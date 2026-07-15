@@ -694,6 +694,53 @@ and, for the default QAOA path, stitched back together). The helper only groups
 the usual ensemble calls; for progress output, circuit batching, and Ctrl+C
 behavior, see :doc:`program_ensembles`.
 
+Structure-Aware Partitioning (Community Decomposer)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Instead of the hybrid ``EnergyImpactDecomposer``, pass a
+:class:`~divi.qprog.problems.CommunityDecomposer` — a drop-in ``hybrid``
+decomposer that splits the QUBO by the *community structure* of its interaction
+graph, grouping strongly-coupled variables and cutting weak couplings so little
+energy is lost at partition boundaries. This helps most on problems with community
+structure; ``EnergyImpactDecomposer`` remains a fine default for featureless (dense,
+unstructured) QUBOs.
+
+Key parameters:
+
+- ``max_cluster_size`` — the maximum number of variables in any partition (the
+  per-partition qubit budget), analogous to ``EnergyImpactDecomposer(size=...)``.
+- ``min_clusters`` — a floor on the number of partitions produced. At least one of
+  ``max_cluster_size`` / ``min_clusters`` must be given.
+- ``method`` — ``"modularity"`` (default: Louvain community detection, the
+  strongest general-purpose choice across structured, dense, and constrained
+  QUBOs) or ``"spectral"`` (signed multi-view spectral clustering, which respects
+  coupling signs; best on sparse-geometric instances). With the ``local_search``
+  polish the two reach comparable quality.
+
+``local_search=True`` is a :class:`~divi.qprog.problems.BinaryOptimizationProblem`
+option (not part of the decomposer): it adds a greedy single-bit-flip polish of each
+aggregated solution and improves results with **any** decomposer, including
+``EnergyImpactDecomposer``.
+
+.. code-block:: python
+
+   from divi.qprog.problems import CommunityDecomposer
+
+   problem = BinaryOptimizationProblem(
+       large_bqm,
+       decomposer=CommunityDecomposer(max_cluster_size=5),  # method="modularity"
+       composer=hybrid.SplatComposer(),
+       local_search=True,
+   )
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=2,
+       optimizer=optimizer,
+       max_iterations=10,
+       backend=backend,
+   )
+   sol_community, energy_community = run_partitioned(ensemble)
+
 Why Partition?
 --------------
 

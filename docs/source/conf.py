@@ -169,8 +169,10 @@ nitpick_ignore_regex = [
     (r"py:class", r"cirq\..*"),
     # dimod's inventory lives under the Ocean umbrella.
     (r"py:class", r"dimod\..*"),
-    # dwave-hybrid does not publish a sphinx inventory.
+    # dwave-hybrid does not publish a sphinx inventory. ``show-inheritance``
+    # also renders its base classes (e.g. ``Runnable``) as bare names.
     (r"py:class", r"hybrid\..*"),
+    (r"py:class", r"^Runnable$"),
     # qoro-maestro does not publish a sphinx inventory.
     (r"py:class", r"maestro\..*"),
     # TypeVars in ``Generic[InT, OutT]`` — autodoc emits both object and

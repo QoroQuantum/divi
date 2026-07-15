@@ -24,6 +24,7 @@ from divi.hamiltonians import (
     x_mixer,
 )
 from divi.qprog.problems import QAOAProblem
+from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
 
 
 def _merge_substates(_, substates):
@@ -87,6 +88,23 @@ def _combine_polynomial_terms(cost_canonical, penalty_canonical, penalty_weight:
     return terms
 
 
+def _induced_sub_qubo(bqm, variables):
+    """Sub-QUBO induced on ``variables``, relabeled to local indices ``0..m-1``.
+
+    Keeps the linear biases of ``variables`` and the quadratic biases between them;
+    couplings crossing the ``variables`` boundary are dropped.
+    """
+    local = {v: i for i, v in enumerate(variables)}
+    cset = set(variables)
+    linear = {local[v]: bqm.linear[v] for v in variables}
+    quadratic = {
+        (local[u], local[v]): q
+        for (u, v), q in bqm.quadratic.items()
+        if u in cset and v in cset
+    }
+    return dimod.BinaryQuadraticModel(linear, quadratic, 0.0, dimod.Vartype.BINARY)
+
+
 class BinaryOptimizationProblem(QAOAProblem):
     """Generic QUBO or HUBO problem for QAOA.
 
@@ -117,9 +135,11 @@ class BinaryOptimizationProblem(QAOAProblem):
       ``quadratization_strength``; ``None`` picks
       ``2 * max(|hubo coeff|)``.
 
-    Optionally accepts a ``dimod.hybrid`` decomposer/composer pair to
-    enable partitioned solving via :meth:`decompose`. Without one, the
-    decomposition-related methods raise ``RuntimeError``.
+    Optionally accepts a ``dimod.hybrid`` decomposer/composer pair to enable
+    partitioned solving via :meth:`decompose`. For structure-aware decomposition of
+    QUBOs with community structure, pass
+    :class:`~divi.qprog.problems.CommunityDecomposer` as the ``decomposer``.
+    Without a decomposer, the decomposition-related methods raise ``RuntimeError``.
 
     Args:
         problem: Objective/cost QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
@@ -144,6 +164,9 @@ class BinaryOptimizationProblem(QAOAProblem):
         composer: Optional ``hybrid.traits.SubsamplesComposer`` for
             recombining sub-solutions; defaults to
             ``hybrid.SplatComposer``.
+        local_search: If ``True``, refine each aggregated candidate to a local
+            minimum by greedy single-bit-flip descent against the full QUBO.
+            Works with any ``decomposer``.
 
     Examples:
         >>> import numpy as np
@@ -163,6 +186,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         quadratization_strength: float | None = None,
         decomposer: hybrid.traits.ProblemDecomposer | None = None,
         composer: hybrid.traits.SubsamplesComposer | None = None,
+        local_search: bool = False,
     ):
         if hamiltonian_builder not in ("native", "quadratized"):
             raise ValueError(
@@ -201,7 +225,14 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._mixer_cache: SparsePauliOp | None = None
 
         # Decomposition support (optional)
+        if local_search and decomposer is None:
+            raise ValueError(
+                "local_search requires a decomposer; it polishes the aggregated "
+                "solution produced during partitioned solving."
+            )
         self._decomposer = decomposer
+        self._local_search = bool(local_search)
+        self._polish_cache: tuple | None = None
         self._bqm: dimod.BinaryQuadraticModel | None
         if decomposer is not None:
             _, self._bqm = _sanitize_problem_input(self._raw_problem)
@@ -315,9 +346,8 @@ class BinaryOptimizationProblem(QAOAProblem):
         """Partition the problem using the configured ``hybrid`` decomposer.
 
         Each non-trivial partition becomes its own
-        :class:`BinaryOptimizationProblem` keyed by ``(name, size)``.
-        Partitions with no interactions are tracked internally and
-        skipped during composition.
+        :class:`BinaryOptimizationProblem` keyed by ``(name, size)``. Partitions
+        with no interactions are tracked internally and skipped during composition.
 
         Raises:
             ValueError: If no decomposer was provided at construction.
@@ -354,22 +384,11 @@ class BinaryOptimizationProblem(QAOAProblem):
                 self._trivial_program_ids.add(prog_id)
                 continue
 
-            ldata, (irow, icol, qdata), _ = partition.subproblem.to_numpy_vectors(
-                partition.subproblem.variables
+            sub_problems[prog_id] = BinaryOptimizationProblem(
+                _induced_sub_qubo(
+                    partition.subproblem, list(partition.subproblem.variables)
+                )
             )
-
-            coo_mat = sps.coo_matrix(
-                (
-                    np.r_[ldata, qdata],
-                    (
-                        np.r_[np.arange(len(ldata)), icol],
-                        np.r_[np.arange(len(ldata)), irow],
-                    ),
-                ),
-                shape=(len(ldata), len(ldata)),
-            )
-
-            sub_problems[prog_id] = BinaryOptimizationProblem(coo_mat)
 
         return sub_problems
 
@@ -426,16 +445,23 @@ class BinaryOptimizationProblem(QAOAProblem):
     def postprocess_candidates(
         self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[np.ndarray, float]]:
-        """Run global candidate solutions through the configured composer.
+        """Compose global candidate solutions into ``(solution, energy)`` pairs.
+
+        With ``local_search=True`` each candidate is refined to a local minimum by
+        greedy single-bit-flip descent against the full QUBO; otherwise the
+        dwave-hybrid composer is run.
 
         Returns:
-            Tuples ``(composed_solution, energy)`` where
-            ``composed_solution`` is an ``int32`` ndarray of bits and
-            ``energy`` is the objective value computed by the composer.
+            Tuples ``(solution, energy)`` where ``solution`` is an ``int32`` ndarray
+            of bits, sorted ascending by ``energy``.
         """
-        composed = [self._compose_solution(sol) for _score, sol in candidates]
-        composed.sort(key=lambda entry: entry[1])
-        return composed
+        if self._local_search:
+            results = [self._greedy_bit_flip(sol) for _score, sol in candidates]
+        else:
+            results = [self._compose_solution(sol) for _score, sol in candidates]
+
+        results.sort(key=lambda entry: entry[1])
+        return results
 
     def _compose_solution(self, solution):
         """Run a single solution through the hybrid composer pipeline."""
@@ -460,3 +486,49 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         sol, energy, _ = final_state.samples.record[0]
         return np.array(sol, dtype=np.int32), float(energy)
+
+    def _polish_fields(self):
+        """Cache ``(h, J, J_csc, tol)`` for the incremental single-bit-flip polish.
+
+        ``tol`` is a PER-NODE improvement threshold, ``1e-12 * (|h_i| + sum_j
+        |J[i,j]|)``. The incremental field's floating-point drift scales with each
+        node's *local* field magnitude, so a per-node bound stays above the drift
+        where couplings are large without desensitizing low-scale nodes elsewhere
+        (a single global bound would let one huge outlier coupling reject genuine
+        improvements across the whole problem).
+        """
+        if self._polish_cache is None:
+            _variables, h, j = bqm_to_sparse(self._bqm)
+            j_abs = j.copy()
+            j_abs.data = np.abs(j_abs.data)
+            node_scale = np.abs(h) + np.asarray(j_abs.sum(axis=1)).ravel()
+            tol = 1e-12 * np.maximum(1.0, node_scale)
+            self._polish_cache = (h, j, j.tocsc(), tol)
+        return self._polish_cache
+
+    def _greedy_bit_flip(self, solution) -> tuple[np.ndarray, float]:
+        """Greedy single-bit-flip descent to a local minimum of the full BQM.
+
+        Maintains an incremental effective field ``g = h + J @ x`` and updates only a
+        flipped variable's neighbors, so cost scales with the number of couplings. The
+        per-node improvement threshold (see :meth:`_polish_fields`) stays above the
+        incremental field's floating-point drift at any coefficient scale.
+        """
+        h, j, jc, tol = self._polish_fields()
+        x = np.array(solution, dtype=np.float64)
+        g = h + j.dot(x)
+        indptr, indices, data = jc.indptr, jc.indices, jc.data
+
+        improved = True
+        while improved:
+            improved = False
+            for i in range(len(x)):
+                if (1 - 2 * x[i]) * g[i] < -tol[i]:
+                    dx = 1 - 2 * x[i]
+                    x[i] = 1 - x[i]
+                    s, e = indptr[i], indptr[i + 1]
+                    g[indices[s:e]] += data[s:e] * dx
+                    improved = True
+
+        bits = x.astype(np.int32)
+        return bits, self.evaluate_global_solution(bits.tolist())

@@ -10,9 +10,10 @@ This tutorial shows three distinct entry points:
 
 1. **Graph-level partitioning** — split a graph by topology (METIS), solve
    MaxCut on each cluster, then aggregate via greedy/beam search.
-2. **QUBO-level partitioning** — use a decomposer/composer from D-Wave
-   Ocean's ``hybrid`` workflow library to split a random BQM and compare
-   two quantum routines (QAOA vs PCE) on the same partitioned problem.
+2. **QUBO-level partitioning** — split a BQM two ways: the structure-aware
+   ``CommunityDecomposer`` (with a ``local_search`` polish) and D-Wave
+   Ocean's ``hybrid`` ``EnergyImpactDecomposer``; compare two quantum routines
+   (QAOA vs PCE) on the same partitioned problem.
 3. **Edge-based partitioning** — use ``MaxWeightMatchingProblem``'s edge
    budget plus a Kernighan-Lin partitioner to chunk a weighted graph into
    matching-sized sub-instances.
@@ -40,6 +41,7 @@ from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
+    CommunityDecomposer,
     GraphPartitioningConfig,
     MaxCutProblem,
     MaxWeightMatchingProblem,
@@ -86,15 +88,9 @@ def _cut_ratio(quantum_solution, classical_cut_size: int, graph: nx.Graph) -> fl
 
 
 def _run_qubo_partitioning(
-    bqm: dimod.BinaryQuadraticModel, engine: str, engine_kwargs: dict
+    problem: BinaryOptimizationProblem, engine: str, engine_kwargs: dict
 ) -> dict:
-    """Run one quantum routine on a hybrid-decomposed BQM."""
-    problem = BinaryOptimizationProblem(
-        bqm,
-        decomposer=hybrid.EnergyImpactDecomposer(size=5),
-        composer=hybrid.SplatComposer(),
-    )
-
+    """Run one quantum routine on a decomposed BQM."""
     ensemble = PartitioningProgramEnsemble(
         problem=problem,
         quantum_routine=engine,
@@ -283,10 +279,28 @@ if __name__ == "__main__":
         bias_generator=partial(np.random.default_rng().uniform, -5, 5),
     )
 
+    # Two decomposition strategies on the same problem:
+    #  - QAOA uses ``CommunityDecomposer``: community-structure-aware clustering of
+    #    the QUBO interaction graph (Louvain modularity by default), plus a greedy
+    #    single-bit-flip ``local_search`` polish of the aggregated solution. This
+    #    shines on problems with community structure.
+    #  - PCE uses the D-Wave hybrid ``EnergyImpactDecomposer``.
+    qaoa_problem = BinaryOptimizationProblem(
+        bqm,
+        decomposer=CommunityDecomposer(max_cluster_size=5),
+        composer=hybrid.SplatComposer(),
+        local_search=True,
+    )
+    pce_problem = BinaryOptimizationProblem(
+        bqm,
+        decomposer=hybrid.EnergyImpactDecomposer(size=5),
+        composer=hybrid.SplatComposer(),
+    )
+
     results_by_engine = {
-        "qaoa": _run_qubo_partitioning(bqm=bqm, engine="qaoa", engine_kwargs={}),
+        "qaoa": _run_qubo_partitioning(qaoa_problem, engine="qaoa", engine_kwargs={}),
         "pce": _run_qubo_partitioning(
-            bqm=bqm,
+            pce_problem,
             engine="pce",
             engine_kwargs={
                 "ansatz": GenericLayerAnsatz([RYGate, RZGate]),

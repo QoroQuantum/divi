@@ -5,8 +5,8 @@
 """Problem classes for QAOA-compatible quantum optimization."""
 
 from ._base import QAOAProblem
-from ._graph_partitioning_utils import GraphPartitioningConfig, draw_partitions
 from ._binary import BinaryOptimizationProblem
+from ._graph_partitioning_utils import GraphPartitioningConfig, draw_partitions
 from ._graphs import (
     MaxCliqueProblem,
     MaxCutProblem,
@@ -20,6 +20,7 @@ from ._matching import (
     check_matching_matrix,
     is_valid_matching,
 )
+from ._qubo_partitioning_utils import CommunityDecomposer
 from ._routing import (
     BinaryBlockConfig,
     CVRPProblem,
@@ -38,6 +39,7 @@ __all__ = [
     "BinaryBlockConfig",
     "BinaryOptimizationProblem",
     "CVRPProblem",
+    "CommunityDecomposer",
     "GraphPartitioningConfig",
     "MaxCliqueProblem",
     "MaxCutProblem",
