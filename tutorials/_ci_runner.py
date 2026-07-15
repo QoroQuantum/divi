@@ -85,7 +85,7 @@ TUTORIALS: dict[str, dict] = {
     },
     "optimization/qaoa_partitioning.py": {
         # Three partitioning entry points run sequentially; budget covers
-        # graph (METIS), QUBO (hybrid), and edge-based (Kernighan-Lin).
+        # graph (METIS), QUBO (multi-view + hybrid), and edge-based (Kernighan-Lin).
         "timeout_seconds": 240,
         "patches": [
             ("N_NODES = 30", "N_NODES = 10"),

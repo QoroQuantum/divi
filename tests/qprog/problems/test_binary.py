@@ -7,6 +7,7 @@ import hybrid
 import numpy as np
 import pytest
 import scipy.sparse as sps
+from hybrid.exceptions import EndOfStream
 from qiskit.circuit.library import RYGate, RZGate
 
 import divi.qprog.problems._binary as binary_module
@@ -24,7 +25,7 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.problems import BinaryOptimizationProblem
+from divi.qprog.problems import BinaryOptimizationProblem, CommunityDecomposer
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog._program_contracts import verify_cost_circuit
@@ -1074,4 +1075,226 @@ class TestQUBOPartitioningEnsemble:
         np.testing.assert_array_equal(solution, expected_solution)
 
         assert isinstance(energy, float)
+        assert energy == pytest.approx(-1.5)
+
+
+class TestCommunityDecomposer:
+    """CommunityDecomposer (structure-aware) + local-search polish."""
+
+    def _community_problem(self, source, **kwargs):
+        return BinaryOptimizationProblem(
+            source,
+            decomposer=CommunityDecomposer(max_cluster_size=2),
+            composer=hybrid.SplatComposer(),
+            **kwargs,
+        )
+
+    def test_decomposer_requires_a_size_constraint(self):
+        with pytest.raises(ValueError, match="max_cluster_size.*min_clusters"):
+            CommunityDecomposer()
+
+    def test_community_decompose_populates_variable_maps(self):
+        problem = self._community_problem(make_known_qubo_bqm())
+        sub_problems = problem.decompose()
+
+        assert all(
+            isinstance(p, BinaryOptimizationProblem) for p in sub_problems.values()
+        )
+        mapped = sorted(
+            gi for indices in problem._variable_maps.values() for gi in indices
+        )
+        assert mapped == list(range(problem.initial_solution_size()))
+
+    def test_multiview_decompose_rejects_hubo(self):
+        with pytest.raises(ValueError, match="quadratic"):
+            BinaryOptimizationProblem(
+                HUBO_CUBIC,
+                decomposer=CommunityDecomposer(max_cluster_size=2),
+            )
+
+    def test_greedy_bit_flip_reaches_local_minimum(self):
+        problem = self._community_problem(make_known_qubo_bqm())
+        problem.decompose()
+
+        start = [1, 1, 1, 1]
+        start_energy = problem.evaluate_global_solution(start)
+        bits, energy = problem._greedy_bit_flip(start)
+
+        assert energy <= start_energy
+        for i in range(len(bits)):
+            flipped = bits.copy()
+            flipped[i] = 1 - flipped[i]
+            assert problem.evaluate_global_solution(flipped.tolist()) >= energy - 1e-9
+
+    def test_greedy_bit_flip_large_scale_reaches_optimum(self):
+        # Coefficients ×1e6: the flip tolerance is scaled by coefficient
+        # magnitude, so the descent still terminates at the true optimum instead
+        # of stalling on incremental-field drift.
+        base = make_known_qubo_bqm()
+        scaled = dimod.BinaryQuadraticModel(
+            {v: 1e6 * b for v, b in base.linear.items()},
+            {e: 1e6 * b for e, b in base.quadratic.items()},
+            0.0,
+            dimod.Vartype.BINARY,
+        )
+        problem = self._community_problem(scaled)
+        problem.decompose()
+
+        bits, energy = problem._greedy_bit_flip([1, 1, 1, 1])
+
+        np.testing.assert_array_equal(bits, np.array([1, 1, 0, 0], dtype=np.int32))
+        assert energy == pytest.approx(-1.5e6)
+
+    def test_local_search_polishes_community_path(self):
+        problem = self._community_problem(make_known_qubo_bqm(), local_search=True)
+        problem.decompose()
+
+        raw = problem.evaluate_global_solution([1, 1, 1, 1])
+        ((_bits, energy),) = problem.postprocess_candidates([(0.0, [1, 1, 1, 1])])
+        assert energy < raw
+        assert energy == pytest.approx(-1.5)
+
+    def test_local_search_polishes_energy_impact_path(self):
+        problem = BinaryOptimizationProblem(
+            make_known_qubo_bqm(),
+            decomposer=hybrid.EnergyImpactDecomposer(size=2),
+            local_search=True,
+        )
+        problem.decompose()
+
+        raw = problem.evaluate_global_solution([1, 1, 1, 1])
+        ((_bits, energy),) = problem.postprocess_candidates([(0.0, [1, 1, 1, 1])])
+        assert energy < raw
+        assert energy == pytest.approx(-1.5)
+
+    def test_decompose_min_clusters_exceeding_n_raises(self):
+        problem = BinaryOptimizationProblem(
+            make_known_qubo_bqm(),
+            decomposer=CommunityDecomposer(min_clusters=99),
+            composer=hybrid.SplatComposer(),
+        )
+        with pytest.raises(ValueError, match="larger than the number of variables"):
+            problem.decompose()
+
+    def test_next_rolls_clusters_then_raises_end_of_stream(self):
+        # KNOWN_QUBO has two disconnected 2-variable components → two clusters,
+        # then the decomposer signals EndOfStream (the Unwind contract).
+        decomposer = CommunityDecomposer(max_cluster_size=2)
+        state = hybrid.State.from_problem(make_known_qubo_bqm())
+
+        seen = 0
+        while True:
+            try:
+                state = decomposer.next(state, silent_rewind=False)
+                seen += 1
+            except EndOfStream:
+                break
+
+        assert seen == 2
+
+    def test_decompose_splits_single_component_via_spectral(self):
+        # One connected component (two interleaved blocks + weak bridge) with a
+        # budget below its size forces the spectral-split branch through the full
+        # decompose() wiring, not just the connected-component pre-split.
+        block_a, block_b = [0, 2, 4, 6], [1, 3, 5, 7]
+        q = np.zeros((8, 8))
+        for blk in (block_a, block_b):
+            for x in range(len(blk)):
+                for y in range(x + 1, len(blk)):
+                    q[blk[x], blk[y]] = -5.0
+        q[6, 7] = 0.05  # weak inter-block bridge -> single component
+
+        problem = BinaryOptimizationProblem(
+            q,
+            decomposer=CommunityDecomposer(max_cluster_size=4, method="spectral"),
+            composer=hybrid.SplatComposer(),
+        )
+        sub_problems = problem.decompose()
+
+        assert len(sub_problems) == 2
+        assert all(pid[1] <= 4 for pid in sub_problems)
+        mapped = sorted(
+            gi for indices in problem._variable_maps.values() for gi in indices
+        )
+        assert mapped == list(range(8))
+
+    def test_greedy_bit_flip_polishes_low_scale_amid_huge_coupling(self):
+        # A 1e12 coupling must not desensitize the descent in the O(1) part of the
+        # problem: the per-node tolerance keeps the small linear rewards live.
+        bqm = dimod.BinaryQuadraticModel(
+            {2: -1.0, 3: -1.0},  # O(1) rewards -> want x2 = x3 = 1
+            {(0, 1): 1e12},  # huge, unrelated coupling
+            0.0,
+            dimod.Vartype.BINARY,
+        )
+        problem = BinaryOptimizationProblem(
+            bqm,
+            decomposer=CommunityDecomposer(max_cluster_size=2),
+            composer=hybrid.SplatComposer(),
+        )
+
+        bits, _energy = problem._greedy_bit_flip([0, 0, 0, 0])
+
+        variables = list(problem._bqm.variables)
+        assert bits[variables.index(2)] == 1
+        assert bits[variables.index(3)] == 1
+
+    def test_local_search_without_decomposer_raises(self):
+        with pytest.raises(ValueError, match="local_search requires a decomposer"):
+            BinaryOptimizationProblem(make_known_qubo_bqm(), local_search=True)
+
+    def test_invalid_method_raises(self):
+        with pytest.raises(ValueError, match="spectral.*modularity"):
+            CommunityDecomposer(max_cluster_size=2, method="bogus")
+
+    def test_modularity_method_decomposes_single_component(self):
+        block_a, block_b = [0, 2, 4, 6], [1, 3, 5, 7]
+        q = np.zeros((8, 8))
+        for blk in (block_a, block_b):
+            for x in range(len(blk)):
+                for y in range(x + 1, len(blk)):
+                    q[blk[x], blk[y]] = -5.0
+        q[6, 7] = 0.05
+
+        problem = BinaryOptimizationProblem(
+            q,
+            decomposer=CommunityDecomposer(max_cluster_size=4, method="modularity"),
+            composer=hybrid.SplatComposer(),
+        )
+        sub_problems = problem.decompose()
+
+        assert all(pid[1] <= 4 for pid in sub_problems)
+        mapped = sorted(
+            gi for indices in problem._variable_maps.values() for gi in indices
+        )
+        assert mapped == list(range(8))
+
+    def test_next_passes_through_single_variable_problem(self):
+        bqm = dimod.BinaryQuadraticModel({0: -1.0}, {}, 0.0, dimod.Vartype.BINARY)
+        decomposer = CommunityDecomposer(max_cluster_size=2)
+
+        out = decomposer.next(hybrid.State.from_problem(bqm), silent_rewind=False)
+
+        assert list(out.subproblem.variables) == [0]
+
+    @pytest.mark.e2e
+    def test_community_partitioning_e2e(self, default_test_simulator):
+        """End-to-end QUBO solve via structure-aware decomposition + polish."""
+        default_test_simulator.set_seed(1997)
+
+        problem = self._community_problem(make_known_qubo_bqm(), local_search=True)
+        ensemble = PartitioningProgramEnsemble(
+            problem=problem,
+            n_layers=2,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=15,
+            backend=default_test_simulator,
+            seed=1997,
+        )
+
+        ensemble.create_programs()
+        ensemble.run(blocking=True, batch_config=BatchConfig(_sort_programs=True))
+        solution, energy = ensemble.aggregate_results()
+
+        np.testing.assert_array_equal(solution, np.array([1, 1, 0, 0]))
         assert energy == pytest.approx(-1.5)
