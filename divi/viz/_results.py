@@ -102,8 +102,7 @@ def _plot_pca_scan_cells(
     cmap_in = pm_kwargs.pop("cmap", None)
     if cmap_in is None:
         cmap_in = plt.rcParams.get("image.cmap", "viridis")
-    cmap = plt.get_cmap(cmap_in).copy()
-    cmap.set_bad(color=(0.88, 0.88, 0.88, 1.0))
+    cmap = plt.get_cmap(cmap_in).with_extremes(bad=(0.88, 0.88, 0.88, 1.0))
 
     z_plot = np.ma.masked_invalid(z)
 
