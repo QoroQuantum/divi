@@ -66,7 +66,7 @@ if __name__ == "__main__":
     optimizer.reset()
 
     pce = PCE(
-        problem=problem,
+        problem=BinaryOptimizationProblem(problem),
         ansatz=GenericLayerAnsatz(
             gate_sequence=[RYGate, RZGate],
             entangler=CXGate,

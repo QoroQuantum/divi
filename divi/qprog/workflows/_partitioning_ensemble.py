@@ -12,7 +12,8 @@ from divi.qprog.aggregation import AggregationStrategy, BeamSearchStrategy
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
 from divi.qprog.ensemble import ProgramEnsemble
 from divi.qprog.optimizers import Optimizer
-from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
+from divi.qprog.problems import QAOAProblem
+from divi.qprog.problems._graphs import _GraphProblemBase
 
 
 class PartitioningProgramEnsemble(ProgramEnsemble):
@@ -69,6 +70,17 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             )
 
         self._engine_cls, engine_args = _ENGINE_MAP[routine]
+
+        # PCE needs BinaryOptimizationProblem partitions; graph problems yield graph sub-problems.
+        if routine == "pce" and isinstance(self._problem, _GraphProblemBase):
+            raise TypeError(
+                "quantum_routine='pce' does not support graph problems "
+                f"({type(self._problem).__name__}): their partitions are graph "
+                "sub-problems, which PCE cannot consume. Use quantum_routine='qaoa' "
+                "or 'iterative_qaoa', or model the problem as a QUBO with "
+                "BinaryOptimizationProblem."
+            )
+
         self._constructor = partial(
             self._engine_cls, backend=backend, **engine_args, **self._engine_kwargs
         )
@@ -103,17 +115,8 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         super().create_programs()
         sub_problems = self._problem.decompose()
         for prog_id, sub_problem in sub_problems.items():
-            # QAOA/IterativeQAOA need Problem objects;
-            # PCE takes raw QUBO matrices directly.
-            if self._engine_cls == PCE and isinstance(
-                sub_problem, BinaryOptimizationProblem
-            ):
-                problem_arg = sub_problem.raw_problem
-            else:
-                problem_arg = sub_problem
-
             self._programs[prog_id] = self._constructor(
-                problem=problem_arg,
+                problem=sub_problem,
                 **self._make_program_args(prog_id),
             )
 

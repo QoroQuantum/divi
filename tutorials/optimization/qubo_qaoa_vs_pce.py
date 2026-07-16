@@ -10,8 +10,9 @@ Two ways to drive a QUBO through divi, side by side:
   :class:`BinaryQuadraticModel` directly.  The cost Hamiltonian is built
   from the BQM's quadratic and linear biases, and solutions are returned
   as a dict keyed by the BQM variable names.
-* ``PCE(qubo_to_matrix(bqm))`` — Pauli Correlation Encoding takes the QUBO
-  as a numpy matrix.  Solutions come back as bitstrings indexed by the
+* ``PCE(BinaryOptimizationProblem(qubo_to_matrix(bqm)))`` — Pauli Correlation
+  Encoding takes the same ``BinaryOptimizationProblem`` wrapper, here built from
+  the QUBO's numpy-matrix form.  Solutions come back as bitstrings indexed by the
   BQM's variable order.
 
 Using a hand-built BQM with named variables lets the tutorial demonstrate
@@ -117,7 +118,7 @@ if __name__ == "__main__":
     # ``list(bqm.variables)`` order, so the bitstring positions line up
     # with ``variables`` above.
     pce_solver = PCE(
-        problem=qubo_to_matrix(bqm),
+        problem=BinaryOptimizationProblem(qubo_to_matrix(bqm)),
         ansatz=GenericLayerAnsatz(
             gate_sequence=[RYGate, RZGate],
             entangler=CXGate,

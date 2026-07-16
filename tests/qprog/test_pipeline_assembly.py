@@ -16,6 +16,7 @@ from divi.pipeline import CircuitPreprocessor, ResultFormat
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
 from divi.qprog import PCE, VQE, CustomVQA
 from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.problems import BinaryOptimizationProblem
 
 
 def _stage_types(pipeline):
@@ -133,7 +134,7 @@ def test_pce_cost_uses_pce_cost_stage_without_mitigation(
     dummy_simulator, default_optimizer
 ):
     pce = PCE(
-        problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=dummy_simulator,

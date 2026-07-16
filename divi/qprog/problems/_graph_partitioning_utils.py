@@ -193,6 +193,7 @@ def _apply_split_with_relabel(
             affinity="precomputed",
             n_init=100,
             assign_labels="discretize",
+            random_state=0,
         )
         parts = sc.fit_predict(adj_matrix)
     elif algorithm == "metis":

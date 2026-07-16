@@ -9,7 +9,11 @@ from divi.qprog import QAOA, VariationalQuantumAlgorithm
 from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.aggregation import BeamSearchStrategy, HierarchicalStrategy
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from divi.qprog.problems import MaxWeightMatchingProblem, is_valid_matching
+from divi.qprog.problems import (
+    MaxCutProblem,
+    MaxWeightMatchingProblem,
+    is_valid_matching,
+)
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
 
@@ -52,6 +56,16 @@ def _make_ensemble(problem, backend, **overrides):
         **overrides,
     }
     return PartitioningProgramEnsemble(**kwargs)
+
+
+def test_pce_routine_rejects_graph_problem(dummy_simulator):
+    """quantum_routine='pce' on a graph problem fails at construction with a clear error."""
+    with pytest.raises(TypeError, match="quantum_routine='pce' does not support graph"):
+        _make_ensemble(
+            MaxCutProblem(nx.path_graph(4)),
+            dummy_simulator,
+            quantum_routine="pce",
+        )
 
 
 _CONFLICT_CANDIDATES = [

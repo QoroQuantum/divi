@@ -15,19 +15,14 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import (
-    BinaryPolynomialProblem,
-    HUBOProblemTypes,
-    QUBOProblemTypes,
-    compile_problem,
-    normalize_binary_polynomial_problem,
-)
+from divi.hamiltonians import BinaryPolynomialProblem, compile_problem
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline import CircuitPreprocessor, ResultFormat
 from divi.pipeline.stages import PCECostStage
 from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
+from divi.qprog.problems import BinaryOptimizationProblem
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -145,7 +140,7 @@ class PCE(VQE):
 
     def __init__(
         self,
-        problem: QUBOProblemTypes | HUBOProblemTypes,
+        problem: BinaryOptimizationProblem,
         n_qubits: int | None = None,
         alpha: float = 2.0,
         encoding_type: Literal["dense", "poly"] = "dense",
@@ -156,8 +151,9 @@ class PCE(VQE):
     ):
         """
         Args:
-            problem (QUBOProblemTypes | HUBOProblemTypes): Binary polynomial
-                objective to minimize. Supports QUBO and HUBO inputs.
+            problem (BinaryOptimizationProblem): The binary problem to minimize.
+                Its combined objective + penalty QUBO/HUBO is used. Wrap a raw
+                QUBO/HUBO with ``BinaryOptimizationProblem(...)``.
             n_qubits (int | None): Optional override. Must be >= minimum for the
                 chosen encoding (ceil(log2(N + 1)) for dense; solve n(n+1)/2 >= N
                 for poly). Larger values raise a warning for both encodings.
@@ -175,9 +171,12 @@ class PCE(VQE):
                 the chemistry ansätze VQE defaults to do not apply to PCE's
                 qubit encoding.
         """
-        self.problem: BinaryPolynomialProblem = normalize_binary_polynomial_problem(
-            problem
-        )
+        if not isinstance(problem, BinaryOptimizationProblem):
+            raise TypeError(
+                f"PCE requires a BinaryOptimizationProblem, got {type(problem).__name__}. "
+                "Wrap your QUBO/HUBO: PCE(BinaryOptimizationProblem(qubo))."
+            )
+        self.problem: BinaryPolynomialProblem = problem.canonical_problem
         self.n_vars = self.problem.n_vars
         self.alpha = alpha
         self.encoding_type = encoding_type
@@ -412,7 +411,9 @@ class PCE(VQE):
                     bitstring=decoded_bitstring,
                     prob=prob,
                     decoded=(
-                        decoded_solution.astype(np.int32) if include_decoded else None
+                        self._decode_assignment(decoded_solution.astype(np.int32))
+                        if include_decoded
+                        else None
                     ),
                     energy=energy,
                 )
@@ -425,6 +426,16 @@ class PCE(VQE):
             result.sort(key=lambda e: (-e.prob, e.bitstring))
 
         return result[:n]
+
+    def _decode_assignment(
+        self, vector: npt.NDArray[np.integer]
+    ) -> npt.NDArray[np.integer] | dict:
+        """Return the assignment keyed by variable name when the variable order
+        isn't the default ``0..n_vars-1``; otherwise the raw array."""
+        vo = self.problem.variable_order
+        if vo != tuple(range(self.n_vars)):
+            return dict(zip(vo, vector))
+        return vector
 
     @property
     def solution(self) -> npt.NDArray[np.integer] | dict:
@@ -457,7 +468,4 @@ class PCE(VQE):
             stacklevel=2,
         )
 
-        vo = self.problem.variable_order
-        if vo != tuple(range(self.problem.n_vars)):
-            return dict(zip(vo, self._final_vector))
-        return self._final_vector
+        return self._decode_assignment(self._final_vector)

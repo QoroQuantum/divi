@@ -36,7 +36,7 @@ from divi.qprog._metrics import (
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import QNGOptimizer
-from divi.qprog.problems import MaxCutProblem
+from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_mask
 
 # --------------------------------------------------------------------------- #
@@ -407,7 +407,7 @@ def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(monkeypatch)
 
 def _small_pce(backend, optimizer):
     return PCE(
-        problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=backend,
@@ -633,7 +633,7 @@ def test_pce_runs_under_fubini_study_qng(default_test_simulator):
     end-to-end under QNG with the FS metric."""
     default_test_simulator.set_seed(1997)
     pce = PCE(
-        problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=default_test_simulator,

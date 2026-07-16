@@ -118,13 +118,14 @@ Divi offers specialized algorithms for different problem types:
       import numpy as np
       from qiskit.circuit.library import CXGate, RYGate, RZGate
       from divi.qprog import PCE, GenericLayerAnsatz
+      from divi.qprog.problems import BinaryOptimizationProblem
       from divi.backends import MaestroSimulator
 
       from divi.qprog.optimizers import MonteCarloOptimizer
 
       qubo_matrix = np.array([[-1.0, 2.0], [0.0, 1.0]])
       pce = PCE(
-          problem=qubo_matrix,
+          problem=BinaryOptimizationProblem(qubo_matrix),
           ansatz=GenericLayerAnsatz(
               gate_sequence=[RYGate, RZGate],
               entangler=CXGate,

@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import dimod
 import numpy as np
 import pytest
 from qiskit.circuit.library import RYGate, RZGate
@@ -25,6 +26,7 @@ from divi.qprog.algorithms._pce import (
     _masks_to_ham_ops,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.problems import BinaryOptimizationProblem
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
@@ -62,7 +64,10 @@ def make_pce(basic_ansatz, dummy_simulator, default_optimizer):
     _default_problem = np.array([[1.0, 0.2], [0.2, 2.0]])
 
     def _make(**kwargs):
-        kwargs.setdefault("problem", _default_problem)
+        problem = kwargs.pop("problem", _default_problem)
+        if not isinstance(problem, BinaryOptimizationProblem):
+            problem = BinaryOptimizationProblem(problem)
+        kwargs["problem"] = problem
         kwargs.setdefault("ansatz", basic_ansatz)
         kwargs.setdefault("optimizer", default_optimizer)
         kwargs.setdefault("backend", dummy_simulator)
@@ -160,7 +165,9 @@ def test_pce_default_ansatz_is_hardware_efficient_and_entangling(
     PCE) and raises; PCE must supply its own applicable default.
     """
     pce = PCE(
-        problem=np.array([[1.0, 0.2, 0.0], [0.2, 2.0, 0.3], [0.0, 0.3, 1.5]]),
+        problem=BinaryOptimizationProblem(
+            np.array([[1.0, 0.2, 0.0], [0.2, 2.0, 0.3], [0.0, 0.3, 1.5]])
+        ),
         backend=dummy_simulator,
         optimizer=default_optimizer,
     )
@@ -186,12 +193,18 @@ def test_pce_invalid_encoding_type(make_pce):
         make_pce(problem=np.zeros((2, 2)), encoding_type="sparse")
 
 
+def test_pce_rejects_non_binary_problem():
+    """PCE only accepts a BinaryOptimizationProblem; a raw QUBO raises clearly."""
+    with pytest.raises(TypeError, match="requires a BinaryOptimizationProblem"):
+        PCE(np.array([[1.0, 0.0], [0.0, 1.0]]))
+
+
 def test_pce_hard_cvar_expval_backend_raises(
     basic_ansatz, dummy_expval_backend, default_optimizer
 ):
     """PCE with alpha >= 5 (hard CVaR) raises when backend supports expectation values."""
     pce = PCE(
-        problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=basic_ansatz,
         optimizer=default_optimizer,
         backend=dummy_expval_backend,
@@ -558,6 +571,23 @@ def test_pce_get_top_solutions_include_decoded(make_pce):
         np.testing.assert_array_equal(sol.decoded, expected_array)
 
 
+def test_pce_get_top_solutions_decoded_keys_by_variable_name(make_pce):
+    """For a string-keyed BQM, decoded is a name-keyed dict, positionally
+    consistent with the decoded bitstring (matching .solution)."""
+    bqm = dimod.BinaryQuadraticModel(
+        {"w": 1.0, "x": 1.0, "y": 1.0}, {}, 0.0, dimod.Vartype.BINARY
+    )
+    pce = make_pce(problem=bqm)  # 3 variables -> 2 qubits (dense)
+    _set_probs(pce, {"00": 0.6, "01": 0.4})
+
+    sol = pce.get_top_solutions(n=1, include_decoded=True)[0]
+    assert isinstance(sol.decoded, dict)
+    assert set(sol.decoded) == {"w", "x", "y"}
+    assert sol.decoded == {
+        name: int(bit) for name, bit in zip(pce.problem.variable_order, sol.bitstring)
+    }
+
+
 def test_pce_get_top_solutions_min_prob_filtering(make_pce):
     """get_top_solutions filters by min_prob correctly."""
     pce = make_pce(problem=np.eye(2))
@@ -656,7 +686,7 @@ def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz):
     qubo = PCE_QUBO_MATRIX.copy()
 
     pce = PCE(
-        problem=qubo,
+        problem=BinaryOptimizationProblem(qubo),
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -690,7 +720,7 @@ def test_pce_qubo_e2e_checkpointing_resume(
     checkpoint_dir = tmp_path / "checkpoint_test"
 
     pce1 = PCE(
-        problem=qubo,
+        problem=BinaryOptimizationProblem(qubo),
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=MonteCarloOptimizer(population_size=5, n_best_sets=2),
@@ -711,7 +741,7 @@ def test_pce_qubo_e2e_checkpointing_resume(
     pce2 = PCE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
-        problem=qubo,
+        problem=BinaryOptimizationProblem(qubo),
         ansatz=basic_ansatz,
         n_layers=1,
     )
@@ -726,7 +756,7 @@ def test_pce_qubo_e2e_checkpointing_resume(
     pce3 = PCE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
-        problem=qubo,
+        problem=BinaryOptimizationProblem(qubo),
         ansatz=basic_ansatz,
         n_layers=1,
     )
@@ -746,7 +776,7 @@ def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz):
     qubo = PCE_QUBO_MATRIX.copy()
 
     pce = PCE(
-        problem=qubo,
+        problem=BinaryOptimizationProblem(qubo),
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -780,7 +810,7 @@ def test_pce_hubo_e2e_solution(default_test_simulator, basic_ansatz):
     _, exact_minima = exact_hubo_minima(HUBO_CUBIC, n_vars=3)
 
     pce = PCE(
-        problem=HUBO_CUBIC,
+        problem=BinaryOptimizationProblem(HUBO_CUBIC),
         ansatz=basic_ansatz,
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -791,6 +821,35 @@ def test_pce_hubo_e2e_solution(default_test_simulator, basic_ansatz):
 
     pce.run()
     assert any(np.array_equal(_read_solution(pce), x) for x in exact_minima)
+
+
+@pytest.mark.e2e
+def test_pce_named_variables_decode_to_names(default_test_simulator, basic_ansatz):
+    """A string-indexed BQM decodes to name-keyed solutions on both surfaces."""
+    default_test_simulator.set_seed(1997)
+    bqm = dimod.BinaryQuadraticModel(
+        {"w": 10, "x": -3, "y": 2},
+        {("w", "x"): -1, ("x", "y"): 1},
+        0.0,
+        dimod.Vartype.BINARY,
+    )
+    pce = PCE(
+        problem=BinaryOptimizationProblem(bqm),
+        ansatz=basic_ansatz,
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+        max_iterations=3,
+        backend=default_test_simulator,
+        seed=1997,
+    )
+    pce.run()
+
+    names = {"w", "x", "y"}
+    solution = _read_solution(pce)
+    assert isinstance(solution, dict) and set(solution) == names
+
+    top = pce.get_top_solutions(n=1, include_decoded=True)[0]
+    assert isinstance(top.decoded, dict) and set(top.decoded) == names
 
 
 # ---------------------------------------------------------------------------

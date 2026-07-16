@@ -21,7 +21,7 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 from divi.qprog.algorithms import InterpolationStrategy
-from divi.qprog.problems import MaxCutProblem
+from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
 
 
@@ -55,7 +55,7 @@ def qaoa_program(dummy_simulator):
 @pytest.fixture
 def pce_program_soft(dummy_simulator, basic_ansatz, default_optimizer):
     return PCE(
-        problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=basic_ansatz,
         n_layers=1,
         backend=dummy_simulator,
@@ -131,7 +131,7 @@ class TestDirectAPI:
         self, dummy_expval_backend, basic_ansatz, default_optimizer
     ):
         pce = PCE(
-            problem=np.array([[1.0, 0.2], [0.2, 2.0]]),
+            problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
             ansatz=basic_ansatz,
             n_layers=1,
             backend=dummy_expval_backend,
