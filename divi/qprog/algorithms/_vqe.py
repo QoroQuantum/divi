@@ -13,6 +13,7 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.hamiltonians._chem import molecular_hamiltonian_from_pyscf
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
@@ -57,8 +58,10 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        hamiltonian: qp.operation.Operator | SparsePauliOp | None = None,
-        molecule: qp.qchem.Molecule | None = None,
+        hamiltonian: (
+            qp.operation.Operator | SparsePauliOp | dict[str, float] | None
+        ) = None,
+        molecule: qp.qchem.Molecule | Any | None = None,
         n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz: Ansatz | None = None,
@@ -69,8 +72,13 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """Initialize the VQE problem.
 
         Args:
-            hamiltonian (qp.operation.Operator | None): A Hamiltonian representing the problem. Defaults to None.
-            molecule (qp.qchem.Molecule | None): The molecule representing the problem. Defaults to None.
+            hamiltonian: A Hamiltonian representing the problem — a PennyLane
+                operator, a Qiskit ``SparsePauliOp``, a divi Pauli-string dict,
+                or an OpenFermion ``QubitOperator`` (requires the ``chem``
+                extra). Defaults to None.
+            molecule: The molecule representing the problem. Either a PennyLane
+                ``qp.qchem.Molecule`` or a PySCF ``gto.Mole`` / restricted
+                mean-field object (requires the ``chem`` extra). Defaults to None.
             n_electrons (int | None): Number of electrons associated with the Hamiltonian.
                 Only needed when a Hamiltonian is given. Defaults to None.
             n_layers (int): Number of ansatz layers. Defaults to 1.
@@ -143,8 +151,9 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         extracting the necessary information (n_qubits, n_electrons, hamiltonian).
 
         Args:
-            hamiltonian: PennyLane Hamiltonian operator or None.
-            molecule: PennyLane Molecule object or None.
+            hamiltonian: PennyLane operator, SparsePauliOp, or OpenFermion
+                QubitOperator, or None.
+            molecule: PennyLane Molecule, PySCF Mole / mean-field, or None.
             n_electrons: Number of electrons or None.
 
         Raises:
@@ -157,17 +166,17 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             )
 
         if hamiltonian is not None:
-            self.n_qubits = (
-                _require_qiskit_num_qubits(hamiltonian.num_qubits)
-                if isinstance(hamiltonian, SparsePauliOp)
-                else len(hamiltonian.wires)
-            )
             self.n_electrons = n_electrons
 
         if molecule is not None:
             self.molecule = molecule
-            hamiltonian, self.n_qubits = qp.qchem.molecular_hamiltonian(molecule)
-            self.n_electrons = molecule.n_electrons
+            if isinstance(molecule, qp.qchem.Molecule):
+                hamiltonian, _ = qp.qchem.molecular_hamiltonian(molecule)
+                self.n_electrons = molecule.n_electrons
+            else:
+                hamiltonian, self.n_electrons = molecular_hamiltonian_from_pyscf(
+                    molecule
+                )
 
             if (n_electrons is not None) and self.n_electrons != n_electrons:
                 warn(
@@ -178,6 +187,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 )
 
         cost_spo = to_spo(hamiltonian)
+        self.n_qubits = _require_qiskit_num_qubits(cost_spo.num_qubits)
         self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
             cost_spo, raise_on_constant=True
         )

@@ -7,6 +7,7 @@ binary-polynomial normalization + evaluation, and QUBO/HUBO-to-Ising
 conversion.
 """
 
+from ._chem import molecular_hamiltonian_from_pyscf, qubit_operator_to_spo
 from ._ising import (
     BinaryToIsingConverter,
     IsingEncoding,
@@ -61,6 +62,8 @@ __all__ = [
     "TrotterizationStrategy",
     "TrotterizationResult",
     "bit_driver",
+    "molecular_hamiltonian_from_pyscf",
+    "qubit_operator_to_spo",
     "to_spo",
     "bit_flip_mixer",
     "compile_problem",

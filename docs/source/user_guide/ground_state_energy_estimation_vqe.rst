@@ -3,7 +3,7 @@ Ground-State Energy Estimation with VQE
 
 The Variational Quantum Eigensolver (VQE) is a quantum algorithm for finding the ground state energy of quantum systems, particularly useful for quantum chemistry applications.
 
-For our :class:`~divi.qprog.algorithms.VQE` implementation, we integrate tightly with PennyLane's `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ module and their Hamiltonian objects. As such, the :class:`~divi.qprog.algorithms.VQE` constructor accepts either a `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, out of which the molecular Hamiltonian is generated, or the Hamiltonian itself.
+The :class:`~divi.qprog.algorithms.VQE` constructor accepts molecule and Hamiltonian objects from three chemistry ecosystems. The ``molecule`` argument takes a PennyLane `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, or a PySCF `gto.Mole <https://pyscf.org/user/gto.html>`_ / restricted (RHF, closed-shell) mean-field object — either way, the molecular Hamiltonian is generated automatically. Alternatively, pass the Hamiltonian itself via ``hamiltonian=``, as a PennyLane operator, a Qiskit ``SparsePauliOp``, or an OpenFermion `QubitOperator <https://quantumai.google/openfermion>`_. The PySCF and OpenFermion paths require the ``chem`` extra (``pip install qoro-divi[chem]``).
 
 This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
@@ -60,6 +60,78 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
    print("\nTop 5 eigenstates by probability:")
    for i, sol in enumerate(top_eigenstates, 1):
        print(f"{i}. {sol.bitstring}: {sol.prob:.2%}")
+
+PySCF and OpenFermion Inputs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Choose PennyLane, PySCF, or OpenFermion based on where your molecule or
+Hamiltonian already lives — Divi does not require converting between
+ecosystems before handing an object to :class:`~divi.qprog.algorithms.VQE`.
+
+Pass a PySCF ``gto.Mole`` or restricted mean-field object directly as
+``molecule=``; Divi runs (or reuses) the RHF calculation and builds the
+molecular Hamiltonian via
+:func:`~divi.hamiltonians.molecular_hamiltonian_from_pyscf`. This path
+requires the ``chem`` extra (``pip install qoro-divi[chem]``):
+
+.. skip: next
+
+.. code-block:: python
+
+   from pyscf import gto
+   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import MaestroSimulator
+
+   mol = gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g")
+
+   vqe_problem = VQE(
+       molecule=mol,
+       ansatz=HartreeFockAnsatz(),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       max_iterations=10,
+       backend=MaestroSimulator(),
+   )
+   vqe_problem.run()
+
+An OpenFermion ``QubitOperator`` can be passed as ``hamiltonian=`` — not
+just for VQE, but for any Divi program whose ``hamiltonian=`` input routes
+through :func:`~divi.hamiltonians.to_spo` (VQE, TimeEvolution, QAOA). The
+conversion is handled by
+:func:`~divi.hamiltonians.qubit_operator_to_spo` and requires the
+``chem`` extra (``pip install qoro-divi[chem]``). OpenFermion
+qubit ``q`` maps to circuit qubit ``q``. ``qubit_operator_to_spo``'s default
+``n_qubits`` is one past the operator's highest-indexed qubit, so a
+``QubitOperator`` narrower than your target circuit should be converted
+explicitly with an ``n_qubits`` argument before being passed in, rather than
+handed straight to ``hamiltonian=``:
+
+.. skip: next
+
+.. code-block:: python
+
+   from openfermion import QubitOperator
+   from divi.hamiltonians import qubit_operator_to_spo
+   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import MaestroSimulator
+
+   qop = QubitOperator("Z0 Z1", 1.0) + QubitOperator("X0", 0.5)
+
+   # qop's own support is qubits 0-1; convert explicitly for a wider register.
+   ham = qubit_operator_to_spo(qop, n_qubits=4)
+
+   vqe_problem = VQE(
+       hamiltonian=ham,
+       n_electrons=2,
+       ansatz=HartreeFockAnsatz(),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       max_iterations=10,
+       backend=MaestroSimulator(),
+   )
+   vqe_problem.run()
 
 Hamiltonian Input
 ^^^^^^^^^^^^^^^^^

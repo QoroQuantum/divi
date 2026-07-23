@@ -79,6 +79,10 @@ ai = [
     "huggingface-hub>=1.0",
     "docutils>=0.18",
 ]
+chem = [
+    "pyscf>=2.0,<3.0",
+    "openfermion>=1.5,<2.0",
+]
 
 
 [dependency-groups]

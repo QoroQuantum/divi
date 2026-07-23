@@ -16,6 +16,8 @@ from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
 
+from divi.hamiltonians._chem import qubit_operator_to_spo
+
 
 def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
     """Validate that a Pauli-basis observable has real coefficients.
@@ -153,8 +155,13 @@ def to_spo(
     *,
     wires=None,
 ) -> SparsePauliOp:
-    """Convert a PennyLane operator, ``SparsePauliOp``, or Pauli-string
-    dict to ``SparsePauliOp``, validating Hermiticity in every case.
+    """Convert a PennyLane operator, ``SparsePauliOp``, Pauli-string dict, or
+    OpenFermion ``QubitOperator`` to ``SparsePauliOp``, validating Hermiticity
+    in every case. OpenFermion qubit ``q`` maps to circuit qubit ``q``; a
+    ``QubitOperator`` narrower than the target circuit is sized to its own
+    support here, so convert it explicitly with
+    :func:`~divi.hamiltonians.qubit_operator_to_spo` (passing ``n_qubits``) to
+    embed it in a wider register.
 
     The PennyLane branch builds a new ``SparsePauliOp`` by walking the
     operator tree. The dict branch accepts ``{pauli_string: coefficient}``
@@ -192,9 +199,25 @@ def to_spo(
         spo = _spo_from_pauli_dict(op)
         _assert_hermitian_spo(spo)
         return spo
+    if _is_openfermion_qubit_operator(op):
+        spo = qubit_operator_to_spo(op)
+        _assert_hermitian_spo(spo)
+        return spo
     spo = _observable_to_sparse_pauli_op(op, wires if wires is not None else op.wires)
     _assert_hermitian_spo(spo)
     return spo
+
+
+def _is_openfermion_qubit_operator(op) -> bool:
+    """True if ``op`` is an OpenFermion ``QubitOperator`` (import-free fast path)."""
+    if type(op).__name__ != "QubitOperator":
+        return False
+    try:
+        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        from openfermion import QubitOperator
+    except ImportError:
+        return False
+    return isinstance(op, QubitOperator)
 
 
 def _spo_wires(op: qp.operation.Operator | SparsePauliOp) -> tuple:

@@ -54,6 +54,61 @@ ANSAETZE_TO_TEST = {
 }
 
 
+def test_vqe_initialization_with_pyscf_molecule(
+    default_test_simulator, default_optimizer
+):
+    """VQE accepts a PySCF molecule and builds the same H2 problem."""
+    pytest.importorskip("openfermion")
+    gto = pytest.importorskip("pyscf.gto")
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
+    vqe_problem = VQE(
+        molecule=mol,
+        ansatz=HartreeFockAnsatz(),
+        backend=default_test_simulator,
+        optimizer=default_optimizer,
+    )
+
+    assert vqe_problem.n_electrons == 2
+    assert vqe_problem.n_qubits == 4
+    assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
+
+
+def test_vqe_pyscf_molecule_warns_on_n_electrons_mismatch(
+    dummy_simulator, default_optimizer
+):
+    """A caller-supplied n_electrons that disagrees with the pyscf molecule warns."""
+    pytest.importorskip("openfermion")
+    gto = pytest.importorskip("pyscf.gto")
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
+    with pytest.warns(UserWarning, match="not consistent"):
+        VQE(
+            molecule=mol,
+            n_electrons=99,
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+
+
+def test_vqe_initialization_with_qubit_operator_hamiltonian(
+    dummy_simulator, default_optimizer
+):
+    """VQE accepts an OpenFermion QubitOperator as the hamiltonian input."""
+    QubitOperator = pytest.importorskip("openfermion").QubitOperator
+
+    qop = QubitOperator("Z0 Z1", 1.0) + QubitOperator("X0", 0.3)
+    vqe_problem = VQE(
+        hamiltonian=qop,
+        n_electrons=2,
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+
+    assert vqe_problem.n_qubits == 2
+    assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
+
+
 def test_vqe_basic_initialization_with_molecule(
     default_test_simulator, h2_molecule, default_optimizer
 ):
