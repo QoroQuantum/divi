@@ -74,6 +74,17 @@ def _batched_expectation(
     n_unique_states = len(unique_bitstrings)
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
 
+    # Positional decoding assumes full-width keys (creg c[n_qubits]); a backend
+    # that narrows keys to only measured clbits would misalign every index.
+    if unique_bitstrings and len(unique_bitstrings[0]) != n_qubits:
+        raise ValueError(
+            f"Backend returned {len(unique_bitstrings[0])}-bit histogram keys "
+            f"for an {n_qubits}-qubit circuit; expected full-width keys "
+            f"(creg c[{n_qubits}]). Partial-measurement circuits must still "
+            f"report all classical bits. If your backend cannot, set "
+            f"measure_all_qubits=True to measure the full register."
+        )
+
     # 2. Build reduced eigenvalue matrix (n_observables × n_unique_states).
     if n_qubits <= 64:
         unique_states_int = np.array(

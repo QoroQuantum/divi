@@ -2468,6 +2468,43 @@ class TestQoroServiceWithApiKey:
             f"got {max_index}"
         )
 
+    def test_partial_measurement_returns_full_width_keys(self, qoro_service):
+        """Contract for the measure-only-relevant-qubits optimization: a circuit
+        that declares ``creg c[n]`` but measures a subset of qubits must still
+        return full-width ``n``-bit histogram keys, with the unmeasured
+        classical bits reading 0 — never narrowed to only the measured clbits.
+
+        Positional decoding in ``_batched_expectation`` (expval path) and the
+        PCE parity decoder assumes qubit ``i`` sits at bitstring position ``i``;
+        a narrowed key would silently misalign every position. The circuit X's
+        all three qubits but measures only q0 and q2, so a full-width result is
+        ``2`` ones (the measured qubits) and ``1`` zero (unmeasured c1).
+        """
+        n_qubits = 3
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\n'
+            f"qreg q[{n_qubits}];\ncreg c[{n_qubits}];\n"
+            "x q[0];\nx q[1];\nx q[2];\n"
+            "measure q[0] -> c[0];\nmeasure q[2] -> c[2];\n"
+        )
+        result = qoro_service.submit_circuits({"partial_meas": qasm})
+
+        status = qoro_service.poll_job_status(result, loop_until_complete=True)
+        assert status == JobStatus.COMPLETED
+
+        completed = qoro_service.get_job_results(result)
+        hist = completed.results[0]["results"]
+        assert isinstance(hist, dict) and hist
+
+        for key, count in hist.items():
+            assert (
+                len(key) == n_qubits
+            ), f"expected full-width {n_qubits}-bit keys, got {key!r}"
+            assert set(key) <= {"0", "1"}
+            assert isinstance(count, int) and count > 0
+            # Endianness-agnostic: measured q0,q2 = 1, unmeasured c1 = 0.
+            assert key.count("1") == 2 and key.count("0") == 1
+
     def test_set_and_get_execution_config(self, qoro_service, circuits):
         """Tests setting and retrieving execution config on a PENDING job."""
         single_circuit = {"circuit_1": circuits["circuit_0"]}

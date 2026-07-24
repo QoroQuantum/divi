@@ -315,6 +315,12 @@ A few details worth calling out:
    expectation values directly from the state representation, so measurement
    grouping has no effect and is overridden with a warning.
 
+   By default each measurement group only measures the qubits it acts on
+   non-trivially — identity positions carry no information for the expectation
+   value, so dropping them shrinks the shot histogram and the data returned by
+   the backend.  Pass ``measure_all_qubits=True`` to measure the full register
+   instead (for example, when you want the raw histograms of every qubit).
+
 Spending Shots Where They Matter
 --------------------------------
 

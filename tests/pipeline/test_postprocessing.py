@@ -194,6 +194,13 @@ class TestBatchedExpectation:
         result = _batched_expectation([histogram], ["I"], n_qubits=1)
         assert result[0, 0] == pytest.approx(1.0)
 
+    def test_narrowed_bitstrings_raise(self):
+        """A backend that returns keys narrower than n_qubits (only measured
+        clbits) would misalign positional decoding — must fail loudly."""
+        histogram = {"01": 100}  # 2-bit keys for a 3-qubit circuit
+        with pytest.raises(ValueError, match="full-width keys"):
+            _batched_expectation([histogram], ["ZII"], n_qubits=3)
+
     def test_product_observable(self):
         """ZIZ on 3 qubits: product of the qubit-0 and qubit-2 Z eigenvalues.
 

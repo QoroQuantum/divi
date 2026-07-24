@@ -13,6 +13,7 @@ from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.backends import QiskitSimulator
 from divi.circuits import MetaCircuit, qscript_to_meta
 from divi.pipeline import (
     CircuitPipeline,
@@ -21,6 +22,7 @@ from divi.pipeline import (
 )
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline._grouping import _compute_measurement_groups
+from divi.pipeline._postprocessing import _counts_to_expvals
 from divi.pipeline.abc import ChildResults, MetaCircuitBatch, ResultFormat, SpecStage
 from divi.pipeline.stages import MeasurementStage
 from divi.pipeline.stages._measurement_stage import (
@@ -34,6 +36,7 @@ from tests.pipeline._helpers import (
     RecordingBackend,
     ShotsBackendSpy,
     build_pipeline_with_shots,
+    measured_qubits,
     ones_execute_fn,
     two_group_pipeline_stages,
 )
@@ -536,6 +539,121 @@ def test_weighted_wires_e2e_yields_finite_energy(default_test_simulator):
     assert isinstance(energy[0], float)
     # H = 10*Z + 1*X + 0.1*Y, so |E| <= 11.1; slack absorbs shot noise.
     assert -11.2 <= energy[0] <= 11.2
+
+
+def _idle_qubit_meta() -> MetaCircuit:
+    """3-qubit circuit whose observable (Z0 + Z2) leaves qubit 1 idle."""
+    qc = QuantumCircuit(3)
+    for i in range(3):
+        qc.h(i)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=SparsePauliOp.from_list([("IIZ", 1.0), ("ZII", 1.0)]),
+    )
+
+
+class TestMeasureAllQubits:
+    """``measure_all`` restricts (default) or forces full-register measurement."""
+
+    def _run_and_collect_qasm(self, make_dummy_simulator, measure_all):
+        env = PipelineEnv(backend=make_dummy_simulator(1000))
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_idle_qubit_meta()),
+                MeasurementStage(grouping_strategy="wires", measure_all=measure_all),
+            ],
+        )
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        meta = next(iter(trace.final_batch.values()))
+        # wires strategy: Z0 and Z2 are non-overlapping → one group covering both.
+        return {q for _, qasm in meta.measurement_qasms for q in measured_qubits(qasm)}
+
+    def test_default_restricts_to_active_qubits(self, make_dummy_simulator):
+        measured = self._run_and_collect_qasm(make_dummy_simulator, measure_all=False)
+        assert measured == {0, 2}
+
+    def test_measure_all_true_measures_every_qubit(self, make_dummy_simulator):
+        measured = self._run_and_collect_qasm(make_dummy_simulator, measure_all=True)
+        assert measured == {0, 1, 2}
+
+    def test_counts_override_forces_full_measurement(self, make_dummy_simulator):
+        """A COUNTS override wants the raw per-qubit histogram, so it measures
+        the full register even though ``measure_all`` defaults to False."""
+        env = PipelineEnv(backend=make_dummy_simulator(1000))
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_idle_qubit_meta()),
+                MeasurementStage(
+                    grouping_strategy="wires",
+                    result_format_override=ResultFormat.COUNTS,
+                ),
+            ],
+        )
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        meta = next(iter(trace.final_batch.values()))
+        measured = {
+            q for _, qasm in meta.measurement_qasms for q in measured_qubits(qasm)
+        }
+        assert measured == {0, 1, 2}
+
+    def test_real_backend_returns_full_width_keys_under_partial_measurement(
+        self, default_test_simulator
+    ):
+        """The safety of restricting measurement rests on the backend returning
+        full-width ``n_qubits`` bitstrings (idle qubits pinned to 0) rather than
+        narrowing to measured clbits — otherwise positional decoding corrupts.
+        Verify that contract directly on the real (Maestro) sampler."""
+        qasm = (
+            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[3];\ncreg c[3];\n'
+            "x q[0];\nx q[1];\nx q[2];\n"
+            "measure q[0] -> c[0];\nmeasure q[2] -> c[2];\n"
+        )
+        result = default_test_simulator.submit_circuits({"c0": qasm})
+        counts = result.results[0]["results"]
+        assert all(len(key) == 3 for key in counts)
+        assert sum(counts.values()) == default_test_simulator.shots
+
+    def test_idle_qubit_outcome_does_not_change_expval(self):
+        """Restricting measurement is safe: the reduced expval is identical
+        whether the idle qubit reads 0 (restricted) or a random value
+        (full-register)."""
+        meta = _idle_qubit_meta()
+        stage = MeasurementStage(grouping_strategy="wires")
+        batch = {
+            (("spec", "circ"),): meta.set_measurement_groups(
+                _compute_measurement_groups(meta.observable, "wires", meta.n_qubits)[0]
+            )
+        }
+
+        # Keys agree on the active qubits (q0, q2) and differ only on the idle
+        # qubit q1 — the value a restricted measurement would never record. The
+        # decoded expval must be identical either way (this asserts the
+        # idle-qubit invariance, not endianness).
+        restricted = {(("spec", "circ"), (OBS_GROUP_AXIS, 0)): {"101": 100}}
+        full_register = {(("spec", "circ"), (OBS_GROUP_AXIS, 0)): {"111": 100}}
+
+        e_restricted = _counts_to_expvals(restricted, batch)
+        e_full = _counts_to_expvals(full_register, batch)
+        assert list(e_restricted.values()) == list(e_full.values())
+
+    @pytest.mark.parametrize("measure_all", [False, True])
+    def test_end_to_end_energy_correct_on_real_sampling_backend(self, measure_all):
+        """Full pipeline on a real shot-based backend (QiskitSimulator sampling)
+        that honours which qubits are measured: the restricted default and the
+        full-register mode must both recover the analytic energy of Z0 + Z2 on
+        H|0>^3 (= 0) within shot noise. This exercises the actual
+        partial-measurement circuit → backend → decode path end-to-end."""
+        backend = QiskitSimulator(shots=20000, force_sampling=True, simulation_seed=7)
+        env = PipelineEnv(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_idle_qubit_meta()),
+                MeasurementStage(grouping_strategy="wires", measure_all=measure_all),
+            ],
+        )
+        energy = list(pipeline.run(initial_spec="ignored", env=env).values())[0]
+        # <Z0> = <Z2> = 0 on |+>; 20k shots keeps the estimate well within 0.1.
+        assert energy == pytest.approx([0.0], abs=0.1)
 
 
 class TestMeasurementStageImagCoeffValidation:

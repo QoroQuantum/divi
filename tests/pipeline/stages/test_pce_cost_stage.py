@@ -21,8 +21,9 @@ from divi.circuits import MetaCircuit
 from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline.abc import PipelineEnv, ResultFormat
 from divi.pipeline.stages import PCECostStage
-from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS
-from divi.qprog.algorithms._pce import _decode_parities
+from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS, _PCEMeasToken
+from divi.qprog.algorithms._pce import _decode_parities, _pack_masks
+from tests.pipeline._helpers import measured_qubits
 
 
 def _make_stage(
@@ -31,11 +32,17 @@ def _make_stage(
     alpha: float = 1.0,
     soft: bool = True,
     alpha_cvar: float = 0.25,
+    masks: np.ndarray | None = None,
+    measure_all: bool = False,
 ):
-    """Build a PCECostStage from a simple QUBO matrix."""
+    """Build a PCECostStage from a simple QUBO matrix.
+
+    ``masks`` defaults to the dense ``arange`` encoding; pass an explicit array
+    (1-D uint64 or 2-D limbs) to touch a specific subset of qubits.
+    """
     problem = normalize_binary_polynomial_problem(qubo)
-    n_vars = problem.n_vars
-    masks = np.arange(1, n_vars + 1, dtype=np.uint64)
+    if masks is None:
+        masks = np.arange(1, problem.n_vars + 1, dtype=np.uint64)
     return PCECostStage(
         problem=problem,
         alpha=alpha,
@@ -43,6 +50,7 @@ def _make_stage(
         decode_parities_fn=_decode_parities,
         variable_masks_u64=masks,
         alpha_cvar=alpha_cvar,
+        measure_all=measure_all,
     )
 
 
@@ -134,6 +142,79 @@ class TestExpandSingleCircuit:
         output = stage.expand(batch, env)
 
         assert all(meta.backend_ham_ops is None for meta in output.batch.values())
+
+
+class TestMeasureAll:
+    """``measure_all`` restricts (default) or forces full-register measurement."""
+
+    _MASKS_Q0_Q1 = np.array([0b0001, 0b0010], dtype=np.uint64)
+
+    def test_default_restricts_to_mask_union(self):
+        # masks touch only qubits 0 and 1; the 4-qubit register leaves 2, 3 idle.
+        stage = _make_stage(np.diag([1.0, 2.0]), masks=self._MASKS_Q0_Q1)
+        output = stage.expand(
+            _make_z_hamiltonian_batch(4), PipelineEnv(backend=_make_sampling_backend())
+        )
+        meta = list(output.batch.values())[0]
+        assert measured_qubits(meta.measurement_qasms[0][1]) == {0, 1}
+
+    def test_measure_all_true_measures_every_qubit(self):
+        stage = _make_stage(
+            np.diag([1.0, 2.0]), masks=self._MASKS_Q0_Q1, measure_all=True
+        )
+        output = stage.expand(
+            _make_z_hamiltonian_batch(4), PipelineEnv(backend=_make_sampling_backend())
+        )
+        meta = list(output.batch.values())[0]
+        assert measured_qubits(meta.measurement_qasms[0][1]) == {0, 1, 2, 3}
+
+    def test_idle_qubit_outcome_does_not_change_energy(self):
+        """Bits outside every mask never enter a parity, so histograms that
+        differ only on an idle qubit reduce to the same energy."""
+        stage = _make_stage(np.diag([1.0, 2.0]), masks=self._MASKS_Q0_Q1)
+        env = _make_env(ResultFormat.COUNTS)
+        # "0011" and "0111" agree on qubits 0,1 (masked) and differ on qubit 2.
+        e_restricted = stage.reduce({_meas_key(0): {"0011": 100}}, env, token=None)
+        e_full = stage.reduce({_meas_key(0): {"0111": 100}}, env, token=None)
+        assert list(e_restricted.values()) == list(e_full.values())
+
+    def test_reduce_rejects_narrowed_histogram_keys(self):
+        """If a backend narrows keys to only measured clbits, positional parity
+        decoding would silently corrupt — the reduce guard must fail loudly."""
+        stage = _make_stage(np.diag([1.0, 2.0]), masks=self._MASKS_Q0_Q1)
+        env = _make_env(ResultFormat.COUNTS)
+        # expand emitted an n_qubits=3 circuit, but the backend returned 2-bit keys.
+        token = _PCEMeasToken(n_qubits=3)
+        with pytest.raises(ValueError, match="full-width keys"):
+            stage.reduce({_meas_key(0): {"01": 100}}, env, token=token)
+
+    def test_wide_register_limb_masks_through_stage(self):
+        """A >64-qubit problem uses 2-D limb masks; expand must measure the
+        mask-relevant wires (incl. one past the 64-bit boundary) and reduce must
+        decode a full-width key without tripping the width guard."""
+        nq = 70
+        # Two variables read qubit 3 (limb 0) and qubit 68 (limb 1).
+        masks = _pack_masks([1 << 3, 1 << 68], nq)
+        assert masks.shape == (2, 2)
+        stage = _make_stage(np.diag([1.0, 2.0]), masks=masks)
+
+        output = stage.expand(
+            _make_z_hamiltonian_batch(nq), PipelineEnv(backend=_make_sampling_backend())
+        )
+        meta = list(output.batch.values())[0]
+        assert measured_qubits(meta.measurement_qasms[0][1]) == {3, 68}
+
+        # Full-width key with qubit 68 set (big-endian: char at nq-1-68).
+        key = ["0"] * nq
+        key[nq - 1 - 68] = "1"
+        env = _make_env(ResultFormat.COUNTS)
+        reduced = stage.reduce(
+            {_meas_key(0): {"".join(key): 100}},
+            env,
+            token=_PCEMeasToken(n_qubits=nq),
+        )
+        energy = list(reduced.values())[0]
+        assert isinstance(energy[0], float)
 
 
 class TestReduceHistogram:

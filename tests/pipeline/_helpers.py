@@ -112,6 +112,15 @@ def run_binding_pipeline(
     return pipeline.run_forward_pass(input_key, env)
 
 
+def measured_qubits(qasm: str) -> set[int]:
+    """Qubit indices measured by a QASM body/string (``measure q[i] -> c[i];``)."""
+    return {
+        int(line.split("[")[1].split("]")[0])
+        for line in qasm.splitlines()
+        if line.startswith("measure")
+    }
+
+
 def two_group_meta() -> MetaCircuit:
     """MetaCircuit with 0.9*Z + 0.4*X for MeasurementStage to produce 2 groups."""
     qc = QuantumCircuit(1)

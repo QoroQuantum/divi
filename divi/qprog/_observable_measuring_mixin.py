@@ -65,6 +65,7 @@ class ObservableMeasuringMixin:
         *args,
         grouping_strategy: GroupingStrategy | None = _UNSET,  # type: ignore[assignment]
         shot_distribution: ShotDistStrategy | None = None,
+        measure_all_qubits: bool = False,
         **kwargs,
     ):
         """Initialize the measurement-config layer.
@@ -103,6 +104,13 @@ class ObservableMeasuringMixin:
 
                 Defaults to ``None`` (every group receives the full shot
                 budget).
+            measure_all_qubits: When ``False`` (default), measure only the
+                qubits each group acts on non-trivially, reducing the number of
+                distinct outcomes without changing the result (identity
+                positions carry no information). ``True`` measures every qubit.
+                Affects only expectation-value estimation on sampling backends;
+                analytic backends and probability/solution sampling are
+                unaffected (the latter always measures its declared wires).
             ``*args``, ``**kwargs``: Forwarded to the next class in the
                 MRO (typically :class:`~divi.qprog.QuantumProgram`).
         """
@@ -115,6 +123,12 @@ class ObservableMeasuringMixin:
             raise ValueError(
                 f"Invalid grouping_strategy={grouping_strategy!r}. "
                 f"Choose 'qwc', 'wires', 'default', or None."
+            )
+
+        if not isinstance(measure_all_qubits, bool):
+            raise TypeError(
+                f"measure_all_qubits must be a bool, got "
+                f"{type(measure_all_qubits).__name__}."
             )
 
         if (
@@ -135,10 +149,12 @@ class ObservableMeasuringMixin:
             "qwc" if grouping_strategy is _UNSET else grouping_strategy
         )
         self._shot_distribution = shot_distribution
+        self._measure_all_qubits = measure_all_qubits
 
     def _make_measurement_stage(self) -> MeasurementStage:
         """The measurement terminal carrying this program's grouping / shot strategy."""
         return MeasurementStage(
             grouping_strategy=self._grouping_strategy,
             shot_distribution=self._shot_distribution,
+            measure_all=self._measure_all_qubits,
         )

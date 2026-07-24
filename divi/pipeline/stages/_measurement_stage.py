@@ -276,6 +276,7 @@ class MeasurementStage(BundleStage):
         grouping_strategy: GroupingStrategy = "qwc",
         result_format_override: ResultFormat | None = None,
         shot_distribution: ShotDistStrategy | None = None,
+        measure_all: bool = False,
     ) -> None:
         """
         Args:
@@ -285,6 +286,13 @@ class MeasurementStage(BundleStage):
             result_format_override: If set, overrides the auto-detected result
                 format. For example, pass ``ResultFormat.COUNTS`` to get raw
                 shot counts even when an observable is present.
+            measure_all: When ``False`` (default), measure only the qubits each
+                group acts on non-trivially, reducing the number of distinct
+                outcomes without changing the expectation value (identity
+                positions are dropped by postprocessing). ``True`` measures
+                every qubit. Affects only the expval path (the probs path
+                always measures its declared wires); a ``COUNTS``/``PROBS``
+                override forces full measurement.
             shot_distribution: How to split the backend's total shot budget
                 across measurement groups (``"uniform"``, ``"weighted"``,
                 ``"weighted_random"``, or a callable). Only affects results on
@@ -300,6 +308,7 @@ class MeasurementStage(BundleStage):
         self._grouping_strategy = grouping_strategy
         self._result_format_override = result_format_override
         self._shot_distribution = shot_distribution
+        self._measure_all = measure_all
 
     # ------------------------------------------------------------------ #
     # Real-path QASM factories (shared inside :meth:`expand` / :meth:`dry_expand`).
@@ -317,7 +326,9 @@ class MeasurementStage(BundleStage):
 
     @staticmethod
     def _dry_expval_qasms(
-        surviving_groups: tuple[tuple[object, ...], ...], n_qubits: int
+        surviving_groups: tuple[tuple[object, ...], ...],
+        n_qubits: int,
+        measure_all: bool = False,
     ) -> tuple[str, ...]:
         """Dry placeholder: one empty string per surviving measurement group."""
         return ("",) * len(surviving_groups)
@@ -427,12 +438,12 @@ class MeasurementStage(BundleStage):
         self,
         batch: MetaCircuitBatch,
         env: PipelineEnv,
-        qasm_factory: Callable[[tuple[tuple[object, ...], ...], int], tuple[str, ...]],
+        qasm_factory: Callable[..., tuple[str, ...]],
     ) -> StageOutput[MetaCircuitBatch]:
         """Group observables and generate measurement QASM (or ham_ops).
 
-        ``qasm_factory`` turns ``(surviving_groups, n_qubits)`` into a tuple of
-        per-group measurement QASMs. :meth:`expand` passes
+        ``qasm_factory`` turns ``(surviving_groups, n_qubits, measure_all=...)``
+        into a tuple of per-group measurement QASMs. :meth:`expand` passes
         :func:`measurement_qasms_from_groups`; :meth:`dry_expand` passes a
         placeholder factory so the batch shape is preserved without
         serialising diagonalising gates + ``measure`` instructions.
@@ -480,6 +491,14 @@ class MeasurementStage(BundleStage):
         zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
         sample_union: SparsePauliOp | None = None
 
+        # Full measurement when opted out, COUNTS/PROBS override, or the analytic
+        # _backend_expval path (its all-identity sentinel would be rejected).
+        measure_all = (
+            self._measure_all
+            or strategy == "_backend_expval"
+            or self._result_format_override in (ResultFormat.COUNTS, ResultFormat.PROBS)
+        )
+
         for key, meta in batch.items():
             if meta.observable is None:
                 raise ValueError(
@@ -517,7 +536,9 @@ class MeasurementStage(BundleStage):
                 zero_shot_groups_by_spec[key] = zero_shot_groups
 
             surviving_groups = tuple(measurement_groups[i] for i in surviving_indices)
-            measurement_qasms = qasm_factory(surviving_groups, meta.n_qubits)
+            measurement_qasms = qasm_factory(
+                surviving_groups, meta.n_qubits, measure_all=measure_all
+            )
             tagged_measurement_qasms = tuple(
                 (((OBS_GROUP_AXIS, orig_idx),), meas_qasm)
                 for orig_idx, meas_qasm in zip(surviving_indices, measurement_qasms)

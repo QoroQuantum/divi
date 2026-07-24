@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 from collections.abc import Callable
 from functools import cached_property
 from typing import Literal
@@ -30,7 +31,8 @@ def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.
     Vectorized calculation of (popcount % 2) for an array of integers.
     Uses a Numba JIT kernel with XOR-fold bit manipulation.
     """
-    return _popcount_parity_jit(arr_input.astype(np.uint64))
+    # copy=False skips the copy on the hot path when already uint64.
+    return _popcount_parity_jit(arr_input.astype(np.uint64, copy=False))
 
 
 def _aggregate_param_group(
@@ -47,13 +49,61 @@ def _aggregate_param_group(
     return state_strings, counts, float(total_shots)
 
 
+_LIMB_BITS = 64
+_LIMB_MASK = (1 << _LIMB_BITS) - 1
+
+
+def _pack_masks(mask_ints: list[int], n_qubits: int) -> npt.NDArray[np.uint64]:
+    """Pack per-variable bitmask integers into a uint64 representation.
+
+    For ``n_qubits <= 64`` this is a 1-D ``(n_vars,)`` array (unchanged from the
+    original encoding). For wider registers it is a 2-D ``(n_vars, L)`` array of
+    little-endian 64-bit limbs, where limb ``j`` holds bits ``[64j, 64j+64)``.
+    """
+    if n_qubits <= _LIMB_BITS:
+        return np.array(mask_ints, dtype=np.uint64)
+    n_limbs = (n_qubits + _LIMB_BITS - 1) // _LIMB_BITS
+    return np.array(
+        [
+            [(m >> (_LIMB_BITS * limb)) & _LIMB_MASK for limb in range(n_limbs)]
+            for m in mask_ints
+        ],
+        dtype=np.uint64,
+    )
+
+
+def _mask_to_int(mask: npt.NDArray[np.uint64]) -> int:
+    """Reconstruct the Python integer bitmask from a scalar or limb-row mask."""
+    if np.ndim(mask) == 0:
+        return int(mask)
+    return sum(int(limb) << (_LIMB_BITS * j) for j, limb in enumerate(mask))
+
+
 def _decode_parities(
     state_strings: list[str], variable_masks_u64: npt.NDArray[np.uint64]
 ) -> npt.NDArray[np.uint8]:
-    """Decode bitstring parities using the precomputed variable masks."""
-    states = np.array([int(s, 2) for s in state_strings], dtype=np.uint64)
-    overlaps = variable_masks_u64[:, None] & states[None, :]
-    return _fast_popcount_parity(overlaps)
+    """Decode bitstring parities using the precomputed variable masks.
+
+    Handles both the 1-D uint64 masks (``n_qubits <= 64``) and the 2-D limb
+    masks (wider registers); the limb path XORs the per-limb parities.
+    """
+    if variable_masks_u64.ndim == 1:
+        states = np.array([int(s, 2) for s in state_strings], dtype=np.uint64)
+        overlaps = variable_masks_u64[:, None] & states[None, :]
+        return _fast_popcount_parity(overlaps)
+
+    n_limbs = variable_masks_u64.shape[1]
+    state_ints = [int(s, 2) for s in state_strings]
+    states = np.array(
+        [
+            [(v >> (_LIMB_BITS * j)) & _LIMB_MASK for j in range(n_limbs)]
+            for v in state_ints
+        ],
+        dtype=np.uint64,
+    )  # (n_states, n_limbs)
+    overlaps = variable_masks_u64[:, None, :] & states[None, :, :]
+    per_limb = _fast_popcount_parity(overlaps)  # (n_vars, n_states, n_limbs)
+    return np.bitwise_xor.reduce(per_limb, axis=-1).astype(np.uint8)
 
 
 def _setup_dense_encoding(
@@ -74,7 +124,7 @@ def _setup_dense_encoding(
             UserWarning,
         )
     n_q = n_qubits if n_qubits is not None else min_qubits
-    masks = np.arange(1, n_vars + 1, dtype=np.uint64)
+    masks = _pack_masks(list(range(1, n_vars + 1)), n_q)
     return n_q, masks
 
 
@@ -98,14 +148,12 @@ def _setup_poly_encoding(
         )
     n_q = n_qubits if n_qubits is not None else min_qubits
 
-    masks = []
-    for i in range(n_q):
-        masks.append(1 << i)
-    for i in range(n_q):
-        for j in range(i + 1, n_q):
-            masks.append((1 << i) | (1 << j))
-
-    return n_q, np.array(masks[:n_vars], dtype=np.uint64)
+    # Weight-1 masks, then weight-2 pairs; islice stops at n_vars without
+    # enumerating the full O(n_q^2) pair space.
+    weight1 = (1 << i for i in range(n_q))
+    weight2 = ((1 << i) | (1 << j) for i in range(n_q) for j in range(i + 1, n_q))
+    masks = list(itertools.islice(itertools.chain(weight1, weight2), n_vars))
+    return n_q, _pack_masks(masks, n_q)
 
 
 def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int) -> str:
@@ -116,7 +164,7 @@ def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int)
     """
     terms = []
     for mask in variable_masks_u64:
-        m = int(mask)
+        m = _mask_to_int(mask)
         paulis = ["I"] * n_qubits
         for i in range(n_qubits):
             if (m >> i) & 1:
@@ -223,7 +271,7 @@ class PCE(VQE):
     @cached_property
     def _pce_cost_preprocessor(self) -> CircuitPreprocessor:
         # PCE's cost terminal is a PCECostStage (a standalone BundleStage, not a
-        # MeasurementStage) that emits one "measure all qubits" QASM per circuit
+        # MeasurementStage) that emits one Z-basis measurement QASM per circuit
         # spec and computes the nonlinear binary-polynomial objective from raw
         # shot histograms. COUNTS keeps QEM off this path (extrapolation has no
         # expectation value to act on; PCE forbids qem_protocol anyway). Cached
@@ -239,6 +287,10 @@ class PCE(VQE):
                 use_soft_objective=self._use_soft_objective,
                 decode_parities_fn=self._decode_parities_fn,
                 variable_masks_u64=self._variable_masks_u64,
+                # Restriction is only lossless for the built-in decoder; a custom
+                # decoder may read any bit, so keep the full register for it.
+                measure_all=self._measure_all_qubits
+                or self._decode_parities_fn is not _decode_parities,
             ),
             cache_key="cost",
         )

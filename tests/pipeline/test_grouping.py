@@ -248,6 +248,56 @@ def test_wires_and_empty_group_produce_same_measurement_qasm():
     assert "measure" in qasms_explicit[0]
 
 
+class TestMeasureAllFlag:
+    """``measure_all`` toggles full-register vs. active-qubit measurement."""
+
+    def test_measure_all_true_measures_every_qubit(self):
+        # Group acts only on qubits 0 and 2 of a 4-qubit register.
+        qasm = measurement_qasms_from_groups((("IIZI", "ZIII"),), 4, measure_all=True)[
+            0
+        ]
+        measured = {
+            int(line.split("[")[1].split("]")[0]) for line in _measure_lines(qasm)
+        }
+        assert measured == {0, 1, 2, 3}
+
+    def test_measure_all_false_restricts_to_active_qubits(self):
+        # Big-endian: "IIZI" is Z on qubit 2, "ZIII" is Z on qubit 0.
+        qasm = measurement_qasms_from_groups((("IIZI", "ZIII"),), 4, measure_all=False)[
+            0
+        ]
+        measured = {
+            int(line.split("[")[1].split("]")[0]) for line in _measure_lines(qasm)
+        }
+        assert measured == {0, 2}
+
+    def test_measure_all_false_keeps_diagonalising_gates(self):
+        # X basis on qubit 0 still needs its H even when idle qubits are dropped.
+        qasm = measurement_qasms_from_groups((("XIII",),), 4, measure_all=False)[0]
+        assert "h q[0];" in qasm
+        assert {
+            int(line.split("[")[1].split("]")[0]) for line in _measure_lines(qasm)
+        } == {0}
+
+    def test_all_identity_group_raises_when_restricting(self):
+        # An all-identity group has nothing to measure; restricting is a misuse.
+        # (In the pipeline this never happens — constants are stripped upstream
+        # and the _backend_expval sentinel forces measure_all.)
+        with pytest.raises(ValueError, match="all-identity group"):
+            measurement_qasms_from_groups(((),), 3, measure_all=False)
+
+    def test_all_identity_group_measures_full_register_when_measure_all(self):
+        qasm = measurement_qasms_from_groups(((),), 3, measure_all=True)[0]
+        measured = {
+            int(line.split("[")[1].split("]")[0]) for line in _measure_lines(qasm)
+        }
+        assert measured == {0, 1, 2}
+
+
+def _measure_lines(qasm: str) -> list[str]:
+    return [line for line in qasm.splitlines() if line.startswith("measure")]
+
+
 class TestWireGroupingFromLabels:
     def test_non_overlapping_in_one_group(self):
         labels = ["ZII", "IZI", "IIZ"]

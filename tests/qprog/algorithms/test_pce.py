@@ -23,7 +23,9 @@ from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.algorithms._pce import (
     _aggregate_param_group,
     _decode_parities,
+    _mask_to_int,
     _masks_to_ham_ops,
+    _pack_masks,
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
@@ -144,6 +146,43 @@ def test_pce_cost_pipeline_uses_custom_stage_stack(make_pce):
         PCECostStage,
         ParameterBindingStage,
     ]
+
+
+@pytest.mark.parametrize("measure_all_qubits", [True, False])
+def test_pce_measure_all_qubits_threads_to_cost_stage(make_pce, measure_all_qubits):
+    """The mixin's ``measure_all_qubits`` reaches PCE's dedicated cost stage."""
+    pce = make_pce(measure_all_qubits=measure_all_qubits)
+    cost_stage = pce._pce_cost_preprocessor.terminal_stage
+    assert isinstance(cost_stage, PCECostStage)
+    assert cost_stage._measure_all is measure_all_qubits
+
+
+def test_pce_measure_all_qubits_defaults_to_false(make_pce):
+    pce = make_pce()
+    assert pce._pce_cost_preprocessor.terminal_stage._measure_all is False
+
+
+def test_pce_custom_decoder_forces_full_measurement(make_pce):
+    """A custom decoder may read bits outside the mask union, so the mask-based
+    restriction must not apply — the cost stage keeps the full register."""
+
+    def custom_decoder(state_strings, variable_masks_u64):
+        return np.zeros((len(variable_masks_u64), len(state_strings)), dtype=np.uint8)
+
+    pce = make_pce(decode_parities_fn=custom_decoder)
+    assert pce._pce_cost_preprocessor.terminal_stage._measure_all is True
+
+
+def test_pce_custom_decoder_overrides_explicit_restrict_request(make_pce):
+    """The mask-union restriction is only sound for the built-in decoder, so a
+    custom decoder forces full measurement even if ``measure_all_qubits=False``
+    is passed — a boolean cannot describe which bits a custom decoder reads."""
+
+    def custom_decoder(state_strings, variable_masks_u64):
+        return np.zeros((len(variable_masks_u64), len(state_strings)), dtype=np.uint8)
+
+    pce = make_pce(decode_parities_fn=custom_decoder, measure_all_qubits=False)
+    assert pce._pce_cost_preprocessor.terminal_stage._measure_all is True
 
 
 def test_pce_n_qubits_validation_and_warning(make_pce):
@@ -923,6 +962,94 @@ class TestMasksToHamOps:
         masks = np.array([0], dtype=np.uint64)
         result = _masks_to_ham_ops(masks, n_qubits=3)
         assert result == "III"
+
+
+# ---------------------------------------------------------------------------
+# Wide registers (> 64 qubits): limb-based masks and decoding
+# ---------------------------------------------------------------------------
+
+
+def _big_endian_bitstring(set_bits, n_qubits):
+    """Build an ``n_qubits``-wide big-endian bitstring with the given bits set
+    (bit i is the LSB, i.e. char position ``n_qubits - 1 - i``)."""
+    chars = ["0"] * n_qubits
+    for b in set_bits:
+        chars[n_qubits - 1 - b] = "1"
+    return "".join(chars)
+
+
+def _bits_to_int(bits):
+    val = 0
+    for b in bits:
+        val |= 1 << b
+    return val
+
+
+class TestWideRegisterMasks:
+    """PCE mask/decode machinery must work past the 64-qubit uint64 boundary."""
+
+    def test_pack_masks_1d_below_boundary(self):
+        packed = _pack_masks([1, 2, 3], n_qubits=4)
+        assert packed.ndim == 1
+        assert packed.dtype == np.uint64
+        assert list(packed) == [1, 2, 3]
+
+    def test_pack_masks_2d_above_boundary(self):
+        # bit 70 lives in limb 1 (bits 64-127).
+        packed = _pack_masks([1 << 3, 1 << 70, (1 << 5) | (1 << 70)], n_qubits=72)
+        assert packed.shape == (3, 2)
+        assert [_mask_to_int(row) for row in packed] == [
+            1 << 3,
+            1 << 70,
+            (1 << 5) | (1 << 70),
+        ]
+
+    def test_decode_parities_across_limb_boundary(self):
+        nq = 72
+        mask_ints = [1 << 3, 1 << 70, (1 << 5) | (1 << 70)]
+        packed = _pack_masks(mask_ints, nq)
+        sbits = [[], [3], [70], [3, 70], [5, 70]]
+        states = [_big_endian_bitstring(b, nq) for b in sbits]
+
+        parities = _decode_parities(states, packed)
+
+        expected = np.array(
+            [
+                [bin((m & _bits_to_int(sb))).count("1") % 2 for sb in sbits]
+                for m in mask_ints
+            ],
+            dtype=np.uint8,
+        )
+        assert np.array_equal(parities, expected)
+
+    def test_limb_decode_matches_1d_below_boundary(self):
+        """Forcing the limb representation on a <=64-bit mask set gives the
+        same parities as the native 1-D path."""
+        mask_ints = [1 << 3, (1 << 5) | (1 << 7)]
+        nq = 8
+        states = [_big_endian_bitstring(b, nq) for b in ([3], [5, 7], [3, 5])]
+
+        native = _decode_parities(states, np.array(mask_ints, dtype=np.uint64))
+        forced_limb = _decode_parities(states, _pack_masks(mask_ints, n_qubits=65))
+        assert np.array_equal(native, forced_limb)
+
+
+def test_pce_poly_encoding_supports_more_than_64_qubits(make_pce):
+    """A poly-encoded problem forced past 64 qubits builds 2-D limb masks and a
+    cost stage whose relevant wires can exceed 64 — no silent uint64 overflow."""
+    # Small problem, n_qubits forced to 65 (>= min for poly); variable 64's
+    # weight-1 mask is 1<<64, which must land in limb 1.
+    qubo = np.diag(np.ones(65))
+    with pytest.warns(UserWarning, match="n_qubits exceeds the minimum"):
+        pce = make_pce(problem=qubo, n_qubits=65, encoding_type="poly")
+
+    assert pce.n_qubits == 65
+    assert pce._variable_masks_u64.ndim == 2
+    assert pce._variable_masks_u64.shape[1] == 2  # two 64-bit limbs
+    # Variable 64 reads qubit 64 (bit 64 → limb 1).
+    assert _mask_to_int(pce._variable_masks_u64[64]) == 1 << 64
+    relevant = pce._pce_cost_preprocessor.terminal_stage._relevant_wires
+    assert 64 in relevant
 
 
 # ---------------------------------------------------------------------------

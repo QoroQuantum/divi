@@ -33,6 +33,10 @@ class TestMixinDefaults:
         program = ConcreteObservableMeasuringProgram(backend=dummy_simulator)
         assert program._shot_distribution is None
 
+    def test_measure_all_qubits_defaults_to_false(self, dummy_simulator):
+        program = ConcreteObservableMeasuringProgram(backend=dummy_simulator)
+        assert program._measure_all_qubits is False
+
 
 class TestVerbatimStorage:
     """Explicit kwargs are stored as passed; no construction-time auto-flip."""
@@ -66,6 +70,25 @@ class TestVerbatimStorage:
         )
         assert program._shot_distribution is custom
 
+    @pytest.mark.parametrize("measure_all_qubits", [True, False])
+    def test_measure_all_qubits_stored_verbatim(
+        self, dummy_simulator, measure_all_qubits
+    ):
+        program = ConcreteObservableMeasuringProgram(
+            backend=dummy_simulator, measure_all_qubits=measure_all_qubits
+        )
+        assert program._measure_all_qubits is measure_all_qubits
+
+    @pytest.mark.parametrize("measure_all_qubits", [True, False])
+    def test_measure_all_qubits_threaded_to_measurement_stage(
+        self, dummy_simulator, measure_all_qubits
+    ):
+        program = ConcreteObservableMeasuringProgram(
+            backend=dummy_simulator, measure_all_qubits=measure_all_qubits
+        )
+        stage = program._make_measurement_stage()
+        assert stage._measure_all is measure_all_qubits
+
 
 class TestValidation:
     """Construction-time validation of user inputs."""
@@ -83,6 +106,15 @@ class TestValidation:
         with pytest.raises(ValueError, match="Invalid grouping_strategy"):
             ConcreteObservableMeasuringProgram(
                 backend=dummy_simulator, grouping_strategy=grouping_strategy
+            )
+
+    @pytest.mark.parametrize("bad_value", ["true", 1, None, 0])
+    def test_non_bool_measure_all_qubits_rejected(self, dummy_simulator, bad_value):
+        """A non-bool measure_all_qubits (e.g. a typo'd string) would silently
+        act as truthy; reject it instead of quietly forcing full measurement."""
+        with pytest.raises(TypeError, match="measure_all_qubits must be a bool"):
+            ConcreteObservableMeasuringProgram(
+                backend=dummy_simulator, measure_all_qubits=bad_value
             )
 
     @pytest.mark.parametrize(

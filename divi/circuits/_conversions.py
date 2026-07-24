@@ -623,7 +623,9 @@ def measurement_qasms_from_groups(
             strings, one tuple per commuting group.
         n_qubits: Total qubit count.
         measure_all: If ``True``, measure all qubits.  If ``False``,
-            restrict to qubits active in the group.
+            restrict to qubits active in the group; an all-identity group
+            (no active qubit) raises ``ValueError``, since it has nothing to
+            measure and should not reach this function in the normal pipeline.
     """
     qasms: list[str] = []
     for group in measurement_groups:
@@ -645,10 +647,18 @@ def measurement_qasms_from_groups(
             # Z and I: no rotation needed.
         diag_qasm = "".join(diag_parts)
 
+        active = [q for q in range(n_qubits) if basis[q] != "I"]
         if measure_all:
             measured = range(n_qubits)
+        elif not active:
+            # Constants are stripped upstream, so this only happens on a direct
+            # misuse (a constant-only group).
+            raise ValueError(
+                "all-identity group with measure_all=False has no qubit to "
+                "measure; pass measure_all=True or drop the constant term."
+            )
         else:
-            measured = [q for q in range(n_qubits) if basis[q] != "I"]
+            measured = active
 
         measure_qasm = "".join(f"measure q[{q}] -> c[{q}];\n" for q in measured)
         qasms.append(diag_qasm + measure_qasm)

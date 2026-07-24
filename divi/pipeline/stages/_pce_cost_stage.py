@@ -5,6 +5,7 @@
 """Pipeline stage for PCE Z-basis measurement and binary-polynomial reduction."""
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -35,6 +36,14 @@ from divi.pipeline.abc import (
 
 PCE_MEAS_AXIS = "pce_meas"
 # Axis name for the single Z-basis measurement circuit emitted by PCECostStage.
+
+
+@dataclass(frozen=True)
+class _PCEMeasToken:
+    """Carries the expected full register width from expand to reduce."""
+
+    n_qubits: int
+
 
 # ---------------------------------------------------------------------------
 # PCE energy reducers (parity → polynomial energy aggregation)
@@ -108,8 +117,9 @@ class PCECostStage(BundleStage):
 
     PCE only needs raw bitstring counts (not expectation values), so this
     stage bypasses MeasurementStage's observable grouping entirely.  Expand
-    generates a single "measure all qubits" QASM per circuit spec, and
-    reduce applies the soft tanh or hard CVaR energy formula.
+    generates a single Z-basis measurement QASM per circuit spec (over the
+    mask-relevant qubits, or all qubits when ``measure_all``), and reduce
+    applies the soft tanh or hard CVaR energy formula.
 
     Args:
         problem: Canonical binary polynomial problem used for objective evaluation.
@@ -119,6 +129,9 @@ class PCECostStage(BundleStage):
         decode_parities_fn: Function mapping (state_strings, masks) → parities.
         variable_masks_u64: Precomputed uint64 masks for each QUBO variable.
         alpha_cvar: CVaR tail fraction (only used when use_soft_objective is False).
+        measure_all: When ``False`` (default), measure only the qubits that
+            appear in some variable mask (qubits in no mask never contribute to
+            a parity, so the energy is unchanged). ``True`` measures every qubit.
     """
 
     def __init__(
@@ -130,6 +143,7 @@ class PCECostStage(BundleStage):
         decode_parities_fn: Callable,
         variable_masks_u64: npt.NDArray[np.uint64],
         alpha_cvar: float = 0.25,
+        measure_all: bool = False,
     ) -> None:
         super().__init__(name="PCECostStage")
         self._problem = problem
@@ -139,6 +153,17 @@ class PCECostStage(BundleStage):
         self._masks = variable_masks_u64
         self._alpha_cvar = alpha_cvar
         self._compiled = compile_problem(problem)
+        self._measure_all = measure_all
+        # Wires touched by at least one mask (bit i ↔ wire i); others need no
+        # measurement. Masks are 1-D uint64 (<=64 qubits) or 2-D limbs.
+        if variable_masks_u64.size == 0:
+            mask_union = 0
+        else:
+            limbs = np.atleast_1d(np.bitwise_or.reduce(variable_masks_u64, axis=0))
+            mask_union = sum(int(limb) << (64 * j) for j, limb in enumerate(limbs))
+        self._relevant_wires = tuple(
+            i for i in range(mask_union.bit_length()) if (mask_union >> i) & 1
+        )
 
     @property
     def axis_name(self) -> str:
@@ -157,22 +182,26 @@ class PCECostStage(BundleStage):
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
-        """Emit a single Z-basis measurement circuit per circuit spec.
+        """Emit a Z-basis measurement circuit per spec, result format COUNTS.
 
-        Generates "measure all qubits" QASM and sets the result format to
-        COUNTS so raw shot histograms reach reduce.
+        With ``measure_all=False`` only mask-relevant qubits are measured; the
+        rest stay 0 in the full-width register and are ignored by the decoder.
         """
         out = {}
         for key, meta in batch.items():
-            measure_qasm = "".join(
-                f"measure q[{i}] -> c[{i}];\n" for i in range(meta.n_qubits)
-            )
+            if self._measure_all or not self._relevant_wires:
+                wires = range(meta.n_qubits)
+            else:
+                wires = self._relevant_wires
+            measure_qasm = "".join(f"measure q[{i}] -> c[{i}];\n" for i in wires)
             tagged = ((((PCE_MEAS_AXIS, 0),), measure_qasm),)
             out[key] = meta.set_measurement_bodies(tagged).set_result_format(
                 ResultFormat.COUNTS
             )
 
-        return StageOutput(batch=out)
+        sample = next(iter(batch.values()), None)
+        token = _PCEMeasToken(n_qubits=sample.n_qubits if sample is not None else 0)
+        return StageOutput(batch=out, token=token)
 
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
@@ -187,6 +216,21 @@ class PCECostStage(BundleStage):
             base_key = tuple(ax for ax in key if ax[0] != PCE_MEAS_AXIS)
 
             state_strings = list(histogram.keys())
+            # Parity decoding assumes full-width keys; narrowed keys would
+            # misalign every mask (mirrors the _batched_expectation guard).
+            if (
+                isinstance(token, _PCEMeasToken)
+                and state_strings
+                and len(state_strings[0]) != token.n_qubits
+            ):
+                raise ValueError(
+                    f"Backend returned {len(state_strings[0])}-bit PCE histogram "
+                    f"keys for an {token.n_qubits}-qubit circuit; expected "
+                    f"full-width keys (creg c[{token.n_qubits}]). "
+                    "Partial-measurement circuits must still report all "
+                    "classical bits. If your backend cannot, set "
+                    "measure_all_qubits=True to measure the full register."
+                )
             counts = np.array(list(histogram.values()), dtype=float)
             total_shots = counts.sum()
             parities = self._decode(state_strings, self._masks)
