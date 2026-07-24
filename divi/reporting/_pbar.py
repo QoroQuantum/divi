@@ -118,13 +118,18 @@ class PhaseStatusColumn(ProgressColumn):
         super().__init__(table_column)
 
     def _build_polling_string(
-        self, split_job_id: str, job_status: str, poll_attempt: int, max_retries: int
+        self,
+        split_job_id: str,
+        job_status: str,
+        poll_attempt: int,
+        max_retries: int | None,
     ) -> str:
         """Build the polling status string for service job tracking."""
         if job_status == "COMPLETED":
             return f" [Job {split_job_id} is complete.]"
         elif poll_attempt > 0:
-            return f" [Job {split_job_id} is {job_status}. Polling attempt {poll_attempt} / {max_retries}]"
+            cap = "∞" if max_retries is None else max_retries
+            return f" [Job {split_job_id} is {job_status}. Polling attempt {poll_attempt} / {cap}]"
 
         return ""
 

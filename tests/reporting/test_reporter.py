@@ -275,6 +275,26 @@ class TestLoggingProgressReporter:
         update_msg = mock_status.update.call_args[0][0]
         assert "3" in update_msg and "10" in update_msg
 
+    def test_info_with_polling_unlimited_shows_infinity(self, mocker):
+        """A ``None`` max_retries renders the cap as ∞ rather than 'None'."""
+        mock_console_class = mocker.patch("divi.reporting._reporter.Console")
+        mock_console = mock_console_class.return_value
+        mock_status = mocker.MagicMock()
+        mock_console.status.return_value = mock_status
+
+        reporter = LoggingProgressReporter()
+        reporter.info(
+            "Polling...",
+            poll_attempt=2,
+            max_retries=None,
+            service_job_id="service_abc-123",
+            job_status="PENDING",
+        )
+
+        status_msg = mock_console.status.call_args[0][0]
+        assert "Polling attempt 2 / ∞" in status_msg
+        assert "None" not in status_msg
+
     def test_info_with_iteration(self, mocker):
         """
         Test the info method with iteration information.

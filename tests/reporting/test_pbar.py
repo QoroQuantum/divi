@@ -149,6 +149,17 @@ class TestPhaseStatusColumn:
             (
                 {
                     "message": "Running job",
+                    "service_job_id": "service_inf-000",
+                    "job_status": "PENDING",
+                    "poll_attempt": 3,
+                    "max_retries": None,
+                },
+                ["service_inf", "PENDING", "Polling attempt 3 / ∞"],
+                False,
+            ),
+            (
+                {
+                    "message": "Running job",
                     "service_job_id": "service_test-789",
                 },
                 ["Running job"],

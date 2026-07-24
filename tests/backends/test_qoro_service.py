@@ -4,6 +4,7 @@
 
 import base64
 import gzip
+import inspect
 import time
 import warnings
 from contextlib import contextmanager
@@ -496,6 +497,30 @@ class TestQoroServiceMock:
         )
         assert status == JobStatus.CANCELLED
         on_complete_callback.assert_called_once()
+
+    def test_default_max_retries_is_unlimited(self):
+        """The constructor default polls indefinitely (``max_retries=None``)."""
+        assert (
+            inspect.signature(QoroService.__init__).parameters["max_retries"].default
+            is None
+        )
+
+    def test_poll_job_status_unlimited_polls_past_former_cap(
+        self, mocker, qoro_service_factory
+    ):
+        """With ``max_retries=None`` the loop never raises MaxRetriesReachedError,
+        polling until the job reaches a terminal state regardless of attempt count.
+        """
+        service = qoro_service_factory(max_retries=None, polling_interval=0.0)
+
+        mock_responses = [make_mock_status_response(mocker, JobStatus.RUNNING)] * 50
+        mock_responses.append(make_mock_status_response(mocker, JobStatus.COMPLETED))
+        mocker.patch.object(service, "_make_request", side_effect=mock_responses)
+
+        status = service.poll_job_status(
+            make_execution_result(), loop_until_complete=True
+        )
+        assert status == JobStatus.COMPLETED
 
     def test_poll_job_status_auto_cancels_remote_job_on_user_cancel(
         self, mocker, qoro_service_factory

@@ -167,7 +167,7 @@ class QoroService(CircuitRunner):
         job_config: JobConfig | None = None,
         execution_config: ExecutionConfig | None = None,
         polling_interval: float = 3.0,
-        max_retries: int = 5000,
+        max_retries: int | None = None,
         track_depth: bool = False,
     ):
         """Initializes the QoroService client.
@@ -190,8 +190,11 @@ class QoroService(CircuitRunner):
                 overrides it.
             polling_interval (float, optional):
                 The interval in seconds for polling job status. Defaults to 3.0.
-            max_retries (int, optional):
-                The maximum number of retries for polling. Defaults to 5000.
+            max_retries (int | None, optional):
+                The maximum number of retries for polling. ``None`` (the
+                default) polls indefinitely until the job reaches a terminal
+                state or polling is cancelled. Pass an integer to cap the
+                number of attempts.
             track_depth (bool, optional):
                 If True, record circuit depth for each submitted batch.
                 Access via :attr:`~divi.backends.CircuitRunner.depth_history` after execution. Defaults to False.
@@ -1215,9 +1218,10 @@ class QoroService(CircuitRunner):
             polling_status.start()
 
             def update_polling_status(retry_count, job_status):
+                cap = "∞" if self.max_retries is None else self.max_retries
                 status_msg = (
                     f"Job [cyan]{job_id.split('-')[0]}[/cyan] is {job_status}. "
-                    f"Polling attempt {retry_count} / {self.max_retries}"
+                    f"Polling attempt {retry_count} / {cap}"
                 )
                 polling_status.update(status_msg)
 
@@ -1239,7 +1243,12 @@ class QoroService(CircuitRunner):
                     JobStatus.CANCELLED,
                 }
 
-                for retry_count in range(1, self.max_retries + 1):
+                attempts = (
+                    itertools.count(1)
+                    if self.max_retries is None
+                    else range(1, self.max_retries + 1)
+                )
+                for retry_count in attempts:
                     if cancellation_event is not None and cancellation_event.is_set():
                         raise ExecutionCancelledError(
                             f"Polling cancelled for job {job_id}."

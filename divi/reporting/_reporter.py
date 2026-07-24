@@ -201,10 +201,11 @@ class LoggingProgressReporter(ProgressReporter):
             # Execution has begun — classical-pipeline stages are done,
             # clear that slot so only the polling context remains.
             self._pipeline_msg = None
+            cap = "∞" if kwargs["max_retries"] is None else kwargs["max_retries"]
             self._polling_msg = (
                 f"Job [cyan]{kwargs['service_job_id'].split('-')[0]}[/cyan] is "
                 f"{kwargs['job_status']}. Polling attempt {kwargs['poll_attempt']} / "
-                f"{kwargs['max_retries']}"
+                f"{cap}"
             )
             self._update_or_create_status()
             return
