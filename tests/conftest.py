@@ -24,6 +24,7 @@ import pytest
 from dotenv import load_dotenv
 
 from divi.backends import CircuitRunner, ExecutionResult, MaestroSimulator
+from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
 
@@ -40,6 +41,9 @@ def suppress_quepp_warnings():
         warnings.filterwarnings("ignore", message=r"QuEPP:.*signal destroyed")
         warnings.filterwarnings("ignore", message=r"QuEPP Monte Carlo:.*non-diagonal")
         warnings.filterwarnings("ignore", message=r"QuEPP:.*zero diagonal Pauli paths")
+        # By category: a symbolic circuit is the norm in these tests, and the
+        # options QuEPP disables need concrete angles.
+        warnings.simplefilter("ignore", SymbolicAngleWarning)
         yield
 
 

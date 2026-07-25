@@ -21,6 +21,7 @@ from divi.circuits import qscript_to_meta
 from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
+    SymbolicAngleWarning,
     _all_cos_path_weight,
     _build_clifford_tableaus,
     _build_path_dag,
@@ -32,6 +33,7 @@ from divi.circuits.quepp import (
     _normalize_angle,
     _normalize_circuit,
     _obs_to_stim_terms,
+    _PreprocResult,
     _qiskit_clifford_to_stim,
     _sample_paths_montecarlo,
     _simulate_clifford_ensemble,
@@ -953,6 +955,30 @@ def test_hybrid_normalization():
     )
     # Only the symbolic rotation should remain
     assert ctx["n_rotations"] == 1
+
+
+def test_symbolic_fallback_warnings_carry_their_own_category():
+    """Callers that expect symbolic angles need to silence exactly these — matching
+    on message text stops suppressing, silently, the moment the wording changes."""
+    qc = QuantumCircuit(1)
+    qc.rx(Parameter("theta"), 0)
+    proto = QuEPP(sampling="montecarlo", coefficient_threshold=0.1, n_twirls=0)
+    prep = _PreprocResult(
+        working=qc,
+        n_qubits=1,
+        rotations=_extract_rotation_gates(qc),
+        tableaus=_build_clifford_tableaus(qc, _extract_rotation_gates(qc)),
+        obs_terms=_obs_to_stim_terms(SparsePauliOp("Z"), 1),
+        symbolic=True,
+    )
+    with pytest.warns(SymbolicAngleWarning) as record:
+        proto._select_paths(prep)
+    assert len(record) == 2
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        warnings.simplefilter("ignore", SymbolicAngleWarning)
+        proto._select_paths(prep)
 
 
 class TestBindBeforeMitigation:

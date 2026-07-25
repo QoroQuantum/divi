@@ -56,7 +56,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits.qem import QEMContext, QEMProtocol
 from divi.pipeline.abc import ResultFormat
 
-__all__ = ["QuEPP"]
+__all__ = ["QuEPP", "SymbolicAngleWarning"]
 
 # ---------------------------------------------------------------------------
 # Constants and type aliases
@@ -256,6 +256,16 @@ def _obs_to_stim_terms(
         big_endian = qiskit_label[::-1]
         terms.append((float(np.real(coeff)), stim.PauliString("+" + big_endian)))
     return terms
+
+
+class SymbolicAngleWarning(UserWarning):
+    """A QuEPP option needing concrete rotation angles was disabled because the
+    circuit still carries unbound parameters.
+
+    Its own category, so a caller that expects symbolic angles can silence exactly
+    this and nothing else — a message-text filter stops suppressing the moment the
+    wording changes, and does so silently.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -1052,7 +1062,13 @@ class QuEPP(QEMProtocol):
                 obs_terms=_obs_to_stim_terms(obs, n_qubits),
                 symbolic=symbolic,
             )
-            paths = self._select_paths(prep)
+            # The dry preview always sees symbolic angles, so _select_paths would
+            # warn that Monte Carlo / threshold pruning fall back to exhaustive
+            # enumeration. That is expected here (the preview only counts paths;
+            # the real run binds angles and samples), so keep the preview quiet.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", SymbolicAngleWarning)
+                paths = self._select_paths(prep)
             n_paths_per_obs.append(len(paths))
             for p in paths:
                 unique_branches.add(p.branches)
@@ -1127,6 +1143,7 @@ class QuEPP(QEMProtocol):
             warnings.warn(
                 "QuEPP: Monte Carlo sampling requires concrete angles. "
                 "Falling back to exhaustive enumeration for symbolic circuit.",
+                SymbolicAngleWarning,
                 stacklevel=3,
             )
 
@@ -1135,6 +1152,7 @@ class QuEPP(QEMProtocol):
             warnings.warn(
                 "QuEPP: coefficient_threshold pruning disabled for symbolic "
                 "circuit (angle magnitudes unknown).",
+                SymbolicAngleWarning,
                 stacklevel=3,
             )
             coeff_threshold = 0.0
