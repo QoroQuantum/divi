@@ -415,6 +415,23 @@ class TestZNE:
         assert len(dags) == 3
         assert ctx["effective_scales"] == (1.0, 3.0, 5.0)
 
+    def test_expand_leaves_the_callers_dag_untouched(self, bell_dag):
+        """``expand`` receives a DAG it does not own — a program's seed circuit,
+        reused by every pipeline built from it and by every later call. Folding it
+        in place leaves it permanently scaled: sibling pipelines that mitigation
+        does not apply to inherit the fold, and repeated calls compound it."""
+        before = bell_dag.size()
+        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
+
+        first, _ = zne.expand(bell_dag)
+        assert bell_dag.size() == before
+        assert Operator(dag_to_circuit(bell_dag)).equiv(
+            Operator(dag_to_circuit(first[0]))
+        )
+
+        second, _ = zne.expand(bell_dag)
+        assert [d.size() for d in second] == [d.size() for d in first]
+
     def test_expand_preserves_unitary(self, bell_dag):
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
         dags, _ = zne.expand(bell_dag)

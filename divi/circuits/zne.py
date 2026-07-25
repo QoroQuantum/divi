@@ -479,8 +479,11 @@ class ZNE(QEMProtocol):
         observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         scales = self._scale_factors
-        folded_pairs = [self._folding_fn(copy.deepcopy(dag), s) for s in scales[:-1]]
-        folded_pairs.append(self._folding_fn(dag, scales[-1]))
+        # Every scale folds a copy, the last one included: ``folding_fn`` mutates
+        # in place, and ``dag`` belongs to the caller. Folding it directly would
+        # leave the program's seed circuit permanently folded — inflating every
+        # later pipeline built from that seed, and compounding across calls.
+        folded_pairs = [self._folding_fn(copy.deepcopy(dag), s) for s in scales]
         folded_dags = tuple(pair[0] for pair in folded_pairs)
         effective_scales = tuple(float(pair[1]) for pair in folded_pairs)
 
