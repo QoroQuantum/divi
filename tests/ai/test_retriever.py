@@ -19,7 +19,11 @@ from divi.ai._types import ChunkMeta
 
 class TestTokenize:
     def test_splits_camel_case(self):
-        assert tokenize("GraphPartitioningQAOA") == ["graph", "partitioning", "qaoa"]
+        assert tokenize("PartitioningProgramEnsemble") == [
+            "partitioning",
+            "program",
+            "ensemble",
+        ]
 
     def test_splits_acronym_word_boundary(self):
         assert tokenize("QAOAAnsatz") == ["qaoa", "ansatz"]

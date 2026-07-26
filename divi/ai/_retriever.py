@@ -144,7 +144,7 @@ def tokenize(text: str) -> list[str]:
     dots. Drops English stopwords and single-character tokens.
 
     Examples:
-        "GraphPartitioningQAOA" → ["graph", "partitioning", "qaoa"]
+        "VQEHyperparameterSweep" → ["vqe", "hyperparameter", "sweep"]
         "divi.qprog.problems._graphs" → ["divi", "qprog", "problems", "graphs"]
         "How do I configure ZNE?" → ["configure", "zne"]
     """

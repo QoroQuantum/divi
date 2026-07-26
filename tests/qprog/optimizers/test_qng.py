@@ -467,7 +467,7 @@ def test_fubini_study_rejects_composite_angle(dummy_simulator, default_optimizer
         )
 
 
-def test_metric_preprocessors_are_cacheable(dummy_simulator, default_optimizer):
+def test_metric_pipelines_are_cacheable(dummy_simulator, default_optimizer):
     """The consolidated metric transforms are pure, so their preprocessors carry
     stable cache keys and ``_build_preprocessor_pipeline`` reuses one pipeline
     object across iterations (its forward cache survives)."""

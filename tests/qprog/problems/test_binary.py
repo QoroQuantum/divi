@@ -129,7 +129,7 @@ class TestBinaryOptimizationProblem:
 class TestLazyIsingInit:
     """The Ising conversion and X-mixer are computed lazily on first access.
 
-    For workflows like ``QUBOPartitioningQAOA`` the parent's full Ising is
+    For workflows like ``PartitioningProgramEnsemble`` the parent's full Ising is
     never used after decomposition, so eager construction was wasted work.
     These tests pin both the laziness and the per-property memoization.
     """
