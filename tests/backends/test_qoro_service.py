@@ -2541,7 +2541,12 @@ class TestQoroServiceWithApiKey:
             simulation_method=SimulationMethod.MatrixProductState,
             api_meta={"optimization_level": 1},
         )
-        response = qoro_service.set_execution_config(result, config)
+        try:
+            response = qoro_service.set_execution_config(result, config)
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == HTTPStatus.CONFLICT:
+                pytest.skip("Job left PENDING before execution config could be set.")
+            raise
         assert response["status"] == "ok"
         assert response["job_id"] == result.job_id
         assert response["execution_configuration"]["bond_dimension"] == 16
