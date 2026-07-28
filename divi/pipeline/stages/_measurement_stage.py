@@ -13,7 +13,10 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import measurement_qasms_from_groups
 from divi.circuits._conversions import _sparse_pauli_op_to_ham_string
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
-from divi.pipeline._grouping import _compute_measurement_groups
+from divi.pipeline._grouping import (
+    BACKEND_EXPVAL,
+    _compute_measurement_groups,
+)
 from divi.pipeline._result_keys_operations import (
     group_by_base_key,
     reduce_postprocess_ordered,
@@ -296,10 +299,10 @@ class MeasurementStage(BundleStage):
             shot_distribution: How to split the backend's total shot budget
                 across measurement groups (``"uniform"``, ``"weighted"``,
                 ``"weighted_random"``, or a callable). Only affects results on
-                a sampling backend (``supports_expval=False``); on a backend
-                that computes expectation values analytically it is recorded
-                but does not change the exact result, and ``expand`` emits a
-                ``UserWarning`` saying so. Pairing it with an explicit
+                a sampling backend (``supports_expval=False``); a backend that
+                computes expectation values analytically has no measurement groups
+                to split shots across, so it is not applied there and ``expand``
+                emits a ``UserWarning`` saying so. Pairing it with an explicit
                 ``grouping_strategy="_backend_expval"`` raises ``ValueError``.
                 When ``None`` (default), every group is submitted with the
                 backend's full shot count.
@@ -449,30 +452,27 @@ class MeasurementStage(BundleStage):
         serialising diagonalising gates + ``measure`` instructions.
         """
         strategy = self._grouping_strategy
-        if (
-            self._shot_distribution is None
-            and strategy in ("qwc", "_backend_expval")
-            and env.backend.supports_expval
-        ):
+        if strategy in ("qwc", BACKEND_EXPVAL) and env.backend.supports_expval:
             # Promote to the backend's analytic expval path only when every
             # circuit in the batch carries the same observable(s): that path
             # emits a single shared ham_ops, so a batch with differing
             # observables (single- or multi-observable) must stay on qwc.
             first_obs = next(iter(batch.values())).observable
             all_same_obs = all(meta.observable == first_obs for meta in batch.values())
-            strategy = "_backend_expval" if all_same_obs else "qwc"
+            strategy = BACKEND_EXPVAL if all_same_obs else "qwc"
 
-        if self._shot_distribution is not None and strategy == "_backend_expval":
+        if (
+            self._shot_distribution is not None
+            and self._grouping_strategy == BACKEND_EXPVAL
+        ):
             raise ValueError(
                 "shot_distribution is incompatible with the '_backend_expval' grouping "
                 "strategy: the backend computes expectation values analytically and "
                 "ignores shots. Set grouping_strategy to 'qwc', 'wires', or None."
             )
-        if self._shot_distribution is not None and env.backend.supports_expval:
-            # Reachable case the explicit-strategy guard above misses: a sampling
-            # grouping strategy on an expval-capable backend still routes to the
-            # native analytic path, so the allocation is recorded but never
-            # changes the (exact) result.
+        if self._shot_distribution is not None and strategy == BACKEND_EXPVAL:
+            # The analytic path submits one circuit for the whole observable, so
+            # there are no groups to allocate across.
             warnings.warn(
                 f"shot_distribution is set but backend "
                 f"{type(env.backend).__name__} computes expectation values "
@@ -495,7 +495,7 @@ class MeasurementStage(BundleStage):
         # _backend_expval path (its all-identity sentinel would be rejected).
         measure_all = (
             self._measure_all
-            or strategy == "_backend_expval"
+            or strategy == BACKEND_EXPVAL
             or self._result_format_override in (ResultFormat.COUNTS, ResultFormat.PROBS)
         )
 
@@ -514,7 +514,7 @@ class MeasurementStage(BundleStage):
             measurement_groups, partition_indices, postprocessing_fn, union_obs = (
                 _compute_measurement_groups(observable, strategy, meta.n_qubits)
             )
-            if strategy == "_backend_expval" and n_observable_terms is None:
+            if strategy == BACKEND_EXPVAL and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)
 
             # Shot allocation weights groups by the union's coefficient L1 norm.
@@ -534,6 +534,16 @@ class MeasurementStage(BundleStage):
             )
             if zero_shot_groups:
                 zero_shot_groups_by_spec[key] = zero_shot_groups
+            if not surviving_indices:
+                # Every group dropped: there is nothing to submit and nothing to
+                # postprocess. Failing here beats emitting an unmeasured circuit,
+                # which previews as a plausible count and dies at execution.
+                raise ValueError(
+                    f"shot_distribution assigned zero shots to every measurement "
+                    f"group of '{key}', so no circuit can be submitted. Raise the "
+                    "backend's shot count or use an allocation that keeps at least "
+                    "one group."
+                )
 
             surviving_groups = tuple(measurement_groups[i] for i in surviving_indices)
             measurement_qasms = qasm_factory(
@@ -557,12 +567,12 @@ class MeasurementStage(BundleStage):
             # override is meaningless there, so never materialise group shots on
             # that path — the override is silently ignored, as analytic expval
             # ignores shots by definition.
-            if surviving_shots is not None and strategy != "_backend_expval":
+            if surviving_shots is not None and strategy != BACKEND_EXPVAL:
                 new_meta = new_meta.set_group_shots(surviving_shots)
             result[key] = new_meta
             postprocess_fn_by_spec[key] = postprocessing_fn
 
-        if strategy == "_backend_expval" and sample_union is not None:
+        if strategy == BACKEND_EXPVAL and sample_union is not None:
             ham_ops = _sparse_pauli_op_to_ham_string(sample_union)
             result = {
                 key: meta.set_backend_ham_ops(ham_ops) for key, meta in result.items()

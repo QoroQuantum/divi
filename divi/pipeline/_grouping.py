@@ -18,6 +18,15 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._core import flatten_observable_tuple
 
+#: Internal grouping strategy: the backend evaluates the whole observable itself,
+#: so no basis-change circuits are built. Not user-passable.
+BACKEND_EXPVAL = "_backend_expval"
+
+#: The ``measurement_groups`` value :func:`build_measurement_groups` emits under
+#: :data:`BACKEND_EXPVAL` — one empty group, since there is no basis to partition.
+#: Structural marker for consumers that cannot see the strategy that produced it.
+BACKEND_EXPVAL_GROUPS = ((),)
+
 GroupingStrategy = Literal["wires", "default", "qwc", "_backend_expval"] | None
 
 
@@ -192,9 +201,9 @@ def _compute_measurement_groups(
         partition_indices = [[i] for i in range(n_union_terms)]
         measurement_groups = tuple((label,) for label in be_labels)
 
-    elif strategy == "_backend_expval":
+    elif strategy == BACKEND_EXPVAL:
         partition_indices = [list(range(n_union_terms))]
-        measurement_groups = ((),)
+        measurement_groups = BACKEND_EXPVAL_GROUPS
 
     else:
         raise ValueError(f"Unknown grouping strategy: {strategy}")

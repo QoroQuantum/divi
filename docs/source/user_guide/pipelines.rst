@@ -1133,10 +1133,12 @@ a backend with ``supports_expval=False``:
 ``QiskitSimulator(force_sampling=True)``, or for
 :class:`~divi.backends.QoroService` set
 ``JobConfig(force_sampling=True)``.  Setting ``shot_distribution`` on an
-expval-capable backend is not silent: it emits a :class:`UserWarning` (the
-per-group allocation is recorded but cannot change the exact, analytically
-computed result), and explicitly pairing it with
-``grouping_strategy="_backend_expval"`` raises :class:`ValueError`.
+expval-capable backend is not silent: it emits a :class:`UserWarning` saying the
+allocation has no effect there.  The analytic path wins deliberately — honouring
+the allocation would mean splitting an observable the backend can evaluate
+exactly into sampled groups, trading exactness for a knob that cannot help — so
+no allocation is computed and ``env_artifacts`` carries no ``per_group_shots``
+entry on that path.
 
 
 Stage Validation

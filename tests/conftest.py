@@ -23,7 +23,12 @@ import warnings
 import pytest
 from dotenv import load_dotenv
 
-from divi.backends import CircuitRunner, ExecutionResult, MaestroSimulator
+from divi.backends import (
+    CircuitRunner,
+    ExecutionResult,
+    MaestroSimulator,
+    QiskitSimulator,
+)
 from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
@@ -134,8 +139,30 @@ def dummy_pipeline_env(dummy_expval_backend):
 
 
 @pytest.fixture
+def dummy_sampling_pipeline_env(make_dummy_simulator):
+    """PipelineEnv on a sampling backend, for tests that need the qwc grouping.
+
+    An expval-capable backend promotes qwc to the analytic ``_backend_expval``
+    path, which submits one circuit and allocates no per-group shots — so a test
+    inspecting groups or shot allocation has to ask for a backend that samples.
+    """
+    return PipelineEnv(backend=make_dummy_simulator(300))
+
+
+@pytest.fixture
 def default_test_simulator():
     return MaestroSimulator(shots=5000)
+
+
+@pytest.fixture
+def sampling_test_simulator():
+    """A real backend that samples rather than evaluating observables analytically.
+
+    Needed by tests about observable grouping or per-group shot allocation: on an
+    expval-capable backend the measurement stage promotes to the analytic path,
+    which submits one circuit and allocates no per-group shots.
+    """
+    return QiskitSimulator(force_sampling=True, shots=1200)
 
 
 @pytest.fixture

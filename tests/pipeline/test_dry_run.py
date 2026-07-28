@@ -151,11 +151,15 @@ class TestAnalyticDryRun:
         _, dry = _dry_run(stages(), dummy_pipeline_env, dry=True, name="dry")
         _assert_same_fanout(real, dry)
 
-    def test_param_binding_fast_path_counts_correctly(self, dummy_pipeline_env):
+    def test_param_binding_fast_path_counts_correctly(
+        self, dummy_sampling_pipeline_env
+    ):
         """Fast-path ParameterBindingStage populates qasm_bodies; dry-run
         counter must read from there (not from the untouched circuit_bodies)."""
         meta = _parametric_twirlable_meta()
-        dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
+        dummy_sampling_pipeline_env.param_sets = np.asarray(
+            [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]
+        )
 
         _, dry_report = _dry_run(
             [
@@ -163,7 +167,7 @@ class TestAnalyticDryRun:
                 ParameterBindingStage(),
                 MeasurementStage(shot_distribution="weighted"),
             ],
-            dummy_pipeline_env,
+            dummy_sampling_pipeline_env,
         )
 
         # 1 body × 3 param sets × 2 obs groups.
@@ -209,37 +213,33 @@ class TestAnalyticDryRun:
         )
         assert spy.call_count > 0, "real path must apply twirl DAG substitution"
 
-    def test_dry_preserves_per_group_shots_artifact(self, dummy_pipeline_env):
+    def test_dry_preserves_per_group_shots_artifact(self, dummy_sampling_pipeline_env):
         """Dry MeasurementStage must still populate per_group_shots via shot allocation."""
         trace, _ = _dry_run(
             [
                 DummySpecStage(meta=two_group_meta()),
                 MeasurementStage(shot_distribution="weighted"),
             ],
-            dummy_pipeline_env,
+            dummy_sampling_pipeline_env,
         )
         assert "per_group_shots" in trace.env_artifacts
 
-    def test_introspect_metadata_survives_dry(self, dummy_pipeline_env):
+    def test_introspect_metadata_survives_dry(self, dummy_sampling_pipeline_env):
         """Each stage's ``introspect()`` feeds ``DryRunReport.stages[i].metadata``.
         If ``introspect`` were silently skipped in dry mode, or stages swapped
         for ones that return degenerate metadata, the fan-out counts would
         still match — so the payload itself needs its own lock-in."""
         meta = _parametric_twirlable_meta()
-        dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
+        dummy_sampling_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
 
         _, report = _dry_run(
             [
                 DummySpecStage(meta=meta),
                 ParameterBindingStage(),
                 PauliTwirlStage(n_twirls=4, seed=0),
-                # Pin shot_distribution so MeasurementStage stays on the
-                # qwc branch rather than auto-promoting to _backend_expval
-                # on the dummy expval backend — the qwc grouping is what
-                # we want to inspect for n_groups / n_pauli_terms.
                 MeasurementStage(shot_distribution="weighted"),
             ],
-            dummy_pipeline_env,
+            dummy_sampling_pipeline_env,
         )
 
         by_name = {s.name: s for s in report.stages}
@@ -267,7 +267,7 @@ class TestAnalyticDryRun:
         assert meas.metadata["n_pauli_terms"] == n_pauli_terms
         assert meas.factor == 1.0
 
-    def test_env_artifacts_surface_on_dry_run_report(self, dummy_pipeline_env):
+    def test_env_artifacts_surface_on_dry_run_report(self, dummy_sampling_pipeline_env):
         """``DryRunReport.env_artifacts`` is the canonical introspection surface
         for stage-produced state — callers should not need to drop into
         ``_build_pipeline_env`` or a pipeline's private spec factory to read
@@ -277,7 +277,7 @@ class TestAnalyticDryRun:
                 DummySpecStage(meta=two_group_meta()),
                 MeasurementStage(shot_distribution="weighted"),
             ],
-            dummy_pipeline_env,
+            dummy_sampling_pipeline_env,
         )
         assert "per_group_shots" in report.env_artifacts
         assert (
@@ -547,12 +547,12 @@ class TestQuantumProgramDryRun:
         )
 
     def test_env_artifacts_exposed_via_dry_run(
-        self, default_test_simulator, default_optimizer
+        self, sampling_test_simulator, default_optimizer
     ):
         """Callers can read ``per_group_shots`` (and any other stage artifact)
         straight off the :class:`DryRunReport` — no private hooks needed."""
         vqe = self._h2_vqe(
-            default_test_simulator,
+            sampling_test_simulator,
             default_optimizer,
             grouping_strategy="qwc",
             shot_distribution="weighted",

@@ -30,6 +30,8 @@ from divi.pipeline.stages._measurement_stage import (
     MeasurementToken,
     _allocate_per_group_shots,
 )
+from divi.qprog import VQE, HartreeFockAnsatz
+from divi.qprog.optimizers import SPSAOptimizer
 from tests.pipeline._helpers import (
     DummySpecStage,
     ExpvalBackendSpy,
@@ -706,10 +708,16 @@ class TestMeasurementStageShotDistributionBackendExpval:
         with pytest.raises(ValueError, match="_backend_expval"):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    def test_shot_distribution_warns_on_analytic_backend(self, dummy_expval_backend):
-        """qwc + expval-supporting backend skips the _backend_expval auto-fallback
-        (so per-group shots are still recorded), but the backend evaluates
-        analytically, so the allocation can't change the result — ``expand`` warns."""
+    def test_shot_distribution_does_not_defeat_the_analytic_path(
+        self, dummy_expval_backend
+    ):
+        """qwc + expval-supporting backend still promotes to _backend_expval.
+
+        Suppressing the promotion would buy a recorded allocation at the price of
+        exactness: the observable would be split into groups and sampled, making a
+        result the backend can compute exactly shot-noisy instead. ``expand`` warns
+        that the allocation has no effect.
+        """
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
@@ -719,8 +727,59 @@ class TestMeasurementStageShotDistributionBackendExpval:
         )
         with pytest.warns(UserWarning, match="analytically"):
             trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "per_group_shots" in trace.env_artifacts
-        assert "ham_ops" not in trace.env_artifacts
+        token = next(t for t in trace.stage_tokens if isinstance(t, MeasurementToken))
+        assert token.effective_strategy == "_backend_expval"
+        assert "ham_ops" in trace.env_artifacts
+        # No allocation to record: the analytic path submits one circuit, not groups.
+        assert "per_group_shots" not in trace.env_artifacts
+
+    def test_shot_distribution_keeps_expectation_values_exact(
+        self, default_test_simulator
+    ):
+        """End-to-end: the same parameters must give the same energy every time.
+
+        Suppressing the analytic promotion made a repeated evaluation of one
+        parameter vector return a different energy each call — millihartree-scale
+        noise on a value the backend can compute exactly.
+        """
+        molecule = qp.qchem.Molecule(
+            symbols=["H", "H"],
+            coordinates=np.array([(0.0, 0.0, -0.6614), (0.0, 0.0, 0.6614)]),
+        )
+        vqe = VQE(
+            molecule=molecule,
+            ansatz=HartreeFockAnsatz(),
+            n_layers=1,
+            backend=default_test_simulator,
+            optimizer=SPSAOptimizer(),
+            shot_distribution="weighted",
+        )
+        params = np.zeros(vqe.n_layers * vqe.n_params_per_layer)
+        with pytest.warns(UserWarning, match="analytically"):
+            energies = [vqe.evaluate(params, vqe.cost_preprocessor()) for _ in range(3)]
+        flattened = [float(np.ravel(list(e.values()))[0]) for e in energies]
+        assert flattened[0] == flattened[1] == flattened[2]
+
+    def test_an_allocation_that_starves_every_group_fails_loudly(
+        self, make_dummy_simulator
+    ):
+        """An all-zero allocation leaves nothing to submit. Emitting the unmeasured
+        spec circuit instead previewed as a plausible one-circuit cost and then died
+        at execution with a message about missing measurement QASM."""
+        env = PipelineEnv(backend=make_dummy_simulator(300))
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_three_group_meta()),
+                MeasurementStage(
+                    grouping_strategy="qwc",
+                    shot_distribution=lambda norms, total: [0] * len(norms),
+                ),
+            ],
+        )
+        # The allocation also drifts from the budget, which warns separately.
+        with pytest.warns(UserWarning):
+            with pytest.raises(ValueError, match="zero shots to every measurement"):
+                pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
     def test_qwc_with_non_expval_backend_works(self, make_dummy_simulator):
         """qwc + non-expval backend doesn't auto-switch -> shot_distribution OK."""
