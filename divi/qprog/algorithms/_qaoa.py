@@ -96,7 +96,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
             **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
-                including ``optimizer``, ``backend``, ``shots``, etc.
+                including ``optimizer`` and ``backend``.
         """
         if initial_state is not None and not isinstance(initial_state, InitialState):
             raise TypeError(

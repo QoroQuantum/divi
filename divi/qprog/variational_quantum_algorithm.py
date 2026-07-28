@@ -519,6 +519,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         ``n_layers * n_params_per_layer``.
         """
 
+    @property
+    def n_params(self) -> int:
+        """Total trainable parameters, ``n_layers * n_params_per_layer``."""
+        return self.n_layers * self.n_params_per_layer
+
     def _save_subclass_state(self) -> dict[str, Any]:
         """Hook method for subclasses to save additional state.
 
@@ -624,7 +629,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             tuple[int, int]: Shape (n_param_sets, n_layers * n_params_per_layer) that
                 initial parameters should have for this quantum program.
         """
-        return (self.optimizer.n_param_sets, self.n_layers * self.n_params_per_layer)
+        return (self.optimizer.n_param_sets, self.n_params)
 
     def _validate_initial_params(self, params: npt.NDArray[np.float64]):
         """
@@ -646,9 +651,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
         """Generate fresh parameter sets for a new optimization run."""
-        total_params = self.n_layers * self.n_params_per_layer
         return self._rng.uniform(
-            0, 2 * np.pi, (self.optimizer.n_param_sets, total_params)
+            0, 2 * np.pi, (self.optimizer.n_param_sets, self.n_params)
         )
 
     def _optimizer_has_resume_state(self) -> bool:
@@ -693,9 +697,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         these values).
         """
         if "param_sets" not in overrides:
-            total_params = self.n_layers * self.n_params_per_layer
             overrides["param_sets"] = np.zeros(
-                (self.optimizer.n_param_sets, total_params)
+                (self.optimizer.n_param_sets, self.n_params)
             )
         if "rng" not in overrides:
             overrides["rng"] = self._rng
@@ -855,7 +858,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             return self._best_params
 
         params_arr = np.asarray(params, dtype=np.float64)
-        expected = self.n_layers * self.n_params_per_layer
+        expected = self.n_params
         if params_arr.shape[-1] != expected:
             raise ValueError(
                 f"params last-axis size ({params_arr.shape[-1]}) does not "
@@ -961,9 +964,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         # QUIVER) can use it without sniffing this closure's signature.
         setattr(cost_fn, "supports_variance", True)
 
-        self._grad_shift_mask = _compute_parameter_shift_mask(
-            self.n_layers * self.n_params_per_layer
-        )
+        self._grad_shift_mask = _compute_parameter_shift_mask(self.n_params)
 
         # Let the optimizer contribute any extra evaluators it needs (e.g. a
         # metric-based optimizer binds its metric estimator to this program and

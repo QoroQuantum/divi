@@ -754,7 +754,7 @@ class TestMeasurementStageShotDistributionBackendExpval:
             optimizer=SPSAOptimizer(),
             shot_distribution="weighted",
         )
-        params = np.zeros(vqe.n_layers * vqe.n_params_per_layer)
+        params = np.zeros(vqe.n_params)
         with pytest.warns(UserWarning, match="analytically"):
             energies = [vqe.evaluate(params, vqe.cost_preprocessor()) for _ in range(3)]
         flattened = [float(np.ravel(list(e.values()))[0]) for e in energies]

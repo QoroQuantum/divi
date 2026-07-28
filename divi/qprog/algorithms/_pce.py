@@ -4,6 +4,7 @@
 
 import itertools
 from collections.abc import Callable
+from dataclasses import replace
 from functools import cached_property
 from typing import Literal
 from warnings import warn
@@ -18,7 +19,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import BinaryPolynomialProblem, compile_problem
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
-from divi.pipeline import CircuitPreprocessor, ResultFormat
+from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
 from divi.pipeline.stages import PCECostStage
 from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz
@@ -276,10 +277,9 @@ class PCE(VQE):
         # shot histograms. COUNTS keeps QEM off this path (extrapolation has no
         # expectation value to act on; PCE forbids qem_protocol anyway). Cached
         # so ``PCECostStage`` (which re-runs ``compile_problem`` in its __init__)
-        # is built once rather than per optimizer iteration; ``cache_key="cost"``
-        # additionally lets the pipeline cache key on it like every other cost.
-        return CircuitPreprocessor(
-            "cost",
+        # is built once rather than per optimizer iteration.
+        return replace(
+            cost_preprocessor(),
             result_format=ResultFormat.COUNTS,
             terminal_stage=PCECostStage(
                 problem=self.problem,
@@ -292,7 +292,6 @@ class PCE(VQE):
                 measure_all=self._measure_all_qubits
                 or self._decode_parities_fn is not _decode_parities,
             ),
-            cache_key="cost",
         )
 
     def cost_preprocessor(self) -> CircuitPreprocessor:
