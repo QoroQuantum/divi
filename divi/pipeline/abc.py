@@ -164,8 +164,15 @@ class PipelineEnv:
     backend: CircuitRunner
     """Backend used to run circuits (e.g. simulator or cloud service)."""
 
-    param_sets: Sequence[Sequence[float]] | npt.NDArray[np.floating] = ()
-    """Parameter sets for binding — strictly 2D (list-of-lists or 2D ndarray)."""
+    param_sets: Sequence[Sequence[float]] | npt.NDArray[np.floating] = ((),)
+    """Parameter sets for binding — strictly 2D (list-of-lists or 2D ndarray).
+
+    Defaults to one set with no free parameters, which is the shape a
+    parameter-free circuit needs: the default must satisfy the 2D contract, or a
+    program that never supplies parameters (and any dry run of one) fails inside
+    :class:`~divi.pipeline.stages.ParameterBindingStage` rather than binding
+    nothing.
+    """
 
     feature_batch: npt.NDArray[np.floating] | None = None
     """Classical feature batch for the data axis, shape ``(n_samples, n_data)``.

@@ -4,6 +4,8 @@
 
 """Tests for divi.pipeline.abc: PipelineEnv, PipelineTrace, ExpansionResult."""
 
+import numpy as np
+
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import MeasurementStage
 
@@ -22,7 +24,9 @@ class TestPipelineTypes:
         env = PipelineEnv(backend=dummy_expval_backend)
 
         assert env.backend is dummy_expval_backend
-        assert env.param_sets == ()
+        # One set with no free parameters — the default has to satisfy the 2D
+        # contract that ParameterBindingStage enforces.
+        assert np.asarray(env.param_sets).shape == (1, 0)
 
     def test_pipeline_trace_has_initial_final_batch_and_expansions(
         self, dummy_pipeline_env
