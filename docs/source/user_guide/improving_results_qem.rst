@@ -184,11 +184,13 @@ on the ensemble circuits.
 - ``sampling`` — ``"exhaustive"`` enumerates paths up to ``truncation_order``
   (deterministic; cost grows with order and circuit size).  ``"montecarlo"``
   *(default)* draws ``n_samples`` random paths, **but only on concrete
-  (parameter-bound) circuits**.  Variational programs (VQE/QAOA/TimeEvolution)
-  present a *symbolic* circuit at mitigation time — error mitigation runs before
-  parameter binding — so ``montecarlo`` warns and falls back to exhaustive
-  enumeration governed by ``truncation_order``; ``n_samples`` has no effect in
-  that case.
+  (parameter-bound) circuits**.  Variational programs (VQE/QAOA) present a
+  *symbolic* circuit at mitigation time — error mitigation runs before parameter
+  binding — so ``montecarlo`` warns and falls back to exhaustive enumeration
+  governed by ``truncation_order``; ``n_samples`` has no effect in that case.
+  A :class:`~divi.qprog.algorithms.TimeEvolution` at a fixed ``time`` has
+  concrete angles, so montecarlo stays live there and the knobs swap roles:
+  ``n_samples`` sets the cost and ``truncation_order`` does not enter.
 - ``n_samples`` *(int, default 200)* — Monte Carlo path budget, used only on the
   concrete-circuit montecarlo path (see ``sampling``).
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
@@ -211,8 +213,14 @@ ZNE vs QuEPP
      - None
      - Clifford simulation of ensemble
    * - Circuit overhead
-     - 1 extra circuit per scale factor
-     - 1 + C(n, 1) + ... + C(n, K_T) paths
+     - ``len(scale_factors)`` — one circuit per scale factor, with no separate
+       unmitigated extra (include ``1.0`` in the list if you want one)
+     - ``(1 + surviving Pauli paths) × n_twirls`` — twirling is a *separate*
+       stage and ``n_twirls`` defaults to **10**, so ``truncation_order=2``
+       costs ×400, not ×40.  ``C(n, 1) + ... + C(n, K_T)`` (with ``n`` the
+       non-Clifford rotation count and ``K_T`` the truncation order) bounds the
+       paths before pruning; read the real factors off a dry run, which shows
+       ``QEMStage`` and ``PauliTwirlStage`` separately
    * - Best for
      - Coherent gate noise
      - Uniform noise (e.g. readout error)
@@ -228,11 +236,21 @@ Error mitigation can multiply the number of circuits significantly.  Use
 before committing to a full run, and pipe the returned reports through
 :func:`~divi.pipeline.format_dry_run` to render them as a tree:
 
-.. skip: next
-
 .. code-block:: python
 
+   import numpy as np
+   import pennylane as qp
+
+   from divi.backends import QiskitSimulator
+   from divi.circuits.quepp import QuEPP
    from divi.pipeline import format_dry_run
+   from divi.qprog import VQE
+   from divi.qprog.optimizers import MonteCarloOptimizer
+
+   h2_molecule = qp.qchem.Molecule(
+       symbols=["H", "H"],
+       coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
+   )
 
    vqe = VQE(
        molecule=h2_molecule,
@@ -246,10 +264,14 @@ before committing to a full run, and pipe the returned reports through
 
 The QEM-relevant entries are how many Pauli paths QuEPP generates, the
 Clifford simulation count, and the twirl fan-out — use these to tune
-``truncation_order``, ``coefficient_threshold``, and ``n_twirls`` before
-spending any shots.  See the :ref:`dry-run` section of the pipelines guide
-for how to read the per-stage factor tree (fan-out ``×K`` vs grouping
-reduction ``÷K``) and for programmatic access to the reports.
+``truncation_order`` and ``n_twirls`` before spending any shots.  The stage's
+fan-out is one greater than its reported ``n_paths``: the unmitigated circuit is
+submitted alongside the paths, so ``n_paths: 9`` shows as ``×10``.
+(``coefficient_threshold`` is disabled on symbolic circuits, which is every
+variational program, so a dry run will not show it doing anything.)  See the
+:ref:`dry-run` section of the pipelines guide for how to read the per-stage
+factor tree (fan-out ``×K`` vs grouping reduction ``÷K``) and for programmatic
+access to the reports.
 
 Signal Destruction and Automatic Fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -327,9 +349,12 @@ Programs that accept several observables in one run (for example
 ``observable=[O1, O2, ...]`` — see :ref:`time-evolution-multi-observable`)
 amortise mitigation cost across the group:
 
-- **ZNE** runs each scale factor's circuit once for the *whole* observable
-  set, not once per observable.  Total shots scale with the number of
-  scale factors, not with ``#scales × #observables``.
+- **ZNE** folds the target circuit once per scale factor for the *whole*
+  observable set, not once per observable.  The submitted count is
+  ``#scales × #measurement groups``, so observables that commute share a group
+  and cost nothing extra, while a non-commuting one adds a group and its own
+  ``#scales`` circuits — the fan-out follows the grouping, not the raw
+  observable count.
 - **QuEPP** shares the target circuit across all observables and dedupes
   path DAGs across observables that produce coincident branches, so a
   large fraction of the classical Clifford simulation is reused.
@@ -349,6 +374,9 @@ pipeline uses — and must implement three members:
 
    import copy
    from collections.abc import Sequence
+   from typing import Any
+
+   import numpy as np
    from qiskit.dagcircuit import DAGCircuit
    from divi.backends import MaestroSimulator
    from divi.circuits.qem import QEMContext, QEMProtocol
@@ -377,13 +405,18 @@ pipeline uses — and must implement three members:
            # pipeline stages can mutate each one without interference.
            return (copy.deepcopy(dag), dag), {}
 
-       def reduce(self, quantum_results: Sequence[float], context: QEMContext) -> float:
-           """Combine the quantum results into a single mitigated value.
+       def reduce(
+           self, quantum_results: Sequence[Any], context: QEMContext
+       ) -> list[float]:
+           """Combine the quantum results into one mitigated value per observable.
 
-           ``quantum_results`` contains one expectation value per circuit
-           returned by ``expand``, in the same order.
+           ``quantum_results`` has one entry per circuit returned by ``expand``, in
+           the same order, and each entry is itself a list of per-observable
+           expectation values — so the average is taken across circuits, position
+           by position, and the return value is a list, not a scalar.
            """
-           return sum(quantum_results) / len(quantum_results)
+           per_circuit = [np.atleast_1d(r) for r in quantum_results]
+           return list(np.mean(per_circuit, axis=0))
 
    # Pass the custom protocol when constructing any variational program
    vqe = VQE(
