@@ -21,6 +21,7 @@ from ._compilation import (
     _batch_has_templates,
     _compile_batch,
     _compile_template_batch,
+    reject_colliding_body_tags,
 )
 from ._postprocessing import (
     _counts_to_cost_variance,
@@ -580,6 +581,7 @@ class CircuitPipeline:
                 _report_pipeline_stage(env, stage.name)
                 output = stage_expand(data, env)
                 data = output.batch
+                reject_colliding_body_tags(type(stage).__name__, output.batch)
                 tokens.append(output.token)
                 expansions.append(
                     ExpansionResult(batch=output.batch, stage_name=stage.name)

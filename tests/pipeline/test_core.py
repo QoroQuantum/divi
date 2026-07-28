@@ -53,6 +53,7 @@ from divi.pipeline.stages import (
 from ._helpers import (
     DummySpecStage,
     FanoutAndSumStage,
+    MisTaggedFanoutStage,
     StatefulFanoutStage,
     ones_execute_fn,
     run_binding_pipeline,
@@ -278,6 +279,42 @@ class TestCircuitPipelineRunForwardPass:
             spec_circ_key + (("fold", 1),),
             spec_circ_key + (("fold", 2),),
         }
+
+    @pytest.mark.parametrize("dry", [True, False], ids=["dry", "real"])
+    def test_colliding_body_tags_are_rejected(self, dummy_pipeline_env, dry):
+        """Execution keys circuits by tag, so two bodies claiming one tag means the
+        duplicates are never submitted while reduction reads the survivor as though
+        nothing were missing. Both passes reject it — a check only the preview ran
+        would be one the author sees only if they preview."""
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MisTaggedFanoutStage(n_copies=3),
+                MeasurementStage(),
+            ]
+        )
+        with pytest.raises(ContractViolation, match="MisTaggedFanoutStage produced 3"):
+            pipeline.run_forward_pass(
+                initial_spec="ignored", env=dummy_pipeline_env, dry=dry
+            )
+
+    def test_the_colliding_stage_is_named_not_a_downstream_one(
+        self, dummy_pipeline_env
+    ):
+        """A collision propagates, so the check runs after every stage and stops at
+        the first one to produce it — whose own input was verified on the pass
+        before, making it the culprit rather than a victim."""
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                MisTaggedFanoutStage(n_copies=2),
+                MeasurementStage(),
+            ]
+        )
+        with pytest.raises(ContractViolation) as excinfo:
+            pipeline.run_forward_pass(initial_spec="ignored", env=dummy_pipeline_env)
+        assert "MisTaggedFanoutStage" in str(excinfo.value)
+        assert "MeasurementStage" not in str(excinfo.value)
 
     def test_run_reduces_bottom_up_after_fanout(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages(fanout=("fold", 3)))

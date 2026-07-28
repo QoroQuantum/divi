@@ -12,7 +12,7 @@ import numpy as np
 
 from divi.circuits import MetaCircuit, TemplateEntry, dag_to_qasm_body
 from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
-from divi.pipeline.abc import BranchKey
+from divi.pipeline.abc import BranchKey, ContractViolation
 
 
 def _preamble(n_qubits: int) -> str:
@@ -79,6 +79,37 @@ def _compile_batch(
             lineage_by_label[label] = branch_key
 
     return circuits, lineage_by_label
+
+
+def _effective_bodies(mc: MetaCircuit) -> tuple:
+    """The bodies :func:`_compile_batch` would lower — rendered QASM when the
+    binding stage has run, the DAGs otherwise."""
+    return mc.qasm_bodies or mc.circuit_bodies or ()
+
+
+def reject_colliding_body_tags(stage_name: str, batch: dict[Any, MetaCircuit]) -> None:
+    """Raise if a stage left two circuit bodies claiming the same tag.
+
+    :func:`_compile_batch` keys each circuit by its tag, so duplicates overwrite
+    each other: the stage believes it produced N variants and one is submitted,
+    while reduction reads the survivor as though nothing were missing. No
+    configuration wants that, so it is a contract breach rather than a warning.
+
+    Called after every stage's expand, which makes the first stage to collide the
+    culprit — its input was checked on the previous pass.
+    """
+    for key, mc in batch.items():
+        bodies = _effective_bodies(mc)
+        distinct = len({tag for tag, _ in bodies})
+        if distinct == len(bodies):
+            continue
+        raise ContractViolation(
+            f"{stage_name} produced {len(bodies)} circuit bodies sharing "
+            f"{distinct} distinct tag(s) for batch key {key!r}. Execution "
+            "identifies circuits by tag, so the duplicates would collapse into one "
+            "submission and the extra bodies would never run. A fan-out stage must "
+            "extend each body's tag, e.g. ``(*parent_tag, (self.axis_name, i))``."
+        )
 
 
 def _batch_has_templates(batch: dict[Any, MetaCircuit]) -> bool:

@@ -132,6 +132,43 @@ def two_group_meta() -> MetaCircuit:
     )
 
 
+class MisTaggedFanoutStage(BundleStage):
+    """Test double: the defining bug of a hand-written fan-out stage.
+
+    Duplicates each body without extending its tag, so execution — which keys
+    circuits by tag — would collapse them back into one submission.
+    """
+
+    def __init__(self, n_copies: int = 3):
+        super().__init__(name="mis-tagged")
+        self._n_copies = n_copies
+
+    @property
+    def axis_name(self) -> str:
+        return "replica"
+
+    @property
+    def consumes_dag_bodies(self) -> bool:
+        return False
+
+    def expand(self, batch, env):
+        return StageOutput(
+            batch={
+                key: mc.set_circuit_bodies(
+                    tuple(
+                        (tag, dag)
+                        for tag, dag in mc.circuit_bodies
+                        for _ in range(self._n_copies)
+                    )
+                )
+                for key, mc in batch.items()
+            }
+        )
+
+    def reduce(self, results, env, token):
+        return dict(results)
+
+
 def two_group_pipeline_stages(
     meta: MetaCircuit | None = None,
     fanout: tuple[str, int] | None = None,
