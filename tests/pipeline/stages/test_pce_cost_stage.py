@@ -334,6 +334,31 @@ class TestReducePathRouting:
         assert list(result.values())[0][0] == pytest.approx(0.0)
 
 
+@pytest.mark.parametrize(
+    "soft, expected",
+    [(True, "soft surrogate"), (False, "hard CVaR")],
+    ids=["soft", "hard"],
+)
+def test_introspect_names_the_objective(soft, expected):
+    """The two objectives score the same shot histogram, so they submit an
+    identical circuit count and are otherwise indistinguishable in a report."""
+    qubo = np.diag([1.0, 2.0])
+    stage = _make_stage(qubo, alpha=0.7, soft=soft, measure_all=True)
+    info = stage.introspect({}, _make_env(ResultFormat.COUNTS), token=None)
+
+    assert info["objective"] == expected
+    assert info["alpha"] == 0.7
+    assert info["n_variables"] == 2
+    assert info["measured_wires"] == "all"
+
+
+def test_introspect_reports_restricted_wires():
+    """The default restricts measurement to the problem-relevant qubits."""
+    stage = _make_stage(np.diag([1.0, 2.0]), measure_all=False)
+    info = stage.introspect({}, _make_env(ResultFormat.COUNTS), token=None)
+    assert info["measured_wires"] == "problem-relevant"
+
+
 def test_two_param_sets_independent():
     """Two param_sets with different histograms produce different energies."""
     qubo = np.diag([1.0, 2.0])

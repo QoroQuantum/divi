@@ -419,11 +419,17 @@ class ParameterBindingStage(BundleStage):
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
     ) -> dict[str, Any]:
         param_sets = np.asarray(env.param_sets, dtype=float)
-        meta = next(iter(batch.values()), None)
-        n_params = len(meta.parameters) if meta else 0
+        # Read the width off the values being bound, not off the batch: the real
+        # path consumes ``meta.parameters`` while the analytic path leaves it
+        # intact, so reporting from the batch would give a different answer per
+        # mode for the same program.
+        n_params = param_sets.shape[1] if param_sets.ndim == 2 else 0
         return {
             "n_param_sets": len(param_sets),
-            "n_params": n_params,
+            # Named for what this stage binds, not "n_params": on a data-bound
+            # circuit the data parameters are bound elsewhere, and the bare name
+            # reads as the full parameter count of the circuit.
+            "n_bound_params": n_params,
             "fast_path": self._fast_path,
             "template_path": self._template_path_enabled(batch, env),
         }

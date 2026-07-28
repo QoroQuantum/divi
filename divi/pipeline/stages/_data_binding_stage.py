@@ -77,6 +77,11 @@ def _squared_error(prediction: float, label: float) -> float:
     return (prediction - label) ** 2
 
 
+def _fn_name(fn: Callable) -> str:
+    """Display name for a resolved loss / reduction callable."""
+    return getattr(fn, "__name__", type(fn).__name__).lstrip("_")
+
+
 def resolve_sample_loss(
     loss: SampleLossFn,
 ) -> Callable[[float, float], float]:
@@ -94,6 +99,9 @@ def resolve_sample_loss(
         def _user_loss(prediction: float, label: float) -> float:
             return float(loss(prediction, label))
 
+        # Carry the wrapped callable's name so introspection names the user's loss
+        # rather than this wrapper, which every custom loss would share.
+        _user_loss.__name__ = getattr(loss, "__name__", "custom")
         return _user_loss
     raise ValueError(f"loss_fn must be 'squared_error' or a callable; got {loss!r}.")
 
@@ -117,6 +125,7 @@ def resolve_loss_reduction(
         def _user_reduction(arr: npt.NDArray[np.float64]) -> float:
             return float(reduction(arr))
 
+        _user_reduction.__name__ = getattr(reduction, "__name__", "custom")
         return _user_reduction
     raise ValueError(
         f"loss_reduction must be 'mean', 'sum', or a callable; got {reduction!r}."
@@ -414,5 +423,18 @@ class DataBindingStage(BundleStage):
         return {
             "n_samples": n_samples,
             "n_data_params": len(self.data_params),
+            # Supervision governs the loss and decides which optimizers are legal
+            # at all (a labelled batch rejects every metric estimator), yet it is
+            # otherwise invisible: the two trees are identical without it.
+            "supervised": self.sample_loss is not None,
+            # Two arms of a loss ablation are otherwise indistinguishable: the loss
+            # does not change the circuits, so without these rows a grouped report
+            # presents them as one configuration.
+            "loss_reduction": _fn_name(self.loss_reduction),
+            **(
+                {"loss_fn": _fn_name(self.sample_loss)}
+                if self.sample_loss is not None
+                else {}
+            ),
             "path": "template" if self._use_template_path else "eager",
         }

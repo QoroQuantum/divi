@@ -179,6 +179,25 @@ class PCECostStage(BundleStage):
         # QASM — never inspects body gate content.
         return False
 
+    def introspect(
+        self,
+        batch: MetaCircuitBatch,
+        env: PipelineEnv,
+        token: StageToken,
+    ) -> dict[str, Any]:
+        """Surface which objective this terminal evaluates.
+
+        The circuit count is identical either way — the mode changes how the same
+        shot histogram is scored — so without this the soft and hard objectives
+        are indistinguishable in a report.
+        """
+        return {
+            "objective": "soft surrogate" if self._soft else "hard CVaR",
+            "alpha": self._alpha,
+            "n_variables": len(self._masks),
+            "measured_wires": "all" if self._measure_all else "problem-relevant",
+        }
+
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:

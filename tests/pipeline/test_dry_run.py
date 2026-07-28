@@ -249,7 +249,7 @@ class TestAnalyticDryRun:
         # is forced onto the slow DAG-binding path.
         pb = by_name["ParameterBindingStage"]
         assert pb.metadata["n_param_sets"] == 1
-        assert pb.metadata["n_params"] == 2
+        assert pb.metadata["n_bound_params"] == 2
         assert pb.metadata["fast_path"] is False
 
         # PauliTwirlStage surfaces its configured twirl count and path choice.

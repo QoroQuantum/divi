@@ -11,6 +11,7 @@ from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPreprocessor, ResultFormat
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
@@ -115,6 +116,34 @@ def test_assemble_pipeline_qem_inclusion_is_protocol_driven(mitigated_vqe):
     # Variational assembly always binds the trainable parameters.
     assert "ParameterBindingStage" in _stage_types(expval)
     assert "ParameterBindingStage" in _stage_types(probs)
+
+
+def test_twirl_stage_draws_from_the_program_seed(dummy_simulator, default_optimizer):
+    """An unseeded twirl stage redraws its labels on every call, so the same
+    program produces different circuits each time it assembles a pipeline."""
+
+    def twirled(seed):
+        program = VQE(
+            hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)]),
+            ansatz=GenericLayerAnsatz([RYGate]),
+            n_layers=1,
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
+            seed=seed,
+        )
+        stage = next(
+            s
+            for s in _protocol_pipeline(program, program.cost_preprocessor()).stages
+            if type(s).__name__ == "PauliTwirlStage"
+        )
+        return program._base_seed, stage._seed
+
+    base_seed, stage_seed = twirled(1234)
+    assert stage_seed == base_seed
+    # Two programs given the same seed twirl identically; a different seed does not.
+    assert twirled(1234)[1] == stage_seed
+    assert twirled(4321)[1] != stage_seed
 
 
 def test_custom_vqa_has_no_sample_pipeline(dummy_simulator, default_optimizer):

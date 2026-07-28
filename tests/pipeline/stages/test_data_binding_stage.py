@@ -441,10 +441,50 @@ def test_introspect_reports_sample_count_and_path(composed):
     assert metadata == {
         "n_samples": 2,
         "n_data_params": 2,
+        "supervised": False,
+        "loss_reduction": "mean",
         "path": "template",
     }
     stage._use_template_path = False
     assert stage.introspect({(): meta}, env=env, token=None)["path"] == "eager"
+
+
+def test_introspect_reports_supervision(composed):
+    """Supervision decides which optimizers are legal at all, so two otherwise
+    identical reports must not be indistinguishable."""
+    qc, data_params, weight_params = composed
+    env = _env(feature_batch=np.array([[0.1, 0.2]]))
+    meta = _make_meta(qc, data_params, weight_params)
+    supervised = DataBindingStage(
+        data_params=data_params, loss_reduction=_mean, sample_loss=lambda p, l: p - l
+    )
+    assert supervised.introspect({(): meta}, env=env, token=None)["supervised"] is True
+
+
+def test_introspect_names_the_loss_and_reduction(composed):
+    """A loss ablation changes no circuit, so without these rows two arms of one
+    render identically and a grouped ensemble report presents them as one config."""
+    qc, data_params, weight_params = composed
+    env = _env(feature_batch=np.array([[0.1, 0.2]]))
+    meta = _make_meta(qc, data_params, weight_params)
+
+    def hinge(prediction, label):
+        return max(0.0, 1.0 - prediction * label)
+
+    stage = DataBindingStage(
+        data_params=data_params,
+        loss_reduction=resolve_loss_reduction("sum"),
+        sample_loss=resolve_sample_loss(hinge),
+    )
+    metadata = stage.introspect({(): meta}, env=env, token=None)
+    assert metadata["loss_fn"] == "hinge"
+    assert metadata["loss_reduction"] == "sum_reduction"
+
+    unsupervised = DataBindingStage(
+        data_params=data_params, loss_reduction=resolve_loss_reduction("mean")
+    )
+    # No loss row at all rather than a null one: there is no per-sample loss to name.
+    assert "loss_fn" not in unsupervised.introspect({(): meta}, env=env, token=None)
 
 
 def test_expand_rejects_mismatched_feature_columns(composed):

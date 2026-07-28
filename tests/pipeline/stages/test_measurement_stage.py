@@ -658,6 +658,105 @@ class TestMeasureAllQubits:
         assert energy == pytest.approx([0.0], abs=0.1)
 
 
+def _wide_term_meta() -> MetaCircuit:
+    """4-qubit observable whose terms differ in support: ZIII, IZII, YXXY."""
+    qc = QuantumCircuit(4)
+    for i in range(4):
+        qc.h(i)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=SparsePauliOp.from_list(
+            [("ZIII", 1.0), ("IZII", 1.0), ("YXXY", 0.5)]
+        ),
+    )
+
+
+def _introspect(stage, meta, backend, **run_kwargs):
+    """Run one stage over ``meta`` and return the metadata it reports."""
+    env = PipelineEnv(backend=backend)
+    pipeline = CircuitPipeline(stages=[DummySpecStage(meta=meta), stage])
+    trace = pipeline.run_forward_pass(initial_spec="ignored", env=env, **run_kwargs)
+    token = trace.stage_tokens[-1] if trace.stage_tokens else None
+    return stage.introspect(trace.final_batch, env, token=token)
+
+
+class TestMeasurementStageIntrospect:
+    """Spec: the reported metadata describes the measurement actually built."""
+
+    def test_widest_basis_change_spans_every_group(self, make_dummy_simulator):
+        """With grouping off each group holds one term, so reading the width off
+        the largest-by-size group degenerates to a single qubit — it has to be the
+        widest basis change any group needs (``YXXY`` touches four)."""
+        info = _introspect(
+            MeasurementStage(grouping_strategy=None),
+            _wide_term_meta(),
+            make_dummy_simulator(100),
+        )
+        assert info["largest_group_size"] == 1
+        assert info["largest_group_width"] == 4
+
+    @pytest.mark.parametrize(
+        "measure_all, expected",
+        [
+            (False, "per group (observable support only)"),
+            (True, "all"),
+        ],
+        ids=["restricted", "full-register"],
+    )
+    def test_reports_which_qubits_it_reads(
+        self, make_dummy_simulator, measure_all, expected
+    ):
+        """``measure_all`` narrows the outcome space below the register width,
+        which no other reported figure reflects."""
+        info = _introspect(
+            MeasurementStage(grouping_strategy="wires", measure_all=measure_all),
+            _idle_qubit_meta(),
+            make_dummy_simulator(100),
+        )
+        assert info["measured_qubits"] == expected
+
+    def test_reports_the_allocated_shot_range(self, make_dummy_simulator):
+        """A shot distribution gives each group its own slice, so a single
+        per-circuit figure would not describe any of them."""
+        info = _introspect(
+            MeasurementStage(shot_distribution="weighted"),
+            _three_group_meta(),
+            make_dummy_simulator(1000),
+        )
+        # Weighted over L1 norms [10, 1, 0.1]: a wide spread, no flat count.
+        assert info["shots_per_group_range"] == [9, 901]
+        assert "shots_per_circuit" not in info
+
+    def test_reports_how_many_groups_survive_a_starved_budget(
+        self, make_dummy_simulator
+    ):
+        """Zero-shot groups are dropped, so ``n_groups`` counts groups formed
+        rather than groups submitted; without the second figure the budget reads
+        as larger than it is."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            info = _introspect(
+                MeasurementStage(shot_distribution="weighted"),
+                _three_group_meta(),
+                make_dummy_simulator(11),  # 10:1:0.1 -> 10:1:0
+            )
+        assert info["n_groups"] == 3
+        assert info["n_groups_submitted"] == 2
+
+    def test_a_basis_readout_says_it_has_no_observable(self, make_dummy_simulator):
+        """A computational-basis readout has nothing to partition, so group and
+        term counts do not apply and a configured strategy describes no work."""
+        info = _introspect(
+            MeasurementStage(grouping_strategy="qwc"),
+            _make_probs_meta(),
+            make_dummy_simulator(100),
+        )
+        assert info["readout"] == "computational basis (no observable)"
+        assert "strategy" not in info
+        assert "n_groups" not in info
+        assert "n_pauli_terms" not in info
+
+
 class TestMeasurementStageImagCoeffValidation:
     """Non-Hermitian SPO observables are rejected at MetaCircuit construction."""
 
@@ -1152,6 +1251,23 @@ class TestMeasurementStageTupleObservable:
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         assert "ham_ops" in trace.env_artifacts
+
+    def test_introspect_recognizes_backend_expval_without_the_token(
+        self, dummy_expval_backend
+    ):
+        """The strategy is resolved inside ``expand`` and reaches ``introspect``
+        only via the token. Without it, the sentinel empty group would be read as a
+        real one and reported as a zero-term, zero-qubit observable."""
+        env = PipelineEnv(backend=dummy_expval_backend)
+        stage = MeasurementStage()
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=_tuple_observable_meta()), stage],
+        )
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        info = stage.introspect(trace.final_batch, env, token=None)
+        assert info["n_groups"] == 1
+        assert info.get("n_pauli_terms") != 0
+        assert "largest_group_width" not in info
 
     def test_explicit_backend_expval_strategy_works_for_multi(
         self, dummy_expval_backend

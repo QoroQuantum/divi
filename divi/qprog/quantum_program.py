@@ -309,7 +309,14 @@ class QuantumProgram(ABC):
 
         stages: list[Stage] = [QEMStage(protocol=self._qem_protocol)]
         if self._qem_protocol.n_twirls > 0:
-            stages.append(PauliTwirlStage(n_twirls=self._qem_protocol.n_twirls))
+            stages.append(
+                PauliTwirlStage(
+                    n_twirls=self._qem_protocol.n_twirls,
+                    # Twirl labels are sampled; the program's seed makes the draw
+                    # reproducible across calls.
+                    seed=self._base_seed,
+                )
+            )
         return tuple(stages)
 
     def dry_run(

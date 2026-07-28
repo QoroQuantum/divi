@@ -15,6 +15,7 @@ from divi.circuits._conversions import _sparse_pauli_op_to_ham_string
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
 from divi.pipeline._grouping import (
     BACKEND_EXPVAL,
+    BACKEND_EXPVAL_GROUPS,
     _compute_measurement_groups,
 )
 from divi.pipeline._result_keys_operations import (
@@ -602,35 +603,58 @@ class MeasurementStage(BundleStage):
             return info
 
         # Backend-native expval: measurement_groups is a sentinel empty group
-        # because the backend evaluates the full observable directly. Surface
-        # the source observable instead of the empty placeholder.
-        if effective_strategy == "_backend_expval":
+        # because the backend evaluates the full observable directly. The
+        # Pauli-term count is the actionable figure; the raw observable string
+        # is redundant with it and only adds noise to the report.
+        #
+        # Recognise the sentinel groups too, not the strategy alone: the strategy
+        # is resolved inside ``expand`` and reaches us only via the token, and
+        # without it the branch below would read the empty group as a real one and
+        # report a zero-term, zero-qubit observable.
+        if (
+            effective_strategy == BACKEND_EXPVAL
+            or meta.measurement_groups == BACKEND_EXPVAL_GROUPS
+        ):
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
                 # Pauli-term count across observables, distinct from
                 # TrotterSpec's ``n_terms`` (Hamiltonian-term count).
                 info["n_pauli_terms"] = token.n_observable_terms
-            obs_str = str(meta.observable[0]) if meta.observable else ""
-            if len(obs_str) > 80:
-                obs_str = obs_str[:77] + "..."
-            info["observable"] = obs_str
             return info
 
         groups = meta.measurement_groups
+        if not groups:
+            # A computational-basis readout (solution sampling): there is no
+            # observable to partition, so group and term counts do not apply —
+            # reporting them as zeros reads as a misconfigured stage. Drop the
+            # configured ``strategy`` too: nothing was grouped, and a row saying
+            # "qwc" beside "no observable" describes work that did not happen.
+            info.pop("strategy", None)
+            info["readout"] = "computational basis (no observable)"
+            return info
+
         info["n_groups"] = len(groups)
         info["n_pauli_terms"] = sum(len(g) for g in groups)
-        # Two complementary "biggest measurement" stats: how many Pauli
-        # strings the largest group contains, and how many qubits its
-        # measurement actually touches (union of non-I positions across
-        # group members). The first answers "how much QWC saves us"; the
-        # second answers "how big a basis change does this group require".
+        # Report the consequence rather than echoing the flag: with measure_all
+        # off, each group reads only the qubits it acts on, so the outcome space a
+        # user sees is narrower than the register.
+        info["measured_qubits"] = (
+            "all" if self._measure_all else "per group (observable support only)"
+        )
+        # Two complementary "biggest measurement" stats: how many Pauli strings
+        # the largest group contains, and the widest basis change any group
+        # requires (qubits it touches, i.e. non-I positions across its members).
+        # The first answers "how much QWC saves us"; the second answers "how big
+        # a basis change does this pipeline need" — maximised over all groups, not
+        # read off the largest-by-size one, which is meaningless when every group
+        # holds a single term.
         if groups:
-            largest = max(groups, key=len)
-            info["largest_group_size"] = len(largest)
-            touched = {
-                q for label in largest for q, c in enumerate(str(label)) if c != "I"
-            }
-            info["largest_group_width"] = f"{len(touched)} qubits"
+            info["largest_group_size"] = max(len(g) for g in groups)
+            widths = (
+                len({q for label in g for q, c in enumerate(str(label)) if c != "I"})
+                for g in groups
+            )
+            info["largest_group_width"] = max(widths)
 
         # Shot-budget surface: tells the user what each circuit will be
         # billed for (or how the budget was distributed across QWC groups).
@@ -643,7 +667,15 @@ class MeasurementStage(BundleStage):
                 # Shot-distribution strategy active — each group gets its
                 # own slice; surface the range so users see the spread.
                 values = sorted(spec_pgs.values())
-                info["shots_per_group"] = [values[0], values[-1]]
+                # Named as a range: a plural key beside ``n_groups: 5`` reads as a
+                # per-group enumeration, and a two-element value then looks wrong.
+                info["shots_per_group_range"] = [values[0], values[-1]]
+                # A starved budget drops zero-shot groups, so ``n_groups`` counts
+                # groups formed while only these are submitted. Without this,
+                # n_groups × shots_per_group_range reads as the whole budget when the
+                # total (correctly) reports a fraction of it.
+                if len(spec_pgs) != len(groups):
+                    info["n_groups_submitted"] = len(spec_pgs)
             else:
                 # Default: every circuit submitted with backend.shots.
                 info["shots_per_circuit"] = backend_shots
