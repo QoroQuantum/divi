@@ -13,6 +13,7 @@ from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.pipeline import PipelineCadence
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
 from tests.qprog._program_contracts import ObservableMeasuringContractsBase
@@ -79,6 +80,17 @@ class TestTimeEvolutionInitialization:
 
 
 class TestTimeEvolutionGenerateCircuits:
+    def test_evolution_routine_declares_a_one_time_cadence(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        """``run()`` measures the evolved state once; no optimizer re-evaluates it."""
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=default_test_simulator,
+        )
+        (routine,) = te._preprocessors()
+        assert routine.cadence is PipelineCadence.ONCE
+
     def test_pipeline_exact_trotterization_one_circuit(
         self, two_qubit_hamiltonian, default_test_simulator
     ):

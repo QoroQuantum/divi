@@ -4,6 +4,8 @@
 
 """Unit tests for ``CircuitPreprocessor`` and its factory functions."""
 
+import json
+
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
@@ -11,6 +13,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.pipeline import (
     CircuitPreprocessor,
+    PipelineCadence,
     ResultFormat,
     cost_preprocessor,
     sample_preprocessor,
@@ -35,6 +38,26 @@ def test_sample_preprocessor_clears_observable_as_probs():
     assert p.preprocess is _clear_observable
     assert p.terminal_stage is None
     assert p.consumes_dag_bodies is False
+
+
+def test_factory_preprocessors_declare_their_cadence():
+    # A recurring routine is driven over the optimizer's whole working set, a
+    # one-time one over a single parameter set, so consumers must be able to tell
+    # them apart without knowing the routine's name.
+    assert cost_preprocessor().cadence is PipelineCadence.PER_EVALUATION
+    assert sample_preprocessor().cadence is PipelineCadence.ONCE
+
+
+def test_cadence_defaults_to_recurring():
+    # The safe side of the choice: a routine that in fact runs once is then
+    # treated as recurring, which overstates it, whereas the reverse would drop
+    # recurring work entirely.
+    assert CircuitPreprocessor("metric").cadence is PipelineCadence.PER_EVALUATION
+
+
+def test_cadence_members_are_json_encodable():
+    # A ``str`` enum, so a member survives a round trip through JSON.
+    assert json.loads(json.dumps(list(PipelineCadence))) == ["per_evaluation", "once"]
 
 
 def test_protocol_is_hashable_and_value_equal():

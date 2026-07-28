@@ -24,9 +24,34 @@ than overridden.
 
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass, replace
+from enum import Enum
 
 from divi.circuits import MetaCircuit
 from divi.pipeline.abc import ResultFormat, Stage
+
+
+class PipelineCadence(str, Enum):
+    """How often a routine's pipeline runs over a program's lifetime.
+
+    Separates the recurring optimization workload from one-time readouts, which
+    are driven with different inputs: a recurring routine runs over the
+    optimizer's whole working set, a one-time one over a single parameter set.
+
+    A ``str`` enum, so a member survives ``json.dumps``.
+    """
+
+    PER_EVALUATION = "per_evaluation"
+    """Re-run on every optimizer evaluation — the cost observable, and the
+    metric/overlap routines natural-gradient optimizers drive. A full ``run()``
+    repeats these many times (per evaluation, per iteration)."""
+
+    ONCE = "once"
+    """Run a single time per ``run()`` — e.g. solution sampling after training."""
+
+
+#: The cost routine's pipeline name. Shared because more than one program builds
+#: a cost preprocessor (PCE supplies its own terminal stage), and they must agree.
+COST_PIPELINE = "cost"
 
 
 def _identity(meta: MetaCircuit) -> MetaCircuit:
@@ -75,9 +100,16 @@ class CircuitPreprocessor:
             QDrift stochastic resampling) comes from the spec stage's
             ``cache_key_extras`` invalidating the forward-pass cache, not from
             leaving this ``None``.
+        cadence: How often the routine runs over a ``run()`` (see
+            :class:`PipelineCadence`). Defaults to ``PER_EVALUATION``, the safe
+            side of the choice: a routine that in fact runs once is then treated
+            as recurring, which overstates it, whereas the reverse would drop
+            recurring work entirely. Set ``ONCE`` for routines that run one time
+            (final-state sampling, a single time evolution).
     """
 
     name: str
+    cadence: PipelineCadence = PipelineCadence.PER_EVALUATION
     preprocess: Callable[[MetaCircuit], MetaCircuit] = _identity
     result_format: ResultFormat = ResultFormat.EXPVALS
     terminal_stage: Stage | None = None
@@ -87,7 +119,7 @@ class CircuitPreprocessor:
 
 def cost_preprocessor() -> CircuitPreprocessor:
     """Measure the seed's cost observable as expectation values (identity transform)."""
-    return CircuitPreprocessor("cost", cache_key="cost")
+    return CircuitPreprocessor(COST_PIPELINE, cache_key=COST_PIPELINE)
 
 
 def sample_preprocessor() -> CircuitPreprocessor:
@@ -97,4 +129,5 @@ def sample_preprocessor() -> CircuitPreprocessor:
         preprocess=_clear_observable,
         result_format=ResultFormat.PROBS,
         cache_key="sample",
+        cadence=PipelineCadence.ONCE,
     )

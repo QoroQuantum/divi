@@ -20,7 +20,12 @@ from ._dry_run import (
     format_dry_run,
 )
 from ._grouping import GroupingStrategy
-from ._preprocessor import CircuitPreprocessor, cost_preprocessor, sample_preprocessor
+from ._preprocessor import (
+    CircuitPreprocessor,
+    PipelineCadence,
+    cost_preprocessor,
+    sample_preprocessor,
+)
 from ._result_keys_operations import (
     extract_param_set_idx,
     group_by_base_key,
@@ -47,6 +52,7 @@ __all__ = [
     "ExpansionResult",
     "GroupingStrategy",
     "CircuitPreprocessor",
+    "PipelineCadence",
     "PipelineEnv",
     "PipelineResult",
     "PipelineTrace",

@@ -22,7 +22,13 @@ from divi.hamiltonians._term_ops import (
     _require_qiskit_num_qubits,
     to_spo,
 )
-from divi.pipeline import CircuitPipeline, CircuitPreprocessor, ResultFormat, Stage
+from divi.pipeline import (
+    CircuitPipeline,
+    CircuitPreprocessor,
+    PipelineCadence,
+    ResultFormat,
+    Stage,
+)
 from divi.pipeline.stages import ParameterBindingStage, TrotterSpecStage
 from divi.qprog import ObservableMeasuringMixin
 from divi.qprog.algorithms import InitialState, ZerosState
@@ -211,7 +217,12 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             ResultFormat.EXPVALS if self.observable is not None else ResultFormat.PROBS
         )
         return CircuitPreprocessor(
-            "evolution", result_format=result_format, cache_key="evolution"
+            "evolution",
+            # ``run()`` measures the evolved state a single time; there is no
+            # optimizer re-evaluating it.
+            cadence=PipelineCadence.ONCE,
+            result_format=result_format,
+            cache_key="evolution",
         )
 
     def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
