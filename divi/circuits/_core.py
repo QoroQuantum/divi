@@ -204,6 +204,17 @@ class MetaCircuit:
         """Return a new MetaCircuit with updated circuit-body DAGs."""
         return replace(self, circuit_bodies=bodies)
 
+    def set_observable(
+        self, observable: SparsePauliOp | tuple[SparsePauliOp, ...]
+    ) -> MetaCircuit:
+        """Return a new MetaCircuit measuring *observable* instead.
+
+        Lets a stage refine what is measured downstream — for example by
+        splitting a multi-term observable into its individual Pauli terms,
+        so the measurement stage reports each separately.
+        """
+        return replace(self, observable=observable)
+
     def set_measurement_bodies(
         self, bodies: tuple[tuple[QASMTag, str], ...]
     ) -> MetaCircuit:

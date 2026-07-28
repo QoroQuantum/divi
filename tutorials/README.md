@@ -67,7 +67,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 
 ### `error_mitigation/`
 
-- **`error_mitigation.py`** — VQE with Zero Noise Extrapolation (ZNE) and probabilistic error amplification
+- **`error_mitigation.py`** — VQE compared four ways: noiseless, noisy, ZNE-mitigated, and QuEPP-mitigated
 
 ### `visualization/`
 

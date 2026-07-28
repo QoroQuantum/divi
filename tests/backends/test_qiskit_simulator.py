@@ -5,7 +5,7 @@
 import warnings
 
 import pytest
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, qasm2
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
@@ -150,6 +150,25 @@ class TestQiskitSimulatorProperties:
         """Test is_async property (line 121)."""
         simulator = QiskitSimulator()
         assert simulator.is_async is False
+
+    def test_optimization_level_defaults_to_qiskits_choice(self):
+        """Transpilation is the caller's to control; divi imposes no default."""
+        assert QiskitSimulator().optimization_level is None
+
+    @pytest.mark.parametrize("level", [None, 0, 2])
+    def test_optimization_level_reaches_the_transpiler(self, mocker, level):
+        """The setting is worthless unless it is threaded into transpile()."""
+        spy = mocker.patch(
+            "divi.backends._qiskit_simulator.transpile",
+            side_effect=lambda circuits, *a, **kw: circuits,
+        )
+        simulator = QiskitSimulator(shots=10, optimization_level=level)
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        qc.measure_all()
+        simulator.submit_circuits({"c0": qasm2.dumps(qc)})
+
+        assert spy.call_args.kwargs["optimization_level"] == level
 
 
 class TestQiskitSimulatorSubmitCircuits:

@@ -181,6 +181,9 @@ on the ensemble circuits.
 - ``coefficient_threshold`` *(float, optional)* — Prune paths whose absolute
   weight falls below this threshold during DFS enumeration (``sampling="exhaustive"``
   only; disabled on symbolic circuits, whose angle magnitudes are unknown).
+  The weight is the path's trigonometric product, independent of the
+  observable's coefficients, so the threshold means the same thing whatever
+  scale the Hamiltonian is written in.
 - ``sampling`` — ``"exhaustive"`` enumerates paths up to ``truncation_order``
   (deterministic; cost grows with order and circuit size).  ``"montecarlo"``
   *(default)* draws ``n_samples`` random paths, **but only on concrete
@@ -321,9 +324,8 @@ observable group and emits a summary warning after the evaluation:
    and mitigation fell back to the raw noisy value. Consider increasing shots
    or reducing noise.
 
-This is distinct from observable groups whose classical Pauli-path values are
-near zero — those carry negligible weight in the Hamiltonian and do not trigger
-the warning.
+The η diagnostics carry no per-run counts, so each fires at most once for a
+whole optimization rather than once per iteration.
 
 If you see this warning frequently, consider:
 
@@ -332,6 +334,22 @@ If you see this warning frequently, consider:
   stochastic noise that QuEPP handles more gracefully.
 - **Lowering the noise level** (e.g. using a less noisy backend or reducing
   circuit depth).
+
+Three further conditions get their own warning, because each calls for a
+different response:
+
+- **No classical signal.** Every Pauli path of an observable has a negligible
+  classical expectation value, so η has no denominator to form and the raw
+  noisy value is returned. Check that the observable's coefficients are not all
+  negligible, and that the circuit's final Clifford layer leaves the
+  back-propagated Pauli diagonal.
+- **Negative η.** The noisy Clifford ensemble came back with the opposite sign
+  to the exact one. No rescaling repairs that, so it points at a misconfigured
+  backend or a noise level past the protocol's usable range rather than at a
+  recoverable estimate.
+- **Amplifying η.** η cleared ``min_eta`` but is still small enough that
+  ``1/η`` magnifies the noisy residual several-fold. The mitigated value is
+  then *noisier* than the unmitigated one even though it is less biased.
 
 Shallow Circuit Warning
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -360,6 +378,74 @@ If you see this warning:
 - **Use a deeper circuit** (more qubits or Trotter steps).
 - **Use ZNE instead** for shallow circuits where QuEPP is unreliable.
 
+.. _qem-quepp-assumptions:
+
+What QuEPP Assumes About the Noise
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+QuEPP infers one rescaling factor from how much noise the Clifford ensemble
+suffers relative to the target. That is sound only when the ensemble is a fair
+proxy for the target, which fails in ways worth knowing:
+
+- **Coherent (unitary) errors.** A systematic over-rotation accumulates with
+  depth in the target, while the ensemble's exact ±π/2 Clifford replacements
+  are far less sensitive to it. η therefore comes back close to 1 and the
+  correction barely fires; at larger coherent strengths the result can be worse
+  than the unmitigated value. Keep ``n_twirls > 0`` on hardware: Pauli twirling
+  converts coherent errors into the stochastic channel QuEPP assumes, which is
+  why ``n_twirls`` defaults to 10.
+- **Non-unital noise.** Amplitude damping and thermal relaxation bias the state
+  toward :math:`|0\rangle`, which *shifts* an expectation value rather than
+  merely shrinking it. A multiplicative ``1/η`` cannot undo an additive shift,
+  so the mitigated value can be further from the truth than the unmitigated one
+  while η itself looks healthy.
+- **Noise carried only by the rotations being replaced.** A cos branch
+  substitutes an identity for a rotation, so error attached exclusively to the
+  rotation gate has no counterpart in the ensemble and cannot be inferred from
+  it. This is a limit of the protocol rather than of any particular backend.
+- **Transpiler optimization.** The ensemble circuits are Clifford, so an
+  optimizing transpiler compresses them much further than the target, and they
+  then see less noise than it does. On
+  :class:`~divi.backends.QiskitSimulator` pass ``optimization_level=0``
+  alongside your noise model; on hardware, transpile the ensemble and the
+  target the same way.
+
+A wide spread in the per-circuit factors is not on its own a sign of trouble, so
+QuEPP does not warn on it. The diagnostics it does emit — an undefined,
+negative, or small η — are the ones that indicate an unusable correction.
+
+.. _qem-quepp-pauli-sums:
+
+How QuEPP Handles Sums of Pauli Terms
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Most real observables — a molecular Hamiltonian, a QUBO cost operator — are
+sums :math:`H = \sum_i c_i P_i` rather than single Pauli strings. Pauli
+propagation back-propagates *one* Pauli at a time, so QuEPP treats each term
+separately and adds the results:
+
+.. math::
+
+   \langle H \rangle = \sum_i c_i \sum_p w_{i,p}\,
+   \mathrm{Tr}\!\left[\rho\, C_{i,p}(P_i)\right]
+
+The path weights :math:`w_{i,p}` belong to a specific term, and each path
+circuit is evaluated against **that term's** Pauli — not against the whole
+observable. So QuEPP measures each Pauli term separately, on both the classical
+and the noisy side.
+
+This costs nothing extra in circuits or shots. Grouping builds its measurement
+basis from the *set* of distinct Pauli strings, which is the same set either
+way, so the submitted circuits and the shot split are identical to measuring
+``H`` as one observable. Path circuits depend only on the branch choices, never
+on the term, so they are still deduplicated across terms.
+
+You do not configure any of this, and it does not surface anywhere you look:
+:meth:`~divi.circuits.quepp.QuEPP.reduce` maps the per-term values back and
+returns one mitigated value per observable you asked for, and a dry run reports
+the same group and Pauli-term counts either way, because grouping deduplicates
+the Pauli set before it counts them.
+
 Performance Considerations
 --------------------------
 
@@ -368,6 +454,15 @@ Performance Considerations
 - **QuEPP**: Cost grows with path count (Monte Carlo budget or exhaustive
   enumeration), twirls, and circuit size. Classical Clifford simulation of
   paths is comparatively cheap next to quantum shots.
+- **QuEPP on a many-term Hamiltonian**: each Pauli term gets its own paths and
+  its own weight (see :ref:`qem-quepp-pauli-sums`), so the CPT sum has more,
+  individually larger, terms than a per-observable sum would. The reconstruction
+  is unbiased either way, but its variance is higher, and reaching a given
+  accuracy on a chemistry Hamiltonian can take more shots than a single-Pauli
+  observable needs. ``1/η`` is a floor on how much the error bar grows: the
+  noisy residual's own shot noise is weighted by the path weights, so a
+  reconstruction leaning on heavy cancellation grows it further. QuEPP warns
+  once ``1/η`` alone exceeds 5.
 - **Budget**: Mitigation increases total shots or circuit evaluations; use
   :meth:`~divi.qprog.QuantumProgram.dry_run` to preview expansion before a long
   run.
@@ -394,6 +489,7 @@ amortise mitigation cost across the group:
 
 Both protocols return one mitigated value per input observable, in input
 order.
+
 
 Custom Error Mitigation Protocols
 ---------------------------------
@@ -466,13 +562,24 @@ pipeline uses — and must implement three members:
   :class:`~qiskit.dagcircuit.DAGCircuit` bodies to execute on the quantum
   backend and a ``QEMContext`` carrying any classical side-channel data for
   the reduce phase.  Return a ``tuple[tuple[DAGCircuit, ...], QEMContext]``.
-- ``reduce(quantum_results, context)`` — Combine a ``Sequence[float]`` of
-  per-circuit expectation values with the ``QEMContext``
-  into a single ``float``.
+- ``reduce(quantum_results, context)`` — Combine the per-circuit results with
+  the ``QEMContext`` into a ``list[float]``, one mitigated value per
+  **requested** observable.  Each entry of ``quantum_results`` is itself a
+  sequence of expectation values, one per observable the measurement stage was
+  asked for — which is the requested set unless the protocol declared an
+  ``OBSERVABLE_OVERRIDE`` (see below).
 - ``post_reduce(contexts)`` *(optional)* — Called once after all per-group
   ``reduce`` calls in an evaluation.  Override to inspect the collected contexts
-  and emit summary diagnostics (e.g. QuEPP's signal-destruction warning).
+  and emit summary diagnostics (e.g. QuEPP's η diagnostics).
   The default implementation is a no-op.
+
+A protocol that needs finer-grained measurements than the caller requested can
+set the ``OBSERVABLE_OVERRIDE`` key on its context to a
+``tuple[SparsePauliOp, ...]``; the QEM stage applies it to the emitted circuits,
+so the measurement stage reports one value per entry.  The protocol then owns
+the remapping — its ``reduce`` must still return one value per *requested*
+observable.  QuEPP uses this to measure each Pauli term of a sum separately
+(see :ref:`qem-quepp-pauli-sums`).
 
 .. note::
    When a ``qem_protocol`` is provided, the :doc:`circuit pipeline <pipelines>`

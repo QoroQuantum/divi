@@ -22,7 +22,7 @@ from divi.circuits.qem import (
     QEMProtocol,
     _NoMitigation,
 )
-from divi.circuits.quepp import QuEPP
+from divi.circuits.quepp import QuEPP, _ObservableCPT
 from divi.circuits.zne import ZNE, LinearExtrapolator
 from divi.pipeline import CircuitPipeline, ContractViolation, DiviPerformanceWarning
 from divi.pipeline._compilation import _compile_batch
@@ -82,6 +82,44 @@ def parametric_meta() -> MetaCircuit:
         parameters=params,
         measured_wires=(0, 1, 2, 3),
     )
+
+
+class TestObservableOverrideAgreement:
+    """All bodies of one MetaCircuit share a measurement fan-out, so a protocol
+    that refines the observable must declare the same refinement for each.
+    A partial or conflicting declaration would emit one set of measurement
+    groups that only some bodies' contexts could interpret.
+    """
+
+    ZI = SparsePauliOp.from_list([("ZI", 1.0)])
+    IZ = SparsePauliOp.from_list([("IZ", 1.0)])
+
+    @staticmethod
+    def _stage() -> QEMStage:
+        return QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0))
+
+    def test_agreeing_overrides_resolve_to_the_shared_value(self):
+        stage = self._stage()
+        ctxs = [{"observable_override": (self.ZI,)} for _ in range(2)]
+        assert stage._resolve_observable_override(ctxs) == (self.ZI,)
+
+    def test_absent_override_resolves_to_none(self):
+        assert self._stage()._resolve_observable_override([{}, {}]) is None
+
+    def test_partial_declaration_is_rejected(self):
+        stage = self._stage()
+        ctxs = [{"observable_override": (self.ZI,)}, {}]
+        with pytest.raises(ContractViolation, match="Either every body overrides"):
+            stage._resolve_observable_override(ctxs)
+
+    def test_conflicting_declarations_are_rejected(self):
+        stage = self._stage()
+        ctxs = [
+            {"observable_override": (self.ZI,)},
+            {"observable_override": (self.IZ,)},
+        ]
+        with pytest.raises(ContractViolation, match="conflicting observable overrides"):
+            stage._resolve_observable_override(ctxs)
 
 
 class TestQEMStage:
@@ -181,11 +219,14 @@ class TestQEMStage:
         contexts = {
             base_key: {
                 "per_obs": [
-                    {
-                        "classical_values": np.array([1.0, 0.0]),
-                        "weights": np.array([theta.cos(), theta.sin()], dtype=object),
-                        "dag_indices": [0, 1, 2],
-                    }
+                    _ObservableCPT(
+                        weights=np.array([theta.cos(), theta.sin()], dtype=object),
+                        classical_values=np.array([1.0, 0.0]),
+                        dag_indices=[0, 1, 2],
+                        entry_slots=[0, 0],
+                        target_slots=[0],
+                        n_paths=2,
+                    )
                 ],
                 "symbolic": True,
                 "weight_symbols": [theta],
@@ -208,7 +249,7 @@ class TestQEMStage:
 
         assert reduced[base_key] == pytest.approx([0.5])
         assert contexts[base_key]["symbolic"] is False
-        bound_weights = contexts[base_key]["per_obs"][0]["weights"]
+        bound_weights = contexts[base_key]["per_obs"][0].weights
         assert bound_weights[0] == pytest.approx(1.0)
         assert bound_weights[1] == pytest.approx(0.0)
 
@@ -348,7 +389,7 @@ class TestQuEPPLocalEffectiveness:
                         path_idx = int(qem_idx) - 1
                         per_obs_entry = ctx["per_obs"][0]
                         out[branch_key] = (
-                            float(per_obs_entry["classical_values"][path_idx])
+                            float(per_obs_entry.classical_values[path_idx])
                             * noise_scale
                             + twirl_jitter
                         )

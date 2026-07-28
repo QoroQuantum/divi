@@ -111,6 +111,10 @@ if __name__ == "__main__":
             n_processes=1,
             simulation_seed=quepp_simulator_seed,
             noise_model=noise_model,
+            # QuEPP's Clifford ensemble compresses much further than the target
+            # under an optimizing transpiler, which would leave it seeing less
+            # noise than the circuit it is meant to calibrate against.
+            optimization_level=0,
         ),
         qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
         **common,

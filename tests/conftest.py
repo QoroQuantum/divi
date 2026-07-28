@@ -46,6 +46,16 @@ def suppress_quepp_warnings():
         warnings.filterwarnings("ignore", message=r"QuEPP:.*signal destroyed")
         warnings.filterwarnings("ignore", message=r"QuEPP Monte Carlo:.*non-diagonal")
         warnings.filterwarnings("ignore", message=r"QuEPP:.*zero diagonal Pauli paths")
+        # The η diagnostics: undefined, sign-inverted, or small enough to
+        # amplify the noisy residual. Small test circuits hit all three.
+        warnings.filterwarnings(
+            "ignore", message=r"(?s)QuEPP:.*no Pauli path with a non-negligible"
+        )
+        warnings.filterwarnings("ignore", message=r"(?s)QuEPP:.*negative η")
+        warnings.filterwarnings(
+            "ignore", message=r"(?s)QuEPP:.*amplify the noisy residual"
+        )
+        warnings.filterwarnings("ignore", message=r"QuEPP Monte Carlo:.*expects only")
         # By category: a symbolic circuit is the norm in these tests, and the
         # options QuEPP disables need concrete angles.
         warnings.simplefilter("ignore", SymbolicAngleWarning)

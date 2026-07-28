@@ -22,7 +22,7 @@ from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
     SymbolicAngleWarning,
-    _all_cos_path_weight,
+    _all_cos_paths,
     _build_clifford_tableaus,
     _build_path_dag,
     _decompose_controlled_rotations,
@@ -33,6 +33,7 @@ from divi.circuits.quepp import (
     _normalize_angle,
     _normalize_circuit,
     _obs_to_stim_terms,
+    _ObservableCPT,
     _PreprocResult,
     _qiskit_clifford_to_stim,
     _sample_paths_montecarlo,
@@ -329,8 +330,21 @@ def test_deterministic_with_seed(mixed_qc):
     assert sorted(p.branches for p in paths1) == sorted(p.branches for p in paths2)
 
 
-class TestAllCosPathWeight:
-    """Spec: ``_all_cos_path_weight`` returns the CPT weight of the branches=(0,)*K path."""
+def _all_cos_weight_of(rots, inv_tabs, obs_terms, term_idx=0) -> float:
+    """The all-cos path weight for one term, or 0.0 when it has no such path."""
+    path = next(
+        (
+            p
+            for p in _all_cos_paths(rots, inv_tabs, obs_terms)
+            if p.term_idx == term_idx
+        ),
+        None,
+    )
+    return 0.0 if path is None else path.weight
+
+
+class TestAllCosPaths:
+    """Spec: ``_all_cos_paths`` returns the branches=(0,)*K path per observable term."""
 
     def test_matches_exhaustive_dfs_all_zero_branch(self):
         """Deterministic fallback weight matches the DFS-enumerated all-zero path."""
@@ -343,7 +357,7 @@ class TestAllCosPathWeight:
         inv_tabs = [t.inverse() for t in tabs]
         obs_terms = _obs_to_stim_terms(obs, 1)
 
-        fallback_w = _all_cos_path_weight(rots, inv_tabs, obs_terms)
+        fallback_w = _all_cos_weight_of(rots, inv_tabs, obs_terms)
 
         # Cross-check with the exhaustive enumeration's all-zero branch.
         dfs_paths = _enumerate_paths_dfs(rots, tabs, obs_terms, max_order=10)
@@ -351,8 +365,8 @@ class TestAllCosPathWeight:
         assert fallback_w == pytest.approx(zero_branch.weight, rel=1e-12)
         assert fallback_w == pytest.approx(np.cos(angle), abs=1e-12)
 
-    def test_returns_zero_when_no_term_diagonal(self):
-        """Observable that never propagates to a diagonal Pauli gives 0."""
+    def test_emits_no_path_when_no_term_diagonal(self):
+        """Observable that never propagates to a diagonal Pauli yields no path."""
         qc = _rx_qc(0.4)
         nc = _normalize_circuit(qc)
         obs = SparsePauliOp.from_list([("X", 1.0)])  # X commutes with Rx
@@ -362,23 +376,28 @@ class TestAllCosPathWeight:
         obs_terms = _obs_to_stim_terms(obs, 1)
 
         # X commutes with Rx so no cos factor accumulates, but the final
-        # Pauli is still X — non-diagonal — so the term contributes 0.
-        assert _all_cos_path_weight(rots, inv_tabs, obs_terms) == 0.0
+        # Pauli is still X — non-diagonal — so the term contributes no path.
+        assert _all_cos_paths(rots, inv_tabs, obs_terms) == []
 
-    def test_multi_term_observable_sums_over_diagonal_contributions(self):
-        """Mixed observable: only the Z term contributes, weighted by its coeff."""
+    def test_weights_are_coefficient_free_and_per_term(self):
+        """Only the Z term propagates diagonally, and its weight excludes its coeff.
+
+        The coefficient is applied later, to the measured value the weight
+        pairs with; folding it in here would double-count it.
+        """
         angle = 0.5
         qc = _rx_qc(angle)
         nc = _normalize_circuit(qc)
-        obs = SparsePauliOp.from_list([("Z", 0.8), ("X", 0.2)])  # X term → 0
+        obs = SparsePauliOp.from_list([("Z", 0.8), ("X", 0.2)])  # X term → no path
         rots = _extract_rotation_gates(nc)
         tabs = _build_clifford_tableaus(nc, rots)
         inv_tabs = [t.inverse() for t in tabs]
         obs_terms = _obs_to_stim_terms(obs, 1)
 
-        assert _all_cos_path_weight(rots, inv_tabs, obs_terms) == pytest.approx(
-            0.8 * np.cos(angle), abs=1e-12
-        )
+        paths = _all_cos_paths(rots, inv_tabs, obs_terms)
+
+        assert [p.term_idx for p in paths] == [0]
+        assert paths[0].weight == pytest.approx(np.cos(angle), abs=1e-12)
 
     def test_mc_fallback_returns_computed_weight(self, mixed_qc):
         """When every MC sample is discarded, the returned path carries the all-cos weight."""
@@ -387,37 +406,104 @@ class TestAllCosPathWeight:
         tabs = _build_clifford_tableaus(mixed_qc, rots)
         inv_tabs = [t.inverse() for t in tabs]
         obs_terms = _obs_to_stim_terms(obs, 2)
-        expected = _all_cos_path_weight(rots, inv_tabs, obs_terms)
+        expected = _all_cos_paths(rots, inv_tabs, obs_terms)
 
         with pytest.warns(UserWarning, match="non-diagonal Pauli strings"):
             paths = _sample_paths_montecarlo(
                 rots, tabs, obs_terms, 100, np.random.default_rng(42)
             )
 
-        if expected == 0.0:
+        if not expected:
             # Fallback correctly declines to fabricate a path with bogus weight.
             assert paths == []
         else:
-            assert len(paths) == 1
+            assert len(paths) == len(expected)
             assert paths[0].branches == (0,) * len(rots)
-            assert paths[0].weight == pytest.approx(expected, rel=1e-12)
+            assert paths[0].weight == pytest.approx(expected[0].weight, rel=1e-12)
+
+
+def _single_term_specs(obs: SparsePauliOp, n_qubits: int, n_circuits: int):
+    """``entry_terms`` measuring ``obs``'s only Pauli on each of *n_circuits*."""
+    (term,) = _obs_to_stim_terms(obs, n_qubits)
+    return [term] * n_circuits
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestPathCircuitsMatchTargetStructure:
+    """Path circuits must stay structurally comparable to the target.
+
+    η measures how much noise the ensemble suffers relative to the target,
+    so a path circuit that is cheaper than the target decoheres less, η
+    over-reports the surviving signal, and the correction comes out too
+    small. Per the paper's Eq. (2), a cos branch substitutes the identity
+    gate — it does not drop the instruction.
+    """
+
+    @staticmethod
+    def _expanded(truncation_order=2):
+        qc = QuantumCircuit(3)
+        qc.h(range(3))
+        for _ in range(2):
+            qc.cz(0, 1)
+            qc.cz(1, 2)
+            for q in range(3):
+                qc.rx(0.6, q)
+        obs = SparsePauliOp.from_list([("ZZZ", 1.0)])
+        protocol = QuEPP(
+            sampling="exhaustive", truncation_order=truncation_order, n_twirls=0
+        )
+        dags, _ = protocol.expand(circuit_to_dag(qc), (obs,))
+        return [dag_to_circuit(d) for d in dags]
+
+    def test_cos_branch_substitutes_identity_rather_than_dropping_the_gate(self):
+        """Every replaced rotation leaves an idle slot behind."""
+        target, *paths = self._expanded()
+        n_rotations = target.count_ops()["rx"]
+
+        for path in paths:
+            ops = path.count_ops()
+            # Each rotation became either an identity or a Clifford rotation.
+            substituted = ops.get("id", 0) + ops.get("sx", 0) + ops.get("sxdg", 0)
+            assert substituted == n_rotations
+            assert "rx" not in ops
+
+    def test_path_circuits_preserve_target_depth(self):
+        """A deleted rotation would shorten the circuit; an idle slot does not."""
+        target, *paths = self._expanded()
+        assert paths
+        for path in paths:
+            assert path.depth() == target.depth()
+
+    def test_two_qubit_gate_count_is_untouched(self):
+        """Only rotations are replaced — the entangling structure is shared."""
+        target, *paths = self._expanded()
+        for path in paths:
+            assert path.count_ops().get("cz", 0) == target.count_ops()["cz"]
 
 
 class TestSimulateCliffordEnsemble:
     def test_bell_state_zz(self, bell_qc):
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        vals = _simulate_clifford_ensemble([bell_qc], obs, 2)
+        vals = _simulate_clifford_ensemble([bell_qc], _single_term_specs(obs, 2, 1))
         assert vals[0] == pytest.approx(1.0)
 
     def test_bell_state_xx(self, bell_qc):
         obs = SparsePauliOp.from_list([("XX", 1.0)])
-        vals = _simulate_clifford_ensemble([bell_qc], obs, 2)
+        vals = _simulate_clifford_ensemble([bell_qc], _single_term_specs(obs, 2, 1))
         assert vals[0] == pytest.approx(1.0)
 
     def test_batch_returns_correct_count(self, bell_qc):
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        vals = _simulate_clifford_ensemble([bell_qc, bell_qc, bell_qc], obs, 2)
+        vals = _simulate_clifford_ensemble([bell_qc] * 3, _single_term_specs(obs, 2, 3))
         assert vals.shape == (3,)
+
+    def test_applies_each_entrys_own_coefficient(self, bell_qc):
+        """One circuit, two terms: each value carries only its own coefficient."""
+        terms = _obs_to_stim_terms(
+            SparsePauliOp.from_list([("ZZ", 0.5), ("XX", -2.0)]), 2
+        )
+        vals = _simulate_clifford_ensemble([bell_qc, bell_qc], terms)
+        assert vals == pytest.approx([0.5, -2.0])
 
 
 class TestHasSymbolicAngles:
@@ -448,7 +534,7 @@ class TestQuEPPProtocol:
         p = QuEPP(truncation_order=2, sampling="exhaustive", n_twirls=0)
         dags, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
         assert len(dags) == ctx["n_paths"] + 1
-        assert "classical_values" in ctx["per_obs"][0]
+        assert isinstance(ctx["per_obs"][0], _ObservableCPT)
         assert ctx["target_idx"] == 0
         assert ctx["ensemble_start"] == 1
 
@@ -464,7 +550,7 @@ class TestQuEPPProtocol:
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         p = QuEPP(truncation_order=0, sampling="exhaustive", n_twirls=0)
         _, ctx = p.expand(circuit_to_dag(bell_qc), obs)
-        assert ctx["per_obs"][0]["classical_values"][0] == pytest.approx(1.0)
+        assert ctx["per_obs"][0].classical_values[0] == pytest.approx(1.0)
         # No rotations → reduce returns weights @ classical_values.
         result = p.reduce([1.0, 1.0], ctx)
         assert result == pytest.approx([1.0])
@@ -503,30 +589,81 @@ class TestQuEPPProtocol:
         assert ctx["n_paths"] == 0
 
 
-def test_low_eta_triggers_fallback():
-    """When noisy/classical ratio falls below min_eta, reduce returns
-    the raw target and marks ``_signal_destroyed`` so post_reduce can warn.
-    """
-    # Non-zero classical values (so "valid" mask has entries) but the
-    # ensemble_noisy values are ~0 ⇒ η ≈ 0 < min_eta (0.1) ⇒ fallback.
-    per_obs = [
-        {
-            "classical_values": np.array([1.0, 0.5]),
-            "weights": np.array([0.5, 0.5]),
-            "dag_indices": [0, 1, 2],
-        }
-    ]
-    ctx = {
+def _reduce_entry(classical_values, weights) -> _ObservableCPT:
+    """A ``per_obs`` entry whose N entries read DAGs 1..N of a one-term observable."""
+    n = len(weights)
+    return _ObservableCPT(
+        weights=np.asarray(weights),
+        classical_values=np.asarray(classical_values),
+        dag_indices=list(range(1 + n)),
+        entry_slots=[0] * n,
+        target_slots=[0],
+        n_paths=n,
+    )
+
+
+def _flagged_entry(*, eta_rejection=None, eta_amplifying=None) -> _ObservableCPT:
+    """A pathless entry carrying only the η diagnostics ``post_reduce`` reads."""
+    entry = _reduce_entry(np.array([]), np.array([]))
+    entry.eta_rejection = eta_rejection
+    entry.eta_amplifying = eta_amplifying
+    return entry
+
+
+def _reduce_ctx(per_obs, *, n_paths, n_rotations=1) -> dict:
+    """A minimal QuEPP reduce context wrapping *per_obs*."""
+    return {
         "per_obs": per_obs,
         "target_idx": 0,
         "ensemble_start": 1,
-        "n_rotations": 1,
-        "n_paths": 2,
+        "n_rotations": n_rotations,
+        "n_paths": n_paths,
     }
+
+
+def test_low_eta_triggers_fallback():
+    """When noisy/classical ratio falls below min_eta, reduce returns
+    the raw target and records the rejection so post_reduce can warn.
+    """
+    # Non-zero classical values (so "valid" mask has entries) but the
+    # ensemble_noisy values are ~0 ⇒ η ≈ 0 < min_eta (0.1) ⇒ fallback.
+    per_obs = [_reduce_entry(np.array([1.0, 0.5]), np.array([0.5, 0.5]))]
+    ctx = _reduce_ctx(per_obs, n_paths=2)
     p = QuEPP(n_twirls=0)
     result = p.reduce([0.3, 0.0, 0.0], ctx)
     assert result == pytest.approx([0.3])
-    assert per_obs[0].get("_signal_destroyed") is True
+    assert per_obs[0].eta_rejection == "below_floor"
+
+
+def test_negative_eta_is_distinguished_from_a_small_one():
+    """A sign-inverted noisy ensemble is a different failure than a decayed one.
+
+    Rescaling cannot repair an inverted sign, so it must not be reported as
+    merely-weak signal.
+    """
+    per_obs = [_reduce_entry(np.array([1.0, 0.5]), np.array([0.5, 0.5]))]
+    ctx = _reduce_ctx(per_obs, n_paths=2)
+    result = QuEPP(n_twirls=0).reduce([0.3, -0.9, -0.45], ctx)
+    assert result == pytest.approx([0.3])
+    assert per_obs[0].eta_rejection == "negative"
+
+
+def test_no_classical_signal_is_distinguished_from_a_small_eta():
+    """All-negligible classical values leave η undefined, not merely small."""
+    per_obs = [_reduce_entry(np.array([0.0, 0.0]), np.array([0.5, 0.5]))]
+    ctx = _reduce_ctx(per_obs, n_paths=2)
+    result = QuEPP(n_twirls=0).reduce([0.3, 0.2, 0.2], ctx)
+    assert result == pytest.approx([0.3])
+    assert per_obs[0].eta_rejection == "no_signal"
+
+
+def test_small_but_accepted_eta_records_amplification():
+    """η above the floor still amplifies (T - N); that has to be visible."""
+    # eta = median(0.15/1.0, 0.075/0.5) = 0.15 -> 1/eta = 6.7 > 5.
+    per_obs = [_reduce_entry(np.array([1.0, 0.5]), np.array([0.5, 0.5]))]
+    ctx = _reduce_ctx(per_obs, n_paths=2)
+    QuEPP(n_twirls=0).reduce([0.3, 0.15, 0.075], ctx)
+    assert per_obs[0].eta_amplifying == pytest.approx(1 / 0.15, rel=1e-9)
 
 
 class TestQuEPPNoDiagonalPathsWarning:
@@ -629,7 +766,7 @@ class TestSymbolicExpand:
         obs = SparsePauliOp.from_list([("IZ", 1.0)])
         p = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
         _, ctx = p.expand(circuit_to_dag(qc), obs)
-        weights = ctx["per_obs"][0]["weights"]
+        weights = ctx["per_obs"][0].weights
         assert weights.dtype == object
         for w in weights:
             assert isinstance(w, (ParameterExpression, int, float))
@@ -652,15 +789,17 @@ class TestEvaluateSymbolicWeights:
         # Build ParameterExpression weights: cos(theta) and sin(theta).
         cos_w = theta.cos()
         sin_w = theta.sin()
-        entry = {"weights": np.array([cos_w, sin_w], dtype=object)}
+        entry = _reduce_entry(
+            np.array([1.0, 1.0]), np.array([cos_w, sin_w], dtype=object)
+        )
         QuEPP.evaluate_symbolic_weights(entry, [theta], np.array([0.0]))
-        assert entry["weights"][0] == pytest.approx(1.0)
-        assert entry["weights"][1] == pytest.approx(0.0)
+        assert entry.weights[0] == pytest.approx(1.0)
+        assert entry.weights[1] == pytest.approx(0.0)
 
     def test_rejects_full_context(self):
         theta = Parameter("theta_full_ctx")
         ctx = {
-            "per_obs": [{"weights": np.array([theta.cos()], dtype=object)}],
+            "per_obs": [_reduce_entry(np.array([1.0]), np.array([theta.cos()]))],
             "symbolic": True,
         }
         with pytest.raises(TypeError, match="per_obs entry"):
@@ -680,6 +819,67 @@ def _exact_expval(qc: QuantumCircuit, obs: SparsePauliOp) -> float:
     return float(np.real(sv.expectation_value(obs)))
 
 
+def _two_qubit_qc() -> QuantumCircuit:
+    """A 2-qubit circuit with several non-commuting rotations."""
+    qc = QuantumCircuit(2)
+    qc.ry(0.9, 0)
+    qc.rz(0.37, 1)
+    qc.cx(0, 1)
+    qc.rx(0.21, 0)
+    return qc
+
+
+def _cpt_estimate(qc: QuantumCircuit, obs: SparsePauliOp) -> float:
+    """The CPT reconstruction ``weights @ classical_values`` for one observable."""
+    _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
+        circuit_to_dag(qc), obs
+    )
+    entry = ctx["per_obs"][0]
+    return float(np.asarray(entry.weights) @ np.asarray(entry.classical_values))
+
+
+class TestCPTMultiTermObservables:
+    """The CPT sum runs over ``(term, path)`` pairs: each term's weight against that
+    term's own Pauli. Collapsing it to paths alone applies every coefficient twice
+    and multiplies each term's weight by every other term's expectation.
+    """
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    @pytest.mark.parametrize("coeff", [1.0, 2.0, 0.5, -3.0])
+    def test_cpt_is_linear_in_the_observable_coefficient(self, coeff):
+        """``⟨cP⟩ = c⟨P⟩``. A coefficient folded into both the path weight and the
+        Clifford expectation scales the estimate by ``c²``, which unit coefficients
+        hide."""
+        qc = _two_qubit_qc()
+        obs = SparsePauliOp.from_list([("ZI", coeff)])
+        assert _cpt_estimate(qc, obs) == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_cpt_of_a_sum_is_the_sum_of_the_terms(self):
+        """Linearity, with unit coefficients so only the cross terms can break it:
+        paths from one term must not be weighted by another term's expectation."""
+        qc = _two_qubit_qc()
+        terms = [("ZI", 1.0), ("IZ", 1.0)]
+        whole = _cpt_estimate(qc, SparsePauliOp.from_list(terms))
+        per_term = sum(
+            _cpt_estimate(qc, SparsePauliOp.from_list([term])) for term in terms
+        )
+        assert whole == pytest.approx(per_term, rel=1e-9)
+        assert whole == pytest.approx(
+            _exact_expval(qc, SparsePauliOp.from_list(terms)), rel=1e-9
+        )
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_cpt_recovers_a_realistic_hamiltonian(self):
+        """Several terms, none of unit magnitude — the shape of every chemistry and
+        QUBO Hamiltonian, and the case no accuracy test covered."""
+        qc = _two_qubit_qc()
+        obs = SparsePauliOp.from_list(
+            [("ZI", 0.7), ("IZ", -0.4), ("ZZ", 0.9), ("XI", 0.25)]
+        )
+        assert _cpt_estimate(qc, obs) == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+
+
 class TestCPTExpansion:
     """Verify that the Heisenberg CPT expansion recovers exact expectation values."""
 
@@ -693,8 +893,8 @@ class TestCPTExpansion:
             circuit_to_dag(qc), obs
         )
         entry = ctx["per_obs"][0]
-        cpt = float(entry["weights"] @ entry["classical_values"])
-        assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
+        cpt = float(entry.weights @ entry.classical_values)
+        assert cpt == pytest.approx(np.cos(angle), rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_h_rx_h_ry(self):
@@ -709,8 +909,8 @@ class TestCPTExpansion:
             circuit_to_dag(qc), obs
         )
         entry = ctx["per_obs"][0]
-        cpt = float(entry["weights"] @ entry["classical_values"])
-        assert cpt == pytest.approx(_exact_expval(qc, obs), abs=1e-4)
+        cpt = float(entry.weights @ entry.classical_values)
+        assert cpt == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_two_qubit_circuit(self, mixed_qc):
@@ -720,8 +920,8 @@ class TestCPTExpansion:
             circuit_to_dag(mixed_qc), obs
         )
         entry = ctx["per_obs"][0]
-        cpt = float(entry["weights"] @ entry["classical_values"])
-        assert cpt == pytest.approx(_exact_expval(mixed_qc, obs), abs=1e-4)
+        cpt = float(entry.weights @ entry.classical_values)
+        assert cpt == pytest.approx(_exact_expval(mixed_qc, obs), rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_commuting_gate_no_branch(self):
@@ -738,7 +938,7 @@ class TestCPTExpansion:
         )
         assert ctx["n_paths"] == 0
         entry = ctx["per_obs"][0]
-        assert float(entry["weights"] @ entry["classical_values"]) == pytest.approx(0.0)
+        assert float(entry.weights @ entry.classical_values) == pytest.approx(0.0)
 
 
 class TestDecomposeControlledRotationsExtended:
@@ -774,8 +974,8 @@ def test_cpt_accuracy_with_normalization():
         circuit_to_dag(qc), obs
     )
     entry = ctx["per_obs"][0]
-    cpt = float(entry["weights"] @ entry["classical_values"])
-    assert cpt == pytest.approx(np.cos(angle), abs=1e-6)
+    cpt = float(entry.weights @ entry.classical_values)
+    assert cpt == pytest.approx(np.cos(angle), rel=1e-9)
 
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -795,7 +995,7 @@ def test_mc_weights_are_cpt_coefficients():
     nc_dag = circuit_to_dag(nc)
     rotation_positions = [(rot.inst_idx, rot) for rot in rots]
     path_dags = [_build_path_dag(nc_dag, rotation_positions, p.branches) for p in paths]
-    cv = _simulate_clifford_ensemble(path_dags, obs, 1)
+    cv = _simulate_clifford_ensemble(path_dags, [obs_terms[p.term_idx] for p in paths])
     mc_estimate = float(weights @ cv)
     assert mc_estimate == pytest.approx(np.cos(angle), abs=0.05)
 
@@ -811,8 +1011,8 @@ class TestQuEPPRoundTrip:
         protocol = QuEPP(sampling="exhaustive", truncation_order=10, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         qr = [exact]
-        qr.extend(ctx["per_obs"][0]["classical_values"])
-        assert protocol.reduce(qr, ctx) == pytest.approx([exact], abs=1e-6)
+        qr.extend(ctx["per_obs"][0].classical_values)
+        assert protocol.reduce(qr, ctx) == pytest.approx([exact], rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_noise_correction(self):
@@ -825,8 +1025,8 @@ class TestQuEPPRoundTrip:
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         noise_factor = 0.9
         qr = [exact * noise_factor]
-        qr.extend(ctx["per_obs"][0]["classical_values"] * noise_factor)
-        assert protocol.reduce(qr, ctx) == pytest.approx([exact], abs=1e-4)
+        qr.extend(ctx["per_obs"][0].classical_values * noise_factor)
+        assert protocol.reduce(qr, ctx) == pytest.approx([exact], rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_expand_with_controlled_rotation(self):
@@ -839,8 +1039,8 @@ class TestQuEPPRoundTrip:
         protocol = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         entry = ctx["per_obs"][0]
-        cpt = float(entry["weights"] @ entry["classical_values"])
-        assert cpt == pytest.approx(_exact_expval(qc, obs), abs=1e-4)
+        cpt = float(entry.weights @ entry.classical_values)
+        assert cpt == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
 
 
 class TestQuEPPSignalDestructionExtended:
@@ -850,52 +1050,63 @@ class TestQuEPPSignalDestructionExtended:
     def _make_context(classical_values, weights=None):
         cv = np.array(classical_values)
         w = np.array(weights) if weights is not None else np.ones(len(cv)) / len(cv)
-        per_obs_entry = {
-            "classical_values": cv,
-            "weights": w,
-            "dag_indices": list(range(1 + len(cv))),
-        }
-        return {
-            "per_obs": [per_obs_entry],
-            "target_idx": 0,
-            "ensemble_start": 1,
-            "n_rotations": len(cv),
-            "n_paths": len(cv),
-        }
+        return _reduce_ctx([_reduce_entry(cv, w)], n_paths=len(cv), n_rotations=len(cv))
 
-    def test_signal_destroyed_flag_not_set_when_eta_valid(self):
+    def test_eta_not_rejected_when_valid(self):
         """reduce() does NOT flag when eta is above threshold."""
         ctx = self._make_context([0.5, 0.3])
         # Ensemble noisy close to classical → eta ≈ 1.0
         quantum_results = [0.5, 0.48, 0.29]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert "_signal_destroyed" not in ctx["per_obs"][0]
+        assert ctx["per_obs"][0].eta_rejection is None
 
-    def test_signal_destroyed_flag_not_set_for_near_zero_classical(self):
-        """reduce() does NOT flag when classical values are all near zero."""
+    def test_near_zero_classical_reports_no_signal_not_destruction(self):
+        """All-negligible classical values are undefined η, not decayed signal."""
         ctx = self._make_context([1e-15, 1e-15])
         quantum_results = [0.5, 0.01, 0.01]
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert "_signal_destroyed" not in ctx["per_obs"][0]
+        assert ctx["per_obs"][0].eta_rejection == "no_signal"
 
     def test_post_reduce_warns_on_destroyed_signal(self):
         """post_reduce() emits a UserWarning when contexts have destroyed signals."""
-        destroyed = {"per_obs": [{"_signal_destroyed": True}]}
-        healthy = {"per_obs": [{}]}
+        destroyed = {"per_obs": [_flagged_entry(eta_rejection="below_floor")]}
+        healthy = {"per_obs": [_flagged_entry()]}
         protocol = QuEPP(truncation_order=1, n_twirls=0)
         with pytest.warns(UserWarning, match=r"signal destroyed"):
             protocol.post_reduce([destroyed, healthy])
+
+    def test_post_reduce_warns_separately_on_no_signal(self):
+        """An undefined η reads differently from a decayed one."""
+        protocol = QuEPP(truncation_order=1, n_twirls=0)
+        with pytest.warns(UserWarning, match=r"no Pauli path with a non-negligible"):
+            protocol.post_reduce(
+                [{"per_obs": [_flagged_entry(eta_rejection="no_signal")]}]
+            )
+
+    def test_post_reduce_warns_separately_on_negative_eta(self):
+        """A sign inversion is not a rescaling problem and must say so."""
+        protocol = QuEPP(truncation_order=1, n_twirls=0)
+        with pytest.warns(UserWarning, match=r"negative η"):
+            protocol.post_reduce(
+                [{"per_obs": [_flagged_entry(eta_rejection="negative")]}]
+            )
+
+    def test_post_reduce_warns_on_noise_amplification(self):
+        """A small-but-accepted η amplifies (T - N); post_reduce reports it."""
+        protocol = QuEPP(truncation_order=1, n_twirls=0)
+        with pytest.warns(UserWarning, match=r"amplify the noisy residual"):
+            protocol.post_reduce([{"per_obs": [_flagged_entry(eta_amplifying=8.0)]}])
 
     def test_post_reduce_silent_when_no_destruction(self):
         """post_reduce() does not warn when all groups are healthy."""
         protocol = QuEPP(truncation_order=1, n_twirls=0)
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            protocol.post_reduce([{"per_obs": [{}]}, {"per_obs": [{}]}])
+            protocol.post_reduce([{"per_obs": [_flagged_entry()]}] * 2)
 
     def test_post_reduce_default_noop_on_base_class(self):
         """QEMProtocol.post_reduce() is a no-op that does not raise."""
-        ctx = {"_signal_destroyed": True}
+        ctx = {"per_obs": [_flagged_entry(eta_rejection="below_floor")]}
         _NoMitigation().post_reduce([ctx])  # should not raise
 
 
@@ -903,18 +1114,22 @@ class TestComputeEta:
     def test_uses_median_ratio_with_valid_mask(self):
         classical = np.array([1.0, 0.0, -2.0, 4.0])
         noisy = np.array([0.8, 999.0, -1.0, 2.4])
-        eta = QuEPP.compute_eta(classical, noisy, min_eta=0.1)
+        eta, reason = QuEPP.compute_eta(classical, noisy, min_eta=0.1)
         assert eta == pytest.approx(0.6)
+        assert reason is None
 
     def test_returns_none_when_all_classical_values_are_near_zero(self):
         classical = np.array([0.0, 1e-14, -1e-15])
         noisy = np.array([0.5, 0.2, -0.1])
-        assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) is None
+        assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) == (None, "no_signal")
 
     def test_returns_none_when_eta_is_below_threshold(self):
         classical = np.array([1.0, -2.0, 4.0])
         noisy = np.array([0.09, -0.18, 0.36])
-        assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) is None
+        assert QuEPP.compute_eta(classical, noisy, min_eta=0.1) == (
+            None,
+            "below_floor",
+        )
 
 
 class TestShallowCircuitWarning:
@@ -1093,11 +1308,9 @@ class TestQuEPPMultiObservable:
         assert isinstance(per_obs, list)
         assert len(per_obs) == 2
         for entry in per_obs:
-            assert "classical_values" in entry
-            assert "weights" in entry
-            assert "dag_indices" in entry
+            assert isinstance(entry, _ObservableCPT)
             # Target shared across all observables, always at merged index 0.
-            assert entry["dag_indices"][0] == 0
+            assert entry.dag_indices[0] == 0
 
     def test_classical_values_match_independent_runs(self, qc_two_rotations):
         """Multi-observable expand produces the same per-observable
@@ -1114,13 +1327,13 @@ class TestQuEPPMultiObservable:
                 circuit_to_dag(qc_two_rotations.copy()), (obs1, obs2)
             )
         np.testing.assert_allclose(
-            sorted(ctx_multi["per_obs"][0]["classical_values"]),
-            sorted(ctx1["per_obs"][0]["classical_values"]),
+            sorted(ctx_multi["per_obs"][0].classical_values),
+            sorted(ctx1["per_obs"][0].classical_values),
             atol=1e-9,
         )
         np.testing.assert_allclose(
-            sorted(ctx_multi["per_obs"][1]["classical_values"]),
-            sorted(ctx2["per_obs"][0]["classical_values"]),
+            sorted(ctx_multi["per_obs"][1].classical_values),
+            sorted(ctx2["per_obs"][0].classical_values),
             atol=1e-9,
         )
 
@@ -1132,8 +1345,8 @@ class TestQuEPPMultiObservable:
             warnings.simplefilter("ignore")
             dags, ctx = protocol.expand(circuit_to_dag(qc_two_rotations), (obs1, obs2))
         per_obs = ctx["per_obs"]
-        target_dag_for_obs1 = dags[per_obs[0]["dag_indices"][0]]
-        target_dag_for_obs2 = dags[per_obs[1]["dag_indices"][0]]
+        target_dag_for_obs1 = dags[per_obs[0].dag_indices[0]]
+        target_dag_for_obs2 = dags[per_obs[1].dag_indices[0]]
         assert target_dag_for_obs1 is target_dag_for_obs2
 
     def test_path_dag_dedup_across_observables(self):
@@ -1149,7 +1362,7 @@ class TestQuEPPMultiObservable:
             )
         per_obs = ctx_multi["per_obs"]
         assert len(dags_multi) == len(dags_solo)
-        assert per_obs[0]["dag_indices"] == per_obs[1]["dag_indices"]
+        assert per_obs[0].dag_indices == per_obs[1].dag_indices
 
     def test_n_identical_observables_share_path_dags(self):
         """N identical observables produce the same number of DAGs as 1
@@ -1193,13 +1406,13 @@ class TestQuEPPMultiObservable:
         noisy_solo_1 = np.concatenate(
             [
                 [float(rng.uniform(-1, 1))],
-                np.array(ctx1["per_obs"][0]["classical_values"]),
+                np.array(ctx1["per_obs"][0].classical_values),
             ]
         )
         noisy_solo_2 = np.concatenate(
             [
                 [float(rng.uniform(-1, 1))],
-                np.array(ctx2["per_obs"][0]["classical_values"]),
+                np.array(ctx2["per_obs"][0].classical_values),
             ]
         )
         out1 = protocol.reduce(noisy_solo_1.tolist(), ctx1)
@@ -1208,9 +1421,9 @@ class TestQuEPPMultiObservable:
         per_obs = ctx_multi["per_obs"]
         n_dags = len(dags_multi)
         rows = [[float("nan"), float("nan")] for _ in range(n_dags)]
-        for slot, d in enumerate(per_obs[0]["dag_indices"]):
+        for slot, d in enumerate(per_obs[0].dag_indices):
             rows[d][0] = noisy_solo_1[slot]
-        for slot, d in enumerate(per_obs[1]["dag_indices"]):
+        for slot, d in enumerate(per_obs[1].dag_indices):
             rows[d][1] = noisy_solo_2[slot]
 
         out_multi = protocol.reduce(rows, ctx_multi)
@@ -1298,3 +1511,130 @@ class TestQuEPPMultiObservable:
         # noise (and tiny numerical drift from the path-DAG dedup).
         assert multi_out[0] == pytest.approx(solo_1[0], abs=5e-3)
         assert multi_out[1] == pytest.approx(solo_2[0], abs=5e-3)
+
+    def test_pipeline_e2e_on_a_multi_term_hamiltonian(self, suppress_quepp_warnings):
+        """A Pauli sum has to survive the real measurement stage, not just expand.
+
+        QuEPP declares single-term observables so the noisy side is
+        term-resolved; the measurement stage has to be measuring *those* for
+        ``reduce`` to find its per-term slots. Driving ``expand``/``reduce``
+        directly cannot show that, because it never builds the fan-out the
+        stage would.
+        """
+        ops = [qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1]), qp.RZ(0.7, 1)]
+        hamiltonian = 0.7 * qp.Z(0) - 0.4 * qp.Z(1) + 0.9 * (qp.Z(0) @ qp.Z(1))
+        meta = qscript_to_meta(
+            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(hamiltonian)])
+        )
+        (spo,) = meta.observable
+        assert len(spo.paulis) > 1, "fixture must be genuinely multi-term"
+
+        out = list(
+            CircuitPipeline(
+                stages=[
+                    CircuitSpecStage(),
+                    QEMStage(
+                        protocol=QuEPP(
+                            sampling="exhaustive", truncation_order=2, n_twirls=0
+                        )
+                    ),
+                    MeasurementStage(),
+                ],
+                suppress_performance_warnings=True,
+            )
+            .run(
+                meta,
+                PipelineEnv(
+                    backend=QiskitSimulator(
+                        shots=200000, simulation_seed=42, _deterministic_execution=True
+                    )
+                ),
+            )
+            .values()
+        )[0]
+
+        # One value per *requested* observable, however many terms it holds.
+        value = out[0] if isinstance(out, list) else out
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.rx(0.3, 0)
+        qc.cx(0, 1)
+        qc.rz(0.7, 1)
+        assert value == pytest.approx(_exact_expval(qc, spo), abs=2e-2)
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestQuEPPMultiTermUnderNonUniformNoise:
+    """The estimator end-to-end on a realistic Hamiltonian, with noise that
+    differs per ensemble circuit.
+
+    Uniform damping is the one regime where a coefficient mishandled on both
+    the classical and the noisy side cancels itself out, so a test that damps
+    every circuit equally cannot see it. These drive each circuit with its own
+    factor and compare against a statevector reference.
+    """
+
+    @staticmethod
+    def _hamiltonian() -> SparsePauliOp:
+        """Several terms, mixed signs, none of unit magnitude."""
+        return SparsePauliOp.from_list(
+            [("ZI", 0.7), ("IZ", -0.4), ("ZZ", 0.9), ("XI", 0.25)]
+        )
+
+    @staticmethod
+    def _mitigated_under_noise(qc, obs, noise_factors) -> float:
+        """Run expand → reduce with per-circuit noise applied to exact values.
+
+        Damps each declared single-term value on each emitted circuit by that
+        circuit's own factor, standing in for a backend whose noise varies
+        across the ensemble.
+        """
+        protocol = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0)
+        dags, ctx = protocol.expand(circuit_to_dag(qc), (obs,))
+        declared = ctx["observable_override"]
+        rows = []
+        for dag_idx, dag in enumerate(dags):
+            exact = [
+                _exact_expval(dag_to_circuit(dag), term_obs) for term_obs in declared
+            ]
+            factor = noise_factors[dag_idx % len(noise_factors)]
+            rows.append([value * factor for value in exact])
+        return protocol.reduce(rows, ctx)[0]
+
+    def test_recovers_exact_energy_when_ensemble_is_noiseless(self):
+        """With exact inputs the estimator must return the exact value.
+
+        ``T - N`` vanishes, so this isolates the classical CPT reconstruction
+        from the η rescale.
+        """
+        qc = _two_qubit_qc()
+        obs = self._hamiltonian()
+        mitigated = self._mitigated_under_noise(qc, obs, [1.0])
+        assert mitigated == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+
+    def test_improves_on_the_unmitigated_value_under_non_uniform_noise(self):
+        """Mitigation must move the estimate toward exact, not away from it."""
+        qc = _two_qubit_qc()
+        obs = self._hamiltonian()
+        exact = _exact_expval(qc, obs)
+        factors = [0.88, 0.94, 0.9, 0.85, 0.92, 0.87, 0.95]
+
+        mitigated = self._mitigated_under_noise(qc, obs, factors)
+        unmitigated = exact * factors[0]
+
+        assert abs(mitigated - exact) < abs(unmitigated - exact)
+
+    def test_is_linear_in_a_hamiltonian_rescaling(self):
+        """Scaling H scales the mitigated energy by the same factor.
+
+        A coefficient applied twice makes this quadratic; an absolute
+        coefficient threshold makes it non-monotonic.
+        """
+        qc = _two_qubit_qc()
+        obs = self._hamiltonian()
+        factors = [0.88, 0.94, 0.9, 0.85]
+        base = self._mitigated_under_noise(qc, obs, factors)
+
+        for scale in (0.01, 3.0):
+            scaled = self._mitigated_under_noise(qc, scale * obs, factors)
+            assert scaled == pytest.approx(scale * base, rel=1e-9)

@@ -128,32 +128,46 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------ #
     print(f"\nPart 3 — per-group shot allocation (backend.shots = {backend.shots})")
     print("-" * 40)
-    header2 = f"{'shot_distribution':<18} {'per-group shots':<40} {'total':>10}"
-    print(header2)
-    print("-" * len(header2))
 
-    allocations: dict[str, list[int]] = {}
-    for shot_dist in ("uniform", "weighted"):
-        vqe = VQE(**vqe_input, grouping_strategy="qwc", shot_distribution=shot_dist)
-        cost_report = vqe.dry_run()["cost"]
-        spec_alloc = next(iter(cost_report.env_artifacts["per_group_shots"].values()))
-        n_groups = max(spec_alloc.keys()) + 1
-        allocations[shot_dist] = [spec_alloc.get(i, 0) for i in range(n_groups)]
+    if backend.supports_expval:
+        # A backend that estimates observables natively evaluates the whole
+        # Hamiltonian in one analytic call, so there are no measurement groups
+        # to divide a shot budget between and no allocation to show.
+        print(
+            f"Skipped: {type(backend).__name__} computes expectation values\n"
+            "analytically, so shots are never split across measurement groups.\n"
+            "Shot allocation applies to sampling backends — re-run this\n"
+            "tutorial with --local-qiskit to see it."
+        )
+    else:
+        header2 = f"{'shot_distribution':<18} {'per-group shots':<40} {'total':>10}"
+        print(header2)
+        print("-" * len(header2))
 
-    # With shot_distribution=None, MeasurementStage submits each group with
-    # the backend's full shot count — derive the per-group view from the
-    # uniform run's group count for a clean comparison.
-    n_groups = len(allocations["uniform"])
-    allocations["None (default)"] = [backend.shots] * n_groups
+        allocations: dict[str, list[int]] = {}
+        for shot_dist in ("uniform", "weighted"):
+            vqe = VQE(**vqe_input, grouping_strategy="qwc", shot_distribution=shot_dist)
+            cost_report = vqe.dry_run()["cost"]
+            spec_alloc = next(
+                iter(cost_report.env_artifacts["per_group_shots"].values())
+            )
+            n_groups = max(spec_alloc.keys()) + 1
+            allocations[shot_dist] = [spec_alloc.get(i, 0) for i in range(n_groups)]
 
-    for name in ("None (default)", "uniform", "weighted"):
-        alloc = allocations[name]
-        print(f"{name:<18} {str(alloc):<40} {sum(alloc):>10}")
+        # With shot_distribution=None, MeasurementStage submits each group with
+        # the backend's full shot count — derive the per-group view from the
+        # uniform run's group count for a clean comparison.
+        n_groups = len(allocations["uniform"])
+        allocations["None (default)"] = [backend.shots] * n_groups
 
-    print(
-        "\nWith ``None``, the backend pays ``shots × n_groups`` total; with\n"
-        "``uniform`` or ``weighted`` the same total is capped at ``shots`` and\n"
-        "spread differently. ``weighted`` concentrates samples on the groups\n"
-        "that dominate the Hamiltonian's L1 norm — reducing estimator variance\n"
-        "on skewed chemistry Hamiltonians at no extra cost."
-    )
+        for name in ("None (default)", "uniform", "weighted"):
+            alloc = allocations[name]
+            print(f"{name:<18} {str(alloc):<40} {sum(alloc):>10}")
+
+        print(
+            "\nWith ``None``, the backend pays ``shots × n_groups`` total; with\n"
+            "``uniform`` or ``weighted`` the same total is capped at ``shots`` and\n"
+            "spread differently. ``weighted`` concentrates samples on the groups\n"
+            "that dominate the Hamiltonian's L1 norm — reducing estimator variance\n"
+            "on skewed chemistry Hamiltonians at no extra cost."
+        )

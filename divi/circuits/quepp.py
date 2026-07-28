@@ -38,6 +38,7 @@ from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.circuit.library import (
     CXGate,
     HGate,
+    IGate,
     RXGate,
     RYGate,
     RZGate,
@@ -53,7 +54,7 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits.qem import QEMContext, QEMProtocol
+from divi.circuits.qem import OBSERVABLE_OVERRIDE, QEMContext, QEMProtocol
 from divi.pipeline.abc import ResultFormat
 
 __all__ = ["QuEPP", "SymbolicAngleWarning"]
@@ -258,6 +259,92 @@ def _obs_to_stim_terms(
     return terms
 
 
+#: ``(T - N)`` is divided by η, so a small η amplifies the shot noise that
+#: lives there. Report above this factor even when η clears ``min_eta``.
+_ETA_AMPLIFICATION_LIMIT = 5.0
+
+
+@dataclass
+class _ObservableCPT:
+    """CPT bookkeeping for one requested observable.
+
+    ``weights``, ``classical_values`` and ``entry_slots`` run in parallel
+    over ``(Pauli term, path)`` pairs. ``dag_indices`` holds the shared
+    target's slot followed by one path slot per pair, so it is one longer.
+    :meth:`__post_init__` enforces both invariants: a misalignment here
+    would otherwise surface as a plausible-looking wrong expectation value
+    rather than an error.
+    """
+
+    weights: np.ndarray
+    classical_values: np.ndarray
+    dag_indices: list[int]
+    entry_slots: list[int]
+    target_slots: list[int]
+    n_paths: int
+    eta_rejection: str | None = None
+    """Why η was unusable, from :meth:`QuEPP.compute_eta`; ``None`` if it was."""
+    eta_amplifying: float | None = None
+    """``1/η`` when it exceeds :data:`_ETA_AMPLIFICATION_LIMIT`."""
+
+    def __post_init__(self) -> None:
+        n_entries = len(self.weights)
+        if len(self.classical_values) != n_entries or (
+            len(self.entry_slots) != n_entries
+        ):
+            raise ValueError(
+                f"_ObservableCPT: weights ({n_entries}), classical_values "
+                f"({len(self.classical_values)}) and entry_slots "
+                f"({len(self.entry_slots)}) must run in parallel over "
+                f"(term, path) pairs."
+            )
+        if len(self.dag_indices) != n_entries + 1:
+            raise ValueError(
+                f"_ObservableCPT: dag_indices has {len(self.dag_indices)} "
+                f"entries; expected {n_entries + 1} (the target slot plus one "
+                f"per (term, path) pair)."
+            )
+
+
+def _read_slot(row: Any, slot: int) -> float:
+    """Read one declared observable's value out of a per-circuit result row.
+
+    Rows are per-observable sequences whenever the measurement stage
+    measured more than one observable; a bare scalar means there was only
+    one, so every slot reads it. Indexing anything else out of range still
+    raises, so a mismatched slot fails loudly rather than reading a
+    plausible wrong value.
+    """
+    if np.ndim(row) == 0:
+        return float(row)
+    return float(row[slot])
+
+
+def _split_into_single_terms(
+    observables: tuple[SparsePauliOp, ...],
+) -> tuple[tuple[SparsePauliOp, ...], list[list[int]]]:
+    """Split each observable into one single-term observable per Pauli.
+
+    Coefficients are kept on the split terms. Grouping and shot allocation
+    build their union by deduplicating Paulis and summing absolute
+    coefficients, so declaring ``(c_1 P_1, ..., c_n P_n)`` yields the same
+    union — and hence the same measurement circuits and shot split — as
+    declaring ``sum_i c_i P_i``.
+
+    Returns the flat tuple of single-term observables and, per input
+    observable, the flat indices of its terms.
+    """
+    declared: list[SparsePauliOp] = []
+    slots_per_obs: list[list[int]] = []
+    for obs in observables:
+        slots = []
+        for term_idx in range(len(obs.paulis)):
+            slots.append(len(declared))
+            declared.append(obs[term_idx])
+        slots_per_obs.append(slots)
+    return tuple(declared), slots_per_obs
+
+
 class SymbolicAngleWarning(UserWarning):
     """A QuEPP option needing concrete rotation angles was disabled because the
     circuit still carries unbound parameters.
@@ -285,11 +372,19 @@ class _RotationGate:
 
 @dataclass(frozen=True)
 class _PauliPath:
-    """One term in the CPT expansion."""
+    """One term in the CPT expansion, for one Pauli term of the observable.
+
+    ``weight`` is the bare trigonometric product — the observable
+    coefficient is *not* folded in, so it stays dimensionless and the
+    measured Pauli it pairs with is ``term_idx``'s, not the whole
+    observable's.
+    """
 
     branches: tuple[int, ...]  # 0=cos/skip, 1=sin per rotation gate
     weight: float | ParameterExpression
-    order: int  # number of sine branches taken
+    order: int
+    term_idx: int = 0
+    """Which Pauli term of the observable this path back-propagates from."""
 
 
 @dataclass(frozen=True)
@@ -527,21 +622,27 @@ def _is_diagonal(pauli_string: stim.PauliString) -> bool:
 def _merge_paths_by_branch(paths: Iterable[_PauliPath]) -> list[_PauliPath]:
     """Collapse paths with identical branch choices by summing their weights.
 
+    Merging is keyed on ``(term_idx, branches)`` — paths from different
+    Pauli terms pair with different measured Paulis even when their branch
+    tuples match.
+
     Paths with equal ``branches`` have equal ``order`` by construction
     (order = popcount of the branch tuple), so the merged order keeps
     the first-observed value.
     """
-    merged: dict[tuple[int, ...], _PauliPath] = {}
+    merged: dict[tuple[int, tuple[int, ...]], _PauliPath] = {}
     for p in paths:
-        if p.branches in merged:
-            old = merged[p.branches]
-            merged[p.branches] = _PauliPath(
+        key = (p.term_idx, p.branches)
+        if key in merged:
+            old = merged[key]
+            merged[key] = _PauliPath(
                 branches=p.branches,
                 weight=old.weight + p.weight,
                 order=old.order,
+                term_idx=p.term_idx,
             )
         else:
-            merged[p.branches] = p
+            merged[key] = p
     return list(merged.values())
 
 
@@ -552,10 +653,20 @@ def _enumerate_paths_dfs(
     max_order: int,
     coefficient_threshold: float = 0.0,
 ) -> list[_PauliPath]:
-    """Enumerate Pauli paths via Heisenberg-picture DFS."""
+    """Enumerate Pauli paths via Heisenberg-picture DFS, per observable term.
+
+    Each term of *observable_terms* is back-propagated independently and
+    its paths are tagged with that term's index. Weights are seeded at
+    ``1.0``, so ``coefficient_threshold`` prunes on the dimensionless
+    trigonometric product and is therefore invariant to rescaling the
+    observable.
+    """
     K = len(rotations)
     if K == 0:
-        return [_PauliPath(branches=(), weight=1.0, order=0)]
+        return [
+            _PauliPath(branches=(), weight=1.0, order=0, term_idx=term_idx)
+            for term_idx in range(len(observable_terms))
+        ]
 
     # Precompute per-rotation metadata once.  The DFS inner loop accessed
     # rot.axis, rot.qubit_idx, rot.angle and called _is_parametric on
@@ -574,13 +685,13 @@ def _enumerate_paths_dfs(
 
     all_paths: list[_PauliPath] = []
 
-    for obs_coeff, obs_pauli in observable_terms:
+    for term_idx, (_obs_coeff, obs_pauli) in enumerate(observable_terms):
         initial_pauli = inv_tableaus[K](obs_pauli)
         # Branches stored as an int bitmask to avoid list-concat copies
         # at every push.  Bit ``i`` corresponds to rotation K-1-i (i.e.
         # bit 0 is the last decision made = rotation 0's branch).
         stack: list[tuple[int, stim.PauliString, int, float, int]] = [
-            (K - 1, initial_pauli, 0, obs_coeff, 0)
+            (K - 1, initial_pauli, 0, 1.0, 0)
         ]
 
         # Inner ``while idx >= 0`` walks commute/cos branches in local
@@ -646,32 +757,34 @@ def _enumerate_paths_dfs(
                         branches=tuple((branches_bits >> i) & 1 for i in range(K)),
                         weight=weight,
                         order=order,
+                        term_idx=term_idx,
                     )
                 )
 
     return _merge_paths_by_branch(all_paths)
 
 
-def _all_cos_path_weight(
+def _all_cos_paths(
     rotations: list[_RotationGate],
     inv_tableaus: list[stim.Tableau],
     observable_terms: list[tuple[float, stim.PauliString]],
-) -> float:
-    """Weight of the all-zero-branch (all-cos) CPT path.
+) -> list[_PauliPath]:
+    """The all-zero-branch (all-cos) CPT path, one per observable term.
 
     Walks each observable term backward through *rotations*, always taking
     the cos branch at non-commuting rotations (and passing through
-    commuting ones with no factor).  A term contributes
-    ``obs_coeff * Π cos(θ_i)`` when the fully back-propagated Pauli is
-    diagonal, and zero otherwise.  Mirrors the ``branches=(0,)*K`` path
-    of the exhaustive DFS exactly, and is used as a deterministic fallback
-    when every Monte Carlo sample is discarded.
+    commuting ones with no factor).  A term contributes a path of weight
+    ``Π cos(θ_i)`` when the fully back-propagated Pauli is diagonal, and
+    none otherwise.  Mirrors the ``branches=(0,)*K`` paths of the
+    exhaustive DFS exactly — coefficient-free, and tagged per term — and is
+    used as a deterministic fallback when every Monte Carlo sample is
+    discarded.
     """
     K = len(rotations)
-    total = 0.0
-    for obs_coeff, obs_pauli in observable_terms:
+    paths: list[_PauliPath] = []
+    for term_idx, (_obs_coeff, obs_pauli) in enumerate(observable_terms):
         pauli = inv_tableaus[K](obs_pauli)
-        weight = obs_coeff
+        weight = 1.0
         for idx in range(K - 1, -1, -1):
             rot = rotations[idx]
             p = pauli[rot.qubit_idx]
@@ -679,8 +792,15 @@ def _all_cos_path_weight(
                 weight *= np.cos(rot.angle)
             pauli = inv_tableaus[idx](pauli)
         if _is_diagonal(pauli):
-            total += weight
-    return total
+            paths.append(
+                _PauliPath(
+                    branches=(0,) * K,
+                    weight=weight,
+                    order=0,
+                    term_idx=term_idx,
+                )
+            )
+    return paths
 
 
 def _sample_paths_montecarlo(
@@ -690,10 +810,20 @@ def _sample_paths_montecarlo(
     n_samples: int,
     rng: np.random.Generator,
 ) -> list[_PauliPath]:
-    """Sample Pauli paths via Monte Carlo."""
+    """Sample Pauli paths via Monte Carlo, tagged per observable term.
+
+    A term is drawn with probability ``|c_i| / Σ|c|`` and the sample's
+    importance weight divides that probability back out, so the returned
+    weights are coefficient-free: the coefficient is applied once, later,
+    on the measured value the weight pairs with.  Dividing by ``|c_i|`` is
+    safe because a term with ``c_i == 0`` is never drawn.
+    """
     K = len(rotations)
     if K == 0:
-        return [_PauliPath(branches=(), weight=1.0, order=0)]
+        return [
+            _PauliPath(branches=(), weight=1.0, order=0, term_idx=term_idx)
+            for term_idx in range(len(observable_terms))
+        ]
 
     # Precompute tableau inverses once (same optimisation as _enumerate_paths_dfs).
     inv_tableaus = [t.inverse() for t in tableaus]
@@ -702,16 +832,28 @@ def _sample_paths_montecarlo(
 
     abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
     coeff_sum = abs_coeffs.sum()
+    if coeff_sum == 0.0:
+        warnings.warn(
+            f"QuEPP Monte Carlo: every coefficient of a "
+            f"{len(observable_terms)}-term observable is zero, so it has no "
+            f"paths to sample and mitigation is a no-op. Check whether the "
+            f"observable was built as intended (a coefficient that optimises "
+            f"to zero reaches this too).",
+            stacklevel=2,
+        )
+        return []
     term_probs = abs_coeffs / coeff_sum
+    _warn_on_term_starvation(term_probs, n_samples)
 
     for _ in range(n_samples):
         if len(observable_terms) == 1:
-            obs_coeff, obs_pauli = observable_terms[0]
+            term_idx = 0
         else:
-            term_idx = rng.choice(len(observable_terms), p=term_probs)
-            obs_coeff, obs_pauli = observable_terms[term_idx]
+            term_idx = int(rng.choice(len(observable_terms), p=term_probs))
+        _obs_coeff, obs_pauli = observable_terms[term_idx]
 
-        is_weight = np.sign(obs_coeff) * coeff_sum
+        # 1 / P(term) — the coefficient itself stays out of the weight.
+        is_weight = 1.0 / term_probs[term_idx]
 
         pauli = inv_tableaus[K](obs_pauli)
         branches: list[int] = []
@@ -760,14 +902,13 @@ def _sample_paths_montecarlo(
                 branches=tuple(branches),
                 weight=is_weight / n_samples,
                 order=sum(branches),
+                term_idx=term_idx,
             )
         )
 
     if not samples:
-        fallback_weight = _all_cos_path_weight(
-            rotations, inv_tableaus, observable_terms
-        )
-        if fallback_weight == 0.0:
+        fallback = _all_cos_paths(rotations, inv_tableaus, observable_terms)
+        if not fallback:
             warnings.warn(
                 f"QuEPP Monte Carlo: all {n_samples} samples produced "
                 f"non-diagonal Pauli strings, and the deterministic "
@@ -780,13 +921,39 @@ def _sample_paths_montecarlo(
         warnings.warn(
             f"QuEPP Monte Carlo: all {n_samples} samples produced "
             f"non-diagonal Pauli strings.  Falling back to the "
-            f"deterministic all-cos path with weight "
-            f"{fallback_weight:.4e}.  Consider increasing n_samples or "
-            f"using exhaustive enumeration.",
+            f"deterministic all-cos path of {len(fallback)} observable "
+            f"term(s).  Consider increasing n_samples or using exhaustive "
+            f"enumeration.",
             stacklevel=2,
         )
-        return [_PauliPath(branches=(0,) * K, weight=fallback_weight, order=0)]
+        return fallback
     return _merge_paths_by_branch(samples)
+
+
+def _warn_on_term_starvation(
+    term_probs: np.ndarray, n_samples: int, min_expected: int = 20
+) -> None:
+    """Warn when a Pauli term is expected to receive too few Monte Carlo samples.
+
+    Terms are drawn proportionally to ``|c_i|``, so a Hamiltonian whose
+    coefficients span orders of magnitude starves its small terms: their
+    contribution is estimated from a handful of samples, or none at all.
+    """
+    if term_probs.size < 2:
+        return
+    expected = term_probs.min() * n_samples
+    if expected >= min_expected:
+        return
+    warnings.warn(
+        f"QuEPP Monte Carlo: with n_samples={n_samples} across "
+        f"{term_probs.size} Pauli terms, the smallest-coefficient term "
+        f"expects only {expected:.1f} samples (terms are drawn in proportion "
+        f"to |coefficient|). Its contribution will be poorly estimated, and "
+        f"it may draw none at all. Raise n_samples to at least "
+        f"{int(np.ceil(min_expected / term_probs.min()))} or use "
+        f"sampling='exhaustive'.",
+        stacklevel=3,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -801,27 +968,27 @@ def _build_path_dag(
 ) -> DAGCircuit:
     """Build a Clifford DAG by replacing rotations according to branch choices.
 
-    * branch 0: rotation is removed (identity / skip).
+    * branch 0: rotation replaced with the identity gate, keeping the path
+      circuit's gate count and depth equal to the target's so it
+      accumulates comparable noise.
     * branch 1: rotation replaced with ``R_P(π/2)`` Clifford.
 
     Uses ``copy_empty_like`` + ``apply_operation_back`` (8x faster than
-    ``deepcopy``) to build the path DAG in a single pass, skipping or
-    replacing rotation nodes inline.
+    ``deepcopy``) to build the path DAG in a single pass, replacing
+    rotation nodes inline.
     """
     replacements: dict[int, Any] = {}
     for (topo_idx, rot), branch in zip(rotation_positions, branches):
         replacements[topo_idx] = (
-            None if branch == 0 else _CLIFFORD_ROTATION_QISKIT[rot.axis]
+            IGate() if branch == 0 else _CLIFFORD_ROTATION_QISKIT[rot.axis]
         )
 
     dag = base_dag.copy_empty_like()
     for i, node in enumerate(base_dag.topological_op_nodes()):
-        if i in replacements:
-            gate = replacements[i]
-            if gate is not None:
-                dag.apply_operation_back(gate, node.qargs, node.cargs)
-        else:
-            dag.apply_operation_back(node.op, node.qargs, node.cargs)
+        gate = replacements.get(i)
+        dag.apply_operation_back(
+            node.op if gate is None else gate, node.qargs, node.cargs
+        )
 
     return dag
 
@@ -833,19 +1000,26 @@ def _build_path_dag(
 
 def _simulate_clifford_ensemble(
     circuits: Sequence[QuantumCircuit | DAGCircuit],
-    observable: SparsePauliOp,
-    n_qubits: int,
+    entry_terms: Sequence[tuple[float, stim.PauliString]],
 ) -> np.ndarray:
-    """Compute exact expectation values for Clifford circuits via stim."""
-    terms = _obs_to_stim_terms(observable, n_qubits)
+    """Exact ``coeff * <P>`` per entry on its Clifford circuit, via stim.
+
+    ``circuits[j]`` and ``entry_terms[j]`` describe the same entry: the
+    path circuit and the single Pauli term (with its coefficient) to
+    evaluate on it.  Distinct terms sharing a path circuit are common —
+    the circuit depends only on the branch choices — so the tableau
+    simulation is cached per circuit and only the cheap ``peek`` repeats.
+    """
     values = np.empty(len(circuits), dtype=float)
+    sims: dict[int, stim.TableauSimulator] = {}
     for i, qc_or_dag in enumerate(circuits):
-        sc = _qiskit_clifford_to_stim(qc_or_dag)
-        sim = stim.TableauSimulator()
-        sim.do_circuit(sc)
-        values[i] = sum(
-            coeff * sim.peek_observable_expectation(ps) for coeff, ps in terms
-        )
+        sim = sims.get(id(qc_or_dag))
+        if sim is None:
+            sim = stim.TableauSimulator()
+            sim.do_circuit(_qiskit_clifford_to_stim(qc_or_dag))
+            sims[id(qc_or_dag)] = sim
+        coeff, ps = entry_terms[i]
+        values[i] = coeff * sim.peek_observable_expectation(ps)
     return values
 
 
@@ -930,9 +1104,15 @@ class QuEPP(QEMProtocol):
         """Build path DAGs and per-observable classical context.
 
         Preprocessing and Clifford tableau construction run once; path
-        enumeration and classical simulation run per observable.  Paths
-        sharing a ``branches`` tuple produce the same Clifford circuit
-        and are deduped across observables.
+        enumeration and classical simulation run per ``(observable term,
+        path)`` pair.  Paths sharing a ``branches`` tuple produce the same
+        Clifford circuit and are deduped across terms and observables — the
+        circuit depends only on the branch choices — while each pair keeps
+        its own weight and measured Pauli.
+
+        Declares an ``OBSERVABLE_OVERRIDE`` of single-term observables so the
+        measurement stage reports each Pauli term separately; the noisy side
+        of the estimator needs the same term resolution as the classical side.
         """
         observables = self._validate_observable_tuple(observable)
 
@@ -946,14 +1126,15 @@ class QuEPP(QEMProtocol):
         tableaus = _build_clifford_tableaus(working, rotations)
 
         # ----- Per-observable path enumeration --------------------------- #
+        obs_terms_list = [_obs_to_stim_terms(obs, n_qubits) for obs in observables]
         obs_paths_list: list[list[_PauliPath]] = []
-        for obs in observables:
+        for obs_terms in obs_terms_list:
             prep = _PreprocResult(
                 working=working,
                 n_qubits=n_qubits,
                 rotations=rotations,
                 tableaus=tableaus,
-                obs_terms=_obs_to_stim_terms(obs, n_qubits),
+                obs_terms=obs_terms,
                 symbolic=symbolic,
             )
             obs_paths_list.append(self._select_paths(prep))
@@ -977,7 +1158,13 @@ class QuEPP(QEMProtocol):
 
         merged_dags = (dag,) + tuple(merged_path_dags)
 
-        # ----- Per-observable per-path classical sim + weights ----------- #
+        # ----- Single-term observables to measure ------------------------- #
+        # One declared observable per (requested observable, Pauli term),
+        # carrying the original coefficient so the union that drives grouping
+        # and shot allocation is identical to declaring the whole observable.
+        declared, term_slots_per_obs = _split_into_single_terms(observables)
+
+        # ----- Per (term, path) classical sim + weights ------------------- #
         all_params: set[Parameter] | None = None
         if symbolic:
             all_params = set().union(
@@ -988,28 +1175,35 @@ class QuEPP(QEMProtocol):
                 )
             )
 
-        per_obs: list[dict] = []
-        for obs, paths in zip(observables, obs_paths_list):
+        per_obs: list[_ObservableCPT] = []
+        for obs_idx, paths in enumerate(obs_paths_list):
+            obs_terms = obs_terms_list[obs_idx]
+            obs_slots = term_slots_per_obs[obs_idx]
+
             # +1 offset because merged_dags[0] is the shared target.
             path_positions = [branch_to_dag_idx[p.branches] + 1 for p in paths]
-            dag_indices = [0] + path_positions
-
-            obs_path_dags = [
+            entry_dags = [
                 merged_path_dags[branch_to_dag_idx[p.branches]] for p in paths
             ]
-            classical_values = _simulate_clifford_ensemble(obs_path_dags, obs, n_qubits)
+            # Pair each entry's weight with *its own* term's Pauli; the
+            # coefficient rides on the value, applied exactly once.
+            entry_terms = [obs_terms[p.term_idx] for p in paths]
             weights = [p.weight for p in paths]
             per_obs.append(
-                {
-                    "classical_values": classical_values,
-                    "weights": (
+                _ObservableCPT(
+                    weights=(
                         np.array(weights, dtype=object)
                         if symbolic
                         else np.array(weights)
                     ),
-                    "n_paths": len(paths),
-                    "dag_indices": dag_indices,
-                }
+                    classical_values=_simulate_clifford_ensemble(
+                        entry_dags, entry_terms
+                    ),
+                    dag_indices=[0] + path_positions,
+                    entry_slots=[obs_slots[p.term_idx] for p in paths],
+                    target_slots=obs_slots,
+                    n_paths=len({p.branches for p in paths}),
+                )
             )
 
         context: QEMContext = {
@@ -1018,6 +1212,7 @@ class QuEPP(QEMProtocol):
             "ensemble_start": 1,
             "n_rotations": len(rotations),
             "n_paths": len(merged_path_dags),
+            OBSERVABLE_OVERRIDE: declared,
         }
         if symbolic:
             context["symbolic"] = True
@@ -1074,6 +1269,10 @@ class QuEPP(QEMProtocol):
             n_paths_per_obs.append(len(paths))
             for p in paths:
                 unique_branches.add(p.branches)
+        # The measurement stage groups whatever ``expand`` would declare, so
+        # the preview must declare it too or its fan-out understates the real
+        # one.
+        declared, _ = _split_into_single_terms(observables)
         self._warn_on_truncation_ratio(len(rotations))
         self._warn_no_diagonal_paths(len(rotations), n_paths_per_obs)
 
@@ -1088,6 +1287,7 @@ class QuEPP(QEMProtocol):
             # Persisted for introspect(); the dry path skips per_obs
             # construction, so the observable count needs its own slot.
             "n_observables": len(observables),
+            OBSERVABLE_OVERRIDE: declared,
         }
         if sampled_paths:
             context["sampled_paths"] = True
@@ -1145,8 +1345,10 @@ class QuEPP(QEMProtocol):
     ) -> list[_PauliPath]:
         """Choose sampling strategy and enumerate / sample the Pauli paths.
 
-        ``rng`` overrides the protocol's own generator, so a preview can draw the
-        same paths a run would without advancing the protocol's state.
+        ``rng`` overrides the protocol's own generator, so a preview can sample
+        without advancing the protocol's state. The draw is an independent
+        stream, not a replay of the one a run would use: a preview estimates the
+        path count rather than predicting the exact paths.
         """
         symbolic = prep.symbolic
         if self._sampling == "montecarlo" and symbolic:
@@ -1237,17 +1439,29 @@ class QuEPP(QEMProtocol):
         classical_values: np.ndarray,
         ensemble_noisy: np.ndarray,
         min_eta: float = 0.1,
-    ) -> float | None:
-        """Compute the rescaling factor η from noisy/ideal ratios."""
+    ) -> tuple[float, None] | tuple[None, str]:
+        """Compute the rescaling factor η from noisy/ideal ratios.
+
+        Returns ``(eta, None)`` when η is usable, otherwise ``(None,
+        reason)`` where *reason* is ``"no_signal"`` (no path carries a
+        measurable classical value), ``"negative"`` (the noisy ensemble has
+        the opposite sign to the exact one, which rescaling cannot repair),
+        or ``"below_floor"`` (η at or under *min_eta*, where ``1/η`` would
+        amplify noise rather than suppress it).
+        """
         valid = np.abs(classical_values) > 1e-12
         if not np.any(valid):
-            return None
+            return None, "no_signal"
         eta = float(np.median(ensemble_noisy[valid] / classical_values[valid]))
-        return eta if eta > min_eta else None
+        if eta < 0.0:
+            return None, "negative"
+        if eta <= min_eta:
+            return None, "below_floor"
+        return eta, None
 
     @staticmethod
     def evaluate_symbolic_weights(
-        per_obs_entry: dict,
+        per_obs_entry: "_ObservableCPT",
         symbols: Sequence[Parameter],
         param_values: np.ndarray,
     ) -> None:
@@ -1258,20 +1472,20 @@ class QuEPP(QEMProtocol):
         weight expressions; *param_values* are their numeric values in
         the same positional order.
         """
-        if "per_obs" in per_obs_entry:
+        if not isinstance(per_obs_entry, _ObservableCPT):
             raise TypeError(
-                "evaluate_symbolic_weights expects a per_obs entry "
-                "(context['per_obs'][i]), not the full QuEPP context."
+                f"evaluate_symbolic_weights expects a per_obs entry "
+                f"(context['per_obs'][i]); got {type(per_obs_entry).__name__}."
             )
         binding = {p: float(v) for p, v in zip(symbols, param_values)}
-        per_obs_entry["weights"] = np.array(
+        per_obs_entry.weights = np.array(
             [
                 (
                     float(w.bind({p: binding[p] for p in w.parameters}))
                     if isinstance(w, ParameterExpression)
                     else float(w)
                 )
-                for w in per_obs_entry["weights"]
+                for w in per_obs_entry.weights
             ]
         )
 
@@ -1283,10 +1497,12 @@ class QuEPP(QEMProtocol):
         """Combine quantum results with per-observable classical context(s)
         into a list of mitigated expectation values.
 
-        The context's ``per_obs`` list carries one entry per observable;
-        each entry has its own ``dag_indices`` slicing
-        ``quantum_results``, its own ``classical_values`` and ``weights``,
-        and produces one mitigated value via the QuEPP η formula.
+        ``quantum_results`` rows are indexed by the single-term observables
+        :meth:`expand` declared, so each entry reads its own term's slot via
+        ``entry_slots`` while the noisy target is summed back over the
+        observable's own terms (``target_slots``). The context's ``per_obs``
+        list still carries one entry per *requested* observable, and this
+        still returns one value per requested observable.
         """
         if context.get("symbolic"):
             raise ValueError(
@@ -1295,7 +1511,7 @@ class QuEPP(QEMProtocol):
                 "pipeline or use QuEPP(sampling='exhaustive') to bind "
                 "parameters before mitigation."
             )
-        per_obs: list[dict] | None = context.get("per_obs")
+        per_obs: list[_ObservableCPT] | None = context.get("per_obs")
         if per_obs is None:
             raise RuntimeError(
                 "QuEPP.reduce: context has no per_obs entries (was this a "
@@ -1306,20 +1522,23 @@ class QuEPP(QEMProtocol):
         n_rotations = context["n_rotations"]
 
         out: list[float] = []
-        for obs_idx, entry in enumerate(per_obs):
-            indices = entry["dag_indices"]
-            obs_results: list[float] = []
-            for i in indices:
-                row = quantum_results[i]
-                if isinstance(row, (list, tuple)):
-                    obs_results.append(float(row[obs_idx]))
-                else:
-                    obs_results.append(float(row))
-
-            target_noisy = obs_results[target_idx]
-            ensemble_noisy = np.array(obs_results[ensemble_start:], dtype=float)
-            classical_values = entry["classical_values"]
-            weights = entry["weights"]
+        for entry in per_obs:
+            dag_indices = entry.dag_indices
+            target_noisy = sum(
+                _read_slot(quantum_results[dag_indices[target_idx]], slot)
+                for slot in entry.target_slots
+            )
+            ensemble_noisy = np.array(
+                [
+                    _read_slot(quantum_results[dag_idx], slot)
+                    for dag_idx, slot in zip(
+                        dag_indices[ensemble_start:], entry.entry_slots
+                    )
+                ],
+                dtype=float,
+            )
+            classical_values = entry.classical_values
+            weights = entry.weights
 
             if n_rotations == 0:
                 out.append(float(weights @ classical_values))
@@ -1328,27 +1547,71 @@ class QuEPP(QEMProtocol):
             classical_est = float(weights @ classical_values)
             noisy_est = float(weights @ ensemble_noisy)
 
-            eta = self.compute_eta(classical_values, ensemble_noisy)
+            eta, rejection = self.compute_eta(classical_values, ensemble_noisy)
             if eta is None:
-                valid = np.abs(classical_values) > 1e-12
-                if np.any(valid):
-                    entry["_signal_destroyed"] = True
+                entry.eta_rejection = rejection
                 out.append(float(target_noisy))
                 continue
+
+            if 1.0 / eta > _ETA_AMPLIFICATION_LIMIT:
+                entry.eta_amplifying = float(1.0 / eta)
 
             out.append(classical_est + (target_noisy - noisy_est) / eta)
 
         return out
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
-        destroyed = 0
+        reasons: dict[str, int] = {}
+        amplifications: list[float] = []
         for ctx in contexts:
-            per_obs = ctx.get("per_obs") or []
-            destroyed += sum(1 for entry in per_obs if entry.get("_signal_destroyed"))
-        if destroyed:
+            for entry in ctx.get("per_obs") or []:
+                if entry.eta_rejection is not None:
+                    reasons[entry.eta_rejection] = (
+                        reasons.get(entry.eta_rejection, 0) + 1
+                    )
+                if entry.eta_amplifying is not None:
+                    amplifications.append(entry.eta_amplifying)
+
+        # Messages carry no per-call counts on purpose: post_reduce runs once
+        # per evaluation, and Python deduplicates warnings by message text, so
+        # an interpolated count that drifts between optimizer iterations would
+        # defeat the dedup and emit one warning per iteration.
+        if reasons.get("no_signal"):
+            warnings.warn(
+                "QuEPP: an observable had no Pauli path with a non-negligible "
+                "classical expectation value, so η is undefined and the raw "
+                "noisy value was returned unmitigated. Check that the "
+                "observable's coefficients are not all negligible, and that "
+                "the circuit's final Clifford layer leaves the "
+                "back-propagated Pauli diagonal. If you also saw the "
+                "zero-diagonal-paths warning, this is that same cause "
+                "surfacing at reduction time.",
+                stacklevel=3,
+            )
+        if reasons.get("below_floor"):
             warnings.warn(
                 "QuEPP: signal destroyed — η fell below the safety threshold "
                 "and mitigation fell back to the raw noisy value. "
                 "Consider increasing shots or reducing noise.",
+                stacklevel=3,
+            )
+        if reasons.get("negative"):
+            warnings.warn(
+                "QuEPP: an observable produced a negative η — the noisy "
+                "Clifford ensemble came back with the opposite sign to the "
+                "exact one, which rescaling cannot repair, so the raw noisy "
+                "value was returned. Raise the shot count first: a sign flip "
+                "on a weak signal is often statistical. If it persists, the "
+                "noise is past this protocol's usable range — use ZNE "
+                "instead.",
+                stacklevel=3,
+            )
+        if amplifications:
+            warnings.warn(
+                f"QuEPP: η was small enough to amplify the noisy residual "
+                f"(T - N) by more than {_ETA_AMPLIFICATION_LIMIT:.0f}x. That "
+                f"residual is where the shot noise lives, so the mitigated "
+                f"value is correspondingly noisier than the unmitigated one. "
+                f"Increase shots, or reduce noise so η moves closer to 1.",
                 stacklevel=3,
             )

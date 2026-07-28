@@ -263,6 +263,35 @@ QiskitSimulator
        n_processes=2
    )
 
+**Controlling transpilation**
+
+``optimization_level`` is forwarded to :func:`~qiskit.compiler.transpile` for
+every circuit the backend runs, and defaults to ``None`` — Qiskit's own choice.
+
+Under a noise model this is worth setting deliberately. Optimization rewrites a
+circuit by how compressible it is, which is not uniform across a batch: a
+Clifford circuit collapses much further than one holding arbitrary rotations. So
+the circuits that execute can accumulate different amounts of noise than the
+ones you submitted. Protocols that compare circuits to each other are sensitive
+to this — :class:`~divi.circuits.quepp.QuEPP` infers its rescaling factor from
+exactly that comparison, so it wants ``optimization_level=0``:
+
+.. code-block:: python
+
+   from qiskit_aer.noise import NoiseModel, depolarizing_error
+
+   noise_model = NoiseModel()
+   noise_model.add_all_qubit_quantum_error(depolarizing_error(0.01, 2), ["cx"])
+
+   backend = QiskitSimulator(
+       shots=5000,
+       noise_model=noise_model,
+       optimization_level=0,  # keep executed circuits faithful to submitted ones
+   )
+
+The same applies to a mirror-circuit benchmark: at any level above 0 a noiseless
+``U · U†`` can be optimized away to nothing.
+
 QoroService
 ------------
 

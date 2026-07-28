@@ -3,12 +3,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.circuits.qem import QEMContext, QEMProtocol, _NoMitigation
+from divi.circuits.qem import (
+    OBSERVABLE_OVERRIDE,
+    QEMContext,
+    QEMProtocol,
+    _NoMitigation,
+)
 from divi.circuits.quepp import QuEPP
 from divi.pipeline._result_keys_operations import FOREIGN_KEY_ATTR, group_by_base_key
 from divi.pipeline.abc import (
@@ -106,6 +113,35 @@ class QEMStage(BundleStage):
 
         return tuple(bodies), ctxs
 
+    def _resolve_observable_override(
+        self, ctxs: list[QEMContext]
+    ) -> tuple[SparsePauliOp, ...] | None:
+        """The observable every context in one MetaCircuit agrees to measure.
+
+        All bodies of a MetaCircuit carry the same observable, so their
+        overrides must match; a mismatch would emit one shared measurement
+        fan-out that only some bodies' contexts can interpret.
+        """
+        overrides = [
+            ctx[OBSERVABLE_OVERRIDE] for ctx in ctxs if OBSERVABLE_OVERRIDE in ctx
+        ]
+        if not overrides:
+            return None
+        if len(overrides) != len(ctxs):
+            raise ContractViolation(
+                f"{self.protocol.name}: {len(overrides)} of {len(ctxs)} circuit "
+                f"bodies declared an observable override. Either every body "
+                f"overrides or none do."
+            )
+        first = overrides[0]
+        if any(other != first for other in overrides[1:]):
+            raise ContractViolation(
+                "QEM protocol declared conflicting observable overrides for "
+                "bodies of the same circuit; they share one measurement stage, "
+                "so the override must be identical."
+            )
+        return first
+
     def _expand_with(
         self, batch: MetaCircuitBatch, protocol_fn
     ) -> StageOutput[MetaCircuitBatch]:
@@ -117,7 +153,11 @@ class QEMStage(BundleStage):
             bodies, ctxs = self._expand_bodies(meta, protocol_fn)
             for (tag, _), ctx in zip(meta.circuit_bodies, ctxs):
                 contexts[parent_key + tag] = ctx
-            out[parent_key] = meta.set_circuit_bodies(bodies)
+            new_meta = meta.set_circuit_bodies(bodies)
+            override = self._resolve_observable_override(ctxs)
+            if override is not None:
+                new_meta = new_meta.set_observable(override)
+            out[parent_key] = new_meta
 
         return StageOutput(batch=out, token=contexts)
 
@@ -204,30 +244,30 @@ class QEMStage(BundleStage):
         per_obs = ctx.get("per_obs")
         if per_obs:
             info["n_observables"] = len(per_obs)
-            data = per_obs[0]
+            weights = per_obs[0].weights
+            classical = per_obs[0].classical_values
         else:
             # Dry path skips per_obs but persists the count separately so
             # introspect() can still surface it.
             if "n_observables" in ctx:
                 info["n_observables"] = ctx["n_observables"]
-            data = ctx
-
-        weights = data.get("weights")
+            weights = ctx.get("weights")
+            classical = ctx.get("classical_values")
         if weights is not None and len(weights) > 0:
             info["weight_sum"] = round(float(np.sum(weights)), 4)
             # L1 norm = ∑|w_i|. Coincides with weight_sum for non-negative
             # weight schemes but diverges when any path carries a negative
-            # weight (e.g. QuEPP sin-branches with sign flips). It is the
-            # variance-amplification factor: a noiseless mitigated estimate
-            # has variance proportional to (l1_norm)^2 / shots, so a value
-            # of 3.2 means the user's error bar grows ~3.2× compared to
-            # an unmitigated estimate at the same shot budget.
+            # weight (e.g. QuEPP sin-branches with sign flips), so it shows
+            # how much cancellation the reconstruction relies on. It is one
+            # of two factors in the error bar — QuEPP's rescaling contributes
+            # a further ~1/η, which QuEPP warns on itself — and QuEPP's
+            # weights are coefficient-free, so it is not in the observable's
+            # units.
             info["weight_l1_norm"] = round(float(np.sum(np.abs(weights))), 4)
             info["weight_range"] = [
                 round(float(np.min(weights)), 4),
                 round(float(np.max(weights)), 4),
             ]
-        classical = data.get("classical_values")
         if classical is not None and weights is not None and len(weights) > 0:
             info["classical_estimate"] = round(float(weights @ classical), 6)
         return info
@@ -260,7 +300,7 @@ class QEMStage(BundleStage):
             if per_obs:
                 new_per_obs = []
                 for entry in per_obs:
-                    new_entry = dict(entry)
+                    new_entry = replace(entry)
                     QuEPP.evaluate_symbolic_weights(new_entry, symbols, param_values)
                     new_per_obs.append(new_entry)
                 new_ctx["per_obs"] = new_per_obs

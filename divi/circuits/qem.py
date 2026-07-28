@@ -12,6 +12,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.pipeline.abc import ResultFormat
 
 __all__ = [
+    "OBSERVABLE_OVERRIDE",
     "QEMProtocol",
     "_NoMitigation",
 ]
@@ -19,6 +20,13 @@ __all__ = [
 #: Type alias for QEM context data passed between expand and reduce.
 #: A plain dict carrying protocol-specific side-channel information.
 QEMContext = dict
+
+#: Optional ``QEMContext`` key. A ``tuple[SparsePauliOp, ...]`` that
+#: replaces the observable on the emitted circuits, so the measurement stage
+#: reports one value per entry instead of one per originally-requested
+#: observable. A protocol that sets it owns the remapping: its ``reduce`` still
+#: returns one value per *requested* observable.
+OBSERVABLE_OVERRIDE = "observable_override"
 
 
 class QEMProtocol(ABC):
@@ -36,7 +44,10 @@ class QEMProtocol(ABC):
       expectation values.
 
     The observable flows through as a ``tuple[SparsePauliOp, ...]`` and is
-    forwarded unchanged to whichever stage needs its structure.
+    forwarded to whichever stage needs its structure. A protocol that needs
+    the measurement stage to report finer-grained values than the caller
+    asked for sets the ``OBSERVABLE_OVERRIDE`` key on its context; ``reduce``
+    then maps those values back to one per requested observable.
     """
 
     #: Number of Pauli-twirling samples requested by the protocol; ``0`` means

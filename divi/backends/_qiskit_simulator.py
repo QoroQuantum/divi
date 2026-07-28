@@ -150,6 +150,7 @@ class QiskitSimulator(CircuitRunner):
         noise_model: NoiseModel | None = None,
         track_depth: bool = False,
         force_sampling: bool = False,
+        optimization_level: int | None = None,
         _deterministic_execution: bool = False,
     ):
         """
@@ -172,6 +173,17 @@ class QiskitSimulator(CircuitRunner):
                 Access via :attr:`~divi.backends.CircuitRunner.depth_history` after execution. Defaults to False.
             force_sampling (bool, optional): If True, always use shot-based sampling
                 even for expectation value measurements. Defaults to False.
+            optimization_level (int | None, optional): Passed to
+                :func:`~qiskit.compiler.transpile` for every circuit this backend
+                runs. Defaults to None, leaving the choice to Qiskit.
+
+                Optimization rewrites a circuit by how compressible it is, which
+                is not uniform across a batch, so under a noise model the
+                executed circuits can accumulate different amounts of noise than
+                the ones submitted. Protocols that compare circuits to each other
+                — :class:`~divi.circuits.quepp.QuEPP` infers a rescaling factor
+                from exactly that comparison — need ``optimization_level=0`` to
+                stay faithful.
         """
         super().__init__(shots=shots, track_depth=track_depth)
 
@@ -195,6 +207,7 @@ class QiskitSimulator(CircuitRunner):
         self.simulation_seed = simulation_seed
         self.qiskit_backend = qiskit_backend
         self.noise_model = noise_model
+        self.optimization_level = optimization_level
         self._deterministic_execution = _deterministic_execution
 
     def set_seed(self, seed: int):
@@ -436,7 +449,12 @@ class QiskitSimulator(CircuitRunner):
         aer_simulator = self._create_simulator(resolved_backend)
         self._configure_simulator_parallelism(aer_simulator, len(prepared))
 
-        transpiled = transpile(prepared, aer_simulator, num_processes=self.n_processes)
+        transpiled = transpile(
+            prepared,
+            aer_simulator,
+            num_processes=self.n_processes,
+            optimization_level=self.optimization_level,
+        )
 
         job = aer_simulator.run(transpiled)
         batch_result = job.result()
@@ -520,7 +538,10 @@ class QiskitSimulator(CircuitRunner):
 
         # 4. Transpile
         transpiled_circuits = transpile(
-            qiskit_circuits, aer_simulator, num_processes=self.n_processes
+            qiskit_circuits,
+            aer_simulator,
+            num_processes=self.n_processes,
+            optimization_level=self.optimization_level,
         )
 
         # 5. Execute
@@ -613,6 +634,9 @@ class QiskitSimulator(CircuitRunner):
         Parameters:
             circuit: The quantum circuit to estimate execution time for as a QASM string.
             qiskit_backend: A Qiskit backend to use for gate time estimation.
+            transpilation_kwargs: Forwarded to :func:`~qiskit.compiler.transpile`.
+                Pass the same ``optimization_level`` the circuit will run at, or
+                the estimate describes a different depth than the one executed.
 
         Returns:
             float: Estimated execution time in seconds.
