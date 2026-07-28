@@ -134,8 +134,10 @@ class TestPymooOptimizer:
             optimizer, initial_params, sphere_cost_fn_population, self.rng, tmp_path
         )
 
-    def test_resume_extends_iteration_budget(self, tmp_path):
-        """Resuming with a higher max_iterations should continue running iterations."""
+    def test_resume_runs_the_iterations_it_is_given(self, tmp_path):
+        """``max_iterations`` is what to run *now*: the caller has already
+        subtracted whatever a previous run spent, so a resumed optimizer adds that
+        many on top of its restored generation count."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=6)
         initial_params = (
             self.rng.random((optimizer.n_param_sets, self.n_params)) * 2 * np.pi
@@ -154,7 +156,7 @@ class TestPymooOptimizer:
         )
 
         assert isinstance(result, OptimizeResult)
-        assert result.nit == 4, "Resume should complete up to the new iteration target"
+        assert result.nit == 6, "2 restored generations plus the 4 it was given"
 
     def test_resume_when_algorithm_finished(self, tmp_path):
         """Test resuming when the saved checkpoint was from a completed optimization."""
@@ -226,7 +228,7 @@ class TestPymooOptimizer:
         assert isinstance(result, OptimizeResult)
         assert result.x.shape == (self.n_params,)
         assert np.isfinite(result.fun)
-        assert result.nit == 5, "DE should complete up to the new iteration target"
+        assert result.nit == 7, "2 restored generations plus the 5 it was given"
 
     def test_de_population_preserved_in_checkpoint(self, tmp_path):
         """Test that DE's population is properly preserved during checkpointing."""
@@ -279,7 +281,7 @@ class TestPymooOptimizer:
             sphere_cost_fn_population, max_iterations=4, rng=self.rng
         )
         assert isinstance(result, OptimizeResult)
-        assert result.nit == 4
+        assert result.nit == 6  # 2 restored iterations plus the 4 it was given
 
     def test_optimize_with_zero_max_iterations(self):
         """Test that optimize with max_iterations=0 returns immediately."""
@@ -300,8 +302,9 @@ class TestPymooOptimizer:
         assert isinstance(result, OptimizeResult)
         assert result.nit == 3  # Should still be at iteration 3
 
-    def test_resume_with_max_iterations_equal_to_completed(self):
-        """Test resuming when max_iterations equals already completed iterations."""
+    def test_resume_adds_to_what_it_already_ran(self):
+        """The optimizer does not cap itself against a total — it runs what it is
+        handed, and the program subtracts what it already spent."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=5)
         initial_params = self.rng.random((5, self.n_params)) * 2 * np.pi
 
@@ -311,11 +314,10 @@ class TestPymooOptimizer:
         )
         assert result1.nit == 5
 
-        # Resume with same max_iterations should not run additional iterations
         result2 = optimizer.optimize(
             sphere_cost_fn_population, max_iterations=5, rng=self.rng
         )
-        assert result2.nit == 5  # Should still be 5, not 10
+        assert result2.nit == 10  # the 5 it already ran plus the 5 it was given
 
     def test_fresh_run_without_initial_params_raises(self):
         """A fresh run must receive initial_params."""

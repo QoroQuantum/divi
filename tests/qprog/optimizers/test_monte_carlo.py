@@ -274,8 +274,14 @@ class TestMonteCarloOptimizer:
                 new_population[: optimizer.n_best_sets], population[best_indices]
             )
 
-    def test_optimize_with_completed_iterations_skips_additional_evaluations(self):
-        """Ensure resuming with fewer iterations does not re-evaluate the cost."""
+    def test_resume_runs_the_iterations_it_is_given(self):
+        """``max_iterations`` is what to run *now*, not a total to reach.
+
+        Only a program knows how many iterations it has already spent, and the
+        stateless optimizers cannot know it at all, so the caller subtracts and
+        every optimizer runs exactly what it is handed —
+        :class:`~divi.qprog.VariationalQuantumAlgorithm` owns the total.
+        """
         optimizer = self._create_optimizer(keep_best_params=False)
         initial_params = self._create_initial_params()
 
@@ -290,12 +296,11 @@ class TestMonteCarloOptimizer:
         )
         assert eval_counter["calls"] == 3
 
-        # Resume with a smaller total iteration budget, should finish immediately.
         result = optimizer.optimize(
             counting_cost_fn, initial_params, max_iterations=1, rng=self.rng
         )
 
-        assert eval_counter["calls"] == 3, "No additional evaluations should be made"
+        assert eval_counter["calls"] == 4, "the resumed call runs the one it was given"
         assert isinstance(result, OptimizeResult)
         assert result.x.shape == (self.n_params,)
 

@@ -285,10 +285,9 @@ class PymooOptimizer(Optimizer):
                 with an OptimizeResult object. Defaults to None.
             **kwargs: Additional keyword arguments:
 
-                - max_iterations (int): Total desired number of iterations.
-                  When resuming from a checkpoint, this represents the total iterations
-                  desired across all runs. The optimizer will automatically calculate
-                  and run only the remaining iterations needed. Defaults to 5.
+                - max_iterations (int, optional): Iterations to run in this call.
+                  The caller subtracts whatever a previous run already spent, so a
+                  resumed optimization receives only what is left. Defaults to 5.
                 - rng (np.random.Generator): Random number generator.
 
         Returns:
@@ -298,18 +297,7 @@ class PymooOptimizer(Optimizer):
 
         # Resume from checkpoint or initialize fresh
         if self._curr_algorithm_obj is not None:
-            if self.method == PymooMethod.CMAES:
-                es = self._curr_algorithm_obj
-                # cma uses counteigen as generation counter roughly
-                # strictly speaking es.countiter is the iteration counter
-                iterations_completed = es.countiter
-            else:
-                # Pymoo DE
-                # n_gen is 1-indexed (includes initialization), so actual iterations = n_gen - 1
-                iterations_completed = self._curr_algorithm_obj.n_gen - 1
-
-            iterations_remaining = max_iterations - iterations_completed
-            iterations_to_run = max(0, iterations_remaining)
+            iterations_to_run = max_iterations
         else:
             if initial_params is None:
                 raise ValueError(

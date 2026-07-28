@@ -229,10 +229,9 @@ class MonteCarloOptimizer(Optimizer):
             callback_fn: Optional callback function to monitor progress.
             **kwargs: Additional keyword arguments:
 
-                - max_iterations (int, optional): Total desired number of iterations.
-                  When resuming from a checkpoint, this represents the total iterations
-                  desired across all runs. The optimizer will automatically calculate
-                  and run only the remaining iterations needed. Defaults to 5.
+                - max_iterations (int, optional): Iterations to run in this call.
+                  The caller subtracts whatever a previous run already spent, so a
+                  resumed optimization receives only what is left. Defaults to 5.
                 - rng (np.random.Generator, optional): Random number generator for
                   parameter sampling. Defaults to a new generator if not provided.
 
@@ -246,10 +245,7 @@ class MonteCarloOptimizer(Optimizer):
         if self._curr_population is not None and self._curr_iteration is not None:
             start_iter = self._curr_iteration + 1
             rng.bit_generator.state = self._curr_rng_state
-            # Calculate remaining iterations to reach total desired
-            iterations_completed = self._curr_iteration + 1
-            iterations_remaining = max_iterations - iterations_completed
-            end_iter = start_iter + max(0, iterations_remaining)
+            end_iter = start_iter + max_iterations
         else:
             if initial_params is None:
                 raise ValueError(

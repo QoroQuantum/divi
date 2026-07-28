@@ -640,6 +640,42 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         program.run(max_iterations=1, perform_final_computation=False)
         assert program.max_iterations == 1
 
+    def test_max_iterations_is_a_total_across_runs(self, mocker):
+        """``max_iterations`` caps the program, not the call.
+
+        Only the program knows what it has already spent — the stateless optimizers
+        keep the iterate in a local and cannot know at all — so ``run()`` subtracts
+        and hands each optimizer the remainder. Before, a repeat ``run()`` spent
+        ``max_iterations`` again on SPSA and scipy while doing nothing on the
+        population optimizers.
+        """
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        spy = mocker.spy(program.optimizer, "optimize")
+
+        program.run(max_iterations=2, perform_final_computation=False)
+        assert spy.call_args.kwargs["max_iterations"] == 2
+
+        program.current_iteration = 2
+        program.run(max_iterations=5, perform_final_computation=False)
+        assert spy.call_args.kwargs["max_iterations"] == 3, "only the remainder"
+
+    def test_a_program_at_its_limit_runs_nothing(self, mocker):
+        """Reaching the limit makes ``run()`` a no-op rather than a second batch, so
+        a finished program cannot be re-run into more circuits by accident."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        spy = mocker.spy(program.optimizer, "optimize")
+        program.max_iterations = 2
+        program.current_iteration = 2
+
+        with pytest.warns(UserWarning, match="nothing left to do"):
+            program.run(perform_final_computation=False)
+
+        spy.assert_not_called()
+        assert program.total_circuit_count == 0
+
     def test_run_successful_completion_and_state_tracking(self, mocker):
         """
         Tests that the run method correctly calls the cost function, tracks the best
@@ -1160,7 +1196,7 @@ class TestCheckpointing:
         # Should warn and not run additional iterations since already completed
         with pytest.warns(
             UserWarning,
-            match="max_iterations \\(2\\) is less than or equal to current_iteration \\(3\\)",
+            match="already run 3 of max_iterations=2",
         ):
             loaded_program.run()
 

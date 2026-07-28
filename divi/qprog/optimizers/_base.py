@@ -60,10 +60,9 @@ class Optimizer(ABC):
             callback_fn: Function called after each iteration with an OptimizeResult object.
             **kwargs: Additional keyword arguments for the optimizer:
 
-                - max_iterations (int, optional): Total desired number of iterations.
-                  When resuming from a checkpoint, this represents the total iterations
-                  desired across all runs. The optimizer will automatically calculate
-                  and run only the remaining iterations needed.
+                - max_iterations (int, optional): Iterations to run in this call.
+                  The caller subtracts whatever a previous run already spent, so a
+                  resumed optimization receives only what is left.
                   Defaults vary by optimizer (e.g., 5 for population-based optimizers,
                   None for some scipy methods).
                 - rng (np.random.Generator, optional): Random number generator for

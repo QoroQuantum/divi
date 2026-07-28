@@ -911,14 +911,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         reject_unclaimed_run_kwargs(self, kwargs)
 
-        if self.max_iterations <= self.current_iteration:
+        # ``max_iterations`` is a total, not a per-call count: a resumed run (from a
+        # checkpoint, or after raising the limit) spends only what is left, and a
+        # program already at the limit spends nothing. Optimizers receive the
+        # remaining count, so none of them needs to know about resumption.
+        iterations_remaining = self.max_iterations - self.current_iteration
+        if iterations_remaining <= 0:
             warn(
-                f"max_iterations ({self.max_iterations}) is less than or equal to "
-                f"current_iteration ({self.current_iteration}). The optimization will "
-                f"not run additional iterations since the maximum has already been "
-                f"reached.",
+                f"This program has already run {self.current_iteration} of "
+                f"max_iterations={self.max_iterations} iterations, so run() has "
+                "nothing left to do. Raise max_iterations to continue.",
                 UserWarning,
             )
+            return self
 
         def cost_fn(params, *, shots=None, return_variance=False):
             self._evaluation_counter += 1
@@ -1033,10 +1038,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             # To provide a consistent user experience, we disable `scipy`'s
             # `maxiter` and manually stop the optimization from the callback
             # when the desired number of iterations is reached.
+            # Counted against the program's own total rather than scipy's per-call
+            # ``nit``, so a resumed run stops at the limit instead of restarting it.
             if (
                 isinstance(self.optimizer, ScipyOptimizer)
                 and self.optimizer.method == ScipyMethod.COBYLA
-                and intermediate_result.nit + 1 == self.max_iterations
+                and self.current_iteration >= self.max_iterations
             ):
                 raise StopIteration
 
@@ -1049,7 +1056,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             initial_params=resolved_initial_params,
             callback_fn=_iteration_counter,
             jac=grad_fn,
-            max_iterations=self.max_iterations,
+            max_iterations=iterations_remaining,
             rng=self._optimizer_rng,
         )
         # Forward every extra evaluator the optimizer declared except ``jac``,
