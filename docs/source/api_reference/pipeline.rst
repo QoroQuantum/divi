@@ -12,6 +12,7 @@ Core
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
+   :skip: EnsembleReports
 
 Built-in Stages
 ---------------

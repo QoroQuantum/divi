@@ -16,6 +16,8 @@ from divi.pipeline import DryRunReport, PipelineCadence, StageInfo
 from divi.pipeline._dry_run import (
     _REQUIRED_CIRCUIT_STATS,
     _cost_headline,
+)
+from divi.pipeline._dry_run_format import (
     _format_factor,
 )
 from tests.pipeline._helpers import h2_vqe

@@ -185,6 +185,68 @@ Divi offers specialized algorithms for different problem types:
       )
       qnn.run(perform_final_computation=False)
 
+Check Before You Run
+--------------------
+
+Every program can tell you what it *would* submit, without executing anything.
+Rebuilding the H₂ VQE from the top of this page:
+
+.. code-block:: python
+
+   from divi.pipeline import format_dry_run
+
+   preview_vqe = VQE(
+       molecule=h2_molecule,
+       ansatz=HartreeFockAnsatz(),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       backend=MaestroSimulator(shots=1000),
+   )
+   format_dry_run(preview_vqe.dry_run())
+
+.. code-block:: text
+
+   cost
+   ├── CircuitSpecStage [circuit] → 14
+   │   ├── n_qubits: 4
+   │   ├── n_gates: 82
+   │   └── depth: 47
+   ├── MeasurementStage [obs_group] → ÷14
+   │   ├── strategy: _backend_expval
+   │   └── n_pauli_terms: 14
+   ├── Total (per evaluation): 14 ÷ 14 = 1 circuit · 1,000 shots
+   └── Summary: avg depth 47, width 4, 36 2q-gates total
+
+   sample
+   ├── CircuitSpecStage [circuit] → 1
+   ├── MeasurementStage [obs_group] → 1
+   ├── Total (once): 1 circuit · 1,000 shots
+   └── Summary: avg depth 47, width 4, 36 2q-gates total
+
+One tree per **routine** the program runs — here ``cost``, which the optimizer
+re-evaluates, and ``sample``, the single readout VQE performs after training.
+Abridged above: each stage also reports more metadata rows, and the real trees
+carry two further stages (``PreprocessStage`` and ``ParameterBindingStage``, both
+at factor ``1`` here).
+
+Read a tree bottom-up: the ``Total`` line is the number you came for — this program
+submits **1 circuit per evaluation**. The rows above show how it got there. The
+spec stage's ``14`` is the starting point (this Hamiltonian has 14 Pauli terms),
+and each stage below multiplies or divides it: here ``MaestroSimulator`` evaluates
+the whole observable at once, so ``÷14`` collapses those 14 terms back into a
+single circuit. A different backend, or error mitigation, changes those factors —
+and a natural-gradient optimizer drives extra routines of its own, which appear as
+further trees.
+
+That makes this the cheapest way to catch a misconfigured program: run it, read
+the ``Total``, and see whether the number is what you expected.
+
+One caveat: ``Total`` is per *evaluation*, not per iteration and not per run.
+Optimizers evaluate the cost more than once per step — COBYLA, used here, decides
+how often as it goes — so ``Total × max_iterations`` is a floor, not a bill. See
+:ref:`dry-run` for the full reading guide, and for what a dry run deliberately
+does **not** tell you.
+
 Backend Options
 ---------------
 
@@ -227,7 +289,7 @@ Now that you have a VQE run working, dig into the user guide:
 * **Improve noisy results** — mitigate errors with :doc:`user_guide/improving_results_qem`.
 * **Tune the optimizer** — see :doc:`user_guide/optimizers`.
 * **Inspect and diagnose runs** — :doc:`user_guide/visualization`.
-* **Understand how circuits flow through Divi** — the expand/execute/reduce model is in :doc:`user_guide/pipelines`.
+* **Understand how circuits flow through Divi** — the expand/execute/reduce model is in :doc:`user_guide/pipelines`, which also covers :ref:`previewing a run before you submit it <dry-run>`.
 * **End-to-end walkthroughs** — the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory on GitHub.
 
 Found a bug or want a feature? Open a ticket on `GitHub Issues <https://github.com/QoroQuantum/divi/issues>`_.

@@ -13,8 +13,12 @@ algorithms.
 .. note::
    If you are using built-in algorithms like :class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.QAOA`, or :class:`~divi.qprog.algorithms.TimeEvolution` you
    **don't need to interact with the pipeline directly** — each algorithm
-   constructs its own pipeline internally.  This guide is for users who want to
-   understand the internals or extend Divi with new algorithms and stages.
+   constructs its own pipeline internally.  Most of this guide is for users who
+   want to understand the internals or extend Divi with new algorithms and stages.
+
+   One section is for everyone: :ref:`dry-run` previews what any program would
+   submit before it executes a single circuit.  You do not need to understand
+   anything below to use it.
 
 
 How the Pipeline Works
@@ -130,6 +134,12 @@ Divi ships with the following built-in stages:
      - Bundle
      - Substitutes symbolic parameters with concrete numerical values to produce
        one circuit variant per parameter set.
+   * - :class:`~divi.pipeline.stages.DataBindingStage`
+     - Bundle
+     - Fans each circuit out over a batch of input samples, binding the data
+       parameters per sample. Used by :class:`~divi.qprog.algorithms.QNN` and any
+       data-bound :class:`~divi.qprog.algorithms.CustomVQA`; adds the
+       ``data_sample`` axis.
    * - :class:`~divi.pipeline.stages.QEMStage`
      - Bundle
      - Applies a :class:`~divi.circuits.qem.QEMProtocol` (e.g. ZNE) in the
@@ -153,37 +163,64 @@ Divi ships with the following built-in stages:
 Dry Run
 -------
 
-Before executing any circuits you can inspect the pipeline to understand the
-total circuit count and how each stage contributes to it.  Call
-:meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program, then pass
-the resulting dict to :func:`~divi.pipeline.format_dry_run` for the rich
-tree output:
+A dry run is a **sanity check on the pipeline you just constructed**, performed
+before a single circuit executes.  It walks each pipeline's forward pass and
+reports what that pipeline *is*: which stages it contains, in what order, what
+each one fans out or reduces, and the shape of the circuits that come out the
+end.  Use it to confirm the pipeline you built is the pipeline you meant —
+that the mitigation you configured actually applies, that observable grouping
+is doing what you expect, that an optimizer is driving the auxiliary pipelines
+you think it is.
 
-.. skip: next
+It is deliberately a *back-of-the-envelope* instrument, not a cost model: the
+counts it reports describe one pass through the pipeline, and it does not
+attempt to predict a full optimization run (see
+:ref:`what-a-dry-run-does-not-tell-you`).  Its strength is **comparison** —
+run it twice with different settings and read off what changed.
+
+Call :meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program, then
+pass the resulting dict to :func:`~divi.pipeline.format_dry_run` for the rich
+tree output:
 
 .. code-block:: python
 
+   import numpy as np
+   import pennylane as qp
+
+   from divi.backends import QiskitSimulator
+   from divi.circuits.quepp import QuEPP
    from divi.pipeline import format_dry_run
+   from divi.qprog import VQE
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+
+   h2_molecule = qp.qchem.Molecule(
+       symbols=["H", "H"],
+       coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
+   )
 
    vqe = VQE(
        molecule=h2_molecule,
        qem_protocol=QuEPP(truncation_order=1, n_twirls=10),
        backend=QiskitSimulator(qiskit_backend="auto"),
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
    )
 
    # Runs the forward pass without executing circuits, then pretty-print.
    format_dry_run(vqe.dry_run())
 
-``format_dry_run`` prints a tree for each pipeline showing the per-stage
-factor (fan-out or reduction) and metadata:
+``format_dry_run`` prints a tree per pipeline showing the per-stage factor
+(fan-out or reduction) and metadata.  Here is the ``cost`` tree for the program
+above, with some metadata rows trimmed:
 
 .. code-block:: text
 
    cost
    ├── CircuitSpecStage [circuit] → 14
    │   ├── n_qubits: 4
-   │   ├── n_gates: 4
-   │   └── n_2q_gates: 2
+   │   ├── n_gates: 42
+   │   ├── n_2q_gates: 18
+   │   └── depth: 24
+   ├── PreprocessStage [PreprocessStage] → 1
    ├── QEMStage [qem_quepp] → ×10
    │   ├── protocol: quepp
    │   ├── n_paths: 9
@@ -193,35 +230,244 @@ factor (fan-out or reduction) and metadata:
    ├── MeasurementStage [obs_group] → ÷2.8
    │   ├── strategy: qwc
    │   ├── n_groups: 5
-   │   └── n_terms: 14
+   │   ├── n_pauli_terms: 14
+   │   └── shots_per_circuit: 5000
    ├── ParameterBindingStage [param_set] → 1
-   │   └── n_params: 3
-   └── Total: 14 × 10 × 10 ÷ 2.8 = 500 circuits
+   │   ├── n_param_sets: 1
+   │   └── n_bound_params: 3
+   ├── Total (per evaluation): 14 × 10 × 10 ÷ 2.8 = 500 circuits · 2,500,000 shots
+   └── Summary: avg depth 24, width 4, 9000 2q-gates total
 
-The spec stage's number (here ``14``) is the naive baseline: one circuit per
-Pauli term in the observable.  Stages that *fan out* show up as ``×K`` (QEM
-path enumeration, Pauli twirling); stages that *reduce* show up as ``÷K``
-(observable grouping collapsing commuting Pauli terms into shared
-measurement circuits).  Use this to estimate cloud costs, tune
-``truncation_order`` or ``n_twirls``, and see at a glance how much grouping
-saves — all before spending a single shot.
+Reading the tree: the spec stage's ``14`` is the naive baseline (one circuit per
+Pauli term); ``×K`` stages fan out (QEM paths, twirls), ``÷K`` stages reduce
+(observable grouping).  The ``Total`` line is what one pass through this
+pipeline submits — **one evaluation** — and the ``Summary`` line describes the
+*shape* of those circuits (depth, width, entangling-gate count).
 
-``dry_run()`` itself is print-free — it returns a
-``dict[str, DryRunReport]`` keyed by pipeline name (e.g. ``"cost"``,
-``"measurement"``), so you can inspect the report programmatically instead of
-(or in addition to) rendering it.  Note that ``dry_run()`` only reports
-**pre-registered** named pipelines (those the algorithm builds in its
-constructor or via its ``_preprocessors`` hook).  A program that assembles its
-pipeline dynamically inside ``run()`` — i.e. never calling ``evaluate()`` with
-a named preprocessor — returns ``{}`` from ``dry_run()``.
+The name in brackets after each stage is the *axis* it fans out over — the
+dimension its extra circuits vary along (``[obs_group]`` one per commuting group,
+``[twirl]`` one per twirl, ``[param_set]`` one per parameter vector,
+``[data_sample]`` one per feature row).  A stage that declares no axis of its own
+repeats its class name there, which is why ``PreprocessStage [PreprocessStage]``
+looks redundant: it restructures circuits without adding a dimension.
+
+For most optimizers one evaluation is one parameter vector (θ).  A *population*
+optimizer binds its whole working set in a single pass, so there the count covers
+all of them and the line says so explicitly:
+``Total (per evaluation, all 10 parameter sets)``.  Read the label, not the
+assumption.
+
+.. important::
+
+   Those shape figures are **logical**: they are measured before transpilation,
+   so they model no coupling map and include no routing SWAPs.  On a device whose
+   qubits are not all-to-all connected, the submitted circuit is deeper and
+   carries more entangling gates than reported — often substantially, for an
+   ansatz with long-range interactions.  Treat them as a lower bound on circuit
+   shape, and transpile a representative circuit against your target device
+   before concluding that it fits.
+
+**The report stops at one evaluation.**  How many evaluations an optimizer spends
+per step, and how many steps a run takes, are not modeled here: a gradient-free
+method decides as it goes, a line search spends what the landscape demands, and
+SPSA-style methods add fixed extras (a resampled gradient, a blocking baseline)
+that vary with their own settings.  Reaching a run total means multiplying by
+figures only you have — consult the optimizer's own documentation for its call
+pattern, or measure one short run and scale.
+
+What the report *does* say about run structure is which routines recur: a
+``PER_EVALUATION`` pipeline runs every time the optimizer evaluates, a ``ONCE``
+pipeline runs one time (the final readout).  The ensemble roll-up keeps the two
+buckets apart for the same reason.
+
+Data-bound programs fan out over their input batch as well, on an axis of their
+own:
+
+.. code-block:: python
+
+   import numpy as np
+   from qiskit.circuit.library import RYGate, RZGate
+
+   from divi.backends import MaestroSimulator
+   from divi.pipeline import format_dry_run
+   from divi.qprog.algorithms import QNN, GenericLayerAnsatz
+   from divi.qprog.algorithms._feature_maps import AngleEmbedding
+   from divi.qprog.optimizers import SPSAOptimizer
+
+   qnn = QNN(
+       n_qubits=3,
+       feature_map=AngleEmbedding(),
+       ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+       feature_batch=np.random.default_rng(0).random((8, 3)),
+       labels=np.array([1.0, -1.0] * 4),
+       backend=MaestroSimulator(shots=1000),
+       optimizer=SPSAOptimizer(),
+   )
+   format_dry_run(qnn.dry_run())
+
+Which gives (metadata rows trimmed as above):
+
+.. code-block:: text
+
+   cost
+   ├── CircuitSpecStage [circuit] → 1
+   │   ├── n_qubits: 3
+   │   └── depth: 3
+   ├── DataBindingStage [data_sample] → ×8
+   │   ├── n_samples: 8
+   │   ├── n_data_params: 3
+   │   ├── supervised: True
+   │   └── path: template
+   ├── PreprocessStage [PreprocessStage] → 1
+   ├── MeasurementStage [obs_group] → 1
+   │   ├── strategy: _backend_expval
+   │   └── n_pauli_terms: 1
+   ├── ParameterBindingStage [param_set] → 1
+   │   ├── n_param_sets: 1
+   │   └── n_bound_params: 6
+   ├── Total (per evaluation): 8 circuits · 8,000 shots
+   └── Summary: avg depth 3, width 3
+
+The batch multiplies against everything else — observable grouping, mitigation
+fan-out, and ``n_param_sets`` for a population optimizer — so a batch-size sweep
+reads straight off the ``Total`` line.  ``n_bound_params`` counts what
+:class:`~divi.pipeline.stages.ParameterBindingStage` binds (the weights); the
+data parameters are bound by
+:class:`~divi.pipeline.stages.DataBindingStage` and counted as ``n_data_params``.
+
+.. note::
+
+   Inference is not previewed.  ``predict()`` assembles its own pipeline outside
+   the routines :meth:`~divi.qprog.QuantumProgram.dry_run` walks, so scoring a test
+   set submits circuits the report never mentions: one per sample **per measurement
+   group**.  Read the group count off the ``cost`` tree's ``n_groups`` — on an
+   expval-native backend that is 1, so 3 samples cost 3 circuits, but a sampling
+   backend with a four-group observable makes the same 3 samples cost 12.
+
+This is the level the report stops at.  It describes pipelines, not runs.
+
+.. note::
+
+   The report mirrors the backend you pass, which makes it useful for spotting
+   backend-dependent restructuring.  An analytic-expval backend (e.g.
+   :class:`~divi.backends.MaestroSimulator`) collapses the whole observable into
+   a single circuit — the ``÷14`` you see there is that collapse, not observable
+   grouping — and reports its configured ``shots`` even though it consumes none.
+   The measurement stage names it: ``strategy: _backend_expval`` means the backend
+   evaluated the observable itself and no basis-change circuits were built, whereas
+   ``strategy: qwc`` means terms were partitioned into commuting groups.
+
+   Which of the two you get is a property of the backend *instance*, not its class:
+   :class:`~divi.backends.QiskitSimulator` computes expectation values analytically
+   by default, but ``force_sampling=True`` — or naming a Qiskit backend, as in
+   ``QiskitSimulator(qiskit_backend="auto")`` — sets ``supports_expval=False`` and
+   switches the tree to ``qwc``.  Inspect against the backend you will actually
+   submit to when the measurement structure is what you care about.
+
+``dry_run()`` is print-free — it returns a ``dict[str, DryRunReport]`` keyed by
+pipeline name for programmatic use, so you can assert on pipeline structure in a
+test or a notebook.
+
+It reports the routines a program *registers*, which is what
+``_preprocessors()`` returns — not every pipeline the program happens to run.
+Calling :meth:`~divi.qprog.QuantumProgram.evaluate` with an ad-hoc preprocessor
+does not register anything, so a custom program that only does that returns
+``{}``.  To make a routine previewable, add it to ``_preprocessors()``:
 
 .. skip: next
 
 .. code-block:: python
 
-   reports = vqe.dry_run()
-   print(reports["cost"].total_circuits)   # 500
-   print(reports["cost"].stages[3].metadata)  # QEM stage metadata dict
+   def _preprocessors(self):
+       return (*super()._preprocessors(), self._my_routine())
+
+.. code-block:: python
+
+   reports = vqe.dry_run()   # `vqe` from the example above
+   cost = reports["cost"]
+
+   # What is in this pipeline, and what does each stage do to the batch?
+   # `factor` is the ratio of circuits out to circuits in, so a reduction reads as
+   # a fraction: the tree's ÷14 is factor == 1 / 14 here.
+   print([(s.name, s.factor) for s in cost.stages])
+   print(cost.total_circuits)        # 500 — one evaluation (this optimizer: one θ)
+   print(cost.cadence)               # PipelineCadence.PER_EVALUATION
+
+When you do want a figure spanning several pipelines, keep the cadences apart:
+recurring pipelines are not comparable with one-time ones, and only you know how
+many evaluations your optimizer will spend.  A ``ONCE`` routine runs *at most*
+once — ``run(perform_final_computation=False)`` skips solution sampling
+altogether, so drop it from the total on that path.
+
+Metric-Optimizer Pipelines
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A natural-gradient optimizer does not just re-run the cost pipeline — it drives
+*additional* pipelines of its own, and a dry run shows them so the pipeline set
+you inspect is the one that will actually run.  Both ``QNSPSAOptimizer`` and
+``QNGOptimizer`` add a ``"metric"`` pipeline, whatever the estimator measures to
+get there; the exception is
+:class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator`, which measures each
+commuting-gate block separately and so reports one ``"metric[block N]"`` per
+block.  Each pipeline is labeled by
+**cadence** — ``cost`` and the metric recur *per evaluation*, ``sample`` runs
+*once* — so recurring and one-time pipelines are never conflated.  Each prints
+its own tree; the per-stage rows are elided below (``…``):
+
+.. code-block:: text
+
+   cost
+   ├── …
+   ├── Total (per evaluation): 14 ÷ 2.8 = 5 circuits · 25,000 shots
+   └── Summary: avg depth 24, width 4, 90 2q-gates total
+
+   sample
+   ├── …
+   ├── Total (once): 1 circuit · 5,000 shots
+   └── Summary: avg depth 24, width 4, 18 2q-gates total
+
+   metric
+   ├── …
+   ├── Total (per evaluation): 1 circuit · 5,000 shots
+   └── Summary: avg depth 48, width 4, 36 2q-gates total
+
+Being able to see this is the point: before running anything, you can read off
+what each routine costs per evaluation and how they differ in shape — here the
+``metric`` circuits are twice as deep as the cost circuits, because QN-SPSA's
+estimator measures state overlaps and so concatenates two parameter vectors.  How
+often the optimizer calls each routine is its own business (see the optimizer's
+documentation); what the tree fixes is the per-call cost.
+
+.. _what-a-dry-run-does-not-tell-you:
+
+What a Dry Run Does Not Tell You
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A dry run describes **pipelines**, not runs.  It stops deliberately short of a
+few things, and knowing where the edge is keeps it useful:
+
+- **It does not project a full optimization run.**  Nothing is multiplied by
+  ``max_iterations``, because how many iterations a variational algorithm needs
+  is a property of the optimization landscape, not of the pipeline.
+- **It does not model the optimizer's call pattern.**  An optimizer may evaluate
+  the cost several times per step — a parameter-shift sweep, a resampled
+  gradient, a line search, a blocking baseline — and how many varies with its own
+  settings and, for adaptive methods, with the run.  The report describes one
+  evaluation of each pipeline; multiply by your optimizer's call pattern to reach
+  a per-iteration figure, and measure a short run if you need certainty.
+- **Shot counts are a pipeline attribute, not a bill.**  They are
+  ``total_circuits`` weighted by each circuit's configured shot budget.  An
+  analytic backend reports its configured ``shots`` while consuming none, and
+  what a provider actually charges for depends on how submissions are batched.
+- **The ``Summary`` shape figures can predate error mitigation.**  On the default
+  analytic path a stage that rewrites circuits (QEM variants, Pauli twirling) is
+  previewed as placeholders, so depth and gate counts describe the circuits
+  entering it — the circuit *counts* stay exact either way.  Whenever a tree
+  shows a ``QEMStage`` or ``PauliTwirlStage``, read its depth as pre-rewrite, and
+  pass ``force_circuit_generation=True`` to expand and measure for real.
+- **It does not check numerics.**  A pipeline can be perfectly well-formed and
+  still produce a bad answer.  A dry run tells you the shape of the computation,
+  never its quality.
 
 When Dry Run Falls Back
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -243,6 +489,71 @@ pipeline that uses it), or, if that stage does not actually mutate body
 DAGs in place, declare ``consumes_dag_bodies=False`` on it so the
 pipeline no longer sees it as unsafe.
 
+Dry Running an Ensemble
+~~~~~~~~~~~~~~~~~~~~~~~
+
+A :class:`~divi.qprog.ensemble.ProgramEnsemble` runs many quantum programs
+together, so it exposes its own
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.dry_run` that previews every
+sub-program at once — no manual loop over ``ensemble.programs``.  Call it
+after :meth:`~divi.qprog.ensemble.ProgramEnsemble.create_programs`; it returns
+a nested dict keyed by program identifier, where each value is exactly the
+``dict[str, DryRunReport]`` a single program returns.  For a runnable
+end-to-end example that also builds the ensemble, see
+:ref:`ensemble-dry-run`.
+
+The same :func:`~divi.pipeline.format_dry_run` renders both the single-program
+and the ensemble result.  By default it picks a layout from the program count
+(``verbose`` for ≤ 3 programs, ``compact`` for ≤ 16, ``grouped`` beyond) — or
+you can force one with the ``style`` argument:
+
+- ``"compact"`` — one summary line per pipeline per program, plus an ensemble
+  grand total.
+- ``"grouped"`` — collapse structurally identical programs into one tree with
+  a count and subtotal, then the grand total.  Best for large sweeps or
+  partitions where many sub-programs share the same fan-out shape.  Programs
+  optimizing *different objectives* are never collapsed.  What counts as a
+  different objective is specific: a different observable (each QAOA graph has its
+  own Hamiltonian), a supervised reduction versus an unsupervised one, or different
+  settings on the terminal stage that computes the objective (a CVaR tail
+  fraction).  It does **not** include swapping one loss *function* for another at
+  the same supervision, or changing the gate sequence — those programs still group,
+  and the report discloses the difference as a ``mixed (…)`` row rather than by
+  splitting the group.  So a sweep over distinct problems groups nothing, and there
+  the view falls back to ``compact`` and says which trait separated them, rather
+  than printing a full tree per program.
+- ``"verbose"`` — a full stage tree per program, then the grand total.
+
+``style`` applies to the nested ensemble result; on a flat single-program result
+it is validated and then has nothing to select between.  See
+:ref:`ensemble-dry-run` for a runnable example, including reading the nested
+result programmatically.
+
+If any sub-program can't be previewed, ``dry_run`` raises and names it — never a
+partial report.  A five-program bond-length sweep (``compact`` band) shows one
+line per pipeline per program plus a grand total with the widest circuit:
+
+.. code-block:: text
+
+   Ensemble Dry Run  (5 programs)
+   ├── bond_0.5  (4q, 24 deep)
+   │   ├── cost: 5 circuits · 25,000 shots  per evaluation, 14 ÷ 2.8
+   │   └── sample: 1 circuit · 5,000 shots  once
+   ├── bond_0.7  (4q, 24 deep)
+   │   ...
+   └── Ensemble total — per evaluation: 25 circuits · 125,000 shots; once: 5 circuits · 25,000 shots · widest 4q · deepest 24
+
+Each pipeline row names the quantity it reports — ``per evaluation`` for a
+recurring routine, ``once`` for a one-time one — so the two are never summed by
+eye into a single number.
+
+The grand total keeps cadences apart (recurring ``cost`` vs one-time
+``sample``).  Each program's fan-out expression reflects only its registered
+stages — this plain VQE has no QEM, so ``cost`` is just the ``14 ÷ 2.8``
+grouping reduction.  The per-program tag carries width *and* depth: a sweep may
+submit the same number of circuits at every setting while their depth changes,
+which is the difference between the members that a circuit count cannot show
+(subject to the logical-shape caveat above).
 
 How Existing Algorithms Build Pipelines
 ---------------------------------------
@@ -272,7 +583,8 @@ solution-extracting programs add a ``sample`` protocol from
 
    def cost_preprocessor(self):
        # Public + overridable (PCE returns a counts-based variant).
-       return CircuitPreprocessor("cost", cache_key="cost")   # identity, EXPVALS
+       # identity transform, EXPVALS, recurring per evaluation (the defaults)
+       return CircuitPreprocessor("cost", cache_key="cost")
 
    # A caller (e.g. an optimizer) measures the prepared state through one verb:
    #   losses = program.evaluate(params, program.cost_preprocessor())
@@ -295,8 +607,11 @@ a protocol is decided by the QEM protocol itself
 mitigation rides expectation-value protocols but not the probability-sampling
 one. Natural-gradient optimizers measure their metric by passing a dynamic
 :class:`~divi.pipeline.CircuitPreprocessor` to
-:meth:`~divi.qprog.QuantumProgram.evaluate`, so a metric is never a separate
-registered pipeline.
+:meth:`~divi.qprog.QuantumProgram.evaluate` rather than registering it as one of
+the program's own routines. They do, however, declare those routines through
+:meth:`~divi.qprog.optimizers.Optimizer.preprocessors`, which the program folds
+into its own set — so a dry run accounts for their cost (see the metric-optimizer
+example under :ref:`dry-run`).
 
 **Stage ordering affects performance.**  Because each stage in the expand pass
 fans out the batch it receives, any work-multiplying stage placed early forces
@@ -704,6 +1019,12 @@ The following minimal example replicates each circuit body twice along a
        def axis_name(self):
            return "replica"
 
+       @property
+       def consumes_dag_bodies(self):
+           # Re-tags the incoming DAGs without reading or mutating them, so
+           # upstream stages can keep their analytic dry path.
+           return False
+
        def expand(self, batch: MetaCircuitBatch, env: PipelineEnv) -> StageOutput:
            out: MetaCircuitBatch = {}
            for parent_key, meta in batch.items():
@@ -791,7 +1112,11 @@ themselves — the base class does not append one.  Skipping it raises
 
    from divi.circuits import MetaCircuit
    from divi.backends import MaestroSimulator
-   from divi.pipeline import CircuitPipeline, CircuitPreprocessor, ResultFormat
+   from divi.pipeline import (
+       CircuitPipeline,
+       CircuitPreprocessor,
+       ResultFormat,
+   )
    from divi.pipeline.stages import (
        CircuitSpecStage,
        MeasurementStage,
@@ -837,6 +1162,8 @@ themselves — the base class does not append one.  Skipping it raises
        def run(self):
            preprocessor = CircuitPreprocessor(
                name="cost",
+               # cadence defaults to PER_EVALUATION (recurring); pass
+               # PipelineCadence.ONCE for a routine that runs a single time.
                result_format=ResultFormat.EXPVALS,
                terminal_stage=MeasurementStage(),
            )

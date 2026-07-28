@@ -10,6 +10,8 @@ from typing import cast
 import numpy as np
 import pennylane as qp
 from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit.circuit.library import RYGate, RZGate
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -17,9 +19,11 @@ from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
 from divi.pipeline import (
     CircuitPipeline,
+    PipelineCadence,
     PipelineEnv,
     PipelineTrace,
     StageOutput,
+    dry_run_pipeline,
 )
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline.abc import (
@@ -32,6 +36,7 @@ from divi.pipeline.abc import (
 )
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
 from divi.qprog import VQE, HartreeFockAnsatz
+from divi.qprog.algorithms import GenericLayerAnsatz
 
 
 class DummySpecStage(SpecStage[str]):
@@ -158,6 +163,78 @@ def h2_vqe(backend, optimizer, **kwargs):
         optimizer=optimizer,
         **kwargs,
     )
+
+
+def metric_compatible_vqe(backend, optimizer, n_layers: int = 1):
+    """A VQE whose GenericLayerAnsatz is compatible with all three metric
+    estimators (expval cost, invertible, FS-supported RY/RZ gates)."""
+    return VQE(
+        molecule=qp.qchem.Molecule(
+            symbols=["H", "H"],
+            coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
+        ),
+        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+        n_layers=n_layers,
+        backend=backend,
+        optimizer=optimizer,
+    )
+
+
+def parametric_twirlable_meta() -> MetaCircuit:
+    """MetaCircuit with CX gates (twirlable) and free parameters (bindable)."""
+    theta = Parameter("theta")
+    phi = Parameter("phi")
+    qc = QuantumCircuit(2)
+    qc.rx(theta, 0)
+    qc.cx(0, 1)
+    qc.ry(phi, 1)
+    qc.cx(1, 0)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=(theta, phi),
+        observable=SparsePauliOp.from_list([("ZZ", 0.9), ("XX", 0.4)]),
+    )
+
+
+def dry_run_stages(
+    stages,
+    env,
+    *,
+    dry=True,
+    name="test",
+    cadence=PipelineCadence.PER_EVALUATION,
+    **pipeline_kwargs,
+):
+    """Build a pipeline over ``stages``, run one forward pass, and return
+    ``(trace, report)`` for that pass.
+
+    These are bare pipelines with no routine behind them, so ``cadence`` is the
+    caller's choice rather than a declared one.
+
+    A fresh ``CircuitPipeline`` is built per call, so a real and a dry pass over
+    equivalent ``stages`` never share a forward-pass cache.
+    """
+    pipeline = CircuitPipeline(stages=stages, **pipeline_kwargs)
+    trace = pipeline.run_forward_pass("ignored", env, dry=dry)
+    report = dry_run_pipeline(name, trace, pipeline.stages, env, cadence)
+    return trace, report
+
+
+def assert_same_fanout(report_a, report_b):
+    """Two reports agree on total circuit count and per-stage fan-out factor."""
+    assert report_a.total_circuits == report_b.total_circuits
+    for stage_a, stage_b in zip(report_a.stages, report_b.stages):
+        assert (
+            stage_a.factor == stage_b.factor
+        ), f"{stage_a.name}: {stage_a.factor} != {stage_b.factor}"
+
+
+def assert_report_dicts_match(reports_a, reports_b):
+    """Per-pipeline report dicts (``QuantumProgram.dry_run`` output) agree
+    pipeline-by-pipeline on totals and per-stage fan-out."""
+    assert set(reports_a) == set(reports_b)
+    for name in reports_a:
+        assert_same_fanout(reports_a[name], reports_b[name])
 
 
 class MisTaggedFanoutStage(BundleStage):

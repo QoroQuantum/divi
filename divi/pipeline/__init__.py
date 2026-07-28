@@ -15,10 +15,11 @@ from ._core import (
 )
 from ._dry_run import (
     DryRunReport,
+    EnsembleReports,
     StageInfo,
     dry_run_pipeline,
-    format_dry_run,
 )
+from ._dry_run_format import format_dry_run
 from ._grouping import GroupingStrategy
 from ._preprocessor import (
     CircuitPreprocessor,
@@ -49,6 +50,7 @@ __all__ = [
     "ContractViolation",
     "DiviPerformanceWarning",
     "DryRunReport",
+    "EnsembleReports",
     "ExpansionResult",
     "GroupingStrategy",
     "CircuitPreprocessor",

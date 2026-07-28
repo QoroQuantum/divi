@@ -277,6 +277,68 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
    results = sweep.aggregate_results()
    print(results)
 
+.. _ensemble-dry-run:
+
+Inspecting an Ensemble Before Running It
+----------------------------------------
+
+An ensemble multiplies whatever you got wrong in one program by the number of
+programs, so it is worth checking the shape of what you built first.
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.dry_run` traverses every
+sub-program's pipeline without executing anything, returning a nested dict keyed
+by program identifier; pass it to :func:`~divi.pipeline.format_dry_run` for a
+per-program breakdown and an ensemble-wide roll-up:
+
+A dry run needs only ``create_programs()`` — never a ``run()`` — so it costs
+nothing on a fresh ensemble.  Reusing ``CustomParameterSweep`` from above with
+three cheap H₂ geometries instead of the molecules it was built with:
+
+.. code-block:: python
+
+   from divi.pipeline import format_dry_run
+
+   bond_sweep = CustomParameterSweep(
+       MaestroSimulator(),
+       [
+           qp.qchem.Molecule(
+               symbols=["H", "H"],
+               coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, d]]),
+           )
+           for d in (0.66, 0.74, 0.82)
+       ],
+   )
+   bond_sweep.create_programs()
+
+   reports = bond_sweep.dry_run()
+   format_dry_run(reports)
+
+   # Which programs differ in structure, and how?
+   for program_id, program_reports in reports.items():
+       cost = program_reports["cost"]
+       print(program_id, cost.total_circuits, cost.circuit_stats.get("max_width"))
+
+``format_dry_run`` auto-selects a layout from the program count; pass
+``style="compact"``, ``"grouped"``, or ``"verbose"`` to force one.
+
+``grouped`` collapses programs that traverse their pipelines identically *and*
+agree on the discrete facts a misconfiguration changes — qubit count, parameter
+count, and the objective they optimize.  That last one decides most real cases:
+programs measuring different observables never group, so a bond-length sweep or a
+partitioning run (each partition has its own subgraph Hamiltonian) groups nothing
+and falls back to ``compact``, naming the trait that separated them.  Where members
+*do* group, a program that lands in a group of its own is the one to look at first.
+
+Members of a group can still differ in circuit *content*, and the report says so
+rather than averaging it away: a field the members disagree on renders as
+``mixed (…)``, a stage whose fan-out varies reports a ``factor_range``, and the
+``Summary`` line shows the depth span instead of a mean describing no member.
+The report also covers each sub-program's optimizer-driven metric/overlap
+pipelines, not just cost and sample.
+
+The roll-up keeps recurring and one-time pipelines apart rather than summing
+them, for the reasons in :ref:`what-a-dry-run-does-not-tell-you`.  See
+:ref:`dry-run` for the full walkthrough, the three styles, and sample output.
+
 Progress Monitoring and Control
 -------------------------------
 

@@ -1893,3 +1893,45 @@ class TestEnsembleCountAccounting:
 
         assert ensemble.total_circuit_count == 30
         assert ensemble.total_run_time == 10.0
+
+
+class TestProgramEnsembleDryRun:
+    """``ProgramEnsemble.dry_run`` delegates to each sub-program and keys the
+    result by program identifier, without touching the run-time machinery."""
+
+    def test_report_keyed_by_program_id(self, program_ensemble):
+        # Keying only; per-program content passthrough is covered by
+        # test_keys_by_program_id_and_forwards_force_flag (with distinct
+        # sentinel values, since the stub programs return {} here).
+        program_ensemble.create_programs()
+        reports = program_ensemble.dry_run()
+        assert set(reports) == set(program_ensemble.programs)
+
+    def test_without_programs_raises(self, program_ensemble):
+        with pytest.raises(RuntimeError, match="create_programs"):
+            program_ensemble.dry_run()
+
+    def test_keys_by_program_id_and_forwards_force_flag(self, program_ensemble, mocker):
+        program_ensemble.create_programs()
+        sentinels = {}
+        spies = {}
+        for prog_id, program in program_ensemble.programs.items():
+            sentinels[prog_id] = {"cost": mocker.sentinel.report}
+            spies[prog_id] = mocker.patch.object(
+                program, "dry_run", return_value=sentinels[prog_id]
+            )
+
+        reports = program_ensemble.dry_run(force_circuit_generation=True)
+
+        assert reports == sentinels
+        for spy in spies.values():
+            spy.assert_called_once_with(force_circuit_generation=True)
+
+    def test_failing_program_aborts_and_is_named(self, program_ensemble, mocker):
+        program_ensemble.create_programs()
+        programs = program_ensemble.programs
+        mocker.patch.object(
+            programs["prog2"], "dry_run", side_effect=ValueError("boom")
+        )
+        with pytest.raises(RuntimeError, match="prog2"):
+            program_ensemble.dry_run()

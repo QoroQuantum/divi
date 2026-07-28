@@ -21,6 +21,7 @@ from rich.traceback import Traceback
 
 from divi.backends import CircuitRunner
 from divi.exceptions import ExecutionCancelledError
+from divi.pipeline import EnsembleReports
 from divi.qprog._batch_coordinator import (
     BatchConfig,
     BatchMode,
@@ -141,6 +142,42 @@ class ProgramEnsemble(ABC):
     def programs(self, value: dict):
         """Set the programs dictionary."""
         self._programs = value
+
+    def dry_run(self, *, force_circuit_generation: bool = False) -> EnsembleReports:
+        """Preview every sub-program's circuit fan-out without executing anything.
+
+        Calls :meth:`~divi.qprog.QuantumProgram.dry_run` on each program and
+        keys the results by program identifier. Pass the returned dict to
+        :func:`~divi.pipeline.format_dry_run` for the tree output.
+
+        Args:
+            force_circuit_generation: Forwarded to each sub-program's
+                :meth:`~divi.qprog.QuantumProgram.dry_run`. If ``True``, every
+                stage runs its full ``expand`` path so the trace contains real
+                DAGs and QASM strings. Defaults to ``False``.
+
+        Raises:
+            RuntimeError: If no programs exist, or a sub-program's dry-run fails.
+
+        Example:
+            >>> from divi.pipeline import format_dry_run
+            >>> ensemble.create_programs()
+            >>> reports = ensemble.dry_run()
+            >>> format_dry_run(reports, style="grouped")  # pretty-print to stdout
+        """
+        if len(self._programs) == 0:
+            raise RuntimeError("No programs to dry-run. Call create_programs() first.")
+        reports: EnsembleReports = {}
+        for program_id, program in self._programs.items():
+            try:
+                reports[program_id] = program.dry_run(
+                    force_circuit_generation=force_circuit_generation
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Dry run failed for program {program_id!r}: {exc}"
+                ) from exc
+        return reports
 
     @abstractmethod
     def create_programs(self):

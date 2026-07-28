@@ -14,11 +14,9 @@ M ≤ N commuting groups saves circuits.
 from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, field
 from statistics import mean, pstdev
-from typing import Any
+from typing import Any, TypeAlias
 
 from qiskit.dagcircuit import DAGCircuit
-from rich.console import Console
-from rich.tree import Tree
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._compilation import _effective_bodies
@@ -30,14 +28,14 @@ from divi.pipeline.abc import (
     Stage,
 )
 
-#: Keys :func:`format_dry_run` indexes without a guard, so a report carrying a
-#: partial ``circuit_stats`` must be rejected rather than fail mid-render.
+#: Keys the renderers index without a guard, so a report carrying a partial
+#: ``circuit_stats`` is rejected rather than failing mid-render. ``mean_depth`` and
+#: the ``std_*`` keys are absent on purpose: a merged group omits them when its
+#: members differ, and the renderer guards them.
 _REQUIRED_CIRCUIT_STATS = frozenset(
     {
         "min_depth",
         "max_depth",
-        "mean_depth",
-        "std_depth",
         "min_width",
         "max_width",
         "mean_width",
@@ -164,11 +162,14 @@ class DryRunReport:
     DAG bodies — the pre-execution analogue of
     :attr:`~divi.backends.CircuitRunner.depth_history`.  Empty when the
     final batch has no DAG bodies (e.g. probability-mode pipelines that
-    only carry bound QASM strings) — all-or-nothing, so a partial mapping is
-    rejected. Populated keys: ``mean_depth``, ``std_depth``, ``min_depth``,
-    ``max_depth``, ``mean_width``, ``std_width``, ``min_width``, ``max_width``,
-    ``mean_2q_depth``, ``total_2q_gates`` (entangling gates summed over every
-    submitted circuit, counting each body once per measurement circuit).
+    only carry bound QASM strings). Populated keys: ``min_depth``,
+    ``max_depth``, ``mean_width``, ``min_width``, ``max_width``,
+    ``mean_2q_depth``, and ``total_2q_gates`` (entangling gates summed over
+    every submitted circuit, counting each body once per measurement circuit),
+    plus ``mean_depth``, ``std_depth`` and ``std_width`` for a single program.
+    A report merged from a group of programs omits the mean and the standard
+    deviations where its members disagree, since a figure describing none of
+    them is worse than none at all.
 
     On the default analytic path a stage that rewrites circuits (QEM variants,
     Pauli twirling) is previewed as placeholders, so these figures describe the
@@ -212,6 +213,9 @@ class DryRunReport:
             f"{joiner}{_cadence_label(self.cadence)}{width}, "
             f"{len(self.stages)} stage{_plural(len(self.stages))})"
         )
+
+
+EnsembleReports: TypeAlias = dict[Hashable, dict[str, DryRunReport]]
 
 
 def _two_qubit_depth(dag: DAGCircuit) -> int:
@@ -435,10 +439,12 @@ def _terminal_metadata(
     return infos[-1].metadata if infos else {}
 
 
-def _stage_metadata_value_in(stages: Sequence[StageInfo], key: str) -> Any:
-    for stage in stages:
-        if key in stage.metadata:
-            return stage.metadata[key]
+def _stage_metadata_value_in(stages: Sequence[StageInfo], *keys: str) -> Any:
+    """The first of ``keys`` any stage reports, in the order given."""
+    for key in keys:
+        for stage in stages:
+            if key in stage.metadata:
+                return stage.metadata[key]
     return None
 
 
@@ -516,7 +522,7 @@ def dry_run_pipeline(
         )
         prev_logical = cur_logical
 
-    total = sum(_submitted_count(mc) for mc in trace.final_batch.values())
+    total = _batch_logical_circuits(trace.final_batch, count_observable_terms=False)
 
     return DryRunReport(
         pipeline_name=name,
@@ -546,81 +552,3 @@ def _cost_headline(circuits: int, shots: int) -> str:
 
 def _cadence_label(cadence: PipelineCadence) -> str:
     return "once" if cadence is PipelineCadence.ONCE else "per evaluation"
-
-
-def _format_factor(factor: float) -> tuple[str, str, str | None]:
-    # Returns (line_token, total_token, total_op). total_op=None omits this
-    # stage from the Total product line.
-    if factor == 1:
-        return "1", "", None
-    if factor == 0:
-        # Degenerate: a stage drove the logical count to zero. Show a bare
-        # "0" rather than a nonsensical "÷0".
-        return "0", "", None
-    if factor > 1:
-        token = f"{factor:g}"
-        return f"[bold yellow]×{token}[/bold yellow]", token, "×"
-    reciprocal = 1.0 / factor if factor else 0.0
-    if reciprocal and abs(reciprocal - round(reciprocal)) < 1e-9:
-        token = f"{int(round(reciprocal))}"
-    else:
-        token = f"{reciprocal:.3g}"
-    return f"[bold green]÷{token}[/bold green]", token, "÷"
-
-
-def format_dry_run(reports: dict[str, DryRunReport]) -> None:
-    """Print dry-run reports as rich trees with stage metadata."""
-    console = Console()
-
-    for report in reports.values():
-        tree = Tree(f"[bold]{report.pipeline_name}[/bold]")
-        factors: list[tuple[str, str]] = []
-
-        for idx, stage in enumerate(report.stages):
-            axis_str = f" [dim]\\[{stage.axis}][/dim]" if stage.axis else ""
-            line_token, total_token, total_op = _format_factor(stage.factor)
-            if total_op is not None:
-                factors.append((total_op, total_token))
-
-            # Spec stage is the source, not a multiplier — bare number on its line.
-            display_token = total_token if idx == 0 and total_op == "×" else line_token
-            node = tree.add(f"[cyan]{stage.name}[/cyan]{axis_str} → {display_token}")
-
-            for key, val in stage.metadata.items():
-                if isinstance(val, list) and len(val) == 2:
-                    node.add(f"[green]{key}: {val[0]} .. {val[1]}[/green]")
-                elif isinstance(val, float):
-                    node.add(f"[green]{key}: {val:.4f}[/green]")
-                else:
-                    node.add(f"[green]{key}: {val}[/green]")
-
-        if len(factors) > 1:
-            total_str = factors[0][1]
-            for op, tok in factors[1:]:
-                total_str += f" {op} {tok}"
-            tree.add(
-                f"[bold]Total: {total_str} = {report.total_circuits:,} circuits[/bold]"
-            )
-        else:
-            tree.add(f"[bold]Total: {report.total_circuits:,} circuits[/bold]")
-
-        if report.circuit_stats:
-            stats = report.circuit_stats
-            # Depth: lead with the average so the reader knows which stat
-            # this is. Add ± std and range only when there is spread.
-            if stats["min_depth"] == stats["max_depth"]:
-                depth_part = f"avg depth {stats['mean_depth']:g}"
-            else:
-                depth_part = (
-                    f"avg depth {stats['mean_depth']:g} "
-                    f"± {stats['std_depth']:g} "
-                    f"(range {stats['min_depth']}-{stats['max_depth']})"
-                )
-            if stats["min_width"] == stats["max_width"]:
-                width_part = f"width {stats['min_width']}"
-            else:
-                width_part = f"width {stats['min_width']}-{stats['max_width']}"
-            tree.add(f"[bold]Summary: {depth_part}, {width_part}[/bold]")
-
-        console.print(tree)
-        console.print()
