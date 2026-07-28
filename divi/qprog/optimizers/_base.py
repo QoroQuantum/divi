@@ -13,6 +13,7 @@ import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
 if TYPE_CHECKING:
+    from divi.pipeline import CircuitPreprocessor
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
@@ -158,6 +159,19 @@ class Optimizer(ABC):
         The base implementation needs nothing extra and returns ``{}``.
         """
         return {}
+
+    def preprocessors(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> tuple["CircuitPreprocessor", ...]:
+        """Routines this optimizer drives alongside the program's own.
+
+        A natural-gradient optimizer measures a metric, which is a pipeline the run
+        submits just like the cost pipeline — so the program folds these into its
+        :meth:`~divi.qprog.QuantumProgram._preprocessors`, and anything reading that
+        (a dry run, say) sees every routine the run will submit. The base optimizer
+        drives none.
+        """
+        return ()
 
     def copy(self) -> "Optimizer":
         """Return a fresh instance with the same configuration and no accumulated

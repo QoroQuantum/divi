@@ -742,9 +742,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         )
 
     def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
-        """Expose the cost routine for introspection. ``SolutionSamplingMixin``
-        adds the sample routine cooperatively."""
-        return (*super()._preprocessors(), self.cost_preprocessor())
+        """The cost routine plus whatever the optimizer drives alongside it.
+
+        ``SolutionSamplingMixin`` adds the sample routine cooperatively, and a
+        metric optimizer adds the routines it drives, so this is every routine a
+        run submits. An optimizer that cannot drive this program raises
+        :class:`~divi.pipeline.ContractViolation` from here — the same refusal
+        ``run()`` makes, reached without submitting anything.
+        """
+        return (
+            *super()._preprocessors(),
+            self.cost_preprocessor(),
+            *self.optimizer.preprocessors(self),
+        )
 
     def cost_preprocessor(self) -> CircuitPreprocessor:
         """The preprocessor driving optimization: expectation of the cost observable.

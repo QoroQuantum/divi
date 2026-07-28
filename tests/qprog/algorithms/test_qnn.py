@@ -9,7 +9,7 @@ import pytest
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.pipeline import CircuitPreprocessor
+from divi.pipeline import CircuitPreprocessor, ContractViolation
 from divi.qprog import (
     QNN,
     AngleEmbedding,
@@ -17,7 +17,7 @@ from divi.qprog import (
     ZZFeatureMap,
 )
 from divi.qprog.algorithms._data_binding import DataBindingMixin
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import QNSPSAOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
@@ -204,6 +204,18 @@ class TestConstructionValidation:
     def test_labels_wrong_length_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="labels has 2 entries but feature_batch"):
             make_qnn(labels=[0.0, 1.0])
+
+    def test_no_metric_estimator_is_recommended_for_a_supervised_batch(self, make_qnn):
+        """Each metric used to redirect to another that rejects the same program,
+        so following the advice went in a circle. For a labelled batch there is no
+        metric alternative and the message must say so."""
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0], optimizer=QNSPSAOptimizer())
+        # Previewing refuses for the same reason run() does, and says the same thing.
+        for call in (program.dry_run, lambda: program.run(max_iterations=1)):
+            with pytest.raises(ContractViolation) as exc:
+                call()
+            assert "no metric estimator" in str(exc.value)
+            assert "SPSAOptimizer" in str(exc.value)
 
     def test_invalid_loss_fn_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="loss_fn must be"):

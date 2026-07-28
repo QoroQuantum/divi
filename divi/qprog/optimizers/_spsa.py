@@ -12,7 +12,11 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
-from divi.qprog._metrics import MetricEstimator, StochasticFidelityMetricEstimator
+from divi.qprog._metrics import (
+    MetricEstimator,
+    StochasticFidelityMetricEstimator,
+    _MetricOptimizerMixin,
+)
 from divi.qprog.optimizers._base import Optimizer
 from divi.qprog.optimizers._linalg import (
     _matrix_abs_psd,
@@ -427,7 +431,7 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
         )
 
 
-class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
+class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
     r"""Quantum Natural SPSA (Gacon et al.).
 
     Combines the cheap SPSA gradient with a *stochastic* Fubini–Study metric, so
@@ -456,7 +460,8 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
     estimator's exact metric while keeping the SPSA gradient.
 
     Single-point optimizer (``n_param_sets == 1``); the variational algorithm
-    supplies the metric evaluator via :meth:`build_evaluators`.
+    supplies the metric evaluator via
+    :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`.
 
     Args:
         learning_rate: Spall's :math:`a` — the learning-rate gain numerator.
@@ -521,16 +526,6 @@ class QNSPSAOptimizer(_SPSAConfigMixin, Optimizer):
             )
         self.regularization = regularization
         self.metric_estimator = metric_estimator or StochasticFidelityMetricEstimator()
-
-    def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
-        """Reject a program whose ansatz the chosen metric estimator cannot model."""
-        self.metric_estimator.check_compatible(program)
-
-    def build_evaluators(
-        self, program: "VariationalQuantumAlgorithm"
-    ) -> dict[str, Callable[[npt.NDArray[np.float64]], Any]]:
-        """Bind the metric estimator (its ``fidelity_fn`` or ``metric_fn``)."""
-        return self.metric_estimator.bind(program)
 
     def optimize(
         self,

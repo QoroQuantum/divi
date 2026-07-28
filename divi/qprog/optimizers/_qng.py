@@ -4,21 +4,22 @@
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
-from divi.qprog._metrics import MetricEstimator, PullbackMetricEstimator
+from divi.qprog._metrics import (
+    MetricEstimator,
+    PullbackMetricEstimator,
+    _MetricOptimizerMixin,
+)
 from divi.qprog.optimizers._base import Optimizer
 from divi.qprog.optimizers._linalg import _regularized_solve
 
-if TYPE_CHECKING:
-    from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
-
-class QNGOptimizer(Optimizer):
+class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
     """Quantum Natural Gradient optimizer.
 
     Performs regularized natural-gradient descent
@@ -30,8 +31,8 @@ class QNGOptimizer(Optimizer):
     positive-semidefinite metric tensor. The optimizer is **metric-agnostic**:
     the metric is produced by an injected :class:`MetricEstimator` strategy
     (default :class:`PullbackMetricEstimator`), bound to the program's
-    capabilities via :meth:`build_evaluators`. Swapping the estimator changes
-    the metric without changing the optimizer.
+    capabilities via :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`.
+    Swapping the estimator changes the metric without changing the optimizer.
 
     Because the default pullback metric is only PSD — and singular whenever the
     number of parameters exceeds the number of Hamiltonian terms — Tikhonov
@@ -39,8 +40,8 @@ class QNGOptimizer(Optimizer):
 
     This is a single-point optimizer (``n_param_sets == 1``). The variational
     algorithm wires the estimator's gradient and metric in via
-    :meth:`build_evaluators`; calling ``optimize`` directly without ``jac`` and
-    ``metric_fn`` raises ``ValueError``.
+    :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`; calling
+    ``optimize`` directly without ``jac`` and ``metric_fn`` raises ``ValueError``.
 
     Args:
         step_size: Learning rate :math:`\\eta` for the parameter update.
@@ -106,22 +107,14 @@ class QNGOptimizer(Optimizer):
         self.rcond = rcond
         self.max_step_norm = max_step_norm
         self.metric_estimator = metric_estimator or PullbackMetricEstimator()
-
-    def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
-        """Reject a program whose loss the chosen metric estimator cannot model."""
-        self.metric_estimator.check_compatible(program)
-
-    def build_evaluators(
-        self, program: "VariationalQuantumAlgorithm"
-    ) -> dict[str, Callable[[npt.NDArray[np.float64]], Any]]:
-        """Bind the metric estimator to the program's metric pipeline.
-
-        The pullback estimator returns a fused ``jac`` + ``metric_fn`` (one
-        memoized measurement serves both); the Fubini–Study estimator returns
-        only ``metric_fn`` and lets the gradient fall back to the program's
-        parameter-shift rule.
-        """
-        return self.metric_estimator.bind(program)
+        if self.metric_estimator.uses_fidelity_sampling:
+            raise ValueError(
+                f"{type(self.metric_estimator).__name__} estimates the metric from "
+                "sampled fidelity overlaps and supplies no closed-form metric "
+                "function, which QNGOptimizer requires. Use QNSPSAOptimizer for "
+                "the stochastic-fidelity metric, or pass a closed-form estimator "
+                "(PullbackMetricEstimator, FubiniStudyMetricEstimator)."
+            )
 
     @property
     def supports_checkpointing(self) -> bool:

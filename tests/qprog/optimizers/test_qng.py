@@ -24,6 +24,7 @@ from divi.pipeline._result_keys_operations import average_by_param_set
 from divi.pipeline.abc import ContractViolation
 from divi.qprog import PCE, QAOA, VQE, CustomVQA, FubiniStudyMetricEstimator
 from divi.qprog._metrics import (
+    METRIC_ROUTINE,
     PullbackMetricEstimator,
     _all_terms_preprocessor,
     _fs_block_prefix,
@@ -478,8 +479,8 @@ def test_metric_pipelines_are_cacheable(dummy_simulator, default_optimizer):
         backend=dummy_simulator,
         optimizer=default_optimizer,
     )
-    assert _all_terms_preprocessor().cache_key == "metric-terms"
-    assert _fs_prefix_labels_preprocessor(0, ()).cache_key == ("metric-prefix", 0)
+    assert _all_terms_preprocessor().cache_key == METRIC_ROUTINE
+    assert _fs_prefix_labels_preprocessor(0, ()).cache_key == (METRIC_ROUTINE, 0)
 
     # Fresh-but-equal preprocessors hit the cache -> same pipeline object.
     p1 = vqe._build_preprocessor_pipeline(_all_terms_preprocessor())

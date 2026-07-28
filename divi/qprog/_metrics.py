@@ -41,6 +41,12 @@ if TYPE_CHECKING:
 Evaluators = dict[str, Callable[..., Any]]
 _METRIC_BRANCH_AXES = ("ham", "circuit")
 
+#: Report key for a metric routine. One name for every estimator: what a reader
+#: needs is that the optimizer runs a metric routine and what it costs, while
+#: *how* the metric is measured is a property of the estimator class they chose.
+#: An estimator emitting several routines qualifies each (``metric[block 0]``).
+METRIC_ROUTINE = "metric"
+
 
 def _run_metric_by_branch(
     program: "VariationalQuantumAlgorithm",
@@ -98,14 +104,14 @@ def _overlap_preprocessor(
     overlap_for: Callable[[MetaCircuit], MetaCircuit],
 ) -> CircuitPreprocessor:
     return CircuitPreprocessor(
-        "overlap",
+        METRIC_ROUTINE,
         preprocess=overlap_for,
         result_format=ResultFormat.PROBS,
         consumes_dag_bodies=True,
         # Built once per ``bind`` and reused across fidelity calls (its
         # ``overlap_for`` closure caches structurally, never resets), so the
         # pipeline is safe to memoize for the run.
-        cache_key="overlap",
+        cache_key=METRIC_ROUTINE,
     )
 
 
@@ -138,8 +144,37 @@ def _zeros_probability(
     return float(np.mean([probs.get(zeros, 0.0) for probs in value]))
 
 
+def _reject_data_bound(program: "VariationalQuantumAlgorithm", metric: str) -> None:
+    """Raise :class:`ContractViolation` for a data-bound program — its ansatz
+    state depends on the data input, so the metric geometry is data-dependent."""
+    if getattr(program, "feature_batch", None) is None:
+        return
+    # Only the unsupervised case has a metric alternative. Recommending pullback
+    # unconditionally sent supervised users in a circle, since pullback rejects a
+    # per-sample loss and pointed them back here.
+    if getattr(program, "_sample_loss_fn", None) is not None:
+        raise ContractViolation(
+            f"The {metric} metric does not support data-bound programs, and no "
+            "metric estimator supports a supervised (labelled) data-binding loss: "
+            "the per-sample loss is a non-linear function of the expectation "
+            "values. Use a non-metric optimizer such as SPSAOptimizer or a "
+            "gradient-free ScipyOptimizer method."
+        )
+    raise ContractViolation(
+        f"The {metric} metric does not support data-bound programs: the ansatz "
+        "state depends on the data input, so the metric is data-dependent. Use "
+        "QNGOptimizer with its default pullback metric, which supports an "
+        "unlabelled data-bound loss, or a non-metric optimizer such as "
+        "SPSAOptimizer."
+    )
+
+
 class MetricEstimator(ABC):
     """Strategy that produces natural-gradient evaluators for a program."""
+
+    #: Whether the metric is estimated from resampled fidelity overlaps (the
+    #: QN-SPSA stochastic path) rather than a closed-form ``"metric_fn"``.
+    uses_fidelity_sampling: bool = False
 
     @abstractmethod
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
@@ -162,6 +197,42 @@ class MetricEstimator(ABC):
         the algorithm's parameter-shift defaults.
         """
         raise NotImplementedError
+
+    @abstractmethod
+    def preprocessors(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> tuple[CircuitPreprocessor, ...]:
+        """The routines this estimator measures through.
+
+        The same ones :meth:`bind`'s evaluators submit, built from ``program``
+        structure alone so they can be enumerated without running anything. Most
+        estimators measure through one; Fubini–Study measures each commuting-gate
+        block separately and returns one per block.
+
+        Implementations must call :meth:`check_compatible` first and raise
+        :class:`~divi.pipeline.ContractViolation` when the metric cannot apply to
+        ``program``.
+        """
+        raise NotImplementedError
+
+
+class _MetricOptimizerMixin:
+    """Delegation for optimizers holding a ``metric_estimator``: program
+    validation, evaluator binding, and the routines they drive all defer to the
+    estimator, so an optimizer adds no metric knowledge of its own."""
+
+    metric_estimator: "MetricEstimator"
+
+    def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
+        self.metric_estimator.check_compatible(program)
+
+    def build_evaluators(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
+        return self.metric_estimator.bind(program)
+
+    def preprocessors(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> tuple[CircuitPreprocessor, ...]:
+        return self.metric_estimator.preprocessors(program)
 
 
 class PullbackMetricEstimator(MetricEstimator):
@@ -200,13 +271,13 @@ class PullbackMetricEstimator(MetricEstimator):
             raise ContractViolation(
                 "The pullback metric is invalid for a supervised data-binding "
                 "loss: the per-sample loss is a non-linear function of the "
-                "expectation values. Use a non-metric optimizer or the "
-                "Fubini–Study estimator."
+                "expectation values. No metric estimator supports this case — the "
+                "Fubini–Study estimators reject data-bound programs outright — so "
+                "use a non-metric optimizer such as SPSAOptimizer."
             )
-
-    def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        shift_mask = program._grad_shift_mask
-        cache: dict[str, Any] = {"key": None, "value": None}
+        # Structural, so it belongs here rather than in bind(): a dry run only
+        # catches ContractViolation from check_compatible, and would otherwise
+        # preview a metric that run() goes on to reject.
         if (
             program.cost_circuit.observable is None
             or len(program.cost_circuit.observable) != 1
@@ -215,6 +286,10 @@ class PullbackMetricEstimator(MetricEstimator):
                 "The pullback metric requires the cost circuit to carry exactly "
                 "one loss observable."
             )
+
+    def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
+        shift_mask = program._grad_shift_mask
+        cache: dict[str, Any] = {"key": None, "value": None}
 
         def grad_and_metric(
             params: npt.NDArray[np.float64],
@@ -243,6 +318,12 @@ class PullbackMetricEstimator(MetricEstimator):
             "jac": lambda params: grad_and_metric(params)[0],
             "metric_fn": lambda params: grad_and_metric(params)[1],
         }
+
+    def preprocessors(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> tuple[CircuitPreprocessor, ...]:
+        self.check_compatible(program)
+        return (_all_terms_preprocessor(),)
 
 
 def _split_into_terms(
@@ -287,9 +368,9 @@ def _all_terms_preprocessor() -> CircuitPreprocessor:
     """Cacheable preprocessor measuring every Pauli term of the cost observable
     as separate expectation values in one multi-observable pass."""
     return CircuitPreprocessor(
-        "metric-terms",
+        METRIC_ROUTINE,
         preprocess=_split_observable_into_terms,
-        cache_key="metric-terms",
+        cache_key=METRIC_ROUTINE,
     )
 
 
@@ -340,8 +421,15 @@ _GATE_GENERATORS = {
 _FS_UNSUPPORTED_GATE = (
     "The Fubini–Study metric supports only single-parameter Pauli-rotation gates "
     "(rx/ry/rz/rxx/ryy/rzz) with a bare parameter as the angle; this ansatz uses "
-    "{gate!r}. Use the pullback metric (PullbackMetricEstimator) or a non-metric "
-    "optimizer."
+    "{gate!r}{detail}. Use the pullback metric (PullbackMetricEstimator) or a "
+    "non-metric optimizer."
+)
+
+#: Appended when the gate itself is supported and the *angle* is what is not — a
+#: message naming only the gate sends the reader to check it against the allow-list
+#: it is already on.
+_FS_UNSUPPORTED_ANGLE = (
+    " with the angle expression {angle!r}, which is not a bare trainable parameter"
 )
 
 
@@ -361,12 +449,7 @@ class FubiniStudyMetricEstimator(MetricEstimator):
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
         # Generator extraction raises ContractViolation on any unsupported gate.
         _fs_blocks(program.cost_circuit)
-        if getattr(program, "feature_batch", None) is not None:
-            raise ContractViolation(
-                "The Fubini–Study metric does not support data-bound programs: "
-                "the ansatz state depends on the data input, so the metric is "
-                "data-dependent. Use a non-metric optimizer."
-            )
+        _reject_data_bound(program, "Fubini–Study")
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
         blocks, full_params, _ = _fs_blocks(program.cost_circuit)
@@ -392,6 +475,23 @@ class FubiniStudyMetricEstimator(MetricEstimator):
 
         return {"metric_fn": metric_fn}
 
+    def preprocessors(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> tuple[CircuitPreprocessor, ...]:
+        self.check_compatible(program)
+        # One prefix-measurement routine per commuting-gate block, keyed by the
+        # block's prefix parameter names (as _measure_prefix_paulis does).
+        blocks, full_params, n_qubits = _fs_blocks(program.cost_circuit)
+        return tuple(
+            _fs_prefix_labels_preprocessor(
+                block_id,
+                tuple(
+                    p.name for p in _fs_prefix_params(prefix_ops, full_params, n_qubits)
+                ),
+            )
+            for block_id, (prefix_ops, _) in enumerate(blocks)
+        )
+
 
 class StochasticFidelityMetricEstimator(MetricEstimator):
     r"""Stochastic Fubini–Study metric via state-overlap fidelities (QN-SPSA).
@@ -408,6 +508,8 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
     over preserved pipeline axes.
     """
 
+    uses_fidelity_sampling = True
+
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
         try:
             build_overlap_meta(program.cost_circuit)
@@ -417,14 +519,15 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
                 "(qiskit QuantumCircuit.inverse()); this program's cost circuit "
                 "could not be inverted."
             ) from exc
-        if getattr(program, "feature_batch", None) is not None:
-            raise ContractViolation(
-                "The stochastic-fidelity metric does not support data-bound "
-                "programs: the ansatz state depends on the data input, so the "
-                "fidelity is data-dependent. Use a non-metric optimizer."
-            )
+        _reject_data_bound(program, "stochastic-fidelity")
 
-    def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
+    def _build_overlap_preprocessor(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> CircuitPreprocessor:
+        """Build the overlap routine shared by :meth:`bind` and
+        :meth:`preprocessors`. Overlap circuits are built lazily and cached by
+        ansatz structure, so this does no circuit work until the routine runs.
+        """
         overlap_cache: dict[_AnsatzKey, MetaCircuit] = {}
 
         def _overlap_for(meta: MetaCircuit) -> MetaCircuit:
@@ -437,7 +540,19 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
                 overlap_cache[key] = overlap
             return overlap
 
-        preprocessor = _overlap_preprocessor(_overlap_for)
+        return _overlap_preprocessor(_overlap_for)
+
+    def preprocessors(
+        self, program: "VariationalQuantumAlgorithm"
+    ) -> tuple[CircuitPreprocessor, ...]:
+        # Validate eagerly so an incompatible ansatz raises ContractViolation
+        # before the lazy closure runs.
+        self.check_compatible(program)
+        return (self._build_overlap_preprocessor(program),)
+
+    def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
+        # No re-validation: the optimizer's validate_program already ran it.
+        preprocessor = self._build_overlap_preprocessor(program)
         zeros = "0" * program.cost_circuit.n_qubits
 
         def fidelity_fn(
@@ -500,7 +615,14 @@ def _fs_blocks(
             pauli = _GATE_GENERATORS.get(node.op.name)
             angle = node.op.params[0]
             if pauli is None or len(parametric) != 1 or angle not in full_params:
-                raise ContractViolation(_FS_UNSUPPORTED_GATE.format(gate=node.op.name))
+                detail = (
+                    _FS_UNSUPPORTED_ANGLE.format(angle=str(angle))
+                    if pauli is not None and angle not in full_params
+                    else ""
+                )
+                raise ContractViolation(
+                    _FS_UNSUPPORTED_GATE.format(gate=node.op.name, detail=detail)
+                )
             generator = SparsePauliOp.from_sparse_list(
                 [(pauli, wires, 0.5)], num_qubits=n
             )
@@ -718,8 +840,11 @@ def _fs_prefix_labels_preprocessor(
         )
 
     return CircuitPreprocessor(
-        "metric-prefix",
+        # One pipeline per block, so each carries the block in its name: the name
+        # is the report key, and identically-named routines would collapse into a
+        # single entry showing only the last block's circuits.
+        f"{METRIC_ROUTINE}[block {block_id}]",
         preprocess=preprocess,
         consumes_dag_bodies=True,
-        cache_key=("metric-prefix", block_id),
+        cache_key=(METRIC_ROUTINE, block_id),
     )
