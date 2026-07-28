@@ -193,6 +193,8 @@ class QEMStage(BundleStage):
                 info[key] = ctx[key]
         if "n_paths" in ctx:
             info["n_clifford_sims"] = ctx["n_paths"]
+        if ctx.get("sampled_paths"):
+            info["path_count"] = "sampled (an estimate, not an exact count)"
 
         # Skip float-dependent stats for symbolic weights (not yet bound).
         if ctx.get("symbolic"):

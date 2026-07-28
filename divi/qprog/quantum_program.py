@@ -322,51 +322,121 @@ class QuantumProgram(ABC):
     def dry_run(
         self, *, force_circuit_generation: bool = False
     ) -> dict[str, DryRunReport]:
-        """Run a forward pass on each exposed preprocessor and return a fan-out analysis.
+        """Traverse each pipeline without executing circuits and return a fan-out analysis.
 
-        Traverses each preprocessor's pipeline without executing circuits and collects
-        the fan-out factor, per-stage metadata, and total circuit count into a dict
-        of :class:`~divi.pipeline.DryRunReport` objects keyed by preprocessor name
-        (see :meth:`_preprocessors`). Pass the returned dict to
-        :func:`~divi.pipeline.format_dry_run` for the pretty tree output.
+        Collects the fan-out factor, per-stage metadata, and total circuit
+        count into a dict of :class:`~divi.pipeline.DryRunReport` objects keyed
+        by pipeline name. Covers the program's own routines and any auxiliary
+        metric/overlap pipelines the optimizer drives per evaluation (see
+        :meth:`_preprocessors`). Pass the returned dict to
+        :func:`~divi.pipeline.format_dry_run` for the tree output.
 
-        Uses the analytic dry path by default; see the user guide for how
-        that trades circuit generation for multiplicative-factor
-        bookkeeping.
+        Uses the analytic dry path by default, trading circuit generation for
+        multiplicative-factor bookkeeping (see the user guide). The preview is
+        side-effect free: it runs against a seeded throwaway RNG and touches no
+        execution counters, so a later ``run()`` is unaffected.
 
         Args:
             force_circuit_generation: If ``True``, force every stage to run
-                its full ``expand`` path so that the trace contains real
-                DAGs and QASM strings. Useful when inspecting actual
-                pipeline output (e.g. debugging a stage's circuit
-                transformation). Defaults to ``False``.
+                its full ``expand`` path so the trace contains real DAGs and
+                QASM strings. Defaults to ``False``.
 
         Example:
             >>> from divi.pipeline import format_dry_run
             >>> reports = program.dry_run()
             >>> format_dry_run(reports)  # pretty-print to stdout
         """
+        self._validate_before_preview()
         reports: dict[str, DryRunReport] = {}
         preprocessors = self._preprocessors()
         if not preprocessors:
-            # No named pipelines (program never calls evaluate()); the loop is a
-            # no-op, so don't require _initial_spec() — honor its documented
-            # opt-out contract for such programs.
+            # No registered routines: skip _initial_spec() per its opt-out contract.
             return reports
         initial_spec = self._initial_spec()
+        # Seeded throwaway RNG so the preview never advances the live generator.
+        dry_rng = np.random.default_rng(self._base_seed)
         for preprocessor in preprocessors:
+            key = preprocessor.name
+            if key in reports:
+                # The name is the report key, so a duplicate would hide a routine.
+                suffix = 2
+                while f"{key}#{suffix}" in reports:
+                    suffix += 1
+                warn(
+                    f"Two routines on {type(self).__name__} are both named "
+                    f"{preprocessor.name!r}; reporting the second as "
+                    f"'{key}#{suffix}'. Give each routine a distinct name to "
+                    "keep the report readable.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+                key = f"{key}#{suffix}"
             pipeline = self._build_preprocessor_pipeline(preprocessor)
-            env = self._build_pipeline_env()
+            env = self._dry_run_env(preprocessor, dry_rng)
             trace = pipeline.run_forward_pass(
                 initial_spec,
                 env,
                 bypass_cache=True,
                 dry=not force_circuit_generation,
             )
-            reports[preprocessor.name] = dry_run_pipeline(
-                preprocessor.name, trace, pipeline.stages, env
+            reports[key] = dry_run_pipeline(
+                key,
+                trace,
+                pipeline.stages,
+                env,
             )
         return reports
+
+    def _validate_before_preview(self) -> None:
+        """Re-check state a preview should catch. Default checks nothing.
+
+        Constructor validation can be outrun by later assignment, and catching a
+        mismatch here is the whole point: the run that follows would fail after
+        submitting circuits.
+        """
+
+    def _dry_run_env(
+        self, preprocessor: CircuitPreprocessor, rng: "np.random.Generator"
+    ) -> PipelineEnv:
+        """The env used to preview one pipeline.
+
+        ``reporter=None`` keeps the preview silent. Subclasses override to narrow
+        the env per routine, since not every pipeline is driven with the same
+        inputs (a one-time readout binds different parameters than the optimizer's
+        working set).
+
+        A parametric seed gets one zero-filled vector of its own width; without it
+        the binding stage sees an empty one and reports ``n_params: 0``.
+        """
+        overrides: dict[str, Any] = {}
+        n_params = self._routine_parameter_count(preprocessor)
+        if n_params:
+            overrides["param_sets"] = np.zeros((1, n_params))
+        return self._build_pipeline_env(rng=rng, reporter=None, **overrides)
+
+    def _routine_parameter_count(self, preprocessor: CircuitPreprocessor) -> int:
+        """Free parameters the binding stage expects for ``preprocessor``.
+
+        A routine that rewrites the circuit into one with a different parameter
+        count (an overlap circuit carries two concatenated vectors) binds that
+        count; the binding stage rejects any other width. A routine that leaves the
+        count alone binds whatever the program itself declares, which is not the
+        same as every parameter on the seed — a data-bound circuit carries data
+        parameters that a different stage binds. ``0`` for a non-circuit seed.
+        """
+        spec = self._initial_spec()
+        raw = getattr(spec, "parameters", None)
+        if not raw:
+            return 0
+        transformed = len(preprocessor.preprocess(spec).parameters)
+        return (
+            self._bindable_parameter_count() if transformed == len(raw) else transformed
+        )
+
+    def _bindable_parameter_count(self) -> int:
+        """Parameters the program's own binding stage varies. Subclasses that
+        separate trainable weights from other bound values override this."""
+        return len(self._initial_spec().parameters)
 
     def _build_pipeline_env(self, **overrides) -> PipelineEnv:
         """Construct a :class:`PipelineEnv` from the current program state.

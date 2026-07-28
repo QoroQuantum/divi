@@ -6,11 +6,13 @@
 
 import warnings
 
+import networkx as nx
 import numpy as np
 import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
+from qiskit.circuit.library import RYGate, RZGate, XGate
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -19,15 +21,22 @@ import divi.pipeline.stages._pauli_twirl_stage as _pauli_twirl_mod
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import QuEPP
-from divi.pipeline import CircuitPipeline, dry_run_pipeline, format_dry_run
+from divi.pipeline import (
+    CircuitPipeline,
+    CircuitPreprocessor,
+    dry_run_pipeline,
+    format_dry_run,
+)
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline._dry_run import _aggregate_circuit_stats, _two_qubit_depth
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
+    ContractViolation,
     DiviPerformanceWarning,
     MetaCircuitBatch,
     PipelineEnv,
+    ResultFormat,
     StageOutput,
     StageToken,
 )
@@ -35,11 +44,69 @@ from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
     PauliTwirlStage,
+    PreprocessStage,
     QEMStage,
 )
-from divi.qprog import VQE, HartreeFockAnsatz
-from divi.qprog.algorithms import TimeEvolution
+from divi.qprog import QAOA, VQE, HartreeFockAnsatz, QuantumProgram
+from divi.qprog._metrics import (
+    METRIC_ROUTINE,
+    FubiniStudyMetricEstimator,
+    MetricEstimator,
+    PullbackMetricEstimator,
+    StochasticFidelityMetricEstimator,
+)
+from divi.qprog.algorithms import PCE, GenericLayerAnsatz, TimeEvolution
+from divi.qprog.optimizers import (
+    MonteCarloOptimizer,
+    QNGOptimizer,
+    QNSPSAOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
+from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from tests.pipeline._helpers import DummySpecStage, two_group_meta
+
+
+def _metric_compatible_vqe(backend, optimizer, n_layers: int = 1) -> VQE:
+    """A VQE whose GenericLayerAnsatz is compatible with all three metric
+    estimators (expval cost, invertible, FS-supported RY/RZ gates)."""
+    return VQE(
+        molecule=qp.qchem.Molecule(
+            symbols=["H", "H"],
+            coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
+        ),
+        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+        n_layers=n_layers,
+        backend=backend,
+        optimizer=optimizer,
+    )
+
+
+def _h2_vqe_for_totals(backend, optimizer) -> VQE:
+    """A circuit-seeded program for the submitted-circuit oracle."""
+    return VQE(
+        molecule=qp.qchem.Molecule(
+            symbols=["H", "H"],
+            coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
+        ),
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+        backend=backend,
+        optimizer=optimizer,
+        max_iterations=1,
+    )
+
+
+def _maxcut_qaoa_for_totals(backend, optimizer) -> QAOA:
+    """A Hamiltonian-seeded program for the submitted-circuit oracle: its seed is a
+    ``SparsePauliOp``, which declares no parameters of its own."""
+    return QAOA(
+        MaxCutProblem(nx.random_regular_graph(3, 6, seed=1)),
+        n_layers=1,
+        backend=backend,
+        optimizer=optimizer,
+        max_iterations=1,
+    )
 
 
 def _parametric_twirlable_meta() -> MetaCircuit:
@@ -175,6 +242,40 @@ class TestAnalyticDryRun:
         # ZZ+XX don't QWC-commute, so grouping saves nothing: factor == 1.
         meas_stage = next(s for s in dry_report.stages if s.name == "MeasurementStage")
         assert meas_stage.factor == 1.0
+
+    def test_dry_preprocess_isolates_each_entry_from_the_others(
+        self, dummy_pipeline_env
+    ):
+        """An analytic upstream stage hands the same DAG object to every batch
+        entry, so a transform that mutates in place would reach all of them and
+        the caller's own copy. Each entry is given a private one first."""
+        theta = Parameter("theta")
+        qc = QuantumCircuit(1)
+        qc.rx(theta, 0)
+        shared = circuit_to_dag(qc)
+        original_size = shared.size()
+
+        def meta():
+            return MetaCircuit(
+                circuit_bodies=(((), shared),),
+                parameters=(theta,),
+                observable=SparsePauliOp.from_list([("Z", 1.0)]),
+            )
+
+        def mutate_in_place(m):
+            _, dag = m.circuit_bodies[0]
+            dag.apply_operation_back(XGate(), (dag.qubits[0],))
+            return m
+
+        stage = PreprocessStage(
+            CircuitPreprocessor("mutating", preprocess=mutate_in_place)
+        )
+        out = stage.dry_expand({"a": meta(), "b": meta()}, dummy_pipeline_env)
+
+        # Each entry absorbed exactly its own mutation, not the other's.
+        for key in ("a", "b"):
+            assert out.batch[key].circuit_bodies[0][1].size() == original_size + 1
+        assert shared.size() == original_size
 
     def test_dry_skips_pauli_twirl_deepcopy(self, dummy_pipeline_env, mocker):
         """Dry PauliTwirl must not invoke the twirl-substitute DAG surgery."""
@@ -484,6 +585,86 @@ class TestQuEPPDryExpand:
         assert dry_qem.metadata["n_rotations"] == real_qem.metadata["n_rotations"]
         assert dry_qem.metadata["n_paths"] == real_qem.metadata["n_paths"]
 
+    def _concrete_montecarlo_meta(self) -> MetaCircuit:
+        """A bound circuit: Monte Carlo path sampling only runs on concrete angles."""
+        qc = QuantumCircuit(2)
+        qc.rx(0.31, 0)
+        qc.cx(0, 1)
+        qc.rz(0.47, 1)
+        qc.ry(0.19, 0)
+        return MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            parameters=(),
+            observable=SparsePauliOp.from_list([("ZZ", 1.0), ("XI", 0.5)]),
+        )
+
+    def test_montecarlo_preview_does_not_advance_the_protocol_rng(
+        self, dummy_pipeline_env
+    ):
+        """Previewing must not change what a later run samples.
+
+        The protocol owns its generator, so drawing preview paths from it left the
+        real run further along the stream — previewing a seeded program changed its
+        circuit count.
+        """
+        protocol = QuEPP(truncation_order=2, n_twirls=0, seed=11)
+        meta = self._concrete_montecarlo_meta()
+        state_before = protocol._rng.bit_generator.state
+
+        dags, context = protocol.dry_expand(
+            dag=meta.circuit_bodies[0][1], observable=meta.observable
+        )
+
+        assert protocol._rng.bit_generator.state == state_before
+        assert context["sampled_paths"] is True
+        assert len(dags) == 1 + context["n_paths"]
+
+    def test_montecarlo_preview_does_not_depend_on_run_position(self):
+        """One protocol instance is often shared across an ensemble's programs, and
+        each program's expand advances its generator. A preview that read the
+        generator's *position* therefore described only the first program — the
+        rest were quoted a count drawn from a state their run had already left.
+        """
+        protocol = QuEPP(truncation_order=2, n_twirls=0, seed=11)
+        meta = self._concrete_montecarlo_meta()
+        dag, observable = meta.circuit_bodies[0][1], meta.observable
+
+        previews = []
+        for _ in range(4):
+            previews.append(len(protocol.dry_expand(dag=dag, observable=observable)[0]))
+            # Interleave real expands, as running one program of an ensemble does.
+            protocol.expand(dag=dag, observable=observable)
+        assert len(set(previews)) == 1, previews
+
+    def test_montecarlo_preview_is_reproducible_and_discloses_sampling(
+        self, dummy_pipeline_env
+    ):
+        """A sampled fan-out varies per evaluation, so the stage says so — and
+        repeated previews of one program agree rather than drifting."""
+        protocol = QuEPP(truncation_order=2, n_twirls=0, seed=11)
+        meta = self._concrete_montecarlo_meta()
+        previews = [
+            protocol.dry_expand(
+                dag=meta.circuit_bodies[0][1], observable=meta.observable
+            )
+            for _ in range(4)
+        ]
+        assert len({len(dags) for dags, _ in previews}) == 1
+        assert all(ctx.get("sampled_paths") for _, ctx in previews)
+
+        stage = QEMStage(protocol=protocol)
+        info = stage.introspect({}, env=dummy_pipeline_env, token={(): previews[0][1]})
+        assert info["path_count"] == "sampled (an estimate, not an exact count)"
+
+    def test_exhaustive_enumeration_is_not_marked_sampled(self, dummy_pipeline_env):
+        """Deterministic enumeration must not carry the sampled-count caveat."""
+        protocol = QuEPP(truncation_order=1, n_twirls=0, sampling="exhaustive")
+        meta = self._concrete_montecarlo_meta()
+        _, context = protocol.dry_expand(
+            dag=meta.circuit_bodies[0][1], observable=meta.observable
+        )
+        assert "sampled_paths" not in context
+
     def test_quepp_dry_skips_clifford_simulation(self, dummy_pipeline_env, mocker):
         """Dry QuEPP must not invoke the Clifford ensemble simulator."""
         meta = _parametric_twirlable_meta()
@@ -506,6 +687,74 @@ class TestQuEPPDryExpand:
             suppress_performance_warnings=True,
         )
         assert spy.call_count == 0, "dry QuEPP must skip Clifford simulation"
+
+
+class _ParametricProgram(QuantumProgram):
+    """A direct ``QuantumProgram`` subclass with a parametric seed — the shape the
+    custom-program docs describe, and the one a VQA-only test never exercises
+    (``VariationalQuantumAlgorithm`` overrides the env construction involved)."""
+
+    def __init__(self, backend):
+        super().__init__(backend=backend)
+        theta = Parameter("theta")
+        qc = QuantumCircuit(1)
+        qc.ry(theta, 0)
+        self._meta = MetaCircuit(
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            observable=SparsePauliOp.from_list([("Z", 1.0)]),
+            parameters=(theta,),
+        )
+
+    def has_results(self) -> bool:
+        return False
+
+    def _initial_spec(self):
+        return self._meta
+
+    def _preprocessors(self):
+        return (CircuitPreprocessor("cost", terminal_stage=MeasurementStage()),)
+
+    def _assemble_pipeline(
+        self, spec_stage, terminal_stage, *, result_format, extra_stages=()
+    ):
+        return CircuitPipeline(
+            stages=[
+                spec_stage,
+                *extra_stages,
+                *self._mitigation_stages(result_format),
+                terminal_stage,
+                ParameterBindingStage(),
+            ]
+        )
+
+    def run(self):
+        pass
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_direct_subclass_previews_its_real_parameter_width(dummy_simulator, force):
+    """A direct subclass must get a parameter vector of its seed's width in both
+    modes: the analytic path otherwise reports ``n_params: 0`` for a parametric
+    circuit, and the forced path fails outright."""
+    program = _ParametricProgram(dummy_simulator)
+    report = program.dry_run(force_circuit_generation=force)["cost"]
+    binding = next(s for s in report.stages if s.name == "ParameterBindingStage")
+    assert binding.metadata["n_bound_params"] == 1
+
+
+def test_routines_sharing_a_name_are_all_reported(dummy_simulator, mocker):
+    """The routine name is the report key, so a second routine claiming it would
+    replace the first — reporting fewer pipelines than the program runs."""
+    program = _ParametricProgram(dummy_simulator)
+    duplicate = CircuitPreprocessor("cost", terminal_stage=MeasurementStage())
+    mocker.patch.object(
+        program, "_preprocessors", return_value=(duplicate, duplicate, duplicate)
+    )
+
+    with pytest.warns(UserWarning, match="are both named 'cost'"):
+        reports = program.dry_run()
+
+    assert set(reports) == {"cost", "cost#2", "cost#3"}
 
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -564,6 +813,314 @@ class TestQuantumProgramDryRun:
         spec_alloc = next(iter(cost_report.env_artifacts["per_group_shots"].values()))
         assert any(shots > 0 for shots in spec_alloc.values())
 
+    def test_qng_surfaces_metric_terms_pipeline(
+        self, default_test_simulator, default_optimizer
+    ):
+        vqe = self._h2_vqe(default_test_simulator, QNGOptimizer())
+        assert METRIC_ROUTINE in vqe.dry_run()
+
+    def test_plain_optimizer_has_no_metric_pipeline(
+        self, default_test_simulator, default_optimizer
+    ):
+        reports = self._h2_vqe(default_test_simulator, default_optimizer).dry_run()
+        assert set(reports) == {"cost", "sample"}
+
+    def test_an_incompatible_optimizer_refuses_the_preview(
+        self, default_test_simulator, default_optimizer, mocker
+    ):
+        """A preview of a pairing ``run()`` will reject is worth nothing: the report
+        would omit exactly the routines that make it invalid, so it costs a program
+        that cannot run. The refusal comes from the same check ``run()`` makes."""
+        vqe = self._h2_vqe(default_test_simulator, QNSPSAOptimizer())
+        mocker.patch.object(
+            vqe.optimizer,
+            "preprocessors",
+            side_effect=ContractViolation("nope"),
+        )
+        with pytest.raises(ContractViolation, match="nope"):
+            vqe.dry_run()
+
+    def test_a_real_incompatible_pairing_refuses_with_the_estimators_reason(
+        self, dummy_simulator, default_optimizer
+    ):
+        """PCE's cost is a classical (COUNTS) objective, which the pullback metric
+        rejects. The estimator's own message names the alternative, so previewing
+        surfaces it before any circuit is built."""
+        pce = PCE(
+            problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
+            ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+            optimizer=QNGOptimizer(),  # default pullback metric
+            backend=dummy_simulator,
+        )
+        with pytest.raises(ContractViolation, match="Fubini–Study estimator"):
+            pce.dry_run()
+
+    def test_fubini_study_surfaces_one_pipeline_per_block(
+        self, default_test_simulator, default_optimizer
+    ):
+        """A block-diagonal Fubini-Study metric drives one prefix pipeline per
+        commuting-gate block; each must appear with a unique report key (no
+        same-named pipeline silently overwriting another)."""
+        vqe = VQE(
+            molecule=qp.qchem.Molecule(
+                symbols=["H", "H"],
+                coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
+            ),
+            ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+            n_layers=2,
+            backend=default_test_simulator,
+            optimizer=QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()),
+        )
+        reports = vqe.dry_run()
+        prefix_keys = [k for k in reports if k.startswith(f"{METRIC_ROUTINE}[block")]
+        n_blocks = len(vqe.optimizer.preprocessors(vqe))
+        assert len(prefix_keys) == n_blocks > 1  # one per block, none dropped
+        assert len(set(prefix_keys)) == len(prefix_keys)  # keys are unique
+
+    def _metric_vqe(self, backend, optimizer):
+        return _metric_compatible_vqe(backend, optimizer)
+
+    @pytest.mark.parametrize(
+        "estimator",
+        [
+            PullbackMetricEstimator(),
+            FubiniStudyMetricEstimator(),
+            StochasticFidelityMetricEstimator(),
+        ],
+    )
+    def test_every_estimator_validates_before_enumerating(
+        self, default_test_simulator, default_optimizer, estimator, mocker
+    ):
+        """Every estimator's ``preprocessors`` must call ``check_compatible`` first,
+        so enumerating routines cannot describe a pairing ``run()`` would reject —
+        the contract can't hold for one estimator and silently lapse in another. It
+        must also validate exactly once per call, not per routine returned."""
+        vqe = self._metric_vqe(default_test_simulator, default_optimizer)
+        spy = mocker.spy(estimator, "check_compatible")
+        estimator.preprocessors(vqe)
+        spy.assert_called_once_with(vqe)
+
+    def test_qng_rejects_a_fidelity_sampling_estimator(self):
+        """QNG needs a closed-form metric; the stochastic-fidelity estimator only
+        supplies a fidelity function, so the pairing fails at construction rather
+        than with a bare ValueError deep inside optimize()."""
+        with pytest.raises(ValueError, match="supplies no closed-form metric"):
+            QNGOptimizer(metric_estimator=StochasticFidelityMetricEstimator())
+
+    def test_a_metric_the_ansatz_rejects_refuses_the_preview(
+        self, default_test_simulator, default_optimizer
+    ):
+        """The ansatz's angles are expressions rather than bare parameters, which
+        Fubini–Study cannot differentiate. Refusing names the gate and the angle;
+        reporting the cost routine alone would price a run that cannot happen."""
+        vqe = self._h2_vqe(
+            default_test_simulator,
+            QNSPSAOptimizer(metric_estimator=FubiniStudyMetricEstimator()),
+        )
+        with pytest.raises(ContractViolation, match="not a bare trainable parameter"):
+            vqe.dry_run()
+
+    # The forced path runs QuEPP's real expand, which warns that Monte Carlo
+    # sampling needs concrete angles — expected when comparing against it.
+    @pytest.mark.filterwarnings("ignore:QuEPP")
+    def test_analytic_path_matches_counts_but_not_mitigated_depth(
+        self, default_test_simulator, default_optimizer
+    ):
+        """The documented split: circuit counts are exact on the analytic path,
+        while the shape figures predate a rewriting stage (QuEPP + twirls here),
+        because it is previewed as placeholders rather than real circuits."""
+        vqe = self._h2_vqe(
+            default_test_simulator,
+            default_optimizer,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=4),
+        )
+        analytic = vqe.dry_run()["cost"]
+        forced = vqe.dry_run(force_circuit_generation=True)["cost"]
+
+        assert analytic.total_circuits == forced.total_circuits
+        assert analytic.circuit_stats["mean_depth"] < forced.circuit_stats["mean_depth"]
+
+    def test_once_pipeline_previews_a_single_parameter_set(
+        self, default_test_simulator, default_optimizer
+    ):
+        """A one-time readout runs after optimization at the trained parameters —
+        one set — not over the optimizer's working set. Previewing it with the
+        population would report circuits the run never submits."""
+        population = 6
+        vqe = self._metric_vqe(
+            default_test_simulator,
+            MonteCarloOptimizer(population_size=population, n_best_sets=1),
+        )
+        reports = vqe.dry_run()
+        assert reports["cost"].total_circuits == population
+        assert reports["sample"].total_circuits == 1
+
+    def test_sampling_readout_reports_no_observable_instead_of_zeros(
+        self, default_test_simulator, default_optimizer
+    ):
+        """A computational-basis readout has no observable to partition, so the
+        group/term counts are omitted rather than printed as a misleading ``0``."""
+        vqe = self._metric_vqe(default_test_simulator, default_optimizer)
+        sample_meta = next(
+            s.metadata
+            for s in vqe.dry_run()["sample"].stages
+            if s.name == "MeasurementStage"
+        )
+        assert "readout" in sample_meta
+        assert "n_groups" not in sample_meta
+        assert "n_pauli_terms" not in sample_meta
+
+    def test_each_metric_block_gets_its_own_report_entry(
+        self, default_test_simulator, dummy_expval_backend
+    ):
+        """The pipeline name is the report key, so blocks sharing one would collapse
+        into a single entry showing only the last block's circuits."""
+        vqe = _metric_compatible_vqe(
+            default_test_simulator,
+            QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()),
+        )
+        prefix_keys = [
+            k for k in vqe.dry_run() if k.startswith(f"{METRIC_ROUTINE}[block")
+        ]
+        assert len(prefix_keys) > 1
+        assert len(set(prefix_keys)) == len(prefix_keys)
+        assert all("block" in k for k in prefix_keys)
+
+    @pytest.mark.parametrize(
+        "optimizer_factory",
+        [
+            QNSPSAOptimizer,
+            QNGOptimizer,
+            lambda: QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()),
+            MonteCarloOptimizer,
+            lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+        ],
+        ids=["qnspsa", "qng", "qng-fs", "montecarlo", "lbfgsb"],
+    )
+    def test_forced_generation_works_for_every_auxiliary_pipeline(
+        self, default_test_simulator, optimizer_factory
+    ):
+        """The report recommends ``force_circuit_generation=True`` for real shapes,
+        so it must work on the pipelines the report shows. An auxiliary routine may
+        bind a different parameter width than the cost one — an overlap circuit
+        carries two concatenated vectors — which the env has to supply per routine.
+        """
+        vqe = _metric_compatible_vqe(default_test_simulator, optimizer_factory())
+        lazy = vqe.dry_run()
+        forced = vqe.dry_run(force_circuit_generation=True)
+        assert set(lazy) == set(forced)
+        for name, report in lazy.items():
+            assert report.total_circuits == forced[name].total_circuits
+
+    def test_forced_shape_is_reproducible_under_twirling(
+        self, default_test_simulator, default_optimizer
+    ):
+        """Twirl labels are sampled, so an unseeded stage makes the one figure a
+        hardware budget quotes — max depth — drift between calls on the same
+        program, silently and with nothing marking it as a sample."""
+        vqe = self._h2_vqe(
+            default_test_simulator,
+            default_optimizer,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=4),
+            seed=1234,
+        )
+        first, second = (
+            vqe.dry_run(force_circuit_generation=True)["cost"].circuit_stats
+            for _ in range(2)
+        )
+        assert first == second
+
+        twin = self._h2_vqe(
+            default_test_simulator,
+            default_optimizer,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=4),
+            seed=1234,
+        )
+        assert (
+            twin.dry_run(force_circuit_generation=True)["cost"].circuit_stats == first
+        )
+
+    def test_analytic_shape_predates_a_rewriting_stage(
+        self, default_test_simulator, default_optimizer
+    ):
+        """The analytic path measures the circuits *entering* a rewriting stage, so
+        its depth understates the submitted one — while the counts stay exact.
+        ``force_circuit_generation=True`` expands and measures for real."""
+        vqe = self._h2_vqe(
+            default_test_simulator,
+            default_optimizer,
+            qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
+        )
+        lazy = vqe.dry_run()["cost"]
+        forced = vqe.dry_run(force_circuit_generation=True)["cost"]
+
+        assert lazy.total_circuits == forced.total_circuits
+        assert lazy.circuit_stats["max_depth"] < forced.circuit_stats["max_depth"]
+
+    def test_widest_basis_change_spans_all_groups(
+        self, default_test_simulator, default_optimizer
+    ):
+        """With grouping off every group holds one term, so reading the width off
+        the largest-by-size group degenerates to 1 — it must be the widest basis
+        change any group needs (H2 carries width-4 terms such as ``YXXY``)."""
+        vqe = self._h2_vqe(
+            default_test_simulator, default_optimizer, grouping_strategy=None
+        )
+        meta = next(
+            s.metadata
+            for s in vqe.dry_run()["cost"].stages
+            if s.name == "MeasurementStage"
+        )
+        assert meta["largest_group_size"] == 1
+        assert meta["largest_group_width"] == 4
+
+    def test_stochastic_bind_and_dry_run_share_overlap_preprocessor(
+        self, default_test_simulator, default_optimizer
+    ):
+        """``bind`` and ``preprocessors`` build the same overlap routine (single
+        source), so what is reported can't drift from what runs."""
+        vqe = self._metric_vqe(default_test_simulator, default_optimizer)
+        est = StochasticFidelityMetricEstimator()
+        (preview_pp,) = est.preprocessors(vqe)
+        run_pp = est._build_overlap_preprocessor(vqe)
+        assert preview_pp.name == run_pp.name == METRIC_ROUTINE
+        assert preview_pp.cache_key == run_pp.cache_key == METRIC_ROUTINE
+        assert preview_pp.result_format == run_pp.result_format
+
+    def test_dry_run_does_not_advance_program_rng(
+        self, sampling_test_simulator, default_optimizer
+    ):
+        """A weighted-random preview draws from a throwaway RNG, so it neither
+        advances the program's live generator (a later run() is unaffected) nor
+        varies between repeated previews."""
+        vqe = self._h2_vqe(
+            sampling_test_simulator,
+            default_optimizer,
+            grouping_strategy="qwc",
+            shot_distribution="weighted_random",
+            seed=1234,
+        )
+        before = vqe._serialized_rng_state
+        reports_a = vqe.dry_run()
+        assert vqe._serialized_rng_state == before  # live RNG untouched
+
+        reports_b = vqe.dry_run()
+        assert (
+            reports_a["cost"].env_artifacts["per_group_shots"]
+            == reports_b["cost"].env_artifacts["per_group_shots"]
+        )
+
+    def test_dry_run_builds_env_without_reporter(
+        self, default_test_simulator, default_optimizer, mocker
+    ):
+        """The preview must stay silent — no progress reporter is wired into the
+        forward-pass env, so nothing bleeds into stdout."""
+        vqe = self._h2_vqe(default_test_simulator, default_optimizer)
+        spy = mocker.spy(vqe, "_build_pipeline_env")
+        vqe.dry_run()
+        assert spy.call_count > 0
+        assert all(call.kwargs.get("reporter") is None for call in spy.call_args_list)
+
     @pytest.mark.filterwarnings(
         "ignore:Backend supports analytic expectation values:UserWarning"
     )
@@ -594,6 +1151,52 @@ class TestQuantumProgramDryRun:
 
         assert vqe.dry_run() == {}
         spec.assert_not_called()
+
+
+def test_measurement_reports_which_qubits_it_reads(dummy_simulator):
+    """``measure_all`` narrows the outcome space below the register width, which no
+    other figure in the report reflects. A sampling backend, since a backend that
+    evaluates the observable itself builds no basis-change circuits to narrow."""
+    env = PipelineEnv(backend=dummy_simulator)
+
+    def measured(flag):
+        _, report = _dry_run(
+            [DummySpecStage(meta=two_group_meta()), MeasurementStage(measure_all=flag)],
+            env,
+        )
+        return report.stages[-1].metadata["measured_qubits"]
+
+    assert measured(False) == "per group (observable support only)"
+    assert measured(True) == "all"
+
+
+@pytest.mark.parametrize(
+    "make_program",
+    [
+        pytest.param(_h2_vqe_for_totals, id="vqe-circuit-seed"),
+        pytest.param(_maxcut_qaoa_for_totals, id="qaoa-hamiltonian-seed"),
+    ],
+)
+def test_cost_evaluation_submits_what_the_report_says(
+    make_program, default_test_simulator, mocker
+):
+    """Oracle for the one claim the report makes: what a single evaluation submits.
+
+    Measured against real submissions rather than restated arithmetic, and across
+    both seed kinds — a Hamiltonian-seeded program declares no parameters on its
+    own seed.
+    """
+    program = make_program(
+        default_test_simulator, MonteCarloOptimizer(population_size=4, n_best_sets=1)
+    )
+    expected = program.dry_run()["cost"].total_circuits
+
+    spy = mocker.spy(program.backend, "submit_circuits")
+    params = np.zeros((program.optimizer.n_param_sets, program.n_params))
+    program.evaluate(params, program.cost_preprocessor())
+
+    submitted = sum(len(call.args[0]) for call in spy.call_args_list)
+    assert submitted == expected
 
 
 class _NonDryDagConsumerStage(BundleStage):
@@ -798,33 +1401,73 @@ class TestCircuitStatsAggregate:
         assert stats["min_depth"] == stats["max_depth"]
         assert stats["min_width"] == stats["max_width"] == 2
 
-    def test_varying_depth_populates_range_stats(self):
-        # Two MetaCircuits with different depths exercise the spread branches
-        # of every stat (min/max/mean/std/2q_depth) — the constant case
-        # collapses all of them to the same number.
-        qc_shallow = QuantumCircuit(2)
-        qc_shallow.cx(0, 1)
-        qc_deep = QuantumCircuit(2)
-        qc_deep.cx(0, 1)
-        qc_deep.cx(0, 1)
-        batch = {
-            (("circuit", 0),): MetaCircuit(
-                circuit_bodies=(((), circuit_to_dag(qc_shallow)),)
-            ),
-            (("circuit", 1),): MetaCircuit(
-                circuit_bodies=(((), circuit_to_dag(qc_deep)),)
-            ),
-        }
-        stats = _aggregate_circuit_stats(batch)
-        assert stats["min_depth"] == 1
-        assert stats["max_depth"] == 2
-        assert stats["mean_depth"] == 1.5
-        assert stats["std_depth"] > 0
-        assert stats["mean_2q_depth"] == 1.5
-        # Width is constant at 2 across both circuits.
-        assert stats["min_width"] == stats["max_width"] == 2
-        assert stats["std_width"] == 0.0
-
     def test_empty_dict_for_empty_batch(self):
         # Aggregator returns {} when no MetaCircuits have DAG bodies to read.
         assert _aggregate_circuit_stats({}) == {}
+
+
+def test_quepp_montecarlo_dry_run_suppresses_fallback_warning(dummy_pipeline_env):
+    """A dry preview always sees symbolic angles, so montecarlo QuEPP would warn
+    it is falling back to exhaustive enumeration. That is execution-path noise
+    for a nothing-executes preview and must stay silent."""
+    meta = _parametric_twirlable_meta()
+    dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        _dry_run(
+            [
+                DummySpecStage(meta=meta),
+                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0, n_samples=4)),
+                MeasurementStage(),
+            ],
+            dummy_pipeline_env,
+            suppress_performance_warnings=True,
+        )
+    assert not any("Monte Carlo sampling" in str(w.message) for w in record)
+
+
+class _IncompleteMetricEstimator(MetricEstimator):
+    """A metric estimator missing ``preprocessors`` — must stay abstract."""
+
+    def check_compatible(self, program):
+        pass
+
+    def bind(self, program):
+        return {}
+
+    # deliberately omits preprocessors
+
+
+def test_metric_estimator_must_declare_its_routines():
+    """The abstract contract that prevents silent omission: a new metric estimator
+    cannot be instantiated without declaring the routines it measures through, so
+    they cannot be left out of what a program reports."""
+    with pytest.raises(TypeError):
+        _IncompleteMetricEstimator()
+
+
+def test_counts_override_on_observable_counts_per_term(dummy_pipeline_env):
+    """A raw COUNTS readout of a grouped observable still measures it per term —
+    the observable survives onto the final batch — so the per-term baseline must
+    apply. The terminal ResultFormat is COUNTS for both this and a
+    dropped-observable sample, so it cannot be the signal."""
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    meta = MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=SparsePauliOp.from_list([("ZZ", 0.5), ("ZI", 0.5)]),
+    )
+    _, report = _dry_run(
+        [
+            DummySpecStage(meta=meta),
+            MeasurementStage(result_format_override=ResultFormat.COUNTS),
+        ],
+        dummy_pipeline_env,
+    )
+    # Per-term baseline retained (2 terms), not collapsed to 1 as it would be
+    # if COUNTS were misread as sampling.
+    assert report.stages[0].factor == 2.0
+    assert report.total_circuits == 1
+
+
+# no phantom ÷N

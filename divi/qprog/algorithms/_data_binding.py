@@ -17,7 +17,7 @@ Each subclass still builds its own data/weight parameter split and composed
 circuit; the mixin only orchestrates the data axis on top of that state.
 """
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -100,6 +100,9 @@ class DataBindingMixin(_MixinBase):
     _data_symbols: tuple["Parameter", ...]
     _weight_symbols: tuple["Parameter", ...]
     _composed_circuit: "QuantumCircuit"
+    feature_batch: npt.NDArray[np.float64] | None
+    labels: npt.NDArray[np.float64] | None
+    _sample_loss_fn: Callable[[float, float], float] | None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -162,7 +165,7 @@ class DataBindingMixin(_MixinBase):
         labels: npt.ArrayLike | None,
         loss_fn: SampleLossFn,
         n_samples: int,
-    ) -> tuple[np.ndarray | None, "object | None"]:
+    ) -> tuple[np.ndarray | None, Callable[[float, float], float] | None]:
         """Validate optional supervised labels and resolve the per-sample loss.
 
         Returns ``(None, None)`` for the unsupervised case. Otherwise returns the
@@ -181,6 +184,59 @@ class DataBindingMixin(_MixinBase):
                 f"{n_samples} samples."
             )
         return arr, resolve_sample_loss(loss_fn)
+
+    def _validate_before_preview(self) -> None:
+        """Re-validate the data axis before previewing it.
+
+        ``feature_batch`` and ``labels`` are public attributes, so a batch swapped
+        in after construction (a train/validation split) can leave the program in a
+        state its constructor would have rejected. Left unchecked, the preview is
+        not merely incomplete but wrong: dropping the batch removes the data axis
+        and under-reports by its whole size.
+        """
+        super()._validate_before_preview()
+        # Only set when a data axis was configured.
+        data_symbols = getattr(self, "_data_symbols", ())
+        batch = self.feature_batch
+        if batch is None:
+            if data_symbols:
+                raise ValueError(
+                    f"{type(self).__name__} binds {len(data_symbols)} data "
+                    "parameter(s) but feature_batch is None. Assign a feature "
+                    "batch; a data-bound circuit cannot run without one, and "
+                    "previewing without it silently drops the data axis."
+                )
+            return
+        # The coercion the constructor applies, so the same batch is rejected here.
+        batch = self._validate_feature_batch(batch, len(data_symbols))
+        labels = self.labels
+        supervised = self._sample_loss_fn is not None
+        if labels is None:
+            if supervised:
+                raise ValueError(
+                    f"{type(self).__name__} was constructed with labels and has a "
+                    "per-sample loss, but labels is now None. The run would train "
+                    "the unsupervised objective while the report calls it "
+                    "supervised. Rebuild the program for an unsupervised loss "
+                    "rather than clearing labels."
+                )
+            return
+        if not supervised:
+            n_labels = np.asarray(labels).reshape(-1).shape[0]
+            raise ValueError(
+                f"{type(self).__name__} was constructed without labels, so it has "
+                f"no per-sample loss to apply to the {n_labels} labels now "
+                "assigned; the run would fail after submitting every circuit. Pass "
+                "labels (and loss_fn, if not the default) to the constructor "
+                "rather than assigning them later."
+            )
+        n_labels = np.asarray(labels).reshape(-1).shape[0]
+        if n_labels != batch.shape[0]:
+            raise ValueError(
+                f"labels has {n_labels} entries but feature_batch has "
+                f"{batch.shape[0]} samples; the run would fail after submitting "
+                "every circuit."
+            )
 
     @staticmethod
     def _validate_feature_batch(

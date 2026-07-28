@@ -1051,6 +1051,10 @@ class QuEPP(QEMProtocol):
         rotations = _extract_rotation_gates(working)
         tableaus = _build_clifford_tableaus(working, rotations)
 
+        # A throwaway stream, so previewing leaves self._rng where a run found it.
+        preview_rng = np.random.default_rng(0)
+        sampled_paths = self._sampling == "montecarlo" and not symbolic
+
         unique_branches: set[tuple[int, ...]] = set()
         n_paths_per_obs: list[int] = []
         for obs in observables:
@@ -1062,13 +1066,11 @@ class QuEPP(QEMProtocol):
                 obs_terms=_obs_to_stim_terms(obs, n_qubits),
                 symbolic=symbolic,
             )
-            # The dry preview always sees symbolic angles, so _select_paths would
-            # warn that Monte Carlo / threshold pruning fall back to exhaustive
-            # enumeration. That is expected here (the preview only counts paths;
-            # the real run binds angles and samples), so keep the preview quiet.
+            # Symbolic angles make _select_paths warn about falling back to
+            # exhaustive enumeration; a run binds them first, so keep it quiet.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SymbolicAngleWarning)
-                paths = self._select_paths(prep)
+                paths = self._select_paths(prep, rng=preview_rng)
             n_paths_per_obs.append(len(paths))
             for p in paths:
                 unique_branches.add(p.branches)
@@ -1087,6 +1089,8 @@ class QuEPP(QEMProtocol):
             # construction, so the observable count needs its own slot.
             "n_observables": len(observables),
         }
+        if sampled_paths:
+            context["sampled_paths"] = True
         if symbolic:
             context["symbolic"] = True
             context["weight_symbols"] = []
@@ -1136,8 +1140,14 @@ class QuEPP(QEMProtocol):
             symbolic=symbolic,
         )
 
-    def _select_paths(self, prep: "_PreprocResult") -> list[_PauliPath]:
-        """Choose sampling strategy and enumerate / sample the Pauli paths."""
+    def _select_paths(
+        self, prep: "_PreprocResult", rng: np.random.Generator | None = None
+    ) -> list[_PauliPath]:
+        """Choose sampling strategy and enumerate / sample the Pauli paths.
+
+        ``rng`` overrides the protocol's own generator, so a preview can draw the
+        same paths a run would without advancing the protocol's state.
+        """
         symbolic = prep.symbolic
         if self._sampling == "montecarlo" and symbolic:
             warnings.warn(
@@ -1163,7 +1173,7 @@ class QuEPP(QEMProtocol):
                 prep.tableaus,
                 prep.obs_terms,
                 self._n_samples,
-                self._rng,
+                self._rng if rng is None else rng,
             )
         return _enumerate_paths_dfs(
             prep.rotations,

@@ -273,6 +273,29 @@ variational program, so a dry run will not show it doing anything.)  See the
 factor tree (fan-out ``×K`` vs grouping reduction ``÷K``) and for programmatic
 access to the reports.
 
+.. warning::
+
+   **Circuit counts are exact except on a sampled path; the reported depth and
+   gate counts are not.**  Monte Carlo path selection (a concrete-angle program,
+   see ``sampling``) draws its paths at random and deduplicates them, so the
+   surviving count is a random variable: two programs sharing one protocol
+   instance, or one protocol reused across runs, will not draw the same number.
+   The preview reports a sample from an independent stream — reproducible, close,
+   but **not** a prediction of any particular run — and says so, marking the stage
+   ``path_count: sampled (an estimate, not an exact count)``.  Size a budget for
+   such a run with headroom, or switch to ``sampling="exhaustive"``, whose count
+   is deterministic.  Everywhere else the count is exact.
+
+   On the default analytic path, mitigation is previewed as placeholders, so the
+   ``Summary`` shape figures describe the circuits *entering* the mitigation
+   stage.  The error is not a bound in either direction — folding understates
+   depth (a 5× fold reads as unfolded), while path substitution can overstate it.
+   Pass ``force_circuit_generation=True`` to expand and measure the real circuits
+   when you are sizing a hardware budget.
+
+   Reported depth also excludes the basis-change and measurement layer that
+   grouping appends, which adds a small amount on top.
+
 Signal Destruction and Automatic Fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

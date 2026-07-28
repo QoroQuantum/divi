@@ -205,6 +205,72 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="labels has 2 entries but feature_batch"):
             make_qnn(labels=[0.0, 1.0])
 
+    def test_dry_run_rejects_a_batch_that_no_longer_matches_the_labels(self, make_qnn):
+        """``feature_batch`` is public, so swapping in a split after construction
+        outruns the constructor's check. A preview that passes here is followed by a
+        run that fails once every circuit has been submitted."""
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
+        program.dry_run()  # consistent to begin with
+
+        program.feature_batch = np.asarray(program.feature_batch)[:2]
+        with pytest.raises(ValueError, match="labels has 4 entries"):
+            program.dry_run()
+
+    @pytest.mark.parametrize(
+        "bad_batch, match",
+        [
+            (None, "feature_batch is None"),
+            (np.zeros((0, 2)), "at least one sample"),
+            (np.zeros((4, 99)), "columns but the circuit binds"),
+            (np.zeros(4), "must be 2D"),
+        ],
+        ids=["none", "empty", "wrong-width", "one-dimensional"],
+    )
+    def test_dry_run_rejects_a_batch_the_constructor_would_have(
+        self, make_qnn, bad_batch, match
+    ):
+        """``feature_batch`` is public, so any state the constructor rejects can be
+        assigned afterwards. ``None`` is the dangerous one: it drops the data axis
+        and the report under-counts by the whole batch instead of failing."""
+        program = make_qnn()
+        program.feature_batch = bad_batch
+        with pytest.raises(ValueError, match=match):
+            program.dry_run()
+
+    def test_dry_run_rejects_labels_the_program_cannot_consume(self, make_qnn):
+        """The per-sample loss is resolved at construction from the labels given
+        then, so labels assigned afterwards have nothing to consume them. The
+        preview would otherwise report ``supervised: False`` for a program holding
+        labels, and the run fails once it reduces them."""
+        program = make_qnn()  # unsupervised: no sample loss resolved
+        program.labels = np.array([0.0, 1.0, 0.0, 1.0])
+        with pytest.raises(ValueError, match="no per-sample loss"):
+            program.dry_run()
+
+    def test_dry_run_rejects_labels_cleared_after_construction(self, make_qnn):
+        """Clearing labels leaves the per-sample loss in place, so the run trains
+        the unsupervised objective while the report still calls it supervised —
+        the one corruption here that yields a wrong answer instead of a failure."""
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
+        program.dry_run()  # supervised and consistent to begin with
+
+        program.labels = None
+        with pytest.raises(ValueError, match="labels is now None"):
+            program.dry_run()
+
+    def test_supervision_is_visible_in_the_report(self, make_qnn):
+        """Supervision decides which optimizers are legal at all, so two reports
+        that differ in it must not render identically."""
+        supervised = make_qnn(labels=[0.0, 1.0, 0.0, 1.0]).dry_run()["cost"]
+        unsupervised = make_qnn().dry_run()["cost"]
+
+        def flag(report):
+            data_stage = next(s for s in report.stages if s.name == "DataBindingStage")
+            return data_stage.metadata["supervised"]
+
+        assert flag(supervised) is True
+        assert flag(unsupervised) is False
+
     def test_no_metric_estimator_is_recommended_for_a_supervised_batch(self, make_qnn):
         """Each metric used to redirect to another that rejects the same program,
         so following the advice went in a circle. For a labelled batch there is no

@@ -22,6 +22,7 @@ from divi.pipeline import (
     CircuitPipeline,
     CircuitPreprocessor,
     GroupingStrategy,
+    PipelineCadence,
     PipelineEnv,
     ResultFormat,
     ShotDistStrategy,
@@ -742,6 +743,46 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return CircuitPipeline(
             stages=stages,
             suppress_performance_warnings=self._suppress_performance_warnings,
+        )
+
+    def _bindable_parameter_count(self) -> int:
+        return self.n_params
+
+    def _validate_before_preview(self) -> None:
+        """Reject counts a run would reject, so the preview fails where it is cheap."""
+        super()._validate_before_preview()
+        if self.n_layers < 1:
+            raise ValueError(
+                f"n_layers must be >= 1, got {self.n_layers}; a circuit with no "
+                "ansatz layers has nothing to optimize."
+            )
+        if self.max_iterations < 1:
+            raise ValueError(
+                f"max_iterations must be >= 1, got {self.max_iterations}; run() "
+                "would warn and return without optimizing anything."
+            )
+
+    def _dry_run_env(
+        self, preprocessor: CircuitPreprocessor, rng: np.random.Generator
+    ) -> PipelineEnv:
+        """Preview a one-time readout at a single parameter set.
+
+        The optimizer evaluates its recurring pipelines over a whole working set
+        (a population, for population optimizers), which is what the default env
+        supplies. A ``ONCE`` routine instead runs after optimization at the
+        trained parameters — one set — so binding the working set there would
+        report circuits the run never submits.
+        """
+        # A Hamiltonian-seeded program declares no width on its seed, so fall back
+        # to the program's own.
+        n_rows = (
+            1
+            if preprocessor.cadence is PipelineCadence.ONCE
+            else self.optimizer.n_param_sets
+        )
+        n_params = self._routine_parameter_count(preprocessor) or self.n_params
+        return self._build_pipeline_env(
+            rng=rng, reporter=None, param_sets=np.zeros((n_rows, n_params))
         )
 
     def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
