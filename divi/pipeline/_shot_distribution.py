@@ -66,17 +66,15 @@ def _compute_shot_distribution(
               which groups contribute most.
             * ``"weighted"`` — proportional to each group's coefficient L1
               norm, using the largest-remainder method to preserve the
-              total exactly. Reduces estimator variance on Hamiltonians
-              whose coefficient distribution is skewed (typical for
-              chemistry).  The preferred default when using adaptive shot
-              allocation.
+              total exactly. Concentrates the budget on the largest-L1
+              groups.
             * ``"weighted_random"`` — multinomial sample with the same
               probabilities as ``"weighted"``.  Same expected allocation,
               but individual runs are stochastic; reproducibility requires
-              seeding ``rng``.  Pick this only when you need unbiased
-              estimators across independent runs (e.g. classical-shadows
-              analysis) — for a single run ``"weighted"`` gives lower
-              variance and better coverage of small-coefficient terms.
+              seeding ``rng``.  Pick this when you need unbiased estimators
+              across independent runs (e.g. classical-shadows analysis); it
+              may leave more low-weight groups with no shots at all than the
+              deterministic ``"weighted"`` split.
             * Callable
               ``(group_l1_norms, total_shots) -> per_group_shots`` for
               fully custom allocation.

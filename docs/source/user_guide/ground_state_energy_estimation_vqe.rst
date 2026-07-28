@@ -11,13 +11,9 @@ This page covers single-instance ground-state energy estimation with
 
 .. tip::
 
-   On sampling backends, pass ``shot_distribution="weighted"`` to focus a
-   single shot budget on the Hamiltonian's dominant terms — lower variance than
-   an equal-budget ``"uniform"`` split on the skewed coefficient distributions
-   typical of chemistry.  (The default gives every group the full shot count, a
-   larger total budget; ``shot_distribution`` splits one budget smartly — so
-   compare strategies at equal total shots.)  See
-   `Spending Shots Where They Matter`_ below.
+   On sampling backends, ``shot_distribution`` caps the total at a single shot
+   budget instead of giving every measurement group the full count, and splits it
+   across the groups.  See `Spending Shots Where They Matter`_ below.
 
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
 -----------------------------------------------

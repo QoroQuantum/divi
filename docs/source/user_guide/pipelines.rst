@@ -1047,11 +1047,14 @@ By default, every measurement group produced by
 backend's full shot count — so with ``G`` groups the default spends
 ``G × shots`` in total, even on tiny terms with little impact on the final
 energy.  Setting the ``shot_distribution`` argument instead caps the total at a
-single ``shots`` budget split across groups by importance.  At that equal
-budget it gives lower estimator variance than a ``"uniform"`` split (the
-dominant terms get more samples); compare strategies at the *same* total
-budget, since the default's per-group full count is a larger budget, not a
-fairer baseline:
+single ``shots`` budget split across groups.  Compare strategies at the *same*
+total budget, since the default's per-group full count is a larger budget, not a
+fairer baseline.
+
+``"weighted"`` concentrates the budget on the groups with the largest
+coefficient L1 norm.  Whether that buys precision depends on the Hamiltonian and
+the state: QWC grouping bundles commuting terms, so a group's L1 norm and its
+variance need not agree.
 
 .. code-block:: python
 
@@ -1063,8 +1066,8 @@ fairer baseline:
 The available strategies (see :data:`~divi.pipeline.ShotDistStrategy`):
 
 - ``"uniform"`` — equal split across groups.
-- ``"weighted"`` — proportional to per-group coefficient L1 norm; dominant
-  Hamiltonian terms get more shots (largest-remainder rounding preserves
+- ``"weighted"`` — proportional to per-group coefficient L1 norm; the
+  largest-L1 groups get more shots (largest-remainder rounding preserves
   the total exactly).
 - ``"weighted_random"`` — multinomial sample of the same probabilities.
   Reproducible when ``env.rng`` is seeded; may drop more low-weight
@@ -1072,10 +1075,10 @@ The available strategies (see :data:`~divi.pipeline.ShotDistStrategy`):
 - A callable ``(group_l1_norms, total_shots) -> per_group_shots`` for
   fully custom allocation.
 
-The equal-budget claim is easy to check without spending a shot: a
+The allocations themselves can be inspected without spending a shot: a
 :meth:`~divi.qprog.QuantumProgram.dry_run` records the per-group allocation
-under ``env_artifacts["per_group_shots"]``, so ``"uniform"`` and ``"weighted"``
-can be compared at the *same* total budget directly:
+under ``env_artifacts["per_group_shots"]``, so two strategies can be lined up at
+the *same* total budget before either is run:
 
 .. code-block:: python
 
@@ -1132,13 +1135,11 @@ To force genuine shot-based sampling — and unlock ``shot_distribution`` — us
 a backend with ``supports_expval=False``:
 ``QiskitSimulator(force_sampling=True)``, or for
 :class:`~divi.backends.QoroService` set
-``JobConfig(force_sampling=True)``.  Setting ``shot_distribution`` on an
-expval-capable backend is not silent: it emits a :class:`UserWarning` saying the
-allocation has no effect there.  The analytic path wins deliberately — honouring
-the allocation would mean splitting an observable the backend can evaluate
-exactly into sampled groups, trading exactness for a knob that cannot help — so
-no allocation is computed and ``env_artifacts`` carries no ``per_group_shots``
-entry on that path.
+``JobConfig(force_sampling=True)``.  On an expval-capable backend
+``shot_distribution`` has no effect — the backend evaluates the whole observable
+itself, so there are no measurement groups to split shots across.  ``expand``
+emits a :class:`UserWarning` saying so, and ``env_artifacts`` carries no
+``per_group_shots`` entry.
 
 
 Stage Validation
