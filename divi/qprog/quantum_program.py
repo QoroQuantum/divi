@@ -384,6 +384,7 @@ class QuantumProgram(ABC):
                 trace,
                 pipeline.stages,
                 env,
+                cadence=preprocessor.cadence,
             )
         return reports
 

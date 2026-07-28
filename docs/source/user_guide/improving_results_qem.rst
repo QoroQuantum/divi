@@ -282,9 +282,10 @@ access to the reports.
    instance, or one protocol reused across runs, will not draw the same number.
    The preview reports a sample from an independent stream — reproducible, close,
    but **not** a prediction of any particular run — and says so, marking the stage
-   ``path_count: sampled (an estimate, not an exact count)``.  Size a budget for
-   such a run with headroom, or switch to ``sampling="exhaustive"``, whose count
-   is deterministic.  Everywhere else the count is exact.
+   ``path_count: sampled (an estimate, not an exact count)`` and the compact row
+   ``sampled count``.  Size a budget for such a run with headroom, or switch to
+   ``sampling="exhaustive"``, whose count is deterministic.  Everywhere else the
+   count is exact.
 
    On the default analytic path, mitigation is previewed as placeholders, so the
    ``Summary`` shape figures describe the circuits *entering* the mitigation
@@ -295,6 +296,15 @@ access to the reports.
 
    Reported depth also excludes the basis-change and measurement layer that
    grouping appends, which adds a small amount on top.
+
+.. note::
+
+   On a sampling backend, ``shot_distribution`` caps the shot budget per
+   *mitigation variant*, not across the evaluation.  Every variant a protocol
+   emits — a folded copy, a Pauli path, a twirl — is its own circuit drawing the
+   full capped budget, so a protocol emitting three variants spends the cap three
+   times.  Read :attr:`~divi.pipeline.DryRunReport.total_shots` for the figure
+   rather than assuming the cap is global.
 
 Signal Destruction and Automatic Fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

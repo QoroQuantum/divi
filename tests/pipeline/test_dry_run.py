@@ -24,11 +24,13 @@ from divi.circuits.quepp import QuEPP
 from divi.pipeline import (
     CircuitPipeline,
     CircuitPreprocessor,
+    PipelineCadence,
     dry_run_pipeline,
     format_dry_run,
 )
 from divi.pipeline._compilation import _compile_batch
 from divi.pipeline._dry_run import _aggregate_circuit_stats, _two_qubit_depth
+from divi.pipeline._preprocessor import sample_preprocessor
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -62,9 +64,16 @@ from divi.qprog.optimizers import (
     QNSPSAOptimizer,
     ScipyMethod,
     ScipyOptimizer,
+    SPSAOptimizer,
 )
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
-from tests.pipeline._helpers import DummySpecStage, two_group_meta
+from tests.pipeline._helpers import (
+    DummySpecStage,
+    FanoutAndSumStage,
+    h2_vqe,
+    meta_with_observable,
+    two_group_meta,
+)
 
 
 def _metric_compatible_vqe(backend, optimizer, n_layers: int = 1) -> VQE:
@@ -126,16 +135,27 @@ def _parametric_twirlable_meta() -> MetaCircuit:
     )
 
 
-def _dry_run(stages, env, *, dry=True, name="test", **pipeline_kwargs):
+def _dry_run(
+    stages,
+    env,
+    *,
+    dry=True,
+    name="test",
+    cadence=PipelineCadence.PER_EVALUATION,
+    **pipeline_kwargs,
+):
     """Build a pipeline over ``stages``, run one forward pass, and return
     ``(trace, report)`` for that pass.
+
+    These are bare pipelines with no routine behind them, so ``cadence`` is the
+    helper's own choice rather than a declared one.
 
     A fresh ``CircuitPipeline`` is built per call, so a real and a dry pass
     over equivalent ``stages`` never share a forward-pass cache.
     """
     pipeline = CircuitPipeline(stages=stages, **pipeline_kwargs)
     trace = pipeline.run_forward_pass("ignored", env, dry=dry)
-    report = dry_run_pipeline(name, trace, pipeline.stages, env)
+    report = dry_run_pipeline(name, trace, pipeline.stages, env, cadence)
     return trace, report
 
 
@@ -195,6 +215,84 @@ class TestDryRunPipeline:
             dry=False,
         )
         format_dry_run({"test": report})
+
+    def test_dry_run_pipeline_threads_cadence(self, dummy_pipeline_env):
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
+        )
+        trace = pipeline.run_forward_pass("ignored", dummy_pipeline_env, dry=False)
+        report = dry_run_pipeline(
+            "x",
+            trace,
+            pipeline.stages,
+            dummy_pipeline_env,
+            cadence=PipelineCadence.ONCE,
+        )
+        assert report.cadence is PipelineCadence.ONCE
+
+    def test_total_shots_weights_circuits_by_backend_shots(self, dummy_pipeline_env):
+        # dummy_expval_backend runs 100 shots; no shot_distribution, so every
+        # circuit is billed the same.
+        _, report = _dry_run(
+            [DummySpecStage(meta=two_group_meta()), MeasurementStage()],
+            dummy_pipeline_env,
+            dry=False,
+        )
+        assert report.total_shots == report.total_circuits * 100
+
+    def test_a_broken_introspect_does_not_break_the_dry_run(
+        self, dummy_pipeline_env, mocker
+    ):
+        """``introspect`` is optional colour, so a bug in one must be reported in
+        place rather than taking down the instrument being used to debug."""
+        spec = DummySpecStage(meta=two_group_meta())
+        mocker.patch.object(
+            spec, "introspect", side_effect=RuntimeError("my introspect has a bug")
+        )
+        _, report = _dry_run([spec, MeasurementStage()], dummy_pipeline_env)
+
+        assert report.total_circuits > 0  # the analysis still completed
+        assert "RuntimeError" in report.stages[0].metadata["introspect failed"]
+
+    def test_objective_key_tracks_the_observable_coefficients(self, dummy_pipeline_env):
+        """The fingerprint has to come off the real observable, not be hand-set:
+        two Hamiltonians differing only in a coefficient must not share it."""
+        a = _dry_run(
+            [
+                DummySpecStage(meta=meta_with_observable(SparsePauliOp(["ZZ"], [1.0]))),
+                MeasurementStage(),
+            ],
+            dummy_pipeline_env,
+        )[1]
+        b = _dry_run(
+            [
+                DummySpecStage(meta=meta_with_observable(SparsePauliOp(["ZZ"], [2.0]))),
+                MeasurementStage(),
+            ],
+            dummy_pipeline_env,
+        )[1]
+        assert a.total_circuits == b.total_circuits
+        assert a.objective_fingerprint != b.objective_fingerprint
+
+    def test_objective_fingerprint_survives_float_noise(self, dummy_pipeline_env):
+        """Coefficients are rounded, so recomputing a Hamiltonian must not split two
+        otherwise-identical objectives on the last few bits of a float."""
+
+        def fingerprint(coefficient):
+            return _dry_run(
+                [
+                    DummySpecStage(
+                        meta=meta_with_observable(SparsePauliOp(["ZZ"], [coefficient]))
+                    ),
+                    MeasurementStage(),
+                ],
+                dummy_pipeline_env,
+            )[1].objective_fingerprint
+
+        # Differing past the rounding precision: the same objective.
+        assert fingerprint(1.0) == fingerprint(1.0 + 1e-12)
+        # Differing within it: distinct objectives.
+        assert fingerprint(1.0) != fingerprint(1.000001)
 
 
 @pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
@@ -773,19 +871,7 @@ class TestQuantumProgramDryRun:
         )
 
     def _h2_vqe(self, backend, optimizer, **kwargs):
-        """An H₂ HartreeFock VQE — the molecule boilerplate the program-level
-        dry-run tests share."""
-        return VQE(
-            molecule=qp.qchem.Molecule(
-                symbols=["H", "H"],
-                coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.5)]),
-            ),
-            ansatz=HartreeFockAnsatz(),
-            n_layers=1,
-            backend=backend,
-            optimizer=optimizer,
-            **kwargs,
-        )
+        return h2_vqe(backend, optimizer, **kwargs)
 
     def test_default_and_forced_match(self, time_evolution_program):
         """``dry_run()`` (analytic) and ``dry_run(force_circuit_generation=True)``
@@ -879,6 +965,91 @@ class TestQuantumProgramDryRun:
 
     def _metric_vqe(self, backend, optimizer):
         return _metric_compatible_vqe(backend, optimizer)
+
+    def test_stage_report_exposes_class_label_and_axis_separately(
+        self, default_test_simulator, default_optimizer
+    ):
+        """Three identifiers, each needed: the class (composition assertions), the
+        constructor ``name=`` (telling two instances of one class apart), and the
+        axis (what the rendered tree shows in brackets)."""
+        stages = (
+            self._h2_vqe(default_test_simulator, default_optimizer)
+            .dry_run()["cost"]
+            .stages
+        )
+        measurement = next(s for s in stages if s.name == "MeasurementStage")
+        assert measurement.axis == "obs_group"
+        assert measurement.label == "MeasurementStage"
+
+    def test_label_and_name_differ_for_a_renamed_stage(self, dummy_pipeline_env):
+        """The two coincide for built-in stages, so a stage whose constructor was
+        given a different name is what proves they are separate identifiers."""
+        _, report = _dry_run(
+            [
+                DummySpecStage(meta=two_group_meta()),
+                FanoutAndSumStage(branch_prefix="b", n_children=2),
+                MeasurementStage(),
+            ],
+            dummy_pipeline_env,
+            dry=False,
+        )
+        info = next(s for s in report.stages if s.name == "FanoutAndSumStage")
+        assert info.label == "FanoutAndSumStage:b"
+
+    def test_sample_pipeline_is_once_cadence(
+        self, default_test_simulator, default_optimizer
+    ):
+        reports = self._h2_vqe(default_test_simulator, default_optimizer).dry_run()
+        assert reports["sample"].cadence is PipelineCadence.ONCE
+        assert reports["cost"].cadence is PipelineCadence.PER_EVALUATION
+
+    @pytest.mark.parametrize(
+        "optimizer_factory, qem",
+        [
+            (MonteCarloOptimizer, None),
+            (lambda: ScipyOptimizer(method=ScipyMethod.COBYLA), None),
+            (SPSAOptimizer, None),
+            (
+                lambda: ScipyOptimizer(method=ScipyMethod.COBYLA),
+                lambda: QuEPP(truncation_order=1, n_twirls=3),
+            ),
+        ],
+        ids=["population", "gradient-free", "spsa", "mitigated"],
+    )
+    def test_two_qubit_total_matches_the_submitted_circuit_count(
+        self, default_test_simulator, optimizer_factory, qem
+    ):
+        """Asserted as the invariant ``total × per-circuit == total_2q_gates`` rather
+        than against fixed numbers. The stats walk DAG bodies and never sees
+        ``qasm_bodies``, where parameter binding fans out — so a population
+        optimizer's multiplicity went missing while mitigation's was counted, and a
+        spot-check on one optimizer could not tell the difference."""
+        kwargs = {"qem_protocol": qem()} if qem else {}
+        vqe = self._h2_vqe(default_test_simulator, optimizer_factory(), **kwargs)
+        for forced in (False, True):
+            report = vqe.dry_run(force_circuit_generation=forced)["cost"]
+            per_circuit = next(
+                s.metadata["n_2q_gates"]
+                for s in report.stages
+                if "n_2q_gates" in s.metadata
+            )
+            assert report.circuit_stats["total_2q_gates"] == (
+                report.total_circuits * per_circuit
+            )
+
+    def test_two_previews_of_one_program_compare_equal(self, sampling_test_simulator):
+        """Nothing about a preview depends on when it ran, so a report is a value:
+        two previews of an unchanged program are the same report."""
+        vqe = self._h2_vqe(
+            sampling_test_simulator,
+            SPSAOptimizer(),
+            shot_distribution="weighted",
+        )
+        report, twin = vqe.dry_run()["cost"], vqe.dry_run()["cost"]
+        assert report == twin
+        # The nested allocation the user guide teaches is readable either way.
+        allocations = report.env_artifacts["per_group_shots"]
+        assert next(iter(next(iter(allocations.values())).values())) is not None
 
     @pytest.mark.parametrize(
         "estimator",
@@ -1401,6 +1572,35 @@ class TestCircuitStatsAggregate:
         assert stats["min_depth"] == stats["max_depth"]
         assert stats["min_width"] == stats["max_width"] == 2
 
+    def test_varying_depth_populates_range_stats(self):
+        # Two MetaCircuits with different depths exercise the spread branches
+        # of every stat (min/max/mean/std/2q_depth) — the constant case
+        # collapses all of them to the same number.
+        qc_shallow = QuantumCircuit(2)
+        qc_shallow.cx(0, 1)
+        qc_deep = QuantumCircuit(2)
+        qc_deep.cx(0, 1)
+        qc_deep.cx(0, 1)
+        batch = {
+            (("circuit", 0),): MetaCircuit(
+                circuit_bodies=(((), circuit_to_dag(qc_shallow)),)
+            ),
+            (("circuit", 1),): MetaCircuit(
+                circuit_bodies=(((), circuit_to_dag(qc_deep)),)
+            ),
+        }
+        stats = _aggregate_circuit_stats(batch)
+        assert stats["min_depth"] == 1
+        assert stats["max_depth"] == 2
+        assert stats["mean_depth"] == 1.5
+        assert stats["std_depth"] > 0
+        assert stats["mean_2q_depth"] == 1.5
+        # 1 + 2 CX gates summed across the two bodies.
+        assert stats["total_2q_gates"] == 3
+        # Width is constant at 2 across both circuits.
+        assert stats["min_width"] == stats["max_width"] == 2
+        assert stats["std_width"] == 0.0
+
     def test_empty_dict_for_empty_batch(self):
         # Aggregator returns {} when no MetaCircuits have DAG bodies to read.
         assert _aggregate_circuit_stats({}) == {}
@@ -1470,4 +1670,39 @@ def test_counts_override_on_observable_counts_per_term(dummy_pipeline_env):
     assert report.total_circuits == 1
 
 
-# no phantom ÷N
+def test_sampling_dropped_observable_is_not_a_phantom_reduction(dummy_pipeline_env):
+    """A sampling routine (``ResultFormat.PROBS``) drops the observable for a
+    computational-basis measurement, so the naive per-Pauli-term baseline must
+    not apply — otherwise the drop renders as a phantom ``÷N`` grouping that
+    never happened. Uses the real ``sample_preprocessor`` transform."""
+    _, report = _dry_run(
+        [
+            DummySpecStage(meta=_parametric_twirlable_meta()),  # 2-term observable
+            PreprocessStage(sample_preprocessor()),
+            MeasurementStage(),
+        ],
+        dummy_pipeline_env,
+        dry=False,
+    )
+    spec, preprocess, meas = report.stages
+    assert spec.factor == 1.0  # bodies, not the 2 observable terms
+    assert preprocess.factor == 1.0  # no phantom reduction where obs is dropped
+    assert meas.factor == 1.0
+    assert report.total_circuits == 1
+
+
+def test_pce_cost_pipeline_has_no_phantom_reduction(dummy_simulator, default_optimizer):
+    """PCE reads raw bitstrings — one circuit per spec, no per-Pauli-term
+    grouping — so its cost pipeline must not show a per-term baseline or a
+    phantom reduction from the placeholder Hamiltonian it never measures."""
+    pce = PCE(
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
+        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+        optimizer=default_optimizer,
+        backend=dummy_simulator,
+    )
+    cost = pce.dry_run()["cost"]
+    assert all(
+        stage.factor in (1.0, float(cost.total_circuits)) for stage in cost.stages
+    )
+    assert not any(stage.factor < 1.0 for stage in cost.stages)  # no phantom ÷N

@@ -7,6 +7,8 @@
 import re
 from typing import cast
 
+import numpy as np
+import pennylane as qp
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
@@ -29,6 +31,7 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
+from divi.qprog import VQE, HartreeFockAnsatz
 
 
 class DummySpecStage(SpecStage[str]):
@@ -129,6 +132,31 @@ def two_group_meta() -> MetaCircuit:
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
         observable=observable,
+    )
+
+
+def meta_with_observable(observable: SparsePauliOp) -> MetaCircuit:
+    """MetaCircuit over ``observable``'s register, carrying it as the observable."""
+    qc = QuantumCircuit(observable.num_qubits)
+    qc.h(range(observable.num_qubits))
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        observable=observable,
+    )
+
+
+def h2_vqe(backend, optimizer, **kwargs):
+    """An H₂ HartreeFock VQE — the molecule boilerplate the dry-run tests share."""
+    return VQE(
+        molecule=qp.qchem.Molecule(
+            symbols=["H", "H"],
+            coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.5)]),
+        ),
+        ansatz=HartreeFockAnsatz(),
+        n_layers=1,
+        backend=backend,
+        optimizer=optimizer,
+        **kwargs,
     )
 
 
