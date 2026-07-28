@@ -35,6 +35,24 @@ def _require_trainable_params(n_params: int, ansatz_name: str) -> int:
     return n_params
 
 
+def _require_n_electrons(kwargs: dict, ansatz_name: str) -> int:
+    """Pop ``n_electrons``, rejecting a missing one by name.
+
+    A chemistry ansatz cannot enumerate excitations without it, and passing
+    ``None`` through surfaces as a comparison against ``NoneType`` from inside
+    PennyLane, naming neither the setting nor the ansatz.
+    """
+    n_electrons = kwargs.pop("n_electrons", None)
+    if n_electrons is None:
+        raise ValueError(
+            f"{ansatz_name} requires n_electrons: it builds excitations from a "
+            "reference state, which needs the electron count. Pass "
+            "n_electrons=... to the program (a molecule input supplies it "
+            "automatically; a raw Hamiltonian does not)."
+        )
+    return n_electrons
+
+
 def _pl_ops_to_qc(pl_ops: Sequence, n_qubits: int) -> QuantumCircuit:
     """Translate ``pl_ops`` to Qiskit gates and return a circuit on ``n_qubits`` qubits."""
     qc = QuantumCircuit(n_qubits)
@@ -375,14 +393,14 @@ class UCCSDAnsatz(Ansatz):
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         """``len(s_wires) + len(d_wires)`` from ``qp.qchem.excitations`` for
         the given ``n_electrons`` (required kwarg)."""
-        n_electrons = kwargs.pop("n_electrons")
+        n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
         n_params = len(s_wires) + len(d_wires)
         return _require_trainable_params(n_params, UCCSDAnsatz.__name__)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        n_electrons = kwargs.pop("n_electrons")
+        n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
         hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
@@ -412,13 +430,13 @@ class HartreeFockAnsatz(Ansatz):
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         """``len(singles) + len(doubles)`` from ``qp.qchem.excitations`` for
         the given ``n_electrons`` (required kwarg)."""
-        n_electrons = kwargs.pop("n_electrons")
+        n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        n_electrons = kwargs.pop("n_electrons")
+        n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
@@ -458,7 +476,7 @@ class QCCAnsatz(Ansatz):
         return _require_trainable_params(n_params, QCCAnsatz.__name__)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        n_electrons = kwargs.pop("n_electrons")
+        n_electrons = _require_n_electrons(kwargs, "QCCAnsatz")
         hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 

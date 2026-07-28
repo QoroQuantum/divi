@@ -611,6 +611,35 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_optimizer.optimize.side_effect = mock_optimize_logic
         program.optimizer = mock_optimizer
 
+    def test_run_rejects_a_keyword_no_layer_consumes(self, mocker):
+        """``run()`` forwards ``**kwargs`` through several layers, each popping what
+        it consumes, so a leftover is claimed by nobody — silently discarded before,
+        with the run proceeding anyway."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.max_iterations = 1
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            program.run(bogus_kwarg=True)
+
+    def test_run_points_a_dry_run_flag_at_the_dry_run_method(self, mocker):
+        """A flag on the action is the near-universal convention, so
+        ``run(dry_run=True)`` is the reflex to catch: ignoring it would execute the
+        very run the caller was avoiding."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.max_iterations = 1
+        with pytest.raises(TypeError, match=r"program\.dry_run\(\)"):
+            program.run(dry_run=True)
+        assert program.total_circuit_count == 0
+
+    def test_run_still_accepts_the_keyword_it_pops(self, mocker):
+        """``max_iterations`` is consumed out of ``**kwargs`` rather than named, so
+        the guard has to see the pop, not the signature."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        program.run(max_iterations=1, perform_final_computation=False)
+        assert program.max_iterations == 1
+
     def test_run_successful_completion_and_state_tracking(self, mocker):
         """
         Tests that the run method correctly calls the cost function, tracks the best

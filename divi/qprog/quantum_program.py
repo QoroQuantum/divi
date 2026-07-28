@@ -41,6 +41,32 @@ from divi.reporting import (
 )
 
 
+def reject_unclaimed_run_kwargs(program: object, kwargs: dict[str, Any]) -> None:
+    """Reject leftover ``run`` keywords, before anything is submitted.
+
+    ``run`` forwards ``**kwargs`` through several layers, each popping what it
+    consumes, so whatever remains is claimed by nobody — a misspelling, or a flag
+    the caller believes is doing something. Call this once the layer has taken its
+    own arguments and before any circuit goes out: checking afterwards would
+    report the mistake having already paid for the run it invalidates.
+    """
+    if not kwargs:
+        return
+    message = (
+        f"{type(program).__name__}.run() got unexpected keyword argument(s): "
+        f"{', '.join(sorted(kwargs))}."
+    )
+    if "dry_run" in kwargs:
+        # A flag on the action is the near-universal convention, so this is the
+        # reflex to catch: silently ignoring it would execute the run the caller
+        # was trying to avoid.
+        message += (
+            " To preview without executing anything, call the separate method "
+            "instead: program.dry_run()."
+        )
+    raise TypeError(message)
+
+
 class QuantumProgram(ABC):
     """Abstract base class for quantum programs.
 

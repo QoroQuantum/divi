@@ -49,7 +49,7 @@ from divi.qprog.optimizers import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog.quantum_program import QuantumProgram
+from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
 from divi.reporting import TerminalStatus
 from divi.viz import ProgramViz
 
@@ -908,6 +908,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         max_iterations = kwargs.pop("max_iterations", self.max_iterations)
         if max_iterations != self.max_iterations:
             self.max_iterations = max_iterations
+
+        reject_unclaimed_run_kwargs(self, kwargs)
 
         if self.max_iterations <= self.current_iteration:
             warn(

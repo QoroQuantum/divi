@@ -220,6 +220,32 @@ class TestQAOAAnsatz:
 
 
 # --- Test Chemistry Ansaetze ---
+@pytest.mark.parametrize(
+    "call",
+    [
+        pytest.param(
+            lambda a: a.n_params_per_layer(n_qubits=4), id="n_params_per_layer"
+        ),
+        pytest.param(lambda a: a.build([0.1, 0.2, 0.3], 4, 1), id="build"),
+    ],
+)
+@pytest.mark.parametrize("ansatz", [UCCSDAnsatz(), HartreeFockAnsatz()], ids=type)
+def test_chemistry_ansatz_names_a_missing_electron_count(ansatz, call):
+    """A chemistry ansatz builds excitations from a reference state, so it cannot do
+    anything without ``n_electrons``. Omitting it used to surface as a comparison
+    against ``NoneType`` from inside PennyLane, naming neither the missing setting
+    nor the ansatz that needed it."""
+    with pytest.raises(ValueError, match="requires n_electrons"):
+        call(ansatz)
+
+
+def test_qcc_ansatz_names_a_missing_electron_count():
+    """QCC derives its parameter count from the register alone, so only ``build``
+    needs the electron count."""
+    with pytest.raises(ValueError, match="requires n_electrons"):
+        QCCAnsatz().build([0.1] * 6, 4, 1)
+
+
 class TestUCCSDAnsatz:
     """Tests for the UCCSDAnsatz class."""
 
