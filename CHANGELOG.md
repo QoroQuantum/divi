@@ -7,20 +7,84 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.12.1](https://github.com/QoroQuantum/divi/compare/v0.12.0...v0.12.1) (2026-06-09)
+## [0.13.0](https://github.com/QoroQuantum/divi/compare/v0.12.1...v0.13.0) (2026-07-29)
 
+### ✨ Added
+
+* **qprog:** add Quantum Natural Gradient (QNG) optimizer and metric estimators, including QNG+QDrift via deterministic per-evaluation sampling for wide-qubit workloads ([f5a8634](https://github.com/QoroQuantum/divi/commit/f5a8634f86a93a6b6cadd97449e61d0bd932be7f), [d7c534c](https://github.com/QoroQuantum/divi/commit/d7c534c0223f6f270b9006b67d711f2f14c79c8c), [14d9369](https://github.com/QoroQuantum/divi/commit/14d9369b8ee770dfa7522f6c588a3701cb562627))
+* **qprog:** add SPSA and QN-SPSA optimizers ([d769665](https://github.com/QoroQuantum/divi/commit/d7696651b56c7227112bfb67b3f23fc33d5fbe38), [a477bbf](https://github.com/QoroQuantum/divi/commit/a477bbfd7cd72a022c057d09bea53188df8af331), [e8b7a97](https://github.com/QoroQuantum/divi/commit/e8b7a973189730f16e9bed75c972866ab51414c3))
+* **qprog:** add QUIVER, an adaptive directional-gradient optimizer ([2f68b8c](https://github.com/QoroQuantum/divi/commit/2f68b8ccbf27819202e9e2c1dc97b9c7db443dc3), [ade6347](https://github.com/QoroQuantum/divi/commit/ade63477d4382177e072dee8271149a8599ae810), [a3f8bdb](https://github.com/QoroQuantum/divi/commit/a3f8bdbb9fbd59de3cf0df950500459e326227c8))
+* **qprog:** unified measurement API — `QuantumProgram.evaluate()` is the single entry point for measuring a program under a named `CircuitPreprocessor`, consolidating observable grouping and adaptive shot allocation in `MeasurementStage` ([485cfdd](https://github.com/QoroQuantum/divi/commit/485cfdd2905bfaa971aff7f5b08485db6ba69674), [4e791f3](https://github.com/QoroQuantum/divi/commit/4e791f37b8abd451803eb9cb3812821afefddf23))
+* **qprog:** aggregation strategies are now first-class objects (`AggregationStrategy`/`BeamSearchStrategy`/`HierarchicalStrategy`); the new `HierarchicalStrategy` enumerates combinations within small groups and merges pairwise instead of greedily pruning after each partition, better preserving solution validity. **Breaking:** this replaces the `beam_width`/`n_partition_candidates` keyword arguments on `aggregate_results`/`get_top_solutions` — pass `strategy=BeamSearchStrategy(beam_width=...)` for the previous behavior ([159c4a7](https://github.com/QoroQuantum/divi/commit/159c4a735a83c2d10be255eccf50c27b3b024bb1), [927cfc6](https://github.com/QoroQuantum/divi/commit/927cfc6a738e58550d7e9403abb9a408ad26ba99), [ea657ec](https://github.com/QoroQuantum/divi/commit/ea657ecec95d2fb1eeea97b4202975e063958247))
+* **qprog:** accept PySCF and OpenFermion chemistry inputs — adds an optional `chem` extra; `VQE(molecule=...)` now accepts a PySCF `Mole`/restricted mean-field, and `hamiltonian=` on VQE/TimeEvolution/QAOA accepts an OpenFermion `QubitOperator` via `to_spo` (closed-shell/RHF only for now) ([6868ea9](https://github.com/QoroQuantum/divi/commit/6868ea96cbaecde930a49daf26a6f3a8a0272dbe))
+* **qprog:** measurement groups now measure only observable-relevant qubits, shrinking sampling histograms while leaving expectation values unchanged (pass `measure_all_qubits=True` to opt out); also extends PCE past 64 qubits via a limb-based mask representation ([106f218](https://github.com/QoroQuantum/divi/commit/106f218bf9679d7de79a55eb3ada9fb246efb6a0))
+* **backends:** QUBO characterization result API + warm-start helper — splits the characterization client into a `divi.backends.characterization` package exposing `CharacterizationResult` (regime/certificate/AR/refuse_reason/regime_diagnostics), a pydantic `CharacterizationOptions`, and a `qaoa_initial_params()` warm-start helper ([59d40e8](https://github.com/QoroQuantum/divi/commit/59d40e8d9d0e3794e90ea34fd35b09909d03ffea))
+* **characterization:** configurable presets and analysis options, plus hardened job recovery — job IDs now survive ambiguous submit/retrieve failures, existing jobs can be polled, and terminal statuses are handled consistently ([b4dfdad](https://github.com/QoroQuantum/divi/commit/b4dfdad389d0e9f0bae586dda7e80162d66781a7))
+* **qprog:** `ProgramEnsemble.dry_run()` previews a whole ensemble at once, with a new `format_dry_run` rendering the reports as a tree, one summary row each, or grouped by shape so a sweep collapses to its distinct configurations ([165693f](https://github.com/QoroQuantum/divi/commit/165693fc9b4fd979fd6a5cd75d5230db79bb2852))
+* **qprog:** community-based QUBO decomposition via `CommunityDecomposer` ([6286455](https://github.com/QoroQuantum/divi/commit/628645531f492f2505a38a278586fa4ac0a8d7ee), [b8d74a5](https://github.com/QoroQuantum/divi/commit/b8d74a50dc7acf0e1449543eed419f23ed36f87a))
+* **characterization:** typed properties for the classical baseline and constraint diagnostics — `classical_baseline`, `relaxation_bound`, `cost_gap_normalized`, `global_flip_symmetric`, `constraint_diagnostics`, and the safe-penalty interval — surfaced in the console report ([ae4c225](https://github.com/QoroQuantum/divi/commit/ae4c22554e75bfabbe23f9a6672ef694faf8a87b))
+* **pipeline:** dry-run previews now report shots and cadence alongside circuit counts, plus a fingerprint of the objective for telling two programs apart, via a documented dataclass report (replacing an under-documented `NamedTuple`) ([d3dbd66](https://github.com/QoroQuantum/divi/commit/d3dbd665a6d1e2dfc9e8659cf6a9db4858493372))
+* **pipeline:** routines now declare a cadence (recurring by default), so telling a routine re-evaluated across a working set from one that runs once no longer means hardcoding a routine name like `"sample"` ([cb6dd6f](https://github.com/QoroQuantum/divi/commit/cb6dd6fc6160b60676f27dae21368d173a087afb))
+* **backends:** `QoroService.max_retries` defaults to unlimited polling instead of capping at 5000 attempts, so long-running jobs are no longer dropped; passing an int still caps attempts, and progress displays render an unlimited cap as `∞` ([f042368](https://github.com/QoroQuantum/divi/commit/f0423684b66db65e1e3160838855ee84e671f120))
+* **backends:** expose noise config fields and validate `ExecutionConfig` ([#90](https://github.com/QoroQuantum/divi/issues/90)) ([5f10796](https://github.com/QoroQuantum/divi/commit/5f107966ec552940f8d677f822746b2d3cf8c095))
+
+### 🐛 Fixed
+
+* **circuits:** give QuEPP's symbolic-angle fallbacks a warning category ([292a267](https://github.com/QoroQuantum/divi/commit/292a267f68a32422cf9c9f424f8bdc1849a1ba0d))
+* **circuits:** QN-SPSA's `build_overlap_meta` keeps its backward parameters disjoint from the ansatz's ([bc8f2fd](https://github.com/QoroQuantum/divi/commit/bc8f2fd73d44ed49910eb589f955fd67dae04ab0))
+* **circuits:** stop ZNE from folding the caller's DAG in place ([76c0500](https://github.com/QoroQuantum/divi/commit/76c0500302a67f845713dd703498d73bd8c5201f))
+* **pipeline:** correct what the stages report about themselves ([e87bbc5](https://github.com/QoroQuantum/divi/commit/e87bbc581d633f8211a218fd221b32c25c202687))
+* **pipeline:** default `param_sets` to a shape the binding stage accepts ([055e8c7](https://github.com/QoroQuantum/divi/commit/055e8c70b96bfd77c0caa0bb77e024c7ba81b275))
+* **pipeline:** keep the analytic expval path when `shot_distribution` is set ([de70c67](https://github.com/QoroQuantum/divi/commit/de70c67236e9fffd52a42ae919f0ce7710f9a95f))
+* **pipeline:** reject circuit bodies that share a tag ([365da61](https://github.com/QoroQuantum/divi/commit/365da61a03a0e2878f0615b8af8d178f2257ca52))
+* **pipeline:** reverse counts endianness in expectation conversion ([160b224](https://github.com/QoroQuantum/divi/commit/160b2244786cd1731b61615c0b0dad1e82045a8a))
+* **qprog:** isolate optimizer RNG and purify pipeline-env building ([c399229](https://github.com/QoroQuantum/divi/commit/c399229c3e7f04e2b3d270254ef0d2d784683a3e))
+* **qprog:** unseeded QDrift stays cohort-consistent under QNG ([875d4e1](https://github.com/QoroQuantum/divi/commit/875d4e1ceab5d3fbc51dbeb55efa2f52e87941c2))
+* **qprog:** make `max_iterations` a total for every optimizer ([25d735b](https://github.com/QoroQuantum/divi/commit/25d735b1ae710b1ac4831fad1d1823184b91c70c))
+* **qprog:** reject unclaimed `run()` and ansatz keywords ([cca7a44](https://github.com/QoroQuantum/divi/commit/cca7a441e867354dd05ac0a5e5584f601ee79c86))
+* **qprog:** require `BinaryOptimizationProblem` for `PCE` — **breaking:** `PCE` no longer accepts a raw QUBO/HUBO matrix and raises a clear `TypeError` instead, matching QAOA's constructor; wrap the matrix in a `BinaryOptimizationProblem` ([cdb0bed](https://github.com/QoroQuantum/divi/commit/cdb0bed5b112c8c70c801068179a3d36beb7fbe6))
+* **qprog:** stop `dry_run()` from disturbing the run that follows ([5a75a90](https://github.com/QoroQuantum/divi/commit/5a75a90cb687871be3880c79bfea01f2540d18d1))
+* **quepp:** stop double-counting observable coefficients ([8be41ad](https://github.com/QoroQuantum/divi/commit/8be41ad9e04a4c6732bc79ca32b05265e42ae3a2))
+* resolve review findings across ZNE, QNG, sampling, and counts conversion — ZNE's k-fold pass no longer duplicates barriers/measures/resets and rejects invalid scale factors up front; QNG raises an actionable error on a singular damped metric and `run()` rejects checkpointing for optimizers that cannot save state; counts-endianness reversal now applies to any bitstring→count mapping ([c670032](https://github.com/QoroQuantum/divi/commit/c670032ce02a8ac9fae2d9cce696d3f48034946f))
+
+### 🔄 Changed
+
+* **hamiltonians:** compute the QDrift keep/sample split once per batch ([2c59220](https://github.com/QoroQuantum/divi/commit/2c5922097c35c068c9612a2aa232a0d2beba7083))
+* **pipeline:** carry measurement metadata on `MetaCircuit` ([d1f4fae](https://github.com/QoroQuantum/divi/commit/d1f4faeaec52a8798a5d9ec27a848cbc871c6071))
+* **pipeline:** clarify cache identifier names ([3471e25](https://github.com/QoroQuantum/divi/commit/3471e2562c0c3b5bc8042d4e8220be728d7f0dcb))
+* **pipeline:** introduce `StageOutput` as the stage return type ([94f14fe](https://github.com/QoroQuantum/divi/commit/94f14fe631d63d279321b9bfc36222b8ef897e01))
+* **qem:** extract ZNE into its own `zne.py` module and derive `QEMStage.consumes_dag_bodies` from whether the protocol mitigates, instead of inline `_NoMitigation` checks ([d5ed005](https://github.com/QoroQuantum/divi/commit/d5ed00502159fdfdb2fc8efa6125623b66670220))
+* **qprog:** QN-SPSA caches its overlap circuit and rejects zero-iteration runs ([c9bbc68](https://github.com/QoroQuantum/divi/commit/c9bbc68105b6f979002f8b45f3a7cd79fb8add0c))
+* **qprog:** metric estimators share a single contract ([7e64879](https://github.com/QoroQuantum/divi/commit/7e64879d4c17fd37d3aa03071644f38ec468c089))
+* **qprog:** reworked how programs build and run their measurement pipelines, landing shared execution/accounting in `QuantumProgram._execute`, a reusable expectation pipeline for cost circuits, and an extracted `SolutionSamplingMixin` ([3555bde](https://github.com/QoroQuantum/divi/commit/3555bded9ddeab3577291b687fb87cba0747d071), [0503927](https://github.com/QoroQuantum/divi/commit/05039279beb614ec571e37e094cb4fd33979c6e7))
+* **qprog:** a program now exposes a single derived `n_params`, replacing five hand-written `n_layers * n_params_per_layer` computations ([742fc58](https://github.com/QoroQuantum/divi/commit/742fc585e942b65dbdbd81d67e35c03e1c6a889e))
+* **qprog:** split optimizers into a package (one module per optimizer plus a shared `_linalg` helper) and harden best-result selection against non-finite losses across Scipy, Pymoo, MonteCarlo, and GridSearch ([e9f14e8](https://github.com/QoroQuantum/divi/commit/e9f14e80f440814816d4bc315a4918da8af09d13))
+
+### 🔧 Internal
+
+* **backends:** drop xfail from noise config e2e ([fe24ddb](https://github.com/QoroQuantum/divi/commit/fe24ddbc88e46899839c231f7fa3bc2fe0062fea))
+* **backends:** skip the execution-config test on a PENDING race ([52d5ef7](https://github.com/QoroQuantum/divi/commit/52d5ef78b04dc09c80a1cf08033d1875e8242e8b))
+* **deps:** upgrade qiskit to 2.5 and refresh dependencies ([40c391a](https://github.com/QoroQuantum/divi/commit/40c391a06ccd253421902a11d9ce07618dc4ca3b))
+* enable uv package cache in setup-divi's `astral-sh/setup-uv` step and bump `actions/checkout` to v6 across workflows ([f893bad](https://github.com/QoroQuantum/divi/commit/f893badef13e059ca58447e4b710d69562090cb7), [d1a75c7](https://github.com/QoroQuantum/divi/commit/d1a75c77bd49ad595cf42653d29ca6ff76c3833d))
+* refresh references to renamed ensemble classes — `GraphPartitioningQAOA`/`QUBOPartitioningQAOA` no longer exist; the partitioning workflow is `PartitioningProgramEnsemble` ([654c4b5](https://github.com/QoroQuantum/divi/commit/654c4b56ebd19e6fca28da0b7e32c165ffaceaf1))
+* update pre-commit hooks to latest and apply Python 3.13 standards ([1a57ec3](https://github.com/QoroQuantum/divi/commit/1a57ec383fa3b341bba25c87a9e5f3c5e8cdfbfe))
+
+### 📝 Documentation
+
+* describe the shot-distribution strategies without ranking them ([c4a0182](https://github.com/QoroQuantum/divi/commit/c4a0182305c16e4845663da4ae7588dcc65d2a69))
+* fix the QEM guide's cost figures and `reduce()` contract ([d97d4e0](https://github.com/QoroQuantum/divi/commit/d97d4e0d885b0cbbd7cb4dc3c8d0e8f7ae3ac43b))
+
+## [0.12.1](https://github.com/QoroQuantum/divi/compare/v0.12.0...v0.12.1) (2026-06-09)
 
 ### 🐛 Fixed
 
 * **reporting:** predict() no longer leaks a progress spinner in notebooks ([3ed90f7](https://github.com/QoroQuantum/divi/commit/3ed90f770349c565e73e3449ee5968288d06a634))
-
 
 ### 🔧 Internal
 
 * **deps:** bump qoro-maestro to 0.2.14 ([728c39c](https://github.com/QoroQuantum/divi/commit/728c39c2962a53f1f3a846feb2925989d2e8e2df))
 
 ## [0.12.0](https://github.com/QoroQuantum/divi/compare/v0.11.1...v0.12.0) (2026-06-05)
-
 
 ### ✨ Added
 
@@ -40,7 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **routing:** extended TSPLIB parser — supports EXPLICIT and GEO edge-weight types with conformant rounding ([7dcfe78](https://github.com/QoroQuantum/divi/commit/7dcfe788e34e12d0c04643e4746bd07c62031ded))
 * **routing:** binary CE-QAOA encoding for TSP via `encoding="binary"` on `TSPProblem` ([7dcfe78](https://github.com/QoroQuantum/divi/commit/7dcfe788e34e12d0c04643e4746bd07c62031ded))
 
-
 ### 🐛 Fixed
 
 * **qprog:** `BatchConfig(max_batch_size=N)` was silently ignored — executor pool now correctly caps at `min(max_batch_size, len(programs))`, preventing both undersized batches and thread exhaustion on large ensembles ([79ebbb9](https://github.com/QoroQuantum/divi/commit/79ebbb99d86537792fcf291ee8b36355430dd1cc))
@@ -56,7 +119,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * set seed in `noisy_estimate_montecarlo` ([5442fe2](https://github.com/QoroQuantum/divi/commit/5442fe2790d53e0710d9bc340cc02f4286163ec7))
 * stress-test hardening for ensembles, QAOA, QUBO, and reporting ([19b0e76](https://github.com/QoroQuantum/divi/commit/19b0e76a03c20b69686404c7ed79c3ea1641e2eb))
 * **ZNE:** implement missing dry-run feature ([1256650](https://github.com/QoroQuantum/divi/commit/125665024befee8773b174a666791c6ce5f17dfc))
-
 
 ### 🔄 Changed
 
@@ -80,7 +142,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * consolidate multi-observable handling, dedupe QuEPP/grouping paths ([4558ceb](https://github.com/QoroQuantum/divi/commit/4558cebcf2f37ce05b107609a79f0cdc5170a105))
 * rename PennyLane import alias `qml` → `qp` across source, tutorials, and docs ([fcf6c08](https://github.com/QoroQuantum/divi/commit/fcf6c08ba8eb0b2062652e666f5d8e605552cedc))
 
-
 ### 🔧 Internal
 
 * adopt pyrefly type checker; three-pass cleanup with tutorial-driven API hardening and type-native graph partitioning ([c278a2b](https://github.com/QoroQuantum/divi/commit/c278a2bdd9ec928c58cf3a33d52a2708d1e26dce), [a22504a](https://github.com/QoroQuantum/divi/commit/a22504ab25455c2a48906a15328b996679652ede), [000af2c](https://github.com/QoroQuantum/divi/commit/000af2c8b9b5eac184658131763256c566303286))
@@ -91,7 +152,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * tighten import boundaries ([0b32295](https://github.com/QoroQuantum/divi/commit/0b32295a6f28189e6d630cd835292df13f510c23))
 * reduce batch size to avoid OOM issues ([394343e](https://github.com/QoroQuantum/divi/commit/394343ea0c3474c5e2e49abecec2523b1102509f))
 
-
 ### 📝 Documentation
 
 * add QUBO characterization page and audit fixes ([02fc14f](https://github.com/QoroQuantum/divi/commit/02fc14f0aa8e49dbbfafda64a1164995f89557b1))
@@ -99,7 +159,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **ai:** fix llama-cpp-python install troubleshooting ([9657d84](https://github.com/QoroQuantum/divi/commit/9657d846bb1a4592eb2a8543d150f74993db70c4))
 
 ## [0.11.1](https://github.com/QoroQuantum/divi/compare/v0.11.0...v0.11.1) (2026-04-21)
-
 
 ### 🐛 Fixed
 
