@@ -9,7 +9,7 @@ Demonstrates how the Divi Characterization Service can shortcut the QAOA
 parameter-search loop, and how its regime/certificate/classical-baseline
 machinery tells you *before* running QAOA whether it is even worth it. The
 characterizer runs an exact (statevector) parameter sweep server-side,
-computes an achievable upper-bound approximation ratio and a classical
+computes a mean-cost approximation ratio and a classical
 (greedy/SA) baseline on the same QUBO, and returns the optimal (γ, β);
 QAOA can then skip its outer optimizer and run a single shot-based
 evaluation at those parameters.
@@ -137,16 +137,26 @@ def main() -> None:
 
     sweep_result = characterize_and_validate(
         problem,
-        reference_states=best_bitstrings[:2],
+        # Reference states drive concentration diagnostics only. The service's
+        # certificate and classical baseline are computed independently.
+        reference_states=best_bitstrings,
         service=QoroService(),
         options=CharacterizationOptions(
-            parameter_sweep=True,
-            structural_sensitivity=True,
+            # "deep" is the only preset that runs the hardness analysis, which
+            # is what produces the certificate and the classical baseline read
+            # below. It also enables the sweep and the sensitivity report.
+            preset="deep",
             ansatz={"mixer": "x", "layers": 1},
         ),
     )
 
     bp = sweep_result.best_parameters
+    if bp is None:
+        console.print(
+            "   [yellow]No sweep parameters returned — the service refused to "
+            "assess this instance. Skipping the warm-started run.[/yellow]"
+        )
+        return
     optimal_gamma, optimal_beta = bp["gamma"], bp["beta"]
     regime = sweep_result.regime
     confidence = sweep_result.confidence
@@ -171,9 +181,10 @@ def main() -> None:
         f"without brute force): best_energy={baseline.get('best_energy', float('nan')):.4f} "
         f"(greedy={baseline.get('greedy_energy', float('nan')):.4f}, "
         f"SA={baseline.get('sa_energy', float('nan')):.4f})\n"
-        f"   Swept approximation ratio (achievable upper bound): "
+        f"   Characterizer approximation ratio (mean over the output): "
         f"{swept_ar_str}{err_suffix} "
-        f"— compare against our own QAOA's ratio in step 4.\n"
+        f"— an average over the output distribution, so it is not directly\n"
+        f"   comparable to the best-of-shots ratio our own run reports in step 4.\n"
     )
     sweep_result.display()
 
@@ -205,7 +216,9 @@ def main() -> None:
         f"\n   [bold]B) Characterizer-guided[/bold]: 1 evaluation at "
         f"(γ={optimal_gamma:.4f}, β={optimal_beta:.4f})"
     )
-    seeded = _run_guided_qaoa(problem, backend, G, optimal_gamma, optimal_beta)
+    seeded = _run_guided_qaoa(
+        problem, backend, G, sweep_result.qaoa_initial_params(layers=1)
+    )
     console.print(
         f"      seeded  →  cut={seeded['cut']:>5.2f}  "
         f"({seeded['circuits']} circuits)\n"
@@ -279,10 +292,9 @@ def _run_guided_qaoa(
     problem: BinaryOptimizationProblem,
     backend,
     graph: nx.Graph,
-    gamma: float,
-    beta: float,
+    initial_params: np.ndarray,
 ) -> dict:
-    """Single characterizer-guided QAOA evaluation at the supplied (γ, β)."""
+    """Single characterizer-guided QAOA evaluation at the swept angles."""
     qaoa = QAOA(
         problem,
         n_layers=1,
@@ -291,7 +303,7 @@ def _run_guided_qaoa(
         backend=backend,
         seed=42,
     )
-    qaoa.run(initial_params=np.array([[gamma, beta]]))
+    qaoa.run(initial_params=initial_params)
     bs = qaoa.solution_bitstring
     cut = maxcut_value(bs, graph)
     return {

@@ -25,7 +25,7 @@ from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
 from divi.circuits import TemplateEntry
-from divi.exceptions import ExecutionCancelledError
+from divi.exceptions import CharacterizationSubmitError, ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
     is_valid_qasm,
@@ -90,6 +90,20 @@ def _raise_with_details(resp: requests.Response):
             body = text[:500] + ("..." if len(text) > 500 else "")
     msg = f"{resp.status_code} {resp.reason}: {body}"
     raise requests.HTTPError(msg, response=resp)
+
+
+def _is_recoverable_characterization_error(exc: Exception) -> bool:
+    """Whether an existing job may need inspection after this request failed."""
+    if isinstance(
+        exc,
+        (requests.exceptions.Timeout, requests.exceptions.ConnectionError),
+    ):
+        return True
+    return (
+        isinstance(exc, requests.exceptions.HTTPError)
+        and exc.response is not None
+        and exc.response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
+    )
 
 
 class JobStatus(Enum):
@@ -1294,89 +1308,120 @@ class QoroService(CircuitRunner):
     ) -> dict:
         """Submit a QUBO for characterization, or fetch an existing result.
 
-        Two modes, dispatched by whether ``job_id`` is provided:
-
-        * **Submit** (``qubo`` provided, ``job_id`` is ``None``): runs
-          the 3-step server flow (init → submit → fetch result).
-        * **Fetch** (``job_id`` provided): retrieves a previously-stored
-          result without re-running the analysis. No credit cost.
-
-        For a hardness-only check, pass
-        ``options={"analysis": {"hardness_only": True}}`` and read the
-        ``hardness`` field of the response.
+        Submit mode performs init, synchronous analysis submission, and result
+        retrieval. Fetch mode waits for an existing job to reach a terminal
+        status before retrieving its stored result, without charging credits.
 
         Args:
-            qubo: Wire-format QUBO payload. Either a legacy comma-key
-                dict (``{"0,0": -1.0, "0,1": 2.0}``) or the
-                bandwidth-efficient ``factored_v1`` envelope
-                (``{"_format": "factored_v1", "n": N, "k": K, "F": <hex>,
-                "signs": [...], "diag": <hex>}``). Required in submit mode.
-            reference_states: Bitstrings to evaluate against. Defaults to
-                ``[]`` when submitting (e.g. for hardness-only runs).
-            options: Optional dict forwarded to ``submit_qubo``. Keys
-                may include ``ansatz``, ``analysis``, ``cost_qubo``,
-                ``penalty_qubo``, ``n_qubits``, ``constraints``.
-            job_id: Identifier of an existing characterization job to fetch.
-                When set, ``qubo`` / ``reference_states`` / ``options`` /
-                ``tag`` are ignored.
-            tag: Job tag used during init (submit mode only).
+            qubo: Legacy comma-key QUBO/HUBO dict or a ``factored_v1``
+                envelope. Required in submit mode.
+            reference_states: One or more binary reference bitstrings. Required
+                in submit mode by the Composer characterization engine.
+            options: Optional server options, including ``preset``, ``analysis``,
+                ``ansatz``, ``subspace``, ``constraints``, and ``n_qubits``.
+            job_id: Existing characterization job to wait for and fetch. When
+                set, submit-mode arguments are ignored.
+            tag: Job tag used during initialization.
 
         Returns:
-            dict: The raw characterization-result response — keys include
-            ``job_id``, ``status``, ``hardness``, ``report``,
-            ``recommendations``, ``created_at``, ``completed_at``. For a
-            rich client-side wrapper, prefer
-            :func:`~divi.backends.characterization.characterize_and_validate`.
+            The raw characterization response. A failed or cancelled fetch
+            returns a minimal ``{"job_id": ..., "status": ...}`` response so
+            the high-level wrapper can raise the corresponding domain error.
 
         Raises:
-            ValueError: If neither ``qubo`` nor ``job_id`` is provided.
-            requests.exceptions.HTTPError: If any request fails.
+            ValueError: If submit mode lacks a QUBO or reference state.
+            ~divi.exceptions.CharacterizationSubmitError: If a request after
+                job creation fails ambiguously. The exception carries the
+                existing ``job_id`` and failed ``phase``.
+            requests.exceptions.HTTPError: For definite client-side rejections
+                and failures before a recoverable job ID exists.
 
         .. note::
-            Credit cost scales with QUBO size in submit mode. Fetching
-            by ``job_id`` is free.
+            Initialization and submission deliberately disable HTTP retries
+            because both mutate server state. Fetching by ``job_id`` is free.
         """
-        if job_id is None:
+        if job_id is not None:
+            try:
+                status = self.poll_job_status(
+                    ExecutionResult(job_id=job_id),
+                    loop_until_complete=True,
+                    verbose=False,
+                )
+            except requests.RequestException as exc:
+                if not _is_recoverable_characterization_error(exc):
+                    raise
+                raise CharacterizationSubmitError(
+                    job_id, exc, phase="status polling"
+                ) from exc
+
+            if status != JobStatus.COMPLETED:
+                return {"job_id": job_id, "status": status.value}
+        else:
             if qubo is None:
                 raise ValueError(
                     "characterize_and_validate() requires either 'qubo' (to submit a "
                     "new job) or 'job_id' (to fetch an existing result)."
                 )
+            if not reference_states:
+                raise ValueError(
+                    "characterize_and_validate() requires at least one reference "
+                    "state when submitting a new job."
+                )
 
-            # Step 1 — init characterization job
             init_resp = self._make_request(
                 "post",
                 "job/init/",
+                retry=False,
                 json={"job_type": JobType.CHARACTERIZE.value, "tag": tag},
                 timeout=100,
             )
             job_id = init_resp.json()["job_id"]
+            if not isinstance(job_id, str):
+                raise ValueError(
+                    "Characterization initialization returned an invalid job_id."
+                )
+            logger.info(
+                "Characterization job %s created. If this call does not return, "
+                "fetch the result with this id rather than resubmitting.",
+                job_id,
+            )
 
-            # Step 2 — submit QUBO.
-            # ``retry=False`` because submit_qubo mutates job state
-            # (PENDING → RUNNING); retrying after a 502 would hit a
-            # non-PENDING job and cascade to 409.
             submit_payload: dict = {
                 "qubo": qubo,
-                "reference_states": reference_states or [],
+                "reference_states": reference_states,
             }
             if options:
                 submit_payload["options"] = options
 
-            self._make_request(
-                "post",
-                f"job/{job_id}/submit_qubo/",
-                retry=False,
-                json=submit_payload,
-                timeout=300,
-            )
+            try:
+                self._make_request(
+                    "post",
+                    f"job/{job_id}/submit_qubo/",
+                    retry=False,
+                    json=submit_payload,
+                    timeout=300,
+                )
+            except requests.RequestException as exc:
+                if not _is_recoverable_characterization_error(exc):
+                    raise
+                raise CharacterizationSubmitError(
+                    job_id, exc, phase="submission"
+                ) from exc
 
-        # Step 3 — fetch result (works for both modes).
-        result_resp = self._make_request(
-            "get",
-            f"job/{job_id}/validation_result/",
-            timeout=100,
-        )
+        assert job_id is not None
+        try:
+            result_resp = self._make_request(
+                "get",
+                f"job/{job_id}/validation_result/",
+                timeout=100,
+            )
+        except requests.RequestException as exc:
+            if not _is_recoverable_characterization_error(exc):
+                raise
+            raise CharacterizationSubmitError(
+                job_id, exc, phase="result retrieval"
+            ) from exc
+
         data = result_resp.json()
         data.setdefault("job_id", job_id)
         return data

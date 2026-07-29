@@ -1,46 +1,33 @@
 # AGENTS.md
 
-## Project overview
-
-- Divi is a Python library for generating and executing quantum programs at scale.
-- Core source lives in `divi/`, tests in `tests/`, docs in `docs/`.
-- Tutorials are in `tutorials/`; UI/demo tooling is in `visualizations/`.
-
 ## Dev environment
 
-- Python: `>=3.11,<3.13` (see `pyproject.toml`).
+- Python version is defined in `pyproject.toml` (`requires-python`).
 - Always use the virtual environment in `.venv/` or `venv/` when running commands.
 - If neither exists, do not run any Python code until the human specifies which Python executable to use.
 - uv is the primary workflow:
-  - Install: `uv sync`
+  - Install: `uv sync --all-extras` (always sync with extras to include `ai` dependencies)
 
 ## Code style and formatting
 
 - Use `black` and `isort` for formatting; `isort` must use the Black profile; `autoflake` is used to remove unused imports.
-- Recommended checks:
-  - `uv run black .`
-  - `uv run isort .` (uses Black profile, see `pyproject.toml`)
-  - `pre-commit run -a`
+- Do NOT run `pre-commit run -a` — it modifies unrelated files. Let pre-commit fire on commit.
 - New/updated `.py` files (outside `docs/`) should include the license header from `LICENSES/.license-header` (pre-commit enforces this).
 - Hook configuration lives in `/.pre-commit-config.yaml`; keep any new files compatible with these hooks.
 - If the human is asking an inquisitive or brainstorm-style question, do not change code; respond with analysis or ideas only.
 
 ## Testing
 
-- Run full suite: `uv run pytest -n auto`
-- Coverage: `uv run pytest -n auto --cov=divi`
 - Write spec-driven tests first (behavior-focused) before adding critical low-level mocking.
 - Use pytest ecosystem tools (e.g., `pytest-mock`) only; avoid `unittest` unless no alternative exists and the human agrees.
-- Markers:
-  - `requires_api_key` for cloud API tests (do not run these as an agent unless explicitly asked)
-  - `algo` for algorithm tests
-  - `e2e` for slow integration tests (avoid during development; run only when explicitly requested)
+- Markers are registered in `pytest.ini`. Do not run `requires_api_key` tests as an
+  agent unless explicitly asked, and avoid `e2e` during development.
 - API tests require a Qoro API key:
   - `QORO_API_KEY=... uv run pytest -n auto --run-api-tests`
   - or `uv run pytest -n auto --run-api-tests --api-key your-key-here`
 - Never inline imports nor classes in test functions. If you are facing errors due to circular imports, ask for approval before inlining imports to fix it.
 - Do not leave meta comments in source or tests that explain where other code moved (e.g. "tests live in …", "keep one smoke here"). Relocations should be obvious from module layout and test names; use docstrings only when they document behaviour under test.
-- Use simulator fixtures from `tests/conftest.py`: `dummy_simulator` when a real backend is not needed (returns fake counts), `default_test_simulator` for actual circuit execution (QASM→shots), `dummy_expval_backend` for expval-mode tests. Do not create new `QiskitSimulator` instances in tests.
+- Use simulator fixtures from `tests/conftest.py`: `dummy_simulator` when a real backend is not needed (returns fake counts), `default_test_simulator` for actual circuit execution (QASM→shots), `dummy_expval_backend` for expval-mode tests. Never instantiate a simulator backend directly in a unit test — always use a fixture. A test that genuinely needs its own instance (e.g. it exercises constructor arguments or a backend configuration no fixture covers) is a special case: say so and get the human's agreement first.
 - **Test layout mirrors `divi/`** — one `test_<module>.py` per source module (see `docs/source/development/testing.rst`).
 - **Shared test infrastructure** (do not mix roles):
   - `conftest.py` — pytest **fixtures** and hooks only (`@pytest.fixture`, `pytest_addoption`). Auto-discovered; never import from conftest in test code.
@@ -51,11 +38,7 @@
 ## Documentation
 
 - **Always use the Makefile** in `docs/` for documentation tasks; do not invoke `sphinx-build` or other Sphinx commands directly.
-- From the repo root: `cd docs` then run the desired target (e.g. `make build`, `make dev`).
-- Install doc deps: `make install` (from `docs/`) or `uv sync --group docs`
-- Build: `cd docs` then `make build`
-- Live reload: `cd docs` then `make dev`
-- Serve built docs: `cd docs` then `make serve`
+- From the repo root: `cd docs` then run the desired target; `make help` lists them.
 - Always `make clean` before `make build` — stale generated stubs and build state can hide or spuriously produce warnings.
 - Nitpick mode is always on (`nitpicky = True` in `conf.py`). No need to pass `-n`.
 
