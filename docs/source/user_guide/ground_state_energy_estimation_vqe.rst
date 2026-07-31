@@ -280,8 +280,7 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
    )
 
    # Execute sweep
-   vqe_sweep.create_programs()
-   vqe_sweep.run(blocking=True)
+   vqe_sweep.run()
    vqe_sweep.aggregate_results()
 
    # Visualize results
@@ -298,9 +297,9 @@ A few details worth calling out:
   under both :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
   :class:`~divi.qprog.algorithms.UCCSDAnsatz`, so you can compare accuracy
   head-to-head across the full curve.
-- **Execution model** — ``run(blocking=True)`` dispatches all VQE programs,
-  potentially in parallel, and blocks the script until every one of them
-  finishes before returning.
+- **Execution model** — ``run()`` dispatches all VQE programs, potentially in
+  parallel, and blocks the script until every one of them finishes before
+  returning.
 
 .. tip::
 

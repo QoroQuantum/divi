@@ -10,7 +10,7 @@ from typing import Literal
 from divi.backends import CircuitRunner
 from divi.qprog.aggregation import AggregationStrategy, BeamSearchStrategy
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
-from divi.qprog.ensemble import ProgramEnsemble
+from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.problems._graphs import _GraphProblemBase
@@ -33,8 +33,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             ``"qaoa"`` (default), ``"pce"``, or ``"iterative_qaoa"``.
         max_iterations: Max optimization iterations per sub-program.
         **kwargs: If ``early_stopping`` is present it is extracted and
-            deep-copied per sub-program.  Remaining kwargs are forwarded
-            to the engine constructor.
+            deep-copied per sub-program.  ``reporting_level`` accepts a
+            :class:`~divi.qprog.ReportingLevel` controlling how much live
+            progress is shown.  Remaining kwargs are forwarded to the
+            engine constructor.
     """
 
     def __init__(
@@ -47,7 +49,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         max_iterations: int = 10,
         **kwargs,
     ):
-        super().__init__(backend=backend)
+        super().__init__(
+            backend=backend,
+            reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
+        )
         self._problem = problem
         self.quantum_routine = quantum_routine
         self.max_iterations = max_iterations
@@ -110,7 +115,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def create_programs(self):
+    def create_programs(self, state=None):
         """Decompose the problem and create quantum programs for each sub-problem."""
         super().create_programs()
         sub_problems = self._problem.decompose()

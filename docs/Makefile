@@ -4,6 +4,10 @@
 # You can set these variables from the command line, and also
 # from the environment for the first two.
 SPHINXOPTS    ?= -W
+# Parallel readers/writers for the HTML build.  Set to empty to build serially.
+# Deliberately not applied to the spelling and coverage builders, which
+# aggregate results across documents and are not parallel-safe.
+SPHINXJOBS    ?= -j auto
 # Use the venv's sphinx-build if available, otherwise fall back to PATH
 SPHINXBUILD   ?= $(shell if [ -x "../.venv/bin/sphinx-build" ]; then echo "../.venv/bin/sphinx-build"; else echo "sphinx-build"; fi)
 SOURCEDIR     = source
@@ -35,9 +39,11 @@ help:
 	@echo "Variables:"
 	@echo "  PORT       - Port for serving documentation (default: 8000)"
 	@echo "  SPHINXOPTS - Additional Sphinx options"
+	@echo "  SPHINXJOBS - Parallel jobs for 'build' (default: -j auto; empty to disable)"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make dev PORT=8080       - Start the dev server on port 8080"
+	@echo "  make build SPHINXJOBS=   - Build serially (easier to read warnings)"
 	@echo "  make test                - Run all quality checks"
 
 .PHONY: help Makefile build clean serve dev open linkcheck coverage spelling test test-snippets test-snippets-fast install
@@ -50,7 +56,7 @@ KNOWN_TARGETS := help dev serve build clean test test-snippets test-snippets-fas
 
 build:
 	@echo "Building HTML documentation..."
-	@$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXOPTS) $(O) || exit 1
+	@$(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXJOBS) $(SPHINXOPTS) $(O) || exit 1
 	@if [ ! -d "$(BUILDDIR)/html" ]; then \
 		echo "Error: Build failed - directory $(BUILDDIR)/html was not created."; \
 		exit 1; \

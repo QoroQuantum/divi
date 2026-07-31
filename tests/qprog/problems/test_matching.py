@@ -498,7 +498,14 @@ class TestMaxWeightMatchingProblemE2E:
         assert quantum_weight >= 0.5 * classical_weight
 
     def test_partitioned_e2e(self, default_test_simulator):
-        """E2E: Partitioned matching produces a valid, positive-weight result."""
+        """E2E: Partitioned matching produces a valid, positive-weight result.
+
+        ``max_edges_per_partition`` is set so the bisection keeps most edges
+        inside a partition (10 of 15) rather than cutting them down to a
+        degenerate [2, 1, 4] split. Under this seed the partitions solve to a
+        valid matching directly, so the repair fallback is not exercised here —
+        ``TestMaxWeightMatchingProblemStrict`` covers that path explicitly.
+        """
         G = nx.gnm_random_graph(10, 15, seed=42)
         for u, v in G.edges():
             G[u][v]["weight"] = float(u + v)
@@ -506,7 +513,7 @@ class TestMaxWeightMatchingProblemE2E:
         problem = MaxWeightMatchingProblem(
             G,
             penalty_scale=10.0,
-            max_edges_per_partition=5,
+            max_edges_per_partition=8,
             partition_algorithm="kernighan_lin",
             seed=42,
         )
@@ -514,14 +521,14 @@ class TestMaxWeightMatchingProblemE2E:
         default_test_simulator.set_seed(42)
         ensemble = PartitioningProgramEnsemble(
             problem=problem,
-            n_layers=1,
+            n_layers=2,
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=5,
+            seed=42,
         )
 
-        ensemble.create_programs()
-        ensemble.run(blocking=True)
+        ensemble.run()
 
         matching, weight = ensemble.aggregate_results()
         assert is_valid_matching(matching)

@@ -15,7 +15,7 @@ from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy, to_spo
 from divi.qprog.algorithms import InitialState, TimeEvolution
-from divi.qprog.ensemble import ProgramEnsemble
+from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 
 logger = logging.getLogger(__name__)
 
@@ -40,13 +40,10 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             time_points=[0.0, 0.5, 1.0, 1.5],
             backend=backend,
         )
-        trajectory.create_programs()
-        trajectory.run(blocking=True)
+        trajectory.run()
         results = trajectory.aggregate_results()
         # results: {0.0: {...}, 0.5: {...}, 1.0: {...}, 1.5: {...}}
     """
-
-    _show_progress = True
 
     def __init__(
         self,
@@ -84,9 +81,15 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 and any other ``QuantumProgram`` / ``ObservableMeasuringMixin``
                 kwarg that should apply uniformly across the trajectory.
                 ``program_id`` and ``progress_queue`` are set internally and
-                must not be passed here.
+                must not be passed here.  ``reporting_level`` is consumed here
+                rather than forwarded, and accepts a
+                :class:`~divi.qprog.ReportingLevel` controlling how much
+                live progress is shown.
         """
-        super().__init__(backend=backend)
+        super().__init__(
+            backend=backend,
+            reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
+        )
 
         time_points = list(time_points)
         if len(time_points) == 0:
@@ -111,7 +114,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         self._seed = seed
         self._extra_kwargs = kwargs
 
-    def create_programs(self):
+    def create_programs(self, state=None):
         """Create one TimeEvolution program per time point."""
         super().create_programs()
 

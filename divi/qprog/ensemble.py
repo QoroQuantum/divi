@@ -8,6 +8,8 @@ import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from enum import Enum
 from queue import Queue
 from threading import Event, Lock, Thread
 from typing import Any, cast
@@ -39,48 +41,246 @@ from divi.reporting import (
 )
 from divi.reporting._pbar import _drain_queue_quietly
 
-__all__ = ["BatchConfig", "BatchMode", "ProgramEnsemble"]
+__all__ = [
+    "BatchConfig",
+    "BatchMode",
+    "ProgramEnsemble",
+    "ReportingLevel",
+    "RoundRecord",
+    "WorkflowStatus",
+]
+
+
+class ReportingLevel(str, Enum):
+    """Amount of live progress shown for an ensemble workflow."""
+
+    OFF = "off"
+    COMPACT = "compact"
+    FULL = "full"
+
+
+class WorkflowStatus(str, Enum):
+    """How a workflow round, or a whole workflow run, ended.
+
+    :attr:`RoundRecord.status` takes ``COMPLETE``, ``FAILED``, or
+    ``CANCELLED``. :attr:`~divi.qprog.ensemble.ProgramEnsemble.stop_reason`
+    takes those plus ``MAX_ROUNDS``, which describes the run rather than any
+    single round.
+    """
+
+    COMPLETE = "complete"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    MAX_ROUNDS = "max_rounds"
+
+
+@dataclass(frozen=True)
+class RoundRecord:
+    """Immutable accounting summary for one ensemble round.
+
+    ``circuit_count`` and ``run_time`` are per-round deltas, not cumulative
+    totals. ``error`` carries the formatted exception for failed rounds and
+    is ``None`` otherwise.
+    """
+
+    #: Round number, counting from 1.
+    number: int
+    program_count: int
+    circuit_count: int
+    run_time: float
+    status: WorkflowStatus
+    error: str | None = None
+
 
 #: Largest ensemble size for which :meth:`ProgramEnsemble.run` will allocate
 #: one executor thread per program under the default wait-for-all barrier.
 _BARRIER_PROGRAM_LIMIT = 256
 
-#: Above this program count, per-program progress rows are created
-#: hidden so the display isn't flooded by hundreds of rows.  Failed,
-#: cancelled, and aborted programs are revealed on terminal status so
-#: users can still diagnose what went wrong.  In hide mode the
-#: ensemble also adds a "Submitting circuits" prep row that ticks up
-#: as workers finish circuit construction and call ``submit``.
-_HIDE_PROGRAM_ROWS_THRESHOLD = 64
-
 #: Above this many ``max_concurrent_programs``, ``run`` warns to flag a
 #: likely misuse of the knob (e.g. the user wanted ``max_batch_size``).
 _CONCURRENT_PROGRAMS_SOFT_CAP = 1024
+
+#: Seconds to wait for the progress listener thread to exit during teardown.
+_LISTENER_JOIN_TIMEOUT = 5.0
 
 
 def _default_task_function(program: QuantumProgram):
     return program.run()
 
 
+def _resolve_worker_count(batch_config: BatchConfig, n_programs: int) -> int:
+    """Size the executor pool for one dispatch.
+
+    In barrier mode the pool must let the barrier predicate fill a batch.
+    When ``max_batch_size`` is set the pool is capped at
+    ``min(max_batch_size, n_programs)`` so the barrier and the batch size
+    align (one full wave per flush), no more threads are spawned than needed
+    (avoiding macOS's per-process thread cap on large ensembles), and threads
+    recycle for the next wave after each flush.
+
+    Raises:
+        RuntimeError: If the default wait-for-all barrier would need more than
+            :data:`_BARRIER_PROGRAM_LIMIT` threads.
+    """
+    default_workers = (os.cpu_count() or 1) + 4
+    if batch_config.mode is not BatchMode.MERGED:
+        return default_workers
+
+    if batch_config.max_concurrent_programs is not None:
+        if batch_config.max_concurrent_programs == -1:
+            if batch_config.max_batch_size is not None:
+                return min(batch_config.max_batch_size, n_programs)
+            return n_programs
+        n_workers = batch_config.max_concurrent_programs
+        if n_workers > _CONCURRENT_PROGRAMS_SOFT_CAP:
+            warn(
+                f"max_concurrent_programs={n_workers} spawns that many "
+                f"executor threads; if you meant to merge submissions, "
+                f"set max_batch_size on BatchConfig instead.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return n_workers
+
+    if batch_config.max_batch_size is not None:
+        return min(batch_config.max_batch_size, n_programs)
+    if n_programs <= _BARRIER_PROGRAM_LIMIT:
+        return max(n_programs, default_workers)
+    raise RuntimeError(
+        f"Ensemble has {n_programs} programs, exceeding the "
+        f"wait-for-all barrier limit ({_BARRIER_PROGRAM_LIMIT}). Set "
+        f"BatchConfig(max_batch_size=N) for early-flush, "
+        f"BatchConfig(max_concurrent_programs=N) to bypass the cap, or "
+        f"BatchConfig(mode=BatchMode.OFF)."
+    )
+
+
+def _resolve_sampling_params(
+    programs: dict[Any, QuantumProgram],
+    params_per_program: dict[Any, npt.NDArray[np.float64]] | None,
+    *,
+    suppress_strict_warning: bool,
+) -> dict[Any, npt.NDArray[np.float64]]:
+    """Resolve one parameter array per program for :meth:`sample_solution`.
+
+    Entries in ``params_per_program`` win; programs missing from it fall back
+    to their own ``_best_params``.
+
+    Raises:
+        RuntimeError: If ``programs`` is empty, or a program has neither an
+            explicit entry nor stored parameters.
+        ValueError: If ``params_per_program`` names unknown programs, or a
+            resolved array's last axis does not match the program's
+            ``n_layers * n_params_per_layer``.
+        TypeError: If any program is not a
+            :class:`~divi.qprog.VariationalQuantumAlgorithm`.
+    """
+    if len(programs) == 0:
+        raise RuntimeError("No programs to sample.")
+
+    for prog_id, program in programs.items():
+        if not isinstance(program, VariationalQuantumAlgorithm):
+            raise TypeError(
+                f"Program {prog_id!r} is {type(program).__name__}; "
+                f"sample_solution requires VariationalQuantumAlgorithm "
+                f"sub-programs."
+            )
+
+    if params_per_program is not None:
+        unknown = set(params_per_program) - set(programs)
+        if unknown:
+            raise ValueError(
+                f"params_per_program contains keys not in this ensemble: "
+                f"{list(unknown)!r}. Valid program IDs: "
+                f"{list(programs.keys())!r}."
+            )
+
+    resolved: dict[Any, npt.NDArray[np.float64]] = {}
+    fallbacks: list[Any] = []
+    for prog_id, program in programs.items():
+        if params_per_program is not None and prog_id in params_per_program:
+            arr = np.asarray(params_per_program[prog_id], dtype=np.float64)
+        else:
+            arr = np.asarray(
+                getattr(program, "_best_params", np.array([], dtype=np.float64)),
+                dtype=np.float64,
+            )
+            if params_per_program is not None:
+                fallbacks.append(prog_id)
+
+        if arr.size == 0:
+            raise RuntimeError(
+                f"Program {prog_id!r}: no parameters available. "
+                f"Pass params_per_program[{prog_id!r}]=... or call "
+                f"run() on the ensemble first."
+            )
+
+        n_layers = getattr(program, "n_layers", None)
+        n_params_per_layer = getattr(program, "n_params_per_layer", None)
+        if n_layers is not None and n_params_per_layer is not None:
+            expected = n_layers * n_params_per_layer
+            if arr.shape[-1] != expected:
+                raise ValueError(
+                    f"Program {prog_id!r}: params last-axis size "
+                    f"({arr.shape[-1]}) does not match "
+                    f"n_layers * n_params_per_layer ({expected})."
+                )
+
+        resolved[prog_id] = arr
+
+    if fallbacks and not suppress_strict_warning:
+        warn(
+            f"params_per_program is missing keys for programs "
+            f"{list(fallbacks)!r}; falling back to each program's "
+            f"_best_params. Pass suppress_strict_warning=True to silence.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    return resolved
+
+
 class ProgramEnsemble(ABC):
     """This abstract class provides the basic scaffolding for higher-order
     computations that require more than one quantum program to achieve its goal.
 
-    Each implementation of this class has to have an implementation of two functions:
-        1. `create_programs`: This function generates the independent programs that
-            are needed to achieve the objective of the job. The creation of those
-            programs can utilize the instance variables of the class to initialize
-            their parameters. The programs should be stored in a key-value store
-            where the keys represent the identifier of the program, whether random
-            or identificatory.
+    :meth:`run` executes the ensemble as a loop of *rounds*. Each round
+    materializes a fresh program map, runs those programs in parallel, and
+    folds their results into a workflow state the next round can use. The loop
+    ends when :meth:`is_complete` returns ``True`` or a ``max_rounds`` limit is
+    hit.
 
-        2. `aggregate_results`: This function aggregates the results of the programs
-            after they are done executing. This function should be aware of the different
-            formats the programs might have (counts dictionary, expectation value, etc) and
-            handle such cases accordingly.
+    Subclasses must implement:
+        1. `create_programs(state)`: Generates the independent programs needed
+            for the coming round, keyed by program identifier. It receives the
+            current workflow state, so an adaptive ensemble can choose this
+            round's programs from what the last round measured.
+
+        2. `aggregate_results`: Aggregates the results of the programs after
+            they are done executing. This function should be aware of the
+            different formats the programs might have (counts dictionary,
+            expectation value, etc) and handle such cases accordingly. Only the
+            final round's programs remain in ``self.programs``.
+
+    Three further hooks are optional and default to single-round behavior:
+    :meth:`initial_state`, :meth:`update_state`, and :meth:`is_complete`.
     """
 
-    def __init__(self, backend: CircuitRunner):
+    def __init__(
+        self,
+        backend: CircuitRunner,
+        *,
+        reporting_level: ReportingLevel = ReportingLevel.COMPACT,
+    ):
+        """Initialize the ensemble.
+
+        Args:
+            backend: Backend used to execute every sub-program's circuits.
+            reporting_level: How much live progress to render. See
+                :class:`~divi.qprog.ReportingLevel`; defaults to ``COMPACT``.
+                The ``DIVI_DISABLE_PROGRESS`` environment variable suppresses
+                all visual output regardless of this setting.
+        """
         super().__init__()
 
         self.backend = backend
@@ -96,10 +296,36 @@ class ProgramEnsemble(ABC):
 
         self._total_circuit_count = 0
         self._total_run_time = 0.0
+        # Normalize so a plain string works wherever the enum does.
+        self.reporting_level = ReportingLevel(reporting_level)
+        self._workflow_state: Any = None
+        self._stop_reason: WorkflowStatus | None = None
+        self._round_history: list[RoundRecord] = []
+        self._round_index = 0
+        # ``(round_number, max_rounds)`` while a workflow round is dispatching;
+        # ``None`` for a standalone ``run_one_round``.
+        self._round_context: tuple[int, int | None] | None = None
+        # True between ``create_programs()`` and the dispatch that consumes the
+        # resulting map. Lets ``run()`` distinguish a caller-materialized first
+        # round from the previous round's spent programs.
+        self._programs_pending = False
+        # Set by join() when a round is cut short by KeyboardInterrupt, so
+        # run() can stop the workflow instead of starting another round.
+        self._round_cancelled = False
 
         self._progress_bar = None
-        self._listener_thread = None
+        self._live_display = None
+        self._listener_thread: Thread | None = None
         self._hide_program_rows = False
+        self._round_task_id = None
+        self._pb_task_map: dict[Any, Any] = {}
+        self._pb_lock = Lock()
+        # Created per dispatch; declared here so teardown paths never have to
+        # probe for their existence.
+        self._queue: Queue | None = None
+        self._done_event: Event | None = None
+        self._cancellation_event = Event()
+        self._future_to_program: dict[Future, QuantumProgram] = {}
 
         self._is_jupyter = Console().is_jupyter
 
@@ -125,6 +351,26 @@ class ProgramEnsemble(ABC):
             float: Cumulative execution time in seconds across all programs.
         """
         return self._total_run_time
+
+    @property
+    def round_history(self) -> tuple[RoundRecord, ...]:
+        """Completed workflow rounds, in execution order."""
+        return tuple(self._round_history)
+
+    @property
+    def workflow_state(self) -> Any:
+        """Latest state produced by :meth:`update_state`, or whatever
+        :meth:`initial_state` returned if no round has completed yet. Reset at
+        the start of every :meth:`run`.
+        """
+        return self._workflow_state
+
+    @property
+    def stop_reason(self) -> WorkflowStatus | None:
+        """Why the most recent :meth:`run` stopped, or ``None`` before the
+        first run. See :class:`WorkflowStatus`.
+        """
+        return self._stop_reason
 
     @property
     def programs(self) -> dict:
@@ -179,8 +425,33 @@ class ProgramEnsemble(ABC):
                 ) from exc
         return reports
 
+    def initial_state(self) -> Any:
+        """Return the state supplied to the first workflow round."""
+        return None
+
+    def update_state(self, state: Any) -> Any:
+        """Reduce the finished round's results into the next round's state.
+
+        Read the results off ``self.programs``, which still holds the round
+        that just completed. Anything later rounds need must be folded into
+        the returned state — the program map is replaced each round.
+        """
+        return state
+
+    def is_complete(self, state: Any) -> bool:
+        """Return whether the workflow should stop before running another round.
+
+        Checked at the top of every iteration, including before the first
+        round — a ``state`` that already satisfies this runs zero rounds. The
+        default stops after one round, which is what the one-shot built-in
+        ensembles need. Overrides that need a round count should read
+        ``len(self.round_history)``, which is reset on every new
+        :meth:`run`.
+        """
+        return self._round_index >= 1
+
     @abstractmethod
-    def create_programs(self):
+    def create_programs(self, state: Any = None):
         """Generate and populate the programs dictionary for ensemble execution.
 
         This method must be implemented by subclasses to create the quantum programs
@@ -209,20 +480,46 @@ class ProgramEnsemble(ABC):
             RuntimeError: If programs already exist (should call `reset()` first).
 
         Example:
-            >>> def create_programs(self):
+            >>> def create_programs(self, state=None):
             ...     super().create_programs()
             ...     self.programs = {
             ...         "prog1": QAOA(...),
             ...         "prog2": QAOA(...),
             ...     }
         """
-        if len(self._programs) > 0:
+        if self._executor is not None:
             raise RuntimeError(
-                "Some programs already exist. "
-                "Clear the program dictionary before creating new ones by using ensemble.reset()."
+                "Cannot create programs while an ensemble round is running."
             )
-
+        if self._programs:
+            raise RuntimeError(
+                "Some programs already exist. Complete the pending round with run() "
+                "or call reset() before creating a new program map."
+            )
         self._queue = Queue()
+        self._programs_pending = True
+
+    def _clear_completed_round(self) -> None:
+        """Discard program instances only after their round has completed."""
+        if self._executor is not None:
+            raise RuntimeError(
+                "Cannot replace programs while an ensemble round is running."
+            )
+        self._programs.clear()
+        self._programs_pending = False
+
+    def _reset_workflow_state(self) -> None:
+        """Clear per-workflow state without touching programs or lifetime totals.
+
+        Called at the start of every :meth:`run` so a repeated workflow starts
+        from round zero. Cumulative circuit and runtime counters survive, as
+        does any program map the caller materialized itself.
+        """
+        self._workflow_state = None
+        self._stop_reason = None
+        self._round_history.clear()
+        self._round_index = 0
+        self._round_context = None
 
     def reset(self):
         """
@@ -230,7 +527,9 @@ class ProgramEnsemble(ABC):
 
         Clears all programs, stops any running executors, terminates listener threads,
         and stops progress bars. This allows the ensemble to be reused for a new set of
-        programs.
+        programs. Also clears :attr:`workflow_state`, :attr:`stop_reason` and
+        :attr:`round_history`; the lifetime :attr:`total_circuit_count` and
+        :attr:`total_run_time` counters survive.
 
         Note:
             Any running programs will be forcefully stopped. Results from incomplete
@@ -243,6 +542,7 @@ class ProgramEnsemble(ABC):
         self._program_key_map.clear()
 
         self._programs.clear()
+        self._programs_pending = False
 
         # Stop the executor before restoring backends so an in-flight worker
         # hits the cancelled proxy rather than the restored real backend.
@@ -253,26 +553,14 @@ class ProgramEnsemble(ABC):
 
         self._restore_program_backends()
 
-        # Signal and wait for listener thread to stop
-        if hasattr(self, "_done_event") and self._done_event is not None:
-            self._done_event.set()
-            self._done_event = None
-
-        if (listener_thread := getattr(self, "_listener_thread", None)) is not None:
-            listener_thread.join(timeout=1)
-            if listener_thread.is_alive():
-                warn("Listener thread did not terminate within timeout.")
-            self._listener_thread = None
-
-        # Stop the live display if it's still active
-        if (live_display := getattr(self, "_live_display", None)) is not None:
-            try:
-                live_display.stop()
-            except Exception:
-                pass  # Already stopped or not running
-            self._live_display = None
-            self._progress_bar = None
-            self._pb_task_map.clear()
+        # Programs may still be mid-flight after a wait=False shutdown, so
+        # skip the drain.
+        self._teardown_progress_display(drain=False)
+        self._done_event = None
+        self._progress_bar = None
+        self._pb_task_map.clear()
+        self._round_task_id = None
+        self._reset_workflow_state()
 
     def _restore_program_backends(self) -> None:
         """Undo the ``_ProxyBackend`` swap done for batched dispatch.
@@ -359,14 +647,18 @@ class ProgramEnsemble(ABC):
             )
         return self._executor.submit(_coordinated_task, program)
 
-    def run(
+    def run_one_round(
         self,
         blocking: bool = False,
         *,
         batch_config: BatchConfig = BatchConfig(),
     ):
         """
-        Execute all programs in the ensemble.
+        Execute the currently materialized programs once.
+
+        Prefer :meth:`run`, which materializes programs and drives rounds for
+        you. Reach for this only to dispatch without blocking, or to drive
+        rounds yourself.
 
         Starts all quantum programs in parallel using a thread pool. Can run in
         blocking or non-blocking mode.
@@ -402,10 +694,139 @@ class ProgramEnsemble(ABC):
             In non-blocking mode, call `join()` later to wait for completion and
             collect results.
         """
-        return self._dispatch(
+        dispatched = self._dispatch(
             task_fn=_default_task_function,
             blocking=blocking,
             batch_config=batch_config,
+        )
+        # Submitted — a later run() must not treat this map as pending.
+        self._programs_pending = False
+        return dispatched
+
+    def run(
+        self,
+        *,
+        max_rounds: int | None = None,
+        batch_config: BatchConfig = BatchConfig(),
+    ) -> "ProgramEnsemble":
+        """Run this ensemble's state-dependent workflow to completion.
+
+        Each round materializes a fresh program map, runs it synchronously,
+        then lets the subclass reduce its results into the next workflow state.
+        ``run_one_round`` remains available for callers needing direct control
+        of a previously materialized program map.
+
+        A program map materialized by the caller before this call is used
+        as-is for the first round; later rounds always come from
+        :meth:`create_programs`.
+
+        Args:
+            max_rounds: Stop after this many rounds even if
+                :meth:`is_complete` is still false. ``None`` runs until
+                convergence.
+            batch_config: Forwarded to each round's dispatch.
+
+        Returns:
+            ProgramEnsemble: Returns self for method chaining. The terminal
+            reason is in :attr:`stop_reason` and the latest state in
+            :attr:`workflow_state`.
+
+        Raises:
+            RuntimeError: If a round's programs fail. :attr:`stop_reason` and
+                :attr:`round_history` are populated before the exception
+                propagates, so catch it and inspect them to see which round
+                failed and why. An exception raised by :meth:`update_state` is
+                recorded the same way, so a ``FAILED`` round may still have
+                executed its circuits successfully.
+        """
+        if max_rounds is not None and max_rounds < 1:
+            raise ValueError("max_rounds must be >= 1 when provided.")
+        if self._executor is not None:
+            raise RuntimeError("An ensemble is already being run.")
+
+        self._reset_workflow_state()
+        state = self.initial_state()
+        self._workflow_state = state
+        use_caller_programs = self._programs_pending and bool(self._programs)
+
+        while True:
+            if self.is_complete(state):
+                self._stop_reason = WorkflowStatus.COMPLETE
+                break
+            if max_rounds is not None and self._round_index >= max_rounds:
+                self._stop_reason = WorkflowStatus.MAX_ROUNDS
+                break
+
+            if not use_caller_programs:
+                self._clear_completed_round()
+                self.create_programs(state)
+            use_caller_programs = False
+
+            # Claim the round number up front so both outcomes record the
+            # same index.
+            self._round_index += 1
+            program_count = len(self._programs)
+            circuits_before = self.total_circuit_count
+            runtime_before = self.total_run_time
+            self._round_context = (self._round_index, max_rounds)
+            self._round_cancelled = False
+            try:
+                self.run_one_round(blocking=True, batch_config=batch_config)
+                if self._round_cancelled:
+                    # Ctrl-C during the round: don't reduce partial results
+                    # into the state, and don't start another round.
+                    self._stop_reason = WorkflowStatus.CANCELLED
+                    self._record_round(
+                        program_count,
+                        circuits_before,
+                        runtime_before,
+                        status=WorkflowStatus.CANCELLED,
+                    )
+                    break
+                state = self.update_state(state)
+            except Exception as exc:
+                self._stop_reason = WorkflowStatus.FAILED
+                self._record_round(
+                    program_count,
+                    circuits_before,
+                    runtime_before,
+                    status=WorkflowStatus.FAILED,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+            finally:
+                self._round_context = None
+
+            self._workflow_state = state
+            self._record_round(
+                program_count,
+                circuits_before,
+                runtime_before,
+                status=WorkflowStatus.COMPLETE,
+            )
+
+        self._workflow_state = state
+        return self
+
+    def _record_round(
+        self,
+        program_count: int,
+        circuits_before: int,
+        runtime_before: float,
+        *,
+        status: WorkflowStatus,
+        error: str | None = None,
+    ) -> None:
+        """Append a :class:`RoundRecord` for the round now in progress."""
+        self._round_history.append(
+            RoundRecord(
+                number=self._round_index,
+                program_count=program_count,
+                circuit_count=self.total_circuit_count - circuits_before,
+                run_time=self.total_run_time - runtime_before,
+                status=status,
+                error=error,
+            )
         )
 
     def _dispatch(
@@ -429,45 +850,18 @@ class ProgramEnsemble(ABC):
         # Reuse the queue from create_programs() — sub-programs bind their
         # reporters to it at construction, so re-creating it here would orphan
         # every per-program update.
-        if getattr(self, "_queue", None) is None:
+        if self._queue is None:
             raise RuntimeError("Call create_programs() before run().")
         # Clear any messages left on the persistent queue by a prior dispatch.
         _drain_queue_quietly(self._queue)
         self._done_event = Event()
 
+        # Drop any display from a previous dispatch before the validation
+        # below can raise, so a rejected dispatch leaves nothing to tear down.
         self._progress_bar = None
         self._live_display = None
-        prep_task_id = None
+        self._round_task_id = None
         batching_enabled = batch_config.mode is BatchMode.MERGED
-        self._hide_program_rows = (
-            batching_enabled and len(self._programs) > _HIDE_PROGRAM_ROWS_THRESHOLD
-        )
-        _wants_progress = hasattr(self, "max_iterations") or getattr(
-            self, "_show_progress", False
-        )
-        if _wants_progress:
-            self._progress_bar, self._live_display = make_progress_display(
-                is_jupyter=self._is_jupyter
-            )
-            if self._progress_bar is not None and self._hide_program_rows:
-                # In hide mode, add a single "Submitting circuits" row up
-                # front so the user sees activity during the prep window
-                # (workers building circuits in Python, no batch flush
-                # yet).  The coordinator emits a ``prep_advance`` message
-                # per program on its first ``submit`` call, ticking this
-                # row up until it reaches len(programs) — at which point
-                # the merged backend submission fires.
-                prep_task_id = self._progress_bar.add_task(
-                    "",
-                    job_name="Submitting circuits",
-                    total=len(self._programs),
-                    completed=0,
-                    message="",
-                    batch_color="",
-                    row_kind="program",
-                    program_key=None,
-                    final_status=None,
-                )
 
         # Validate that all program instances are unique to prevent thread-safety issues
         program_instances = list(self._programs.values())
@@ -478,53 +872,15 @@ class ProgramEnsemble(ABC):
                 "You must provide a unique instance for each program ID."
             )
 
-        # In barrier mode the pool is sized so the barrier predicate can
-        # actually fill a batch.  When ``max_batch_size`` is set, the pool
-        # is capped at ``min(max_batch_size, len(programs))`` so:
-        #   - the barrier and the batch size align (one full wave per flush);
-        #   - we don't spawn more threads than necessary (avoids macOS's
-        #     per-process thread cap on large ensembles);
-        #   - threads recycle for the next wave after each flush completes.
-        default_workers = (os.cpu_count() or 1) + 4
-        if batching_enabled:
-            if batch_config.max_concurrent_programs is not None:
-                if batch_config.max_concurrent_programs == -1:
-                    if batch_config.max_batch_size is not None:
-                        n_workers = min(
-                            batch_config.max_batch_size, len(self._programs)
-                        )
-                    else:
-                        n_workers = len(self._programs)
-                else:
-                    n_workers = batch_config.max_concurrent_programs
-                    if n_workers > _CONCURRENT_PROGRAMS_SOFT_CAP:
-                        warn(
-                            f"max_concurrent_programs={n_workers} spawns that many "
-                            f"executor threads; if you meant to merge submissions, "
-                            f"set max_batch_size on BatchConfig instead.",
-                            UserWarning,
-                            stacklevel=2,
-                        )
-            elif batch_config.max_batch_size is not None:
-                n_workers = min(batch_config.max_batch_size, len(self._programs))
-            elif len(self._programs) <= _BARRIER_PROGRAM_LIMIT:
-                n_workers = max(len(self._programs), default_workers)
-            else:
-                raise RuntimeError(
-                    f"Ensemble has {len(self._programs)} programs, exceeding the "
-                    f"wait-for-all barrier limit ({_BARRIER_PROGRAM_LIMIT}). Set "
-                    f"BatchConfig(max_batch_size=N) for early-flush, "
-                    f"BatchConfig(max_concurrent_programs=N) to bypass the cap, or "
-                    f"BatchConfig(mode=BatchMode.OFF)."
-                )
-        else:
-            n_workers = default_workers
+        n_workers = _resolve_worker_count(batch_config, len(self._programs))
+
+        prep_task_id = self._build_progress_display(batching_enabled)
 
         self._executor = ThreadPoolExecutor(max_workers=n_workers)
         self._cancellation_event = Event()
         self.futures.clear()
-        self._future_to_program = {}
-        self._program_key_map = {}
+        self._future_to_program.clear()
+        self._program_key_map.clear()
         # Per-program counter values at dispatch start; join() adds the delta.
         self._dispatch_count_baseline = {
             program: (program._total_circuit_count, program._total_run_time)
@@ -546,60 +902,9 @@ class ProgramEnsemble(ABC):
         # hold for survivors and they'd hang forever.  Tear everything
         # down on failure so the caller can retry cleanly.
         try:
-            # Set up batch coordinator to merge circuit submissions.
             if batching_enabled:
-                progress_queue = getattr(self, "_queue", None)
-                self._coordinator = _BatchCoordinator(
-                    self.backend,
-                    progress_queue=progress_queue,
-                    batch_config=batch_config,
-                    n_workers=n_workers,
-                    cancellation_event=self._cancellation_event,
-                )
-                for idx, (prog_id, program) in enumerate(self._programs.items()):
-                    program_key = str(idx)
-                    self._program_key_map[program] = program_key
-                    self._coordinator.register_program(program_key)
-                    self._program_original_backend[program] = program.backend
-                    program.backend = _ProxyBackend(
-                        self.backend, self._coordinator, program_key
-                    )
-
-            if self._progress_bar is not None and self._live_display is not None:
-                self._live_display.start()
-
-                # Co-allocated with ``_progress_bar`` in the setup path, so a
-                # progress-active branch implies ``_done_event`` is live.
-                assert self._done_event is not None
-                queue_obj = self._queue
-                progress_bar = self._progress_bar
-                pb_task_map = self._pb_task_map
-                done_event = self._done_event
-                pb_lock = self._pb_lock
-                hide_program_rows = self._hide_program_rows
-
-                def _listener_runner():
-                    # Spawn-side guard: if ``queue_listener`` dies for any
-                    # reason — including signature errors before its body
-                    # runs — drain the queue so any ``queue.join()`` caller
-                    # doesn't hang waiting for ``task_done()`` calls that
-                    # will never come.
-                    try:
-                        queue_listener(
-                            queue_obj,
-                            progress_bar,
-                            pb_task_map,
-                            done_event,
-                            pb_lock,
-                            hide_program_rows=hide_program_rows,
-                            prep_task_id=prep_task_id,
-                        )
-                    except BaseException:
-                        _drain_queue_quietly(queue_obj)
-                        raise
-
-                self._listener_thread = Thread(target=_listener_runner, daemon=True)
-                self._listener_thread.start()
+                self._install_coordinator(batch_config, n_workers)
+            self._start_listener(prep_task_id)
 
             for program in self._programs.values():
                 future = self._add_program_to_executor(program, task_fn)
@@ -616,26 +921,17 @@ class ProgramEnsemble(ABC):
                 self._coordinator = None
             self._program_key_map.clear()
 
-            if self._done_event is not None:
-                self._done_event.set()
-            if self._listener_thread is not None:
-                self._listener_thread.join(timeout=5)
-                self._listener_thread = None
-
-            if self._live_display is not None:
-                try:
-                    self._live_display.stop()
-                except Exception:
-                    pass
-                self._live_display = None
-                self._progress_bar = None
+            # Producers may still be mid-flight here, so skip the queue drain.
+            self._teardown_progress_display(drain=False)
+            self._progress_bar = None
+            self._round_task_id = None
 
             if self._executor is not None:
                 self._executor.shutdown(wait=False)
                 self._executor = None
             self._restore_program_backends()
             self.futures.clear()
-            self._future_to_program = {}
+            self._future_to_program.clear()
             raise
 
         if not blocking:
@@ -698,67 +994,11 @@ class ProgramEnsemble(ABC):
             TypeError: If any sub-program is not a
                 :class:`~divi.qprog.VariationalQuantumAlgorithm`.
         """
-        if len(self._programs) == 0:
-            raise RuntimeError("No programs to sample.")
-
-        for prog_id, program in self._programs.items():
-            if not isinstance(program, VariationalQuantumAlgorithm):
-                raise TypeError(
-                    f"Program {prog_id!r} is {type(program).__name__}; "
-                    f"sample_solution requires VariationalQuantumAlgorithm "
-                    f"sub-programs."
-                )
-
-        if params_per_program is not None:
-            unknown = set(params_per_program) - set(self._programs)
-            if unknown:
-                raise ValueError(
-                    f"params_per_program contains keys not in this ensemble: "
-                    f"{list(unknown)!r}. Valid program IDs: "
-                    f"{list(self._programs.keys())!r}."
-                )
-
-        resolved: dict[Any, npt.NDArray[np.float64]] = {}
-        fallbacks: list[Any] = []
-        for prog_id, program in self._programs.items():
-            if params_per_program is not None and prog_id in params_per_program:
-                arr = np.asarray(params_per_program[prog_id], dtype=np.float64)
-            else:
-                arr = np.asarray(
-                    getattr(program, "_best_params", np.array([], dtype=np.float64)),
-                    dtype=np.float64,
-                )
-                if params_per_program is not None:
-                    fallbacks.append(prog_id)
-
-            if arr.size == 0:
-                raise RuntimeError(
-                    f"Program {prog_id!r}: no parameters available. "
-                    f"Pass params_per_program[{prog_id!r}]=... or call "
-                    f"run() on the ensemble first."
-                )
-
-            n_layers = getattr(program, "n_layers", None)
-            n_params_per_layer = getattr(program, "n_params_per_layer", None)
-            if n_layers is not None and n_params_per_layer is not None:
-                expected = n_layers * n_params_per_layer
-                if arr.shape[-1] != expected:
-                    raise ValueError(
-                        f"Program {prog_id!r}: params last-axis size "
-                        f"({arr.shape[-1]}) does not match "
-                        f"n_layers * n_params_per_layer ({expected})."
-                    )
-
-            resolved[prog_id] = arr
-
-        if fallbacks and not suppress_strict_warning:
-            warn(
-                f"params_per_program is missing keys for programs "
-                f"{list(fallbacks)!r}; falling back to each program's "
-                f"_best_params. Pass suppress_strict_warning=True to silence.",
-                UserWarning,
-                stacklevel=2,
-            )
+        resolved = _resolve_sampling_params(
+            self._programs,
+            params_per_program,
+            suppress_strict_warning=suppress_strict_warning,
+        )
 
         program_to_id = {program: pid for pid, program in self._programs.items()}
 
@@ -803,6 +1043,150 @@ class ProgramEnsemble(ABC):
                 except Exception:
                     pass  # Skip failed futures
 
+    def _install_coordinator(self, batch_config: BatchConfig, n_workers: int) -> None:
+        """Create the batch coordinator and route every program through it."""
+        self._coordinator = _BatchCoordinator(
+            self.backend,
+            progress_queue=self._queue,
+            batch_config=batch_config,
+            n_workers=n_workers,
+            cancellation_event=self._cancellation_event,
+        )
+        for idx, program in enumerate(self._programs.values()):
+            program_key = str(idx)
+            self._program_key_map[program] = program_key
+            self._coordinator.register_program(program_key)
+            self._program_original_backend[program] = program.backend
+            program.backend = _ProxyBackend(
+                self.backend, self._coordinator, program_key
+            )
+
+    def _start_listener(self, prep_task_id) -> None:
+        """Start the Live display and its queue-listener thread, if enabled."""
+        if self._progress_bar is None or self._live_display is None:
+            return
+        self._live_display.start()
+
+        # Co-allocated with ``_progress_bar`` in the setup path, so a
+        # progress-active branch implies both of these are live.
+        assert self._done_event is not None
+        assert self._queue is not None
+        queue_obj = self._queue
+        progress_bar = self._progress_bar
+        pb_task_map = self._pb_task_map
+        done_event = self._done_event
+        pb_lock = self._pb_lock
+        hide_program_rows = self._hide_program_rows
+        round_task_id = self._round_task_id
+
+        def _listener_runner():
+            # Spawn-side guard: if ``queue_listener`` dies for any reason —
+            # including signature errors before its body runs — drain the
+            # queue so any ``queue.join()`` caller doesn't hang waiting for
+            # ``task_done()`` calls that will never come.
+            try:
+                queue_listener(
+                    queue_obj,
+                    progress_bar,
+                    pb_task_map,
+                    done_event,
+                    pb_lock,
+                    hide_program_rows=hide_program_rows,
+                    prep_task_id=prep_task_id,
+                    round_task_id=round_task_id,
+                )
+            except BaseException:
+                _drain_queue_quietly(queue_obj)
+                raise
+
+        self._listener_thread = Thread(target=_listener_runner, daemon=True)
+        self._listener_thread.start()
+
+    def _build_progress_display(self, batching_enabled: bool):
+        """Create this dispatch's progress display and its standing rows.
+
+        Returns the "Submitting circuits" row's task id, or ``None`` when that
+        row does not apply.
+        """
+        # Only FULL asks for every program row; COMPACT hides successful ones
+        # and the listener reveals failures.
+        self._hide_program_rows = self.reporting_level is not ReportingLevel.FULL
+        if self.reporting_level is ReportingLevel.OFF:
+            return None
+
+        self._progress_bar, self._live_display = make_progress_display(
+            is_jupyter=self._is_jupyter
+        )
+        if self._progress_bar is None:
+            return None
+
+        if self._round_context is not None:
+            round_number, max_rounds = self._round_context
+            round_label = (
+                f"Round {round_number}/{max_rounds}"
+                if max_rounds is not None
+                else f"Round {round_number}"
+            )
+            self._round_task_id = self._add_standing_row(
+                job_name="Workflow",
+                total=None,
+                message=f"{round_label} — {len(self._programs)} programs",
+                row_kind="workflow",
+            )
+
+        if self._hide_program_rows and batching_enabled:
+            # Only the coordinator emits ``prep_advance``, so this row is
+            # created for merged dispatch only — it could never advance under
+            # BatchMode.OFF.  It ticks up as each program makes its first
+            # ``submit`` call, reaching len(programs) just as the merged
+            # backend submission fires.
+            return self._add_standing_row(
+                job_name="Submitting circuits",
+                total=len(self._programs),
+                message="",
+                row_kind="program",
+            )
+        return None
+
+    def _add_standing_row(
+        self, *, job_name: str, total: int | None, message: str, row_kind: str
+    ):
+        """Add a non-program progress row that lives for the whole dispatch."""
+        assert self._progress_bar is not None
+        return self._progress_bar.add_task(
+            "",
+            job_name=job_name,
+            total=total,
+            completed=0,
+            message=message,
+            batch_color="",
+            row_kind=row_kind,
+            program_key=None,
+            final_status=None,
+        )
+
+    def _teardown_progress_display(self, *, drain: bool = True) -> None:
+        """Drain, stop and release the round's listener thread and Live display.
+
+        ``drain=False`` skips the queue drain for abort paths, where producers
+        may still be running and the drain could block.
+        """
+        if drain and self._listener_thread is not None:
+            self._wait_for_listener_drain()
+        if self._done_event is not None:
+            self._done_event.set()
+        if self._listener_thread is not None:
+            self._listener_thread.join(timeout=_LISTENER_JOIN_TIMEOUT)
+            if self._listener_thread.is_alive():
+                warn("Listener thread did not terminate within timeout.")
+            self._listener_thread = None
+        if self._live_display is not None:
+            try:
+                self._live_display.stop()
+            except Exception:
+                pass  # Already stopped or not running
+            self._live_display = None
+
     def _wait_for_listener_drain(self, timeout: float = 30.0) -> None:
         """Wait for the listener to drain the queue, with a watchdog.
 
@@ -816,7 +1200,7 @@ class ProgramEnsemble(ABC):
           no drain progress the loop returns with a warning.  Display
           will be incomplete but the program exits.
         """
-        if self._listener_thread is None:
+        if self._listener_thread is None or self._queue is None:
             return
         deadline = time.monotonic() + timeout
         while self._queue.unfinished_tasks > 0:
@@ -863,6 +1247,20 @@ class ProgramEnsemble(ABC):
         if message is not None:
             payload["message"] = message
         self._queue.put(payload)
+
+    def _emit_workflow_round_message(self, final_status: TerminalStatus) -> None:
+        """Put the round's terminal status on the listener queue.
+
+        No-op for a standalone ``run_one_round`` (no round row) or when
+        there is no progress display to consume the message.
+        """
+        if (
+            self._round_task_id is None
+            or self._queue is None
+            or self._progress_bar is None
+        ):
+            return
+        self._queue.put({"workflow_round": True, "final_status": final_status})
 
     def _stop_remaining_programs(
         self,
@@ -1008,26 +1406,33 @@ class ProgramEnsemble(ABC):
         if not failures:
             return
 
-        console = (
-            self._progress_bar.console
-            if self._progress_bar is not None
-            else Console(stderr=True)
-        )
+        console = self._failure_console()
         for program, exc in failures:
             label = (
                 f" (Program {program.program_id})"
                 if program.program_id is not None
                 else ""
             )
-            console.print(
-                Panel(
-                    f"[bold]{type(exc).__name__}[/bold]: {exc}",
-                    title=f"[bold red]Program Failure{label}[/bold red]",
-                    subtitle="[dim]Traceback follows[/dim]",
-                    border_style="red",
-                )
-            )
+            self._print_failure_panel(console, exc, label)
             console.print(Traceback.from_exception(type(exc), exc, exc.__traceback__))
+
+    def _failure_console(self) -> Console:
+        """The progress display's console, or a fresh stderr one."""
+        if self._progress_bar is not None:
+            return self._progress_bar.console
+        return Console(stderr=True)
+
+    @staticmethod
+    def _print_failure_panel(console: Console, exc: BaseException, label: str) -> None:
+        """Render one program failure as a Rich panel."""
+        console.print(
+            Panel(
+                f"[bold]{type(exc).__name__}[/bold]: {exc}",
+                title=f"[bold red]Program Failure{label}[/bold red]",
+                subtitle="[dim]Traceback follows[/dim]",
+                border_style="red",
+            )
+        )
 
     def _handle_failure(self, failed_future: Future | None) -> None:
         """Handle a program failure by stopping remaining programs.
@@ -1055,6 +1460,8 @@ class ProgramEnsemble(ABC):
             running_status=TerminalStatus.ABORTED,
             running_message="Aborted due to failure",
         )
+        # Every failure gets a panel, not just the one join() spotted first.
+        self._report_failed_programs()
 
     def join(self):
         """
@@ -1072,8 +1479,9 @@ class ProgramEnsemble(ABC):
                 remaining programs.
 
         Note:
-            This method should be called after `run(blocking=False)` to wait for
-            completion. It's automatically called when using `run(blocking=True)`.
+            This method should be called after `run_one_round(blocking=False)`
+            to wait for completion. It's automatically called by `run()` and by
+            `run_one_round(blocking=True)`.
         """
         if self._executor is None:
             return
@@ -1084,14 +1492,17 @@ class ProgramEnsemble(ABC):
             # If a task fails, future.result() will raise the exception immediately.
             for future in as_completed(self.futures):
                 completed_futures.append(future.result())
+            self._emit_workflow_round_message(TerminalStatus.SUCCESS)
 
         except KeyboardInterrupt:
+            self._round_cancelled = True
             if self._progress_bar is not None:
                 self._progress_bar.console.print(
                     "[bold yellow]Shutdown signal received, waiting for programs "
                     "to finish current iteration...[/bold yellow]"
                 )
             self._handle_cancellation()
+            self._emit_workflow_round_message(TerminalStatus.CANCELLED)
 
             # Re-collect all completed results from scratch to avoid duplicates
             # from the as_completed loop above.
@@ -1119,30 +1530,10 @@ class ProgramEnsemble(ABC):
                     else:
                         n_already_done += 1
 
-            # Show a condensed error in a Rich panel so the user gets
-            # immediate feedback.  The full traceback is preserved in the
-            # chained RuntimeError that propagates afterwards.
-            failed_program_label = ""
-            if failed_future is not None:
-                fp = self._future_to_program.get(failed_future)
-                if fp is not None:
-                    failed_program_label = f" (Program {fp.program_id})"
-
-            console = (
-                self._progress_bar.console
-                if self._progress_bar is not None
-                else Console(stderr=True)
-            )
-            console.print(
-                Panel(
-                    f"[bold]{type(e).__name__}[/bold]: {e}",
-                    title=f"[bold red]Program Failure{failed_program_label}[/bold red]",
-                    subtitle="[dim]Full traceback follows below[/dim]",
-                    border_style="red",
-                )
-            )
-
+            # _handle_failure renders a panel per failed program, so every
+            # failure is reported rather than only this first one.
             self._handle_failure(failed_future)
+            self._emit_workflow_round_message(TerminalStatus.FAILED)
 
             # Re-collect all completed results from scratch to avoid duplicates
             # from the as_completed loop above.
@@ -1177,31 +1568,29 @@ class ProgramEnsemble(ABC):
                         p._total_run_time - baseline.get(p, (0, 0.0))[1]
                         for p in completed_futures
                     )
-                self.futures.clear()
+            self.futures.clear()
 
-            # Shutdown coordinator
-            if self._coordinator is not None:
-                self._coordinator.shutdown()
-                self._coordinator = None
+            # A second KeyboardInterrupt lands most often in the executor
+            # shutdown below, so the display/listener teardown gets its own
+            # finally — otherwise an orphaned Live would block every later
+            # dispatch on this console.
+            try:
+                # Shutdown coordinator
+                if self._coordinator is not None:
+                    self._coordinator.shutdown()
+                    self._coordinator = None
 
-            # Shutdown executor and wait for all threads to complete
-            # This is critical for Python 3.12 to prevent process hangs
-            if self._executor is not None:
-                self._executor.shutdown(wait=True)
-                self._executor = None
+                # Shutdown executor and wait for all threads to complete
+                # This is critical for Python 3.12 to prevent process hangs
+                if self._executor is not None:
+                    executor, self._executor = self._executor, None
+                    executor.shutdown(wait=True)
 
-            self._restore_program_backends()
+                self._restore_program_backends()
+            finally:
+                self._teardown_progress_display()
 
-            if (
-                self._progress_bar is not None
-                and self._done_event is not None
-                and self._listener_thread is not None
-                and self._live_display is not None
-            ):
-                self._wait_for_listener_drain()
-                self._done_event.set()
-                self._listener_thread.join()
-                self._live_display.stop()
+            self._round_task_id = None
 
         # After successful cleanup, try to unregister the hook.
         try:

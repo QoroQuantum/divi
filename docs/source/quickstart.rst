@@ -285,7 +285,8 @@ Now that you have a VQE run working, dig into the user guide:
 
 * **Deepen your understanding of the algorithms** — :doc:`user_guide/ground_state_energy_estimation_vqe`, :doc:`user_guide/combinatorial_optimization_qaoa_pce`, :doc:`user_guide/hamiltonian_time_evolution`.
 * **Train a quantum model** — build a quantum neural network with :doc:`user_guide/quantum_neural_networks`, or bring your own PennyLane/Qiskit circuit via :doc:`user_guide/framework_integration`.
-* **Scale up** — run many programs in parallel with :doc:`user_guide/program_ensembles`.
+* **Scale up** — run many programs in parallel, or over adaptive rounds, with
+  :doc:`user_guide/program_ensembles`.
 * **Improve noisy results** — mitigate errors with :doc:`user_guide/improving_results_qem`.
 * **Tune the optimizer** — see :doc:`user_guide/optimizers`.
 * **Inspect and diagnose runs** — :doc:`user_guide/visualization`.

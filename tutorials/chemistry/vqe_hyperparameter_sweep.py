@@ -37,8 +37,7 @@ if __name__ == "__main__":
 
     t1 = time.time()
 
-    vqe_problem.create_programs()
-    vqe_problem.run(blocking=True)
+    vqe_problem.run()
     vqe_problem.aggregate_results()
 
     print(f"Time taken: {round(time.time() - t1, 5)} seconds")

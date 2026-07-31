@@ -1041,8 +1041,7 @@ class TestQUBOPartitioningEnsemble:
             seed=1997,
         )
 
-        ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(_sort_programs=True))
+        ensemble.run(batch_config=BatchConfig(_sort_programs=True))
         solution, energy = ensemble.aggregate_results()
 
         expected_solution = np.array([1, 1, 0, 0])
@@ -1067,8 +1066,7 @@ class TestQUBOPartitioningEnsemble:
             seed=1997,
         )
 
-        ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(_sort_programs=True))
+        ensemble.run(batch_config=BatchConfig(_sort_programs=True))
         solution, energy = ensemble.aggregate_results()
 
         expected_solution = np.array([1, 1, 0, 0])
@@ -1292,8 +1290,7 @@ class TestCommunityDecomposer:
             seed=1997,
         )
 
-        ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(_sort_programs=True))
+        ensemble.run(batch_config=BatchConfig(_sort_programs=True))
         solution, energy = ensemble.aggregate_results()
 
         np.testing.assert_array_equal(solution, np.array([1, 1, 0, 0]))

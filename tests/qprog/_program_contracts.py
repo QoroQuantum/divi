@@ -145,7 +145,7 @@ class ObservableMeasuringContractsBase:
 
 def verify_basic_program_ensemble_behaviour(obj: ProgramEnsemble, mocker) -> None:
     with pytest.raises(RuntimeError, match="No programs to run"):
-        obj.run()
+        obj.run_one_round()
 
     with pytest.raises(RuntimeError, match="No programs to aggregate"):
         obj.aggregate_results()
