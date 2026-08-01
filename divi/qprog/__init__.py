@@ -31,6 +31,7 @@ from .algorithms import (
     InitialState,
     InterpolationStrategy,
     IterativeQAOA,
+    LUCJAnsatz,
     OnesState,
     QAOAAnsatz,
     QCCAnsatz,
@@ -66,6 +67,10 @@ from .variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
 )
 from .workflows import (
+    LASSQD,
+    FragmentSpec,
+    FragmentState,
+    LASSQDState,
     MoleculeTransformer,
     PartitioningProgramEnsemble,
     TimeEvolutionTrajectory,
