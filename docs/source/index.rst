@@ -93,6 +93,7 @@ Or pin a specific nightly by date:
 
    user_guide/core_concepts
    user_guide/ground_state_energy_estimation_vqe
+   user_guide/localized_active_space_sqd
    user_guide/combinatorial_optimization_qaoa_pce
    user_guide/hamiltonian_time_evolution
    user_guide/quantum_neural_networks

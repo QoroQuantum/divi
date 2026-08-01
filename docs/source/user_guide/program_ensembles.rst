@@ -35,6 +35,14 @@ detail on its own page — this section gives a quick overview and links.
    matching partitioning are all covered in
    :doc:`combinatorial_optimization_qaoa_pce`.
 
+**Localized Active-Space SQD**
+   :class:`~divi.qprog.workflows.LASSQD` partitions a molecule's active space
+   into fragments, runs one VQE per fragment against its own
+   mean-field-embedded effective Hamiltonian, and recovers the ground state
+   via sample-based quantum diagonalization. See
+   :doc:`localized_active_space_sqd` for fragment specification, automatic
+   fragmentation, and the accuracy characteristics of the reported energy.
+
 Aggregation Strategies
 ----------------------
 

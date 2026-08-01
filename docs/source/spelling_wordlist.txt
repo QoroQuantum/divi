@@ -44,6 +44,7 @@ decomposer
 Demultiplexes
 derandomized
 Deserializes
+diagonalization
 diagonalizations
 dir
 divi
@@ -95,6 +96,7 @@ Iteratively
 jac
 jacobian
 Jacobian
+Jastrow
 json
 jupyter
 Jupyter
@@ -212,6 +214,7 @@ subsamples
 subtrees
 symmetrized
 Sympy
+Sz
 tanh
 th
 tol

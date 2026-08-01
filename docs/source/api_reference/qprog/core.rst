@@ -14,13 +14,14 @@ uniform return type for decoded solutions.
    :no-inherited-members:
    :include-all-objects:
    :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, TimeEvolution, CustomVQA, QNN
-   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz
+   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz, LUCJAnsatz
    :skip: FeatureMap, AngleEmbedding, ZZFeatureMap
    :skip: InitialState, ZerosState, OnesState, SuperpositionState, CustomPerQubitState, WState
    :skip: ScipyOptimizer, ScipyMethod, MonteCarloOptimizer, GridSearchOptimizer
    :skip: QNGOptimizer, SPSAOptimizer, QNSPSAOptimizer, QUIVEROptimizer
    :skip: MetricEstimator, PullbackMetricEstimator, FubiniStudyMetricEstimator, StochasticFidelityMetricEstimator
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
+   :skip: LASSQD, FragmentSpec, FragmentState, LASSQDState
    :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
    :skip: ParamHistoryMode
 
