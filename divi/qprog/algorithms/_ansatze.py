@@ -20,7 +20,7 @@ from warnings import warn
 import numpy as np
 import pennylane as qp
 from qiskit.circuit import Gate, QuantumCircuit
-from qiskit.circuit.library import RXGate, RYGate, RZGate
+from qiskit.circuit.library import RXGate, RYGate, RZGate, RZZGate, XXPlusYYGate
 
 from divi.circuits._conversions import _qscript_to_dag
 from divi.hamiltonians._term_ops import _HALF_PI
@@ -500,6 +500,135 @@ class QCCAnsatz(Ansatz):
                     ent_idx += 1
 
         return qc
+
+
+class LUCJAnsatz(Ansatz):
+    """Local unitary cluster Jastrow ansatz.
+
+    Each layer applies the LUCJ structure ``exp(K) exp(iJ) exp(-K)`` with
+    locality restrictions: ``K`` is a nearest-neighbor Givens chain confined to
+    each spin sector, and ``J`` is a diagonal Coulomb operator on same-orbital
+    opposite-spin pairs plus same-spin neighbors. Both factors conserve
+    particle number and Sz, which sample-based diagonalization requires — its
+    symmetry filter checks alpha and beta populations separately.
+
+    Assumes the interleaved Jordan-Wigner ordering that
+    ``divi.hamiltonians._chem._spo_from_integrals`` produces: qubit ``2p`` is
+    the alpha spin-orbital of spatial orbital ``p`` and ``2p + 1`` is its beta
+    partner. The Hartree-Fock reference is embedded, so no separate initial
+    state is needed.
+
+    Restricted to closed-shell references: ``n_electrons`` must be even and
+    at most ``n_qubits``. A two-qubit register (one spatial orbital) has a
+    single diagonal on-site term and no hopping, so its output is fixed
+    regardless of the parameter value — it offers no variational freedom.
+
+    Measured limitation: on a minimal two-orbital, one-alpha-one-beta
+    fragment, exact optimization of this ansatz's parameters (global search,
+    no shot noise) plateaus about 20 mHa above the exact ground state.
+    Additional layers do not lift the plateau: 1, 2, and 3 layers converge to
+    the same energy to 8+ significant figures.
+    """
+
+    @staticmethod
+    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+        """Per-layer parameter count.
+
+        ``2 * (n_orb - 1)`` hopping angles, ``n_orb`` on-site Coulomb terms,
+        and ``2 * (n_orb - 1)`` same-spin-neighbor Coulomb terms, where
+        ``n_orb = n_qubits // 2``. Collapses to ``1`` for a single spatial
+        orbital (``n_qubits == 2``), where only the on-site term applies.
+        """
+        if n_qubits % 2:
+            raise ValueError(
+                f"LUCJAnsatz needs an even qubit count (two spin-orbitals per "
+                f"spatial orbital); got {n_qubits}."
+            )
+        n_orb = n_qubits // 2
+        if n_orb == 1:
+            # One spatial orbital: no hopping or same-spin neighbors, only the
+            # on-site opposite-spin Coulomb term.
+            return _require_trainable_params(1, LUCJAnsatz.__name__)
+        n_params = 2 * (n_orb - 1) + n_orb + 2 * (n_orb - 1)
+        return _require_trainable_params(n_params, LUCJAnsatz.__name__)
+
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+        """Build the LUCJ ansatz circuit.
+
+        Args:
+            params: Flat parameter array of length
+                ``n_layers * n_params_per_layer(n_qubits)``.
+            n_qubits: Number of qubits. Must be even.
+            n_layers: Number of LUCJ layers.
+            **kwargs: Must include ``n_electrons`` (an even integer, at most
+                ``n_qubits``).
+
+        Returns:
+            QuantumCircuit: Qiskit circuit implementing the LUCJ ansatz.
+
+        Raises:
+            ValueError: If ``n_qubits`` is odd, if ``n_electrons`` is missing,
+                odd, or exceeds ``n_qubits``, or if ``params`` is shorter than
+                ``n_layers * n_params_per_layer(n_qubits)``.
+        """
+        if n_qubits % 2:
+            raise ValueError(f"LUCJAnsatz needs an even qubit count; got {n_qubits}.")
+        n_electrons = _require_n_electrons(kwargs, "LUCJAnsatz")
+        if n_electrons % 2:
+            raise ValueError(
+                f"LUCJAnsatz only supports closed-shell references (even "
+                f"n_electrons); got {n_electrons}."
+            )
+        if n_electrons > n_qubits:
+            raise ValueError(
+                f"n_electrons ({n_electrons}) cannot exceed n_qubits ({n_qubits})."
+            )
+        n_orb = n_qubits // 2
+
+        per_layer = LUCJAnsatz.n_params_per_layer(n_qubits)
+        flat = np.asarray(params, dtype=object).flatten()
+        n_required = n_layers * per_layer
+        if flat.size < n_required:
+            raise ValueError(
+                f"LUCJAnsatz expected {n_required} parameters "
+                f"({n_layers} layers x {per_layer} per layer); got {flat.size}."
+            )
+
+        circuit = QuantumCircuit(n_qubits)
+        # Hartree-Fock reference: interleaved ordering puts the lowest
+        # n_electrons spin-orbitals on the lowest qubits.
+        for qubit in range(n_electrons):
+            circuit.x(qubit)
+
+        hop_pairs = [
+            (2 * p + spin, 2 * (p + 1) + spin)
+            for spin in (0, 1)
+            for p in range(n_orb - 1)
+        ]
+
+        for layer in range(n_layers):
+            offset = layer * per_layer
+            cursor = offset
+
+            hop_angles = []
+            for lower, upper in hop_pairs:
+                angle = flat[cursor]
+                cursor += 1
+                hop_angles.append(angle)
+                circuit.append(XXPlusYYGate(angle, 0.0), [lower, upper])
+
+            for p in range(n_orb):
+                circuit.append(RZZGate(flat[cursor]), [2 * p, 2 * p + 1])
+                cursor += 1
+
+            for lower, upper in hop_pairs:
+                circuit.append(RZZGate(flat[cursor]), [lower, upper])
+                cursor += 1
+
+            for (lower, upper), angle in zip(reversed(hop_pairs), reversed(hop_angles)):
+                circuit.append(XXPlusYYGate(-angle, 0.0), [lower, upper])
+
+        return circuit
 
 
 def _emit_two_qubit_pauli_rot(

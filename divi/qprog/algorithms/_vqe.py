@@ -8,11 +8,13 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 import pennylane as qp
+from qiskit import transpile
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._chem import molecular_hamiltonian_from_pyscf
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
@@ -24,6 +26,7 @@ from divi.qprog.algorithms import (
     Ansatz,
     HartreeFockAnsatz,
     InitialState,
+    LUCJAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
     ZerosState,
@@ -110,7 +113,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.initial_state = initial_state
 
         if not isinstance(self.initial_state, ZerosState) and isinstance(
-            self.ansatz, (HartreeFockAnsatz, QCCAnsatz, UCCSDAnsatz)
+            self.ansatz, (HartreeFockAnsatz, LUCJAnsatz, QCCAnsatz, UCCSDAnsatz)
         ):
             warn(
                 f"initial_state={self.initial_state!r} supplied with a chemistry "
@@ -218,6 +221,15 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 n_electrons=self.n_electrons,
             ),
             inplace=True,
+        )
+
+        # Lower to the gate set the QASM body emitter accepts. Ansatzes such as
+        # LUCJAnsatz emit gates (e.g. xx_plus_yy) outside that basis;
+        # optimization_level=0 keeps this a cheap gate-by-gate substitution.
+        qc = transpile(
+            qc,
+            basis_gates=list(_QISKIT_TO_QASM2.keys()),
+            optimization_level=0,
         )
 
         dag = circuit_to_dag(qc)

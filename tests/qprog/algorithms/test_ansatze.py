@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import numpy as np
 import pytest
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.circuit.library import (
@@ -17,8 +18,10 @@ from qiskit.circuit.library import (
 )
 
 from divi.qprog import (
+    VQE,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
+    LUCJAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
@@ -337,3 +340,146 @@ class TestQCCAnsatz:
         # 2 X (HF prep, once total) + 2 layers × (4 RY + 51 entangler basis gates).
         assert len(names) == 2 + 2 * (4 + 51)
         assert names.count("ry") == 8
+
+
+def _make_lucj_vqe(n_qubits, n_electrons, backend, optimizer, n_layers=1):
+    """Build a VQE(LUCJAnsatz()) over a dummy n_qubits-wide Hamiltonian.
+
+    The Hamiltonian's value is irrelevant here — ``sample_solution`` measures
+    the prepared state in the computational basis regardless of what
+    observable is attached — it only needs to span ``n_qubits`` wires.
+    """
+    hamiltonian = {"Z" + "I" * (n_qubits - 1): 1.0}
+    return VQE(
+        hamiltonian=hamiltonian,
+        n_electrons=n_electrons,
+        n_layers=n_layers,
+        ansatz=LUCJAnsatz(),
+        backend=backend,
+        optimizer=optimizer,
+    )
+
+
+# --- Test LUCJAnsatz ---
+class TestLUCJAnsatz:
+    """LUCJ must conserve particle number and Sz for SQD sampling to work."""
+
+    def test_requires_even_qubit_count(self):
+        with pytest.raises(ValueError, match="even"):
+            LUCJAnsatz().build(np.zeros(6), n_qubits=5, n_layers=1, n_electrons=2)
+
+    def test_requires_n_electrons(self):
+        with pytest.raises(ValueError, match="n_electrons"):
+            LUCJAnsatz().build(np.zeros(6), n_qubits=4, n_layers=1)
+
+    @pytest.mark.parametrize("n_qubits", [2, 4, 6, 8])
+    def test_param_count_matches_built_circuit(self, n_qubits):
+        """``build`` only rejects too *few* parameters, so an
+        ``n_params_per_layer`` that over-reports the real count would still
+        pass a check that only inspects ``circuit.num_qubits``. Feed exactly
+        ``n_params`` distinct values and confirm the last one is actually
+        consumed by some gate, proving the reported count matches what
+        ``build`` reads rather than over- or under-counting it."""
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits)
+        circuit = LUCJAnsatz().build(
+            np.arange(n_params, dtype=float),
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+        )
+        assert circuit.num_qubits == n_qubits
+        consumed_values = {
+            abs(float(instr.operation.params[0]))
+            for instr in circuit.data
+            if instr.operation.name in ("xx_plus_yy", "rzz")
+        }
+        assert consumed_values == set(range(n_params))
+
+    def test_hartree_fock_reference_is_embedded(
+        self, default_test_simulator, default_optimizer
+    ):
+        """With zero angles the circuit is deterministic: every shot lands on
+        the same bitstring, and that bitstring is exactly the HF determinant.
+
+        Executed through the actual backend (rather than a bare
+        ``Statevector``) so this exercises divi's full circuit-submission
+        path, including the QASM2 lowering ``xx_plus_yy`` requires.
+        """
+        n_qubits, n_electrons = 4, 2
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits)
+        vqe = _make_lucj_vqe(
+            n_qubits, n_electrons, default_test_simulator, default_optimizer
+        )
+
+        vqe.sample_solution(params=np.zeros(n_params))
+
+        probs = next(iter(vqe.best_probs.values()))
+        # Deterministic circuit: exactly one bitstring across every shot.
+        assert len(probs) == 1
+        occupied = next(iter(probs))
+        assert probs[occupied] == pytest.approx(1.0, abs=1e-9)
+        # Interleaved placement (qubits 0, 1 occupied), not a popcount-only
+        # check: a blocked-HF regression ("1010") has the same popcount as
+        # the correct interleaved one ("1100") but must still fail here.
+        assert occupied == "1" * n_electrons + "0" * (n_qubits - n_electrons)
+
+    def test_hopping_gates_stay_within_one_spin_sector(self):
+        """Every XXPlusYY hop connects same-parity (same-spin) qubits two apart.
+
+        A statevector-only check can miss this: at closed-shell HF, an
+        on-site XXPlusYY between qubits 2p and 2p+1 acts as the identity
+        (both are occupied or both empty), so a regression that hops across
+        spin sectors on-site would still pass a probability-based test. This
+        asserts the gate placement directly instead.
+        """
+        n_qubits, n_electrons, n_layers = 6, 4, 2
+        n_params = n_layers * LUCJAnsatz.n_params_per_layer(n_qubits)
+        rng = np.random.default_rng(3)
+        circuit = LUCJAnsatz().build(
+            rng.uniform(0, 2 * np.pi, n_params),
+            n_qubits=n_qubits,
+            n_layers=n_layers,
+            n_electrons=n_electrons,
+        )
+        hop_gates = [
+            instr for instr in circuit.data if instr.operation.name == "xx_plus_yy"
+        ]
+        assert hop_gates
+        for instr in hop_gates:
+            lower, upper = (circuit.find_bit(q).index for q in instr.qubits)
+            assert lower % 2 == upper % 2
+            assert abs(upper - lower) == 2
+
+    def test_conserves_particle_number_and_sz(
+        self, default_test_simulator, default_optimizer
+    ):
+        """Every sampled basis state keeps both alpha and beta counts.
+
+        Executed through the actual backend (rather than a bare
+        ``Statevector``) so this exercises divi's full circuit-submission
+        path, including the QASM2 lowering ``xx_plus_yy`` requires.
+        """
+        n_qubits, n_electrons, n_layers = 6, 4, 2
+        n_params = n_layers * LUCJAnsatz.n_params_per_layer(n_qubits)
+        rng = np.random.default_rng(2)
+        vqe = _make_lucj_vqe(
+            n_qubits,
+            n_electrons,
+            default_test_simulator,
+            default_optimizer,
+            n_layers=n_layers,
+        )
+
+        vqe.sample_solution(params=rng.uniform(0, 2 * np.pi, n_params))
+
+        probs = next(iter(vqe.best_probs.values()))
+        n_orb = n_qubits // 2
+        assert probs
+        for bitstring, prob in probs.items():
+            if prob < 1e-12:
+                continue
+            # divi normalizes measurement bitstrings so character k is qubit k.
+            alpha = sum(int(bitstring[2 * p]) for p in range(n_orb))
+            beta = sum(int(bitstring[2 * p + 1]) for p in range(n_orb))
+            assert alpha == n_electrons // 2
+            assert beta == n_electrons // 2

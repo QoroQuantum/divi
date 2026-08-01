@@ -14,6 +14,7 @@ from divi.qprog import VQE
 from divi.qprog.algorithms import (
     GenericLayerAnsatz,
     HartreeFockAnsatz,
+    LUCJAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
@@ -271,6 +272,30 @@ def test_vqe_correct_circuits_count_and_energies(
 
     vqe_problem.run()
     verify_correct_circuit_count(vqe_problem)
+
+
+def test_vqe_lucj_ansatz_runs_to_completion(
+    default_test_simulator, default_optimizer, h2_molecule
+):
+    """Regression test: VQE(LUCJAnsatz()) must complete a run.
+
+    LUCJAnsatz emits ``xx_plus_yy``/``rzz`` gates outside the QASM2 body
+    emitter's basis; VQE's cost-circuit builder used to hand the DAG to the
+    emitter unlowered, raising ``ValueError`` at circuit submission.
+    """
+    vqe_problem = VQE(
+        molecule=h2_molecule,
+        ansatz=LUCJAnsatz(),
+        n_layers=1,
+        optimizer=default_optimizer,
+        max_iterations=2,
+        backend=default_test_simulator,
+    )
+
+    vqe_problem.run()
+
+    assert len(vqe_problem.losses_history) == 2
+    assert np.isfinite(vqe_problem.best_loss)
 
 
 @pytest.mark.e2e
