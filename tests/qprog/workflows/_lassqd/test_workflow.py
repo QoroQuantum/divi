@@ -76,13 +76,13 @@ def test_validate_fragment_specs_rejects_overlap():
         FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1),
     ]
     with pytest.raises(ValueError, match="overlap"):
-        validate_fragment_specs(specs, n_orbitals_total=4)
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
 def test_validate_fragment_specs_rejects_out_of_range():
     specs = [FragmentSpec(orbitals=(0, 9), n_alpha=1, n_beta=1)]
     with pytest.raises(ValueError, match="out of range"):
-        validate_fragment_specs(specs, n_orbitals_total=4)
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
 def test_validate_fragment_specs_accepts_disjoint_in_range():
@@ -90,13 +90,30 @@ def test_validate_fragment_specs_accepts_disjoint_in_range():
         FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
         FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
     ]
-    validate_fragment_specs(specs, n_orbitals_total=4)
+    validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+
+
+def test_validate_fragment_specs_rejects_electron_count_mismatch():
+    """Fragments must account for exactly the electrons occupying the active
+    orbitals they cover. A shortfall does not raise anywhere downstream; it
+    silently yields an energy for the wrong number of electrons."""
+    specs = [FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=1)]
+    with pytest.raises(ValueError, match="electron"):
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+
+
+def test_validate_fragment_specs_accepts_consistent_electron_count():
+    specs = [
+        FragmentSpec(orbitals=(0, 3), n_alpha=1, n_beta=1),
+        FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1),
+    ]
+    validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
 def test_validate_fragment_specs_rejects_spin_imbalance():
     specs = [FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=0)]
     with pytest.raises(ValueError, match="spin-imbalanced"):
-        validate_fragment_specs(specs, n_orbitals_total=4)
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
 def test_validate_fragment_specs_rejects_a_fully_occupied_fragment():
@@ -106,7 +123,7 @@ def test_validate_fragment_specs_rejects_a_fully_occupied_fragment():
     raising a bare ``ValueError`` with an empty ``round_history``."""
     specs = [FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=2)]
     with pytest.raises(ValueError, match="fully occupied"):
-        validate_fragment_specs(specs, n_orbitals_total=4)
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
 def _lassqd(backend, **overrides):

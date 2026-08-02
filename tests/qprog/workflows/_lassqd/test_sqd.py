@@ -576,7 +576,12 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
     """Both RDMs, and the energy they reconstruct, on a 4-orbital active
     space. A sign error in the two-body contraction corrupts rdm2 and the
     reconstructed energy even where it happens to leave rdm1 alone, and a
-    2-orbital case cannot exercise that path at all."""
+    2-orbital case cannot exercise that path at all.
+
+    Also pins rdm2's ``rspq`` and ``qpsr`` invariances, which
+    ``rotation_energy_gradient_fn`` needs to collapse the two-electron
+    derivative into one Fock matrix. The last assertion keeps them non-vacuous.
+    """
     one_body, two_body, n_orb, constant = _h4_integrals()
     n_alpha = n_beta = 2
     solver = SQDSolver(
@@ -606,6 +611,10 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
     np.testing.assert_allclose(rdm1, expected_rdm1, atol=1e-6)
     np.testing.assert_allclose(rdm2, expected_rdm2, atol=1e-6)
     np.testing.assert_allclose(rdm1, rdm1.T, atol=1e-10)
+
+    np.testing.assert_allclose(rdm2, rdm2.transpose(2, 3, 0, 1), atol=1e-12)
+    np.testing.assert_allclose(rdm2, rdm2.transpose(1, 0, 3, 2), atol=1e-12)
+    assert not np.allclose(rdm2, rdm2.transpose(1, 0, 2, 3), atol=1e-8)
 
     energy_from_rdms = (
         np.sum(one_body * rdm1)

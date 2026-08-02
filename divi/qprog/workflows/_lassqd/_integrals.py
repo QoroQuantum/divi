@@ -23,6 +23,10 @@ from scipy.optimize import minimize
 
 from ._state import FragmentSpec, FragmentState
 
+# L-BFGS-B ftol is relative, so a tol=1e-6 shorthand halts around 1e-6 * |E|,
+# coarser than LASSQD's energy_tol. Tighter than this terminates ABNORMAL.
+ORBITAL_MINIMIZE_OPTIONS = {"ftol": 1e-12, "gtol": 1e-6}
+
 
 @dataclass(frozen=True)
 class MOIntegrals:
@@ -343,6 +347,194 @@ def total_energy(
     return float(e_core + e_act)
 
 
+def build_energy_rdms(
+    n_orb: int, n_core: int, rdm1_active: np.ndarray, rdm2_active: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build the full-register 1- and 2-particle densities of :func:`total_energy`.
+
+    Returns dense ``D`` and ``d`` over the whole permuted MO register such that
+
+    .. math::
+
+        E = E_\\mathrm{nuc} + \\sum_{mn} h_{mn} D_{mn}
+            + \\tfrac{1}{2} \\sum_{mnop} d_{mnop} g_{mnop}
+
+    reproduces :func:`total_energy` exactly, with ``h`` and ``g`` the MO-basis
+    one- and two-electron integrals (chemist order) over the same register.
+    Frozen-core orbitals occupy ``[0, n_core)``, the active space follows, and
+    the virtual block is zero in both densities.
+
+    Args:
+        n_orb: Size of the full MO register.
+        n_core: Number of frozen-core orbitals.
+        rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
+        rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
+
+    Returns:
+        ``(D, d)`` of shapes ``(n_orb, n_orb)`` and ``(n_orb,) * 4``.
+    """
+    n_act = rdm1_active.shape[0]
+    active = slice(n_core, n_core + n_act)
+
+    one_rdm = np.zeros((n_orb, n_orb))
+    two_rdm = np.zeros((n_orb,) * 4)
+
+    for i in range(n_core):
+        one_rdm[i, i] = 2.0
+    one_rdm[active, active] = rdm1_active
+
+    for i in range(n_core):
+        for j in range(n_core):
+            two_rdm[i, i, j, j] += 4.0
+            two_rdm[i, j, j, i] -= 2.0
+
+    for i in range(n_core):
+        two_rdm[active, active, i, i] += 2.0 * rdm1_active
+        two_rdm[i, i, active, active] += 2.0 * rdm1_active
+        two_rdm[active, i, i, active] -= rdm1_active
+        two_rdm[i, active, active, i] -= rdm1_active
+
+    two_rdm[active, active, active, active] += rdm2_active
+
+    return one_rdm, two_rdm
+
+
+def rotation_energy_gradient_fn(
+    mol,
+    mo_coeff: np.ndarray,
+    n_core: int,
+    fragment_specs: Sequence[FragmentSpec],
+    rdm1_active: np.ndarray,
+    rdm2_active: np.ndarray,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+):
+    """Build the orbital-rotation objective and its analytic gradient.
+
+    The returned callable evaluates :func:`total_energy` at
+    ``mo_coeff @ expm(K(x))`` -- to within floating-point round-off, via the
+    contracted form of :func:`build_energy_rdms` rather than the explicit
+    loops -- together with its exact derivative with respect to the rotation
+    angles ``x``, sharing the single four-index MO transform between the two.
+
+    The gradient follows from the generalized Fock matrix
+    ``F = h @ D.T + einsum("mqrs,nqrs->mn", g, d)``. Because the
+    parameterization is global (``expm`` of the full generator, not a step
+    from the current point), the chain rule through the matrix exponential is
+    a Frechet pullback, ``M = expm_frechet(K.T, U @ 2F)``, and
+    ``dE/dx_i = M[p, q] - M[q, p]``. At ``x = 0`` this reduces to
+    ``2 * (F[p, q] - F[q, p])``.
+
+    The generalized Fock matrix collapses the four derivative terms of the
+    two-electron energy into one, so the gradient (not the energy) requires
+    the active RDMs to carry their physical permutation symmetry:
+    ``rdm1_active`` symmetric, and ``rdm2_active`` invariant under
+    ``pqrs -> rspq`` and ``pqrs -> qpsr``.
+
+    Args:
+        mol: A PySCF ``gto.Mole``.
+        mo_coeff: ``(nao, n_orb)`` MO coefficients, permuted into
+            ``[core | fragment blocks | virtual]`` order.
+        n_core: Number of frozen-core orbitals.
+        fragment_specs: Fragment specifications, in the same order as the
+            fragment blocks in ``mo_coeff``; only each fragment's orbital
+            count is used.
+        rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
+        rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
+        ao_eri: AO-basis electron-repulsion integral, as returned by
+            :func:`cached_ao_eri`.
+        h_ao: AO-basis one-electron integral, as returned by
+            :func:`cached_h_ao`.
+
+    Returns:
+        ``(rotation_pairs, energy_and_gradient)``: the ``(p, q)`` orbital
+        pairs the rotation angles are indexed by, and a callable mapping a
+        length-``len(rotation_pairs)`` angle vector to ``(energy, gradient)``.
+
+    Raises:
+        ImportError: If the ``chem`` extra is not installed.
+    """
+    try:
+        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        from pyscf import ao2mo
+    except ImportError as exc:
+        raise ImportError(
+            "rotation_energy_gradient_fn requires the 'chem' extra; "
+            "install it with `pip install qoro-divi[chem]`."
+        ) from exc
+
+    n_orb_total = mo_coeff.shape[1]
+    n_act = sum(spec.n_orbitals for spec in fragment_specs)
+
+    offsets = []
+    running = 0
+    for spec in fragment_specs:
+        offsets.append(running)
+        running += spec.n_orbitals
+
+    rotation_pairs: list[tuple[int, int]] = []
+    # Core <-> active.
+    for p in range(n_core):
+        for q in range(n_core, n_core + n_act):
+            rotation_pairs.append((p, q))
+    # Core <-> virtual.
+    for p in range(n_core):
+        for q in range(n_core + n_act, n_orb_total):
+            rotation_pairs.append((p, q))
+    # Active <-> active, across different fragments only.
+    for idx_a, spec_a in enumerate(fragment_specs):
+        for idx_b, spec_b in enumerate(fragment_specs):
+            if idx_a < idx_b:
+                for p_idx in range(spec_a.n_orbitals):
+                    p = n_core + offsets[idx_a] + p_idx
+                    for q_idx in range(spec_b.n_orbitals):
+                        q = n_core + offsets[idx_b] + q_idx
+                        rotation_pairs.append((p, q))
+    # Active <-> virtual.
+    for p in range(n_core, n_core + n_act):
+        for q in range(n_core + n_act, n_orb_total):
+            rotation_pairs.append((p, q))
+
+    one_rdm, two_rdm = build_energy_rdms(n_orb_total, n_core, rdm1_active, rdm2_active)
+    two_rdm_flat = two_rdm.reshape(n_orb_total, -1)
+    e_nuc = mol.energy_nuc()
+
+    def energy_and_gradient(
+        rotation_params: np.ndarray,
+    ) -> tuple[float, np.ndarray]:
+        generator = np.zeros((n_orb_total, n_orb_total))
+        for idx, (p, q) in enumerate(rotation_pairs):
+            generator[p, q] = rotation_params[idx]
+            generator[q, p] = -rotation_params[idx]
+
+        unitary = scipy.linalg.expm(generator)
+        rotated = np.dot(mo_coeff, unitary)
+
+        h_mo = np.dot(rotated.T, np.dot(h_ao, rotated))
+        g_mo = ao2mo.restore(1, ao2mo.incore.full(ao_eri, rotated), n_orb_total)
+        g_mo_flat = g_mo.reshape(n_orb_total, -1)
+
+        energy = (
+            e_nuc
+            + float(np.sum(h_mo * one_rdm))
+            + 0.5 * float(np.dot(two_rdm_flat.ravel(), g_mo_flat.ravel()))
+        )
+
+        fock = np.dot(h_mo, one_rdm.T) + np.dot(g_mo_flat, two_rdm_flat.T)
+        pullback = np.asarray(
+            scipy.linalg.expm_frechet(
+                generator.T, np.dot(unitary, 2.0 * fock), compute_expm=False
+            )
+        )
+        gradient = np.array(
+            [pullback[p, q] - pullback[q, p] for p, q in rotation_pairs]
+        )
+
+        return energy, gradient
+
+    return rotation_pairs, energy_and_gradient
+
+
 def optimize_orbitals(
     mol,
     mo_coeff: np.ndarray,
@@ -359,10 +551,11 @@ def optimize_orbitals(
     generator over a fixed set of allowed rotation pairs -- core-active,
     core-virtual, active-active across different fragments, and
     active-virtual -- and minimizes :func:`total_energy` over those rotation
-    angles with L-BFGS-B, a quasi-Newton optimizer using finite-difference
-    gradients (``n_rot + 1`` loss evaluations per iteration, which is why
-    both ``ao_eri`` and ``h_ao`` must already be cached before this call).
-    Core-core rotations are excluded because :func:`total_energy` has no
+    angles with L-BFGS-B. The objective and its analytic gradient come from
+    :func:`rotation_energy_gradient_fn`, so an iteration costs one four-index
+    MO transform rather than the ``n_rot + 1`` a finite-difference gradient
+    would need (both ``ao_eri`` and ``h_ao`` must still be cached before this
+    call). Core-core rotations are excluded because :func:`total_energy` has no
     core-core degree of freedom to resolve; intra-fragment active rotations
     are excluded not because they leave the energy unchanged (they do not)
     but because each fragment's RDM is only valid in that fragment's current
@@ -400,56 +593,32 @@ def optimize_orbitals(
             :func:`total_energy`.
     """
     n_orb_total = mo_coeff.shape[1]
-    n_act = sum(spec.n_orbitals for spec in fragment_specs)
 
-    offsets = []
-    running = 0
-    for spec in fragment_specs:
-        offsets.append(running)
-        running += spec.n_orbitals
-
-    rotation_pairs: list[tuple[int, int]] = []
-    # Core <-> active.
-    for p in range(n_core):
-        for q in range(n_core, n_core + n_act):
-            rotation_pairs.append((p, q))
-    # Core <-> virtual.
-    for p in range(n_core):
-        for q in range(n_core + n_act, n_orb_total):
-            rotation_pairs.append((p, q))
-    # Active <-> active, across different fragments only.
-    for idx_a, spec_a in enumerate(fragment_specs):
-        for idx_b, spec_b in enumerate(fragment_specs):
-            if idx_a < idx_b:
-                for p_idx in range(spec_a.n_orbitals):
-                    p = n_core + offsets[idx_a] + p_idx
-                    for q_idx in range(spec_b.n_orbitals):
-                        q = n_core + offsets[idx_b] + q_idx
-                        rotation_pairs.append((p, q))
-    # Active <-> virtual.
-    for p in range(n_core, n_core + n_act):
-        for q in range(n_core + n_act, n_orb_total):
-            rotation_pairs.append((p, q))
-
+    rotation_pairs, energy_and_gradient = rotation_energy_gradient_fn(
+        mol,
+        mo_coeff,
+        n_core,
+        fragment_specs,
+        rdm1_active,
+        rdm2_active,
+        ao_eri,
+        h_ao,
+    )
     n_rot = len(rotation_pairs)
 
-    def loss_fn(rotation_params: np.ndarray) -> float:
-        generator = np.zeros((n_orb_total, n_orb_total))
-        for idx, (p, q) in enumerate(rotation_pairs):
-            generator[p, q] = rotation_params[idx]
-            generator[q, p] = -rotation_params[idx]
-        rotated = np.dot(mo_coeff, scipy.linalg.expm(generator))
-        return total_energy(
-            mol, rotated, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
-        )
-
     init_params = np.zeros(n_rot)
-    baseline_energy = loss_fn(init_params)
+    baseline_energy = energy_and_gradient(init_params)[0]
 
     best_params = init_params
     best_energy = baseline_energy
     if n_rot > 0:
-        res = minimize(loss_fn, init_params, method="L-BFGS-B", tol=1e-6)
+        res = minimize(
+            energy_and_gradient,
+            init_params,
+            method="L-BFGS-B",
+            jac=True,
+            options=ORBITAL_MINIMIZE_OPTIONS,
+        )
         if np.isfinite(res.fun) and (
             not np.isfinite(best_energy) or res.fun < best_energy
         ):

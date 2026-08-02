@@ -17,6 +17,11 @@ from divi.qprog import LASSQD, ReportingLevel
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.workflows._lassqd._active_space import localize_blocks
+from divi.qprog.workflows._lassqd._integrals import (
+    build_active_permutation,
+    cached_ao_eri,
+    cached_h_ao,
+)
 from divi.qprog.workflows._lassqd._state import FragmentSpec
 
 
@@ -56,6 +61,69 @@ def h4_localized_blocks_seed0(h4_chain_mean_field):
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     return localize_blocks(mol, mo_coeff, (0, 1), (2, 3), np.random.default_rng(0))
+
+
+def h2o_molecule(basis="6-31g"):
+    """Closed-shell water at its experimental geometry."""
+    return gto.M(
+        atom="O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587",
+        basis=basis,
+        verbose=0,
+    )
+
+
+@pytest.fixture(scope="session")
+def orbital_rotation_case():
+    """A deliberately demanding ``optimize_orbitals`` argument set.
+
+    H2O/6-31G has 13 spatial orbitals. Three are frozen core, five are active
+    across two fragments of unequal size whose requested orbital indices are
+    neither sorted nor contiguous (so ``build_active_permutation`` genuinely
+    reorders them), and five are virtual -- 61 rotation pairs spanning all
+    four rotation categories, with core-core Coulomb and exchange distinct.
+    The fragmentation is one ``validate_fragment_specs`` accepts.
+
+    The active RDMs are fixed-seed random, carrying exactly the permutation
+    symmetries a real spatial RDM has and no more: ``rdm1`` is symmetric, and
+    ``rdm2`` is symmetric under ``pqrs -> rspq`` and ``pqrs -> qpsr`` but is
+    otherwise dense and unstructured, so a transposed index in the
+    two-particle density cannot cancel against itself. Random rather than
+    variationally optimal RDMs also leave the orbitals far from stationary,
+    which is what makes the strict-improvement assertion meaningful.
+
+    Returns the full positional argument list of ``optimize_orbitals``:
+    ``(mol, mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao)``.
+    """
+    mol = h2o_molecule()
+    mean_field = scf.RHF(mol).run(verbose=0)
+    mo_coeff = np.asarray(mean_field.mo_coeff)
+    n_orbitals_total = mo_coeff.shape[1]
+
+    specs = [
+        FragmentSpec(orbitals=(4, 6), n_alpha=1, n_beta=1),
+        FragmentSpec(orbitals=(2, 5, 7), n_alpha=1, n_beta=1),
+    ]
+    n_core = 3
+    n_act = sum(spec.n_orbitals for spec in specs)
+    permutation = build_active_permutation(specs, n_core, n_orbitals_total)
+
+    rng = np.random.default_rng(20250801)
+    root = rng.standard_normal((n_act, n_act))
+    rdm1_active = 0.3 * (root @ root.T)
+    rdm2_active = rng.standard_normal((n_act,) * 4)
+    rdm2_active = rdm2_active + rdm2_active.transpose(2, 3, 0, 1)
+    rdm2_active = rdm2_active + rdm2_active.transpose(1, 0, 3, 2)
+
+    return (
+        mol,
+        mo_coeff[:, permutation],
+        n_core,
+        specs,
+        rdm1_active,
+        rdm2_active,
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+    )
 
 
 def uniform_full_space_probs(n_orb, n_alpha, n_beta):

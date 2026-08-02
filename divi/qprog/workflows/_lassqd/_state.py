@@ -109,7 +109,7 @@ class LASSQDState:
 
 
 def validate_fragment_specs(
-    specs: Sequence[FragmentSpec], n_orbitals_total: int
+    specs: Sequence[FragmentSpec], n_orbitals_total: int, n_occupied: int
 ) -> None:
     """Reject fragments that overlap or index outside the orbital register.
 
@@ -117,12 +117,23 @@ def validate_fragment_specs(
     mean-field contribution of every *other* fragment, so shared orbitals
     would be double-counted.
 
+    The fragments' electron counts must also add up to twice the number of
+    active orbitals below ``n_occupied``. A mismatch is not caught downstream;
+    it yields an energy for the wrong number of electrons.
+
+    Args:
+        specs: The fragment specifications to validate.
+        n_orbitals_total: Size of the molecule's orbital register.
+        n_occupied: Number of doubly occupied orbitals in the reference
+            determinant (``mol.nelectron // 2``).
+
     Raises:
         ValueError: If any orbital index is out of range or shared between
             fragments, if ``specs`` is empty, if any fragment is
-            spin-imbalanced (``n_alpha != n_beta``), or if any fragment is
+            spin-imbalanced (``n_alpha != n_beta``), if any fragment is
             fully occupied (``n_alpha + n_beta >= 2 * n_orbitals``, leaving no
-            correlation to capture).
+            correlation to capture), or if the fragments' total electron
+            count does not match the orbitals they cover.
     """
     if not specs:
         raise ValueError("At least one fragment is required.")
@@ -155,3 +166,12 @@ def validate_fragment_specs(
                     f"{orbital}. Fragments must be disjoint."
                 )
             seen[orbital] = index
+
+    n_active_occupied = sum(1 for orbital in seen if orbital < n_occupied)
+    n_declared = sum(spec.n_alpha + spec.n_beta for spec in specs)
+    if n_declared != 2 * n_active_occupied:
+        raise ValueError(
+            f"Fragments declare {n_declared} electrons but cover "
+            f"{n_active_occupied} occupied orbitals, which hold "
+            f"{2 * n_active_occupied}."
+        )

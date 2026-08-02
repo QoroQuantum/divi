@@ -462,7 +462,9 @@ class LASSQD(ProgramEnsemble):
         self._mean_field = mean_field
 
         if active_spaces is not None:
-            validate_fragment_specs(active_spaces, self._mol.nao_nr())
+            validate_fragment_specs(
+                active_spaces, self._mol.nao_nr(), self._mol.nelectron // 2
+            )
 
         self._active_spaces = None if active_spaces is None else list(active_spaces)
         self._n_active_orbitals = n_active_orbitals
@@ -526,7 +528,7 @@ class LASSQD(ProgramEnsemble):
 
         if self._active_spaces is not None:
             specs = list(self._active_spaces)
-            validate_fragment_specs(specs, n_orbitals_total)
+            validate_fragment_specs(specs, n_orbitals_total, n_occupied)
         else:
             auto_specs, localized = auto_fragment_specs(
                 self._mol,

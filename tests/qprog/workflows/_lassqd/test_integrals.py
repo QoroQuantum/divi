@@ -6,6 +6,8 @@
 
 import numpy as np
 import pytest
+import scipy.linalg
+import scipy.optimize
 from pyscf import ao2mo, fci, mcscf, scf
 
 from divi.hamiltonians._chem import (
@@ -14,13 +16,16 @@ from divi.hamiltonians._chem import (
 )
 from divi.qprog.workflows._lassqd import _integrals as _integrals_module
 from divi.qprog.workflows._lassqd._integrals import (
+    ORBITAL_MINIMIZE_OPTIONS,
     MOIntegrals,
     assemble_active_rdms,
     build_active_permutation,
+    build_energy_rdms,
     cached_ao_eri,
     cached_h_ao,
     fragment_effective_integrals,
     optimize_orbitals,
+    rotation_energy_gradient_fn,
     total_energy,
     transform_integrals,
 )
@@ -29,6 +34,7 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     dense_fci_energy,
     h2_molecule,
     h4_chain,
+    orbital_rotation_case,
 )
 
 
@@ -445,3 +451,136 @@ def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(mocker):
 
     assert energy == pytest.approx(baseline_energy)
     np.testing.assert_allclose(rotated_mo_coeff, mo_coeff, atol=1e-12)
+
+
+def _rotated_mo_coeff(mo_coeff, rotation_pairs, rotation_params):
+    """``mo_coeff`` under the skew generator the rotation angles parameterize."""
+    n_orb = mo_coeff.shape[1]
+    generator = np.zeros((n_orb, n_orb))
+    for idx, (p, q) in enumerate(rotation_pairs):
+        generator[p, q] = rotation_params[idx]
+        generator[q, p] = -rotation_params[idx]
+    return mo_coeff @ scipy.linalg.expm(generator)
+
+
+def test_energy_rdms_reconstruct_total_energy(orbital_rotation_case):
+    """The contracted ``E_nuc + sum(h D) + 0.5 * sum(d g)`` form the analytic
+    gradient is derived from must reproduce ``total_energy``'s explicit loops
+    exactly, which is what pins the core-core, core-active and core-active
+    exchange blocks of the two-particle density."""
+    mol, mo_coeff, n_core, _, rdm1_active, rdm2_active, ao_eri, h_ao = (
+        orbital_rotation_case
+    )
+    n_orb = mo_coeff.shape[1]
+
+    one_rdm, two_rdm = build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active)
+    h_mo = mo_coeff.T @ h_ao @ mo_coeff
+    g_mo = ao2mo.restore(1, ao2mo.incore.full(ao_eri, mo_coeff), n_orb)
+
+    reconstructed = (
+        mol.energy_nuc()
+        + np.einsum("mn,mn->", h_mo, one_rdm)
+        + 0.5 * np.einsum("mnop,mnop->", two_rdm, g_mo)
+    )
+    expected = total_energy(
+        mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+    )
+
+    assert reconstructed == pytest.approx(expected, abs=1e-10)
+
+
+@pytest.mark.parametrize("at_origin", [True, False])
+def test_rotation_gradient_matches_central_differences(
+    orbital_rotation_case, at_origin
+):
+    """The analytic gradient must match central differences of ``total_energy``
+    itself, both at zero rotation and away from it. Away from zero is the
+    discriminating case: the derivative of the matrix exponential is a Frechet
+    pullback, and the naive commutator form it is easily confused with agrees
+    with it only at the origin."""
+    mol, mo_coeff, n_core, _, rdm1_active, rdm2_active, ao_eri, h_ao = (
+        orbital_rotation_case
+    )
+    rotation_pairs, energy_and_gradient = rotation_energy_gradient_fn(
+        *orbital_rotation_case
+    )
+    n_rot = len(rotation_pairs)
+    assert n_rot == 61
+
+    rotation_params = (
+        np.zeros(n_rot)
+        if at_origin
+        else 0.15 * np.random.default_rng(20250801).standard_normal(n_rot)
+    )
+
+    def energy_at(params):
+        rotated = _rotated_mo_coeff(mo_coeff, rotation_pairs, params)
+        return total_energy(
+            mol, rotated, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+        )
+
+    step = 1e-5
+    numerical = np.empty(n_rot)
+    for idx in range(n_rot):
+        forward = rotation_params.copy()
+        forward[idx] += step
+        backward = rotation_params.copy()
+        backward[idx] -= step
+        numerical[idx] = (energy_at(forward) - energy_at(backward)) / (2.0 * step)
+
+    energy, analytic = energy_and_gradient(rotation_params)
+
+    assert energy == pytest.approx(energy_at(rotation_params), abs=1e-10)
+    np.testing.assert_allclose(analytic, numerical, atol=1e-6)
+
+
+def test_optimize_orbitals_improves_strictly_on_the_baseline(orbital_rotation_case):
+    """The routine returns ``min(baseline, minimize_result)``, so an
+    inverted-sign gradient would silently return the unrotated orbitals at the
+    baseline energy. Assert a strict improvement, and that the reported energy
+    is the one the returned coefficients actually produce."""
+    mol, mo_coeff, n_core, _, rdm1_active, rdm2_active, ao_eri, h_ao = (
+        orbital_rotation_case
+    )
+    baseline_energy = total_energy(
+        mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+    )
+
+    rotated_mo_coeff, energy = optimize_orbitals(*orbital_rotation_case)
+
+    assert energy < baseline_energy - 1e-8
+    assert energy == pytest.approx(
+        total_energy(
+            mol, rotated_mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+        ),
+        abs=1e-8,
+    )
+
+    overlap = mol.intor("int1e_ovlp")
+    gram = rotated_mo_coeff.T @ overlap @ rotated_mo_coeff
+    np.testing.assert_allclose(gram, np.eye(mo_coeff.shape[1]), atol=1e-10)
+
+
+def test_orbital_minimize_options_reach_a_small_gradient(orbital_rotation_case):
+    """A ``tol=1e-6`` shorthand halts with the gradient still around 2e-2,
+    since ``ftol`` is relative to ``|E|``. Asserted on ``minimize``'s own
+    Jacobian: the rotation-pair set is not closed under the Fréchet pullback,
+    so the local gradient at the returned coefficients is a different quantity.
+    """
+    mol, mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao = (
+        orbital_rotation_case
+    )
+    rotation_pairs, energy_and_gradient = rotation_energy_gradient_fn(
+        mol, mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao
+    )
+
+    result = scipy.optimize.minimize(
+        energy_and_gradient,
+        np.zeros(len(rotation_pairs)),
+        method="L-BFGS-B",
+        jac=True,
+        options=ORBITAL_MINIMIZE_OPTIONS,
+    )
+
+    assert result.status == 0
+    assert np.abs(result.jac).max() < 1e-3
