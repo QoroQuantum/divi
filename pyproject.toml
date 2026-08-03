@@ -82,6 +82,7 @@ ai = [
 chem = [
     "pyscf>=2.0,<3.0",
     "openfermion>=1.5,<2.0",
+    "qiskit-nature>=0.8.0,<0.9.0",
 ]
 
 

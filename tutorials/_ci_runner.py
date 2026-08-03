@@ -186,7 +186,7 @@ TUTORIALS: dict[str, dict] = {
         "patches": [
             ("max_iterations=60", "max_iterations=15"),
             ("n_batches=6", "n_batches=2"),
-            ("batch_size=16", "batch_size=6"),
+            ("batch_size=32", "batch_size=6"),
             ("max_rounds=5", "max_rounds=2"),
         ],
     },

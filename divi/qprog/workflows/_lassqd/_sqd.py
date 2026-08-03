@@ -431,11 +431,28 @@ class SQDSolver:
     ):
         """Initialize the solver.
 
+        Args:
+            n_orb: Spatial orbitals in the fragment.
+            n_alpha: Alpha electrons in the target sector.
+            n_beta: Beta electrons in the target sector.
+            n_batches: Subspaces per iteration; the lowest-energy one wins.
+            batch_size: Configurations sampled per batch. Alpha and beta halves
+                are pooled separately, so the subspace holds up to
+                ``batch_size ** 2`` determinants. The accuracy knob: a
+                one-determinant subspace is the mean field.
+            n_iterations: Configuration-recovery iterations.
+            lambda_penalty: Weight of the ``S^2`` penalty.
+            recovery: Whether to run configuration recovery.
+            rng: Subsampling generator; fresh default when omitted.
+
         Raises:
-            ValueError: If ``n_batches`` or ``n_iterations`` is less than 1.
+            ValueError: If ``n_batches``, ``batch_size`` or ``n_iterations`` is
+                less than 1.
         """
         if n_batches < 1:
             raise ValueError(f"n_batches must be >= 1, got {n_batches}.")
+        if batch_size < 1:
+            raise ValueError(f"batch_size must be >= 1, got {batch_size}.")
         if n_iterations < 1:
             raise ValueError(f"n_iterations must be >= 1, got {n_iterations}.")
 
@@ -527,13 +544,9 @@ class SQDSolver:
 
             batches = []
             for _ in range(self.n_batches):
-                n_samples = max(1, int(np.sqrt(self.batch_size) / 2))
-                if len(valid_bs) > 0:
-                    sampled = self._rng.choice(
-                        valid_bs, size=n_samples, replace=True, p=bs_probs
-                    )
-                else:
-                    sampled = []
+                sampled = self._rng.choice(
+                    valid_bs, size=self.batch_size, replace=True, p=bs_probs
+                )
 
                 alpha_pool = set()
                 beta_pool = set()
@@ -549,7 +562,7 @@ class SQDSolver:
                     for b in unique_beta:
                         s_k.add(a + b)
 
-                if not s_k and len(valid_bs) > 0:
+                if not s_k:
                     fallback_samples = self._rng.choice(
                         valid_bs,
                         size=min(self.batch_size, len(valid_bs)),
@@ -630,7 +643,7 @@ def compute_spatial_rdms(
     subspace_dets: list[tuple[tuple[int, ...], tuple[int, ...]]],
     eigenvector: np.ndarray,
     n_orb: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Reconstruct the spatial 1- and 2-RDM from an SQD eigenvector.
 
     Args:
@@ -640,8 +653,9 @@ def compute_spatial_rdms(
         n_orb: Number of spatial orbitals.
 
     Returns:
-        ``(rdm1, rdm2)`` spatial reduced density matrices in PySCF's active-
-        space convention.
+        ``(rdm1, rdm2, rdm1_alpha, rdm1_beta)`` spatial reduced density matrices
+        in PySCF's active-space convention, where ``rdm1`` is the spin trace
+        ``rdm1_alpha + rdm1_beta``.
     """
     m_dim = len(eigenvector)
 
@@ -694,10 +708,9 @@ def compute_spatial_rdms(
                                     val_ij * sign_q * sign_s * sign_r * sign_p
                                 )
 
-    rdm1 = np.zeros((n_orb, n_orb))
-    for p in range(n_orb):
-        for q in range(n_orb):
-            rdm1[p, q] = rdm1_spin[p, q] + rdm1_spin[p + n_orb, q + n_orb]
+    rdm1_alpha = rdm1_spin[:n_orb, :n_orb].copy()
+    rdm1_beta = rdm1_spin[n_orb:, n_orb:].copy()
+    rdm1 = rdm1_alpha + rdm1_beta
 
     rdm2 = np.zeros((n_orb, n_orb, n_orb, n_orb))
     for p in range(n_orb):
@@ -710,4 +723,4 @@ def compute_spatial_rdms(
                             val += rdm2_spin[p + s1, q + s1, r + s2, s + s2]
                     rdm2[p, q, r, s] = val
 
-    return rdm1, rdm2
+    return rdm1, rdm2, rdm1_alpha, rdm1_beta

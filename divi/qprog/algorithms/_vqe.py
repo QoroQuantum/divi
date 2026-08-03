@@ -70,6 +70,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         ansatz: Ansatz | None = None,
         initial_state: InitialState | None = None,
         max_iterations=10,
+        n_alpha: int | None = None,
+        n_beta: int | None = None,
         **kwargs,
     ) -> None:
         """Initialize the VQE problem.
@@ -91,6 +93,12 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 Pass an :class:`~divi.qprog.algorithms.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            n_alpha (int | None): Alpha electrons, for a spin-polarized
+                reference. Must be given together with ``n_beta``; without both,
+                ansatzes that need a reference determinant assume the
+                closed-shell split. Defaults to None.
+            n_beta (int | None): Beta electrons, under the same convention.
+                Defaults to None.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
@@ -105,6 +113,17 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         self._process_problem_input(
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
+        )
+
+        if (n_alpha is None) != (n_beta is None):
+            raise ValueError(
+                "n_alpha and n_beta must be given together; got "
+                f"n_alpha={n_alpha}, n_beta={n_beta}."
+            )
+        self._spin_kwargs: dict[str, int] = (
+            {}
+            if n_alpha is None or n_beta is None
+            else {"n_alpha": n_alpha, "n_beta": n_beta}
         )
 
         # Resolve & store initial state (n_qubits is now set)
@@ -134,7 +153,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             and electron count.
         """
         return self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons
+            self.n_qubits, n_electrons=self.n_electrons, **self._spin_kwargs
         )
 
     @property
@@ -203,7 +222,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         ``SparsePauliOp`` as observable.
         """
         n_params = self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons
+            self.n_qubits, n_electrons=self.n_electrons, **self._spin_kwargs
         )
         weights = np.array(
             [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
@@ -219,6 +238,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 n_qubits=self.n_qubits,
                 n_layers=self.n_layers,
                 n_electrons=self.n_electrons,
+                **self._spin_kwargs,
             ),
             inplace=True,
         )

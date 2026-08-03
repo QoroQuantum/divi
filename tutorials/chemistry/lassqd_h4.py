@@ -2,44 +2,48 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""LASSQD on a stretched H4 chain.
+"""LASSQD on a stretched H4 chain, and why the fragmentation matters.
 
 :class:`~divi.qprog.workflows.LASSQD` estimates a molecule's ground-state
 energy by splitting its active space into fragments, running one VQE per
 fragment, recovering each fragment's ground state from the sampled bitstring
-distribution via sample-based quantum diagonalization (SQD), reassembling
-the fragment reduced density matrices (RDMs) into an active-space RDM, and
-re-optimizing the molecular orbitals against it. One round of
-``LASSQD.run()`` is one full pass through this cycle (a "macro-cycle");
-``run()`` repeats it until the total energy converges (or ``max_rounds`` is
-reached).
+distribution via sample-based quantum diagonalization (SQD), reassembling the
+fragment reduced density matrices (RDMs) into an active-space RDM, and
+re-optimizing the molecular orbitals against it. One round of ``LASSQD.run()``
+is one such macro-cycle; ``run()`` repeats until the energy converges or
+``max_rounds`` is reached.
 
-This tutorial builds a linear H4 chain and fragments its active space into
-two fragments of two orbitals and two electrons each: ``(0, 1)`` (the two
-occupied canonical RHF MOs) and ``(2, 3)`` (the two virtual MOs) — a split
-along orbital occupancy, not spatial position. Splitting the active space
-this way is an approximation, not a shortcut to the same answer as an
-unfragmented calculation: reassembling the fragments' RDMs zeroes every
-cross-fragment 2-RDM block, so the reported energy is **not** comparable to
-a CASCI/FCI reference on the same active space, and can fall substantially
-below it. The gap measured here (about 1.47 Hartree) mostly comes from each
-macro-cycle re-optimizing the orbitals against that non-N-representable
-RDM, compounding round over round until convergence — not from the zeroed
-blocks alone (which account for only about 0.37 Ha at a fixed orbital
-basis). A single fragment spanning the *whole* active space has no
-cross-fragment blocks to zero and is variational, matching FCI to about
-``2e-16`` Ha on H2/STO-3G with a large enough sampling budget — see the
-user guide's
-`Localized Active-Space SQD (LASSQD)
+The reassembled RDM is that of a *product* of fragment states, so the energy is
+a genuine expectation value and sits **above** a CASCI/FCI reference on the same
+active space. What fragmenting costs is the correlation *between* fragments,
+which a product state cannot represent -- so the split you choose is the main
+thing determining accuracy.
+
+This tutorial makes that concrete on a linear H4 chain built as two
+well-separated H2 pairs, comparing two fragmentations of the same 4-orbital
+active space:
+
+* **Automatic** -- localize the frontier orbitals and cut along the weakest
+  coupling, so the correlation dropped is the weak inter-pair correlation.
+  Fragment indices it reports are positions in the localized basis, not
+  canonical MO labels.
+* **By orbital occupancy** -- one fragment of the occupied MOs ``(0, 1)`` and
+  one of the virtuals ``(2, 3)``. Every H2 unit straddles both fragments, so
+  this cuts through the correlation that matters.
+
+Both give two fragments over the same active space, and both are valid upper
+bounds -- but the automatic split recovers most of the correlation energy where
+the occupancy split recovers a fraction of it. See the
+user guide's `Localized Active-Space SQD (LASSQD)
 <https://divi.readthedocs.io/en/latest/user_guide/localized_active_space_sqd.html>`_
-page for that comparison and the full accuracy discussion.
+page for the accuracy discussion and for tuning the sampling budget.
 """
 
 import time
 
 from pyscf import gto, mcscf, scf
 
-from divi.qprog import LASSQD, FragmentSpec
+from divi.qprog import LASSQD, FragmentSpec, ReportingLevel
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -52,38 +56,61 @@ def main() -> None:
         verbose=0,
     )
 
-    ensemble = LASSQD(
-        h4,
-        active_spaces=[
-            FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-            FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
-        ],
+    mean_field = scf.RHF(h4).run(verbose=0)
+    casci_energy = mcscf.CASCI(mean_field, 4, 4).kernel()[0]
+    correlation = casci_energy - mean_field.e_tot
+
+    settings = dict(
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         max_iterations=60,
         n_batches=6,
-        batch_size=16,
+        batch_size=32,
         n_sqd_iterations=3,
         seed=7,
         backend=get_backend(shots=5000),
+        reporting_level=ReportingLevel.OFF,
     )
 
-    t0 = time.time()
-    ensemble.run(max_rounds=5)
-    elapsed = time.time() - t0
+    layouts = {
+        "automatic (cuts along weakest coupling)": dict(
+            n_active_orbitals=4, max_orbitals_per_fragment=2
+        ),
+        "by occupancy (cuts through both H2 units)": dict(
+            active_spaces=[
+                FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+                FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+            ]
+        ),
+    }
 
-    mean_field = scf.RHF(h4).run(verbose=0)
-    casci_energy = mcscf.CASCI(mean_field, 4, 4).kernel()[0]
+    print(f"RHF:   {mean_field.e_tot:.6f} Ha")
+    print(f"CASCI: {casci_energy:.6f} Ha  (correlation {correlation:+.6f} Ha)\n")
 
-    print(f"Stop reason: {ensemble.stop_reason}")
-    print(f"Rounds run: {len(ensemble.round_history)}")
-    print(f"LASSQD energy:  {ensemble.energy:.6f} Ha")
-    print(f"CASCI energy:   {casci_energy:.6f} Ha")
-    print(f"Difference:     {ensemble.energy - casci_energy:+.6f} Ha")
-    print(f"Time taken: {elapsed:.1f}s")
+    for label, layout in layouts.items():
+        ensemble = LASSQD(h4, **layout, **settings)
+        start = time.time()
+        ensemble.run(max_rounds=5)
+        elapsed = time.time() - start
+
+        # best_energy, not energy: the macro-cycle need not be monotone, and
+        # every round is a valid upper bound.
+        gap = ensemble.best_energy - casci_energy
+        recovered = (ensemble.best_energy - mean_field.e_tot) / correlation
+        print(f"{label}")
+        print(
+            f"  fragments:   {[f.spec.orbitals for f in ensemble.workflow_state.fragments]}"
+        )
+        print(f"  energy:      {ensemble.best_energy:.6f} Ha")
+        print(f"  above CASCI: {gap:+.6f} Ha")
+        print(f"  correlation recovered: {recovered:.0%}")
+        print(f"  {len(ensemble.round_history)} rounds, {elapsed:.1f}s\n")
+
     print(
-        "\nThe difference above is expected to be large and negative — see this "
-        "file's module docstring for why a multi-fragment LASSQD energy is not "
-        "comparable to CASCI."
+        "Both energies are upper bounds, so both sit above CASCI. The gap is the "
+        "inter-fragment correlation each split discards -- which is why cutting "
+        "along a weak interaction beats cutting through a bond. The occupancy "
+        "split also warns that a fragment collapsed to one determinant, which is "
+        "the same problem showing up in the sampling."
     )
 
 

@@ -9,7 +9,7 @@ import itertools
 import numpy as np
 import pytest
 import scipy.linalg
-from pyscf import fci, gto, scf
+from pyscf import ao2mo, cc, fci, gto, scf
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._chem import _spo_from_integrals
@@ -25,6 +25,28 @@ from divi.qprog.workflows._lassqd._integrals import (
 from divi.qprog.workflows._lassqd._state import FragmentSpec
 
 
+def embedded_fragment_ccsd(h_eff, g_frag, spec):
+    """Converged CCSD on a fragment's effective integrals.
+
+    Mirrors the embedded RHF that ``_ccsd_seed_params`` builds internally, so a
+    test can reach the same ``t1``/``t2`` the seed was derived from.
+    """
+    n_orb = spec.n_orbitals
+    mol = gto.M(verbose=0)
+    mol.nelectron = spec.n_alpha + spec.n_beta
+    mol.incore_anyway = True
+
+    mean_field = scf.RHF(mol)
+    mean_field.get_hcore = lambda *args: h_eff
+    mean_field.get_ovlp = lambda *args: np.eye(n_orb)
+    mean_field._eri = ao2mo.restore(8, g_frag, n_orb)
+    mean_field.kernel()
+
+    coupled_cluster = cc.CCSD(mean_field)
+    coupled_cluster.kernel()
+    return coupled_cluster
+
+
 def h2_molecule(bond_length=0.74, basis="sto-3g"):
     """Closed-shell H2: 2 electrons, spatial orbital count set by ``basis``."""
     return gto.M(
@@ -37,8 +59,8 @@ def h2_molecule(bond_length=0.74, basis="sto-3g"):
 def h4_chain():
     """Linear H4 in STO-3G, two well-separated H2 pairs.
 
-    4 spatial orbitals / 4 electrons. Matches the reference repo's
-    ``README.md`` example so parity numbers are comparable.
+    4 spatial orbitals / 4 electrons, so FCI over the full space is exact in
+    this basis and usable as a bound.
     """
     return gto.M(
         atom="H 0 0 0; H 0 0 0.74; H 0 0 2.0; H 0 0 2.74",
@@ -148,36 +170,12 @@ def dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant=0.0):
     return energy + constant
 
 
-#: Reference implementation's converged total energy and final MO-coefficient
-#: trace for the H4 chain / two 2-orbital-fragment parity fixture below.
-#:
-#: Generated from a checkout of the research repo (``Fragmented-SQD``) at
-#: commit ``b08d97a``, with two local, uncommitted fixes applied to
-#: ``sqd_core.py`` and reverted immediately afterward: a sign fix in the
-#: double-excitation Slater-Condon matrix element, and switching the
-#: recovery branch's dedup from ``list(set(...))`` to ``sorted(set(...))``
-#: so its sampling order is deterministic instead of depending on Python's
-#: per-process string hash randomization. A pristine ``b08d97a`` checkout
-#: will NOT reproduce these numbers.
-#:
-#: Regenerate with:
-#:
-#: .. code-block:: bash
-#:
-#:     cd Fragmented-SQD && uv run --with pyscf --with numpy --with scipy python -c "
-#:     from pyscf import gto
-#:     from lassqd import LASSQD
-#:     mol = gto.M(atom='H 0 0 0; H 0 0 0.74; H 0 0 2.0; H 0 0 2.74', basis='sto-3g', verbose=0)
-#:     solver = LASSQD(mol, [
-#:         {'orbitals': [0, 1], 'n_alpha': 1, 'n_beta': 1},
-#:         {'orbitals': [2, 3], 'n_alpha': 1, 'n_beta': 1},
-#:     ], n_batches=5, batch_size=8, n_iterations=3, lambda_penalty=0.2)
-#:     energy = solver.run_scf(max_macro_cycles=4, tol=1e-5)
-#:     print('REFERENCE_ENERGY =', repr(energy))
-#:     print('REFERENCE_MO_TRACE =', repr(float(solver.C.trace())))
-#:     "
-REFERENCE_ENERGY = -2.523619542803957
-REFERENCE_MO_TRACE = -0.8246322519559883
+#: Converged energy and MO-coefficient trace of the ``exact_sampler_lassqd``
+#: fixture over 4 macro-cycles, recorded from this implementation. Not vendored
+#: from the reference, whose value encoded the zeroed-block functional and sat
+#: below FCI.
+PRODUCT_STATE_ENERGY = -2.2139336088963217
+PRODUCT_STATE_MO_TRACE = 0.003246214227570765
 
 #: Fixed, recognizable stand-in for a converged VQE's parameters, so tests
 #: can assert the exact values that reach the following round's

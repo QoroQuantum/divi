@@ -60,7 +60,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 
 - **`vqe_h2_molecule.py`** — VQE on H2: basic run plus grouping-strategy and shot-allocation comparisons
 - **`vqe_hyperparameter_sweep.py`** — Hyperparameter sweeps across multiple molecules
-- **`lassqd_h4.py`** — `LASSQD` on a stretched H4 chain: two-fragment active-space decomposition, SQD recovery, and why the converged energy is not comparable to CASCI
+- **`lassqd_h4.py`** — `LASSQD` on a stretched H4 chain: compares an automatic fragmentation against an occupancy-based one to show how much the choice of split costs in correlation energy
 
 ### `dynamics/`
 

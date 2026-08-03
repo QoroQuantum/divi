@@ -325,8 +325,8 @@ def test_solver_recovers_fci_when_subspace_is_complete():
 
     # Batch subspaces are drawn with replacement, so a single small batch can
     # miss an alpha or beta half and project onto an incomplete space. Four
-    # batches of eight draws each (n_samples = sqrt(batch_size) / 2) make the
-    # best-of-batches subspace complete with overwhelming probability.
+    # batches of batch_size draws each make the best-of-batches subspace
+    # complete with overwhelming probability.
     solver = SQDSolver(
         n_orb,
         1,
@@ -343,6 +343,38 @@ def test_solver_recovers_fci_when_subspace_is_complete():
     assert result.energy == pytest.approx(expected, abs=1e-8)
 
 
+@pytest.mark.parametrize(
+    "batch_size,expected_subspace",
+    [(1, 1), (2, 4), (8, 4)],
+)
+def test_batch_size_sets_the_number_of_samples_drawn(batch_size, expected_subspace):
+    """``batch_size`` is the per-batch sample count, so the recovered subspace
+    grows with it until it saturates the space.
+
+    A two-orbital ``(1, 1)`` space spans four determinants. One draw can only
+    ever yield one, while two or more saturate it. This discriminates the
+    documented behavior from the ``n_samples = sqrt(batch_size) / 2`` scaling
+    it replaced, under which ``batch_size=8`` drew a single sample and left the
+    subspace at one determinant -- the mean-field answer, for any budget.
+    """
+    one_body, two_body, n_orb, constant = _h2_integrals()
+    probs = uniform_full_space_probs(n_orb, 1, 1)
+
+    solver = SQDSolver(
+        n_orb,
+        1,
+        1,
+        n_batches=1,
+        batch_size=batch_size,
+        n_iterations=1,
+        lambda_penalty=0.0,
+        rng=np.random.default_rng(0),
+    )
+    result = solver.solve(probs, one_body, two_body, constant=constant)
+
+    assert len(set(result.subspace)) == expected_subspace
+
+
 def test_solver_carries_the_best_energy_across_iterations():
     """The returned energy is the minimum found over all iterations, not just
     the last one: a single-iteration solve reproduces iteration 0 of a
@@ -355,6 +387,10 @@ def test_solver_carries_the_best_energy_across_iterations():
     trip on. ``recovery=False`` keeps the sampled candidate list identical
     (and insertion-ordered) across iterations, so the outcome depends only
     on the seeded RNG.
+
+    ``batch_size=1`` is load-bearing: 2 or more saturates this 9-determinant
+    space in one iteration, so both solves hit the exact ground state and the
+    comparison stops discriminating.
     """
     n_orb, n_alpha, n_beta = 3, 1, 1
     one_body = np.diag([-10.0, -0.1, 0.2])
@@ -362,7 +398,7 @@ def test_solver_carries_the_best_energy_across_iterations():
     probs = uniform_full_space_probs(n_orb, n_alpha, n_beta)
     kwargs = dict(
         n_batches=2,
-        batch_size=4,
+        batch_size=1,
         lambda_penalty=0.0,
         recovery=False,
     )
@@ -543,7 +579,7 @@ def test_spatial_rdm_trace_equals_electron_count():
         uniform_full_space_probs(n_orb, 1, 1), one_body, two_body, constant=constant
     )
     dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, rdm2 = compute_spatial_rdms(dets, result.eigenvector, n_orb)
+    rdm1, rdm2, _, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
 
     assert np.trace(rdm1) == pytest.approx(2.0, abs=1e-8)
 
@@ -564,7 +600,7 @@ def test_spatial_rdm1_matches_pyscf_fci():
         uniform_full_space_probs(n_orb, 1, 1), one_body, two_body, constant=constant
     )
     dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
+    rdm1, _, _, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
 
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (1, 1))
     expected = fci.direct_spin1.make_rdm1(civec, n_orb, (1, 1))
@@ -601,7 +637,7 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
         constant=constant,
     )
     dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, rdm2 = compute_spatial_rdms(dets, result.eigenvector, n_orb)
+    rdm1, rdm2, _, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
 
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (n_alpha, n_beta))
     expected_rdm1, expected_rdm2 = fci.direct_spin1.make_rdm12(
@@ -622,3 +658,44 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
         + constant
     )
     assert energy_from_rdms == pytest.approx(result.energy, abs=1e-8)
+
+
+def test_spatial_spin_rdm1s_match_pyscf_for_a_polarized_sector():
+    """The per-spin halves are why this returns a 4-tuple, and a balanced sector
+    cannot test them: there ``alpha == beta == rdm1 / 2``, so a swapped or
+    spin-traced return would pass. Use a polarized sector, where PySCF's
+    ``make_rdm1s`` gives two different matrices."""
+    one_body, two_body, n_orb, constant = _h4_integrals()
+    n_alpha, n_beta = 3, 1
+    solver = SQDSolver(
+        n_orb,
+        n_alpha,
+        n_beta,
+        n_batches=8,
+        batch_size=4096,
+        n_iterations=1,
+        lambda_penalty=0.0,
+        rng=np.random.default_rng(0),
+    )
+    result = solver.solve(
+        uniform_full_space_probs(n_orb, n_alpha, n_beta),
+        one_body,
+        two_body,
+        constant=constant,
+    )
+    dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
+    rdm1, _, rdm1_alpha, rdm1_beta = compute_spatial_rdms(
+        dets, result.eigenvector, n_orb
+    )
+
+    _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (n_alpha, n_beta))
+    expected_alpha, expected_beta = fci.direct_spin1.make_rdm1s(
+        civec, n_orb, (n_alpha, n_beta)
+    )
+
+    assert not np.allclose(expected_alpha, expected_beta), "sector must be polarized"
+    np.testing.assert_allclose(rdm1_alpha, expected_alpha, atol=1e-6)
+    np.testing.assert_allclose(rdm1_beta, expected_beta, atol=1e-6)
+    np.testing.assert_allclose(rdm1_alpha + rdm1_beta, rdm1, atol=1e-12)
+    assert np.trace(rdm1_alpha) == pytest.approx(n_alpha, abs=1e-6)
+    assert np.trace(rdm1_beta) == pytest.approx(n_beta, abs=1e-6)

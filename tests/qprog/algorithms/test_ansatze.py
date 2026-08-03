@@ -26,11 +26,24 @@ from divi.qprog import (
     QCCAnsatz,
     UCCSDAnsatz,
 )
+from divi.qprog.algorithms._ansatze import _resolve_spin_counts, _uccsd_excitations
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
 def _build_circuit(ansatz, params, n_qubits, n_layers, **kwargs) -> QuantumCircuit:
     return ansatz.build(params, n_qubits, n_layers, **kwargs)
+
+
+def _occupied_from_label(label: str) -> set[int]:
+    """Qubit indices set in a measured bitstring (qubit 0 leftmost, as divi
+    reports them)."""
+    return {i for i, bit in enumerate(label) if bit == "1"}
+
+
+def _interleaved(blocked: int, n_spatial: int) -> int:
+    """Interleaved qubit for a blocked spin-orbital index."""
+    spin, spatial = divmod(blocked, n_spatial)
+    return 2 * spatial + spin
 
 
 # --- Test GenericLayerAnsatz ---
@@ -269,6 +282,88 @@ class TestUCCSDAnsatz:
         assert qc.num_qubits == n_qubits
         assert len(qc.data) > 0
 
+    def test_reference_state_occupies_the_interleaved_spin_orbitals(
+        self, default_test_simulator, default_optimizer
+    ):
+        """Alpha occupies ``2p``, beta ``2p + 1``. With zero angles the circuit
+        is deterministic, so every shot lands on the reference determinant.
+
+        A total-electron-count check would pass with the two spins transposed,
+        so this asserts the occupied set.
+        """
+        n_qubits, n_alpha, n_beta = 8, 3, 1
+        vqe = _make_uccsd_vqe(
+            n_qubits,
+            n_alpha + n_beta,
+            default_test_simulator,
+            default_optimizer,
+            n_alpha=n_alpha,
+            n_beta=n_beta,
+        )
+
+        vqe.sample_solution(params=np.zeros(vqe.n_params))
+
+        probs = next(iter(vqe.best_probs.values()))
+        assert len(probs) == 1
+        occupied = _occupied_from_label(next(iter(probs)))
+        assert occupied == {2 * p for p in range(n_alpha)} | {
+            2 * p + 1 for p in range(n_beta)
+        }
+
+    @pytest.mark.parametrize("index", range(26))
+    def test_each_excitation_rotates_only_the_modes_it_names(
+        self, index, default_test_simulator, default_optimizer
+    ):
+        """One parameter at ``theta`` must put support on exactly two
+        determinants: the reference, and the one reached by moving electrons
+        between the *interleaved* qubits named by ``excitation_list[index]``.
+
+        This localizes the class of error a qubit permutation introduced.
+        Jordan-Wigner parity strings are built over the mapper's mode order, so
+        relabeling qubits afterwards left each excitation's Z-string covering
+        the wrong modes -- 25 of 26 excitations were then neither
+        ``exp(-theta A)`` nor ``exp(+theta A)``. The 14 whose spurious Z factors
+        happened to evaluate to +1 on the reference determinant still produced
+        the right state, so only an energy assertion caught it, and it pointed
+        at nothing in particular.
+
+        Run through the backend rather than a bare ``Statevector`` so this
+        exercises divi's full circuit-submission path, including the QASM2
+        lowering the excitation gates require.
+
+        Also pins the positional alignment between ``excitation_list[index]``
+        and parameter ``index``, which ``_uccsd_amplitude_seed`` indexes on.
+        """
+        n_qubits, n_electrons, theta = 8, 4, 0.37
+        excitations = _uccsd_excitations(n_qubits // 2, (2, 2))
+        assert len(excitations) == 26
+
+        vqe = _make_uccsd_vqe(
+            n_qubits, n_electrons, default_test_simulator, default_optimizer
+        )
+        params = np.zeros(vqe.n_params)
+        params[index] = theta
+
+        vqe.sample_solution(params=params)
+        probs = next(iter(vqe.best_probs.values()))
+
+        assert len(probs) == 2, "a single excitation must span two determinants"
+        reference = {0, 1, 2, 3}
+        occupied, unoccupied = excitations[index]
+        excited = (reference - {_interleaved(i, 4) for i in occupied}) | {
+            _interleaved(i, 4) for i in unoccupied
+        }
+        assert {frozenset(_occupied_from_label(label)) for label in probs} == {
+            frozenset(reference),
+            frozenset(excited),
+        }
+
+        # Shot-noise tolerance on 5000 shots; the support above is the sharp part.
+        excited_label = next(
+            label for label in probs if _occupied_from_label(label) == excited
+        )
+        assert probs[excited_label] == pytest.approx(np.sin(theta) ** 2, abs=0.02)
+
 
 class TestHartreeFockAnsatz:
     """Tests for the HartreeFockAnsatz class."""
@@ -342,7 +437,25 @@ class TestQCCAnsatz:
         assert names.count("ry") == 8
 
 
-def _make_lucj_vqe(n_qubits, n_electrons, backend, optimizer, n_layers=1):
+def _make_uccsd_vqe(n_qubits, n_electrons, backend, optimizer, **spin_counts):
+    """Build a VQE(UCCSDAnsatz()) over a dummy n_qubits-wide Hamiltonian.
+
+    Same rationale as :func:`_make_lucj_vqe`: ``sample_solution`` measures in
+    the computational basis regardless of the attached observable.
+    """
+    return VQE(
+        hamiltonian={"Z" + "I" * (n_qubits - 1): 1.0},
+        n_electrons=n_electrons,
+        ansatz=UCCSDAnsatz(),
+        backend=backend,
+        optimizer=optimizer,
+        **spin_counts,
+    )
+
+
+def _make_lucj_vqe(
+    n_qubits, n_electrons, backend, optimizer, n_layers=1, **spin_counts
+):
     """Build a VQE(LUCJAnsatz()) over a dummy n_qubits-wide Hamiltonian.
 
     The Hamiltonian's value is irrelevant here — ``sample_solution`` measures
@@ -357,7 +470,42 @@ def _make_lucj_vqe(n_qubits, n_electrons, backend, optimizer, n_layers=1):
         ansatz=LUCJAnsatz(),
         backend=backend,
         optimizer=optimizer,
+        **spin_counts,
     )
+
+
+@pytest.mark.parametrize(
+    "n_qubits,n_electrons,n_alpha,n_beta,expected",
+    [
+        (4, 2, None, None, (2, (1, 1))),
+        (8, 4, None, None, (4, (2, 2))),
+        (8, 4, 3, 1, (4, (3, 1))),
+        (8, 4, 4, 0, (4, (4, 0))),
+    ],
+)
+def test_resolve_spin_counts_accepts(n_qubits, n_electrons, n_alpha, n_beta, expected):
+    """Without explicit counts the closed-shell split is used; with them, they
+    pass through untouched."""
+    assert (
+        _resolve_spin_counts(n_qubits, n_electrons, n_alpha, n_beta, "Ansatz")
+        == expected
+    )
+
+
+@pytest.mark.parametrize(
+    "n_qubits,n_electrons,n_alpha,n_beta,message",
+    [
+        (5, 2, None, None, "even qubit count"),
+        (8, 4, 2, None, "together"),
+        (8, 4, None, 2, "together"),
+        (8, 3, None, None, "cannot split"),
+        (8, 4, 3, 2, "not n_electrons"),
+        (4, 4, 3, 1, "outside the range"),
+    ],
+)
+def test_resolve_spin_counts_rejects(n_qubits, n_electrons, n_alpha, n_beta, message):
+    with pytest.raises(ValueError, match=message):
+        _resolve_spin_counts(n_qubits, n_electrons, n_alpha, n_beta, "Ansatz")
 
 
 # --- Test LUCJAnsatz ---
@@ -394,6 +542,59 @@ class TestLUCJAnsatz:
             if instr.operation.name in ("xx_plus_yy", "rzz")
         }
         assert consumed_values == set(range(n_params))
+
+    @pytest.mark.parametrize("n_alpha,n_beta", [(2, 2), (2, 0), (3, 1)])
+    def test_reference_honours_the_requested_spin_counts(self, n_alpha, n_beta):
+        """LUCJ used to ignore ``n_alpha``/``n_beta`` and fill the lowest
+        ``n_electrons`` qubits, which in interleaved ordering silently prepared
+        ``(1, 1)`` for a requested ``(2, 0)`` -- the wrong Sz sector, with no
+        error."""
+        n_qubits = 8
+        circuit = LUCJAnsatz().build(
+            np.zeros(LUCJAnsatz.n_params_per_layer(n_qubits)),
+            n_qubits,
+            1,
+            n_electrons=n_alpha + n_beta,
+            n_alpha=n_alpha,
+            n_beta=n_beta,
+        )
+
+        occupied = sorted(
+            circuit.qubits.index(instruction.qubits[0])
+            for instruction in circuit.data
+            if instruction.operation.name == "x"
+        )
+        assert occupied == sorted(
+            [2 * p for p in range(n_alpha)] + [2 * p + 1 for p in range(n_beta)]
+        )
+
+    @pytest.mark.parametrize("n_alpha,n_beta", [(2, 0), (3, 1)])
+    def test_vqe_forwards_the_spin_counts(
+        self, n_alpha, n_beta, default_test_simulator, default_optimizer
+    ):
+        """The spin counts must survive the trip through ``VQE`` into
+        ``build``, not just be honoured when ``build`` is called directly.
+
+        With zero angles the circuit is deterministic, so every shot lands on
+        the reference determinant and the occupied set is observable.
+        """
+        n_qubits = 8
+        vqe = _make_lucj_vqe(
+            n_qubits,
+            n_alpha + n_beta,
+            default_test_simulator,
+            default_optimizer,
+            n_alpha=n_alpha,
+            n_beta=n_beta,
+        )
+
+        vqe.sample_solution(params=np.zeros(vqe.n_params))
+
+        probs = next(iter(vqe.best_probs.values()))
+        assert len(probs) == 1
+        assert _occupied_from_label(next(iter(probs))) == {
+            2 * p for p in range(n_alpha)
+        } | {2 * p + 1 for p in range(n_beta)}
 
     def test_hartree_fock_reference_is_embedded(
         self, default_test_simulator, default_optimizer

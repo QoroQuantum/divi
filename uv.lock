@@ -3217,6 +3217,21 @@ wheels = [
 ]
 
 [[package]]
+name = "qiskit-algorithms"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "qiskit" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e5/86/d0f8ccae25281d49ebb0e2b59076c2d815389c16a4f7a379936f21065e94/qiskit_algorithms-0.4.0.tar.gz", hash = "sha256:b945e807c9b94ba2e0d2e02898b1f1e1a33efd3b4a6dc5a45bb787c6832d4093", size = 259556, upload-time = "2025-08-29T18:32:24.076Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/23/ab868be0ea11e0054ac4962d27f80cc064e007f8e34b7b61808a25227cca/qiskit_algorithms-0.4.0-py3-none-any.whl", hash = "sha256:c8bfc119e270c7cd7d6013e62193914381bd71fd4cdc847c07b50c749fd0114d", size = 327840, upload-time = "2025-08-29T18:32:22.659Z" },
+]
+
+[[package]]
 name = "qiskit-ibm-runtime"
 version = "0.48.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3238,6 +3253,26 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/f8/9e/853be37179502be1c3e1c2cd406eb326853067d365e31920c3bbe91ccca2/qiskit_ibm_runtime-0.48.0.tar.gz", hash = "sha256:b6b5944c7698cdce147b16bdef1fcae773490c271c8a5ae26c3fd302bb3e94cb", size = 2068278, upload-time = "2026-07-14T18:13:31.454Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/0a/74386aaa4894f44c0b57649a851c9209a592aa24406cf23f8685c72a586e/qiskit_ibm_runtime-0.48.0-py3-none-any.whl", hash = "sha256:ecbd70a85efbbeec4add8de1c446ace21b196b2587c74306e9d3fe1e4fdddd2e", size = 1990089, upload-time = "2026-07-14T18:13:29.34Z" },
+]
+
+[[package]]
+name = "qiskit-nature"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h5py" },
+    { name = "numpy" },
+    { name = "qiskit" },
+    { name = "qiskit-algorithms" },
+    { name = "rustworkx" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "setuptools" },
+    { name = "sympy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/fa/3f86a24ea0a0b6a8bbf7d91ed99ad5e3f38635cf5bf6c38dbfb771f6aea7/qiskit_nature-0.8.0.tar.gz", hash = "sha256:de3c375600b9583450f5d4cd5c9d2cc58cf45c7b8f446cd3be2aa12fe4f37d8d", size = 2204687, upload-time = "2026-06-01T13:47:15.247Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/b1/ea0b97ddc8040a80c89fb7588329f5f185e1b7fd3cec82d4f3efcac4c4f0/qiskit_nature-0.8.0-py3-none-any.whl", hash = "sha256:f219dc19c91109edb39575bd6de1dea7d3be088be831057740b94648143e0f8a", size = 2178105, upload-time = "2026-06-01T13:47:13.399Z" },
 ]
 
 [[package]]
@@ -3287,6 +3322,7 @@ ai = [
 chem = [
     { name = "openfermion" },
     { name = "pyscf" },
+    { name = "qiskit-nature" },
 ]
 jupyter = [
     { name = "ipykernel" },
@@ -3358,6 +3394,7 @@ requires-dist = [
     { name = "qiskit", specifier = ">=2.3" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime", specifier = ">=0.45" },
+    { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
     { name = "qoro-maestro", specifier = "==0.2.14" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=14.0" },

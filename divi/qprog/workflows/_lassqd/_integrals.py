@@ -16,6 +16,7 @@ Implements the frozen-core / active-space integral machinery for LASSQD:
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import permutations
 
 import numpy as np
 import scipy.linalg
@@ -146,6 +147,12 @@ def fragment_effective_integrals(
         fragments: Every fragment's current state, in permutation order.
         index: Position of the target fragment within ``fragments``.
 
+    Other fragments enter through their spin-traced 1-RDM as
+    ``rdm1[r,s] * ((pq|rs) - (pr|sq) / 2)``. The Coulomb term sees the total
+    density; the exchange term is same-spin only, and ``h_eff`` is spin-free, so
+    the ``1/2`` is a spin average -- exact when the other fragment is
+    closed-shell, approximate when it is polarized.
+
     Returns:
         ``(h_eff, g_frag)``: the fragment's effective one-body integrals
         (including core and other-fragment mean-field terms) and its bare
@@ -195,7 +202,7 @@ def fragment_effective_integrals(
                     for s_idx in range(n_other_orb):
                         s = n_core + offsets[other_idx] + s_idx
                         h_eff[p_idx, q_idx] += other.rdm1[r_idx, s_idx] * (
-                            2.0 * g_mo[p, q, r, s] - g_mo[p, r, s, q]
+                            g_mo[p, q, r, s] - 0.5 * g_mo[p, r, s, q]
                         )
 
     g_frag = np.zeros((n_f_orb, n_f_orb, n_f_orb, n_f_orb))
@@ -218,27 +225,40 @@ def assemble_active_rdms(
     """Assemble the full active-space 1- and 2-RDM from per-fragment RDMs.
 
     Fragments are placed block-diagonally in the order supplied, purely by
-    position (the running offset of ``spec.n_orbitals``); no cross-fragment
-    2-RDM elements are populated.
+    position (the running offset of ``spec.n_orbitals``). The 1-RDM has no
+    cross-fragment elements; the 2-RDM does. For a product state,
+
+    ``Gamma[p,q,r,s] = gamma[p,q] gamma[r,s] - sum_sigma gamma^sigma[p,s]
+    gamma^sigma[r,q]``
+
+    so with ``p, q`` in fragment A and ``r, s`` in fragment B only the direct
+    term survives, and with ``p, s`` in A and ``q, r`` in B only the exchange
+    term does. Both are filled for every ordered pair of distinct fragments.
     """
     n_act = sum(fragment.spec.n_orbitals for fragment in fragments)
     rdm1 = np.zeros((n_act, n_act))
     rdm2 = np.zeros((n_act, n_act, n_act, n_act))
 
+    blocks = []
     offset = 0
     for fragment in fragments:
         n_f_orb = fragment.spec.n_orbitals
-        rdm1[offset : offset + n_f_orb, offset : offset + n_f_orb] = fragment.rdm1
-
-        for p in range(n_f_orb):
-            for q in range(n_f_orb):
-                for r in range(n_f_orb):
-                    for s in range(n_f_orb):
-                        rdm2[offset + p, offset + q, offset + r, offset + s] = (
-                            fragment.rdm2[p, q, r, s]
-                        )
-
+        span = slice(offset, offset + n_f_orb)
+        rdm1[span, span] = fragment.rdm1
+        rdm2[span, span, span, span] = fragment.rdm2
+        blocks.append((span, fragment.rdm1, *fragment.spin_rdm1s()))
         offset += n_f_orb
+
+    for (span_a, rdm1_a, alpha_a, beta_a), (
+        span_b,
+        rdm1_b,
+        alpha_b,
+        beta_b,
+    ) in permutations(blocks, 2):
+        rdm2[span_a, span_a, span_b, span_b] += np.einsum("pq,rs->pqrs", rdm1_a, rdm1_b)
+        rdm2[span_a, span_b, span_b, span_a] -= np.einsum(
+            "ps,rq->pqrs", alpha_a, alpha_b
+        ) + np.einsum("ps,rq->pqrs", beta_a, beta_b)
 
     return rdm1, rdm2
 

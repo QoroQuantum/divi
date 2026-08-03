@@ -9,6 +9,7 @@ import pytest
 import scipy.linalg
 import scipy.optimize
 from pyscf import ao2mo, fci, mcscf, scf
+from pyscf.fci import cistring
 
 from divi.hamiltonians._chem import (
     _spo_from_integrals,
@@ -124,37 +125,43 @@ def test_single_fragment_effective_integrals_are_the_bare_block():
     np.testing.assert_allclose(g_frag, integrals.g_mo[:2, :2, :2, :2], atol=1e-12)
 
 
-def test_two_fragment_effective_integrals_include_the_other_mean_field():
-    """The cross term must equal an explicitly contracted reference."""
+def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
+    """A doubly occupied other fragment is indistinguishable from frozen core,
+    so PySCF's ``CASCI.get_h1eff()`` is an independent oracle for the
+    embedding potential.
+
+    This replaces a version whose ``expected`` re-implemented the same
+    contraction as the source. That passed for *any* scale factor on the
+    density term, and the term was in fact 2x too large: ``rdm1`` is
+    spin-traced, so contracting it against ``2J - K`` -- coefficients that
+    already assume double occupancy -- double-counted exactly.
+    """
     mol = h4_chain()
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
     integrals = transform_integrals(mol, mo_coeff, n_core=0)
 
-    rdm_other = np.array([[1.4, 0.1], [0.1, 0.6]])
     states = [
         FragmentState(
             spec=FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-            rdm1=np.zeros((2, 2)),
+            rdm1=2.0 * np.eye(2),
             rdm2=np.zeros((2,) * 4),
         ),
         FragmentState(
             spec=FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
-            rdm1=rdm_other,
+            rdm1=np.zeros((2, 2)),
             rdm2=np.zeros((2,) * 4),
         ),
     ]
 
-    h_eff, _ = fragment_effective_integrals(integrals, states, 0)
+    h_eff, _ = fragment_effective_integrals(integrals, states, 1)
 
-    expected = integrals.h_mo[:2, :2].copy()
-    for p in range(2):
-        for q in range(2):
-            for r_idx, r in enumerate((2, 3)):
-                for s_idx, s in enumerate((2, 3)):
-                    expected[p, q] += rdm_other[r_idx, s_idx] * (
-                        2.0 * integrals.g_mo[p, q, r, s] - integrals.g_mo[p, r, s, q]
-                    )
+    # ncas=2 with zero active electrons forces ncore=2, so orbitals 0 and 1 are
+    # the core and 2, 3 the active block -- the same partition as above.
+    casci = mcscf.CASCI(mean_field, 2, 0)
+    casci.mo_coeff = mo_coeff
+    assert casci.ncore == 2
+    expected, _ = casci.get_h1eff()
 
     np.testing.assert_allclose(h_eff, expected, atol=1e-12)
 
@@ -183,7 +190,13 @@ def test_fragment_hamiltonian_ground_state_matches_fci():
     ), f"FCI energy {expected} not found in the fragment operator's spectrum"
 
 
-def test_assemble_active_rdms_block_diagonalizes():
+def test_assemble_active_rdms_places_blocks_and_cross_fragment_terms():
+    """Intra-fragment blocks sit on the diagonal; the cross-fragment 2-RDM
+    carries the product-state Coulomb and exchange terms.
+
+    The 1-RDM stays strictly block-diagonal -- a product of fragment
+    wavefunctions has no inter-fragment coherence.
+    """
     states = [
         FragmentState(
             spec=FragmentSpec(orbitals=(0,), n_alpha=1, n_beta=1),
@@ -199,10 +212,123 @@ def test_assemble_active_rdms_block_diagonalizes():
     rdm1, rdm2 = assemble_active_rdms(states)
 
     np.testing.assert_allclose(rdm1, np.diag([2.0, 1.5]))
+    assert rdm1[0, 1] == pytest.approx(0.0)
     assert rdm2[0, 0, 0, 0] == pytest.approx(1.0)
     assert rdm2[1, 1, 1, 1] == pytest.approx(3.0)
-    # No cross-fragment 2-RDM elements are populated.
-    assert rdm2[0, 0, 1, 1] == pytest.approx(0.0)
+
+    # Coulomb: gamma_A[0,0] * gamma_B[0,0], both orderings.
+    assert rdm2[0, 0, 1, 1] == pytest.approx(3.0)
+    assert rdm2[1, 1, 0, 0] == pytest.approx(3.0)
+
+    # Exchange: -(alpha_A alpha_B + beta_A beta_B); with no per-spin RDMs
+    # supplied each half is gamma/2, giving -(1.0 * 0.75 + 1.0 * 0.75).
+    assert rdm2[0, 1, 1, 0] == pytest.approx(-1.5)
+    assert rdm2[1, 0, 0, 1] == pytest.approx(-1.5)
+
+
+@pytest.mark.parametrize(
+    "particles_a,particles_b",
+    [((1, 1), (1, 1)), ((1, 0), (1, 2))],
+    ids=["closed-shell", "spin-polarized"],
+)
+def test_assemble_active_rdms_matches_an_explicit_product_state(
+    particles_a, particles_b
+):
+    """Index-level oracle against PySCF.
+
+    Two exactly-solved 2-orbital fragments, combined into an explicit product
+    CI vector over the full 4-orbital space, whose RDMs PySCF then computes
+    independently. 2x2 blocks are the point: with 1x1 blocks every index
+    permutation of the Coulomb and exchange einsums is numerically identical, so
+    a transposed exchange term or a swapped target slice passes unnoticed.
+    """
+    rng = np.random.default_rng(5)
+    fragments = []
+    civecs = []
+    for particles in (particles_a, particles_b):
+        one_body = rng.normal(size=(2, 2))
+        one_body = one_body + one_body.T
+        two_body = np.zeros((2,) * 4)
+        _, civec = fci.direct_spin1.kernel(one_body, two_body, 2, particles)
+        rdm1, rdm2 = fci.direct_spin1.make_rdm12(civec, 2, particles)
+        alpha, beta = fci.direct_spin1.make_rdm1s(civec, 2, particles)
+        civecs.append((civec, particles))
+        fragments.append(
+            FragmentState(
+                spec=FragmentSpec(
+                    orbitals=(0, 1) if not fragments else (2, 3),
+                    n_alpha=particles[0],
+                    n_beta=particles[1],
+                ),
+                rdm1=rdm1,
+                rdm2=rdm2,
+                rdm1_alpha=alpha,
+                rdm1_beta=beta,
+            )
+        )
+
+    rdm1, rdm2 = assemble_active_rdms(fragments)
+
+    # The product state, written out over the combined 4-orbital space. A's
+    # orbitals (0, 1) precede B's (2, 3), so the string-combination sign is +1.
+    total = (
+        particles_a[0] + particles_b[0],
+        particles_a[1] + particles_b[1],
+    )
+    product = np.zeros(
+        (
+            cistring.num_strings(4, total[0]),
+            cistring.num_strings(4, total[1]),
+        )
+    )
+    for (vec_a, part_a), (vec_b, part_b) in [tuple(civecs)]:
+        for ia, sa in enumerate(cistring.make_strings(range(2), part_a[0])):
+            for ib, sb in enumerate(cistring.make_strings(range(2), part_a[1])):
+                for ja, ta in enumerate(cistring.make_strings(range(2, 4), part_b[0])):
+                    for jb, tb in enumerate(
+                        cistring.make_strings(range(2, 4), part_b[1])
+                    ):
+                        addr_a = cistring.str2addr(4, total[0], sa | ta)
+                        addr_b = cistring.str2addr(4, total[1], sb | tb)
+                        product[addr_a, addr_b] += vec_a[ia, ib] * vec_b[ja, jb]
+
+    expected1, expected2 = fci.direct_spin1.make_rdm12(product, 4, total)
+    np.testing.assert_allclose(rdm1, expected1, atol=1e-12)
+    np.testing.assert_allclose(rdm2, expected2, atol=1e-12)
+
+
+def test_assemble_active_rdms_exchange_uses_per_spin_densities():
+    """A spin-polarized pair exchanges only within a spin channel, so supplying
+    the alpha/beta halves must give a different answer from the closed-shell
+    ``gamma / 2`` fallback -- an all-alpha and an all-beta fragment have no
+    same-spin overlap to exchange at all."""
+    alpha_only = FragmentState(
+        spec=FragmentSpec(orbitals=(0,), n_alpha=1, n_beta=0),
+        rdm1=np.array([[1.0]]),
+        rdm2=np.zeros((1, 1, 1, 1)),
+        rdm1_alpha=np.array([[1.0]]),
+        rdm1_beta=np.zeros((1, 1)),
+    )
+    beta_only = FragmentState(
+        spec=FragmentSpec(orbitals=(1,), n_alpha=0, n_beta=1),
+        rdm1=np.array([[1.0]]),
+        rdm2=np.zeros((1, 1, 1, 1)),
+        rdm1_alpha=np.zeros((1, 1)),
+        rdm1_beta=np.array([[1.0]]),
+    )
+    _, rdm2 = assemble_active_rdms([alpha_only, beta_only])
+
+    assert rdm2[0, 0, 1, 1] == pytest.approx(1.0)
+    assert rdm2[0, 1, 1, 0] == pytest.approx(0.0)
+
+    # The closed-shell fallback would wrongly predict -0.5 here.
+    _, rdm2_traced = assemble_active_rdms(
+        [
+            FragmentState(spec=s.spec, rdm1=s.rdm1, rdm2=s.rdm2)
+            for s in (alpha_only, beta_only)
+        ]
+    )
+    assert rdm2_traced[0, 1, 1, 0] == pytest.approx(-0.5)
 
 
 def test_total_energy_matches_fci_for_full_active_space():
@@ -267,7 +393,13 @@ def test_total_energy_matches_casci_with_frozen_core():
 
 
 def test_fragment_effective_integrals_honors_noncontiguous_permutation():
-    """A non-identity, non-contiguous permutation must still index the caller's orbitals."""
+    """A non-identity, non-contiguous permutation must still index the caller's
+    orbitals.
+
+    The oracle here reproduces the source's contraction, so it pins the
+    *indexing* and not the coefficients; those are pinned independently against
+    PySCF in ``test_two_fragment_effective_integrals_match_pyscfs_embedding_potential``.
+    """
     mol = h4_chain()
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
@@ -303,7 +435,7 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation():
             for r_idx, r in enumerate(other_orbitals):
                 for s_idx, s in enumerate(other_orbitals):
                     expected_h[p_idx, q_idx] += rdm_other[r_idx, s_idx] * (
-                        2.0 * g_mo[p, q, r, s] - g_mo[p, r, s, q]
+                        g_mo[p, q, r, s] - 0.5 * g_mo[p, r, s, q]
                     )
             for r_idx, r in enumerate(target_orbitals):
                 for s_idx, s in enumerate(target_orbitals):

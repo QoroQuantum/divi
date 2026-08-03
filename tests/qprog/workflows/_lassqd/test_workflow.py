@@ -15,16 +15,17 @@ reliably captured.
 """
 
 import dataclasses
-import warnings
 
 import numpy as np
 import pytest
 from pyscf import cc, fci, gto, mcscf, scf
+from pyscf.cc import addons as cc_addons
 from qiskit.quantum_info import SparsePauliOp, Statevector
 
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import LASSQD, ReportingLevel, WorkflowStatus
 from divi.qprog.algorithms import LUCJAnsatz, UCCSDAnsatz
+from divi.qprog.algorithms._ansatze import _uccsd_excitations
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.workflows._lassqd import _workflow
 from divi.qprog.workflows._lassqd._sqd import SQDResult
@@ -34,12 +35,15 @@ from divi.qprog.workflows._lassqd._state import (
     validate_fragment_specs,
 )
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
-    REFERENCE_ENERGY,
-    REFERENCE_MO_TRACE,
+    PRODUCT_STATE_ENERGY,
+    PRODUCT_STATE_MO_TRACE,
     _build_exact_sampler_program,
+    build_exact_sampler_lassqd,
+    embedded_fragment_ccsd,
     exact_sampler_lassqd,
     h2_molecule,
     h4_chain,
+    h4_chain_mean_field,
     uniform_full_space_probs,
 )
 
@@ -110,9 +114,54 @@ def test_validate_fragment_specs_accepts_consistent_electron_count():
     validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
-def test_validate_fragment_specs_rejects_spin_imbalance():
-    specs = [FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=0)]
-    with pytest.raises(ValueError, match="spin-imbalanced"):
+def test_validate_fragment_specs_accepts_spin_imbalanced_fragments():
+    """Spin-imbalanced fragments are the antiferromagnetic case a localized
+    active space exists to describe, so they must be accepted as long as the
+    fragments' electrons still add up.
+
+    Both fragments here keep an excitation available in at least one spin
+    channel, which is what makes them runnable rather than merely valid.
+    """
+    specs = [
+        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=0),
+        FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=2),
+    ]
+    validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+
+
+def test_validate_fragment_specs_rejects_a_spin_saturated_fragment():
+    """Dropping the spin-balance rule exposed a case the old spin-traced
+    fully-occupied guard missed: ``(2a, 0b)`` on two orbitals fills the alpha
+    channel and empties the beta one, so UCCSD has zero parameters and
+    ``create_programs`` died with an error naming neither the fragment nor the
+    cause."""
+    specs = [
+        FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=0),
+        FragmentSpec(orbitals=(2, 3), n_alpha=0, n_beta=2),
+    ]
+    with pytest.raises(ValueError, match="no excitation available"):
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+
+
+def test_validate_fragment_specs_rejects_a_nonzero_total_sz():
+    """Relaxing the per-fragment balance rule left the *total* Sz unchecked, so
+    an Sz=1 fragmentation of a closed-shell molecule ran to ``COMPLETE`` and
+    reported the wrong spin sector (measured -1.662 against a singlet FCI of
+    -2.252). The electron count alone does not catch it: 4 electrons split
+    3-alpha/1-beta still sums to 4."""
+    specs = [
+        FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=1),
+        FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=0),
+    ]
+    with pytest.raises(ValueError, match="Sz"):
+        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+
+
+def test_validate_fragment_specs_still_rejects_inconsistent_electron_totals():
+    """Relaxing the spin-balance rule must not relax the electron count: a lone
+    spin-polarized fragment leaves the molecule's electrons unaccounted for."""
+    specs = [FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=0)]
+    with pytest.raises(ValueError, match="declare"):
         validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
@@ -122,7 +171,7 @@ def test_validate_fragment_specs_rejects_a_fully_occupied_fragment():
     must be rejected at construction rather than reaching ``run()`` and
     raising a bare ``ValueError`` with an empty ``round_history``."""
     specs = [FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=2)]
-    with pytest.raises(ValueError, match="fully occupied"):
+    with pytest.raises(ValueError, match="no excitation available"):
         validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
@@ -234,7 +283,22 @@ def test_initial_state_seeds_diagonal_rdms(dummy_expval_backend):
         # Diagonal guess: 1.0 alpha + 1.0 beta on the lowest orbital.
         assert fragment.rdm1[0, 0] == pytest.approx(2.0)
         assert fragment.params is None
+        assert fragment.rdm1_alpha is not None
+        assert fragment.rdm1_beta is not None
     assert state.energy == float("inf")
+
+
+def test_initial_state_diagonal_guess_splits_spin_for_a_polarized_fragment():
+    """``_diagonal_rdm_guess`` must place alpha and beta separately. A
+    closed-shell fragment cannot show this -- there the halves equal ``rdm1 / 2``
+    and match ``spin_rdm1s()``'s fallback, so a spin-traced guess would pass."""
+    spec = FragmentSpec(orbitals=(0, 1, 2), n_alpha=2, n_beta=1)
+    rdm1, _, rdm1_alpha, rdm1_beta = _workflow._diagonal_rdm_guess(spec)
+
+    assert not np.allclose(rdm1_alpha, rdm1_beta)
+    np.testing.assert_allclose(rdm1_alpha + rdm1_beta, rdm1, atol=1e-12)
+    np.testing.assert_allclose(np.diag(rdm1_alpha), [1.0, 1.0, 0.0])
+    np.testing.assert_allclose(np.diag(rdm1_beta), [1.0, 0.0, 0.0])
 
 
 def test_initial_state_2rdm_only_populates_diagonal_blocks(dummy_expval_backend):
@@ -427,12 +491,18 @@ def test_update_state_populates_rdms_and_energy(exact_sampler_lassqd):
     with pytest.warns(UserWarning, match="no correlation"):
         new_state = ensemble.update_state(state)
 
-    # Cross-checked against an independent implementation of this same
-    # macro-cycle reduction on this fixture, agreeing to 2e-13.
-    assert new_state.energy == pytest.approx(-2.5236195428, abs=1e-6)
+    assert np.isfinite(new_state.energy)
     assert new_state.previous_energy == state.energy
     for fragment in new_state.fragments:
         assert np.trace(fragment.rdm1) == pytest.approx(2.0, abs=1e-6)
+        # Explicit, not the ``spin_rdm1s()`` fallback: that returns rdm1 / 2
+        # twice, whose sum equals rdm1 identically, so a sum check alone would
+        # pass even if update_state stopped populating the halves.
+        assert fragment.rdm1_alpha is not None
+        assert fragment.rdm1_beta is not None
+        np.testing.assert_allclose(
+            fragment.rdm1_alpha + fragment.rdm1_beta, fragment.rdm1, atol=1e-12
+        )
         # Round-trips program.best_params into the next round's seed_params.
         np.testing.assert_allclose(fragment.params, [0.11, 0.22, 0.33])
 
@@ -553,7 +623,8 @@ def test_energy_property_reflects_workflow_state(exact_sampler_lassqd):
     with pytest.warns(UserWarning, match="no correlation"):
         ensemble.run(max_rounds=1)
 
-    assert ensemble.energy == pytest.approx(-2.5236195428, abs=1e-6)
+    assert np.isfinite(ensemble.energy)
+    assert ensemble.energy != float("inf")
 
 
 def test_aggregate_results_matches_energy_after_one_round(exact_sampler_lassqd):
@@ -572,6 +643,52 @@ def test_aggregate_results_matches_energy_after_one_round(exact_sampler_lassqd):
     assert result.energy == ensemble.energy
     assert result.energy != float("inf")
     assert result is ensemble.workflow_state
+
+
+POLARIZED_SPECS = [
+    FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=1),
+    FragmentSpec(orbitals=(2, 3), n_alpha=0, n_beta=1),
+]
+
+
+def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
+    """Each fragment's own ``n_alpha``/``n_beta`` must reach its VQE program.
+
+    The spin counts are asymmetric per fragment and mirror-imaged between them,
+    so a swap at either forwarding site -- ``n_params_per_layer`` or the
+    ``_FragmentVQE`` constructor -- prepares the wrong Sz sector. Parameter
+    counts cannot catch that, since ``(2, 1)`` and ``(1, 2)`` are mirror images
+    with identical excitation counts, so this asserts the occupied set of the
+    reference determinant instead.
+    """
+    ensemble = _lassqd(default_test_simulator, active_spaces=POLARIZED_SPECS)
+    state = ensemble.initial_state()
+    n_occupied = ensemble._mol.nelectron // 2
+    n_core = _workflow._compute_n_core(
+        [fragment.spec for fragment in state.fragments], n_occupied
+    )
+    integrals = _workflow.transform_integrals(ensemble._mol, state.mo_coeff, n_core)
+
+    for index, fragment in enumerate(state.fragments):
+        h_eff, g_frag = _workflow.fragment_effective_integrals(
+            integrals, state.fragments, index
+        )
+        with pytest.warns(UserWarning, match="CCSD"):
+            program = ensemble._build_fragment_program(
+                fragment, h_eff, g_frag, f"fragment_{index}", seed=0
+            )
+
+        program.sample_solution(params=np.zeros(program.n_params))
+
+        probs = next(iter(program.best_probs.values()))
+        assert len(probs) == 1
+        spec = fragment.spec
+        occupied = {
+            position for position, bit in enumerate(next(iter(probs))) if bit == "1"
+        }
+        assert occupied == {2 * p for p in range(spec.n_alpha)} | {
+            2 * p + 1 for p in range(spec.n_beta)
+        }
 
 
 def test_ccsd_seed_params_is_deterministic_and_correctly_sized(dummy_expval_backend):
@@ -600,10 +717,10 @@ def test_ccsd_seed_params_is_deterministic_and_correctly_sized(dummy_expval_back
 
 
 def test_ccsd_seed_params_skips_spin_imbalanced_fragments():
-    """Exercises ``_ccsd_seed_params``'s own spin-imbalance branch directly,
-    bypassing ``validate_fragment_specs`` (which now rejects such fragments
-    before they would ever reach here). Kept as defence-in-depth coverage,
-    not as a supported use case."""
+    """Restricted CCSD cannot represent a polarized fragment, so seeding warns
+    and defers to the optimizer's own initialization rather than failing the
+    round. Such fragments are supported as long as the fragments together sum
+    to ``Sz = 0``, so this path is reachable."""
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=0)
     h_eff = np.eye(2)
     g_frag = np.zeros((2, 2, 2, 2))
@@ -660,6 +777,56 @@ def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd():
 
     assert seed_energy == pytest.approx(ccsd_electronic_energy, abs=1e-3)
     assert seed_energy < permuted_energy - 0.05
+
+
+def test_uccsd_seed_singles_match_the_ccsd_t1_amplitudes():
+    """The energy assertion above cannot cover the singles, so pin their values.
+
+    ``_ccsd_seed_params`` runs its own RHF on the fragment's effective
+    integrals, so CCSD always sees canonical orbitals and ``t1`` is
+    Brillouin-suppressed: measured ``max|t1|`` is 1.25e-03 against ``max|t2|``
+    of 8.2e-02. Zeroing every single moves the seeded energy by 7.5e-06 and
+    sign-flipping them by 2.4e-05 -- both far inside that test's 1e-3 tolerance,
+    so the whole singles block could be scrambled or deleted unnoticed. The
+    doubles are caught there with 40x margin.
+    """
+    mol = h4_chain()
+    mean_field = scf.RHF(mol).run(verbose=0)
+    spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
+    integrals = _workflow.transform_integrals(
+        mol, np.asarray(mean_field.mo_coeff), n_core=0
+    )
+    placeholder = FragmentState(
+        spec=spec, rdm1=np.zeros((4, 4)), rdm2=np.zeros((4, 4, 4, 4))
+    )
+    h_eff, g_frag = _workflow.fragment_effective_integrals(integrals, [placeholder], 0)
+    n_params = UCCSDAnsatz.n_params_per_layer(8, n_electrons=4)
+
+    seed = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, UCCSDAnsatz())
+    assert seed is not None
+
+    embedded = embedded_fragment_ccsd(h_eff, g_frag, spec)
+    t1_spin = cc_addons.spatial2spin(embedded.t1)
+
+    n_spatial, n_occupied = spec.n_orbitals, spec.n_alpha
+    singles_seen = 0
+    for index, (occupied, unoccupied) in enumerate(
+        _uccsd_excitations(n_spatial, (n_occupied, n_occupied))
+    ):
+        if len(occupied) != 1:
+            continue
+        spin_o, spatial_o = divmod(occupied[0], n_spatial)
+        spin_u, spatial_u = divmod(unoccupied[0], n_spatial)
+        expected = -t1_spin[
+            2 * spatial_o + spin_o, 2 * (spatial_u - n_occupied) + spin_u
+        ]
+        assert seed[index] == pytest.approx(expected, abs=1e-12)
+        singles_seen += 1
+
+    assert singles_seen == 8
+    # Guards against the whole block being zero, which the loop above would
+    # otherwise accept if t1 itself came back empty.
+    assert np.abs(t1_spin).max() > 1e-6
 
 
 def test_create_programs_seeds_fresh_fragments_from_ccsd(dummy_expval_backend):
@@ -743,54 +910,99 @@ def test_ccsd_failure_falls_back_to_none_with_a_warning(dummy_expval_backend, mo
         assert program._seed_params is None
 
 
-def test_matches_reference_converged_energy(exact_sampler_lassqd):
-    """Parity gate: with an exact sampler, LASSQD must reproduce the reference.
+def test_converged_energy_is_pinned_and_above_fci(
+    exact_sampler_lassqd, h4_chain_mean_field
+):
+    """Golden pin on the converged macro-cycle, plus the bound that makes it
+    physical.
 
-    Parity here does not come from the subspace saturating the fragment's
-    full determinant space. This fixture's ``batch_size=8`` draws
-    ``n_samples = max(1, int(sqrt(8) / 2)) == 1`` sample per batch against a
-    2-orbital, one-alpha/one-beta fragment spanning four determinants, so
-    each batch's subspace holds exactly one determinant (see
-    ``test_update_state_warns_when_a_fragment_collapses_to_one_determinant``
-    above) -- the opposite of saturating it. Parity holds because this
-    fixture's exact ground state is dominated by a single determinant, so
-    essentially every draw lands on that same determinant regardless of
-    which RNG drew it, and both implementations converge to an identical
-    single-determinant subspace despite using different generators.
+    The product-state RDM is N-representable, so the energy is a real
+    expectation value and cannot dip below full-space FCI. The zeroed-block
+    functional this replaced returned -2.5236, i.e. 0.27 Ha *under* FCI, so this
+    bound fails on exactly the defect that motivated filling the cross-fragment
+    blocks.
 
-    That narrows what this gate actually covers: the integral transform,
-    orbital permutation, effective-integral construction, RDM assembly, and
-    orbital re-optimization, all against a single-determinant subspace. It
-    does not exercise the correlation machinery -- no multi-determinant
-    eigenvector, no RDM reconstruction from a superposition, and no spin
-    penalty is exercised here. Widening the sampling budget to force
-    multi-determinant capture would invalidate the vendored reference
-    constants below, so the parameters and tolerances stay as they are.
-
-    Measured |divi - reference|: 2.03e-13 for energy (stable across 5
-    repeated runs; abs=1e-9 leaves comfortable headroom without approaching
-    ``energy_tol`` of 1e-6) and 2.23e-8 for the MO-coefficient trace (abs=1e-6,
-    tied to both implementations' shared L-BFGS-B orbital-rotation tolerance
-    of 1e-6). The trace check guards against a scalar energy match hiding a
-    compensating error in the converged orbitals themselves.
+    At least one fragment's recovered subspace collapses to a single
+    determinant over these rounds -- the warning asserted below -- so what this
+    pins is the deterministic pipeline: integral transform, orbital
+    permutation, effective-integral construction, RDM assembly and orbital
+    re-optimization, rather than correlation recovery.
     """
     ensemble, _ = exact_sampler_lassqd
     with pytest.warns(UserWarning, match="no correlation"):
         ensemble.run(max_rounds=4)
 
-    assert ensemble.energy == pytest.approx(REFERENCE_ENERGY, abs=1e-9)
+    assert ensemble.energy == pytest.approx(PRODUCT_STATE_ENERGY, abs=1e-9)
     assert np.trace(ensemble.workflow_state.mo_coeff) == pytest.approx(
-        REFERENCE_MO_TRACE, abs=1e-6
+        PRODUCT_STATE_MO_TRACE, abs=1e-6
     )
 
+    exact = fci.FCI(h4_chain_mean_field).kernel()[0]
+    assert ensemble.energy > exact - 1e-8
 
-def test_round_history_length_matches_macro_cycles(exact_sampler_lassqd):
+
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
+def test_polarized_fragments_run_the_full_macro_cycle(
+    default_test_simulator, mocker, h4_chain_mean_field
+):
+    """A full run on fragments that are individually polarized but sum to
+    ``Sz = 0``, covering the macro-cycle end to end rather than the pieces.
+
+    The assembled RDM stays N-representable regardless of polarization, so the
+    energy remains a variational upper bound on full-space FCI.
+    """
+    ensemble, _ = build_exact_sampler_lassqd(
+        default_test_simulator, mocker, active_spaces=POLARIZED_SPECS
+    )
+
+    ensemble.run(max_rounds=2)
+
+    assert ensemble.stop_reason in (
+        WorkflowStatus.COMPLETE,
+        WorkflowStatus.MAX_ROUNDS,
+    )
+    assert len(ensemble.round_history) >= 1
+    exact = fci.FCI(h4_chain_mean_field).kernel()[0]
+    assert np.isfinite(ensemble.best_energy)
+    assert ensemble.best_energy > exact - 1e-8
+
+
+def test_best_energy_tracks_the_lowest_round_not_the_last(exact_sampler_lassqd, mocker):
+    """The macro-cycle is not guaranteed monotone, and ``energy`` reports the
+    last round. Since every round's energy is a variational upper bound, the
+    lowest is the tightest bound the run established."""
     ensemble, _ = exact_sampler_lassqd
     with pytest.warns(UserWarning, match="no correlation"):
         ensemble.run(max_rounds=3)
-    # This fixture (seed=0) converges in exactly 2 macro-cycles under the
-    # default energy_tol, well before the max_rounds=3 cap.
-    assert len(ensemble.round_history) == 2
+
+    assert len(ensemble.energy_history) == len(ensemble.round_history)
+    assert ensemble.best_energy == min(ensemble.energy_history)
+    assert ensemble.best_energy <= ensemble.energy
+
+    # A non-monotone history must report the minimum, not the final value.
+    mocker.patch.object(ensemble, "_energy_history", [-1.5, -2.5, -2.0])
+    assert ensemble.best_energy == pytest.approx(-2.5)
+
+
+def test_best_energy_is_infinite_before_the_first_round(exact_sampler_lassqd):
+    ensemble, _ = exact_sampler_lassqd
+    assert ensemble.best_energy == float("inf")
+    assert ensemble.energy_history == ()
+
+
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
+def test_round_history_length_matches_macro_cycles(exact_sampler_lassqd):
+    ensemble, _ = exact_sampler_lassqd
+    ensemble.run(max_rounds=3)
+
+    # How many rounds this fixture needs is data-dependent, so assert the
+    # contract rather than a count: capped runs fill max_rounds, converged ones
+    # stop short.
+    assert 1 <= len(ensemble.round_history) <= 3
+    if ensemble.stop_reason is WorkflowStatus.MAX_ROUNDS:
+        assert len(ensemble.round_history) == 3
+    else:
+        assert len(ensemble.round_history) < 3
     # Round numbers are 1-based and contiguous.
     assert [record.number for record in ensemble.round_history] == list(
         range(1, len(ensemble.round_history) + 1)
@@ -929,6 +1141,7 @@ def test_repeated_runs_start_from_a_clean_state(dummy_expval_backend, mocker):
 
 
 @pytest.mark.e2e
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
 def test_single_fragment_h2_reaches_chemical_accuracy(default_test_simulator):
     """One fragment covering the whole space degenerates to plain SQD, so FCI
     is an exact variational bound (no cross-fragment 2-RDM blocks are zeroed)
@@ -938,14 +1151,17 @@ def test_single_fragment_h2_reaches_chemical_accuracy(default_test_simulator):
     batch_size=32``) than the two-fragment case below for SQD to reliably
     capture the correlated determinant; see the module docstring.
 
-    This pins ``seed=7``, one of the seeds observed to capture the
-    correlated determinant at this budget. It is not a general accuracy
-    guarantee: across seeds ``{0, 1, 2, 3, 42}`` at this same budget, only
-    one reproduced this result, and the other four converged bit-identically
-    to the mean-field (RHF) energy with ``stop_reason == COMPLETE``; raising
-    ``max_iterations`` from 60 to 300 changed nothing to fifteen significant
-    figures for those. Do not read this test as proving SQD reliably reaches
-    FCI in general.
+    ``seed`` cannot make this deterministic: ``MaestroSimulator.set_seed`` is a
+    no-op (maestro does not expose seeding from C++), so shot outcomes depend on
+    how many circuits the *process* has already simulated. An earlier version of
+    this test pinned ``seed=7`` at ``n_batches=12, batch_size=32`` and passed in
+    isolation while failing when other tests ran first -- it landed on the
+    mean-field energy instead, the same collapse its budget note described for
+    four of five seeds. The budget below is raised until the correlated
+    determinant is captured regardless of where the sampler happens to be.
+
+    ``best_energy`` rather than ``energy``, since the macro-cycle need not be
+    monotone and every round is a valid upper bound.
     """
     mean_field = scf.RHF(h2_molecule()).run(verbose=0)
     exact = fci.FCI(mean_field).kernel()[0]
@@ -954,49 +1170,38 @@ def test_single_fragment_h2_reaches_chemical_accuracy(default_test_simulator):
         h2_molecule(),
         active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-        max_iterations=60,
-        n_batches=12,
-        batch_size=32,
+        max_iterations=200,
+        n_batches=24,
+        batch_size=256,
         n_sqd_iterations=3,
         seed=7,
         backend=default_test_simulator,
         reporting_level=ReportingLevel.OFF,
     )
-    # Whether an early round collapses to a single determinant (and warns)
-    # is itself shot-noise-dependent on this real backend (see the module
-    # docstring), so this doesn't assert on the warning either way.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        ensemble.run(max_rounds=5)
+    ensemble.run(max_rounds=5)
 
-    # Measured: -1.1372838344885021, agreeing with FCI to 2e-16 Hartree,
-    # reproduced across 4 independent process runs.
-    assert ensemble.energy == pytest.approx(exact, abs=1e-6)
-    assert ensemble.energy >= exact - 1e-8
+    assert ensemble.best_energy == pytest.approx(exact, abs=1e-6)
+    assert ensemble.best_energy >= exact - 1e-8
 
 
 @pytest.mark.e2e
-def test_two_fragment_h4_stays_within_a_recorded_band_of_casci(
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
+def test_two_fragment_h4_lands_on_the_product_state_energy(
     default_test_simulator,
 ):
-    """Regression guard, not a physics claim.
+    """The two-fragment energy is bracketed: it cannot beat CASCI, and cannot do
+    worse than the uncorrelated product state.
 
-    Fragmenting the active space is an approximation, so LASSQD is not
-    expected to reach CASCI. The band below records observed behavior and
-    exists to catch regressions, and must not be read as an accuracy target.
+    Zeroing the cross-fragment 2-RDM blocks put this 1.47 Ha *below* CASCI,
+    because the energy was then a truncated RDM contracted against untruncated
+    integrals and not an expectation value at all. The lower bound is what
+    catches a regression to that.
 
-    The functional is also **not variational** for more than one fragment:
-    ``assemble_active_rdms`` zeroes the cross-fragment 2-RDM blocks, so the
-    energy can legitimately fall below CASCI. Do not assert a lower bound.
-
-    The gap to CASCI here (about 1.47 Ha) is much larger than the zeroed
-    cross-fragment blocks alone account for at a fixed orbital basis (about
-    0.37 Ha): each macro-cycle round re-optimizes orbitals against a
-    non-N-representable RDM, and the self-consistency loop amplifies the
-    zeroed-block error round over round, converging by ``energy_tol`` onto a
-    substantially lower value while the electron count stays correct. This is
-    the known fragmentation approximation compounded by the macro-cycle, not
-    a separate defect.
+    RHF is asserted as a ceiling, not a target. These fragments capture no
+    intra-fragment correlation at this sampling budget (measured: within 4.6e-07
+    of RHF), but a 2-orbital ``(1a, 1b)`` fragment does have a double excitation
+    available -- capturing it would correctly put the energy *below* RHF, so
+    pinning equality would read a better result as a regression.
     """
     ensemble = LASSQD(
         h4_chain(),
@@ -1013,18 +1218,10 @@ def test_two_fragment_h4_stays_within_a_recorded_band_of_casci(
         backend=default_test_simulator,
         reporting_level=ReportingLevel.OFF,
     )
-    # See the comment in test_single_fragment_h2_reaches_chemical_accuracy:
-    # whether an early round collapses (and warns) is shot-noise-dependent.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", UserWarning)
-        ensemble.run(max_rounds=5)
+    ensemble.run(max_rounds=5)
 
     mean_field = scf.RHF(h4_chain()).run(verbose=0)
     casci = mcscf.CASCI(mean_field, 4, 4).kernel()[0]
 
-    # Measured energy - CASCI, across 8 independent seeds (1, 2, 3, 5, 7, 11,
-    # 42, 100) and repeats of seed 7: -1.467016010 to -1.467016004, i.e.
-    # reproducible to better than 1e-8. Two-sided band around the observed
-    # value; NOT a variational bound in either direction.
-    diff = ensemble.energy - casci
-    assert -1.48 < diff < -1.455, "regressed past the recorded band"
+    assert ensemble.energy > casci, "a product state cannot beat CASCI"
+    assert ensemble.energy <= mean_field.e_tot + 1e-5

@@ -17,16 +17,15 @@ class FragmentSpec:
     Args:
         orbitals: Canonical RHF molecular-orbital indices, in energy order —
             not the caller's own arbitrary numbering.
-        n_alpha: Alpha electrons assigned to the fragment. Must equal
-            ``n_beta``: only closed-shell fragments are supported.
-        n_beta: Beta electrons assigned to the fragment. Must equal
-            ``n_alpha``: only closed-shell fragments are supported.
+        n_alpha: Alpha electrons assigned to the fragment. May differ from
+            ``n_beta`` for a spin-polarized fragment.
+        n_beta: Beta electrons assigned to the fragment.
 
     Raises:
         ValueError: If ``orbitals`` is empty or contains duplicates, or if
-            ``n_alpha``/``n_beta`` fall outside ``[0, n_orbitals]``.
-            ``n_alpha != n_beta`` is rejected separately, during fragment
-            validation.
+            ``n_alpha``/``n_beta`` fall outside ``[0, n_orbitals]``. Whether the
+            spin counts leave an excitation available is checked separately,
+            during fragment validation.
     """
 
     orbitals: tuple[int, ...]
@@ -77,12 +76,25 @@ class FragmentState:
         params: The fragment VQE's converged parameters from the previous
             round, or ``None`` for a fragment that has not been optimized
             yet (e.g. a freshly built initial state).
+        rdm1_alpha: Alpha-spin half of ``rdm1``, or ``None`` to assume the
+            closed-shell split ``rdm1 / 2``. Needed for the cross-fragment
+            exchange term, which contracts same-spin densities.
+        rdm1_beta: Beta-spin half of ``rdm1``, under the same convention.
     """
 
     spec: FragmentSpec
     rdm1: np.ndarray
     rdm2: np.ndarray
     params: np.ndarray | None = None
+    rdm1_alpha: np.ndarray | None = None
+    rdm1_beta: np.ndarray | None = None
+
+    def spin_rdm1s(self) -> tuple[np.ndarray, np.ndarray]:
+        """``(alpha, beta)`` 1-RDM halves, splitting ``rdm1`` if not supplied."""
+        if self.rdm1_alpha is None or self.rdm1_beta is None:
+            half = self.rdm1 / 2.0
+            return half, half.copy()
+        return self.rdm1_alpha, self.rdm1_beta
 
 
 @dataclass(frozen=True, eq=False)
@@ -129,30 +141,27 @@ def validate_fragment_specs(
 
     Raises:
         ValueError: If any orbital index is out of range or shared between
-            fragments, if ``specs`` is empty, if any fragment is
-            spin-imbalanced (``n_alpha != n_beta``), if any fragment is
-            fully occupied (``n_alpha + n_beta >= 2 * n_orbitals``, leaving no
-            correlation to capture), or if the fragments' total electron
-            count does not match the orbitals they cover.
+            fragments, if ``specs`` is empty, if a fragment leaves every spin
+            channel empty or full (no excitation available, so no correlation to
+            capture), if the fragments' total electron count does not match the
+            orbitals they cover, or if the fragments do not sum to ``Sz = 0``.
+            Per-fragment spin-count bounds are enforced by
+            :class:`FragmentSpec` itself.
     """
     if not specs:
         raise ValueError("At least one fragment is required.")
 
     seen: dict[int, int] = {}
     for index, spec in enumerate(specs):
-        if spec.n_alpha != spec.n_beta:
+        if not any(
+            0 < count < spec.n_orbitals for count in (spec.n_alpha, spec.n_beta)
+        ):
             raise ValueError(
-                f"Fragment {index} (orbitals {spec.orbitals}) is "
-                f"spin-imbalanced: n_alpha={spec.n_alpha}, n_beta="
-                f"{spec.n_beta}. Only closed-shell fragments (n_alpha == "
-                "n_beta) are supported."
-            )
-        if spec.n_alpha + spec.n_beta >= 2 * spec.n_orbitals:
-            raise ValueError(
-                f"Fragment {index} (orbitals {spec.orbitals}) is fully "
-                f"occupied: n_alpha={spec.n_alpha}, n_beta={spec.n_beta} "
-                f"fill all {spec.n_orbitals} orbitals, leaving no "
-                "correlation for this fragment to capture."
+                f"Fragment {index} (orbitals {spec.orbitals}) has no excitation "
+                f"available: n_alpha={spec.n_alpha}, n_beta={spec.n_beta} leave "
+                f"every spin channel of its {spec.n_orbitals} orbitals either "
+                "empty or full, so there is no correlation for this fragment to "
+                "capture."
             )
         for orbital in spec.orbitals:
             if not 0 <= orbital < n_orbitals_total:
@@ -174,4 +183,14 @@ def validate_fragment_specs(
             f"Fragments declare {n_declared} electrons but cover "
             f"{n_active_occupied} occupied orbitals, which hold "
             f"{2 * n_active_occupied}."
+        )
+
+    total_alpha = sum(spec.n_alpha for spec in specs)
+    total_beta = sum(spec.n_beta for spec in specs)
+    if total_alpha != total_beta:
+        raise ValueError(
+            f"Fragments declare {total_alpha} alpha and {total_beta} beta "
+            f"electrons, a total Sz of {(total_alpha - total_beta) / 2}. Only "
+            "closed-shell molecules are supported, so the fragments must sum "
+            "to Sz = 0 even where individual fragments are polarized."
         )

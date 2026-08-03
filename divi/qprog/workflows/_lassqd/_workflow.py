@@ -10,11 +10,10 @@ from typing import Any
 from warnings import warn
 
 import numpy as np
-import pennylane as qp
 
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog.algorithms import UCCSDAnsatz
-from divi.qprog.algorithms._ansatze import Ansatz
+from divi.qprog.algorithms._ansatze import Ansatz, _uccsd_excitations
 from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import Optimizer
@@ -83,42 +82,45 @@ def _uccsd_amplitude_seed(
     """Map CCSD ``t1``/``t2`` onto :class:`~divi.qprog.algorithms.UCCSDAnsatz`'s
     first layer by direct amplitude correspondence.
 
-    ``pyscf.cc.addons.spatial2spin`` expands the restricted (spatial-orbital)
-    ``t1``/``t2`` into spin-orbital tensors under its default interleaved
-    ``orbspin`` (even index alpha, odd index beta), which is the same
-    interleaved convention ``qp.qchem.excitations`` and
-    ``divi.hamiltonians._chem._spo_from_integrals`` use. That lets each
-    single/double excitation index tuple from ``qp.qchem.excitations`` be
-    read off directly against the spin-orbital ``t1``/``t2`` tensors, rather
-    than relying on a positional truncation.
+    ``pyscf.cc.addons.spatial2spin`` expands the restricted ``t1``/``t2`` into
+    interleaved spin-orbital tensors (even index alpha, odd beta), indexed
+    separately within the occupied and virtual blocks. ``qiskit_nature``'s
+    excitation list uses blocked indices over the whole register, so each is
+    remapped through its ``(spatial orbital, spin)`` pair.
 
-    Doubles carry a sign flip: ``qp.UCCSD.compute_decomposition`` lowers each
-    excitation to ``exp(theta/2 * (T - T^dagger))``, so a CCSD amplitude
-    ``t`` maps to angle ``theta = 2t``, with sign
-    ``theta_double = -2 * t2`` and ``theta_single = 2 * t1``.
+    The angles are ``theta_single = -t1`` and ``theta_double = +t2``: a unique
+    excitation carries the amplitude itself, with no antisymmetrization factor
+    and no same-spin/mixed-spin distinction.
 
-    Only the first layer is seeded; any additional layers (``n_layers > 1``)
-    have no corresponding CCSD amplitude and are left at zero.
+    Requires a spin-balanced fragment -- one occupied count serves both spins.
+    Only the first layer is seeded; further layers have no corresponding CCSD
+    amplitude and stay at zero.
     """
     # pyrefly: ignore[missing-attribute]  # cc_addons is None only if pyscf is absent
     t1_full = cc_addons.spatial2spin(coupled_cluster.t1)
     # pyrefly: ignore[missing-attribute]  # cc_addons is None only if pyscf is absent
     t2_full = cc_addons.spatial2spin(coupled_cluster.t2)
-    n_electrons = spec.n_alpha + spec.n_beta
-    n_qubits = 2 * spec.n_orbitals
-    singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
+    n_spatial = spec.n_orbitals
+    n_occupied = spec.n_alpha
 
-    first_layer = np.concatenate(
-        [
-            [2.0 * t1_full[r, p - n_electrons] for r, p in singles],
-            [
-                -2.0 * t2_full[s, r, q - n_electrons, p - n_electrons]
-                for s, r, q, p in doubles
-            ],
-        ]
-    )
+    def block_index(blocked: int) -> int:
+        """Amplitude-block index for a blocked spin-orbital index."""
+        spin, spatial = divmod(blocked, n_spatial)
+        if spatial < n_occupied:
+            return 2 * spatial + spin
+        return 2 * (spatial - n_occupied) + spin
+
+    first_layer = []
+    for occupied, unoccupied in _uccsd_excitations(n_spatial, (n_occupied, n_occupied)):
+        occupied_indices = [block_index(index) for index in occupied]
+        virtual_indices = [block_index(index) for index in unoccupied]
+        if len(occupied) == 1:
+            first_layer.append(-t1_full[occupied_indices[0], virtual_indices[0]])
+        else:
+            first_layer.append(t2_full[tuple(occupied_indices + virtual_indices)])
+
     seed = np.zeros(n_params)
-    take = min(n_params, first_layer.size)
+    take = min(n_params, len(first_layer))
     seed[:take] = first_layer[:take]
     return seed
 
@@ -167,19 +169,13 @@ def _ccsd_seed_params(
         restricted CCSD cannot represent) or if the mean-field or CCSD
         calculation fails to converge or raises.
 
-    Note:
-        ``validate_fragment_specs`` already rejects spin-imbalanced
-        fragments, so this function's own spin-imbalance branch should be
-        unreachable in practice; it is kept as defence-in-depth rather than
-        as a supported code path.
     """
     if spec.n_alpha != spec.n_beta:
         warn(
             f"CCSD seeding skipped for fragment {spec.orbitals}: restricted "
             f"CCSD requires equal alpha/beta electron counts, got n_alpha="
-            f"{spec.n_alpha}, n_beta={spec.n_beta}. This should be "
-            "unreachable, since fragment specs are validated before this "
-            "point; falling back to the optimizer's own initialization.",
+            f"{spec.n_alpha}, n_beta={spec.n_beta}. Falling back to the "
+            "optimizer's own initialization.",
             UserWarning,
             stacklevel=2,
         )
@@ -243,7 +239,9 @@ def _compute_n_core(specs: Sequence[FragmentSpec], n_occupied: int) -> int:
     return n_occupied - sum(1 for orbital in active_orbitals if orbital < n_occupied)
 
 
-def _diagonal_rdm_guess(spec: FragmentSpec) -> tuple[np.ndarray, np.ndarray]:
+def _diagonal_rdm_guess(
+    spec: FragmentSpec,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Build a diagonal RDM guess for a fresh fragment.
 
     Places ``n_alpha`` alpha electrons and ``n_beta`` beta electrons on the
@@ -251,17 +249,21 @@ def _diagonal_rdm_guess(spec: FragmentSpec) -> tuple[np.ndarray, np.ndarray]:
     ``[p, p, q, q]`` elements of the 2-RDM are populated, each set to
     ``rdm1[p, p] * rdm1[q, q]``; every other element, including all
     off-diagonal-block elements, stays zero.
+
+    Returns ``(rdm1, rdm2, rdm1_alpha, rdm1_beta)``.
     """
     n_orb = spec.n_orbitals
-    occupation = np.zeros(n_orb)
-    occupation[: spec.n_alpha] += 1.0
-    occupation[: spec.n_beta] += 1.0
+    occ_alpha = np.zeros(n_orb)
+    occ_alpha[: spec.n_alpha] = 1.0
+    occ_beta = np.zeros(n_orb)
+    occ_beta[: spec.n_beta] = 1.0
+    occupation = occ_alpha + occ_beta
     rdm1 = np.diag(occupation)
 
     rdm2 = np.zeros((n_orb, n_orb, n_orb, n_orb))
     p, q = np.meshgrid(np.arange(n_orb), np.arange(n_orb), indexing="ij")
     rdm2[p, p, q, q] = occupation[p] * occupation[q]
-    return rdm1, rdm2
+    return rdm1, rdm2, np.diag(occ_alpha), np.diag(occ_beta)
 
 
 class LASSQD(ProgramEnsemble):
@@ -274,11 +276,11 @@ class LASSQD(ProgramEnsemble):
     VQE programs; running rounds and aggregating results are handled
     elsewhere.
 
-    With more than one fragment, :attr:`energy` is not variational and can
-    fall substantially below an exact reference (FCI/CASCI) on the same
-    active space; see :ref:`lassqd-accuracy-characteristics` in the user
-    guide. A single fragment spanning the whole active space is variational
-    and comparable to FCI.
+    :attr:`energy` is a variational upper bound -- the assembled RDM is that of
+    a product of fragment states, so the energy is a genuine expectation value.
+    Fragmenting nonetheless costs accuracy, and the cost grows with how
+    strongly the fragments interact; see
+    :ref:`lassqd-accuracy-characteristics` in the user guide.
 
     Args:
         molecule: A PySCF ``gto.Mole`` (an RHF calculation is run on it lazily,
@@ -304,16 +306,19 @@ class LASSQD(ProgramEnsemble):
         ansatz: Per-fragment ansatz. Defaults to ``UCCSDAnsatz()``.
         max_iterations: Max optimization iterations per fragment VQE.
         n_batches: Number of SQD batches per fragment recovery.
-        batch_size: SQD batch size.
+        batch_size: Configurations sampled per SQD batch, so the subspace holds
+            up to ``batch_size ** 2`` determinants. The accuracy knob; a
+            one-determinant subspace is the mean field.
         n_sqd_iterations: Number of SQD self-consistent recovery iterations.
         energy_tol: Macro-cycle stops once consecutive rounds' total energies
             differ by less than this (Hartree).
         lambda_penalty: Weight of the S² spin-contamination penalty added to
             each fragment's projected Hamiltonian before diagonalization.
-        seed: Random seed. Makes fragmentation, localization, and sampling
-            reproducible; numerical results may still differ in the last few
-            digits between runs, so compare with a tolerance rather than for
-            exact equality.
+        seed: Seed for fragmentation, localization, and SQD subsampling, also
+            passed to the backend. Reproducibility is limited by the backend:
+            :class:`~divi.backends.QiskitSimulator` seeds exactly, while
+            :class:`~divi.backends.MaestroSimulator` cannot, so identical runs
+            are not guaranteed to agree bit for bit there.
         **kwargs: ``backend`` (required) and ``reporting_level`` are consumed
             here; ``program_id`` and ``progress_queue`` are set internally and
             must not be passed here. Any other keyword is forwarded verbatim
@@ -330,8 +335,7 @@ class LASSQD(ProgramEnsemble):
             ``batch_size``, or ``n_sqd_iterations`` is below 1; if
             ``energy_tol`` is not positive; if ``coupling_threshold`` or
             ``lambda_penalty`` is negative; or (for ``active_spaces``) if any
-            fragment is spin-imbalanced (``n_alpha != n_beta``), fully
-            occupied, or fragments overlap.
+            fragment leaves no excitation available, or fragments overlap.
         TypeError: If ``program_id`` or ``progress_queue`` is passed via
             ``kwargs``, if ``backend`` is missing, if ``molecule`` is
             neither a PySCF ``Mole`` nor a restricted mean-field, or if
@@ -485,6 +489,7 @@ class LASSQD(ProgramEnsemble):
 
         self._state: LASSQDState | None = None
         self._solvers: dict[int, SQDSolver] = {}
+        self._energy_history: list[float] = []
         self._ao_eri: np.ndarray | None = None
         self._h_ao: np.ndarray | None = None
 
@@ -564,14 +569,20 @@ class LASSQD(ProgramEnsemble):
         permutation = build_active_permutation(specs, n_core, n_orbitals_total)
         mo_coeff = mo_coeff[:, permutation]
 
-        fragments = tuple(
-            FragmentState(spec=spec, rdm1=rdm1, rdm2=rdm2, params=None)
-            for spec, (rdm1, rdm2) in (
-                (spec, _diagonal_rdm_guess(spec)) for spec in specs
+        fragments = []
+        for spec in specs:
+            rdm1, rdm2, rdm1_alpha, rdm1_beta = _diagonal_rdm_guess(spec)
+            fragments.append(
+                FragmentState(
+                    spec=spec,
+                    rdm1=rdm1,
+                    rdm2=rdm2,
+                    rdm1_alpha=rdm1_alpha,
+                    rdm1_beta=rdm1_beta,
+                )
             )
-        )
 
-        return LASSQDState(mo_coeff=mo_coeff, fragments=fragments)
+        return LASSQDState(mo_coeff=mo_coeff, fragments=tuple(fragments))
 
     def create_programs(self, state: LASSQDState | None = None):
         """Create one fragment VQE per fragment in ``state``.
@@ -630,7 +641,10 @@ class LASSQD(ProgramEnsemble):
             n_qubits = 2 * fragment.spec.n_orbitals
             n_layers = self._extra_kwargs.get("n_layers", 1)
             n_params = n_layers * self._ansatz.n_params_per_layer(
-                n_qubits, n_electrons=n_electrons
+                n_qubits,
+                n_electrons=n_electrons,
+                n_alpha=fragment.spec.n_alpha,
+                n_beta=fragment.spec.n_beta,
             )
             seed_params = _ccsd_seed_params(
                 h_eff, g_frag, fragment.spec, n_params, self._ansatz
@@ -639,6 +653,8 @@ class LASSQD(ProgramEnsemble):
         return _FragmentVQE(
             hamiltonian=hamiltonian,
             n_electrons=n_electrons,
+            n_alpha=fragment.spec.n_alpha,
+            n_beta=fragment.spec.n_beta,
             ansatz=self._ansatz,
             optimizer=copy.deepcopy(self._optimizer),
             max_iterations=self._max_iterations,
@@ -685,6 +701,11 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         super()._reset_workflow_state()
         self._rng = np.random.default_rng(self._seed)
         self._solvers.clear()
+        self._energy_history.clear()
+        if self._seed is not None and self.backend is not None:
+            # No-op on backends that cannot seed their sampler, so a run stays
+            # reproducible only as far as the backend allows.
+            self.backend.set_seed(self._seed)
 
     def _solver_for(self, index: int, spec: FragmentSpec) -> SQDSolver:
         """Return this fragment's cached ``SQDSolver``, building it once.
@@ -733,13 +754,10 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         from the recovered subspace. The full active-space RDM is then
         reassembled and the molecular orbitals re-optimized against it.
 
-        The reassembled active-space RDM zeroes every cross-fragment 2-RDM
-        block, so with more than one fragment the returned ``energy`` is not
-        variational and can fall well below an exact reference (FCI/CASCI on
-        the same active space); it must not be read as an upper bound. With a
-        single fragment spanning the whole active space there are no
-        cross-fragment blocks to zero, so the functional is variational and
-        the result is comparable to FCI.
+        The reassembled RDM includes the cross-fragment 2-RDM blocks, so it is
+        the RDM of a product of fragment states and the returned ``energy`` is a
+        variational upper bound. What fragmenting costs is the inter-fragment
+        *correlation* that a product state cannot represent.
 
         Args:
             state: The state whose fragments were used to build the
@@ -805,13 +823,17 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             dets = [
                 bitstring_to_spatial_det(bs, spec.n_orbitals) for bs in result.subspace
             ]
-            rdm1, rdm2 = compute_spatial_rdms(dets, result.eigenvector, spec.n_orbitals)
+            rdm1, rdm2, rdm1_alpha, rdm1_beta = compute_spatial_rdms(
+                dets, result.eigenvector, spec.n_orbitals
+            )
             new_fragments.append(
                 FragmentState(
                     spec=spec,
                     rdm1=rdm1,
                     rdm2=rdm2,
                     params=np.asarray(program.best_params).ravel(),
+                    rdm1_alpha=rdm1_alpha,
+                    rdm1_beta=rdm1_beta,
                 )
             )
 
@@ -828,6 +850,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             h_ao,
         )
 
+        self._energy_history.append(float(energy))
+
         return LASSQDState(
             mo_coeff=mo_coeff,
             fragments=tuple(new_fragments),
@@ -840,12 +864,37 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         return abs(state.energy - state.previous_energy) < self._energy_tol
 
     @property
-    def energy(self) -> float:
-        """Converged total energy, or ``inf`` before the first round.
+    def energy_history(self) -> tuple[float, ...]:
+        """Total energy of each completed round, in order."""
+        return tuple(self._energy_history)
 
-        Not variational with more than one fragment: it can fall well below
-        an exact reference on the same active space. See
-        :ref:`lassqd-accuracy-characteristics` in the user guide.
+    @property
+    def best_energy(self) -> float:
+        """Lowest energy over all completed rounds, or ``inf`` before the first.
+
+        Every round's energy is a variational upper bound, so the lowest is the
+        tightest one this run established.
+
+        Note that ``workflow_state`` still holds the *last* round's orbitals,
+        which are not the ones that produced this energy unless the two
+        coincide.
+        """
+        if not self._energy_history:
+            return float("inf")
+        return min(self._energy_history)
+
+    @property
+    def energy(self) -> float:
+        """Total energy of the last completed round, or ``inf`` before the first.
+
+        A variational upper bound: the assembled RDM is that of a product of
+        fragment states, so this is a genuine expectation value and cannot fall
+        below an exact reference on the same active space. Fragmenting still
+        costs accuracy -- see :ref:`lassqd-accuracy-characteristics`.
+
+        The macro-cycle is not guaranteed monotone, so a later round can report
+        a higher energy than an earlier one; ``energy_history`` records each, and
+        ``best_energy`` gives the lowest.
         """
         if self.workflow_state is None:
             return float("inf")

@@ -53,8 +53,8 @@ interaction (FCI) calculation on the same active space:
        active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=5,
-       n_batches=2,
-       batch_size=4,
+       n_batches=4,
+       batch_size=128,
        n_sqd_iterations=1,
        seed=0,
        backend=MaestroSimulator(shots=500),
@@ -64,33 +64,19 @@ interaction (FCI) calculation on the same active space:
 
 .. important::
 
-   Every code example on this page uses a deliberately small sampling
-   budget (``n_batches``, ``batch_size``, ``n_sqd_iterations`` well below
-   the constructor's defaults of 15, 170, and 6) so it runs quickly.
-   ``lambda_penalty`` (default ``0.2``) is a further SQD sizing knob: the
-   weight of the S² spin-contamination penalty applied before
-   diagonalizing each fragment's projected Hamiltonian. A
-   ``stop_reason`` of ``COMPLETE`` only means the energy stopped changing
-   between rounds — it does **not** mean the energy is accurate. Run
-   verbatim, the snippet above lands about 20 mHa above FCI — H2/STO-3G's
-   entire correlation energy — meaning SQD's recovered subspace held only
-   the reference (RHF) determinant and the reported energy is exactly the
-   mean-field energy; that is directly recognizable, since the two values
-   match. Reaching chemical accuracy takes a substantially larger budget;
-   the measured result below (agreeing with FCI to ``2e-16`` Ha) uses
-   ``n_batches=12, batch_size=32, n_sqd_iterations=3, max_iterations=60``
-   at ``seed=7``.
+   Examples here run below the defaults (``n_batches=15``,
+   ``batch_size=170``, ``n_sqd_iterations=6``) for speed. ``batch_size`` is the
+   accuracy knob: configurations sampled per batch, and the subspace holds at
+   most its square.
 
-On H2/STO-3G with that larger budget and seed, a converged single-fragment
-run agrees with FCI to about ``2e-16`` Ha. Whether the correlated
-determinants get captured depends on the seed as well as the budget: across
-seeds ``{0, 1, 2, 3, 42}`` at that same budget, only one seed reproduced
-this result, and the other four converged onto the mean-field energy with
-``stop_reason == COMPLETE``. Raising ``max_iterations`` well beyond 60
-changes nothing once a seed has landed on the mean-field plateau. Reaching
-FCI is therefore possible but not guaranteed by budget alone. Fragmenting
-the same active space into more than one piece moves the workflow into the
-regime described in :ref:`lassqd-accuracy-characteristics`.
+   ``stop_reason == COMPLETE`` means the energy stopped *changing*, not that it
+   is accurate. An energy equal to the mean field means the subspace held only
+   the reference determinant; the workflow warns when that happens.
+
+One fragment spanning the whole space is just SQD on that space, so the snippet
+above reaches FCI. At ``batch_size=32`` it returns the mean-field energy
+instead: the correlated determinant carries about 1% of the distribution here,
+so a few dozen samples usually miss it.
 
 Explicit Fragment Specification
 --------------------------------
@@ -126,23 +112,25 @@ two occupied MOs and its two virtual MOs:
            FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
        ],
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-       max_iterations=5,
-       n_batches=2,
-       batch_size=4,
+       max_iterations=20,
+       n_batches=4,
+       batch_size=128,
        n_sqd_iterations=1,
        seed=7,
-       backend=MaestroSimulator(shots=200),
+       backend=MaestroSimulator(shots=2000),
    )
    ensemble.run(max_rounds=2)
-   # With two fragments this energy is not variational and is not
-   # comparable to FCI/CASCI -- see Accuracy Characteristics below.
    print(f"Energy: {ensemble.energy:.6f} Ha")
 
-.. warning::
+.. note::
 
-   With more than one fragment, as above, the reported energy is **not
-   variational** and is not comparable to FCI/CASCI on the same active
-   space — see :ref:`lassqd-accuracy-characteristics` below.
+   Occupied-vs-virtual is a poor split here — every H2 unit straddles both
+   fragments. ``tutorials/chemistry/lassqd_h4.py`` compares it against cutting
+   along the weakest coupling.
+
+   The energy is a variational upper bound, so it sits *above* FCI/CASCI on the
+   same active space. How far above depends on how strongly the fragments
+   interact — see :ref:`lassqd-accuracy-characteristics` below.
 
 Automatic Fragmentation
 ------------------------
@@ -189,8 +177,8 @@ is the relative edge-pruning threshold for that coupling graph.
        max_orbitals_per_fragment=2,
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=2,
-       n_batches=2,
-       batch_size=4,
+       n_batches=4,
+       batch_size=128,
        n_sqd_iterations=1,
        seed=0,
        backend=MaestroSimulator(shots=200),
@@ -246,8 +234,8 @@ energies differ by less than ``energy_tol`` (default ``1e-6`` Ha). After
        active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=5,
-       n_batches=2,
-       batch_size=4,
+       n_batches=4,
+       batch_size=128,
        n_sqd_iterations=1,
        seed=0,
        backend=MaestroSimulator(shots=500),
@@ -263,27 +251,35 @@ energies differ by less than ``energy_tol`` (default ``1e-6`` Ha). After
 Accuracy Characteristics
 --------------------------
 
-**Fragmenting the active space is not variational.** Reassembling
-per-fragment RDMs zeroes every cross-fragment 2-RDM block, so with more than
-one fragment the reported ``energy`` is not comparable to a CASCI or FCI
-calculation on the same active space and can fall substantially below it —
-this is not a convergence failure. Measured on a linear H4 chain with two
-2-orbital fragments, the converged energy sits about 1.47 Ha below CASCI. A
-fixed-orbital-basis estimate of the zeroed-block error alone accounts for
-only about 0.37 Ha of that gap; the remaining ~1.1 Ha accumulates because
-each macro-cycle re-optimizes the molecular orbitals against a
-non-N-representable RDM, and the self-consistency loop compounds that error
-round over round until it converges by ``energy_tol`` onto the lower value.
-The electron count and symmetry stay correct throughout — only the absolute
-energy is affected. Do not use a multi-fragment LASSQD energy as a
-drop-in replacement for a CASCI or FCI reference.
+**The energy is a variational upper bound.** Reassembling the per-fragment
+RDMs reproduces the reduced density matrices of a product of fragment states,
+including the cross-fragment Coulomb and exchange blocks, so the reported
+``energy`` is a genuine expectation value and cannot fall below a CASCI or FCI
+calculation on the same active space.
 
-**A single fragment spanning the whole active space is the exception**: with
-no cross-fragment blocks to zero, the functional is variational and the
-result is directly comparable to FCI (see
-`A Single Fragment: the Variational Case`_ above). This makes a
-single-fragment run a useful sanity check when validating a new fragment
-layout or a change to fragment-level settings.
+**What fragmenting costs is inter-fragment correlation.** A product of fragment
+states cannot describe correlation *between* fragments, and the error grows with
+how strongly they interact. Measured against a CASCI reference on the same
+active space: essentially exact for well-separated H\ :sub:`2` pairs, tens of
+mHa on coupled hydrogen chains, and — on an N\ :sub:`2` triple bond in a
+six-orbital active space — around 50 mHa near equilibrium, rising to roughly
+285 mHa at a bond length of 3.0 Å once the bond is fully broken. Pick fragments
+along weak interactions, not through bonds.
+
+Two consequences worth knowing before you trust a number:
+
+* **Error smoothness matters more than its size** for relative energies. On
+  H\ :sub:`4` separation and symmetric-stretch curves the error is smooth and
+  monotone; on N\ :sub:`2` it is neither. Across 1.1–3.0 Å it moves by 12–28 mHa
+  between adjacent geometries near equilibrium and by about 175 mHa between 2.5
+  and 3.0 Å, and it does not decrease monotonically. Automatic fragmentation is
+  part of the reason: the layout it picks changes along the curve, so adjacent
+  points are not always solving the same partitioning. Such a curve is unusable
+  for reaction energies even though each point is a valid bound.
+* **More fragments is not automatically worse.** A single fragment spanning a
+  wide active space asks more of the sampling than several narrow ones, and can
+  come out less accurate despite being the more expressive ansatz. Compare
+  layouts on your own system rather than assuming.
 
 Choosing an Ansatz
 --------------------

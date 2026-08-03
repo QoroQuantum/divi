@@ -5,15 +5,18 @@
 """Built-in QAOA / VQE ansätze.
 
 Every ``Ansatz.build`` creates and returns a :class:`~qiskit.circuit.QuantumCircuit`.
-Chemistry ansätze (``UCCSDAnsatz``, ``HartreeFockAnsatz``,
-``QCCAnsatz``) source excitation / Hartree-Fock data from ``pennylane.qchem``
-and route the PL gates through the local PL → Qiskit converter; consumers
-always see Qiskit instructions.
+``UCCSDAnsatz`` sources its excitations and Hartree-Fock reference from
+``qiskit_nature`` (the ``chem`` extra), remapping that library's blocked spin
+ordering onto Divi's interleaved one. The remaining chemistry ansätze
+(``HartreeFockAnsatz``, ``QCCAnsatz``) source excitation / Hartree-Fock data
+from ``pennylane.qchem`` and route the PL gates through the local PL → Qiskit
+converter; consumers always see Qiskit instructions.
 """
 
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from functools import cache
 from typing import Literal
 from warnings import warn
 
@@ -380,6 +383,107 @@ class QAOAAnsatz(Ansatz):
 # --- Chemistry Ansätze ---
 
 
+def _resolve_spin_counts(
+    n_qubits: int,
+    n_electrons: int,
+    n_alpha: int | None,
+    n_beta: int | None,
+    ansatz_name: str,
+) -> tuple[int, tuple[int, int]]:
+    """Resolve ``(n_spatial_orbitals, (n_alpha, n_beta))`` for a reference state.
+
+    With neither spin count given, the closed-shell split
+    ``n_alpha = n_beta = n_electrons // 2`` is used, which requires an even
+    ``n_electrons``.
+    """
+    if n_qubits % 2:
+        raise ValueError(
+            f"{ansatz_name} needs an even qubit count (two spin-orbitals per "
+            f"spatial orbital); got n_qubits={n_qubits}."
+        )
+    n_spatial = n_qubits // 2
+
+    if (n_alpha is None) != (n_beta is None):
+        raise ValueError(
+            f"{ansatz_name} needs n_alpha and n_beta together; got "
+            f"n_alpha={n_alpha}, n_beta={n_beta}."
+        )
+
+    if n_alpha is None or n_beta is None:
+        if n_electrons % 2:
+            raise ValueError(
+                f"{ansatz_name} cannot split {n_electrons} electrons into equal "
+                "alpha/beta counts. Pass n_alpha and n_beta explicitly for a "
+                "spin-imbalanced reference."
+            )
+        n_alpha = n_beta = n_electrons // 2
+    elif n_alpha + n_beta != n_electrons:
+        raise ValueError(
+            f"{ansatz_name} got n_alpha={n_alpha} and n_beta={n_beta}, which sum "
+            f"to {n_alpha + n_beta}, not n_electrons={n_electrons}."
+        )
+
+    for name, count in (("n_alpha", n_alpha), ("n_beta", n_beta)):
+        if not 0 <= count <= n_spatial:
+            raise ValueError(
+                f"{ansatz_name} got {name}={count}, outside the range "
+                f"[0, {n_spatial}] set by {n_qubits} qubits."
+            )
+    return n_spatial, (n_alpha, n_beta)
+
+
+@cache
+def _uccsd_template(
+    n_spatial: int, n_particles: tuple[int, int]
+) -> tuple[QuantumCircuit, QuantumCircuit, tuple[tuple[tuple[int, ...], ...], ...]]:
+    """``(reference_state, ansatz, excitations)`` from qiskit-nature, in
+    interleaved spin order.
+
+    Both circuits are built eagerly and copied into plain ``QuantumCircuit``\\ s:
+    qiskit-nature's ``BlueprintCircuit`` marks itself built before it finishes
+    appending gates, so one left unbuilt can be read half-constructed from
+    another worker thread. The results are cached and shared, so callers must
+    compose or bind without mutating them.
+    """
+    try:
+        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        from qiskit_nature.second_q import mappers
+
+        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        from qiskit_nature.second_q.circuit import library
+    except ImportError as exc:
+        raise ImportError(
+            "UCCSDAnsatz requires the 'chem' extra; "
+            "install it with `pip install qoro-divi[chem]`."
+        ) from exc
+
+    # Interleaving must happen in the mapper: Jordan-Wigner parity strings are
+    # built over the mapper's mode order, so permuting qubits afterwards leaves
+    # each excitation's Z-string covering the wrong modes.
+    mapper = mappers.InterleavedQubitMapper(mappers.JordanWignerMapper())
+
+    blueprint = library.UCCSD(n_spatial, n_particles, mapper)
+    blueprint.num_parameters  # force the lazy build
+    excitations = tuple(blueprint.excitation_list or ())
+
+    ansatz = QuantumCircuit(2 * n_spatial)
+    ansatz.compose(blueprint, inplace=True)
+
+    reference = QuantumCircuit(2 * n_spatial)
+    reference.compose(library.HartreeFock(n_spatial, n_particles, mapper), inplace=True)
+    return reference, ansatz, excitations
+
+
+def _uccsd_excitations(
+    n_spatial: int, n_particles: tuple[int, int]
+) -> tuple[tuple[tuple[int, ...], ...], ...]:
+    """UCCSD excitation list, as ``(occupied, unoccupied)`` blocked indices.
+
+    Positionally aligned with the ansatz's parameter vector.
+    """
+    return _uccsd_template(n_spatial, n_particles)[2]
+
+
 class UCCSDAnsatz(Ansatz):
     """
     Unitary Coupled Cluster Singles and Doubles (UCCSD) ansatz.
@@ -387,34 +491,49 @@ class UCCSDAnsatz(Ansatz):
     This ansatz is specifically designed for quantum chemistry calculations,
     implementing the UCCSD approximation which includes all single and double
     electron excitations from a reference state.
+
+    Excitations and the Hartree-Fock reference come from ``qiskit_nature``,
+    which requires the ``chem`` extra. Spin-imbalanced references are
+    supported by passing ``n_alpha`` and ``n_beta``; without them the
+    closed-shell split ``n_alpha = n_beta = n_electrons // 2`` is used.
     """
 
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
-        """``len(s_wires) + len(d_wires)`` from ``qp.qchem.excitations`` for
-        the given ``n_electrons`` (required kwarg)."""
+        """Number of UCCSD excitation amplitudes for the given reference.
+
+        Requires ``n_electrons``; optionally accepts ``n_alpha`` / ``n_beta``.
+        """
         n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
-        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
-        s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
-        n_params = len(s_wires) + len(d_wires)
-        return _require_trainable_params(n_params, UCCSDAnsatz.__name__)
+        n_spatial, n_particles = _resolve_spin_counts(
+            n_qubits,
+            n_electrons,
+            kwargs.get("n_alpha"),
+            kwargs.get("n_beta"),
+            "UCCSDAnsatz",
+        )
+        _, template, _ = _uccsd_template(n_spatial, n_particles)
+        return _require_trainable_params(template.num_parameters, UCCSDAnsatz.__name__)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
-        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
-        s_wires, d_wires = qp.qchem.excitations_to_wires(singles, doubles)
-        hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
+        n_spatial, n_particles = _resolve_spin_counts(
+            n_qubits,
+            n_electrons,
+            kwargs.get("n_alpha"),
+            kwargs.get("n_beta"),
+            "UCCSDAnsatz",
+        )
+        reference, template, _ = _uccsd_template(n_spatial, n_particles)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
-        pl_ops = qp.UCCSD.compute_decomposition(
-            params,
-            wires=range(n_qubits),
-            s_wires=s_wires,
-            d_wires=d_wires,
-            init_state=hf_state,
-            n_repeats=n_layers,
-        )
-        return _pl_ops_to_qc(pl_ops, n_qubits)
+        qc = QuantumCircuit(n_qubits)
+        qc.compose(reference, inplace=True)
+        for layer in params:
+            qc.compose(
+                template.assign_parameters(list(layer), inplace=False), inplace=True
+            )
+        return qc
 
 
 class HartreeFockAnsatz(Ansatz):
@@ -518,10 +637,13 @@ class LUCJAnsatz(Ansatz):
     partner. The Hartree-Fock reference is embedded, so no separate initial
     state is needed.
 
-    Restricted to closed-shell references: ``n_electrons`` must be even and
-    at most ``n_qubits``. A two-qubit register (one spatial orbital) has a
-    single diagonal on-site term and no hopping, so its output is fixed
-    regardless of the parameter value — it offers no variational freedom.
+    ``n_electrons`` must be at most ``n_qubits``. Spin-imbalanced references
+    are supported by passing ``n_alpha`` and ``n_beta``; without them the
+    closed-shell split ``n_alpha = n_beta = n_electrons // 2`` is used, which
+    requires an even ``n_electrons``. A two-qubit register (one spatial
+    orbital) has a single diagonal on-site term and no hopping, so its output
+    is fixed regardless of the parameter value — it offers no variational
+    freedom.
 
     Measured limitation: on a minimal two-orbital, one-alpha-one-beta
     fragment, exact optimization of this ansatz's parameters (global search,
@@ -560,30 +682,31 @@ class LUCJAnsatz(Ansatz):
                 ``n_layers * n_params_per_layer(n_qubits)``.
             n_qubits: Number of qubits. Must be even.
             n_layers: Number of LUCJ layers.
-            **kwargs: Must include ``n_electrons`` (an even integer, at most
-                ``n_qubits``).
+            **kwargs: Must include ``n_electrons`` (at most ``n_qubits``).
+                Optionally accepts ``n_alpha`` / ``n_beta`` to select a
+                spin-imbalanced reference determinant.
 
         Returns:
             QuantumCircuit: Qiskit circuit implementing the LUCJ ansatz.
 
         Raises:
-            ValueError: If ``n_qubits`` is odd, if ``n_electrons`` is missing,
-                odd, or exceeds ``n_qubits``, or if ``params`` is shorter than
+            ValueError: If ``n_qubits`` is odd, if ``n_electrons`` is missing or
+                exceeds ``n_qubits``, if ``n_electrons`` is odd without
+                ``n_alpha``/``n_beta``, or if ``params`` is shorter than
                 ``n_layers * n_params_per_layer(n_qubits)``.
         """
-        if n_qubits % 2:
-            raise ValueError(f"LUCJAnsatz needs an even qubit count; got {n_qubits}.")
         n_electrons = _require_n_electrons(kwargs, "LUCJAnsatz")
-        if n_electrons % 2:
-            raise ValueError(
-                f"LUCJAnsatz only supports closed-shell references (even "
-                f"n_electrons); got {n_electrons}."
-            )
         if n_electrons > n_qubits:
             raise ValueError(
                 f"n_electrons ({n_electrons}) cannot exceed n_qubits ({n_qubits})."
             )
-        n_orb = n_qubits // 2
+        n_orb, (n_alpha, n_beta) = _resolve_spin_counts(
+            n_qubits,
+            n_electrons,
+            kwargs.get("n_alpha"),
+            kwargs.get("n_beta"),
+            "LUCJAnsatz",
+        )
 
         per_layer = LUCJAnsatz.n_params_per_layer(n_qubits)
         flat = np.asarray(params, dtype=object).flatten()
@@ -595,10 +718,10 @@ class LUCJAnsatz(Ansatz):
             )
 
         circuit = QuantumCircuit(n_qubits)
-        # Hartree-Fock reference: interleaved ordering puts the lowest
-        # n_electrons spin-orbitals on the lowest qubits.
-        for qubit in range(n_electrons):
-            circuit.x(qubit)
+        for p in range(n_alpha):
+            circuit.x(2 * p)
+        for p in range(n_beta):
+            circuit.x(2 * p + 1)
 
         hop_pairs = [
             (2 * p + spin, 2 * (p + 1) + spin)
