@@ -292,17 +292,29 @@ distribution to recover the ground state from.
 :class:`~divi.qprog.algorithms.LUCJAnsatz` is also available (pass
 ``ansatz=LUCJAnsatz()``); it only uses fewer parameters per layer than
 ``UCCSDAnsatz`` on larger fragments (e.g. 16 vs. 26 at 8 qubits) — at 4
-qubits it is more expensive (6 vs. 3). On a minimal two-orbital fragment it
-plateaus about 20 mHa above the exact ground state — again H2/STO-3G's
-entire correlation energy — because this ansatz cannot represent the
-correlated state at all, so its sampled distribution never covers anything
-beyond the reference determinant; adding layers does not lift the plateau,
-since more layers of an ansatz that can't reach the correlated state don't
-help. This is the same "subspace collapsed to one determinant" outcome as
-the small-sampling-budget case above, reached for a different reason: an
-inexpressive ansatz rather than too few samples. Prefer ``UCCSDAnsatz``
-(the default) unless you have already validated ``LUCJAnsatz`` against a
-reference on your specific fragment size.
+qubits it is more expensive (6 vs. 3).
+
+Its accuracy depends strongly on fragment size, and on a **two-orbital
+fragment it recovers nothing at all**: exact optimization from many random
+starts returns
+the Hartree-Fock determinant itself, about 20 mHa above the exact ground state
+on H\ :sub:`4`'s fragments. Its sampled distribution then covers only the
+reference determinant, which is the same "subspace collapsed to one
+determinant" outcome as the small-sampling-budget case above, reached for a
+different reason. Adding layers does not help there — 1, 2 and 3 layers agree
+to 8 significant figures — because a two-orbital register has too little
+structure for the ansatz to act on, not because the ansatz is inexpressive in
+general: on a four-orbital fragment the same measurement recovers 47%, 66% and
+88% of the correlation energy at 1, 2 and 3 layers. Raise ``n_layers`` before
+concluding it cannot reach your fragment's correlated state, and prefer
+``UCCSDAnsatz`` (the default) unless you have validated ``LUCJAnsatz`` against
+a reference at your own fragment size.
+
+To match the circuit arXiv:2405.05068 and arXiv:2512.14936 run — the truncated
+LUCJ form ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` on the Hartree-Fock determinant
+— pass ``ansatz_kwargs={"trailing_rotation": True}`` with ``n_layers=1``. On a
+five-orbital fragment that costs 29 parameters against 21 without it, where a
+second full layer would cost 42.
 
 Next Steps
 ------------

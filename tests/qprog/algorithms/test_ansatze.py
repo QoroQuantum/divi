@@ -454,7 +454,13 @@ def _make_uccsd_vqe(n_qubits, n_electrons, backend, optimizer, **spin_counts):
 
 
 def _make_lucj_vqe(
-    n_qubits, n_electrons, backend, optimizer, n_layers=1, **spin_counts
+    n_qubits,
+    n_electrons,
+    backend,
+    optimizer,
+    n_layers=1,
+    ansatz_kwargs=None,
+    **spin_counts,
 ):
     """Build a VQE(LUCJAnsatz()) over a dummy n_qubits-wide Hamiltonian.
 
@@ -470,8 +476,37 @@ def _make_lucj_vqe(
         ansatz=LUCJAnsatz(),
         backend=backend,
         optimizer=optimizer,
+        ansatz_kwargs=ansatz_kwargs,
         **spin_counts,
     )
+
+
+def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
+    default_test_simulator, default_optimizer
+):
+    """An ansatz option must reach ``n_params_per_layer`` *and* ``build``.
+
+    If only ``build`` saw it, the circuit would carry unbound parameters; if
+    only the count saw it, the optimizer would tune parameters no gate reads.
+    Either way the mismatch is silent, so assert the two agree.
+    """
+    n_qubits, n_electrons = 6, 2
+    plain = _make_lucj_vqe(
+        n_qubits, n_electrons, default_test_simulator, default_optimizer
+    )
+    extended = _make_lucj_vqe(
+        n_qubits,
+        n_electrons,
+        default_test_simulator,
+        default_optimizer,
+        ansatz_kwargs={"trailing_rotation": True},
+    )
+
+    n_hopping = 2 * (n_qubits // 2 - 1)
+    assert extended.n_params_per_layer - plain.n_params_per_layer == n_hopping
+
+    assert len(extended.cost_circuit.parameters) == extended.n_params
+    assert len(plain.cost_circuit.parameters) == plain.n_params
 
 
 @pytest.mark.parametrize(
@@ -542,6 +577,97 @@ class TestLUCJAnsatz:
             if instr.operation.name in ("xx_plus_yy", "rzz")
         }
         assert consumed_values == set(range(n_params))
+
+    @pytest.mark.parametrize("n_qubits", [4, 6, 10])
+    def test_trailing_rotation_adds_one_independent_orbital_rotation(self, n_qubits):
+        """``trailing_rotation`` must add exactly one more hopping chain, with
+        its own angles, after the layer's closing inverse rotation.
+
+        This is the difference between our circuit and the one both SQD papers
+        run (``exp(K2) exp(-K1) exp(iJ1) exp(K1)``), so pin the gate counts and
+        the ordering rather than only the parameter total: appending the extra
+        chain *before* the inverse would collapse against it.
+        """
+        n_orb = n_qubits // 2
+        n_hopping = 2 * (n_orb - 1)
+        plain = LUCJAnsatz.n_params_per_layer(n_qubits)
+        extended = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
+        assert extended - plain == n_hopping
+
+        def hop_count(**kwargs):
+            n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **kwargs)
+            circuit = LUCJAnsatz().build(
+                np.arange(1, n_params + 1, dtype=float),
+                n_qubits=n_qubits,
+                n_layers=1,
+                n_electrons=2,
+                **kwargs,
+            )
+            hops = [
+                instr for instr in circuit.data if instr.operation.name == "xx_plus_yy"
+            ]
+            return circuit, hops
+
+        _, plain_hops = hop_count()
+        circuit, extended_hops = hop_count(trailing_rotation=True)
+        assert len(extended_hops) - len(plain_hops) == n_hopping
+
+        # Every reported parameter reaches a gate, so the count cannot over-report.
+        consumed = {
+            abs(float(instr.operation.params[0]))
+            for instr in circuit.data
+            if instr.operation.name in ("xx_plus_yy", "rzz")
+        }
+        assert consumed == set(float(v) for v in range(1, extended + 1))
+
+        # The trailing chain comes last: the final gates are hops, not Jastrow.
+        names = [instr.operation.name for instr in circuit.data]
+        assert names[-n_hopping:] == ["xx_plus_yy"] * n_hopping
+
+    def test_trailing_rotation_angles_are_independent_of_the_opening_rotation(self):
+        """The added rotation is ``exp(K2)``, a *new* rotation -- not a repeat of
+        ``exp(K1)``. Sharing angles with the opening chain would make the extra
+        parameters redundant and the flag pointless."""
+        n_qubits = 6
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
+        params = np.zeros(n_params)
+        # Only the trailing block is non-zero, so any gate that fires must
+        # belong to it.
+        params[-4:] = [0.3, 0.4, 0.5, 0.6]
+        circuit = LUCJAnsatz().build(
+            params,
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+            trailing_rotation=True,
+        )
+        firing = [
+            float(instr.operation.params[0])
+            for instr in circuit.data
+            if instr.operation.name == "xx_plus_yy"
+            and abs(float(instr.operation.params[0])) > 0.0
+        ]
+        assert sorted(firing) == [0.3, 0.4, 0.5, 0.6]
+
+    def test_trailing_rotation_defaults_off(self):
+        """Existing callers must see the previous circuit unchanged."""
+        n_qubits = 6
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits)
+        rng = np.random.default_rng(11)
+        params = rng.uniform(0, 2 * np.pi, n_params)
+        without = LUCJAnsatz().build(
+            params, n_qubits=n_qubits, n_layers=1, n_electrons=2
+        )
+        explicit = LUCJAnsatz().build(
+            params,
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+            trailing_rotation=False,
+        )
+        assert [instr.operation.name for instr in without.data] == [
+            instr.operation.name for instr in explicit.data
+        ]
 
     @pytest.mark.parametrize("n_alpha,n_beta", [(2, 2), (2, 0), (3, 1)])
     def test_reference_honours_the_requested_spin_counts(self, n_alpha, n_beta):

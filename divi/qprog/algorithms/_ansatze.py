@@ -630,6 +630,8 @@ class LUCJAnsatz(Ansatz):
     opposite-spin pairs plus same-spin neighbors. Both factors conserve
     particle number and Sz, which sample-based diagonalization requires — its
     symmetry filter checks alpha and beta populations separately.
+    ``trailing_rotation`` adds a closing orbital rotation per layer; see
+    :meth:`build`.
 
     Assumes the interleaved Jordan-Wigner ordering that
     ``divi.hamiltonians._chem._spo_from_integrals`` produces: qubit ``2p`` is
@@ -645,11 +647,15 @@ class LUCJAnsatz(Ansatz):
     is fixed regardless of the parameter value — it offers no variational
     freedom.
 
-    Measured limitation: on a minimal two-orbital, one-alpha-one-beta
-    fragment, exact optimization of this ansatz's parameters (global search,
-    no shot noise) plateaus about 20 mHa above the exact ground state.
-    Additional layers do not lift the plateau: 1, 2, and 3 layers converge to
-    the same energy to 8+ significant figures.
+    Measured limitation: on a minimal two-orbital, one-alpha-one-beta fragment,
+    exact optimization of this ansatz's parameters (many random starts, no shot
+    noise)
+    returns the Hartree-Fock determinant itself -- none of the fragment's
+    correlation energy -- and 1, 2, and 3 layers agree to 8 significant
+    figures, so layers cannot lift it. That is a property of a two-orbital
+    register, not of the ansatz: on a four-orbital fragment the same
+    measurement recovers 47%, 66% and 88% of the correlation energy at 1, 2 and
+    3 layers, so the layer count is worth tuning above the minimal case.
     """
 
     @staticmethod
@@ -660,6 +666,9 @@ class LUCJAnsatz(Ansatz):
         and ``2 * (n_orb - 1)`` same-spin-neighbor Coulomb terms, where
         ``n_orb = n_qubits // 2``. Collapses to ``1`` for a single spatial
         orbital (``n_qubits == 2``), where only the on-site term applies.
+
+        ``trailing_rotation=True`` adds a further ``2 * (n_orb - 1)`` hopping
+        angles per layer; see :meth:`build`.
         """
         if n_qubits % 2:
             raise ValueError(
@@ -671,7 +680,10 @@ class LUCJAnsatz(Ansatz):
             # One spatial orbital: no hopping or same-spin neighbors, only the
             # on-site opposite-spin Coulomb term.
             return _require_trainable_params(1, LUCJAnsatz.__name__)
-        n_params = 2 * (n_orb - 1) + n_orb + 2 * (n_orb - 1)
+        n_hopping = 2 * (n_orb - 1)
+        n_params = n_hopping + n_orb + n_hopping
+        if kwargs.get("trailing_rotation"):
+            n_params += n_hopping
         return _require_trainable_params(n_params, LUCJAnsatz.__name__)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
@@ -684,7 +696,13 @@ class LUCJAnsatz(Ansatz):
             n_layers: Number of LUCJ layers.
             **kwargs: Must include ``n_electrons`` (at most ``n_qubits``).
                 Optionally accepts ``n_alpha`` / ``n_beta`` to select a
-                spin-imbalanced reference determinant.
+                spin-imbalanced reference determinant, and
+                ``trailing_rotation`` (default ``False``) to close each layer
+                with an independent orbital rotation rather than the inverse of
+                that layer's own. At ``n_layers=1`` that is the truncated LUCJ
+                circuit ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` of
+                arXiv:2405.05068 and arXiv:2512.14936; without it, the same
+                circuit lacking ``exp(K2)``.
 
         Returns:
             QuantumCircuit: Qiskit circuit implementing the LUCJ ansatz.
@@ -708,7 +726,10 @@ class LUCJAnsatz(Ansatz):
             "LUCJAnsatz",
         )
 
-        per_layer = LUCJAnsatz.n_params_per_layer(n_qubits)
+        trailing_rotation = bool(kwargs.get("trailing_rotation", False))
+        per_layer = LUCJAnsatz.n_params_per_layer(
+            n_qubits, trailing_rotation=trailing_rotation
+        )
         flat = np.asarray(params, dtype=object).flatten()
         n_required = n_layers * per_layer
         if flat.size < n_required:
@@ -750,6 +771,11 @@ class LUCJAnsatz(Ansatz):
 
             for (lower, upper), angle in zip(reversed(hop_pairs), reversed(hop_angles)):
                 circuit.append(XXPlusYYGate(-angle, 0.0), [lower, upper])
+
+            if trailing_rotation:
+                for lower, upper in hop_pairs:
+                    circuit.append(XXPlusYYGate(flat[cursor], 0.0), [lower, upper])
+                    cursor += 1
 
         return circuit
 

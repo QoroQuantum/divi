@@ -72,6 +72,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         max_iterations=10,
         n_alpha: int | None = None,
         n_beta: int | None = None,
+        ansatz_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
         """Initialize the VQE problem.
@@ -99,6 +100,11 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 closed-shell split. Defaults to None.
             n_beta (int | None): Beta electrons, under the same convention.
                 Defaults to None.
+            ansatz_kwargs (dict | None): Ansatz-specific options, forwarded to
+                both ``n_params_per_layer`` and ``build`` so the parameter count
+                and the circuit stay in agreement (e.g.
+                ``{"trailing_rotation": True}`` for
+                :class:`~divi.qprog.algorithms.LUCJAnsatz`). Defaults to None.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
@@ -125,6 +131,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             if n_alpha is None or n_beta is None
             else {"n_alpha": n_alpha, "n_beta": n_beta}
         )
+        # Merged into every ansatz call, so the count and the circuit agree.
+        self._ansatz_kwargs: dict[str, Any] = dict(ansatz_kwargs or {})
 
         # Resolve & store initial state (n_qubits is now set)
         if initial_state is None:
@@ -153,7 +161,10 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             and electron count.
         """
         return self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons, **self._spin_kwargs
+            self.n_qubits,
+            n_electrons=self.n_electrons,
+            **self._spin_kwargs,
+            **self._ansatz_kwargs,
         )
 
     @property
@@ -221,9 +232,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         wraps its DAG into a cost ``MetaCircuit`` carrying the cost
         ``SparsePauliOp`` as observable.
         """
-        n_params = self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons, **self._spin_kwargs
-        )
+        n_params = self.n_params_per_layer
         weights = np.array(
             [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
             dtype=object,
@@ -239,6 +248,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 n_layers=self.n_layers,
                 n_electrons=self.n_electrons,
                 **self._spin_kwargs,
+                **self._ansatz_kwargs,
             ),
             inplace=True,
         )
