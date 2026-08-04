@@ -83,6 +83,19 @@ class Ansatz(ABC):
         """Returns the number of parameters required by the ansatz for one layer."""
         raise NotImplementedError
 
+    def parameter_frequencies(
+        self, n_qubits: int, **kwargs
+    ) -> Sequence[tuple[float, int]] | None:
+        """One layer's per-parameter ``(omega, order)``, or ``None`` for ``(1, 1)``.
+
+        The energy carries frequencies ``{omega, ..., order * omega}`` in that
+        parameter, which sets its parameter-shift rule. Override when a gate's
+        generator has more than two distinct eigenvalues, or when gates share a
+        parameter; both raise the frequency content, and the default two-term
+        rule then returns a wrong gradient. A superset is safe.
+        """
+        return None
+
     @abstractmethod
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         """
@@ -515,6 +528,11 @@ class UCCSDAnsatz(Ansatz):
         _, template, _ = _uccsd_template(n_spatial, n_particles)
         return _require_trainable_params(template.num_parameters, UCCSDAnsatz.__name__)
 
+    def parameter_frequencies(self, n_qubits: int, **kwargs):
+        """``{1, 2}`` per amplitude: each excitation exponentiates a generator
+        whose eigenvalues span two distinct gaps."""
+        return [(1.0, 2)] * UCCSDAnsatz.n_params_per_layer(n_qubits, **kwargs)
+
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
         n_spatial, n_particles = _resolve_spin_counts(
@@ -553,6 +571,11 @@ class HartreeFockAnsatz(Ansatz):
         singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
+
+    def parameter_frequencies(self, n_qubits: int, **kwargs):
+        """``{1/2, 1}`` per amplitude: both ``SingleExcitation`` and
+        ``DoubleExcitation`` have generator eigenvalues ``{0, 0, +-1/2}``."""
+        return [(0.5, 2)] * HartreeFockAnsatz.n_params_per_layer(n_qubits, **kwargs)
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
@@ -685,6 +708,31 @@ class LUCJAnsatz(Ansatz):
         if kwargs.get("trailing_rotation"):
             n_params += n_hopping
         return _require_trainable_params(n_params, LUCJAnsatz.__name__)
+
+    def parameter_frequencies(self, n_qubits: int, **kwargs):
+        """Hopping angles carry half-integer frequencies, Jastrow angles ``{1}``.
+
+        ``XXPlusYY(theta)`` is ``exp(-i (theta / 2) (XX + YY) / 2)``, whose
+        eigenphases are ``0`` and ``+-theta / 2``, so one occurrence carries
+        ``{1/2, 1}``. A layer uses each hopping angle twice -- once negated --
+        which compounds it to ``{1/2, 1, 3/2, 2}``; a trailing rotation's own
+        angles appear once. The Jastrow ``RZZ`` angles are plain Pauli rotations.
+
+        Two spatial orbitals are a special case: there is a single hop pair per
+        spin, no gate moves occupancy between pairs, and the half-integers drop
+        out -- measured absent over a ``4 * pi`` window. Halving those angles'
+        term counts is worth the branch, since fragments this small are common.
+        """
+        n_orb = n_qubits // 2
+        if n_orb == 1:
+            return [(1.0, 1)]
+        n_hopping = 2 * (n_orb - 1)
+        hopping = (1.0, 2) if n_orb == 2 else (0.5, 4)
+        frequencies = [hopping] * n_hopping + [(1.0, 1)] * (n_orb + n_hopping)
+        if kwargs.get("trailing_rotation"):
+            trailing = (1.0, 1) if n_orb == 2 else (0.5, 2)
+            frequencies += [trailing] * n_hopping
+        return frequencies
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         """Build the LUCJ ansatz circuit.

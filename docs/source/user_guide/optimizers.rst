@@ -60,6 +60,15 @@ Use L-BFGS-B when:
    happens, switch to a gradient-free optimizer (COBYLA, Nelder-Mead) or the
    Monte Carlo optimizer for a more illustrative run.
 
+.. note::
+
+   :class:`~divi.qprog.algorithms.QAOA` has no exact parameter-shift rule. Each
+   layer angle drives one rotation per Hamiltonian term, at an angle scaled by
+   that term's coefficient, so its gradient is not recoverable from a single
+   pair of shifted evaluations. Gradient-based optimizers — L-BFGS-B and the
+   natural-gradient optimizers — raise on QAOA rather than return a wrong
+   gradient. Use a gradient-free or evolutionary optimizer instead.
+
 .. code-block:: python
 
    optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)

@@ -167,6 +167,16 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             **self._ansatz_kwargs,
         )
 
+    def _parameter_frequencies(self):
+        """The ansatz's per-layer frequencies, repeated across layers."""
+        per_layer = self.ansatz.parameter_frequencies(
+            self.n_qubits,
+            n_electrons=self.n_electrons,
+            **self._spin_kwargs,
+            **self._ansatz_kwargs,
+        )
+        return None if per_layer is None else list(per_layer) * self.n_layers
+
     @property
     def eigenstate(self) -> npt.NDArray[np.int32] | None:
         """Get the computed eigenstate as a NumPy array.

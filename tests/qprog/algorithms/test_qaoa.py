@@ -37,7 +37,7 @@ from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
 
 class TestGeneralQAOA:
     def test_qaoa_optimization_runs_cost_pipeline(
-        self, mocker, optimizer, default_test_simulator
+        self, mocker, gradient_free_optimizer, default_test_simulator
     ):
         """The cost pipeline is invoked during the optimization loop.
 
@@ -48,7 +48,7 @@ class TestGeneralQAOA:
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
-            optimizer=optimizer,
+            optimizer=gradient_free_optimizer,
             max_iterations=1,
             backend=default_test_simulator,
         )
@@ -104,12 +104,12 @@ class TestGeneralQAOA:
         assert spy.call_args.args[1].name == "sample"
 
     def test_graph_correct_circuits_count_and_energies(
-        self, optimizer, dummy_simulator
+        self, gradient_free_optimizer, dummy_simulator
     ):
         qaoa_problem = QAOA(
             MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
             n_layers=1,
-            optimizer=optimizer,
+            optimizer=gradient_free_optimizer,
             max_iterations=1,
             backend=dummy_simulator,
         )
@@ -117,6 +117,34 @@ class TestGeneralQAOA:
         qaoa_problem.run()
 
         verify_correct_circuit_count(qaoa_problem)
+
+    def test_gradient_is_refused_rather_than_silently_wrong(
+        self, dummy_simulator, default_optimizer
+    ):
+        """A layer angle drives one rotation per Hamiltonian term, so the
+        two-term rule returns a near-zero gradient instead of the true one."""
+        qaoa = QAOA(
+            MaxCutProblem(nx.bull_graph()),
+            n_layers=1,
+            optimizer=default_optimizer,
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+        with pytest.raises(NotImplementedError, match="no parameter-shift gradient"):
+            qaoa._grad_shift_rule
+
+    def test_a_gradient_free_run_never_builds_a_shift_rule(
+        self, gradient_free_optimizer, dummy_simulator
+    ):
+        """The refusal above must not break QAOA's supported optimizers."""
+        qaoa = QAOA(
+            MaxCutProblem(nx.bull_graph()),
+            n_layers=1,
+            optimizer=gradient_free_optimizer,
+            max_iterations=1,
+            backend=dummy_simulator,
+        )
+        qaoa.run()
 
 
 class TestQAOAQDriftMultiSample:

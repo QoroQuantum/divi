@@ -149,6 +149,15 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     def n_params_per_layer(self) -> int:
         return 2
 
+    def _parameter_frequencies(self):
+        raise NotImplementedError(
+            "QAOA has no parameter-shift gradient. Each layer angle drives one "
+            "rotation per Hamiltonian term at an angle scaled by that term's "
+            "coefficient, so its frequency content is set by the Hamiltonian and "
+            "the two-term rule silently returns a near-zero gradient. Use a "
+            "gradient-free optimizer (e.g. COBYLA) or a stochastic one (e.g. SPSA)."
+        )
+
     def _spec_stage(self) -> Stage:
         # QAOA trotterizes the cost Hamiltonian into the ansatz: seeded with
         # the Hamiltonian, not a pre-built MetaCircuit.

@@ -228,6 +228,20 @@ The ``build`` method must return a list of PennyLane operations
 (``list[qp.operation.Operator]``). Refer to the built-in ansätze in the
 repository for concrete examples.
 
+.. important::
+
+   Gradient-based optimizers differentiate the ansatz with the two-term
+   ``±π/2`` parameter-shift rule, which is exact only when each parameter drives
+   a single gate whose generator has two distinct eigenvalues. Override
+   :meth:`~divi.qprog.algorithms.Ansatz.parameter_frequencies` when that does not
+   hold — when a parameter appears in more than one gate, or when a gate's
+   generator has a richer spectrum, as excitation gates do. It returns one
+   ``(omega, order)`` pair per parameter of a single layer, declaring that the
+   energy carries frequencies ``{omega, ..., order * omega}`` in that parameter.
+   Declaring more frequencies than the ansatz actually carries is safe (it only
+   costs extra circuit evaluations); declaring too few returns a wrong gradient
+   with no error.
+
 VQE Hyperparameter Sweep
 ------------------------
 

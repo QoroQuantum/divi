@@ -23,7 +23,7 @@ from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimiz
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
-    _compute_parameter_shift_mask,
+    _compute_parameter_shift_rule,
 )
 from tests.conftest import DummyExpvalBackend, DummySimulator
 
@@ -1772,56 +1772,115 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         mock_final.assert_called_once()
 
 
-class TestComputeParameterShiftMask:
-    """Spec: _compute_parameter_shift_mask produces a valid parameter shift rule matrix."""
+class TestComputeParameterShiftRule:
+    """Spec: _compute_parameter_shift_rule builds shifts and recombination weights."""
 
     @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
-    def test_shape(self, n_params):
-        mask = _compute_parameter_shift_mask(n_params)
-        assert mask.shape == (2 * n_params, n_params)
-
-    @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
-    def test_row_pairs_are_opposite_signs(self, n_params):
-        """Positive and negative shifts must be mirrors of each other."""
-        mask = _compute_parameter_shift_mask(n_params)
-        for i in range(n_params):
-            np.testing.assert_array_equal(mask[2 * i], -mask[2 * i + 1])
+    def test_default_family_shape(self, n_params):
+        shifts, weights = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
+        assert shifts.shape == (2 * n_params, n_params)
+        assert weights.shape == (n_params, 2 * n_params)
 
     @pytest.mark.parametrize("n_params", [1, 2, 3, 4, 5, 8])
-    def test_each_row_pair_shifts_exactly_one_parameter(self, n_params):
-        """Each row pair should shift exactly one parameter at column i."""
-        mask = _compute_parameter_shift_mask(n_params)
-        for i in range(n_params):
-            row = mask[2 * i]
-            nonzero_cols = np.nonzero(row)[0]
-            assert (
-                len(nonzero_cols) == 1
-            ), f"Row pair {i} shifts {len(nonzero_cols)} params: columns {nonzero_cols.tolist()}"
-            assert nonzero_cols[0] == i
+    def test_each_row_shifts_exactly_one_parameter(self, n_params):
+        shifts, _ = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
+        for index in range(n_params):
+            for row in shifts[2 * index : 2 * index + 2]:
+                nonzero = np.nonzero(row)[0]
+                assert nonzero.tolist() == [index]
 
-    @pytest.mark.parametrize("n_params", [1, 2, 3, 5, 8])
-    def test_shift_magnitude_is_half_pi(self, n_params):
-        mask = _compute_parameter_shift_mask(n_params)
-        nonzero = mask[mask != 0]
-        np.testing.assert_allclose(np.abs(nonzero), 0.5 * np.pi)
-
-    def test_known_values_n_equals_1(self):
-        mask = _compute_parameter_shift_mask(1)
-        expected = np.array([[np.pi / 2], [-np.pi / 2]])
-        np.testing.assert_array_equal(mask, expected)
-
-    def test_known_values_n_equals_2(self):
-        mask = _compute_parameter_shift_mask(2)
-        h = np.pi / 2
-        expected = np.array(
-            [
-                [h, 0],
-                [-h, 0],
-                [0, h],
-                [0, -h],
-            ]
+    def test_unit_frequency_reproduces_the_two_term_rule(self):
+        """The historical +-pi/2 rule with +-1/2 weights is the (1, 1) case."""
+        shifts, weights = _compute_parameter_shift_rule([(1.0, 1)] * 2)
+        half = np.pi / 2
+        np.testing.assert_allclose(
+            shifts, [[half, 0], [-half, 0], [0, half], [0, -half]]
         )
-        np.testing.assert_array_equal(mask, expected)
+        np.testing.assert_allclose(
+            weights, [[0.5, -0.5, 0.0, 0.0], [0.0, 0.0, 0.5, -0.5]]
+        )
+
+    @pytest.mark.parametrize("order", [1, 2, 4])
+    def test_order_sets_the_evaluation_count(self, order):
+        shifts, weights = _compute_parameter_shift_rule([(1.0, order)])
+        assert shifts.shape == (2 * order, 1)
+        assert weights.shape == (1, 2 * order)
+
+    def test_families_may_differ_between_parameters(self):
+        """A ragged rule is one flat batch, not padded rows per parameter."""
+        shifts, weights = _compute_parameter_shift_rule([(1.0, 1), (0.5, 4)])
+        assert shifts.shape == (2 + 8, 2)
+        # Each parameter's weights touch only its own rows.
+        assert np.count_nonzero(weights[0]) == 2
+        assert np.count_nonzero(weights[1]) == 8
+        np.testing.assert_array_equal(np.nonzero(weights[0])[0], [0, 1])
+
+    def test_folds_shifts_into_the_principal_interval(self):
+        """Shifts are reduced modulo the energy's period, keeping them smallest."""
+        shifts, _ = _compute_parameter_shift_rule([(0.5, 2)])
+        # Unfolded these are (2k-1) * pi/2 for k = 1..4; the period is 4 * pi.
+        np.testing.assert_allclose(
+            shifts[:, 0],
+            [np.pi / 2, 3 * np.pi / 2, -3 * np.pi / 2, -np.pi / 2],
+        )
+
+    @pytest.mark.parametrize(
+        "frequencies, match",
+        [
+            ([(0.0, 1)], "omega must be positive"),
+            ([(1.0, 0)], "order must be at least"),
+        ],
+    )
+    def test_rejects_invalid_families(self, frequencies, match):
+        with pytest.raises(ValueError, match=match):
+            _compute_parameter_shift_rule(frequencies)
+
+    @pytest.mark.parametrize("omega, order", [(1.0, 1), (2.0, 1), (1.0, 2), (0.5, 4)])
+    def test_differentiates_its_own_frequency_family_exactly(self, omega, order):
+        """The rule must be exact on any trigonometric polynomial it declares."""
+        rng = np.random.default_rng(0)
+        cosines = rng.normal(size=order + 1)
+        sines = rng.normal(size=order + 1)
+
+        def energy(theta):
+            return sum(
+                cosines[r] * np.cos(r * omega * theta)
+                + sines[r] * np.sin(r * omega * theta)
+                for r in range(order + 1)
+            )
+
+        def derivative(theta):
+            return sum(
+                r
+                * omega
+                * (
+                    -cosines[r] * np.sin(r * omega * theta)
+                    + sines[r] * np.cos(r * omega * theta)
+                )
+                for r in range(order + 1)
+            )
+
+        shifts, weights = _compute_parameter_shift_rule([(omega, order)])
+        for theta in rng.uniform(-3.0, 3.0, 5):
+            values = np.array([energy(theta + row[0]) for row in shifts])
+            assert (weights @ values)[0] == pytest.approx(derivative(theta), abs=1e-9)
+
+
+class TestGradShiftRule(BaseVariationalQuantumAlgorithmTest):
+    """Spec: a program's shift rule is built lazily from its declared frequencies."""
+
+    def test_defaults_to_the_two_term_rule(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        shifts, _ = program._grad_shift_rule
+        assert shifts.shape == (2 * program.n_params, program.n_params)
+
+    def test_rejects_a_declaration_of_the_wrong_length(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        mocker.patch.object(
+            type(program), "_parameter_frequencies", return_value=[(1.0, 1)]
+        )
+        with pytest.raises(ValueError, match="declared 1 parameter frequencies"):
+            program._grad_shift_rule
 
 
 class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):

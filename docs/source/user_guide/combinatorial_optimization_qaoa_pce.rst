@@ -299,7 +299,7 @@ NumPy Array-based Input
    qaoa_problem = QAOA(
        BinaryOptimizationProblem(qubo_array),
        n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
        backend=MaestroSimulator(),
    )

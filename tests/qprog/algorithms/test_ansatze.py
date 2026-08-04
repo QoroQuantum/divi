@@ -481,6 +481,90 @@ def _make_lucj_vqe(
     )
 
 
+def _finite_difference_gradient(vqe, params, step=1e-4):
+    """Central-difference gradient of the exact expectation value."""
+    gradient = np.zeros_like(params)
+    for index in range(len(params)):
+        plus, minus = params.copy(), params.copy()
+        plus[index] += step
+        minus[index] -= step
+        forward = next(iter(vqe._evaluate_cost_param_sets(plus).values()))
+        backward = next(iter(vqe._evaluate_cost_param_sets(minus).values()))
+        gradient[index] = (forward - backward) / (2.0 * step)
+    return gradient
+
+
+@pytest.mark.parametrize(
+    "ansatz_factory, n_qubits, n_electrons, n_layers, ansatz_kwargs",
+    [
+        # Ansaetze on the default (1, 1) rule: measured over a 4*pi window to
+        # carry frequency 1 exactly, so the two-term rule is right for them.
+        (lambda: GenericLayerAnsatz([RYGate, RZGate]), 4, 2, 1, None),
+        (QCCAnsatz, 4, 2, 1, None),
+        (QCCAnsatz, 4, 2, 2, None),
+        # Ansaetze that declare their own frequencies. Hartree-Fock is exact
+        # under the default rule at 4 qubits / 1 layer — the excitation acts on
+        # the untouched reference, where the 1/2 harmonic has zero amplitude —
+        # so the wider cases are what actually pin its declaration.
+        (HartreeFockAnsatz, 4, 2, 1, None),
+        (HartreeFockAnsatz, 6, 2, 1, None),
+        (HartreeFockAnsatz, 4, 2, 2, None),
+        (UCCSDAnsatz, 4, 2, 1, None),
+        (UCCSDAnsatz, 4, 2, 2, None),
+        # Both LUCJ orbital regimes, since two orbitals take a reduced family.
+        (LUCJAnsatz, 4, 2, 1, None),
+        (LUCJAnsatz, 4, 2, 2, None),
+        (LUCJAnsatz, 6, 2, 1, None),
+        (LUCJAnsatz, 6, 2, 2, None),
+        (LUCJAnsatz, 4, 2, 1, {"trailing_rotation": True}),
+        (LUCJAnsatz, 6, 2, 1, {"trailing_rotation": True}),
+    ],
+)
+def test_declared_frequencies_give_exact_gradients(
+    ansatz_factory,
+    n_qubits,
+    n_electrons,
+    n_layers,
+    ansatz_kwargs,
+    default_test_simulator,
+    default_optimizer,
+):
+    """An ansatz's declared frequencies must reproduce the true derivative.
+
+    The two-term ``+-pi/2`` rule silently returns a wrong gradient on an ansatz
+    whose parameters carry other frequencies — it returned numerically *zero* for
+    UCCSD, whose amplitudes sit at frequency 2 where that shift is a null step.
+    This pins each declaration against finite differences, so a structural change
+    to an ansatz that moves its frequencies fails here instead of quietly
+    corrupting every gradient-based optimizer.
+
+    Qubit counts and layer counts are part of the contract: an excitation gate's
+    higher harmonics only carry amplitude once earlier gates have moved the state
+    out of the gate's invariant subspace, so a narrow single-layer case can pass
+    under a wrong rule.
+    """
+    hamiltonian = {
+        "Z" + "I" * (n_qubits - 1): 1.0,
+        "XX" + "I" * (n_qubits - 2): 0.4,
+        "I" * (n_qubits - 2) + "ZZ": -0.7,
+    }
+    vqe = VQE(
+        hamiltonian=hamiltonian,
+        n_electrons=n_electrons,
+        n_layers=n_layers,
+        ansatz=ansatz_factory(),
+        backend=default_test_simulator,
+        optimizer=default_optimizer,
+        ansatz_kwargs=ansatz_kwargs,
+    )
+
+    params = np.random.default_rng(5).uniform(0.2, 1.2, vqe.n_params)
+    analytic = vqe._evaluate_gradient_at(params)
+    numerical = _finite_difference_gradient(vqe, params)
+
+    np.testing.assert_allclose(analytic, numerical, atol=1e-6)
+
+
 def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
     default_test_simulator, default_optimizer
 ):
