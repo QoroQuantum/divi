@@ -276,7 +276,8 @@ def queue_listener(
     Runs in a daemon thread until *done_event* is set.  Messages with
     ``batch=True`` are routed to :func:`handle_batch_message`; messages
     with ``prep_advance=True`` advance the prep row; messages with
-    ``workflow_round=True`` update the workflow-round row; all others are
+    ``workflow_round=True`` update the workflow-round row, carrying a
+    ``final_status``, a stage ``message``, or both; all others are
     program-level updates resolved through ``pb_task_map``.
 
     When ``hide_program_rows`` is set, per-program rows were created
@@ -351,9 +352,13 @@ def queue_listener(
                 # --- Workflow-round signals from the ensemble ---
                 if msg.get("workflow_round"):
                     if round_task_id is not None:
-                        progress_bar.update(
-                            round_task_id, final_status=msg["final_status"]
-                        )
+                        round_update: dict[str, Any] = {}
+                        if "final_status" in msg:
+                            round_update["final_status"] = msg["final_status"]
+                        if msg.get("message"):
+                            round_update["message"] = msg["message"]
+                        if round_update:
+                            progress_bar.update(round_task_id, **round_update)
                     continue
 
                 # --- Regular per-program messages ---

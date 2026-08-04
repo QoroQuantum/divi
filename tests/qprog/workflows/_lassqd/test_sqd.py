@@ -319,6 +319,40 @@ def test_spin_penalty_suppresses_the_triplet_ground_state():
     assert singlet_energy == pytest.approx(0.3, abs=1e-8)
 
 
+def test_beta_one_body_applies_to_the_beta_channel():
+    """``one_body_beta`` must reach the beta spin-orbitals, not the alpha ones.
+
+    SQD blocks its spin-orbitals -- index ``p < n_orb`` is alpha -- which is the
+    opposite of the circuits' interleaved order, so a mix-up here is plausible
+    and silent: particle number and Sz are unchanged by swapping the channels.
+
+    With no two-body term and diagonal one-body matrices, every determinant is
+    an eigenstate, so the ``(2 alpha, 1 beta)`` sector energy is exact by hand:
+    alpha must fill both orbitals (``-0.9 + 0.4``) and beta takes the lower of
+    its own diagonal (``-0.6``), totalling ``-1.1``. Swapping the channels would
+    give ``(-0.2 - 0.6) + (-0.9) = -1.7`` instead.
+    """
+    n_orb, n_alpha, n_beta = 2, 2, 1
+    h_alpha = np.diag([-0.9, 0.4])
+    h_beta = np.diag([-0.2, -0.6])
+    two_body = np.zeros((n_orb,) * 4)
+    probs = uniform_full_space_probs(n_orb, n_alpha, n_beta)
+
+    solver = SQDSolver(
+        n_orb,
+        n_alpha,
+        n_beta,
+        n_batches=1,
+        batch_size=8,
+        n_iterations=1,
+        lambda_penalty=0.0,
+        rng=np.random.default_rng(0),
+    )
+    result = solver.solve(probs, h_alpha, two_body, one_body_beta=h_beta)
+
+    assert result.energy == pytest.approx(-1.1, abs=1e-9)
+
+
 def test_solver_recovers_fci_when_subspace_is_complete():
     one_body, two_body, n_orb, constant = _h2_integrals()
     probs = uniform_full_space_probs(n_orb, 1, 1)
@@ -385,8 +419,7 @@ def test_solver_carries_the_best_energy_across_iterations():
     make every determinant's projected energy an exact sum of orbital
     energies, with no near-degenerate ties for the batch-selection argmin to
     trip on. ``recovery=False`` keeps the sampled candidate list identical
-    (and insertion-ordered) across iterations, so the outcome depends only
-    on the seeded RNG.
+    across iterations, so the outcome depends only on the seeded RNG.
 
     ``batch_size=1`` is load-bearing: 2 or more saturates this 9-determinant
     space in one iteration, so both solves hit the exact ground state and the
@@ -413,7 +446,10 @@ def test_solver_carries_the_best_energy_across_iterations():
     )
     multi_energy = multi.solve(probs, one_body, two_body).energy
 
-    assert single_energy == pytest.approx(-9.8, abs=1e-9)
+    # One draw lands a single determinant (orbitals 0 and 1, -10.0 + -0.1);
+    # three iterations reach the true ground state with both electrons in
+    # orbital 0.
+    assert single_energy == pytest.approx(-10.1, abs=1e-9)
     assert multi_energy == pytest.approx(-20.0, abs=1e-9)
 
 

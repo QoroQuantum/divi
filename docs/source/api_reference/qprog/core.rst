@@ -21,7 +21,7 @@ uniform return type for decoded solutions.
    :skip: QNGOptimizer, SPSAOptimizer, QNSPSAOptimizer, QUIVEROptimizer
    :skip: MetricEstimator, PullbackMetricEstimator, FubiniStudyMetricEstimator, StochasticFidelityMetricEstimator
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
-   :skip: LASSQD, FragmentSpec, FragmentState, LASSQDState
+   :skip: LASSQD, FragmentSpec, FragmentState, LASSQDRoundReport, LASSQDState
    :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
    :skip: ParamHistoryMode
 

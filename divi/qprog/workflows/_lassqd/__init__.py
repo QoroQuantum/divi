@@ -5,6 +5,12 @@
 """Localized active-space sample-based quantum diagonalization."""
 
 from ._state import FragmentSpec, FragmentState, LASSQDState
-from ._workflow import LASSQD
+from ._workflow import LASSQD, LASSQDRoundReport
 
-__all__ = ["FragmentSpec", "FragmentState", "LASSQD", "LASSQDState"]
+__all__ = [
+    "FragmentSpec",
+    "FragmentState",
+    "LASSQD",
+    "LASSQDRoundReport",
+    "LASSQDState",
+]

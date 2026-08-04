@@ -10,10 +10,11 @@ import numpy as np
 import pytest
 import scipy.linalg
 from pyscf import ao2mo, cc, fci, gto, scf
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp, Statevector
 
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import LASSQD, ReportingLevel
+from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.workflows._lassqd._active_space import localize_blocks
@@ -21,15 +22,46 @@ from divi.qprog.workflows._lassqd._integrals import (
     build_active_permutation,
     cached_ao_eri,
     cached_h_ao,
+    fragment_effective_integrals,
+    transform_integrals,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec
+from divi.qprog.workflows._lassqd._workflow import _compute_n_core
+
+
+def ansatz_energy(
+    params, h_eff, g_frag, spec, ansatz: Ansatz | None = None, n_layers=1
+):
+    """Exact expectation value of a fragment Hamiltonian in an ansatz state."""
+    ansatz = ansatz if ansatz is not None else UCCSDAnsatz()
+    circuit = ansatz.build(
+        params,
+        2 * spec.n_orbitals,
+        n_layers,
+        n_electrons=spec.n_alpha + spec.n_beta,
+        n_alpha=spec.n_alpha,
+        n_beta=spec.n_beta,
+    )
+    hamiltonian = SparsePauliOp(_spo_from_integrals(h_eff, g_frag, constant=0.0))
+    state = Statevector.from_instruction(circuit)
+    return float(np.real(state.expectation_value(hamiltonian)))
+
+
+def fragment_integrals(ensemble, mo_coeff, fragments, index):
+    """``(h_alpha, h_beta, g_frag)`` for one fragment of a workflow state."""
+    n_core = _compute_n_core(
+        [fragment.spec for fragment in fragments], ensemble._mol.nelectron // 2
+    )
+    n_act = sum(fragment.spec.n_orbitals for fragment in fragments)
+    integrals = transform_integrals(ensemble._mol, mo_coeff, n_core, n_act)
+    return fragment_effective_integrals(integrals, fragments, index)
 
 
 def embedded_fragment_ccsd(h_eff, g_frag, spec):
-    """Converged CCSD on a fragment's effective integrals.
+    """CCSD on a fragment's effective integrals, in the fragment's own basis.
 
-    Mirrors the embedded RHF that ``_ccsd_seed_params`` builds internally, so a
-    test can reach the same ``t1``/``t2`` the seed was derived from.
+    Mirrors the embedded mean field ``_ccsd_seed_params`` builds internally,
+    including its identity ``mo_coeff``.
     """
     n_orb = spec.n_orbitals
     mol = gto.M(verbose=0)
@@ -40,7 +72,15 @@ def embedded_fragment_ccsd(h_eff, g_frag, spec):
     mean_field.get_hcore = lambda *args: h_eff
     mean_field.get_ovlp = lambda *args: np.eye(n_orb)
     mean_field._eri = ao2mo.restore(8, g_frag, n_orb)
-    mean_field.kernel()
+
+    occupations = np.zeros(n_orb)
+    occupations[: spec.n_alpha] = 2.0
+    mean_field.mo_coeff = np.eye(n_orb)
+    mean_field.mo_occ = occupations
+    density = mean_field.make_rdm1()
+    mean_field.mo_energy = np.diag(mean_field.get_fock(dm=density))
+    mean_field.e_tot = mean_field.energy_tot(dm=density)
+    mean_field.converged = True
 
     coupled_cluster = cc.CCSD(mean_field)
     coupled_cluster.kernel()
@@ -69,6 +109,19 @@ def h4_chain():
     )
 
 
+def h8_chain():
+    """Uniform linear H8 in STO-3G.
+
+    8 spatial orbitals / 8 electrons, which automatic fragmentation splits into
+    two 4-orbital fragments holding 4 electrons each.
+    """
+    return gto.M(
+        atom="; ".join(f"H 0 0 {index * 1.0:.1f}" for index in range(8)),
+        basis="sto-3g",
+        verbose=0,
+    )
+
+
 @pytest.fixture(scope="session")
 def h4_chain_mean_field():
     """RHF mean field for ``h4_chain()``, computed once per test session."""
@@ -77,9 +130,7 @@ def h4_chain_mean_field():
 
 @pytest.fixture(scope="session")
 def h4_localized_blocks_seed0(h4_chain_mean_field):
-    """``localize_blocks`` on ``h4_chain_mean_field`` under seed 0, computed
-    once per test session for tests that only need the resulting localized
-    orbitals rather than exercising ``localize_blocks`` itself."""
+    """``localize_blocks`` on ``h4_chain_mean_field`` under seed 0."""
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     return localize_blocks(mol, mo_coeff, (0, 1), (2, 3), np.random.default_rng(0))
@@ -96,22 +147,15 @@ def h2o_molecule(basis="6-31g"):
 
 @pytest.fixture(scope="session")
 def orbital_rotation_case():
-    """A deliberately demanding ``optimize_orbitals`` argument set.
+    """An ``optimize_orbitals`` argument set spanning every rotation category.
 
-    H2O/6-31G has 13 spatial orbitals. Three are frozen core, five are active
-    across two fragments of unequal size whose requested orbital indices are
-    neither sorted nor contiguous (so ``build_active_permutation`` genuinely
-    reorders them), and five are virtual -- 61 rotation pairs spanning all
-    four rotation categories, with core-core Coulomb and exchange distinct.
-    The fragmentation is one ``validate_fragment_specs`` accepts.
+    H2O/6-31G has 13 spatial orbitals: three frozen core, five active across
+    two fragments of unequal size whose orbital indices are neither sorted nor
+    contiguous, and five virtual -- 61 rotation pairs.
 
-    The active RDMs are fixed-seed random, carrying exactly the permutation
-    symmetries a real spatial RDM has and no more: ``rdm1`` is symmetric, and
-    ``rdm2`` is symmetric under ``pqrs -> rspq`` and ``pqrs -> qpsr`` but is
-    otherwise dense and unstructured, so a transposed index in the
-    two-particle density cannot cancel against itself. Random rather than
-    variationally optimal RDMs also leave the orbitals far from stationary,
-    which is what makes the strict-improvement assertion meaningful.
+    The active RDMs are fixed-seed random, carrying the permutation symmetries
+    of a real spatial RDM and no more: ``rdm1`` is symmetric and ``rdm2`` is
+    symmetric under ``pqrs -> rspq`` and ``pqrs -> qpsr``, otherwise dense.
 
     Returns the full positional argument list of ``optimize_orbitals``:
     ``(mol, mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao)``.
@@ -170,29 +214,24 @@ def dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant=0.0):
     return energy + constant
 
 
-#: Converged energy and MO-coefficient trace of the ``exact_sampler_lassqd``
-#: fixture over 4 macro-cycles, recorded from this implementation. Not vendored
-#: from the reference, whose value encoded the zeroed-block functional and sat
-#: below FCI.
+#: Energy and MO-coefficient trace of ``exact_sampler_lassqd`` over 4
+#: macro-cycles. The trace fingerprints which of several equivalent orbital
+#: solutions the optimizer reached, so it can move while the energy does not.
 PRODUCT_STATE_ENERGY = -2.2139336088963217
-PRODUCT_STATE_MO_TRACE = 0.003246214227570765
+PRODUCT_STATE_MO_TRACE = -0.9595516448662426
 
-#: Fixed, recognizable stand-in for a converged VQE's parameters, so tests
-#: can assert the exact values that reach the following round's
-#: ``FragmentState.params``.
+#: Stand-in for a converged VQE's parameters.
 _STUB_BEST_PARAMS = np.array([0.11, 0.22, 0.33])
 
 
 class ExactSamplerVQE(QuantumProgram):
     """Stand-in for a fragment VQE whose distribution is exact.
 
-    Mirrors the reference's own VQE emulation: diagonalize the fragment's own
-    qubit Hamiltonian (the same ``SparsePauliOp`` a real VQE is built from,
-    not the underlying spatial integrals) restricted to the correct
-    alpha/beta particle-number sector, and square the ground-state amplitudes
-    into a probability distribution. Gives the workflow a deterministic
-    oracle with no sampling noise, routed through the same Jordan-Wigner
-    qubit convention a real fragment VQE would use.
+    Diagonalizes the fragment's qubit Hamiltonian -- the same
+    ``SparsePauliOp`` a real VQE is built from -- restricted to the correct
+    alpha/beta particle-number sector, and squares the ground-state amplitudes
+    into a probability distribution: a deterministic, noise-free oracle using
+    the same Jordan-Wigner convention as a real fragment VQE.
     """
 
     def __init__(
@@ -228,21 +267,13 @@ class ExactSamplerVQE(QuantumProgram):
     def run(self, **kwargs) -> "ExactSamplerVQE":
         """Diagonalize the fragment's qubit Hamiltonian and sample its ground state.
 
-        Builds the dense matrix from ``self._hamiltonian`` (a
-        :class:`~qiskit.quantum_info.SparsePauliOp`), whose ``to_matrix()``
-        basis-state index is Qiskit's native little-endian convention (qubit
-        0 is the rightmost bit) -- the reverse of divi's own bitstring
-        convention (qubit ``k`` is character ``k``) used elsewhere in this
-        codebase. Restricts to the computational basis states matching the
-        fragment's target alpha/beta electron counts -- exact for a
-        molecular Hamiltonian, which conserves both counts separately -- and
-        diagonalizes that subspace instead of building a separate spatial
-        Slater-Condon matrix, so a Jordan-Wigner convention mismatch would
-        surface here rather than only in the converter under test.
+        Restricts the dense matrix to the computational basis states matching
+        the fragment's target alpha/beta electron counts, which a molecular
+        Hamiltonian conserves separately, and diagonalizes that subspace.
 
-        Populates ``best_probs`` with a single parameter set's distribution,
-        keyed by divi's interleaved qubit convention (qubit ``2p`` / ``2p +
-        1`` are the alpha / beta spin-orbitals of spatial orbital ``p``).
+        Populates ``best_probs`` keyed by divi's interleaved qubit convention
+        (qubit ``2p`` / ``2p + 1`` are the alpha / beta spin-orbitals of
+        spatial orbital ``p``).
         """
         n_orb = self._spec.n_orbitals
         n_alpha, n_beta = self._spec.n_alpha, self._spec.n_beta
@@ -277,10 +308,14 @@ class ExactSamplerVQE(QuantumProgram):
         return self
 
 
-def _build_exact_sampler_program(self, fragment, h_eff, g_frag, program_id, seed):
+def _build_exact_sampler_program(
+    self, fragment, h_alpha, h_beta, g_frag, program_id, seed
+):
     """Replacement for ``LASSQD._build_fragment_program`` used by
     :func:`build_exact_sampler_lassqd`."""
-    hamiltonian = _spo_from_integrals(h_eff, g_frag, constant=0.0)
+    hamiltonian = _spo_from_integrals(
+        h_alpha, g_frag, constant=0.0, one_body_beta=h_beta
+    )
     return ExactSamplerVQE(
         hamiltonian,
         fragment.spec,
@@ -292,13 +327,11 @@ def _build_exact_sampler_program(self, fragment, h_eff, g_frag, program_id, seed
 
 def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
     """Build a fresh ``LASSQD`` ensemble whose fragment programs sample an
-    exact ground state, patched with a fresh ``mocker`` per call so distinct
-    instances don't share state.
+    exact ground state.
 
-    Builds two 2-orbital fragments on ``h4_chain()`` and monkeypatches
+    Builds two 2-orbital fragments on ``h4_chain()`` and patches
     ``LASSQD._build_fragment_program`` to return :class:`ExactSamplerVQE`
-    instances instead of running real VQE optimizations, so ``update_state``
-    is exercised against a deterministic, noise-free sampled distribution.
+    instances in place of real VQE optimizations.
 
     Args:
         overrides: Extra keyword arguments forwarded to ``LASSQD``,

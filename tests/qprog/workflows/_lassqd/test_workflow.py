@@ -15,14 +15,14 @@ reliably captured.
 """
 
 import dataclasses
+import logging
 
 import numpy as np
 import pytest
 from pyscf import cc, fci, gto, mcscf, scf
 from pyscf.cc import addons as cc_addons
-from qiskit.quantum_info import SparsePauliOp, Statevector
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import LASSQD, ReportingLevel, WorkflowStatus
 from divi.qprog.algorithms import LUCJAnsatz, UCCSDAnsatz
 from divi.qprog.algorithms._ansatze import _uccsd_excitations
@@ -32,18 +32,22 @@ from divi.qprog.workflows._lassqd._sqd import SQDResult
 from divi.qprog.workflows._lassqd._state import (
     FragmentSpec,
     FragmentState,
+    LASSQDState,
     validate_fragment_specs,
 )
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     PRODUCT_STATE_ENERGY,
     PRODUCT_STATE_MO_TRACE,
     _build_exact_sampler_program,
+    ansatz_energy,
     build_exact_sampler_lassqd,
     embedded_fragment_ccsd,
     exact_sampler_lassqd,
+    fragment_integrals,
     h2_molecule,
     h4_chain,
     h4_chain_mean_field,
+    h8_chain,
     uniform_full_space_probs,
 )
 
@@ -244,18 +248,46 @@ def test_rejects_invalid_sqd_sizing_arguments(dummy_expval_backend, override, ma
     [
         ({"n_active_orbitals": 0}, "n_active_orbitals"),
         ({"n_active_orbitals": -2}, "n_active_orbitals"),
-        ({"energy_window": -0.1}, "energy_window"),
+        ({"active_orbitals": [0, 0, 1]}, "duplicates"),
+        ({"active_orbitals": [0, 999]}, "out of range"),
+        ({"active_orbitals": [0, 1]}, "at least one occupied and one virtual"),
+        ({"n_active_orbitals": 4, "fragment_atoms": [[0], [0, 1]]}, "disjoint"),
+        ({"n_active_orbitals": 4, "fragment_atoms": [[0], [99]]}, "out of range"),
+        (
+            {"n_active_orbitals": 4, "local_spins": [0, 0]},
+            "local_spins requires fragment_atoms",
+        ),
+        (
+            {
+                "n_active_orbitals": 4,
+                "fragment_atoms": [[0, 1], [2, 3]],
+                "local_spins": [0],
+            },
+            "local_spins has 1 entries",
+        ),
     ],
 )
 def test_rejects_invalid_automatic_fragmentation_arguments(
     dummy_expval_backend, override, match
 ):
-    """``n_active_orbitals``/``energy_window`` used to only be validated
-    lazily, inside ``select_frontier_orbitals`` during ``initial_state()``,
-    unlike every sibling sizing argument above, which is validated eagerly in
-    the constructor."""
+    """Every automatic-fragmentation argument is validated in the constructor,
+    like the sizing arguments above. Deferring to ``initial_state()`` meant a
+    bad index surfaced only after an SCF had already run, and an argument
+    consumed twice (once by ``auto_fragment_specs``, once by the workflow) would
+    arrive empty the second time if given as a generator."""
     with pytest.raises(ValueError, match=match):
         _lassqd(dummy_expval_backend, active_spaces=None, **override)
+
+
+def test_active_orbitals_accepts_an_exhaustible_iterable(dummy_expval_backend):
+    """Materialized in the constructor, so a generator is not consumed by the
+    first of the two readers."""
+    ensemble = _lassqd(
+        dummy_expval_backend,
+        active_spaces=None,
+        active_orbitals=(o for o in [0, 1, 2, 3]),
+    )
+    assert ensemble._active_orbitals == (0, 1, 2, 3)
 
 
 def test_rejects_non_ansatz_instance(dummy_expval_backend):
@@ -347,7 +379,7 @@ def test_initial_state_forwards_the_workflow_rng_to_auto_fragment_specs(
 
     ensemble.initial_state()
 
-    assert spy.call_args.args[4] is ensemble._rng
+    assert spy.call_args.args[3] is ensemble._rng
 
 
 def test_create_programs_makes_one_vqe_per_fragment(dummy_expval_backend):
@@ -360,6 +392,7 @@ def test_create_programs_makes_one_vqe_per_fragment(dummy_expval_backend):
         assert program.n_qubits == 4
 
 
+@pytest.mark.filterwarnings("ignore:.*only UCCSDAnsatz")
 def test_create_programs_uses_the_configured_ansatz(dummy_expval_backend):
     """A non-default ansatz must be the one that actually reaches the
     programs: asserting only the default ansatz's type cannot tell a
@@ -473,8 +506,7 @@ def test_update_state_does_not_mutate_the_input(exact_sampler_lassqd):
     rdm1_before = [fragment.rdm1.copy() for fragment in state.fragments]
     energy_before = state.energy
 
-    with pytest.warns(UserWarning, match="no correlation"):
-        new_state = ensemble.update_state(state)
+    new_state = ensemble.update_state(state)
 
     assert new_state is not state
     np.testing.assert_array_equal(state.mo_coeff, mo_before)
@@ -488,8 +520,7 @@ def test_update_state_populates_rdms_and_energy(exact_sampler_lassqd):
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)
 
-    with pytest.warns(UserWarning, match="no correlation"):
-        new_state = ensemble.update_state(state)
+    new_state = ensemble.update_state(state)
 
     assert np.isfinite(new_state.energy)
     assert new_state.previous_energy == state.energy
@@ -620,29 +651,84 @@ def test_energy_property_reflects_workflow_state(exact_sampler_lassqd):
     ensemble, _ = exact_sampler_lassqd
     assert ensemble.energy == float("inf")
 
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=1)
+    ensemble.run(max_rounds=1)
 
     assert np.isfinite(ensemble.energy)
     assert ensemble.energy != float("inf")
 
 
 def test_aggregate_results_matches_energy_after_one_round(exact_sampler_lassqd):
-    """``aggregate_results`` used to return the state that *built* the last
-    round's programs (stale by one round) rather than the state
-    ``update_state`` produced, so after exactly one round it returned the
-    initial state's ``inf`` energy instead of the round's real, finite
-    energy -- silently handing back garbage from the guide's headline
-    ``ensemble.run().aggregate_results()`` idiom."""
+    """``aggregate_results`` returns the state ``update_state`` produced, not
+    the one that built the round's programs, so after a single round its energy
+    is the round's finite energy rather than the initial state's ``inf``."""
     ensemble, _ = exact_sampler_lassqd
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=1)
+    ensemble.run(max_rounds=1)
 
     result = ensemble.aggregate_results()
 
     assert result.energy == ensemble.energy
     assert result.energy != float("inf")
     assert result is ensemble.workflow_state
+
+
+@pytest.mark.parametrize("name", ["local_spins", "fragment_atoms"])
+def test_rejects_automatic_only_arguments_with_explicit_active_spaces(
+    dummy_expval_backend, name
+):
+    override = {"fragment_atoms": [[0, 1], [2, 3]]}
+    if name == "local_spins":
+        override["local_spins"] = [0, 0]
+    with pytest.raises(ValueError, match=f"{name} applies to automatic"):
+        _lassqd(dummy_expval_backend, **{name: override[name]})
+
+
+def _h8_lassqd(backend, local_spins=None):
+    """``LASSQD`` on H8 fragmented one half-chain per fragment -- the smallest
+    layout where a polarized split still leaves an excitation available."""
+    return LASSQD(
+        h8_chain(),
+        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        n_active_orbitals=8,
+        fragment_atoms=([0, 1, 2, 3], [4, 5, 6, 7]),
+        local_spins=local_spins,
+        seed=42,
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+    )
+
+
+def test_local_spins_polarize_automatically_built_fragments(dummy_expval_backend):
+    """``local_spins`` must survive the remap from localized-column indices to
+    register positions, which is where the automatic path rewrites every spec."""
+    ensemble = _h8_lassqd(dummy_expval_backend, local_spins=[2, -2])
+
+    state = ensemble.initial_state()
+
+    assert [(f.spec.n_alpha, f.spec.n_beta) for f in state.fragments] == [
+        (3, 1),
+        (1, 3),
+    ]
+
+
+def test_fragment_atoms_alone_stays_closed_shell(dummy_expval_backend):
+    ensemble = _h8_lassqd(dummy_expval_backend)
+
+    state = ensemble.initial_state()
+
+    assert [(f.spec.n_alpha, f.spec.n_beta) for f in state.fragments] == [
+        (2, 2),
+        (2, 2),
+    ]
+
+
+def test_local_spins_must_sum_to_zero_sz(dummy_expval_backend):
+    """A per-fragment override can break the global Sz = 0 invariant, which
+    ``auto_fragment_specs`` cannot see on its own since it checks each
+    fragment's electron count independently."""
+    ensemble = _h8_lassqd(dummy_expval_backend, local_spins=[2, 2])
+
+    with pytest.raises(ValueError, match="total Sz"):
+        ensemble.initial_state()
 
 
 POLARIZED_SPECS = [
@@ -667,15 +753,18 @@ def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
     n_core = _workflow._compute_n_core(
         [fragment.spec for fragment in state.fragments], n_occupied
     )
-    integrals = _workflow.transform_integrals(ensemble._mol, state.mo_coeff, n_core)
+    n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
+    integrals = _workflow.transform_integrals(
+        ensemble._mol, state.mo_coeff, n_core, n_act
+    )
 
     for index, fragment in enumerate(state.fragments):
-        h_eff, g_frag = _workflow.fragment_effective_integrals(
+        h_alpha, h_beta, g_frag = _workflow.fragment_effective_integrals(
             integrals, state.fragments, index
         )
         with pytest.warns(UserWarning, match="CCSD"):
             program = ensemble._build_fragment_program(
-                fragment, h_eff, g_frag, f"fragment_{index}", seed=0
+                fragment, h_alpha, h_beta, g_frag, f"fragment_{index}", seed=0
             )
 
         program.sample_solution(params=np.zeros(program.n_params))
@@ -692,28 +781,101 @@ def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
 
 
 def test_ccsd_seed_params_is_deterministic_and_correctly_sized(dummy_expval_backend):
-    """Exercises the positional-heuristic path (no ``ansatz`` argument)."""
+    """Repeated seeding of the same fragment must agree exactly.
+
+    Replaces a version that exercised a positional fallback for non-UCCSD
+    ansaetze -- concatenating ``t1``/``t2`` and truncating to the parameter
+    count. That correspondence was not physical (its own docstring said so), so
+    a LUCJ caller received arbitrary seeds; seeding now warns and skips instead.
+    """
     ensemble = _lassqd(dummy_expval_backend)
     state = ensemble.initial_state()
-    n_occupied = ensemble._mol.nelectron // 2
-    n_core = _workflow._compute_n_core(
-        [fragment.spec for fragment in state.fragments], n_occupied
-    )
-    integrals = _workflow.transform_integrals(ensemble._mol, state.mo_coeff, n_core)
-    h_eff, g_frag = _workflow.fragment_effective_integrals(
-        integrals, state.fragments, 0
-    )
+    h_eff, _, g_frag = fragment_integrals(ensemble, state.mo_coeff, state.fragments, 0)
     spec = state.fragments[0].spec
-    n_params = LUCJAnsatz.n_params_per_layer(2 * spec.n_orbitals)
+    ansatz = UCCSDAnsatz()
+    n_params = ansatz.n_params_per_layer(
+        2 * spec.n_orbitals, n_electrons=spec.n_alpha + spec.n_beta
+    )
 
-    first = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params)
-    second = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params)
+    first = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, ansatz)
+    second = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, ansatz)
 
     assert first is not None
     assert second is not None
     assert first.shape == (n_params,)
     assert np.any(first != 0.0)
     np.testing.assert_allclose(first, second)
+
+
+def test_a_stalled_orbital_optimizer_is_not_reported_as_converged(
+    dummy_expval_backend,
+):
+    """A round whose inner solve gave up must not count as a fixed point.
+
+    ``optimize_orbitals`` is monotone -- it falls back to the unrotated orbitals
+    rather than returning something worse -- so a stalled optimizer yields a
+    round whose energy barely moves, which is exactly what convergence looks
+    like. Every FeFe run before this was declared COMPLETE on that signature
+    while the orbital optimization still had progress left: one round later
+    reached a lower energy than a previous three-round "converged" result.
+    """
+    ensemble = _lassqd(dummy_expval_backend)
+    state = LASSQDState(
+        mo_coeff=np.eye(4),
+        fragments=(),
+        energy=-1.0,
+        previous_energy=-1.0 + 1e-12,
+    )
+
+    ensemble._orbitals_converged = True
+    assert ensemble.is_complete(state)
+
+    ensemble._orbitals_converged = False
+    with pytest.warns(UserWarning, match="did not converge"):
+        assert not ensemble.is_complete(state)
+
+
+def test_seeding_warns_when_the_embedding_is_spin_asymmetric(default_test_simulator):
+    """A *balanced* fragment next to a polarized neighbour still gets a
+    spin-asymmetric embedding, which restricted CCSD seeding has to average.
+
+    The spin-imbalance skip keys on the fragment's own ``n_alpha != n_beta``, so
+    it does not fire here -- the asymmetry comes from the neighbour. Without this
+    warning the averaging is silent in exactly the regime ``local_spins`` exists
+    for.
+    """
+    ensemble = _lassqd(default_test_simulator, ansatz=UCCSDAnsatz())
+    state = ensemble.initial_state()
+    polarized = dataclasses.replace(
+        state.fragments[1],
+        rdm1_alpha=np.diag([0.9, 0.1]),
+        rdm1_beta=np.diag([0.2, 0.8]),
+        rdm1=np.diag([1.1, 0.9]),
+    )
+    fragments = (state.fragments[0], polarized)
+    h_alpha, h_beta, g_frag = fragment_integrals(ensemble, state.mo_coeff, fragments, 0)
+    assert np.abs(h_alpha - h_beta).max() > 1e-6
+
+    with pytest.warns(UserWarning, match="spin channels differ"):
+        ensemble._build_fragment_program(
+            fragments[0], h_alpha, h_beta, g_frag, "fragment_0", seed=0
+        )
+
+
+def test_ccsd_seed_params_skips_a_non_uccsd_ansatz(dummy_expval_backend):
+    """Only UCCSD's parameters correspond to CCSD amplitudes. The old fallback
+    handed a LUCJ caller a truncated ``t1``/``t2`` concatenation, which its own
+    docstring admitted was not a physical correspondence."""
+    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
+    h_eff = np.eye(2)
+    g_frag = np.zeros((2,) * 4)
+
+    with pytest.warns(UserWarning, match="only UCCSDAnsatz"):
+        result = _workflow._ccsd_seed_params(
+            h_eff, g_frag, spec, n_params=6, ansatz=LUCJAnsatz()
+        )
+
+    assert result is None
 
 
 def test_ccsd_seed_params_skips_spin_imbalanced_fragments():
@@ -746,44 +908,83 @@ def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd():
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
     spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
-    integrals = _workflow.transform_integrals(mol, mo_coeff, n_core=0)
+    integrals = _workflow.transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
     placeholder = FragmentState(
         spec=spec, rdm1=np.zeros((4, 4)), rdm2=np.zeros((4, 4, 4, 4))
     )
-    h_eff, g_frag = _workflow.fragment_effective_integrals(integrals, [placeholder], 0)
-    n_qubits = 2 * spec.n_orbitals
-    n_electrons = spec.n_alpha + spec.n_beta
-    n_params = UCCSDAnsatz.n_params_per_layer(n_qubits, n_electrons=n_electrons)
+    h_eff, _, g_frag = _workflow.fragment_effective_integrals(
+        integrals, [placeholder], 0
+    )
+    n_params = UCCSDAnsatz.n_params_per_layer(
+        2 * spec.n_orbitals, n_electrons=spec.n_alpha + spec.n_beta
+    )
 
     seed = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, UCCSDAnsatz())
 
     assert seed is not None
-    hamiltonian_matrix = _spo_from_integrals(h_eff, g_frag, 0.0).to_matrix()
-    ansatz = UCCSDAnsatz()
-
-    def energy_at(params):
-        circuit = ansatz.build(
-            params, n_qubits=n_qubits, n_layers=1, n_electrons=n_electrons
-        )
-        state_vector = np.asarray(Statevector.from_instruction(circuit))
-        return float(np.real(state_vector.conj() @ hamiltonian_matrix @ state_vector))
-
     coupled_cluster = cc.CCSD(mean_field)
     coupled_cluster.kernel()
     ccsd_electronic_energy = coupled_cluster.e_tot - mol.energy_nuc()
 
-    seed_energy = energy_at(seed)
-    permuted_energy = energy_at(np.random.default_rng(0).permutation(seed))
+    seed_energy = ansatz_energy(seed, h_eff, g_frag, spec)
+    permuted_energy = ansatz_energy(
+        np.random.default_rng(0).permutation(seed), h_eff, g_frag, spec
+    )
 
     assert seed_energy == pytest.approx(ccsd_electronic_energy, abs=1e-3)
     assert seed_energy < permuted_energy - 0.05
 
 
+def test_uccsd_seed_beats_the_reference_determinant_in_a_localized_basis(
+    dummy_expval_backend,
+):
+    """The seed must recover correlation in the basis the fragments actually use.
+
+    The test above uses canonical MOs, where the fragment basis and the basis an
+    SCF on the fragment's integrals converges to coincide. Real fragments are
+    localized: an SCF rotates within their occupied and virtual blocks, leaving
+    the reference determinant untouched while permuting which amplitude belongs
+    to which orbital pair. Amplitudes read off that rotated solution seeded a
+    state *above* the reference determinant -- worse than starting from zeros.
+    """
+    ensemble = LASSQD(
+        h8_chain(),
+        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        n_active_orbitals=8,
+        max_orbitals_per_fragment=4,
+        backend=dummy_expval_backend,
+        seed=0,
+        reporting_level=ReportingLevel.OFF,
+    )
+    state = ensemble.initial_state()
+
+    for index, fragment in enumerate(state.fragments):
+        spec = fragment.spec
+        h_alpha, h_beta, g_frag = fragment_integrals(
+            ensemble, state.mo_coeff, state.fragments, index
+        )
+        n_params = UCCSDAnsatz.n_params_per_layer(
+            2 * spec.n_orbitals, n_electrons=spec.n_alpha + spec.n_beta
+        )
+        exact = fci.direct_spin1.kernel(
+            h_alpha, g_frag, spec.n_orbitals, (spec.n_alpha, spec.n_beta)
+        )[0]
+        seed = _workflow._ccsd_seed_params(
+            0.5 * (h_alpha + h_beta), g_frag, spec, n_params, UCCSDAnsatz()
+        )
+        assert seed is not None
+
+        reference = ansatz_energy(np.zeros(n_params), h_alpha, g_frag, spec)
+        seeded = ansatz_energy(seed, h_alpha, g_frag, spec)
+
+        assert seeded > exact - 1e-8
+        assert (reference - seeded) / (reference - exact) > 0.9
+
+
 def test_uccsd_seed_singles_match_the_ccsd_t1_amplitudes():
     """The energy assertion above cannot cover the singles, so pin their values.
 
-    ``_ccsd_seed_params`` runs its own RHF on the fragment's effective
-    integrals, so CCSD always sees canonical orbitals and ``t1`` is
+    That fragment's orbitals are canonical MOs, so ``t1`` is
     Brillouin-suppressed: measured ``max|t1|`` is 1.25e-03 against ``max|t2|``
     of 8.2e-02. Zeroing every single moves the seeded energy by 7.5e-06 and
     sign-flipping them by 2.4e-05 -- both far inside that test's 1e-3 tolerance,
@@ -794,12 +995,14 @@ def test_uccsd_seed_singles_match_the_ccsd_t1_amplitudes():
     mean_field = scf.RHF(mol).run(verbose=0)
     spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
     integrals = _workflow.transform_integrals(
-        mol, np.asarray(mean_field.mo_coeff), n_core=0
+        mol, np.asarray(mean_field.mo_coeff), n_core=0, n_act=4
     )
     placeholder = FragmentState(
         spec=spec, rdm1=np.zeros((4, 4)), rdm2=np.zeros((4, 4, 4, 4))
     )
-    h_eff, g_frag = _workflow.fragment_effective_integrals(integrals, [placeholder], 0)
+    h_eff, _, g_frag = _workflow.fragment_effective_integrals(
+        integrals, [placeholder], 0
+    )
     n_params = UCCSDAnsatz.n_params_per_layer(8, n_electrons=4)
 
     seed = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, UCCSDAnsatz())
@@ -851,6 +1054,121 @@ def test_create_programs_ccsd_seed_length_scales_with_n_layers(dummy_expval_back
             program.n_qubits, n_electrons=program.n_electrons
         )
         assert program._seed_params.shape == (expected_length,)
+
+
+@pytest.mark.filterwarnings("ignore:.*only UCCSDAnsatz has parameters")
+def test_ansatz_kwargs_reach_every_fragment_vqe(dummy_expval_backend):
+    """``ansatz_kwargs`` must reach both the fragment VQE and the seed-length
+    calculation, which ``_build_fragment_program`` derives separately.
+
+    A mismatch is silent: the VQE would reject a seed vector sized for the
+    other circuit, or the optimizer would tune parameters no gate reads.
+    """
+    ensemble = _lassqd(
+        dummy_expval_backend,
+        ansatz=LUCJAnsatz(),
+        ansatz_kwargs={"trailing_rotation": True},
+    )
+    ensemble.create_programs(ensemble.initial_state())
+
+    for program in ensemble.programs.values():
+        n_orb = program.n_qubits // 2
+        expected = LUCJAnsatz.n_params_per_layer(
+            program.n_qubits, trailing_rotation=True
+        )
+        assert program.n_params_per_layer == expected
+        assert expected - LUCJAnsatz.n_params_per_layer(program.n_qubits) == 2 * (
+            n_orb - 1
+        )
+        assert len(program.cost_circuit.parameters) == program.n_params
+
+
+def test_round_reports_record_each_round_as_it_completes(exact_sampler_lassqd):
+    """The per-round record must land when the round does, not at the end of the
+    run, so a capped or interrupted run keeps every finished round's numbers."""
+    ensemble, state = exact_sampler_lassqd
+
+    assert ensemble.round_reports == ()
+
+    for expected_rounds in (1, 2):
+        ensemble.create_programs(state)
+        ensemble.run_one_round(blocking=True)
+        state = ensemble.update_state(state)
+        ensemble._clear_completed_round()
+
+        assert len(ensemble.round_reports) == expected_rounds
+        report = ensemble.round_reports[-1]
+        assert report.number == expected_rounds
+        assert report.energy == ensemble.energy_history[-1]
+        assert report.rotation_pairs > 0
+        assert report.orbital_evaluations > report.orbital_iterations >= 0
+        assert len(report.subspace_sizes) == len(state.fragments)
+        assert all(size >= 1 for size in report.subspace_sizes)
+        assert report.orbital_seconds >= 0.0
+        assert f"Round {expected_rounds} done" in report.summary()
+
+    # The initial state's energy is ``inf``, so round 1 has no predecessor to
+    # subtract and must not report an infinite change.
+    assert ensemble.round_reports[0].energy_change is None
+    assert "first round" in ensemble.round_reports[0].summary()
+    assert ensemble.round_reports[1].energy_change == pytest.approx(
+        ensemble.energy_history[1] - ensemble.energy_history[0]
+    )
+
+
+def test_round_reports_are_cleared_by_a_workflow_reset(exact_sampler_lassqd):
+    ensemble, state = exact_sampler_lassqd
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    ensemble.update_state(state)
+    assert ensemble.round_reports
+
+    ensemble._reset_workflow_state()
+
+    assert ensemble.round_reports == ()
+
+
+def test_update_state_names_each_reduction_stage(exact_sampler_lassqd, mocker):
+    """Each classical stage of the reduction reports itself, so the display
+    distinguishes SQD recovery from the orbital solve rather than only showing
+    that a round is open."""
+    ensemble, state = exact_sampler_lassqd
+    spy = mocker.spy(ensemble, "_emit_workflow_round_stage")
+
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    ensemble.update_state(state)
+
+    reported = [call.args[0] for call in spy.call_args_list]
+    assert any("SQD" in message for message in reported)
+    assert any("RDM" in message for message in reported)
+    assert any("orbital" in message.lower() for message in reported)
+    assert reported[-1] == ensemble.round_reports[-1].summary()
+    # Only the outcome is marked final; the stages it passed through are not.
+    assert [call.kwargs.get("final", False) for call in spy.call_args_list][-1] is True
+    assert not any(call.kwargs.get("final", False) for call in spy.call_args_list[:-1])
+
+
+def test_round_summary_is_logged_not_only_painted_on_the_progress_row(
+    exact_sampler_lassqd, caplog
+):
+    """The round's outcome must survive a run whose output is redirected.
+
+    The workflow-round row is transient -- later frames overwrite its text -- so
+    a summary written only there leaves no record of a completed round. The
+    stage names are progress and may stay transient; the outcome may not.
+    """
+    ensemble, state = exact_sampler_lassqd
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+
+    with caplog.at_level(logging.INFO, logger="divi.qprog.ensemble"):
+        ensemble.update_state(state)
+
+    summary = ensemble.round_reports[-1].summary()
+    assert summary in caplog.text
+    # A stage label is progress only, and must not be logged alongside it.
+    assert "Re-optimizing orbitals" not in caplog.text
 
 
 def test_create_programs_ccsd_seeding_is_deterministic_across_ensembles(
@@ -910,6 +1228,7 @@ def test_ccsd_failure_falls_back_to_none_with_a_warning(dummy_expval_backend, mo
         assert program._seed_params is None
 
 
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
 def test_converged_energy_is_pinned_and_above_fci(
     exact_sampler_lassqd, h4_chain_mean_field
 ):
@@ -917,20 +1236,12 @@ def test_converged_energy_is_pinned_and_above_fci(
     physical.
 
     The product-state RDM is N-representable, so the energy is a real
-    expectation value and cannot dip below full-space FCI. The zeroed-block
-    functional this replaced returned -2.5236, i.e. 0.27 Ha *under* FCI, so this
-    bound fails on exactly the defect that motivated filling the cross-fragment
-    blocks.
-
-    At least one fragment's recovered subspace collapses to a single
-    determinant over these rounds -- the warning asserted below -- so what this
-    pins is the deterministic pipeline: integral transform, orbital
-    permutation, effective-integral construction, RDM assembly and orbital
-    re-optimization, rather than correlation recovery.
+    expectation value and cannot dip below full-space FCI. What the pin covers
+    is the deterministic pipeline: integral transform, orbital permutation,
+    effective-integral construction, RDM assembly and orbital re-optimization.
     """
     ensemble, _ = exact_sampler_lassqd
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=4)
+    ensemble.run(max_rounds=4)
 
     assert ensemble.energy == pytest.approx(PRODUCT_STATE_ENERGY, abs=1e-9)
     assert np.trace(ensemble.workflow_state.mo_coeff) == pytest.approx(
@@ -1017,8 +1328,7 @@ def test_round_history_length_matches_macro_cycles(exact_sampler_lassqd):
 
 def test_stop_reason_is_max_rounds_when_capped(exact_sampler_lassqd):
     ensemble, _ = exact_sampler_lassqd
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=1)
+    ensemble.run(max_rounds=1)
     assert ensemble.stop_reason is WorkflowStatus.MAX_ROUNDS
 
 
@@ -1029,24 +1339,20 @@ def test_stop_reason_is_complete_when_converged(exact_sampler_lassqd):
     assert ensemble.stop_reason is WorkflowStatus.COMPLETE
 
 
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
 def test_energy_is_monotonically_non_increasing(exact_sampler_lassqd):
     """Catches sign and orbital-indexing errors that still converge.
 
-    This exact-sampler fixture converges within 2 macro-cycles under
-    ``run()``'s own ``is_complete`` gate, which would leave only a single
-    pair to compare -- and that pair is already forced to agree within
-    ``energy_tol`` by the gate itself, so it proves nothing about
-    monotonicity beyond it. Driving macro-cycles directly (bypassing
-    ``is_complete``) forces 4 rounds regardless of convergence, giving 3
-    independent comparisons.
+    Drives the macro-cycles directly rather than through ``run()``, so all 4
+    rounds happen regardless of ``is_complete``, giving 3 comparisons that the
+    ``energy_tol`` gate does not already force to agree.
     """
     ensemble, state = exact_sampler_lassqd
     energies = []
     for _ in range(4):
         ensemble.create_programs(state)
         ensemble.run_one_round(blocking=True)
-        with pytest.warns(UserWarning, match="no correlation"):
-            state = ensemble.update_state(state)
+        state = ensemble.update_state(state)
         energies.append(state.energy)
         ensemble._clear_completed_round()
 
@@ -1153,12 +1459,8 @@ def test_single_fragment_h2_reaches_chemical_accuracy(default_test_simulator):
 
     ``seed`` cannot make this deterministic: ``MaestroSimulator.set_seed`` is a
     no-op (maestro does not expose seeding from C++), so shot outcomes depend on
-    how many circuits the *process* has already simulated. An earlier version of
-    this test pinned ``seed=7`` at ``n_batches=12, batch_size=32`` and passed in
-    isolation while failing when other tests ran first -- it landed on the
-    mean-field energy instead, the same collapse its budget note described for
-    four of five seeds. The budget below is raised until the correlated
-    determinant is captured regardless of where the sampler happens to be.
+    how many circuits the *process* has already simulated. The budget below is
+    raised until the correlated determinant is captured regardless.
 
     ``best_energy`` rather than ``energy``, since the macro-cycle need not be
     monotone and every round is a valid upper bound.

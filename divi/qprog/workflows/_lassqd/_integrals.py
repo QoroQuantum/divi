@@ -17,6 +17,7 @@ Implements the frozen-core / active-space integral machinery for LASSQD:
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import permutations
+from warnings import warn
 
 import numpy as np
 import scipy.linalg
@@ -30,27 +31,55 @@ ORBITAL_MINIMIZE_OPTIONS = {"ftol": 1e-12, "gtol": 1e-6}
 
 
 @dataclass(frozen=True)
-class MOIntegrals:
-    """One round's MO-basis integrals and frozen-core potentials.
-
-    All arrays are indexed over the full permuted MO register (core, then
-    fragment blocks in spec order, then virtual), matching the column order
-    of the ``mo_coeff`` passed to :func:`transform_integrals`.
+class OrbitalSolve:
+    """Outcome of one round's orbital re-optimization.
 
     Attributes:
-        h_mo: ``(n_orb, n_orb)`` one-electron integrals.
-        g_mo: ``(n_orb,) * 4`` two-electron integrals in chemist order.
-        j_core: ``(n_orb, n_orb)`` frozen-core Coulomb potential.
-        k_core: ``(n_orb, n_orb)`` frozen-core exchange potential.
-        n_core: Number of frozen-core orbitals these integrals were built
-            with; needed to locate each fragment's active block.
+        mo_coeff: The rotated MO coefficients.
+        energy: Total energy at the returned orbitals.
+        converged: Whether the optimizer reported success rather than exhausting
+            its budget. A capped solve still returns its best point, so the
+            energy remains an upper bound, but not a stationary point.
+        n_iterations: Optimizer iterations taken.
+        n_evaluations: Objective evaluations taken, each one four-index MO
+            transform.
+        gradient_norm: Largest absolute orbital-gradient component at the
+            returned orbitals. A solve that stops on its energy-reduction
+            tolerance can report ``converged`` with this well above
+            ``ORBITAL_MINIMIZE_OPTIONS``' gradient tolerance.
+        n_rotation_pairs: Number of orbital pairs the rotation spanned.
     """
 
-    h_mo: np.ndarray
-    g_mo: np.ndarray
+    mo_coeff: np.ndarray
+    energy: float
+    converged: bool
+    n_iterations: int
+    n_evaluations: int
+    gradient_norm: float
+    n_rotation_pairs: int
+
+
+@dataclass(frozen=True)
+class MOIntegrals:
+    """One round's active-space integrals and frozen-core potentials.
+
+    Every array is indexed over the active space alone, in the fragment-block
+    order of the ``mo_coeff`` passed to :func:`transform_integrals`. The core
+    and virtual blocks are not stored: the only consumer,
+    :func:`fragment_effective_integrals`, reads neither, and materializing the
+    full register costs ``n_orb ** 4``.
+
+    Attributes:
+        h_act: ``(n_act, n_act)`` one-electron integrals.
+        g_act: ``(n_act,) * 4`` two-electron integrals in chemist order.
+        j_core: ``(n_act, n_act)`` frozen-core Coulomb potential.
+        k_core: ``(n_act, n_act)`` frozen-core exchange potential.
+    """
+
+    h_act: np.ndarray
+    g_act: np.ndarray
     j_core: np.ndarray
     k_core: np.ndarray
-    n_core: int
 
 
 def build_active_permutation(
@@ -80,11 +109,14 @@ def build_active_permutation(
     return np.array(core + active + virtual, dtype=int)
 
 
-def transform_integrals(mol, mo_coeff: np.ndarray, n_core: int) -> MOIntegrals:
-    """Run one four-index MO transform and build the frozen-core potentials.
-
-    A single ``ao2mo.kernel`` call per macro-cycle, reused by every
-    fragment's effective integrals for that cycle.
+def transform_integrals(
+    mol,
+    mo_coeff: np.ndarray,
+    n_core: int,
+    n_act: int,
+    ao_eri: np.ndarray | None = None,
+) -> MOIntegrals:
+    """Transform the active-space integrals and build the frozen-core potentials.
 
     Args:
         mol: A PySCF ``gto.Mole``.
@@ -93,6 +125,10 @@ def transform_integrals(mol, mo_coeff: np.ndarray, n_core: int) -> MOIntegrals:
             are the active fragment blocks in spec order, and the rest are
             virtual.
         n_core: Number of frozen-core orbitals.
+        n_act: Number of active orbitals.
+        ao_eri: AO-basis electron-repulsion integral from :func:`cached_ao_eri`.
+            Supplying it avoids rebuilding the AO integrals every round;
+            ``None`` builds them here.
 
     Raises:
         ImportError: If the ``chem`` extra is not installed.
@@ -100,123 +136,112 @@ def transform_integrals(mol, mo_coeff: np.ndarray, n_core: int) -> MOIntegrals:
     try:
         # pyrefly: ignore[missing-import]  # optional ``chem`` extra
         from pyscf import ao2mo
+        from pyscf.scf import hf
     except ImportError as exc:
         raise ImportError(
             "transform_integrals requires the 'chem' extra; "
             "install it with `pip install qoro-divi[chem]`."
         ) from exc
 
-    n_orb = mo_coeff.shape[1]
-    h_ao = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
-    h_mo = np.dot(mo_coeff.T, np.dot(h_ao, mo_coeff))
+    if ao_eri is None:
+        ao_eri = cached_ao_eri(mol)
+    h_ao = cached_h_ao(mol)
 
-    g_mo = ao2mo.kernel(mol, mo_coeff)
-    g_mo = ao2mo.restore(1, g_mo, n_orb)
+    core_coeff = mo_coeff[:, :n_core]
+    active_coeff = mo_coeff[:, n_core : n_core + n_act]
 
-    j_core = np.zeros((n_orb, n_orb))
-    k_core = np.zeros((n_orb, n_orb))
-    for p in range(n_orb):
-        for q in range(n_orb):
-            for i in range(n_core):
-                j_core[p, q] += g_mo[p, q, i, i]
-                k_core[p, q] += g_mo[p, i, i, q]
+    # Occupation-one core density, so vj/vk come out as sum_i (pq|ii) and
+    # sum_i (pi|iq) directly.
+    vj_core, vk_core = hf.dot_eri_dm(ao_eri, core_coeff @ core_coeff.T, hermi=1)
 
     return MOIntegrals(
-        h_mo=h_mo, g_mo=g_mo, j_core=j_core, k_core=k_core, n_core=n_core
+        h_act=active_coeff.T @ h_ao @ active_coeff,
+        g_act=ao2mo.incore.general(ao_eri, (active_coeff,) * 4, compact=False).reshape(
+            (n_act,) * 4
+        ),
+        j_core=active_coeff.T @ vj_core @ active_coeff,
+        k_core=active_coeff.T @ vk_core @ active_coeff,
     )
 
 
 def fragment_effective_integrals(
     integrals: MOIntegrals, fragments: Sequence[FragmentState], index: int
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build one fragment's effective one- and two-body integrals.
 
-    The frozen core contributes a mean-field potential
-    (``2 * J_core - K_core``) and every *other* fragment contributes its own
-    mean-field Coulomb/exchange term through its current 1-RDM, while the
-    two-body integrals stay local to this fragment.
+    The frozen core contributes a spin-free mean-field potential
+    (``2 * J_core - K_core``) -- a doubly occupied core carries no spin density
+    -- and every *other* fragment contributes its own mean-field Coulomb and
+    exchange term. Coulomb sees the other fragment's total density; exchange is
+    same-spin, so it contracts that fragment's alpha or beta density and the
+    resulting one-body potential differs between the two spin channels:
 
-    Fragments are indexed by their permuted contiguous positions: the
-    running offset of ``spec.n_orbitals`` in the order ``fragments`` is
-    supplied, offset by ``integrals.n_core``. This is valid because
-    ``integrals`` was built from a ``mo_coeff`` permuted with
-    :func:`build_active_permutation` using the same ``n_core``.
+    ``h_sigma[p,q] = h[p,q] + 2 J_core - K_core
+    + sum_B ( gamma_B[r,s] (pq|rs) - gamma_B^sigma[r,s] (pr|sq) )``
+
+    The two channels coincide only when every other fragment is closed-shell.
+    Spin-averaging them would erase the ``K_alpha - K_beta`` asymmetry that
+    generates inter-fragment magnetic coupling, leaving each fragment's solver
+    blind to the sign of its neighbours' local moments.
 
     Args:
-        integrals: MO-basis integrals for the current round.
+        integrals: Active-space integrals for the current round.
         fragments: Every fragment's current state, in permutation order.
         index: Position of the target fragment within ``fragments``.
 
-    Other fragments enter through their spin-traced 1-RDM as
-    ``rdm1[r,s] * ((pq|rs) - (pr|sq) / 2)``. The Coulomb term sees the total
-    density; the exchange term is same-spin only, and ``h_eff`` is spin-free, so
-    the ``1/2`` is a spin average -- exact when the other fragment is
-    closed-shell, approximate when it is polarized.
-
     Returns:
-        ``(h_eff, g_frag)``: the fragment's effective one-body integrals
-        (including core and other-fragment mean-field terms) and its bare
-        two-body integrals, both shaped for the fragment's own orbital
-        count.
+        ``(h_alpha, h_beta, g_frag)``: the fragment's effective one-body
+        integrals per spin channel, and its bare two-body integrals.
 
     Raises:
-        ValueError: If ``integrals.n_core`` plus the total number of
-            orbitals across ``fragments`` exceeds the size of ``integrals``,
-            which indicates ``integrals`` was built with a different
-            ``n_core`` (or a different set of fragments) than supplied here.
+        ValueError: If the fragments cover a different number of orbitals than
+            ``integrals`` spans, meaning the two were built from different
+            fragment specs.
     """
-    offsets = []
+    blocks = []
     running = 0
     for fragment in fragments:
-        offsets.append(running)
-        running += fragment.spec.n_orbitals
+        n_f = fragment.spec.n_orbitals
+        blocks.append(slice(running, running + n_f))
+        running += n_f
 
-    n_orb = integrals.h_mo.shape[0]
-    if integrals.n_core + running > n_orb:
+    n_act = integrals.h_act.shape[0]
+    if running != n_act:
         raise ValueError(
-            "Fragment orbitals do not fit in the MO register: n_core="
-            f"{integrals.n_core} + total fragment orbitals={running} exceeds "
-            f"n_orb={n_orb}. `integrals` and `fragments` were likely built "
-            "with inconsistent n_core or fragment specs."
+            f"Fragments cover {running} orbitals but the active-space integrals "
+            f"span {n_act}. `integrals` and `fragments` were built from "
+            "different fragment specs."
         )
 
-    target = fragments[index]
-    n_f_orb = target.spec.n_orbitals
-    n_core = integrals.n_core
-    h_mo, g_mo = integrals.h_mo, integrals.g_mo
+    target = blocks[index]
+    core_embedded = (
+        integrals.h_act[target, target]
+        + 2.0 * integrals.j_core[target, target]
+        - integrals.k_core[target, target]
+    )
+    # Separate arrays even with one fragment, where the loop below never rebinds
+    # them: two names for one array would make any later in-place edit corrupt
+    # both channels, and only in that configuration.
+    h_alpha = core_embedded
+    h_beta = core_embedded.copy()
 
-    h_eff = np.zeros((n_f_orb, n_f_orb))
-    for p_idx in range(n_f_orb):
-        p = n_core + offsets[index] + p_idx
-        for q_idx in range(n_f_orb):
-            q = n_core + offsets[index] + q_idx
-            h_eff[p_idx, q_idx] = (
-                h_mo[p, q] + 2.0 * integrals.j_core[p, q] - integrals.k_core[p, q]
-            )
-            for other_idx, other in enumerate(fragments):
-                if other_idx == index:
-                    continue
-                n_other_orb = other.spec.n_orbitals
-                for r_idx in range(n_other_orb):
-                    r = n_core + offsets[other_idx] + r_idx
-                    for s_idx in range(n_other_orb):
-                        s = n_core + offsets[other_idx] + s_idx
-                        h_eff[p_idx, q_idx] += other.rdm1[r_idx, s_idx] * (
-                            g_mo[p, q, r, s] - 0.5 * g_mo[p, r, s, q]
-                        )
+    g_act = integrals.g_act
+    for other_index, other in enumerate(fragments):
+        if other_index == index:
+            continue
+        span = blocks[other_index]
+        exchange_block = g_act[target, span, span, target]
+        alpha_other, beta_other = other.spin_rdm1s()
 
-    g_frag = np.zeros((n_f_orb, n_f_orb, n_f_orb, n_f_orb))
-    for p_idx in range(n_f_orb):
-        p = n_core + offsets[index] + p_idx
-        for q_idx in range(n_f_orb):
-            q = n_core + offsets[index] + q_idx
-            for r_idx in range(n_f_orb):
-                r = n_core + offsets[index] + r_idx
-                for s_idx in range(n_f_orb):
-                    s = n_core + offsets[index] + s_idx
-                    g_frag[p_idx, q_idx, r_idx, s_idx] = g_mo[p, q, r, s]
+        coulomb = np.einsum(
+            "rs,pqrs->pq", other.rdm1, g_act[target, target, span, span]
+        )
+        h_alpha = (
+            h_alpha + coulomb - np.einsum("rs,prsq->pq", alpha_other, exchange_block)
+        )
+        h_beta = h_beta + coulomb - np.einsum("rs,prsq->pq", beta_other, exchange_block)
 
-    return h_eff, g_frag
+    return h_alpha, h_beta, g_act[target, target, target, target].copy()
 
 
 def assemble_active_rdms(
@@ -315,56 +340,10 @@ def total_energy(
     Raises:
         ImportError: If the ``chem`` extra is not installed.
     """
-    try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
-        from pyscf import ao2mo
-    except ImportError as exc:
-        raise ImportError(
-            "total_energy requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
-
-    n_orb = mo_coeff.shape[1]
-    h_mo = np.dot(mo_coeff.T, np.dot(h_ao, mo_coeff))
-
-    g_mo = ao2mo.incore.full(ao_eri, mo_coeff)
-    g_mo = ao2mo.restore(1, g_mo, n_orb)
-
-    n_act = rdm1_active.shape[0]
-
-    e_core = mol.energy_nuc()
-    for i in range(n_core):
-        e_core += 2.0 * h_mo[i, i]
-        for j in range(n_core):
-            e_core += 2.0 * g_mo[i, i, j, j] - g_mo[i, j, j, i]
-
-    j_core = np.zeros((n_act, n_act))
-    k_core = np.zeros((n_act, n_act))
-    for p in range(n_act):
-        p_mo = n_core + p
-        for q in range(n_act):
-            q_mo = n_core + q
-            for i in range(n_core):
-                j_core[p, q] += g_mo[p_mo, q_mo, i, i]
-                k_core[p, q] += g_mo[p_mo, i, i, q_mo]
-
-    e_act = 0.0
-    for p in range(n_act):
-        p_mo = n_core + p
-        for q in range(n_act):
-            q_mo = n_core + q
-            e_act += rdm1_active[p, q] * (
-                h_mo[p_mo, q_mo] + 2.0 * j_core[p, q] - k_core[p, q]
-            )
-            for r in range(n_act):
-                r_mo = n_core + r
-                for s in range(n_act):
-                    s_mo = n_core + s
-                    e_act += (
-                        0.5 * rdm2_active[p, q, r, s] * g_mo[p_mo, q_mo, r_mo, s_mo]
-                    )
-
-    return float(e_core + e_act)
+    energy, _ = energy_and_generalized_fock(
+        mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+    )
+    return energy
 
 
 def build_energy_rdms(
@@ -417,6 +396,115 @@ def build_energy_rdms(
     two_rdm[active, active, active, active] += rdm2_active
 
     return one_rdm, two_rdm
+
+
+def energy_and_generalized_fock(
+    mol,
+    mo_coeff: np.ndarray,
+    n_core: int,
+    rdm1_active: np.ndarray,
+    rdm2_active: np.ndarray,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+) -> tuple[float, np.ndarray]:
+    """Energy and generalized Fock matrix without a full four-index transform.
+
+    Equivalent to contracting :func:`build_energy_rdms`' dense densities against
+    the full MO integrals, but built from the blocks those densities actually
+    reach. The two-particle density vanishes whenever any index is virtual and
+    is diagonal within the core, so the contraction reduces to Coulomb/exchange
+    builds from the core and active densities plus one ``(all|act,act,act)``
+    transform -- ``n_orb * n_act ** 3`` elements rather than ``n_orb ** 4``.
+
+    Args:
+        mol: A PySCF ``gto.Mole``.
+        mo_coeff: ``(nao, n_orb)`` MO coefficients, permuted into
+            ``[core | fragment blocks | virtual]`` order.
+        n_core: Number of frozen-core orbitals.
+        rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
+        rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
+        ao_eri: AO-basis electron-repulsion integral from :func:`cached_ao_eri`.
+        h_ao: AO-basis one-electron integral from :func:`cached_h_ao`.
+
+    Returns:
+        ``(energy, fock)`` with ``fock`` shaped ``(n_orb, n_orb)``; its virtual
+        columns are zero, since the densities do not reach them.
+
+    Raises:
+        ImportError: If the ``chem`` extra is not installed.
+    """
+    try:
+        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        from pyscf import ao2mo
+        from pyscf.scf import hf
+    except ImportError as exc:
+        raise ImportError(
+            "energy_and_generalized_fock requires the 'chem' extra; "
+            "install it with `pip install qoro-divi[chem]`."
+        ) from exc
+
+    n_orb = mo_coeff.shape[1]
+    n_act = rdm1_active.shape[0]
+    active = slice(n_core, n_core + n_act)
+    core_coeff = mo_coeff[:, :n_core]
+    active_coeff = mo_coeff[:, active]
+
+    h_mo = mo_coeff.T @ h_ao @ mo_coeff
+
+    # Occupation-one core density, so vj/vk come out as sum_i (mn|ii) and
+    # sum_i (mi|in) directly. Both densities go in one call so the ERI is
+    # traversed once rather than twice.
+    dm_core = core_coeff @ core_coeff.T
+    dm_act = active_coeff @ rdm1_active @ active_coeff.T
+    vj, vk = hf.dot_eri_dm(ao_eri, np.stack([dm_core, dm_act]), hermi=1)
+
+    j_core = mo_coeff.T @ vj[0] @ mo_coeff
+    k_core = mo_coeff.T @ vk[0] @ mo_coeff
+    j_act = mo_coeff.T @ vj[1] @ mo_coeff
+    k_act = mo_coeff.T @ vk[1] @ mo_coeff
+
+    # Both small index sets go first: ``half_e1`` transforms the leading pair, so
+    # (act,act) costs n_act**2 pairs where (all,act) costs n_orb*n_act. Chemist
+    # symmetry recovers the wanted ordering, (m a | b c) = g_aaaA[b, c, a, m].
+    g_gaaa = (
+        ao2mo.incore.general(
+            ao_eri,
+            (active_coeff, active_coeff, active_coeff, mo_coeff),
+            compact=False,
+        )
+        .reshape(n_act, n_act, n_act, n_orb)
+        .transpose(3, 2, 0, 1)
+    )
+
+    core_diagonal = np.arange(n_core)
+    e_core = 2.0 * float(
+        np.sum(
+            h_mo[core_diagonal, core_diagonal]
+            + j_core[core_diagonal, core_diagonal]
+            - 0.5 * k_core[core_diagonal, core_diagonal]
+        )
+    )
+    embedded_h = (
+        h_mo[active, active] + 2.0 * j_core[active, active] - k_core[active, active]
+    )
+    e_act = float(np.sum(rdm1_active * embedded_h)) + 0.5 * float(
+        np.einsum("pqrs,pqrs->", rdm2_active, g_gaaa[active], optimize=True)
+    )
+    energy = float(mol.energy_nuc()) + e_core + e_act
+
+    fock = np.zeros((n_orb, n_orb))
+    fock[:, :n_core] = (
+        2.0 * h_mo[:, :n_core]
+        + 4.0 * j_core[:, :n_core]
+        - 2.0 * k_core[:, :n_core]
+        + 2.0 * j_act[:, :n_core]
+        - k_act[:, :n_core]
+    )
+    embedded_general = h_mo[:, active] + 2.0 * j_core[:, active] - k_core[:, active]
+    fock[:, active] = embedded_general @ rdm1_active.T + np.einsum(
+        "mqrs,pqrs->mp", g_gaaa, rdm2_active, optimize=True
+    )
+    return energy, fock
 
 
 def rotation_energy_gradient_fn(
@@ -474,15 +562,6 @@ def rotation_energy_gradient_fn(
     Raises:
         ImportError: If the ``chem`` extra is not installed.
     """
-    try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
-        from pyscf import ao2mo
-    except ImportError as exc:
-        raise ImportError(
-            "rotation_energy_gradient_fn requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
-
     n_orb_total = mo_coeff.shape[1]
     n_act = sum(spec.n_orbitals for spec in fragment_specs)
 
@@ -515,10 +594,6 @@ def rotation_energy_gradient_fn(
         for q in range(n_core + n_act, n_orb_total):
             rotation_pairs.append((p, q))
 
-    one_rdm, two_rdm = build_energy_rdms(n_orb_total, n_core, rdm1_active, rdm2_active)
-    two_rdm_flat = two_rdm.reshape(n_orb_total, -1)
-    e_nuc = mol.energy_nuc()
-
     def energy_and_gradient(
         rotation_params: np.ndarray,
     ) -> tuple[float, np.ndarray]:
@@ -530,17 +605,9 @@ def rotation_energy_gradient_fn(
         unitary = scipy.linalg.expm(generator)
         rotated = np.dot(mo_coeff, unitary)
 
-        h_mo = np.dot(rotated.T, np.dot(h_ao, rotated))
-        g_mo = ao2mo.restore(1, ao2mo.incore.full(ao_eri, rotated), n_orb_total)
-        g_mo_flat = g_mo.reshape(n_orb_total, -1)
-
-        energy = (
-            e_nuc
-            + float(np.sum(h_mo * one_rdm))
-            + 0.5 * float(np.dot(two_rdm_flat.ravel(), g_mo_flat.ravel()))
+        energy, fock = energy_and_generalized_fock(
+            mol, rotated, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
         )
-
-        fock = np.dot(h_mo, one_rdm.T) + np.dot(g_mo_flat, two_rdm_flat.T)
         pullback = np.asarray(
             scipy.linalg.expm_frechet(
                 generator.T, np.dot(unitary, 2.0 * fock), compute_expm=False
@@ -564,7 +631,8 @@ def optimize_orbitals(
     rdm2_active: np.ndarray,
     ao_eri: np.ndarray,
     h_ao: np.ndarray,
-) -> tuple[np.ndarray, float]:
+    max_orbital_iterations: int | None = None,
+) -> OrbitalSolve:
     """Optimize molecular orbitals against the current active-space RDMs.
 
     Parameterizes an orbital rotation as the exponential of a skew-symmetric
@@ -589,6 +657,11 @@ def optimize_orbitals(
     ``fun=0.0`` without evaluating the objective when there are zero rotation
     parameters) instead of raising.
 
+    That monotonicity is also why the third return value matters: an optimizer
+    that gives up returns the baseline, so the round's energy barely moves and
+    looks exactly like a converged macro-cycle. The flag lets the caller tell
+    the two apart.
+
     Args:
         mol: A PySCF ``gto.Mole``.
         mo_coeff: ``(nao, n_orb)`` MO coefficients, permuted into
@@ -603,14 +676,23 @@ def optimize_orbitals(
             :func:`cached_ao_eri`.
         h_ao: AO-basis one-electron integral, as returned by
             :func:`cached_h_ao`.
+        max_orbital_iterations: Cap on L-BFGS-B iterations for this orbital
+            solve, bounding the cost of one round at the price of returning
+            before convergence. Unrelated to any VQE iteration budget.
+            ``None`` uses scipy's default.
 
     Returns:
-        ``(rotated_mo_coeff, energy)``: the rotated MO coefficients and the
-        total energy at the optimum.
+        An :class:`OrbitalSolve` carrying the rotated orbitals, the energy, and
+        the solve's own diagnostics -- iteration and evaluation counts, the
+        final gradient norm, and whether it converged.
 
     Raises:
         ImportError: If the ``chem`` extra is not installed, propagated from
             :func:`total_energy`.
+
+    Warns:
+        UserWarning: If the optimizer stopped without converging, naming the
+            iteration count and scipy's reason.
     """
     n_orb_total = mo_coeff.shape[1]
 
@@ -627,23 +709,46 @@ def optimize_orbitals(
     n_rot = len(rotation_pairs)
 
     init_params = np.zeros(n_rot)
-    baseline_energy = energy_and_gradient(init_params)[0]
+    baseline_energy, baseline_gradient = energy_and_gradient(init_params)
 
     best_params = init_params
     best_energy = baseline_energy
+    best_gradient = baseline_gradient
+    converged = True
+    n_iterations = 0
+    n_evaluations = 1
     if n_rot > 0:
+        options = dict(ORBITAL_MINIMIZE_OPTIONS)
+        if max_orbital_iterations is not None:
+            options["maxiter"] = max_orbital_iterations
         res = minimize(
             energy_and_gradient,
             init_params,
             method="L-BFGS-B",
             jac=True,
-            options=ORBITAL_MINIMIZE_OPTIONS,
+            options=options,
         )
+        n_iterations = int(res.nit)
+        n_evaluations += int(res.nfev)
         if np.isfinite(res.fun) and (
             not np.isfinite(best_energy) or res.fun < best_energy
         ):
             best_params = res.x
             best_energy = float(res.fun)
+            best_gradient = np.asarray(res.jac)
+        converged = bool(res.success)
+        if not converged:
+            warn(
+                "Orbital optimization stopped without converging after "
+                f"{res.nit} iterations and {res.nfev} evaluations: "
+                f"{str(res.message).strip()}. The returned orbitals are the best "
+                "seen, so the energy is still an upper bound, but this round is "
+                "not a stationary point -- a small round-to-round energy change "
+                "here means the optimizer gave up, not that the macro-cycle "
+                "converged.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     generator = np.zeros((n_orb_total, n_orb_total))
     for idx, (p, q) in enumerate(rotation_pairs):
@@ -651,4 +756,14 @@ def optimize_orbitals(
         generator[q, p] = -best_params[idx]
     rotated_mo_coeff = np.dot(mo_coeff, scipy.linalg.expm(generator))
 
-    return rotated_mo_coeff, float(best_energy)
+    return OrbitalSolve(
+        mo_coeff=rotated_mo_coeff,
+        energy=float(best_energy),
+        converged=converged,
+        n_iterations=n_iterations,
+        n_evaluations=n_evaluations,
+        gradient_norm=(
+            float(np.max(np.abs(best_gradient))) if best_gradient.size else 0.0
+        ),
+        n_rotation_pairs=n_rot,
+    )

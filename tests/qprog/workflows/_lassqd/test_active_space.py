@@ -21,95 +21,48 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     h4_chain,
     h4_chain_mean_field,
     h4_localized_blocks_seed0,
+    h8_chain,
 )
 
 # 6 orbitals, 3 occupied (indices 0-2), HOMO index 2, LUMO index 3.
-_ENERGIES = np.array([-2.0, -1.0, -0.4, 0.3, 1.2, 2.5])
+_N_ORBITALS = 6
 
 
 def test_even_n_active_orbitals_splits_evenly():
-    occupied, virtual = select_frontier_orbitals(
-        _ENERGIES, n_occupied=3, n_active_orbitals=4
-    )
+    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 3, 4)
     assert occupied == (1, 2)
     assert virtual == (3, 4)
 
 
 def test_odd_n_active_orbitals_favors_occupied():
     """ceil(k/2) occupied, floor(k/2) virtual."""
-    occupied, virtual = select_frontier_orbitals(
-        _ENERGIES, n_occupied=3, n_active_orbitals=3
-    )
+    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 3, 3)
     assert occupied == (1, 2)
     assert virtual == (3,)
 
 
 def test_n_active_orbitals_clamps_at_register_edges():
-    occupied, virtual = select_frontier_orbitals(
-        _ENERGIES, n_occupied=3, n_active_orbitals=12
-    )
+    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 3, 12)
     assert occupied == (0, 1, 2)
     assert virtual == (3, 4, 5)
 
 
 def test_asymmetric_clamping_only_clamps_the_occupied_side():
     """A one-orbital occupied register clamps while the virtual side does not."""
-    occupied, virtual = select_frontier_orbitals(
-        _ENERGIES, n_occupied=1, n_active_orbitals=6
-    )
+    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 1, 6)
     assert occupied == (0,)
     assert virtual == (1, 2, 3)
-
-
-def test_energy_window_includes_occupied_boundary_exactly():
-    """Occupied qualifies when eps >= eps_HOMO - w, pinned at the exact edge."""
-    occupied, virtual = select_frontier_orbitals(
-        _ENERGIES, n_occupied=3, energy_window=0.6
-    )
-    # eps_HOMO = -0.4, so the occupied cutoff is exactly -1.0: orbital 1 sits
-    # exactly on the boundary and must be included, orbital 0 (-2.0) must not.
-    assert occupied == (1, 2)
-    # eps_LUMO = 0.3, cutoff 0.9: orbital 4 (1.2) sits strictly outside it.
-    assert virtual == (3,)
-
-
-def test_energy_window_includes_virtual_boundary_exactly():
-    """Virtual qualifies when eps <= eps_LUMO + w, pinned at the exact edge."""
-    occupied, virtual = select_frontier_orbitals(
-        _ENERGIES, n_occupied=3, energy_window=0.9
-    )
-    # eps_HOMO = -0.4, cutoff -1.3: orbital 0 (-2.0) sits strictly outside it.
-    assert occupied == (1, 2)
-    # eps_LUMO = 0.3, so the virtual cutoff is exactly 1.2: orbital 4 sits
-    # exactly on the boundary and must be included, orbital 5 (2.5) must not.
-    assert virtual == (3, 4)
-
-
-def test_requires_exactly_one_selection_mode():
-    with pytest.raises(ValueError, match="exactly one"):
-        select_frontier_orbitals(
-            _ENERGIES, n_occupied=3, n_active_orbitals=2, energy_window=0.5
-        )
-    with pytest.raises(ValueError, match="exactly one"):
-        select_frontier_orbitals(_ENERGIES, n_occupied=3)
 
 
 def test_rejects_selection_without_both_occupied_and_virtual():
     """An all-occupied register leaves no virtual orbital to select."""
     with pytest.raises(ValueError, match="at least one occupied"):
-        select_frontier_orbitals(
-            _ENERGIES, n_occupied=len(_ENERGIES), n_active_orbitals=2
-        )
+        select_frontier_orbitals(_N_ORBITALS, _N_ORBITALS, 2)
 
 
 def test_rejects_non_positive_n_active_orbitals():
     with pytest.raises(ValueError, match="n_active_orbitals"):
-        select_frontier_orbitals(_ENERGIES, n_occupied=3, n_active_orbitals=0)
-
-
-def test_rejects_negative_energy_window():
-    with pytest.raises(ValueError, match="energy_window"):
-        select_frontier_orbitals(_ENERGIES, n_occupied=3, energy_window=-0.1)
+        select_frontier_orbitals(_N_ORBITALS, 3, 0)
 
 
 def test_localization_preserves_the_occupied_subspace(
@@ -287,10 +240,9 @@ def test_merge_clusters_returns_disjoint_complete_clusters():
 def test_auto_fragment_specs_on_h4_finds_two_fragments():
     mol = h4_chain()
     mean_field = scf.RHF(mol).run(verbose=0)
-    specs, localized = auto_fragment_specs(
+    specs, localized, active_positions = auto_fragment_specs(
         mol,
         np.asarray(mean_field.mo_coeff),
-        np.asarray(mean_field.mo_energy),
         n_occupied=2,
         rng=np.random.default_rng(0),
         n_active_orbitals=4,
@@ -304,13 +256,68 @@ def test_auto_fragment_specs_on_h4_finds_two_fragments():
         # count, so alpha and beta must agree.
         assert spec.n_alpha == spec.n_beta == 1
     assert localized.shape[1] == 4
+    # ``orbitals`` are register indices, not localized-column indices.
+    assert sorted(o for spec in specs for o in spec.orbitals) == sorted(
+        active_positions
+    )
 
 
-def _canonical_partition_key(mol, mo_coeff, mo_energy, seed):
-    specs, _ = auto_fragment_specs(
+def _h8_auto_specs(**overrides):
+    """H8 fragmented one half-chain per fragment.
+
+    H8 rather than H4 because a polarized split of a 2-orbital fragment fills
+    one spin channel and empties the other, leaving no excitation at all.
+    """
+    mol = h8_chain()
+    mean_field = scf.RHF(mol).run(verbose=0)
+    kwargs = dict(
+        n_occupied=4,
+        rng=np.random.default_rng(0),
+        n_active_orbitals=8,
+        fragment_atoms=([0, 1, 2, 3], [4, 5, 6, 7]),
+    )
+    kwargs.update(overrides)
+    return auto_fragment_specs(
+        mol,
+        np.asarray(mean_field.mo_coeff),
+        **kwargs,
+    )
+
+
+def test_auto_fragment_specs_applies_local_spins():
+    """``local_spins`` sets 2S per fragment, leaving each fragment's electron
+    count alone. This is the antiferromagnetic layout the closed-shell default
+    cannot express."""
+    specs, _, _ = _h8_auto_specs(local_spins=[2, -2])
+
+    assert [(spec.n_alpha, spec.n_beta) for spec in specs] == [(3, 1), (1, 3)]
+    assert sum(spec.n_alpha for spec in specs) == sum(spec.n_beta for spec in specs)
+
+
+def test_auto_fragment_specs_rejects_local_spins_without_atoms():
+    """Coupling-graph fragment order depends on an RNG seed, so a positional
+    spin list would not name a stable fragment."""
+    with pytest.raises(ValueError, match="local_spins requires fragment_atoms"):
+        _h8_auto_specs(
+            fragment_atoms=None, max_orbitals_per_fragment=4, local_spins=[2, -2]
+        )
+
+
+def test_auto_fragment_specs_rejects_wrong_number_of_local_spins():
+    with pytest.raises(ValueError, match="local_spins has 3 entries"):
+        _h8_auto_specs(local_spins=[2, -2, 0])
+
+
+def test_auto_fragment_specs_rejects_unreachable_local_spin():
+    """A fragment cannot supply more unpaired spins than it has electrons."""
+    with pytest.raises(ValueError, match="cannot supply that many unpaired"):
+        _h8_auto_specs(local_spins=[8, -8])
+
+
+def _canonical_partition_key(mol, mo_coeff, seed):
+    specs, _, _ = auto_fragment_specs(
         mol,
         mo_coeff,
-        mo_energy,
         n_occupied=2,
         rng=np.random.default_rng(seed),
         n_active_orbitals=4,
@@ -330,11 +337,8 @@ def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
     """
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
-    mo_energy = np.asarray(h4_chain_mean_field.mo_energy)
 
-    partitions = {
-        _canonical_partition_key(mol, mo_coeff, mo_energy, seed) for seed in range(8)
-    }
+    partitions = {_canonical_partition_key(mol, mo_coeff, seed) for seed in range(8)}
     assert len(partitions) == 1
 
 
@@ -351,7 +355,7 @@ def test_auto_fragment_specs_active_integrals_include_frozen_core():
     # is a frozen core orbital, orbital 1 is active occupied, orbital 2 is
     # active virtual.
     occupied_indices, virtual_indices = select_frontier_orbitals(
-        np.asarray(mean_field.mo_energy), n_occupied=2, n_active_orbitals=2
+        mo_coeff.shape[1], 2, 2
     )
     localized_occ, localized_virt = localize_blocks(
         mol, mo_coeff, occupied_indices, virtual_indices, np.random.default_rng(0)

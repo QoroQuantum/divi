@@ -5,7 +5,9 @@
 """The LASSQD program ensemble: construction and per-round program creation."""
 
 import copy
+import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 from warnings import warn
 
@@ -18,7 +20,11 @@ from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import Optimizer
 
-from ._active_space import auto_fragment_specs, select_frontier_orbitals
+from ._active_space import (
+    auto_fragment_specs,
+    split_active_orbitals,
+)
+from ._active_space import validate_fragment_atoms as _validate_fragment_atoms
 from ._integrals import (
     assemble_active_rdms,
     build_active_permutation,
@@ -43,6 +49,72 @@ try:
 except ImportError:
     cc = None
     cc_addons = None
+
+
+# Below this the two spin channels of an embedding potential are the same matrix
+# to seeding precision, so averaging them for restricted CCSD costs nothing.
+_SEED_SPIN_ASYMMETRY_TOL = 1e-6
+
+# Largest occupied-virtual Fock element, relative to the Fock scale, at which the
+# fragment's reference determinant still counts as a Hartree-Fock solution.
+_SEED_STATIONARITY_TOL = 1e-6
+
+
+@dataclass(frozen=True)
+class LASSQDRoundReport:
+    """One macro-cycle round's stage outputs.
+
+    Appended to ``LASSQD.round_reports`` as the round completes, so an
+    interrupted run keeps every finished round's numbers.
+
+    Attributes:
+        number: Round number, counting from 1.
+        energy: This round's total energy, a variational upper bound.
+        energy_change: Signed change from the previous round's energy, or
+            ``None`` for the first round, which has no predecessor.
+        subspace_sizes: Distinct determinants each fragment's SQD recovery
+            spanned, in fragment order. A one-determinant entry means that
+            fragment captured no correlation.
+        orbital_iterations: Iterations the orbital solve took.
+        orbital_evaluations: Objective evaluations the orbital solve took, each
+            one four-index MO transform.
+        orbital_gradient_norm: Largest orbital-gradient component at the
+            returned orbitals.
+        orbital_converged: Whether the orbital solve reached a stationary point
+            rather than stopping on a budget or an energy-reduction floor.
+        rotation_pairs: Orbital pairs the rotation spanned.
+        recovery_seconds: Wall-clock time in SQD recovery for all fragments.
+        orbital_seconds: Wall-clock time in the orbital re-optimization.
+    """
+
+    number: int
+    energy: float
+    energy_change: float | None
+    subspace_sizes: tuple[int, ...]
+    orbital_iterations: int
+    orbital_evaluations: int
+    orbital_gradient_norm: float
+    orbital_converged: bool
+    rotation_pairs: int
+    recovery_seconds: float
+    orbital_seconds: float
+
+    def summary(self) -> str:
+        """One-line human-readable digest of the round."""
+        change = (
+            "first round"
+            if self.energy_change is None
+            else f"change {self.energy_change:+.3e}"
+        )
+        return (
+            f"Round {self.number} done. Energy: {self.energy:.8f} Ha "
+            f"({change}); subspaces "
+            f"{list(self.subspace_sizes)}; orbitals: {self.orbital_iterations} "
+            f"iterations over {self.rotation_pairs} pairs, "
+            f"|g|max {self.orbital_gradient_norm:.2e}, "
+            f"converged={self.orbital_converged}; "
+            f"SQD {self.recovery_seconds:.1f}s, orbitals {self.orbital_seconds:.1f}s"
+        )
 
 
 class _FragmentVQE(VQE):
@@ -87,6 +159,10 @@ def _uccsd_amplitude_seed(
     separately within the occupied and virtual blocks. ``qiskit_nature``'s
     excitation list uses blocked indices over the whole register, so each is
     remapped through its ``(spatial orbital, spin)`` pair.
+
+    The correspondence is positional, so ``coupled_cluster`` must have been
+    solved in the same orbital basis the ansatz excites in -- the fragment's own
+    orbitals, not a rotated set of them.
 
     The angles are ``theta_single = -t1`` and ``theta_double = +t2``: a unique
     excitation carries the amplitude itself, with no antisymmetrization factor
@@ -140,18 +216,21 @@ def _ccsd_seed_params(
     coupled-cluster amplitudes computed on that fragment's own effective
     integrals, instead of starting from the optimizer's random initial guess.
 
-    For :class:`~divi.qprog.algorithms.UCCSDAnsatz` (``ansatz`` an instance of
-    it), the mapping is a direct amplitude correspondence via
-    :func:`_uccsd_amplitude_seed`: UCCSD's parameters are themselves
-    singles-and-doubles excitation amplitudes, so each parameter is read off
-    the matching entry of ``t1``/``t2`` rather than positionally truncated.
+    Only :class:`~divi.qprog.algorithms.UCCSDAnsatz` is seeded, via
+    :func:`_uccsd_amplitude_seed`: its parameters are themselves
+    singles-and-doubles excitation amplitudes, so each is read off the matching
+    entry of ``t1``/``t2``. No other ansatz has parameters that correspond to
+    CCSD amplitudes -- LUCJ's hopping and Coulomb angles do not -- so those warn
+    and defer to the optimizer's own initialization.
 
-    For any other ansatz, the mapping concatenates the fragment's ``t1`` and
-    ``t2`` CCSD amplitude arrays (in that order) and truncates or zero-pads
-    the result to ``n_params``. This is a deterministic, correctly sized
-    heuristic, not a physically motivated correspondence between individual
-    amplitudes and specific ansatz parameters (e.g. LUCJ hopping or Coulomb
-    angles).
+    The CCSD runs in the fragment's own orbital basis, on the determinant the
+    ansatz's Hartree-Fock reference prepares, rather than on a self-consistent
+    field's canonical orbitals. Fragment orbitals are localized, and an SCF
+    would rotate within the occupied and virtual blocks -- leaving the reference
+    determinant and its energy untouched while permuting which amplitude belongs
+    to which orbital pair, so the resulting seed would be attached to the wrong
+    excitations. That determinant must still be a Hartree-Fock solution for its
+    amplitudes to mean anything, which the occupied-virtual Fock block checks.
 
     Args:
         h_eff: Fragment's effective one-body integrals, shape
@@ -160,16 +239,26 @@ def _ccsd_seed_params(
             ``(n_orbitals,) * 4``.
         spec: Fragment specification.
         n_params: Length of the returned vector.
-        ansatz: The fragment's configured ansatz. ``None`` (or anything other
-            than ``UCCSDAnsatz``) falls back to the positional heuristic.
+        ansatz: The fragment's configured ansatz.
 
     Returns:
         A length-``n_params`` vector, or ``None`` (with a ``UserWarning``) if
-        the fragment is spin-imbalanced (``n_alpha != n_beta``, which
-        restricted CCSD cannot represent) or if the mean-field or CCSD
-        calculation fails to converge or raises.
-
+        ``ansatz`` is not a ``UCCSDAnsatz``, if the fragment is spin-imbalanced
+        (``n_alpha != n_beta``, which restricted CCSD cannot represent), if the
+        fragment's reference determinant is not Hartree-Fock stationary, or if
+        the CCSD calculation fails to converge or raises.
     """
+    if not isinstance(ansatz, UCCSDAnsatz):
+        warn(
+            f"CCSD seeding skipped for fragment {spec.orbitals}: only "
+            "UCCSDAnsatz has parameters that correspond to CCSD amplitudes, got "
+            f"{type(ansatz).__name__}. Falling back to the optimizer's own "
+            "initialization.",
+            UserWarning,
+            stacklevel=2,
+        )
+        return None
+
     if spec.n_alpha != spec.n_beta:
         warn(
             f"CCSD seeding skipped for fragment {spec.orbitals}: restricted "
@@ -186,6 +275,7 @@ def _ccsd_seed_params(
         from pyscf import ao2mo, gto, scf
 
         n_orb = spec.n_orbitals
+        n_occupied = spec.n_alpha
         fake_mol = gto.M(verbose=0)
         fake_mol.nelectron = spec.n_alpha + spec.n_beta
         fake_mol.incore_anyway = True
@@ -196,10 +286,24 @@ def _ccsd_seed_params(
         # pyrefly: ignore[bad-assignment]  # overriding with fragment integrals
         mean_field.get_ovlp = lambda *args: np.eye(n_orb)
         mean_field._eri = ao2mo.restore(8, g_frag, n_orb)
-        # pyrefly: ignore[not-callable]  # method reassigned above
-        mean_field.kernel()
-        if not mean_field.converged:
-            raise RuntimeError("Mean-field reference did not converge")
+
+        occupations = np.zeros(n_orb)
+        occupations[:n_occupied] = 2.0
+        mean_field.mo_coeff = np.eye(n_orb)
+        mean_field.mo_occ = occupations
+        # pyrefly: ignore[not-callable]  # resolved on the pyscf mean-field at runtime
+        density = mean_field.make_rdm1()
+        fock = mean_field.get_fock(dm=density)
+        off_diagonal = np.abs(fock[:n_occupied, n_occupied:]).max()
+        if off_diagonal > _SEED_STATIONARITY_TOL * max(1.0, np.abs(fock).max()):
+            raise RuntimeError(
+                "the fragment's reference determinant is not a Hartree-Fock "
+                f"solution in its own orbital basis (max |F_ov| = "
+                f"{off_diagonal:.3e})"
+            )
+        mean_field.mo_energy = np.diag(fock)
+        mean_field.e_tot = mean_field.energy_tot(dm=density)
+        mean_field.converged = True
 
         # pyrefly: ignore[missing-attribute]  # cc is None only if pyscf is absent
         coupled_cluster = cc.CCSD(mean_field)
@@ -215,16 +319,7 @@ def _ccsd_seed_params(
         )
         return None
 
-    if isinstance(ansatz, UCCSDAnsatz):
-        return _uccsd_amplitude_seed(coupled_cluster, spec, n_params)
-
-    amplitudes = np.concatenate(
-        [np.ravel(coupled_cluster.t1), np.ravel(coupled_cluster.t2)]
-    )
-    seed = np.zeros(n_params)
-    take = min(n_params, amplitudes.size)
-    seed[:take] = amplitudes[:take]
-    return seed
+    return _uccsd_amplitude_seed(coupled_cluster, spec, n_params)
 
 
 def _compute_n_core(specs: Sequence[FragmentSpec], n_occupied: int) -> int:
@@ -287,24 +382,48 @@ class LASSQD(ProgramEnsemble):
             in :meth:`initial_state`) or a restricted mean-field object —
             not a PennyLane ``qchem.Molecule``. Closed-shell (RHF) only.
         optimizer: Optimizer template, deep-copied for each fragment's VQE.
-        active_spaces: Explicit fragment specification. Mutually exclusive
-            with ``n_active_orbitals`` and ``energy_window``.
-        n_active_orbitals: Automatic fragmentation: total active orbitals to
-            select around the HOMO-LUMO gap. Mutually exclusive with
-            ``active_spaces`` and ``energy_window``.
-        energy_window: Automatic fragmentation: energy window (Hartree) around
-            the HOMO-LUMO gap — an occupied orbital qualifies when its energy
-            is at least the HOMO energy minus this window, and a virtual
-            orbital when its energy is at most the LUMO energy plus this
-            window. Mutually exclusive with ``active_spaces`` and
-            ``n_active_orbitals``.
+        active_spaces: Explicit fragment layout, one ``FragmentSpec`` per
+            fragment. Fixes which orbitals are active, how they partition, and
+            each fragment's spin at once, and skips localization entirely.
+            Mutually exclusive with the automatic path below.
+        n_active_orbitals: Total active orbitals to select around the HOMO-LUMO
+            gap. Mutually exclusive with ``active_spaces`` and
+            ``active_orbitals``.
+        active_orbitals: Explicit MO column indices forming the active space,
+            instead of selecting it by energy. Use it when the active space is
+            defined by orbital character -- a metal ``d`` manifold can sit well
+            below the HOMO with its virtual partners well above the LUMO, where
+            no frontier count reaches them. Pair it with a mean field whose
+            orbitals already carry that character, e.g. from PySCF's AVAS, and
+            with ``fragment_atoms`` to say which centre each belongs to.
+            Mutually exclusive with ``active_spaces`` and ``n_active_orbitals``.
         max_orbitals_per_fragment: Maximum spatial orbitals per automatically
-            built fragment. Ignored when ``active_spaces`` is given.
+            built fragment. Ignored when ``active_spaces`` or ``fragment_atoms``
+            is given.
         coupling_threshold: Relative edge-pruning threshold for the automatic
             fragmentation's orbital coupling graph. Ignored when
-            ``active_spaces`` is given.
+            ``active_spaces`` or ``fragment_atoms`` is given.
+        fragment_atoms: One sequence of atom indices per fragment. Assigns each
+            localized active orbital to the fragment owning the atom it sits on,
+            replacing the coupling-graph clustering -- one fragment per metal
+            centre, for instance. Ignored when ``active_spaces`` is given.
+        local_spins: Per-fragment ``2S``, in the order ``fragment_atoms`` names
+            them. The fragment's electron count comes from its occupied
+            orbitals, so this sets spin alone: ``n_alpha - n_beta = 2S``. Use it
+            for spin-polarized fragments, e.g. ``[2, -2]`` for an
+            antiferromagnetically coupled dimer of local triplets. The fragments
+            must still sum to ``Sz = 0``. Requires ``fragment_atoms``.
         ansatz: Per-fragment ansatz. Defaults to ``UCCSDAnsatz()``.
-        max_iterations: Max optimization iterations per fragment VQE.
+        max_iterations: Max optimization iterations per fragment VQE. An
+            iteration is an optimizer step, not a circuit evaluation: a
+            gradient-free method spends several evaluations per step and
+            ``n_params + 1`` of them building its initial simplex before the
+            first step, so this has to scale with the ansatz's parameter count.
+        max_orbital_iterations: Cap on L-BFGS-B iterations in each round's
+            orbital re-optimization, a separate solve from the fragment VQEs and
+            usually the round's dominant cost on a large register. ``None``
+            leaves it uncapped. A capped round still returns its best orbitals
+            but is not a stationary point, and reports as not converged.
         n_batches: Number of SQD batches per fragment recovery.
         batch_size: Configurations sampled per SQD batch, so the subspace holds
             up to ``batch_size ** 2`` determinants. The accuracy knob; a
@@ -328,14 +447,21 @@ class LASSQD(ProgramEnsemble):
 
     Raises:
         ValueError: If not exactly one of ``active_spaces``,
-            ``n_active_orbitals``, ``energy_window`` is given; if
-            ``n_active_orbitals`` is not positive; if ``energy_window`` is
-            negative; if ``max_iterations`` is below 1; if
+            ``n_active_orbitals``, ``active_orbitals`` is given; if
+            ``fragment_atoms`` or ``local_spins`` is combined with
+            ``active_spaces``; if ``local_spins`` is given without
+            ``fragment_atoms`` or does not match its length; if
+            ``active_orbitals`` has duplicates, out-of-range indices, or no
+            occupied or no virtual orbital; if ``fragment_atoms`` names an
+            out-of-range atom or shares one between fragments; if
+            ``n_active_orbitals`` is not positive; if ``max_iterations`` is below
+            1; if ``max_orbital_iterations`` is given and below 1; if
             ``max_orbitals_per_fragment`` is below 1; if ``n_batches``,
             ``batch_size``, or ``n_sqd_iterations`` is below 1; if
             ``energy_tol`` is not positive; if ``coupling_threshold`` or
-            ``lambda_penalty`` is negative; or (for ``active_spaces``) if any
-            fragment leaves no excitation available, or fragments overlap.
+            ``lambda_penalty`` is negative; or if any fragment leaves no
+            excitation available, fragments overlap, or the fragments do not
+            sum to ``Sz = 0``.
         TypeError: If ``program_id`` or ``progress_queue`` is passed via
             ``kwargs``, if ``backend`` is missing, if ``molecule`` is
             neither a PySCF ``Mole`` nor a restricted mean-field, or if
@@ -352,11 +478,14 @@ class LASSQD(ProgramEnsemble):
         optimizer: Optimizer,
         active_spaces: Sequence[FragmentSpec] | None = None,
         n_active_orbitals: int | None = None,
-        energy_window: float | None = None,
+        active_orbitals: Sequence[int] | None = None,
         max_orbitals_per_fragment: int = 4,
         coupling_threshold: float = 1e-3,
+        fragment_atoms: Sequence[Sequence[int]] | None = None,
+        local_spins: Sequence[int] | None = None,
         ansatz: Ansatz | None = None,
         max_iterations: int = 10,
+        max_orbital_iterations: int | None = None,
         n_batches: int = 15,
         batch_size: int = 170,
         n_sqd_iterations: int = 6,
@@ -367,24 +496,42 @@ class LASSQD(ProgramEnsemble):
     ):
         n_given = sum(
             spec is not None
-            for spec in (active_spaces, n_active_orbitals, energy_window)
+            for spec in (active_spaces, n_active_orbitals, active_orbitals)
         )
         if n_given != 1:
             raise ValueError(
-                "Pass exactly one of active_spaces, n_active_orbitals, or "
-                "energy_window."
+                "Pass exactly one of active_spaces (explicit fragment layout), "
+                "n_active_orbitals (frontier selection), or active_orbitals "
+                "(explicit MO indices)."
+            )
+        for name, value in (
+            ("local_spins", local_spins),
+            ("fragment_atoms", fragment_atoms),
+        ):
+            if value is not None and active_spaces is not None:
+                raise ValueError(
+                    f"{name} applies to automatic fragmentation only; "
+                    "active_spaces already fixes the fragment layout."
+                )
+        if local_spins is not None and fragment_atoms is None:
+            raise ValueError(
+                "local_spins requires fragment_atoms: coupling-graph fragment "
+                "order depends on max_orbitals_per_fragment, coupling_threshold "
+                "and the localization RNG, so a positional spin list would not "
+                "name a stable fragment."
             )
         if n_active_orbitals is not None and n_active_orbitals <= 0:
             raise ValueError(
                 f"n_active_orbitals must be positive; got {n_active_orbitals}."
             )
-        if energy_window is not None and energy_window < 0:
-            raise ValueError(
-                f"energy_window must be non-negative; got {energy_window}."
-            )
         if max_iterations < 1:
             raise ValueError(
                 f"max_iterations must be at least 1; got {max_iterations}."
+            )
+        if max_orbital_iterations is not None and max_orbital_iterations < 1:
+            raise ValueError(
+                "max_orbital_iterations must be at least 1 when given; got "
+                f"{max_orbital_iterations}."
             )
         if max_orbitals_per_fragment < 1:
             raise ValueError(
@@ -465,19 +612,47 @@ class LASSQD(ProgramEnsemble):
                 )
         self._mean_field = mean_field
 
+        n_orbitals_total = self._mol.nao_nr()
+        n_occupied = self._mol.nelectron // 2
         if active_spaces is not None:
-            validate_fragment_specs(
-                active_spaces, self._mol.nao_nr(), self._mol.nelectron // 2
-            )
+            validate_fragment_specs(active_spaces, n_orbitals_total, n_occupied)
+
+        # Materialize and validate here rather than in ``initial_state``: these
+        # are consumed more than once, so a generator would arrive empty the
+        # second time, and an out-of-range index should fail at construction
+        # like an explicit ``active_spaces`` does.
+        self._active_orbitals = (
+            None if active_orbitals is None else tuple(int(o) for o in active_orbitals)
+        )
+        if self._active_orbitals is not None:
+            split_active_orbitals(self._active_orbitals, n_occupied, n_orbitals_total)
+
+        self._fragment_atoms = (
+            None
+            if fragment_atoms is None
+            else tuple(tuple(int(a) for a in atoms) for atoms in fragment_atoms)
+        )
+        if self._fragment_atoms is not None:
+            _validate_fragment_atoms(self._fragment_atoms, self._mol.natm)
+
+        self._local_spins = (
+            None if local_spins is None else tuple(int(s) for s in local_spins)
+        )
+        if self._local_spins is not None and self._fragment_atoms is not None:
+            if len(self._local_spins) != len(self._fragment_atoms):
+                raise ValueError(
+                    f"local_spins has {len(self._local_spins)} entries but "
+                    f"fragment_atoms names {len(self._fragment_atoms)} fragments."
+                )
 
         self._active_spaces = None if active_spaces is None else list(active_spaces)
         self._n_active_orbitals = n_active_orbitals
-        self._energy_window = energy_window
         self._max_orbitals_per_fragment = max_orbitals_per_fragment
         self._coupling_threshold = coupling_threshold
         self._ansatz: Ansatz = UCCSDAnsatz() if ansatz is None else ansatz
         self._optimizer = optimizer
         self._max_iterations = max_iterations
+        self._max_orbital_iterations = max_orbital_iterations
         self._n_batches = n_batches
         self._batch_size = batch_size
         self._n_sqd_iterations = n_sqd_iterations
@@ -490,6 +665,9 @@ class LASSQD(ProgramEnsemble):
         self._state: LASSQDState | None = None
         self._solvers: dict[int, SQDSolver] = {}
         self._energy_history: list[float] = []
+        self._round_reports: list[LASSQDRoundReport] = []
+        # No round has run, so nothing has stalled yet.
+        self._orbitals_converged = True
         self._ao_eri: np.ndarray | None = None
         self._h_ao: np.ndarray | None = None
 
@@ -510,8 +688,12 @@ class LASSQD(ProgramEnsemble):
             every fragment's ``params`` set to ``None``.
 
         Raises:
-            NotImplementedError: If the mean-field is not restricted (non-2D
-                ``mo_coeff``).
+            RuntimeError: If a mean field computed here does not converge.
+
+        Warns:
+            UserWarning: If the mean-field reference is not aufbau, i.e. its
+                LUMO lies below its HOMO. Frontier selection assumes ascending
+                orbital energies, so the active space would be wrong.
         """
         # pyrefly: ignore[missing-import]  # optional ``chem`` extra
         from pyscf import scf
@@ -519,50 +701,56 @@ class LASSQD(ProgramEnsemble):
         mean_field = self._mean_field
         if mean_field is None or getattr(mean_field, "mo_coeff", None) is None:
             mean_field = scf.RHF(self._mol).run(verbose=0)
+            if not mean_field.converged:
+                raise RuntimeError(
+                    "The mean-field reference did not converge, so every orbital "
+                    "the macro-cycle starts from is meaningless. Converge it "
+                    "yourself and pass the mean-field object instead of the "
+                    "molecule."
+                )
             self._mean_field = mean_field
 
         mo_coeff = np.asarray(mean_field.mo_coeff)
-        if mo_coeff.ndim != 2:
-            raise NotImplementedError(
-                "Only restricted (closed-shell) mean-fields are supported; "
-                f"got mo_coeff with {mo_coeff.ndim} dimensions."
-            )
         mo_energy = np.asarray(mean_field.mo_energy)
         n_orbitals_total = mo_coeff.shape[1]
         n_occupied = self._mol.nelectron // 2
+        # Only the frontier path reads orbital energies. Checking this on the
+        # other paths would test a stale array anyway: a caller who reorders
+        # ``mo_coeff`` (as AVAS does) leaves ``mo_energy`` describing the old
+        # register.
+        if (
+            self._n_active_orbitals is not None
+            and mo_energy[n_occupied] < mo_energy[n_occupied - 1]
+        ):
+            warn(
+                f"The mean-field reference is not aufbau: the LUMO sits "
+                f"{(mo_energy[n_occupied - 1] - mo_energy[n_occupied]) * 1000:.1f} "
+                "mHa below the HOMO, so the occupied set is not the lowest "
+                "orbitals. Frontier selection assumes ascending orbital "
+                "energies and will pick the wrong active space.",
+                UserWarning,
+                stacklevel=2,
+            )
 
         if self._active_spaces is not None:
             specs = list(self._active_spaces)
-            validate_fragment_specs(specs, n_orbitals_total, n_occupied)
         else:
-            auto_specs, localized = auto_fragment_specs(
+            specs, localized, active_positions = auto_fragment_specs(
                 self._mol,
                 mo_coeff,
-                mo_energy,
                 n_occupied,
                 self._rng,
                 n_active_orbitals=self._n_active_orbitals,
-                energy_window=self._energy_window,
                 max_orbitals_per_fragment=self._max_orbitals_per_fragment,
                 coupling_threshold=self._coupling_threshold,
+                active_orbitals=self._active_orbitals,
+                fragment_atoms=self._fragment_atoms,
+                local_spins=self._local_spins,
             )
-            occupied_indices, virtual_indices = select_frontier_orbitals(
-                mo_energy,
-                n_occupied,
-                n_active_orbitals=self._n_active_orbitals,
-                energy_window=self._energy_window,
-            )
-            active_positions = tuple(occupied_indices) + tuple(virtual_indices)
             mo_coeff = mo_coeff.copy()
             mo_coeff[:, active_positions] = localized
-            specs = [
-                FragmentSpec(
-                    orbitals=tuple(active_positions[o] for o in spec.orbitals),
-                    n_alpha=spec.n_alpha,
-                    n_beta=spec.n_beta,
-                )
-                for spec in auto_specs
-            ]
+
+        validate_fragment_specs(specs, n_orbitals_total, n_occupied)
 
         n_core = _compute_n_core(specs, n_occupied)
 
@@ -605,22 +793,32 @@ class LASSQD(ProgramEnsemble):
         n_core = _compute_n_core(
             [fragment.spec for fragment in state.fragments], n_occupied
         )
-        integrals = transform_integrals(self._mol, state.mo_coeff, n_core)
+        ao_eri, _ = self._cached_mol_integrals()
+        n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
+        integrals = transform_integrals(
+            self._mol, state.mo_coeff, n_core, n_act, ao_eri
+        )
         fragment_seeds = self._rng.integers(0, 2**63 - 1, size=len(state.fragments))
 
         for index, fragment in enumerate(state.fragments):
-            h_eff, g_frag = fragment_effective_integrals(
+            h_alpha, h_beta, g_frag = fragment_effective_integrals(
                 integrals, state.fragments, index
             )
             prog_id = f"fragment_{index}"
             self._programs[prog_id] = self._build_fragment_program(
-                fragment, h_eff, g_frag, prog_id, int(fragment_seeds[index])
+                fragment,
+                h_alpha,
+                h_beta,
+                g_frag,
+                prog_id,
+                int(fragment_seeds[index]),
             )
 
     def _build_fragment_program(
         self,
         fragment: FragmentState,
-        h_eff: np.ndarray,
+        h_alpha: np.ndarray,
+        h_beta: np.ndarray,
         g_frag: np.ndarray,
         program_id: str,
         seed: int,
@@ -631,8 +829,17 @@ class LASSQD(ProgramEnsemble):
         own CCSD amplitudes via :func:`_ccsd_seed_params`; a fragment
         warm-started from a previous round uses ``fragment.params`` directly
         and never calls CCSD.
+
+        CCSD seeding is restricted, so it gets the spin-averaged one-body
+        potential. That only affects the optimizer's starting point, not the
+        Hamiltonian it optimizes against, which carries both channels -- but a
+        spin-restricted-looking seed can still land a local optimizer in a
+        different basin than the symmetry-broken solution, so a materially
+        asymmetric embedding is warned about.
         """
-        hamiltonian = _spo_from_integrals(h_eff, g_frag, constant=0.0)
+        hamiltonian = _spo_from_integrals(
+            h_alpha, g_frag, constant=0.0, one_body_beta=h_beta
+        )
         n_electrons = fragment.spec.n_alpha + fragment.spec.n_beta
 
         if fragment.params is not None:
@@ -645,9 +852,26 @@ class LASSQD(ProgramEnsemble):
                 n_electrons=n_electrons,
                 n_alpha=fragment.spec.n_alpha,
                 n_beta=fragment.spec.n_beta,
+                **self._extra_kwargs.get("ansatz_kwargs", {}),
             )
+            spin_asymmetry = float(np.abs(h_alpha - h_beta).max())
+            if spin_asymmetry > _SEED_SPIN_ASYMMETRY_TOL:
+                warn(
+                    f"CCSD seeding for fragment {fragment.spec.orbitals} averages "
+                    f"an embedding potential whose spin channels differ by "
+                    f"{spin_asymmetry:.3e} Hartree, because restricted CCSD "
+                    "takes one one-body matrix. The seed may sit in a different "
+                    "basin than the symmetry-broken solution; the Hamiltonian "
+                    "being optimized keeps both channels.",
+                    UserWarning,
+                    stacklevel=2,
+                )
             seed_params = _ccsd_seed_params(
-                h_eff, g_frag, fragment.spec, n_params, self._ansatz
+                0.5 * (h_alpha + h_beta),
+                g_frag,
+                fragment.spec,
+                n_params,
+                self._ansatz,
             )
 
         return _FragmentVQE(
@@ -702,6 +926,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._rng = np.random.default_rng(self._seed)
         self._solvers.clear()
         self._energy_history.clear()
+        self._round_reports.clear()
+        self._orbitals_converged = True
         if self._seed is not None and self.backend is not None:
             # No-op on backends that cannot seed their sampler, so a run stays
             # reproducible only as far as the backend allows.
@@ -780,21 +1006,40 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 determinant — this round captured no correlation energy for
                 that fragment, indistinguishable from convergence by
                 ``stop_reason`` alone.
+
+        Raises:
+            RuntimeError: If ``state`` is not the state ``create_programs``
+                built this round's circuits from, which would silently reduce
+                the fragment results against different orbitals.
         """
+        if self._state is not None and state is not self._state:
+            raise RuntimeError(
+                "update_state received a different state than create_programs "
+                "built this round's circuits from; the reduction would use "
+                "different orbitals than the VQEs optimized against."
+            )
+
         n_occupied = self._mol.nelectron // 2
         n_core = _compute_n_core(
             [fragment.spec for fragment in state.fragments], n_occupied
         )
-        integrals = transform_integrals(self._mol, state.mo_coeff, n_core)
+        ao_eri, _ = self._cached_mol_integrals()
+        n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
+        integrals = transform_integrals(
+            self._mol, state.mo_coeff, n_core, n_act, ao_eri
+        )
 
+        self._emit_workflow_round_stage("Recovering fragment subspaces (SQD)")
+        recovery_started = time.perf_counter()
         programs = self.programs
         new_fragments = []
+        subspace_sizes = []
         for index, fragment in enumerate(state.fragments):
             # Same "fragment_{index}" id create_programs() assigned.
             program_id = f"fragment_{index}"
             program = programs[program_id]
             spec = fragment.spec
-            h_eff, g_frag = fragment_effective_integrals(
+            h_alpha, h_beta, g_frag = fragment_effective_integrals(
                 integrals, state.fragments, index
             )
 
@@ -803,13 +1048,14 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
             solver = self._solver_for(index, spec)
             try:
-                result = solver.solve(sqd_probs, h_eff, g_frag)
+                result = solver.solve(sqd_probs, h_alpha, g_frag, one_body_beta=h_beta)
             except ValueError as exc:
                 raise ValueError(
                     f"SQD failed for {program_id}: {exc} Increase the "
                     "backend shot count or n_sqd_iterations."
                 ) from exc
 
+            subspace_sizes.append(len(set(result.subspace)))
             if len(set(result.subspace)) == 1:
                 warn(
                     f"{program_id}'s recovered subspace contains only one "
@@ -837,9 +1083,13 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 )
             )
 
+        self._emit_workflow_round_stage("Assembling active-space RDMs")
         rdm1_active, rdm2_active = assemble_active_rdms(new_fragments)
         ao_eri, h_ao = self._cached_mol_integrals()
-        mo_coeff, energy = optimize_orbitals(
+
+        self._emit_workflow_round_stage("Re-optimizing orbitals")
+        orbital_started = time.perf_counter()
+        solve = optimize_orbitals(
             self._mol,
             state.mo_coeff,
             n_core,
@@ -848,20 +1098,65 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             rdm2_active,
             ao_eri,
             h_ao,
+            max_orbital_iterations=self._max_orbital_iterations,
         )
+        self._orbitals_converged = solve.converged
+        self._energy_history.append(solve.energy)
 
-        self._energy_history.append(float(energy))
+        self._round_reports.append(
+            LASSQDRoundReport(
+                number=len(self._energy_history),
+                energy=solve.energy,
+                energy_change=(
+                    solve.energy - state.energy if np.isfinite(state.energy) else None
+                ),
+                subspace_sizes=tuple(subspace_sizes),
+                orbital_iterations=solve.n_iterations,
+                orbital_evaluations=solve.n_evaluations,
+                orbital_gradient_norm=solve.gradient_norm,
+                orbital_converged=solve.converged,
+                rotation_pairs=solve.n_rotation_pairs,
+                recovery_seconds=orbital_started - recovery_started,
+                orbital_seconds=time.perf_counter() - orbital_started,
+            )
+        )
+        self._emit_workflow_round_stage(self._round_reports[-1].summary(), final=True)
 
         return LASSQDState(
-            mo_coeff=mo_coeff,
+            mo_coeff=solve.mo_coeff,
             fragments=tuple(new_fragments),
-            energy=float(energy),
+            energy=solve.energy,
             previous_energy=state.energy,
         )
 
     def is_complete(self, state: LASSQDState) -> bool:
-        """Stop once the macro-cycle energy change falls below ``energy_tol``."""
-        return abs(state.energy - state.previous_energy) < self._energy_tol
+        """Stop once the macro-cycle energy change falls below ``energy_tol``.
+
+        A round whose orbital optimization gave up does not count as converged,
+        however small its energy change. ``optimize_orbitals`` is monotone -- it
+        falls back to the unrotated orbitals rather than returning something
+        worse -- so a stalled optimizer produces a round that barely moves and
+        is otherwise indistinguishable from a real fixed point. Requiring the
+        inner solve to have converged is what separates the two.
+        """
+        if not abs(state.energy - state.previous_energy) < self._energy_tol:
+            return False
+        if not self._orbitals_converged:
+            warn(
+                "The macro-cycle energy change is below energy_tol but the "
+                "orbital optimization did not converge, so this is not a fixed "
+                "point. Continuing; raise the optimizer's iteration budget or "
+                "loosen energy_tol if this repeats.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return False
+        return True
+
+    @property
+    def round_reports(self) -> tuple[LASSQDRoundReport, ...]:
+        """Each completed round's :class:`LASSQDRoundReport`, in order."""
+        return tuple(self._round_reports)
 
     @property
     def energy_history(self) -> tuple[float, ...]:

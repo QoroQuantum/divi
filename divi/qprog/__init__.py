@@ -70,6 +70,7 @@ from .workflows import (
     LASSQD,
     FragmentSpec,
     FragmentState,
+    LASSQDRoundReport,
     LASSQDState,
     MoleculeTransformer,
     PartitioningProgramEnsemble,

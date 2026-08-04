@@ -50,6 +50,19 @@ from tests.pipeline._helpers import (
 )
 
 
+@pytest.fixture(autouse=True)
+def plain_rich_output(monkeypatch):
+    """Render without color, whatever the ambient terminal settings are.
+
+    Rich honors ``FORCE_COLOR`` even when writing to a ``StringIO``, and the
+    escape sequences then count toward ``len(line)`` and interleave with the
+    text these tests assert on -- a 20-column line measures 29 characters.
+    """
+    for variable in ("FORCE_COLOR", "CLICOLOR_FORCE", "COLORTERM"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("TERM", "dumb")
+
+
 class TestEnsembleDryRunFormatting:
     """``format_dry_run`` dispatches on report shape (flat single-program vs
     nested ensemble) and honors the ``style`` argument for the nested form."""

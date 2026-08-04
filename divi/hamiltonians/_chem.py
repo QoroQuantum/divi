@@ -60,16 +60,25 @@ def qubit_operator_to_spo(
 
 
 def _spo_from_integrals(
-    one_body: np.ndarray, two_body: np.ndarray, constant: float
+    one_body: np.ndarray,
+    two_body: np.ndarray,
+    constant: float,
+    one_body_beta: np.ndarray | None = None,
 ) -> SparsePauliOp:
     """Jordan-Wigner a set of spatial-MO integrals into a ``SparsePauliOp``.
 
     Args:
         one_body: ``(n_orb, n_orb)`` one-electron integrals in the MO basis.
+            Applies to both spin channels unless ``one_body_beta`` is given, in
+            which case this is the alpha channel.
         two_body: ``(n_orb,) * 4`` two-electron integrals in PySCF chemist
             order ``(pq|rs)``.
         constant: Scalar offset retained as the operator's identity term
             (nuclear repulsion plus any frozen-core energy).
+        one_body_beta: Beta-channel one-electron integrals, for a
+            spin-dependent one-body potential such as the exchange term of a
+            spin-polarized mean-field embedding. The two-body integrals are
+            spin-free regardless, being spatial-orbital integrals.
 
     Returns:
         A ``SparsePauliOp`` on ``2 * n_orb`` qubits. Spin-orbitals are
@@ -86,6 +95,9 @@ def _spo_from_integrals(
 
         # pyrefly: ignore[missing-import]  # optional ``chem`` extra
         from openfermion.chem.molecular_data import spinorb_from_spatial
+
+        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        from openfermion.config import EQ_TOLERANCE
     except ImportError as exc:
         raise ImportError(
             "_spo_from_integrals requires the 'chem' extra; "
@@ -107,6 +119,22 @@ def _spo_from_integrals(
     one_body_coeffs, two_body_coeffs = spinorb_from_spatial(
         one_body, two_body.transpose(0, 2, 3, 1)
     )
+    if one_body_beta is not None:
+        one_body_beta = np.asarray(one_body_beta, dtype=float)
+        if one_body_beta.shape != (n_orb, n_orb):
+            raise ValueError(
+                f"one_body_beta must have shape {(n_orb, n_orb)}; "
+                f"got {one_body_beta.shape}."
+            )
+        # ``spinorb_from_spatial`` interleaves alpha on even and beta on odd
+        # indices, writing ``one_body`` into both; replace the beta block. It
+        # also zeroes coefficients below its own tolerance, so apply the same
+        # mask here or the two channels differ at that threshold even when the
+        # inputs are identical.
+        one_body_coeffs[1::2, 1::2] = np.where(
+            np.abs(one_body_beta) < EQ_TOLERANCE, 0.0, one_body_beta
+        )
+
     interaction = InteractionOperator(
         float(constant), one_body_coeffs, 0.5 * two_body_coeffs
     )

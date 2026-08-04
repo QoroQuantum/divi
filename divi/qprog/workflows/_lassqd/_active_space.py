@@ -14,72 +14,53 @@ from ._state import FragmentSpec
 
 
 def select_frontier_orbitals(
-    mo_energy: np.ndarray,
-    n_occupied: int,
-    *,
-    n_active_orbitals: int | None = None,
-    energy_window: float | None = None,
+    n_orbitals_total: int, n_occupied: int, n_active_orbitals: int
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Choose active orbitals around the HOMO-LUMO gap.
 
     Args:
-        mo_energy: Molecular-orbital energies in ascending order.
+        n_orbitals_total: Size of the MO register.
         n_occupied: Number of occupied spatial orbitals.
         n_active_orbitals: Take the ``ceil(k / 2)`` highest occupied and
             ``floor(k / 2)`` lowest virtual orbitals, clamped at the register
-            edges. Mutually exclusive with ``energy_window``.
-        energy_window: Take occupied orbitals with ``eps >= eps_HOMO - w`` and
-            virtual orbitals with ``eps <= eps_LUMO + w``, in Hartree. Must be
-            non-negative. Mutually exclusive with ``n_active_orbitals``.
+            edges.
 
     Returns:
         ``(occupied_indices, virtual_indices)``, each ascending.
 
     Raises:
-        ValueError: If not exactly one of ``n_active_orbitals`` and
-            ``energy_window`` is given, if ``n_active_orbitals`` is not
-            positive, if ``energy_window`` is negative, or if the molecule's
-            orbital register has no occupied or no virtual orbitals to
-            select from.
+        ValueError: If ``n_active_orbitals`` is not positive, or if the
+            selection yields no occupied or no virtual orbital.
     """
-    if (n_active_orbitals is None) == (energy_window is None):
-        raise ValueError("Pass exactly one of n_active_orbitals or energy_window.")
-
-    n_total = len(mo_energy)
-    if n_active_orbitals is not None:
-        if n_active_orbitals <= 0:
-            raise ValueError(
-                f"n_active_orbitals must be positive; got {n_active_orbitals}."
-            )
-        n_occ_take = min(-(-n_active_orbitals // 2), n_occupied)
-        n_virt_take = min(n_active_orbitals // 2, n_total - n_occupied)
-        occupied = tuple(range(n_occupied - n_occ_take, n_occupied))
-        virtual = tuple(range(n_occupied, n_occupied + n_virt_take))
-    else:
-        assert energy_window is not None
-        if energy_window < 0:
-            raise ValueError(
-                f"energy_window must be non-negative; got {energy_window}."
-            )
-        homo = mo_energy[n_occupied - 1]
-        lumo = mo_energy[n_occupied]
-        occupied = tuple(
-            i for i in range(n_occupied) if mo_energy[i] >= homo - energy_window
+    if n_active_orbitals <= 0:
+        raise ValueError(
+            f"n_active_orbitals must be positive; got {n_active_orbitals}."
         )
-        virtual = tuple(
-            i
-            for i in range(n_occupied, n_total)
-            if mo_energy[i] <= lumo + energy_window
-        )
+    n_occ_take = min(-(-n_active_orbitals // 2), n_occupied)
+    n_virt_take = min(n_active_orbitals // 2, n_orbitals_total - n_occupied)
+    occupied = tuple(range(n_occupied - n_occ_take, n_occupied))
+    virtual = tuple(range(n_occupied, n_occupied + n_virt_take))
 
     if not occupied or not virtual:
         raise ValueError(
             "The active space must contain at least one occupied and one "
-            f"virtual orbital; selected {len(occupied)} occupied and "
-            f"{len(virtual)} virtual. The molecule's orbital register has "
-            "no occupied orbitals, or no virtual orbitals, to select from."
+            f"virtual orbital; got {len(occupied)} occupied and {len(virtual)} "
+            f"virtual from n_active_orbitals={n_active_orbitals} with "
+            f"n_occupied={n_occupied} of {n_orbitals_total} orbitals."
         )
     return occupied, virtual
+
+
+def _atom_populations(mol, block: np.ndarray) -> np.ndarray:
+    """``(n_atom, n_col)`` Mulliken population of each column on each atom."""
+    overlap = mol.intor("int1e_ovlp")
+    per_ao_population = block * (overlap @ block)
+    return np.array(
+        [
+            per_ao_population[start:stop].sum(axis=0)
+            for _, _, start, stop in mol.aoslice_by_atom()
+        ]
+    )
 
 
 def _canonicalize_columns(mol, block: np.ndarray) -> np.ndarray:
@@ -98,13 +79,7 @@ def _canonicalize_columns(mol, block: np.ndarray) -> np.ndarray:
     if n_col <= 1:
         return block
 
-    overlap = mol.intor("int1e_ovlp")
-    ao_slices = mol.aoslice_by_atom()
-    per_ao_population = block * (overlap @ block)
-
-    atom_population = np.array(
-        [per_ao_population[start:stop].sum(axis=0) for _, _, start, stop in ao_slices]
-    )
+    atom_population = _atom_populations(mol, block)
     dominant_atom = np.argmax(atom_population, axis=0)
 
     coords = mol.atom_coords()
@@ -116,6 +91,124 @@ def _canonicalize_columns(mol, block: np.ndarray) -> np.ndarray:
         key=lambda col: (int(dominant_atom[col]), tuple(centroid[col])),
     )
     return block[:, order]
+
+
+def split_active_orbitals(
+    active_orbitals: Sequence[int], n_occupied: int, n_orbitals_total: int
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Split explicit active MO indices into occupied and virtual, ascending.
+
+    Args:
+        active_orbitals: MO column indices forming the active space.
+        n_occupied: Number of occupied spatial orbitals; an index below this is
+            occupied.
+        n_orbitals_total: Size of the MO register.
+
+    Raises:
+        ValueError: If ``active_orbitals`` is empty, contains duplicates or
+            out-of-range indices, or has no occupied or no virtual orbital.
+    """
+    indices = tuple(int(orbital) for orbital in active_orbitals)
+    if not indices:
+        raise ValueError("active_orbitals must contain at least one orbital.")
+    if len(set(indices)) != len(indices):
+        raise ValueError(f"active_orbitals contains duplicates: {indices}.")
+    for orbital in indices:
+        if not 0 <= orbital < n_orbitals_total:
+            raise ValueError(
+                f"active_orbitals index {orbital} is out of range for a register "
+                f"of {n_orbitals_total} orbitals."
+            )
+
+    occupied = tuple(sorted(o for o in indices if o < n_occupied))
+    virtual = tuple(sorted(o for o in indices if o >= n_occupied))
+    if not occupied or not virtual:
+        raise ValueError(
+            "The active space must contain at least one occupied and one virtual "
+            f"orbital; got {len(occupied)} occupied and {len(virtual)} virtual "
+            f"from active_orbitals={indices} with n_occupied={n_occupied}."
+        )
+    return occupied, virtual
+
+
+def validate_fragment_atoms(
+    fragment_atoms: Sequence[Sequence[int]], n_atoms: int
+) -> dict[int, int]:
+    """Map each named atom to its fragment index, rejecting overlap and range errors.
+
+    Raises:
+        ValueError: If ``fragment_atoms`` is empty, names an out-of-range atom,
+            shares an atom between fragments, or contains an empty fragment.
+    """
+    if not fragment_atoms:
+        raise ValueError("fragment_atoms must contain at least one fragment.")
+
+    owner: dict[int, int] = {}
+    for index, atoms in enumerate(fragment_atoms):
+        if not atoms:
+            raise ValueError(f"fragment_atoms[{index}] names no atoms.")
+        for atom in atoms:
+            if not 0 <= atom < n_atoms:
+                raise ValueError(
+                    f"fragment_atoms[{index}] names atom {atom}, out of range "
+                    f"for a molecule with {n_atoms} atoms."
+                )
+            if atom in owner:
+                raise ValueError(
+                    f"Atom {atom} appears in both fragment {owner[atom]} and "
+                    f"fragment {index}. Fragments must be disjoint."
+                )
+            owner[atom] = index
+    return owner
+
+
+def assign_orbitals_to_atoms(
+    mol, localized: np.ndarray, fragment_atoms: Sequence[Sequence[int]]
+) -> list[tuple[int, ...]]:
+    """Group localized columns into fragments by the atom they sit on.
+
+    Each column is assigned to whichever fragment owns the atom carrying its
+    largest Mulliken population. This is the fragmentation a localized active
+    space is usually defined by -- "these orbitals belong to this metal centre"
+    -- rather than one inferred from orbital coupling.
+
+    Args:
+        mol: A PySCF ``gto.Mole``.
+        localized: ``(nao, n_act)`` localized active-space coefficients.
+        fragment_atoms: One sequence of atom indices per fragment.
+
+    Returns:
+        One tuple of ``localized`` column indices per fragment, in the order
+        ``fragment_atoms`` was given.
+
+    Raises:
+        ValueError: If any column's dominant atom belongs to no fragment, or if
+            a fragment ends up with no orbitals. Atom range and disjointness are
+            propagated from :func:`validate_fragment_atoms`.
+    """
+    owner = validate_fragment_atoms(fragment_atoms, mol.natm)
+    dominant_atom = np.argmax(_atom_populations(mol, localized), axis=0)
+    clusters: list[list[int]] = [[] for _ in fragment_atoms]
+    for column, atom in enumerate(dominant_atom):
+        atom = int(atom)
+        if atom not in owner:
+            raise ValueError(
+                f"Localized active orbital {column} sits mainly on atom {atom} "
+                f"({mol.atom_symbol(atom)}), which no fragment claims. Every "
+                "active orbital must belong to some fragment; add that atom to "
+                "one of them, or choose an active space localized on the atoms "
+                "you listed."
+            )
+        clusters[owner[atom]].append(column)
+
+    for index, cluster in enumerate(clusters):
+        if not cluster:
+            raise ValueError(
+                f"Fragment {index} (atoms {list(fragment_atoms[index])}) got no "
+                "active orbitals. The localized active space puts none of its "
+                "orbitals on those atoms."
+            )
+    return [tuple(cluster) for cluster in clusters]
 
 
 def localize_blocks(
@@ -466,15 +559,16 @@ def _localized_active_space_integrals(
 def auto_fragment_specs(
     mol,
     mo_coeff: np.ndarray,
-    mo_energy: np.ndarray,
     n_occupied: int,
     rng: np.random.Generator,
     *,
     n_active_orbitals: int | None = None,
-    energy_window: float | None = None,
     max_orbitals_per_fragment: int = 4,
     coupling_threshold: float = 1e-3,
-) -> tuple[list[FragmentSpec], np.ndarray]:
+    active_orbitals: Sequence[int] | None = None,
+    fragment_atoms: Sequence[Sequence[int]] | None = None,
+    local_spins: Sequence[int] | None = None,
+) -> tuple[list[FragmentSpec], np.ndarray, tuple[int, ...]]:
     """Automatically fragment an active space from orbital coupling.
 
     Selects active orbitals around the HOMO-LUMO gap
@@ -488,54 +582,115 @@ def auto_fragment_specs(
     Args:
         mol: A PySCF ``gto.Mole``.
         mo_coeff: ``(nao, n_orb)`` MO coefficients.
-        mo_energy: Molecular-orbital energies in ascending order.
         n_occupied: Number of occupied spatial orbitals.
         rng: Random number generator, forwarded to :func:`localize_blocks`.
             Required rather than created internally, so that fragmentation
             stays reproducible under a caller-supplied seed.
-        n_active_orbitals: See :func:`select_frontier_orbitals`.
-        energy_window: See :func:`select_frontier_orbitals`.
+        n_active_orbitals: See :func:`select_frontier_orbitals`. Mutually
+            exclusive with ``active_orbitals``.
         max_orbitals_per_fragment: Maximum spatial orbitals per fragment.
-        coupling_threshold: See :func:`build_coupling_graph`.
+            Ignored when ``fragment_atoms`` is given.
+        coupling_threshold: See :func:`build_coupling_graph`. Ignored when
+            ``fragment_atoms`` is given.
+        active_orbitals: Explicit MO column indices forming the active space,
+            replacing the frontier selection. Use it when the active space is
+            defined by orbital character rather than energy -- a transition
+            metal's ``d`` manifold can sit well below the HOMO and its virtual
+            partners well above the LUMO, where no frontier count reaches them.
+        fragment_atoms: One sequence of atom indices per fragment. Assigns each
+            localized active orbital to the fragment owning the atom it sits on
+            (:func:`assign_orbitals_to_atoms`), replacing the coupling-graph
+            clustering. This is how a localized active space is normally
+            specified -- one fragment per metal centre.
+        local_spins: Per-fragment ``2S``, in the order ``fragment_atoms`` names
+            them, overriding the closed-shell default of ``S = 0``. The
+            fragment's electron count is fixed by its occupied orbitals, so this
+            sets only the spin: ``n_alpha - n_beta = 2S``. Requires
+            ``fragment_atoms``, whose order is the caller's -- coupling-graph
+            fragment order depends on ``max_orbitals_per_fragment``,
+            ``coupling_threshold`` and the localization RNG, so a positional
+            spin list would not name a stable fragment there.
 
     Returns:
-        ``(specs, localized)``: one ``FragmentSpec`` per fragment, with
-        ``orbitals`` indexing the columns of ``localized``, and the
-        localized active-space AO-basis coefficient matrix, occupied columns
-        first.
+        ``(specs, localized, active_positions)``: one ``FragmentSpec`` per
+        fragment with ``orbitals`` already in ``mo_coeff`` register indices, the
+        localized active-space AO-basis coefficients (occupied columns first),
+        and the register positions those columns belong to.
 
     Raises:
         ImportError: If the ``chem`` extra is not installed.
-        ValueError: Propagated from :func:`select_frontier_orbitals` or
-            :func:`merge_clusters`.
+        ValueError: If ``local_spins`` is given without ``fragment_atoms``, if
+            its length differs from the fragment count, or if a requested ``2S``
+            exceeds the fragment's electron count. Also propagated from
+            :func:`select_frontier_orbitals`, :func:`split_active_orbitals`,
+            :func:`assign_orbitals_to_atoms`, or :func:`merge_clusters`.
     """
-    occupied_indices, virtual_indices = select_frontier_orbitals(
-        mo_energy,
-        n_occupied,
-        n_active_orbitals=n_active_orbitals,
-        energy_window=energy_window,
-    )
+    if local_spins is not None and fragment_atoms is None:
+        raise ValueError(
+            "local_spins requires fragment_atoms: coupling-graph fragment order "
+            "depends on max_orbitals_per_fragment, coupling_threshold and the "
+            "localization RNG, so a positional spin list would not name a "
+            "stable fragment. Name the fragments by atom to assign their spins."
+        )
+
+    if active_orbitals is not None:
+        occupied_indices, virtual_indices = split_active_orbitals(
+            active_orbitals, n_occupied, mo_coeff.shape[1]
+        )
+    else:
+        if n_active_orbitals is None:
+            raise ValueError(
+                "Pass exactly one of n_active_orbitals or active_orbitals."
+            )
+        occupied_indices, virtual_indices = select_frontier_orbitals(
+            mo_coeff.shape[1], n_occupied, n_active_orbitals
+        )
     localized_occ, localized_virt = localize_blocks(
         mol, mo_coeff, occupied_indices, virtual_indices, rng
     )
     localized = np.hstack([localized_occ, localized_virt])
     is_occupied = [True] * localized_occ.shape[1] + [False] * localized_virt.shape[1]
 
-    one_body, two_body = _localized_active_space_integrals(
-        mol, mo_coeff, occupied_indices, n_occupied, localized
-    )
-
-    graph = build_coupling_graph(
-        one_body, two_body, coupling_threshold=coupling_threshold
-    )
-    clusters = merge_clusters(graph, is_occupied, max_orbitals_per_fragment)
-
-    specs = [
-        FragmentSpec(
-            orbitals=cluster,
-            n_alpha=sum(is_occupied[orbital] for orbital in cluster),
-            n_beta=sum(is_occupied[orbital] for orbital in cluster),
+    if fragment_atoms is not None:
+        clusters = assign_orbitals_to_atoms(mol, localized, fragment_atoms)
+    else:
+        one_body, two_body = _localized_active_space_integrals(
+            mol, mo_coeff, occupied_indices, n_occupied, localized
         )
-        for cluster in clusters
-    ]
-    return specs, localized
+        graph = build_coupling_graph(
+            one_body, two_body, coupling_threshold=coupling_threshold
+        )
+        clusters = merge_clusters(graph, is_occupied, max_orbitals_per_fragment)
+
+    if local_spins is not None and len(local_spins) != len(clusters):
+        raise ValueError(
+            f"local_spins has {len(local_spins)} entries but fragment_atoms "
+            f"names {len(clusters)} fragments."
+        )
+
+    active_positions = tuple(occupied_indices) + tuple(virtual_indices)
+    specs = []
+    for index, cluster in enumerate(clusters):
+        n_electrons = 2 * sum(is_occupied[orbital] for orbital in cluster)
+        two_s = 0 if local_spins is None else int(local_spins[index])
+        if abs(two_s) > n_electrons:
+            raise ValueError(
+                f"local_spins[{index}] asks for 2S={two_s} on a fragment "
+                f"holding {n_electrons} electrons, which cannot supply that "
+                "many unpaired spins."
+            )
+        if (n_electrons - two_s) % 2:
+            raise ValueError(
+                f"local_spins[{index}]=2S={two_s} has the wrong parity for a "
+                f"fragment holding {n_electrons} electrons; n_alpha - n_beta "
+                "must match the electron count's parity."
+            )
+        n_alpha = (n_electrons + two_s) // 2
+        specs.append(
+            FragmentSpec(
+                orbitals=tuple(active_positions[o] for o in cluster),
+                n_alpha=n_alpha,
+                n_beta=n_electrons - n_alpha,
+            )
+        )
+    return specs, localized, active_positions

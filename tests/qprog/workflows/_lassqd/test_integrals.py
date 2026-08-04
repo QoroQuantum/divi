@@ -114,15 +114,15 @@ def test_single_fragment_effective_integrals_are_the_bare_block():
     mol = h2_molecule()
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0)
+    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=2)
 
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
     state = FragmentState(spec=spec, rdm1=np.zeros((2, 2)), rdm2=np.zeros((2,) * 4))
 
-    h_eff, g_frag = fragment_effective_integrals(integrals, [state], 0)
+    h_eff, _, g_frag = fragment_effective_integrals(integrals, [state], 0)
 
-    np.testing.assert_allclose(h_eff, integrals.h_mo[:2, :2], atol=1e-12)
-    np.testing.assert_allclose(g_frag, integrals.g_mo[:2, :2, :2, :2], atol=1e-12)
+    np.testing.assert_allclose(h_eff, integrals.h_act, atol=1e-12)
+    np.testing.assert_allclose(g_frag, integrals.g_act, atol=1e-12)
 
 
 def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
@@ -139,7 +139,7 @@ def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
     mol = h4_chain()
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0)
+    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
 
     states = [
         FragmentState(
@@ -154,7 +154,7 @@ def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
         ),
     ]
 
-    h_eff, _ = fragment_effective_integrals(integrals, states, 1)
+    h_eff, _, _ = fragment_effective_integrals(integrals, states, 1)
 
     # ncas=2 with zero active electrons forces ncore=2, so orbitals 0 and 1 are
     # the core and 2, 3 the active block -- the same partition as above.
@@ -166,16 +166,156 @@ def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
     np.testing.assert_allclose(h_eff, expected, atol=1e-12)
 
 
+def test_spo_beta_one_body_touches_only_beta_spin_orbitals():
+    """``one_body_beta`` must land on the beta spin-orbitals, not the alpha ones.
+
+    ``spinorb_from_spatial`` interleaves with alpha on even indices, so the beta
+    block is written at ``[1::2, 1::2]``. Nothing downstream would notice a swap:
+    particle number, Sz and every symmetry the other tests assert are preserved
+    under exchanging the two channels, while an antiferromagnetic fragment would
+    silently get its neighbour's beta potential applied to its alpha electrons.
+
+    Anchored structurally rather than by an energy: the operator built with a
+    distinct beta channel, minus the one built without, must act non-trivially
+    only on odd (beta) qubits.
+    """
+    n_orb = 2
+    h_alpha = np.diag([-0.9, 0.4])
+    h_beta = np.diag([-0.2, -0.6])
+    two_body = np.zeros((n_orb,) * 4)
+
+    with_beta = _spo_from_integrals(h_alpha, two_body, 0.0, one_body_beta=h_beta)
+    alpha_only = _spo_from_integrals(h_alpha, two_body, 0.0)
+    difference = (with_beta - alpha_only).simplify()
+
+    acted_on = set()
+    for pauli in difference.paulis:
+        acted_on.update(np.flatnonzero(pauli.x | pauli.z).tolist())
+    # Only the beta channel changed, and it did change.
+    assert acted_on, "supplying one_body_beta changed nothing"
+    assert all(
+        qubit % 2 == 1 for qubit in acted_on
+    ), f"beta one-body reached qubits {sorted(acted_on)}; even qubits are alpha"
+
+
+def test_optimize_orbitals_reports_whether_it_converged(orbital_rotation_case):
+    """The convergence flag must distinguish a real fixed point from a stall.
+
+    Because the routine is monotone -- it falls back to the unrotated orbitals
+    rather than returning something worse -- a starved optimizer yields a round
+    whose energy barely moves, which is indistinguishable from convergence
+    without this flag.
+    """
+    converged_solve = optimize_orbitals(*orbital_rotation_case)
+    assert converged_solve.converged is True
+
+    with pytest.warns(UserWarning, match="stopped without converging"):
+        starved_solve = optimize_orbitals(
+            *orbital_rotation_case, max_orbital_iterations=1
+        )
+
+    assert starved_solve.converged is False
+    assert starved_solve.n_iterations == 1
+    assert starved_solve.n_iterations < converged_solve.n_iterations
+    # Still monotone: the starved run cannot beat the converged one, and both
+    # remain at or below the unrotated baseline.
+    assert starved_solve.energy >= converged_solve.energy - 1e-12
+
+
+def test_polarized_neighbour_splits_the_embedding_by_spin():
+    """A spin-polarized neighbour must give the two spin channels different
+    one-body potentials, matching AO-basis Coulomb/exchange builds.
+
+    The oracle contracts the neighbour's alpha and beta densities in the AO
+    basis via ``dot_eri_dm``, independent of the source's MO-basis einsum. This
+    is the term a spin-averaged embedding erases: without it each fragment's
+    solver cannot see the sign of its neighbour's local moment, which is what
+    generates inter-fragment magnetic coupling.
+    """
+    mol = h4_chain()
+    mean_field = scf.RHF(mol).run(verbose=0)
+    mo_coeff = np.asarray(mean_field.mo_coeff)
+    ao_eri = cached_ao_eri(mol)
+    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=4, ao_eri=ao_eri)
+
+    alpha_other = np.diag([0.9, 0.1])
+    beta_other = np.diag([0.2, 0.6])
+    states = [
+        FragmentState(
+            spec=FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+            rdm1=np.zeros((2, 2)),
+            rdm2=np.zeros((2,) * 4),
+        ),
+        FragmentState(
+            spec=FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+            rdm1=alpha_other + beta_other,
+            rdm2=np.zeros((2,) * 4),
+            rdm1_alpha=alpha_other,
+            rdm1_beta=beta_other,
+        ),
+    ]
+
+    h_alpha, h_beta, _ = fragment_effective_integrals(integrals, states, 0)
+
+    target = mo_coeff[:, :2]
+    other = mo_coeff[:, 2:4]
+    dm_alpha = other @ alpha_other @ other.T
+    dm_beta = other @ beta_other @ other.T
+    vj_alpha, vk_alpha = scf.hf.dot_eri_dm(ao_eri, dm_alpha, hermi=1)
+    vj_beta, vk_beta = scf.hf.dot_eri_dm(ao_eri, dm_beta, hermi=1)
+    bare = target.T @ mean_field.get_hcore() @ target
+    coulomb = target.T @ (vj_alpha + vj_beta) @ target
+    expected_alpha = bare + coulomb - target.T @ vk_alpha @ target
+    expected_beta = bare + coulomb - target.T @ vk_beta @ target
+
+    np.testing.assert_allclose(h_alpha, expected_alpha, atol=1e-10)
+    np.testing.assert_allclose(h_beta, expected_beta, atol=1e-10)
+    # The channels genuinely differ, so a spin-averaged embedding would fail.
+    assert np.abs(h_alpha - h_beta).max() > 1e-3
+    # Their average is the spin-traced potential the previous version returned.
+    np.testing.assert_allclose(
+        0.5 * (h_alpha + h_beta),
+        bare + coulomb - 0.5 * target.T @ (vk_alpha + vk_beta) @ target,
+        atol=1e-10,
+    )
+
+
+def test_closed_shell_neighbour_leaves_the_channels_identical():
+    """With no spin density in the neighbour the two channels must coincide, so
+    the spin-resolved path is a strict generalization of the spin-traced one."""
+    mol = h4_chain()
+    mean_field = scf.RHF(mol).run(verbose=0)
+    mo_coeff = np.asarray(mean_field.mo_coeff)
+    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
+
+    states = [
+        FragmentState(
+            spec=FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+            rdm1=np.zeros((2, 2)),
+            rdm2=np.zeros((2,) * 4),
+        ),
+        FragmentState(
+            spec=FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+            rdm1=2.0 * np.eye(2),
+            rdm2=np.zeros((2,) * 4),
+        ),
+    ]
+
+    h_alpha, h_beta, _ = fragment_effective_integrals(integrals, states, 0)
+
+    np.testing.assert_allclose(h_alpha, h_beta, atol=1e-14)
+
+
 def test_fragment_hamiltonian_ground_state_matches_fci():
     """End-to-end: effective integrals -> SparsePauliOp -> lowest eigenvalue."""
     mol = h2_molecule()
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0)
+    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=2)
 
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
     state = FragmentState(spec=spec, rdm1=np.zeros((2, 2)), rdm2=np.zeros((2,) * 4))
-    h_eff, g_frag = fragment_effective_integrals(integrals, [state], 0)
+    h_eff, _, g_frag = fragment_effective_integrals(integrals, [state], 0)
 
     spo = _spo_from_integrals(h_eff, g_frag, 0.0)
     expected = dense_fci_energy(h_eff, g_frag, 1, 1, 0.0)
@@ -365,11 +505,11 @@ def test_fragment_effective_integrals_matches_casci_h1eff_with_frozen_core():
     mc.mo_coeff = mo_coeff
     h1eff, _ = mc.get_h1eff()
 
-    integrals = transform_integrals(mol, mo_coeff, n_core=1)
+    integrals = transform_integrals(mol, mo_coeff, n_core=1, n_act=2)
     spec = FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1)
     state = FragmentState(spec=spec, rdm1=np.zeros((2, 2)), rdm2=np.zeros((2,) * 4))
 
-    h_eff, _ = fragment_effective_integrals(integrals, [state], 0)
+    h_eff, _, _ = fragment_effective_integrals(integrals, [state], 0)
 
     np.testing.assert_allclose(h_eff, h1eff, atol=1e-10)
 
@@ -410,7 +550,7 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation():
     ]
     permutation = build_active_permutation(specs, n_core=0, n_orbitals_total=4)
     permuted_mo_coeff = mo_coeff[:, permutation]
-    integrals = transform_integrals(mol, permuted_mo_coeff, n_core=0)
+    integrals = transform_integrals(mol, permuted_mo_coeff, n_core=0, n_act=4)
 
     rdm_other = np.array([[1.3, 0.2], [0.2, 0.7]])
     states = [
@@ -418,12 +558,12 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation():
         FragmentState(spec=specs[1], rdm1=rdm_other, rdm2=np.zeros((2,) * 4)),
     ]
 
-    h_eff, g_frag = fragment_effective_integrals(integrals, states, 0)
+    h_eff, _, g_frag = fragment_effective_integrals(integrals, states, 0)
 
     # Oracle built directly from the unpermuted MO integrals, indexed at the
     # caller's requested orbitals (0, 3) and (1, 2), not at positions 0..3.
-    unpermuted = transform_integrals(mol, mo_coeff, n_core=0)
-    h_mo, g_mo = unpermuted.h_mo, unpermuted.g_mo
+    unpermuted = transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
+    h_mo, g_mo = unpermuted.h_act, unpermuted.g_act
     target_orbitals = (0, 3)
     other_orbitals = (1, 2)
 
@@ -445,23 +585,26 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation():
     np.testing.assert_allclose(g_frag, expected_g, atol=1e-10)
 
 
-def test_fragment_effective_integrals_rejects_inconsistent_n_core():
-    """A fragment set that overruns the MO register signals its n_core mismatch."""
+def test_fragment_effective_integrals_rejects_mismatched_active_space():
+    """Fragments covering a different orbital count than the integrals span
+    means the two were built from different specs -- which would otherwise
+    silently read the wrong block."""
     integrals = MOIntegrals(
-        h_mo=np.zeros((2, 2)),
-        g_mo=np.zeros((2, 2, 2, 2)),
+        h_act=np.zeros((2, 2)),
+        g_act=np.zeros((2, 2, 2, 2)),
         j_core=np.zeros((2, 2)),
         k_core=np.zeros((2, 2)),
-        n_core=1,
     )
-    state = FragmentState(
-        spec=FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-        rdm1=np.zeros((2, 2)),
-        rdm2=np.zeros((2,) * 4),
-    )
+    states = [
+        FragmentState(
+            spec=FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+            rdm1=np.zeros((2, 2)),
+            rdm2=np.zeros((2,) * 4),
+        )
+    ] * 2
 
-    with pytest.raises(ValueError, match="n_core"):
-        fragment_effective_integrals(integrals, [state], 0)
+    with pytest.raises(ValueError, match="span"):
+        fragment_effective_integrals(integrals, states, 0)
 
 
 def _diagonal_active_rdms(n_act):
@@ -503,7 +646,7 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(mocker):
     h_ao = cached_h_ao(mol)
 
     spy = mocker.spy(_integrals_module, "minimize")
-    rotated_mo_coeff, _ = optimize_orbitals(
+    solve = optimize_orbitals(
         mol, permuted_mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
@@ -520,9 +663,10 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(mocker):
     )
     actual_n_rot = len(spy.call_args.args[1])
     assert actual_n_rot == expected_n_rot == 6
+    assert solve.n_rotation_pairs == expected_n_rot
 
     overlap = mol.intor("int1e_ovlp")
-    gram = rotated_mo_coeff.T @ overlap @ rotated_mo_coeff
+    gram = solve.mo_coeff.T @ overlap @ solve.mo_coeff
     np.testing.assert_allclose(gram, np.eye(n_orb_total), atol=1e-10)
 
 
@@ -542,14 +686,14 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom():
     h_ao = cached_h_ao(mol)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    rotated_mo_coeff, energy = optimize_orbitals(
-        mol, mo_coeff, 0, [spec], rdm1, rdm2, ao_eri, h_ao
-    )
+    solve = optimize_orbitals(mol, mo_coeff, 0, [spec], rdm1, rdm2, ao_eri, h_ao)
 
     unrotated_energy = total_energy(mol, mo_coeff, 0, rdm1, rdm2, ao_eri, h_ao)
-    assert energy == pytest.approx(unrotated_energy)
-    assert energy == pytest.approx(energy_fci, abs=1e-10)
-    np.testing.assert_allclose(rotated_mo_coeff, mo_coeff, atol=1e-12)
+    assert solve.energy == pytest.approx(unrotated_energy)
+    assert solve.energy == pytest.approx(energy_fci, abs=1e-10)
+    np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
+    assert solve.n_rotation_pairs == 0
+    assert solve.n_iterations == 0
 
 
 def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(mocker):
@@ -575,14 +719,20 @@ def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(mocker):
     fake_result = mocker.Mock()
     fake_result.fun = baseline_energy + 1.0
     fake_result.x = np.full(4, 0.5)
+    fake_result.jac = np.full(4, 1.0)
+    fake_result.nit = 3
+    fake_result.nfev = 4
+    fake_result.success = True
     mocker.patch.object(_integrals_module, "minimize", return_value=fake_result)
 
-    rotated_mo_coeff, energy = optimize_orbitals(
+    solve = optimize_orbitals(
         mol, mo_coeff, 0, specs, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
-    assert energy == pytest.approx(baseline_energy)
-    np.testing.assert_allclose(rotated_mo_coeff, mo_coeff, atol=1e-12)
+    assert solve.energy == pytest.approx(baseline_energy)
+    np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
+    # The discarded result's gradient must be discarded with it.
+    assert solve.gradient_norm != pytest.approx(1.0)
 
 
 def _rotated_mo_coeff(mo_coeff, rotation_pairs, rotation_params):
@@ -678,18 +828,18 @@ def test_optimize_orbitals_improves_strictly_on_the_baseline(orbital_rotation_ca
         mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
-    rotated_mo_coeff, energy = optimize_orbitals(*orbital_rotation_case)
+    solve = optimize_orbitals(*orbital_rotation_case)
 
-    assert energy < baseline_energy - 1e-8
-    assert energy == pytest.approx(
+    assert solve.energy < baseline_energy - 1e-8
+    assert solve.energy == pytest.approx(
         total_energy(
-            mol, rotated_mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+            mol, solve.mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
         ),
         abs=1e-8,
     )
 
     overlap = mol.intor("int1e_ovlp")
-    gram = rotated_mo_coeff.T @ overlap @ rotated_mo_coeff
+    gram = solve.mo_coeff.T @ overlap @ solve.mo_coeff
     np.testing.assert_allclose(gram, np.eye(mo_coeff.shape[1]), atol=1e-10)
 
 

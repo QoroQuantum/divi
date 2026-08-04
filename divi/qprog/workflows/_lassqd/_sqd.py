@@ -78,17 +78,23 @@ def probs_to_sqd_bitstrings(probs: dict[str, float], n_orb: int) -> dict[str, fl
 
 
 def spin_orbital_integrals(
-    one_body: np.ndarray, two_body: np.ndarray, n_orb: int
+    one_body: np.ndarray,
+    two_body: np.ndarray,
+    n_orb: int,
+    one_body_beta: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Convert spatial one- and two-body integrals to spin-orbital integrals."""
+    """Convert spatial one- and two-body integrals to spin-orbital integrals.
+
+    Spin-orbitals are blocked: index ``p`` is alpha for ``p < n_orb`` and beta
+    above. ``one_body_beta`` gives the beta channel a distinct one-body
+    potential, as a spin-polarized mean-field embedding produces.
+    """
+    if one_body_beta is None:
+        one_body_beta = one_body
     n_spin_orb = 2 * n_orb
     h_spin = np.zeros((n_spin_orb, n_spin_orb))
-    for p in range(n_spin_orb):
-        for q in range(n_spin_orb):
-            p_sp, p_spin = p % n_orb, p // n_orb
-            q_sp, q_spin = q % n_orb, q // n_orb
-            if p_spin == q_spin:
-                h_spin[p, q] = one_body[p_sp, q_sp]
+    h_spin[:n_orb, :n_orb] = one_body
+    h_spin[n_orb:, n_orb:] = one_body_beta
 
     g_spin = np.zeros((n_spin_orb, n_spin_orb, n_spin_orb, n_spin_orb))
     for p in range(n_spin_orb):
@@ -395,7 +401,15 @@ class SQDResult:
     """Outcome of one SQD solve.
 
     Attributes:
-        energy: Lowest projected energy found across all batches.
+        energy: Lowest eigenvalue of the *spin-penalized* projected Hamiltonian,
+            ``H + lambda (S^2 - s(s+1))^2``, plus ``constant`` -- not the bare
+            expectation value ``<H>``. Batches are ranked on this deliberately,
+            so a batch with a lower bare energy in the wrong spin sector loses;
+            the cost is that on a spin-incomplete subspace this sits above
+            ``<H>`` by the penalty term. Do not treat it as a variational bound.
+            LASSQD's reported energy does not come from here: it is recomputed
+            by :func:`~divi.qprog.workflows._lassqd._integrals.total_energy` from
+            the reassembled RDMs, which carry no penalty.
         eigenvector: Ground-state coefficients over ``subspace``.
         subspace: Blocked bitstrings spanning the winning batch's determinants,
             in the same order as ``eigenvector``.
@@ -473,15 +487,19 @@ class SQDSolver:
         one_body: np.ndarray,
         two_body: np.ndarray,
         constant: float = 0.0,
+        one_body_beta: np.ndarray | None = None,
     ) -> SQDResult:
         """Run the SQD solver loop.
 
         Args:
             probs: Mapping of blocked bitstrings to their sampled probability.
-            one_body: Spatial one-body integrals.
+            one_body: Spatial one-body integrals; the alpha channel when
+                ``one_body_beta`` is given.
             two_body: Spatial two-body integrals.
             constant: Energy offset (e.g. nuclear repulsion) added to every
                 projected eigenvalue.
+            one_body_beta: Beta-channel one-body integrals, when the embedding
+                potential is spin-dependent.
 
         Returns:
             The lowest-energy :class:`SQDResult` found across all iterations.
@@ -491,9 +509,14 @@ class SQDSolver:
                 brought into agreement with the target particle symmetry, or
                 if no batch ever produces a candidate eigenvector.
         """
-        unique_bs = list(probs.keys())
+        # Sorted, not insertion-ordered: the first iteration samples straight
+        # from this list, so a dict built in a different order would draw a
+        # different subspace from the same distribution and the same seed.
+        unique_bs = sorted(probs)
 
-        h_spin, g_spin = spin_orbital_integrals(one_body, two_body, self.n_orb)
+        h_spin, g_spin = spin_orbital_integrals(
+            one_body, two_body, self.n_orb, one_body_beta
+        )
         target_s = 0.5 * abs(self.n_alpha - self.n_beta)
 
         best_energy = float("inf")

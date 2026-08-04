@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import atexit
+import logging
 import os
 import time
 from abc import ABC, abstractmethod
@@ -49,6 +50,8 @@ __all__ = [
     "RoundRecord",
     "WorkflowStatus",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class ReportingLevel(str, Enum):
@@ -1246,6 +1249,25 @@ class ProgramEnsemble(ABC):
             payload["final_status"] = final_status
         if message is not None:
             payload["message"] = message
+        self._queue.put(payload)
+
+    def _emit_workflow_round_stage(self, message: str, *, final: bool = False) -> None:
+        """Name the stage a multi-stage ``update_state`` is currently in.
+
+        Written to the workflow-round row. ``final`` marks the message as the
+        round's outcome rather than a stage it passed through, which is also
+        logged: the round row is transient and its text is overwritten by later
+        frames, so a redirected run would otherwise keep no record of it.
+        """
+        if final:
+            logger.info(message)
+        if self._queue is None or self._progress_bar is None:
+            if not final and self.reporting_level is not ReportingLevel.OFF:
+                logger.info(message)
+            return
+        payload: dict[str, Any] = {"workflow_round": True, "message": message}
+        if final:
+            payload["final_status"] = TerminalStatus.SUCCESS
         self._queue.put(payload)
 
     def _emit_workflow_round_message(self, final_status: TerminalStatus) -> None:

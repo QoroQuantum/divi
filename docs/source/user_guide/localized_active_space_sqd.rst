@@ -136,27 +136,38 @@ Automatic Fragmentation
 ------------------------
 
 Rather than specifying fragments by hand, LASSQD can select the active space
-and split it into fragments for you. Pass exactly one of ``n_active_orbitals``
-or ``energy_window`` (mutually exclusive with each other and with
+and split it into fragments for you. The automatic path has three independent
+choices: which orbitals are active, how they partition into fragments, and what
+spin each fragment carries.
+
+**Which orbitals.** Pass exactly one of these (each also mutually exclusive with
 ``active_spaces``):
 
 - ``n_active_orbitals`` — total spatial orbitals to select around the
   HOMO-LUMO gap (``ceil(k / 2)`` highest occupied, ``floor(k / 2)`` lowest
-  virtual). Use this when you want a fixed-size active space regardless of
-  the molecule's orbital spacing.
-- ``energy_window`` — an energy window, in Hartree, around the HOMO-LUMO gap:
-  an occupied orbital qualifies when its energy is at least the HOMO energy
-  minus the window, and a virtual orbital when its energy is at most the
-  LUMO energy plus the window. Use this when the relevant orbitals are known
-  to cluster within a specific energy range and you want the active-space
-  size to adapt to the molecule rather than fixing it in advance.
+  virtual). The right choice when the correlated orbitals sit at the frontier.
+- ``active_orbitals`` — explicit MO column indices. Use this when the active
+  space is defined by orbital *character* rather than energy: a transition
+  metal's ``d`` manifold can sit well below the HOMO with its virtual partners
+  well above the LUMO, where no frontier count reaches them. Pair it with a
+  mean field whose orbitals already carry that character, such as one prepared
+  with PySCF's AVAS.
 
-Either way, ``max_orbitals_per_fragment`` (default 4) caps how many orbitals
-each automatically built fragment can contain — the selected active space is
-partitioned by localizing the occupied and virtual blocks independently and
-greedily merging orbitals along their coupling strength, so a smaller cap
-produces more, smaller fragments. ``coupling_threshold`` (default ``1e-3``)
-is the relative edge-pruning threshold for that coupling graph.
+**How they partition.** By default the selected space is localized and split by
+greedily merging orbitals along their coupling strength, capped by
+``max_orbitals_per_fragment`` (default 4), with ``coupling_threshold`` (default
+``1e-3``) pruning weak edges. Alternatively pass ``fragment_atoms`` — one
+sequence of atom indices per fragment — to assign each localized orbital to
+whichever fragment owns the atom it sits on. That is how a localized active
+space is usually specified: one fragment per metal centre.
+
+**What spin.** Fragments default to closed shell. ``local_spins`` sets ``2S``
+per fragment, in the order ``fragment_atoms`` names them, leaving each
+fragment's electron count alone — so ``local_spins=[2, -2]`` makes two local
+triplets aligned antiparallel, the antiferromagnetic arrangement of a coupled
+dimer. The fragments must still sum to ``Sz = 0``. It requires
+``fragment_atoms``, because coupling-graph fragment order depends on the
+localization RNG and would not name a stable fragment.
 
 .. code-block:: python
 
@@ -214,6 +225,12 @@ energies differ by less than ``energy_tol`` (default ``1e-6`` Ha). After
 - ``ensemble.round_history`` — one :class:`~divi.qprog.RoundRecord` per
   macro-cycle, each carrying its round number, program count, and
   circuit/runtime deltas.
+- ``ensemble.round_reports`` — one
+  :class:`~divi.qprog.workflows.LASSQDRoundReport` per macro-cycle: the energy
+  and its change, each fragment's SQD subspace size, the orbital solve's
+  iteration count, gradient norm and convergence flag, and per-stage wall clock.
+  Recorded as each round finishes, so an interrupted run keeps every completed
+  round. ``report.summary()`` renders one line per round.
 - ``ensemble.stop_reason`` — a :class:`~divi.qprog.WorkflowStatus`.
   ``COMPLETE`` means the energy converged within ``energy_tol``;
   ``MAX_ROUNDS`` means ``run()`` stopped at the ``max_rounds`` cap before

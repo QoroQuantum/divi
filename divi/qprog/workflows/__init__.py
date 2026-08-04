@@ -2,7 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from ._lassqd import LASSQD, FragmentSpec, FragmentState, LASSQDState
+from ._lassqd import (
+    LASSQD,
+    FragmentSpec,
+    FragmentState,
+    LASSQDRoundReport,
+    LASSQDState,
+)
 from ._partitioning_ensemble import PartitioningProgramEnsemble
 from ._time_evolution_trajectory import TimeEvolutionTrajectory
 from ._vqe_sweep import MoleculeTransformer, VQEHyperparameterSweep
