@@ -11,10 +11,17 @@ density-matrix reconstruction.
 """
 
 import bisect
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import scipy.linalg
+
+#: Determinant rows per pass in :func:`projected_matrices`. The pair arrays it
+#: builds scale with this times the subspace size, so a fixed block keeps peak
+#: memory independent of how large the subspace grows; only the returned
+#: matrices scale with its square.
+_PAIR_BLOCK_ROWS = 512
 
 
 def deinterleave_spin_bitstring(bitstring: str, n_orb: int) -> str:
@@ -290,6 +297,247 @@ def s2_matrix_element(det_i, det_j, n_orb: int) -> float:
     return diag + coeff_ij
 
 
+def projected_matrices(
+    dets: Sequence[tuple[tuple[int, ...], tuple[int, ...]]],
+    dets_spin: Sequence[tuple[int, ...]],
+    h_spin: np.ndarray,
+    g_spin: np.ndarray,
+    n_orb: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Project the Hamiltonian and ``S^2`` onto the span of ``dets``.
+
+    Returns what filling every entry with :func:`slater_condon` and
+    :func:`s2_matrix_element` would -- those remain the reference definitions --
+    computed by array operations instead of a double loop. Excitation ranks come
+    from one matrix product, then each rank's elements are gathered in one pass.
+
+    The saving is that Slater-Condon vanishes past a double excitation, and the
+    fraction of pairs that survive falls as the subspace grows: 76% at 50
+    determinants but 7% at 4900, where the loop form costs 68 s.
+
+    ``S^2``'s off-diagonal is handled differently. It is non-zero only between
+    determinants related by exchanging spins across two spatial orbitals, which
+    is well under 1% of pairs, so those are located by array operations and then
+    evaluated by the scalar routine -- keeping its ladder-operator signs as the
+    single source of truth for a negligible cost.
+
+    Rows are processed in blocks so the pair arrays stay bounded rather than
+    scaling with the square of the subspace; only the two returned matrices do.
+
+    Args:
+        dets: ``(alpha_occ, beta_occ)`` spatial occupations per determinant.
+        dets_spin: The same determinants as sorted spin-orbital tuples, all
+            holding the same electron count -- the excitation rank is derived
+            from that assumption.
+        h_spin: One-body integrals over spin-orbitals.
+        g_spin: Two-body integrals over spin-orbitals.
+        n_orb: Spatial orbitals in the fragment.
+
+    Returns:
+        ``(h_proj, s2_proj)``, both ``(len(dets), len(dets))``.
+    """
+    m = len(dets_spin)
+    h_proj = np.zeros((m, m))
+    s2_proj = np.zeros((m, m))
+    if m == 0:
+        return h_proj, s2_proj
+
+    n_spin = 2 * n_orb
+    occupation = np.zeros((m, n_spin))
+    for row, spin_occ in enumerate(dets_spin):
+        occupation[row, list(spin_occ)] = 1.0
+
+    n_electrons = int(round(float(occupation[0].sum())))
+    # Occupied orbitals strictly below an index: the parity that signs an
+    # annihilation or creation there, matching _annihilation_sign's use of the
+    # position within the sorted occupation tuple.
+    below = np.cumsum(occupation, axis=1) - occupation
+    index = np.arange(n_spin)
+
+    # --- Diagonal (identical determinants) ---
+    # Strictly upper-triangular so the pair sum runs over p < q, matching
+    # slater_condon without assuming g[p, q, p, q] == g[q, p, q, p].
+    coulomb = g_spin[index[:, None], index[None, :], index[:, None], index[None, :]]
+    coulomb = np.triu(coulomb, k=1)
+    diagonal = occupation @ np.diag(h_spin) + np.einsum(
+        "ip,pq,iq->i", occupation, coulomb, occupation
+    )
+    alpha_occupation = occupation[:, :n_orb]
+    beta_occupation = occupation[:, n_orb:]
+    spin_z = 0.5 * (alpha_occupation.sum(axis=1) - beta_occupation.sum(axis=1))
+    s2_diagonal = spin_z * (spin_z + 1.0) + (
+        beta_occupation * (1.0 - alpha_occupation)
+    ).sum(axis=1)
+
+    # exchange[p, q, r] == g_spin[p, r, q, r], the sum a single excitation takes
+    # over the orbitals occupied in the right-hand determinant.
+    exchange = g_spin[
+        index[:, None, None],
+        index[None, None, :],
+        index[None, :, None],
+        index[None, None, :],
+    ]
+
+    for start in range(0, m, _PAIR_BLOCK_ROWS):
+        stop = min(start + _PAIR_BLOCK_ROWS, m)
+        # Every determinant holds n_electrons, so the count of orbitals in i
+        # absent from j is the excitation rank connecting them.
+        rank = (n_electrons - np.rint(occupation[start:stop] @ occupation.T)).astype(
+            np.int16
+        )
+
+        local, cols = np.nonzero(rank == 0)
+        rows = local + start
+        h_proj[rows, cols] = diagonal[rows]
+        s2_proj[rows, cols] = s2_diagonal[rows]
+
+        # --- Single excitations: q in j replaced by p in i ---
+        local, cols = np.nonzero(rank == 1)
+        if local.size:
+            rows = local + start
+            created = (occupation[rows] * (1.0 - occupation[cols])).argmax(axis=1)
+            annihilated = (occupation[cols] * (1.0 - occupation[rows])).argmax(axis=1)
+            # Annihilating q then creating p, the intermediate occupation losing
+            # one orbital below p exactly when q < p.
+            exponent = (
+                below[cols, annihilated]
+                + below[cols, created]
+                - (annihilated < created)
+            )
+            sign = 1.0 - 2.0 * (exponent.astype(np.int64) % 2)
+            # The r == q term the reference excludes contributes g[p, q, q, q],
+            # which antisymmetry makes identically zero, so no exclusion is
+            # needed here.
+            summed = np.einsum(
+                "kr,kr->k", exchange[created, annihilated], occupation[cols]
+            )
+            h_proj[rows, cols] = sign * (h_spin[created, annihilated] + summed)
+
+        # --- Double excitations: q, s in j replaced by p, r in i ---
+        local, cols = np.nonzero(rank == 2)
+        if local.size:
+            rows = local + start
+            # np.nonzero walks row-major and each row holds exactly two entries,
+            # so every pair contributes its differing orbitals in ascending order.
+            _, created_pair = np.nonzero(occupation[rows] * (1.0 - occupation[cols]))
+            _, annihilated_pair = np.nonzero(
+                occupation[cols] * (1.0 - occupation[rows])
+            )
+            lower_created, upper_created = created_pair[0::2], created_pair[1::2]
+            lower_annihilated = annihilated_pair[0::2]
+            upper_annihilated = annihilated_pair[1::2]
+            # Annihilate both, then create both, each step's parity read off the
+            # original occupation corrected for the orbitals already moved. The
+            # -1 is the q < s comparison, always true since the pair is sorted.
+            exponent = (
+                below[cols, lower_annihilated]
+                + below[cols, upper_annihilated]
+                - 1
+                + below[cols, upper_created]
+                - (lower_annihilated < upper_created)
+                - (upper_annihilated < upper_created)
+                + below[cols, lower_created]
+                - (lower_annihilated < lower_created)
+                - (upper_annihilated < lower_created)
+            )
+            sign = 1.0 - 2.0 * (exponent.astype(np.int64) % 2)
+            h_proj[rows, cols] = (
+                sign
+                * g_spin[
+                    lower_created, upper_created, lower_annihilated, upper_annihilated
+                ]
+            )
+
+            # S^2 connects only spin-exchange pairs: i gains alpha at one spatial
+            # orbital and beta at another, losing exactly the opposite pair. The
+            # predicate is a superset -- a pair that satisfies it but carries no
+            # S^2 weight simply gets assigned zero.
+            spin_exchange = (
+                (lower_created < n_orb)
+                & (upper_created >= n_orb)
+                & (lower_annihilated < n_orb)
+                & (upper_annihilated >= n_orb)
+                & (lower_created == upper_annihilated - n_orb)
+                & (lower_annihilated == upper_created - n_orb)
+            )
+            for row, col in zip(rows[spin_exchange], cols[spin_exchange]):
+                s2_proj[row, col] = s2_matrix_element(dets[row], dets[col], n_orb)
+
+    return h_proj, s2_proj
+
+
+#: Places the carryover ranking rounds to. Threaded BLAS and set iteration order
+#: perturb eigenvector components at the last bit, enough to swap near-equal
+#: weights and, once a cap binds, change which determinants survive.
+_CARRYOVER_WEIGHT_PLACES = 12
+
+
+def _heaviest_strings(weights: dict[str, float], limit: int | None) -> list[str]:
+    """The ``limit`` heaviest strings, near-ties broken on the string so float
+    noise cannot decide what is kept."""
+    ordered = sorted(
+        weights,
+        key=lambda string: (
+            -round(weights[string], _CARRYOVER_WEIGHT_PLACES),
+            string,
+        ),
+    )
+    return ordered if limit is None else ordered[:limit]
+
+
+def carryover_weights(
+    subspace: Sequence[str],
+    eigenvector: np.ndarray,
+    n_orb: int,
+    cutoff: float,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Weigh the alpha and beta strings worth carrying to the next iteration.
+
+    Splits the determinants carrying real weight into their alpha and beta
+    halves, weighting each half by the probability it holds across every
+    determinant containing it.
+
+    The threshold is relative to the largest coefficient because the eigenvector
+    is normalized: its typical component falls as ``1 / sqrt(m)``, so a fixed
+    threshold would prune almost nothing at large subspace sizes.
+
+    Halves are returned separately because the subspace is rebuilt as their
+    product, so ``k`` of each reintroduce up to ``k ** 2`` determinants,
+    including combinations never sampled together. A half spread thinly over
+    many determinants can therefore outrank a concentrated one.
+
+    Args:
+        subspace: Blocked bitstrings spanning the diagonalized subspace.
+        eigenvector: Coefficients over ``subspace``, in the same order.
+        n_orb: Spatial orbitals in the fragment.
+        cutoff: Retain determinants whose ``abs(coefficient)`` exceeds this
+            fraction of the largest coefficient in ``eigenvector``.
+
+    Returns:
+        ``(alpha_weights, beta_weights)``, each mapping string to weight.
+    """
+    coefficients = np.asarray(eigenvector, dtype=float)
+    if coefficients.size == 0:
+        return {}, {}
+    largest = float(np.max(np.abs(coefficients)))
+    if largest == 0.0:
+        return {}, {}
+    threshold = cutoff * largest
+
+    alpha_weights: dict[str, float] = {}
+    beta_weights: dict[str, float] = {}
+    for bitstring, coefficient in zip(subspace, coefficients):
+        if abs(coefficient) <= threshold:
+            continue
+        weight = float(coefficient) ** 2
+        alpha = bitstring[:n_orb]
+        beta = bitstring[n_orb:]
+        alpha_weights[alpha] = alpha_weights.get(alpha, 0.0) + weight
+        beta_weights[beta] = beta_weights.get(beta, 0.0) + weight
+
+    return alpha_weights, beta_weights
+
+
 def filter_symmetry(bitstrings, n_orb: int, n_alpha: int, n_beta: int) -> list[str]:
     """Keep only blocked bitstrings with the target alpha and beta counts."""
     kept = []
@@ -325,22 +573,16 @@ def _correct_spin_part(
     delta = 0.01
     threshold = target / n_orb
 
-    if current > target:
-        indices = [i for i, val in enumerate(part) if val == 1]
-        weights = [
-            _modified_relu(abs(1.0 - average_occupancy[i]), threshold, delta)
-            for i in indices
-        ]
-        n_flips = current - target
-        new_value = 0
-    else:
-        indices = [i for i, val in enumerate(part) if val == 0]
-        weights = [
-            _modified_relu(abs(0.0 - average_occupancy[i]), threshold, delta)
-            for i in indices
-        ]
-        n_flips = target - current
-        new_value = 1
+    # Too many electrons means emptying occupied bits, too few means filling
+    # empty ones; the weighting is the same distance either way.
+    from_value = 1 if current > target else 0
+    indices = [i for i, val in enumerate(part) if val == from_value]
+    weights = [
+        _modified_relu(abs(from_value - average_occupancy[i]), threshold, delta)
+        for i in indices
+    ]
+    n_flips = abs(current - target)
+    new_value = 1 - from_value
 
     weight_sum = sum(weights)
     if weight_sum > 1e-9:
@@ -441,6 +683,8 @@ class SQDSolver:
         n_iterations: int = 6,
         lambda_penalty: float = 0.2,
         recovery: bool = True,
+        carryover_cutoff: float | None = None,
+        max_carryover: int | None = None,
         rng: np.random.Generator | None = None,
     ):
         """Initialize the solver.
@@ -457,11 +701,22 @@ class SQDSolver:
             n_iterations: Configuration-recovery iterations.
             lambda_penalty: Weight of the ``S^2`` penalty.
             recovery: Whether to run configuration recovery.
+            carryover_cutoff: Enables carryover when given, as a fraction of the
+                winning batch's largest eigenvector coefficient. Determinants
+                above it are retained and later batches extended with their
+                alpha and beta halves; ``None`` (default) is conventional SQD.
+                Re-decided each iteration, and selected from the *penalized*
+                ground state, so ``lambda_penalty`` influences what is kept.
+            max_carryover: Keeps at most this many alpha and beta strings, the
+                heaviest, so retention can shrink between iterations. ``None``
+                (default) leaves the subspace bounded only by the fragment's
+                determinant space; worth setting on a wide fragment.
             rng: Subsampling generator; fresh default when omitted.
 
         Raises:
             ValueError: If ``n_batches``, ``batch_size`` or ``n_iterations`` is
-                less than 1.
+                less than 1, if ``carryover_cutoff`` is not positive, or if
+                ``max_carryover`` is given without a cutoff or is less than 1.
         """
         if n_batches < 1:
             raise ValueError(f"n_batches must be >= 1, got {n_batches}.")
@@ -469,6 +724,18 @@ class SQDSolver:
             raise ValueError(f"batch_size must be >= 1, got {batch_size}.")
         if n_iterations < 1:
             raise ValueError(f"n_iterations must be >= 1, got {n_iterations}.")
+        if carryover_cutoff is not None and not carryover_cutoff > 0:
+            raise ValueError(
+                f"carryover_cutoff must be positive, got {carryover_cutoff}."
+            )
+        if max_carryover is not None:
+            if carryover_cutoff is None:
+                raise ValueError(
+                    "max_carryover caps what carryover retains, so it needs "
+                    "carryover_cutoff to be set."
+                )
+            if max_carryover < 1:
+                raise ValueError(f"max_carryover must be >= 1, got {max_carryover}.")
 
         self.n_orb = n_orb
         self.n_alpha = n_alpha
@@ -478,6 +745,8 @@ class SQDSolver:
         self.n_iterations = n_iterations
         self.lambda_penalty = lambda_penalty
         self.recovery = recovery
+        self.carryover_cutoff = carryover_cutoff
+        self.max_carryover = max_carryover
         self._rng = np.random.default_rng() if rng is None else rng
         self.occupancy = np.zeros((2, n_orb))
 
@@ -522,6 +791,12 @@ class SQDSolver:
         best_energy = float("inf")
         best_state = None
         best_subspace = None
+
+        # Re-read each iteration, not accumulated: weights from differently
+        # normalized eigenvectors are not comparable, and a carried string is
+        # present in the current subspace anyway.
+        carried_alpha: list[str] = []
+        carried_beta: list[str] = []
 
         # Only reached when this solver has not produced any batch results yet.
         if np.sum(self.occupancy) == 0:
@@ -577,6 +852,11 @@ class SQDSolver:
                     alpha_pool.add(bs[: self.n_orb])
                     beta_pool.add(bs[self.n_orb :])
 
+                # Carried strings join this batch's own pools, so they also pair
+                # with freshly sampled halves rather than only with each other.
+                alpha_pool.update(carried_alpha)
+                beta_pool.update(carried_beta)
+
                 unique_alpha = [s for s in alpha_pool if s.count("1") == self.n_alpha]
                 unique_beta = [s for s in beta_pool if s.count("1") == self.n_beta]
 
@@ -603,20 +883,15 @@ class SQDSolver:
 
             for s_k in batches:
                 m_dim = len(s_k)
-                h_proj = np.zeros((m_dim, m_dim))
-                s2_proj = np.zeros((m_dim, m_dim))
 
                 dets = [bitstring_to_spatial_det(bs, self.n_orb) for bs in s_k]
                 dets_spin = [
                     spatial_to_spin_occupations(d[0], d[1], self.n_orb) for d in dets
                 ]
 
-                for i in range(m_dim):
-                    for j in range(m_dim):
-                        h_proj[i, j] = slater_condon(
-                            dets_spin[i], dets_spin[j], h_spin, g_spin
-                        )
-                        s2_proj[i, j] = s2_matrix_element(dets[i], dets[j], self.n_orb)
+                h_proj, s2_proj = projected_matrices(
+                    dets, dets_spin, h_spin, g_spin, self.n_orb
+                )
 
                 penalty_matrix = s2_proj - target_s * (target_s + 1.0) * np.eye(m_dim)
                 penalty_matrix = self.lambda_penalty * np.dot(
@@ -649,6 +924,16 @@ class SQDSolver:
                 best_energy = energy_iter
                 best_state = batch_states[best_batch_idx]
                 best_subspace = batch_subspaces[best_batch_idx]
+
+            if self.carryover_cutoff is not None:
+                alpha_weights, beta_weights = carryover_weights(
+                    [str(bs) for bs in batch_subspaces[best_batch_idx]],
+                    batch_states[best_batch_idx],
+                    self.n_orb,
+                    self.carryover_cutoff,
+                )
+                carried_alpha = _heaviest_strings(alpha_weights, self.max_carryover)
+                carried_beta = _heaviest_strings(beta_weights, self.max_carryover)
 
             self.occupancy = np.mean(batch_occupancies, axis=0)
 
@@ -686,34 +971,25 @@ def compute_spatial_rdms(
 
     n_spin = 2 * n_orb
     rdm1_spin = np.zeros((n_spin, n_spin))
-    for i in range(m_dim):
-        for j in range(m_dim):
-            det_j = dets_spin[j]
-            det_i = dets_spin[i]
-            val_ij = eigenvector[i] * eigenvector[j]
-
-            for q in det_j:
-                sign_q, occ_mid = _annihilation_sign(det_j, q)
-                if sign_q == 0 or occ_mid is None:
-                    continue
-                diff = set(det_i) - set(occ_mid)
-                if len(diff) == 1:
-                    p = next(iter(diff))
-                    sign_p, occ_final = _creation_sign(occ_mid, p)
-                    if sign_p != 0 and occ_final == det_i:
-                        rdm1_spin[p, q] += val_ij * sign_p * sign_q
-
     rdm2_spin = np.zeros((n_spin, n_spin, n_spin, n_spin))
     for i in range(m_dim):
+        det_i = dets_spin[i]
         for j in range(m_dim):
             det_j = dets_spin[j]
-            det_i = dets_spin[i]
             val_ij = eigenvector[i] * eigenvector[j]
 
             for q in det_j:
                 sign_q, occ_1 = _annihilation_sign(det_j, q)
                 if sign_q == 0 or occ_1 is None:
                     continue
+
+                diff = set(det_i) - set(occ_1)
+                if len(diff) == 1:
+                    p = next(iter(diff))
+                    sign_p, occ_final = _creation_sign(occ_1, p)
+                    if sign_p != 0 and occ_final == det_i:
+                        rdm1_spin[p, q] += val_ij * sign_p * sign_q
+
                 for s in occ_1:
                     sign_s, occ_2 = _annihilation_sign(occ_1, s)
                     if sign_s == 0 or occ_2 is None:

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 import networkx as nx
 import numpy as np
 
+from ._integrals import cached_h_ao
 from ._state import FragmentSpec
 
 
@@ -272,7 +273,7 @@ def localize_blocks(
         ImportError: If the ``chem`` extra is not installed.
     """
     try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        # optional ``chem`` extra
         from pyscf import lo
     except ImportError as exc:
         raise ImportError(
@@ -532,7 +533,7 @@ def _localized_active_space_integrals(
         ImportError: If the ``chem`` extra is not installed.
     """
     try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        # optional ``chem`` extra
         from pyscf import ao2mo, scf
     except ImportError as exc:
         raise ImportError(
@@ -541,7 +542,7 @@ def _localized_active_space_integrals(
         ) from exc
 
     n_act = localized.shape[1]
-    h_ao = mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+    h_ao = cached_h_ao(mol)
 
     core_indices = sorted(set(range(n_occupied)) - set(occupied_indices))
     if core_indices:

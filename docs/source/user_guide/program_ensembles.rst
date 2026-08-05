@@ -327,9 +327,11 @@ stand in for your own code; only the four hooks matter here:
 ``max_rounds`` caps the loop even when ``is_complete`` never returns ``True``.
 Leave it as ``None`` to run until convergence.
 
-Interrupting a running workflow with :kbd:`Ctrl-C` cancels the current round
-and stops the loop: the round is recorded as ``CANCELLED``, ``update_state``
-is not called on its partial results, and no further round starts.
+Interrupting a running workflow with :kbd:`Ctrl-C` cancels the current round and
+stops the loop: the round is recorded as ``CANCELLED`` and no further round
+starts. The state is left at the last round that completed, so a partial round's
+results never reach it — whether the interrupt landed in the dispatch or in
+``update_state``.
 
 .. note::
 
@@ -346,7 +348,8 @@ After ``run()`` returns, three attributes describe the workflow:
 
 - ``workflow_state`` — the latest state, converged or not.
 - ``stop_reason`` — a :class:`~divi.qprog.WorkflowStatus`: ``COMPLETE``,
-  ``MAX_ROUNDS``, ``FAILED``, or ``CANCELLED``.
+  ``MAX_ROUNDS``, ``FAILED``, or ``CANCELLED``, and ``None`` before the first
+  ``run()``.
 - ``round_history`` — a tuple of immutable
   :class:`~divi.qprog.RoundRecord` entries, one per round.
 
@@ -369,9 +372,10 @@ every round and every run; the per-round deltas live in ``round_history``.
 Starting a new ``run()`` resets the workflow state and round history but keeps
 those lifetime totals.
 
-When a round's programs fail, ``run()`` records the failed round and then
-*raises* — so ``FAILED`` is something you catch, not something you find on a
-returned ensemble:
+When a round fails — materializing its programs, executing them, or reducing
+them — ``run()`` records the failed round and then *raises*, so ``FAILED`` is
+something you catch, not something you find on a returned ensemble. The
+exception is whatever the round raised, so catch broadly:
 
 .. skip: next
 
@@ -379,7 +383,7 @@ returned ensemble:
 
    try:
        ensemble.run(max_rounds=5)
-   except RuntimeError:
+   except Exception:
        failed = ensemble.round_history[-1]
        print(f"round {failed.number} failed: {failed.error}")
 

@@ -21,9 +21,11 @@ from typing import Literal
 from warnings import warn
 
 import numpy as np
+import numpy.typing as npt
 import pennylane as qp
 from qiskit.circuit import Gate, QuantumCircuit
 from qiskit.circuit.library import RXGate, RYGate, RZGate, RZZGate, XXPlusYYGate
+from scipy.optimize import least_squares
 
 from divi.circuits._conversions import _qscript_to_dag
 from divi.hamiltonians._term_ops import _HALF_PI
@@ -644,44 +646,237 @@ class QCCAnsatz(Ansatz):
         return qc
 
 
-def _rotation_schedule(n_orb: int) -> list[int]:
-    """Lower orbital of each Givens rotation in a general orbital rotation.
+def _rotation_schedule(n_orb: int, depth: int | None = None) -> list[int]:
+    """Lower orbital of each Givens rotation in an orbital rotation.
 
-    The Clements brick-wall schedule: ``n_orb`` alternating half-layers of
-    disjoint adjacent pairs, ``n_orb * (n_orb - 1) / 2`` rotations in total,
-    which is the dimension of the group and therefore reaches any rotation.
+    The Clements brick-wall schedule: alternating half-layers of disjoint
+    adjacent pairs. At the full ``depth`` of ``n_orb`` half-layers that is
+    ``n_orb * (n_orb - 1) / 2`` gates, each carrying two parameters, which
+    reaches any unitary; see :func:`n_rotation_params`. A smaller ``depth``
+    truncates the network to a shallower, less expressive one. A larger one is
+    rejected rather than capped, since it only adds redundant parameters.
     """
+    if depth is None:
+        depth = n_orb
+    if not 0 <= depth <= n_orb:
+        raise ValueError(
+            f"Rotation depth must be between 0 and n_orb ({n_orb}), beyond which "
+            f"the network is redundant; got {depth}."
+        )
     return [
-        p for half_layer in range(n_orb) for p in range(half_layer % 2, n_orb - 1, 2)
+        p for half_layer in range(depth) for p in range(half_layer % 2, n_orb - 1, 2)
     ]
 
 
+def n_rotation_params(
+    n_orb: int, *, orbital_phases: bool, depth: int | None = None
+) -> int:
+    """Parameters one spin sector's orbital rotation takes: an angle and a phase
+    per scheduled Givens pair, plus one phase per orbital when
+    ``orbital_phases``.
+
+    The gate phases reach the unitary group rather than only its orthogonal
+    subgroup, which ``exp(iJ)`` needs -- under a real rotation the first-order
+    energy correction is imaginary and cancels. A rotation that gets inverted
+    around the Jastrow needs no per-orbital phases: for diagonal ``D``,
+    ``(D G)^-1 J (D G) = G^-1 J G``.
+
+    Zero for a single orbital, whose only rotation would be a global phase.
+    """
+    if n_orb < 2:
+        return 0
+    n_gates = len(_rotation_schedule(n_orb, depth))
+    return 2 * n_gates + (n_orb if orbital_phases else 0)
+
+
+def _rotation_one_particle(
+    params: npt.ArrayLike, n_orb: int, depth: int | None = None
+) -> np.ndarray:
+    """One-particle matrix one spin sector's rotation block realizes.
+
+    Gates apply in schedule order so their matrices compose right to left, and
+    the per-orbital phases apply last.
+    """
+    values = np.asarray(params, dtype=float)
+    schedule = _rotation_schedule(n_orb, depth)
+    n_gates = len(schedule)
+    # Zero-padded, so the sandwiched layout -- which carries no orbital phases --
+    # evaluates rather than raising on an empty diagonal.
+    orbital_phases = np.zeros(n_orb)
+    supplied = values[2 * n_gates :]
+    orbital_phases[: len(supplied)] = supplied
+    matrix = np.eye(n_orb, dtype=complex)
+    for index, orbital in enumerate(schedule):
+        angle, phase = values[2 * index], values[2 * index + 1]
+        block = np.eye(n_orb, dtype=complex)
+        cosine, sine = np.cos(angle / 2), np.sin(angle / 2)
+        block[orbital, orbital] = cosine
+        block[orbital, orbital + 1] = -1j * sine * np.exp(-1j * phase)
+        block[orbital + 1, orbital] = -1j * sine * np.exp(1j * phase)
+        block[orbital + 1, orbital + 1] = cosine
+        matrix = block @ matrix
+    return np.diag(np.exp(1j * orbital_phases)) @ matrix
+
+
+def rotation_angles(
+    target: np.ndarray, *, tol: float = 1e-7, depth: int | None = None
+) -> np.ndarray | None:
+    """Parameters whose rotation block realizes ``target``, or ``None``.
+
+    ``target`` is a unitary over spatial orbitals. A full-``depth`` block spans
+    that group, but not in closed form here: every gate in a given orbital pair
+    contributes the same generator, so the map's derivative at zero has rank
+    ``n_orb - 1`` rather than full rank. A small rotation between distant
+    orbitals therefore needs order-one angles that partly cancel, and the
+    parameters are recovered by a least-squares solve rather than read off.
+
+    Returns ``None`` if no start converges below ``tol``, leaving the caller to
+    fall back rather than seed from a wrong rotation. A truncated ``depth`` may
+    not reach ``target`` at all.
+    """
+    n_orb = target.shape[0]
+    n_params = n_rotation_params(n_orb, orbital_phases=True, depth=depth)
+    if n_params == 0:
+        return np.zeros(0)
+
+    def residual(params: np.ndarray) -> np.ndarray:
+        difference = _rotation_one_particle(params, n_orb, depth) - target
+        return np.concatenate([difference.real.ravel(), difference.imag.ravel()])
+
+    # A near-identity target is the hard case, not the easy one: zero parameters
+    # realize the identity exactly but sit at the rank-deficient point, so the
+    # solve can walk away from it. Return it directly when it already fits.
+    if np.max(np.abs(np.eye(n_orb) - target)) < tol:
+        return np.zeros(n_params)
+
+    # Fixed starts, so a seeded run is reproducible.
+    rng = np.random.default_rng(0)
+    starts = [np.zeros(n_params), np.full(n_params, 0.1)] + [
+        rng.uniform(-np.pi, np.pi, n_params) for _ in range(12)
+    ]
+    for start in starts:
+        solution = least_squares(residual, start)
+        if np.max(np.abs(residual(solution.x))) < tol:
+            return np.asarray(solution.x, dtype=float)
+    return None
+
+
 def _emit_givens_rotation(
-    circuit: QuantumCircuit, angle, orbital: int, spin: int
+    circuit: QuantumCircuit, angle, phase, orbital: int, spin: int
 ) -> None:
-    """Emit ``exp(angle / 2 * (a+_j a_l - a+_l a_j))`` between adjacent same-spin
-    orbitals, the Givens rotation a general orbital rotation composes from.
+    """Emit a Givens rotation between adjacent same-spin orbitals.
 
-    Two conventions matter here, and getting either wrong leaves a
-    particle-conserving gate that is not an orbital rotation:
+    ``angle`` mixes the two orbitals, ``phase`` sets the relative phase of the
+    mixing; at ``phase = -pi / 2`` the gate reduces to the real rotation
+    ``exp(angle / 2 * (a+_j a_l - a+_l a_j))``.
 
-    * Interleaved Jordan-Wigner puts orbital ``p``'s two spin-orbitals on qubits
-      ``2p`` and ``2p + 1``, so a same-spin hop spans two qubits with the
-      opposite-spin partner between them and its generator carries a ``Z`` on
-      that qubit. Conjugating by ``CZ`` supplies it, mapping ``X_l -> Z_k X_l``
-      and ``Y_l -> Z_k Y_l`` while commuting with ``X_j`` and ``Y_j``.
-    * The phase argument ``-pi / 2`` selects the anti-Hermitian generator
-      ``a+_j a_l - a+_l a_j``, whose one-particle action is a real rotation. At
-      ``0`` the gate exponentiates the Hermitian hop instead, giving
-      ``exp(-i theta / 2 * sigma_x)`` -- so the network would span a
-      phase-conjugated rotation group, which no real orbital rotation lies in.
+    Interleaved Jordan-Wigner leaves the opposite-spin partner between the two
+    hopped qubits, so the generator carries a ``Z`` there. ``CZ`` conjugation
+    supplies it, mapping ``X_l -> Z_k X_l`` and ``Y_l -> Z_k Y_l``; without it
+    the gate is a qubit XY exchange, not a fermionic rotation.
     """
     lower = 2 * orbital + spin
     middle = lower + 1
     upper = 2 * (orbital + 1) + spin
     circuit.cz(middle, upper)
-    circuit.append(XXPlusYYGate(angle, -_HALF_PI), [lower, upper])
+    circuit.append(XXPlusYYGate(angle, phase), [lower, upper])
     circuit.cz(middle, upper)
+
+
+def _emit_rotation_block(
+    circuit: QuantumCircuit,
+    params,
+    n_orb: int,
+    spin: int,
+    inverse: bool = False,
+    depth: int | None = None,
+) -> None:
+    """Emit one spin sector's orbital rotation, or its inverse.
+
+    ``params`` interleaves each gate's ``(angle, phase)``, then any per-orbital
+    phases -- omitting those leaves the trailing slice empty. Inverting reverses
+    the gates and negates the angles, keeping each gate's phase.
+    """
+    schedule = _rotation_schedule(n_orb, depth)
+    n_gates = len(schedule)
+    angles = [params[2 * index] for index in range(n_gates)]
+    phases = [params[2 * index + 1] for index in range(n_gates)]
+    orbital_phases = params[2 * n_gates :]
+
+    if inverse:
+        for orbital, orbital_phase in enumerate(orbital_phases):
+            circuit.p(-orbital_phase, 2 * orbital + spin)
+        for angle, phase, orbital in zip(
+            reversed(angles), reversed(phases), reversed(schedule)
+        ):
+            _emit_givens_rotation(circuit, -angle, phase, orbital, spin)
+        return
+
+    for angle, phase, orbital in zip(angles, phases, schedule):
+        _emit_givens_rotation(circuit, angle, phase, orbital, spin)
+    for orbital, orbital_phase in enumerate(orbital_phases):
+        circuit.p(orbital_phase, 2 * orbital + spin)
+
+
+def lucj_jastrow_pairs(
+    n_orb: int,
+    same_spin_pairs: Sequence[Sequence[int]] | None = None,
+    opposite_spin_pairs: Sequence[Sequence[int]] | None = None,
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Orbital pairs the diagonal Coulomb operator acts on: same spin, then
+    opposite spin.
+
+    Either argument defaults to LUCJ's local pattern -- same-spin nearest
+    neighbors and on-site opposite-spin pairs, the connectivity a heavy-hex
+    device supports without routing. An explicit list replaces that default:
+    ``[]`` drops the channel entirely, and every pair recovers the unrestricted
+    diagonal Coulomb operator. A same-spin pair must name two distinct orbitals;
+    an opposite-spin pair need not.
+    """
+
+    def validated(
+        pairs: Sequence[Sequence[int]], label: str, distinct: bool
+    ) -> list[tuple[int, int]]:
+        checked = []
+        for pair in pairs:
+            p, q = (int(index) for index in pair)
+            if not (0 <= p < n_orb and 0 <= q < n_orb):
+                raise ValueError(
+                    f"{label} pair {(p, q)} is outside the {n_orb} orbitals."
+                )
+            if distinct and p == q:
+                raise ValueError(
+                    f"{label} pair {(p, q)} repeats an orbital, which is a "
+                    "one-body term rather than a Coulomb interaction."
+                )
+            checked.append((p, q))
+        return checked
+
+    same = (
+        [(p, p + 1) for p in range(n_orb - 1)]
+        if same_spin_pairs is None
+        else validated(same_spin_pairs, "Same-spin", distinct=True)
+    )
+    opposite = (
+        [(p, p) for p in range(n_orb)]
+        if opposite_spin_pairs is None
+        else validated(opposite_spin_pairs, "Opposite-spin", distinct=False)
+    )
+    return same, opposite
+
+
+def _lucj_layout(
+    n_orb: int, kwargs: dict
+) -> tuple[int, list[tuple[int, int]], list[tuple[int, int]], int | None]:
+    """A layer's structure: independent spin sectors, Jastrow pairs, and the
+    rotation depth."""
+    same, opposite = lucj_jastrow_pairs(
+        n_orb,
+        kwargs.get("same_spin_pairs"),
+        kwargs.get("opposite_spin_pairs"),
+    )
+    n_sectors = 1 if kwargs.get("shared_spin_params") else 2
+    return n_sectors, same, opposite, kwargs.get("rotation_depth")
 
 
 class LUCJAnsatz(Ansatz):
@@ -694,8 +889,13 @@ class LUCJAnsatz(Ansatz):
     on ``J`` alone is what makes the ansatz *local*; the rotation is
     unrestricted. Both factors conserve particle number and Sz, which
     sample-based diagonalization requires -- its symmetry filter checks alpha
-    and beta populations separately. ``trailing_rotation`` adds a closing
-    orbital rotation per layer; see :meth:`build`.
+    and beta populations separately.
+
+    That default is the flavor the literature uses. Keywords select others:
+    ``trailing_rotation`` adds a closing orbital rotation per layer,
+    ``shared_spin_params`` ties the two spin sectors together, ``rotation_depth``
+    shortens each rotation network, and ``same_spin_pairs`` /
+    ``opposite_spin_pairs`` reshape ``J``. See :meth:`build`.
 
     Assumes the interleaved Jordan-Wigner ordering that
     ``divi.hamiltonians._chem._spo_from_integrals`` produces: qubit ``2p`` is
@@ -706,27 +906,26 @@ class LUCJAnsatz(Ansatz):
     ``n_electrons`` must be at most ``n_qubits``. Spin-imbalanced references
     are supported by passing ``n_alpha`` and ``n_beta``; without them the
     closed-shell split ``n_alpha = n_beta = n_electrons // 2`` is used, which
-    requires an even ``n_electrons``. A two-qubit register (one spatial
-    orbital) has a single diagonal on-site term and no hopping, so its output
-    is fixed regardless of the parameter value — it offers no variational
-    freedom.
-
-    A single spatial orbital offers no variational freedom: only the on-site
-    diagonal term survives, and its value cannot change the state.
+    requires an even ``n_electrons``. A single spatial orbital offers no
+    variational freedom: only the on-site diagonal term survives, and its value
+    cannot change the state.
     """
 
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
-        """Per-layer parameter count.
+        """Per-layer parameter count, where ``n_orb = n_qubits // 2``.
 
-        ``n_orb * (n_orb - 1)`` rotation angles (a general rotation per spin
-        sector), ``n_orb`` on-site Coulomb terms, and ``2 * (n_orb - 1)``
-        same-spin-neighbor Coulomb terms, where ``n_orb = n_qubits // 2``.
-        Collapses to ``1`` for a single spatial orbital (``n_qubits == 2``),
-        where only the on-site term applies.
+        A full-depth rotation takes two parameters per Givens pair -- an angle
+        and a phase -- so ``n_orb * (n_orb - 1)`` per spin sector, and the
+        default Jastrow adds ``n_orb`` on-site Coulomb terms plus one per
+        same-spin neighbor pair. Both are counted once per independent spin
+        sector: twice by default, once under ``shared_spin_params``. That leaves
+        ``1`` for a single spatial orbital (``n_qubits == 2``), where only the
+        on-site term survives.
 
-        ``trailing_rotation=True`` adds a further ``n_orb * (n_orb - 1)``
-        rotation angles per layer; see :meth:`build`.
+        ``trailing_rotation=True`` adds another rotation per sector, each also
+        carrying one phase per orbital. ``rotation_depth`` and the Jastrow pair
+        arguments shrink the count further; see :meth:`build`.
         """
         if n_qubits % 2:
             raise ValueError(
@@ -734,39 +933,45 @@ class LUCJAnsatz(Ansatz):
                 f"spatial orbital); got {n_qubits}."
             )
         n_orb = n_qubits // 2
-        if n_orb == 1:
-            # One spatial orbital: no rotation or same-spin neighbors, only the
-            # on-site opposite-spin Coulomb term.
-            return _require_trainable_params(1, LUCJAnsatz.__name__)
-        n_rotation = 2 * len(_rotation_schedule(n_orb))
-        n_params = n_rotation + n_orb + 2 * (n_orb - 1)
+        n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
+        n_params = n_sectors * n_rotation_params(
+            n_orb, orbital_phases=False, depth=depth
+        )
+        n_params += len(opposite_pairs) + n_sectors * len(same_pairs)
         if kwargs.get("trailing_rotation"):
-            n_params += n_rotation
+            n_params += n_sectors * n_rotation_params(
+                n_orb, orbital_phases=True, depth=depth
+            )
         return _require_trainable_params(n_params, LUCJAnsatz.__name__)
 
     def parameter_frequencies(self, n_qubits: int, **kwargs):
-        """Rotation angles carry half-integer frequencies, Jastrow angles ``{1}``.
+        """Per-parameter frequency families, which differ by role.
 
-        ``XXPlusYY(theta)`` is ``exp(-i (theta / 2) (XX + YY) / 2)``, whose
-        eigenphases are ``0`` and ``+-theta / 2``, so one occurrence carries
-        ``{1/2, 1}``. A layer uses each rotation angle twice -- once negated --
-        which compounds it to ``{1/2, 1, 3/2, 2}``; a trailing rotation's own
-        angles appear once. The Jastrow ``RZZ`` angles are plain Pauli rotations.
+        A gate's mixing angle sets eigenphases ``+-theta / 2``, so one occurrence
+        carries ``{1/2, 1}``; a sandwiched gate appears twice, compounding to
+        ``{1/2, ..., 2}``. A gate's phase enters as ``exp(+-i beta)`` instead, so
+        two occurrences reach degree two in the amplitude and the energy squares
+        that -- measured up to ``4``. The ``RZZ`` Jastrow angles and the
+        per-orbital phases are plain Pauli rotations.
 
-        Two spatial orbitals are a special case: one rotation per spin, no gate
-        moves occupancy between the two pairs, and the half-integers drop out --
-        measured absent over a ``4 * pi`` window. Halving those angles' term
-        counts is worth the branch, since fragments this small are common.
+        Trailing parameters appear once rather than twice, halving each family;
+        ``shared_spin_params`` parameters drive both sectors, doubling it.
         """
         n_orb = n_qubits // 2
-        if n_orb == 1:
-            return [(1.0, 1)]
-        n_rotation = 2 * len(_rotation_schedule(n_orb))
-        rotation = (1.0, 2) if n_orb == 2 else (0.5, 4)
-        frequencies = [rotation] * n_rotation + [(1.0, 1)] * (n_orb + 2 * (n_orb - 1))
+        n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
+        n_gates = len(_rotation_schedule(n_orb, depth))
+        sandwiched = 4 // n_sectors
+        trailing = 2 // n_sectors
+
+        frequencies: list[tuple[float, int]] = []
+        for _sector in range(n_sectors):
+            frequencies += [(0.5, 2 * sandwiched), (1.0, 2 * sandwiched)] * n_gates
+        frequencies += [(1.0, 1)] * len(opposite_pairs)
+        frequencies += [(1.0, trailing)] * (n_sectors * len(same_pairs))
         if kwargs.get("trailing_rotation"):
-            trailing = (1.0, 1) if n_orb == 2 else (0.5, 2)
-            frequencies += [trailing] * n_rotation
+            for _sector in range(n_sectors):
+                frequencies += [(0.5, 2 * trailing), (1.0, 2 * trailing)] * n_gates
+                frequencies += [(1.0, trailing)] * n_orb
         return frequencies
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
@@ -787,9 +992,24 @@ class LUCJAnsatz(Ansatz):
                 arXiv:2405.05068 and arXiv:2512.14936; without it, the same
                 circuit lacking ``exp(K2)``.
 
-        Parameters are consumed in the order: rotation angles (alpha sector then
-        beta, each in brick-wall order), on-site Coulomb terms, same-spin
-        neighbor Coulomb terms, then the trailing rotation's own angles.
+                Three further keywords trade expressiveness for parameters.
+                ``shared_spin_params`` (default ``False``) drives both spin sectors
+                from one set of rotation and same-spin Coulomb parameters,
+                halving the count and imposing spin symmetry.
+                ``rotation_depth`` (default ``None``, the full ``n_orb``
+                half-layers) truncates each rotation's brick-wall network.
+                ``same_spin_pairs`` and ``opposite_spin_pairs`` replace the
+                Jastrow's default local pattern -- same-spin nearest neighbors
+                and on-site opposite-spin pairs -- with explicit
+                ``(orbital, orbital)`` pairs, from ``[]`` to every pair.
+
+        Parameters are consumed in the order: each sandwiched rotation (alpha
+        sector then beta) as an ``(angle, phase)`` pair per Givens gate in
+        brick-wall order, then the opposite-spin Coulomb terms, then the
+        same-spin ones (alpha sector then beta), then each trailing rotation --
+        its own ``(angle, phase)`` pairs followed by one phase per orbital. Under
+        ``shared_spin_params`` only the alpha sector's parameters appear, and drive
+        both.
 
         Returns:
             QuantumCircuit: Qiskit circuit implementing the LUCJ ansatz.
@@ -814,9 +1034,7 @@ class LUCJAnsatz(Ansatz):
         )
 
         trailing_rotation = bool(kwargs.get("trailing_rotation", False))
-        per_layer = LUCJAnsatz.n_params_per_layer(
-            n_qubits, trailing_rotation=trailing_rotation
-        )
+        per_layer = LUCJAnsatz.n_params_per_layer(n_qubits, **kwargs)
         flat = np.asarray(params, dtype=object).flatten()
         n_required = n_layers * per_layer
         if flat.size < n_required:
@@ -831,41 +1049,58 @@ class LUCJAnsatz(Ansatz):
         for p in range(n_beta):
             circuit.x(2 * p + 1)
 
-        # One general rotation per spin sector, as a brick-wall Givens network.
-        rotations = [
-            (orbital, spin) for spin in (0, 1) for orbital in _rotation_schedule(n_orb)
-        ]
-        neighbor_pairs = [
-            (2 * p + spin, 2 * (p + 1) + spin)
-            for spin in (0, 1)
-            for p in range(n_orb - 1)
-        ]
+        n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
+        sandwiched_size = n_rotation_params(n_orb, orbital_phases=False, depth=depth)
+        trailing_size = n_rotation_params(n_orb, orbital_phases=True, depth=depth)
 
         for layer in range(n_layers):
             cursor = layer * per_layer
 
-            angles = []
-            for orbital, spin in rotations:
-                angle = flat[cursor]
-                cursor += 1
-                angles.append(angle)
-                _emit_givens_rotation(circuit, angle, orbital, spin)
+            rotation_params = []
+            for _sector in range(n_sectors):
+                rotation_params.append(flat[cursor : cursor + sandwiched_size])
+                cursor += sandwiched_size
+            for spin in (0, 1):
+                _emit_rotation_block(
+                    circuit, rotation_params[spin % n_sectors], n_orb, spin, depth=depth
+                )
 
-            for p in range(n_orb):
-                circuit.append(RZZGate(flat[cursor]), [2 * p, 2 * p + 1])
-                cursor += 1
-
-            for lower, upper in neighbor_pairs:
-                circuit.append(RZZGate(flat[cursor]), [lower, upper])
+            for p, q in opposite_pairs:
+                circuit.append(RZZGate(flat[cursor]), [2 * p, 2 * q + 1])
                 cursor += 1
 
-            for (orbital, spin), angle in zip(reversed(rotations), reversed(angles)):
-                _emit_givens_rotation(circuit, -angle, orbital, spin)
+            same_start = cursor
+            for spin in (0, 1):
+                offset = same_start + (spin % n_sectors) * len(same_pairs)
+                for index, (p, q) in enumerate(same_pairs):
+                    circuit.append(
+                        RZZGate(flat[offset + index]), [2 * p + spin, 2 * q + spin]
+                    )
+            cursor = same_start + n_sectors * len(same_pairs)
+
+            for spin in (1, 0):
+                _emit_rotation_block(
+                    circuit,
+                    rotation_params[spin % n_sectors],
+                    n_orb,
+                    spin,
+                    inverse=True,
+                    depth=depth,
+                )
 
             if trailing_rotation:
-                for orbital, spin in rotations:
-                    _emit_givens_rotation(circuit, flat[cursor], orbital, spin)
-                    cursor += 1
+                trailing_params = []
+                for _sector in range(n_sectors):
+                    trailing_params.append(flat[cursor : cursor + trailing_size])
+                    cursor += trailing_size
+                for spin in (0, 1):
+                    _emit_rotation_block(
+                        circuit,
+                        trailing_params[spin % n_sectors],
+                        n_orb,
+                        spin,
+                        depth=depth,
+                    )
 
         return circuit
 

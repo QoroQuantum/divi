@@ -466,6 +466,8 @@ class ProgramEnsemble(ABC):
             - Subclasses should call `super().create_programs()` first to
               initialize the progress queue and validate that no programs
               already exist.
+            - An override must accept the state argument; `run()` passes the
+              current workflow state positionally on every round.
             - After calling super(), subclasses should populate `self.programs` or
               `self._programs` with their program instances.
             - Program identifiers can be any hashable type (e.g., strings, tuples).
@@ -760,20 +762,20 @@ class ProgramEnsemble(ABC):
                 self._stop_reason = WorkflowStatus.MAX_ROUNDS
                 break
 
-            if not use_caller_programs:
-                self._clear_completed_round()
-                self.create_programs(state)
-            use_caller_programs = False
-
-            # Claim the round number up front so both outcomes record the
+            # Claim the round number up front so every outcome records the
             # same index.
             self._round_index += 1
-            program_count = len(self._programs)
             circuits_before = self.total_circuit_count
             runtime_before = self.total_run_time
             self._round_context = (self._round_index, max_rounds)
             self._round_cancelled = False
+            program_count = len(self._programs)
             try:
+                if not use_caller_programs:
+                    self._clear_completed_round()
+                    self.create_programs(state)
+                use_caller_programs = False
+                program_count = len(self._programs)
                 self.run_one_round(blocking=True, batch_config=batch_config)
                 if self._round_cancelled:
                     # Ctrl-C during the round: don't reduce partial results
@@ -787,8 +789,22 @@ class ProgramEnsemble(ABC):
                     )
                     break
                 state = self.update_state(state)
+            except KeyboardInterrupt:
+                # Ctrl-C outside the dispatch, most likely in update_state's
+                # classical reduction. Leave the state at its last complete
+                # round rather than reducing a partial one.
+                self._stop_reason = WorkflowStatus.CANCELLED
+                self._programs_pending = False
+                self._record_round(
+                    program_count,
+                    circuits_before,
+                    runtime_before,
+                    status=WorkflowStatus.CANCELLED,
+                )
+                break
             except Exception as exc:
                 self._stop_reason = WorkflowStatus.FAILED
+                self._programs_pending = False
                 self._record_round(
                     program_count,
                     circuits_before,
@@ -1254,15 +1270,17 @@ class ProgramEnsemble(ABC):
     def _emit_workflow_round_stage(self, message: str, *, final: bool = False) -> None:
         """Name the stage a multi-stage ``update_state`` is currently in.
 
-        Written to the workflow-round row. ``final`` marks the message as the
-        round's outcome rather than a stage it passed through, which is also
-        logged: the round row is transient and its text is overwritten by later
-        frames, so a redirected run would otherwise keep no record of it.
+        Written to the workflow-round row while a listener is consuming the
+        queue, and logged otherwise -- ``update_state`` runs after the round's
+        display has been torn down, so nothing would drain a queued payload
+        there. ``final`` marks the message as the round's outcome rather than a
+        stage it passed through.
         """
-        if final:
-            logger.info(message)
-        if self._queue is None or self._progress_bar is None:
-            if not final and self.reporting_level is not ReportingLevel.OFF:
+        listener_alive = (
+            self._listener_thread is not None and self._listener_thread.is_alive()
+        )
+        if self._queue is None or self._progress_bar is None or not listener_alive:
+            if final or self.reporting_level is not ReportingLevel.OFF:
                 logger.info(message)
             return
         payload: dict[str, Any] = {"workflow_round": True, "message": message}

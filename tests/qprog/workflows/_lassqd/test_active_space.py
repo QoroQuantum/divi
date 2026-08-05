@@ -7,6 +7,9 @@
 import networkx as nx
 import numpy as np
 import pytest
+
+pytest.importorskip("pyscf")
+
 from pyscf import mcscf, scf
 
 from divi.qprog.workflows._lassqd._active_space import (

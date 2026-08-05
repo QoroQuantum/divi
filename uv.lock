@@ -2918,12 +2918,11 @@ name = "pyscf"
 version = "2.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h5py" },
-    { name = "numpy" },
-    { name = "psutil", marker = "sys_platform == 'win32'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "setuptools" },
+    { name = "h5py", marker = "sys_platform != 'win32'" },
+    { name = "numpy", marker = "sys_platform != 'win32'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' and sys_platform != 'win32'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform != 'win32'" },
+    { name = "setuptools", marker = "sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3b/76/4b4f33877f4ee460733bd8b9af64cb9c13be9d5111fb8f6357d227c2c908/pyscf-2.14.0.tar.gz", hash = "sha256:9b6ea3c2470baac9d0492d93b335542c04ab96277e79f1abcbe1cea0eb063c5f", size = 11565773, upload-time = "2026-07-18T22:50:28.053Z" }
 wheels = [
@@ -3321,7 +3320,7 @@ ai = [
 ]
 chem = [
     { name = "openfermion" },
-    { name = "pyscf" },
+    { name = "pyscf", marker = "sys_platform != 'win32'" },
     { name = "qiskit-nature" },
 ]
 jupyter = [
@@ -3389,7 +3388,7 @@ requires-dist = [
     { name = "pymetis", marker = "sys_platform != 'win32'", specifier = ">=2025.1.1,<2026.0.0" },
     { name = "pymoo", specifier = ">=0.6,<0.7" },
     { name = "pyperclip", marker = "extra == 'ai'", specifier = ">=1.11.0,<2.0.0" },
-    { name = "pyscf", marker = "extra == 'chem'", specifier = ">=2.0,<3.0" },
+    { name = "pyscf", marker = "sys_platform != 'win32' and extra == 'chem'", specifier = ">=2.0,<3.0" },
     { name = "python-dotenv", specifier = ">=1.1.1,<2.0" },
     { name = "qiskit", specifier = ">=2.3" },
     { name = "qiskit-aer" },

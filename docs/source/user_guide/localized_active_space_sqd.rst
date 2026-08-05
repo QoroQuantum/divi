@@ -31,31 +31,31 @@ model, progress reporting, and circuit-batching behavior are the ones
 described in :doc:`program_ensembles`; this page covers only what is
 specific to LASSQD.
 
-A Single Fragment: the Variational Case
-----------------------------------------
+A Single Fragment: Comparable to FCI
+--------------------------------------
 
-The simplest configuration puts the whole active space in one fragment. With
-only one fragment there are no cross-fragment RDM blocks to approximate, so
-the energy is variational and directly comparable to a full configuration
-interaction (FCI) calculation on the same active space:
+The simplest configuration puts the whole active space in one fragment. The
+reassembled RDM is then the fragment's own, with no product structure to it, so
+the energy is directly comparable to a full configuration interaction (FCI)
+calculation on the same active space:
 
 .. code-block:: python
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import LASSQD, FragmentSpec
+   from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec, SQDConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
 
    ensemble = LASSQD(
        mol,
-       active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+       fragmentation=FragmentationConfig(
+           active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+       ),
+       sqd=SQDConfig(n_batches=4, batch_size=128, n_recovery_iterations=1),
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=5,
-       n_batches=4,
-       batch_size=128,
-       n_sqd_iterations=1,
        seed=0,
        backend=MaestroSimulator(shots=500),
    )
@@ -64,10 +64,16 @@ interaction (FCI) calculation on the same active space:
 
 .. important::
 
-   Examples here run below the defaults (``n_batches=15``,
-   ``batch_size=170``, ``n_sqd_iterations=6``) for speed. ``batch_size`` is the
-   accuracy knob: configurations sampled per batch, and the subspace holds at
-   most its square.
+   Examples here run below :class:`~divi.qprog.workflows.SQDConfig`'s defaults
+   (``n_batches=15``, ``batch_size=170``, ``n_recovery_iterations=6``) for
+   speed.
+
+   ``batch_size`` is how much of the determinant space one iteration sees; the
+   subspace holds at most its square. ``n_batches`` subspaces compete rather
+   than pool, so it buys attempts, not size. ``carryover_cutoff`` keeps what
+   was seen across iterations and is on by default; setting it to ``None``
+   gives conventional SQD, whose energies oscillate rather than converge
+   (:ref:`lassqd-carryover`).
 
    ``stop_reason == COMPLETE`` means the energy stopped *changing*, not that it
    is accurate. An energy equal to the mean field means the subspace held only
@@ -96,7 +102,7 @@ two occupied MOs and its two virtual MOs:
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import LASSQD, FragmentSpec
+   from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec, SQDConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    h4 = gto.M(
@@ -107,15 +113,15 @@ two occupied MOs and its two virtual MOs:
 
    ensemble = LASSQD(
        h4,
-       active_spaces=[
-           FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-           FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
-       ],
+       fragmentation=FragmentationConfig(
+           active_spaces=[
+               FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+               FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+           ],
+       ),
+       sqd=SQDConfig(n_batches=4, batch_size=128, n_recovery_iterations=1),
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=20,
-       n_batches=4,
-       batch_size=128,
-       n_sqd_iterations=1,
        seed=7,
        backend=MaestroSimulator(shots=2000),
    )
@@ -137,8 +143,9 @@ Automatic Fragmentation
 
 Rather than specifying fragments by hand, LASSQD can select the active space
 and split it into fragments for you. The automatic path has three independent
-choices: which orbitals are active, how they partition into fragments, and what
-spin each fragment carries.
+choices, all fields of
+:class:`~divi.qprog.workflows.FragmentationConfig`: which orbitals are active,
+how they partition into fragments, and what spin each fragment carries.
 
 **Which orbitals.** Pass exactly one of these (each also mutually exclusive with
 ``active_spaces``):
@@ -173,7 +180,7 @@ localization RNG and would not name a stable fragment.
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import LASSQD
+   from divi.qprog import LASSQD, FragmentationConfig, SQDConfig
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    h4 = gto.M(
@@ -184,13 +191,12 @@ localization RNG and would not name a stable fragment.
 
    ensemble = LASSQD(
        h4,
-       n_active_orbitals=4,
-       max_orbitals_per_fragment=2,
+       fragmentation=FragmentationConfig(
+           n_active_orbitals=4, max_orbitals_per_fragment=2
+       ),
+       sqd=SQDConfig(n_batches=4, batch_size=128, n_recovery_iterations=1),
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=2,
-       n_batches=4,
-       batch_size=128,
-       n_sqd_iterations=1,
        seed=0,
        backend=MaestroSimulator(shots=200),
    )
@@ -229,8 +235,10 @@ energies differ by less than ``energy_tol`` (default ``1e-6`` Ha). After
   :class:`~divi.qprog.workflows.LASSQDRoundReport` per macro-cycle: the energy
   and its change, each fragment's SQD subspace size, the orbital solve's
   iteration count, gradient norm and convergence flag, and per-stage wall clock.
-  Recorded as each round finishes, so an interrupted run keeps every completed
-  round. ``report.summary()`` renders one line per round.
+  Recorded once a round's reduction finishes, so an interrupted run keeps every
+  completed round — and a round that failed or was cancelled mid-reduction
+  appears in ``round_history`` without a report. ``report.summary()`` renders one
+  line per round.
 - ``ensemble.stop_reason`` — a :class:`~divi.qprog.WorkflowStatus`.
   ``COMPLETE`` means the energy converged within ``energy_tol``;
   ``MAX_ROUNDS`` means ``run()`` stopped at the ``max_rounds`` cap before
@@ -241,19 +249,25 @@ energies differ by less than ``energy_tol`` (default ``1e-6`` Ha). After
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import LASSQD, FragmentSpec, WorkflowStatus
+   from divi.qprog import (
+       LASSQD,
+       FragmentationConfig,
+       FragmentSpec,
+       SQDConfig,
+       WorkflowStatus,
+   )
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    h2 = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
 
    ensemble = LASSQD(
        h2,
-       active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+       fragmentation=FragmentationConfig(
+           active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+       ),
+       sqd=SQDConfig(n_batches=4, batch_size=128, n_recovery_iterations=1),
        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        max_iterations=5,
-       n_batches=4,
-       batch_size=128,
-       n_sqd_iterations=1,
        seed=0,
        backend=MaestroSimulator(shots=500),
    )
@@ -298,6 +312,75 @@ Two consequences worth knowing before you trust a number:
   come out less accurate despite being the more expressive ansatz. Compare
   layouts on your own system rather than assuming.
 
+.. _lassqd-carryover:
+
+Carrying Configurations Between Recovery Iterations
+-----------------------------------------------------
+
+Without retention, each recovery iteration diagonalizes only the configurations
+it just sampled, so a determinant found early is lost as soon as sampling moves
+on. ``carryover_cutoff`` keeps the ones carrying real weight — the determinants
+of the winning batch whose coefficient exceeds that fraction of the largest —
+and extends later iterations' subspaces with them (arXiv:2512.14936). It
+defaults to ``1e-5``; pass ``None`` for conventional SQD:
+
+.. code-block:: python
+
+   from pyscf import gto
+   from divi.backends import MaestroSimulator
+   from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec, SQDConfig
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+
+   h4 = gto.M(atom="H 0 0 0; H 0 0 1.0; H 0 0 2.0; H 0 0 3.0",
+              basis="sto-3g", verbose=0)
+
+   # One four-orbital fragment spans 36 determinants, and a small batch_size
+   # reaches only a few per iteration -- the regime where retention pays.
+   ensemble = LASSQD(
+       h4,
+       fragmentation=FragmentationConfig(
+           active_spaces=[FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)],
+       ),
+       sqd=SQDConfig(
+           n_batches=2,
+           batch_size=4,
+           n_recovery_iterations=4,
+           carryover_cutoff=1e-2,
+           max_carryover=64,
+       ),
+       optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+       max_iterations=3,
+       seed=0,
+       backend=MaestroSimulator(shots=500),
+   )
+   ensemble.run(max_rounds=1)
+
+   print(f"subspaces {ensemble.round_reports[0].subspace_sizes} of 36")
+
+Because the halves are retained separately and the subspace is rebuilt as their
+product, this reintroduces determinant *combinations* that were never sampled
+together. ``max_carryover`` caps how many alpha and beta strings are held **per
+spin sector**. Carried strings join each batch's own sampled halves rather than
+replacing them, so a cap of ``k`` bounds a batch's subspace at
+``(k + batch_size) ** 2`` determinants.
+
+.. warning::
+
+   Leaving ``max_carryover`` unset lets the retained set grow every iteration,
+   and the subspace with it, quadratically — the relative cutoff prunes little
+   on its own. The projected matrices are dense, so a fragment with a large
+   determinant space can exhaust memory. Cap it there.
+
+This helps where sampling reaches a small fraction of a fragment's determinant
+space. Where sampling already covers that space — small fragments, or a generous
+``batch_size`` — there is nothing left to add and it changes nothing. Check
+:attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
+fragment's full determinant count to see which regime you are in.
+
+Retention is scoped to one fragment solve. A determinant is a statement about a
+particular orbital basis, and every round re-optimizes the orbitals, so carrying
+bitstrings across rounds would require mapping them into the new basis first.
+
 Choosing an Ansatz
 --------------------
 
@@ -311,9 +394,19 @@ distribution to recover the ground state from.
 ``K`` is a general orbital rotation (independent per spin sector) and ``J`` is a
 diagonal Coulomb operator restricted to same-orbital opposite-spin pairs plus
 same-spin neighbors — that restriction on ``J`` is what makes the ansatz
-*local*. It costs more parameters than ``UCCSDAnsatz`` at every fragment size
-(33 vs. 24 on a five-orbital fragment), so prefer the default unless you have
-validated ``LUCJAnsatz`` against a reference at your own fragment size.
+*local*. Its rotations are unitary rather than merely orthogonal, which
+``exp(iJ)`` needs: under a real rotation the first-order energy correction is
+imaginary and cancels, and the ansatz recovers far less correlation energy — 43%
+against 94% on a four-orbital H4 fragment at one layer. That costs a phase per
+Givens rotation, so LUCJ is more expensive than
+``UCCSDAnsatz`` at every fragment size — 53 against 24 on a five-orbital
+fragment. Prefer the default unless you have validated ``LUCJAnsatz`` against a
+reference at your own fragment size.
+
+Seeding works for both. ``UCCSDAnsatz``'s parameters *are* amplitudes, so each is
+read straight off ``t1``/``t2``; ``LUCJAnsatz``'s are rotation and Coulomb
+angles, so its seed comes from the leading term of the doubles tensor's double
+factorization, which supplies both the rotation and the Coulomb weights.
 
 Because SQD recovers correlation by diagonalizing in the *sampled* subspace, a
 fragment ansatz that concentrates its amplitude on one determinant starves the
@@ -324,8 +417,21 @@ fragment's full determinant count before trusting an energy.
 To match the circuit arXiv:2405.05068 and arXiv:2512.14936 run — the truncated
 LUCJ form ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` on the Hartree-Fock determinant
 — pass ``ansatz_kwargs={"trailing_rotation": True}`` with ``n_layers=1``. On a
-five-orbital fragment that costs 53 parameters against 33 without it, where a
-second full layer would cost 66.
+five-orbital fragment that costs 103 parameters against 53 without it, where a
+second full layer would cost 106.
+
+Three more ``ansatz_kwargs`` trade expressiveness for parameters, should the
+default prove too large to optimize at your fragment size. ``shared_spin_params``
+drives both spin sectors from one set of rotation and same-spin Coulomb
+parameters, imposing spin symmetry — 29 parameters on that five-orbital
+fragment. ``rotation_depth`` truncates each rotation's brick-wall network to
+that many half-layers instead of the ``n_orbitals`` a general rotation needs;
+``rotation_depth=2`` also costs 29. ``same_spin_pairs`` and
+``opposite_spin_pairs`` replace the Jastrow's local pattern with explicit
+orbital pairs, from ``[]`` to every pair. Seeding follows all of these except
+``shared_spin_params``, where the factorization has nothing to say — it gives each
+sector its own rotation — so that flavor warns and starts from the optimizer's
+own initialization.
 
 Next Steps
 ------------

@@ -8,6 +8,9 @@ import numpy as np
 import pytest
 import scipy.linalg
 import scipy.optimize
+
+pytest.importorskip("pyscf")
+
 from pyscf import ao2mo, fci, mcscf, scf
 from pyscf.fci import cistring
 
@@ -19,15 +22,15 @@ from divi.qprog.workflows._lassqd import _integrals as _integrals_module
 from divi.qprog.workflows._lassqd._integrals import (
     ORBITAL_MINIMIZE_OPTIONS,
     MOIntegrals,
+    _build_energy_rdms,
+    _total_energy,
     assemble_active_rdms,
     build_active_permutation,
-    build_energy_rdms,
     cached_ao_eri,
     cached_h_ao,
     fragment_effective_integrals,
     optimize_orbitals,
     rotation_energy_gradient_fn,
-    total_energy,
     transform_integrals,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
@@ -472,7 +475,7 @@ def test_assemble_active_rdms_exchange_uses_per_spin_densities():
 
 
 def test_total_energy_matches_fci_for_full_active_space():
-    """With n_core=0 and the exact FCI RDMs, total_energy must equal the FCI energy."""
+    """With n_core=0 and the exact FCI RDMs, _total_energy must equal the FCI energy."""
     mol = h4_chain()
     mean_field = scf.RHF(mol).run(verbose=0)
     mo_coeff = np.asarray(mean_field.mo_coeff)
@@ -490,7 +493,7 @@ def test_total_energy_matches_fci_for_full_active_space():
 
     ao_eri = cached_ao_eri(mol)
     h_ao = cached_h_ao(mol)
-    energy = total_energy(mol, mo_coeff, 0, rdm1, rdm2, ao_eri, h_ao)
+    energy = _total_energy(mol, mo_coeff, 0, rdm1, rdm2, ao_eri, h_ao)
 
     assert energy == pytest.approx(expected, abs=1e-10)
 
@@ -515,7 +518,7 @@ def test_fragment_effective_integrals_matches_casci_h1eff_with_frozen_core():
 
 
 def test_total_energy_matches_casci_with_frozen_core():
-    """total_energy must reproduce a CASCI total energy through a real frozen core."""
+    """_total_energy must reproduce a CASCI total energy through a real frozen core."""
     mol = h4_chain()
     mean_field = scf.RHF(mol).run(verbose=0)
 
@@ -527,7 +530,7 @@ def test_total_energy_matches_casci_with_frozen_core():
     ao_eri = cached_ao_eri(mol)
     h_ao = cached_h_ao(mol)
 
-    energy = total_energy(mol, mo_coeff, mc.ncore, rdm1, rdm2, ao_eri, h_ao)
+    energy = _total_energy(mol, mo_coeff, mc.ncore, rdm1, rdm2, ao_eri, h_ao)
 
     assert energy == pytest.approx(mc.e_tot, abs=1e-8)
 
@@ -688,7 +691,7 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom():
 
     solve = optimize_orbitals(mol, mo_coeff, 0, [spec], rdm1, rdm2, ao_eri, h_ao)
 
-    unrotated_energy = total_energy(mol, mo_coeff, 0, rdm1, rdm2, ao_eri, h_ao)
+    unrotated_energy = _total_energy(mol, mo_coeff, 0, rdm1, rdm2, ao_eri, h_ao)
     assert solve.energy == pytest.approx(unrotated_energy)
     assert solve.energy == pytest.approx(energy_fci, abs=1e-10)
     np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
@@ -712,7 +715,7 @@ def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(mocker):
         FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
     ]
 
-    baseline_energy = total_energy(
+    baseline_energy = _total_energy(
         mol, mo_coeff, 0, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
@@ -747,7 +750,7 @@ def _rotated_mo_coeff(mo_coeff, rotation_pairs, rotation_params):
 
 def test_energy_rdms_reconstruct_total_energy(orbital_rotation_case):
     """The contracted ``E_nuc + sum(h D) + 0.5 * sum(d g)`` form the analytic
-    gradient is derived from must reproduce ``total_energy``'s explicit loops
+    gradient is derived from must reproduce ``_total_energy``'s explicit loops
     exactly, which is what pins the core-core, core-active and core-active
     exchange blocks of the two-particle density."""
     mol, mo_coeff, n_core, _, rdm1_active, rdm2_active, ao_eri, h_ao = (
@@ -755,7 +758,7 @@ def test_energy_rdms_reconstruct_total_energy(orbital_rotation_case):
     )
     n_orb = mo_coeff.shape[1]
 
-    one_rdm, two_rdm = build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active)
+    one_rdm, two_rdm = _build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active)
     h_mo = mo_coeff.T @ h_ao @ mo_coeff
     g_mo = ao2mo.restore(1, ao2mo.incore.full(ao_eri, mo_coeff), n_orb)
 
@@ -764,7 +767,7 @@ def test_energy_rdms_reconstruct_total_energy(orbital_rotation_case):
         + np.einsum("mn,mn->", h_mo, one_rdm)
         + 0.5 * np.einsum("mnop,mnop->", two_rdm, g_mo)
     )
-    expected = total_energy(
+    expected = _total_energy(
         mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
@@ -775,7 +778,7 @@ def test_energy_rdms_reconstruct_total_energy(orbital_rotation_case):
 def test_rotation_gradient_matches_central_differences(
     orbital_rotation_case, at_origin
 ):
-    """The analytic gradient must match central differences of ``total_energy``
+    """The analytic gradient must match central differences of ``_total_energy``
     itself, both at zero rotation and away from it. Away from zero is the
     discriminating case: the derivative of the matrix exponential is a Frechet
     pullback, and the naive commutator form it is easily confused with agrees
@@ -797,7 +800,7 @@ def test_rotation_gradient_matches_central_differences(
 
     def energy_at(params):
         rotated = _rotated_mo_coeff(mo_coeff, rotation_pairs, params)
-        return total_energy(
+        return _total_energy(
             mol, rotated, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
         )
 
@@ -824,7 +827,7 @@ def test_optimize_orbitals_improves_strictly_on_the_baseline(orbital_rotation_ca
     mol, mo_coeff, n_core, _, rdm1_active, rdm2_active, ao_eri, h_ao = (
         orbital_rotation_case
     )
-    baseline_energy = total_energy(
+    baseline_energy = _total_energy(
         mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
@@ -832,7 +835,7 @@ def test_optimize_orbitals_improves_strictly_on_the_baseline(orbital_rotation_ca
 
     assert solve.energy < baseline_energy - 1e-8
     assert solve.energy == pytest.approx(
-        total_energy(
+        _total_energy(
             mol, solve.mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
         ),
         abs=1e-8,

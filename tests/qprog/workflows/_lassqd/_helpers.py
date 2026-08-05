@@ -5,6 +5,7 @@
 """Shared helpers for the LASSQD test modules."""
 
 import itertools
+from dataclasses import fields
 
 import numpy as np
 import pytest
@@ -13,7 +14,7 @@ from pyscf import ao2mo, cc, fci, gto, scf
 from qiskit.quantum_info import SparsePauliOp, Statevector
 
 from divi.hamiltonians._chem import _spo_from_integrals
-from divi.qprog import LASSQD, ReportingLevel
+from divi.qprog import LASSQD, FragmentationConfig, ReportingLevel, SQDConfig
 from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
@@ -27,6 +28,29 @@ from divi.qprog.workflows._lassqd._integrals import (
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec
 from divi.qprog.workflows._lassqd._workflow import _compute_n_core
+
+_FRAGMENTATION_FIELDS = {field.name for field in fields(FragmentationConfig)}
+_SQD_FIELDS = {field.name for field in fields(SQDConfig)}
+
+
+def lassqd_kwargs(**overrides):
+    """Route flat keyword overrides into ``LASSQD``'s configuration objects.
+
+    The test modules name individual knobs (``n_batches=2``,
+    ``max_orbitals_per_fragment=4``); this assembles the two configs they belong
+    to so each call site does not have to know which one owns what.
+    """
+    fragmentation = {
+        name: overrides.pop(name)
+        for name in list(overrides)
+        if name in _FRAGMENTATION_FIELDS
+    }
+    sqd = {name: overrides.pop(name) for name in list(overrides) if name in _SQD_FIELDS}
+    return dict(
+        fragmentation=FragmentationConfig(**fragmentation),
+        sqd=SQDConfig(**sqd),
+        **overrides,
+    )
 
 
 def ansatz_energy(
@@ -106,6 +130,27 @@ def h4_chain():
         atom="H 0 0 0; H 0 0 0.74; H 0 0 2.0; H 0 0 2.74",
         basis="sto-3g",
         verbose=0,
+    )
+
+
+def h8_frontier_lassqd(backend=None, **overrides):
+    """H8 split into two frontier-selected 4-orbital fragments.
+
+    The seeding tests all want this same ensemble and differ only in the backend
+    and whether the fragments are polarized.
+    """
+    kwargs = dict(
+        n_active_orbitals=8,
+        max_orbitals_per_fragment=4,
+        seed=0,
+    )
+    kwargs.update(overrides)
+    return LASSQD(
+        h8_chain(),
+        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(**kwargs),
     )
 
 
@@ -345,16 +390,19 @@ def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
             FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
             FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
         ],
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         n_batches=2,
         batch_size=8,
-        n_sqd_iterations=2,
+        n_recovery_iterations=2,
         seed=seed,
-        backend=backend,
-        reporting_level=ReportingLevel.OFF,
     )
     kwargs.update(overrides)
-    ensemble = LASSQD(h4_chain(), **kwargs)
+    ensemble = LASSQD(
+        h4_chain(),
+        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(**kwargs),
+    )
     mocker.patch.object(LASSQD, "_build_fragment_program", _build_exact_sampler_program)
 
     return ensemble, ensemble.initial_state()

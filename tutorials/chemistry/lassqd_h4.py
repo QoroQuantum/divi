@@ -43,7 +43,13 @@ import time
 
 from pyscf import gto, mcscf, scf
 
-from divi.qprog import LASSQD, FragmentSpec, ReportingLevel
+from divi.qprog import (
+    LASSQD,
+    FragmentationConfig,
+    FragmentSpec,
+    ReportingLevel,
+    SQDConfig,
+)
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
@@ -62,20 +68,18 @@ def main() -> None:
 
     settings = dict(
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        sqd=SQDConfig(n_batches=6, batch_size=32, n_recovery_iterations=3),
         max_iterations=60,
-        n_batches=6,
-        batch_size=32,
-        n_sqd_iterations=3,
         seed=7,
         backend=get_backend(shots=5000),
         reporting_level=ReportingLevel.OFF,
     )
 
     layouts = {
-        "automatic (cuts along weakest coupling)": dict(
+        "automatic (cuts along weakest coupling)": FragmentationConfig(
             n_active_orbitals=4, max_orbitals_per_fragment=2
         ),
-        "by occupancy (cuts through both H2 units)": dict(
+        "by occupancy (cuts through both H2 units)": FragmentationConfig(
             active_spaces=[
                 FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
                 FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
@@ -86,8 +90,8 @@ def main() -> None:
     print(f"RHF:   {mean_field.e_tot:.6f} Ha")
     print(f"CASCI: {casci_energy:.6f} Ha  (correlation {correlation:+.6f} Ha)\n")
 
-    for label, layout in layouts.items():
-        ensemble = LASSQD(h4, **layout, **settings)
+    for label, fragmentation in layouts.items():
+        ensemble = LASSQD(h4, fragmentation=fragmentation, **settings)
         start = time.time()
         ensemble.run(max_rounds=5)
         elapsed = time.time() - start

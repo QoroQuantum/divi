@@ -463,6 +463,78 @@ class TestRoundFailureHandling:
         # The circuits did execute, so the delta is real.
         assert failed.circuit_count == _CIRCUITS_PER_ROUND
 
+    def test_create_programs_failure_is_recorded_as_a_failed_round(
+        self, dummy_simulator
+    ):
+        """A materialization bug must fail the round, not escape unrecorded."""
+
+        class _HalfBuilder(_LifecycleEnsemble):
+            fail_materialization = True
+
+            def create_programs(self, state=None):
+                super().create_programs(state)
+                if self.fail_materialization:
+                    raise ValueError("materialization boom")
+
+        ensemble = _HalfBuilder(
+            dummy_simulator, n_rounds=2, reporting_level=ReportingLevel.OFF
+        )
+        with pytest.raises(ValueError, match="materialization boom"):
+            ensemble.run()
+
+        assert ensemble.stop_reason == WorkflowStatus.FAILED
+        failed = ensemble.round_history[-1]
+        assert failed.number == 1
+        assert failed.status is WorkflowStatus.FAILED
+        assert "ValueError" in failed.error
+        assert failed.circuit_count == 0
+
+    def test_failed_materialization_is_not_reused_by_the_next_run(
+        self, dummy_simulator
+    ):
+        """Its half-built map must not be adopted as the next run's round 1."""
+
+        class _HalfBuilder(_LifecycleEnsemble):
+            fail_materialization = True
+
+            def create_programs(self, state=None):
+                super().create_programs(state)
+                if self.fail_materialization:
+                    raise ValueError("materialization boom")
+
+        ensemble = _HalfBuilder(
+            dummy_simulator, n_rounds=1, reporting_level=ReportingLevel.OFF
+        )
+        with pytest.raises(ValueError):
+            ensemble.run()
+
+        ensemble.fail_materialization = False
+        ensemble.calls.clear()
+        ensemble.run()
+
+        assert "create_programs(0)" in ensemble.calls
+        assert ensemble.stop_reason == WorkflowStatus.COMPLETE
+
+    def test_keyboard_interrupt_in_update_state_cancels_the_workflow(
+        self, dummy_simulator
+    ):
+        """Ctrl-C in the classical reduction stops the loop instead of escaping."""
+
+        class _InterruptedReducer(_LifecycleEnsemble):
+            def update_state(self, state):
+                raise KeyboardInterrupt
+
+        ensemble = _InterruptedReducer(
+            dummy_simulator, n_rounds=3, reporting_level=ReportingLevel.OFF
+        )
+        ensemble.run()
+
+        assert ensemble.stop_reason == WorkflowStatus.CANCELLED
+        assert [r.status for r in ensemble.round_history] == [WorkflowStatus.CANCELLED]
+        # The interrupted round's results never reach the state.
+        assert ensemble.workflow_state == 0
+        assert len(ensemble.program_ids_per_round) == 1
+
     def test_failure_tears_down_round_machinery(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(n_rounds=2, fail_on_round=1)
 

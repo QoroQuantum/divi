@@ -68,10 +68,12 @@ from .variational_quantum_algorithm import (
 )
 from .workflows import (
     LASSQD,
+    FragmentationConfig,
     FragmentSpec,
     FragmentState,
     LASSQDRoundReport,
     LASSQDState,
+    SQDConfig,
     MoleculeTransformer,
     PartitioningProgramEnsemble,
     TimeEvolutionTrajectory,

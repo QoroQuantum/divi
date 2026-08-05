@@ -4,10 +4,12 @@
 
 from ._lassqd import (
     LASSQD,
+    FragmentationConfig,
     FragmentSpec,
     FragmentState,
     LASSQDRoundReport,
     LASSQDState,
+    SQDConfig,
 )
 from ._partitioning_ensemble import PartitioningProgramEnsemble
 from ._time_evolution_trajectory import TimeEvolutionTrajectory

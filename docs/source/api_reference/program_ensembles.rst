@@ -27,7 +27,9 @@ runs over a grid of inputs; :class:`~divi.qprog.workflows.PartitioningProgramEns
 decomposes a large graph problem into solvable sub-problems;
 :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs a sequence of time-evolution
 steps to build a trajectory; :class:`~divi.qprog.workflows.LASSQD` partitions a
-molecule's active space into fragments and runs one VQE per fragment.
+molecule's active space into fragments and runs one VQE per fragment, configured
+by :class:`~divi.qprog.workflows.FragmentationConfig` and
+:class:`~divi.qprog.workflows.SQDConfig`.
 
 .. automodapi:: divi.qprog.workflows
    :no-heading:

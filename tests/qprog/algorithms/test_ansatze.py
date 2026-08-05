@@ -18,7 +18,9 @@ from qiskit.circuit.library import (
 )
 from qiskit.quantum_info import Operator, SparsePauliOp
 from scipy.linalg import expm
+from scipy.stats import unitary_group
 
+from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import (
     VQE,
     GenericLayerAnsatz,
@@ -30,9 +32,13 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms._ansatze import (
     _emit_givens_rotation,
+    _emit_rotation_block,
     _resolve_spin_counts,
+    _rotation_one_particle,
     _rotation_schedule,
     _uccsd_excitations,
+    n_rotation_params,
+    rotation_angles,
 )
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
@@ -488,6 +494,22 @@ def _make_lucj_vqe(
     )
 
 
+def _particle_conserving_hamiltonian(n_orb, seed=0):
+    """A fragment Hamiltonian over ``n_orb`` spatial orbitals."""
+    rng = np.random.default_rng(seed)
+    one_body = rng.normal(size=(n_orb, n_orb))
+    one_body = 0.5 * (one_body + one_body.T)
+    two_body = rng.normal(size=(n_orb,) * 4) * 0.3
+    two_body = 0.25 * (
+        two_body
+        + two_body.transpose(1, 0, 2, 3)
+        + two_body.transpose(0, 1, 3, 2)
+        + two_body.transpose(1, 0, 3, 2)
+    )
+    two_body = 0.5 * (two_body + two_body.transpose(2, 3, 0, 1))
+    return _spo_from_integrals(one_body, two_body, constant=0.0)
+
+
 def _finite_difference_gradient(vqe, params, step=1e-4):
     """Central-difference gradient of the exact expectation value."""
     gradient = np.zeros_like(params)
@@ -525,6 +547,12 @@ def _finite_difference_gradient(vqe, params, step=1e-4):
         (LUCJAnsatz, 6, 2, 2, None),
         (LUCJAnsatz, 4, 2, 1, {"trailing_rotation": True}),
         (LUCJAnsatz, 6, 2, 1, {"trailing_rotation": True}),
+        # LUCJ flavors: each knob moves the layout, and a shared parameter
+        # doubles its own frequency family.
+        (LUCJAnsatz, 6, 2, 1, {"shared_spin_params": True}),
+        (LUCJAnsatz, 6, 2, 1, {"shared_spin_params": True, "trailing_rotation": True}),
+        (LUCJAnsatz, 6, 2, 1, {"rotation_depth": 1}),
+        (LUCJAnsatz, 6, 2, 1, {"same_spin_pairs": [], "opposite_spin_pairs": [(0, 2)]}),
     ],
 )
 def test_declared_frequencies_give_exact_gradients(
@@ -549,12 +577,13 @@ def test_declared_frequencies_give_exact_gradients(
     higher harmonics only carry amplitude once earlier gates have moved the state
     out of the gate's invariant subspace, so a narrow single-layer case can pass
     under a wrong rule.
+
+    The Hamiltonian has to conserve particle number. A bare ``XX`` term does not,
+    so its expectation vanishes on every ansatz here and what remains is diagonal
+    -- leaving the energy independent of any phase parameter, and the test blind
+    to their frequencies.
     """
-    hamiltonian = {
-        "Z" + "I" * (n_qubits - 1): 1.0,
-        "XX" + "I" * (n_qubits - 2): 0.4,
-        "I" * (n_qubits - 2) + "ZZ": -0.7,
-    }
+    hamiltonian = _particle_conserving_hamiltonian(n_qubits // 2)
     vqe = VQE(
         hamiltonian=hamiltonian,
         n_electrons=n_electrons,
@@ -594,8 +623,8 @@ def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
     )
 
     n_orb = n_qubits // 2
-    n_rotation = n_orb * (n_orb - 1)
-    assert extended.n_params_per_layer - plain.n_params_per_layer == n_rotation
+    trailing_block = n_rotation_params(n_orb, orbital_phases=True)
+    assert extended.n_params_per_layer - plain.n_params_per_layer == 2 * trailing_block
 
     assert len(extended.cost_circuit.parameters) == extended.n_params
     assert len(plain.cost_circuit.parameters) == plain.n_params
@@ -648,23 +677,19 @@ def test_rotation_schedule_spans_the_rotation_group(n_orb):
 
 
 @pytest.mark.parametrize("orbital, spin", [(0, 0), (0, 1), (1, 0), (2, 1)])
-def test_givens_rotation_is_a_real_fermionic_orbital_rotation(orbital, spin):
-    """The gate must equal the JW image of ``exp(t (a+_j a_l - a+_l a_j))``.
+def test_givens_rotation_is_a_fermionic_orbital_rotation(orbital, spin):
+    """At ``phase = -pi / 2`` the gate must equal the Jordan-Wigner image of
+    ``exp(t (a+_j a_l - a+_l a_j))``.
 
-    Two independent ways to get a particle- and Sz-conserving gate that is *not*
-    an orbital rotation, both of which this pins:
-
-    * dropping the ``Z`` the intervening opposite-spin qubit contributes, which
-      leaves a plain qubit XY exchange;
-    * exponentiating the Hermitian hop (phase argument ``0``), whose one-particle
-      action ``exp(-i t sigma_x)`` is complex, so the network spans a
-      phase-conjugated rotation group containing no real orbital rotation -- and
-      no real CCSD amplitude can then be mapped onto it.
+    Pins the ``Z`` that the intervening opposite-spin qubit contributes: dropping
+    it leaves a plain qubit XY exchange, which still conserves particle number
+    and Sz and so produces valid-looking energies while not being an orbital
+    rotation at all.
     """
     n_qubits = 8
     angle = 0.7
     circuit = QuantumCircuit(n_qubits)
-    _emit_givens_rotation(circuit, angle, orbital, spin)
+    _emit_givens_rotation(circuit, angle, -np.pi / 2, orbital, spin)
 
     lower = 2 * orbital + spin
     middle = lower + 1
@@ -684,6 +709,67 @@ def test_givens_rotation_is_a_real_fermionic_orbital_rotation(orbital, spin):
     expected = expm(0.5 * angle * generator.to_matrix())
 
     np.testing.assert_allclose(Operator(circuit).data, expected, atol=1e-12)
+
+
+def _consumed_values(circuit):
+    """Every parameter value any gate reads.
+
+    Reads all of a gate's parameters, not just the first: a Givens gate carries
+    a mixing angle *and* a phase, so inspecting ``params[0]`` alone would report
+    half of them as unconsumed.
+    """
+    return {
+        abs(float(value))
+        for instruction in circuit.data
+        if instruction.operation.name in ("xx_plus_yy", "rzz", "p")
+        for value in instruction.operation.params
+    }
+
+
+def _one_particle_from_gates(params, n_orb, spin=0):
+    """The one-particle matrix the emitted rotation gates actually realize.
+
+    Reads it off the circuit rather than a model of it: the gates are applied to
+    each single-electron basis state in turn, and the amplitudes on the other
+    single-electron states form the columns.
+    """
+    circuit = QuantumCircuit(2 * n_orb)
+    _emit_rotation_block(circuit, list(params), n_orb, spin)
+    unitary = Operator(circuit).data
+
+    occupied = [1 << (2 * p + spin) for p in range(n_orb)]
+    return np.array([[unitary[row, column] for column in occupied] for row in occupied])
+
+
+@pytest.mark.parametrize("n_orb", [2, 3, 4, 5])
+def test_rotation_angles_reproduce_a_target_orbital_rotation(n_orb):
+    """Seeding needs the inverse of the rotation block: given a unitary, the
+    parameters whose gates realize it.
+
+    The target is a general unitary rather than a real rotation, because that is
+    what the block has to span -- a real rotation cannot supply the factor of
+    ``i`` the Jastrow needs. Checks both halves: that the solve hits the target,
+    and that the model it solves against is what the circuit emits. A fit can be
+    exact against the wrong convention.
+    """
+    target = unitary_group.rvs(n_orb, random_state=11)
+
+    params = rotation_angles(target)
+    assert params is not None
+    assert len(params) == n_rotation_params(n_orb, orbital_phases=True)
+
+    np.testing.assert_allclose(_rotation_one_particle(params, n_orb), target, atol=1e-6)
+    for spin in (0, 1):
+        np.testing.assert_allclose(
+            _one_particle_from_gates(params, n_orb, spin), target, atol=1e-6
+        )
+
+
+def test_rotation_angles_handles_a_single_orbital():
+    """One orbital has no rotation to make, so the parameter vector is empty."""
+    angles = rotation_angles(np.eye(1))
+    assert angles is not None
+    assert len(angles) == 0
 
 
 # --- Test LUCJAnsatz ---
@@ -714,12 +800,7 @@ class TestLUCJAnsatz:
             n_electrons=2,
         )
         assert circuit.num_qubits == n_qubits
-        consumed_values = {
-            abs(float(instr.operation.params[0]))
-            for instr in circuit.data
-            if instr.operation.name in ("xx_plus_yy", "rzz")
-        }
-        assert consumed_values == set(range(n_params))
+        assert _consumed_values(circuit) == set(range(n_params))
 
     @pytest.mark.parametrize("n_qubits", [4, 6, 10])
     def test_trailing_rotation_adds_one_independent_orbital_rotation(self, n_qubits):
@@ -732,10 +813,11 @@ class TestLUCJAnsatz:
         rotation *before* the inverse would collapse against it.
         """
         n_orb = n_qubits // 2
-        n_rotation = n_orb * (n_orb - 1)
+        n_gates = len(_rotation_schedule(n_orb))
+        added = 2 * n_rotation_params(n_orb, orbital_phases=True)
         plain = LUCJAnsatz.n_params_per_layer(n_qubits)
         extended = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
-        assert extended - plain == n_rotation
+        assert extended - plain == added
 
         def rotation_gates(**kwargs):
             n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **kwargs)
@@ -753,34 +835,31 @@ class TestLUCJAnsatz:
 
         _, plain_gates = rotation_gates()
         circuit, extended_gates = rotation_gates(trailing_rotation=True)
-        assert len(extended_gates) - len(plain_gates) == n_rotation
+        assert len(extended_gates) - len(plain_gates) == 2 * n_gates
 
         # Every reported parameter reaches a gate, so the count cannot over-report.
-        consumed = {
-            abs(float(instr.operation.params[0]))
-            for instr in circuit.data
-            if instr.operation.name in ("xx_plus_yy", "rzz")
+        assert _consumed_values(circuit) == {
+            float(value) for value in range(1, extended + 1)
         }
-        assert consumed == set(float(v) for v in range(1, extended + 1))
 
-        # The trailing rotation comes last: each Givens is a CZ-wrapped hop, so
-        # the tail is that triple repeated, with no Jastrow gate after it.
+        # The trailing rotation closes the layer, so the tail is its per-orbital
+        # phases with no Jastrow gate after them.
         names = [instr.operation.name for instr in circuit.data]
-        assert names[-3 * n_rotation :] == ["cz", "xx_plus_yy", "cz"] * n_rotation
+        assert names[-n_orb:] == ["p"] * n_orb
 
-    def test_trailing_rotation_angles_are_independent_of_the_opening_rotation(self):
+    def test_trailing_rotation_params_are_independent_of_the_opening_rotation(self):
         """The added rotation is ``exp(K2)``, a *new* rotation -- not a repeat of
-        ``exp(K1)``. Sharing angles with the opening rotation would make the extra
-        parameters redundant and the flag pointless."""
+        ``exp(K1)``. Sharing parameters with the opening rotation would make the
+        extra ones redundant and the flag pointless."""
         n_qubits = 6
         n_orb = n_qubits // 2
-        n_rotation = n_orb * (n_orb - 1)
+        added = 2 * n_rotation_params(n_orb, orbital_phases=True)
         n_params = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
         params = np.zeros(n_params)
         # Only the trailing block is non-zero, so any gate that fires must
         # belong to it.
-        trailing = np.arange(1, n_rotation + 1, dtype=float) / 10.0
-        params[-n_rotation:] = trailing
+        trailing = np.arange(1, added + 1, dtype=float) / 10.0
+        params[-added:] = trailing
         circuit = LUCJAnsatz().build(
             params,
             n_qubits=n_qubits,
@@ -788,13 +867,8 @@ class TestLUCJAnsatz:
             n_electrons=2,
             trailing_rotation=True,
         )
-        firing = [
-            float(instr.operation.params[0])
-            for instr in circuit.data
-            if instr.operation.name == "xx_plus_yy"
-            and abs(float(instr.operation.params[0])) > 0.0
-        ]
-        assert sorted(firing) == sorted(trailing)
+        firing = {value for value in _consumed_values(circuit) if value > 0.0}
+        assert firing == set(trailing)
 
     def test_trailing_rotation_defaults_off(self):
         """Existing callers must see the previous circuit unchanged."""
@@ -815,6 +889,126 @@ class TestLUCJAnsatz:
         assert [instr.operation.name for instr in without.data] == [
             instr.operation.name for instr in explicit.data
         ]
+
+    @pytest.mark.parametrize(
+        "flavor",
+        [
+            {"shared_spin_params": True},
+            {"shared_spin_params": True, "trailing_rotation": True},
+            {"rotation_depth": 1},
+            {"rotation_depth": 0, "trailing_rotation": True},
+            {"same_spin_pairs": []},
+            {"same_spin_pairs": [(0, 2)], "opposite_spin_pairs": [(1, 2), (2, 1)]},
+            {"opposite_spin_pairs": []},
+        ],
+        ids=lambda flavor: "-".join(sorted(flavor)),
+    )
+    def test_every_flavor_consumes_exactly_its_reported_parameters(self, flavor):
+        """Each knob has to move ``n_params_per_layer`` and ``build`` together.
+
+        Distinct values in, so a count that over-reports leaves one unread and a
+        layout that reads the wrong slice shows up as a missing value.
+        """
+        n_qubits = 6
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **flavor)
+        circuit = LUCJAnsatz().build(
+            np.arange(1, n_params + 1, dtype=float),
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+            **flavor,
+        )
+        assert _consumed_values(circuit) == {
+            float(value) for value in range(1, n_params + 1)
+        }
+
+    def test_shared_spin_params_drives_both_sectors_from_one_set(self):
+        """The point of the knob is spin symmetry, not just a smaller vector: the
+        beta sector must realize the same rotation as alpha, from the same
+        parameters."""
+        n_qubits, n_orb = 6, 3
+        balanced = LUCJAnsatz.n_params_per_layer(n_qubits, shared_spin_params=True)
+        assert LUCJAnsatz.n_params_per_layer(n_qubits) - balanced == n_rotation_params(
+            n_orb, orbital_phases=False
+        ) + (n_orb - 1)
+
+        rng = np.random.default_rng(3)
+        params = rng.uniform(0.2, 1.2, balanced)
+        circuit = LUCJAnsatz().build(
+            params,
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+            shared_spin_params=True,
+        )
+
+        def sector_params(spin):
+            return [
+                tuple(float(value) for value in instruction.operation.params)
+                for instruction in circuit.data
+                if instruction.operation.name == "xx_plus_yy"
+                and circuit.qubits.index(instruction.qubits[0]) % 2 == spin
+            ]
+
+        assert sector_params(0) == sector_params(1)
+
+    @pytest.mark.parametrize("depth,n_gates", [(0, 0), (1, 2), (2, 3), (4, 6)])
+    def test_rotation_depth_truncates_the_brick_wall(self, depth, n_gates):
+        """A shallower network means fewer Givens gates; the full depth is the
+        whole schedule."""
+        n_qubits = 8
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, rotation_depth=depth)
+        circuit = LUCJAnsatz().build(
+            np.arange(1, n_params + 1, dtype=float),
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+            rotation_depth=depth,
+        )
+        # Two sectors, each rotation emitted and inverted.
+        assert (
+            sum(1 for instr in circuit.data if instr.operation.name == "xx_plus_yy")
+            == 4 * n_gates
+        )
+
+    def test_rotation_depth_rejects_a_redundant_network(self):
+        """Past the full schedule the extra half-layers only add parameters, so
+        the request is a mistake rather than a deeper ansatz."""
+        with pytest.raises(ValueError, match="between 0 and n_orb"):
+            LUCJAnsatz.n_params_per_layer(8, rotation_depth=5)
+
+    def test_jastrow_pairs_land_on_the_named_qubits(self):
+        """Explicit pairs have to reach the circuit as written, with the
+        same-spin ones duplicated across sectors and the opposite-spin ones
+        pairing alpha ``2p`` with beta ``2q + 1``."""
+        n_qubits = 6
+        flavor = {"same_spin_pairs": [(0, 2)], "opposite_spin_pairs": [(1, 2)]}
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **flavor)
+        circuit = LUCJAnsatz().build(
+            np.arange(1, n_params + 1, dtype=float),
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=2,
+            **flavor,
+        )
+        placements = {
+            tuple(circuit.qubits.index(qubit) for qubit in instruction.qubits)
+            for instruction in circuit.data
+            if instruction.operation.name == "rzz"
+        }
+        assert placements == {(2, 5), (0, 4), (1, 5)}
+
+    @pytest.mark.parametrize(
+        "pairs,message",
+        [
+            ({"same_spin_pairs": [(0, 3)]}, "outside the 3 orbitals"),
+            ({"opposite_spin_pairs": [(0, -1)]}, "outside the 3 orbitals"),
+            ({"same_spin_pairs": [(1, 1)]}, "repeats an orbital"),
+        ],
+    )
+    def test_jastrow_pairs_are_validated(self, pairs, message):
+        with pytest.raises(ValueError, match=message):
+            LUCJAnsatz.n_params_per_layer(6, **pairs)
 
     @pytest.mark.parametrize("n_alpha,n_beta", [(2, 2), (2, 0), (3, 1)])
     def test_reference_honours_the_requested_spin_counts(self, n_alpha, n_beta):
