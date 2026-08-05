@@ -16,6 +16,8 @@ from qiskit.circuit.library import (
     SwapGate,
     UGate,
 )
+from qiskit.quantum_info import Operator, SparsePauliOp
+from scipy.linalg import expm
 
 from divi.qprog import (
     VQE,
@@ -26,7 +28,12 @@ from divi.qprog import (
     QCCAnsatz,
     UCCSDAnsatz,
 )
-from divi.qprog.algorithms._ansatze import _resolve_spin_counts, _uccsd_excitations
+from divi.qprog.algorithms._ansatze import (
+    _emit_givens_rotation,
+    _resolve_spin_counts,
+    _rotation_schedule,
+    _uccsd_excitations,
+)
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
@@ -586,8 +593,9 @@ def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
         ansatz_kwargs={"trailing_rotation": True},
     )
 
-    n_hopping = 2 * (n_qubits // 2 - 1)
-    assert extended.n_params_per_layer - plain.n_params_per_layer == n_hopping
+    n_orb = n_qubits // 2
+    n_rotation = n_orb * (n_orb - 1)
+    assert extended.n_params_per_layer - plain.n_params_per_layer == n_rotation
 
     assert len(extended.cost_circuit.parameters) == extended.n_params
     assert len(plain.cost_circuit.parameters) == plain.n_params
@@ -627,6 +635,57 @@ def test_resolve_spin_counts_rejects(n_qubits, n_electrons, n_alpha, n_beta, mes
         _resolve_spin_counts(n_qubits, n_electrons, n_alpha, n_beta, "Ansatz")
 
 
+@pytest.mark.parametrize("n_orb", [2, 3, 4, 5, 8])
+def test_rotation_schedule_spans_the_rotation_group(n_orb):
+    """A general orbital rotation needs ``n_orb * (n_orb - 1) / 2`` Givens
+    rotations -- the dimension of the group. A single adjacent chain has only
+    ``n_orb - 1`` and cannot reach an arbitrary rotation, which is what confined
+    LUCJ to a fraction of its fragment correlation energy."""
+    schedule = _rotation_schedule(n_orb)
+    assert len(schedule) == n_orb * (n_orb - 1) // 2
+    # Every adjacent pair participates, and each half-layer is disjoint.
+    assert set(schedule) == set(range(n_orb - 1))
+
+
+@pytest.mark.parametrize("orbital, spin", [(0, 0), (0, 1), (1, 0), (2, 1)])
+def test_givens_rotation_is_a_real_fermionic_orbital_rotation(orbital, spin):
+    """The gate must equal the JW image of ``exp(t (a+_j a_l - a+_l a_j))``.
+
+    Two independent ways to get a particle- and Sz-conserving gate that is *not*
+    an orbital rotation, both of which this pins:
+
+    * dropping the ``Z`` the intervening opposite-spin qubit contributes, which
+      leaves a plain qubit XY exchange;
+    * exponentiating the Hermitian hop (phase argument ``0``), whose one-particle
+      action ``exp(-i t sigma_x)`` is complex, so the network spans a
+      phase-conjugated rotation group containing no real orbital rotation -- and
+      no real CCSD amplitude can then be mapped onto it.
+    """
+    n_qubits = 8
+    angle = 0.7
+    circuit = QuantumCircuit(n_qubits)
+    _emit_givens_rotation(circuit, angle, orbital, spin)
+
+    lower = 2 * orbital + spin
+    middle = lower + 1
+    upper = 2 * (orbital + 1) + spin
+
+    def label(paulis: dict[int, str]) -> str:
+        return "".join(paulis.get(q, "I") for q in reversed(range(n_qubits)))
+
+    # a+_j a_l - a+_l a_j under Jordan-Wigner, with the string on the qubit
+    # between the two hopped spin-orbitals.
+    generator = SparsePauliOp.from_list(
+        [
+            (label({lower: "X", middle: "Z", upper: "Y"}), 0.5j),
+            (label({lower: "Y", middle: "Z", upper: "X"}), -0.5j),
+        ]
+    )
+    expected = expm(0.5 * angle * generator.to_matrix())
+
+    np.testing.assert_allclose(Operator(circuit).data, expected, atol=1e-12)
+
+
 # --- Test LUCJAnsatz ---
 class TestLUCJAnsatz:
     """LUCJ must conserve particle number and Sz for SQD sampling to work."""
@@ -664,21 +723,21 @@ class TestLUCJAnsatz:
 
     @pytest.mark.parametrize("n_qubits", [4, 6, 10])
     def test_trailing_rotation_adds_one_independent_orbital_rotation(self, n_qubits):
-        """``trailing_rotation`` must add exactly one more hopping chain, with
+        """``trailing_rotation`` must add exactly one more orbital rotation, with
         its own angles, after the layer's closing inverse rotation.
 
         This is the difference between our circuit and the one both SQD papers
         run (``exp(K2) exp(-K1) exp(iJ1) exp(K1)``), so pin the gate counts and
         the ordering rather than only the parameter total: appending the extra
-        chain *before* the inverse would collapse against it.
+        rotation *before* the inverse would collapse against it.
         """
         n_orb = n_qubits // 2
-        n_hopping = 2 * (n_orb - 1)
+        n_rotation = n_orb * (n_orb - 1)
         plain = LUCJAnsatz.n_params_per_layer(n_qubits)
         extended = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
-        assert extended - plain == n_hopping
+        assert extended - plain == n_rotation
 
-        def hop_count(**kwargs):
+        def rotation_gates(**kwargs):
             n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **kwargs)
             circuit = LUCJAnsatz().build(
                 np.arange(1, n_params + 1, dtype=float),
@@ -687,14 +746,14 @@ class TestLUCJAnsatz:
                 n_electrons=2,
                 **kwargs,
             )
-            hops = [
+            gates = [
                 instr for instr in circuit.data if instr.operation.name == "xx_plus_yy"
             ]
-            return circuit, hops
+            return circuit, gates
 
-        _, plain_hops = hop_count()
-        circuit, extended_hops = hop_count(trailing_rotation=True)
-        assert len(extended_hops) - len(plain_hops) == n_hopping
+        _, plain_gates = rotation_gates()
+        circuit, extended_gates = rotation_gates(trailing_rotation=True)
+        assert len(extended_gates) - len(plain_gates) == n_rotation
 
         # Every reported parameter reaches a gate, so the count cannot over-report.
         consumed = {
@@ -704,20 +763,24 @@ class TestLUCJAnsatz:
         }
         assert consumed == set(float(v) for v in range(1, extended + 1))
 
-        # The trailing chain comes last: the final gates are hops, not Jastrow.
+        # The trailing rotation comes last: each Givens is a CZ-wrapped hop, so
+        # the tail is that triple repeated, with no Jastrow gate after it.
         names = [instr.operation.name for instr in circuit.data]
-        assert names[-n_hopping:] == ["xx_plus_yy"] * n_hopping
+        assert names[-3 * n_rotation :] == ["cz", "xx_plus_yy", "cz"] * n_rotation
 
     def test_trailing_rotation_angles_are_independent_of_the_opening_rotation(self):
         """The added rotation is ``exp(K2)``, a *new* rotation -- not a repeat of
-        ``exp(K1)``. Sharing angles with the opening chain would make the extra
+        ``exp(K1)``. Sharing angles with the opening rotation would make the extra
         parameters redundant and the flag pointless."""
         n_qubits = 6
+        n_orb = n_qubits // 2
+        n_rotation = n_orb * (n_orb - 1)
         n_params = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
         params = np.zeros(n_params)
         # Only the trailing block is non-zero, so any gate that fires must
         # belong to it.
-        params[-4:] = [0.3, 0.4, 0.5, 0.6]
+        trailing = np.arange(1, n_rotation + 1, dtype=float) / 10.0
+        params[-n_rotation:] = trailing
         circuit = LUCJAnsatz().build(
             params,
             n_qubits=n_qubits,
@@ -731,7 +794,7 @@ class TestLUCJAnsatz:
             if instr.operation.name == "xx_plus_yy"
             and abs(float(instr.operation.params[0])) > 0.0
         ]
-        assert sorted(firing) == [0.3, 0.4, 0.5, 0.6]
+        assert sorted(firing) == sorted(trailing)
 
     def test_trailing_rotation_defaults_off(self):
         """Existing callers must see the previous circuit unchanged."""

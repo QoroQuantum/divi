@@ -644,17 +644,58 @@ class QCCAnsatz(Ansatz):
         return qc
 
 
+def _rotation_schedule(n_orb: int) -> list[int]:
+    """Lower orbital of each Givens rotation in a general orbital rotation.
+
+    The Clements brick-wall schedule: ``n_orb`` alternating half-layers of
+    disjoint adjacent pairs, ``n_orb * (n_orb - 1) / 2`` rotations in total,
+    which is the dimension of the group and therefore reaches any rotation.
+    """
+    return [
+        p for half_layer in range(n_orb) for p in range(half_layer % 2, n_orb - 1, 2)
+    ]
+
+
+def _emit_givens_rotation(
+    circuit: QuantumCircuit, angle, orbital: int, spin: int
+) -> None:
+    """Emit ``exp(angle / 2 * (a+_j a_l - a+_l a_j))`` between adjacent same-spin
+    orbitals, the Givens rotation a general orbital rotation composes from.
+
+    Two conventions matter here, and getting either wrong leaves a
+    particle-conserving gate that is not an orbital rotation:
+
+    * Interleaved Jordan-Wigner puts orbital ``p``'s two spin-orbitals on qubits
+      ``2p`` and ``2p + 1``, so a same-spin hop spans two qubits with the
+      opposite-spin partner between them and its generator carries a ``Z`` on
+      that qubit. Conjugating by ``CZ`` supplies it, mapping ``X_l -> Z_k X_l``
+      and ``Y_l -> Z_k Y_l`` while commuting with ``X_j`` and ``Y_j``.
+    * The phase argument ``-pi / 2`` selects the anti-Hermitian generator
+      ``a+_j a_l - a+_l a_j``, whose one-particle action is a real rotation. At
+      ``0`` the gate exponentiates the Hermitian hop instead, giving
+      ``exp(-i theta / 2 * sigma_x)`` -- so the network would span a
+      phase-conjugated rotation group, which no real orbital rotation lies in.
+    """
+    lower = 2 * orbital + spin
+    middle = lower + 1
+    upper = 2 * (orbital + 1) + spin
+    circuit.cz(middle, upper)
+    circuit.append(XXPlusYYGate(angle, -_HALF_PI), [lower, upper])
+    circuit.cz(middle, upper)
+
+
 class LUCJAnsatz(Ansatz):
     """Local unitary cluster Jastrow ansatz.
 
-    Each layer applies the LUCJ structure ``exp(K) exp(iJ) exp(-K)`` with
-    locality restrictions: ``K`` is a nearest-neighbor Givens chain confined to
-    each spin sector, and ``J`` is a diagonal Coulomb operator on same-orbital
-    opposite-spin pairs plus same-spin neighbors. Both factors conserve
-    particle number and Sz, which sample-based diagonalization requires — its
-    symmetry filter checks alpha and beta populations separately.
-    ``trailing_rotation`` adds a closing orbital rotation per layer; see
-    :meth:`build`.
+    Each layer applies ``exp(K) exp(iJ) exp(-K)``, where ``K`` is a general
+    orbital rotation -- a brick-wall network of Givens rotations, independent
+    per spin sector -- and ``J`` is a diagonal Coulomb operator restricted to
+    same-orbital opposite-spin pairs plus same-spin neighbors. That restriction
+    on ``J`` alone is what makes the ansatz *local*; the rotation is
+    unrestricted. Both factors conserve particle number and Sz, which
+    sample-based diagonalization requires -- its symmetry filter checks alpha
+    and beta populations separately. ``trailing_rotation`` adds a closing
+    orbital rotation per layer; see :meth:`build`.
 
     Assumes the interleaved Jordan-Wigner ordering that
     ``divi.hamiltonians._chem._spo_from_integrals`` produces: qubit ``2p`` is
@@ -670,28 +711,22 @@ class LUCJAnsatz(Ansatz):
     is fixed regardless of the parameter value — it offers no variational
     freedom.
 
-    Measured limitation: on a minimal two-orbital, one-alpha-one-beta fragment,
-    exact optimization of this ansatz's parameters (many random starts, no shot
-    noise)
-    returns the Hartree-Fock determinant itself -- none of the fragment's
-    correlation energy -- and 1, 2, and 3 layers agree to 8 significant
-    figures, so layers cannot lift it. That is a property of a two-orbital
-    register, not of the ansatz: on a four-orbital fragment the same
-    measurement recovers 47%, 66% and 88% of the correlation energy at 1, 2 and
-    3 layers, so the layer count is worth tuning above the minimal case.
+    A single spatial orbital offers no variational freedom: only the on-site
+    diagonal term survives, and its value cannot change the state.
     """
 
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
         """Per-layer parameter count.
 
-        ``2 * (n_orb - 1)`` hopping angles, ``n_orb`` on-site Coulomb terms,
-        and ``2 * (n_orb - 1)`` same-spin-neighbor Coulomb terms, where
-        ``n_orb = n_qubits // 2``. Collapses to ``1`` for a single spatial
-        orbital (``n_qubits == 2``), where only the on-site term applies.
+        ``n_orb * (n_orb - 1)`` rotation angles (a general rotation per spin
+        sector), ``n_orb`` on-site Coulomb terms, and ``2 * (n_orb - 1)``
+        same-spin-neighbor Coulomb terms, where ``n_orb = n_qubits // 2``.
+        Collapses to ``1`` for a single spatial orbital (``n_qubits == 2``),
+        where only the on-site term applies.
 
-        ``trailing_rotation=True`` adds a further ``2 * (n_orb - 1)`` hopping
-        angles per layer; see :meth:`build`.
+        ``trailing_rotation=True`` adds a further ``n_orb * (n_orb - 1)``
+        rotation angles per layer; see :meth:`build`.
         """
         if n_qubits % 2:
             raise ValueError(
@@ -700,38 +735,38 @@ class LUCJAnsatz(Ansatz):
             )
         n_orb = n_qubits // 2
         if n_orb == 1:
-            # One spatial orbital: no hopping or same-spin neighbors, only the
+            # One spatial orbital: no rotation or same-spin neighbors, only the
             # on-site opposite-spin Coulomb term.
             return _require_trainable_params(1, LUCJAnsatz.__name__)
-        n_hopping = 2 * (n_orb - 1)
-        n_params = n_hopping + n_orb + n_hopping
+        n_rotation = 2 * len(_rotation_schedule(n_orb))
+        n_params = n_rotation + n_orb + 2 * (n_orb - 1)
         if kwargs.get("trailing_rotation"):
-            n_params += n_hopping
+            n_params += n_rotation
         return _require_trainable_params(n_params, LUCJAnsatz.__name__)
 
     def parameter_frequencies(self, n_qubits: int, **kwargs):
-        """Hopping angles carry half-integer frequencies, Jastrow angles ``{1}``.
+        """Rotation angles carry half-integer frequencies, Jastrow angles ``{1}``.
 
         ``XXPlusYY(theta)`` is ``exp(-i (theta / 2) (XX + YY) / 2)``, whose
         eigenphases are ``0`` and ``+-theta / 2``, so one occurrence carries
-        ``{1/2, 1}``. A layer uses each hopping angle twice -- once negated --
+        ``{1/2, 1}``. A layer uses each rotation angle twice -- once negated --
         which compounds it to ``{1/2, 1, 3/2, 2}``; a trailing rotation's own
         angles appear once. The Jastrow ``RZZ`` angles are plain Pauli rotations.
 
-        Two spatial orbitals are a special case: there is a single hop pair per
-        spin, no gate moves occupancy between pairs, and the half-integers drop
-        out -- measured absent over a ``4 * pi`` window. Halving those angles'
-        term counts is worth the branch, since fragments this small are common.
+        Two spatial orbitals are a special case: one rotation per spin, no gate
+        moves occupancy between the two pairs, and the half-integers drop out --
+        measured absent over a ``4 * pi`` window. Halving those angles' term
+        counts is worth the branch, since fragments this small are common.
         """
         n_orb = n_qubits // 2
         if n_orb == 1:
             return [(1.0, 1)]
-        n_hopping = 2 * (n_orb - 1)
-        hopping = (1.0, 2) if n_orb == 2 else (0.5, 4)
-        frequencies = [hopping] * n_hopping + [(1.0, 1)] * (n_orb + n_hopping)
+        n_rotation = 2 * len(_rotation_schedule(n_orb))
+        rotation = (1.0, 2) if n_orb == 2 else (0.5, 4)
+        frequencies = [rotation] * n_rotation + [(1.0, 1)] * (n_orb + 2 * (n_orb - 1))
         if kwargs.get("trailing_rotation"):
             trailing = (1.0, 1) if n_orb == 2 else (0.5, 2)
-            frequencies += [trailing] * n_hopping
+            frequencies += [trailing] * n_rotation
         return frequencies
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
@@ -751,6 +786,10 @@ class LUCJAnsatz(Ansatz):
                 circuit ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` of
                 arXiv:2405.05068 and arXiv:2512.14936; without it, the same
                 circuit lacking ``exp(K2)``.
+
+        Parameters are consumed in the order: rotation angles (alpha sector then
+        beta, each in brick-wall order), on-site Coulomb terms, same-spin
+        neighbor Coulomb terms, then the trailing rotation's own angles.
 
         Returns:
             QuantumCircuit: Qiskit circuit implementing the LUCJ ansatz.
@@ -792,37 +831,40 @@ class LUCJAnsatz(Ansatz):
         for p in range(n_beta):
             circuit.x(2 * p + 1)
 
-        hop_pairs = [
+        # One general rotation per spin sector, as a brick-wall Givens network.
+        rotations = [
+            (orbital, spin) for spin in (0, 1) for orbital in _rotation_schedule(n_orb)
+        ]
+        neighbor_pairs = [
             (2 * p + spin, 2 * (p + 1) + spin)
             for spin in (0, 1)
             for p in range(n_orb - 1)
         ]
 
         for layer in range(n_layers):
-            offset = layer * per_layer
-            cursor = offset
+            cursor = layer * per_layer
 
-            hop_angles = []
-            for lower, upper in hop_pairs:
+            angles = []
+            for orbital, spin in rotations:
                 angle = flat[cursor]
                 cursor += 1
-                hop_angles.append(angle)
-                circuit.append(XXPlusYYGate(angle, 0.0), [lower, upper])
+                angles.append(angle)
+                _emit_givens_rotation(circuit, angle, orbital, spin)
 
             for p in range(n_orb):
                 circuit.append(RZZGate(flat[cursor]), [2 * p, 2 * p + 1])
                 cursor += 1
 
-            for lower, upper in hop_pairs:
+            for lower, upper in neighbor_pairs:
                 circuit.append(RZZGate(flat[cursor]), [lower, upper])
                 cursor += 1
 
-            for (lower, upper), angle in zip(reversed(hop_pairs), reversed(hop_angles)):
-                circuit.append(XXPlusYYGate(-angle, 0.0), [lower, upper])
+            for (orbital, spin), angle in zip(reversed(rotations), reversed(angles)):
+                _emit_givens_rotation(circuit, -angle, orbital, spin)
 
             if trailing_rotation:
-                for lower, upper in hop_pairs:
-                    circuit.append(XXPlusYYGate(flat[cursor], 0.0), [lower, upper])
+                for orbital, spin in rotations:
+                    _emit_givens_rotation(circuit, flat[cursor], orbital, spin)
                     cursor += 1
 
         return circuit

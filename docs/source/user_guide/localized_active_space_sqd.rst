@@ -307,31 +307,25 @@ that fragment's own CCSD amplitudes rather than a random initial guess,
 which improves convergence and gives SQD a better-covered sampled
 distribution to recover the ground state from.
 :class:`~divi.qprog.algorithms.LUCJAnsatz` is also available (pass
-``ansatz=LUCJAnsatz()``); it only uses fewer parameters per layer than
-``UCCSDAnsatz`` on larger fragments (e.g. 16 vs. 26 at 8 qubits) — at 4
-qubits it is more expensive (6 vs. 3).
+``ansatz=LUCJAnsatz()``). Each layer applies ``exp(K) exp(iJ) exp(-K)``, where
+``K`` is a general orbital rotation (independent per spin sector) and ``J`` is a
+diagonal Coulomb operator restricted to same-orbital opposite-spin pairs plus
+same-spin neighbors — that restriction on ``J`` is what makes the ansatz
+*local*. It costs more parameters than ``UCCSDAnsatz`` at every fragment size
+(33 vs. 24 on a five-orbital fragment), so prefer the default unless you have
+validated ``LUCJAnsatz`` against a reference at your own fragment size.
 
-Its accuracy depends strongly on fragment size, and on a **two-orbital
-fragment it recovers nothing at all**: exact optimization from many random
-starts returns
-the Hartree-Fock determinant itself, about 20 mHa above the exact ground state
-on H\ :sub:`4`'s fragments. Its sampled distribution then covers only the
-reference determinant, which is the same "subspace collapsed to one
-determinant" outcome as the small-sampling-budget case above, reached for a
-different reason. Adding layers does not help there — 1, 2 and 3 layers agree
-to 8 significant figures — because a two-orbital register has too little
-structure for the ansatz to act on, not because the ansatz is inexpressive in
-general: on a four-orbital fragment the same measurement recovers 47%, 66% and
-88% of the correlation energy at 1, 2 and 3 layers. Raise ``n_layers`` before
-concluding it cannot reach your fragment's correlated state, and prefer
-``UCCSDAnsatz`` (the default) unless you have validated ``LUCJAnsatz`` against
-a reference at your own fragment size.
+Because SQD recovers correlation by diagonalizing in the *sampled* subspace, a
+fragment ansatz that concentrates its amplitude on one determinant starves the
+solver even when its own energy is low. Check the per-fragment subspace sizes in
+:attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
+fragment's full determinant count before trusting an energy.
 
 To match the circuit arXiv:2405.05068 and arXiv:2512.14936 run — the truncated
 LUCJ form ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` on the Hartree-Fock determinant
 — pass ``ansatz_kwargs={"trailing_rotation": True}`` with ``n_layers=1``. On a
-five-orbital fragment that costs 29 parameters against 21 without it, where a
-second full layer would cost 42.
+five-orbital fragment that costs 53 parameters against 33 without it, where a
+second full layer would cost 66.
 
 Next Steps
 ------------
