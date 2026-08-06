@@ -85,19 +85,13 @@ class ScipyOptimizer(Optimizer):
         """
         max_iterations = kwargs.pop("max_iterations", None)
 
-        # If a callback is provided, we wrap the cost function and callback
-        # to ensure the data passed to the callback has a consistent shape.
+        # Normalize x/fun to 2D/1D for the callback contract, keeping every other key.
         if callback_fn:
 
             def callback_wrapper(intermediate_result: OptimizeResult):
-                # Create a dictionary from the intermediate result to preserve all of its keys.
                 result_dict = dict(intermediate_result)
-
-                # Overwrite 'x' and 'fun' to ensure they have consistent dimensions.
                 result_dict["x"] = np.atleast_2d(intermediate_result.x)
                 result_dict["fun"] = np.atleast_1d(intermediate_result.fun)
-
-                # Create a new OptimizeResult and pass it to the user's callback.
                 return callback_fn(OptimizeResult(**result_dict))
 
         else:

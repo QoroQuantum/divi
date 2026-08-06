@@ -151,7 +151,6 @@ def resolve_checkpoint_path(
             main_dir=main_path,
         )
 
-    # Determine which subdirectory to load
     if subdirectory is None:
         checkpoint_path = _find_latest_checkpoint_subdir(main_path)
     else:
@@ -218,10 +217,8 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         with open(temp_file, "w") as f:
             f.write(content)
-        # Atomic rename on POSIX systems
         temp_file.replace(path)
     except Exception as e:
-        # Clean up temp file if it exists
         if temp_file.exists():
             temp_file.unlink()
         raise OSError(f"Failed to write checkpoint file {path}: {e}") from e
@@ -305,15 +302,9 @@ def _load_and_validate_pydantic_model(
         json_data_dict = _validate_checkpoint_json(
             path, required_fields=required_fields
         )
-        # Convert dict back to JSON string for Pydantic
         json_data = json.dumps(json_data_dict)
-    except CheckpointNotFoundError:
-        raise CheckpointNotFoundError(
-            f"Checkpoint file not found: {path}",
-            main_dir=path.parent,
-        )
-    except CheckpointCorruptedError:
-        # Re-raise JSON validation errors as-is
+    except (CheckpointNotFoundError, CheckpointCorruptedError):
+        # Both already carry their own context, including available_directories.
         raise
 
     try:
@@ -460,14 +451,9 @@ def get_checkpoint_info(checkpoint_path: Path) -> CheckpointInfo:
             f"Expected format: {SUBDIR_PREFIX}XXX"
         )
 
-    # Get modification time
     mtime = checkpoint_path.stat().st_mtime
     timestamp = datetime.fromtimestamp(mtime)
-
-    # Calculate size
     size_bytes = _calculate_checkpoint_size(checkpoint_path)
-
-    # Check validity
     is_valid = _is_checkpoint_valid(checkpoint_path)
 
     return CheckpointInfo(
@@ -519,7 +505,6 @@ def list_checkpoints(main_dir: Path) -> list[CheckpointInfo]:
             # Skip invalid checkpoints
             continue
 
-    # Sort by iteration number
     checkpoints.sort(key=lambda x: x.iteration)
     return checkpoints
 
@@ -558,10 +543,8 @@ def cleanup_old_checkpoints(main_dir: Path, keep_last_n: int) -> None:
     if len(checkpoints) <= keep_last_n:
         return
 
-    # Sort by iteration (descending) and remove oldest
     checkpoints.sort(key=lambda x: x.iteration, reverse=True)
     to_remove = checkpoints[keep_last_n:]
 
     for checkpoint_info in to_remove:
-        # Remove directory and all contents
         shutil.rmtree(checkpoint_info.path)

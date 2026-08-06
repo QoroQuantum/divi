@@ -270,9 +270,9 @@ class TestPipelineOutputMetaCircuitWithQEM:
         trace = pipeline.run_forward_pass(42, dummy_pipeline_env)
         assert len(trace.final_batch) == 1
         meta = next(iter(trace.final_batch.values()))
-        assert meta.circuit_bodies
-        # One DAG body per scale factor.
-        assert len(meta.circuit_bodies) >= len(default_zne_protocol.scale_factors)
+        # Exactly one DAG body per scale factor — a duplicate append would pass a
+        # lower bound.
+        assert len(meta.circuit_bodies) == len(default_zne_protocol.scale_factors)
 
     def test_no_mitigation_single_body_per_key(
         self, parametric_meta, dummy_pipeline_env
@@ -287,7 +287,7 @@ class TestPipelineOutputMetaCircuitWithQEM:
         trace = pipeline.run_forward_pass(42, dummy_pipeline_env)
         for key, meta in trace.final_batch.items():
             assert len(meta.circuit_bodies) == 1
-            assert meta.measurement_qasms
+            assert len(meta.measurement_qasms) == 1
 
 
 def test_quepp_before_measurement_passes():

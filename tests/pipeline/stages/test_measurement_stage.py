@@ -194,7 +194,7 @@ class TestMeasurementStageResultFormatOverride:
 
         # Raw results: obs_group axis stripped, values passed through as-is.
         # Two groups map to the same base_key, so the last one wins (dict update).
-        assert base_key in reduced
+        assert reduced == {base_key: {"01": 30, "10": 70}}
 
 
 # --------------------------------------------------------------------------- #

@@ -319,14 +319,23 @@ class TestMaxWeightMatchingProblem:
         p.decompose()
 
         initial = [0] * p.initial_solution_size()
-        prog_id = list(p._edge_index_maps.keys())[0]
-        n_local = len(p._edge_index_maps[prog_id])
-        candidate = list(range(n_local))  # dummy decoded
+        # Only a partition whose global indices differ from its local ones can
+        # distinguish the mapping from the identity, so pick one of those.
+        shifted = [
+            (prog_id, index_map)
+            for prog_id, index_map in p._edge_index_maps.items()
+            if list(index_map) != list(range(len(index_map)))
+        ]
+        assert shifted, "no partition maps local indices away from the identity"
+        prog_id, index_map = shifted[0]
 
-        result = p.extend_solution(initial, prog_id, [1] * n_local)
+        result = p.extend_solution(initial, prog_id, [1] * len(index_map))
+
         assert len(result) == len(initial)
-        # At least one bit should be set
-        assert sum(result) == n_local
+        # The partition's own global positions carry the set bits; a wrong
+        # local-to-global mapping would set the right count in the wrong places.
+        selected = {index for index, bit in enumerate(result) if bit}
+        assert selected == set(index_map)
 
     def test_finalize_repairs_and_cleans(self):
         G = nx.Graph()

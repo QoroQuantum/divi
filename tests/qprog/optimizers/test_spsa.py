@@ -411,9 +411,33 @@ def test_spsa_exact_loss_records_unperturbed_value():
         max_iterations=3,
         rng=np.random.default_rng(0),
     )
-    assert calls["n"] == 3 * 2  # (gradient batch + exact eval) per step
+    # (gradient batch + exact eval) per step, plus one for the final iterate.
+    assert calls["n"] == 3 * 2 + 1
     for theta, fun in captured:
         assert fun == pytest.approx(_sphere(theta))  # exact, not the c²-biased proxy
+
+
+@pytest.mark.parametrize(
+    "optimizer_cls, extra_kwargs",
+    [
+        (SPSAOptimizer, {}),
+        (QNSPSAOptimizer, {"metric_fn": lambda x: np.eye(2)}),
+    ],
+)
+def test_exact_loss_records_the_final_step(optimizer_cls, extra_kwargs):
+    """With exact_loss and no blocking, a final step that lowers the exact loss is
+    returned as best — not the stale start, since best-tracking otherwise runs
+    only before each step."""
+    start = np.array([1.0, 0.3])
+    result = optimizer_cls(learning_rate=0.5, exact_loss=True).optimize(
+        _sphere,
+        initial_params=start,
+        max_iterations=1,
+        rng=np.random.default_rng(0),
+        **extra_kwargs,
+    )
+    assert result.fun[0] < _sphere(start)
+    assert not np.allclose(result.x, start)
 
 
 def test_spsa_exact_loss_is_noop_under_blocking():

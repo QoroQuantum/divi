@@ -18,31 +18,11 @@ from divi.pipeline._postprocessing import (
 )
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage
-from tests.pipeline._helpers import DummySpecStage, two_group_meta
+from tests.pipeline._helpers import DummySpecStage
 
 
 class TestCountsToExpvals:
     """Spec: _counts_to_expvals converts shot counts to expvals as a post-processing step."""
-
-    def test_converts_counts_dict_to_float_expval(self, dummy_pipeline_env):
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                MeasurementStage(),
-            ]
-        )
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        _, lineage_by_label = _compile_batch(trace.final_batch)
-        raw: ChildResults = {bk: {"0": 50, "1": 50} for bk in lineage_by_label.values()}
-
-        result = _counts_to_expvals(raw, trace.final_batch)
-
-        assert len(result) == len(raw)
-        for v in result.values():
-            if isinstance(v, dict):
-                assert all(isinstance(x, (int, float)) for x in v.values())
-            else:
-                assert isinstance(v, (int, float))
 
     @pytest.mark.parametrize("obs_qubit, expected", [(0, -1.0), (1, -1.0), (2, 1.0)])
     def test_single_qubit_term_maps_to_correct_qubit(

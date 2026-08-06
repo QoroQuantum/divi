@@ -389,14 +389,18 @@ class TestCompileBatch:
     """Spec: _compile_batch lowers MetaCircuit batch to QASM labels and lineage."""
 
     def test_raises_when_measurement_qasms_missing(self, dummy_pipeline_env):
+        """Compiling before MeasurementStage has run must name the missing piece."""
         pipeline = CircuitPipeline(
             stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
         )
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        # Manually remove measurement_qasms to simulate the error
-        batch = trace.final_batch
-        node = next(iter(batch.values()))
-        assert hasattr(node, "circuit_bodies") and node.circuit_bodies
+        unmeasured = {
+            key: node.set_measurement_bodies(())
+            for key, node in trace.final_batch.items()
+        }
+
+        with pytest.raises(ValueError, match="no measurement_qasms"):
+            _compile_batch(unmeasured)
 
     def test_produces_lineage_and_circuits_for_grouped_batch(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(

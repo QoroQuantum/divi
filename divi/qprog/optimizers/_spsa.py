@@ -196,6 +196,33 @@ class _SPSAConfigMixin:
             return theta, current_loss
         return proposed, f_proposed
 
+    def _fold_final_iterate(
+        self,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        theta: npt.NDArray[np.float64],
+        current_loss: float,
+        best_x: npt.NDArray[np.float64],
+        best_fun: float,
+    ) -> tuple[npt.NDArray[np.float64], float]:
+        """Best-track the iterate the final step reached.
+
+        Tracking runs at the top of the loop, so the last step's destination is
+        never seen there and a one-step accepted run would return its starting
+        point. ``blocking`` has already measured that iterate's loss;
+        ``exact_loss`` spends one more evaluation to match its own contract. The
+        proxy path is left alone, since its recorded loss is the perturbation
+        average rather than ``f(theta)``.
+        """
+        if self.blocking:
+            final_loss = current_loss
+        elif self.exact_loss:
+            final_loss = float(np.asarray(cost_fn(theta)).reshape(-1)[0])
+        else:
+            return best_x, best_fun
+        if final_loss < best_fun:
+            return theta.copy(), final_loss
+        return best_x, best_fun
+
     def _warn_if_diverging(
         self, fun: float, reference: float | None, already_warned: bool
     ) -> bool:
@@ -414,13 +441,9 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
             else:
                 theta = proposed
 
-        # A step accepted on the final iteration carries its measured loss in
-        # current_loss but was not yet best-tracked (that runs at the top of the
-        # loop), so fold it in — otherwise a one-step accepted run returns the
-        # stale starting point.
-        if self.blocking and current_loss < best_fun:
-            best_fun = current_loss
-            best_x = theta.copy()
+        best_x, best_fun = self._fold_final_iterate(
+            cost_fn, theta, current_loss, best_x, best_fun
+        )
 
         return OptimizeResult(
             x=best_x,
@@ -653,13 +676,9 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
             else:
                 theta = proposed
 
-        # A step accepted on the final iteration carries its measured loss in
-        # current_loss but was not yet best-tracked (that runs at the top of the
-        # loop), so fold it in — otherwise a one-step accepted run returns the
-        # stale starting point.
-        if self.blocking and current_loss < best_fun:
-            best_fun = current_loss
-            best_x = theta.copy()
+        best_x, best_fun = self._fold_final_iterate(
+            cost_fn, theta, current_loss, best_x, best_fun
+        )
 
         return OptimizeResult(
             x=best_x,
@@ -750,7 +769,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         b: Small floor guarding divisions by a vanishing gradient norm.
         alpha/gamma/A: Spall gain-schedule knobs (default to constant gains).
         blocking/blocking_history/blocking_tol/exact_loss: Inherited look-ahead
-            blocking and loss-recording behaviour (see :class:`SPSAOptimizer`).
+            blocking and loss-recording behavior (see :class:`SPSAOptimizer`).
     """
 
     def __init__(
@@ -1022,23 +1041,9 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 M_next = np.ceil(kappa * sigma2 / (2.0 * eps_k * eps_k * g2))
                 M_k = int(np.clip(M_next, self.M_min, self.M_max))
 
-        # Best-iterate tracking runs at the top of the loop, so the iterate
-        # reached by the final step is never tracked. Fold it in:
-        #   * blocking: the accepted step's loss is already measured in
-        #     current_loss, so no extra evaluation is needed.
-        #   * exact_loss (no blocking): the per-step loss is the true f(theta),
-        #     so spend one more exact evaluation on the final iterate to match
-        #     that contract. (The free-proxy path is left as-is: its recorded
-        #     loss is the perturbation average, not f(theta).)
-        if self.blocking:
-            if current_loss < best_fun:
-                best_fun = current_loss
-                best_x = theta.copy()
-        elif self.exact_loss:
-            final_loss = float(np.asarray(cost_only(theta)).reshape(-1)[0])
-            if final_loss < best_fun:
-                best_fun = final_loss
-                best_x = theta.copy()
+        best_x, best_fun = self._fold_final_iterate(
+            cost_only, theta, current_loss, best_x, best_fun
+        )
 
         return OptimizeResult(
             x=best_x,

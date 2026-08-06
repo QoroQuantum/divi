@@ -114,9 +114,6 @@ class PhaseStatusColumn(ProgressColumn):
         TerminalStatus.ABORTED: ("• Aborted ⚠️ ", "dim magenta"),
     }
 
-    def __init__(self, table_column=None):
-        super().__init__(table_column)
-
     def _build_polling_string(
         self,
         split_job_id: str,

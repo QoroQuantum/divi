@@ -7,6 +7,7 @@ import networkx as nx
 import numpy as np
 import pennylane as qp
 import pytest
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from qiskit.circuit.library import RYGate, RZGate
 from sklearn.decomposition import PCA
 
@@ -533,7 +534,8 @@ class TestPlot3D:
 
         try:
             assert fig is ax.figure
-            assert hasattr(ax, "plot_surface")
+            # A surface was actually drawn, not merely a 3D-capable axes returned.
+            assert any(isinstance(c, Poly3DCollection) for c in ax.collections)
         finally:
             plt.close(fig)
 
@@ -547,7 +549,7 @@ class TestPlot3D:
 
         try:
             assert fig is ax.figure
-            assert hasattr(ax, "plot_surface")
+            assert any(isinstance(c, Poly3DCollection) for c in ax.collections)
         finally:
             plt.close(fig)
 
@@ -558,6 +560,9 @@ class TestPlot3D:
 
         try:
             assert fig is ax.figure
+            surface = ax.collections[-1]
+            assert surface.get_cmap().name == "plasma"
+            assert surface.get_alpha() == 0.5
         finally:
             plt.close(fig)
 

@@ -15,7 +15,7 @@ from divi.hamiltonians import (
     ExactTrotterization,
     QDrift,
 )
-from divi.pipeline.stages import TrotterSpecStage
+from divi.pipeline.stages import TrotterSpecStage, _trotter_spec_stage
 from divi.qprog import (
     QAOA,
     ScipyMethod,
@@ -303,13 +303,14 @@ class TestQAOAQDriftMultiSample:
         assert trotter_stage.cache_key_extras(env) == (env.evaluation_counter,)
 
     def test_multi_sample_final_computation_merges_histograms(
-        self, default_test_simulator
+        self, mocker, default_test_simulator
     ):
-        """Final computation with multi-sample QDrift samples Hamiltonians and merges histograms."""
+        """Every sampled Hamiltonian's histogram reaches the merge, not just one."""
+        n_hamiltonians = 3
         strategy = QDrift(
             keep_fraction=0.5,
             sampling_budget=4,
-            n_hamiltonians_per_iteration=3,
+            n_hamiltonians_per_iteration=n_hamiltonians,
             seed=456,
         )
         qaoa = QAOA(
@@ -320,14 +321,16 @@ class TestQAOAQDriftMultiSample:
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         )
+        spy = mocker.spy(_trotter_spec_stage, "reduce_merge_histograms")
+
         qaoa.run()
-        # best_probs should contain merged distribution (one entry per param set)
-        assert len(qaoa.best_probs) >= 1
+
+        assert spy.call_count > 0
+        for call in spy.call_args_list:
+            grouped = call.args[0]
+            assert all(len(values) == n_hamiltonians for values in grouped.values())
+
         probs = next(iter(qaoa.best_probs.values()))
-        assert isinstance(probs, dict)
-        assert all(
-            isinstance(k, str) and isinstance(v, (int, float)) for k, v in probs.items()
-        )
         assert np.isclose(sum(probs.values()), 1.0)
 
     @pytest.mark.e2e

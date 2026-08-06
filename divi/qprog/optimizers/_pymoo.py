@@ -83,7 +83,6 @@ class PymooOptimizer(Optimizer):
         Returns:
             int: Population size for the optimization algorithm.
         """
-        # Determine population size from stored parameters
         if self.method.value == "DE":
             return self.population_size
         elif self.method.value == "CMAES":
@@ -110,16 +109,13 @@ class PymooOptimizer(Optimizer):
         rng: np.random.Generator,
     ) -> Any:
         """Initialize CMA-ES strategy."""
-        # Initialize CMA-ES using cma library
-        # cma expects a single initial solution (mean) and initial sigma
-        x0 = initial_params[0]  # Use first parameter set as mean
+        # cma takes a single mean plus an initial sigma, not a population.
+        x0 = initial_params[0]
 
-        # Handle sigma/sigma0
         sigma0 = self.algorithm_kwargs.get(
             "sigma0", self.algorithm_kwargs.get("sigma", 0.1)
         )
 
-        # Filter kwargs for CMAEvolutionStrategy
         cma_kwargs = {
             k: v
             for k, v in self.algorithm_kwargs.items()
@@ -138,7 +134,6 @@ class PymooOptimizer(Optimizer):
         rng: np.random.Generator,
     ) -> Any:
         """Initialize Pymoo strategy (DE)."""
-        # Initialize DE using pymoo
         optimizer_obj = globals()[self.method.value](
             pop_size=self.population_size,
             parallelize=False,
@@ -203,22 +198,18 @@ class PymooOptimizer(Optimizer):
             )
         es = self._curr_algorithm_obj
         for _ in range(iterations_to_run):
-            # Ask
             X = es.ask()
             evaluated_X = np.array(X)
 
-            # Evaluate
             curr_losses = cost_fn(evaluated_X)
             # Non-finite losses become worst so a NaN individual is never kept as best.
             safe_losses = np.where(np.isfinite(curr_losses), curr_losses, np.inf)
 
-            # Tell
             es.tell(X, safe_losses)
 
             if callback_fn:
                 callback_fn(OptimizeResult(x=evaluated_X, fun=curr_losses))
 
-        # Return result
         return OptimizeResult(
             x=es.result.xbest,
             fun=es.result.fbest,
@@ -251,7 +242,6 @@ class PymooOptimizer(Optimizer):
 
             algo.tell(infills=pop)
 
-            # Ask for next population to evaluate
             algo.pop = algo.ask()
 
             if callback_fn:
@@ -332,10 +322,7 @@ class PymooOptimizer(Optimizer):
 
         state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        # Serialize algorithm object using dill, then base64 encode
-        # For CMAES (cma lib), algorithm object is picklable.
-        # For DE (pymoo), algorithm object is picklable and includes pop and problem.
-
+        # dill, not pickle: the DE object carries its population and problem.
         algorithm_obj_bytes = dill.dumps(self._curr_algorithm_obj)
         algorithm_obj_b64 = base64.b64encode(algorithm_obj_bytes).decode("ascii")
 
@@ -373,15 +360,12 @@ class PymooOptimizer(Optimizer):
             error_context="Pymoo optimizer",
         )
 
-        # Create new instance with saved configuration
         optimizer = cls(
             method=PymooMethod(state.method_value),
             population_size=state.population_size,
             **state.algorithm_kwargs,
         )
 
-        # Restore algorithm object from base64 string
-        # For DE, this includes the population and problem
         optimizer._curr_algorithm_obj = dill.loads(
             base64.b64decode(state.algorithm_obj_b64)
         )

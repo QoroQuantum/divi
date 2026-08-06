@@ -713,29 +713,38 @@ def _extract_test_usage(text: str, source_file: str) -> list[ChunkMeta]:
 # ---------------------------------------------------------------------------
 
 
-def _should_skip(path: Path) -> bool:
-    """Return ``True`` if *path* should be excluded from indexing."""
+def _is_noise_file(path: Path) -> bool:
+    """Whether *path* is excluded on its own name, wherever it sits."""
     if path.name in SKIP_NAMES:
         return True
     is_test_file = "tests" in path.parts
     # Only apply SKIP_PREFIXES to non-test files (we want test_*.py)
     if not is_test_file and path.stem.startswith(SKIP_PREFIXES):
         return True
-    # Only index files under allowed top-level directories
-    if not any(part in INCLUDE_DIRS for part in path.parts):
-        return True
-    # Skip the AI module itself — it's the chatbot, not library documentation
+    return any(part in {"__pycache__", "_build", ".git"} for part in path.parts)
+
+
+def _in_included_dirs(path: Path) -> bool:
+    """Whether a root-relative *path* sits under an indexable top-level directory."""
     parts = path.parts
-    if (
+    if not any(part in INCLUDE_DIRS for part in parts):
+        return False
+    # Skip the AI module itself — it's the chatbot, not library documentation
+    return not (
         "divi" in parts
         and "ai" in parts
         and parts.index("ai") == parts.index("divi") + 1
-    ):
-        return True
-    # Still skip __pycache__ and build dirs within included dirs
-    if any(part in {"__pycache__", "_build", ".git"} for part in path.parts):
-        return True
-    return False
+    )
+
+
+def _should_skip(path: Path) -> bool:
+    """Return ``True`` if *path* should be excluded from a directory scan.
+
+    ``path`` must be relative to the scanned root: the directory checks match
+    against its components, and an absolute path carries the checkout's own
+    directory names — a checkout named ``divi`` would satisfy them for free.
+    """
+    return _is_noise_file(path) or not _in_included_dirs(path)
 
 
 def _collect_files(source_dirs: list[Path]) -> list[Path]:
@@ -748,7 +757,9 @@ def _collect_files(source_dirs: list[Path]) -> list[Path]:
     files: list[Path] = []
     for base in source_dirs:
         if base.is_file():
-            if base.suffix in EXTENSIONS and not _should_skip(base):
+            # A named file is an explicit request, so only the name-based
+            # exclusions apply — the top-level allowlist scopes walks.
+            if base.suffix in EXTENSIONS and not _is_noise_file(Path(base.name)):
                 files.append(base)
             continue
 
@@ -765,7 +776,7 @@ def _collect_files(source_dirs: list[Path]) -> list[Path]:
                 if (
                     path.is_file()
                     and path.suffix in EXTENSIONS
-                    and not _should_skip(path)
+                    and not _should_skip(Path(rel))
                 ):
                     files.append(path)
         except (subprocess.CalledProcessError, FileNotFoundError):
@@ -774,7 +785,7 @@ def _collect_files(source_dirs: list[Path]) -> list[Path]:
                 if (
                     path.is_file()
                     and path.suffix in EXTENSIONS
-                    and not _should_skip(path)
+                    and not _should_skip(path.relative_to(base))
                 ):
                     files.append(path)
 

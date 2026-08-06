@@ -60,7 +60,7 @@ class TestConditionalSpinnerColumn:
         """Test that spinner is shown when final_status is not in FINAL_STATUSES."""
         task = self._create_task(mocker, fields, get_time=mocker.Mock(return_value=0.0))
         result = column.render(task)
-        assert result != ""
+        assert str(result) != ""
 
 
 class TestPhaseStatusColumn:
@@ -549,8 +549,9 @@ class TestProgramOnlyColumn:
     def test_renders_inner_for_program_row(self, mocker):
         inner = mocker.Mock()
         col = _ProgramOnlyColumn(inner)
-        col.render(self._task(mocker, "program"))
+        result = col.render(self._task(mocker, "program"))
         inner.render.assert_called_once()
+        assert result is inner.render.return_value
 
     def test_empty_text_for_batch_row(self, mocker):
         inner = mocker.Mock()

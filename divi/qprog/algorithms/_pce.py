@@ -414,7 +414,6 @@ class PCE(VQE):
             ValueError: If min_prob is not in range [0.0, 1.0], n is negative,
                 or sort_by is not one of ``"prob"`` or ``"energy"``.
         """
-        # Validate inputs
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")
         if not (0.0 <= min_prob <= 1.0):
@@ -422,11 +421,9 @@ class PCE(VQE):
         if sort_by not in ("prob", "energy"):
             raise ValueError(f"sort_by must be 'prob' or 'energy', got '{sort_by}'")
 
-        # Handle edge case: n == 0
         if n == 0:
             return []
 
-        # Require probability distribution to exist
         if not self._best_probs:
             raise RuntimeError(
                 "No probability distribution available. The final computation step "
@@ -435,14 +432,11 @@ class PCE(VQE):
                 "and compute the distribution."
             )
 
-        # Extract the probability distribution (nested by parameter set)
-        # _best_probs structure: {tag: {bitstring: prob}}
+        # _best_probs is keyed by parameter-set tag: {tag: {bitstring: prob}}.
         probs_dict = next(iter(self._best_probs.values()))
 
-        # Filter by minimum probability
         filtered = [(bs, prob) for bs, prob in probs_dict.items() if prob >= min_prob]
 
-        # Decode all filtered encoded qubit states to QUBO variable assignments
         encoded_bitstrings = [bs for bs, _ in filtered]
         decoded_parities = self._decode_parities_fn(
             encoded_bitstrings, self._variable_masks_u64
@@ -450,7 +444,6 @@ class PCE(VQE):
         # decoded_parities shape: (n_vars, n_states), transpose to (n_states, n_vars)
         decoded_qubo_solutions = (1 - decoded_parities).T
 
-        # Build full result list with decoded solutions and optional energy
         compute_energy = sort_by == "energy"
         result = []
         for (encoded_bitstring, prob), decoded_solution in zip(
@@ -481,7 +474,6 @@ class PCE(VQE):
                 )
             )
 
-        # Sort and take top n
         if sort_by == "energy":
             result.sort(key=lambda e: (e.energy, e.bitstring))
         else:

@@ -93,10 +93,10 @@ class TestMetaCircuit:
     def test_set_circuit_bodies_returns_new_instance(self, plain_dag, parametric_dag):
         orig = MetaCircuit(circuit_bodies=(((), plain_dag),))
         new_dag, params = parametric_dag
-        out = orig.set_circuit_bodies(
-            ((("qem", 0),), new_dag),
-        )
+        bodies = (((("qem", 0),), new_dag),)
+        out = orig.set_circuit_bodies(bodies)
         assert out is not orig
+        assert out.circuit_bodies == bodies
         # Original untouched.
         assert orig.circuit_bodies == (((), plain_dag),)
         # set_circuit_bodies doesn't mutate parameters — caller re-wraps if needed.

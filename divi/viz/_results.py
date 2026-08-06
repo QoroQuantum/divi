@@ -617,7 +617,7 @@ class NEBResult:
         defaults = {"marker": "o", "markersize": 4}
         defaults.update(plot_kwargs)
         ax.plot(self.path_distances, self.energies, **defaults)
-        ax.set_xlabel("Normalised path distance")
+        ax.set_xlabel("Normalized path distance")
         ax.set_ylabel("Objective")
         ax.set_title(f"{self.program_type} NEB Energy Profile")
 

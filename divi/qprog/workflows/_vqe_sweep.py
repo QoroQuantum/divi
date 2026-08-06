@@ -56,11 +56,11 @@ def _compute_dihedral(b0, b1, b2):
 
 
 def _find_refs(adj, placed, parent, child):
-    gp = next((n for n in adj[parent] if n != child and n in placed), -1)
-    ggp = -1
-    if gp != -1:
-        ggp = next((n for n in adj[gp] if n != parent and n in placed), -1)
-    return gp if gp != -1 else None, ggp if ggp != -1 else None
+    gp = next((n for n in adj[parent] if n != child and n in placed), None)
+    ggp = None
+    if gp is not None:
+        ggp = next((n for n in adj[gp] if n != parent and n in placed), None)
+    return gp, ggp
 
 
 # --- Main functions ---
@@ -122,7 +122,6 @@ def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> npt.NDArray[np.float
     if n_atoms == 0:
         return coords
 
-    # Validate bond lengths are positive
     for i, entry in enumerate(z_matrix[1:], start=1):
         if entry.bond_length is not None and entry.bond_length <= 0:
             raise ValueError(
@@ -197,7 +196,6 @@ def _transform_bonds(
     Returns:
         New Z-matrix with transformed bond lengths.
     """
-    # Convert to set of sorted tuples for quick lookup
     bonds_set = {tuple(sorted(b)) for b in bonds_to_transform}
 
     new_zmatrix = []
@@ -246,29 +244,23 @@ def _kabsch_align(
     P = np.asarray(P, dtype=float)
     Q = np.asarray(Q, dtype=float)
 
-    # Centroids
     Pc = np.mean(P, axis=0)
     Qc = np.mean(Q, axis=0)
 
-    # Centered coordinates
     P_centered = P - Pc
     Q_centered = Q - Qc
 
-    # Covariance and SVD
     H = P_centered.T @ Q_centered
     U, _, Vt = np.linalg.svd(H)
 
-    # Compute rotation matrix
     R = Vt.T @ U.T
 
-    # Ensure proper rotation (det = +1) by handling reflections
+    # Reflections have det = -1; flipping Vt's last row restores a rotation.
     if np.linalg.det(R) < 0:
-        # Flip the last column of Vt to ensure proper rotation
         Vt[-1, :] *= -1
         R = Vt.T @ U.T
     t = Qc - Pc @ R
 
-    # Apply transformation
     P_aligned = P_in @ R + t
 
     P_aligned[np.abs(P_aligned) < 1e-12] = 0.0
@@ -371,7 +363,6 @@ class MoleculeTransformer:
         atom_connectivity = list(self.atom_connectivity or ())
         bonds_to_transform = list(self.bonds_to_transform or ())
 
-        # Convert to Z-matrix, with connectivity
         z_matrix = _cartesian_to_zmatrix(original_coords, atom_connectivity)
 
         for value in self.bond_modifiers:
@@ -389,7 +380,6 @@ class MoleculeTransformer:
                         transformed_coords, original_coords, self.alignment_atoms
                     )
 
-            # Clone the base molecule with the new coordinates
             mol = copy.copy(self.base_molecule)
             mol.coordinates = transformed_coords
             variants[value] = mol
@@ -458,7 +448,6 @@ class VQEHyperparameterSweep(ProgramEnsemble):
                 "At least one of molecule_transformer or hamiltonians must be provided."
             )
 
-        # Store the optimizer template (will be copied for each program)
         self._optimizer_template = (
             optimizer if optimizer is not None else MonteCarloOptimizer()
         )
@@ -552,18 +541,15 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         if self._executor is not None:
             self.join()
 
-        # Get the unique ansatz objects that were actually run
-        # Assumes `self.ansatze` is a list of the ansatz instances used.
+        # Every configured ansatz, not only those whose programs completed.
         unique_ansatze = self.ansatze
 
-        # Create a stable color mapping for each unique ansatz object
         colors = ["blue", "g", "r", "c", "m", "y", "k"]
         color_map = {
             ansatz: colors[i % len(colors)] for i, ansatz in enumerate(unique_ansatze)
         }
 
         if graph_type == "scatter":
-            # Plot each ansatz's results as a separate series for clarity
             for ansatz in unique_ansatze:
                 modifiers = []
                 energies = []
@@ -573,7 +559,6 @@ class VQEHyperparameterSweep(ProgramEnsemble):
                         modifiers.append(modifier)
                         energies.append(self._programs[program_key].best_loss)
 
-                # Use the new .name property for the label and the color_map
                 plt.scatter(
                     modifiers,
                     energies,

@@ -734,7 +734,7 @@ class TestQoroServiceMock:
 
     # --- Tests for submit_circuits ---
 
-    def test_submit_circuits_single_chunk(self, mocker, submit_circuits_mock):
+    def test_submit_circuits_single_chunk(self, submit_circuits_mock):
         """Test submitting circuits in a single chunk."""
         qoro_service_mock, mock_make_request = submit_circuits_mock
         result = qoro_service_mock.submit_circuits({"circuit_1": "mock_qasm"})
@@ -744,9 +744,9 @@ class TestQoroServiceMock:
         assert result.results is None
         assert mock_make_request.call_count == 2
         # Check init call
-        mock_make_request.call_args_list[0].assert_called_with(
-            "post", "job/init/", json=mocker.ANY, timeout=100
-        )
+        init_call = mock_make_request.call_args_list[0]
+        assert init_call.args == ("post", "job/init/")
+        assert init_call.kwargs["timeout"] == 100
         # Check add_circuits call
         add_circuits_call = mock_make_request.call_args_list[1]
         assert add_circuits_call.args == ("post", "job/mock_job_id/add_circuits/")

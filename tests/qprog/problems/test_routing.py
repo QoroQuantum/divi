@@ -814,7 +814,9 @@ class TestCvrpSolutionUtils:
         )
         assert len(repaired_bs) == 18
         assert routes is not None
-        assert all(r[0] == 0 and r[-1] == 0 for r in routes)
+        # Every customer served exactly once, within capacity — the decoder wraps
+        # each route in the depot regardless, so the wrapper proves nothing.
+        assert is_valid_cvrp_solution(repaired_bs, 3, 2, CVRP_DEMANDS, 10.0, depot=0)
 
 
 class TestCVRPProblem:

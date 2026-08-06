@@ -2,12 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import faiss
-import numpy as np
 import pytest
 
 from divi.ai._retriever import RetrievedChunk
-from divi.ai._types import ChunkMeta
 
 
 @pytest.fixture()
@@ -133,50 +130,6 @@ with enough content to pass the minimum length threshold.
 
 
 @pytest.fixture()
-def sample_chunks():
-    """Pre-built list of ChunkMeta for retriever/chat tests."""
-    return [
-        ChunkMeta(
-            text="[Module: divi.qprog.vqe]\nVQE implementation for quantum chemistry.",
-            source_file="/repo/divi/qprog/vqe.py",
-            start_line=1,
-            end_line=10,
-        ),
-        ChunkMeta(
-            text="[Function: divi.qprog.vqe.VQE.run]\ndef run(self):\n"
-            '    """Run the VQE algorithm."""',
-            source_file="/repo/divi/qprog/vqe.py",
-            start_line=50,
-            end_line=80,
-        ),
-        ChunkMeta(
-            text="[Source: docs/user_guide/vqe.rst § Getting Started]\n"
-            "How to run VQE with Divi.",
-            source_file="/repo/docs/user_guide/vqe.rst",
-            start_line=1,
-            end_line=20,
-            chunk_type="doc",
-        ),
-        ChunkMeta(
-            text="[Source: docs/api_reference/qprog.rst § VQE]\n"
-            "API reference for the VQE class.",
-            source_file="/repo/docs/api_reference/qprog.rst",
-            start_line=1,
-            end_line=15,
-            chunk_type="doc",
-        ),
-        ChunkMeta(
-            text="[Source: tutorials/vqe_quickstart.md § Quick Start]\n"
-            "Tutorial on running VQE quickly.",
-            source_file="/repo/tutorials/vqe_quickstart.md",
-            start_line=1,
-            end_line=30,
-            chunk_type="doc",
-        ),
-    ]
-
-
-@pytest.fixture()
 def sample_retrieved_chunks():
     """Three sample retrieved chunks with mixed source types and scores.
 
@@ -222,16 +175,3 @@ def mock_llm(mocker):
     )
     llm.n_ctx.return_value = 4096
     return llm
-
-
-@pytest.fixture()
-def mini_faiss_index(sample_chunks):
-    """Real FAISS IndexFlatIP with 5 normalised vectors + chunk list."""
-    dim = 8
-    rng = np.random.default_rng(42)
-    vectors = rng.standard_normal((len(sample_chunks), dim)).astype(np.float32)
-    faiss.normalize_L2(vectors)
-
-    index = faiss.IndexFlatIP(dim)
-    index.add(vectors)
-    return index, sample_chunks

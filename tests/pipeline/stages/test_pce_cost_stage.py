@@ -220,24 +220,6 @@ class TestMeasureAll:
 class TestReduceHistogram:
     """Verify that reduce correctly processes single-histogram results."""
 
-    def test_single_histogram_produces_energy(self):
-        """A single histogram per param_set produces a valid energy."""
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.COUNTS)
-
-        result = stage.reduce(
-            {_meas_key(0): {"00": 30, "01": 10, "10": 20, "11": 40}},
-            env,
-            token=None,
-        )
-
-        assert len(result) == 1
-        value = list(result.values())[0]
-        assert isinstance(value, list)
-        assert len(value) == 1
-        assert isinstance(value[0], float)
-
     def test_different_histograms_produce_different_energies(self):
         """Different shot distributions yield different energies."""
         qubo = np.diag([1.0, 2.0])

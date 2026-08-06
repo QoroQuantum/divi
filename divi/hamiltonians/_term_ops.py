@@ -68,9 +68,9 @@ def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
     Validates that every key is a non-empty string of equal length composed
     only of ``I``, ``X``, ``Y``, ``Z`` and that every coefficient is real.
     Dict keys are unique by construction, so the cancellation gap noted on
-    :func:`~divi.circuits._core._assert_hermitian_spo` (where ``+i X`` and
-    ``-i X`` could cancel to a hermitian sum despite individually being
-    non-hermitian) cannot arise on this path.
+    :func:`_assert_hermitian_spo` (where ``+i X`` and ``-i X`` could cancel to a
+    hermitian sum despite individually being non-hermitian) cannot arise on this
+    path.
     """
     if not terms:
         raise ValueError(

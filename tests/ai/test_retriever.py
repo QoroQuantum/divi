@@ -282,13 +282,28 @@ class TestEnrichChunks:
         assert "return 42" in result[0].text
         assert result[0].text.startswith("[Function: mod.func]")
 
-    def test_max_enrich_limit(self):
-        chunks = [
-            self._make_chunk(
-                f'[Function: m.f{i}]\ndef f{i}():\n    """Doc."""',
-                f"/nonexistent/f{i}.py",
+    def test_max_enrich_limit(self, tmp_path):
+        """Only the first ``max_enrich`` chunks are enriched from disk.
+
+        The sources have to be resolvable: an unreadable path returns early,
+        before the enrichment counter is ever reached.
+        """
+        chunks = []
+        for i in range(10):
+            source = tmp_path / f"f{i}.py"
+            source.write_text(
+                f"def f{i}():\n" '    """Doc."""\n' f"    return {i}\n",
+                encoding="utf-8",
             )
-            for i in range(10)
-        ]
+            chunks.append(
+                self._make_chunk(
+                    f'[Function: m.f{i}]\ndef f{i}():\n    """Doc."""',
+                    str(source),
+                )
+            )
+
         result = enrich_chunks(chunks, max_enrich=2)
+
         assert len(result) == 10
+        enriched = [i for i, chunk in enumerate(result) if "return" in chunk.text]
+        assert enriched == [0, 1]
