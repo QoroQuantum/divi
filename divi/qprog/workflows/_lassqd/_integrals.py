@@ -579,14 +579,14 @@ def rotation_energy_gradient_fn(
             range(block_a.start, block_a.stop), range(block_b.start, block_b.stop)
         )
     rotation_pairs += product(active, virtual)
+    rows, cols = pair_indices(rotation_pairs)
 
     def energy_and_gradient(
         rotation_params: np.ndarray,
     ) -> tuple[float, np.ndarray]:
         generator = np.zeros((n_orb_total, n_orb_total))
-        for idx, (p, q) in enumerate(rotation_pairs):
-            generator[p, q] = rotation_params[idx]
-            generator[q, p] = -rotation_params[idx]
+        generator[rows, cols] = rotation_params
+        generator[cols, rows] = -rotation_params
 
         unitary = scipy.linalg.expm(generator)
         rotated = np.dot(mo_coeff, unitary)
@@ -599,13 +599,19 @@ def rotation_energy_gradient_fn(
                 generator.T, np.dot(unitary, 2.0 * fock), compute_expm=False
             )
         )
-        gradient = np.array(
-            [pullback[p, q] - pullback[q, p] for p, q in rotation_pairs]
-        )
+        gradient = pullback[rows, cols] - pullback[cols, rows]
 
         return energy, gradient
 
     return rotation_pairs, energy_and_gradient
+
+
+def pair_indices(
+    rotation_pairs: Sequence[tuple[int, int]],
+) -> tuple[np.ndarray, np.ndarray]:
+    """Split rotation pairs into row and column index arrays."""
+    pairs = np.asarray(rotation_pairs, dtype=int).reshape(len(rotation_pairs), 2)
+    return pairs[:, 0], pairs[:, 1]
 
 
 def optimize_orbitals(
@@ -737,9 +743,10 @@ def optimize_orbitals(
             )
 
     generator = np.zeros((n_orb_total, n_orb_total))
-    for idx, (p, q) in enumerate(rotation_pairs):
-        generator[p, q] = best_params[idx]
-        generator[q, p] = -best_params[idx]
+    if n_rot > 0:
+        rows, cols = pair_indices(rotation_pairs)
+        generator[rows, cols] = best_params
+        generator[cols, rows] = -best_params
     rotated_mo_coeff = np.dot(mo_coeff, scipy.linalg.expm(generator))
 
     return OrbitalSolve(

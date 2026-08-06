@@ -572,11 +572,13 @@ def test_update_state_warns_when_a_fragment_collapses_to_one_determinant(
     # alpha orbitals, n_beta on the lowest beta orbitals.
     alpha_part = "1" * spec.n_alpha + "0" * (spec.n_orbitals - spec.n_alpha)
     beta_part = "1" * spec.n_beta + "0" * (spec.n_orbitals - spec.n_beta)
-    collapsed_bitstring = alpha_part + beta_part
     mocker.patch(
         "divi.qprog.workflows._lassqd._workflow.SQDSolver.solve",
         return_value=SQDResult(
-            energy=0.0, eigenvector=np.array([1.0]), subspace=[collapsed_bitstring]
+            energy=0.0,
+            amplitudes=np.array([[1.0]]),
+            strings_alpha=(alpha_part,),
+            strings_beta=(beta_part,),
         ),
     )
 
@@ -1545,8 +1547,7 @@ def test_best_energy_tracks_the_lowest_round_not_the_last(exact_sampler_lassqd, 
     last round. Since every round's energy is a variational upper bound, the
     lowest is the tightest bound the run established."""
     ensemble, _ = exact_sampler_lassqd
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=3)
+    ensemble.run(max_rounds=3)
 
     assert len(ensemble.energy_history) == len(ensemble.round_history)
     assert ensemble.best_energy == min(ensemble.energy_history)
@@ -1596,8 +1597,7 @@ def test_stop_reason_is_max_rounds_when_capped(exact_sampler_lassqd):
 
 def test_stop_reason_is_complete_when_converged(exact_sampler_lassqd):
     ensemble, _ = exact_sampler_lassqd
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=12)
+    ensemble.run(max_rounds=12)
     assert ensemble.stop_reason is WorkflowStatus.COMPLETE
 
 
@@ -1696,14 +1696,12 @@ def test_repeated_runs_start_from_a_clean_state(dummy_expval_backend, mocker):
     )
     mocker.patch.object(LASSQD, "_build_fragment_program", _build_exact_sampler_program)
 
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=2)
+    ensemble.run(max_rounds=2)
     first_energy = ensemble.energy
     first_mo_coeff = ensemble.workflow_state.mo_coeff.copy()
     first_rounds = len(ensemble.round_history)
 
-    with pytest.warns(UserWarning, match="no correlation"):
-        ensemble.run(max_rounds=2)
+    ensemble.run(max_rounds=2)
 
     assert len(ensemble.round_history) == first_rounds
     assert ensemble.energy == pytest.approx(first_energy, abs=1e-9)

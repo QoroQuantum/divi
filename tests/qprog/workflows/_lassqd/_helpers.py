@@ -262,8 +262,8 @@ def dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant=0.0):
 #: Energy and MO-coefficient trace of ``exact_sampler_lassqd`` over 4
 #: macro-cycles. The trace fingerprints which of several equivalent orbital
 #: solutions the optimizer reached, so it can move while the energy does not.
-PRODUCT_STATE_ENERGY = -2.2139336088963217
-PRODUCT_STATE_MO_TRACE = -0.9595516448662426
+PRODUCT_STATE_ENERGY = -2.221584047820374
+PRODUCT_STATE_MO_TRACE = -0.9605551058944303
 
 #: Stand-in for a converged VQE's parameters.
 _STUB_BEST_PARAMS = np.array([0.11, 0.22, 0.33])

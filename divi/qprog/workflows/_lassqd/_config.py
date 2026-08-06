@@ -165,14 +165,32 @@ class SQDConfig:
             subspace at ``(k + batch_size) ** 2`` determinants. ``None`` leaves
             it uncapped, and since the cutoff is relative it prunes little: the
             retained set then grows every recovery iteration and the subspace
-            with it, quadratically. Cap it on fragments whose determinant space
-            is large.
+            with it, quadratically. ``max_dim`` bounds the sector outright rather
+            than only the carried part.
+        max_dim: Caps each spin sector, as one integer or an ``(alpha, beta)``
+            pair, so the subspace never exceeds their product. When it binds,
+            strings are kept in priority order: reference, then carried, then
+            sampled by descending sample count.
+        include_reference: Keep the aufbau reference determinant in every batch,
+            bounding the fragment's energy by its reference.
+        symmetrize_spin: Pool the alpha and beta halves together for a
+            spin-exchange invariant subspace. Inactive unless
+            ``n_alpha == n_beta``.
+        recovery_energy_tol: Ends a fragment's recovery once the winning energy
+            moves less than this between iterations and the occupancies have also
+            settled. ``0.0`` (the default) spends every iteration, since a
+            settled iteration does not mean carryover had nothing left to add.
+            Not ``LASSQD``'s ``energy_tol``, which ends the macro-cycle.
+        recovery_occupancies_tol: The occupancy half of that test, on the largest
+            change in any orbital's average occupancy.
 
     Raises:
         ValueError: If ``n_batches``, ``batch_size`` or
             ``n_recovery_iterations`` is below 1; if ``lambda_penalty`` is
-            negative; if ``carryover_cutoff`` is not positive; or if
-            ``max_carryover`` is given without a cutoff or is below 1.
+            negative; if ``carryover_cutoff`` is not positive; if
+            ``max_carryover`` is given without a cutoff or is below 1; if
+            ``max_dim`` is not a positive integer or a pair of them; or if
+            ``recovery_energy_tol`` or ``recovery_occupancies_tol`` is negative.
     """
 
     n_batches: int = 15
@@ -181,6 +199,11 @@ class SQDConfig:
     lambda_penalty: float = 0.2
     carryover_cutoff: float | None = _DEFAULT_CARRYOVER_CUTOFF
     max_carryover: int | None = None
+    max_dim: int | tuple[int, int] | None = None
+    include_reference: bool = True
+    symmetrize_spin: bool = False
+    recovery_energy_tol: float = 0.0
+    recovery_occupancies_tol: float = 0.0
 
     def __post_init__(self):
         if self.n_batches < 1:
@@ -210,3 +233,25 @@ class SQDConfig:
                 raise ValueError(
                     f"max_carryover must be at least 1; got {self.max_carryover}."
                 )
+        if self.max_dim is not None:
+            if isinstance(self.max_dim, tuple):
+                object.__setattr__(
+                    self, "max_dim", tuple(int(dim) for dim in self.max_dim)
+                )
+                if len(self.max_dim) != 2:
+                    raise ValueError(
+                        "max_dim takes one integer or an (alpha, beta) pair; got "
+                        f"{len(self.max_dim)} entries."
+                    )
+                dims = self.max_dim
+            else:
+                dims = (self.max_dim,)
+            for dim in dims:
+                if dim < 1:
+                    raise ValueError(f"max_dim entries must be at least 1; got {dim}.")
+        for name, value in (
+            ("recovery_energy_tol", self.recovery_energy_tol),
+            ("recovery_occupancies_tol", self.recovery_occupancies_tol),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative; got {value}.")

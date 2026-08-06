@@ -485,56 +485,71 @@ def _heaviest_strings(weights: dict[str, float], limit: int | None) -> list[str]
     return ordered if limit is None else ordered[:limit]
 
 
+def ci_string_to_int(half: str) -> int:
+    """Integer form of one spin sector's occupation string, character ``p`` to bit
+    ``p`` -- how PySCF's selected CI addresses determinants."""
+    return int(half[::-1], 2)
+
+
+def _aufbau_string(n_orb: int, n_electrons: int) -> str:
+    """One spin sector of the reference determinant, as the ansatz prepares it at
+    zero parameters: spatial orbitals ``0 .. n_electrons - 1`` filled."""
+    return "1" * n_electrons + "0" * (n_orb - n_electrons)
+
+
+def _occupation_matrix(strings: Sequence[str], n_orb: int) -> np.ndarray:
+    """``(len(strings), n_orb)`` indicator of which orbitals each string fills."""
+    return np.array(
+        [[1.0 if bit == "1" else 0.0 for bit in half] for half in strings]
+    ).reshape(len(strings), n_orb)
+
+
 def carryover_weights(
-    subspace: Sequence[str],
-    eigenvector: np.ndarray,
-    n_orb: int,
+    strings_alpha: Sequence[str],
+    strings_beta: Sequence[str],
+    amplitudes: np.ndarray,
     cutoff: float,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Weigh the alpha and beta strings worth carrying to the next iteration.
 
-    Splits the determinants carrying real weight into their alpha and beta
-    halves, weighting each half by the probability it holds across every
-    determinant containing it.
+    A string is eligible when some determinant containing it clears the cutoff;
+    eligible strings are ranked by their marginal weight over the whole subspace.
 
     The threshold is relative to the largest coefficient because the eigenvector
     is normalized: its typical component falls as ``1 / sqrt(m)``, so a fixed
     threshold would prune almost nothing at large subspace sizes.
 
-    Halves are returned separately because the subspace is rebuilt as their
-    product, so ``k`` of each reintroduce up to ``k ** 2`` determinants,
-    including combinations never sampled together. A half spread thinly over
-    many determinants can therefore outrank a concentrated one.
-
     Args:
-        subspace: Blocked bitstrings spanning the diagonalized subspace.
-        eigenvector: Coefficients over ``subspace``, in the same order.
-        n_orb: Spatial orbitals in the fragment.
-        cutoff: Retain determinants whose ``abs(coefficient)`` exceeds this
-            fraction of the largest coefficient in ``eigenvector``.
+        strings_alpha: Alpha sector strings indexing ``amplitudes``' rows.
+        strings_beta: Beta sector strings indexing its columns.
+        amplitudes: Ground-state coefficients, one row per alpha string.
+        cutoff: Retain strings appearing in a determinant whose
+            ``abs(coefficient)`` exceeds this fraction of the largest.
 
     Returns:
         ``(alpha_weights, beta_weights)``, each mapping string to weight.
     """
-    coefficients = np.asarray(eigenvector, dtype=float)
+    coefficients = np.asarray(amplitudes, dtype=float)
     if coefficients.size == 0:
         return {}, {}
-    largest = float(np.max(np.abs(coefficients)))
+    magnitude = np.abs(coefficients)
+    largest = float(magnitude.max())
     if largest == 0.0:
         return {}, {}
-    threshold = cutoff * largest
 
-    alpha_weights: dict[str, float] = {}
-    beta_weights: dict[str, float] = {}
-    for bitstring, coefficient in zip(subspace, coefficients):
-        if abs(coefficient) <= threshold:
-            continue
-        weight = float(coefficient) ** 2
-        alpha = bitstring[:n_orb]
-        beta = bitstring[n_orb:]
-        alpha_weights[alpha] = alpha_weights.get(alpha, 0.0) + weight
-        beta_weights[beta] = beta_weights.get(beta, 0.0) + weight
+    eligible = magnitude > cutoff * largest
+    probability = coefficients**2
+    alpha_marginal = probability.sum(axis=1)
+    beta_marginal = probability.sum(axis=0)
 
+    alpha_weights = {
+        strings_alpha[int(row)]: float(alpha_marginal[row])
+        for row in np.flatnonzero(eligible.any(axis=1))
+    }
+    beta_weights = {
+        strings_beta[int(col)]: float(beta_marginal[col])
+        for col in np.flatnonzero(eligible.any(axis=0))
+    }
     return alpha_weights, beta_weights
 
 
@@ -642,6 +657,9 @@ def bit_flip_correction(
 class SQDResult:
     """Outcome of one SQD solve.
 
+    The subspace is always the full product of the two sector string lists, which
+    is also the layout PySCF's selected-CI routines take.
+
     Attributes:
         energy: Lowest eigenvalue of the *spin-penalized* projected Hamiltonian,
             ``H + lambda (S^2 - s(s+1))^2``, plus ``constant`` -- not the bare
@@ -652,14 +670,31 @@ class SQDResult:
             LASSQD's reported energy does not come from here: it is recomputed
             by :func:`~divi.qprog.workflows._lassqd._integrals.total_energy` from
             the reassembled RDMs, which carry no penalty.
-        eigenvector: Ground-state coefficients over ``subspace``.
-        subspace: Blocked bitstrings spanning the winning batch's determinants,
-            in the same order as ``eigenvector``.
+        amplitudes: Ground-state coefficients, ``amplitudes[i, j]`` belonging to
+            the determinant pairing ``strings_alpha[i]`` with
+            ``strings_beta[j]``.
+        strings_alpha: Alpha sector occupation strings, ascending by
+            :func:`ci_string_to_int`.
+        strings_beta: Beta sector occupation strings, likewise ascending.
     """
 
     energy: float
-    eigenvector: np.ndarray
-    subspace: list[str]
+    amplitudes: np.ndarray
+    strings_alpha: tuple[str, ...]
+    strings_beta: tuple[str, ...]
+
+    @property
+    def subspace(self) -> list[str]:
+        """Blocked bitstrings spanning the subspace, ordered as
+        ``amplitudes.ravel()``."""
+        return [
+            alpha + beta for alpha in self.strings_alpha for beta in self.strings_beta
+        ]
+
+    @property
+    def eigenvector(self) -> np.ndarray:
+        """``amplitudes`` flattened over :attr:`subspace`'s ordering."""
+        return self.amplitudes.ravel()
 
 
 class SQDSolver:
@@ -685,6 +720,11 @@ class SQDSolver:
         recovery: bool = True,
         carryover_cutoff: float | None = None,
         max_carryover: int | None = None,
+        max_dim: int | tuple[int, int] | None = None,
+        include_reference: bool = True,
+        symmetrize_spin: bool = False,
+        energy_tol: float = 0.0,
+        occupancies_tol: float = 0.0,
         rng: np.random.Generator | None = None,
     ):
         """Initialize the solver.
@@ -711,12 +751,27 @@ class SQDSolver:
                 heaviest, so retention can shrink between iterations. ``None``
                 (default) leaves the subspace bounded only by the fragment's
                 determinant space; worth setting on a wide fragment.
+            max_dim: Caps each spin sector, as one integer or an
+                ``(alpha, beta)`` pair, so the subspace never exceeds their
+                product.
+            include_reference: Keep the aufbau reference determinant in every
+                batch, so the projected energy cannot exceed the reference's.
+            symmetrize_spin: Pool alpha and beta halves together for a
+                spin-exchange invariant subspace. Ignored unless
+                ``n_alpha == n_beta``.
+            energy_tol: Stop iterating once the winning energy moves less than
+                this between iterations and the occupancies have also settled.
+                Zero (the default) never stops early.
+            occupancies_tol: The occupancy half of that test, on the largest
+                change in any orbital's average occupancy.
             rng: Subsampling generator; fresh default when omitted.
 
         Raises:
             ValueError: If ``n_batches``, ``batch_size`` or ``n_iterations`` is
-                less than 1, if ``carryover_cutoff`` is not positive, or if
-                ``max_carryover`` is given without a cutoff or is less than 1.
+                less than 1, if ``carryover_cutoff`` is not positive, if
+                ``max_carryover`` is given without a cutoff or is less than 1,
+                if any ``max_dim`` entry is less than 1, or if ``energy_tol`` or
+                ``occupancies_tol`` is negative.
         """
         if n_batches < 1:
             raise ValueError(f"n_batches must be >= 1, got {n_batches}.")
@@ -736,6 +791,18 @@ class SQDSolver:
                 )
             if max_carryover < 1:
                 raise ValueError(f"max_carryover must be >= 1, got {max_carryover}.")
+        max_dim_alpha, max_dim_beta = (
+            max_dim if isinstance(max_dim, tuple) else (max_dim, max_dim)
+        )
+        for name, dim in (("alpha", max_dim_alpha), ("beta", max_dim_beta)):
+            if dim is not None and dim < 1:
+                raise ValueError(f"max_dim ({name}) must be >= 1, got {dim}.")
+        for name, tol in (
+            ("energy_tol", energy_tol),
+            ("occupancies_tol", occupancies_tol),
+        ):
+            if tol < 0:
+                raise ValueError(f"{name} must be non-negative, got {tol}.")
 
         self.n_orb = n_orb
         self.n_alpha = n_alpha
@@ -747,8 +814,17 @@ class SQDSolver:
         self.recovery = recovery
         self.carryover_cutoff = carryover_cutoff
         self.max_carryover = max_carryover
+        self.max_dim_alpha = max_dim_alpha
+        self.max_dim_beta = max_dim_beta
+        self.include_reference = include_reference
+        # Exchanging the sectors is only a symmetry when they hold equal counts.
+        self.symmetrize_spin = symmetrize_spin and n_alpha == n_beta
+        self.energy_tol = energy_tol
+        self.occupancies_tol = occupancies_tol
         self._rng = np.random.default_rng() if rng is None else rng
         self.occupancy = np.zeros((2, n_orb))
+        self._reference_alpha = _aufbau_string(n_orb, n_alpha)
+        self._reference_beta = _aufbau_string(n_orb, n_beta)
 
     def solve(
         self,
@@ -778,19 +854,12 @@ class SQDSolver:
                 brought into agreement with the target particle symmetry, or
                 if no batch ever produces a candidate eigenvector.
         """
-        # Sorted, not insertion-ordered: the first iteration samples straight
-        # from this list, so a dict built in a different order would draw a
-        # different subspace from the same distribution and the same seed.
-        unique_bs = sorted(probs)
-
         h_spin, g_spin = spin_orbital_integrals(
             one_body, two_body, self.n_orb, one_body_beta
         )
         target_s = 0.5 * abs(self.n_alpha - self.n_beta)
 
-        best_energy = float("inf")
-        best_state = None
-        best_subspace = None
+        best: SQDResult | None = None
 
         # Re-read each iteration, not accumulated: weights from differently
         # normalized eigenvectors are not comparable, and a carried string is
@@ -803,161 +872,241 @@ class SQDSolver:
             self.occupancy[0] = self.n_alpha / self.n_orb
             self.occupancy[1] = self.n_beta / self.n_orb
 
-        for it in range(self.n_iterations):
-            if it == 0 or not self.recovery:
-                valid_bs = filter_symmetry(
-                    unique_bs, self.n_orb, self.n_alpha, self.n_beta
+        previous_energy: float | None = None
+        previous_occupancy: np.ndarray | None = None
+
+        for iteration in range(self.n_iterations):
+            candidates = self._recovered_distribution(probs, iteration)
+
+            results = [
+                self._diagonalize(sectors, h_spin, g_spin, target_s, constant)
+                for sectors in self._draw_batches(
+                    candidates, carried_alpha, carried_beta
                 )
-            else:
-                valid_bs = [
-                    bit_flip_correction(
-                        bs,
-                        self.n_orb,
-                        self.n_alpha,
-                        self.n_beta,
-                        self.occupancy,
-                        self._rng,
-                    )
-                    for bs in unique_bs
-                ]
-                valid_bs = sorted(set(valid_bs))
+            ]
+            winner, occupancies = min(results, key=lambda pair: pair[0].energy)
+            if best is None or winner.energy < best.energy:
+                best = winner
 
-            if not valid_bs:
-                raise ValueError(
-                    "No valid configurations found matching particle symmetry!"
-                )
-
-            bs_probs = []
-            for bs in valid_bs:
-                if bs in probs:
-                    bs_probs.append(probs[bs])
-                else:
-                    bs_probs.append(1.0 / len(valid_bs))
-
-            prob_sum = sum(bs_probs)
-            if prob_sum > 0:
-                bs_probs = [p / prob_sum for p in bs_probs]
-            else:
-                bs_probs = [1.0 / len(valid_bs)] * len(valid_bs)
-
-            batches = []
-            for _ in range(self.n_batches):
-                sampled = self._rng.choice(
-                    valid_bs, size=self.batch_size, replace=True, p=bs_probs
-                )
-
-                alpha_pool = set()
-                beta_pool = set()
-                for bs in sampled:
-                    alpha_pool.add(bs[: self.n_orb])
-                    beta_pool.add(bs[self.n_orb :])
-
-                # Carried strings join this batch's own pools, so they also pair
-                # with freshly sampled halves rather than only with each other.
-                alpha_pool.update(carried_alpha)
-                beta_pool.update(carried_beta)
-
-                unique_alpha = [s for s in alpha_pool if s.count("1") == self.n_alpha]
-                unique_beta = [s for s in beta_pool if s.count("1") == self.n_beta]
-
-                s_k = set()
-                for a in unique_alpha:
-                    for b in unique_beta:
-                        s_k.add(a + b)
-
-                if not s_k:
-                    fallback_samples = self._rng.choice(
-                        valid_bs,
-                        size=min(self.batch_size, len(valid_bs)),
-                        replace=False,
-                        p=bs_probs,
-                    )
-                    s_k.update(fallback_samples)
-
-                batches.append(list(s_k))
-
-            batch_energies = []
-            batch_states = []
-            batch_subspaces = []
-            batch_occupancies = []
-
-            for s_k in batches:
-                m_dim = len(s_k)
-
-                dets = [bitstring_to_spatial_det(bs, self.n_orb) for bs in s_k]
-                dets_spin = [
-                    spatial_to_spin_occupations(d[0], d[1], self.n_orb) for d in dets
-                ]
-
-                h_proj, s2_proj = projected_matrices(
-                    dets, dets_spin, h_spin, g_spin, self.n_orb
-                )
-
-                penalty_matrix = s2_proj - target_s * (target_s + 1.0) * np.eye(m_dim)
-                penalty_matrix = self.lambda_penalty * np.dot(
-                    penalty_matrix, penalty_matrix
-                )
-
-                eigenvals, eigenvecs = scipy.linalg.eigh(h_proj + penalty_matrix)
-
-                e_k = eigenvals[0] + constant
-                v_k = np.asarray(eigenvecs)[:, 0]
-
-                batch_energies.append(e_k)
-                batch_states.append(v_k)
-                batch_subspaces.append(s_k)
-
-                occ_k = np.zeros((2, self.n_orb))
-                for i, c in enumerate(v_k):
-                    coeff_sq = c**2
-                    alpha_occ, beta_occ = dets[i]
-                    for p in alpha_occ:
-                        occ_k[0, p] += coeff_sq
-                    for p in beta_occ:
-                        occ_k[1, p] += coeff_sq
-                batch_occupancies.append(occ_k)
-
-            best_batch_idx = int(np.argmin(batch_energies))
-            energy_iter = batch_energies[best_batch_idx]
-
-            if energy_iter < best_energy:
-                best_energy = energy_iter
-                best_state = batch_states[best_batch_idx]
-                best_subspace = batch_subspaces[best_batch_idx]
+            occupancy = np.mean([occ for _, occ in results], axis=0)
+            converged = (
+                previous_energy is not None
+                and abs(previous_energy - winner.energy) < self.energy_tol
+                and float(np.abs(occupancy - previous_occupancy).max())
+                < self.occupancies_tol
+            )
+            self.occupancy = occupancy
+            if converged:
+                break
+            previous_energy = winner.energy
+            previous_occupancy = occupancy
 
             if self.carryover_cutoff is not None:
                 alpha_weights, beta_weights = carryover_weights(
-                    [str(bs) for bs in batch_subspaces[best_batch_idx]],
-                    batch_states[best_batch_idx],
-                    self.n_orb,
+                    winner.strings_alpha,
+                    winner.strings_beta,
+                    winner.amplitudes,
                     self.carryover_cutoff,
                 )
                 carried_alpha = _heaviest_strings(alpha_weights, self.max_carryover)
                 carried_beta = _heaviest_strings(beta_weights, self.max_carryover)
 
-            self.occupancy = np.mean(batch_occupancies, axis=0)
-
-        if best_state is None or best_subspace is None:
+        if best is None:
             raise ValueError("No batch produced a candidate eigenvector.")
+        return best
 
-        return SQDResult(
-            energy=float(best_energy),
-            eigenvector=best_state,
-            subspace=[str(bs) for bs in best_subspace],
+    def _recovered_distribution(
+        self, probs: dict[str, float], iteration: int
+    ) -> dict[str, float]:
+        """The distribution this iteration samples its batches from.
+
+        Iteration zero, and every iteration when ``recovery`` is off, postselects
+        on particle number. Otherwise each bitstring is bit-flip corrected and its
+        probability added to whatever the correction produced, so several samples
+        collapsing onto one determinant leave it correspondingly heavier.
+
+        Raises:
+            ValueError: If no sampled bitstring survives postselection.
+        """
+        # Sorted, not insertion-ordered: a dict built in a different order would
+        # otherwise draw a different subspace from the same seed.
+        ordered = sorted(probs)
+        weights: dict[str, float] = {}
+        if iteration == 0 or not self.recovery:
+            for bits in filter_symmetry(ordered, self.n_orb, self.n_alpha, self.n_beta):
+                weights[bits] = weights.get(bits, 0.0) + probs[bits]
+        else:
+            for bits in ordered:
+                corrected = bit_flip_correction(
+                    bits,
+                    self.n_orb,
+                    self.n_alpha,
+                    self.n_beta,
+                    self.occupancy,
+                    self._rng,
+                )
+                weights[corrected] = weights.get(corrected, 0.0) + probs[bits]
+
+        if not weights:
+            raise ValueError(
+                "No valid configurations found matching particle symmetry!"
+            )
+
+        total = sum(weights.values())
+        if total <= 0:
+            uniform = 1.0 / len(weights)
+            return {bits: uniform for bits in weights}
+        return {bits: weight / total for bits, weight in weights.items()}
+
+    def _draw_batches(
+        self,
+        candidates: dict[str, float],
+        carried_alpha: Sequence[str],
+        carried_beta: Sequence[str],
+    ) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+        """Subsample ``n_batches`` subspaces, each as its two sector string lists.
+
+        Batches draw without replacement (arXiv:2405.05068), capped at the number
+        of configurations carrying positive probability.
+        """
+        strings = sorted(candidates)
+        probabilities = np.array([candidates[bits] for bits in strings])
+        size = min(self.batch_size, int(np.count_nonzero(probabilities)))
+
+        batches = []
+        for _ in range(self.n_batches):
+            sampled = self._rng.choice(
+                strings, size=size, replace=False, p=probabilities
+            )
+            alpha_counts: dict[str, int] = {}
+            beta_counts: dict[str, int] = {}
+            for bits in sampled:
+                alpha = bits[: self.n_orb]
+                beta = bits[self.n_orb :]
+                alpha_counts[alpha] = alpha_counts.get(alpha, 0) + 1
+                beta_counts[beta] = beta_counts.get(beta, 0) + 1
+
+            if self.symmetrize_spin:
+                merged: dict[str, int] = dict(alpha_counts)
+                for half, count in beta_counts.items():
+                    merged[half] = merged.get(half, 0) + count
+                alpha_counts = beta_counts = merged
+                carried_alpha = carried_beta = sorted({*carried_alpha, *carried_beta})
+
+            batches.append(
+                (
+                    self._sector_strings(
+                        alpha_counts,
+                        carried_alpha,
+                        self._reference_alpha,
+                        self.n_alpha,
+                        self.max_dim_alpha,
+                    ),
+                    self._sector_strings(
+                        beta_counts,
+                        carried_beta,
+                        self._reference_beta,
+                        self.n_beta,
+                        self.max_dim_beta,
+                    ),
+                )
+            )
+        return batches
+
+    def _sector_strings(
+        self,
+        counts: dict[str, int],
+        carried: Sequence[str],
+        reference: str,
+        target: int,
+        max_dim: int | None,
+    ) -> tuple[str, ...]:
+        """One spin sector's strings, priority-ordered, capped, then sorted.
+
+        Priority decides only what a binding ``max_dim`` keeps. The returned order
+        is ascending :func:`ci_string_to_int`, which is what indexes the amplitude
+        matrix.
+        """
+        sampled = sorted(counts, key=lambda half: (-counts[half], half))
+        priority = ([reference] if self.include_reference else []) + list(carried)
+
+        kept: dict[str, None] = {}
+        for half in priority + sampled:
+            if half.count("1") == target:
+                kept.setdefault(half, None)
+        selected = list(kept)[:max_dim] if max_dim is not None else list(kept)
+        return tuple(sorted(selected, key=ci_string_to_int))
+
+    def _diagonalize(
+        self,
+        sectors: tuple[tuple[str, ...], tuple[str, ...]],
+        h_spin: np.ndarray,
+        g_spin: np.ndarray,
+        target_s: float,
+        constant: float,
+    ) -> tuple[SQDResult, np.ndarray]:
+        """Diagonalize one batch's subspace, returning its result and occupancy."""
+        strings_alpha, strings_beta = sectors
+        dets = [
+            bitstring_to_spatial_det(alpha + beta, self.n_orb)
+            for alpha in strings_alpha
+            for beta in strings_beta
+        ]
+        dets_spin = [
+            spatial_to_spin_occupations(alpha, beta, self.n_orb) for alpha, beta in dets
+        ]
+
+        h_proj, s2_proj = projected_matrices(
+            dets, dets_spin, h_spin, g_spin, self.n_orb
         )
+        deviation = s2_proj - target_s * (target_s + 1.0) * np.eye(len(dets))
+        eigenvals, eigenvecs = scipy.linalg.eigh(
+            h_proj + self.lambda_penalty * (deviation @ deviation)
+        )
+        amplitudes = np.asarray(eigenvecs)[:, 0].reshape(
+            len(strings_alpha), len(strings_beta)
+        )
+
+        # A string's orbitals are occupied in every determinant built on it, so
+        # the sector marginals suffice.
+        probability = amplitudes**2
+        occupancy = np.stack(
+            [
+                probability.sum(axis=1) @ _occupation_matrix(strings_alpha, self.n_orb),
+                probability.sum(axis=0) @ _occupation_matrix(strings_beta, self.n_orb),
+            ]
+        )
+        result = SQDResult(
+            energy=float(eigenvals[0] + constant),
+            amplitudes=amplitudes,
+            strings_alpha=strings_alpha,
+            strings_beta=strings_beta,
+        )
+        return result, occupancy
+
+
+#: Widest fragment PySCF's selected-CI determinant addressing can take, whose
+#: CI strings are 64-bit words. Above it the reconstruction falls back to the
+#: in-house kernel, which carries unbounded Python integers.
+_MAX_PYSCF_ORBITALS = 63
 
 
 def compute_spatial_rdms(
-    subspace_dets: list[tuple[tuple[int, ...], tuple[int, ...]]],
-    eigenvector: np.ndarray,
+    strings_alpha: Sequence[str],
+    strings_beta: Sequence[str],
+    amplitudes: np.ndarray,
     n_orb: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Reconstruct the spatial 1- and 2-RDM from an SQD eigenvector.
+    """Reconstruct the spatial 1- and 2-RDM from an SQD state.
+
+    Delegates to PySCF's selected-CI contractions; fragments wider than
+    :data:`_MAX_PYSCF_ORBITALS` go through :func:`_spatial_rdms_exact` instead.
 
     Args:
-        subspace_dets: ``(alpha_occ, beta_occ)`` spatial-orbital pairs for each
-            subspace determinant, in the same order as ``eigenvector``.
-        eigenvector: SQD ground-state coefficients over ``subspace_dets``.
+        strings_alpha: Alpha sector strings indexing ``amplitudes``' rows,
+            ascending by :func:`ci_string_to_int`.
+        strings_beta: Beta sector strings indexing its columns, likewise.
+        amplitudes: SQD ground-state coefficients over their product.
         n_orb: Number of spatial orbitals.
 
     Returns:
@@ -965,6 +1114,39 @@ def compute_spatial_rdms(
         in PySCF's active-space convention, where ``rdm1`` is the spin trace
         ``rdm1_alpha + rdm1_beta``.
     """
+    if n_orb > _MAX_PYSCF_ORBITALS:
+        return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)
+
+    from pyscf.fci.selected_ci import _as_SCIvector, make_rdm1s, make_rdm2
+
+    ci_strings = (
+        np.array([ci_string_to_int(half) for half in strings_alpha], dtype=np.int64),
+        np.array([ci_string_to_int(half) for half in strings_beta], dtype=np.int64),
+    )
+    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
+    civec = _as_SCIvector(np.ascontiguousarray(amplitudes, dtype=float), ci_strings)
+    rdm1_alpha, rdm1_beta = make_rdm1s(civec, n_orb, nelec)
+    rdm2 = make_rdm2(civec, n_orb, nelec)
+    return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta
+
+
+def _spatial_rdms_exact(
+    strings_alpha: Sequence[str],
+    strings_beta: Sequence[str],
+    amplitudes: np.ndarray,
+    n_orb: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Reconstruct both RDMs from the second-quantized definitions directly.
+
+    One pass over every pair of determinants, so orders of magnitude slower than
+    :func:`compute_spatial_rdms`'s usual path.
+    """
+    subspace_dets = [
+        bitstring_to_spatial_det(alpha + beta, n_orb)
+        for alpha in strings_alpha
+        for beta in strings_beta
+    ]
+    eigenvector = np.asarray(amplitudes, dtype=float).ravel()
     m_dim = len(eigenvector)
 
     dets_spin = [spatial_to_spin_occupations(d[0], d[1], n_orb) for d in subspace_dets]

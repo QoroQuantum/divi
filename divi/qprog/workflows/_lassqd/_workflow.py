@@ -46,7 +46,6 @@ from ._integrals import (
 )
 from ._sqd import (
     SQDSolver,
-    bitstring_to_spatial_det,
     compute_spatial_rdms,
     probs_to_sqd_bitstrings,
 )
@@ -1150,6 +1149,11 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 lambda_penalty=self._sqd.lambda_penalty,
                 carryover_cutoff=self._sqd.carryover_cutoff,
                 max_carryover=self._sqd.max_carryover,
+                max_dim=self._sqd.max_dim,
+                include_reference=self._sqd.include_reference,
+                symmetrize_spin=self._sqd.symmetrize_spin,
+                energy_tol=self._sqd.recovery_energy_tol,
+                occupancies_tol=self._sqd.recovery_occupancies_tol,
                 rng=self._rng.spawn(1)[0],
             )
             self._solvers[index] = solver
@@ -1256,8 +1260,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     "backend shot count or n_recovery_iterations."
                 ) from exc
 
-            subspace_sizes.append(len(set(result.subspace)))
-            if len(set(result.subspace)) == 1:
+            subspace_size = int(result.amplitudes.size)
+            subspace_sizes.append(subspace_size)
+            if subspace_size == 1:
                 warn(
                     f"{program_id}'s recovered subspace contains only one "
                     "determinant: this round captured no correlation energy "
@@ -1267,11 +1272,11 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     stacklevel=2,
                 )
 
-            dets = [
-                bitstring_to_spatial_det(bs, spec.n_orbitals) for bs in result.subspace
-            ]
             rdm1, rdm2, rdm1_alpha, rdm1_beta = compute_spatial_rdms(
-                dets, result.eigenvector, spec.n_orbitals
+                result.strings_alpha,
+                result.strings_beta,
+                result.amplitudes,
+                spec.n_orbitals,
             )
             new_fragments.append(
                 FragmentState(

@@ -17,9 +17,11 @@ import divi.qprog.workflows._lassqd._sqd as sqd_module
 from divi.qprog.workflows._lassqd._sqd import (
     SQDSolver,
     _heaviest_strings,
+    _spatial_rdms_exact,
     bit_flip_correction,
     bitstring_to_spatial_det,
     carryover_weights,
+    ci_string_to_int,
     compute_spatial_rdms,
     filter_symmetry,
     projected_matrices,
@@ -509,6 +511,10 @@ def test_batch_size_sets_the_number_of_samples_drawn(batch_size, expected_subspa
     documented behavior from the ``n_samples = sqrt(batch_size) / 2`` scaling
     it replaced, under which ``batch_size=8`` drew a single sample and left the
     subspace at one determinant -- the mean-field answer, for any budget.
+
+    ``include_reference=False`` so the subspace is exactly what was drawn: the
+    reference determinant would otherwise contribute a half of its own and the
+    single-draw case could no longer land on one determinant.
     """
     one_body, two_body, n_orb, constant = _h2_integrals()
     probs = uniform_full_space_probs(n_orb, 1, 1)
@@ -521,6 +527,7 @@ def test_batch_size_sets_the_number_of_samples_drawn(batch_size, expected_subspa
         batch_size=batch_size,
         n_iterations=1,
         lambda_penalty=0.0,
+        include_reference=False,
         rng=np.random.default_rng(0),
     )
     result = solver.solve(probs, one_body, two_body, constant=constant)
@@ -542,7 +549,9 @@ def test_solver_carries_the_best_energy_across_iterations():
 
     ``batch_size=1`` is load-bearing: 2 or more saturates this 9-determinant
     space in one iteration, so both solves hit the exact ground state and the
-    comparison stops discriminating.
+    comparison stops discriminating. So is ``include_reference=False``: the
+    reference determinant here *is* the ground state, so including it would hand
+    both solves the answer on iteration zero.
     """
     n_orb, n_alpha, n_beta = 3, 1, 1
     one_body = np.diag([-10.0, -0.1, 0.2])
@@ -553,6 +562,7 @@ def test_solver_carries_the_best_energy_across_iterations():
         batch_size=1,
         lambda_penalty=0.0,
         recovery=False,
+        include_reference=False,
     )
 
     single = SQDSolver(
@@ -618,6 +628,7 @@ def test_carryover_grows_the_subspace_across_iterations(monkeypatch):
         n_iterations=5,
         lambda_penalty=0.0,
         recovery=False,
+        include_reference=False,
     )
     energy = (
         SQDSolver(
@@ -648,7 +659,12 @@ def test_carryover_grows_the_subspace_across_iterations(monkeypatch):
 def test_carryover_can_recover_the_full_determinant_space(monkeypatch):
     """The sharpest statement of what retention buys: on H4 with a sampling
     budget that reaches a quarter of the space, accumulating across iterations
-    completes it and the projected energy becomes exactly FCI."""
+    completes it and the projected energy becomes exactly FCI.
+
+    Runs at the default tolerances, which are zero: early stopping would end the
+    run before the accumulation finishes, which is exactly why it is opt-in (see
+    ``test_the_convergence_break_can_stop_carryover_short``).
+    """
     one_body, two_body, n_orb, _ = _h4_integrals()
     probs = uniform_full_space_probs(n_orb, 2, 2)
     exact = dense_fci_energy(one_body, two_body, 2, 2, 0.0)
@@ -660,6 +676,7 @@ def test_carryover_can_recover_the_full_determinant_space(monkeypatch):
         n_iterations=5,
         lambda_penalty=0.0,
         recovery=False,
+        include_reference=False,
     )
     plain = SQDSolver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
         one_body=one_body, two_body=two_body, probs=probs
@@ -673,6 +690,45 @@ def test_carryover_can_recover_the_full_determinant_space(monkeypatch):
 
     assert len(set(carried.subspace)) == full_space
     assert carried.energy == pytest.approx(exact, abs=1e-9)
+
+
+def test_the_convergence_break_can_stop_carryover_short():
+    """Pins the cost of ending recovery early, which is why it is opt-in.
+
+    Carryover improves the subspace non-monotonically, so the break stops 6
+    determinants and 11.7 mHa short here. Tolerances are passed explicitly since
+    they default to zero.
+    """
+    one_body, two_body, n_orb, _ = _h4_integrals()
+    probs = uniform_full_space_probs(n_orb, 2, 2)
+    exact = dense_fci_energy(one_body, two_body, 2, 2, 0.0)
+    kwargs = dict(
+        n_batches=1,
+        batch_size=4,
+        n_iterations=5,
+        lambda_penalty=0.0,
+        recovery=False,
+        include_reference=False,
+        carryover_cutoff=1e-2,
+    )
+
+    stopped = SQDSolver(
+        n_orb,
+        2,
+        2,
+        energy_tol=1e-8,
+        occupancies_tol=1e-5,
+        rng=np.random.default_rng(0),
+        **kwargs,
+    ).solve(probs, one_body, two_body)
+    exhaustive = SQDSolver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
+        probs, one_body, two_body
+    )
+
+    assert stopped.amplitudes.size == 30
+    assert exhaustive.amplitudes.size == 36
+    assert stopped.energy - exact == pytest.approx(1.17e-2, rel=0.05)
+    assert exhaustive.energy == pytest.approx(exact, abs=1e-9)
 
 
 def test_carried_strings_persist_through_an_iteration_that_does_not_resample_them(
@@ -698,6 +754,7 @@ def test_carried_strings_persist_through_an_iteration_that_does_not_resample_the
         n_iterations=5,
         lambda_penalty=0.0,
         recovery=False,
+        include_reference=False,
         carryover_cutoff=1e-3,
         rng=np.random.default_rng(3),
     ).solve(one_body=one_body, two_body=two_body, probs=probs)
@@ -713,13 +770,34 @@ def test_carried_strings_persist_through_an_iteration_that_does_not_resample_the
 def test_carryover_weights_rank_the_halves_by_probability():
     """The cap keeps the heaviest strings, so the weights it ranks by must
     follow the eigenvector's probability rather than the order encountered."""
-    n_orb = 3
-    subspace = ["100010", "010001", "001100"]
-    eigenvector = np.array([0.9, 0.4, 0.1])
+    strings_alpha = ("100", "010", "001")
+    strings_beta = ("010", "001", "100")
+    amplitudes = np.diag([0.9, 0.4, 0.1])
 
-    alpha_weights, _ = carryover_weights(subspace, eigenvector, n_orb, cutoff=1e-8)
+    alpha_weights, _ = carryover_weights(
+        strings_alpha, strings_beta, amplitudes, cutoff=1e-8
+    )
     assert alpha_weights["100"] > alpha_weights["010"] > alpha_weights["001"]
     assert alpha_weights["100"] == pytest.approx(0.81)
+
+
+def test_carryover_weights_rank_by_the_full_marginal_not_the_eligible_part():
+    """A string's rank must come from its weight across the whole subspace, not
+    only from the determinants that cleared the cutoff: summing eligible ones
+    alone ranks ``01`` first and loses the heavier ``10``."""
+    strings_alpha = ("10", "01")
+    strings_beta = ("10", "01")
+    amplitudes = np.array([[0.3, 0.9], [0.4, 0.0]])
+
+    alpha_weights, _ = carryover_weights(
+        strings_alpha, strings_beta, amplitudes, cutoff=0.4
+    )
+
+    # 0.9 is the largest, so the cutoff sits at 0.36: only 0.4 and 0.9 clear it.
+    assert set(alpha_weights) == {"10", "01"}
+    assert alpha_weights["10"] == pytest.approx(0.3**2 + 0.9**2)
+    assert alpha_weights["01"] == pytest.approx(0.4**2)
+    assert alpha_weights["10"] > alpha_weights["01"]
 
 
 def test_the_cap_keeps_the_heaviest_string_not_the_first_one():
@@ -749,15 +827,24 @@ def test_carryover_cutoff_prunes_relative_to_the_largest_coefficient():
     any subspace size: a normalized eigenvector's components fall as
     1/sqrt(m), so an absolute threshold would prune almost nothing at large m.
     Scaling the whole vector therefore must not change what is retained."""
-    subspace = ["1010", "0101", "1001"]
-    vector = np.array([0.8, 0.5, 0.05])
+    strings_alpha = ("10", "01")
+    strings_beta = ("10", "01")
+    # Determinants "1010" (0.8), "0101" (0.5) and "1001" (0.05); "0110" is absent.
+    amplitudes = np.array([[0.8, 0.05], [0.0, 0.5]])
 
-    kept = carryover_weights(subspace, vector, n_orb=2, cutoff=0.1)[0]
-    scaled = carryover_weights(subspace, vector / 100.0, n_orb=2, cutoff=0.1)[0]
+    kept = carryover_weights(strings_alpha, strings_beta, amplitudes, cutoff=0.1)[1]
+    scaled = carryover_weights(
+        strings_alpha, strings_beta, amplitudes / 100.0, cutoff=0.1
+    )[1]
 
-    # 0.05 is below a tenth of 0.8, so its determinant drops out.
+    # 0.05 is below a tenth of 0.8, and it is the only determinant placing beta
+    # "01" alongside alpha "10", so beta "01" survives only through "0101".
     assert set(kept) == {"10", "01"}
     assert set(kept) == set(scaled)
+
+    # Raising the cutoff past 0.5 leaves only the "1010" determinant eligible.
+    pruned = carryover_weights(strings_alpha, strings_beta, amplitudes, cutoff=0.7)[1]
+    assert set(pruned) == {"10"}
 
 
 @pytest.mark.parametrize("cap", [1, 2])
@@ -785,6 +872,7 @@ def test_max_carryover_bounds_the_subspace(monkeypatch, cap):
             n_iterations=5,
             lambda_penalty=0.0,
             recovery=False,
+            include_reference=False,
             carryover_cutoff=1e-8,
             max_carryover=max_carryover,
             rng=np.random.default_rng(3),
@@ -818,57 +906,283 @@ def test_carryover_rejects_invalid_configuration(kwargs, match):
         SQDSolver(2, 1, 1, **kwargs)
 
 
-def test_recovered_bitstrings_deduplicate_in_sorted_order(monkeypatch):
-    """The recovery branch must deduplicate corrected bitstrings with
-    ``sorted(set(...))``, not ``list(set(...))``: plain ``set`` iteration
-    order depends on Python's per-process string hash randomization, so
-    ``rng.choice`` draws from it would vary across process launches even
-    under a fixed seed.
+def test_recovery_accumulates_probability_onto_collapsed_bitstrings():
+    """Correction is many-to-one, and the collapsed multiplicity must survive it.
 
-    Spies on the ``sorted`` name in the ``_sqd`` module (module-level
-    attribute lookup shadows the builtin there) during a ``solve()`` that
-    exercises the recovery branch, keeping only calls whose argument is a
-    set of bitstrings -- the dedup call's signature, which ``list(set(...))``
-    removes -- and checks each result is ordered and duplicate-free.
+    Deduplicating with a ``set`` and looking each survivor up in the original
+    distribution -- what this replaced -- discards the 0.9 funnelled through
+    ``1111`` and returns a flat distribution instead.
     """
-    captured = []
-    real_sorted = sorted
-
-    def spy_sorted(iterable, *args, **kwargs):
-        materialized = list(iterable)
-        result = real_sorted(materialized, *args, **kwargs)
-        if (
-            isinstance(iterable, set)
-            and materialized
-            and isinstance(materialized[0], str)
-        ):
-            captured.append(result)
-        return result
-
-    monkeypatch.setattr(sqd_module, "sorted", spy_sorted, raising=False)
-
-    n_orb, n_alpha, n_beta = 3, 1, 1
-    one_body = np.diag([-10.0, -0.1, 0.2])
-    two_body = np.zeros((n_orb,) * 4)
-    probs = uniform_full_space_probs(n_orb, n_alpha, n_beta)
-
+    n_orb = 2
     solver = SQDSolver(
         n_orb,
-        n_alpha,
-        n_beta,
-        n_batches=2,
-        batch_size=4,
+        1,
+        1,
         n_iterations=2,
-        recovery=True,
+        occupancies_tol=0.0,
+        rng=np.random.default_rng(0),
+    )
+    solver.occupancy = np.full((2, n_orb), 0.5)
+    probs = {"1111": 0.9, "1010": 0.1}
+
+    recovered = solver._recovered_distribution(probs, iteration=1)
+
+    assert sum(recovered.values()) == pytest.approx(1.0)
+    assert all(
+        bits[:n_orb].count("1") == 1 and bits[n_orb:].count("1") == 1
+        for bits in recovered
+    )
+    # "1111" corrects to one of the four valid determinants, keeping its 0.9;
+    # whichever that is must dominate, and a uniform rebuild could not.
+    assert max(recovered.values()) == pytest.approx(0.9, abs=1e-12)
+
+
+def test_recovery_leaves_the_first_iteration_on_the_sampled_probabilities():
+    """Iteration zero postselects rather than corrects, so survivors keep their
+    sampled weights renormalized."""
+    solver = SQDSolver(2, 1, 1, rng=np.random.default_rng(0))
+    probs = {"1010": 0.6, "0101": 0.2, "1100": 0.2}
+
+    recovered = solver._recovered_distribution(probs, iteration=0)
+
+    # "1100" holds both electrons in the alpha sector, so postselection drops it.
+    assert recovered == {"1010": pytest.approx(0.75), "0101": pytest.approx(0.25)}
+
+
+def test_a_batch_draws_distinct_configurations():
+    """A batch of size k contributes k distinct configurations. With replacement,
+    4 draws from 4 equally likely candidates reach all of them ~9% of the time."""
+    solver = SQDSolver(
+        2,
+        1,
+        1,
+        n_batches=1,
+        batch_size=4,
+        include_reference=False,
+        rng=np.random.default_rng(0),
+    )
+    candidates = dict.fromkeys(["1010", "1001", "0110", "0101"], 0.25)
+
+    for _ in range(20):
+        ((strings_alpha, strings_beta),) = solver._draw_batches(candidates, [], [])
+        # All four determinants means both halves appeared in both sectors.
+        assert set(strings_alpha) == {"10", "01"}
+        assert set(strings_beta) == {"10", "01"}
+
+
+def test_a_batch_cannot_ask_for_more_than_the_positive_probability_pool():
+    """An oversized batch_size must clamp to the positive-probability pool rather
+    than raise."""
+    solver = SQDSolver(
+        2,
+        1,
+        1,
+        n_batches=1,
+        batch_size=100,
+        include_reference=False,
+        rng=np.random.default_rng(0),
+    )
+    candidates = {"1010": 0.5, "0101": 0.5, "1001": 0.0}
+
+    ((strings_alpha, strings_beta),) = solver._draw_batches(candidates, [], [])
+
+    assert set(strings_alpha) | set(strings_beta) == {"10", "01"}
+
+
+def test_sector_strings_are_ordered_for_pyscf_addressing():
+    """PySCF addresses determinants by ascending CI-string integer, which is not
+    the strings' lexicographic order since bit ``p`` is character ``p``."""
+    solver = SQDSolver(3, 1, 1, rng=np.random.default_rng(0))
+    counts = {"100": 1, "010": 1, "001": 1}
+
+    strings = solver._sector_strings(counts, [], "100", target=1, max_dim=None)
+
+    assert [ci_string_to_int(half) for half in strings] == [1, 2, 4]
+    assert strings == ("100", "010", "001")
+    # Lexicographic ordering would have put "001" first.
+    assert strings != tuple(sorted(strings))
+
+
+def test_the_reference_determinant_is_always_available():
+    """The aufbau determinant must be in the subspace even when sampling never
+    produced it, bounding the fragment's energy by its reference."""
+    n_orb = 3
+    one_body = np.diag([-10.0, -0.1, 0.2])
+    two_body = np.zeros((n_orb,) * 4)
+    # Only a doubly-excited determinant is ever sampled.
+    probs = {"001001": 1.0}
+    kwargs = dict(
+        n_batches=1,
+        batch_size=1,
+        n_iterations=1,
         lambda_penalty=0.0,
         rng=np.random.default_rng(0),
     )
-    solver.solve(probs, one_body, two_body)
 
-    assert captured, "expected the recovery branch to call sorted(set(...))"
-    for call in captured:
-        assert call == sorted(call)
-        assert len(call) == len(set(call))
+    without = SQDSolver(n_orb, 1, 1, include_reference=False, **kwargs).solve(
+        probs, one_body, two_body
+    )
+    with_reference = SQDSolver(n_orb, 1, 1, include_reference=True, **kwargs).solve(
+        probs, one_body, two_body
+    )
+
+    assert without.strings_alpha == ("001",)
+    assert without.energy == pytest.approx(0.4, abs=1e-9)
+    # The reference "100100" puts both electrons in orbital 0.
+    assert "100" in with_reference.strings_alpha
+    assert with_reference.energy == pytest.approx(-20.0, abs=1e-9)
+
+
+@pytest.mark.parametrize("max_dim", [1, 2, (1, 3), (3, 1)])
+def test_max_dim_caps_each_spin_sector(max_dim):
+    """The cap binds per sector, so the subspace never exceeds their product."""
+    one_body, two_body, n_orb, _ = _h4_integrals()
+    probs = uniform_full_space_probs(n_orb, 2, 2)
+    cap_alpha, cap_beta = max_dim if isinstance(max_dim, tuple) else (max_dim, max_dim)
+
+    result = SQDSolver(
+        n_orb,
+        2,
+        2,
+        n_batches=2,
+        batch_size=6,
+        n_iterations=4,
+        lambda_penalty=0.0,
+        carryover_cutoff=1e-8,
+        max_dim=max_dim,
+        rng=np.random.default_rng(0),
+    ).solve(probs, one_body, two_body)
+
+    assert len(result.strings_alpha) <= cap_alpha
+    assert len(result.strings_beta) <= cap_beta
+    assert result.amplitudes.shape == (
+        len(result.strings_alpha),
+        len(result.strings_beta),
+    )
+
+
+def test_max_dim_keeps_the_reference_when_the_cap_binds():
+    """At ``max_dim=1`` the one surviving string per sector must be the reference,
+    whatever was sampled."""
+    n_orb = 3
+    one_body = np.diag([-10.0, -0.1, 0.2])
+    two_body = np.zeros((n_orb,) * 4)
+    probs = uniform_full_space_probs(n_orb, 1, 1)
+
+    result = SQDSolver(
+        n_orb,
+        1,
+        1,
+        n_batches=1,
+        batch_size=8,
+        n_iterations=1,
+        lambda_penalty=0.0,
+        max_dim=1,
+        rng=np.random.default_rng(0),
+    ).solve(probs, one_body, two_body)
+
+    assert result.strings_alpha == ("100",)
+    assert result.strings_beta == ("100",)
+
+
+def test_symmetrize_spin_pools_the_sectors_together():
+    """Sampling only "1001" offers alpha "10" and beta "01" separately; the merged
+    pool offers both to both, spanning the singlet and triplet."""
+    n_orb = 2
+    one_body = np.diag([-1.0, -0.5])
+    two_body = np.zeros((n_orb,) * 4)
+    probs = {"1001": 1.0}
+    kwargs = dict(
+        n_batches=1,
+        batch_size=4,
+        n_iterations=1,
+        lambda_penalty=0.0,
+        include_reference=False,
+        rng=np.random.default_rng(0),
+    )
+
+    separate = SQDSolver(n_orb, 1, 1, symmetrize_spin=False, **kwargs).solve(
+        probs, one_body, two_body
+    )
+    merged = SQDSolver(n_orb, 1, 1, symmetrize_spin=True, **kwargs).solve(
+        probs, one_body, two_body
+    )
+
+    assert set(separate.subspace) == {"1001"}
+    assert set(merged.subspace) == {"1001", "1010", "0101", "0110"}
+
+
+def test_symmetrize_spin_is_inactive_on_a_polarized_fragment():
+    """Exchanging the sectors is not a symmetry at unequal electron counts, so the
+    flag must be ignored rather than merge pools."""
+    assert SQDSolver(3, 2, 1, symmetrize_spin=True).symmetrize_spin is False
+    assert SQDSolver(3, 2, 2, symmetrize_spin=True).symmetrize_spin is True
+
+
+def test_recovery_stops_once_energy_and_occupancy_settle(monkeypatch):
+    """Zero two-body terms and a saturating batch make iteration one reproduce
+    iteration zero, so both criteria are met and the rest are skipped."""
+    n_orb = 2
+    one_body = np.diag([-1.0, -0.5])
+    two_body = np.zeros((n_orb,) * 4)
+    probs = uniform_full_space_probs(n_orb, 1, 1)
+
+    diagonalizations = []
+    real = sqd_module.projected_matrices
+
+    def spy(dets, *args, **kwargs):
+        diagonalizations.append(len(dets))
+        return real(dets, *args, **kwargs)
+
+    monkeypatch.setattr(sqd_module, "projected_matrices", spy)
+
+    SQDSolver(
+        n_orb,
+        1,
+        1,
+        n_batches=1,
+        batch_size=16,
+        n_iterations=8,
+        lambda_penalty=0.0,
+        recovery=False,
+        energy_tol=1e-8,
+        occupancies_tol=1e-5,
+        rng=np.random.default_rng(0),
+    ).solve(probs, one_body, two_body)
+
+    # Iterations 0 and 1 to establish that nothing moved, then the break.
+    assert len(diagonalizations) == 2
+
+
+def test_recovery_runs_every_iteration_at_the_default_tolerances():
+    """The default tolerances are zero, so no iteration can qualify to stop."""
+    n_orb = 2
+    one_body = np.diag([-1.0, -0.5])
+    two_body = np.zeros((n_orb,) * 4)
+    probs = uniform_full_space_probs(n_orb, 1, 1)
+
+    counted = []
+
+    class _CountingSolver(SQDSolver):
+        def _diagonalize(self, *args, **kwargs):
+            counted.append(1)
+            return super()._diagonalize(*args, **kwargs)
+
+    _CountingSolver(
+        n_orb,
+        1,
+        1,
+        n_batches=1,
+        batch_size=16,
+        n_iterations=5,
+        lambda_penalty=0.0,
+        recovery=False,
+        rng=np.random.default_rng(0),
+    ).solve(probs, one_body, two_body)
+
+    assert len(counted) == 5
+    assert SQDSolver(2, 1, 1).energy_tol == 0.0
+    assert SQDSolver(2, 1, 1).occupancies_tol == 0.0
 
 
 def test_solver_is_reproducible_under_a_seed():
@@ -963,11 +1277,26 @@ def test_subspace_pools_alpha_and_beta_separately():
         batch_size=16,
         n_iterations=1,
         lambda_penalty=0.0,
+        include_reference=False,
         rng=np.random.default_rng(0),
     )
     result = solver.solve(probs, one_body, two_body)
 
     assert set(result.subspace) == {"1001"}
+
+
+def _rdms_from(result, n_orb):
+    """Both RDM paths off one solve, asserted to agree so every assertion below
+    constrains the PySCF layout as well as the definitions."""
+    fast = compute_spatial_rdms(
+        result.strings_alpha, result.strings_beta, result.amplitudes, n_orb
+    )
+    exact = _spatial_rdms_exact(
+        result.strings_alpha, result.strings_beta, result.amplitudes, n_orb
+    )
+    for from_pyscf, from_definition in zip(fast, exact):
+        np.testing.assert_allclose(from_pyscf, from_definition, atol=1e-10)
+    return fast
 
 
 def test_spatial_rdm_trace_equals_electron_count():
@@ -985,8 +1314,7 @@ def test_spatial_rdm_trace_equals_electron_count():
     result = solver.solve(
         uniform_full_space_probs(n_orb, 1, 1), one_body, two_body, constant=constant
     )
-    dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, rdm2, _, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
+    rdm1, _, _, _ = _rdms_from(result, n_orb)
 
     assert np.trace(rdm1) == pytest.approx(2.0, abs=1e-12)
 
@@ -1006,8 +1334,7 @@ def test_spatial_rdm1_matches_pyscf_fci():
     result = solver.solve(
         uniform_full_space_probs(n_orb, 1, 1), one_body, two_body, constant=constant
     )
-    dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, _, _, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
+    rdm1, _, _, _ = _rdms_from(result, n_orb)
 
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (1, 1))
     expected = fci.direct_spin1.make_rdm1(civec, n_orb, (1, 1))
@@ -1043,8 +1370,7 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
         two_body,
         constant=constant,
     )
-    dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, rdm2, _, _ = compute_spatial_rdms(dets, result.eigenvector, n_orb)
+    rdm1, rdm2, _, _ = _rdms_from(result, n_orb)
 
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (n_alpha, n_beta))
     expected_rdm1, expected_rdm2 = fci.direct_spin1.make_rdm12(
@@ -1090,10 +1416,7 @@ def test_spatial_spin_rdm1s_match_pyscf_for_a_polarized_sector():
         two_body,
         constant=constant,
     )
-    dets = [bitstring_to_spatial_det(bs, n_orb) for bs in result.subspace]
-    rdm1, _, rdm1_alpha, rdm1_beta = compute_spatial_rdms(
-        dets, result.eigenvector, n_orb
-    )
+    rdm1, _, rdm1_alpha, rdm1_beta = _rdms_from(result, n_orb)
 
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (n_alpha, n_beta))
     expected_alpha, expected_beta = fci.direct_spin1.make_rdm1s(

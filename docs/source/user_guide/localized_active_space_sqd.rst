@@ -69,11 +69,12 @@ calculation on the same active space:
    speed.
 
    ``batch_size`` is how much of the determinant space one iteration sees; the
-   subspace holds at most its square. ``n_batches`` subspaces compete rather
-   than pool, so it buys attempts, not size. ``carryover_cutoff`` keeps what
-   was seen across iterations and is on by default; setting it to ``None``
-   gives conventional SQD, whose energies oscillate rather than converge
-   (:ref:`lassqd-carryover`).
+   subspace holds at most its square, and each batch draws *without*
+   replacement so those are distinct configurations. ``n_batches`` subspaces
+   compete rather than pool, so it buys attempts, not size.
+   ``carryover_cutoff`` keeps what was seen across iterations and is on by
+   default; setting it to ``None`` gives conventional SQD, whose energies
+   oscillate rather than converge (:ref:`lassqd-carryover`).
 
    ``stop_reason == COMPLETE`` means the energy stopped *changing*, not that it
    is accurate. An energy equal to the mean field means the subspace held only
@@ -359,17 +360,29 @@ defaults to ``1e-5``; pass ``None`` for conventional SQD:
 
 Because the halves are retained separately and the subspace is rebuilt as their
 product, this reintroduces determinant *combinations* that were never sampled
-together. ``max_carryover`` caps how many alpha and beta strings are held **per
-spin sector**. Carried strings join each batch's own sampled halves rather than
-replacing them, so a cap of ``k`` bounds a batch's subspace at
-``(k + batch_size) ** 2`` determinants.
+together. Which strings survive is ranked by marginal weight over the whole
+subspace, not only over the determinants that cleared the cutoff.
+
+Two knobs bound the growth. ``max_carryover`` caps how many alpha and beta
+strings retention holds **per spin sector**; carried strings join each batch's
+own sampled halves rather than replacing them, so a cap of ``k`` bounds a
+batch's subspace at ``(k + batch_size) ** 2`` determinants. ``max_dim`` caps each
+sector outright, so the subspace never exceeds the product of the two limits:
+
+.. code-block:: python
+
+   # At most 12 alpha x 12 beta = 144 determinants per batch, whatever the budget.
+   config = SQDConfig(carryover_cutoff=1e-2, max_dim=12)
+
+When a cap binds, strings are kept in priority order: reference, then carried by
+descending weight, then this batch's halves by descending sample count.
 
 .. warning::
 
-   Leaving ``max_carryover`` unset lets the retained set grow every iteration,
-   and the subspace with it, quadratically — the relative cutoff prunes little
-   on its own. The projected matrices are dense, so a fragment with a large
-   determinant space can exhaust memory. Cap it there.
+   Leaving both caps unset lets the retained set grow every iteration, and the
+   subspace with it, quadratically — the relative cutoff prunes little on its
+   own. The projected matrices are dense, so a fragment with a large determinant
+   space can exhaust memory. Set ``max_dim`` there.
 
 This helps where sampling reaches a small fraction of a fragment's determinant
 space. Where sampling already covers that space — small fragments, or a generous
@@ -380,6 +393,38 @@ fragment's full determinant count to see which regime you are in.
 Retention is scoped to one fragment solve. A determinant is a statement about a
 particular orbital basis, and every round re-optimizes the orbitals, so carrying
 bitstrings across rounds would require mapping them into the new basis first.
+
+.. _lassqd-subspace-floor:
+
+Guaranteeing a Floor, and Stopping Early
+------------------------------------------
+
+Three further knobs on :class:`~divi.qprog.workflows.SQDConfig` shape the
+subspace rather than its size.
+
+``include_reference`` (on by default) keeps the fragment's aufbau reference
+determinant in every batch. Adding a determinant to a variational subspace can
+only lower the projected minimum, so a fragment's SQD energy cannot land above
+its own reference however the sampling went. Turn it off to make the subspace
+exactly what was sampled.
+
+``symmetrize_spin`` pools the alpha and beta halves together, so a sampled
+``|1001>`` also offers ``|0110>`` and both singlet and triplet combinations can
+be formed. Ignored on spin-polarized fragments, where exchanging the sectors is
+not a symmetry.
+
+``recovery_energy_tol`` and ``recovery_occupancies_tol`` end a fragment's
+recovery once both its energy and its orbital occupancies stop moving. Both
+default to ``0.0``, so recovery spends every iteration unless you opt in. Neither
+is ``LASSQD``'s own ``energy_tol``, which ends the macro-cycle.
+
+.. warning::
+
+   Carryover improves the subspace non-monotonically, so a settled iteration does
+   not mean the next one had nothing to add. Stopping early cost 2.6 mHa on the
+   diiron complex of arXiv:2512.14936 and 11.7 mHa on a four-orbital H4 fragment,
+   against a recovery loop that took 0.1 s per round there to the orbital solve's
+   ~300 s. Enable it only when recovery dominates.
 
 Choosing an Ansatz
 --------------------
