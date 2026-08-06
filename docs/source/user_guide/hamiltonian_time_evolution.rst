@@ -216,8 +216,7 @@ collects results into a time-ordered mapping.
        observable=qp.PauliZ(0),
        backend=backend,
    )
-   trajectory.create_programs()
-   trajectory.run(blocking=True)
+   trajectory.run()
 
    results = trajectory.aggregate_results()
    # results: {0.01: 0.9996, 0.166: 0.944, ..., 3.14: 0.998}
@@ -243,7 +242,6 @@ cloud job, reducing overhead significantly:
 .. code-block:: python
 
    trajectory.run(
-       blocking=True,
        batch_config=BatchConfig(max_concurrent_programs=-1),
    )
 

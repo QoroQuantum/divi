@@ -102,8 +102,7 @@ def _run_qubo_partitioning(
         **engine_kwargs,
     )
 
-    ensemble.create_programs()
-    ensemble.run().join()
+    ensemble.run()
 
     greedy_solution, greedy_energy = ensemble.aggregate_results(
         strategy=BeamSearchStrategy(beam_width=1, n_partition_candidates=5)
@@ -238,8 +237,7 @@ if __name__ == "__main__":
         backend=get_backend(),
     )
 
-    maxcut_ensemble.create_programs()
-    maxcut_ensemble.run(blocking=True)
+    maxcut_ensemble.run()
 
     classical_cut_size, _ = nx.approximation.one_exchange(graph, seed=1)
 
@@ -341,10 +339,9 @@ if __name__ == "__main__":
         max_iterations=10,
     )
 
-    matching_ensemble.create_programs()
-    print(f"Created {len(matching_ensemble.programs)} sub-programs")
+    matching_ensemble.run()
+    print(f"Solved {len(matching_ensemble.programs)} sub-programs")
 
-    matching_ensemble.run(blocking=True)
     matching, weight = matching_ensemble.aggregate_results(
         strategy=BeamSearchStrategy(beam_width=3)
     )

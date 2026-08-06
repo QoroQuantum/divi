@@ -237,6 +237,10 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         """Trainable parameters per ansatz layer (data params are excluded)."""
         return self.ansatz.n_params_per_layer(self.n_qubits)
 
+    def _parameter_frequencies(self):
+        per_layer = self.ansatz.parameter_frequencies(self.n_qubits)
+        return None if per_layer is None else list(per_layer) * self.n_layers
+
     # ------------------------------------------------------------------ #
     # Plumbing
     # ------------------------------------------------------------------ #

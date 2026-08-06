@@ -2,6 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Tests for a single ``ProgramEnsemble`` dispatch.
+
+Covers executor sizing, batch coordination, the progress display, join,
+cancellation and failure handling, solution sampling, circuit/runtime
+accounting, and dry runs. The multi-round workflow loop that drives repeated
+dispatches lives in ``test_ensemble_workflow.py``.
+"""
+
 import os
 import re
 import threading
@@ -28,54 +36,14 @@ from divi.qprog.ensemble import (
 )
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
-from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from divi.reporting import TerminalStatus
+from tests.qprog._helpers import (
+    SimpleTestProgram,
+    _FakeRunResult,
+    _StubProgram,
+)
 from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
-
-
-class _FakeRunResult:
-    """Mimics a program instance returned by run() for mocked futures."""
-
-    def __init__(self, circuit_count: int, run_time: float):
-        self._total_circuit_count = circuit_count
-        self._total_run_time = run_time
-
-
-class _StubProgram(QuantumProgram):
-    """Base for ProgramEnsemble test programs.
-
-    Stubs the abstract methods and tracks a ``_ran`` flag; subclasses
-    implement only ``run()`` (and any extra constructor args they need).
-    """
-
-    def __init__(self, *, backend, **kwargs):
-        super().__init__(backend=backend, **kwargs)
-        self._ran = False
-
-    def has_results(self) -> bool:
-        return self._ran
-
-    def _generate_circuits(self, **kwargs):
-        return []
-
-    def _post_process_results(self, results):
-        pass
-
-
-class SimpleTestProgram(_StubProgram):
-    """A simple mock program whose ``run()`` assigns preset counter values."""
-
-    def __init__(self, circ_count: int, run_time: float, *, backend, **kwargs):
-        super().__init__(backend=backend, **kwargs)
-        self.circ_count = circ_count
-        self.run_time = run_time
-
-    def run(self):
-        self._total_circuit_count = self.circ_count
-        self._total_run_time = self.run_time
-        self._ran = True
-        return self
 
 
 class SampleProgramEnsemble(ProgramEnsemble):
@@ -85,7 +53,7 @@ class SampleProgramEnsemble(ProgramEnsemble):
         super().__init__(backend)
         self.max_iterations = 5
 
-    def create_programs(self):
+    def create_programs(self, state=None):
         """Creates a set of mock programs."""
         super().create_programs()
         self.programs = {
@@ -133,6 +101,14 @@ class TestProgramEnsemble:
         assert program_ensemble.total_circuit_count == 0
         assert program_ensemble.total_run_time == 0.0
 
+    def test_public_import_surface(self):
+        # Guards against __init__.py regressions: everything ensemble.py
+        # advertises in __all__ must be importable from divi.qprog.
+        import divi.qprog as qprog
+
+        missing = [name for name in ensemble_module.__all__ if not hasattr(qprog, name)]
+        assert not missing, f"not re-exported from divi.qprog: {missing}"
+
     def test_basic_program_ensemble_behaviour(self, program_ensemble, mocker):
         """Uses the contract to verify basic error handling and state checks."""
         verify_basic_program_ensemble_behaviour(program_ensemble, mocker)
@@ -145,7 +121,7 @@ class TestProgramEnsemble:
         assert hasattr(program_ensemble._queue, "get")  # Check if it's queue-like
         # create_programs() only sets up the progress queue (sub-programs bind
         # to it at construction). _done_event is created per-run by run().
-        assert not hasattr(program_ensemble, "_done_event")
+        assert program_ensemble._done_event is None
 
     def test_reset_cleans_up_all_resources(self, program_ensemble, mocker):
         """Tests that reset() correctly shuts down and cleans up all resources."""
@@ -199,8 +175,9 @@ class TestProgramEnsemble:
 
     def test_run_returns_expected_number_of_futures(self, program_ensemble):
         program_ensemble.create_programs()
-        program_ensemble.run()
+        program_ensemble.run_one_round(blocking=False)
         assert len(program_ensemble.futures) == 2
+        program_ensemble.join()
 
     def test_run_fails_if_already_running(self, mocker, program_ensemble):
         program_ensemble.create_programs()
@@ -215,11 +192,11 @@ class TestProgramEnsemble:
         mock_instance.submit.side_effect = [future1, future2]
 
         # First run should work
-        program_ensemble.run()
+        program_ensemble.run_one_round(blocking=False)
 
         # Subsequent run should raise an exception
         with pytest.raises(RuntimeError, match="An ensemble is already being run."):
-            program_ensemble.run()
+            program_ensemble.run_one_round(blocking=False)
 
     def test_run_submits_correct_tasks(self, program_ensemble, mocker):
         """Tests that run() submits the correct number of tasks to the executor."""
@@ -239,7 +216,7 @@ class TestProgramEnsemble:
         )
 
         # Run non-blocking to inspect the state before it's cleaned up
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         assert mock_executor.submit.call_count == len(program_ensemble.programs)
 
@@ -256,8 +233,8 @@ class TestProgramEnsemble:
     def test_blocking_run_executes_and_joins_correctly(self, program_ensemble):
         """Integration test for a standard blocking run."""
         program_ensemble.create_programs()
-        # run(blocking=True) is the default, which should execute and then join.
-        result = program_ensemble.run(blocking=True)
+        # blocking=True should execute and then join.
+        result = program_ensemble.run_one_round(blocking=True)
 
         assert result is program_ensemble
         assert program_ensemble.total_circuit_count == 15
@@ -270,7 +247,7 @@ class TestProgramEnsemble:
         """Tests that a non-blocking run correctly registers a cleanup hook."""
         mock_atexit_register = mocker.patch("atexit.register")
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         # Check that the executor is active and hook is registered
         assert program_ensemble._executor is not None
@@ -287,7 +264,7 @@ class TestProgramEnsemble:
         mock_atexit_unregister = mocker.patch("atexit.unregister")
 
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)  # This registers the hook
+        program_ensemble.run_one_round(blocking=False)  # This registers the hook
 
         mock_atexit_register.assert_called_once()
 
@@ -316,7 +293,7 @@ class TestProgramEnsemble:
     def test_join_handles_task_exceptions(self, program_ensemble, mocker):
         """Ensures join() catches exceptions from futures, collects partial results, and cleans up."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         failing_future = Future()
         failing_future.set_exception(ValueError("Task failed"))
@@ -356,7 +333,7 @@ class TestProgramEnsemble:
         verifying the end-to-end data flow.
         """
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=True)
+        program_ensemble.run_one_round(blocking=True)
         result = program_ensemble.aggregate_results()
 
         assert result == 15  # 10 + 5
@@ -371,7 +348,9 @@ class TestProgramEnsemble:
 
         with pytest.warns(UserWarning, match="Listener thread did not terminate"):
             program_ensemble.reset()
-        mock_thread.join.assert_called_once_with(timeout=1)
+        mock_thread.join.assert_called_once_with(
+            timeout=ensemble_module._LISTENER_JOIN_TIMEOUT
+        )
 
     def test_reset_progress_bar_exception(self, program_ensemble, mocker):
         """Test reset handles live display stop exception."""
@@ -735,7 +714,7 @@ class TestProgramEnsemble:
     def test_handle_failure_sets_cancellation_event(self, program_ensemble, mocker):
         """Failure path should set _cancellation_event to stop VQA loops."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         f_bad = Future()
         f_bad.set_exception(RuntimeError("Job xyz has failed."))
@@ -761,7 +740,7 @@ class TestProgramEnsemble:
     def test_handle_failure_updates_progress_bars(self, program_ensemble, mocker):
         """Failure path should emit a Failed terminal-status message."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
         program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
@@ -800,7 +779,7 @@ class TestProgramEnsemble:
     def test_handle_failure_non_batched_cancels_jobs(self, program_ensemble, mocker):
         """Without coordinator, failure should call cancel_unfinished_job on running programs."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
         program_ensemble._coordinator = None
 
         mock_progress_bar = mocker.MagicMock()
@@ -848,7 +827,7 @@ class TestProgramEnsemble:
     def test_stop_remaining_programs_called_on_failure(self, program_ensemble, mocker):
         """_stop_remaining_programs should be called from the failure path."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         f_bad = Future()
         f_bad.set_exception(RuntimeError("boom"))
@@ -874,7 +853,7 @@ class TestProgramEnsemble:
         """When batch coordinator fails all futures, every program should
         emit a Failed terminal-status message via the queue."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
         program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
@@ -920,7 +899,7 @@ class TestProgramEnsemble:
     def test_join_keyboard_interrupt(self, program_ensemble, mocker):
         """Test join handles KeyboardInterrupt."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         mocker.patch(
             "divi.qprog.ensemble.as_completed", side_effect=KeyboardInterrupt()
@@ -933,11 +912,13 @@ class TestProgramEnsemble:
 
         assert result is False
         mock_handle_cancellation.assert_called_once()
+        # run() reads this to stop the workflow instead of starting a round.
+        assert program_ensemble._round_cancelled is True
 
     def test_join_keyboard_interrupt_no_double_count(self, program_ensemble, mocker):
         """Results collected before KeyboardInterrupt are not double-counted."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         # Create two pre-resolved futures with known results
         f1 = Future()
@@ -966,7 +947,7 @@ class TestProgramEnsemble:
     def test_join_exception_no_double_count(self, program_ensemble, mocker):
         """All completed futures are counted exactly once after a task exception."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
 
         f1 = Future()
         f1.set_result(_FakeRunResult(10, 5.0))
@@ -1016,7 +997,7 @@ class TestProgramEnsemble:
     def test_atexit_unregister_failure(self, program_ensemble, mocker):
         """Test atexit unregister handles TypeError."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
         mock_unregister = mocker.patch(
             "atexit.unregister", side_effect=TypeError("Not registered")
         )
@@ -1029,7 +1010,7 @@ class TestProgramEnsemble:
         running and then correctly aggregates the results.
         """
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
         mock_join = mocker.spy(program_ensemble, "join")
         result = program_ensemble.aggregate_results()
         mock_join.assert_called_once()
@@ -1039,13 +1020,13 @@ class TestProgramEnsemble:
         """BatchConfig is forwarded to the coordinator."""
         program_ensemble.create_programs()
         config = BatchConfig(max_batch_size=50)
-        program_ensemble.run(blocking=True, batch_config=config)
+        program_ensemble.run_one_round(blocking=True, batch_config=config)
         assert program_ensemble.total_circuit_count == 15
 
     def test_run_with_batching_off(self, program_ensemble):
         """BatchMode.OFF disables the coordinator entirely."""
         program_ensemble.create_programs()
-        program_ensemble.run(
+        program_ensemble.run_one_round(
             blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
         )
         assert program_ensemble.total_circuit_count == 15
@@ -1106,7 +1087,7 @@ class TestRegistrationFailureCleanup:
         baseline_alive = self._flush_threads_alive()
 
         with pytest.raises(RuntimeError, match="boom"):
-            ensemble.run(blocking=False)
+            ensemble.run_one_round(blocking=False)
 
         coord = captured["coord"]
         # Load-bearing assertion: the orphaned-registration bug.
@@ -1135,11 +1116,11 @@ class TestRegistrationFailureCleanup:
         mocker.patch.object(_BatchCoordinator, "register_program", _flaky_once)
 
         with pytest.raises(RuntimeError, match="boom"):
-            ensemble.run(blocking=False)
+            ensemble.run_one_round(blocking=False)
 
         # Subsequent register_program calls fall through to the original
         # implementation, so the second run() should succeed end-to-end.
-        ensemble.run(blocking=True)
+        ensemble.run_one_round(blocking=True)
         assert ensemble.aggregate_results() == 15
 
 
@@ -1149,7 +1130,7 @@ def test_cancellation_event_is_shared_with_coordinator(dummy_simulator):
     ensemble = SampleProgramEnsemble(backend=dummy_simulator)
     ensemble.create_programs()
     try:
-        ensemble.run(blocking=False)
+        ensemble.run_one_round(blocking=False)
         assert (
             ensemble._coordinator is not None
         ), "expected coordinator under default BatchMode.MERGED"
@@ -1326,7 +1307,7 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=10)
         ensemble.create_programs()
-        ensemble.run(blocking=True)
+        ensemble.run_one_round(blocking=True)
 
         spy.assert_called_once()
         expected = max(10, (os.cpu_count() or 1) + 4)
@@ -1337,7 +1318,7 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=2)
         ensemble.create_programs()
-        ensemble.run(blocking=True)
+        ensemble.run_one_round(blocking=True)
 
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] >= (os.cpu_count() or 1) + 4
@@ -1349,7 +1330,9 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=20)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=4))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(max_batch_size=4)
+        )
 
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] == 4
@@ -1360,7 +1343,9 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=8)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=512))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(max_batch_size=512)
+        )
 
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] == 8
@@ -1384,7 +1369,9 @@ class TestExecutorSizing:
 
         ensemble = _SubmittingEnsemble(backend=dummy_simulator, n_programs=32)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=8))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(max_batch_size=8)
+        )
 
         assert sum(merged_sizes) == 32
         assert all(size == 8 for size in merged_sizes), merged_sizes
@@ -1417,7 +1404,9 @@ class TestExecutorSizing:
             backend=dummy_simulator, n_programs=8, n_circuits_per_program=5
         )
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=10))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(max_batch_size=10)
+        )
 
         # All 40 circuits must be flushed across some number of merged calls.
         assert sum(merged_sizes) == 40
@@ -1436,7 +1425,7 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=300)
         ensemble.create_programs()
-        ensemble.run(
+        ensemble.run_one_round(
             blocking=True,
             batch_config=BatchConfig(max_concurrent_programs=-1, max_batch_size=64),
         )
@@ -1449,7 +1438,9 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=20)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
 
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] == (os.cpu_count() or 1) + 4
@@ -1459,7 +1450,7 @@ class TestExecutorSizing:
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=257)
         ensemble.create_programs()
         with pytest.raises(RuntimeError) as excinfo:
-            ensemble.run(blocking=True)
+            ensemble.run_one_round(blocking=True)
 
         msg = str(excinfo.value)
         assert "257" in msg
@@ -1470,14 +1461,18 @@ class TestExecutorSizing:
         """Same large ensemble runs cleanly once the user opts into early-flush."""
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=257)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=8))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(max_batch_size=8)
+        )
         # All 257 programs ran (each contributes circ_count=1).
         assert ensemble.total_circuit_count == 257
 
     def test_exceeds_barrier_limit_succeeds_with_off_mode(self, dummy_simulator):
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=257)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
         assert ensemble.total_circuit_count == 257
 
     def test_coordinator_n_workers_matches_executor_in_early_flush(
@@ -1485,7 +1480,9 @@ class TestExecutorSizing:
     ):
         """The coordinator's barrier cap matches executor capacity in early-flush."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False, batch_config=BatchConfig(max_batch_size=4))
+        program_ensemble.run_one_round(
+            blocking=False, batch_config=BatchConfig(max_batch_size=4)
+        )
         assert program_ensemble._coordinator is not None
         assert (
             program_ensemble._coordinator._n_workers
@@ -1498,7 +1495,7 @@ class TestExecutorSizing:
     ):
         """Default barrier path passes the executor capacity to the coordinator."""
         program_ensemble.create_programs()
-        program_ensemble.run(blocking=False)
+        program_ensemble.run_one_round(blocking=False)
         assert program_ensemble._coordinator is not None
         assert (
             program_ensemble._coordinator._n_workers
@@ -1515,7 +1512,9 @@ class TestExecutorSizing:
         """
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=64)
         ensemble.create_programs()
-        ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=64))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(max_batch_size=64)
+        )
         assert ensemble.total_circuit_count == 64
 
     def test_max_concurrent_programs_sizes_pool_directly(self, dummy_simulator, mocker):
@@ -1523,7 +1522,7 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=10)
         ensemble.create_programs()
-        ensemble.run(
+        ensemble.run_one_round(
             blocking=True,
             batch_config=BatchConfig(max_concurrent_programs=10),
         )
@@ -1535,7 +1534,7 @@ class TestExecutorSizing:
         """Explicit ``max_concurrent_programs`` lifts the 256-program cap."""
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=300)
         ensemble.create_programs()
-        ensemble.run(
+        ensemble.run_one_round(
             blocking=True,
             batch_config=BatchConfig(max_concurrent_programs=300),
         )
@@ -1546,7 +1545,7 @@ class TestExecutorSizing:
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=2)
         ensemble.create_programs()
         with pytest.warns(UserWarning, match="max_concurrent_programs"):
-            ensemble.run(
+            ensemble.run_one_round(
                 blocking=True,
                 batch_config=BatchConfig(max_concurrent_programs=2000),
             )
@@ -1558,7 +1557,7 @@ class TestExecutorSizing:
         spy = self._spy_executor(mocker)
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=37)
         ensemble.create_programs()
-        ensemble.run(
+        ensemble.run_one_round(
             blocking=True,
             batch_config=BatchConfig(max_concurrent_programs=-1),
         )
@@ -1573,7 +1572,7 @@ class TestExecutorSizing:
         even when the resolved value exceeds 1024."""
         ensemble = _ParameterizedEnsemble(backend=dummy_simulator, n_programs=2000)
         ensemble.create_programs()
-        ensemble.run(
+        ensemble.run_one_round(
             blocking=True,
             batch_config=BatchConfig(max_concurrent_programs=-1),
         )
@@ -1719,8 +1718,8 @@ class TestEnsembleSampleSolution:
             np.testing.assert_array_equal(program._best_params, original[pid])
 
     def test_run_then_sample_solution(self, small_partitioning_ensemble):
-        """After run(blocking=True), sample_solution() repopulates _best_probs."""
-        small_partitioning_ensemble.run(blocking=True)
+        """The high-level workflow run populates VQE sampling probabilities."""
+        small_partitioning_ensemble.run()
         circuits_after_run = small_partitioning_ensemble.total_circuit_count
         for program in small_partitioning_ensemble.programs.values():
             program._best_probs = {}
@@ -1763,7 +1762,7 @@ class TestEnsembleRedispatchLifecycle:
         ensemble = small_partitioning_ensemble
         originals = {pid: p.backend for pid, p in ensemble.programs.items()}
 
-        ensemble.run(blocking=True)  # default BatchMode.MERGED
+        ensemble.run_one_round(blocking=True)  # default BatchMode.MERGED
 
         for pid, program in ensemble.programs.items():
             assert not isinstance(program.backend, _ProxyBackend)
@@ -1776,7 +1775,7 @@ class TestEnsembleRedispatchLifecycle:
         through the (by then shut-down) coordinator via a dangling proxy.
         """
         ensemble = small_partitioning_ensemble
-        ensemble.run(blocking=True)  # MERGED; coordinator shut down in join()
+        ensemble.run_one_round(blocking=True)  # MERGED; coordinator shut down in join()
 
         ensemble.sample_solution(
             blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
@@ -1792,7 +1791,7 @@ class TestEnsembleRedispatchLifecycle:
         ``_program_key_map`` populated by the batched dispatch.
         """
         ensemble = small_partitioning_ensemble
-        ensemble.run(blocking=True)  # MERGED populates _program_key_map
+        ensemble.run_one_round(blocking=True)  # MERGED populates _program_key_map
 
         ensemble.sample_solution(
             blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
@@ -1827,7 +1826,9 @@ class TestEnsembleCountAccounting:
         _reset_after(ensemble)
         ensemble.create_programs()
 
-        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
 
         assert ensemble.total_circuit_count == 15
         assert ensemble.total_run_time == 5.0
@@ -1845,7 +1846,9 @@ class TestEnsembleCountAccounting:
         ensemble.create_programs()
 
         for dispatch in range(1, 4):
-            ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+            ensemble.run_one_round(
+                blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+            )
 
             assert ensemble.total_circuit_count == 15 * dispatch
             assert ensemble.total_run_time == 5.0 * dispatch
@@ -1872,7 +1875,9 @@ class TestEnsembleCountAccounting:
         program._total_circuit_count = 100
         program._total_run_time = 50.0
 
-        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
 
         # Only the +10 / +2.0 increment from this dispatch is credited.
         assert ensemble.total_circuit_count == 10
@@ -1888,8 +1893,10 @@ class TestEnsembleCountAccounting:
         _reset_after(ensemble)
         ensemble.create_programs()
 
-        ensemble.run(blocking=True)  # MERGED
-        ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        ensemble.run_one_round(blocking=True)  # MERGED
+        ensemble.run_one_round(
+            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+        )
 
         assert ensemble.total_circuit_count == 30
         assert ensemble.total_run_time == 10.0

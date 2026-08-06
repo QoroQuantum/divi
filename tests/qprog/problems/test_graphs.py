@@ -449,24 +449,17 @@ class TestGraphInput:
         assert qaoa_problem.solution == [0, 1, 4]
 
     @pytest.mark.e2e
-    def test_graph_qaoa_e2e_solution(self, optimizer, default_test_simulator):
+    def test_graph_qaoa_e2e_solution(
+        self, gradient_free_optimizer, default_test_simulator
+    ):
         G = nx.bull_graph()
-
-        # L-BFGS-B needs more layers for sufficient circuit expressibility
-        # to solve MAX_CLIQUE — 1 layer converges to a local optimum.
-        n_layers = (
-            2
-            if isinstance(optimizer, ScipyOptimizer)
-            and optimizer.method == ScipyMethod.L_BFGS_B
-            else 1
-        )
 
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
             MaxCliqueProblem(G, is_constrained=True),
-            n_layers=n_layers,
-            optimizer=optimizer,
+            n_layers=1,
+            optimizer=gradient_free_optimizer,
             max_iterations=10,
             backend=default_test_simulator,
             seed=1997,

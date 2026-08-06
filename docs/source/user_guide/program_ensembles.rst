@@ -6,6 +6,10 @@ in parallel — handling scheduling, circuit batching, progress tracking, and
 result aggregation.  Typical use cases include parameter sweeps, molecular
 dissociation curves, problem decomposition, and algorithm comparison.
 
+An ensemble can also run over several *rounds*, choosing each round's programs
+from what the previous round measured — the basis for iterative refinement and
+other adaptive workflows. See `The Workflow Lifecycle`_.
+
 Built-in Ensemble Workflows
 ----------------------------
 
@@ -30,6 +34,14 @@ detail on its own page — this section gives a quick overview and links.
    aggregation strategy (see `Aggregation Strategies`_).  Graph, QUBO, and
    matching partitioning are all covered in
    :doc:`combinatorial_optimization_qaoa_pce`.
+
+**Localized Active-Space SQD**
+   :class:`~divi.qprog.workflows.LASSQD` partitions a molecule's active space
+   into fragments, runs one VQE per fragment against its own
+   mean-field-embedded effective Hamiltonian, and recovers the ground state
+   via sample-based quantum diagonalization. See
+   :doc:`localized_active_space_sqd` for fragment specification, automatic
+   fragmentation, and the accuracy characteristics of the reported energy.
 
 Aggregation Strategies
 ----------------------
@@ -216,6 +228,235 @@ mutates its own optimizer-side state (``best_params``, ``losses_history``,
 ``current_iteration``).
 
 
+.. _ensemble-lifecycle:
+
+The Workflow Lifecycle
+----------------------
+
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.run` is the entry point for every
+ensemble. It blocks until the workflow finishes and returns the ensemble, so
+results are ready to aggregate as soon as it returns:
+
+.. skip: next
+
+.. code-block:: python
+
+   results = ensemble.run().aggregate_results()
+
+Internally ``run()`` drives a loop of *rounds*. Each round materializes a fresh
+program map, executes it, and folds the results into a workflow state that the
+next round can use. The loop runs in this order:
+
+1. ``initial_state()`` — once, producing the first state.
+2. ``is_complete(state)`` — if ``True``, stop here.
+3. ``create_programs(state)`` — materialize this round's programs.
+4. Execute those programs in parallel.
+5. ``update_state(state)`` — fold the results into the next state.
+6. Back to step 2.
+
+The check at step 2 happens *before* each round, including the first, so a
+state that already satisfies ``is_complete`` runs zero rounds. One required
+hook and three optional ones fill in that loop:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Hook
+     - Responsibility
+   * - ``create_programs(state)``
+     - Populate ``self.programs`` for the coming round. **Required.**
+   * - ``initial_state()``
+     - The state handed to the first round. Defaults to ``None``.
+   * - ``update_state(state)``
+     - Reduce the finished round's results into the next state.
+   * - ``is_complete(state)``
+     - ``True`` to stop. Defaults to stopping after one round.
+
+Because the defaults stop after a single round, a one-shot ensemble only has
+to implement ``create_programs`` — which is why the built-in workflows behave
+as simple parallel dispatchers.
+
+.. important::
+
+   Each round replaces the program map, so after ``run()`` only the **final**
+   round's programs remain in ``self.programs``. A multi-round ensemble must
+   carry anything it needs across rounds in the state returned by
+   ``update_state`` — the inherited ``aggregate_results`` sees the last round
+   only.
+
+Multi-round workflows
+~~~~~~~~~~~~~~~~~~~~~
+
+Override the remaining hooks to make an ensemble adaptive — each round's
+programs can depend on what the previous round measured. Below, each round
+samples bond lengths around the best geometry the last round found and halves
+the search width. ``bond_lengths_around``, ``make_vqe``, and ``best_geometry``
+stand in for your own code; only the four hooks matter here:
+
+.. skip: next
+
+.. code-block:: python
+
+   class SelfRefiningSweep(ProgramEnsemble):
+       def initial_state(self):
+           return {"center": 0.74, "spread": 0.10}
+
+       def create_programs(self, state):
+           super().create_programs()
+           self.programs = {
+               f"d_{i}": make_vqe(d, self.backend)
+               for i, d in enumerate(bond_lengths_around(state))
+           }
+
+       def update_state(self, state):
+           # self.programs still holds the round that just finished.
+           return {
+               "center": best_geometry(self.programs),
+               "spread": state["spread"] / 2,
+           }
+
+       def is_complete(self, state):
+           return state["spread"] < 1e-3
+
+       def aggregate_results(self):
+           return self.workflow_state
+
+   ensemble = SelfRefiningSweep(backend).run(max_rounds=8)
+
+``max_rounds`` caps the loop even when ``is_complete`` never returns ``True``.
+Leave it as ``None`` to run until convergence.
+
+Interrupting a running workflow with :kbd:`Ctrl-C` cancels the current round and
+stops the loop: the round is recorded as ``CANCELLED`` and no further round
+starts. The state is left at the last round that completed, so a partial round's
+results never reach it — whether the interrupt landed in the dispatch or in
+``update_state``.
+
+.. note::
+
+   ``batch_config`` is fixed for the whole run while the program count can
+   change per round, so an ensemble that grows across rounds can hit the
+   wait-for-all barrier limit partway through. Set ``max_batch_size`` or
+   ``max_concurrent_programs`` explicitly (see :ref:`circuit-batching`) when
+   later rounds may produce many more programs than the first.
+
+Inspecting what happened
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+After ``run()`` returns, three attributes describe the workflow:
+
+- ``workflow_state`` — the latest state, converged or not.
+- ``stop_reason`` — a :class:`~divi.qprog.WorkflowStatus`: ``COMPLETE``,
+  ``MAX_ROUNDS``, ``FAILED``, or ``CANCELLED``, and ``None`` before the first
+  ``run()``.
+- ``round_history`` — a tuple of immutable
+  :class:`~divi.qprog.RoundRecord` entries, one per round.
+
+Each record carries the round number, program count, the round's circuit and
+runtime *deltas*, a status, and — for a failed round — the formatted
+exception:
+
+.. skip: next
+
+.. code-block:: python
+
+   ensemble.run(max_rounds=5)
+
+   print(ensemble.stop_reason)     # e.g. WorkflowStatus.MAX_ROUNDS
+   for record in ensemble.round_history:
+       print(record.number, record.program_count, record.circuit_count, record.status)
+
+``total_circuit_count`` and ``total_run_time`` remain lifetime totals across
+every round and every run; the per-round deltas live in ``round_history``.
+Starting a new ``run()`` resets the workflow state and round history but keeps
+those lifetime totals.
+
+When a round fails — materializing its programs, executing them, or reducing
+them — ``run()`` records the failed round and then *raises*, so ``FAILED`` is
+something you catch, not something you find on a returned ensemble. The
+exception is whatever the round raised, so catch broadly:
+
+.. skip: next
+
+.. code-block:: python
+
+   try:
+       ensemble.run(max_rounds=5)
+   except Exception:
+       failed = ensemble.round_history[-1]
+       print(f"round {failed.number} failed: {failed.error}")
+
+Controlling a single round
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.run_one_round` dispatches an
+already-materialized program map exactly once, and is the lower-level control
+surface behind ``run()``. Prefer ``run()``; reach for this only when you need
+to dispatch without blocking, or to drive rounds yourself:
+
+.. skip: next
+
+.. code-block:: python
+
+   ensemble.create_programs()
+   ensemble.run_one_round(blocking=False)
+   # ... do other work ...
+   ensemble.join()
+
+If you materialize a program map yourself and then call ``run()``, that map is
+used as the first round rather than being rebuilt — so calling
+``create_programs()`` beforehand is safe. It just isn't needed: ``run()``
+materializes each round for you.
+
+.. _ensemble-reporting:
+
+Progress Reporting
+------------------
+
+Every ensemble accepts a ``reporting_level`` controlling how much live progress
+is rendered. It is a :class:`~divi.qprog.ReportingLevel`:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 80
+
+   * - Level
+     - Rows shown
+   * - ``COMPACT``
+     - Workflow/round, preparation, and batch rows. Successful program rows are
+       hidden; failing ones are revealed so they stay diagnosable. The default.
+   * - ``FULL``
+     - Workflow/round, preparation, batch, and every program row.
+   * - ``OFF``
+     - No display at all. ``round_history`` is still recorded.
+
+Reach for ``FULL`` when you need to watch one specific program — say a
+partition that keeps failing — and for ``OFF`` in notebooks, logging
+pipelines, or scripts whose stdout you parse.
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.qprog import ReportingLevel
+
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=2,
+       backend=backend,
+       optimizer=optimizer,
+       reporting_level=ReportingLevel.FULL,
+   )
+
+The equivalent string works too — ``reporting_level="full"`` is accepted and
+coerced — and an unrecognized value raises :class:`ValueError` rather than
+silently falling back.
+
+Setting the ``DIVI_DISABLE_PROGRESS`` environment variable to a truthy value
+(``1``, ``true``, ``yes``, ``on``) suppresses all visual output regardless of
+the level — useful in CI. Round history is still retained.
+
 Custom Ensemble Workflows
 -------------------------
 
@@ -232,27 +473,29 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
    import numpy as np
 
    class CustomParameterSweep(ProgramEnsemble):
-       def __init__(self, backend: CircuitRunner, molecules):
-           super().__init__(backend)
+       def __init__(self, backend: CircuitRunner, molecules, **kwargs):
+           # Forwarding **kwargs lets callers pass ``reporting_level``.
+           super().__init__(backend, **kwargs)
            self.molecules = molecules
 
-       def create_programs(self):
+       def create_programs(self, state=None):
            """Generate one VQE program per molecule."""
            super().create_programs()
-           for i, mol in enumerate(self.molecules):
-               vqe = VQE(
+           self.programs = {
+               f"sweep_{i}": VQE(
                    molecule=mol,
                    optimizer=MonteCarloOptimizer(),
                    backend=self.backend,
                    max_iterations=10,
                )
-               self._programs[f"sweep_{i}"] = vqe
+               for i, mol in enumerate(self.molecules)
+           }
 
        def aggregate_results(self):
            """Collect and analyze results from all programs"""
            super().aggregate_results()
            results = {}
-           for program_id, program in self._programs.items():
+           for program_id, program in self.programs.items():
                if program.losses_history:  # Check if program completed
                    final_loss = program.best_loss
                    results[program_id] = {
@@ -271,8 +514,7 @@ You can create custom program ensemble workflows by inheriting from :class:`~div
    # Use a local simulator
    local_backend = MaestroSimulator()
    sweep = CustomParameterSweep(local_backend, molecules)
-   sweep.create_programs()
-   sweep.run(blocking=True)
+   sweep.run()
 
    results = sweep.aggregate_results()
    print(results)
@@ -405,7 +647,7 @@ Use ``max_batch_size`` to cap the number of circuits per flush:
    from divi.qprog import BatchConfig
 
    # Flush as soon as 50 circuits are pending (partial flush)
-   ensemble.run(blocking=True, batch_config=BatchConfig(max_batch_size=50))
+   ensemble.run(batch_config=BatchConfig(max_batch_size=50))
 
 When the pending circuit count reaches ``max_batch_size`` the coordinator
 flushes immediately — even if some programs haven't submitted yet.  Those
@@ -433,7 +675,6 @@ the entire ensemble and bypass the default 256-program barrier cap:
 
    # All programs run concurrently -> single merged backend submission.
    ensemble.run(
-       blocking=True,
        batch_config=BatchConfig(max_concurrent_programs=-1),
    )
 
@@ -473,10 +714,10 @@ Pass ``BatchConfig(mode=BatchMode.OFF)`` to disable batching entirely:
    from divi.qprog import BatchConfig, BatchMode
 
    # Each program submits circuits independently
-   ensemble.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+   ensemble.run(batch_config=BatchConfig(mode=BatchMode.OFF))
 
    # Merged submissions (default)
-   ensemble.run(blocking=True)
+   ensemble.run()
 
 Next Steps
 ----------

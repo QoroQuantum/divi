@@ -26,7 +26,7 @@ jobs:
       - uses: ./.github/actions/setup-divi
         with:
           python-version: ${{ matrix.python-version }}
-          sync-args: --group docs --group testing
+          sync-args: --group docs --group testing --extra chem
 
       - name: Test documentation code snippets
         run: |

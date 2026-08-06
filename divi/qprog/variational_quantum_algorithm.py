@@ -5,6 +5,8 @@
 import logging
 import pickle
 from abc import abstractmethod
+from collections.abc import Sequence
+from functools import cached_property
 from pathlib import Path
 from queue import Queue
 from typing import Any, ClassVar, Literal, TypeAlias, cast
@@ -61,31 +63,59 @@ _RUN_INSTRUCTION = "Call run() to execute the optimization."
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
 
 
-def _compute_parameter_shift_mask(n_params: int) -> npt.NDArray[np.float64]:
-    """
-    Generate a binary matrix mask for the parameter shift rule.
-    This mask is used to determine the shifts to apply to each parameter
-    when computing gradients via the parameter shift rule in quantum algorithms.
+def _compute_parameter_shift_rule(
+    frequencies: Sequence[tuple[float, int]],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Build a parameter-shift rule from each parameter's frequency family.
+
+    A parameter whose energy carries frequencies ``{omega, ..., order * omega}``
+    is differentiated exactly by ``2 * order`` evaluations at equidistant shifts;
+    ``(1.0, 1)`` is the familiar two-term ``+-pi/2`` rule. Parameters may need
+    different term counts, so the evaluations form one flat batch.
 
     Args:
-        n_params (int): The number of parameters in the quantum circuit.
+        frequencies: One ``(omega, order)`` pair per parameter.
 
     Returns:
-        npt.NDArray[np.float64]: A (2 * n_params, n_params) matrix where each row encodes
-            the shift to apply to each parameter for a single evaluation.
-            The values are multiples of 0.5 * pi, with alternating signs.
+        ``(shifts, weights)``: a ``(n_evaluations, n_params)`` array of offsets to
+        add to the parameter vector, and a ``(n_params, n_evaluations)`` array
+        whose product with the evaluated values is the derivative.
+
+    Raises:
+        ValueError: If any ``omega`` is not positive or ``order`` is below 1.
     """
-    mask_arr = 1 << np.arange(n_params)
+    n_params = len(frequencies)
+    shift_blocks = []
+    weight_blocks = []
+    for index, (omega, order) in enumerate(frequencies):
+        if not omega > 0:
+            raise ValueError(f"omega must be positive; got {omega}.")
+        if order < 1:
+            raise ValueError(f"order must be at least 1; got {order}.")
 
-    binary_matrix = ((mask_arr[:, np.newaxis] & (1 << np.arange(n_params))) > 0).astype(
-        np.float64
-    )
+        term = np.arange(1, 2 * order + 1)
+        shifts = (2 * term - 1) * np.pi / (2 * order * omega)
+        # The energy has period 2 pi / omega, so folding the shifts into its
+        # principal interval keeps the rule exact and the single-frequency case
+        # at the conventional +-pi/2.
+        period = 2.0 * np.pi / omega
+        shifts = (shifts + 0.5 * period) % period - 0.5 * period
+        coefficients = (
+            (-1.0) ** (term - 1)
+            * omega
+            / (4 * order * np.sin((2 * term - 1) * np.pi / (4 * order)) ** 2)
+        )
 
-    binary_matrix = binary_matrix.repeat(2, axis=0)
-    binary_matrix[1::2] *= -1
-    binary_matrix *= 0.5 * np.pi
+        block = np.zeros((len(shifts), n_params))
+        block[:, index] = shifts
+        shift_blocks.append(block)
+        weights = np.zeros((n_params, len(shifts)))
+        weights[index, :] = coefficients
+        weight_blocks.append(weights)
 
-    return binary_matrix
+    if not shift_blocks:
+        return np.zeros((0, 0)), np.zeros((0, 0))
+    return np.vstack(shift_blocks), np.hstack(weight_blocks)
 
 
 def _argmin_finite(values: npt.NDArray[np.float64]) -> int | None:
@@ -863,20 +893,41 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         constant = 0.0 if self._loss_constant_consumed else self.loss_constant
         return {idx: float(value[0]) + constant for idx, value in result.items()}
 
+    def _parameter_frequencies(self) -> Sequence[tuple[float, int]] | None:
+        """Per-parameter ``(omega, order)`` for the shift rule, or ``None``.
+
+        ``None`` takes the two-term rule for every parameter. Subclasses that own
+        an ansatz delegate to it.
+        """
+        return None
+
+    @cached_property
+    def _grad_shift_rule(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """The ``(shifts, weights)`` this program differentiates with.
+
+        Built on first use so a gradient-free run never pays for it, and so a
+        parameterization with no tractable exact rule only raises when a gradient
+        is actually requested.
+        """
+        frequencies = self._parameter_frequencies()
+        if frequencies is None:
+            frequencies = [(1.0, 1)] * self.n_params
+        if len(frequencies) != self.n_params:
+            raise ValueError(
+                f"{type(self).__name__} declared {len(frequencies)} parameter "
+                f"frequencies but has {self.n_params} parameters."
+            )
+        return _compute_parameter_shift_rule(frequencies)
+
     def _evaluate_gradient_at(
         self, params: npt.NDArray[np.float64], **kwargs
     ) -> npt.NDArray[np.float64]:
         """Evaluate the parameter-shift gradient at a single parameter vector."""
-        shifted_param_sets = self._grad_shift_mask + params
-        exp_vals = self._evaluate_cost_param_sets(shifted_param_sets, **kwargs)
-        exp_vals_arr = np.asarray(
-            [value for value in exp_vals.values()],
-            dtype=np.float64,
-        )
-
-        pos_shifts = exp_vals_arr[::2]
-        neg_shifts = exp_vals_arr[1::2]
-        return 0.5 * (pos_shifts - neg_shifts)
+        shifts, weights = self._grad_shift_rule
+        exp_vals = self._evaluate_cost_param_sets(shifts + params, **kwargs)
+        return weights @ np.asarray(list(exp_vals.values()), dtype=np.float64)
 
     def _resolve_sample_params(
         self, params: npt.NDArray[np.float64] | None
@@ -1004,8 +1055,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         # Advertise the shot-variance channel so variance-aware optimizers (e.g.
         # QUIVER) can use it without sniffing this closure's signature.
         setattr(cost_fn, "supports_variance", True)
-
-        self._grad_shift_mask = _compute_parameter_shift_mask(self.n_params)
 
         # Let the optimizer contribute any extra evaluators it needs (e.g. a
         # metric-based optimizer binds its metric estimator to this program and

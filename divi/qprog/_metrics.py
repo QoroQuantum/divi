@@ -288,7 +288,7 @@ class PullbackMetricEstimator(MetricEstimator):
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
-        shift_mask = program._grad_shift_mask
+        shifts, weights = program._grad_shift_rule
         cache: dict[str, Any] = {"key": None, "value": None}
 
         def grad_and_metric(
@@ -299,13 +299,11 @@ class PullbackMetricEstimator(MetricEstimator):
                 np.asarray(params, dtype=np.float64).tobytes(),
             )
             if cache["key"] != key:
-                branch_payloads = _term_expectations(program, shift_mask + params)
+                branch_payloads = _term_expectations(program, shifts + params)
                 gradients = []
                 metrics = []
                 for exp_vals, coeffs in branch_payloads.values():
-                    jacobian = 0.5 * (
-                        exp_vals[0::2] - exp_vals[1::2]
-                    )  # (m, v): d_i <P_r>
+                    jacobian = weights @ exp_vals  # (m, v): d_i <P_r>
                     gradients.append(jacobian @ coeffs)
                     metrics.append((jacobian * coeffs**2) @ jacobian.T)
                 grad = np.mean(gradients, axis=0)

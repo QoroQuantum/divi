@@ -103,7 +103,7 @@ Answers questions about Divi APIs, generates code examples, and explains concept
 |---|---|
 | **VQE & QAOA** | Built-in variational algorithms with pluggable ansätze and optimizers |
 | **Circuit Pipelines** | Expand → execute → reduce pattern for complex circuit workflows |
-| **Program Ensembles** | Parallel execution of multiple quantum programs with automatic scheduling |
+| **Program Ensembles** | Parallel execution of multiple quantum programs with automatic scheduling, over one round or many adaptive ones |
 | **Flexible Backends** | `MaestroSimulator` for fast local dev, `QiskitSimulator` for noisy simulation, `QoroService` for cloud execution |
 | **Execution Config** | Control bond dimension, simulator type, and simulation method per job |
 | **Live Reporting** | Real-time dashboards and convergence tracking via callbacks |

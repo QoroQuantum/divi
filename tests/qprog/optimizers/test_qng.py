@@ -38,7 +38,7 @@ from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import QNGOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
-from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_mask
+from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 
 # --------------------------------------------------------------------------- #
 # Optimizer numerics (no quantum backend)
@@ -242,7 +242,7 @@ def test_pullback_metric_assembly(dummy_simulator, default_optimizer, monkeypatc
     rng = np.random.default_rng(0)
     fake = rng.standard_normal((2 * n_params, len(coeffs)))
 
-    vqe._grad_shift_mask = np.zeros((2 * n_params, n_params))
+    vqe._grad_shift_rule = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
     monkeypatch.setattr(
         "divi.qprog._metrics._term_expectations",
         lambda _program, _param_sets: {(("circuit", 0),): (fake, coeffs)},
@@ -605,8 +605,12 @@ def test_qaoa_qdrift_pullback_uses_sampled_branch_observables(dummy_simulator):
         np.testing.assert_allclose(branch_payloads[branch_key][1], sampled_coeffs)
 
 
-def test_qaoa_qdrift_qng_runs_end_to_end(dummy_simulator):
-    """QNG + QDrift completes and produces a solution."""
+def test_qaoa_qdrift_qng_refuses_upfront(dummy_simulator):
+    """QNG needs a gradient, and QAOA has no exact parameter-shift rule.
+
+    This ran to completion while the two-term rule returned a near-zero gradient
+    for both layer angles, so the natural-gradient step was a null step.
+    """
     qaoa = QAOA(
         MaxCutProblem(nx.bull_graph()),
         n_layers=1,
@@ -617,8 +621,8 @@ def test_qaoa_qdrift_qng_runs_end_to_end(dummy_simulator):
         max_iterations=1,
         backend=dummy_simulator,
     )
-    qaoa.run()
-    assert qaoa.best_probs
+    with pytest.raises(NotImplementedError, match="no parameter-shift gradient"):
+        qaoa.run()
 
 
 def test_qng_run_with_checkpointing_raises_upfront(toy_vqe, tmp_path):
@@ -652,7 +656,7 @@ def test_pullback_metric_is_symmetric_psd_low_rank(toy_vqe):
     """The metric computed on a real backend is symmetric, PSD, and rank <= v."""
     toy_vqe.backend.set_seed(7)
     n_params = toy_vqe.n_layers * toy_vqe.n_params_per_layer
-    toy_vqe._grad_shift_mask = _compute_parameter_shift_mask(n_params)
+    toy_vqe._grad_shift_rule = _compute_parameter_shift_rule([(1.0, 1)] * n_params)
     params = np.linspace(0.1, 1.0, n_params)
 
     evaluators = PullbackMetricEstimator().bind(toy_vqe)

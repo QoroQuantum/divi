@@ -85,12 +85,11 @@ def verify_correct_circuit_count(obj: QuantumProgram):
             evaluation_circuits_count = (
                 obj.optimize_result.nfev * circuits_per_param_set
             )
+            # One circuit per shift-rule evaluation, which is two per parameter
+            # only for ansaetze on the default two-term rule.
+            shifts, _ = obj._grad_shift_rule
             gradient_circuits_count = (
-                obj.optimize_result.njev
-                * circuits_per_param_set
-                * obj.n_layers
-                * obj.n_params_per_layer
-                * 2
+                obj.optimize_result.njev * circuits_per_param_set * shifts.shape[0]
             )
 
             assert (
@@ -145,7 +144,7 @@ class ObservableMeasuringContractsBase:
 
 def verify_basic_program_ensemble_behaviour(obj: ProgramEnsemble, mocker) -> None:
     with pytest.raises(RuntimeError, match="No programs to run"):
-        obj.run()
+        obj.run_one_round()
 
     with pytest.raises(RuntimeError, match="No programs to aggregate"):
         obj.aggregate_results()

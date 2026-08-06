@@ -299,7 +299,7 @@ NumPy Array-based Input
    qaoa_problem = QAOA(
        BinaryOptimizationProblem(qubo_array),
        n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=10,
        backend=MaestroSimulator(),
    )
@@ -478,8 +478,7 @@ For large graphs, enable edge-based partitioning with ``max_edges_per_partition`
        backend=MaestroSimulator(),
    )
 
-   ensemble.create_programs()
-   ensemble.run(blocking=True)
+   ensemble.run()
    matching, weight = ensemble.aggregate_results()
    print(f"Matching: {matching}, weight: {weight}")
 
@@ -597,8 +596,7 @@ with a graph problem configured for partitioning via
    )
 
    # Execute workflow
-   ensemble.create_programs()
-   ensemble.run(blocking=True)
+   ensemble.run()
 
    # Aggregate results from all partitions
    quantum_solution, energy = ensemble.aggregate_results()
@@ -619,7 +617,7 @@ You can choose the per-partition engine via ``quantum_routine``:
   Pass ``strategy``, ``max_iterations_per_depth``, and other IterativeQAOA-specific kwargs
   directly; ``n_layers`` is used as ``max_depth``.
 
-One QUBO, one set of imports, and one helper for ``create_programs`` → ``run`` →
+One QUBO, one set of imports, and one helper for ``run`` →
 ``aggregate_results``. Only ``BinaryOptimizationProblem`` and
 ``PartitioningProgramEnsemble`` change between ``quantum_routine`` choices:
 
@@ -636,7 +634,6 @@ One QUBO, one set of imports, and one helper for ``create_programs`` → ``run``
    from divi.backends import MaestroSimulator
 
    def run_partitioned(ensemble):
-       ensemble.create_programs()
        ensemble.run()
        return ensemble.aggregate_results()
 

@@ -18,7 +18,7 @@ jobs:
       - uses: ./.github/actions/setup-divi
         with:
           python-version: "3.13"
-          sync-args: --group dev
+          sync-args: --group dev --extra chem
 
       - name: Cache pre-commit hooks
         uses: actions/cache@v4

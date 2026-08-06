@@ -185,8 +185,7 @@ if __name__ == "__main__":
         observable=qp.PauliZ(0),
         backend=backend,
     )
-    trajectory.create_programs()
-    trajectory.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+    trajectory.run(batch_config=BatchConfig(mode=BatchMode.OFF))
 
     results = trajectory.aggregate_results()
 

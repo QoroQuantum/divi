@@ -269,12 +269,15 @@ def queue_listener(
     *,
     hide_program_rows: bool = False,
     prep_task_id: TaskID | None = None,
+    round_task_id: TaskID | None = None,
 ):
     """Drain a message queue and update the unified progress bar.
 
     Runs in a daemon thread until *done_event* is set.  Messages with
     ``batch=True`` are routed to :func:`handle_batch_message`; messages
-    with ``prep_advance=True`` advance the prep row; all others are
+    with ``prep_advance=True`` advance the prep row; messages with
+    ``workflow_round=True`` update the workflow-round row, carrying a
+    ``final_status``, a stage ``message``, or both; all others are
     program-level updates resolved through ``pb_task_map``.
 
     When ``hide_program_rows`` is set, per-program rows were created
@@ -344,6 +347,18 @@ def queue_listener(
                         prep_update.pop("advance", None)
                         prep_update["completed"] = prep_task.total
                     progress_bar.update(prep_task_id, **prep_update)
+                    continue
+
+                # --- Workflow-round signals from the ensemble ---
+                if msg.get("workflow_round"):
+                    if round_task_id is not None:
+                        round_update: dict[str, Any] = {}
+                        if "final_status" in msg:
+                            round_update["final_status"] = msg["final_status"]
+                        if msg.get("message"):
+                            round_update["message"] = msg["message"]
+                        if round_update:
+                            progress_bar.update(round_task_id, **round_update)
                     continue
 
                 # --- Regular per-program messages ---

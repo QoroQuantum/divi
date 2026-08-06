@@ -30,6 +30,24 @@ def optimizer(request):
     return request.param()
 
 
+@pytest.fixture(
+    **_fixture_kwargs(
+        [
+            (opt_id, factory)
+            for opt_id, factory in OPTIMIZER_VARIANTS
+            if opt_id != "l-bfgs-b"
+        ]
+    )
+)
+def gradient_free_optimizer(request):
+    """Parametrize over the variants that need no gradient.
+
+    For programs with no exact parameter-shift rule, such as
+    :class:`~divi.qprog.algorithms.QAOA`.
+    """
+    return request.param()
+
+
 @pytest.fixture(**_fixture_kwargs(_CHECKPOINTING_OPTIMIZERS))
 def checkpointing_optimizer(request):
     """Parametrize over optimizers that support save/load checkpointing."""

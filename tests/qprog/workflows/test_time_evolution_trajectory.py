@@ -177,7 +177,7 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results = traj.aggregate_results()
 
         assert len(results) == 2
@@ -195,7 +195,7 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results = traj.aggregate_results()
 
         assert len(results) == 2
@@ -231,7 +231,7 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         assert traj.total_circuit_count >= 3
 
     def test_results_ordered_by_time_points(
@@ -244,7 +244,7 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results = traj.aggregate_results()
         assert list(results.keys()) == time_points
 
@@ -255,12 +255,12 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results1 = traj.aggregate_results()
 
         traj.reset()
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results2 = traj.aggregate_results()
 
         assert 0.5 in results1
@@ -273,7 +273,7 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True, batch_config=BatchConfig())
+        traj.run(batch_config=BatchConfig())
         results = traj.aggregate_results()
 
         assert len(results) == 2
@@ -287,7 +287,7 @@ class TestTimeEvolutionTrajectoryRun:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF))
+        traj.run(batch_config=BatchConfig(mode=BatchMode.OFF))
         results = traj.aggregate_results()
 
         assert len(results) == 2
@@ -303,7 +303,7 @@ class TestTimeEvolutionTrajectoryE2E:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results = traj.aggregate_results()
 
         # Near t=0: P(0) ≈ 1
@@ -326,7 +326,7 @@ class TestTimeEvolutionTrajectoryE2E:
             backend=default_test_simulator,
         )
         traj.create_programs()
-        traj.run(blocking=True)
+        traj.run()
         results = traj.aggregate_results()
 
         for t, probs in results.items():
@@ -677,7 +677,7 @@ def test_cached_and_uncached_results_agree(
     )
     traj_cached.create_programs()
     assert all(p._template_meta is not None for p in traj_cached.programs.values())
-    traj_cached.run(blocking=True)
+    traj_cached.run()
     cached = traj_cached.aggregate_results()
 
     # Force the un-cached path by raising the threshold.
@@ -690,7 +690,7 @@ def test_cached_and_uncached_results_agree(
     )
     traj_un.create_programs()
     assert all(p._template_meta is None for p in traj_un.programs.values())
-    traj_un.run(blocking=True)
+    traj_un.run()
     uncached = traj_un.aggregate_results()
 
     for t in time_points:

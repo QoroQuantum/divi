@@ -20,8 +20,9 @@ Why Divi?
   path from a high-level program to executed circuits, with inspectable stages for
   compilation, batching, and error mitigation. See :doc:`user_guide/pipelines`.
 * **Program ensembles** — run many variational programs in parallel under one
-  :class:`~divi.qprog.ensemble.ProgramEnsemble`, with automatic circuit batching
-  and aggregation. Built-in workflows cover hyperparameter sweeps, graph
+  :class:`~divi.qprog.ensemble.ProgramEnsemble`, optionally over multiple
+  adaptive rounds where each round's programs are chosen from what the last
+  round measured, with automatic circuit batching and aggregation. Built-in workflows cover hyperparameter sweeps, graph
   partitioning, and time-evolution trajectories. See :doc:`user_guide/program_ensembles`.
 * **Swap backends without changing code** — develop locally against
   :class:`~divi.backends.MaestroSimulator`, simulate noise with
@@ -92,6 +93,7 @@ Or pin a specific nightly by date:
 
    user_guide/core_concepts
    user_guide/ground_state_energy_estimation_vqe
+   user_guide/localized_active_space_sqd
    user_guide/combinatorial_optimization_qaoa_pce
    user_guide/hamiltonian_time_evolution
    user_guide/quantum_neural_networks

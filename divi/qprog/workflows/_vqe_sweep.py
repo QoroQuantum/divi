@@ -15,7 +15,7 @@ import numpy as np
 import numpy.typing as npt
 import pennylane as qp
 
-from divi.qprog import VQE, Ansatz, ProgramEnsemble
+from divi.qprog import VQE, Ansatz, ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 
@@ -432,9 +432,14 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         max_iterations: int
             The maximum number of optimizer iterations for each VQE run.
         **kwargs
-            Forwarded to the parent class.
+            Forwarded to the parent class. ``reporting_level`` accepts a
+            :class:`~divi.qprog.ReportingLevel` controlling how much live
+            progress is shown.
         """
-        super().__init__(backend=kwargs.pop("backend"))
+        super().__init__(
+            backend=kwargs.pop("backend"),
+            reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
+        )
 
         self.molecule_transformer = molecule_transformer
         self.ansatze = ansatze
@@ -465,7 +470,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
             **kwargs,
         )
 
-    def create_programs(self):
+    def create_programs(self, state=None):
         """
         Create VQE programs for all combinations of ansätze and molecule variants.
 

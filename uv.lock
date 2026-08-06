@@ -2918,12 +2918,11 @@ name = "pyscf"
 version = "2.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h5py" },
-    { name = "numpy" },
-    { name = "psutil", marker = "sys_platform == 'win32'" },
-    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
-    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "setuptools" },
+    { name = "h5py", marker = "sys_platform != 'win32'" },
+    { name = "numpy", marker = "sys_platform != 'win32'" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' and sys_platform != 'win32'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' and sys_platform != 'win32'" },
+    { name = "setuptools", marker = "sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3b/76/4b4f33877f4ee460733bd8b9af64cb9c13be9d5111fb8f6357d227c2c908/pyscf-2.14.0.tar.gz", hash = "sha256:9b6ea3c2470baac9d0492d93b335542c04ab96277e79f1abcbe1cea0eb063c5f", size = 11565773, upload-time = "2026-07-18T22:50:28.053Z" }
 wheels = [
@@ -3217,6 +3216,21 @@ wheels = [
 ]
 
 [[package]]
+name = "qiskit-algorithms"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "qiskit" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e5/86/d0f8ccae25281d49ebb0e2b59076c2d815389c16a4f7a379936f21065e94/qiskit_algorithms-0.4.0.tar.gz", hash = "sha256:b945e807c9b94ba2e0d2e02898b1f1e1a33efd3b4a6dc5a45bb787c6832d4093", size = 259556, upload-time = "2025-08-29T18:32:24.076Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3c/23/ab868be0ea11e0054ac4962d27f80cc064e007f8e34b7b61808a25227cca/qiskit_algorithms-0.4.0-py3-none-any.whl", hash = "sha256:c8bfc119e270c7cd7d6013e62193914381bd71fd4cdc847c07b50c749fd0114d", size = 327840, upload-time = "2025-08-29T18:32:22.659Z" },
+]
+
+[[package]]
 name = "qiskit-ibm-runtime"
 version = "0.48.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3241,8 +3255,28 @@ wheels = [
 ]
 
 [[package]]
+name = "qiskit-nature"
+version = "0.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h5py" },
+    { name = "numpy" },
+    { name = "qiskit" },
+    { name = "qiskit-algorithms" },
+    { name = "rustworkx" },
+    { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "scipy", version = "1.18.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "setuptools" },
+    { name = "sympy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/fa/3f86a24ea0a0b6a8bbf7d91ed99ad5e3f38635cf5bf6c38dbfb771f6aea7/qiskit_nature-0.8.0.tar.gz", hash = "sha256:de3c375600b9583450f5d4cd5c9d2cc58cf45c7b8f446cd3be2aa12fe4f37d8d", size = 2204687, upload-time = "2026-06-01T13:47:15.247Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e7/b1/ea0b97ddc8040a80c89fb7588329f5f185e1b7fd3cec82d4f3efcac4c4f0/qiskit_nature-0.8.0-py3-none-any.whl", hash = "sha256:f219dc19c91109edb39575bd6de1dea7d3be088be831057740b94648143e0f8a", size = 2178105, upload-time = "2026-06-01T13:47:13.399Z" },
+]
+
+[[package]]
 name = "qoro-divi"
-version = "0.12.1"
+version = "0.13.0"
 source = { editable = "." }
 dependencies = [
     { name = "basis-set-exchange" },
@@ -3286,7 +3320,8 @@ ai = [
 ]
 chem = [
     { name = "openfermion" },
-    { name = "pyscf" },
+    { name = "pyscf", marker = "sys_platform != 'win32'" },
+    { name = "qiskit-nature" },
 ]
 jupyter = [
     { name = "ipykernel" },
@@ -3353,11 +3388,12 @@ requires-dist = [
     { name = "pymetis", marker = "sys_platform != 'win32'", specifier = ">=2025.1.1,<2026.0.0" },
     { name = "pymoo", specifier = ">=0.6,<0.7" },
     { name = "pyperclip", marker = "extra == 'ai'", specifier = ">=1.11.0,<2.0.0" },
-    { name = "pyscf", marker = "extra == 'chem'", specifier = ">=2.0,<3.0" },
+    { name = "pyscf", marker = "sys_platform != 'win32' and extra == 'chem'", specifier = ">=2.0,<3.0" },
     { name = "python-dotenv", specifier = ">=1.1.1,<2.0" },
     { name = "qiskit", specifier = ">=2.3" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime", specifier = ">=0.45" },
+    { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
     { name = "qoro-maestro", specifier = "==0.2.14" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=14.0" },

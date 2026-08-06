@@ -31,6 +31,7 @@ from .algorithms import (
     InitialState,
     InterpolationStrategy,
     IterativeQAOA,
+    LUCJAnsatz,
     OnesState,
     QAOAAnsatz,
     QCCAnsatz,
@@ -42,7 +43,14 @@ from .algorithms import (
     ZZFeatureMap,
 )
 from .early_stopping import EarlyStopping
-from .ensemble import BatchConfig, BatchMode, ProgramEnsemble
+from .ensemble import (
+    BatchConfig,
+    BatchMode,
+    ProgramEnsemble,
+    ReportingLevel,
+    RoundRecord,
+    WorkflowStatus,
+)
 from .optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
@@ -59,6 +67,13 @@ from .variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
 )
 from .workflows import (
+    LASSQD,
+    FragmentationConfig,
+    FragmentSpec,
+    FragmentState,
+    LASSQDRoundReport,
+    LASSQDState,
+    SQDConfig,
     MoleculeTransformer,
     PartitioningProgramEnsemble,
     TimeEvolutionTrajectory,

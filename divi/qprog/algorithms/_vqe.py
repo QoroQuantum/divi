@@ -8,11 +8,13 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 import pennylane as qp
+from qiskit import transpile
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._chem import molecular_hamiltonian_from_pyscf
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
@@ -24,6 +26,7 @@ from divi.qprog.algorithms import (
     Ansatz,
     HartreeFockAnsatz,
     InitialState,
+    LUCJAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
     ZerosState,
@@ -67,6 +70,9 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         ansatz: Ansatz | None = None,
         initial_state: InitialState | None = None,
         max_iterations=10,
+        n_alpha: int | None = None,
+        n_beta: int | None = None,
+        ansatz_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
         """Initialize the VQE problem.
@@ -88,6 +94,17 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 Pass an :class:`~divi.qprog.algorithms.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
             max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
+            n_alpha (int | None): Alpha electrons, for a spin-polarized
+                reference. Must be given together with ``n_beta``; without both,
+                ansatzes that need a reference determinant assume the
+                closed-shell split. Defaults to None.
+            n_beta (int | None): Beta electrons, under the same convention.
+                Defaults to None.
+            ansatz_kwargs (dict | None): Ansatz-specific options, forwarded to
+                both ``n_params_per_layer`` and ``build`` so the parameter count
+                and the circuit stay in agreement (e.g.
+                ``{"trailing_rotation": True}`` for
+                :class:`~divi.qprog.algorithms.LUCJAnsatz`). Defaults to None.
             **kwargs: Additional keyword arguments passed to the parent class.
         """
         super().__init__(**kwargs)
@@ -104,13 +121,26 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
         )
 
+        if (n_alpha is None) != (n_beta is None):
+            raise ValueError(
+                "n_alpha and n_beta must be given together; got "
+                f"n_alpha={n_alpha}, n_beta={n_beta}."
+            )
+        self._spin_kwargs: dict[str, int] = (
+            {}
+            if n_alpha is None or n_beta is None
+            else {"n_alpha": n_alpha, "n_beta": n_beta}
+        )
+        # Merged into every ansatz call, so the count and the circuit agree.
+        self._ansatz_kwargs: dict[str, Any] = dict(ansatz_kwargs or {})
+
         # Resolve & store initial state (n_qubits is now set)
         if initial_state is None:
             initial_state = ZerosState()
         self.initial_state = initial_state
 
         if not isinstance(self.initial_state, ZerosState) and isinstance(
-            self.ansatz, (HartreeFockAnsatz, QCCAnsatz, UCCSDAnsatz)
+            self.ansatz, (HartreeFockAnsatz, LUCJAnsatz, QCCAnsatz, UCCSDAnsatz)
         ):
             warn(
                 f"initial_state={self.initial_state!r} supplied with a chemistry "
@@ -131,8 +161,21 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             and electron count.
         """
         return self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons
+            self.n_qubits,
+            n_electrons=self.n_electrons,
+            **self._spin_kwargs,
+            **self._ansatz_kwargs,
         )
+
+    def _parameter_frequencies(self):
+        """The ansatz's per-layer frequencies, repeated across layers."""
+        per_layer = self.ansatz.parameter_frequencies(
+            self.n_qubits,
+            n_electrons=self.n_electrons,
+            **self._spin_kwargs,
+            **self._ansatz_kwargs,
+        )
+        return None if per_layer is None else list(per_layer) * self.n_layers
 
     @property
     def eigenstate(self) -> npt.NDArray[np.int32] | None:
@@ -199,9 +242,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         wraps its DAG into a cost ``MetaCircuit`` carrying the cost
         ``SparsePauliOp`` as observable.
         """
-        n_params = self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons
-        )
+        n_params = self.n_params_per_layer
         weights = np.array(
             [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
             dtype=object,
@@ -216,8 +257,19 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 n_qubits=self.n_qubits,
                 n_layers=self.n_layers,
                 n_electrons=self.n_electrons,
+                **self._spin_kwargs,
+                **self._ansatz_kwargs,
             ),
             inplace=True,
+        )
+
+        # Lower to the gate set the QASM body emitter accepts. Ansatzes such as
+        # LUCJAnsatz emit gates (e.g. xx_plus_yy) outside that basis;
+        # optimization_level=0 keeps this a cheap gate-by-gate substitution.
+        qc = transpile(
+            qc,
+            basis_gates=list(_QISKIT_TO_QASM2.keys()),
+            optimization_level=0,
         )
 
         dag = circuit_to_dag(qc)

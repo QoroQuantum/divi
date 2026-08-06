@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from qiskit.circuit.library import RYGate, RZGate
 
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -19,7 +20,7 @@ from divi.pipeline.stages._pce_cost_stage import (
     _compute_soft_energy,
 )
 from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
-from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.algorithms import GenericLayerAnsatz, LUCJAnsatz
 from divi.qprog.algorithms._pce import (
     _aggregate_param_group,
     _decode_parities,
@@ -219,6 +220,35 @@ def test_pce_default_ansatz_is_hardware_efficient_and_entangling(
     cost_dag = pce._create_cost_circuit().circuit_bodies[0][1]
     two_qubit_ops = [n.op.name for n in cost_dag.op_nodes() if n.op.num_qubits == 2]
     assert two_qubit_ops, "default PCE ansatz must be entangling"
+
+
+def test_pce_lucj_ansatz_runs_to_completion(default_test_simulator, default_optimizer):
+    """Regression test: PCE(LUCJAnsatz()) must complete a run.
+
+    LUCJAnsatz emits gates outside the QASM2 body emitter's basis; PCE's
+    cost-circuit builder used to hand the DAG to the emitter unlowered,
+    raising ``ValueError`` at circuit submission.
+    """
+    pce = PCE(
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
+        ansatz=LUCJAnsatz(),
+        n_electrons=2,
+        optimizer=default_optimizer,
+        max_iterations=2,
+        backend=default_test_simulator,
+    )
+
+    cost_dag = pce._create_cost_circuit().circuit_bodies[0][1]
+    unsupported = {
+        node.op.name
+        for node in cost_dag.op_nodes()
+        if node.op.name not in _QISKIT_TO_QASM2
+    }
+    assert not unsupported, f"gates outside the QASM2 basis: {sorted(unsupported)}"
+
+    pce.run()
+
+    assert len(pce.losses_history) == 2
 
 
 def test_pce_qem_protocol_raises(make_pce):

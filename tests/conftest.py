@@ -7,6 +7,19 @@ import os
 import random
 import re
 
+# Pin BLAS to one thread per process. Must be set before numpy loads, since BLAS
+# reads its thread count at library load. Under ``-n auto`` each xdist worker
+# would otherwise spawn one BLAS thread per core, oversubscribing the machine by
+# the square of the core count and making the parallel suite slower than serial.
+for _blas_threads_var in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+):
+    os.environ.setdefault(_blas_threads_var, "1")
+
 import matplotlib
 
 # Configure matplotlib to use Agg backend for testing

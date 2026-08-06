@@ -178,6 +178,18 @@ TUTORIALS: dict[str, dict] = {
             ("max_iterations=10", "max_iterations=3"),
         ],
     },
+    "chemistry/lassqd_h4.py": {
+        # Two fragment VQEs per round (CCSD seeding + COBYLA) plus SQD
+        # recovery and orbital re-optimization each round, so the budget is
+        # generous relative to the other chemistry tutorials.
+        "timeout_seconds": 300,
+        "patches": [
+            ("max_iterations=60", "max_iterations=15"),
+            ("n_batches=6", "n_batches=2"),
+            ("batch_size=32", "batch_size=6"),
+            ("max_rounds=5", "max_rounds=2"),
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
