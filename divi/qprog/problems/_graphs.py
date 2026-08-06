@@ -82,11 +82,12 @@ class _GraphProblemBase(QAOAProblem):
 
     @staticmethod
     def _compute_wire_labels(graph: GraphProblemTypes) -> tuple:
-        """Map qubit positions back to original node values in node-iteration order."""
-        if isinstance(graph, nx.Graph):
-            return tuple(graph.nodes())
-        # rustworkx graph: edge_list() / node values; mirror the relabeling done
-        # inside the SPO builders.
+        """Map qubit positions back to original node values in node-iteration order.
+
+        One expression covers both graph types: ``_to_nx_graph`` remaps a
+        rustworkx ``PyGraph``'s internal indices through ``nodes()`` before the
+        SPO builders see it, so its qubit order is that same sequence.
+        """
         return tuple(graph.nodes())
 
     @property

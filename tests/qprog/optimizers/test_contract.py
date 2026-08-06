@@ -63,6 +63,31 @@ class TestOptimizerContract:
             result.fun, recalculated_fun
         ), "Final cost value should correspond to the final parameters."
 
+    def test_optimize_descends_from_the_initial_cost(
+        self, contract_optimizer: Optimizer
+    ):
+        """Every optimizer must actually improve on where it started.
+
+        Without this the contract is satisfied by an optimizer that returns its
+        starting point: the remaining tests only pin shapes, finiteness, and
+        that ``fun`` matches ``x``, all of which a no-op honors. The sphere
+        function is convex with its minimum at the origin, so 20 iterations from
+        a random start leave ample margin for any of these methods.
+        """
+        initial_params = self._get_initial_params(contract_optimizer)
+        cost_fn = (
+            sphere_cost_fn_single
+            if contract_optimizer.n_param_sets == 1
+            else sphere_cost_fn_population
+        )
+        initial_cost = float(np.min(np.atleast_1d(cost_fn(initial_params))))
+
+        result = contract_optimizer.optimize(
+            cost_fn, initial_params, max_iterations=20, rng=np.random.default_rng(7)
+        )
+
+        assert float(np.atleast_1d(result.fun)[0]) < initial_cost
+
     def test_supports_checkpointing_matches_get_config(
         self, contract_optimizer: Optimizer
     ):

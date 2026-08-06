@@ -154,6 +154,23 @@ def _interrupt_first_dispatch(mocker):
     mocker.patch("divi.qprog.ensemble.as_completed", side_effect=_side_effect)
 
 
+def _interrupt_dispatch_then_cleanup(mocker):
+    """Interrupt the dispatch, then interrupt again during its cleanup.
+
+    The second ``as_completed`` call is the one inside
+    ``_stop_remaining_programs``, which runs from ``join()``'s
+    ``except KeyboardInterrupt`` handler and so cannot be caught by it.
+    """
+    calls = {"n": 0}
+
+    def _side_effect(futures, *args, **kwargs):
+        calls["n"] += 1
+        raise KeyboardInterrupt
+
+    mocker.patch("divi.qprog.ensemble.as_completed", side_effect=_side_effect)
+    return calls
+
+
 class TestLifecycleHookContract:
     def test_hooks_fire_in_documented_order(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(n_rounds=2)
@@ -565,6 +582,29 @@ class TestRoundFailureHandling:
         ensemble.run(max_rounds=5)
 
         assert not any(call.startswith("update_state") for call in ensemble.calls)
+        assert ensemble.workflow_state == 0
+
+    def test_second_interrupt_during_cleanup_still_tears_down(
+        self, lifecycle_ensemble, mocker
+    ):
+        """A Ctrl-C while cancelling must not leave the round half-dismantled.
+
+        The cleanup path runs from ``join()``'s own interrupt handler, so a
+        second interrupt there escapes it. ``join()``'s ``finally`` must still
+        shut the executor down and release the display, and ``run()`` must
+        record the round as cancelled rather than propagating.
+        """
+        ensemble = lifecycle_ensemble(n_rounds=5)
+        _interrupt_dispatch_then_cleanup(mocker)
+
+        ensemble.run(max_rounds=5)
+
+        assert ensemble.stop_reason == WorkflowStatus.CANCELLED
+        assert [r.status for r in ensemble.round_history] == [WorkflowStatus.CANCELLED]
+        assert ensemble._executor is None
+        assert ensemble._live_display is None
+        assert ensemble._coordinator is None
+        # The interrupted round's results never reach the state.
         assert ensemble.workflow_state == 0
 
     def test_ensemble_is_reusable_after_a_failed_round(self, lifecycle_ensemble):

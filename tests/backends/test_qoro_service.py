@@ -2221,6 +2221,29 @@ def _contract_qoro_runner(
     return service
 
 
+class TestTransportRetries:
+    """The session-level retry policy, separate from ``poll_job_status``' loop.
+
+    ``poll_job_status`` retries a *job* that is still running; this policy
+    retries the HTTP request itself on a transport failure, and nothing else
+    asserts its shape.
+    """
+
+    def test_retry_policy_is_mounted_for_both_schemes(self):
+        for scheme in ("http://", "https://"):
+            adapter = _qoro_service.session.get_adapter(scheme)
+            assert adapter.max_retries is _qoro_service.retry_configuration
+
+    def test_retry_policy_covers_transient_failures(self):
+        retries = _qoro_service.retry_configuration
+        assert retries.total == 5
+        assert retries.backoff_factor > 0
+        # 502 is the gateway error the service emits while a node cycles; the
+        # methods listed are the ones the client actually issues.
+        assert HTTPStatus.BAD_GATEWAY in retries.status_forcelist
+        assert set(retries.allowed_methods) == {"GET", "POST", "DELETE"}
+
+
 class TestContracts(AsyncRunnerContractsBase):
     """Shared :class:`~divi.backends.CircuitRunner` behavioural contracts."""
 

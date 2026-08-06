@@ -1183,3 +1183,21 @@ class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
             return make_pce(**kwargs)
 
         return _make
+
+
+def test_one_circuit_per_param_set_per_iteration(make_pce):
+    """PCE spends exactly one circuit per parameter set, plus the final sample.
+
+    The shared ``verify_correct_circuit_count`` contract models an observable
+    fan-out and so does not apply here: ``PCECostStage`` emits a single
+    Z-basis measurement per spec and reads the whole cost off that one
+    histogram, whatever the problem's term count.
+    """
+    pce = make_pce(max_iterations=3)
+
+    pce.run()
+
+    n_param_sets = pce.optimizer.n_param_sets
+    # Three optimizer iterations, then one all-wires measurement for the
+    # final solution sample.
+    assert pce.total_circuit_count == 3 * n_param_sets + 1

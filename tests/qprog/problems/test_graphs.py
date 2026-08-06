@@ -7,6 +7,7 @@ import warnings
 import networkx as nx
 import numpy as np
 import pytest
+import rustworkx as rx
 
 from divi.backends import CircuitRunner
 from divi.qprog import (
@@ -51,6 +52,32 @@ def _naive_diagonal_energy(problem, solution):
             eigenvalue *= 1 - 2 * solution[qubit]
         energy += float(np.real(coeff)) * eigenvalue
     return energy
+
+
+def test_wire_labels_follow_node_order_for_both_graph_backends():
+    """A rustworkx graph gets the same qubit-to-node map as its networkx twin.
+
+    ``_to_nx_graph`` remaps a ``PyGraph``'s internal indices through
+    ``nodes()`` before the Hamiltonian is built, so one expression serves both
+    backends — but only if the node *values*, not the internal indices, are what
+    the labels record.
+    """
+    edges = [("a", "b"), ("b", "c")]
+    nx_graph = nx.Graph()
+    nx_graph.add_edges_from(edges)
+
+    rx_graph = rx.PyGraph()
+    indices = {name: rx_graph.add_node(name) for name in ("a", "b", "c")}
+    for left, right in edges:
+        rx_graph.add_edge(indices[left], indices[right], 1.0)
+
+    nx_problem = MaxCutProblem(nx_graph)
+    rx_problem = MaxCutProblem(rx_graph)
+
+    assert rx_problem.wire_labels == ("a", "b", "c")
+    assert rx_problem.wire_labels == nx_problem.wire_labels
+    # The decoder reads node values off the bitstring, not internal indices.
+    assert rx_problem.decode_fn("101") == ["a", "c"]
 
 
 class TestEvaluateSolution:

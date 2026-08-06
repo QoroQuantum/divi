@@ -1118,6 +1118,52 @@ class TestLUCJAnsatz:
             assert lower % 2 == upper % 2
             assert abs(upper - lower) == 2
 
+    @pytest.mark.parametrize(
+        "ansatz_kwargs",
+        [{}, {"trailing_rotation": True}, {"shared_spin_params": True}],
+    )
+    def test_every_hop_is_cz_conjugated(self, ansatz_kwargs):
+        """Each hop must sit between two ``CZ`` gates on its intervening qubit.
+
+        Interleaved Jordan-Wigner puts the opposite-spin partner between the two
+        hopped qubits, so the fermionic generator carries a ``Z`` there and the
+        ``CZ`` conjugation supplies it. Dropping it leaves a qubit XY exchange
+        that still conserves particle number and Sz, still consumes the same
+        parameters, and still agrees with its own parameter-shift rule -- so the
+        statevector and gradient tests here cannot see it. The single-electron
+        probes elsewhere cannot either: they leave the intervening qubit empty,
+        where ``CZ`` acts trivially.
+        """
+        n_qubits, n_electrons = 6, 2
+        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **ansatz_kwargs)
+        circuit = LUCJAnsatz().build(
+            np.arange(1, n_params + 1, dtype=float),
+            n_qubits=n_qubits,
+            n_layers=1,
+            n_electrons=n_electrons,
+            **ansatz_kwargs,
+        )
+
+        instructions = list(circuit.data)
+        hop_positions = [
+            i
+            for i, instr in enumerate(instructions)
+            if instr.operation.name == "xx_plus_yy"
+        ]
+        assert hop_positions
+
+        def qubits_of(instr):
+            return tuple(circuit.find_bit(q).index for q in instr.qubits)
+
+        for position in hop_positions:
+            lower, upper = qubits_of(instructions[position])
+            before, after = instructions[position - 1], instructions[position + 1]
+            assert before.operation.name == "cz"
+            assert after.operation.name == "cz"
+            # The intervening opposite-spin qubit is the one between the pair.
+            assert qubits_of(before) == (lower + 1, upper)
+            assert qubits_of(after) == (lower + 1, upper)
+
     def test_conserves_particle_number_and_sz(
         self, default_test_simulator, default_optimizer
     ):
