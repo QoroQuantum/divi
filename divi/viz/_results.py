@@ -5,11 +5,27 @@
 """Result containers and plotting helpers for :mod:`divi.viz`."""
 
 from dataclasses import dataclass
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 from matplotlib.colors import BoundaryNorm, LogNorm
+
+
+def _resolve_axes(ax=None, *, projection: str | None = None) -> tuple[Any, Any]:
+    """Return ``(fig, ax)``, creating a figure when the caller passed no axes.
+
+    The axes type is left open: a ``projection`` yields a projection-specific
+    subclass (``Axes3D`` and its ``plot_surface``/``set_zlabel``), which the
+    stubs for :meth:`matplotlib.figure.Figure.add_subplot` do not express.
+    """
+    if ax is not None:
+        return ax.figure, ax
+    if projection is None:
+        return plt.subplots()
+    fig = plt.figure()
+    return fig, fig.add_subplot(111, projection=projection)
 
 
 def _cell_edges_from_centers(
@@ -45,10 +61,7 @@ def _plot_2d_contourf(
     **contour_kwargs,
 ):
     """Smooth filled contours for direction scans (``scan_2d``)."""
-    if ax is None:
-        fig, ax = plt.subplots()
-    else:
-        fig = ax.figure
+    fig, ax = _resolve_axes(ax)
 
     xx, yy = np.meshgrid(x_offsets, y_offsets, indexing="xy")
     # corner_mask=True (matplotlib default) leaves triangular holes on rectilinear
@@ -84,10 +97,7 @@ def _plot_pca_scan_cells(
     **plot_kwargs,
 ):
     """Cell heatmap for PCA scans (avoids large unfilled regions from ``contourf``)."""
-    if ax is None:
-        fig, ax = plt.subplots()
-    else:
-        fig = ax.figure
+    fig, ax = _resolve_axes(ax)
 
     z = np.asarray(values, dtype=np.float64)
     if not np.any(np.isfinite(z)):
@@ -179,11 +189,7 @@ def _plot_3d_surface(
     **surface_kwargs,
 ):
     """3D surface rendering for 2D scan grids."""
-    if ax is None:
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection="3d")
-    else:
-        fig = ax.figure
+    fig, ax = _resolve_axes(ax, projection="3d")
 
     xx, yy = np.meshgrid(x_offsets, y_offsets, indexing="xy")
     defaults = {"cmap": "viridis", "edgecolor": "none"}
@@ -222,10 +228,7 @@ class Scan1DResult:
         Returns:
             tuple: ``(fig, ax)`` for the rendered plot.
         """
-        if ax is None:
-            fig, ax = plt.subplots()
-        else:
-            fig = ax.figure
+        fig, ax = _resolve_axes(ax)
 
         ax.plot(self.offsets, self.values, **plot_kwargs)
         ax.set_xlabel("Offset")
@@ -542,10 +545,7 @@ class Fourier2DResult:
         Returns:
             tuple: ``(fig, ax)`` for the rendered plot.
         """
-        if ax is None:
-            fig, ax = plt.subplots()
-        else:
-            fig = ax.figure
+        fig, ax = _resolve_axes(ax)
 
         extent: tuple[float, float, float, float] = (
             float(self.frequencies_x[0]),
@@ -609,10 +609,7 @@ class NEBResult:
         Returns:
             tuple: ``(fig, ax)`` for the rendered plot.
         """
-        if ax is None:
-            fig, ax = plt.subplots()
-        else:
-            fig = ax.figure
+        fig, ax = _resolve_axes(ax)
 
         defaults = {"marker": "o", "markersize": 4}
         defaults.update(plot_kwargs)

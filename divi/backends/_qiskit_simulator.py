@@ -28,6 +28,7 @@ from divi.exceptions import ExecutionCancelledError
 
 from ._circuit_runner import CircuitRunner
 from ._execution_result import ExecutionResult
+from ._pauli_serde import ham_ops_group_for_circuit
 from ._shot_allocation import (
     ShotRange,
     bucket_by_shots,
@@ -384,15 +385,10 @@ class QiskitSimulator(CircuitRunner):
         Returns:
             List of individual Pauli operator strings for this circuit.
         """
-        if circuit_ham_map is None:
-            return ham_ops.replace("|", ";").split(";")
-
-        groups = ham_ops.split("|")
-        for group_index, (start, end) in enumerate(circuit_ham_map):
-            if start <= circuit_index < end:
-                return groups[group_index].split(";")
-
-        return ham_ops.replace("|", ";").split(";")
+        # A matched group holds no ``|``, so the replace only flattens the
+        # fall-back case where every group applies.
+        group = ham_ops_group_for_circuit(circuit_index, ham_ops, circuit_ham_map)
+        return group.replace("|", ";").split(";")
 
     @staticmethod
     def _prepare_expval_circuit(

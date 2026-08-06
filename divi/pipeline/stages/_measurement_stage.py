@@ -21,6 +21,7 @@ from divi.pipeline._grouping import (
 from divi.pipeline._result_keys_operations import (
     group_by_base_key,
     reduce_postprocess_ordered,
+    strip_axis_from_label,
 )
 from divi.pipeline._shot_distribution import (
     _compute_group_l1_norms,
@@ -695,26 +696,26 @@ class MeasurementStage(BundleStage):
         return self._reduce_expval(results, token)
 
     @staticmethod
-    def _reduce_probs(results: ChildResults) -> ChildResults:
-        """Strip the meas axis from probs results (identity reduce)."""
-        out: ChildResults = {}
-        for key, value in results.items():
-            base_key = tuple(ax for ax in key if ax[0] != PROBS_MEAS_AXIS)
-            out[base_key] = value
-        return out
+    def _reduce_strip_axis(results: ChildResults, axis_name: str) -> ChildResults:
+        """Identity reduce: drop ``axis_name`` from each key, values untouched."""
+        return {
+            strip_axis_from_label(key, axis_name): value
+            for key, value in results.items()
+        }
 
-    @staticmethod
-    def _reduce_raw(results: ChildResults) -> ChildResults:
+    @classmethod
+    def _reduce_probs(cls, results: ChildResults) -> ChildResults:
+        """Strip the meas axis from probs results (identity reduce)."""
+        return cls._reduce_strip_axis(results, PROBS_MEAS_AXIS)
+
+    @classmethod
+    def _reduce_raw(cls, results: ChildResults) -> ChildResults:
         """Strip the obs_group axis without postprocessing.
 
         Used when the expand path grouped observables but the caller
         requested raw counts or probabilities instead of expectation values.
         """
-        out: ChildResults = {}
-        for key, value in results.items():
-            base_key = tuple(ax for ax in key if ax[0] != OBS_GROUP_AXIS)
-            out[base_key] = value
-        return out
+        return cls._reduce_strip_axis(results, OBS_GROUP_AXIS)
 
     def _reduce_expval(
         self, results: ChildResults, token: MeasurementToken

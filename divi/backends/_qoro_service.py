@@ -10,13 +10,13 @@ import logging
 import os
 import time
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
 from threading import Event
-from typing import Any
+from typing import Any, TypeVar
 
 import requests
 from dotenv import dotenv_values, find_dotenv
@@ -57,6 +57,8 @@ from ._systems import (
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
+
+T = TypeVar("T")
 
 session = requests.Session()
 retry_configuration = Retry(
@@ -104,6 +106,38 @@ def _is_recoverable_characterization_error(exc: Exception) -> bool:
         and exc.response is not None
         and exc.response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
     )
+
+
+def _greedy_size_chunks(
+    items: Iterable[T],
+    item_size: Callable[[T], int],
+    base_overhead: int,
+    max_bytes: int,
+) -> list[list[T]]:
+    """Greedily pack *items* into chunks whose estimated size stays under the cap.
+
+    A chunk is flushed before the item that would overflow it, so a single item
+    larger than ``max_bytes`` still lands in a chunk of its own rather than
+    being dropped — the caller is responsible for rejecting that case up front
+    if the server cannot accept it.
+    """
+    chunks: list[list[T]] = []
+    current: list[T] = []
+    current_size = base_overhead
+
+    for item in items:
+        size = item_size(item)
+        if current and current_size + size > max_bytes:
+            chunks.append(current)
+            current = []
+            current_size = base_overhead
+        current.append(item)
+        current_size += size
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 class JobStatus(Enum):
@@ -484,38 +518,19 @@ class QoroService(CircuitRunner):
         consistent overhead calculation.
         Assumes that BASE64 encoding produces ASCI characters, which are 1 byte each.
         """
-        max_payload_bytes = _MAX_PAYLOAD_SIZE_MB * 1024 * 1024
-        circuit_chunks = []
-        current_chunk = {}
-
-        # Start with size 2 for the opening and closing curly braces '{}'
-        current_chunk_size_bytes = 2
-
-        for key, value in circuits.items():
-            compressed_value = self._compress_data(value)
-
-            item_size_bytes = len(key) + len(compressed_value) + 6
-
-            # If adding this item would exceed the limit, finalize the current chunk.
-            # This check only runs if the chunk is not empty.
-            if current_chunk and (
-                current_chunk_size_bytes + item_size_bytes > max_payload_bytes
-            ):
-                circuit_chunks.append(current_chunk)
-
-                # Start a new chunk
-                current_chunk = {}
-                current_chunk_size_bytes = 2
-
-            # Add the new item to the current chunk and update its size
-            current_chunk[key] = compressed_value
-            current_chunk_size_bytes += item_size_bytes
-
-        # Add the last remaining chunk if it's not empty
-        if current_chunk:
-            circuit_chunks.append(current_chunk)
-
-        return circuit_chunks
+        compressed = [
+            (key, self._compress_data(value)) for key, value in circuits.items()
+        ]
+        chunks = _greedy_size_chunks(
+            compressed,
+            # 6 bytes of JSON punctuation per entry: two quote pairs, a colon
+            # and a comma.
+            lambda item: len(item[0]) + len(item[1]) + 6,
+            # The opening and closing curly braces.
+            base_overhead=2,
+            max_bytes=int(_MAX_PAYLOAD_SIZE_MB * 1024 * 1024),
+        )
+        return [dict(chunk) for chunk in chunks]
 
     def submit_circuits(
         self,
@@ -770,26 +785,16 @@ class QoroService(CircuitRunner):
                 "reduce the template size or split the program."
             )
 
-        chunks: list[list[tuple[str, tuple[float, ...]]]] = []
-        current: list[tuple[str, tuple[float, ...]]] = []
-        current_size = fixed_overhead
-
-        for label, values in parameter_sets:
+        def row_size(row: tuple[str, tuple[float, ...]]) -> int:
             # One row's JSON: {"label": "<label>", "values": [v0, v1, ...]},
             # ≈ 26 + len(label) + per-value chars + trailing ", ".
+            label, values = row
             values_size = sum(len(repr(float(v))) + 2 for v in values)
-            row_size = 26 + len(label) + values_size + 2
-            if current and (current_size + row_size > max_payload_bytes):
-                chunks.append(current)
-                current = []
-                current_size = fixed_overhead
-            current.append((label, values))
-            current_size += row_size
+            return 26 + len(label) + values_size + 2
 
-        if current:
-            chunks.append(current)
-
-        return chunks
+        return _greedy_size_chunks(
+            parameter_sets, row_size, fixed_overhead, max_payload_bytes
+        )
 
     def submit_circuit_templates(
         self,

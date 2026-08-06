@@ -89,18 +89,9 @@ class QiskitSpecStage(CircuitSpecStage):
         items: QuantumCircuit | Sequence[QuantumCircuit] | Mapping[str, QuantumCircuit],
     ) -> MetaCircuit | list[MetaCircuit] | dict[str, MetaCircuit]:
         """Dispatch input shape and convert each QuantumCircuit to MetaCircuit."""
-        if isinstance(items, QuantumCircuit):
-            return QiskitSpecStage._qiskit_to_meta(items)
-        if isinstance(items, str):
-            raise TypeError(
-                f"QiskitSpecStage expects a QuantumCircuit, sequence, or mapping, "
-                f"got str"
-            )
-        if isinstance(items, Mapping):
-            return {k: QiskitSpecStage._qiskit_to_meta(v) for k, v in items.items()}
-        if isinstance(items, Sequence):
-            return [QiskitSpecStage._qiskit_to_meta(v) for v in items]
-        raise TypeError(
-            f"QiskitSpecStage expects a QuantumCircuit, sequence, or mapping, "
-            f"got {type(items).__name__}"
+        return CircuitSpecStage._convert_by_shape(
+            items,
+            QiskitSpecStage._qiskit_to_meta,
+            single_type=QuantumCircuit,
+            expected="QiskitSpecStage expects a QuantumCircuit, sequence, or mapping",
         )

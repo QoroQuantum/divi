@@ -142,6 +142,35 @@ def _batched_expectation(
     return (reduced_prob_matrix @ reduced_eigvals_matrix.T).T
 
 
+def _reverse_endianness(counts: Mapping) -> dict:
+    """Little-endian backend bitstrings → big-endian, matching stored labels."""
+    return {bitstring[::-1]: count for bitstring, count in counts.items()}
+
+
+def _group_lookups(
+    batch: dict[Any, MetaCircuit],
+) -> tuple[set, dict[tuple, dict[int, tuple[object, ...]]], dict[tuple, int]]:
+    """Per-batch-key tables for resolving a branch key's measurement group."""
+    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]] = {}
+    nq_by_bk: dict[tuple, int] = {}
+    for bk, node in batch.items():
+        nq_by_bk[bk] = node.n_qubits
+        labels_by_bk[bk] = dict(enumerate(node.measurement_groups))
+    return set(batch.keys()), labels_by_bk, nq_by_bk
+
+
+def _resolve_group(
+    branch_key: tuple,
+    batch_keys: set,
+    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]],
+    nq_by_bk: dict[tuple, int],
+) -> tuple[tuple, tuple[object, ...], int]:
+    """Return ``(batch_key, group_labels, n_qubits)`` for one branch key."""
+    bk = _find_batch_key(branch_key, batch_keys)
+    obs_group_idx = int(dict(branch_key).get("obs_group", 0))
+    return bk, labels_by_bk[bk][obs_group_idx], nq_by_bk[bk]
+
+
 def _counts_to_expvals(
     raw: ChildResults,
     batch: dict[Any, MetaCircuit],
@@ -156,29 +185,19 @@ def _counts_to_expvals(
 
     Returns an ``{obs_idx: float}`` dict per branch key.
     """
-    # Pre-compute per-batch-key lookup tables.
-    batch_keys = set(batch.keys())
-    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]] = {}
-    nq_by_bk: dict[tuple, int] = {}
-    for bk, node in batch.items():
-        nq_by_bk[bk] = node.n_qubits
-        labels_by_bk[bk] = {i: g for i, g in enumerate(node.measurement_groups)}
+    batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
 
     out: ChildResults = {}
     for branch_key, counts in raw.items():
-        bk = _find_batch_key(branch_key, batch_keys)
-        axis_values = dict(branch_key)
-        obs_group_idx = int(axis_values.get("obs_group", 0))
+        _bk, group_labels, n_qubits = _resolve_group(
+            branch_key, batch_keys, labels_by_bk, nq_by_bk
+        )
 
-        group_labels = labels_by_bk[bk][obs_group_idx]
-        n_qubits = nq_by_bk[bk]
-
-        # Little-endian backend counts → big-endian, matching the labels.
         # Any bitstring→count mapping (incl. qiskit's dict-subclass Counts) is
         # reversed; a non-mapping value crashes loudly below in
         # _batched_expectation rather than silently skipping the reversal.
         if isinstance(counts, Mapping):
-            counts = {bitstring[::-1]: count for bitstring, count in counts.items()}
+            counts = _reverse_endianness(counts)
 
         expvals = _batched_expectation(
             [counts], [str(p) for p in group_labels], n_qubits
@@ -232,31 +251,22 @@ def _counts_to_cost_variance(
     matching the post-reduce cost keys. Specs with multiple observables yield
     ``nan`` (single-scalar variance undefined).
     """
-    batch_keys = set(batch.keys())
-    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]] = {}
-    nq_by_bk: dict[tuple, int] = {}
-    coeffs_by_bk: dict[tuple, dict[str, float] | None] = {}
-    for bk, node in batch.items():
-        nq_by_bk[bk] = node.n_qubits
-        labels_by_bk[bk] = {i: g for i, g in enumerate(node.measurement_groups)}
-        coeffs_by_bk[bk] = _observable_coeff_map(node)
+    batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
+    coeffs_by_bk = {bk: _observable_coeff_map(node) for bk, node in batch.items()}
 
     out: dict[tuple, float] = {}
     for branch_key, counts in raw.items():
-        bk = _find_batch_key(branch_key, batch_keys)
+        bk, group_labels, n_qubits = _resolve_group(
+            branch_key, batch_keys, labels_by_bk, nq_by_bk
+        )
         base_key = tuple(ax for ax in branch_key if ax[0] != "obs_group")
         coeff_map = coeffs_by_bk[bk]
         if coeff_map is None:
             out[base_key] = float("nan")
             continue
 
-        axis_values = dict(branch_key)
-        obs_group_idx = int(axis_values.get("obs_group", 0))
-        group_labels = labels_by_bk[bk][obs_group_idx]
-        n_qubits = nq_by_bk[bk]
-
         if isinstance(counts, Mapping):
-            counts = {bitstring[::-1]: count for bitstring, count in counts.items()}
+            counts = _reverse_endianness(counts)
             shots = sum(counts.values())
         else:
             # Non-count payload (shouldn't reach here on the shot path); skip.

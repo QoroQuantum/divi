@@ -35,6 +35,7 @@ from ._active_space import (
 from ._active_space import validate_fragment_atoms as _validate_fragment_atoms
 from ._config import FragmentationConfig, SQDConfig
 from ._integrals import (
+    MOIntegrals,
     assemble_active_rdms,
     build_active_permutation,
     cached_ao_eri,
@@ -961,15 +962,7 @@ class LASSQD(ProgramEnsemble):
             state = self.initial_state()
         self._state = state
 
-        n_occupied = self._mol.nelectron // 2
-        n_core = _compute_n_core(
-            [fragment.spec for fragment in state.fragments], n_occupied
-        )
-        ao_eri, _ = self._cached_mol_integrals()
-        n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
-        integrals = transform_integrals(
-            self._mol, state.mo_coeff, n_core, n_act, ao_eri
-        )
+        integrals, _n_core = self._active_space_integrals(state)
         fragment_seeds = self._rng.integers(0, 2**63 - 1, size=len(state.fragments))
 
         for index, fragment in enumerate(state.fragments):
@@ -1174,6 +1167,19 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             self._h_ao = cached_h_ao(self._mol)
         return self._ao_eri, self._h_ao
 
+    def _active_space_integrals(self, state: LASSQDState) -> tuple[MOIntegrals, int]:
+        """This state's active-space integrals and its frozen-core count."""
+        n_occupied = self._mol.nelectron // 2
+        n_core = _compute_n_core(
+            [fragment.spec for fragment in state.fragments], n_occupied
+        )
+        ao_eri, _ = self._cached_mol_integrals()
+        n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
+        integrals = transform_integrals(
+            self._mol, state.mo_coeff, n_core, n_act, ao_eri
+        )
+        return integrals, n_core
+
     def update_state(self, state: LASSQDState) -> LASSQDState:
         """Reduce this round's sampled distributions into the next state.
 
@@ -1222,15 +1228,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 "different orbitals than the VQEs optimized against."
             )
 
-        n_occupied = self._mol.nelectron // 2
-        n_core = _compute_n_core(
-            [fragment.spec for fragment in state.fragments], n_occupied
-        )
-        ao_eri, _ = self._cached_mol_integrals()
-        n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
-        integrals = transform_integrals(
-            self._mol, state.mo_coeff, n_core, n_act, ao_eri
-        )
+        integrals, n_core = self._active_space_integrals(state)
 
         self._emit_workflow_round_stage("Recovering fragment subspaces (SQD)")
         recovery_started = time.perf_counter()

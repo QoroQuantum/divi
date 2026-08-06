@@ -235,30 +235,33 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             cost_spo, raise_on_constant=True
         )
 
-    def _create_cost_circuit(self) -> MetaCircuit:
-        """Create the cost MetaCircuit for VQE.
+    def _cost_meta_from_ansatz(
+        self, prefix: QuantumCircuit | None = None, /, **ansatz_kwargs
+    ) -> MetaCircuit:
+        """Wrap ``prefix`` plus a layered ansatz into a cost ``MetaCircuit``.
 
-        Builds a single ``QuantumCircuit`` (initial state + ansatz) and
-        wraps its DAG into a cost ``MetaCircuit`` carrying the cost
-        ``SparsePauliOp`` as observable.
+        The same keywords reach ``n_params_per_layer`` and ``build``, so the
+        parameter count and the circuit cannot disagree. ``prefix`` is
+        positional so an ansatz keyword of the same name cannot capture it.
         """
-        n_params = self.n_params_per_layer
+        n_params = self.ansatz.n_params_per_layer(
+            self.n_qubits, n_electrons=self.n_electrons, **ansatz_kwargs
+        )
         weights = np.array(
             [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
             dtype=object,
         )
 
-        wires = list(range(self.n_qubits))
         qc = QuantumCircuit(self.n_qubits)
-        qc.compose(self.initial_state.build(wires), inplace=True)
+        if prefix is not None:
+            qc.compose(prefix, inplace=True)
         qc.compose(
             self.ansatz.build(
                 weights,
                 n_qubits=self.n_qubits,
                 n_layers=self.n_layers,
                 n_electrons=self.n_electrons,
-                **self._spin_kwargs,
-                **self._ansatz_kwargs,
+                **ansatz_kwargs,
             ),
             inplace=True,
         )
@@ -272,13 +275,19 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             optimization_level=0,
         )
 
-        dag = circuit_to_dag(qc)
-        flat_params = tuple(weights.flatten())
         return MetaCircuit(
-            circuit_bodies=(((), dag),),
-            parameters=flat_params,
+            circuit_bodies=(((), circuit_to_dag(qc)),),
+            parameters=tuple(weights.flatten()),
             observable=self.cost_hamiltonian,
             precision=self._precision,
+        )
+
+    def _create_cost_circuit(self) -> MetaCircuit:
+        """Create the cost MetaCircuit for VQE: initial state plus ansatz."""
+        return self._cost_meta_from_ansatz(
+            self.initial_state.build(list(range(self.n_qubits))),
+            **self._spin_kwargs,
+            **self._ansatz_kwargs,
         )
 
     def sample_solution(

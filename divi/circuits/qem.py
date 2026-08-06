@@ -29,6 +29,20 @@ QEMContext = dict
 OBSERVABLE_OVERRIDE = "observable_override"
 
 
+def select_by_dag_indices(
+    quantum_results: Sequence[Any], context: QEMContext
+) -> list[Any]:
+    """The results this protocol's own DAGs produced, in ``expand`` order.
+
+    ``dag_indices`` is absent when nothing else shared the QEM axis, in which
+    case every result belongs to this protocol.
+    """
+    indices = context.get("dag_indices")
+    if indices is None:
+        return list(quantum_results)
+    return [quantum_results[i] for i in indices]
+
+
 class QEMProtocol(ABC):
     """Abstract base class for Quantum Error Mitigation protocols.
 
@@ -157,12 +171,7 @@ class _NoMitigation(QEMProtocol):
         quantum_results: Sequence[Any],
         context: QEMContext,
     ) -> list[float]:
-        indices = context.get("dag_indices")
-        selected = (
-            [quantum_results[i] for i in indices]
-            if indices is not None
-            else list(quantum_results)
-        )
+        selected = select_by_dag_indices(quantum_results, context)
         if len(selected) == 0:
             raise RuntimeError("NoMitigation received an empty results sequence.")
         if len(selected) > 1:

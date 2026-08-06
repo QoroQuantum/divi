@@ -43,6 +43,23 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
     def __init__(self) -> None:
         super().__init__(name=type(self).__name__)
 
+    @staticmethod
+    def _convert_by_shape(items, convert, *, single_type, expected: str):
+        """Apply *convert* across a single item, a sequence, or a mapping.
+
+        ``str`` is rejected before the ``Sequence`` branch: it satisfies that
+        protocol and would otherwise be converted character by character.
+        """
+        if isinstance(items, single_type):
+            return convert(items)
+        if isinstance(items, str):
+            raise TypeError(f"{expected}, got str")
+        if isinstance(items, Mapping):
+            return {key: convert(value) for key, value in items.items()}
+        if isinstance(items, Sequence):
+            return [convert(value) for value in items]
+        raise TypeError(f"{expected}, got {type(items).__name__}")
+
     def expand(
         self, batch: CircuitSpec, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:

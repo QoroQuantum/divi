@@ -112,20 +112,12 @@ class PennyLaneSpecStage(CircuitSpecStage):
         items: PennyLaneInput | Sequence[PennyLaneInput] | Mapping[str, PennyLaneInput],
     ) -> MetaCircuit | list[MetaCircuit] | dict[str, MetaCircuit]:
         """Dispatch input shape and convert each input to MetaCircuit."""
-        if isinstance(items, (qp.tape.QuantumScript, QNode)):
-            return PennyLaneSpecStage._pennylane_to_meta(items)
-        if isinstance(items, str):
-            raise TypeError(
-                f"PennyLaneSpecStage expects a QuantumScript, QNode, sequence, or "
-                f"mapping, got str"
-            )
-        if isinstance(items, Mapping):
-            return {
-                k: PennyLaneSpecStage._pennylane_to_meta(v) for k, v in items.items()
-            }
-        if isinstance(items, Sequence):
-            return [PennyLaneSpecStage._pennylane_to_meta(v) for v in items]
-        raise TypeError(
-            f"PennyLaneSpecStage expects a QuantumScript, QNode, sequence, or "
-            f"mapping, got {type(items).__name__}"
+        return CircuitSpecStage._convert_by_shape(
+            items,
+            PennyLaneSpecStage._pennylane_to_meta,
+            single_type=(qp.tape.QuantumScript, QNode),
+            expected=(
+                "PennyLaneSpecStage expects a QuantumScript, QNode, sequence, "
+                "or mapping"
+            ),
         )

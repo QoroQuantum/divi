@@ -17,7 +17,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler.basepasses import TransformationPass
 
-from divi.circuits.qem import QEMContext, QEMProtocol
+from divi.circuits.qem import QEMContext, QEMProtocol, select_by_dag_indices
 from divi.pipeline.abc import ResultFormat
 
 __all__ = [
@@ -48,6 +48,22 @@ def _count_foldable_gates(
         if node.op.name not in _NON_UNITARY_OP_NAMES
         and node.op.name not in exclude_names
         and len(node.qargs) not in exclude_arities
+    )
+
+
+def _warn_on_collapsed_scales(
+    requested: Sequence[float], effective: Sequence[float]
+) -> None:
+    """Warn when folding maps distinct requested scales onto the same one."""
+    if len(set(effective)) == len(effective):
+        return
+    warnings.warn(
+        f"ZNE: requested scale factors {list(requested)} collapse to effective "
+        f"scales {list(effective)} — the foldable gate count is too small for "
+        f"the requested granularity. Extrapolation may fail or be biased; "
+        f"consider fewer scale factors, integer scales only, or a circuit with "
+        f"more foldable gates.",
+        stacklevel=3,
     )
 
 
@@ -487,16 +503,7 @@ class ZNE(QEMProtocol):
         folded_dags = tuple(pair[0] for pair in folded_pairs)
         effective_scales = tuple(float(pair[1]) for pair in folded_pairs)
 
-        if len(set(effective_scales)) < len(effective_scales):
-            warnings.warn(
-                f"ZNE: requested scale factors {list(self._scale_factors)} "
-                f"collapse to effective scales {list(effective_scales)} — "
-                f"the foldable gate count is too small for the requested "
-                f"granularity.  Extrapolation may fail or be biased; "
-                f"consider fewer scale factors, integer scales only, or a "
-                f"circuit with more foldable gates.",
-                stacklevel=2,
-            )
+        _warn_on_collapsed_scales(self._scale_factors, effective_scales)
 
         return folded_dags, {
             "effective_scales": effective_scales,
@@ -516,16 +523,7 @@ class ZNE(QEMProtocol):
             float(_compute_effective_scale(n_foldable, s)) for s in scales
         )
 
-        if len(set(effective_scales)) < len(effective_scales):
-            warnings.warn(
-                f"ZNE: requested scale factors {list(scales)} collapse to "
-                f"effective scales {list(effective_scales)} — the foldable "
-                f"gate count is too small for the requested granularity. "
-                f"Extrapolation may fail or be biased; consider fewer scale "
-                f"factors, integer scales only, or a circuit with more "
-                f"foldable gates.",
-                stacklevel=2,
-            )
+        _warn_on_collapsed_scales(scales, effective_scales)
 
         return tuple(dag for _ in scales), {
             "effective_scales": effective_scales,
@@ -543,12 +541,7 @@ class ZNE(QEMProtocol):
         observable expectation values from one scale factor.  Extrapolation
         runs independently per observable.
         """
-        indices = context.get("dag_indices")
-        selected = (
-            [quantum_results[i] for i in indices]
-            if indices is not None
-            else list(quantum_results)
-        )
+        selected = select_by_dag_indices(quantum_results, context)
         scales = context.get("effective_scales", self._scale_factors)
 
         if not selected:

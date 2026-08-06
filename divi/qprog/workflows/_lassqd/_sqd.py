@@ -1011,15 +1011,13 @@ def compute_spatial_rdms(
     rdm1_beta = rdm1_spin[n_orb:, n_orb:].copy()
     rdm1 = rdm1_alpha + rdm1_beta
 
-    rdm2 = np.zeros((n_orb, n_orb, n_orb, n_orb))
-    for p in range(n_orb):
-        for q in range(n_orb):
-            for r in range(n_orb):
-                for s in range(n_orb):
-                    val = 0.0
-                    for s1 in (0, n_orb):
-                        for s2 in (0, n_orb):
-                            val += rdm2_spin[p + s1, q + s1, r + s2, s + s2]
-                    rdm2[p, q, r, s] = val
+    # Spin-trace the 2-RDM: sum the four same-spin-pair blocks (aa, ab, ba, bb).
+    alpha, beta = slice(None, n_orb), slice(n_orb, None)
+    rdm2 = (
+        rdm2_spin[alpha, alpha, alpha, alpha]
+        + rdm2_spin[alpha, alpha, beta, beta]
+        + rdm2_spin[beta, beta, alpha, alpha]
+        + rdm2_spin[beta, beta, beta, beta]
+    )
 
     return rdm1, rdm2, rdm1_alpha, rdm1_beta

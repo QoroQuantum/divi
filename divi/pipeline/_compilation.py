@@ -25,6 +25,20 @@ def _preamble(n_qubits: int) -> str:
     )
 
 
+def _branch_label(branch_key: BranchKey) -> str:
+    """Flatten a branch key into the label backends and lineage maps key on."""
+    return "/".join(f"{ax}:{val}" for ax, val in branch_key)
+
+
+def _require_measurements(batch_key, node: MetaCircuit) -> None:
+    """Reject a node that never passed through ``MeasurementStage``."""
+    if not node.measurement_qasms:
+        raise ValueError(
+            f"MetaCircuit has no measurement_qasms for key '{batch_key}'. "
+            "Run MeasurementStage before execution."
+        )
+
+
 def _compile_batch(
     batch: dict[Any, MetaCircuit],
 ) -> tuple[dict[str, str], dict[str, BranchKey]]:
@@ -46,11 +60,7 @@ def _compile_batch(
     lineage_by_label: dict[str, BranchKey] = {}
 
     for batch_key, node in batch.items():
-        if not node.measurement_qasms:
-            raise ValueError(
-                f"MetaCircuit has no measurement_qasms for key '{batch_key}'. "
-                "Run MeasurementStage before execution."
-            )
+        _require_measurements(batch_key, node)
         if not node.circuit_bodies:
             raise ValueError(
                 f"MetaCircuit has no circuit_bodies for key '{batch_key}'."
@@ -74,7 +84,7 @@ def _compile_batch(
             body_items, node.measurement_qasms
         ):
             branch_key: BranchKey = (*batch_key, *body_tag, *meas_tag)
-            label = "/".join(f"{ax}:{val}" for ax, val in branch_key)
+            label = _branch_label(branch_key)
             circuits[label] = preamble + body_qasm + meas_qasm
             lineage_by_label[label] = branch_key
 
@@ -151,11 +161,7 @@ def _compile_template_batch(
     lineage_by_label: dict[str, BranchKey] = {}
 
     for batch_key, node in batch.items():
-        if not node.measurement_qasms:
-            raise ValueError(
-                f"MetaCircuit has no measurement_qasms for key '{batch_key}'. "
-                "Run MeasurementStage before execution."
-            )
+        _require_measurements(batch_key, node)
         if not node.parameters or not node.qasm_bodies:
             raise ValueError(
                 f"MetaCircuit for key '{batch_key}' is not a template: expected "
@@ -179,7 +185,7 @@ def _compile_template_batch(
                     param_set_tag,
                     *meas_tag,
                 )
-                label = "/".join(f"{ax}:{val}" for ax, val in branch_key)
+                label = _branch_label(branch_key)
                 param_set_rows.append((label, tuple(float(v) for v in values)))
                 lineage_by_label[label] = branch_key
 

@@ -35,6 +35,7 @@ from qiskit import QuantumCircuit
 
 from ._circuit_runner import CircuitRunner
 from ._execution_result import ExecutionResult
+from ._pauli_serde import ham_ops_group_for_circuit
 from ._shot_allocation import from_wire, per_circuit, validate
 
 logger = logging.getLogger(__name__)
@@ -458,22 +459,8 @@ class MaestroSimulator(CircuitRunner):
         ham_ops: str,
         circuit_ham_map: list[list[int]] | None,
     ) -> str:
-        """Resolve which observable string applies to a given circuit index.
-
-        When ``circuit_ham_map`` is provided but no range covers
-        ``circuit_index``, falls back to the full ``ham_ops`` string —
-        callers may submit auxiliary circuits outside the per-group ranges
-        and expect them to be evaluated against every observable.
-        """
-        if circuit_ham_map is None:
-            return ham_ops
-
-        groups = ham_ops.split("|")
-        for group_index, (start, end) in enumerate(circuit_ham_map):
-            if start <= circuit_index < end:
-                return groups[group_index]
-
-        return ham_ops
+        """Resolve which observable string applies to a given circuit index."""
+        return ham_ops_group_for_circuit(circuit_index, ham_ops, circuit_ham_map)
 
     def submit_circuits(
         self,

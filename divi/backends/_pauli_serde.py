@@ -2,18 +2,40 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Wire-format serialisation for ``ham_ops`` payloads sent to the Qoro service.
+"""The ``ham_ops`` string format: its wire serialization and its group layout.
 
 ``ham_ops`` is a semicolon-separated dense Pauli string (``;`` between terms,
 ``|`` between groups) produced upstream by
 :func:`~divi.circuits._sparse_pauli_op_to_ham_string`.  This module compresses
-that string for transport via sparse encoding + gzip + base64.  Not an
-operator encoding (Jordan-Wigner, Bravyi-Kitaev) — purely an I/O concern
-scoped to the Qoro backend.
+that string for transport via sparse encoding + gzip + base64, and resolves
+which ``|``-group a given circuit was measured for.  Not an operator encoding
+(Jordan-Wigner, Bravyi-Kitaev) — purely an I/O and layout concern.
 """
 
 import base64
 import gzip
+
+
+def ham_ops_group_for_circuit(
+    circuit_index: int,
+    ham_ops: str,
+    circuit_ham_map: list[list[int]] | None,
+) -> str:
+    """The ``|``-group of *ham_ops* covering *circuit_index*, else all of it.
+
+    Falling back to the whole string matters for auxiliary circuits submitted
+    outside the per-group ranges (overlap circuits, for instance): they are
+    evaluated against every observable rather than none.
+    """
+    if circuit_ham_map is None:
+        return ham_ops
+
+    groups = ham_ops.split("|")
+    for group_index, (start, end) in enumerate(circuit_ham_map):
+        if start <= circuit_index < end:
+            return groups[group_index]
+
+    return ham_ops
 
 
 def _dense_to_sparse(term: str) -> str:

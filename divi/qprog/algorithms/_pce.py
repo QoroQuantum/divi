@@ -11,14 +11,10 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit import transpile
-from qiskit.circuit import ParameterVector
 from qiskit.circuit.library import CXGate, RYGate, RZGate
-from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import BinaryPolynomialProblem, compile_problem
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
@@ -314,40 +310,12 @@ class PCE(VQE):
         return super()._evaluate_cost_param_sets(param_sets, **kwargs)
 
     def _create_cost_circuit(self) -> MetaCircuit:
-        """Create the cost MetaCircuit, handling the edge case of zero parameters."""
-        n_params = self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons
-        )
+        """Create the cost MetaCircuit — no initial state, no spin keywords.
 
-        weights = np.array(
-            [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
-            dtype=object,
-        )
-
-        ansatz_qc = self.ansatz.build(
-            weights,
-            n_qubits=self.n_qubits,
-            n_layers=self.n_layers,
-            n_electrons=self.n_electrons,
-        )
-
-        # Lower to the gate set the QASM body emitter accepts. Ansatzes such as
-        # LUCJAnsatz emit gates (e.g. xx_plus_yy) outside that basis;
-        # optimization_level=0 keeps this a cheap gate-by-gate substitution.
-        ansatz_qc = transpile(
-            ansatz_qc,
-            basis_gates=list(_QISKIT_TO_QASM2.keys()),
-            optimization_level=0,
-        )
-
-        dag = circuit_to_dag(ansatz_qc)
-        flat_params = tuple(weights.flatten())
-        return MetaCircuit(
-            circuit_bodies=(((), dag),),
-            parameters=flat_params,
-            observable=self.cost_hamiltonian,
-            precision=self._precision,
-        )
+        PCE encodes variables in Pauli parities rather than electrons, so the
+        chemistry reference state VQE prepends does not apply.
+        """
+        return self._cost_meta_from_ansatz()
 
     def sample_solution(
         self,

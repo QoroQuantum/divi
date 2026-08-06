@@ -502,14 +502,7 @@ class CircuitPipeline:
                 if result_format is ResultFormat.PROBS:
                     raw = _counts_to_probs(raw, env.backend.shots)
                 elif result_format is ResultFormat.EXPVALS:
-                    ham_ops = next(
-                        (
-                            meta.backend_ham_ops
-                            for meta in plan.final_batch.values()
-                            if meta.backend_ham_ops is not None
-                        ),
-                        None,
-                    )
+                    ham_ops = plan.env_artifacts.get("ham_ops")
                     if ham_ops is not None:
                         # Backend-native expval: no shot counts, so a shot-noise
                         # variance is undefined; cost_variance is left unset and

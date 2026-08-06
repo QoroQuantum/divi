@@ -10,6 +10,7 @@ strings (qubit 0 on the left), matching the bitstring convention used by
 backends and :func:`~divi.pipeline._postprocessing._batched_expectation`.
 """
 
+from collections import defaultdict, deque
 from collections.abc import Callable
 from typing import Literal
 
@@ -169,24 +170,25 @@ def _compute_measurement_groups(
     if strategy in ("qwc", "default"):
         grouped_ops = union.group_commuting(qubit_wise=True)
         # Reconstruct partition_indices by matching labels back to originals.
+        # One queue of union indices per label, consumed in order, so repeated
+        # labels are handed out once each without rescanning the union.
+        indices_by_label: dict[str, deque[int]] = defaultdict(deque)
+        for index, label in enumerate(be_labels):
+            indices_by_label[label].append(index)
+
         partition_indices: list[list[int]] = []
         grouped_be_labels: list[tuple[str, ...]] = []
-        used: set[int] = set()
         for group_op in grouped_ops:
-            group_le = group_op.paulis.to_labels()
             indices = []
             group_labels = []
-            for gl in group_le:
+            for gl in group_op.paulis.to_labels():
                 gl_be = gl[::-1]
                 if len(gl_be) < n_qubits:
                     gl_be = gl_be + "I" * (n_qubits - len(gl_be))
-                # Find the matching original index (handle duplicates).
-                for orig_idx, orig_label in enumerate(be_labels):
-                    if orig_idx not in used and orig_label == gl_be:
-                        indices.append(orig_idx)
-                        used.add(orig_idx)
-                        group_labels.append(gl_be)
-                        break
+                queue = indices_by_label.get(gl_be)
+                if queue:
+                    indices.append(queue.popleft())
+                    group_labels.append(gl_be)
             partition_indices.append(indices)
             grouped_be_labels.append(tuple(group_labels))
         measurement_groups = tuple(grouped_be_labels)

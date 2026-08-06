@@ -355,26 +355,15 @@ class ParameterBindingStage(BundleStage):
         """
         out: MetaCircuitBatch = {}
         for key, node in batch.items():
-            if len(node.parameters) == 0:
-                # No weights to defer. Emit bound bodies (consulting any
-                # data-baked partials DataBindingStage parked) so compile takes
-                # its normal bound route. Parameters already empty.
-                prefix_index = _prefix_index_for(node)
-                bodies = tuple(
-                    (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
-                    for tag, dag in node.circuit_bodies
-                )
-                out[key] = node.set_qasm_bodies(bodies)
-                continue
-
             prefix_index = _prefix_index_for(node)
-            template_bodies = tuple(
+            bodies = tuple(
                 (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
                 for tag, dag in node.circuit_bodies
             )
-            # Keep parameters: their presence is the "this is a template" signal
-            # and supplies the payload's parameter_names.
-            out[key] = node.set_qasm_bodies(template_bodies)
+            # Parameters are left intact: their presence is the "this is a
+            # template" signal and supplies the payload's parameter_names. A node
+            # with none serializes the same way and compiles down the bound route.
+            out[key] = node.set_qasm_bodies(bodies)
         return out
 
     def _run_dry(
