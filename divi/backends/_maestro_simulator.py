@@ -6,12 +6,13 @@ import logging
 import os
 import re
 import weakref
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
 from threading import Event, Lock
 from typing import TYPE_CHECKING, Any
 
+from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 
 if TYPE_CHECKING:
@@ -464,7 +465,7 @@ class MaestroSimulator(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        payloads: Sequence[CircuitPayload] | Mapping[str, str],
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -475,7 +476,7 @@ class MaestroSimulator(CircuitRunner):
         """Submit quantum circuits for execution on the maestro simulator.
 
         Args:
-            circuits: Dictionary mapping circuit labels to OpenQASM string representations.
+            payloads: Bound QASM payloads, one resolved circuit per parameter-set row.
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. If None, runs in sampling mode.
             circuit_ham_map: Maps circuit index ranges to observable groups for
@@ -508,6 +509,7 @@ class MaestroSimulator(CircuitRunner):
                 "and ignores shot counts. Pass exactly one."
             )
 
+        circuits = bound_circuits(payloads)
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
 

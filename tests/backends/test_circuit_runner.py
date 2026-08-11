@@ -2,9 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from collections.abc import Sequence
+
 import pytest
 
 from divi.backends import CircuitRunner, ExecutionResult
+from divi.circuits._payloads import CircuitPayload
 
 
 class ConcreteCircuitRunner(CircuitRunner):
@@ -18,7 +21,7 @@ class ConcreteCircuitRunner(CircuitRunner):
     def is_async(self) -> bool:
         return False
 
-    def submit_circuits(self, circuits: dict[str, str], **kwargs):
+    def submit_circuits(self, payloads: Sequence[CircuitPayload], **kwargs):
         return ExecutionResult(results=[])
 
 
@@ -51,6 +54,6 @@ class TestCircuitRunner:
         assert runner.shots == 100
         assert runner.supports_expval is False
         assert runner.is_async is False
-        result = runner.submit_circuits({})
+        result = runner.submit_circuits([])
         assert isinstance(result, ExecutionResult)
         assert result.results == []

@@ -10,7 +10,7 @@ import logging
 import os
 import time
 import warnings
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 from enum import Enum
@@ -25,6 +25,7 @@ from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
 from divi.circuits import TemplateEntry
+from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.exceptions import CharacterizationSubmitError, ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
@@ -534,7 +535,7 @@ class QoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        payloads: Sequence[CircuitPayload] | Mapping[str, str],
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -552,8 +553,10 @@ class QoroService(CircuitRunner):
         one or more chunks, associating them all with a single job ID.
 
         Args:
-            circuits (dict[str, str]):
-                Dictionary mapping unique circuit IDs to QASM circuit strings.
+            payloads:
+                Already-resolved circuits, either as
+                :class:`~divi.circuits.CircuitPayload` objects or as a
+                ``{label: qasm}`` mapping.
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
@@ -599,6 +602,8 @@ class QoroService(CircuitRunner):
             ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
                 to poll for results using backend.poll_job_status() and get_job_results().
         """
+        circuits = bound_circuits(payloads)
+
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
         if override_job_config:

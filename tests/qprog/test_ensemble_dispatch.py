@@ -1236,6 +1236,19 @@ class _SubmittingEnsemble(ProgramEnsemble):
         return None
 
 
+def _record_merged_sizes(mocker, backend) -> list[int]:
+    """Patch ``backend.submit_circuits`` to record each merged call's size."""
+    original = backend.submit_circuits
+    merged_sizes: list[int] = []
+
+    def _spy(payloads, **kwargs):
+        merged_sizes.append(len(payloads))
+        return original(payloads, **kwargs)
+
+    mocker.patch.object(backend, "submit_circuits", _spy)
+    return merged_sizes
+
+
 class _AccumulatingProgram(_StubProgram):
     """Program whose run() *accumulates* fixed per-call increments into
     ``_total_circuit_count`` / ``_total_run_time``.
@@ -1358,14 +1371,7 @@ class TestExecutorSizing:
         backend call carries that many circuits and the flush count matches
         ``ceil(n_programs / max_batch_size)``.  Regresses the bug where the
         pool was capped at ``cpu+4`` and flushes fired prematurely."""
-        original = dummy_simulator.submit_circuits
-        merged_sizes: list[int] = []
-
-        def _spy(circuits, **kwargs):
-            merged_sizes.append(len(circuits))
-            return original(circuits, **kwargs)
-
-        mocker.patch.object(dummy_simulator, "submit_circuits", _spy)
+        merged_sizes = _record_merged_sizes(mocker, dummy_simulator)
 
         ensemble = _SubmittingEnsemble(backend=dummy_simulator, n_programs=32)
         ensemble.create_programs()
@@ -1391,14 +1397,7 @@ class TestExecutorSizing:
         and the trigger semantics permit (but do not require) any single
         flush to exceed 10.
         """
-        original = dummy_simulator.submit_circuits
-        merged_sizes: list[int] = []
-
-        def _spy(circuits, **kwargs):
-            merged_sizes.append(len(circuits))
-            return original(circuits, **kwargs)
-
-        mocker.patch.object(dummy_simulator, "submit_circuits", _spy)
+        merged_sizes = _record_merged_sizes(mocker, dummy_simulator)
 
         ensemble = _SubmittingEnsemble(
             backend=dummy_simulator, n_programs=8, n_circuits_per_program=5

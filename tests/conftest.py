@@ -42,6 +42,7 @@ from divi.backends import (
     MaestroSimulator,
     QiskitSimulator,
 )
+from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
@@ -101,9 +102,9 @@ class DummySimulator(CircuitRunner):
     def supports_expval(self):
         return False
 
-    def submit_circuits(self, circuits, **kwargs):
+    def submit_circuits(self, payloads, **kwargs):
         res = []
-        for label, qasm in circuits.items():
+        for label, qasm in bound_circuits(payloads).items():
             match = re.search(r"qreg q\[(\d+)\]", qasm)
             if not match:
                 raise RuntimeError("QASM missing qreg for some reason")
@@ -133,7 +134,7 @@ class DummyExpvalBackend(CircuitRunner):
     def supports_expval(self):
         return True
 
-    def submit_circuits(self, circuits, **kwargs):
+    def submit_circuits(self, payloads, **kwargs):
         return ExecutionResult(results=[])
 
 

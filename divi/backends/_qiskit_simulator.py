@@ -24,6 +24,7 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
+from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 
 from ._circuit_runner import CircuitRunner
@@ -463,7 +464,7 @@ class QiskitSimulator(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        payloads: Sequence[CircuitPayload] | Mapping[str, str],
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -474,7 +475,7 @@ class QiskitSimulator(CircuitRunner):
         """Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
 
         Args:
-            circuits: Dictionary mapping circuit labels to OpenQASM string representations.
+            payloads: Bound QASM payloads, one resolved circuit per parameter-set row.
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. Multiple groups can be pipe-delimited when
                 ``circuit_ham_map`` is provided. If None, runs in sampling mode.
@@ -494,6 +495,8 @@ class QiskitSimulator(CircuitRunner):
         """
         if cancellation_event is not None and cancellation_event.is_set():
             raise ExecutionCancelledError("Qiskit batch cancelled before dispatch")
+
+        circuits = bound_circuits(payloads)
 
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"

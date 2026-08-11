@@ -3,13 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from threading import Event
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from divi.circuits import TemplateEntry
+from divi.circuits._payloads import CircuitPayload
 
 from ._execution_result import ExecutionResult
 
@@ -92,7 +93,7 @@ class CircuitRunner(ABC):
     @abstractmethod
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        payloads: Sequence[CircuitPayload] | Mapping[str, str],
         *,
         cancellation_event: Event | None = None,
         **kwargs,
@@ -104,8 +105,11 @@ class CircuitRunner(ABC):
         circuits are executed on their respective backends (simulator, hardware, etc.).
 
         Args:
-            circuits (dict[str, str]): Dictionary mapping circuit labels to their
-                OpenQASM string representations.
+            payloads: One :class:`~divi.circuits.CircuitPayload` per circuit
+                variant, each carrying its own labelled parameter sets — or a
+                ``{label: circuit}`` mapping of already-resolved circuits.
+                ``bound_circuits`` accepts either and flattens both to the
+                mapping form.
             cancellation_event: When set, the backend aborts the batch and
                 raises :class:`~divi.exceptions.ExecutionCancelledError`.
                 Sync backends honour it between items; async backends thread

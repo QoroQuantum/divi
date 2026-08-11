@@ -13,7 +13,6 @@ Run: ``cd docs && make test-snippets``
 
 import os
 import shutil
-from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -40,6 +39,7 @@ from divi.backends import (
     MaestroSimulator,
     SimulatorCluster,
 )
+from divi.circuits._payloads import bound_circuits
 from divi.qprog import SuperpositionState
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ class DocStubQoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        payloads,
         ham_ops=None,
         circuit_ham_map=None,
         job_type=None,
@@ -174,7 +174,7 @@ class DocStubQoroService(CircuitRunner):
         override_job_config=None,
         **kwargs,
     ) -> ExecutionResult:
-        self._pending_circuits = dict(circuits)
+        self._pending_circuits = bound_circuits(payloads)
         self._last_ham_ops = ham_ops
         return ExecutionResult(job_id="doc-sybil-qoro-job")
 

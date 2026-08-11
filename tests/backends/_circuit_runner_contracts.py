@@ -7,11 +7,14 @@
 Each ``verify_*`` takes a ready-to-use runner; the backend ``TestContracts``
 class mocks dependencies and injects the instance.
 
+The depth contracts are built once by :func:`depth_contracts` over a payload
+factory, so every backend is held to the same numbers.
+
 Lists are grouped by runner fixture (``track_depth`` and sync/async shape):
 
 * ``DEPTH_CONTRACTS_DISABLED`` / ``DEPTH_CONTRACTS_ENABLED``
-* ``SYNC_RUNNER_CONTRACT_CASES`` / ``ASYNC_RUNNER_CONTRACT_CASES`` — ready-made
-  ``(verify, fixture_name)`` tuples for parametrization
+* ``SYNC_RUNNER_CONTRACT_CASES`` / ``ASYNC_RUNNER_CONTRACT_CASES`` —
+  ready-made ``(verify, fixture_name)`` tuples for parametrization
 """
 
 from collections.abc import Callable
@@ -20,9 +23,11 @@ from threading import Event
 import pytest
 
 from divi.backends import CircuitRunner
+from divi.circuits._payloads import CircuitPayload, bound_payloads
 from divi.exceptions import ExecutionCancelledError
 
 ContractCase = tuple[Callable[[CircuitRunner], None], str]
+PayloadFactory = Callable[..., list[CircuitPayload]]
 
 CONTRACT_TEST_SHOTS = 10
 
@@ -43,10 +48,14 @@ QASM_DEPTH_3 = (
     "h q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
 )
 
-_CIRCUITS_ONE = {"c1": QASM_DEPTH_2}
-_CIRCUITS_TWO = {"c1": QASM_DEPTH_2, "c2": QASM_DEPTH_3}
-_BATCH_ONE = {"c1": QASM_DEPTH_2}
-_BATCH_TWO = {"c2": QASM_DEPTH_3, "c3": QASM_DEPTH_3}
+_QASM_BY_DEPTH = {2: QASM_DEPTH_2, 3: QASM_DEPTH_3}
+
+
+def qasm_payloads(*depths: int) -> list[CircuitPayload]:
+    """Bound QASM payloads with the given circuit depths."""
+    return bound_payloads(
+        {f"c{index}": _QASM_BY_DEPTH[depth] for index, depth in enumerate(depths)}
+    )
 
 
 def flatten_contract_cases(
@@ -61,73 +70,82 @@ def contract_case_id(case: ContractCase) -> str:
     return verify.__name__.removeprefix("verify_")
 
 
-def verify_depth_tracking_disabled(runner: CircuitRunner) -> None:
-    """When ``track_depth`` is False, no depth data is recorded."""
-    assert runner.track_depth is False
+def depth_contracts(
+    payloads: PayloadFactory,
+) -> tuple[list[Callable[[CircuitRunner], None]], ...]:
+    """Build the ``(disabled, enabled)`` depth contracts over one CircuitPayload factory."""
 
-    runner.submit_circuits(_CIRCUITS_ONE)
+    def verify_depth_tracking_disabled(runner: CircuitRunner) -> None:
+        """When ``track_depth`` is False, no depth data is recorded."""
+        assert runner.track_depth is False
 
-    assert runner.depth_history == []
-    assert runner.average_depth() == 0.0
-    assert runner.std_depth() == 0.0
+        runner.submit_circuits(payloads(2))
 
+        assert runner.depth_history == []
+        assert runner.average_depth() == 0.0
+        assert runner.std_depth() == 0.0
 
-def verify_depth_tracking_records(runner: CircuitRunner) -> None:
-    """When ``track_depth`` is True, depths are correctly recorded for a single batch."""
-    assert runner.track_depth is True
+    def verify_depth_tracking_records(runner: CircuitRunner) -> None:
+        """Depths are the logical ones, recorded once per submission."""
+        assert runner.track_depth is True
 
-    runner.submit_circuits(_CIRCUITS_TWO)
+        runner.submit_circuits(payloads(2, 3))
 
-    assert len(runner.depth_history) == 1
-    assert sorted(runner.depth_history[0]) == [2, 3]
-    assert runner.average_depth() == pytest.approx(2.5)
+        assert len(runner.depth_history) == 1
+        assert sorted(runner.depth_history[0]) == [2, 3]
+        assert runner.average_depth() == pytest.approx(2.5)
 
+    def verify_depth_history_accumulates(runner: CircuitRunner) -> None:
+        """Each ``submit_circuits`` call appends a new batch entry."""
+        assert runner.track_depth is True
 
-def verify_depth_history_accumulates(runner: CircuitRunner) -> None:
-    """Multiple ``submit_circuits`` calls each append a new batch entry."""
-    assert runner.track_depth is True
+        runner.submit_circuits(payloads(2))
+        runner.submit_circuits(payloads(3, 3))
 
-    runner.submit_circuits(_BATCH_ONE)
-    runner.submit_circuits(_BATCH_TWO)
+        assert [len(batch) for batch in runner.depth_history] == [1, 2]
 
-    assert len(runner.depth_history) == 2
-    assert len(runner.depth_history[0]) == len(_BATCH_ONE)
-    assert len(runner.depth_history[1]) == len(_BATCH_TWO)
+    def verify_clear_depth_history(runner: CircuitRunner) -> None:
+        """``clear_depth_history`` resets all depth state."""
+        assert runner.track_depth is True
 
+        runner.submit_circuits(payloads(2))
+        assert len(runner.depth_history) == 1
 
-def verify_clear_depth_history(runner: CircuitRunner) -> None:
-    """``clear_depth_history`` resets all depth state."""
-    assert runner.track_depth is True
+        runner.clear_depth_history()
 
-    runner.submit_circuits(_CIRCUITS_ONE)
-    assert len(runner.depth_history) == 1
+        assert runner.depth_history == []
+        assert runner.average_depth() == 0.0
+        assert runner.std_depth() == 0.0
 
-    runner.clear_depth_history()
+    def verify_depth_history_returns_copy(runner: CircuitRunner) -> None:
+        """``depth_history`` returns a copy; mutating it leaves state intact."""
+        assert runner.track_depth is True
 
-    assert runner.depth_history == []
-    assert runner.average_depth() == 0.0
-    assert runner.std_depth() == 0.0
+        runner.submit_circuits(payloads(2))
+        history = runner.depth_history
+        history.clear()
 
+        assert len(runner.depth_history) == 1
+        assert len(history) == 0
 
-def verify_depth_history_returns_copy(runner: CircuitRunner) -> None:
-    """``depth_history`` returns a copy; mutating it does not affect internal state."""
-    assert runner.track_depth is True
+    def verify_std_depth_zero_for_single_value(runner: CircuitRunner) -> None:
+        """``std_depth`` returns 0.0 when only one depth value exists."""
+        assert runner.track_depth is True
 
-    runner.submit_circuits(_CIRCUITS_ONE)
-    history = runner.depth_history
-    history.clear()
+        runner.submit_circuits(payloads(2))
 
-    assert len(runner.depth_history) == 1
-    assert len(history) == 0
+        assert runner.std_depth() == 0.0
 
-
-def verify_std_depth_zero_for_single_value(runner: CircuitRunner) -> None:
-    """``std_depth`` returns 0.0 when only one depth value exists."""
-    assert runner.track_depth is True
-
-    runner.submit_circuits(_CIRCUITS_ONE)
-
-    assert runner.std_depth() == 0.0
+    return (
+        [verify_depth_tracking_disabled],
+        [
+            verify_depth_tracking_records,
+            verify_depth_history_accumulates,
+            verify_clear_depth_history,
+            verify_depth_history_returns_copy,
+            verify_std_depth_zero_for_single_value,
+        ],
+    )
 
 
 def verify_cancellation_before_dispatch(runner: CircuitRunner) -> None:
@@ -139,17 +157,7 @@ def verify_cancellation_before_dispatch(runner: CircuitRunner) -> None:
         runner.submit_circuits({"c1": QASM_MINIMAL}, cancellation_event=event)
 
 
-DEPTH_CONTRACTS_DISABLED = [
-    verify_depth_tracking_disabled,
-]
-
-DEPTH_CONTRACTS_ENABLED = [
-    verify_depth_tracking_records,
-    verify_depth_history_accumulates,
-    verify_clear_depth_history,
-    verify_depth_history_returns_copy,
-    verify_std_depth_zero_for_single_value,
-]
+DEPTH_CONTRACTS_DISABLED, DEPTH_CONTRACTS_ENABLED = depth_contracts(qasm_payloads)
 
 SYNC_CANCELLATION_CONTRACTS = [
     verify_cancellation_before_dispatch,
