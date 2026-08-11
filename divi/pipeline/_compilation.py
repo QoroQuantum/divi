@@ -97,6 +97,34 @@ def _effective_bodies(mc: MetaCircuit) -> tuple:
     return mc.qasm_bodies or mc.circuit_bodies or ()
 
 
+def batch_lineage(batch: dict[Any, MetaCircuit]) -> dict[str, BranchKey]:
+    """The ``label -> branch key`` map the batch would submit under.
+
+    Enumerates labels without rendering circuits or binding values.
+
+    A node that still carries parameters is bound backend-side, so its
+    param-set axis is added here; a bound node already has that axis baked
+    into its body tag by
+    :class:`~divi.pipeline.stages.ParameterBindingStage`. Deferred nodes
+    report a single ``param_set`` branch — the count lives in
+    ``env.param_sets``, which describes one run rather than the pipeline's
+    structure.
+    """
+    lineage: dict[str, BranchKey] = {}
+    for batch_key, node in batch.items():
+        param_axis = ((PARAM_SET_AXIS, 0),) if node.parameters else ()
+        for body_tag, _ in _effective_bodies(node):
+            for meas_tag, _ in node.measurement_qasms:
+                branch_key: BranchKey = (
+                    *batch_key,
+                    *body_tag,
+                    *param_axis,
+                    *meas_tag,
+                )
+                lineage[_branch_label(branch_key)] = branch_key
+    return lineage
+
+
 def reject_colliding_body_tags(stage_name: str, batch: dict[Any, MetaCircuit]) -> None:
     """Raise if a stage left two circuit bodies claiming the same tag.
 
