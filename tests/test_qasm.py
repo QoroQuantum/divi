@@ -367,3 +367,51 @@ def test_validate_qasm_invalid(qasm):
     # Also verify it raises when using validate_qasm
     with pytest.raises(SyntaxError):
         validate_qasm(qasm)
+
+
+PARAMETRIC_TEMPLATE = """OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[2];
+creg c[2];
+ry(theta_0) q[0];
+rz(theta_1) q[1];
+cx q[0],q[1];
+measure q[0] -> c[0];
+"""
+
+
+def test_declared_parameters_validate_a_template():
+    """A template's placeholders are legal identifiers once declared."""
+    assert is_valid_qasm(PARAMETRIC_TEMPLATE, ("theta_0", "theta_1")) is True
+
+
+def test_undeclared_parameters_are_still_rejected():
+    """Declaring one placeholder does not admit every bare identifier."""
+    assert is_valid_qasm(PARAMETRIC_TEMPLATE, ("theta_0",)) is False
+
+
+def test_template_without_declared_parameters_is_rejected():
+    """Omitting ``parameters`` keeps the pre-existing strict behavior."""
+    assert is_valid_qasm(PARAMETRIC_TEMPLATE) is False
+
+
+def test_declared_parameters_do_not_mask_a_real_syntax_error():
+    """The placeholder must not shadow the genuine fault: without declaring
+    it, the unknown symbol is reported first and the arity error is hidden."""
+    broken = PARAMETRIC_TEMPLATE.replace("cx q[0],q[1];", "cx q[0] q[1];")
+
+    with pytest.raises(SyntaxError, match="qubit args"):
+        validate_qasm(broken, ("theta_0", "theta_1"))
+
+
+def test_declared_parameters_are_not_visible_inside_a_gate_body():
+    """Gate bodies carry their own parameter scope, which must not inherit
+    the caller's declarations."""
+    qasm = """OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[1];
+gate mygate(alpha) a { rx(theta_0) a; }
+mygate(0.5) q[0];
+"""
+
+    assert is_valid_qasm(qasm, ("theta_0",)) is False
