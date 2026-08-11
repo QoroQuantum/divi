@@ -34,6 +34,7 @@ workloads efficiently.
 """
 
 import re
+from collections.abc import Collection
 from typing import NamedTuple
 
 # ---------- Lexer ----------
@@ -184,16 +185,18 @@ _MATH_FUNCS = {"SIN", "COS", "TAN", "EXP", "LN", "SQRT", "ACOS", "ATAN", "ASIN"}
 
 # ---------- Parser with symbol checks ----------
 class Parser:
-    def __init__(self, toks: list[Tok]):
+    def __init__(self, toks: list[Tok], parameters: Collection[str] = ()):
         self.toks = toks
         self.i = 0
         # symbols
         self.qregs: dict[str, int] = {}
         self.cregs: dict[str, int] = {}
         self.user_gates: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
-        # gate-def scope
+        # Parameters declared by the caller are in scope for top-level gate
+        # arguments. ``gate_def`` saves and restores this set, so a gate body
+        # still sees only its own parameters.
         self.in_gate_def = False
-        self.g_params: set[str] = set()
+        self.g_params: set[str] = set(parameters)
         self.g_qubits: set[str] = set()
 
     # -- helpers --
@@ -367,7 +370,9 @@ class Parser:
         arity = None
 
         if self.accept("LPAREN"):
-            n_params = self._expr_list_count(allow_id=False)  # top-level: no free IDs
+            # Declared parameters only; _expr_atom rejects any other bare ID,
+            # so an empty declaration set means no free IDs at all.
+            n_params = self._expr_list_count(allow_id=True)
             self.match("RPAREN")
         else:
             n_params = 0
@@ -676,10 +681,18 @@ class Parser:
 
 
 # ---------- Public API ----------
-def validate_qasm(src: str) -> None:
-    """Validate QASM syntax, raising SyntaxError on error."""
+def validate_qasm(src: str, parameters: Collection[str] = ()) -> None:
+    """Validate QASM syntax, raising SyntaxError on error.
+
+    Args:
+        src: The QASM source to validate.
+        parameters: Names that may appear as bare identifiers in gate
+            arguments, for validating a parametric template before its
+            values are substituted. Any identifier not named here is still
+            rejected as an unknown symbol.
+    """
     toks = _lex(src)
-    Parser(toks).parse()
+    Parser(toks, parameters).parse()
 
 
 def validate_qasm_count_qubits(src: str) -> int:
@@ -691,10 +704,13 @@ def validate_qasm_count_qubits(src: str) -> int:
     return sum(parser.qregs.values())
 
 
-def is_valid_qasm(src: str) -> bool:
-    """Check if QASM is valid, returning True/False without raising exceptions."""
+def is_valid_qasm(src: str, parameters: Collection[str] = ()) -> bool:
+    """Check if QASM is valid, returning True/False without raising exceptions.
+
+    ``parameters`` has the same meaning as in :func:`validate_qasm`.
+    """
     try:
-        validate_qasm(src)
+        validate_qasm(src, parameters)
         return True
     except SyntaxError:
         return False
