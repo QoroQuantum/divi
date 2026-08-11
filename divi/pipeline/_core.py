@@ -13,14 +13,14 @@ from typing import Any
 from rich.console import Console
 from rich.tree import Tree
 
-from divi.backends import JobStatus, SupportsCircuitTemplates
+from divi.backends import JobStatus
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
+from divi.circuits._payloads import bound_circuits, is_bound
 from divi.exceptions import ExecutionCancelledError
 
 from ._compilation import (
-    _batch_has_templates,
+    _batch_has_free_parameters,
     _compile_batch,
-    _compile_template_batch,
     batch_lineage,
     reject_colliding_body_tags,
 )
@@ -245,25 +245,22 @@ def _default_execute_fn(
     trace: PipelineTrace,
     env: PipelineEnv,
 ) -> ChildResults:
-    """Default execute: lower MetaCircuit batch to QASM circuits, then backend run."""
-    use_templates = _batch_has_templates(trace.final_batch)
-    if use_templates and not isinstance(env.backend, SupportsCircuitTemplates):
+    """Default execute: lower MetaCircuit batch to payloads, then run."""
+    backend = env.backend
+    if (
+        _batch_has_free_parameters(trace.final_batch)
+        and not backend.resolves_parameters
+    ):
         raise ContractViolation(
-            "Batch still carries free parameters at execution, so it would be "
-            "submitted as backend templates, but this backend does not support "
-            "them. Ensure ParameterBindingStage ran and bound the parameters, "
-            "or use a backend implementing SupportsCircuitTemplates."
+            "Batch still carries free parameters at execution, but this "
+            "backend cannot resolve them. Ensure ParameterBindingStage ran, "
+            "or use a backend that sets resolves_parameters."
         )
-    templates = []
-    circuits: dict[str, str] = {}
-    if use_templates:
-        templates, lineage_by_label = _compile_template_batch(
-            trace.final_batch, env.param_sets
-        )
-        env.artifacts["circuit_count"] = sum(len(t.parameter_sets) for t in templates)
-    else:
-        circuits, lineage_by_label = _compile_batch(trace.final_batch)
-        env.artifacts["circuit_count"] = len(circuits)
+
+    payloads, lineage_by_label = _compile_batch(trace.final_batch, env.param_sets)
+    env.artifacts["circuit_count"] = sum(
+        len(payload.parameter_sets) for payload in payloads
+    )
 
     submit_kwargs = {}
     artifacts = trace.env_artifacts
@@ -272,27 +269,21 @@ def _default_execute_fn(
         submit_kwargs["ham_ops"] = ham_ops
 
     per_group_shots = artifacts.get("per_group_shots")
-    if per_group_shots:
-        # ParameterBindingStage takes the bound path when per-group shots are
-        # active (see ParameterBindingStage._template_path_enabled), so these
-        # are concrete flat circuits and use_templates is False here.
-        shot_groups = _build_shot_groups(circuits, lineage_by_label, per_group_shots)
+    if per_group_shots and is_bound(payloads):
+        # Per-group shots attach to concrete circuits, so the binding stage
+        # has already bound them.
+        shot_groups = _build_shot_groups(
+            bound_circuits(payloads), lineage_by_label, per_group_shots
+        )
         if shot_groups is not None:
             submit_kwargs["shot_groups"] = shot_groups
 
     if env.cancellation_event is not None and env.cancellation_event.is_set():
         raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
 
-    if use_templates:
-        # A template batch is only produced for a template-capable backend.
-        assert isinstance(env.backend, SupportsCircuitTemplates)
-        result = env.backend.submit_circuit_templates(
-            templates, cancellation_event=env.cancellation_event, **submit_kwargs
-        )
-    else:
-        result = env.backend.submit_circuits(
-            circuits, cancellation_event=env.cancellation_event, **submit_kwargs
-        )
+    result = backend.submit_circuits(
+        payloads, cancellation_event=env.cancellation_event, **submit_kwargs
+    )
 
     # Store for cancellation support (read by cancel_unfinished_job)
     env.artifacts["_current_execution_result"] = result

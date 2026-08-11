@@ -31,6 +31,7 @@ from divi.pipeline.stages import (
 from divi.pipeline.stages._parameter_binding_stage import _validate_param_sets
 from tests.pipeline._helpers import (
     DummySpecStage,
+    FakeBackend,
     run_binding_pipeline,
     two_group_meta,
 )
@@ -249,56 +250,40 @@ class TestFormatParam:
         assert _format_param(1e-20, 10) == "0"
 
 
-class _TemplateCapableBackend:
-    """Minimal expval-supporting backend that implements the
-    :class:`~divi.backends.SupportsCircuitTemplates` capability protocol."""
-
-    is_async = False
-    supports_expval = True
-    shots = 100
-
-    def submit_circuits(self, circuits, **kwargs):  # pragma: no cover - unused
-        raise AssertionError(
-            "submit_circuits should not be called on the template path"
-        )
-
-    def submit_circuit_templates(
-        self, templates, **kwargs
-    ):  # pragma: no cover - unused
-        raise AssertionError(
-            "submit_circuit_templates is not exercised by these stage tests"
-        )
+def _qasm_payload_backend() -> FakeBackend:
+    """Expval backend that resolves parameters from QASM-encoded payloads."""
+    return FakeBackend(resolves_parameters=True)
 
 
-class TestParameterBindingStageTemplatePath:
-    """Spec: when env.backend.supports_circuit_templates is True, the fast
-    path defers parameter binding by parking parametric QASM in
-    ``qasm_bodies`` instead of pre-rendering per param set."""
+class TestParameterBindingStageDeferredBinding:
+    """Spec: when the backend resolves parameters, the fast path defers
+    binding by parking parametric QASM in ``qasm_bodies`` instead of
+    pre-rendering per param set."""
 
-    def test_template_carrier_populated_when_backend_supports_templates(self):
+    def test_parametric_qasm_parked_when_backend_resolves_parameters(self):
         """Backend opts in → qasm_bodies carries parametric QASM."""
         trace = run_binding_pipeline(
             _parametric_meta(),
-            backend=_TemplateCapableBackend(),
+            backend=_qasm_payload_backend(),
             param_sets=np.array([[1.5, 2.7], [3.0, 4.0]]),
         )
 
         for node in trace.final_batch.values():
             assert (
                 node.qasm_bodies
-            ), "qasm_bodies should be populated when backend supports templates."
+            ), "qasm_bodies should be populated when the backend resolves parameters."
             assert (
                 node.parameters
-            ), "Parameters must remain unbound so compile takes the template path."
+            ), "Parameters must remain unbound so compile emits a parametric CircuitPayload."
             # Symbols survive: substitution is deferred to the backend.
             for _tag, body in node.qasm_bodies:
                 assert "theta" in body
                 assert "phi" in body
 
-    def test_template_path_skipped_when_backend_does_not_support(
+    def test_binding_happens_locally_when_backend_does_not_resolve(
         self, dummy_pipeline_env
     ):
-        """Non-template backend → fast path renders bound QASM as before."""
+        """Backend resolves nothing → fast path renders bound QASM as before."""
         trace = run_binding_pipeline(
             _parametric_meta(),
             backend=dummy_pipeline_env.backend,
@@ -308,10 +293,10 @@ class TestParameterBindingStageTemplatePath:
             assert node.qasm_bodies
             assert node.parameters == ()
 
-    def test_template_path_skipped_when_slow_path_required(
+    def test_binding_happens_locally_when_slow_path_required(
         self, suppress_pipeline_perf_warnings
     ):
-        """Slow path (QEM enabled) must bind locally even on template-capable backend."""
+        """Slow path (QEM enabled) must bind locally even on a resolving backend."""
         meta = _parametric_meta()
         pipeline = CircuitPipeline(
             stages=[
@@ -322,40 +307,55 @@ class TestParameterBindingStageTemplatePath:
             ]
         )
         env = PipelineEnv(
-            backend=_TemplateCapableBackend(),
+            backend=_qasm_payload_backend(),
             param_sets=np.array([[1.5, 2.7]]),
         )
         trace = pipeline.run_forward_pass("x", env)
         for node in trace.final_batch.values():
             assert node.parameters == ()  # bound locally, not deferred
             # Slow path binds into DAGs, so the QASM-string slot stays empty;
-            # a template firing here would populate it.
+            # a deferred binding firing here would populate it.
             assert node.qasm_bodies == ()
 
     def test_non_parametric_falls_back_to_bound_emission(self):
-        """No parameters → no template needed; emit bound bodies as the fast path does."""
+        """No parameters → nothing to defer; emit bound bodies as the fast path does."""
         trace = run_binding_pipeline(
             two_group_meta(),
-            backend=_TemplateCapableBackend(),
+            backend=_qasm_payload_backend(),
             param_sets=np.array([[0.0]]),
         )
         for node in trace.final_batch.values():
             assert node.qasm_bodies
             assert node.parameters == ()
 
-    def test_template_path_disabled_when_per_group_shots_active(self):
+    def test_binding_is_not_deferred_when_per_group_shots_active(self):
         """Per-group shot allocation attaches shots to concrete flat circuits,
-        which the deferred template payload can't express — so the template
-        path is disabled even on a template-capable backend."""
+        which a CircuitPayload can't express — so binding happens locally even on a
+        backend that would otherwise resolve the parameters itself."""
         stage = ParameterBindingStage()
         stage._fast_path = True
-        env = PipelineEnv(backend=_TemplateCapableBackend())
+        env = PipelineEnv(backend=_qasm_payload_backend())
         meta = two_group_meta()
         batch = {(("spec", "c"),): meta}
-        assert stage._template_path_enabled(batch, env) is True
+        assert stage._defers_binding(batch, env) is True
 
         batch_with_shots = {(("spec", "c"),): meta.set_group_shots({0: 100})}
-        assert stage._template_path_enabled(batch_with_shots, env) is False
+        assert stage._defers_binding(batch_with_shots, env) is False
+
+    def test_introspect_agrees_with_the_path_actually_taken(self):
+        """A dry run must not claim binding is deferred when it is not: the
+        reported flag and ``_defers_binding`` read the same predicate."""
+        stage = ParameterBindingStage()
+        stage._fast_path = True
+        env = PipelineEnv(backend=_qasm_payload_backend(), param_sets=np.array([[0.0]]))
+        meta = two_group_meta()
+
+        for batch in (
+            {(("spec", "c"),): meta},
+            {(("spec", "c"),): meta.set_group_shots({0: 100})},
+        ):
+            report = stage.introspect(batch, env, token=None)
+            assert report["deferred_binding"] is stage._defers_binding(batch, env)
 
 
 class TestParameterBindingStageOrdering:

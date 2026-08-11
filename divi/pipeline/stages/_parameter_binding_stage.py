@@ -12,7 +12,6 @@ import numpy as np
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 
-from divi.backends import SupportsCircuitTemplates
 from divi.circuits import MetaCircuit, render_template
 from divi.circuits._conversions import _assert_finite, _format_bound_param
 from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
@@ -147,6 +146,15 @@ def _lookup_or_serialize(
     return _qasm_body_cached(dag, precision)
 
 
+def _serialize_circuit_bodies(node: MetaCircuit) -> tuple[tuple[tuple, str], ...]:
+    """Serialize every body DAG to QASM, preferring upstream-parked partials."""
+    prefix_index = _prefix_index_for(node)
+    return tuple(
+        (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
+        for tag, dag in node.circuit_bodies
+    )
+
+
 def _fast_prepare(
     node: MetaCircuit,
     body_tag: tuple,
@@ -212,12 +220,11 @@ class ParameterBindingStage(BundleStage):
       ``meta.circuit_bodies`` (``parameters`` cleared). Slower, but preserves
       the DAG IR so downstream stages see concrete gate angles.
 
-    A third **template** path (:meth:`_run_template`, when the backend
-    implements :class:`~divi.backends.SupportsCircuitTemplates`) renders the
-    parametric body into ``meta.qasm_bodies`` *without* binding, leaving
-    ``parameters`` intact so the compilation pass defers substitution to the
-    backend. Bound vs. template is therefore decided downstream by whether
-    ``parameters`` survives, not by a dedicated field.
+    A third **deferred** path applies when the backend sets
+    ``resolves_parameters``: it renders the parametric body into
+    ``meta.qasm_bodies`` *without* binding (:meth:`_run_qasm_payloads`), so
+    ``parameters`` stays intact. Whether it survives is what tells the
+    compilation pass to emit a parametric payload rather than a bound one.
 
     :meth:`dry_expand` skips the prepare/emit helper entirely and emits
     shape-correct placeholders directly — the analytic path has no per-
@@ -265,10 +272,9 @@ class ParameterBindingStage(BundleStage):
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
         param_sets = _validate_param_sets(env)
-        if self._template_path_enabled(batch, env):
-            run = self._run_template
-        else:
-            run = self._run_fast if self._fast_path else self._run_slow
+        if self._defers_binding(batch, env):
+            return StageOutput(batch=self._run_qasm_payloads(batch))
+        run = self._run_fast if self._fast_path else self._run_slow
         return StageOutput(batch=run(batch, param_sets))
 
     def dry_expand(
@@ -279,19 +285,19 @@ class ParameterBindingStage(BundleStage):
         param_sets = _validate_param_sets(env, assert_finite=False)
         return StageOutput(batch=self._run_dry(batch, param_sets))
 
-    def _template_path_enabled(self, batch: MetaCircuitBatch, env: PipelineEnv) -> bool:
-        """Whether to defer parameter binding to the backend for this run.
+    def _defers_binding(self, batch: MetaCircuitBatch, env: PipelineEnv) -> bool:
+        """Whether to leave the parameters for the backend to resolve.
 
-        Requires the fast-path condition (no downstream stage consumes DAG
-        bodies) and a backend implementing
-        :class:`~divi.backends.SupportsCircuitTemplates`. Disabled when
-        per-group shot allocation is active: that attaches shots to concrete
-        flat circuits (one per parameter set), which the deferred template
-        payload (one template plus a parameter matrix) cannot express.
+        Declines on the slow path, and when per-group shot allocation is
+        active: that assigns shots to individual bound circuits, which a
+        payload cannot express — one shot count covers a whole parameter
+        sweep. Either way binding happens here instead.
         """
-        if not self._fast_path or any(meta.group_shots for meta in batch.values()):
-            return False
-        return isinstance(env.backend, SupportsCircuitTemplates)
+        return (
+            env.backend.resolves_parameters
+            and self._fast_path
+            and not any(meta.group_shots for meta in batch.values())
+        )
 
     def _run_fast(
         self, batch: MetaCircuitBatch, param_sets: np.ndarray
@@ -300,15 +306,8 @@ class ParameterBindingStage(BundleStage):
         for key, node in batch.items():
             if len(node.parameters) == 0:
                 # No weights to bind, but bodies may still carry per-sample data
-                # baked in by DataBindingStage (parked in qasm_bodies), so
-                # consult those before serialising the shared DAG. Parameters are
-                # already empty here.
-                prefix_index = _prefix_index_for(node)
-                bodies = tuple(
-                    (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
-                    for tag, dag in node.circuit_bodies
-                )
-                out[key] = node.set_qasm_bodies(bodies)
+                # baked in by DataBindingStage (parked in qasm_bodies).
+                out[key] = node.set_qasm_bodies(_serialize_circuit_bodies(node))
                 continue
 
             prefix_index = _prefix_index_for(node)
@@ -340,31 +339,23 @@ class ParameterBindingStage(BundleStage):
             out[key] = replace(node, circuit_bodies=tuple(bound), parameters=())
         return out
 
-    def _run_template(
-        self, batch: MetaCircuitBatch, param_sets: np.ndarray
-    ) -> MetaCircuitBatch:
-        """Defer parameter substitution to a template-capable backend.
+    def _run_qasm_payloads(self, batch: MetaCircuitBatch) -> MetaCircuitBatch:
+        """Defer parameter substitution to a QASM-encoding payload backend.
 
         Serialises each body DAG once into parametric QASM (named symbol
         placeholders preserved) and parks it in
         :attr:`~divi.circuits.MetaCircuit.qasm_bodies`, leaving ``parameters``
-        intact. The compilation pass sees the surviving parameters and emits a
-        payload of :class:`~divi.circuits.TemplateEntry` rows that the backend
-        resolves per parameter set, replacing N near-identical bound circuits
-        with one template plus N parameter vectors.
+        intact. The compilation pass sees the surviving parameters and emits
+        :class:`~divi.circuits.CircuitPayload` objects that the backend resolves per
+        parameter set, replacing N near-identical bound circuits with one
+        template plus N parameter vectors.
         """
-        out: MetaCircuitBatch = {}
-        for key, node in batch.items():
-            prefix_index = _prefix_index_for(node)
-            bodies = tuple(
-                (tag, _lookup_or_serialize(prefix_index, tag, dag, node.precision))
-                for tag, dag in node.circuit_bodies
-            )
-            # Parameters are left intact: their presence is the "this is a
-            # template" signal and supplies the payload's parameter_names. A node
-            # with none serializes the same way and compiles down the bound route.
-            out[key] = node.set_qasm_bodies(bodies)
-        return out
+        # Parameters are left intact: their presence is the "this is a payload"
+        # signal and supplies the payload's parameter_names.
+        return {
+            key: node.set_qasm_bodies(_serialize_circuit_bodies(node))
+            for key, node in batch.items()
+        }
 
     def _run_dry(
         self, batch: MetaCircuitBatch, param_sets: np.ndarray
@@ -376,7 +367,7 @@ class ParameterBindingStage(BundleStage):
         the real path so downstream stages (dry-aware or not) see the attribute
         they expect populated. ``parameters`` is left intact (unlike the real
         bound paths): :meth:`introspect` reports ``n_params`` from it, and dry
-        traces are never routed through ``_batch_has_templates``.
+        traces are never routed through ``_batch_has_free_parameters``.
         """
         n_param_sets = len(param_sets)
         out: MetaCircuitBatch = {}
@@ -420,7 +411,7 @@ class ParameterBindingStage(BundleStage):
             # reads as the full parameter count of the circuit.
             "n_bound_params": n_params,
             "fast_path": self._fast_path,
-            "template_path": self._template_path_enabled(batch, env),
+            "deferred_binding": self._defers_binding(batch, env),
         }
 
     def reduce(

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.pipeline._core: validation, CircuitPipeline, compile_batch, format_pipeline_tree."""
+"""Tests for divi.pipeline._core: validation, CircuitPipeline, compilation, format_pipeline_tree."""
 
 import signal
 import threading
@@ -15,10 +15,11 @@ from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.backends import AsyncJobBackend, CircuitRunner, ExecutionResult, JobStatus
+from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
 from divi.backends._cancellation import _best_effort_cancel_job
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
+from divi.circuits._payloads import bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
@@ -31,9 +32,8 @@ from divi.pipeline import (
     format_pipeline_tree,
 )
 from divi.pipeline._compilation import (
-    _batch_has_templates,
+    _batch_has_free_parameters,
     _compile_batch,
-    _compile_template_batch,
 )
 from divi.pipeline._core import (
     _build_shot_groups,
@@ -52,6 +52,7 @@ from divi.pipeline.stages import (
 
 from ._helpers import (
     DummySpecStage,
+    FakeBackend,
     FanoutAndSumStage,
     MisTaggedFanoutStage,
     StatefulFanoutStage,
@@ -61,12 +62,16 @@ from ._helpers import (
     two_group_pipeline_stages,
 )
 
-# Module-level helpers + stubs for the template-path tests below.
+
+def _compile_bound(batch):
+    """Lower an already-bound batch to ``{label: qasm}`` plus its lineage map."""
+    payloads, lineage_by_label = _compile_batch(batch, [[]])
+    return bound_circuits(payloads), lineage_by_label
 
 
 def _parametric_meta_one_body():
     """MetaCircuit with one parametric body and a single backend-expval
-    measurement variant — the minimal template-path shape."""
+    measurement variant — the minimal parametric-CircuitPayload shape."""
     params = (Parameter("theta"), Parameter("phi"))
     qc = QuantumCircuit(1)
     qc.rx(params[0], 0)
@@ -76,60 +81,6 @@ def _parametric_meta_one_body():
         parameters=params,
         observable=SparsePauliOp.from_list([("Z", 1.0)]),
     )
-
-
-class _NonTemplateExpvalBackend:
-    """Backend that supports expval but does not implement the
-    SupportsCircuitTemplates protocol — parallels DummyExpvalBackend."""
-
-    is_async = False
-    supports_expval = True
-    shots = 100
-
-    def submit_circuits(self, circuits, **kwargs):  # pragma: no cover
-        raise AssertionError("unused — these tests don't dispatch to the backend")
-
-
-class _TemplateOnlyBackend:
-    """Template-capable backend used by compile-only tests; both submit
-    methods raise to make accidental execution loud."""
-
-    is_async = False
-    supports_expval = True
-    shots = 100
-
-    def submit_circuits(self, circuits, **kwargs):  # pragma: no cover
-        raise AssertionError("compile-only tests should not reach the backend")
-
-    def submit_circuit_templates(self, templates, **kwargs):  # pragma: no cover
-        raise AssertionError("compile-only tests should not reach the backend")
-
-
-class _RecordingTemplateBackend:
-    """Records every submit call so dispatch tests can assert routing."""
-
-    is_async = False
-    supports_expval = True
-    shots = 100
-
-    def __init__(self):
-        self.template_calls: list[tuple] = []
-        self.circuit_calls: list[tuple] = []
-
-    def submit_circuits(self, circuits, **kwargs):
-        self.circuit_calls.append((dict(circuits), kwargs))
-        return ExecutionResult(results=[])
-
-    def submit_circuit_templates(self, templates, **kwargs):
-        templates = list(templates)
-        self.template_calls.append((templates, kwargs))
-        return ExecutionResult(
-            results=[
-                {"label": label, "results": 0.42}
-                for entry in templates
-                for label, _values in entry.parameter_sets
-            ]
-        )
 
 
 class TestScopeToken:
@@ -385,8 +336,8 @@ class TestCircuitPipelineRunForwardPass:
         assert trace2 is not trace1
 
 
-class TestCompileBatch:
-    """Spec: _compile_batch lowers MetaCircuit batch to QASM labels and lineage."""
+class TestCompileBoundBatch:
+    """Spec: a bound batch lowers to single-row QASM payloads with a lineage map."""
 
     def test_raises_when_measurement_qasms_missing(self, dummy_pipeline_env):
         """Compiling before MeasurementStage has run must name the missing piece."""
@@ -400,14 +351,14 @@ class TestCompileBatch:
         }
 
         with pytest.raises(ValueError, match="no measurement_qasms"):
-            _compile_batch(unmeasured)
+            _compile_bound(unmeasured)
 
     def test_produces_lineage_and_circuits_for_grouped_batch(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(
             stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
         )
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        circuits, lineage_by_label = _compile_batch(trace.final_batch)
+        circuits, lineage_by_label = _compile_bound(trace.final_batch)
         assert len(circuits) == len(lineage_by_label)
         for label, qasm in circuits.items():
             assert isinstance(qasm, str) and "OPENQASM" in qasm
@@ -417,42 +368,45 @@ class TestCompileBatch:
             assert any(e[0] == "obs_group" for e in branch_key)
 
 
-def _run_pipeline_with_templates(
+def _run_pipeline_with_deferred_binding(
     meta: MetaCircuit, param_sets: list[list[float]]
 ) -> PipelineTrace:
-    """Drive a parametric MetaCircuit through the template-mode pipeline."""
+    """Drive a parametric MetaCircuit through a pipeline whose backend resolves
+    parameters, so binding is deferred and the parameters survive."""
     return run_binding_pipeline(
-        meta, backend=_TemplateOnlyBackend(), param_sets=param_sets
+        meta,
+        backend=FakeBackend(resolves_parameters=True),
+        param_sets=param_sets,
     )
 
 
-class TestCompileTemplateBatch:
-    """Spec: _compile_template_batch lowers a templated batch into TemplateEntry
-    rows whose labels match what _compile_batch would emit on the bound path."""
+class TestCompileQasmPayloadBatch:
+    """Spec: _compile_batch lowers a parametric batch into QASM-encoded payloads
+    whose labels match those of the equivalent bound batch."""
 
     PARAM_SETS = [[1.5, 2.7], [3.0, 4.0], [5.0, 6.0]]
 
     def test_emits_one_entry_per_body_measurement_pair(self):
-        trace = _run_pipeline_with_templates(
+        trace = _run_pipeline_with_deferred_binding(
             _parametric_meta_one_body(), self.PARAM_SETS
         )
-        entries, _ = _compile_template_batch(trace.final_batch, self.PARAM_SETS)
+        entries, _ = _compile_batch(trace.final_batch, self.PARAM_SETS)
         # Single body, single measurement (backend expval) → one entry.
         assert len(entries) == 1
         entry = entries[0]
-        assert "OPENQASM" in entry.template_qasm
-        assert "theta" in entry.template_qasm
-        assert "phi" in entry.template_qasm
+        assert "OPENQASM" in entry.circuit
+        assert "theta" in entry.circuit
+        assert "phi" in entry.circuit
         assert entry.parameter_names == ("theta", "phi")
         assert len(entry.parameter_sets) == len(self.PARAM_SETS)
 
     def test_labels_match_bound_path_lineage(self):
         """Each templated parameter_set label maps to the same BranchKey as
         the bound path would produce for the equivalent (body, param_set, meas)."""
-        trace = _run_pipeline_with_templates(
+        trace = _run_pipeline_with_deferred_binding(
             _parametric_meta_one_body(), self.PARAM_SETS
         )
-        entries, lineage = _compile_template_batch(trace.final_batch, self.PARAM_SETS)
+        entries, lineage = _compile_batch(trace.final_batch, self.PARAM_SETS)
 
         all_labels = [label for entry in entries for label, _ in entry.parameter_sets]
         assert len(all_labels) == len(set(all_labels))  # uniqueness
@@ -464,65 +418,64 @@ class TestCompileTemplateBatch:
             assert any(ax == "obs_group" for ax, _ in branch_key)
 
     def test_param_values_passed_through_as_floats(self):
-        trace = _run_pipeline_with_templates(
+        trace = _run_pipeline_with_deferred_binding(
             _parametric_meta_one_body(), self.PARAM_SETS
         )
-        entries, _ = _compile_template_batch(trace.final_batch, self.PARAM_SETS)
+        entries, _ = _compile_batch(trace.final_batch, self.PARAM_SETS)
         passed = [list(values) for _, values in entries[0].parameter_sets]
         assert passed == self.PARAM_SETS
 
     def test_rejects_non_2d_param_sets(self):
-        trace = _run_pipeline_with_templates(
+        trace = _run_pipeline_with_deferred_binding(
             _parametric_meta_one_body(), self.PARAM_SETS
         )
         with pytest.raises(ValueError, match="2D param_sets"):
-            _compile_template_batch(trace.final_batch, [1.0, 2.0])
+            _compile_batch(trace.final_batch, [1.0, 2.0])
 
-    def test_batch_has_templates_detection(self):
-        trace = _run_pipeline_with_templates(
+    def test_batch_has_free_parameters_detection(self):
+        trace = _run_pipeline_with_deferred_binding(
             _parametric_meta_one_body(), self.PARAM_SETS
         )
-        assert _batch_has_templates(trace.final_batch)
+        assert _batch_has_free_parameters(trace.final_batch)
 
         # Negative: ParameterBindingStage's fast path clears parameters on full
-        # bind, so a previously-parametric circuit is no longer a template batch.
+        # bind, so a previously-parametric circuit no longer carries free ones.
         bound_trace = run_binding_pipeline(
             _parametric_meta_one_body(),
-            backend=_NonTemplateExpvalBackend(),
+            backend=FakeBackend(),
             param_sets=self.PARAM_SETS,
         )
-        assert not _batch_has_templates(bound_trace.final_batch)
+        assert not _batch_has_free_parameters(bound_trace.final_batch)
 
-    def test_execute_rejects_unbound_batch_on_non_template_backend(self):
+    def test_execute_rejects_unbound_batch_when_backend_cannot_resolve(self):
         """Reaching execute with free parameters still present (e.g. no
-        ParameterBindingStage ran) on a backend without template support is a
-        directed contract violation, not a bare AssertionError."""
+        ParameterBindingStage ran) on a backend that does not resolve
+        parameters is a directed contract violation, not a bare
+        AssertionError."""
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=_parametric_meta_one_body()),
                 MeasurementStage(),
             ]
         )
-        env = PipelineEnv(
-            backend=_NonTemplateExpvalBackend(), param_sets=self.PARAM_SETS
-        )
+        env = PipelineEnv(backend=FakeBackend(), param_sets=self.PARAM_SETS)
         trace = pipeline.run_forward_pass("x", env)
         with pytest.raises(ContractViolation, match="free parameters"):
             _default_execute_fn(trace, env)
 
     def test_multi_body_multi_measurement_emits_cartesian_product(self):
-        """N bodies × M measurements → N*M TemplateEntry rows, each with the
-        same parameter_sets but distinct labels per (body, meas, param_set)."""
+        """N bodies × M measurements → N*M payloads, each with the same
+        parameter_sets but distinct labels per (body, meas, param_set)."""
         meta = _parametric_meta_one_body()
         # Stamp two distinct body variants and two measurement variants directly
         # onto the post-MeasurementStage MetaCircuit, then ask compile to lower it.
-        trace = _run_pipeline_with_templates(meta, self.PARAM_SETS)
+        trace = _run_pipeline_with_deferred_binding(meta, self.PARAM_SETS)
         node = next(iter(trace.final_batch.values()))
         # qasm_bodies has one (tag, qasm); fan it out into 2 variants.
         body_tag, body_qasm = node.qasm_bodies[0]
         body_variants = (
             ((*body_tag, ("body_id", 0)), body_qasm),
-            ((*body_tag, ("body_id", 1)), body_qasm.replace("theta", "theta")),
+            ((*body_tag, ("body_id", 1)), body_qasm.replace("rx(", "ry(")),
         )
         # QASMTag is a tuple of (axis, value) pairs, so each measurement tag
         # is itself a 1-tuple wrapping one AxisLabel.
@@ -533,7 +486,7 @@ class TestCompileTemplateBatch:
         node = node.set_qasm_bodies(body_variants).set_measurement_bodies(meas_variants)
         batch = {next(iter(trace.final_batch.keys())): node}
 
-        entries, lineage = _compile_template_batch(batch, self.PARAM_SETS)
+        entries, lineage = _compile_batch(batch, self.PARAM_SETS)
         assert len(entries) == 4  # 2 bodies × 2 measurements
         # Total labels = bodies × measurements × param_sets, all unique.
         all_labels = [label for entry in entries for label, _ in entry.parameter_sets]
@@ -572,7 +525,7 @@ class TestBoundVersusTemplatedNumericalEquivalence:
         )
         resolved: dict[str, str] = {}
         for label, values in entry.parameter_sets:
-            qasm = entry.template_qasm
+            qasm = entry.circuit
             for name, idx in ordered:
                 qasm = qasm.replace(name, str(float(values[idx])))
             resolved[label] = qasm
@@ -586,11 +539,9 @@ class TestBoundVersusTemplatedNumericalEquivalence:
                 ParameterBindingStage(),
             ]
         )
-        env = PipelineEnv(
-            backend=_NonTemplateExpvalBackend(), param_sets=self.ROUND_TRIP_PARAMS
-        )
+        env = PipelineEnv(backend=FakeBackend(), param_sets=self.ROUND_TRIP_PARAMS)
         trace = pipeline.run_forward_pass("x", env)
-        circuits, _ = _compile_batch(trace.final_batch)
+        circuits, _ = _compile_bound(trace.final_batch)
         return circuits
 
     def _run_templated(self):
@@ -602,10 +553,11 @@ class TestBoundVersusTemplatedNumericalEquivalence:
             ]
         )
         env = PipelineEnv(
-            backend=_TemplateOnlyBackend(), param_sets=self.ROUND_TRIP_PARAMS
+            backend=FakeBackend(resolves_parameters=True),
+            param_sets=self.ROUND_TRIP_PARAMS,
         )
         trace = pipeline.run_forward_pass("x", env)
-        entries, _ = _compile_template_batch(trace.final_batch, self.ROUND_TRIP_PARAMS)
+        entries, _ = _compile_batch(trace.final_batch, self.ROUND_TRIP_PARAMS)
         resolved: dict[str, str] = {}
         for entry in entries:
             resolved.update(self._resolve_template_locally(entry))
@@ -661,14 +613,14 @@ def _multi_pauli_parametric_meta() -> MetaCircuit:
     )
 
 
-class TestMultiMeasurementTemplatePathEndToEnd:
+class TestMultiMeasurementDeferredBindingEndToEnd:
     """Spec: a shot-based parametric program with K non-commuting Pauli
-    groups produces K TemplateEntry rows after the real pipeline expansion
+    groups produces K payloads after the real pipeline expansion
     (DummySpecStage → MeasurementStage → ParameterBindingStage), with
-    labels that exactly match what ``_compile_batch`` would have emitted
-    for the equivalent bound path. Closes the gap between unit compile
-    tests (which hand-build multi-measurement state) and the production
-    code path through MeasurementStage's qwc grouping.
+    labels that exactly match those of the equivalent bound batch. Closes
+    the gap between unit compile tests (which hand-build multi-measurement
+    state) and the production code path through MeasurementStage's qwc
+    grouping.
     """
 
     PARAM_SETS = [[1.5, -0.25], [0.5, 0.125]]
@@ -684,80 +636,59 @@ class TestMultiMeasurementTemplatePathEndToEnd:
         )
         env = PipelineEnv(
             backend=backend,
-            param_sets=TestMultiMeasurementTemplatePathEndToEnd.PARAM_SETS,
+            param_sets=TestMultiMeasurementDeferredBindingEndToEnd.PARAM_SETS,
         )
         return pipeline.run_forward_pass("x", env)
 
-    def test_multi_measurement_template_carrier_and_compile(self, mocker):
+    def test_multi_measurement_payload_carrier_and_compile(self):
         """End-to-end pre-condition + compile output: shot-based pipeline
         produces 2 commuting Pauli groups, ParameterBindingStage fires its
-        template branch (because the mock has ``submit_circuit_templates``
-        in its ``__dict__`` and so satisfies the runtime Protocol check —
-        ``inspect.getattr_static`` skips MagicMock's auto-attr ``__getattr__``,
-        so the method must be passed explicitly), and
-        ``_compile_template_batch`` emits one TemplateEntry per group."""
-        backend = mocker.Mock(
-            supports_expval=False,
-            is_async=False,
-            shots=100,
-            submit_circuit_templates=mocker.Mock(),
+        QASM-CircuitPayload branch, and ``_compile_batch`` emits one CircuitPayload per group.
+        """
+        trace = self._run_pipeline(
+            FakeBackend(resolves_parameters=True, supports_expval=False)
         )
-        trace = self._run_pipeline(backend)
 
         # MeasurementStage produced 2 commuting groups.
         node = next(iter(trace.final_batch.values()))
         assert len(node.measurement_qasms) == 2
-        # ParameterBindingStage selected the template path.
-        assert _batch_has_templates(trace.final_batch)
+        # ParameterBindingStage deferred the binding.
+        assert _batch_has_free_parameters(trace.final_batch)
         assert len(node.qasm_bodies) == 1
 
-        entries, lineage = _compile_template_batch(trace.final_batch, self.PARAM_SETS)
-        # 1 body × 2 measurement groups → 2 TemplateEntry rows.
+        entries, lineage = _compile_batch(trace.final_batch, self.PARAM_SETS)
+        # 1 body × 2 measurement groups → 2 payloads.
         assert len(entries) == 2
         all_labels = [label for entry in entries for label, _ in entry.parameter_sets]
         assert len(all_labels) == 2 * len(self.PARAM_SETS)
         assert len(set(all_labels)) == len(all_labels)
         assert set(all_labels) == set(lineage.keys())
 
-    def test_templated_labels_match_bound_labels_for_same_input(self, mocker):
-        """Routing contract: ``_compile_batch`` (bound, ``spec=CircuitRunner``
-        mock has no template method → protocol fails → bound path) and
-        ``_compile_template_batch`` (templated, plain Mock auto-creates
-        ``submit_circuit_templates`` → protocol succeeds → template path)
-        must produce identical label and lineage sets for the same input."""
-        templated_backend = mocker.Mock(
-            supports_expval=False,
-            is_async=False,
-            shots=100,
-            submit_circuit_templates=mocker.Mock(),
+    def test_payload_labels_match_bound_labels_for_same_input(self):
+        """Routing contract: the deferred and bound compile paths must produce
+        identical label and lineage sets for the same input."""
+        payload_trace = self._run_pipeline(
+            FakeBackend(resolves_parameters=True, supports_expval=False)
         )
-        bound_backend = mocker.Mock(
-            spec=CircuitRunner,
-            supports_expval=False,
-            is_async=False,
-            shots=100,
+        payload_entries, payload_lineage = _compile_batch(
+            payload_trace.final_batch, self.PARAM_SETS
         )
 
-        templated_trace = self._run_pipeline(templated_backend)
-        templated_entries, templated_lineage = _compile_template_batch(
-            templated_trace.final_batch, self.PARAM_SETS
-        )
+        bound_trace = self._run_pipeline(FakeBackend(supports_expval=False))
+        bound_circuits, bound_lineage = _compile_bound(bound_trace.final_batch)
 
-        bound_trace = self._run_pipeline(bound_backend)
-        bound_circuits, bound_lineage = _compile_batch(bound_trace.final_batch)
-
-        templated_labels = {
-            label for entry in templated_entries for label, _ in entry.parameter_sets
+        payload_labels = {
+            label for entry in payload_entries for label, _ in entry.parameter_sets
         }
-        assert templated_labels == set(bound_circuits.keys())
-        for label in templated_labels:
-            assert templated_lineage[label] == bound_lineage[label]
+        assert payload_labels == set(bound_circuits.keys())
+        for label in payload_labels:
+            assert payload_lineage[label] == bound_lineage[label]
 
 
-def test_dispatch_calls_submit_circuit_templates():
-    """A template-capable backend receives a template payload when the
-    program is parametric and the fast path applies."""
-    backend = _RecordingTemplateBackend()
+def test_dispatch_submits_one_parametric_payload_per_variant():
+    """A parameter-resolving backend receives the parameters unbound, as one
+    CircuitPayload per (body, measurement) variant carrying every parameter set."""
+    backend = FakeBackend(resolves_parameters=True, strict=False)
     pipeline = CircuitPipeline(
         stages=[
             DummySpecStage(meta=_parametric_meta_one_body()),
@@ -768,11 +699,12 @@ def test_dispatch_calls_submit_circuit_templates():
     env = PipelineEnv(backend=backend, param_sets=[[1.5, 2.7], [3.0, 4.0]])
     pipeline.run(initial_spec="x", env=env)
 
-    assert len(backend.template_calls) == 1
-    assert backend.circuit_calls == []
-    templates, _ = backend.template_calls[0]
-    assert len(templates) == 1  # single (body, meas) variant
-    assert len(templates[0].parameter_sets) == 2
+    assert len(backend.calls) == 1
+    payloads, _ = backend.calls[0]
+    assert len(payloads) == 1  # single (body, meas) variant
+    assert payloads[0].parameter_names == ("theta", "phi")
+    assert len(payloads[0].parameter_sets) == 2
+    assert isinstance(payloads[0].circuit, str)
 
 
 class TestFormatPipelineTree:
@@ -795,13 +727,13 @@ class TestFormatPipelineTree:
         assert len(lines) == 5
 
     def test_deferred_binding_tree_shows_the_param_set_axis(self, capsys):
-        """A template-capable backend leaves binding to the backend, so the
-        param-set axis lives on the parameters rather than on the body tags.
-        The tree must still show it, or it silently under-reports the
-        expansion that execution actually performs."""
+        """A resolving backend leaves binding to the backend, so the param-set
+        axis lives on the parameters rather than on the body tags. The tree
+        must still show it, or it silently under-reports the expansion that
+        execution actually performs."""
         trace = run_binding_pipeline(
             _parametric_meta_one_body(),
-            backend=_TemplateOnlyBackend(),
+            backend=FakeBackend(resolves_parameters=True),
             param_sets=[[1.5, -0.25], [0.5, 0.125]],
         )
         node = next(iter(trace.final_batch.values()))
@@ -829,7 +761,9 @@ class TestFormatPipelineTree:
                 if ":" in line
             }
 
-        assert axes_for(_TemplateOnlyBackend()) == axes_for(_NonTemplateExpvalBackend())
+        assert axes_for(FakeBackend(resolves_parameters=True)) == axes_for(
+            FakeBackend(resolves_parameters=False)
+        )
 
     def test_format_pipeline_tree_empty_batch(self, capsys):
         trace = PipelineTrace(
@@ -849,7 +783,7 @@ def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
     pipeline = CircuitPipeline(stages=two_group_pipeline_stages(fanout=("fold", 3)))
 
     def _execute_fn(trace, env):
-        _, lineage_by_label = _compile_batch(trace.final_batch)
+        _, lineage_by_label = _compile_bound(trace.final_batch)
         return {bk: 2 for bk in lineage_by_label.values()}
 
     reduced = pipeline.run(
@@ -1261,6 +1195,7 @@ class TestDefaultExecuteFnCancellation:
     def _async_backend(self, mocker, *, raise_on_poll):
         backend = mocker.Mock(spec=AsyncJobBackend)
         backend.supports_expval = False
+        backend.resolves_parameters = False
         backend.max_retries = 1
         backend.submit_circuits.return_value = ExecutionResult(job_id="job_42")
         if raise_on_poll:

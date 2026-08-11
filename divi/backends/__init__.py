@@ -4,7 +4,7 @@
 
 from ._async_job_backend import AsyncJobBackend
 from ._backend_properties_conversion import create_backend_from_properties
-from ._circuit_runner import CircuitRunner, SupportsCircuitTemplates
+from ._circuit_runner import CircuitRunner
 from ._config import ExecutionConfig, JobConfig, SimulationMethod, Simulator
 from ._execution_result import ExecutionResult
 from ._maestro_simulator import MaestroConfig, MaestroSimulator
@@ -30,7 +30,6 @@ __all__ = [
     "SimulationMethod",
     "Simulator",
     "SimulatorCluster",
-    "SupportsCircuitTemplates",
     "convert_counts_to_probs",
     "create_backend_from_properties",
     "reverse_dict_endianness",

@@ -8,7 +8,7 @@ import pytest
 
 from divi.circuits import qscript_to_meta
 from divi.pipeline import CircuitPipeline
-from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._postprocessing import (
     _batched_expectation,
     _counts_to_cost_variance,
@@ -43,7 +43,7 @@ class TestCountsToExpvals:
             ]
         )
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        _, lineage_by_label = _compile_batch(trace.final_batch)
+        lineage_by_label = batch_lineage(trace.final_batch)
         raw: ChildResults = {bk: {"011": 100} for bk in lineage_by_label.values()}
 
         result = _counts_to_expvals(raw, trace.final_batch)
@@ -67,7 +67,7 @@ class TestCountsToExpvals:
             ]
         )
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        _, lineage_by_label = _compile_batch(trace.final_batch)
+        lineage_by_label = batch_lineage(trace.final_batch)
 
         # Little-endian backend counts giving distinct <Z0>=0.4, <Z1>=0.6,
         # <Z2>=0.8, so any qubit permutation (not just a full reversal) is caught
@@ -111,8 +111,7 @@ class TestCountsToCostVariance:
             ]
         )
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        _, lineage_by_label = _compile_batch(trace.final_batch)
-        return trace, lineage_by_label
+        return trace, batch_lineage(trace.final_batch)
 
     def test_matches_analytic_formula(self, dummy_pipeline_env):
         # <Z> = (75 - 25)/100 = 0.5, coeff = 1, M = 100
