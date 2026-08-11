@@ -1182,7 +1182,7 @@ class QoroService(CircuitRunner):
         self,
         execution_result: ExecutionResult,
         loop_until_complete: bool = False,
-        on_complete: Callable[[requests.Response], None] | None = None,
+        on_complete: Callable[[dict], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
@@ -1201,8 +1201,10 @@ class QoroService(CircuitRunner):
         Args:
             execution_result: An ExecutionResult instance with a job_id to check.
             loop_until_complete (bool): If True, polls until the job is complete or failed.
-            on_complete (Callable, optional): A function to call with the final response
-                object when the job finishes.
+            on_complete (Callable, optional): A function called with the decoded
+                final status payload when the job reaches a terminal state.
+                Consumers read ``run_time`` from it to accumulate
+                :attr:`~divi.qprog.QuantumProgram.total_run_time`.
             verbose (bool, optional): If True, prints polling status to the logger.
             progress_callback (Callable, optional): A function for updating progress bars.
                 Takes `(retry_count, status)`.
@@ -1280,11 +1282,12 @@ class QoroService(CircuitRunner):
                     response = self._make_request(
                         "get", f"job/{job_id}/status/", timeout=200
                     )
-                    status = JobStatus(response.json()["status"])
+                    payload = response.json()
+                    status = JobStatus(payload["status"])
 
                     if status in terminal_statuses:
                         if on_complete:
-                            on_complete(response)
+                            on_complete(payload)
                         return status
 
                     update_fn(retry_count, status.value)
