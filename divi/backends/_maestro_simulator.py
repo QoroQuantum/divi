@@ -86,16 +86,6 @@ def _run_with_cancellation(
     return out
 
 
-def _strip_measurements(qasm: str) -> str:
-    """Remove measurement instructions from QASM.
-
-    Measurement gates collapse the statevector, which corrupts
-    expectation-value estimation.  They must be stripped before
-    passing circuits to ``simple_estimate``.
-    """
-    return re.sub(r"measure\s+q\[\d+\]\s*->\s*\w+\[\d+\]\s*;\n?", "", qasm)
-
-
 def _resolve_noise_realizations(
     realizations: int | None, *, sampling: bool
 ) -> int | None:
@@ -460,8 +450,15 @@ class MaestroSimulator(CircuitRunner):
         ham_ops: str,
         circuit_ham_map: list[list[int]] | None,
     ) -> str:
-        """Resolve which observable string applies to a given circuit index."""
-        return ham_ops_group_for_circuit(circuit_index, ham_ops, circuit_ham_map)
+        """Resolve which observable string applies to a given circuit index.
+
+        A matched group holds no ``|``; the replace only flattens the fall-back
+        case where every group applies, which maestro would otherwise read as
+        one pseudo-term.
+        """
+        return ham_ops_group_for_circuit(
+            circuit_index, ham_ops, circuit_ham_map
+        ).replace("|", ";")
 
     def submit_circuits(
         self,
@@ -589,16 +586,14 @@ class MaestroSimulator(CircuitRunner):
                 )
                 if self.config.noise_model is None:
                     raw = maestro.simple_estimate(
-                        _strip_measurements(qasm),
+                        qasm,
                         observables=pauli_string,
                         config=sim_config,
                     )
                 else:
                     # Noisy functions require a parsed maestro Circuit, not a raw QASM string.
                     circuit_parser = maestro.QasmToCirc()
-                    maestro_circuit = circuit_parser.parse_and_translate(
-                        _strip_measurements(qasm)
-                    )
+                    maestro_circuit = circuit_parser.parse_and_translate(qasm)
                     realizations = _resolve_noise_realizations(
                         self.config.noise_realizations, sampling=False
                     )

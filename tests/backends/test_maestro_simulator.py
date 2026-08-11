@@ -11,7 +11,7 @@ import pytest
 
 import divi.backends._maestro_simulator as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
-from divi.backends._maestro_simulator import _run_with_cancellation, _strip_measurements
+from divi.backends._maestro_simulator import _run_with_cancellation
 from divi.exceptions import ExecutionCancelledError
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
@@ -615,11 +615,7 @@ class TestParallelExecution:
             QASM_DEPTH_3,
             QASM_DEPTH_2.replace("h q[0]", "x q[0]"),
         ]
-        per_qasm_expval = {
-            _strip_measurements(qasms[0]): 0.1,
-            _strip_measurements(qasms[1]): 0.2,
-            _strip_measurements(qasms[2]): 0.3,
-        }
+        per_qasm_expval = {qasms[0]: 0.1, qasms[1]: 0.2, qasms[2]: 0.3}
         fake.simple_estimate.side_effect = lambda qasm, **_: {
             "expectation_values": [per_qasm_expval[qasm]]
         }
@@ -763,9 +759,10 @@ class TestExpvalSubmission:
 
         assert fake.simple_estimate.call_args[1]["observables"] == "ZI;IZ"
 
-    def test_expval_strips_measurements(self, mocker):
-        """Measurement instructions are stripped so they don't collapse
-        the statevector before expectation values are computed."""
+    def test_expval_passes_measurements_through(self, mocker):
+        """Maestro ignores terminal measurement on the estimate path, so
+        stripping it client-side changed no value and only let this channel
+        drift from the QRMI one."""
         fake = _make_fake_maestro(mocker)
         fake.simple_estimate.side_effect = [
             {"expectation_values": [0.5]},
@@ -776,7 +773,7 @@ class TestExpvalSubmission:
         sim.submit_circuits({"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3}, ham_ops="ZI")
 
         for call in fake.simple_estimate.call_args_list:
-            assert "measure" not in call[0][0]
+            assert "measure" in call[0][0]
 
     def test_expval_preserves_circuit_body(self, mocker):
         """Stripping measurements must leave the circuit gates intact."""
@@ -856,7 +853,11 @@ class TestExpvalSubmission:
         assert calls[1][1]["observables"] == "XX"
 
     def test_circuit_ham_map_fallback(self, mocker):
-        """Circuits not in any group fall back to full ham_ops string."""
+        """A circuit outside every group is measured against all observables.
+
+        Maestro splits only on ';', so the groups must be flattened first: it
+        would read 'ZI|XX' as one 5-character pseudo-term, return 0.0 for it,
+        and drop both real observables without raising."""
         fake = _make_fake_maestro(mocker)
         fake.simple_estimate.side_effect = [
             {"expectation_values": [0.5]},
@@ -872,8 +873,7 @@ class TestExpvalSubmission:
 
         calls = fake.simple_estimate.call_args_list
         assert calls[0][1]["observables"] == "ZI"
-        # Circuit 1 not in any group — falls back to full ham_ops
-        assert calls[1][1]["observables"] == "ZI|XX"
+        assert calls[1][1]["observables"] == "ZI;XX"
 
 
 class TestMaestroConfigNoiseDefaults:
@@ -1078,10 +1078,9 @@ class TestNoisyExpvalSubmission:
         assert call.kwargs["observables"] == "ZI;IZ"
         assert "config" in call.kwargs
 
-    def test_noisy_estimate_strips_measurements(self, mocker):
-        """``noisy_estimate``/``montecarlo`` receive a parsed circuit built
-        from QASM that has had its ``measure`` lines stripped — measurements
-        would corrupt the analytical statevector."""
+    def test_noisy_estimate_passes_measurements_through(self, mocker):
+        """The noisy estimators ignore terminal measurement too, so the circuit
+        reaches them intact."""
         fake = _make_fake_maestro(mocker)
         sim, _ = _make_noisy_sim(mocker, fake)
 
@@ -1090,7 +1089,7 @@ class TestNoisyExpvalSubmission:
         parsed_input = fake.QasmToCirc.return_value.parse_and_translate.call_args.args[
             0
         ]
-        assert "measure" not in parsed_input
+        assert "measure" in parsed_input
         assert "h q[0]" in parsed_input  # body preserved
 
     def test_noisy_estimate_passes_observables_string(self, mocker):
@@ -1137,49 +1136,6 @@ class TestNoisyExpvalSubmission:
         labels = [r["label"] for r in result.results]
         assert labels == ["a", "b"]
         assert sorted(seeds_seen.values()) == [10, 11]
-
-
-class TestStripMeasurements:
-    """Verify _strip_measurements preserves gates and removes only measurements."""
-
-    def test_removes_all_measure_lines(self):
-        qasm = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[3];\ncreg c[3];\n'
-            "h q[0];\ncx q[0],q[1];\nrz(0.5) q[2];\n"
-            "measure q[0] -> c[0];\nmeasure q[1] -> c[1];\nmeasure q[2] -> c[2];\n"
-        )
-        result = _strip_measurements(qasm)
-        assert "measure" not in result
-        assert "h q[0]" in result
-        assert "cx q[0],q[1]" in result
-        assert "rz(0.5) q[2]" in result
-
-    def test_no_measurements_unchanged(self):
-        qasm = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
-            "h q[0];\ncx q[0],q[1];\n"
-        )
-        assert _strip_measurements(qasm) == qasm
-
-    def test_preserves_creg(self):
-        """creg declarations must survive even though measurements are stripped."""
-        qasm = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
-            "h q[0];\nmeasure q[0] -> c[0];\n"
-        )
-        result = _strip_measurements(qasm)
-        assert "creg c[2]" in result
-
-    def test_strips_non_default_creg_name(self):
-        """Measurements targeting a non-``c`` classical register must be stripped."""
-        qasm = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg meas[2];\n'
-            "h q[0];\nmeasure q[0] -> meas[0];\nmeasure q[1] -> meas[1];\n"
-        )
-        result = _strip_measurements(qasm)
-        assert "measure" not in result
-        assert "h q[0]" in result
-        assert "creg meas[2]" in result
 
 
 def _contract_maestro_runner(mocker, fake_maestro, *, track_depth: bool = False):
