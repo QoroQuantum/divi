@@ -20,7 +20,7 @@ from divi.pipeline import (
     PipelineEnv,
     StageOutput,
 )
-from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._grouping import _compute_measurement_groups
 from divi.pipeline._postprocessing import _counts_to_expvals
 from divi.pipeline.abc import ChildResults, MetaCircuitBatch, ResultFormat, SpecStage
@@ -472,7 +472,7 @@ class TestMeasurementStageShotDistributionReducePath:
         measurement-axis Pauli has eigenvalue +1 on |0>, so each group's
         expval is exactly +1.0."""
 
-        _, lineage = _compile_batch(trace.final_batch)
+        lineage = batch_lineage(trace.final_batch)
         return {bk: {"0": 100} for bk in lineage.values()}
 
     def test_reduce_injects_placeholders_and_yields_correct_energy(

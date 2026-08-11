@@ -6,8 +6,10 @@
 
 from http import HTTPStatus
 
+from qiskit.circuit import Parameter
+
 from divi.backends import ExecutionResult, JobStatus
-from divi.circuits import TemplateEntry
+from divi.circuits._payloads import CircuitPayload
 
 
 def make_execution_result(job_id: str = "test_job") -> ExecutionResult:
@@ -53,22 +55,22 @@ def create_failed_job(service):
     return ExecutionResult(job_id=job_id)
 
 
-def make_template_entry(
+def make_qasm_payload(
     n_param_sets: int = 2, n_params: int = 2, label_prefix: str = "iter"
-) -> TemplateEntry:
-    """Build a TemplateEntry whose parameter values are derived from the
+) -> CircuitPayload:
+    """Build a QASM-encoded CircuitPayload whose parameter values are derived from the
     set/param indices, making per-set assertions deterministic."""
-    param_names = tuple(f"theta_{i}" for i in range(n_params))
+    parameters = tuple(Parameter(f"theta_{i}") for i in range(n_params))
     sets = tuple(
         (f"{label_prefix}_{i}", tuple(float(i + j) for j in range(n_params)))
         for i in range(n_param_sets)
     )
-    return TemplateEntry(
-        template_qasm=(
+    return CircuitPayload(
+        circuit=(
             'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
             "ry(theta_0) q[0];\nrz(theta_1) q[0];\nmeasure q[0] -> c[0];\n"
         ),
-        parameter_names=param_names,
+        parameters=parameters,
         parameter_sets=sets,
     )
 

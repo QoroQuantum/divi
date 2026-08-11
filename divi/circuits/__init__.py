@@ -15,7 +15,6 @@ from ._pennylane_utils import qnode_to_meta
 from ._payloads import CircuitPayload, bound_circuits
 from ._qasm_template import (
     QASMTemplate,
-    TemplateEntry,
     build_template,
     render_template,
 )
@@ -29,7 +28,6 @@ __all__ = [
     "MetaCircuit",
     "QASMTag",
     "QASMTemplate",
-    "TemplateEntry",
     "bound_circuits",
     "build_overlap_meta",
     "build_template",

@@ -26,7 +26,7 @@ from divi.pipeline import (
     dry_run_pipeline,
     format_dry_run,
 )
-from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._dry_run import (
     _aggregate_circuit_stats,
     _two_qubit_depth,
@@ -77,7 +77,7 @@ class TestDryRunPipeline:
         assert report.total_circuits > 0
 
     def test_total_matches_compile(self, dummy_pipeline_env):
-        """Total circuits matches actual _compile_batch output (full-generation mode)."""
+        """Total circuits matches the compiled bound batch (full-generation mode)."""
         trace, report = dry_run_stages(
             [
                 DummySpecStage(meta=two_group_meta()),
@@ -87,8 +87,7 @@ class TestDryRunPipeline:
             dummy_pipeline_env,
             dry=False,
         )
-        compiled, _ = _compile_batch(trace.final_batch)
-        assert report.total_circuits == len(compiled)
+        assert report.total_circuits == len(batch_lineage(trace.final_batch))
 
     def test_format_does_not_raise(self, dummy_pipeline_env):
         """format_dry_run prints without errors."""

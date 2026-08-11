@@ -25,7 +25,7 @@ from divi.circuits.qem import (
 from divi.circuits.quepp import QuEPP, _ObservableCPT
 from divi.circuits.zne import ZNE, LinearExtrapolator
 from divi.pipeline import CircuitPipeline, ContractViolation, DiviPerformanceWarning
-from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._result_keys_operations import FOREIGN_KEY_ATTR
 from divi.pipeline.stages import (
     MeasurementStage,
@@ -33,7 +33,11 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
-from tests.pipeline._helpers import DummySpecStage, ones_execute_fn, two_group_meta
+from tests.pipeline._helpers import (
+    DummySpecStage,
+    ones_execute_fn,
+    two_group_meta,
+)
 
 
 class _DummyQEMProtocol(QEMProtocol):
@@ -357,7 +361,7 @@ class TestQuEPPLocalEffectiveness:
         )
 
         def noisy_execute_fn(trace, env):
-            _, lineage_by_label = _compile_batch(trace.final_batch)
+            lineage_by_label = batch_lineage(trace.final_batch)
             return {
                 branch_key: noisy_target for branch_key in lineage_by_label.values()
             }
@@ -372,7 +376,7 @@ class TestQuEPPLocalEffectiveness:
 
         def build_quepp_execute_fn(with_twirls: bool):
             def execute_fn(trace, env):
-                _, lineage_by_label = _compile_batch(trace.final_batch)
+                lineage_by_label = batch_lineage(trace.final_batch)
                 contexts = self._get_quepp_contexts(trace)
                 out = {}
                 for branch_key in lineage_by_label.values():

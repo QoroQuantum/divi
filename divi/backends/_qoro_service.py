@@ -24,8 +24,13 @@ from qiskit import QuantumCircuit
 from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
-from divi.circuits import TemplateEntry
-from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
+from divi.circuits._payloads import (
+    CircuitBatch,
+    CircuitPayload,
+    as_payloads,
+    bound_circuits,
+    is_bound,
+)
 from divi.exceptions import CharacterizationSubmitError, ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
@@ -204,10 +209,9 @@ class QoroService(CircuitRunner):
     This class provides methods to submit circuits, check job status,
     and retrieve results from the Qoro platform.
 
-    Implements the
-    :class:`~divi.backends.SupportsCircuitTemplates` capability protocol via
-    :meth:`submit_circuit_templates`, enabling the pipeline's deferred-binding
-    path for parametric variational sweeps.
+    Resolves parameters server-side, so the pipeline can hand it parametric
+    QASM-encoded :class:`~divi.circuits.CircuitPayload` objects and skip binding
+    near-identical circuits locally on variational sweeps.
     """
 
     def __init__(
@@ -321,6 +325,11 @@ class QoroService(CircuitRunner):
         """
         Whether the backend executes circuits asynchronously.
         """
+        return True
+
+    @property
+    def resolves_parameters(self) -> bool:
+        """The Qoro backend substitutes parameter values server-side."""
         return True
 
     def _resolve_and_validate_target(self, config: JobConfig) -> JobConfig:
@@ -533,6 +542,50 @@ class QoroService(CircuitRunner):
         )
         return [dict(chunk) for chunk in chunks]
 
+    def _resolve_job_config(self, override: JobConfig | None) -> JobConfig:
+        """Layer service defaults under an optional per-call override."""
+        if not override:
+            return self.job_config
+        return self._resolve_and_validate_target(self.job_config.override(override))
+
+    def _resolve_execution_config(
+        self, override: ExecutionConfig | None
+    ) -> ExecutionConfig | None:
+        """Layer service defaults under an optional per-call override."""
+        if override is None:
+            return self.execution_config
+        if self.execution_config is None:
+            return override
+        return self.execution_config.override(override)
+
+    @staticmethod
+    def _validate_ham_group(group: str) -> None:
+        """Check one ``;``-delimited observable group is well formed."""
+        valid_paulis = {"I", "X", "Y", "Z"}
+        terms = group.split(";")
+        if not all(terms):
+            raise ValueError(
+                "Hamiltonian operators must be non-empty semicolon-separated strings."
+            )
+        ham_ops_length = len(terms[0])
+        if not all(len(term) == ham_ops_length for term in terms):
+            raise ValueError("All Hamiltonian operators must have the same length.")
+        if not all(all(c in valid_paulis for c in term) for term in terms):
+            raise ValueError(
+                "Hamiltonian operators must contain only I, X, Y, Z characters."
+            )
+
+    @staticmethod
+    def _job_type_for(job_type: JobType | None, ham_ops: str | None) -> JobType:
+        """Resolve the job type, inferring EXPECTATION from ``ham_ops``."""
+        if ham_ops is None:
+            return job_type if job_type is not None else JobType.EXECUTE
+        if job_type is not None and job_type != JobType.EXPECTATION:
+            raise ValueError(
+                "Hamiltonian operators are only supported for EXPECTATION job type."
+            )
+        return JobType.EXPECTATION
+
     def submit_circuits(
         self,
         payloads: Sequence[CircuitPayload] | CircuitBatch,
@@ -547,18 +600,38 @@ class QoroService(CircuitRunner):
         **kwargs,
     ) -> ExecutionResult:
         """
-        Submit quantum circuits to the Qoro API for execution.
+        Submit payloads to the Qoro API for execution.
 
-        This method first initialises a job and then sends the circuits in
-        one or more chunks, associating them all with a single job ID.
+        A single ``job/init/`` call returns the ``job_id``, then one or more
+        ``add_circuits/`` calls upload the payload; only the last is marked
+        ``finalized``.
+
+        Parametric payloads travel as a compressed ``circuit_template`` plus the
+        parameter matrix, and the backend resolves one circuit per row. Bound
+        payloads (the degenerate no-parameter case) travel as a ``label ->
+        circuit`` mapping instead. Either way results come back keyed by the
+        labels supplied in ``parameter_sets``.
+
+        Running an ensemble with ``batch_submissions=True`` merges circuits
+        across programs and always sends them bound, so those runs take the
+        mapping shape regardless of the parameters they started with.
+
+        The two shapes resolve floats differently: the backend substitutes
+        via ``str(value)`` on the deserialized float, preserving the full
+        Python repr, whereas bound QASM was rendered locally at the
+        :class:`~divi.circuits.MetaCircuit`'s precision (8 decimals by
+        default). Values that round-trip through both formatters give
+        byte-identical circuits; others differ only in the trailing digits.
 
         Args:
-            payloads:
-                Already-resolved circuits, either as
-                :class:`~divi.circuits.CircuitPayload` objects, a mapping of
-                unique circuit ID → QASM string or
-                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence
-                labelled by positional index.
+            payloads (Sequence[CircuitPayload] | CircuitBatch):
+                One :class:`~divi.circuits.CircuitPayload` per ``(body, measurement)``
+                variant in the compiled batch, each carrying its own
+                ``parameter_sets`` rows pre-labelled with deterministic
+                ``BranchKey``-derived labels — or a collection of
+                already-resolved circuits: a mapping of unique circuit ID →
+                QASM string or :class:`~qiskit.circuit.QuantumCircuit`, or a
+                bare sequence labelled by positional index.
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
@@ -569,12 +642,14 @@ class QoroService(CircuitRunner):
                 Maps each ``|``-delimited group in ``ham_ops`` to a ``[start, end)``
                 slice of the ordered circuit list.  Must have the same length as
                 ``ham_ops.split("|")``.  When None, a single ``ham_ops`` group is
-                applied to all circuits.
+                applied to all circuits. Bound payloads only — the parametric
+                ordering does not align with the flat index ranges it references.
             shot_groups (list[list[int]] | None, optional):
                 Per-circuit shot allocation as ``[start, end, shots]`` triples
-                covering the iteration order of ``circuits``. Mutually exclusive
+                covering the iteration order of the circuits. Mutually exclusive
                 with the service-level ``shots`` field. When provided, ranges
                 spanning multiple internal chunks are re-indexed automatically.
+                Bound payloads only, for the same reason as ``circuit_ham_map``.
             job_type (JobType | None, optional):
                 Type of job to execute (EXECUTE or EXPECTATION).
                 If not provided, defaults to EXECUTE.
@@ -604,15 +679,9 @@ class QoroService(CircuitRunner):
             ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
                 to poll for results using backend.poll_job_status() and get_job_results().
         """
-        circuits = bound_circuits(payloads)
-
-        # Create final job configuration by layering configurations:
-        #    service defaults -> user overrides
-        if override_job_config:
-            config = self.job_config.override(override_job_config)
-            job_config = self._resolve_and_validate_target(config)
-        else:
-            job_config = self.job_config
+        payloads = as_payloads(payloads)
+        if not payloads:
+            raise ValueError("submit_circuits requires at least one payload.")
 
         if ham_ops is not None and shot_groups is not None:
             raise ValueError(
@@ -621,56 +690,49 @@ class QoroService(CircuitRunner):
                 "ignore shot counts. Pass exactly one."
             )
 
+        if ham_ops is not None:
+            # Each |-delimited group is validated independently.
+            ham_groups = ham_ops.split("|")
+            for group in ham_groups:
+                self._validate_ham_group(group)
+
+            if circuit_ham_map is not None and len(circuit_ham_map) != len(ham_groups):
+                raise ValueError(
+                    f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
+                    f"number of ham_ops groups ({len(ham_groups)})."
+                )
+
+        job_config = self._resolve_job_config(override_job_config)
+        call_plan = (
+            self._bound_call_plan(payloads, shot_groups)
+            if is_bound(payloads)
+            else self._parametric_call_plan(
+                payloads, ham_ops, circuit_ham_map, shot_groups
+            )
+        )
+
+        return self._dispatch_job(
+            call_plan,
+            job_config=job_config,
+            execution_config=self._resolve_execution_config(override_execution_config),
+            job_type=self._job_type_for(job_type, ham_ops),
+            ham_ops=ham_ops,
+            circuit_ham_map=circuit_ham_map,
+        )
+
+    def _bound_call_plan(
+        self, payloads: Sequence[CircuitPayload], shot_groups: list[list[int]] | None
+    ) -> list[dict[str, Any]]:
+        """Chunk resolved circuits into ``add_circuits/`` payload fragments."""
+        circuits = bound_circuits(payloads)
+
         shot_ranges = None
         if shot_groups is not None:
             shot_ranges = from_wire(shot_groups)
             validate(shot_ranges, len(circuits))
 
-        # Handle Hamiltonian operators: validate compatibility and auto-infer job type
-        if ham_ops is not None:
-            # Validate that if job_type is explicitly set, it must be EXPECTATION
-            if job_type is not None and job_type != JobType.EXPECTATION:
-                raise ValueError(
-                    "Hamiltonian operators are only supported for EXPECTATION job type."
-                )
-            # Auto-infer job type if not explicitly set
-            if job_type is None:
-                job_type = JobType.EXPECTATION
-
-            # Validate observables format (each |-delimited group independently)
-            valid_paulis = {"I", "X", "Y", "Z"}
-            ham_groups = ham_ops.split("|")
-            for group in ham_groups:
-                terms = group.split(";")
-                if len(terms) == 0:
-                    raise ValueError(
-                        "Hamiltonian operators must be non-empty semicolon-separated strings."
-                    )
-                ham_ops_length = len(terms[0])
-                if not all(len(term) == ham_ops_length for term in terms):
-                    raise ValueError(
-                        "All Hamiltonian operators must have the same length."
-                    )
-                if not all(all(c in valid_paulis for c in term) for term in terms):
-                    raise ValueError(
-                        "Hamiltonian operators must contain only I, X, Y, Z characters."
-                    )
-
-            # Validate circuit_ham_map consistency
-            if circuit_ham_map is not None:
-                if len(circuit_ham_map) != len(ham_groups):
-                    raise ValueError(
-                        f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
-                        f"number of ham_ops groups ({len(ham_groups)})."
-                    )
-
-        if job_type is None:
-            job_type = JobType.EXECUTE
-
-        # Validate circuits
         for key, circuit in circuits.items():
             if not is_valid_qasm(circuit):
-                # Get the actual error message for better error reporting
                 try:
                     validate_qasm(circuit)
                 except SyntaxError as e:
@@ -679,7 +741,6 @@ class QoroService(CircuitRunner):
                         f"Circuit '{key}' is not a valid QASM: {msg}"
                     ) from e
 
-        # Track circuit depth if enabled
         if self.track_depth:
             self._depth_history.append(
                 [
@@ -688,83 +749,28 @@ class QoroService(CircuitRunner):
                 ]
             )
 
-        # Resolve execution config: service default -> explicit override
-        if override_execution_config is not None and self.execution_config is not None:
-            execution_config = self.execution_config.override(override_execution_config)
-        elif override_execution_config is not None:
-            execution_config = override_execution_config
-        else:
-            execution_config = self.execution_config
-
-        # Initialise the job without circuits to get a job_id
-        init_payload: dict[str, Any] = {
-            "tag": job_config.tag,
-            "job_type": job_type.value,
-            "use_packing": job_config.use_circuit_packing or False,
-        }
-        if isinstance(job_config.simulator_cluster, SimulatorCluster):
-            init_payload["simulator_cluster"] = job_config.simulator_cluster.name
-        elif isinstance(job_config.qpu_system, QPUSystem):
-            init_payload["qpu_system_name"] = job_config.qpu_system.name
-        if execution_config is not None:
-            init_payload["execution_configuration"] = execution_config.to_payload()
-
-        init_response = self._make_request(
-            "post", "job/init/", json=init_payload, timeout=100
-        )
-        if init_response.status_code not in [HTTPStatus.OK, HTTPStatus.CREATED]:
-            _raise_with_details(init_response)
-        job_id = init_response.json()["job_id"]
-
-        # Split circuits and add them to the created job
-        circuit_chunks = self._split_circuits(circuits)
-        num_chunks = len(circuit_chunks)
-        compressed_ham_ops = compress_ham_ops(ham_ops) if ham_ops is not None else None
-
+        chunks = self._split_circuits(circuits)
         # Per-chunk starting offset into the global circuit list, used to
-        # re-index ``shot_groups`` when chunking. Built up-front so the loop
-        # body has no manual accumulator to maintain.
-        chunk_offsets = list(
-            itertools.accumulate((len(c) for c in circuit_chunks), initial=0)
-        )
-        for i, (chunk, chunk_offset) in enumerate(zip(circuit_chunks, chunk_offsets)):
-            is_last_chunk = i == num_chunks - 1
-            add_circuits_payload: dict[str, Any] = {
-                "circuits": chunk,
-                "mode": "append",
-                "finalized": "true" if is_last_chunk else "false",
-            }
+        # re-index ``shot_groups`` when chunking.
+        offsets = itertools.accumulate((len(c) for c in chunks), initial=0)
 
-            # Include shots/ham_ops in add_circuits payload
-            if compressed_ham_ops is not None:
-                add_circuits_payload["observables"] = compressed_ham_ops
-                if circuit_ham_map is not None:
-                    add_circuits_payload["circuit_ham_map"] = circuit_ham_map
-            elif shot_ranges is not None:
-                add_circuits_payload["shot_groups"] = to_wire(
-                    restrict_to_chunk(shot_ranges, chunk_offset, len(chunk))
+        call_plan = []
+        for chunk, offset in zip(chunks, offsets):
+            fragment: dict[str, Any] = {"circuits": chunk}
+            if shot_ranges is not None:
+                fragment["shot_groups"] = to_wire(
+                    restrict_to_chunk(shot_ranges, offset, len(chunk))
                 )
-            else:
-                add_circuits_payload["shots"] = job_config.shots
+            call_plan.append(fragment)
+        return call_plan
 
-            add_circuits_response = self._make_request(
-                "post",
-                f"job/{job_id}/add_circuits/",
-                json=add_circuits_payload,
-                timeout=100,
-            )
-            if add_circuits_response.status_code != HTTPStatus.OK:
-                _raise_with_details(add_circuits_response)
-
-        return ExecutionResult(results=None, job_id=job_id)
-
-    def _split_template_parameter_sets(
-        self,
+    @staticmethod
+    def _split_payload_parameter_sets(
         compressed_template_b64: str,
         parameter_names: tuple[str, ...],
         parameter_sets: tuple[tuple[str, tuple[float, ...]], ...],
     ) -> list[list[tuple[str, tuple[float, ...]]]]:
-        """Split a ``TemplateEntry``'s ``parameter_sets`` into chunks bounded
+        """Split a ``CircuitPayload``'s ``parameter_sets`` into chunks bounded
         by :data:`_MAX_PAYLOAD_SIZE_MB`.
 
         Each chunk re-uses the same already-compressed ``circuit_template``
@@ -803,183 +809,87 @@ class QoroService(CircuitRunner):
             parameter_sets, row_size, fixed_overhead, max_payload_bytes
         )
 
-    def submit_circuit_templates(
+    def _parametric_call_plan(
         self,
-        templates: list[TemplateEntry],
-        *,
-        ham_ops: str | None = None,
-        circuit_ham_map: list[list[int]] | None = None,
-        shot_groups: list[list[int]] | None = None,
-        job_type: JobType | None = None,
-        override_execution_config: ExecutionConfig | None = None,
-        override_job_config: JobConfig | None = None,
-        cancellation_event: Event | None = None,
-        **kwargs,
-    ) -> ExecutionResult:
-        """Submit parametric templates with deferred parameter substitution.
+        payloads: Sequence[CircuitPayload],
+        ham_ops: str | None,
+        circuit_ham_map: list[list[int]] | None,
+        shot_groups: list[list[int]] | None,
+    ) -> list[dict[str, Any]]:
+        """Chunk parameter matrices into ``add_circuits/`` payload fragments.
 
-        Each :class:`~divi.circuits.TemplateEntry` is uploaded along with its
-        ``parameter_names`` and ``parameter_sets``; the Qoro backend
-        resolves each set into one circuit row labelled with the
-        caller-supplied ``label``, bypassing the bandwidth cost of shipping
-        near-identical bound QASM strings (the typical bottleneck for
-        variational gradient sweeps).
-
-        The job lifecycle mirrors :meth:`submit_circuits`: a single
-        ``job/init/`` call returns the ``job_id``, then one or more
-        ``add_circuits/`` calls upload each template's parameter sets. When
-        a template's ``parameter_sets`` would exceed
-        ``_MAX_PAYLOAD_SIZE_MB`` in a single request the rows are
-        split across multiple ``add_circuits/`` calls (each reusing the
-        same compressed template). Only the very last call across all
-        templates and chunks is marked ``finalized=true``. Polling and
-        result retrieval are unchanged.
-
-        Notes:
-            * **Precision divergence with the bound path.** The Qoro backend
-              substitutes each parameter via ``str(value)`` on the
-              JSON-deserialised float, which preserves the full Python
-              repr (e.g. ``"1.123456789"``).
-              :meth:`submit_circuits`, in contrast, ships QASM whose
-              numeric parameters were rendered locally at the
-              :class:`~divi.circuits.MetaCircuit`'s configured precision
-              (default 8 decimal places, e.g. ``"1.12345679"``). For
-              parameter values that round-trip cleanly through both
-              formatters (e.g. ``1.5``, ``-0.25``) the resolved circuits
-              are byte-identical; otherwise they differ in the
-              lower-precision digits, which is invisible to shot-noisy
-              runs and negligible for analytic expvals at typical
-              QAOA/VQE precisions.
-            * **Interaction with ``batch_submissions=True``.** When a
-              :class:`~divi.qprog._batch_coordinator._BatchCoordinator`
-              merges submissions across programs, it routes through a
-              ``_ProxyBackend`` that intercepts only
-              :meth:`submit_circuits` and is therefore *not* a structural
-              conformer to :class:`~divi.backends.SupportsCircuitTemplates`.
-              In that mode the pipeline silently falls back to the bound
-              path, losing the templating bandwidth win in exchange for
-              the cross-program merging win — they are mutually
-              exclusive in this release.
-
-        Args:
-            templates: One :class:`~divi.circuits.TemplateEntry` per
-                ``(body, measurement)`` variant in the compiled batch; each
-                carries its own ``parameter_sets`` rows pre-labelled with
-                deterministic ``BranchKey``-derived labels.
-            ham_ops: Single-group observable string applied to every
-                resolved circuit in the job. ``|``-delimited multi-group
-                observables are not supported on this path (use
-                :meth:`submit_circuits` for batches that need
-                ``circuit_ham_map`` re-indexing).
-            circuit_ham_map: Must be ``None`` on this path — the templated
-                ordering does not align with the bound-circuit flat index
-                ranges that ``circuit_ham_map`` is keyed by.
-            shot_groups: Must be ``None`` on this path for the same reason
-                as ``circuit_ham_map``.
-            job_type: ``EXECUTE`` (default) or ``EXPECTATION`` (auto-set
-                when ``ham_ops`` is provided).
-            override_execution_config: Same semantics as
-                :meth:`submit_circuits`.
-            override_job_config: Same semantics as :meth:`submit_circuits`.
-            cancellation_event: Accepted for parity with
-                :class:`~divi.backends.CircuitRunner`; pass the same Event
-                to :meth:`poll_job_status` to interrupt polling.
-            **kwargs: Ignored.
-
-        Returns:
-            ExecutionResult: Carries the ``job_id`` for async polling. The
-                results dict returned by :meth:`get_job_results` is keyed by
-                the same labels supplied in each template's
-                ``parameter_sets``.
+        Each fragment reuses the same compressed ``circuit_template``; only
+        ``parameter_sets`` is split, mirroring how :meth:`_bound_call_plan`
+        splits the circuit mapping.
         """
-        if not templates:
-            raise ValueError("submit_circuit_templates requires at least one template.")
         if circuit_ham_map is not None:
             raise ValueError(
-                "circuit_ham_map is not supported on the template path "
-                "because the templated circuit ordering does not align with "
-                "the bound-circuit flat index ranges it references. Submit "
-                "via submit_circuits if your batch needs |-delimited "
-                "ham_ops with circuit_ham_map."
+                "circuit_ham_map is not supported for parametric payloads because "
+                "their ordering does not align with the bound-circuit flat "
+                "index ranges it references. Bind the parameters first if your "
+                "batch needs |-delimited ham_ops with circuit_ham_map."
             )
         if shot_groups is not None:
             raise ValueError(
-                "shot_groups is not supported on the template path for the "
+                "shot_groups is not supported for parametric payloads for the "
                 "same reason as circuit_ham_map; per-circuit shot allocation "
-                "would need re-indexing into the templated order."
+                "would need re-indexing into the payload order."
             )
         if ham_ops is not None and "|" in ham_ops:
             raise ValueError(
                 "|-delimited ham_ops groups require circuit_ham_map; not "
-                "supported on the template path."
+                "supported for parametric payloads."
             )
 
-        if override_job_config:
-            config = self.job_config.override(override_job_config)
-            job_config = self._resolve_and_validate_target(config)
-        else:
-            job_config = self.job_config
-
-        if ham_ops is not None:
-            if job_type is not None and job_type != JobType.EXPECTATION:
-                raise ValueError(
-                    "Hamiltonian operators are only supported for EXPECTATION job type."
+        call_plan: list[dict[str, Any]] = []
+        for payload in payloads:
+            if not isinstance(payload.circuit, str):
+                raise TypeError(
+                    "QoroService resolves parameters server-side and needs "
+                    f"QASM-encoded payloads; got {type(payload.circuit).__name__}."
                 )
-            if job_type is None:
-                job_type = JobType.EXPECTATION
-
-            valid_paulis = {"I", "X", "Y", "Z"}
-            terms = ham_ops.split(";")
-            if not terms:
-                raise ValueError(
-                    "Hamiltonian operators must be non-empty semicolon-separated strings."
-                )
-            ham_ops_length = len(terms[0])
-            if not all(len(term) == ham_ops_length for term in terms):
-                raise ValueError("All Hamiltonian operators must have the same length.")
-            if not all(all(c in valid_paulis for c in term) for term in terms):
-                raise ValueError(
-                    "Hamiltonian operators must contain only I, X, Y, Z characters."
-                )
-
-        if job_type is None:
-            job_type = JobType.EXECUTE
-
-        # Template QASMs carry symbolic placeholders (e.g. `ry(theta_0) q[0];`)
-        # that don't parse as QASM 2.0; defer validation to the backend, which
-        # runs it on the resolved circuit.
-        for entry in templates:
-            if len(entry.parameter_sets) == 0:
-                raise ValueError(
-                    "Each TemplateEntry must carry at least one parameter set."
-                )
-            for label, values in entry.parameter_sets:
-                if len(values) != len(entry.parameter_names):
+            # One check per template, not per resolved row: the rows differ
+            # only in the substituted values.
+            if not is_valid_qasm(payload.circuit, payload.parameter_names):
+                try:
+                    validate_qasm(payload.circuit, payload.parameter_names)
+                except SyntaxError as e:
+                    msg = _format_validation_error_with_context(payload.circuit, e)
                     raise ValueError(
-                        f"Parameter set '{label}' has {len(values)} values "
-                        f"but template declares {len(entry.parameter_names)} "
-                        "parameter names."
-                    )
+                        f"Circuit template is not valid QASM: {msg}"
+                    ) from e
 
-        if override_execution_config is not None and self.execution_config is not None:
-            execution_config = self.execution_config.override(override_execution_config)
-        elif override_execution_config is not None:
-            execution_config = override_execution_config
-        else:
-            execution_config = self.execution_config
+            compressed = self._compress_data(payload.circuit)
+            for chunk in self._split_payload_parameter_sets(
+                compressed, payload.parameter_names, payload.parameter_sets
+            ):
+                call_plan.append(
+                    {
+                        "circuit_template": compressed,
+                        "parameter_names": list(payload.parameter_names),
+                        "parameter_sets": [
+                            {"label": label, "values": list(values)}
+                            for label, values in chunk
+                        ],
+                    }
+                )
+        return call_plan
 
-        # Precompute every (compressed_template, parameter_names, chunk) call
-        # before init so we know which call is the *very* last across all
-        # templates × chunks — only that one is marked ``finalized=true``.
-        call_plan: list[tuple[str, list[str], list[tuple[str, tuple[float, ...]]]]] = []
-        for entry in templates:
-            compressed = self._compress_data(entry.template_qasm)
-            chunks = self._split_template_parameter_sets(
-                compressed, entry.parameter_names, entry.parameter_sets
-            )
-            for chunk in chunks:
-                call_plan.append((compressed, list(entry.parameter_names), chunk))
+    def _dispatch_job(
+        self,
+        call_plan: list[dict[str, Any]],
+        *,
+        job_config: JobConfig,
+        execution_config: ExecutionConfig | None,
+        job_type: JobType,
+        ham_ops: str | None,
+        circuit_ham_map: list[list[int]] | None,
+    ) -> ExecutionResult:
+        """Open a job, upload every payload fragment, return its ``job_id``.
 
+        The plan is complete before ``job/init/`` runs, so the last fragment
+        is known up front and is the only one marked ``finalized``.
+        """
         init_payload: dict[str, Any] = {
             "tag": job_config.tag,
             "job_type": job_type.value,
@@ -1000,32 +910,25 @@ class QoroService(CircuitRunner):
         job_id = init_response.json()["job_id"]
 
         compressed_ham_ops = compress_ham_ops(ham_ops) if ham_ops is not None else None
-        num_calls = len(call_plan)
 
-        for i, (compressed_template, param_names, chunk) in enumerate(call_plan):
-            is_last = i == num_calls - 1
-            add_circuits_payload: dict[str, Any] = {
-                "circuit_template": compressed_template,
-                "parameter_names": param_names,
-                "parameter_sets": [
-                    {"label": label, "values": list(values)} for label, values in chunk
-                ],
+        for i, fragment in enumerate(call_plan):
+            payload: dict[str, Any] = {
+                **fragment,
                 "mode": "append",
-                "finalized": "true" if is_last else "false",
+                "finalized": "true" if i == len(call_plan) - 1 else "false",
             }
             if compressed_ham_ops is not None:
-                add_circuits_payload["observables"] = compressed_ham_ops
-            else:
-                add_circuits_payload["shots"] = job_config.shots
+                payload["observables"] = compressed_ham_ops
+                if circuit_ham_map is not None:
+                    payload["circuit_ham_map"] = circuit_ham_map
+            elif "shot_groups" not in payload:
+                payload["shots"] = job_config.shots
 
-            add_circuits_response = self._make_request(
-                "post",
-                f"job/{job_id}/add_circuits/",
-                json=add_circuits_payload,
-                timeout=100,
+            response = self._make_request(
+                "post", f"job/{job_id}/add_circuits/", json=payload, timeout=100
             )
-            if add_circuits_response.status_code != HTTPStatus.OK:
-                _raise_with_details(add_circuits_response)
+            if response.status_code != HTTPStatus.OK:
+                _raise_with_details(response)
 
         return ExecutionResult(results=None, job_id=job_id)
 

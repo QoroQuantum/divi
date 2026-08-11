@@ -5,11 +5,9 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from threading import Event
-from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from divi.circuits import TemplateEntry
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 from ._execution_result import ExecutionResult
@@ -27,27 +25,6 @@ def normalise_circuit_batch(circuits: CircuitBatch) -> dict[str, str]:
         ValueError: If a QuantumCircuit cannot be exported to OpenQASM 2.
     """
     return bound_circuits(circuits)
-
-
-@runtime_checkable
-class SupportsCircuitTemplates(Protocol):
-    """Capability protocol for backends that resolve parametric QASM
-    templates server-side.
-
-    The pipeline's deferred-binding path is gated on
-    ``isinstance(backend, SupportsCircuitTemplates)``; a backend opts in
-    simply by implementing :meth:`submit_circuit_templates` — no inheritance
-    is required, and no capability flag has to be plumbed through the base
-    class for backends that have nothing else to share with the protocol.
-    """
-
-    def submit_circuit_templates(
-        self,
-        templates: list[TemplateEntry],
-        *,
-        cancellation_event: Event | None = None,
-        **kwargs,
-    ) -> ExecutionResult: ...
 
 
 class CircuitRunner(ABC):
@@ -94,6 +71,17 @@ class CircuitRunner(ABC):
         """
         return False
 
+    @property
+    def resolves_parameters(self) -> bool:
+        """Whether the backend substitutes parameter values itself.
+
+        When True the pipeline hands over parametric payloads — one circuit plus
+        a parameter matrix — and the backend resolves them. When False it
+        binds first, so every payload arrives already resolved: no parameters and
+        one row per circuit.
+        """
+        return False
+
     def set_seed(self, seed: int) -> None:
         """Seed the backend's random number generator, if supported.
 
@@ -115,18 +103,16 @@ class CircuitRunner(ABC):
         """
         Submit quantum circuits for execution.
 
-        This abstract method must be implemented by subclasses to define how
-        circuits are executed on their respective backends (simulator, hardware, etc.).
-        Implementations must pass ``payloads`` through ``bound_circuits`` before
-        use.
-
         Args:
             payloads: One :class:`~divi.circuits.CircuitPayload` per circuit
-                variant, each carrying its own labelled parameter sets — or a
-                collection of already-resolved circuits: a mapping of label →
+                variant, each carrying its own labelled parameter sets, one
+                resolved circuit per row. Backends that do not set
+                :attr:`resolves_parameters` receive them already bound — no
+                parameters, one row each. ``bound_circuits`` flattens those to a
+                ``label -> circuit`` mapping, and also accepts the plain
+                collections callers may pass in their place: a mapping of label →
                 OpenQASM string or :class:`~qiskit.circuit.QuantumCircuit`, or a
-                bare sequence labelled by positional index. ``bound_circuits``
-                accepts any of these and flattens them to the mapping form.
+                bare sequence labelled by positional index.
             cancellation_event: When set, the backend aborts the batch and
                 raises :class:`~divi.exceptions.ExecutionCancelledError`.
                 Sync backends honour it between items; async backends thread

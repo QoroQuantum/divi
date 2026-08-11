@@ -17,7 +17,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
-from divi.circuits._payloads import bound_circuits
+from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.pipeline import (
     CircuitPipeline,
     PipelineCadence,
@@ -26,7 +26,7 @@ from divi.pipeline import (
     StageOutput,
     dry_run_pipeline,
 )
-from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline.abc import (
     BundleStage,
     ChildResults,
@@ -38,6 +38,59 @@ from divi.pipeline.abc import (
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.algorithms import GenericLayerAnsatz
+
+
+class FakeBackend(CircuitRunner):
+    """Configurable :class:`CircuitRunner` double for pipeline routing tests.
+
+    Dispatch is an error by default: compile-only tests must never reach the
+    backend, and a stage bug that submits during ``expand`` should fail loudly
+    rather than be recorded and ignored. Tests that *do* dispatch pass
+    ``strict=False`` and read back ``calls``.
+    """
+
+    def __init__(
+        self,
+        *,
+        resolves_parameters: bool = False,
+        supports_expval: bool = True,
+        strict: bool = True,
+        shots: int = 100,
+    ):
+        super().__init__(shots=shots)
+        self._resolves_parameters = resolves_parameters
+        self._supports_expval = supports_expval
+        self._strict = strict
+        self.calls: list[tuple[list[CircuitPayload], dict]] = []
+
+    @property
+    def is_async(self) -> bool:
+        return False
+
+    @property
+    def supports_expval(self) -> bool:
+        return self._supports_expval
+
+    @property
+    def resolves_parameters(self) -> bool:
+        return self._resolves_parameters
+
+    def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
+        if self._strict:
+            raise AssertionError(
+                "submit_circuits was called, but this FakeBackend is strict — "
+                "the test was not expected to dispatch. Pass strict=False if "
+                "it should."
+            )
+        payloads = list(payloads)
+        self.calls.append((payloads, kwargs))
+        return ExecutionResult(
+            results=[
+                {"label": label, "results": 0.42}
+                for payload in payloads
+                for label, _values in payload.parameter_sets
+            ]
+        )
 
 
 class DummySpecStage(SpecStage[str]):
@@ -296,8 +349,9 @@ def ones_execute_fn(
 ) -> ChildResults:
     """Return 1 for each branch key so reduce stages get correct key structure (BranchKeys)."""
     try:
-        _, lineage_by_label = _compile_batch(trace.final_batch)
-        return {branch_key: 1 for branch_key in lineage_by_label.values()}
+        return {
+            branch_key: 1 for branch_key in batch_lineage(trace.final_batch).values()
+        }
     except (ValueError, AttributeError):
         return {key: 1 for key in trace.final_batch}
 

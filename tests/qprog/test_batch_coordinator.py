@@ -29,9 +29,14 @@ from divi.qprog._batch_coordinator import (
 class FakeSyncBackend(CircuitRunner):
     """Minimal synchronous backend that echoes circuit labels as results."""
 
-    def __init__(self, shots: int = 100):
+    def __init__(self, shots: int = 100, resolves_parameters: bool = False):
         super().__init__(shots=shots)
         self.submitted: list[dict[str, str]] = []
+        self._resolves_parameters = resolves_parameters
+
+    @property
+    def resolves_parameters(self) -> bool:
+        return self._resolves_parameters
 
     @property
     def is_async(self) -> bool:
@@ -1086,6 +1091,17 @@ class TestProxyBackend:
         assert proxy.supports_expval == real.supports_expval
         assert proxy.is_async is False
         assert proxy.max_retries == 0
+
+    def test_never_defers_parameter_binding(self):
+        """The proxy submits a bound label -> qasm mapping, so it must report
+        resolves_parameters False even when the real backend resolves them —
+        otherwise the pipeline emits parametric payloads the proxy cannot flatten."""
+        real = FakeSyncBackend(shots=200, resolves_parameters=True)
+        coord = _BatchCoordinator(real)
+        proxy = _ProxyBackend(real, coord, "prog_1")
+
+        assert real.resolves_parameters is True
+        assert proxy.resolves_parameters is False
 
     def test_submit_prefixes_tags_and_returns_results(self):
         """Proxy prefixes circuit tags and returns demuxed results."""

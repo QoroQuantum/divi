@@ -16,7 +16,7 @@ from divi.hamiltonians import (
     TrotterizationStrategy,
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
-from divi.pipeline._compilation import _compile_batch
+from divi.pipeline._compilation import batch_lineage
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
 
@@ -147,7 +147,7 @@ class TestReduce:
         )
 
         def _execute_fn(trace: PipelineTrace, env: PipelineEnv) -> ChildResults:
-            _, lineage_by_label = _compile_batch(trace.final_batch)
+            lineage_by_label = batch_lineage(trace.final_batch)
             branch_keys = sorted(lineage_by_label.values(), key=str)
             return {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
 

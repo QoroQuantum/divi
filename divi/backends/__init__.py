@@ -4,12 +4,7 @@
 
 from ._async_job_backend import AsyncJobBackend
 from ._backend_properties_conversion import create_backend_from_properties
-from ._circuit_runner import (
-    CircuitBatch,
-    CircuitRunner,
-    SupportsCircuitTemplates,
-    normalise_circuit_batch,
-)
+from ._circuit_runner import CircuitBatch, CircuitRunner, normalise_circuit_batch
 from ._config import ExecutionConfig, JobConfig, SimulationMethod, Simulator
 from ._execution_result import ExecutionResult
 from ._maestro_simulator import MaestroConfig, MaestroSimulator
@@ -36,7 +31,6 @@ __all__ = [
     "SimulationMethod",
     "Simulator",
     "SimulatorCluster",
-    "SupportsCircuitTemplates",
     "convert_counts_to_probs",
     "create_backend_from_properties",
     "normalise_circuit_batch",

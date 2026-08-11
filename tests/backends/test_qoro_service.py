@@ -8,11 +8,13 @@ import inspect
 import time
 import warnings
 from contextlib import contextmanager
+from dataclasses import replace
 from http import HTTPStatus
 from threading import Event, Thread
 
 import pytest
 import requests
+from qiskit.circuit import Parameter
 
 from divi.backends import (
     ExecutionConfig,
@@ -42,7 +44,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
-from divi.circuits import TemplateEntry
+from divi.circuits._payloads import CircuitPayload
 from divi.exceptions import ExecutionCancelledError
 from divi.qasm import validate_qasm
 from tests.backends._circuit_runner_contracts import (
@@ -56,7 +58,7 @@ from tests.backends._helpers import (
     make_mock_add_response,
     make_mock_init_response,
     make_mock_status_response,
-    make_template_entry,
+    make_qasm_payload,
 )
 
 
@@ -1099,7 +1101,8 @@ class TestQoroServiceMock:
         qoro_service_mock, mock_make_request = submit_circuits_mock
         circuits = {"circuit_1": "mock_qasm"}
         qoro_service_mock.submit_circuits(
-            circuits, override_job_config=JobConfig(use_circuit_packing=True)
+            circuits,
+            override_job_config=JobConfig(use_circuit_packing=True),
         )
         _, called_kwargs = mock_make_request.call_args_list[0]
         assert called_kwargs.get("json", {}).get("use_packing") is True
@@ -1125,7 +1128,8 @@ class TestQoroServiceMock:
 
         # Override shots in submit_circuits
         service_with_default.submit_circuits(
-            {"circuit_1": "mock_qasm"}, override_job_config=JobConfig(shots=2000)
+            {"circuit_1": "mock_qasm"},
+            override_job_config=JobConfig(shots=2000),
         )
 
         # Verify init payload is minimal (no shots/ham_ops)
@@ -1236,6 +1240,10 @@ class TestQoroServiceMock:
                 "XYZ;ABC",
                 "Hamiltonian operators must contain only I, X, Y, Z characters",
             ),
+            ("", "non-empty semicolon-separated"),
+            (";", "non-empty semicolon-separated"),
+            ("ZZ;", "non-empty semicolon-separated"),
+            (";ZZ", "non-empty semicolon-separated"),
         ],
     )
     def test_submit_circuits_ham_ops_validation_errors(
@@ -1246,7 +1254,9 @@ class TestQoroServiceMock:
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
         with pytest.raises(ValueError, match=error_msg):
             qoro_service_mock.submit_circuits(
-                {"c1": "qasm"}, ham_ops=ham_ops, job_type=JobType.EXPECTATION
+                {"c1": "qasm"},
+                ham_ops=ham_ops,
+                job_type=JobType.EXPECTATION,
             )
 
     def test_submit_circuits_ham_ops_with_non_expectation_error(
@@ -1353,9 +1363,9 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="API Error: 500"):
             qoro_service_mock.submit_circuits({"c1": "qasm"})
 
-    # --- Tests for submit_circuit_templates ---
+    # --- Tests for parametric CircuitPayload submission ---
 
-    def test_submit_circuit_templates_single_entry(self, mocker, qoro_service_factory):
+    def test_parametric_submission_single_payload(self, mocker, qoro_service_factory):
         """Single template → one init call plus one finalized add_circuits/ call."""
         service = qoro_service_factory()
         mock_make_request = mocker.patch.object(
@@ -1367,7 +1377,7 @@ class TestQoroServiceMock:
             ],
         )
 
-        result = service.submit_circuit_templates([make_template_entry()])
+        result = service.submit_circuits([make_qasm_payload()])
 
         assert isinstance(result, ExecutionResult)
         assert result.job_id == "mock_job_id"
@@ -1396,10 +1406,10 @@ class TestQoroServiceMock:
         decoded = gzip.decompress(
             base64.b64decode(payload["circuit_template"])
         ).decode()
-        sent_entry = make_template_entry()
-        assert decoded == sent_entry.template_qasm
+        sent_entry = make_qasm_payload()
+        assert decoded == sent_entry.circuit
 
-    def test_submit_circuit_templates_multiple_entries(
+    def test_parametric_submission_multiple_payloads(
         self, mocker, qoro_service_factory
     ):
         """N templates → 1 init + N add_circuits/ calls; only the last is finalized."""
@@ -1415,11 +1425,11 @@ class TestQoroServiceMock:
             ],
         )
 
-        service.submit_circuit_templates(
+        service.submit_circuits(
             [
-                make_template_entry(label_prefix="t0"),
-                make_template_entry(label_prefix="t1"),
-                make_template_entry(label_prefix="t2"),
+                make_qasm_payload(label_prefix="t0"),
+                make_qasm_payload(label_prefix="t1"),
+                make_qasm_payload(label_prefix="t2"),
             ]
         )
 
@@ -1430,7 +1440,7 @@ class TestQoroServiceMock:
         ]
         assert finalized_flags == ["false", "false", "true"]
 
-    def test_submit_circuit_templates_chunks_oversized_parameter_sets(
+    def test_parametric_submission_chunks_oversized_parameter_sets(
         self, mocker, qoro_service_factory
     ):
         """A single template whose parameter_sets exceed the payload cap is
@@ -1446,13 +1456,13 @@ class TestQoroServiceMock:
             f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=1000.0 / 1024 / 1024
         )
         service = qoro_service_factory()
-        entry = make_template_entry(n_param_sets=8, n_params=3)
+        entry = make_qasm_payload(n_param_sets=8, n_params=3)
 
         # Pre-flight: confirm the patch actually forces chunking; otherwise
         # the test would pass via the single-call path and silently lose
         # its meaning.
-        compressed = service._compress_data(entry.template_qasm)
-        chunks = service._split_template_parameter_sets(
+        compressed = service._compress_data(entry.circuit)
+        chunks = service._split_payload_parameter_sets(
             compressed, entry.parameter_names, entry.parameter_sets
         )
         assert len(chunks) > 1, (
@@ -1467,7 +1477,7 @@ class TestQoroServiceMock:
             + [make_mock_add_response(mocker) for _ in chunks],
         )
 
-        service.submit_circuit_templates([entry])
+        service.submit_circuits([entry])
 
         # 1 init + len(chunks) add_circuits/ calls.
         assert mock_make_request.call_count == 1 + len(chunks)
@@ -1492,7 +1502,7 @@ class TestQoroServiceMock:
         expected_labels = [label for label, _ in entry.parameter_sets]
         assert seen_labels == expected_labels
 
-    def test_submit_circuit_templates_finalize_only_very_last_call(
+    def test_parametric_submission_finalizes_only_very_last_call(
         self, mocker, qoro_service_factory
     ):
         """With multiple templates AND chunking within each, ``finalized=true``
@@ -1509,16 +1519,16 @@ class TestQoroServiceMock:
         # template must split into ≥2 chunks. Verified below by the
         # pre-flight check.
         templates = [
-            make_template_entry(n_param_sets=10, n_params=3, label_prefix="t0"),
-            make_template_entry(n_param_sets=10, n_params=3, label_prefix="t1"),
+            make_qasm_payload(n_param_sets=10, n_params=3, label_prefix="t0"),
+            make_qasm_payload(n_param_sets=10, n_params=3, label_prefix="t1"),
         ]
 
         # Compute the expected total call count up-front; this is the wire
         # contract we want to lock in.
         total_chunks = 0
         for entry in templates:
-            compressed = service._compress_data(entry.template_qasm)
-            chunks = service._split_template_parameter_sets(
+            compressed = service._compress_data(entry.circuit)
+            chunks = service._split_payload_parameter_sets(
                 compressed, entry.parameter_names, entry.parameter_sets
             )
             assert len(chunks) >= 2, (
@@ -1535,7 +1545,7 @@ class TestQoroServiceMock:
             + [make_mock_add_response(mocker) for _ in range(total_chunks)],
         )
 
-        service.submit_circuit_templates(templates)
+        service.submit_circuits(templates)
 
         finalized_flags = [
             call.kwargs["json"]["finalized"]
@@ -1545,7 +1555,7 @@ class TestQoroServiceMock:
         assert finalized_flags.count("true") == 1
         assert finalized_flags[-1] == "true"
 
-    def test_submit_circuit_templates_rejects_template_exceeding_cap(
+    def test_parametric_submission_rejects_template_exceeding_cap(
         self, mocker, qoro_service_factory
     ):
         """A compressed template that's larger than the per-request cap on
@@ -1560,11 +1570,44 @@ class TestQoroServiceMock:
         mock_make_request = mocker.patch.object(service, "_make_request")
 
         with pytest.raises(ValueError, match="exceeds the per-request payload cap"):
-            service.submit_circuit_templates([make_template_entry()])
+            service.submit_circuits([make_qasm_payload()])
 
         mock_make_request.assert_not_called()
 
-    def test_split_template_parameter_sets_groups_by_payload_estimate(
+    def test_parametric_submission_validates_the_template_once(
+        self, mocker, qoro_service_factory
+    ):
+        """The rows differ only in substituted values, so the template is
+        checked once however many parameter sets ride on it."""
+        service = qoro_service_factory()
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker),
+                make_mock_add_response(mocker),
+            ],
+        )
+        spy = mocker.spy(_qoro_service, "is_valid_qasm")
+
+        service.submit_circuits([make_qasm_payload(n_param_sets=50)])
+
+        assert spy.call_count == 1
+
+    def test_parametric_submission_rejects_a_malformed_template(
+        self, mocker, qoro_service_factory
+    ):
+        """A broken template fails locally rather than server-side."""
+        service = qoro_service_factory()
+        mock_make_request = mocker.patch.object(service, "_make_request")
+        payload = replace(make_qasm_payload(), circuit="OPENQASM 2.0;\nqreg q[1]\n")
+
+        with pytest.raises(ValueError, match="Circuit template is not valid QASM"):
+            service.submit_circuits([payload])
+
+        mock_make_request.assert_not_called()
+
+    def test_split_payload_parameter_sets_groups_by_payload_estimate(
         self, qoro_service_factory, mocker
     ):
         """Direct unit test for the chunker: with the cap lowered enough to
@@ -1577,10 +1620,10 @@ class TestQoroServiceMock:
             f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=1000.0 / 1024 / 1024
         )
         service = qoro_service_factory()
-        entry = make_template_entry(n_param_sets=12, n_params=4)
-        compressed = service._compress_data(entry.template_qasm)
+        entry = make_qasm_payload(n_param_sets=12, n_params=4)
+        compressed = service._compress_data(entry.circuit)
 
-        chunks = service._split_template_parameter_sets(
+        chunks = service._split_payload_parameter_sets(
             compressed, entry.parameter_names, entry.parameter_sets
         )
 
@@ -1589,7 +1632,7 @@ class TestQoroServiceMock:
         assert flat == list(entry.parameter_sets)
         assert all(len(chunk) >= 1 for chunk in chunks)
 
-    def test_submit_circuit_templates_with_ham_ops(self, mocker, qoro_service_factory):
+    def test_parametric_submission_with_ham_ops(self, mocker, qoro_service_factory):
         """ham_ops auto-infers EXPECTATION and goes in the add_circuits payload."""
         service = qoro_service_factory()
         mock_make_request = mocker.patch.object(
@@ -1601,7 +1644,7 @@ class TestQoroServiceMock:
             ],
         )
 
-        service.submit_circuit_templates([make_template_entry()], ham_ops="XX;ZZ")
+        service.submit_circuits([make_qasm_payload()], ham_ops="XX;ZZ")
 
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
         assert init_payload["job_type"] == JobType.EXPECTATION.value
@@ -1610,60 +1653,45 @@ class TestQoroServiceMock:
         assert add_payload["observables"].startswith("@gzs")
         assert "shots" not in add_payload
 
-    def test_submit_circuit_templates_rejects_empty_list(self, qoro_service_factory):
+    def test_submission_rejects_empty_payload_list(self, qoro_service_factory):
         service = qoro_service_factory()
-        with pytest.raises(ValueError, match="at least one template"):
-            service.submit_circuit_templates([])
+        with pytest.raises(ValueError, match="at least one payload"):
+            service.submit_circuits([])
 
-    def test_submit_circuit_templates_rejects_circuit_ham_map(
-        self, qoro_service_factory
-    ):
+    def test_parametric_submission_rejects_circuit_ham_map(self, qoro_service_factory):
         service = qoro_service_factory()
         with pytest.raises(ValueError, match="circuit_ham_map is not supported"):
-            service.submit_circuit_templates(
-                [make_template_entry()], circuit_ham_map=[[0, 1]]
-            )
+            service.submit_circuits([make_qasm_payload()], circuit_ham_map=[[0, 1]])
 
-    def test_submit_circuit_templates_rejects_shot_groups(self, qoro_service_factory):
+    def test_parametric_submission_rejects_shot_groups(self, qoro_service_factory):
         service = qoro_service_factory()
         with pytest.raises(ValueError, match="shot_groups is not supported"):
-            service.submit_circuit_templates(
-                [make_template_entry()], shot_groups=[[0, 1, 100]]
-            )
+            service.submit_circuits([make_qasm_payload()], shot_groups=[[0, 1, 100]])
 
-    def test_submit_circuit_templates_rejects_piped_ham_ops(self, qoro_service_factory):
+    def test_parametric_submission_rejects_piped_ham_ops(self, qoro_service_factory):
         service = qoro_service_factory()
         with pytest.raises(ValueError, match=r"\|-delimited ham_ops"):
-            service.submit_circuit_templates([make_template_entry()], ham_ops="XX|ZZ")
+            service.submit_circuits([make_qasm_payload()], ham_ops="XX|ZZ")
 
-    def test_submit_circuit_templates_validates_param_set_arity(
-        self, qoro_service_factory
-    ):
-        """Each parameter set must have exactly len(parameter_names) values."""
-        service = qoro_service_factory()
-        bad = TemplateEntry(
-            template_qasm="OPENQASM 2.0;\n",
-            parameter_names=("theta_0", "theta_1"),
-            parameter_sets=(("only_one", (0.5,)),),
-        )
-        with pytest.raises(ValueError, match="but template declares 2 parameter names"):
-            service.submit_circuit_templates([bad])
+    def test_payload_validates_param_set_arity(self):
+        """Each parameter set must have exactly len(parameters) values."""
+        with pytest.raises(ValueError, match="declares 2 parameter"):
+            CircuitPayload(
+                circuit="OPENQASM 2.0;\n",
+                parameters=(Parameter("theta_0"), Parameter("theta_1")),
+                parameter_sets=(("only_one", (0.5,)),),
+            )
 
-    def test_submit_circuit_templates_rejects_empty_parameter_sets(
-        self, qoro_service_factory
-    ):
-        """A TemplateEntry with zero parameter_sets is rejected before any
-        HTTP traffic — there is nothing to resolve."""
-        service = qoro_service_factory()
-        empty = TemplateEntry(
-            template_qasm="OPENQASM 2.0;\n",
-            parameter_names=("theta_0",),
-            parameter_sets=(),
-        )
+    def test_payload_rejects_empty_parameter_sets(self):
+        """A CircuitPayload with zero parameter_sets has nothing to resolve."""
         with pytest.raises(ValueError, match="at least one parameter set"):
-            service.submit_circuit_templates([empty])
+            CircuitPayload(
+                circuit="OPENQASM 2.0;\n",
+                parameters=(Parameter("theta_0"),),
+                parameter_sets=(),
+            )
 
-    def test_submit_circuit_templates_rejects_ham_ops_with_execute_job_type(
+    def test_parametric_submission_rejects_ham_ops_with_execute_job_type(
         self, qoro_service_factory
     ):
         """ham_ops paired with an explicit EXECUTE job_type is a contradiction
@@ -1674,13 +1702,13 @@ class TestQoroServiceMock:
             ValueError,
             match="Hamiltonian operators are only supported for EXPECTATION job type.",
         ):
-            service.submit_circuit_templates(
-                [make_template_entry()],
+            service.submit_circuits(
+                [make_qasm_payload()],
                 ham_ops="XX;ZZ",
                 job_type=JobType.EXECUTE,
             )
 
-    def test_submit_circuit_templates_with_ham_ops_omits_shots_in_init(
+    def test_parametric_submission_with_ham_ops_omits_shots_in_init(
         self, mocker, qoro_service_factory
     ):
         """When ham_ops is provided, neither the init payload nor the
@@ -1696,7 +1724,7 @@ class TestQoroServiceMock:
                 make_mock_add_response(mocker),
             ],
         )
-        service.submit_circuit_templates([make_template_entry()], ham_ops="XX;ZZ")
+        service.submit_circuits([make_qasm_payload()], ham_ops="XX;ZZ")
 
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
         assert "shots" not in init_payload
@@ -2351,25 +2379,16 @@ class TestQoroServiceWithApiKey:
 
     @pytest.fixture(autouse=True)
     def auto_cleanup(self, qoro_service):
-        """Automatically deletes all jobs submitted during a test, via either
-        the bound (``submit_circuits``) or templated (``submit_circuit_templates``) entry.
-        """
+        """Automatically deletes all jobs submitted during a test."""
         jobs = []
         original_submit = qoro_service.submit_circuits
-        original_submit_templates = qoro_service.submit_circuit_templates
 
         def tracking_submit(*args, **kwargs):
             result = original_submit(*args, **kwargs)
             jobs.append(result)
             return result
 
-        def tracking_submit_templates(*args, **kwargs):
-            result = original_submit_templates(*args, **kwargs)
-            jobs.append(result)
-            return result
-
         qoro_service.submit_circuits = tracking_submit
-        qoro_service.submit_circuit_templates = tracking_submit_templates
         yield
         for result in jobs:
             try:
@@ -2502,7 +2521,9 @@ class TestQoroServiceWithApiKey:
         single_circuit = {"circuit_1": circuits["circuit_0"]}
         ham_ops = "ZIII;IZII;IIZI;IIIZ"
         result = qoro_service.submit_circuits(
-            single_circuit, ham_ops=ham_ops, job_type=JobType.EXPECTATION
+            single_circuit,
+            ham_ops=ham_ops,
+            job_type=JobType.EXPECTATION,
         )
 
         # Poll for completion
@@ -2700,24 +2721,24 @@ class TestQoroServiceWithApiKey:
         assert retrieved.simulation_method == SimulationMethod.MatrixProductState
         assert retrieved.api_meta == {"optimization_level": 1}
 
-    def test_submit_circuit_templates_returns_job_id(self, qoro_service):
+    def test_parametric_submission_returns_job_id(self, qoro_service):
         """Templated submission round-trips through the real API and returns
         a job_id, exercising the gzip+b64 template payload, parameter_names,
         and parameter_sets shape end-to-end."""
-        result = qoro_service.submit_circuit_templates(
-            [make_template_entry(n_param_sets=3, n_params=2)]
+        result = qoro_service.submit_circuits(
+            [make_qasm_payload(n_param_sets=3, n_params=2)]
         )
         assert isinstance(result, ExecutionResult)
         assert result.job_id is not None
 
-    def test_submit_circuit_templates_resolves_one_circuit_per_param_set(
+    def test_parametric_submission_resolves_one_circuit_per_param_set(
         self, qoro_service
     ):
         """Each row in ``parameter_sets`` should resolve to one Circuit on
         the backend with the caller-supplied label, so result-label routing
         through :func:`_collapse_to_parent_results` keeps working unchanged."""
-        entry = make_template_entry(n_param_sets=4, n_params=2, label_prefix="real")
-        result = qoro_service.submit_circuit_templates([entry])
+        entry = make_qasm_payload(n_param_sets=4, n_params=2, label_prefix="real")
+        result = qoro_service.submit_circuits([entry])
 
         status = qoro_service.poll_job_status(result, loop_until_complete=True)
         assert status == JobStatus.COMPLETED

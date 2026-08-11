@@ -641,7 +641,11 @@ def test_cost_evaluation_submits_what_the_report_says(
     params = np.zeros((program.optimizer.n_param_sets, program.n_params))
     program.evaluate(params, program.cost_preprocessor())
 
-    submitted = sum(len(call.args[0]) for call in spy.call_args_list)
+    submitted = sum(
+        len(payload.parameter_sets)
+        for call in spy.call_args_list
+        for payload in call.args[0]
+    )
     assert submitted == expected
 
 

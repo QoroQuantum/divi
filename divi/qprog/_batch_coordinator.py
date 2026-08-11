@@ -26,7 +26,10 @@ from divi.backends import (
     JobStatus,
 )
 from divi.backends._shot_allocation import from_wire, to_wire
-from divi.circuits._payloads import CircuitPayload, bound_circuits
+from divi.circuits._payloads import (
+    CircuitPayload,
+    bound_circuits,
+)
 from divi.exceptions import ExecutionCancelledError
 from divi.reporting import BATCH_COLORS
 
@@ -884,6 +887,12 @@ class _ProxyBackend(CircuitRunner):
     @property
     def is_async(self) -> bool:
         # Results come back synchronously from the coordinator.
+        return False
+
+    @property
+    def resolves_parameters(self) -> bool:
+        # Merged submissions are always bound: submit() carries a label -> qasm
+        # mapping, so parameters must be resolved before they reach the proxy.
         return False
 
     @property
