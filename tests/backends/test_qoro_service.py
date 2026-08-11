@@ -499,6 +499,60 @@ class TestQoroServiceMock:
         assert status == JobStatus.CANCELLED
         on_complete_callback.assert_called_once()
 
+    def test_on_complete_receives_decoded_payload(self, mocker, qoro_service_factory):
+        """Consumers read ``run_time`` off a dict, so the payload must be decoded.
+
+        Passing the raw ``Response`` silently skipped every consumer branch and
+        left ``total_run_time`` at zero.
+        """
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
+        terminal = mocker.MagicMock()
+        terminal.json.return_value = {"status": "COMPLETED", "run_time": 2.5}
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_status_response(mocker, JobStatus.RUNNING),
+                terminal,
+            ],
+        )
+        on_complete = mocker.MagicMock()
+
+        service.poll_job_status(
+            make_execution_result(),
+            loop_until_complete=True,
+            on_complete=on_complete,
+        )
+
+        on_complete.assert_called_once_with({"status": "COMPLETED", "run_time": 2.5})
+
+    def test_run_time_reaches_pipeline_artifacts(self, mocker, qoro_service_factory):
+        """End to end: the backend's payload lands in ``artifacts['run_time']``."""
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
+        terminal = mocker.MagicMock()
+        terminal.json.return_value = {"status": "COMPLETED", "run_time": 4.0}
+        mocker.patch.object(service, "_make_request", return_value=terminal)
+
+        artifacts: dict = {}
+
+        def track_runtime(response):
+            if isinstance(response, dict):
+                artifacts["run_time"] = artifacts.get("run_time", 0.0) + float(
+                    response.get("run_time", 0)
+                )
+
+        service.poll_job_status(
+            make_execution_result(),
+            loop_until_complete=True,
+            on_complete=track_runtime,
+        )
+
+        assert artifacts["run_time"] == 4.0
+
     def test_default_max_retries_is_unlimited(self):
         """The constructor default polls indefinitely (``max_retries=None``)."""
         assert (

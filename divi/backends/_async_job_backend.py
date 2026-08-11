@@ -62,7 +62,7 @@ class AsyncJobBackend(Protocol):
         self,
         execution_result: ExecutionResult,
         loop_until_complete: bool = False,
-        on_complete: Callable[[requests.Response], None] | None = None,
+        on_complete: Callable[[dict], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
@@ -74,8 +74,9 @@ class AsyncJobBackend(Protocol):
             loop_until_complete: If ``True``, poll until a terminal status
                 (``COMPLETED`` / ``FAILED`` / ``CANCELLED``); otherwise return
                 after a single query.
-            on_complete: Invoked with the final HTTP response when a terminal
-                status is reached.
+            on_complete: Invoked with the decoded final status payload when a
+                terminal status is reached. Backends that report no timing
+                metadata may skip the call.
             verbose: When ``True``, log per-poll status. Disable when
                 rendering progress via ``progress_callback`` so user-facing
                 output isn't doubled.
