@@ -10,6 +10,7 @@ from ._execution_result import ExecutionResult
 from ._maestro_simulator import MaestroConfig, MaestroSimulator
 from ._qiskit_simulator import QiskitSimulator
 from ._qoro_service import JobStatus, JobType, QoroService
+from ._qrmi_backend import QRMIBackend
 from ._results_processing import convert_counts_to_probs, reverse_dict_endianness
 from ._systems import QPU, QPUSystem, SimulatorCluster
 
@@ -25,6 +26,7 @@ __all__ = [
     "MaestroSimulator",
     "QPU",
     "QPUSystem",
+    "QRMIBackend",
     "QiskitSimulator",
     "QoroService",
     "SimulationMethod",
