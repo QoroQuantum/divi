@@ -10,7 +10,7 @@ import logging
 import os
 import time
 import warnings
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import replace
 from enum import Enum
@@ -25,6 +25,7 @@ from requests.adapters import HTTPAdapter, Retry
 from rich.console import Console
 
 from divi.circuits import TemplateEntry
+from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import CharacterizationSubmitError, ExecutionCancelledError
 from divi.qasm import (
     _format_validation_error_with_context,
@@ -33,7 +34,7 @@ from divi.qasm import (
 )
 
 from ._cancellation import _auto_cancellation_scope
-from ._circuit_runner import CircuitBatch, CircuitRunner, normalise_circuit_batch
+from ._circuit_runner import CircuitRunner
 from ._config import ExecutionConfig, JobConfig
 from ._execution_result import ExecutionResult
 from ._pauli_serde import compress_ham_ops
@@ -534,7 +535,7 @@ class QoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: CircuitBatch,
+        payloads: Sequence[CircuitPayload] | CircuitBatch,
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -552,10 +553,12 @@ class QoroService(CircuitRunner):
         one or more chunks, associating them all with a single job ID.
 
         Args:
-            circuits:
-                Mapping of unique circuit ID → QASM string or
-                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
-                circuits labelled by positional index.
+            payloads:
+                Already-resolved circuits, either as
+                :class:`~divi.circuits.CircuitPayload` objects, a mapping of
+                unique circuit ID → QASM string or
+                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence
+                labelled by positional index.
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
@@ -601,7 +604,7 @@ class QoroService(CircuitRunner):
             ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
                 to poll for results using backend.poll_job_status() and get_job_results().
         """
-        circuits = normalise_circuit_batch(circuits)
+        circuits = bound_circuits(payloads)
 
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides

@@ -12,6 +12,7 @@ from ._conversions import (
 )
 from ._fidelity import build_overlap_meta
 from ._pennylane_utils import qnode_to_meta
+from ._payloads import CircuitPayload, bound_circuits
 from ._qasm_template import (
     QASMTemplate,
     TemplateEntry,
@@ -24,10 +25,12 @@ from ._qasm_template import (
 __all__ = [
     "DEFAULT_PRECISION",
     "AxisLabel",
+    "CircuitPayload",
     "MetaCircuit",
     "QASMTag",
     "QASMTemplate",
     "TemplateEntry",
+    "bound_circuits",
     "build_overlap_meta",
     "build_template",
     "dag_to_qasm_body",

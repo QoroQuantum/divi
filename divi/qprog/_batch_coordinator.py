@@ -10,6 +10,7 @@ improving backend utilization.
 """
 
 import logging
+from collections.abc import Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
@@ -23,9 +24,9 @@ from divi.backends import (
     CircuitRunner,
     ExecutionResult,
     JobStatus,
-    normalise_circuit_batch,
 )
 from divi.backends._shot_allocation import from_wire, to_wire
+from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.reporting import BATCH_COLORS
 
@@ -895,11 +896,13 @@ class _ProxyBackend(CircuitRunner):
 
     # --- Intercepted methods ---
 
-    def submit_circuits(self, circuits: CircuitBatch, **kwargs) -> ExecutionResult:
+    def submit_circuits(
+        self, payloads: Sequence[CircuitPayload] | CircuitBatch, **kwargs
+    ) -> ExecutionResult:
         """Prefix tags, submit to coordinator, return sync results."""
         prefixed = {
             f"{self._program_key}{_TAG_SEP}{tag}": qasm
-            for tag, qasm in normalise_circuit_batch(circuits).items()
+            for tag, qasm in bound_circuits(payloads).items()
         }
 
         results, _runtime = self._coordinator.submit(

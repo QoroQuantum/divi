@@ -241,9 +241,9 @@ def test_shots_override_threads_to_backend_without_mutation(default_optimizer):
     captured = {}
     original = vqe.backend.submit_circuits
 
-    def spy(circuits, **kwargs):
+    def spy(payloads, **kwargs):
         captured["shot_groups"] = kwargs.get("shot_groups")
-        return original(circuits, **kwargs)
+        return original(payloads, **kwargs)
 
     vqe.backend.submit_circuits = spy
 
@@ -532,11 +532,11 @@ def test_quiver_adapt_m_updates_shot_budget_to_backend(default_optimizer):
     seen_shots: list[int] = []
     original = vqe.backend.submit_circuits
 
-    def spy(circuits, **kwargs):
+    def spy(payloads, **kwargs):
         shot_groups = kwargs.get("shot_groups")
         if shot_groups:
             seen_shots.extend(triple[2] for triple in shot_groups)
-        return original(circuits, **kwargs)
+        return original(payloads, **kwargs)
 
     vqe.backend.submit_circuits = spy
     vqe.run(perform_final_computation=False)

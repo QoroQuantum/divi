@@ -12,6 +12,7 @@ from threading import Barrier, Event, Lock, Thread
 import pytest
 
 from divi.backends import CircuitRunner, ExecutionResult
+from divi.circuits._payloads import bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.qprog import BatchConfig, BatchMode
 from divi.qprog._batch_coordinator import (
@@ -40,8 +41,9 @@ class FakeSyncBackend(CircuitRunner):
     def supports_expval(self) -> bool:
         return False
 
-    def submit_circuits(self, circuits, **kwargs) -> ExecutionResult:
-        self.submitted.append(dict(circuits))
+    def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
+        circuits = bound_circuits(payloads)
+        self.submitted.append(circuits)
         results = [
             {"label": label, "results": {"00": self._shots}} for label in circuits
         ]
@@ -63,8 +65,9 @@ class FakeExpvalBackend(CircuitRunner):
     def supports_expval(self) -> bool:
         return True
 
-    def submit_circuits(self, circuits, **kwargs) -> ExecutionResult:
-        self.call_log.append((dict(circuits), dict(kwargs)))
+    def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
+        circuits = bound_circuits(payloads)
+        self.call_log.append((circuits, dict(kwargs)))
         results = [{"label": label, "results": {"expval": 0.5}} for label in circuits]
         return ExecutionResult(results=results)
 
@@ -537,7 +540,7 @@ class TestFlushWithSyncBackend:
         mocker.patch.object(
             backend,
             "submit_circuits",
-            lambda circuits, **kw: ExecutionResult(results=None, job_id="fake"),
+            lambda payloads, **kw: ExecutionResult(results=None, job_id="fake"),
         )
         coord = _BatchCoordinator(backend)
 
@@ -998,7 +1001,7 @@ class TestTotalRuntime:
         mocker.patch.object(
             backend,
             "submit_circuits",
-            lambda circuits, **kw: ExecutionResult(results=None, job_id="fake"),
+            lambda payloads, **kw: ExecutionResult(results=None, job_id="fake"),
         )
         coord = _BatchCoordinator(backend)
 
@@ -1037,7 +1040,7 @@ class TestTotalRuntime:
         mocker.patch.object(
             backend,
             "submit_circuits",
-            lambda circuits, **kw: ExecutionResult(results=None, job_id="fake"),
+            lambda payloads, **kw: ExecutionResult(results=None, job_id="fake"),
         )
         coord = _BatchCoordinator(backend)
 

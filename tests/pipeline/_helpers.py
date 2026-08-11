@@ -17,6 +17,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner, ExecutionResult
 from divi.circuits import MetaCircuit
+from divi.circuits._payloads import bound_circuits
 from divi.pipeline import (
     CircuitPipeline,
     PipelineCadence,
@@ -333,12 +334,12 @@ class ExpvalBackendSpy(CircuitRunner):
     def supports_expval(self):
         return True
 
-    def submit_circuits(self, circuits, **kwargs):
+    def submit_circuits(self, payloads, **kwargs):
         self.last_ham_ops = kwargs.get("ham_ops")
         results = []
         if self.last_ham_ops is not None:
             terms = self.last_ham_ops.split(";")
-            for label in circuits:
+            for label in bound_circuits(payloads):
                 pauli_dict = {term: 0.1 * (i + 1) for i, term in enumerate(terms)}
                 results.append({"label": label, "results": pauli_dict})
         return ExecutionResult(results=results)
@@ -355,9 +356,9 @@ class ShotsBackendSpy(CircuitRunner):
     def supports_expval(self):
         return False
 
-    def submit_circuits(self, circuits, **kwargs):
+    def submit_circuits(self, payloads, **kwargs):
         results = []
-        for label, qasm in circuits.items():
+        for label, qasm in bound_circuits(payloads).items():
             match = re.search(r"qreg q\[(\d+)\]", qasm)
             n_qubits = int(match.group(1))
             results.append(
@@ -385,11 +386,11 @@ class RecordingBackend(CircuitRunner):
     def supports_expval(self) -> bool:
         return False
 
-    def submit_circuits(self, circuits, **kwargs):
-        self.last_circuits = dict(circuits)
+    def submit_circuits(self, payloads, **kwargs):
+        self.last_circuits = bound_circuits(payloads)
         self.last_kwargs = dict(kwargs)
         results = [
             {"label": label, "results": {"0": kwargs.get("shots_for_label", 100)}}
-            for label in circuits
+            for label in self.last_circuits
         ]
         return ExecutionResult(results=results)

@@ -10,6 +10,7 @@ import pytest
 
 from divi.backends import ExecutionResult, QiskitSimulator
 from divi.circuits import DEFAULT_PRECISION
+from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.hamiltonians import ExactTrotterization, QDrift
@@ -29,6 +30,18 @@ _PROB_TOL = 0.05
 
 # Tolerance for QDrift expval comparisons (sampling noise + shot noise)
 _QDRIFT_EXPVAL_TOL = 0.15
+
+
+def _unit_expval_submit(payloads, **kwargs):
+    """Return 1.0 for every requested ``ham_ops`` term on every circuit."""
+    ham_ops = kwargs.get("ham_ops", "")
+    payload = {op: 1.0 for op in (ham_ops.split(";") if ham_ops else [])}
+    return ExecutionResult(
+        results=[
+            {"label": label, "results": payload.copy()}
+            for label in bound_circuits(payloads)
+        ]
+    )
 
 
 @pytest.fixture
@@ -194,21 +207,10 @@ class TestTimeEvolutionObservable:
     def test_run_with_observable_expval_backend_multi_term(
         self, two_qubit_hamiltonian, dummy_expval_backend, mocker
     ):
-        def _deterministic_submit(circuits, **kwargs):
-            ham_ops = kwargs.get("ham_ops", "")
-            ops = ham_ops.split(";") if ham_ops else []
-            payload = {op: 1.0 for op in ops}
-            return ExecutionResult(
-                results=[
-                    {"label": label, "results": payload.copy()}
-                    for label in circuits.keys()
-                ]
-            )
-
         mocker.patch.object(
             dummy_expval_backend,
             "submit_circuits",
-            side_effect=_deterministic_submit,
+            side_effect=_unit_expval_submit,
         )
 
         te = TimeEvolution(
@@ -366,21 +368,10 @@ class TestTimeEvolutionExpvalAccessor:
         shot-based simulators. Pins the contract for QoroService and Maestro
         analytical paths."""
 
-        def _deterministic_submit(circuits, **kwargs):
-            ham_ops = kwargs.get("ham_ops", "")
-            ops = ham_ops.split(";") if ham_ops else []
-            payload = {op: 1.0 for op in ops}
-            return ExecutionResult(
-                results=[
-                    {"label": label, "results": payload.copy()}
-                    for label in circuits.keys()
-                ]
-            )
-
         mocker.patch.object(
             dummy_expval_backend,
             "submit_circuits",
-            side_effect=_deterministic_submit,
+            side_effect=_unit_expval_submit,
         )
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
@@ -1002,21 +993,10 @@ class TestTimeEvolutionMeasurementConfig:
         on an analytic-expval backend (no auto-flip to ``"_backend_expval"``,
         which only supports single-observable batches)."""
 
-        def _deterministic_submit(circuits, **kwargs):
-            ham_ops = kwargs.get("ham_ops", "")
-            ops = ham_ops.split(";") if ham_ops else []
-            payload = {op: 1.0 for op in ops}
-            return ExecutionResult(
-                results=[
-                    {"label": label, "results": payload.copy()}
-                    for label in circuits.keys()
-                ]
-            )
-
         mocker.patch.object(
             dummy_expval_backend,
             "submit_circuits",
-            side_effect=_deterministic_submit,
+            side_effect=_unit_expval_submit,
         )
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
@@ -1036,24 +1016,10 @@ class TestTimeEvolutionMeasurementConfig:
         (``ham_ops`` kwarg present on submit), not via shot-based
         measurement QASMs."""
 
-        submitted_kwargs = []
-
-        def _capture_submit(circuits, **kwargs):
-            submitted_kwargs.append(kwargs)
-            ham_ops = kwargs.get("ham_ops", "")
-            ops = ham_ops.split(";") if ham_ops else []
-            payload = {op: 1.0 for op in ops}
-            return ExecutionResult(
-                results=[
-                    {"label": label, "results": payload.copy()}
-                    for label in circuits.keys()
-                ]
-            )
-
-        mocker.patch.object(
+        submit_mock = mocker.patch.object(
             dummy_expval_backend,
             "submit_circuits",
-            side_effect=_capture_submit,
+            side_effect=_unit_expval_submit,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
@@ -1066,7 +1032,7 @@ class TestTimeEvolutionMeasurementConfig:
             te.run()
 
         assert te._grouping_strategy == "qwc"
-        assert any("ham_ops" in kw for kw in submitted_kwargs)
+        assert any("ham_ops" in call.kwargs for call in submit_mock.call_args_list)
 
 
 class TestTimeEvolutionPrecision:

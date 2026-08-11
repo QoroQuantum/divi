@@ -42,6 +42,7 @@ from divi.backends import (
     SimulatorCluster,
     normalise_circuit_batch,
 )
+from divi.circuits._payloads import bound_circuits
 from divi.qprog import SuperpositionState
 
 # ---------------------------------------------------------------------------
@@ -176,7 +177,7 @@ class DocStubQoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: CircuitBatch,
+        payloads,
         ham_ops=None,
         circuit_ham_map=None,
         job_type=None,
@@ -184,7 +185,7 @@ class DocStubQoroService(CircuitRunner):
         override_job_config=None,
         **kwargs,
     ) -> ExecutionResult:
-        self._pending_circuits = normalise_circuit_batch(circuits)
+        self._pending_circuits = bound_circuits(payloads)
         self._last_ham_ops = ham_ops
         return ExecutionResult(job_id="doc-sybil-qoro-job")
 

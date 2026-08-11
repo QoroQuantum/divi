@@ -7,12 +7,13 @@ import os
 import re
 import warnings
 import weakref
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
 from threading import Event, Lock
 from typing import TYPE_CHECKING, Any
 
+from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 
 if TYPE_CHECKING:
@@ -555,7 +556,7 @@ class MaestroSimulator(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: CircuitBatch,
+        payloads: Sequence[CircuitPayload] | CircuitBatch,
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -566,9 +567,8 @@ class MaestroSimulator(CircuitRunner):
         """Submit quantum circuits for execution on the maestro simulator.
 
         Args:
-            circuits: Mapping of circuit label → OpenQASM string or
-                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
-                circuits labelled by positional index.
+            payloads: Bound QASM payloads, one resolved circuit per parameter-set
+                row — or a collection of already-resolved circuits.
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. If None, runs in sampling mode.
             circuit_ham_map: Maps circuit index ranges to observable groups for
@@ -594,8 +594,6 @@ class MaestroSimulator(CircuitRunner):
                 "Maestro batch cancelled before any circuit was dispatched"
             )
 
-        circuits = normalise_circuit_batch(circuits)
-
         if ham_ops is not None and shot_groups is not None:
             raise ValueError(
                 "shot_groups is incompatible with ham_ops: maestro's "
@@ -603,6 +601,7 @@ class MaestroSimulator(CircuitRunner):
                 "and ignores shot counts. Pass exactly one."
             )
 
+        circuits = bound_circuits(payloads)
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
 
