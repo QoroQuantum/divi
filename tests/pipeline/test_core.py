@@ -794,6 +794,43 @@ class TestFormatPipelineTree:
         # 5 lines total: root + 2 folds + 2 obs_groups
         assert len(lines) == 5
 
+    def test_deferred_binding_tree_shows_the_param_set_axis(self, capsys):
+        """A template-capable backend leaves binding to the backend, so the
+        param-set axis lives on the parameters rather than on the body tags.
+        The tree must still show it, or it silently under-reports the
+        expansion that execution actually performs."""
+        trace = run_binding_pipeline(
+            _parametric_meta_one_body(),
+            backend=_TemplateOnlyBackend(),
+            param_sets=[[1.5, -0.25], [0.5, 0.125]],
+        )
+        node = next(iter(trace.final_batch.values()))
+        assert node.parameters, "precondition: binding was deferred"
+
+        format_pipeline_tree(trace)
+        lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+
+        assert any("param_set" in line for line in lines)
+
+    def test_deferred_and_bound_trees_agree_on_axes(self, capsys):
+        """The same program must produce the same tree axes whether the
+        backend resolves parameters or the pipeline binds locally."""
+        param_sets = [[1.5, -0.25]]
+
+        def axes_for(backend):
+            trace = run_binding_pipeline(
+                _parametric_meta_one_body(), backend=backend, param_sets=param_sets
+            )
+            format_pipeline_tree(trace)
+            out = capsys.readouterr().out
+            return {
+                line.split(":")[0].lstrip("│├└─ ")
+                for line in out.splitlines()
+                if ":" in line
+            }
+
+        assert axes_for(_TemplateOnlyBackend()) == axes_for(_NonTemplateExpvalBackend())
+
     def test_format_pipeline_tree_empty_batch(self, capsys):
         trace = PipelineTrace(
             initial_batch={},

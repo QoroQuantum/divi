@@ -21,6 +21,7 @@ from ._compilation import (
     _batch_has_templates,
     _compile_batch,
     _compile_template_batch,
+    batch_lineage,
     reject_colliding_body_tags,
 )
 from ._postprocessing import (
@@ -76,8 +77,7 @@ def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
 
 def format_pipeline_tree(trace: PipelineTrace) -> None:
     """Print the full pipeline expansion tree to the terminal."""
-    _, lineage = _compile_batch(trace.final_batch)
-    keys = sorted(lineage.values(), key=str)
+    keys = sorted(batch_lineage(trace.final_batch).values(), key=str)
     if not keys:
         print("(empty)")
         return
