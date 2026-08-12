@@ -422,9 +422,9 @@ is ``LASSQD``'s own ``energy_tol``, which ends the macro-cycle.
 
    Carryover improves the subspace non-monotonically, so a settled iteration does
    not mean the next one had nothing to add. Stopping early cost 2.6 mHa on the
-   diiron complex of arXiv:2512.14936 and 11.7 mHa on a four-orbital H4 fragment,
-   against a recovery loop that took 0.1 s per round there to the orbital solve's
-   ~300 s. Enable it only when recovery dominates.
+   diiron complex of arXiv:2512.14936 and 11.7 mHa on a four-orbital H4 fragment.
+   Enable it only once you have confirmed that recovery, rather than the orbital
+   solve, is what your runs spend their time on.
 
 Choosing an Ansatz
 --------------------

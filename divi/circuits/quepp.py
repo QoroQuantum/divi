@@ -973,9 +973,7 @@ def _build_path_dag(
       accumulates comparable noise.
     * branch 1: rotation replaced with ``R_P(π/2)`` Clifford.
 
-    Uses ``copy_empty_like`` + ``apply_operation_back`` (8x faster than
-    ``deepcopy``) to build the path DAG in a single pass, replacing
-    rotation nodes inline.
+    The path DAG is built in a single pass, replacing rotation nodes inline.
     """
     replacements: dict[int, Any] = {}
     for (topo_idx, rot), branch in zip(rotation_positions, branches):

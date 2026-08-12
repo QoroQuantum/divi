@@ -18,8 +18,8 @@ Three-stage pipeline:
    **cross-encoder** (``Xenova/ms-marco-MiniLM-L-6-v2``) reranks the top
    ``rerank_candidates`` candidates against the original query.
 
-The reranker is lazily loaded on first call (it adds ~80 MB resident
-and ~1 s of startup time the first time the chatbot retrieves).
+The reranker is lazily loaded on first call, so only a session that
+actually retrieves pays to bring the model into memory.
 
 A chunk is **gated as confident** by its rerank score: cross-encoder
 logits are positive for relevant pairs and negative for irrelevant
@@ -82,12 +82,11 @@ class SearchStack:
     and passed to every :func:`retrieve` call.
 
     Three derived lookups (``reranker``, ``vocab``, ``raw_text``) are
-    materialised lazily on first access via ``cached_property``. The
-    cross-encoder costs ~80 MB / ~1 s to load, and ``vocab`` / ``raw_text``
-    each touch every chunk — only the queries that actually need them pay
-    the cost. Tests can override any of these by assigning directly to the
-    attribute (``stack.reranker = mock``), which populates ``__dict__`` and
-    shortcuts the descriptor.
+    materialised lazily on first access via ``cached_property``: loading the
+    cross-encoder and walking every chunk are both deferred to the queries
+    that need them. Tests can override any of these by assigning directly to
+    the attribute (``stack.reranker = mock``), which populates ``__dict__``
+    and shortcuts the descriptor.
 
     ``vocab`` and ``raw_text`` back the "out-of-corpus" sanity check: if a
     query contains a distinctive token or CamelCase identifier that does
@@ -307,7 +306,7 @@ def _has_out_of_corpus_identifier(query: str, stack: "SearchStack") -> bool:
 
 
 # Cross-encoder logit threshold for "confident enough to surface."
-# Calibrated against our benchmark — three score regimes observed:
+# Reranker scores fall into three regimes:
 #   * Clear on-topic + lexical overlap with chunk text:  top score > +2
 #   * Conversationally-phrased on-topic (paraphrases, "choose between
 #     X and Y" style):                                   top score -2..0

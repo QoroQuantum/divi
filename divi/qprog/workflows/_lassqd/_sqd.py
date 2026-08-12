@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import scipy.linalg
+import scipy.sparse.linalg
 
 #: Determinant rows per pass in :func:`projected_matrices`. The pair arrays it
 #: builds scale with this times the subspace size, so a fixed block keeps peak
@@ -103,27 +104,19 @@ def spin_orbital_integrals(
     h_spin[:n_orb, :n_orb] = one_body
     h_spin[n_orb:, n_orb:] = one_body_beta
 
-    g_spin = np.zeros((n_spin_orb, n_spin_orb, n_spin_orb, n_spin_orb))
-    for p in range(n_spin_orb):
-        for q in range(n_spin_orb):
-            for r in range(n_spin_orb):
-                for s in range(n_spin_orb):
-                    p_sp, p_spin = p % n_orb, p // n_orb
-                    q_sp, q_spin = q % n_orb, q // n_orb
-                    r_sp, r_spin = r % n_orb, r // n_orb
-                    s_sp, s_spin = s % n_orb, s // n_orb
+    # The Coulomb term survives where p, r share a spin and q, s do; the
+    # exchange term where p, s do and q, r do.
+    coulomb = np.einsum("prqs->pqrs", two_body)
+    exchange = np.einsum("psqr->pqrs", two_body)
 
-                    term1 = (
-                        two_body[p_sp, r_sp, q_sp, s_sp]
-                        if (p_spin == r_spin and q_spin == s_spin)
-                        else 0.0
-                    )
-                    term2 = (
-                        two_body[p_sp, s_sp, q_sp, r_sp]
-                        if (p_spin == s_spin and q_spin == r_spin)
-                        else 0.0
-                    )
-                    g_spin[p, q, r, s] = term1 - term2
+    alpha, beta = slice(None, n_orb), slice(n_orb, None)
+    g_spin = np.zeros((n_spin_orb, n_spin_orb, n_spin_orb, n_spin_orb))
+    g_spin[alpha, alpha, alpha, alpha] = coulomb - exchange
+    g_spin[beta, beta, beta, beta] = coulomb - exchange
+    g_spin[alpha, beta, alpha, beta] = coulomb
+    g_spin[beta, alpha, beta, alpha] = coulomb
+    g_spin[alpha, beta, beta, alpha] = -exchange
+    g_spin[beta, alpha, alpha, beta] = -exchange
 
     return h_spin, g_spin
 
@@ -312,8 +305,7 @@ def projected_matrices(
     from one matrix product, then each rank's elements are gathered in one pass.
 
     The saving is that Slater-Condon vanishes past a double excitation, and the
-    fraction of pairs that survive falls as the subspace grows: 76% at 50
-    determinants but 7% at 4900, where the loop form costs 68 s.
+    fraction of pairs that survive falls as the subspace grows.
 
     ``S^2``'s off-diagonal is handled differently. It is non-zero only between
     determinants related by exchanging spins across two spatial orbitals, which
@@ -464,6 +456,70 @@ def projected_matrices(
                 s2_proj[row, col] = s2_matrix_element(dets[row], dets[col], n_orb)
 
     return h_proj, s2_proj
+
+
+#: Subspace size from which the ground root is found iteratively rather than
+#: densely.
+_ITERATIVE_SUBSPACE_MIN = 512
+
+#: Ground-root convergence for the iterative solve, well inside the energies
+#: LASSQD resolves.
+_ITERATIVE_TOLERANCE = 1e-10
+
+
+def ground_root(
+    h_proj: np.ndarray, deviation: np.ndarray, lambda_penalty: float
+) -> tuple[float, np.ndarray]:
+    """Lowest eigenpair of the spin-penalized projected Hamiltonian.
+
+    ``H + lambda * deviation ** 2`` is what gets diagonalized, and only its
+    lowest root is ever read. Large subspaces therefore take a Lanczos solve
+    with the penalty applied as an operator, which never forms the dense
+    ``deviation @ deviation`` product; small ones fall back to the dense form.
+
+    A Lanczos solve can converge on an interior root instead of the lowest one,
+    which the dense solve cannot do. Two roots are requested rather than one so
+    a missed root has to be missed twice, and the result is checked against the
+    smallest diagonal entry -- a variational upper bound on the true lowest
+    eigenvalue -- with anything above it, or any solve that does not converge,
+    falling back to the dense form.
+
+    Args:
+        h_proj: The projected Hamiltonian.
+        deviation: ``S^2`` projected onto the subspace, less the target
+            eigenvalue on the diagonal.
+        lambda_penalty: Weight of the spin-contamination penalty.
+
+    Returns:
+        ``(eigenvalue, eigenvector)`` for the lowest root.
+    """
+    dimension = h_proj.shape[0]
+    if dimension >= _ITERATIVE_SUBSPACE_MIN:
+        spin_deviation = scipy.sparse.linalg.aslinearoperator(deviation)
+        penalized = scipy.sparse.linalg.aslinearoperator(h_proj) + lambda_penalty * (
+            spin_deviation @ spin_deviation
+        )
+        diagonal = np.diag(h_proj) + lambda_penalty * np.einsum(
+            "ij,ji->i", deviation, deviation
+        )
+        # Started deterministically on the lowest-diagonal determinant, since a
+        # random start would let the carryover ranking move between runs.
+        start = np.zeros(dimension)
+        start[int(np.argmin(diagonal))] = 1.0
+        try:
+            values, vectors = scipy.sparse.linalg.eigsh(
+                penalized, k=2, which="SA", v0=start, tol=_ITERATIVE_TOLERANCE
+            )
+            lowest = int(np.argmin(values))
+            if values[lowest] <= diagonal.min():
+                return float(values[lowest]), np.asarray(vectors)[:, lowest]
+        except scipy.sparse.linalg.ArpackError:
+            pass
+
+    values, vectors = scipy.linalg.eigh(
+        h_proj + lambda_penalty * (deviation @ deviation)
+    )
+    return float(values[0]), np.asarray(vectors)[:, 0]
 
 
 #: Places the carryover ranking rounds to. Threaded BLAS and set iteration order
@@ -1060,12 +1116,8 @@ class SQDSolver:
             dets, dets_spin, h_spin, g_spin, self.n_orb
         )
         deviation = s2_proj - target_s * (target_s + 1.0) * np.eye(len(dets))
-        eigenvals, eigenvecs = scipy.linalg.eigh(
-            h_proj + self.lambda_penalty * (deviation @ deviation)
-        )
-        amplitudes = np.asarray(eigenvecs)[:, 0].reshape(
-            len(strings_alpha), len(strings_beta)
-        )
+        energy, eigenvector = ground_root(h_proj, deviation, self.lambda_penalty)
+        amplitudes = eigenvector.reshape(len(strings_alpha), len(strings_beta))
 
         # A string's orbitals are occupied in every determinant built on it, so
         # the sector marginals suffice.
@@ -1077,7 +1129,7 @@ class SQDSolver:
             ]
         )
         result = SQDResult(
-            energy=float(eigenvals[0] + constant),
+            energy=float(energy + constant),
             amplitudes=amplitudes,
             strings_alpha=strings_alpha,
             strings_beta=strings_beta,

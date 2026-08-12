@@ -176,6 +176,60 @@ def test_hamiltonian_matrix_is_symmetric():
     np.testing.assert_allclose(matrix, matrix.T, atol=1e-12)
 
 
+def _scalar_spin_orbital_integrals(one_body, two_body, n_orb, one_body_beta=None):
+    """The elementwise rule ``spin_orbital_integrals`` replaced with blocks."""
+    if one_body_beta is None:
+        one_body_beta = one_body
+    n_spin = 2 * n_orb
+    h_spin = np.zeros((n_spin, n_spin))
+    h_spin[:n_orb, :n_orb] = one_body
+    h_spin[n_orb:, n_orb:] = one_body_beta
+    g_spin = np.zeros((n_spin,) * 4)
+    for p, q, r, s in itertools.product(range(n_spin), repeat=4):
+        p_sp, p_spin = p % n_orb, p // n_orb
+        q_sp, q_spin = q % n_orb, q // n_orb
+        r_sp, r_spin = r % n_orb, r // n_orb
+        s_sp, s_spin = s % n_orb, s // n_orb
+        coulomb = (
+            two_body[p_sp, r_sp, q_sp, s_sp]
+            if (p_spin == r_spin and q_spin == s_spin)
+            else 0.0
+        )
+        exchange = (
+            two_body[p_sp, s_sp, q_sp, r_sp]
+            if (p_spin == s_spin and q_spin == r_spin)
+            else 0.0
+        )
+        g_spin[p, q, r, s] = coulomb - exchange
+    return h_spin, g_spin
+
+
+@pytest.mark.parametrize("n_orb", [1, 2, 3])
+@pytest.mark.parametrize("polarized", [True, False])
+def test_spin_orbital_integrals_match_the_elementwise_definition(n_orb, polarized):
+    """The block form must reproduce the elementwise spin selection exactly.
+
+    Six block assignments stand in for the four-index loop, so a block written to
+    the wrong spin sector -- or a transpose that permutes the wrong pair -- still
+    produces a plausibly-shaped tensor. Integrals without the ``(pq|rs)``
+    permutation symmetries are what separate the two: a physical ``two_body``
+    makes several of the blocks coincide.
+    """
+    rng = np.random.default_rng(31)
+    one_body = rng.normal(size=(n_orb, n_orb))
+    one_body = 0.5 * (one_body + one_body.T)
+    one_body_beta = rng.normal(size=(n_orb, n_orb)) if polarized else None
+    two_body = rng.normal(size=(n_orb,) * 4)
+
+    expected_h, expected_g = _scalar_spin_orbital_integrals(
+        one_body, two_body, n_orb, one_body_beta
+    )
+    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb, one_body_beta)
+
+    np.testing.assert_array_equal(h_spin, expected_h)
+    np.testing.assert_array_equal(g_spin, expected_g)
+
+
 def _scalar_projected_matrices(dets, dets_spin, h_spin, g_spin, n_orb):
     """The double loop ``projected_matrices`` replaced, kept as the reference."""
     dim = len(dets)
@@ -279,6 +333,107 @@ def test_projected_matrices_are_independent_of_the_row_block(monkeypatch, block_
 
     np.testing.assert_allclose(h_proj, expected_h, rtol=1e-10, atol=1e-11)
     np.testing.assert_allclose(s2_proj, expected_s2, rtol=1e-10, atol=1e-11)
+
+
+def _penalized_subspace(n_orb=4, n_alpha=2, n_beta=2, seed=17):
+    """A projected Hamiltonian and its ``S^2`` deviation over a full space."""
+    rng = np.random.default_rng(seed)
+    one_body = rng.normal(size=(n_orb, n_orb))
+    one_body = 0.5 * (one_body + one_body.T)
+    # Every ``(pq|rs)`` permutation symmetry, since without them the projected
+    # Hamiltonian is not symmetric and the two solvers disagree by construction:
+    # LAPACK reads one triangle where the operator form reads the whole matrix.
+    two_body = rng.normal(size=(n_orb,) * 4)
+    two_body = 0.25 * (
+        two_body
+        + two_body.transpose(1, 0, 2, 3)
+        + two_body.transpose(0, 1, 3, 2)
+        + two_body.transpose(1, 0, 3, 2)
+    )
+    two_body = 0.5 * (two_body + two_body.transpose(2, 3, 0, 1))
+    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+
+    space = [
+        (alpha, beta)
+        for alpha in itertools.combinations(range(n_orb), n_alpha)
+        for beta in itertools.combinations(range(n_orb), n_beta)
+    ]
+    dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
+    h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+    target_s = 0.5 * abs(n_alpha - n_beta)
+    deviation = s2_proj - target_s * (target_s + 1.0) * np.eye(len(space))
+    return h_proj, deviation
+
+
+def test_ground_root_iterative_branch_matches_the_dense_solve(monkeypatch):
+    """Above the threshold the penalty is applied as an operator instead of being
+    squared into a dense matrix, and the root comes from Lanczos rather than
+    LAPACK. Both must land on the same eigenpair, so the threshold is forced down
+    onto a subspace small enough to diagonalize densely for the comparison."""
+    h_proj, deviation = _penalized_subspace()
+    lambda_penalty = 0.2
+    expected_values, expected_vectors = np.linalg.eigh(
+        h_proj + lambda_penalty * (deviation @ deviation)
+    )
+
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    energy, vector = sqd_module.ground_root(h_proj, deviation, lambda_penalty)
+
+    assert energy == pytest.approx(expected_values[0], abs=1e-10)
+    # The sign of an eigenvector is arbitrary in either solver.
+    assert abs(float(vector @ expected_vectors[:, 0])) == pytest.approx(1.0, abs=1e-8)
+
+
+def test_ground_root_falls_back_when_the_iterative_root_is_not_the_lowest(
+    mocker, monkeypatch
+):
+    """Lanczos can converge on an interior root, which the dense solve cannot.
+
+    The smallest diagonal entry bounds the true lowest eigenvalue from above, so
+    a root above it is provably not the ground state and must be discarded
+    rather than reported as the fragment's energy.
+    """
+    h_proj, deviation = _penalized_subspace()
+    lambda_penalty = 0.2
+    penalized = h_proj + lambda_penalty * (deviation @ deviation)
+    expected = np.linalg.eigvalsh(penalized)[0]
+    interior = float(np.diag(penalized).min()) + 1.0
+    assert expected < interior
+
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    mocker.patch.object(
+        sqd_module.scipy.sparse.linalg,
+        "eigsh",
+        return_value=(
+            np.array([interior, interior + 1.0]),
+            np.eye(h_proj.shape[0], 2),
+        ),
+    )
+
+    energy, _ = sqd_module.ground_root(h_proj, deviation, lambda_penalty)
+
+    assert energy == pytest.approx(expected, abs=1e-12)
+
+
+def test_ground_root_falls_back_when_the_iterative_solve_fails(mocker, monkeypatch):
+    """Lanczos can exhaust its budget on a subspace whose lowest roots are nearly
+    degenerate, which must cost accuracy rather than the solve."""
+    h_proj, deviation = _penalized_subspace()
+    lambda_penalty = 0.2
+    expected = np.linalg.eigvalsh(h_proj + lambda_penalty * (deviation @ deviation))[0]
+
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    failing = mocker.patch.object(
+        sqd_module.scipy.sparse.linalg,
+        "eigsh",
+        side_effect=sqd_module.scipy.sparse.linalg.ArpackError(-1),
+    )
+
+    energy, vector = sqd_module.ground_root(h_proj, deviation, lambda_penalty)
+
+    failing.assert_called_once()
+    assert energy == pytest.approx(expected, abs=1e-12)
+    assert vector.shape == (h_proj.shape[0],)
 
 
 def test_projected_matrices_handles_an_empty_subspace():
