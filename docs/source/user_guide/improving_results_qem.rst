@@ -29,6 +29,8 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
 
 **Basic Usage:**
 
+.. dashboard-example: zne
+
 .. code-block:: python
 
    from divi.circuits.zne import ZNE, RichardsonExtrapolator

@@ -240,6 +240,8 @@ Min Vertex Cover.  Each graph problem has a dedicated class:
 
 Example: Finding the max-clique of a graph:
 
+.. dashboard-example: max-clique
+
 .. code-block:: python
 
    import networkx as nx
@@ -284,6 +286,8 @@ In contrast to graph-based QAOA instances, the solution format for QUBO-based QA
 NumPy Array-based Input
 ^^^^^^^^^^^^^^^^^^^^^^^
 
+.. dashboard-example: qubo-numpy
+
 .. code-block:: python
 
    import numpy as np
@@ -319,6 +323,8 @@ NumPy Array-based Input
 
 BinaryQuadraticModel Input
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. dashboard-example: bqm
 
 .. code-block:: python
 
@@ -390,6 +396,8 @@ Hamiltonian Builders
 
 Example
 ^^^^^^^
+
+.. dashboard-example: hubo
 
 .. code-block:: python
 
@@ -514,6 +522,8 @@ Three interpolation strategies are available via :class:`~divi.qprog.algorithms.
 
 Example:
 
+.. dashboard-example: iterative-qaoa
+
 .. code-block:: python
 
    import networkx as nx
@@ -565,6 +575,8 @@ For large graphs that exceed quantum hardware limitations, use
 :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
 with a graph problem configured for partitioning via
 :class:`~divi.qprog.problems.GraphPartitioningConfig`:
+
+.. dashboard-example: optimization
 
 .. code-block:: python
 

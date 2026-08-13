@@ -200,6 +200,8 @@ per time point, runs them via
 :class:`~divi.qprog.ensemble.ProgramEnsemble` (with optional circuit batching), and
 collects results into a time-ordered mapping.
 
+.. dashboard-example: simulation
+
 .. code-block:: python
 
    import math

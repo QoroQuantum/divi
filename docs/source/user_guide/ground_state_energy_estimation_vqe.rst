@@ -20,6 +20,8 @@ Basic :class:`~divi.qprog.algorithms.VQE` Usage
 
 Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for the H2 molecule:
 
+.. dashboard-example: vqe-basic
+
 .. code-block:: python
 
    import numpy as np
@@ -261,6 +263,8 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 - **bond_modifiers**: A list of actual numeric changes to apply to the chosen bonds. This has two modes: ``scale`` and ``delta``. If the provided list contains only strictly positive values, ``scale`` mode will be activated, where the values represent a multiplier to apply to the original bond length. Otherwise, the ``delta`` mode is enabled, where the provided values act as additives to the original bond length. Include the base molecule in the sweep by providing ``1`` in ``scale`` mode or ``0`` in ``delta`` mode.
 
 - **alignment_atoms**: For debugging purposes, the output molecules can be aligned using `Kabsch algorithm <https://en.wikipedia.org/wiki/Kabsch_algorithm>`_, where users provide a list of indices of reference atoms that act as the "spine" of the whole molecule. An example of such would be the carbon chain of an alkane group.
+
+.. dashboard-example: chemistry
 
 .. code-block:: python
 

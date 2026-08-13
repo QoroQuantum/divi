@@ -25,6 +25,8 @@ Five-Minute Tutorial
 
 Let's solve a quantum chemistry problem - finding the ground state energy of a hydrogen molecule:
 
+.. dashboard-example: dry-run
+
 .. code-block:: python
 
    import numpy as np
@@ -89,6 +91,8 @@ Divi offers specialized algorithms for different problem types:
 **QAOA – Optimization Problems**
    Use :class:`~divi.qprog.algorithms.QAOA` for combinatorial optimization: Max-Cut, Max-Clique, traveling salesman, QUBO/HUBO, and similar NP-hard problems (graphs or binary polynomial formulations).
 
+   .. dashboard-example: qaoa-basic
+
    .. code-block:: python
 
       import networkx as nx
@@ -112,6 +116,8 @@ Divi offers specialized algorithms for different problem types:
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding**
    Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/user_guide/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
+
+   .. dashboard-example: pce
 
    .. code-block:: python
 
@@ -162,6 +168,8 @@ Divi offers specialized algorithms for different problem types:
    Qiskit circuit instead, use :class:`~divi.qprog.algorithms.CustomVQA`
    (:doc:`user_guide/framework_integration`).
 
+   .. dashboard-example: qnn
+
    .. code-block:: python
 
       import numpy as np
@@ -190,6 +198,8 @@ Check Before You Run
 
 Every program can tell you what it *would* submit, without executing anything.
 Rebuilding the H₂ VQE from the top of this page:
+
+.. dashboard-example: dry-run
 
 .. code-block:: python
 

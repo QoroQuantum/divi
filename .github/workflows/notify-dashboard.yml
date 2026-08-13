@@ -1,0 +1,21 @@
+name: Notify dashboard of main updates
+
+# Lets qoro-dash's "latest" example snapshot (an unreleased preview of the
+# docs, distinct from the stable/tagged snapshot it also ships) refresh
+# itself within seconds of a real change, instead of qoro-dash polling on a
+# schedule. See qoro-dash's .github/workflows/sync-divi-latest.yml, which is
+# the repository_dispatch listener this triggers.
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch to qoro-dash
+        env:
+          GH_TOKEN: ${{ secrets.QORO_DASH_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/QoroQuantum/qoro-dash/dispatches \
+            -f event_type=divi-main-updated

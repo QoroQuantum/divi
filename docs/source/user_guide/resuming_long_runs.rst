@@ -29,6 +29,8 @@ Saving Checkpoints
 
 To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConfig` object to the ``run()`` method:
 
+.. dashboard-example: checkpointing
+
 .. code-block:: python
 
    import numpy as np

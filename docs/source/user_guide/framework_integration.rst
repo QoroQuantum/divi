@@ -51,6 +51,8 @@ When you need a **custom ansatz or circuit**, use
 template and Hamiltonian while Divi handles compilation, execution, and
 optimization:
 
+.. dashboard-example: custom
+
 .. code-block:: python
 
    import pennylane as qp
