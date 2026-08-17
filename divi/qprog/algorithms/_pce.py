@@ -78,6 +78,38 @@ def _mask_to_int(mask: npt.NDArray[np.uint64]) -> int:
     return sum(int(limb) << (_LIMB_BITS * j) for j, limb in enumerate(mask))
 
 
+def _states_to_limbs(state_strings: list[str], n_limbs: int) -> npt.NDArray[np.uint64]:
+    """Unpack big-endian bitstrings into ``(n_states, n_limbs)`` little-endian limbs.
+
+    Raises:
+        ValueError: If the states are wider than the masks' limbs hold, or if
+            they are not all the same width.
+    """
+    n_states = len(state_strings)
+    n_bits = len(state_strings[0])
+    if n_bits > n_limbs * _LIMB_BITS:
+        raise ValueError(
+            f"{n_bits}-bit states do not fit in {n_limbs} 64-bit limb(s); "
+            "the masks were packed for a narrower register."
+        )
+
+    offender = next((s for s in state_strings if len(s) != n_bits), None)
+    if offender is not None:
+        raise ValueError(
+            f"expected {n_bits}-bit states, got one of width {len(offender)}"
+        )
+
+    chars = np.frombuffer("".join(state_strings).encode("ascii"), dtype=np.uint8)
+    if np.any((chars < ord("0")) | (chars > ord("1"))):
+        raise ValueError("state_strings contains a non-binary bitstring")
+    padded = np.zeros((n_states, n_limbs * _LIMB_BITS), dtype=np.uint8)
+    padded[:, -n_bits:] = (chars - np.uint8(ord("0"))).reshape(n_states, n_bits)
+
+    # packbits is MSB-first, so word 0 is the most significant limb.
+    words = np.packbits(padded, axis=1).view(">u8").astype(np.uint64)
+    return np.ascontiguousarray(words[:, ::-1])
+
+
 def _decode_parities(
     state_strings: list[str], variable_masks_u64: npt.NDArray[np.uint64]
 ) -> npt.NDArray[np.uint8]:
@@ -86,20 +118,15 @@ def _decode_parities(
     Handles both the 1-D uint64 masks (``n_qubits <= 64``) and the 2-D limb
     masks (wider registers); the limb path XORs the per-limb parities.
     """
+    if not state_strings:
+        return np.zeros((variable_masks_u64.shape[0], 0), dtype=np.uint8)
+
     if variable_masks_u64.ndim == 1:
-        states = np.array([int(s, 2) for s in state_strings], dtype=np.uint64)
+        states = _states_to_limbs(state_strings, 1)[:, 0]
         overlaps = variable_masks_u64[:, None] & states[None, :]
         return _fast_popcount_parity(overlaps)
 
-    n_limbs = variable_masks_u64.shape[1]
-    state_ints = [int(s, 2) for s in state_strings]
-    states = np.array(
-        [
-            [(v >> (_LIMB_BITS * j)) & _LIMB_MASK for j in range(n_limbs)]
-            for v in state_ints
-        ],
-        dtype=np.uint64,
-    )  # (n_states, n_limbs)
+    states = _states_to_limbs(state_strings, variable_masks_u64.shape[1])
     overlaps = variable_masks_u64[:, None, :] & states[None, :, :]
     per_limb = _fast_popcount_parity(overlaps)  # (n_vars, n_states, n_limbs)
     return np.bitwise_xor.reduce(per_limb, axis=-1).astype(np.uint8)

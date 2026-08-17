@@ -37,7 +37,7 @@ from ._circuit_runner import CircuitRunner
 from ._config import ExecutionConfig, JobConfig
 from ._execution_result import ExecutionResult
 from ._pauli_serde import compress_ham_ops
-from ._results_processing import _decode_qh1_b64
+from ._results_processing import _decode_histogram_b64
 from ._shot_allocation import (
     from_wire,
     restrict_to_chunk,
@@ -1164,7 +1164,7 @@ class QoroService(CircuitRunner):
             data = response.json()
 
             for result in data["results"]:
-                result["results"] = _decode_qh1_b64(result["results"])
+                result["results"] = _decode_histogram_b64(result["results"])
             all_results.extend(data["results"])
 
             if data.get("next") is None:

@@ -71,3 +71,70 @@ def make_template_entry(
         parameter_names=param_names,
         parameter_sets=sets,
     )
+
+
+def encode_uleb128(value: int) -> bytes:
+    """Encode a non-negative integer as ULEB128."""
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        if value:
+            out.append(byte | 0x80)
+        else:
+            out.append(byte)
+            return bytes(out)
+
+
+def build_qh_histogram(
+    n_bits: int, entries: list[tuple[int, int]], magic: bytes = b"QH1"
+) -> bytes:
+    """Build a QH1/QH2 histogram payload from ``(index, count)`` entries."""
+    entries = sorted(entries, key=lambda entry: entry[0])
+    indices = [index for index, _ in entries]
+    counts = [count for _, count in entries]
+
+    gaps = []
+    previous = 0
+    for index in indices:
+        gaps.append(index - previous)
+        previous = index
+
+    is_one = [count == 1 for count in counts]
+    if not is_one:
+        rle_body = b""
+    else:
+        runs = []
+        current = is_one[0]
+        run_length = 1
+        for value in is_one[1:]:
+            if value == current:
+                run_length += 1
+            else:
+                runs.append(run_length)
+                current = not current
+                run_length = 1
+        runs.append(run_length)
+        first_value = 1 if is_one[0] else 0
+        rle_body = (
+            encode_uleb128(len(runs))
+            + bytes([first_value])
+            + b"".join(encode_uleb128(run) for run in runs)
+        )
+
+    extras = [count - 2 for count in counts if count != 1]
+    width = encode_uleb128(n_bits) if magic == b"QH2" else bytes([n_bits])
+    return b"".join(
+        [
+            magic,
+            width,
+            encode_uleb128(len(entries)),
+            encode_uleb128(sum(counts)),
+            encode_uleb128(len(gaps)),
+            *(encode_uleb128(gap) for gap in gaps),
+            encode_uleb128(len(rle_body)),
+            rle_body,
+            encode_uleb128(len(extras)),
+            *(encode_uleb128(extra) for extra in extras),
+        ]
+    )

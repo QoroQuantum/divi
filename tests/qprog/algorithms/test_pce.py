@@ -1063,6 +1063,40 @@ class TestWideRegisterMasks:
         forced_limb = _decode_parities(states, _pack_masks(mask_ints, n_qubits=65))
         assert np.array_equal(native, forced_limb)
 
+    @pytest.mark.parametrize("n_qubits", [8, 72])
+    def test_decode_parities_rejects_ragged_states(self, n_qubits):
+        """Mixed-width states must raise, not be regrouped by the reshape.
+
+        Widths summing to the expected total would otherwise pack rows that
+        straddle two states.
+        """
+        packed = _pack_masks([1 << 3, 1 << 5], n_qubits)
+        good = _big_endian_bitstring([3], n_qubits)
+        states = [good, good[:-1], good + "0"]
+        with pytest.raises(ValueError, match="got one of width"):
+            _decode_parities(states, packed)
+
+    def test_decode_parities_rejects_states_wider_than_the_masks(self):
+        """States wider than the masks' limbs cannot be decoded against them."""
+        packed = _pack_masks([1 << 3], n_qubits=64)
+        with pytest.raises(ValueError, match="do not fit"):
+            _decode_parities([_big_endian_bitstring([3], 65)], packed)
+
+    def test_decode_parities_rejects_non_binary_states(self):
+        """Packed decoding must not reinterpret non-binary characters as bits."""
+        packed = _pack_masks([1 << 3], n_qubits=72)
+        with pytest.raises(ValueError, match="non-binary"):
+            _decode_parities(["2" + "0" * 71], packed)
+
+    def test_decode_parities_empty_wide_states_preserve_variable_axis(self):
+        """No states still returns one empty row per wide variable mask."""
+        packed = _pack_masks([1 << 3, 1 << 65], n_qubits=72)
+
+        result = _decode_parities([], packed)
+
+        assert result.shape == (2, 0)
+        assert result.dtype == np.uint8
+
 
 def test_pce_poly_encoding_supports_more_than_64_qubits(make_pce):
     """A poly-encoded problem forced past 64 qubits builds 2-D limb masks and a

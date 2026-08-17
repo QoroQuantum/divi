@@ -169,17 +169,48 @@ class TestBatchedExpectation:
         expected = (70 * 1 + 30 * (-1)) / 100  # 0.4
         assert result[0, 0] == pytest.approx(expected)
 
-    def test_identity_returns_one(self):
-        histogram = {"0": 60, "1": 40}
-        result = _batched_expectation([histogram], ["I"], n_qubits=1)
-        assert result[0, 0] == pytest.approx(1.0)
-
     def test_narrowed_bitstrings_raise(self):
         """A backend that returns keys narrower than n_qubits (only measured
         clbits) would misalign positional decoding — must fail loudly."""
         histogram = {"01": 100}  # 2-bit keys for a 3-qubit circuit
         with pytest.raises(ValueError, match="full-width keys"):
             _batched_expectation([histogram], ["ZII"], n_qubits=3)
+
+    @pytest.mark.parametrize("n_qubits", [3, 70])
+    def test_ragged_bitstrings_raise(self, n_qubits):
+        """One wrong-width key among correct ones must be caught, not regrouped.
+
+        Widths that happen to sum to the right total would otherwise reshape
+        into a matrix whose rows straddle two keys.
+        """
+        good = "1" + "0" * (n_qubits - 1)
+        histogram = {good: 50, good[:-1]: 30, good + "0": 20}
+        with pytest.raises(ValueError, match="full-width keys"):
+            _batched_expectation([histogram], ["Z" * n_qubits], n_qubits=n_qubits)
+
+    @pytest.mark.parametrize(
+        ("malformed", "n_qubits"),
+        [("0_1", 3), (" 1", 2), ("+1", 2), ("2" + "0" * 64, 65)],
+    )
+    def test_non_binary_bitstring_raises(self, malformed, n_qubits):
+        """Both integer and packed paths accept only literal zero and one."""
+        with pytest.raises(ValueError, match="non-binary"):
+            _batched_expectation(
+                [{malformed: 1}],
+                ["Z" + "I" * (n_qubits - 1)],
+                n_qubits=n_qubits,
+            )
+
+    def test_non_pauli_label_character_raises(self):
+        """Only IXYZ have the ±1 spectrum the parity form assumes."""
+        with pytest.raises(ValueError, match="outside IXYZ"):
+            _batched_expectation([{"010": 5, "111": 5}], ["ZAZ"], n_qubits=3)
+
+    @pytest.mark.parametrize("label", ["Z", "IIZ"])
+    def test_pauli_label_width_must_match_register(self, label):
+        """Every observable label must address exactly the declared register."""
+        with pytest.raises(ValueError, match="2-character"):
+            _batched_expectation([{"00": 1}], [label], n_qubits=2)
 
     def test_product_observable(self):
         """ZIZ on 3 qubits: product of the qubit-0 and qubit-2 Z eigenvalues.
@@ -264,6 +295,36 @@ class TestBatchedExpectation:
         result = _batched_expectation([histogram], [label], n_qubits=n_qubits)
         # All-zero bitstring → all Z eigenvalues +1 → product = +1
         assert result[0, 0] == pytest.approx(1.0)
+
+    def test_identity_expectation_is_exact(self):
+        """Integer counts are contracted before division, so identity stays exact."""
+        result = _batched_expectation([{"00": 1, "01": 2, "10": 3}], ["II"], n_qubits=2)
+
+        assert result[0, 0] == 1.0
+
+    def test_empty_histogram_stays_zero(self):
+        """An empty histogram is a finite zero row rather than ``nan``."""
+        result = _batched_expectation([{}], ["I"], n_qubits=1)
+
+        assert np.isfinite(result[0, 0])
+        assert result[0, 0] == 0.0
+
+    @pytest.mark.parametrize("n_qubits", [64, 65])
+    def test_dense_label_is_a_parity_not_a_lookup_table(self, n_qubits):
+        """A label active on every qubit must stay cheap and give ±1 by parity.
+
+        Eigenvalues of X, Y and Z are ±1, so the observable's value is the
+        parity of the measured ones — enumerating 2**n_active eigenvalues would
+        exhaust memory here.
+        """
+        label = "Z" * (n_qubits - 1) + "X"
+        odd_parity = "1" + "0" * (n_qubits - 1)
+        even_parity = "11" + "0" * (n_qubits - 2)
+
+        result = _batched_expectation(
+            [{odd_parity: 40, even_parity: 60}], [label], n_qubits=n_qubits
+        )
+        assert result[0, 0] == pytest.approx((60 - 40) / 100)
 
 
 class TestCountsToProbs:

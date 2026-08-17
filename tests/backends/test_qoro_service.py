@@ -50,6 +50,7 @@ from tests.backends._circuit_runner_contracts import (
     AsyncRunnerContractsBase,
 )
 from tests.backends._helpers import (
+    build_qh_histogram,
     create_failed_job,
     make_execution_result,
     make_mock_add_response,
@@ -1680,7 +1681,7 @@ class TestQoroServiceMock:
 
         # Test 3: Get job results success
         mocker.patch(
-            "divi.backends._qoro_service._decode_qh1_b64",
+            "divi.backends._qoro_service._decode_histogram_b64",
             return_value={"decoded": "data"},
         )
         mock_json = {
@@ -1709,7 +1710,7 @@ class TestQoroServiceMock:
         mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response_empty
         )
-        mock_decode = mocker.patch("divi.backends._qoro_service._decode_qh1_b64")
+        mock_decode = mocker.patch("divi.backends._qoro_service._decode_histogram_b64")
         completed_result_empty = qoro_service_mock.get_job_results(
             make_execution_result("job_1")
         )
@@ -1719,7 +1720,7 @@ class TestQoroServiceMock:
 
         # Test 5: Get job results decoding error
         mocker.patch(
-            "divi.backends._qoro_service._decode_qh1_b64",
+            "divi.backends._qoro_service._decode_histogram_b64",
             side_effect=ValueError("corrupt stream"),
         )
         mock_response_error = mocker.MagicMock(
@@ -1784,7 +1785,7 @@ class TestQoroServiceMock:
         """Results fit in one page — next is None, no further requests."""
         service = qoro_service_factory()
         mocker.patch(
-            "divi.backends._qoro_service._decode_qh1_b64",
+            "divi.backends._qoro_service._decode_histogram_b64",
             side_effect=lambda x: x,
         )
         page = {
@@ -1806,13 +1807,44 @@ class TestQoroServiceMock:
         mock_request.assert_called_once()
         assert len(result.results) == 2
 
+    def test_get_job_results_decodes_qh2_histogram(self, mocker, qoro_service_factory):
+        """The service decodes a real wide histogram from the cloud envelope."""
+        service = qoro_service_factory()
+        n_bits = 256
+        blob = build_qh_histogram(n_bits, [(1 << (n_bits - 1), 2)], magic=b"QH2")
+        page = {
+            "count": 1,
+            "next": None,
+            "results": [
+                {
+                    "label": "wide",
+                    "results": {
+                        "encoding": "qh2",
+                        "n_bits": n_bits,
+                        "payload": base64.b64encode(blob).decode("ascii"),
+                    },
+                }
+            ],
+        }
+        mocker.patch.object(
+            service,
+            "_make_request",
+            return_value=mocker.MagicMock(status_code=200, json=lambda: page),
+        )
+
+        result = service.get_job_results(make_execution_result("job_1"))
+
+        assert result.results == [
+            {"label": "wide", "results": {"1" + "0" * (n_bits - 1): 2}}
+        ]
+
     def test_get_job_results_paginates_multiple_pages(
         self, mocker, qoro_service_factory
     ):
         """160 results across two pages — all are collected."""
         service = qoro_service_factory()
         mocker.patch(
-            "divi.backends._qoro_service._decode_qh1_b64",
+            "divi.backends._qoro_service._decode_histogram_b64",
             side_effect=lambda x: x,
         )
 
@@ -1853,7 +1885,7 @@ class TestQoroServiceMock:
         """HTTP error on the second page propagates correctly."""
         service = qoro_service_factory()
         mocker.patch(
-            "divi.backends._qoro_service._decode_qh1_b64",
+            "divi.backends._qoro_service._decode_histogram_b64",
             side_effect=lambda x: x,
         )
 

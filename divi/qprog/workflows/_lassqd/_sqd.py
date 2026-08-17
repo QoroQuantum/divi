@@ -553,11 +553,33 @@ def _aufbau_string(n_orb: int, n_electrons: int) -> str:
     return "1" * n_electrons + "0" * (n_orb - n_electrons)
 
 
-def _occupation_matrix(strings: Sequence[str], n_orb: int) -> np.ndarray:
-    """``(len(strings), n_orb)`` indicator of which orbitals each string fills."""
-    return np.array(
-        [[1.0 if bit == "1" else 0.0 for bit in half] for half in strings]
-    ).reshape(len(strings), n_orb)
+def _bit_matrix(strings: Sequence[str], width: int) -> np.ndarray:
+    """``(len(strings), width)`` uint8 0/1 matrix of equal-width bit strings.
+
+    Raises:
+        ValueError: If any string is not ``width`` characters wide.
+    """
+    offender = next((s for s in strings if len(s) != width), None)
+    if offender is not None:
+        raise ValueError(
+            f"expected {width}-character strings, got one of width {len(offender)}"
+        )
+    packed = np.frombuffer("".join(strings).encode("ascii"), dtype=np.uint8)
+    if np.any((packed < ord("0")) | (packed > ord("1"))):
+        raise ValueError("strings contains a non-binary bitstring")
+    return (packed - np.uint8(ord("0"))).reshape(len(strings), width)
+
+
+def _occupations_from_bit_matrix(bits: np.ndarray) -> list[tuple[int, ...]]:
+    """Occupied-orbital tuple for each row of a binary indicator matrix."""
+    rows, cols = np.nonzero(bits)
+    bounds = np.searchsorted(rows, np.arange(len(bits) + 1))
+    return [tuple(cols[bounds[i] : bounds[i + 1]].tolist()) for i in range(len(bits))]
+
+
+def _sector_occupations(strings: Sequence[str], n_orb: int) -> list[tuple[int, ...]]:
+    """Occupied-orbital tuple for each of one spin sector's strings."""
+    return _occupations_from_bit_matrix(_bit_matrix(strings, n_orb))
 
 
 def carryover_weights(
@@ -611,11 +633,14 @@ def carryover_weights(
 
 def filter_symmetry(bitstrings, n_orb: int, n_alpha: int, n_beta: int) -> list[str]:
     """Keep only blocked bitstrings with the target alpha and beta counts."""
-    kept = []
-    for bits in bitstrings:
-        if bits[:n_orb].count("1") == n_alpha and bits[n_orb:].count("1") == n_beta:
-            kept.append(bits)
-    return kept
+    bitstrings = list(bitstrings)
+    if not bitstrings:
+        return []
+    bits = _bit_matrix(bitstrings, 2 * n_orb)
+    keep = (bits[:, :n_orb].sum(axis=1, dtype=np.int64) == n_alpha) & (
+        bits[:, n_orb:].sum(axis=1, dtype=np.int64) == n_beta
+    )
+    return [half for half, keeping in zip(bitstrings, keep) if keeping]
 
 
 def _modified_relu(distance: float, threshold: float, delta: float = 0.01) -> float:
@@ -1028,6 +1053,8 @@ class SQDSolver:
         strings = sorted(candidates)
         probabilities = np.array([candidates[bits] for bits in strings])
         size = min(self.batch_size, int(np.count_nonzero(probabilities)))
+        # Split once per candidate rather than once per draw per batch.
+        halves = {bits: (bits[: self.n_orb], bits[self.n_orb :]) for bits in strings}
 
         batches = []
         for _ in range(self.n_batches):
@@ -1037,8 +1064,7 @@ class SQDSolver:
             alpha_counts: dict[str, int] = {}
             beta_counts: dict[str, int] = {}
             for bits in sampled:
-                alpha = bits[: self.n_orb]
-                beta = bits[self.n_orb :]
+                alpha, beta = halves[bits]
                 alpha_counts[alpha] = alpha_counts.get(alpha, 0) + 1
                 beta_counts[beta] = beta_counts.get(beta, 0) + 1
 
@@ -1103,11 +1129,12 @@ class SQDSolver:
     ) -> tuple[SQDResult, np.ndarray]:
         """Diagonalize one batch's subspace, returning its result and occupancy."""
         strings_alpha, strings_beta = sectors
-        dets = [
-            bitstring_to_spatial_det(alpha + beta, self.n_orb)
-            for alpha in strings_alpha
-            for beta in strings_beta
-        ]
+        # Occupations decoded once per sector string, not once per determinant.
+        alpha_bits = _bit_matrix(strings_alpha, self.n_orb)
+        beta_bits = _bit_matrix(strings_beta, self.n_orb)
+        alpha_occs = _occupations_from_bit_matrix(alpha_bits)
+        beta_occs = _occupations_from_bit_matrix(beta_bits)
+        dets = [(alpha, beta) for alpha in alpha_occs for beta in beta_occs]
         dets_spin = [
             spatial_to_spin_occupations(alpha, beta, self.n_orb) for alpha, beta in dets
         ]
@@ -1124,8 +1151,8 @@ class SQDSolver:
         probability = amplitudes**2
         occupancy = np.stack(
             [
-                probability.sum(axis=1) @ _occupation_matrix(strings_alpha, self.n_orb),
-                probability.sum(axis=0) @ _occupation_matrix(strings_beta, self.n_orb),
+                probability.sum(axis=1) @ alpha_bits,
+                probability.sum(axis=0) @ beta_bits,
             ]
         )
         result = SQDResult(
@@ -1193,11 +1220,9 @@ def _spatial_rdms_exact(
     One pass over every pair of determinants, so orders of magnitude slower than
     :func:`compute_spatial_rdms`'s usual path.
     """
-    subspace_dets = [
-        bitstring_to_spatial_det(alpha + beta, n_orb)
-        for alpha in strings_alpha
-        for beta in strings_beta
-    ]
+    alpha_occs = _sector_occupations(strings_alpha, n_orb)
+    beta_occs = _sector_occupations(strings_beta, n_orb)
+    subspace_dets = [(alpha, beta) for alpha in alpha_occs for beta in beta_occs]
     eigenvector = np.asarray(amplitudes, dtype=float).ravel()
     m_dim = len(eigenvector)
 

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Numba JIT-compiled kernel for QH1 histogram decompression.
+"""Numba JIT-compiled kernel for QH1/QH2 histogram decompression.
 
 Indices are represented as little-endian ``uint64`` limb arrays so the
 decoder works uniformly for arbitrary ``n_bits`` (including circuits with
@@ -75,11 +75,15 @@ def _uleb128_decode_limbs_jit(
 @numba.njit(cache=True, nogil=True)
 def _decompress_histogram_jit(
     data: npt.NDArray[np.uint8],
+    n_bits: int,
+    pos: int,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.int64], int, int, int, int, int]:
-    """JIT inner kernel: decompress a QH1 blob into (indices, counts) arrays.
+    """JIT inner kernel: decompress a validated QH histogram body.
 
     Args:
-        data: Raw QH1 blob as a uint8 array.
+        data: Raw QH1 or QH2 blob as a uint8 array.
+        n_bits: Validated histogram width from the Python header parser.
+        pos: Offset immediately after the width header.
 
     Returns:
         ``(indices, counts, n_bits, L, unique, total_shots, n_decoded)`` where
@@ -89,16 +93,13 @@ def _decompress_histogram_jit(
         ``L = ceil(n_bits / 64)``.  ``unique`` is the header-declared count
         (may differ from ``n_decoded`` in corrupt streams).
     """
-    pos = 3  # skip "QH1" magic (validated by caller)
-    n_bits = int(data[pos])
-    pos += 1
+    # Scratch buffer — allocated once, reused for every scalar varint read.
+    scratch1 = np.zeros(1, dtype=np.uint64)
 
     L = (n_bits + 63) // 64
     if L < 1:
         L = 1
 
-    # Scratch buffers ­— allocated once, reused for every varint read.
-    scratch1 = np.zeros(1, dtype=np.uint64)
     gap_scratch = np.zeros(L, dtype=np.uint64)
 
     pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
@@ -155,6 +156,9 @@ def _decompress_histogram_jit(
             pos_scan = _uleb128_decode_limbs_jit(data, pos_scan, scratch1)
             rle_total += int(scratch1[0])
 
+    if rle_total != num_gaps:
+        raise ValueError("corrupt stream: gap/count length mismatch")
+
     is_one = np.empty(rle_total, dtype=np.bool_)
 
     # Second pass: fill is_one
@@ -177,6 +181,13 @@ def _decompress_histogram_jit(
     # --- Extras ---
     pos = _uleb128_decode_limbs_jit(data, pos, scratch1)
     extras_len = int(scratch1[0])
+
+    expected_extras = 0
+    for i in range(n_decoded):
+        if not is_one[i]:
+            expected_extras += 1
+    if extras_len != expected_extras:
+        raise ValueError("corrupt stream: extras/count length mismatch")
 
     extras = np.empty(extras_len, dtype=np.int64)
     for i in range(extras_len):

@@ -2,82 +2,24 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import base64
+
 import numpy as np
 import pytest
 
+from divi.backends import _results_processing as results_processing
 from divi.backends import convert_counts_to_probs, reverse_dict_endianness
 from divi.backends._numba_kernels import (
     _decompress_histogram_jit,
     _uleb128_decode_limbs_jit,
 )
 from divi.backends._results_processing import (
-    _decode_qh1_b64,
+    _MAX_HISTOGRAM_WIDTH,
+    _decode_histogram_b64,
     _decompress_histogram,
-    _limbs_to_bitstring,
+    _limbs_to_bitstrings,
 )
-
-
-def _uleb128(n: int) -> bytes:
-    """Encode a non-negative integer as a ULEB128 varint."""
-    out = bytearray()
-    while True:
-        b = n & 0x7F
-        n >>= 7
-        if n:
-            out.append(b | 0x80)
-        else:
-            out.append(b)
-            return bytes(out)
-
-
-def _build_qh1(n_bits: int, entries: list[tuple[int, int]]) -> bytes:
-    """Build a QH1-encoded histogram blob from ``(index, count)`` entries.
-
-    Entries are sorted by index before encoding.  RLE-compresses the
-    ``count == 1`` boolean sequence; everything else is written as an
-    "extra" equal to ``count - 2``.
-    """
-    entries = sorted(entries, key=lambda e: e[0])
-    indices = [i for i, _ in entries]
-    counts = [c for _, c in entries]
-
-    gaps = []
-    prev = 0
-    for idx in indices:
-        gaps.append(idx - prev)
-        prev = idx
-
-    bools = [c == 1 for c in counts]
-    if not bools:
-        rle_body = b""
-    else:
-        runs = []
-        cur = bools[0]
-        run_len = 1
-        for b in bools[1:]:
-            if b == cur:
-                run_len += 1
-            else:
-                runs.append(run_len)
-                cur = not cur
-                run_len = 1
-        runs.append(run_len)
-        first_val = 1 if bools[0] else 0
-        rle_body = (
-            _uleb128(len(runs))
-            + bytes([first_val])
-            + b"".join(_uleb128(r) for r in runs)
-        )
-
-    extras = [c - 2 for c in counts if c != 1]
-
-    blob = b"QH1" + bytes([n_bits])
-    blob += _uleb128(len(entries))
-    blob += _uleb128(sum(counts))
-    blob += _uleb128(len(gaps)) + b"".join(_uleb128(g) for g in gaps)
-    blob += _uleb128(len(rle_body)) + rle_body
-    blob += _uleb128(len(extras)) + b"".join(_uleb128(e) for e in extras)
-    return blob
+from tests.backends._helpers import build_qh_histogram, encode_uleb128
 
 
 class TestQoroServiceUtilities:
@@ -89,30 +31,51 @@ class TestQoroServiceUtilities:
 
     # --- Top-level Wrapper Function Tests ---
 
-    def test_decode_qh1_b64_empty_or_no_payload(self):
-        """Tests that _decode_qh1_b64 handles empty inputs correctly."""
-        assert _decode_qh1_b64(None) is None
-        assert _decode_qh1_b64({}) == {}
-        assert _decode_qh1_b64({"encoding": "qh1", "payload": ""}) == {
+    def test_decode_histogram_b64_empty_or_no_payload(self):
+        """Tests that _decode_histogram_b64 handles empty inputs correctly."""
+        assert _decode_histogram_b64(None) is None
+        assert _decode_histogram_b64({}) == {}
+        assert _decode_histogram_b64({"encoding": "qh1", "payload": ""}) == {
             "encoding": "qh1",
             "payload": "",
         }
 
-    def test_decode_qh1_b64_unsupported_encoding(self):
-        """Tests that _decode_qh1_b64 raises an error for unsupported encodings."""
+    def test_decode_histogram_b64_unsupported_encoding(self):
+        """Tests that _decode_histogram_b64 raises an error for unsupported encodings."""
         with pytest.raises(ValueError, match="Unsupported encoding: invalid"):
-            _decode_qh1_b64({"encoding": "invalid", "payload": "dGVzdA=="})
+            _decode_histogram_b64({"encoding": "invalid", "payload": "dGVzdA=="})
 
-    def test_decode_qh1_b64_passes_decoded_bytes_to_decompressor(self, mocker):
-        """The base64 payload must be decoded before reaching the decompressor."""
-        mock_decompress = mocker.patch(
-            "divi.backends._results_processing._decompress_histogram"
-        )
+    @pytest.mark.parametrize(
+        ("encoding", "magic", "n_bits"),
+        [("qh1", b"QH1", 3), ("qh2", b"QH2", 256)],
+    )
+    def test_decode_histogram_b64_decodes_supported_envelopes(
+        self, encoding, magic, n_bits
+    ):
+        """Base64 decoding and format dispatch produce the encoded histogram."""
+        key = "1" + "0" * (n_bits - 1)
+        blob = build_qh_histogram(n_bits, [(1 << (n_bits - 1), 2)], magic=magic)
+        encoded = {
+            "encoding": encoding,
+            "n_bits": n_bits,
+            "payload": base64.b64encode(blob).decode("ascii"),
+        }
 
-        # "test" -> base64 -> "dGVzdA=="
-        _decode_qh1_b64({"encoding": "qh1", "payload": "dGVzdA=="})
+        assert _decode_histogram_b64(encoded) == {key: 2}
 
-        mock_decompress.assert_called_once_with(b"test")
+    @pytest.mark.parametrize(("encoding", "magic"), [("qh1", b"QH2"), ("qh2", b"QH1")])
+    def test_decode_histogram_b64_rejects_magic_disagreement(self, encoding, magic):
+        """The envelope encoding and payload magic must describe one format."""
+        n_bits = 3
+        blob = build_qh_histogram(n_bits, [(0, 1)], magic=magic)
+        encoded = {
+            "encoding": encoding,
+            "n_bits": n_bits,
+            "payload": base64.b64encode(blob).decode("ascii"),
+        }
+
+        with pytest.raises(ValueError, match="does not match"):
+            _decode_histogram_b64(encoded)
 
     # --- Core Decompression Logic Tests ---
 
@@ -124,6 +87,12 @@ class TestQoroServiceUtilities:
         """Tests that a payload with an invalid magic header raises a ValueError."""
         with pytest.raises(ValueError, match="bad magic"):
             _decompress_histogram(b"INVALID_MAGIC")
+
+    @pytest.mark.parametrize("payload", [b"QH1", b"QH2", b"QH2\x80"])
+    def test_decompress_histogram_truncated_header_raises(self, payload):
+        """Both header formats report truncation as a decoder ValueError."""
+        with pytest.raises(ValueError, match="truncated"):
+            _decompress_histogram(payload)
 
     def test_decompress_histogram_successful(self):
         """
@@ -214,7 +183,7 @@ class TestQoroServiceUtilities:
         """A varint wider than the destination limb buffer must raise."""
         # 10 bytes encoding 2**64 — bit 64 must spill past a 1-limb buffer,
         # so the decoder must raise rather than silently truncate.
-        data = np.frombuffer(_uleb128(1 << 64), dtype=np.uint8)
+        data = np.frombuffer(encode_uleb128(1 << 64), dtype=np.uint8)
         out = np.zeros(1, dtype=np.uint64)
         with pytest.raises(ValueError, match="exceeds destination width"):
             _uleb128_decode_limbs_jit(data, 0, out)
@@ -241,7 +210,7 @@ class TestQoroServiceUtilities:
         )
         data = np.frombuffer(valid_payload, dtype=np.uint8)
         indices, counts, n_bits, L, unique, total_shots, n_decoded = (
-            _decompress_histogram_jit(data)
+            _decompress_histogram_jit(data, 3, 4)
         )
 
         assert n_bits == 3
@@ -251,6 +220,47 @@ class TestQoroServiceUtilities:
         assert n_decoded == 3
         np.testing.assert_array_equal(indices.ravel(), [1, 5, 7])
         np.testing.assert_array_equal(counts, [1, 3, 1])
+
+    @pytest.mark.parametrize(("num_gaps", "rle_count"), [(2, 1), (1, 2)])
+    def test_decompress_rejects_gap_count_cardinality_mismatch(
+        self, num_gaps, rle_count
+    ):
+        """Every decoded count must have exactly one decoded index."""
+        rle_body = b"\x01\x01" + encode_uleb128(rle_count)
+        blob = b"".join(
+            [
+                b"QH1\x03",
+                encode_uleb128(rle_count),
+                encode_uleb128(rle_count),
+                encode_uleb128(num_gaps),
+                b"\x00" * num_gaps,
+                encode_uleb128(len(rle_body)),
+                rle_body,
+                b"\x00",
+            ]
+        )
+
+        with pytest.raises(ValueError, match="gap/count length mismatch"):
+            _decompress_histogram(blob)
+
+    @pytest.mark.parametrize(("extras_len", "extras"), [(0, b""), (2, b"\x00\x00")])
+    def test_decompress_rejects_extra_count_cardinality_mismatch(
+        self, extras_len, extras
+    ):
+        """Every non-unit count must consume exactly one extras entry."""
+        rle_body = b"\x01\x00\x01"
+        blob = b"".join(
+            [
+                b"QH1\x03\x01\x02\x01\x00",
+                encode_uleb128(len(rle_body)),
+                rle_body,
+                encode_uleb128(extras_len),
+                extras,
+            ]
+        )
+
+        with pytest.raises(ValueError, match="extras/count length mismatch"):
+            _decompress_histogram(blob)
 
     # --- Wide-register (limb array) tests ---
 
@@ -264,7 +274,7 @@ class TestQoroServiceUtilities:
         length, or silent truncation).
         """
         index = 1 << (n_bits - 1)
-        blob = _build_qh1(n_bits, [(index, 1)])
+        blob = build_qh_histogram(n_bits, [(index, 1)])
         result = _decompress_histogram(blob)
         expected_key = "1" + "0" * (n_bits - 1)
         assert result == {expected_key: 1}
@@ -275,7 +285,7 @@ class TestQoroServiceUtilities:
         """Several entries mixing small and wide indices decode correctly."""
         top = 1 << (n_bits - 1)
         entries = [(0, 2), (1, 1), (top - 1, 4), (top, 3), (top | 1, 1)]
-        blob = _build_qh1(n_bits, entries)
+        blob = build_qh_histogram(n_bits, entries)
         result = _decompress_histogram(blob)
 
         def to_key(i: int) -> str:
@@ -291,7 +301,62 @@ class TestQoroServiceUtilities:
         # The top limb holds bits that must all be zero above bit 4; they
         # aren't, so the validator must raise rather than silently return a
         # wrong-width bitstring.
-        blob = _build_qh1(4, [(16, 1)])
+        blob = build_qh_histogram(4, [(16, 1)])
+        with pytest.raises(ValueError, match="exceeds n_bits"):
+            _decompress_histogram(blob)
+
+    # --- QH2 (>255 bits, ULEB128 width) tests ---
+
+    @pytest.mark.parametrize(
+        ("n_bits", "magic"), [(255, b"QH1"), (256, b"QH2"), (300, b"QH2")]
+    )
+    def test_decompress_histogram_across_qh2_boundary(self, n_bits, magic):
+        """Both width encodings decode exact histograms across the boundary."""
+        top = 1 << (n_bits - 1)
+        entries = [(0, 2), (1, 1), (top, 3), (top | 1, 1)]
+        blob = build_qh_histogram(n_bits, entries, magic=magic)
+        result = _decompress_histogram(blob)
+
+        expected = {format(i, f"0{n_bits}b"): c for i, c in entries}
+        assert result == expected
+
+    @pytest.mark.parametrize("n_bits", [_MAX_HISTOGRAM_WIDTH + 1, 2**63 + 5])
+    def test_decompress_qh2_width_above_the_maximum_raises(self, n_bits):
+        """A few header bytes must not be able to demand a huge allocation."""
+        blob = build_qh_histogram(n_bits, [(0, 1)], magic=b"QH2")
+        with pytest.raises(ValueError, match="exceeds the maximum supported"):
+            _decompress_histogram(blob)
+
+    def test_decompress_envelope_width_disagreement_raises(self):
+        """The envelope's n_bits and the payload's must agree."""
+        blob = build_qh_histogram(256, [(1, 1)], magic=b"QH2")
+        encoded = {
+            "encoding": "qh2",
+            "n_bits": 255,
+            "payload": base64.b64encode(blob).decode("ascii"),
+        }
+        with pytest.raises(ValueError, match="envelope declares"):
+            _decode_histogram_b64(encoded)
+
+    @pytest.mark.parametrize("n_bits", [65, -3])
+    def test_limbs_to_bitstrings_width_wider_than_limbs_raises(self, n_bits):
+        """A width past the limb buffer would silently render a short slice."""
+        with pytest.raises(ValueError, match="not renderable"):
+            _limbs_to_bitstrings(np.zeros((1, 1), dtype=np.uint64), n_bits, 1)
+
+    def test_limbs_to_bitstrings_spans_render_blocks(self, monkeypatch):
+        """Rendering is chunked, so rows must not be dropped or reordered."""
+        monkeypatch.setattr(results_processing, "_RENDER_BLOCK_CELLS", 40)
+        n_rows = 7
+        limbs = np.arange(n_rows, dtype=np.uint64).reshape(n_rows, 1)
+        rendered = _limbs_to_bitstrings(limbs, 20, 1)
+        assert rendered == [format(i, "020b") for i in range(n_rows)]
+
+    def test_decompress_qh2_index_exceeding_n_bits_raises(self):
+        """The width validator must still fire on the QH2 path."""
+        # n_bits=300 -> 5 limbs, top limb carrying 44 valid bits; bit 300 is
+        # inside the buffer but outside the declared width.
+        blob = build_qh_histogram(300, [(1 << 300, 1)], magic=b"QH2")
         with pytest.raises(ValueError, match="exceeds n_bits"):
             _decompress_histogram(blob)
 
@@ -303,17 +368,17 @@ class TestQoroServiceUtilities:
         Python's ``s[-0:]`` returns ``s`` in full, so a naive implementation
         would emit 64 chars for a ``n_bits == 0`` input.
         """
-        limbs = np.zeros(1, dtype=np.uint64)
-        assert _limbs_to_bitstring(limbs, 0, 1) == ""
+        limbs = np.zeros((1, 1), dtype=np.uint64)
+        assert _limbs_to_bitstrings(limbs, 0, 1) == [""]
 
         # Non-zero limb content must also be ignored at width 0.
-        limbs[0] = np.uint64(0xDEADBEEF)
-        assert _limbs_to_bitstring(limbs, 0, 1) == ""
+        limbs[0, 0] = np.uint64(0xDEADBEEF)
+        assert _limbs_to_bitstrings(limbs, 0, 1) == [""]
 
     def test_limbs_to_bitstring_multiple_of_64(self):
         """Width exactly a multiple of 64 must return the full concatenation."""
-        limbs = np.array([np.uint64(0x5), np.uint64(0x1)], dtype=np.uint64)
-        result = _limbs_to_bitstring(limbs, 128, 2)
+        limbs = np.array([[np.uint64(0x5), np.uint64(0x1)]], dtype=np.uint64)
+        (result,) = _limbs_to_bitstrings(limbs, 128, 2)
         assert len(result) == 128
         # Top limb (0x1) -> bit 0 of limb[1] set -> bit 64 of the 128-bit value
         # -> position (128 - 1 - 64) = 63 from the left.
@@ -323,6 +388,27 @@ class TestQoroServiceUtilities:
         # All other bits zero.
         ones = {63, 125, 127}
         assert {i for i, c in enumerate(result) if c == "1"} == ones
+
+    @pytest.mark.parametrize("n_bits", [7, 65, 130])
+    def test_limbs_to_bitstrings_batch_matches_scalar_format(self, n_bits):
+        """A batch render equals per-row big-endian formatting at any width."""
+        rng = np.random.default_rng(0)
+        n_limbs = (n_bits + 63) // 64
+        limbs = rng.integers(
+            0, 1 << 63, size=(5, n_limbs), dtype=np.uint64, endpoint=True
+        )
+        # Keep every value inside the declared width.
+        top_bits = n_bits - (n_limbs - 1) * 64
+        if top_bits < 64:
+            limbs[:, -1] &= np.uint64((1 << top_bits) - 1)
+
+        expected = [
+            format(
+                sum(int(limb) << (64 * j) for j, limb in enumerate(row)), f"0{n_bits}b"
+            )
+            for row in limbs
+        ]
+        assert _limbs_to_bitstrings(limbs, n_bits, n_limbs) == expected
 
     def test_uleb128_decode_truncated_varint_raises(self):
         """A varint whose final byte still has the continuation bit set must raise.
@@ -351,7 +437,7 @@ class TestQoroServiceUtilities:
         # uint64 arithmetic. For n_bits=64 the top-limb mask check is
         # skipped (top_bits_used == 64), so only the final-carry guard can
         # detect this corruption.
-        blob = _build_qh1(64, [(1 << 63, 1), (1 << 64, 1)])
+        blob = build_qh_histogram(64, [(1 << 63, 1), (1 << 64, 1)])
         with pytest.raises(ValueError, match="overflows limb buffer"):
             _decompress_histogram(blob)
 

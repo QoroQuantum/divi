@@ -17,6 +17,7 @@ import divi.qprog.workflows._lassqd._sqd as sqd_module
 from divi.qprog.workflows._lassqd._sqd import (
     SQDSolver,
     _heaviest_strings,
+    _sector_occupations,
     _spatial_rdms_exact,
     bit_flip_correction,
     bitstring_to_spatial_det,
@@ -80,6 +81,55 @@ def test_bitstring_to_spatial_det():
     """Blocked SQD bitstring '1001' on 2 orbitals: alpha {0}, beta {1}."""
     assert bitstring_to_spatial_det("1001", n_orb=2) == ((0,), (1,))
     assert bitstring_to_spatial_det("1010", n_orb=2) == ((0,), (0,))
+
+
+@pytest.mark.parametrize("n_orb", [2, 70])
+def test_sector_occupations_matches_per_string_decode(n_orb):
+    """A sector's occupations equal decoding each string on its own.
+
+    Determinants are the product of two sectors, so the per-string decode runs
+    once per sector string here instead of once per determinant.
+    """
+    rng = np.random.default_rng(4)
+    strings = ["".join(rng.choice(["0", "1"], n_orb)) for _ in range(6)]
+    strings.append("0" * n_orb)
+    strings.append("1" * n_orb)
+
+    expected = [
+        bitstring_to_spatial_det(half + "0" * n_orb, n_orb)[0] for half in strings
+    ]
+    assert _sector_occupations(strings, n_orb) == expected
+
+
+@pytest.mark.parametrize(
+    ("consumer", "args"),
+    [
+        pytest.param(
+            _sector_occupations,
+            (["1010", "10", "101010"], 4),
+            id="occupations",
+        ),
+        pytest.param(
+            filter_symmetry,
+            (["1010", "10100", "101"], 2, 1, 1),
+            id="symmetry",
+        ),
+    ],
+)
+def test_ragged_strings_are_rejected_not_regrouped(consumer, args):
+    """Mixed widths summing to the expected total must raise.
+
+    Reshaping alone would produce rows straddling two strings, silently
+    filtering or occupying the wrong orbitals.
+    """
+    with pytest.raises(ValueError, match="got one of width"):
+        consumer(*args)
+
+
+def test_non_binary_sector_string_is_rejected():
+    """Packed sector decoding must not treat arbitrary character bytes as bits."""
+    with pytest.raises(ValueError, match="non-binary"):
+        _sector_occupations(["1200"], n_orb=4)
 
 
 def test_slater_condon_vanishes_beyond_double_excitation():
