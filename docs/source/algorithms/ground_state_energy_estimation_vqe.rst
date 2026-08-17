@@ -1,19 +1,43 @@
 Ground-State Energy Estimation with VQE
 =======================================
 
-The Variational Quantum Eigensolver (VQE) is a quantum algorithm for finding the ground state energy of quantum systems, particularly useful for quantum chemistry applications.
+The Variational Quantum Eigensolver (VQE) estimates a ground-state energy by
+optimizing a parameterized state against a Hamiltonian. Divi accepts the
+problem in the ecosystem where it already lives:
 
-The :class:`~divi.qprog.algorithms.VQE` constructor accepts molecule and Hamiltonian objects from three chemistry ecosystems. The ``molecule`` argument takes a PennyLane `qchem <https://docs.pennylane.ai/en/stable/code/qml_qchem.html>`_ `Molecule <https://docs.pennylane.ai/en/stable/code/api/pennylane.qchem.Molecule.html>`_ object, or a PySCF `gto.Mole <https://pyscf.org/user/gto.html>`_ / restricted (RHF, closed-shell) mean-field object — either way, the molecular Hamiltonian is generated automatically. Alternatively, pass the Hamiltonian itself via ``hamiltonian=``, as a PennyLane operator, a Qiskit ``SparsePauliOp``, or an OpenFermion `QubitOperator <https://quantumai.google/openfermion>`_. The PySCF and OpenFermion paths require the ``chem`` extra (``pip install qoro-divi[chem]``).
+.. list-table:: VQE inputs
+   :header-rows: 1
+   :widths: 20 38 27 15
+
+   * - Argument
+     - Accepted object
+     - What Divi does
+     - Extra
+   * - ``molecule``
+     - PennyLane ``qchem.Molecule``
+     - Builds the molecular Hamiltonian automatically
+     - Default install
+   * - ``molecule``
+     - PySCF ``gto.Mole`` or restricted mean-field object
+     - Runs or reuses RHF, then builds the Hamiltonian
+     - ``chem``
+   * - ``hamiltonian``
+     - PennyLane operator or Qiskit ``SparsePauliOp``
+     - Uses the supplied qubit Hamiltonian directly
+     - Default install
+   * - ``hamiltonian``
+     - OpenFermion ``QubitOperator``
+     - Converts it to Divi's internal operator form
+     - ``chem``
+
+Install chemistry integrations with ``pip install qoro-divi[chem]``.
 
 This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
 :class:`~divi.qprog.workflows.VQEHyperparameterSweep`.
 
-.. tip::
-
-   On sampling backends, ``shot_distribution`` caps the total at a single shot
-   budget instead of giving every measurement group the full count, and splits it
-   across the groups.  See `Spending Shots Where They Matter`_ below.
+On sampling backends, see `Spending Shots Where They Matter`_ before assigning
+a large measurement budget.
 
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
 -----------------------------------------------
@@ -66,44 +90,14 @@ Choose PennyLane, PySCF, or OpenFermion based on where your molecule or
 Hamiltonian already lives — Divi does not require converting between
 ecosystems before handing an object to :class:`~divi.qprog.algorithms.VQE`.
 
-Pass a PySCF ``gto.Mole`` or restricted mean-field object directly as
-``molecule=``; Divi runs (or reuses) the RHF calculation and builds the
-molecular Hamiltonian via
-:func:`~divi.hamiltonians.molecular_hamiltonian_from_pyscf`. This path
-requires the ``chem`` extra (``pip install qoro-divi[chem]``):
+Pass a PySCF ``gto.Mole`` or restricted mean-field object as ``molecule=``.
+Divi runs or reuses RHF and builds the Hamiltonian through
+:func:`~divi.hamiltonians.molecular_hamiltonian_from_pyscf`. This requires the
+``chem`` extra.
 
-.. skip: next
-
-.. code-block:: python
-
-   from pyscf import gto
-   from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import MaestroSimulator
-
-   mol = gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g")
-
-   vqe_problem = VQE(
-       molecule=mol,
-       ansatz=HartreeFockAnsatz(),
-       n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=10,
-       backend=MaestroSimulator(),
-   )
-   vqe_problem.run()
-
-An OpenFermion ``QubitOperator`` can be passed as ``hamiltonian=`` — not
-just for VQE, but for any Divi program whose ``hamiltonian=`` input routes
-through :func:`~divi.hamiltonians.to_spo` (VQE, TimeEvolution, QAOA). The
-conversion is handled by
-:func:`~divi.hamiltonians.qubit_operator_to_spo` and requires the
-``chem`` extra (``pip install qoro-divi[chem]``). OpenFermion
-qubit ``q`` maps to circuit qubit ``q``. ``qubit_operator_to_spo``'s default
-``n_qubits`` is one past the operator's highest-indexed qubit, so a
-``QubitOperator`` narrower than your target circuit should be converted
-explicitly with an ``n_qubits`` argument before being passed in, rather than
-handed straight to ``hamiltonian=``:
+OpenFermion ``QubitOperator`` inputs also require ``chem``. OpenFermion qubit
+``q`` maps to Divi circuit qubit ``q``. Convert explicitly when the target
+register is wider than the operator support:
 
 .. skip: next
 
@@ -111,67 +105,21 @@ handed straight to ``hamiltonian=``:
 
    from openfermion import QubitOperator
    from divi.hamiltonians import qubit_operator_to_spo
-   from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import MaestroSimulator
-
    qop = QubitOperator("Z0 Z1", 1.0) + QubitOperator("X0", 0.5)
-
-   # qop's own support is qubits 0-1; convert explicitly for a wider register.
    ham = qubit_operator_to_spo(qop, n_qubits=4)
-
-   vqe_problem = VQE(
-       hamiltonian=ham,
-       n_electrons=2,
-       ansatz=HartreeFockAnsatz(),
-       n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=10,
-       backend=MaestroSimulator(),
-   )
-   vqe_problem.run()
 
 Hamiltonian Input
 ^^^^^^^^^^^^^^^^^
 
-In the case of a Hamiltonian input, the input would be passed to the constructor as follows:
-
-.. code-block:: python
-
-   import numpy as np
-   import pennylane as qp
-   from divi.qprog import VQE, HartreeFockAnsatz
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-   from divi.backends import MaestroSimulator
-
-   mol = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
-   )
-   ham, _ = qp.qchem.molecular_hamiltonian(mol)
-
-   vqe_problem = VQE(
-       hamiltonian=ham,
-       n_electrons=mol.n_electrons,
-       ansatz=HartreeFockAnsatz(),
-       n_layers=2,
-       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
-       max_iterations=10,
-       backend=MaestroSimulator(),
-   )
-
-In the case where the input is a Hamiltonian, the number of electrons present in the given system must be provided when the chosen ansatz is UCCSD or Hartree-Fock.
+Pass a PennyLane or Qiskit Hamiltonian as ``hamiltonian=``. Chemistry ansätze
+such as UCCSD and Hartree–Fock also require ``n_electrons``.
 
 Initial Parameters
 ^^^^^^^^^^^^^^^^^^
 
-Setting good initial parameters can significantly improve VQE convergence and prevent getting trapped in local minima. This is particularly useful for:
-
-- **Molecular dissociation curves**: Use optimal parameters from previous bond lengths as starting points
-- **Parameter sweeps**: Initialize from known good parameter regions
-- **Restarting failed optimizations**: Use parameters from partial convergence
-
-You can set initial parameters by passing ``initial_params`` to ``run()``. For detailed information and examples, see the :doc:`core_concepts` guide on Parameter Management.
+Pass ``initial_params`` to ``run()`` to warm-start from known parameters or
+continue a geometry sweep or interrupted optimization. See
+:ref:`variational-run-controls`.
 
 Initial State
 ^^^^^^^^^^^^^
@@ -188,47 +136,33 @@ circuits); custom or hardware-efficient ansätze are the usual place to set it.
 Available Ansätze
 -----------------
 
-Divi provides several built-in ansätze for VQE calculations. For detailed documentation of each ansatz class, see the :doc:`/api_reference/qprog/algorithms` page.
+Use a chemistry ansatz when its reference-state assumptions match the problem;
+use a hardware-efficient ansatz when circuit shape matters more than a
+chemistry-derived parameterization. See
+:doc:`/api_reference/qprog/algorithms` for constructor details.
+
+.. list-table:: Ansatz selection
+   :header-rows: 1
+   :widths: 28 72
+
+   * - Ansatz
+     - Typical use
+   * - :class:`~divi.qprog.algorithms.HartreeFockAnsatz`
+     - Minimal chemistry baseline and reference-state preparation.
+   * - :class:`~divi.qprog.algorithms.UCCSDAnsatz`
+     - Chemistry calculations where excitation-based structure is useful.
+   * - :class:`~divi.qprog.algorithms.QCCAnsatz`
+     - Qubit-space chemistry with selected entanglers.
+   * - :class:`~divi.qprog.algorithms.GenericLayerAnsatz`
+     - Custom hardware-efficient gate sequences and connectivity.
 
 Custom Ansätze
 ^^^^^^^^^^^^^^
 
-Implement a custom ansatz by subclassing the abstract :class:`~divi.qprog.algorithms.Ansatz` class and providing two methods — it will then plug directly into Divi's execution routine:
-
-.. skip: next
-
-.. code-block:: python
-
-   class Ansatz(ABC):
-       """Abstract base class for all VQE ansätze."""
-
-       @property
-       def name(self) -> str:
-           """Returns the human-readable name of the ansatz."""
-           return self.__class__.__name__
-
-       @staticmethod
-       @abstractmethod
-       def n_params_per_layer(n_qubits: int, **kwargs) -> int:
-           """Returns the number of parameters required by the ansatz for one layer."""
-           raise NotImplementedError
-
-       @abstractmethod
-       def build(self, params, n_qubits: int, n_layers: int, **kwargs):
-           """
-           Builds the ansatz circuit.
-
-           Args:
-               params (array): The parameters (weights) for the ansatz.
-               n_qubits (int): The number of qubits.
-               n_layers (int): The number of layers.
-               **kwargs: Additional arguments like n_electrons for chemistry ansätze.
-           """
-           raise NotImplementedError
-
-The ``build`` method must return a list of PennyLane operations
-(``list[qp.operation.Operator]``). Refer to the built-in ansätze in the
-repository for concrete examples.
+A custom :class:`~divi.qprog.algorithms.Ansatz` implements
+``n_params_per_layer`` and ``build``; ``build`` returns the PennyLane operations
+for all requested layers. Use :doc:`/api_reference/qprog/algorithms` for the
+full abstract contract and the built-in implementations as concrete examples.
 
 .. important::
 
@@ -247,9 +181,12 @@ repository for concrete examples.
 VQE Hyperparameter Sweep
 ------------------------
 
-By sweeping over physical parameters like bond length and varying the ansatz, this mode enables large-scale quantum chemistry simulations — efficiently distributing the workload across cloud or hybrid backends.
-
-This mode is particularly useful for the study **molecular behavior** and **reaction dynamics**. It also allows one to compare **ansatz performance** and **optimizer robustness**. All through a single class!
+Use :class:`~divi.qprog.workflows.VQEHyperparameterSweep` when the same VQE
+study spans several molecular geometries, ansatzes, or optimizer settings. It
+builds the Cartesian product of those choices, runs each configuration, and
+aggregates the results for comparison. Typical uses include tracing a bond
+dissociation curve and testing how robust an ansatz or optimizer remains as the
+geometry changes.
 
 Configuring the Molecular Transformations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -338,13 +275,11 @@ Spending Shots Where They Matter
 --------------------------------
 
 For chemistry Hamiltonians the coefficient distribution is typically highly
-skewed — a handful of dominant terms account for most of the energy, while
-many small terms contribute fractions of a millihartree.  Sampling every
-measurement group with the full shot count wastes precision on those small
-terms.
+skewed. Under a fixed total budget, uniform allocation can oversample
+low-weight groups and undersample dominant ones.
 
-Pass ``shot_distribution`` to focus the same total budget on the groups
-that matter:
+Continuing from the sweep setup above, focus the same total budget on dominant
+groups:
 
 .. code-block:: python
 
@@ -352,7 +287,7 @@ that matter:
    from divi.backends import QiskitSimulator
 
    vqe = VQE(
-       molecule=molecule,
+       molecule=mol,
        ansatz=UCCSDAnsatz(),
        optimizer=mc_optimizer,
        backend=QiskitSimulator(force_sampling=True, shots=2000),
@@ -373,7 +308,7 @@ Next Steps
 ----------
 
 - Try the runnable tutorials in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
-- Learn about :doc:`optimizers` for optimization strategies
+- Learn about :doc:`../execution_workflows/optimizers` for optimization strategies
 - Explore :doc:`improving_results_qem` for error mitigation
-- Save and resume long runs with :doc:`resuming_long_runs`
-- Visualize the loss landscape with :doc:`visualization`
+- Save and resume long runs with :doc:`../execution_workflows/resuming_long_runs`
+- Visualize the loss landscape with :doc:`../execution_workflows/visualization`

@@ -13,13 +13,34 @@ On each checkpoint, Divi writes **program** state (parameters, losses, iteration
 - **Chunk long jobs** — stop and restart without re-running from scratch
 - **Raise iteration caps** — increase ``max_iterations`` after :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.load_state`
 
-Checkpointing is supported for all :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` subclasses (:class:`~divi.qprog.algorithms.VQE`, :class:`~divi.qprog.algorithms.QAOA`) and works with checkpointing-capable optimizers:
+Checkpointing is available to variational programs such as
+:class:`~divi.qprog.algorithms.VQE` and :class:`~divi.qprog.algorithms.QAOA`,
+but the optimizer must also support restoring its state:
 
-- :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
-- :class:`~divi.qprog.optimizers.PymooOptimizer` (CMAES and DE methods)
+.. list-table:: Checkpoint compatibility
+   :header-rows: 1
+   :widths: 45 20 35
 
-.. note::
-   :class:`~divi.qprog.optimizers.ScipyOptimizer` does not support checkpointing due to limitations in the underlying scipy optimization methods.
+   * - Optimizer
+     - Supported
+     - Notes
+   * - :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
+     - Yes
+     - Restores the population and RNG state.
+   * - :class:`~divi.qprog.optimizers.PymooOptimizer`
+     - Yes
+     - Supports CMA-ES and Differential Evolution state.
+   * - :class:`~divi.qprog.optimizers.ScipyOptimizer`
+     - No
+     - The underlying SciPy methods do not expose resumable state.
+   * - :class:`~divi.qprog.optimizers.QNGOptimizer`
+     - No
+     - Rejects checkpoint configuration before the run starts.
+   * - :class:`~divi.qprog.optimizers.SPSAOptimizer`,
+       :class:`~divi.qprog.optimizers.QNSPSAOptimizer`, and
+       :class:`~divi.qprog.optimizers.QUIVEROptimizer`
+     - No
+     - Their adaptive state is rebuilt rather than restored.
 
 Basic Usage
 -----------
@@ -194,7 +215,7 @@ Here's a complete example showing checkpointing with :class:`~divi.qprog.algorit
    )
 
    # Continue optimization
-   qaoa2.max_iterations = 10
+   qaoa2.max_iterations = 20  # Raise the cumulative target beyond the saved run
    qaoa2.run()
 
    # Access results
@@ -348,7 +369,7 @@ Handle load failures explicitly when you build tooling or CLIs:
 Limitations
 -----------
 
-- **:class:`~divi.qprog.optimizers.ScipyOptimizer`** does not support checkpointing
+- Optimizers marked unsupported in the compatibility table reject checkpointing
 - Checkpoints are **not portable** across different Python versions or library versions
 - Problem configuration must be **manually provided** when loading (not stored in checkpoint)
 - Checkpoint files can be **large** for population-based optimizers (MonteCarlo, Pymoo)

@@ -168,7 +168,7 @@ Examples:
 ```
 feat: add beam search aggregation strategy
 fix: resolve duplicate object warnings in docs
-docs: update backends user guide with execution config
+docs: update backend execution guide with job configuration
 test: add auth token resolution tests
 ```
 

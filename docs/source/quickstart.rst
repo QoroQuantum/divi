@@ -60,7 +60,8 @@ Let's solve a quantum chemistry problem - finding the ground state energy of a h
    print(f"Ground state energy: {vqe.best_loss:.6f} Hartree")
    print(f"Circuits executed: {vqe.total_circuit_count}")
 
-That's it — you just ran a variational quantum algorithm. The energy should be close to -1.137 Hartree (H₂'s true ground state energy).
+That's it — you just ran a variational quantum algorithm. The energy should be
+close to the ``-1.137`` Hartree reference for this geometry and model.
 
 .. tip::
 
@@ -115,7 +116,7 @@ Divi offers specialized algorithms for different problem types:
       print(f"Solution: {qaoa.solution}")
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding**
-   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/user_guide/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
+   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/algorithms/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
 
    .. dashboard-example: pce
 
@@ -158,15 +159,15 @@ Divi offers specialized algorithms for different problem types:
           backend=MaestroSimulator(shots=5000),
       )
       te.run()
-      print(te.results)  # basis-state probabilities or expectation value
+      print(te.results)  # basis-state probabilities
 
 **QNN – Quantum Machine Learning**
    Use :class:`~divi.qprog.algorithms.QNN` to train a variational classifier on a
    classical feature batch: a feature map encodes each sample, a trainable ansatz
    supplies the weights, and Divi composes and binds the circuit for you. See
-   :doc:`user_guide/quantum_neural_networks`. To bring your own PennyLane or
+   :doc:`algorithms/quantum_neural_networks`. To bring your own PennyLane or
    Qiskit circuit instead, use :class:`~divi.qprog.algorithms.CustomVQA`
-   (:doc:`user_guide/framework_integration`).
+   (:doc:`execution_workflows/framework_integration`).
 
    .. dashboard-example: qnn
 
@@ -187,6 +188,8 @@ Divi offers specialized algorithms for different problem types:
               entangling_layout="linear",
           ),
           feature_batch=np.array([[0.1, 0.2], [2.0, 2.1]]),
+          labels=np.array([-1.0, 1.0]),
+          loss_fn="squared_error",
           max_iterations=5,
           optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
           backend=MaestroSimulator(),
@@ -224,7 +227,7 @@ Rebuilding the H₂ VQE from the top of this page:
    ├── MeasurementStage [obs_group] → ÷14
    │   ├── strategy: _backend_expval
    │   └── n_pauli_terms: 14
-   ├── Total (per evaluation): 14 ÷ 14 = 1 circuit · 1,000 shots
+   ├── Total (per evaluation): 14 ÷ 14 = 1 circuit · 1,000 configured shots
    └── Summary: avg depth 47, width 4, 36 2q-gates total
 
    sample
@@ -240,7 +243,9 @@ carry two further stages (``PreprocessStage`` and ``ParameterBindingStage``, bot
 at factor ``1`` here).
 
 Read a tree bottom-up: the ``Total`` line is the number you came for — this program
-submits **1 circuit per evaluation**. The rows above show how it got there. The
+submits **1 circuit per evaluation**. Maestro evaluates this expectation value
+analytically, so the displayed 1,000 shots are configured but not consumed. The
+rows above show how it got there. The
 spec stage's ``14`` is the starting point (this Hamiltonian has 14 Pauli terms),
 and each stage below multiplies or divides it: here ``MaestroSimulator`` evaluates
 the whole observable at once, so ``÷14`` collapses those 14 terms back into a
@@ -261,7 +266,10 @@ Backend Options
 ---------------
 
 **Local development**
-   Use :class:`~divi.backends.MaestroSimulator` (shown in all examples above) for fast iteration and testing. For noisy simulation, use :class:`~divi.backends.QiskitSimulator` with Qiskit noise models.
+   Use :class:`~divi.backends.MaestroSimulator` (shown in all examples above)
+   for fast iteration, testing, and Pauli-channel noise. Use
+   :class:`~divi.backends.QiskitSimulator` when you need Qiskit-native or
+   device-calibrated noise models.
 
 **Cloud simulation & hardware**
    Access scalable cloud simulators (statevector, tensor-network, and more) through :class:`~divi.backends.QoroService`. Sign up at `dash.qoroquantum.net <https://dash.qoroquantum.net/>`_ to get started with free credits. For real quantum hardware access, `contact us <https://qoroquantum.net>`_:
@@ -287,20 +295,23 @@ Backend Options
           {"my_circuit": qasm},
           override_job_config=JobConfig(simulator_cluster="qoro_maestro"),
       )
+      service.poll_job_status(result, loop_until_complete=True)
+      completed = service.get_job_results(result)
+      print(completed.results)
 
 What to read next
 -----------------
 
-Now that you have a VQE run working, dig into the user guide:
+Now that you have a VQE run working, continue with the focused guides:
 
-* **Deepen your understanding of the algorithms** — :doc:`user_guide/ground_state_energy_estimation_vqe`, :doc:`user_guide/combinatorial_optimization_qaoa_pce`, :doc:`user_guide/hamiltonian_time_evolution`.
-* **Train a quantum model** — build a quantum neural network with :doc:`user_guide/quantum_neural_networks`, or bring your own PennyLane/Qiskit circuit via :doc:`user_guide/framework_integration`.
+* **Deepen your understanding of the algorithms** — :doc:`algorithms/ground_state_energy_estimation_vqe`, :doc:`algorithms/combinatorial_optimization_qaoa_pce`, :doc:`algorithms/hamiltonian_time_evolution`.
+* **Train a quantum model** — build a quantum neural network with :doc:`algorithms/quantum_neural_networks`, or bring your own PennyLane/Qiskit circuit via :doc:`execution_workflows/framework_integration`.
 * **Scale up** — run many programs in parallel, or over adaptive rounds, with
-  :doc:`user_guide/program_ensembles`.
-* **Improve noisy results** — mitigate errors with :doc:`user_guide/improving_results_qem`.
-* **Tune the optimizer** — see :doc:`user_guide/optimizers`.
-* **Inspect and diagnose runs** — :doc:`user_guide/visualization`.
-* **Understand how circuits flow through Divi** — the expand/execute/reduce model is in :doc:`user_guide/pipelines`, which also covers :ref:`previewing a run before you submit it <dry-run>`.
+  :doc:`execution_workflows/program_ensembles`.
+* **Improve noisy results** — mitigate errors with :doc:`algorithms/improving_results_qem`.
+* **Tune the optimizer** — see :doc:`execution_workflows/optimizers`.
+* **Inspect and diagnose runs** — :doc:`execution_workflows/visualization`.
+* **Understand how circuits flow through Divi** — the expand/execute/reduce model is in :doc:`execution_workflows/pipelines`, which also covers :ref:`previewing a run before you submit it <dry-run>`.
 * **End-to-end walkthroughs** — the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory on GitHub.
 
 Found a bug or want a feature? Open a ticket on `GitHub Issues <https://github.com/QoroQuantum/divi/issues>`_.

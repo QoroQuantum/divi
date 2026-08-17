@@ -5,9 +5,11 @@ Quantum Neural Networks
 quantum machine learning. It trains the weights of a parameterized circuit over
 a batch of classical feature vectors. By default it minimizes the expectation
 value of a chosen observable averaged across the batch (unsupervised); pass
-``labels`` to train a **supervised** loss instead (see `Supervised training`_).
+``labels`` to train a **supervised** loss instead. The quick start uses this
+supervised path; unsupervised reduction is described under
+`The Observable and the Loss`_.
 
-Unlike :doc:`framework_integration` (where you bring your own circuit via
+Unlike :doc:`../execution_workflows/framework_integration` (where you bring your own circuit via
 :class:`~divi.qprog.algorithms.CustomVQA`), ``QNN`` **builds the circuit for
 you** from two composable pieces:
 
@@ -17,18 +19,15 @@ you** from two composable pieces:
 - an :class:`~divi.qprog.algorithms.Ansatz` — the *trainable* layer. Any Divi
   ansatz works; its parameters are the weights the optimizer updates.
 
-Data parameters and weight parameters are kept disjoint. At every optimization
-step, the cost observable is evaluated on the composed circuit once per sample,
-the per-sample expectation values are reduced along the sample axis (mean by
-default), and a single scalar loss per weight candidate is handed to the
-optimizer. **The optimizer never sees the data axis** — the fan-out and
-reduction happen inside the pipeline's data-binding stage.
+Data parameters and weights remain disjoint. In unsupervised mode, the pipeline
+reduces per-sample expectations directly. With labels, ``loss_fn`` first turns
+each prediction-label pair into a loss, then ``loss_reduction`` aggregates it.
+The optimizer sees one scalar per weight candidate, never the data axis.
 
 Quick Start
 -----------
 
-Train a tiny 2-qubit QNN on a four-sample toy dataset (unsupervised — it
-minimizes the observable; the `Supervised training`_ section adds labels):
+Train a tiny 2-qubit classifier on four labeled samples:
 
 .. code-block:: python
 
@@ -44,6 +43,7 @@ minimizes the observable; the `Supervised training`_ section adds labels):
    # Two loose clusters: (n_samples, n_features). n_features must match the
    # feature map's parameter count — AngleEmbedding uses one feature per qubit.
    X_train = np.array([[0.1, 0.2], [0.3, 0.5], [2.0, 2.1], [2.3, 2.4]])
+   y_train = np.array([-1.0, -1.0, 1.0, 1.0])
 
    program = QNN(
        n_qubits=n_qubits,
@@ -54,6 +54,8 @@ minimizes the observable; the `Supervised training`_ section adds labels):
            entangling_layout="linear",
        ),
        feature_batch=X_train,
+       labels=y_train,
+       loss_fn="squared_error",
        n_layers=2,
        loss_reduction="mean",
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
@@ -132,8 +134,9 @@ available on :class:`~divi.qprog.algorithms.CustomVQA` when it has a data axis.
 **Regression use.** ``return_scores=True`` returns the raw ⟨H⟩ value per sample —
 a continuous output in the observable's readout range.  For the default all-qubit
 parity observable (``Z ⊗ Z ⊗ … ⊗ Z``) that range is ``[-1, 1]``.  When training
-a regressor, scale your continuous targets into this range; using targets outside
-it makes the supervised loss asymmetric and can slow or prevent convergence.  For a
+a regressor, scale your continuous targets into this range. Targets outside it
+are unattainable, forcing predictions toward the boundary and potentially
+slowing or preventing convergence. For a
 custom observable, inspect its eigenvalue range and scale accordingly.
 
 **Low-dimensional inputs.** The built-in feature maps
@@ -169,24 +172,26 @@ implement ``n_params`` and ``build``.
 The Observable and the Loss
 ---------------------------
 
-``observable`` is the operator whose expectation value is minimized, as a
+``observable`` produces one prediction per sample, as a
 :class:`~qiskit.quantum_info.SparsePauliOp` acting on ``n_qubits`` qubits. It
 defaults to the all-qubit parity ``Z ⊗ Z ⊗ … ⊗ Z``, which gives a single
 readout in ``[-1, 1]`` informed by every qubit. Pass your own to change the
 readout, e.g. ``SparsePauliOp.from_list([("ZI", 1.0)])`` to read a single qubit.
+Unsupervised mode minimizes this expectation directly; supervised mode compares
+it with each label through ``loss_fn``.
 
-``loss_reduction`` controls how the per-sample expectation values collapse into
-the scalar the optimizer sees:
+``loss_reduction`` aggregates per-sample expectations in unsupervised mode and
+per-sample losses in supervised mode:
 
 - ``"mean"`` (default) — average over the batch.
 - ``"sum"`` — total over the batch.
 - a callable ``np.ndarray (n_samples,) -> float`` — any custom aggregation.
 
-Supervised training
--------------------
+Supervised Loss and Readout
+---------------------------
 
-Pass ``labels`` (shape ``(n_samples,)``, aligned with ``feature_batch``'s rows)
-to train a supervised loss. Each sample's prediction — the cost observable's
+The quick start passes ``labels`` with shape ``(n_samples,)``, aligned with
+``feature_batch``'s rows. Each sample's prediction — the cost observable's
 expectation value, in ``[-1, 1]`` for the default parity observable — is
 compared to its label by ``loss_fn``, and those per-sample losses are then
 aggregated by ``loss_reduction``. The default ``loss_fn="squared_error"`` with
@@ -231,7 +236,7 @@ weighted sum is the prediction.  A **list** of observables is not supported on
 the supervised path; keep the default parity observable or pass a single
 ``SparsePauliOp``.  The same ``labels`` / ``loss_fn`` pair is available on
 :class:`~divi.qprog.algorithms.CustomVQA`'s data-binding path
-(:doc:`framework_integration`) when you bring your own circuit.
+(:doc:`../execution_workflows/framework_integration`) when you bring your own circuit.
 
 When to use QNN vs CustomVQA
 ----------------------------
@@ -240,16 +245,16 @@ When to use QNN vs CustomVQA
   feature-map + ansatz workflow and Divi to compose and bind the circuit for
   you.
 - Reach for :class:`~divi.qprog.algorithms.CustomVQA` (see
-  :doc:`framework_integration`) when you already have a PennyLane or Qiskit
+  :doc:`../execution_workflows/framework_integration`) when you already have a PennyLane or Qiskit
   circuit and want full control over its structure, marking data parameters
   yourself with ``data_arg`` / ``arg_shapes`` / ``data_param_indices``.
 
 Next Steps
 ----------
 
-- :doc:`framework_integration` — bring-your-own-circuit data binding with
+- :doc:`../execution_workflows/framework_integration` — bring-your-own-circuit data binding with
   ``CustomVQA``
-- :doc:`optimizers` — optimizer choice and early stopping
+- :doc:`../execution_workflows/optimizers` — optimizer choice and early stopping
 - :doc:`../api_reference/qprog/algorithms` — full ``QNN``, ``FeatureMap``, and
   ``Ansatz`` API
 - `qnn_classifier.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/qnn_classifier.py>`_

@@ -5,7 +5,8 @@ Divi provides specialized :class:`~divi.qprog.problems.TSPProblem` and
 :class:`~divi.qprog.problems.CVRPProblem` classes for solving routing
 problems with QAOA.  Both are :class:`~divi.qprog.problems.QAOAProblem`
 subclasses and work with the same ``QAOA`` constructor described in
-:doc:`combinatorial_optimization_qaoa_pce`.  They implement the
+:doc:`combinatorial_optimization_qaoa_pce`. With the default
+``encoding="one_hot"``, they implement the
 **Constraint-Enhanced QAOA** (CE-QAOA) protocol [#onah2025]_, which uses
 block one-hot encoding with W-state initialization and an XY mixer to keep
 quantum amplitude concentrated on the feasible (permutation) subspace.
@@ -61,7 +62,7 @@ exactly once and returning to the start.
        backend=backend,
    )
    qaoa.run()
-   print(qaoa.solution)  # decoded tour or bitstring
+   print(qaoa.solution)  # decoded city sequence, returning to start_city
 
 The ``start_city`` is fixed and excluded from the encoding, reducing the
 problem from *n²* to *(n−1)²* qubits.  Penalty strengths ``constraint_penalty``
@@ -72,6 +73,8 @@ Capacitated Vehicle Routing (CVRP)
 
 Route multiple vehicles from a depot to customers, respecting vehicle
 capacity constraints.
+
+Continuing with the imports and backend from the TSP example:
 
 .. code-block:: python
 
@@ -107,9 +110,29 @@ capacity constraints.
 Binary Encoding
 ^^^^^^^^^^^^^^^
 
-For larger instances, the one-hot encoding becomes impractical (e.g. 1,600
-qubits for 20 customers with 4 vehicles).  The **binary encoding** reduces
-qubit count from O(N) to O(log N) per routing slot:
+Choose the encoding from the qubit budget and the importance of staying inside
+the feasible subspace:
+
+.. list-table:: One-hot versus binary routing encodings
+   :header-rows: 1
+   :widths: 18 28 27 27
+
+   * - Encoding
+     - Qubit scaling per slot
+     - Advantage
+     - Cost
+   * - ``"one_hot"``
+     - :math:`O(N)`
+     - W-state initialization and XY mixing preserve the one-hot constraint.
+     - Becomes impractical for large routing instances.
+   * - ``"binary"``
+     - :math:`O(\log N)`
+     - Substantially lowers the qubit count.
+     - Produces a HUBO with higher-order interactions; it does not preserve
+       feasibility through the one-hot mixer.
+
+For example, one-hot CVRP can require 1,600 qubits for 20 customers and four
+vehicles. Binary encoding reduces the register size:
 
 .. code-block:: python
 
@@ -121,14 +144,16 @@ qubit count from O(N) to O(log N) per routing slot:
        encoding="binary",   # compact binary encoding
    )
 
-This produces a higher-order binary optimization (HUBO) problem that is
-automatically quadratized.  See the ``binary_block_config`` utility for
-qubit count estimates at various scales.
+This produces a HUBO that Divi maps natively to higher-order Z interactions.
+See ``binary_block_config`` for qubit-count estimates.
 
 Feasibility, Repair, and Energy
 -------------------------------
 
-Both problem classes implement:
+Both classes provide feasibility and energy checks. Hungarian repair is
+available for one-hot encoding; binary routing repair is unsupported.
+
+Relevant methods include:
 
 - :meth:`~divi.qprog.problems.TSPProblem.is_feasible` — check
   whether a bitstring represents a valid tour/route.
@@ -199,13 +224,15 @@ Qubit Scaling
      - 3,000
      - 360
 
-The "tight" binary column assumes ``max_steps ≈ customers / vehicles + 1``.
+Binary (full) uses the default ``max_steps=n_customers``. Binary (tight) uses
+``max_steps ≈ customers / vehicles + 1``; setting it below a vehicle's required
+stop count makes the instance infeasible.
 
 Next Steps
 ----------
 
 - Run the ``tutorials/routing/ce_qaoa_routing.py`` tutorial
-- Explore :doc:`optimizers` — ``GridSearchOptimizer`` is particularly
+- Explore :doc:`../execution_workflows/optimizers` — ``GridSearchOptimizer`` is particularly
   suited for the 2-parameter CE-QAOA landscape
 - See :doc:`combinatorial_optimization_qaoa_pce` for general QAOA usage
 

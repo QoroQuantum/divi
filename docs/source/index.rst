@@ -18,24 +18,28 @@ Why Divi?
   :class:`~divi.qprog.algorithms.CustomVQA`.
 * **Structured pipelines** — an *expand → execute → reduce* model automates the
   path from a high-level program to executed circuits, with inspectable stages for
-  compilation, batching, and error mitigation. See :doc:`user_guide/pipelines`.
+  compilation, batching, and error mitigation. See
+  :doc:`execution_workflows/pipelines`.
 * **Program ensembles** — run many variational programs in parallel under one
   :class:`~divi.qprog.ensemble.ProgramEnsemble`, optionally over multiple
   adaptive rounds where each round's programs are chosen from what the last
   round measured, with automatic circuit batching and aggregation. Built-in workflows cover hyperparameter sweeps, graph
-  partitioning, and time-evolution trajectories. See :doc:`user_guide/program_ensembles`.
-* **Swap backends without changing code** — develop locally against
-  :class:`~divi.backends.MaestroSimulator`, simulate noise with
-  :class:`~divi.backends.QiskitSimulator`, and scale up on the cloud via
+  partitioning, and time-evolution trajectories. See
+  :doc:`execution_workflows/program_ensembles`.
+* **Swap backends without changing code** — develop and simulate locally with
+  :class:`~divi.backends.MaestroSimulator`, use
+  :class:`~divi.backends.QiskitSimulator` for Qiskit-native or
+  device-calibrated noise models, and scale up on the cloud via
   :class:`~divi.backends.QoroService` — all behind the same
-  :class:`~divi.backends.CircuitRunner` interface. See :doc:`user_guide/backends`.
+  :class:`~divi.backends.CircuitRunner` interface. See
+  :doc:`execution_workflows/backends`.
 * **Integrated error mitigation** — Zero-Noise Extrapolation and QuEPP plug
   directly into the variational loop, not as a post-processing step. See
-  :doc:`user_guide/improving_results_qem`.
+  :doc:`algorithms/improving_results_qem`.
 
 New to Divi? Start with the :doc:`quickstart` for a five-minute VQE example and
-a tour of the built-in algorithms, then work through the :guilabel:`User Guide`
-in the sidebar.
+a tour of the built-in algorithms, then explore :guilabel:`Algorithms` or
+:guilabel:`Execution & Workflows` in the sidebar.
 
 Installation
 ============
@@ -89,23 +93,29 @@ Or pin a specific nightly by date:
 
 .. toctree::
    :maxdepth: 1
-   :caption: User Guide
+   :caption: Algorithms
 
-   user_guide/core_concepts
-   user_guide/ground_state_energy_estimation_vqe
-   user_guide/localized_active_space_sqd
-   user_guide/combinatorial_optimization_qaoa_pce
-   user_guide/hamiltonian_time_evolution
-   user_guide/quantum_neural_networks
-   user_guide/framework_integration
-   user_guide/routing
-   user_guide/backends
-   user_guide/optimizers
-   user_guide/program_ensembles
-   user_guide/improving_results_qem
-   user_guide/visualization
-   user_guide/pipelines
-   user_guide/resuming_long_runs
+   algorithms/ground_state_energy_estimation_vqe
+   algorithms/localized_active_space_sqd
+   algorithms/combinatorial_optimization_qaoa_pce
+   algorithms/routing
+   algorithms/hamiltonian_time_evolution
+   algorithms/quantum_neural_networks
+   algorithms/improving_results_qem
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Execution & Workflows
+
+   execution_workflows/core_concepts
+   execution_workflows/backends
+   execution_workflows/optimizers
+   execution_workflows/resuming_long_runs
+   execution_workflows/visualization
+   execution_workflows/program_ensembles
+   execution_workflows/framework_integration
+   execution_workflows/pipelines
+   execution_workflows/pipeline_authoring
 
 .. toctree::
    :maxdepth: 1

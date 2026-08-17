@@ -16,8 +16,8 @@ class TestStripEmbedPrefix:
     symbol name or section title) and drops only the structural label
     (``[Source:`` / ``[Class:`` / brackets / ``§`` separator). For Source
     chunks with a section, the file path is dropped because its leading
-    components (``docs``, ``source``, ``user_guide``) are uniform across
-    all docs and only the section title discriminates."""
+    path components identify a documentation category rather than its topic;
+    only the section title discriminates."""
 
     def test_source_with_section_keeps_section_title(self):
         text = "[Source: foo.py § Bar]\ncontent here"
@@ -112,7 +112,7 @@ Using Sphinx Roles
 ==================
 
 Use :class:`VQE` to run variational quantum eigensolver problems.
-See :doc:`user_guide/vqe` for a full walkthrough. You can also
+See :doc:`algorithms/ground_state_energy_estimation_vqe` for a full walkthrough. You can also
 reference :ref:`advanced-usage` for more details on configuring
 the :class:`QiskitSimulator` backend.
 """

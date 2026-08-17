@@ -356,3 +356,12 @@ Limitations:
 
 - ``IterativeQAOA`` is excluded because its parameter space is not fixed across iterations.
 - ``PCE`` preserves the same backend rules as ordinary cost evaluation. In particular, hard CVaR mode still requires a sampling backend.
+
+Next Steps
+----------
+
+- :doc:`optimizers` — choose an optimizer and interpret its convergence data.
+- :ref:`Result properties <reading-results>` — find parameter and loss
+  histories on a variational program.
+- :ref:`dry-run` — preview one cost-pipeline evaluation used by a landscape
+  scan, not the full grid.

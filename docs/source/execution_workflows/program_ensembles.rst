@@ -10,6 +10,14 @@ An ensemble can also run over several *rounds*, choosing each round's programs
 from what the previous round measured — the basis for iterative refinement and
 other adaptive workflows. See `The Workflow Lifecycle`_.
 
+Use this page in increasing order of control:
+
+1. choose a ready-made workflow under `Built-in Ensemble Workflows`_;
+2. inspect its results, or aggregate a partitioning workflow;
+3. use `The Workflow Lifecycle`_ for adaptive rounds; and
+4. use `Custom Ensemble Workflows`_ and `Circuit Batching`_ only when you need
+   custom orchestration or dispatch control.
+
 Built-in Ensemble Workflows
 ----------------------------
 
@@ -19,12 +27,12 @@ detail on its own page — this section gives a quick overview and links.
 **VQE Hyperparameter Sweeps**
    :class:`~divi.qprog.workflows.VQEHyperparameterSweep` runs VQE across multiple
    molecular configurations (bond lengths, ansätze) in parallel.
-   See :doc:`ground_state_energy_estimation_vqe` for configuration and examples.
+   See :doc:`../algorithms/ground_state_energy_estimation_vqe` for configuration and examples.
 
 **Time Evolution Trajectories**
    :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs one time-evolution
    program per time point and collects expectation values into a trajectory.
-   See :doc:`hamiltonian_time_evolution` for full details.
+   See :doc:`../algorithms/hamiltonian_time_evolution` for full details.
 
 **Problem Decomposition (Graph / QUBO / Matching)**
    :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` decomposes a
@@ -33,20 +41,21 @@ detail on its own page — this section gives a quick overview and links.
    per-partition results into a global solution using a configurable
    aggregation strategy (see `Aggregation Strategies`_).  Graph, QUBO, and
    matching partitioning are all covered in
-   :doc:`combinatorial_optimization_qaoa_pce`.
+   :doc:`../algorithms/combinatorial_optimization_qaoa_pce`.
 
 **Localized Active-Space SQD**
    :class:`~divi.qprog.workflows.LASSQD` partitions a molecule's active space
    into fragments, runs one VQE per fragment against its own
    mean-field-embedded effective Hamiltonian, and recovers the ground state
    via sample-based quantum diagonalization. See
-   :doc:`localized_active_space_sqd` for fragment specification, automatic
+   :doc:`../algorithms/localized_active_space_sqd` for fragment specification, automatic
    fragmentation, and the accuracy characteristics of the reported energy.
 
 Aggregation Strategies
 ----------------------
 
-After each partition is solved, its quantum program returns several candidate
+For :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`, each solved
+partition returns several candidate
 bitstrings ranked by probability. An *aggregation strategy* stitches these
 per-partition candidates into a single global solution — the choice of strategy
 controls the quality/cost trade-off across the full problem. ``aggregate_results``
@@ -460,161 +469,71 @@ the level — useful in CI. Round history is still retained.
 Custom Ensemble Workflows
 -------------------------
 
-You can create custom program ensemble workflows by inheriting from :class:`~divi.qprog.ensemble.ProgramEnsemble`:
+Subclass :class:`~divi.qprog.ensemble.ProgramEnsemble` and implement
+``create_programs``. Override the state hooks for adaptive rounds and
+``aggregate_results`` for a custom return shape. The multi-round example above
+is schematic; ``make_vqe`` and its geometry helpers stand for application code.
+A one-round subclass needs only this contract:
 
-**Custom Ensemble Implementation**
+.. skip: next
 
 .. code-block:: python
 
-   from divi.qprog import ProgramEnsemble, VQE
-   from divi.qprog.optimizers import MonteCarloOptimizer
-   from divi.backends import CircuitRunner, MaestroSimulator
-   import pennylane as qp
-   import numpy as np
-
-   class CustomParameterSweep(ProgramEnsemble):
-       def __init__(self, backend: CircuitRunner, molecules, **kwargs):
-           # Forwarding **kwargs lets callers pass ``reporting_level``.
-           super().__init__(backend, **kwargs)
-           self.molecules = molecules
-
+   class MyEnsemble(ProgramEnsemble):
        def create_programs(self, state=None):
-           """Generate one VQE program per molecule."""
            super().create_programs()
-           self.programs = {
-               f"sweep_{i}": VQE(
-                   molecule=mol,
-                   optimizer=MonteCarloOptimizer(),
-                   backend=self.backend,
-                   max_iterations=10,
-               )
-               for i, mol in enumerate(self.molecules)
-           }
-
-       def aggregate_results(self):
-           """Collect and analyze results from all programs"""
-           super().aggregate_results()
-           results = {}
-           for program_id, program in self.programs.items():
-               if program.losses_history:  # Check if program completed
-                   final_loss = program.best_loss
-                   results[program_id] = {
-                       'energy': final_loss,
-                       'params': program.best_params,
-                       'circuits': program.total_circuit_count
-                   }
-           return results
-
-   # Usage
-   mol1 = qp.qchem.Molecule(symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]]))
-   mol2 = qp.qchem.Molecule(symbols=["Li", "H"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.6]]))
-   mol3 = qp.qchem.Molecule(symbols=["H", "F"], coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.92]]))
-   molecules = [mol1, mol2, mol3]
-
-   # Use a local simulator
-   local_backend = MaestroSimulator()
-   sweep = CustomParameterSweep(local_backend, molecules)
-   sweep.run()
-
-   results = sweep.aggregate_results()
-   print(results)
+           self.programs = {"job": make_program(self.backend)}
 
 .. _ensemble-dry-run:
 
 Inspecting an Ensemble Before Running It
 ----------------------------------------
 
-An ensemble multiplies whatever you got wrong in one program by the number of
-programs, so it is worth checking the shape of what you built first.
 :meth:`~divi.qprog.ensemble.ProgramEnsemble.dry_run` traverses every
-sub-program's pipeline without executing anything, returning a nested dict keyed
-by program identifier; pass it to :func:`~divi.pipeline.format_dry_run` for a
-per-program breakdown and an ensemble-wide roll-up:
+sub-program without execution. Call ``create_programs()``, then render the
+nested report:
 
-A dry run needs only ``create_programs()`` — never a ``run()`` — so it costs
-nothing on a fresh ensemble.  Reusing ``CustomParameterSweep`` from above with
-three cheap H₂ geometries instead of the molecules it was built with:
+.. skip: next
 
 .. code-block:: python
 
    from divi.pipeline import format_dry_run
 
-   bond_sweep = CustomParameterSweep(
-       MaestroSimulator(),
-       [
-           qp.qchem.Molecule(
-               symbols=["H", "H"],
-               coordinates=np.array([[0.0, 0.0, 0.0], [0.0, 0.0, d]]),
-           )
-           for d in (0.66, 0.74, 0.82)
-       ],
-   )
-   bond_sweep.create_programs()
-
-   reports = bond_sweep.dry_run()
+   ensemble.create_programs()
+   reports = ensemble.dry_run()
    format_dry_run(reports)
-
-   # Which programs differ in structure, and how?
-   for program_id, program_reports in reports.items():
-       cost = program_reports["cost"]
-       print(program_id, cost.total_circuits, cost.circuit_stats.get("max_width"))
 
 ``format_dry_run`` auto-selects a layout from the program count; pass
 ``style="compact"``, ``"grouped"``, or ``"verbose"`` to force one.
 
-``grouped`` collapses programs that traverse their pipelines identically *and*
-agree on the discrete facts a misconfiguration changes — qubit count, parameter
-count, and the objective they optimize.  That last one decides most real cases:
-programs measuring different observables never group, so a bond-length sweep or a
-partitioning run (each partition has its own subgraph Hamiltonian) groups nothing
-and falls back to ``compact``, naming the trait that separated them.  Where members
-*do* group, a program that lands in a group of its own is the one to look at first.
+``grouped`` requires matching widths, parameter counts, and objectives;
+differences appear as ``mixed (…)`` or ``factor_range``. Recurring and one-time
+pipelines remain separate. See :ref:`dry-run` for report semantics.
 
-Members of a group can still differ in circuit *content*, and the report says so
-rather than averaging it away: a field the members disagree on renders as
-``mixed (…)``, a stage whose fan-out varies reports a ``factor_range``, and the
-``Summary`` line shows the depth span instead of a mean describing no member.
-The report also covers each sub-program's optimizer-driven metric/overlap
-pipelines, not just cost and sample.
+Cancellation and Batch Status
+-----------------------------
 
-The roll-up keeps recurring and one-time pipelines apart rather than summing
-them, for the reasons in :ref:`what-a-dry-run-does-not-tell-you`.  See
-:ref:`dry-run` for the full walkthrough, the three styles, and sample output.
+Reporting levels and display suppression are described in
+:ref:`ensemble-reporting`. During a batched run, an additional status line shows
+the merged circuit count, participating programs, polling state, and backend job
+identifier.
 
-Progress Monitoring and Control
--------------------------------
-
-Divi provides automatic progress tracking for long-running ensembles. When you
-execute an ensemble that contains compatible programs (like :class:`~divi.qprog.algorithms.VQE` or
-:class:`~divi.qprog.algorithms.QAOA`), a rich progress display appears in your console showing the
-status of each program in real-time.
-
-When circuit batching is active (the default), an additional batch status line
-appears below the per-program progress bars. It shows the merged job's polling
-status — how many circuits were merged, which programs are part of the current
-flush group, and the backend job ID.
-
-**Stopping an Ensemble**
-
-You can gracefully stop a running ensemble at any time by pressing ``Ctrl+C``.
-The ``KeyboardInterrupt`` is caught during :meth:`~divi.qprog.ensemble.ProgramEnsemble.join`,
-which cancels any in-flight backend jobs and allows currently running programs
-to finish their current iteration before shutting down.
+Pressing :kbd:`Ctrl-C` cancels in-flight backend work and stops the current
+round. Completed rounds remain in ``round_history``; a partial round does not
+update workflow state or start another round. Cancellation is cooperative, so
+work already completing inside a backend may still return before shutdown.
 
 .. _circuit-batching:
 
 Circuit Batching
 ----------------
 
-By default, :meth:`~divi.qprog.ensemble.ProgramEnsemble.run` merges the circuit
-submissions from all programs in the ensemble into **single backend calls**.
-This behavior is controlled by :class:`~divi.qprog.ensemble.BatchConfig`.
+By default, :meth:`~divi.qprog.ensemble.ProgramEnsemble.run` merges submissions
+through :class:`~divi.qprog.ensemble.BatchConfig`.
 
 **How it works**
 
-Each optimization iteration, every program calls ``submit_circuits`` on its
-backend. With batching enabled, these calls are intercepted by a coordinator
-that:
+Each iteration, the coordinator:
 
 1. Collects circuit submissions from all active programs (barrier-based flush).
 2. Merges them into a single payload with namespaced circuit tags.
@@ -622,17 +541,10 @@ that:
 4. Polls for results once (instead of N times).
 5. Demultiplexes the results back to each program by tag prefix.
 
-This happens transparently — programs are unaware they're sharing a backend
-call.
-
 **When to use batching**
 
-- **Cloud backends** (:class:`~divi.backends.QoroService`): batching reduces
-  the number of API calls, authentication round-trips, and polling loops.
-  This is the primary use case.
-- **Local simulators** (:class:`~divi.backends.QiskitSimulator`): batching
-  adds synchronization overhead for no network benefit. The simulator already
-  parallelizes circuits internally.
+- **Cloud backends**: batching reduces API calls, queue slots, and polling.
+- **Local simulators**: batching adds synchronization without network savings.
 
 **Limiting batch size**
 
@@ -649,23 +561,13 @@ Use ``max_batch_size`` to cap the number of circuits per flush:
    # Flush as soon as 50 circuits are pending (partial flush)
    ensemble.run(batch_config=BatchConfig(max_batch_size=50))
 
-When the pending circuit count reaches ``max_batch_size`` the coordinator
-flushes immediately — even if some programs haven't submitted yet.  Those
-programs will be included in a later flush.  This reduces per-job size on
-the backend and can improve latency for large ensembles.
-
-``max_batch_size`` controls **merging granularity**, not individual payload
-size.  A single program that submits more circuits than the limit will still
-flush normally.
+At ``max_batch_size`` the coordinator flushes immediately. The limit controls
+merge granularity, not the size of one program's submission.
 
 **Cloud submission with one merged job**
 
-When submitting through :class:`~divi.backends.QoroService`, every
-``submit_circuits`` call costs an HTTP round trip and a scheduler
-queue slot.  A 512-program ensemble batched in chunks of ~14 produces
-~37 round trips; merging all 512 into a single job amortizes that to
-one.  Pass ``max_concurrent_programs=-1`` to size the executor pool to
-the entire ensemble and bypass the default 256-program barrier cap:
+Set ``max_concurrent_programs=-1`` to include the entire ensemble in one cloud
+submission, bypassing the default 256-program barrier cap:
 
 .. skip: next
 
@@ -678,13 +580,8 @@ the entire ensemble and bypass the default 256-program barrier cap:
        batch_config=BatchConfig(max_concurrent_programs=-1),
    )
 
-The ``-1`` sentinel follows the same convention as scikit-learn's
-``n_jobs=-1`` ("use all available").  An explicit positive integer
-works too, e.g. ``max_concurrent_programs=512``.
-
-For ensembles where each program emits many circuits per call, combine
-``max_concurrent_programs`` with ``max_batch_size`` to bound the merged
-payload:
+Use a positive integer to cap concurrency. Combine it with ``max_batch_size``
+when each program emits many circuits:
 
 .. skip: next
 
@@ -697,11 +594,8 @@ payload:
        ),
    )
 
-Explicit values of ``max_concurrent_programs`` above 1024 emit a
-:class:`UserWarning` — that's a soft cap meant to flag the most common
-mistake (reaching for ``max_concurrent_programs`` when the user actually
-wanted ``max_batch_size``).  The ``-1`` form is silent because it's an
-intentional opt-in.
+Values above 1024 warn because users often intend ``max_batch_size`` instead;
+the explicit ``-1`` opt-in is silent.
 
 **Disabling batching**
 
@@ -723,5 +617,6 @@ Next Steps
 ----------
 
 - :doc:`backends` — backend configuration and performance tuning.
-- :doc:`resuming_long_runs` — checkpointing and resuming long ensemble runs.
+- :doc:`resuming_long_runs` — checkpointing the state of supported variational
+  programs. Ensemble workflow state is not currently checkpointed as a unit.
 - :doc:`visualization` — result visualization, including :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.

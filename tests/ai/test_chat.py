@@ -120,11 +120,11 @@ class TestIsOverviewQuery:
 
 
 class TestFilterChunksForOverview:
-    def test_keeps_user_guide_chunks(self):
+    def test_keeps_algorithm_guide_chunks(self):
         chunks = [
             RetrievedChunk(
                 text="guide content",
-                source_file="/repo/docs/user_guide/vqe.rst",
+                source_file="/repo/docs/algorithms/vqe.rst",
                 start_line=1,
                 end_line=10,
                 score=0.8,
@@ -302,11 +302,11 @@ class TestBuildPrompt:
         assert len(messages) == 4  # system + 2 history + user
 
     def test_overview_query_filters_chunks(self):
-        """Overview queries should filter to user-guide/tutorial chunks only."""
+        """Overview queries should filter to non-API documentation chunks only."""
         chunks = [
             RetrievedChunk(
                 text="guide content about algorithms",
-                source_file="/repo/docs/user_guide/core_concepts.rst",
+                source_file="/repo/docs/execution_workflows/core_concepts.rst",
                 start_line=1,
                 end_line=10,
                 score=0.8,

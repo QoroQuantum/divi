@@ -39,7 +39,7 @@ from divi.ai._indexer import _collect_files, _should_skip
         (Path("tests/test_foo.py"), False),
         (Path("tests/conftest.py"), False),
         # Valid docs → keep
-        (Path("docs/user_guide/intro.rst"), False),
+        (Path("docs/source/algorithms/intro.rst"), False),
         (Path("docs/source/quickstart.rst"), False),
         # Valid tutorials → keep
         (Path("tutorials/vqe_example.py"), False),

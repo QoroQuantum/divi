@@ -332,7 +332,7 @@ class QuantumProgram(ABC):
         :func:`~divi.pipeline.format_dry_run` for the tree output.
 
         Uses the analytic dry path by default, trading circuit generation for
-        multiplicative-factor bookkeeping (see the user guide). The preview is
+        multiplicative-factor bookkeeping (see the pipeline guide). The preview is
         side-effect free: it runs against a seeded throwaway RNG and touches no
         execution counters, so a later ``run()`` is unaffected.
 

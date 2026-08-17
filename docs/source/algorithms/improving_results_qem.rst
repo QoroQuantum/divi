@@ -15,6 +15,30 @@ or :class:`~divi.qprog.algorithms.QAOA`) with the ``qem_protocol`` argument. You
 subclass :class:`~divi.circuits.qem.QEMProtocol` for custom mitigation; see
 `Custom Error Mitigation Protocols`_ below.
 
+.. list-table:: Choosing a mitigation protocol
+   :header-rows: 1
+   :widths: 18 32 25 25
+
+   * - Protocol
+     - Reach for it when
+     - Cost driver
+     - Main limitation
+   * - ZNE
+     - The backend noise can be amplified predictably and several folded
+       evaluations are affordable.
+     - Scale factors × measurement groups
+     - Extrapolation becomes unstable when amplification does not track the
+       target noise.
+   * - QuEPP
+     - Clifford-path simulation is tractable and the residual signal survives
+       the target noise.
+     - Path count × twirls, plus the target circuit
+     - Signal destruction and cancellation can amplify statistical error.
+
+Use :meth:`~divi.qprog.QuantumProgram.dry_run` before a long mitigated run. It
+shows structural circuit expansion; it cannot predict the number of shots
+needed to reach a particular statistical error bar.
+
 Zero Noise Extrapolation (ZNE)
 ------------------------------
 
@@ -67,31 +91,11 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    vqe.run()
    print(f"Mitigated energy: {vqe.best_loss:.6f}")
 
-**Configuration Options** (same imports as in **Basic Usage** above):
-
-.. code-block:: python
-
-   # Light mitigation (faster, 2 scale factors)
-   light_zne = ZNE(
-       scale_factors=[1, 3],
-       extrapolator=RichardsonExtrapolator(),
-   )
-
-   # Heavy mitigation (more accurate, 5 scale factors)
-   heavy_zne = ZNE(
-       scale_factors=[1, 3, 5, 7, 9],
-       extrapolator=RichardsonExtrapolator(),
-   )
-
-**Choosing a folding strategy.**  The default
-:func:`~divi.circuits.zne.global_fold` folds the entire circuit
-(``U · (U†·U)^k · L†·L``, with the tail ``L`` handling fractional
-remainders); it is deterministic and a sensible first choice when scale
-factors are widely spaced.  For deep circuits, scales close to 1, or
-finer-grained noise scaling, swap in
-:func:`~divi.circuits.zne.local_fold`, which folds each gate
-independently (``G · (G†·G)^k``) and distributes fractional remainders
-across a random subset of gates:
+Use two or three scales for lower cost and more scales for a richer
+extrapolation fit. Additional scales also increase cost and statistical noise;
+they do not guarantee greater accuracy. The default :func:`~divi.circuits.zne.global_fold` is
+deterministic and suits widely spaced scales. For deep circuits, scales near 1,
+or per-gate control, use :func:`~divi.circuits.zne.local_fold`:
 
 .. skip: next
 
@@ -105,73 +109,22 @@ across a random subset of gates:
        folding_fn=local_fold,
    )
 
-``local_fold`` accepts keyword arguments via ``functools.partial`` for
-deterministic output (``selection="from_left"`` / ``"from_right"``) or
-to skip gates during folding — for example, excluding 2-qubit gates to
-isolate single-qubit noise, or excluding everything except ``cx`` to
-target 2-qubit gate errors specifically:
-
-.. skip: next
-
-.. code-block:: python
-
-   from functools import partial
-   from divi.circuits.zne import ZNE, local_fold
-
-   zne_selective = ZNE(
-       scale_factors=[1.0, 1.5, 2.0],
-       folding_fn=partial(local_fold, selection="from_left", exclude={"cx"}),
-   )
+Pass ``selection="from_left"`` or ``"from_right"`` through
+``functools.partial`` for deterministic local folding; ``exclude=`` can isolate
+specific gate classes.
 
 .. note::
-   The achievable scale factors form a discrete grid of granularity
-   ``2/d`` where ``d`` is the number of foldable gates.  For very small
-   ``d`` a requested non-integer scale may snap to a different value;
-   ZNE forwards the *effective* scale to the extrapolator so
-   extrapolation stays unbiased, and warns if two requested scales
-   collapse to the same effective value.
+   With ``d`` foldable gates, effective scales are quantized in increments of
+   ``2/d``. ZNE forwards the effective scale and warns when requested scales
+   collapse to one value.
 
 Quantum Enhanced Pauli Propagation (QuEPP)
 ------------------------------------------
 
-QuEPP is a hybrid classical-quantum protocol based on Clifford Perturbation
-Theory (CPT) from `Majumder et al. (2026) <https://arxiv.org/abs/2603.14485>`_.
-
-It works by decomposing the target circuit into a set of Clifford circuits
-(Pauli paths) whose expectation values can be computed exactly with a classical
-simulator.  The low-order paths capture most of the signal; the residual
-higher-order contribution is estimated from the noisy quantum hardware and
-corrected with a rescaling factor derived from comparing noisy and ideal values
-on the ensemble circuits.
-
-**Basic Usage:**
-
-.. skip: next
-
-.. code-block:: python
-
-   from divi.circuits.quepp import QuEPP
-   from divi.qprog import VQE
-   from divi.qprog.optimizers import MonteCarloOptimizer
-   from divi.backends import QiskitSimulator
-   import pennylane as qp
-   import numpy as np
-
-   h2_molecule = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-   )
-
-   vqe = VQE(
-       molecule=h2_molecule,
-       qem_protocol=QuEPP(truncation_order=2),
-       backend=QiskitSimulator(qiskit_backend="auto"),
-       optimizer=MonteCarloOptimizer(),
-       max_iterations=10,
-   )
-
-   vqe.run()
-   print(f"Mitigated energy: {vqe.best_loss:.6f}")
+QuEPP implements the Clifford Perturbation Theory protocol of
+`Majumder et al. (2026) <https://arxiv.org/abs/2603.14485>`_. It computes
+low-order Clifford paths classically and uses noisy hardware to estimate the
+residual. Select it with ``qem_protocol=QuEPP(truncation_order=2)``.
 
 **Parameters:**
 
@@ -220,12 +173,9 @@ ZNE vs QuEPP
    * - Circuit overhead
      - ``len(scale_factors)`` — one circuit per scale factor, with no separate
        unmitigated extra (include ``1.0`` in the list if you want one)
-     - ``(1 + surviving Pauli paths) × n_twirls`` — twirling is a *separate*
-       stage and ``n_twirls`` defaults to **10**, so ``truncation_order=2``
-       costs ×400, not ×40.  ``C(n, 1) + ... + C(n, K_T)`` (with ``n`` the
-       non-Clifford rotation count and ``K_T`` the truncation order) bounds the
-       paths before pruning; read the real factors off a dry run, which shows
-       ``QEMStage`` and ``PauliTwirlStage`` separately
+     - ``(1 + surviving Pauli paths) × n_twirls``. The default
+       ``n_twirls=10`` multiplies the entire path fan-out by 10; use a dry run
+       for the actual count
    * - Best for
      - Coherent gate noise
      - Uniform noise (e.g. readout error)
@@ -236,80 +186,23 @@ ZNE vs QuEPP
 Estimating Circuit Cost with Dry Run
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Error mitigation can multiply the number of circuits significantly.  Use
-:meth:`~divi.qprog.QuantumProgram.dry_run` to preview the per-stage expansion
-before committing to a full run, and pipe the returned reports through
-:func:`~divi.pipeline.format_dry_run` to render them as a tree:
-
-.. code-block:: python
-
-   import numpy as np
-   import pennylane as qp
-
-   from divi.backends import QiskitSimulator
-   from divi.circuits.quepp import QuEPP
-   from divi.pipeline import format_dry_run
-   from divi.qprog import VQE
-   from divi.qprog.optimizers import MonteCarloOptimizer
-
-   h2_molecule = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
-   )
-
-   vqe = VQE(
-       molecule=h2_molecule,
-       qem_protocol=QuEPP(truncation_order=2, n_twirls=10),
-       backend=QiskitSimulator(qiskit_backend="auto"),
-       optimizer=MonteCarloOptimizer(),
-   )
-
-   # Collect the analytic reports and render a per-stage factor tree per pipeline.
-   format_dry_run(vqe.dry_run())
-
-The QEM-relevant entries are how many Pauli paths QuEPP generates, the
-Clifford simulation count, and the twirl fan-out — use these to tune
-``truncation_order`` and ``n_twirls`` before spending any shots.  The stage's
-fan-out is one greater than its reported ``n_paths``: the unmitigated circuit is
-submitted alongside the paths, so ``n_paths: 9`` shows as ``×10``.
-(``coefficient_threshold`` is disabled on symbolic circuits, which is every
-variational program, so a dry run will not show it doing anything.)  See the
-:ref:`dry-run` section of the pipelines guide for how to read the per-stage
-factor tree (fan-out ``×K`` vs grouping reduction ``÷K``) and for programmatic
-access to the reports.
+Use :meth:`~divi.qprog.QuantumProgram.dry_run` before committing to mitigation:
+``format_dry_run(program.dry_run())`` shows QEM paths, Clifford simulations,
+and twirl fan-out. QuEPP's fan-out is ``n_paths + 1`` because it also submits
+the unmitigated circuit. See :ref:`dry-run` for the complete report contract.
 
 .. warning::
 
-   **Circuit counts are exact except on a sampled path; the reported depth and
-   gate counts are not.**  Monte Carlo path selection (a concrete-angle program,
-   see ``sampling``) draws its paths at random and deduplicates them, so the
-   surviving count is a random variable: two programs sharing one protocol
-   instance, or one protocol reused across runs, will not draw the same number.
-   The preview reports a sample from an independent stream — reproducible, close,
-   but **not** a prediction of any particular run — and says so, marking the stage
-   ``path_count: sampled (an estimate, not an exact count)`` and the compact row
-   ``sampled count``.  Size a budget for such a run with headroom, or switch to
-   ``sampling="exhaustive"``, whose count is deterministic.  Everywhere else the
-   count is exact.
-
-   On the default analytic path, mitigation is previewed as placeholders, so the
-   ``Summary`` shape figures describe the circuits *entering* the mitigation
-   stage.  The error is not a bound in either direction — folding understates
-   depth (a 5× fold reads as unfolded), while path substitution can overstate it.
-   Pass ``force_circuit_generation=True`` to expand and measure the real circuits
-   when you are sizing a hardware budget.
-
-   Reported depth also excludes the basis-change and measurement layer that
-   grouping appends, which adds a small amount on top.
+   For concrete-angle programs that actually use Monte Carlo, path counts are
+   sampled estimates; budget with headroom or use ``sampling="exhaustive"``.
+   Default previews report pre-mitigation circuit
+   shape. Use ``force_circuit_generation=True`` for post-rewrite depth and gate
+   counts; measurement basis changes add further depth.
 
 .. note::
 
-   On a sampling backend, ``shot_distribution`` caps the shot budget per
-   *mitigation variant*, not across the evaluation.  Every variant a protocol
-   emits — a folded copy, a Pauli path, a twirl — is its own circuit drawing the
-   full capped budget, so a protocol emitting three variants spends the cap three
-   times.  Read :attr:`~divi.pipeline.DryRunReport.total_shots` for the figure
-   rather than assuming the cap is global.
+   ``shot_distribution`` caps shots per mitigation variant, not per evaluation.
+   Use :attr:`~divi.pipeline.DryRunReport.total_shots` for the full cost.
 
 Signal Destruction and Automatic Fallback
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -377,7 +270,8 @@ If you see this warning:
   branches.  (``sampling="montecarlo"`` does *not* help here: on the symbolic
   circuits variational programs produce it falls back to exhaustive enumeration
   anyway — see ``sampling`` above.)
-- **Use a deeper circuit** (more qubits or Trotter steps).
+- If the problem already requires more non-Clifford rotations, the warning may
+  disappear; do not deepen a circuit solely to satisfy QuEPP.
 - **Use ZNE instead** for shallow circuits where QuEPP is unreliable.
 
 .. _qem-quepp-assumptions:
@@ -436,11 +330,10 @@ circuit is evaluated against **that term's** Pauli — not against the whole
 observable. So QuEPP measures each Pauli term separately, on both the classical
 and the noisy side.
 
-This costs nothing extra in circuits or shots. Grouping builds its measurement
-basis from the *set* of distinct Pauli strings, which is the same set either
-way, so the submitted circuits and the shot split are identical to measuring
-``H`` as one observable. Path circuits depend only on the branch choices, never
-on the term, so they are still deduplicated across terms.
+This adds no target-circuit variants and does not change the configured shot
+split. Grouping still uses the same distinct Pauli strings, and path circuits
+remain deduplicated across terms. Higher reconstruction variance can nonetheless
+require more shots for a target accuracy.
 
 You do not configure any of this, and it does not surface anywhere you look:
 :meth:`~divi.circuits.quepp.QuEPP.reduce` maps the per-term values back and
@@ -456,7 +349,8 @@ Performance Considerations
 - **QuEPP**: Cost grows with path count (Monte Carlo budget or exhaustive
   enumeration), twirls, and circuit size. Classical Clifford simulation of
   paths is comparatively cheap next to quantum shots.
-- **QuEPP on a many-term Hamiltonian**: each Pauli term gets its own paths and
+- **QuEPP on a many-term Hamiltonian**: Pauli-term handling does not by itself
+  add target-circuit variants, but each term gets its own paths and
   its own weight (see :ref:`qem-quepp-pauli-sums`), so the CPT sum has more,
   individually larger, terms than a per-observable sum would. The reconstruction
   is unbiased either way, but its variance is higher, and reaching a given
@@ -496,103 +390,26 @@ order.
 Custom Error Mitigation Protocols
 ---------------------------------
 
-You can implement custom error mitigation strategies by inheriting from
-:class:`~divi.circuits.qem.QEMProtocol`.  The protocol operates on Qiskit
-:class:`~qiskit.dagcircuit.DAGCircuit` bodies — the same IR the rest of the
-pipeline uses — and must implement three members:
+Protocol authors subclass :class:`~divi.circuits.qem.QEMProtocol` and provide:
 
-.. code-block:: python
+- ``name`` — the unique pipeline-axis identifier;
+- ``expand(dag, observable)`` — circuit variants plus a
+  ``QEMContext`` dictionary;
+- ``reduce(quantum_results, context)`` — one mitigated value per requested
+  observable; and
+- optionally ``post_reduce(contexts)`` for evaluation-wide diagnostics.
 
-   import copy
-   from collections.abc import Sequence
-   from typing import Any
+``expand`` may consume its input DAG, so copy it explicitly when returning
+independent variants. A protocol that overrides measurements owns the remapping
+back to the caller’s requested observable order. See
+:class:`~divi.circuits.qem.QEMProtocol` and the ZNE and QuEPP implementations
+for the complete extension contract. Pipeline integration is automatic through
+:class:`~divi.pipeline.stages.QEMStage`.
 
-   import numpy as np
-   from qiskit.dagcircuit import DAGCircuit
-   from divi.backends import MaestroSimulator
-   from divi.circuits.qem import QEMContext, QEMProtocol
-
-   class WeightedAveraging(QEMProtocol):
-       """A simple protocol that runs the circuit twice and averages results."""
-
-       @property
-       def name(self) -> str:
-           return "weighted_avg"
-
-       def expand(self, dag: DAGCircuit, observable=None):
-           """Return circuits to execute and a reduce-time context.
-
-           ``expand`` *consumes* the input ``dag`` — implementations may
-           mutate it, and downstream stages may mutate the returned DAGs
-           in place.  When you need multiple distinct variants, deep-copy
-           the dag explicitly (as shown below); reusing the same reference
-           would cause later edits to affect every slot it appears in.
-           The optional ``observable`` argument carries the observable being
-           measured (as a Qiskit
-           :class:`~qiskit.quantum_info.SparsePauliOp`) — hybrid protocols
-           like QuEPP use it for classical pre-computation.
-           """
-           # Run the circuit twice as two independent DAG copies so later
-           # pipeline stages can mutate each one without interference.
-           return (copy.deepcopy(dag), dag), {}
-
-       def reduce(
-           self, quantum_results: Sequence[Any], context: QEMContext
-       ) -> list[float]:
-           """Combine the quantum results into one mitigated value per observable.
-
-           ``quantum_results`` has one entry per circuit returned by ``expand``, in
-           the same order, and each entry is itself a list of per-observable
-           expectation values — so the average is taken across circuits, position
-           by position, and the return value is a list, not a scalar.
-           """
-           per_circuit = [np.atleast_1d(r) for r in quantum_results]
-           return list(np.mean(per_circuit, axis=0))
-
-   # Pass the custom protocol when constructing any variational program
-   vqe = VQE(
-       molecule=h2_molecule,
-       qem_protocol=WeightedAveraging(),
-       optimizer=MonteCarloOptimizer(),
-       backend=MaestroSimulator(),
-   )
-
-**Key Members to Implement:**
-
-- ``name`` *(property)* — Unique protocol name used as the pipeline axis identifier
-- ``expand(dag, observable)`` — Generate one or more Qiskit
-  :class:`~qiskit.dagcircuit.DAGCircuit` bodies to execute on the quantum
-  backend and a ``QEMContext`` carrying any classical side-channel data for
-  the reduce phase.  Return a ``tuple[tuple[DAGCircuit, ...], QEMContext]``.
-- ``reduce(quantum_results, context)`` — Combine the per-circuit results with
-  the ``QEMContext`` into a ``list[float]``, one mitigated value per
-  **requested** observable.  Each entry of ``quantum_results`` is itself a
-  sequence of expectation values, one per observable the measurement stage was
-  asked for — which is the requested set unless the protocol declared an
-  ``OBSERVABLE_OVERRIDE`` (see below).
-- ``post_reduce(contexts)`` *(optional)* — Called once after all per-group
-  ``reduce`` calls in an evaluation.  Override to inspect the collected contexts
-  and emit summary diagnostics (e.g. QuEPP's η diagnostics).
-  The default implementation is a no-op.
-
-A protocol that needs finer-grained measurements than the caller requested can
-set the ``OBSERVABLE_OVERRIDE`` key on its context to a
-``tuple[SparsePauliOp, ...]``; the QEM stage applies it to the emitted circuits,
-so the measurement stage reports one value per entry.  The protocol then owns
-the remapping — its ``reduce`` must still return one value per *requested*
-observable.  QuEPP uses this to measure each Pauli term of a sum separately
-(see :ref:`qem-quepp-pauli-sums`).
-
-.. note::
-   When a ``qem_protocol`` is provided, the :doc:`circuit pipeline <pipelines>`
-   automatically wraps it in a :class:`~divi.pipeline.stages.QEMStage`.
-   During execution, ``expand`` is called in the pipeline's *expand* pass and
-   ``reduce`` is called in the *reduce* pass — you don't need to manage
-   pipeline integration yourself.
 
 Next Steps
 ----------
 
 - :doc:`../api_reference/circuits` — ``QEMProtocol``, ``ZNE``, and QuEPP
-- :doc:`program_ensembles` — running many mitigated programs together
-- :doc:`pipelines` — how QEM fits into the circuit pipeline
+- :doc:`../execution_workflows/program_ensembles` — running many mitigated programs together
+- :doc:`../execution_workflows/pipelines` — how QEM fits into the circuit pipeline

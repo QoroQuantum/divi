@@ -342,7 +342,7 @@ class TestQuantumProgramDryRun:
         )
         report, twin = vqe.dry_run()["cost"], vqe.dry_run()["cost"]
         assert report == twin
-        # The nested allocation the user guide teaches is readable either way.
+        # The nested allocation documented in the pipeline guide is readable either way.
         allocations = report.env_artifacts["per_group_shots"]
         assert next(iter(next(iter(allocations.values())).values())) is not None
 

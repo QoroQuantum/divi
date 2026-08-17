@@ -473,5 +473,5 @@ See Also
   properties.
 * :class:`~divi.backends.characterization.CharacterizationOptions` for the
   complete configuration schema.
-* :doc:`../user_guide/combinatorial_optimization_qaoa_pce` for the QAOA
+* :doc:`../algorithms/combinatorial_optimization_qaoa_pce` for the QAOA
   workflow.

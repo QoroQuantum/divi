@@ -52,7 +52,7 @@ from divi.qprog import SuperpositionState
 # snippet source text at exec time to reduce iteration / shot / population
 # budgets before running.  The rendered HTML still shows the original values.
 SNIPPET_PATCHES: list[tuple[str, str]] = [
-    # User-guide snippets use standardized parameter values so the patch
+    # Guide snippets use standardized parameter values so the patch
     # list stays small.  If you add a new snippet, match these defaults
     # rather than inventing new values.
     #   - ``shots=5000``                    → ``shots=500``

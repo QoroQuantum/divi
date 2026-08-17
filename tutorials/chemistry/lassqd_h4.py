@@ -34,9 +34,9 @@ active space:
 Both give two fragments over the same active space, and both are valid upper
 bounds -- but the automatic split recovers most of the correlation energy where
 the occupancy split recovers a fraction of it. See the
-user guide's `Localized Active-Space SQD (LASSQD)
-<https://divi.readthedocs.io/en/latest/user_guide/localized_active_space_sqd.html>`_
-page for the accuracy discussion and for tuning the sampling budget.
+`Localized Active-Space SQD (LASSQD) guide
+<https://divi.readthedocs.io/en/latest/algorithms/localized_active_space_sqd.html>`_
+for the accuracy discussion and sampling-budget tuning.
 """
 
 import time

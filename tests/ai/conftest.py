@@ -149,7 +149,7 @@ def sample_retrieved_chunks():
         ),
         RetrievedChunk(
             text="Medium relevance chunk about QAOA.",
-            source_file="/repo/docs/user_guide/qaoa.rst",
+            source_file="/repo/docs/algorithms/qaoa.rst",
             start_line=1,
             end_line=20,
             score=0.65,

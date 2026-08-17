@@ -26,7 +26,10 @@
 > [!TIP]
 > **Using Claude Code, Cursor, or another LLM coding agent?** Divi is indexed on [Context7](https://context7.com/qoroquantum/divi) — point your agent at `/qoroquantum/divi` to pull current, version-specific Divi docs and snippets directly into its context.
 
-## ⚡ Quick Start
+## ⚡ At-Scale Example
+
+For the shortest introduction, start with the
+**[five-minute tutorial](https://divi.readthedocs.io/en/latest/quickstart.html)**.
 
 ```bash
 pip install qoro-divi
@@ -40,48 +43,57 @@ To install the latest development build (published daily from `main`):
 pip install qoro-divi --pre
 ```
 
-Run a VQE energy minimization in a few lines:
+Split a graph into quantum-sized MaxCut problems, solve the partitions, and
+stitch their candidates into a global solution:
 
 ```python
-import numpy as np
-import pennylane as qp
-from divi.qprog import VQE, HartreeFockAnsatz
-from divi.backends import MaestroSimulator
-from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+import networkx as nx
 
-# Define an H₂ molecule
-molecule = qp.qchem.Molecule(
-    symbols=["H", "H"],
-    coordinates=np.array([(0, 0, 0), (0, 0, 0.5)]),
+from divi.backends import MaestroSimulator
+from divi.qprog import BeamSearchStrategy
+from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
+from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
+from divi.qprog.workflows import PartitioningProgramEnsemble
+
+graph = nx.barbell_graph(4, 0)
+problem = MaxCutProblem(
+    graph,
+    config=GraphPartitioningConfig(
+        max_n_nodes_per_cluster=4,
+        partitioning_algorithm="kernighan_lin",
+    ),
 )
 
-vqe = VQE(
-    molecule=molecule,
-    ansatz=HartreeFockAnsatz(),
-    n_layers=2,
-    backend=MaestroSimulator(shots=5000),
+backend = MaestroSimulator()
+ensemble = PartitioningProgramEnsemble(
+    problem=problem,
+    n_layers=1,
+    backend=backend,
     optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+    max_iterations=10,
     seed=42,
 )
 
-vqe.run()
-print(f"Ground state energy: {vqe.best_loss:.6f}")
+ensemble.run()
+cut, _ = ensemble.aggregate_results(
+    strategy=BeamSearchStrategy(beam_width=3, n_partition_candidates=5)
+)
+print(f"Cut edges: {nx.cut_size(graph, cut)}")
+print(f"Circuits executed: {ensemble.total_circuit_count}")
 ```
 
-Hamiltonians and circuits accept either Qiskit (``SparsePauliOp``,
-``QuantumCircuit``) or PennyLane (``QuantumScript``, operators) inputs
-interchangeably.
+``PartitioningProgramEnsemble`` handles decomposition, parallel execution, and
+candidate aggregation while each partition remains small enough for the chosen
+backend.
 
 ## 🌐 Cloud Execution with Qoro Service
 
-Run the same programs on Qoro's cloud platform with tensor-network simulators — no code changes needed:
+Run the same workflow on Qoro's cloud platform by swapping only the backend:
 
 ```python
 from divi.backends import QoroService
 
-service = QoroService()  # reads QORO_API_KEY from .env or environment
-vqe = VQE(molecule=molecule, backend=service)
-vqe.run()
+backend = QoroService()  # reads QORO_API_KEY from .env or environment
 ```
 
 **Get started for free** → Sign up at [dash.qoroquantum.net](https://dash.qoroquantum.net/) and receive **$100 worth of credits** to run your first quantum programs on our cloud.
@@ -104,7 +116,7 @@ Answers questions about Divi APIs, generates code examples, and explains concept
 | **VQE & QAOA** | Built-in variational algorithms with pluggable ansätze and optimizers |
 | **Circuit Pipelines** | Expand → execute → reduce pattern for complex circuit workflows |
 | **Program Ensembles** | Parallel execution of multiple quantum programs with automatic scheduling, over one round or many adaptive ones |
-| **Flexible Backends** | `MaestroSimulator` for fast local dev, `QiskitSimulator` for noisy simulation, `QoroService` for cloud execution |
+| **Flexible Backends** | `MaestroSimulator` for local simulation, `QiskitSimulator` for Qiskit-native noise models, `QoroService` for cloud execution |
 | **Execution Config** | Control bond dimension, simulator type, and simulation method per job |
 | **Live Reporting** | Real-time dashboards and convergence tracking via callbacks |
 
@@ -123,11 +135,11 @@ divi/
 
 ## 📚 Documentation
 
-Full documentation, user guides, and API reference: **[divi.readthedocs.io](https://divi.readthedocs.io)**
+Algorithm guides, execution guides, and API reference: **[divi.readthedocs.io](https://divi.readthedocs.io)**
 
 Hands-on examples are in the [`tutorials/`](tutorials/) folder.
 
-## � Contributing
+## Contributing
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and code style guidelines.
 

@@ -16,13 +16,13 @@ Tutorials that use `get_backend()` from `_backend.py` accept these CLI flags:
 
 | Flag | Backend | Description |
 | ------ | --------- | ------------- |
-| `--local-qiskit` (default) | `QiskitSimulator` | Local Qiskit Aer simulation |
-| `--local-maestro` | `MaestroSimulator` | Local Maestro orchestration |
+| `--local-maestro` (default) | `MaestroSimulator` | Local high-performance simulation |
+| `--local-qiskit` | `QiskitSimulator` | Local Qiskit Aer simulation |
 | `--cloud-maestro` | `QoroService` | Qoro cloud backend |
 | `--force-sampling` | — | Disable exact expectation values; use shot-based sampling instead |
 
 ```bash
-python tutorials/optimization/qaoa_graph_problems.py --local-qiskit
+python tutorials/optimization/qaoa_graph_problems.py --local-maestro
 python tutorials/optimization/qaoa_graph_problems.py --cloud-maestro
 python tutorials/optimization/qaoa_graph_problems.py --local-qiskit --force-sampling
 ```
@@ -100,13 +100,16 @@ pip install qoro-divi
 
 ## Documentation
 
-For comprehensive documentation and detailed explanations, see the [User Guide](https://divi.readthedocs.io/en/latest/user_guide/).
+For comprehensive documentation and detailed explanations, see the
+[Algorithms](https://divi.readthedocs.io/en/latest/algorithms/ground_state_energy_estimation_vqe.html)
+and [Execution & Workflows](https://divi.readthedocs.io/en/latest/execution_workflows/core_concepts.html)
+sections.
 
 ## Contributing
 
 When adding new examples:
 
-1. Drop the file into the folder that matches its primary topic (or open a new folder if it's a genuinely new category that maps to a user-guide page).
+1. Drop the file into the folder that matches its primary topic (or open a new folder if it introduces a genuinely new documentation category).
 2. Keep examples focused and self-contained.
 3. Add clear docstrings explaining the example's purpose.
 4. Include expected output in comments.

@@ -114,7 +114,7 @@ Documentation code snippets (Sybil)
 
 Python examples in ``*.rst`` files are executed in CI (see the **Build Docs** workflow)
 using `Sybil <https://sybil.readthedocs.io/>`_ and ``docs/source/conftest.py``. This
-catches stale imports and API drift in the user guide.
+catches stale imports and API drift in the guides.
 
 **Run locally**
 
@@ -184,5 +184,5 @@ Avoid invisible snippets when:
 - The setup is shared across many pages (prefer ``docs/source/conftest.py`` namespace
   injection instead).
 
-``user_guide/visualization.rst`` uses invisible setup to define shared scan inputs once
+``execution_workflows/visualization.rst`` uses invisible setup to define shared scan inputs once
 and keep later examples short while still runnable.

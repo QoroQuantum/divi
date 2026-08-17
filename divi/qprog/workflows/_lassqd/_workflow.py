@@ -669,7 +669,7 @@ class LASSQD(ProgramEnsemble):
     a product of fragment states, so the energy is a genuine expectation value.
     Fragmenting nonetheless costs accuracy, and the cost grows with how
     strongly the fragments interact; see
-    :ref:`lassqd-accuracy-characteristics` in the user guide.
+    :ref:`lassqd-accuracy-characteristics` in the LASSQD guide.
 
     Args:
         molecule: A PySCF ``gto.Mole`` (an RHF calculation is run on it lazily,

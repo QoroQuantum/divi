@@ -1,9 +1,49 @@
 Optimizers
 ==========
 
-Divi provides built-in support for optimizing quantum programs using a range of optimization methods, each suited to different problem types and user requirements.
+Choose an optimizer from the properties of the run, not from an absolute
+ranking. Shot noise, parameter count, gradient availability, and circuit budget
+usually matter more than the algorithm name.
 
-All optimizers can be accessed through the ``divi.qprog.optimizers`` module. Scipy-based optimizers rely on the :class:`~divi.qprog.optimizers.ScipyMethod` enum to specify the optimizer used.
+.. list-table:: Optimizer selection
+   :header-rows: 1
+   :widths: 20 25 25 30
+
+   * - Start with
+     - Suitable regime
+     - Per-step cost
+     - Main caveat
+   * - COBYLA or Nelder–Mead
+     - Small or moderate, gradient-free problems
+     - Grows with parameter count
+     - Local methods; repeated starts may find different minima.
+   * - Monte Carlo or CMA-ES
+     - Global exploration and multimodal landscapes
+     - Population-sized batches
+     - More evaluations before local convergence.
+   * - SPSA or QN-SPSA
+     - Many parameters on shot-based backends
+     - Constant number of objective evaluations
+     - Stochastic directions require tuning and averaging.
+   * - QUIVER
+     - Shot-based runs needing a tunable accuracy/budget trade-off
+     - Controlled by direction count ``V``
+     - Parameter-shift mode is exact only where the program provides an exact
+       shift rule.
+   * - L-BFGS-B or QNG
+     - Smooth objectives with an exact program gradient
+     - Parameter-shift and, for QNG, metric evaluations
+     - Not supported by QAOA, which has no exact two-term parameter-shift rule.
+   * - Grid search
+     - One or two parameters, especially shallow QAOA
+     - Exponential in parameter count
+     - Impractical beyond roughly three parameters.
+
+All optimizer classes are listed in the
+:doc:`optimizer API reference <../api_reference/qprog/optimizers>`. SciPy
+methods are selected with :class:`~divi.qprog.optimizers.ScipyMethod`. The
+sections below explain the trade-offs and program-specific restrictions in
+more detail.
 
 Monte Carlo Optimization
 -------------------------
@@ -118,50 +158,28 @@ Differential Evolution [#storn1997]_ is a method that optimizes a problem by ite
 Quantum Natural Gradient
 ------------------------
 
-The :class:`~divi.qprog.optimizers.QNGOptimizer` performs regularized natural-gradient descent:
+The :class:`~divi.qprog.optimizers.QNGOptimizer` preconditions the
+parameter-shift gradient with a regularized metric:
 
 .. math::
 
    \theta \leftarrow \theta - \eta \, (G + \lambda I)^{-1} \nabla L,
 
-where :math:`\nabla L` is the parameter-shift gradient and :math:`G` is a
-positive-semidefinite metric tensor. Preconditioning by the inverse metric
-rescales the gradient to follow the geometry of the quantum state manifold,
-which can dramatically reduce the number of iterations needed to converge
-compared to vanilla gradient descent — particularly in circuits with many
-parameters or pronounced curvature variation.
+This can improve convergence when parameter directions have different
+curvatures, at the cost of metric evaluations.
 
-**Metric estimators.** The optimizer is metric-agnostic: the metric is
-produced by an injected :class:`~divi.qprog.optimizers.MetricEstimator`
-strategy. Swapping the estimator changes the metric without touching the
-optimizer itself. Two estimators are provided:
+Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
 
-- :class:`~divi.qprog.optimizers.PullbackMetricEstimator` *(default)* —
-  Hamiltonian-aware pullback metric,
-  :math:`G_{ij} = \sum_r a_r^2 \,(\partial_i \langle P_r \rangle)(\partial_j \langle P_r \rangle)`,
-  computed from the per-Pauli-term expectation gradients of the loss
-  observable :math:`H = \sum_r a_r P_r`. The gradient and metric share one
-  parameter-shift measurement pass (a single memoized evaluation), so there
-  is no extra circuit overhead relative to a standard gradient step.
-  Compatible with VQE, QAOA, and ``CustomVQA`` programs whose loss is the
-  expectation value of the cost Hamiltonian. Rejects programs with a
-  classical loss objective (PCE) or a supervised data-bound loss.
+- :class:`~divi.qprog.optimizers.PullbackMetricEstimator` *(default)* shares
+  the Hamiltonian-gradient measurement pass. It supports expectation-valued
+  VQE and CustomVQA, but not PCE or supervised data-bound losses.
 
-- :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` — block-diagonal
-  Fubini–Study metric (quantum geometric tensor), computed from the covariance
-  of the Hermitian generators of each layer's parametric gates. Independent of
-  the loss observable, so it applies to any program with a Pauli-rotation
-  ansatz — including PCE. Provides only ``metric_fn``; the gradient falls back
-  to the program's own parameter-shift rule. Rejects ansatze that use
-  unsupported or composite-angle gates, and data-bound programs.
+- :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` is
+  observable-independent and supports PCE with Pauli-rotation ansatze. It
+  rejects unsupported/composite-angle gates and data-bound programs.
 
-**Solver options.** The optimizer regularizes the metric before inverting to
-prevent divergence along flat directions:
-
-- ``solver="tikhonov"`` *(default)* — solves :math:`(G + \lambda I)\,\delta = \nabla L`
-  via a Cholesky-based symmetric solve, exploiting the PSD structure.
-- ``solver="pinv"`` — applies the Moore–Penrose pseudo-inverse of the raw
-  (undamped) metric with cutoff ``rcond``.
+``solver="tikhonov"`` regularizes flat directions; ``solver="pinv"`` uses a
+pseudo-inverse with cutoff ``rcond``.
 
 **Usage** is the same as any optimizer — pass an instance via the
 ``optimizer=`` argument and call ``run()``:
@@ -197,65 +215,28 @@ To switch to the Fubini–Study metric, inject a different estimator:
    already checkpoints the parameter history, so optimizer-level state is
    not needed.
 
-.. note::
-
-   Both metric estimators compute the metric exactly per iteration and
-   require additional circuit evaluations beyond a plain gradient step.
-   QNG is best suited to simulators or small-to-moderate problems where
-   the measurement overhead is acceptable. For large hardware runs with
-   tight shot budgets, standard gradient-based optimizers may be more
-   practical.
-
-.. note::
-
-   **QNG with QDrift.** When a QAOA program uses a stochastic
-   :class:`~divi.hamiltonians.QDrift` trotterization, the gradient and the
-   metric must be evaluated on the *same* sampled Hamiltonian — otherwise the
-   natural-gradient step mixes mismatched operators. Divi guarantees this: the
-   cost, gradient, and metric pipelines all draw the same QDrift batch within
-   one optimizer evaluation (the sample is keyed on an internal per-evaluation
-   counter) and resample on the next. The draw is reproducible from the
-   ``QDrift(seed=...)`` you provide; with no seed it is still consistent within
-   each evaluation but varies across runs. ``n_hamiltonians_per_iteration``
-   controls how many independent samples are averaged per evaluation — higher
-   values reduce variance at a proportional increase in circuits.
-
-Use QNG when:
-
-- You are running VQE, QAOA, or PCE on a simulator and want faster
-  parameter convergence relative to vanilla gradient descent.
-- Your landscape has strong curvature variation across parameters.
-- You are using the pullback metric and want gradient + metric from a
-  single measurement pass.
+Use QNG on small-to-moderate exact-gradient problems where metric overhead is
+acceptable. It does not support QAOA or checkpointing.
 
 Simultaneous Perturbation (SPSA / QN-SPSA)
 ------------------------------------------
 
-SPSA and its quantum-natural variant estimate their search direction from a
-*constant* number of cost evaluations per step, independent of the number of
-parameters. This makes them attractive for many-parameter, shot-noisy circuits
-where the parameter-shift rule — which scales with the parameter count — is
-prohibitively expensive.
+SPSA and QN-SPSA use a constant number of evaluations per step, making them
+useful for many-parameter, shot-noisy circuits.
 
 SPSA
 ^^^^
 
-The :class:`~divi.qprog.optimizers.SPSAOptimizer` [#spall1992]_ approximates the
-gradient from just **two** cost evaluations per step by perturbing all
-parameters simultaneously along a random Bernoulli :math:`\pm 1` direction
-:math:`h`:
+The :class:`~divi.qprog.optimizers.SPSAOptimizer` [#spall1992]_ perturbs all
+parameters along one random :math:`\pm 1` direction and estimates the gradient
+from two evaluations:
 
 .. math::
 
    \hat g_k = \frac{f(\theta + c_k h) - f(\theta - c_k h)}{2 c_k}\, h,
    \qquad \theta \leftarrow \theta - a_k \hat g_k,
 
-with decaying gains :math:`a_k = a/(A + k + 1)^\alpha` and
-:math:`c_k = c/(k + 1)^\gamma`. The two perturbed points are evaluated as a
-single batch, so a stochastic cost (e.g. a :class:`~divi.hamiltonians.QDrift`
-QAOA cost) scores both against the same sampled Hamiltonian. SPSA is
-gradient-free: it ignores any parameter-shift gradient the algorithm would
-otherwise compute.
+The two points share a batch, so stochastic costs use one sampled Hamiltonian.
 
 .. code-block:: python
 
@@ -263,65 +244,35 @@ otherwise compute.
 
    optimizer = SPSAOptimizer(learning_rate=0.2, c=0.2)
 
-A good starting point is to set ``c`` near the standard deviation of the cost's
-shot noise (so the finite difference clears the noise floor) and tune
-``learning_rate`` from there. ``resamplings`` averages several gradient samples
-per step to reduce variance (at proportional cost). The optional ``blocking``
-guard performs *look-ahead* blocking — it evaluates the candidate's loss and
-rejects the step if it would worsen the loss by more than ``blocking_tol`` times
-the std of the recent window, otherwise accepting it. This prevents a single bad
-estimate (or a divergent preconditioned step in QN-SPSA) from corrupting the run,
-at the cost of one extra evaluation per step (plus one to seed the baseline).
-``blocking_tol`` — not ``resamplings`` — is the knob that absorbs cost noise in
-that single-evaluation accept/reject decision.
+Set ``c`` near the cost's shot-noise standard deviation, then tune
+``learning_rate``. ``resamplings`` reduces gradient variance at proportional
+cost. ``blocking`` spends an extra evaluation to reject steps that exceed
+``blocking_tol`` times recent loss variation.
 
 .. note::
 
-   When ``blocking`` is off and a run diverges (most likely QN-SPSA in high
-   dimensions), best-iterate tracking would otherwise return an early finite
-   iterate with no signal that the run blew up. The optimizers emit a one-time
-   ``UserWarning`` when the loss grows by more than 1000× its starting value —
-   if you see it, enable ``blocking``, raise ``regularization``, or lower
-   ``learning_rate``.
+   A 1000× loss increase warns once. Enable ``blocking``, raise
+   ``regularization``, or lower ``learning_rate``.
 
 .. note::
 
-   The perturbation directions are drawn from a random generator, so runs vary
-   by default. Pass ``rng=`` (a ``numpy.random.Generator``) for reproducibility.
-   The loss reported to the history is the average of the two perturbed
-   evaluations — a free but ``O(c_k²)``-biased estimate of ``f(θ)``; set
-   ``exact_loss=True`` to spend one extra unperturbed evaluation per step for the
-   exact value (used for the recorded loss and best-iterate selection). Note that
-   a ``QDrift(seed=...)`` seed fixes only the Hamiltonian sampling, not these
-   perturbation directions.
+   Pass ``rng=`` for reproducible directions. ``exact_loss=True`` spends one
+   extra evaluation for unbiased history and best-iterate selection. A QDrift
+   seed does not seed SPSA directions.
 
 QN-SPSA
 ^^^^^^^
 
-The :class:`~divi.qprog.optimizers.QNSPSAOptimizer` [#gacon2021]_ combines the
-SPSA gradient with a metric-preconditioned update, so it follows the geometry of
-the state manifold like :class:`~divi.qprog.optimizers.QNGOptimizer` while
-keeping a constant per-step circuit budget. Like QNG, the metric backend is
-pluggable via the ``metric_estimator`` argument:
+The :class:`~divi.qprog.optimizers.QNSPSAOptimizer` [#gacon2021]_ preconditions
+SPSA with a pluggable metric:
 
-- :class:`~divi.qprog.optimizers.StochasticFidelityMetricEstimator` *(default)* —
-  the faithful QN-SPSA metric, estimated from state-overlap fidelities
-  :math:`F(\theta_1, \theta_2) = |\langle\psi(\theta_1)|\psi(\theta_2)\rangle|^2`
-  (measured as the all-zeros probability of the compute-uncompute circuit
-  :math:`U(\theta_1)\,U(\theta_2)^\dagger`) using two random directions and four
-  overlap evaluations per step. The samples are accumulated into a running
-  average seeded at the identity, conditioned as :math:`|\bar g| + \beta I`, and
-  used to precondition the SPSA gradient. Because the overlap depends only on the
-  ansatz state — not the loss observable — it applies to any qiskit-invertible
-  ansatz, and rejects data-bound programs (and any ansatz qiskit cannot invert).
-  For QDrift QAOA the metric is built from the fixed cost-ansatz realization
-  captured at construction (it does not re-sample per evaluation), so it stays
-  consistent across the run.
+- :class:`~divi.qprog.optimizers.StochasticFidelityMetricEstimator` *(default)*
+  adds four state-overlap evaluations per step to SPSA's two objective
+  evaluations. It supports Qiskit-invertible ansatze, not data-bound programs.
+  QDrift uses one fixed ansatz realization.
 
-- :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` or
-  :class:`~divi.qprog.optimizers.PullbackMetricEstimator` — use the estimator's
-  *exact* metric (as in QNG) while keeping the SPSA gradient. The metric cost
-  then scales with the parameter count rather than staying constant.
+- Fubini–Study or pullback estimators provide exact metrics, but their cost
+  scales with parameter count.
 
 .. code-block:: python
 
@@ -337,12 +288,8 @@ pluggable via the ``metric_estimator`` argument:
        metric_estimator=FubiniStudyMetricEstimator(),
    )
 
-QN-SPSA preconditions the step by the (inverse) metric, so it typically uses a
-smaller raw ``learning_rate`` than plain SPSA. The constant per-step cost buys a
-*noisier* metric estimate than QNG's exact metric. In high dimensions this noisy,
-low-rank metric estimate can occasionally drive a divergent step; raise
-``resamplings`` (less metric noise), increase ``regularization``, or enable
-``blocking`` (which rejects such steps outright) if the optimization is unstable.
+QN-SPSA usually needs a smaller ``learning_rate`` than SPSA. For unstable runs,
+raise ``resamplings`` or ``regularization``, or enable ``blocking``.
 
 .. note::
 
@@ -352,20 +299,11 @@ low-rank metric estimate can occasionally drive a divergent step; raise
    per-step gains, blocking history, and running-average metric are recomputed
    each run.
 
-Use SPSA / QN-SPSA when:
-
-- Your circuit has many parameters and parameter-shift gradients are too costly.
-- The cost is shot-noisy and you want a method designed around stochastic
-  evaluations.
-- *(QN-SPSA)* You want metric-aware updates at a constant per-step circuit cost,
-  trading the exact metric for a stochastic estimate.
-
 QUIVER (Adaptive Directional Gradients)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :class:`~divi.qprog.optimizers.QUIVEROptimizer` [#coyle2026]_ reconstructs the
-full gradient from ``V`` random Rademacher (:math:`\pm 1`) directional
-derivatives, independent of the parameter count :math:`N`:
+The :class:`~divi.qprog.optimizers.QUIVEROptimizer` [#coyle2026]_ estimates the
+gradient from ``V`` random directional derivatives:
 
 .. math::
 
@@ -374,19 +312,14 @@ derivatives, independent of the parameter count :math:`N`:
    {2\varepsilon}\, v_\ell,
    \qquad \theta \leftarrow \theta - a_k\,\tilde\nabla^{\mathsf F} f,
 
-costing :math:`2V` evaluations per step. A single direction (:math:`V = 1`)
-recovers SPSA; :math:`V = N` recovers the full parameter-shift gradient — so
-``V`` dials between cheap-but-noisy and expensive-but-precise gradient estimates.
+This costs :math:`2V` evaluations: ``V=1`` resembles SPSA; larger ``V`` trades
+cost for precision.
 
-QUIVER also adapts ``V`` and the per-direction shot count ``M`` each step
-(iCANS/gCANS-style), spending more directions when the gradient estimate is noisy
-relative to its magnitude, and more shots when measurement noise dominates:
+QUIVER can adapt ``V`` and the per-direction shot count ``M``:
 
-- ``V`` is driven by the spread of the ``V`` directional samples — it needs no
-  backend variance, so it adapts on any cost function.
-- ``M`` is driven by the measurement-variance estimate the cost closure exposes
-  on shot-based backends. On native-expectation-value backends (no shot counts)
-  it falls back to a fixed ``M`` and ``V``-from-spread only.
+- ``V`` follows directional-sample spread.
+- ``M`` follows measurement variance on sampling backends and stays fixed on
+  native-expval backends.
 
 .. code-block:: python
 
@@ -394,26 +327,15 @@ relative to its magnitude, and more shots when measurement noise dominates:
 
    optimizer = QUIVEROptimizer(learning_rate=0.1, epsilon=0.1, V_init=2)
 
-Set ``derivative_mode="parameter_shift"`` to use a :math:`\pi/2` directional shift
-instead of the finite-difference step ``epsilon``; set ``adapt_V=False`` /
-``adapt_M=False`` to pin a fixed budget. QUIVER shares SPSA's ``blocking`` and
-``exact_loss`` options, is gradient-free, and does not support checkpointing.
+Use ``derivative_mode="parameter_shift"`` where an exact directional shift is
+valid; ``adapt_V=False`` or ``adapt_M=False`` pins the budget. QUIVER supports
+SPSA's ``blocking`` and ``exact_loss`` options, but not checkpointing.
 
 .. note::
 
-   An adapting ``M`` delivers its per-evaluation shot budget to the backend as
-   explicit per-circuit shot groups, which disables circuit-template batching for
-   that submission. On template-capable backends (e.g. the Qoro cloud) this trades
-   template reuse for shot adaptivity — prefer ``adapt_M=False`` there if
-   submission overhead dominates, and reserve ``adapt_M`` for local shot-based
-   simulators. ``adapt_M`` also assumes a uniform per-group shot count, so it is
-   not combined with a configured ``shot_distribution`` (a warning is emitted).
-
-Use QUIVER when:
-
-- You want SPSA's constant-cost appeal but with a tunable accuracy/cost trade-off
-  via ``V``.
-- You want the per-step measurement budget to adapt automatically to shot noise.
+   Adaptive ``M`` disables circuit-template batching and cannot combine with
+   ``shot_distribution``. Prefer fixed ``M`` when cloud submission overhead
+   dominates.
 
 Grid Search
 -----------
@@ -456,61 +378,19 @@ A warning is issued if ``max_iterations > 1`` is supplied.
    impractical beyond ~3 parameters. For higher dimensions, use
    :class:`~divi.qprog.optimizers.MonteCarloOptimizer` or CMA-ES instead.
 
-Choosing the Right Optimizer
+Program-Specific Constraints
 ----------------------------
 
-**For :class:`~divi.qprog.algorithms.VQE`:**
+- :class:`~divi.qprog.algorithms.QAOA` has no exact two-term parameter-shift
+  gradient. Use gradient-free SciPy methods, evolutionary methods, SPSA,
+  QN-SPSA, QUIVER in finite-difference mode, or a low-dimensional grid search.
+- VQE and ``CustomVQA`` can use exact-gradient methods only when their ansatz
+  declares a valid parameter-shift spectrum.
+- PCE uses a classical counts-based objective. Default pullback QNG does not
+  apply; use the Fubini–Study estimator or a gradient-free optimizer.
+- Checkpointing requires an optimizer with restorable state. See
+  :doc:`resuming_long_runs` for the compatibility table.
 
-- **QNG (pullback)**: Best when the landscape is smooth and you want faster per-iteration
-  progress than L-BFGS-B at the cost of additional metric measurements; requires a
-  Hamiltonian-expectation-value loss (not PCE)
-- **QN-SPSA**: Metric-aware updates like QNG but at a constant per-step circuit
-  cost; best for many-parameter circuits where exact gradients/metrics are too expensive
-- **SPSA**: Gradient-free with two evaluations per step; best for many-parameter,
-  shot-noisy circuits
-- **QUIVER**: Forward-gradient generalization of SPSA with a tunable direction
-  count ``V`` and adaptive shot allocation; best when you want to trade gradient
-  accuracy against measurement budget on shot-based backends
-- **L-BFGS-B**: Best for smooth, differentiable landscapes with good initial parameters
-- **Monte Carlo**: Excellent for exploration and avoiding local minima
-- **COBYLA**: Good for constrained problems or when gradients are unreliable
-- **Nelder-Mead**: Robust choice for noisy or discontinuous landscapes
-
-**For :class:`~divi.qprog.algorithms.QAOA`:**
-
-- **Grid Search**: Best for 1–2 layer QAOA where you want full landscape visibility
-- **QNG (pullback)**: Accelerates convergence in simulator runs; requires a cost
-  Hamiltonian expectation loss
-- **QN-SPSA / SPSA**: Best for deep, many-layer QAOA on shot-noisy backends, where
-  the constant per-step cost beats parameter-shift gradients
-- **QUIVER**: When you want SPSA's low per-step cost on shot-noisy QAOA but with a
-  tunable direction count and adaptive shot allocation
-- **COBYLA**: Often the best starting point for :class:`~divi.qprog.algorithms.QAOA` problems
-- **Nelder-Mead**: Good for noisy landscapes and parameter initialization
-- **Monte Carlo**: Excellent for global exploration and avoiding barren plateaus
-- **L-BFGS-B**: Use when you have good initial parameters and smooth landscapes
-
-**For PyMOO Optimizers:**
-
-- **CMA-ES**: Excellent for high-dimensional parameter spaces and when you need robust global optimization. Particularly effective for :class:`~divi.qprog.algorithms.VQE` with many parameters.
-- **Differential Evolution**: Good for multimodal optimization landscapes and when you need to escape local minima. Works well for :class:`~divi.qprog.algorithms.QAOA` parameter optimization.
-
-**For Hyperparameter Sweeps:**
-
-- **Monte Carlo**: Best for initial exploration across parameter ranges
-- **L-BFGS-B**: Use for fine-tuning after Monte Carlo exploration
-- **Nelder-Mead**: Robust fallback when other methods fail
-- **CMA-ES**: Excellent for high-dimensional sweeps with many parameters
-
-**Quantum-Specific Considerations:**
-
-- **Barren Plateaus**: Use :class:`~divi.qprog.optimizers.MonteCarloOptimizer` or CMA-ES to avoid getting trapped in flat regions
-- **Parameter Initialization**: Start with small random values (typically [-0.1, 0.1]) for better convergence
-- **Circuit Depth**: Deeper circuits benefit from more robust optimizers like CMA-ES or :class:`~divi.qprog.optimizers.MonteCarloOptimizer`
-- **Noise Resilience**: Nelder-Mead and COBYLA are more robust to quantum noise than gradient-based methods
-- **Natural Gradient**: Use :class:`~divi.qprog.optimizers.QNGOptimizer` on simulators when the circuit has pronounced
-  curvature variation and you want metric-aware updates; not recommended for large hardware runs
-  where extra metric measurements are expensive
 
 Early Stopping
 --------------
@@ -637,7 +517,7 @@ Next Steps
 ----------
 
 - `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ — runnable examples
-- :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce` — algorithm-specific guidance
+- :doc:`../algorithms/ground_state_energy_estimation_vqe` and :doc:`../algorithms/combinatorial_optimization_qaoa_pce` — algorithm-specific guidance
 - :doc:`program_ensembles` — optimizers in large-scale sweeps and ensembles
 
 References

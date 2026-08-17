@@ -280,8 +280,8 @@ def build_prompt(
     list[dict[str, str]]
         A message list ready for ``Llama.create_chat_completion``.
     """
-    # For "what algorithms/features does Divi support?" use only user-guide
-    # chunks so the model sees overview content, not API reference listings.
+    # For "what algorithms/features does Divi support?" use overview guides
+    # rather than API reference listings.
     if _is_overview_query(user_query):
         filtered = _filter_chunks_for_overview(chunks)
         if filtered:

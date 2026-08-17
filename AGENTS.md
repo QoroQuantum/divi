@@ -62,7 +62,7 @@ API pages use `sphinx-automodapi` — one `.. automodapi::` directive per submod
 
 ### RST code snippets
 
-- Run `cd docs && make test-snippets` after changing user-guide examples; CI runs this in the docs workflow.
+- Run `cd docs && make test-snippets` after changing guide examples; CI runs this in the docs workflow.
 - Conventions for RST snippets and Sybil: `docs/source/development/building_docs.rst` (section *Documentation code snippets (Sybil)*).
 
 ## Commit conventions

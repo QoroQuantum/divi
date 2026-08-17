@@ -15,7 +15,7 @@ networks.
 .. tip::
    **Two ways to do QML in Divi.** For most quantum-machine-learning work, reach
    for the curated :class:`~divi.qprog.algorithms.QNN` primitive
-   (:doc:`quantum_neural_networks`) — it composes a feature map and ansatz for
+   (:doc:`../algorithms/quantum_neural_networks`) — it composes a feature map and ansatz for
    you. Use the ``CustomVQA`` data-binding path on this page only when you bring
    your own circuit and want to mark its data parameters by hand.
 
@@ -36,7 +36,7 @@ stages bridge directly from the major quantum frameworks:
 You rarely call these stages by hand. :class:`~divi.qprog.algorithms.CustomVQA`
 selects the right one based on the object you pass it, then drives the resulting
 circuit through binding, execution, and reduction — the same machinery used
-throughout Divi. For a manual, stage-by-stage walkthrough see :doc:`pipelines`.
+throughout Divi. For manual construction, see :doc:`pipeline_authoring`.
 
 Bring Your Own Circuit with CustomVQA
 -------------------------------------
@@ -160,17 +160,16 @@ For **supervised** training, pass ``labels`` (shape ``(n_samples,)``) alongside
 the feature batch: each sample's expectation value is compared to its label via
 ``loss_fn`` (``"squared_error"`` by default, or a callable) before
 ``loss_reduction`` aggregates. This is the same supervised interface as
-:class:`~divi.qprog.algorithms.QNN` — see :doc:`quantum_neural_networks`.
+:class:`~divi.qprog.algorithms.QNN` — see :doc:`../algorithms/quantum_neural_networks`.
 
 For the full tutorial, see `custom_vqa.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/advanced/custom_vqa.py>`_.
 
 Next Steps
 ----------
 
-- :doc:`quantum_neural_networks` — the curated ``QNN`` primitive for QML
+- :doc:`../algorithms/quantum_neural_networks` — the curated ``QNN`` primitive for QML
 - :doc:`core_concepts` — the :class:`~divi.circuits.MetaCircuit` IR these inputs
   compile to, and the variational run lifecycle
-- :doc:`pipelines` — the stage-by-stage view, including a manual ``CustomVQA``
-  pipeline walkthrough
+- :doc:`pipeline_authoring` — manual pipelines and custom stages
 - :doc:`../api_reference/qprog/algorithms` — full
   :class:`~divi.qprog.algorithms.CustomVQA` API

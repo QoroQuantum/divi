@@ -1,15 +1,39 @@
-Backends Guide
-==============
+Backends
+========
 
-Divi's execution layer is built around :class:`~divi.backends.CircuitRunner`: every backend exposes the same submission API so programs can swap simulators or the cloud service without changing algorithm code. This guide covers the bundled runners, :class:`~divi.backends.ExecutionResult`, and Qoro job configuration.
+Divi's execution layer is built around :class:`~divi.backends.CircuitRunner`:
+every backend exposes the same submission API, so programs can change execution
+targets without changing algorithm logic.
+
+.. list-table:: Choose a backend
+   :header-rows: 1
+   :widths: 24 38 38
+
+   * - Backend
+     - Start here when
+     - Move elsewhere when
+   * - :class:`~divi.backends.MaestroSimulator`
+     - Developing locally, running noiseless simulations, or modeling
+       hand-written Pauli-channel noise.
+     - You need Qiskit-native calibration data or a cloud target.
+   * - :class:`~divi.backends.QiskitSimulator`
+     - Reusing a Qiskit Aer noise model or fake-backend calibration.
+     - You need Maestro's local methods or managed cloud execution.
+   * - :class:`~divi.backends.QoroService`
+     - Running managed simulators or quantum hardware through the cloud.
+     - You are still iterating rapidly on local code.
+
+Most algorithm users can continue directly to the relevant backend section.
+The next section is for callers using ``submit_circuits`` without a
+:class:`~divi.qprog.QuantumProgram`.
 
 Backend Architecture
 --------------------
 
 All backends in Divi implement the :class:`~divi.backends.CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend, like cloud hardware, with a single line of code.
 
-Understanding ExecutionResult
-------------------------------
+Direct Submission and ``ExecutionResult``
+-----------------------------------------
 
 All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return an :class:`~divi.backends.ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
 
@@ -82,32 +106,15 @@ MaestroSimulator
 
 :class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and automatically selects between Statevector and MatrixProductState methods based on circuit width.
 
-**Key Features:**
-
-* **Native C++ Core**: Backed by ``qoro-maestro``, a compiled simulator designed for low per-circuit overhead.
-* **Auto Method Selection**: Switches from Statevector to MatrixProductState for circuits exceeding 22 qubits (configurable via :class:`~divi.backends.MaestroConfig`'s ``mps_qubit_threshold``), so a single backend handles both narrow and wide registers.
-* **Multiple Simulation Methods**: Statevector, MatrixProductState, Stabilizer, ExtendedStabilizer, TensorNetwork, PauliPropagator.
-* **Pauli-channel noise**: Analytical exact-mean expectation values or Monte-Carlo sampling under a ``maestro.NoiseModel``, configured directly on :class:`~divi.backends.MaestroConfig` — see :ref:`noisy-simulation-maestro`.
-
-
 .. _configuring-maestrosimulator:
 
 Configuring MaestroSimulator
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Simulator configuration is carried by a dedicated
-:class:`~divi.backends.MaestroConfig` object — the same pattern
-:class:`~divi.backends.QoroService` uses with
-:class:`~divi.backends.ExecutionConfig`, so the mental model is the same
-whether you run locally or in the cloud.  Field semantics are documented in
-the `maestro Python bindings guide <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_,
-since each :class:`~divi.backends.MaestroConfig` field maps directly to the
-identically-named field on maestro's ``SimulatorConfig``.
-
-Constructing :class:`~divi.backends.MaestroSimulator` with no config gives you
-automatic simulation-method selection: Statevector for narrow circuits, MPS
-above ``mps_qubit_threshold`` (default 22 qubits) so wide registers do not try
-to store a full statevector.
+Options live in :class:`~divi.backends.MaestroConfig` and map directly to the
+`maestro Python bindings <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_.
+Without a config, Maestro uses Statevector below ``mps_qubit_threshold``
+(default 22 qubits) and MPS above it.
 
 .. code-block:: python
 
@@ -194,46 +201,20 @@ one of five dispatch scenarios across four C++ entry points
    ``noise_realizations=1`` (expval) is **not** the same as ``noise_realizations=None``:
    the former is one random Pauli sampling; the latter is the exact analytical mean.
 
-**Analytical noisy expectation values**
+Configure any mode from the table through one backend constructor:
 
 .. code-block:: python
 
-   from divi.backends import MaestroSimulator, MaestroConfig
+   from divi.backends import MaestroConfig, MaestroSimulator
 
-   # noise_realizations defaults to None → analytical noisy_estimate
-   sim = MaestroSimulator(config=MaestroConfig(noise_model=noise_model))
-   result = sim.submit_circuits({"c0": qasm_string}, ham_ops="ZI;IZ")
-   expvals = result.results[0]["results"]   # {"ZI": <float>, "IZ": <float>}
-
-**Monte Carlo noisy expectation values**
-
-.. code-block:: python
-
-   sim_mc = MaestroSimulator(
+   backend = MaestroSimulator(
+       shots=5000,
        config=MaestroConfig(
            noise_model=noise_model,
            noise_realizations=20,
            noise_seed=42,
-       )
-   )
-   result = sim_mc.submit_circuits({"c0": qasm_string}, ham_ops="ZI;IZ")
-   expvals = result.results[0]["results"]
-
-**Noisy sampling (counts mode)**
-
-.. code-block:: python
-
-   sim_sample = MaestroSimulator(
-       shots=5000,
-       config=MaestroConfig(
-           noise_model=noise_model,
-           noise_realizations=10,
-           noise_seed=0,
        ),
    )
-   result = sim_sample.submit_circuits({"c0": qasm_string})
-   counts = result.results[0]["results"]
-   # 5000 shots distributed across 10 random Pauli error patterns.
 
 For reproducibility under noisy execution see :ref:`Operational notes <operational-notes-shot-reproducibility>` below.
 
@@ -439,16 +420,6 @@ The ``api_meta`` field accepts runtime pass-through metadata. Allowed keys are d
 
 .. _Backend Selection Guide:
 
-Backend Selection Guide
------------------------
-
-Choosing the right backend depends on what stage of development you're in.
-
-* **For Development and Testing**, use :class:`~divi.backends.MaestroSimulator` — for exact noiseless simulation, for analytical Pauli-channel noise, or for fast Monte Carlo over a hand-written noise model.
-* **For Qiskit-native noise**, use :class:`~divi.backends.QiskitSimulator` — its strength is plugging into Qiskit fake backends and arbitrary ``qiskit_aer.noise.NoiseModel`` instances built from device calibration data.
-* **For Production Runs**, use :class:`~divi.backends.QoroService` for cloud simulation, real quantum hardware, and scalable execution.
-* **For Research**, start with :class:`~divi.backends.MaestroSimulator` for prototyping, then use :class:`~divi.backends.QoroService` for validation against real hardware.
-
 Analytic vs Sampling Execution
 ------------------------------
 
@@ -524,4 +495,4 @@ Next Steps
 * `tutorials/backends/qasm_thru_service.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backends/qasm_thru_service.py>`_ and `tutorials/backends/backend_properties_conversion.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backends/backend_properties_conversion.py>`_ — Qoro submission and backend-from-metadata workflows
 * :doc:`../api_reference/backends` — full ``CircuitRunner``, ``JobConfig``, and ``ExecutionConfig`` reference
 * :doc:`pipelines` — how programs drive backends through the pipeline
-* :doc:`improving_results_qem` — error mitigation on noisy hardware
+* :doc:`../algorithms/improving_results_qem` — error mitigation on noisy hardware

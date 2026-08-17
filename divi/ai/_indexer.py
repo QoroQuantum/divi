@@ -101,9 +101,8 @@ def _strip_embed_prefix(text: str) -> str:
     section title) is the actually-discriminating part and binds the chunk
     to topic-specific queries (e.g. ``ZNE`` for a chunk about Zero Noise
     Extrapolation). For Source chunks with a section, the file path is
-    dropped — its leading components (``docs``, ``source``, ``user_guide``)
-    are themselves uniform across all docs and only the section title
-    discriminates.
+    dropped — those path components identify a documentation category rather
+    than the topic, while the section title is discriminating.
     """
     m = _EMBED_PREFIX_RE.match(text)
     if not m:
