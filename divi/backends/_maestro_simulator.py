@@ -5,6 +5,7 @@
 import logging
 import os
 import re
+import warnings
 import weakref
 from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -159,7 +160,13 @@ class MaestroConfig:
     default."""
 
     use_double_precision: bool = False
-    """Use double-precision floating point."""
+    """Use double-precision floating point.  Applies to the GPU MPS and
+    tensor-network simulators; CPU simulation is already double precision."""
+
+    precision: bool | None = None
+    """Precision for Qiskit Aer — ``True`` selects double, ``False`` single, and
+    ``None`` uses maestro's default.  Separate from
+    :attr:`use_double_precision`, which covers the GPU simulators."""
 
     disable_optimized_swapping: bool = False
     """Disable MPS swap-cost optimization."""
@@ -172,16 +179,26 @@ class MaestroConfig:
     ``False``, use the collapsing one."""
 
     pp_coefficient_threshold: float | None = None
-    """Pauli-propagation coefficient truncation threshold.  ``None`` uses
-    maestro's default."""
+    """Pauli-propagation coefficient truncation threshold.  Inert unless a trim
+    or deduplication cadence is set."""
 
     pp_pauli_weight_threshold: int | None = None
-    """Pauli-propagation maximum Pauli weight retained.  ``None`` uses maestro's
-    default."""
+    """Pauli-propagation maximum Pauli weight retained.  Ignored when at or
+    above the qubit count, and inert unless a cadence is set."""
 
     pp_steps_between_trims: int | None = None
-    """Pauli-propagation steps between truncation passes.  ``None`` uses
-    maestro's default."""
+    """Gates between Pauli-propagation truncation passes, which drop each string
+    independently.  Cheaper but markedly less accurate than
+    :attr:`pp_steps_between_deduplications` at the same threshold."""
+
+    pp_steps_between_deduplications: int | None = None
+    """Gates between deduplication passes, which merge identical Pauli strings
+    before applying the thresholds.  Preferred cadence when accuracy matters,
+    and it takes precedence on gates where both cadences are due."""
+
+    path_integral_threshold: float | None = None
+    """Trim threshold for PathIntegral simulation.  ``None`` uses maestro's
+    default (no trimming)."""
 
     mps_qubit_threshold: int = 22
     """Qubit count above which automatic MPS selection kicks in.  Only active
@@ -240,6 +257,33 @@ class MaestroConfig:
     for expval — the former is one random Pauli sampling, the latter is
     the exact analytical average.  Divi-specific; not forwarded to
     ``maestro.SimulatorConfig``."""
+
+    def __post_init__(self):
+        """Validate the Pauli-propagation knobs and warn about no-op combinations."""
+        if (
+            self.pp_coefficient_threshold is not None
+            and self.pp_coefficient_threshold < 0
+        ):
+            raise ValueError(
+                "pp_coefficient_threshold must be non-negative. "
+                f"Got {self.pp_coefficient_threshold}."
+            )
+
+        if (
+            self.pp_pauli_weight_threshold is not None
+            and self.pp_pauli_weight_threshold < 0
+        ):
+            raise ValueError(
+                "pp_pauli_weight_threshold must be non-negative. "
+                f"Got {self.pp_pauli_weight_threshold}."
+            )
+
+        for name in ("pp_steps_between_trims", "pp_steps_between_deduplications"):
+            cadence = getattr(self, name)
+            # Maestro takes these modulo a gate index, so 0 divides by zero and
+            # aborts the process with SIGFPE rather than raising.
+            if cadence is not None and cadence < 1:
+                raise ValueError(f"{name} must be a positive integer. Got {cadence}.")
 
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
@@ -313,16 +357,63 @@ class MaestroConfig:
         if not self.mps_measure_no_collapse:
             kwargs["mps_measure_no_collapse"] = False
 
-        if self.pp_coefficient_threshold is not None:
-            kwargs["pp_coefficient_threshold"] = self.pp_coefficient_threshold
+        config = maestro.SimulatorConfig(**kwargs)
 
-        if self.pp_pauli_weight_threshold is not None:
-            kwargs["pp_pauli_weight_threshold"] = self.pp_pauli_weight_threshold
+        # Maestro binds these as writable properties only; its constructor
+        # does not accept them.
+        property_settings = {
+            "precision": self.precision,
+            "pp_coefficient_threshold": self.pp_coefficient_threshold,
+            "pp_pauli_weight_threshold": self.pp_pauli_weight_threshold,
+            "pp_steps_between_trims": self.pp_steps_between_trims,
+            "pp_steps_between_deduplications": self.pp_steps_between_deduplications,
+            "path_integral_threshold": self.path_integral_threshold,
+        }
+        for name, value in property_settings.items():
+            if value is not None:
+                setattr(config, name, value)
 
-        if self.pp_steps_between_trims is not None:
-            kwargs["pp_steps_between_trims"] = self.pp_steps_between_trims
+        # Warned here, not in __post_init__: a config is also an override delta,
+        # where a threshold and its cadence can arrive from opposite sides.
+        thresholds_set = (
+            self.pp_coefficient_threshold is not None
+            or self.pp_pauli_weight_threshold is not None
+        )
+        cadence_set = (
+            self.pp_steps_between_trims is not None
+            or self.pp_steps_between_deduplications is not None
+        )
 
-        return maestro.SimulatorConfig(**kwargs)
+        if thresholds_set and not cadence_set:
+            warnings.warn(
+                "pp_coefficient_threshold and pp_pauli_weight_threshold are only "
+                "consulted during a truncation pass, so they have no effect unless "
+                "pp_steps_between_deduplications or pp_steps_between_trims is set.",
+                stacklevel=3,
+            )
+
+        if (thresholds_set or cadence_set) and resolved_sim_type not in (
+            None,
+            "PauliPropagator",
+        ):
+            warnings.warn(
+                "The pp_* options only apply to PauliPropagator simulations; they "
+                f"will be ignored with simulation_type={resolved_sim_type!r}.",
+                stacklevel=3,
+            )
+
+        if (
+            self.pp_pauli_weight_threshold is not None
+            and self.pp_pauli_weight_threshold >= n_qubits
+        ):
+            warnings.warn(
+                f"pp_pauli_weight_threshold={self.pp_pauli_weight_threshold} is at or "
+                f"above the circuit's {n_qubits} qubits, which disables weight "
+                "filtering.",
+                stacklevel=3,
+            )
+
+        return config
 
 
 def _shutdown_executor(executor: ThreadPoolExecutor) -> None:

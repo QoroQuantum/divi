@@ -10,8 +10,10 @@ simulator-side noisy-execution paths are exercised in
 ``test_maestro_simulator.py``; this module guards the config object.
 """
 
+import warnings
 from dataclasses import asdict, fields, replace
 
+import maestro
 import pytest
 
 from divi.backends import MaestroConfig, MaestroSimulator
@@ -139,12 +141,15 @@ class TestOverride:
             "max_bond_dimension",
             "singular_value_threshold",
             "use_double_precision",
+            "precision",
             "disable_optimized_swapping",
             "lookahead_depth",
             "mps_measure_no_collapse",
             "pp_coefficient_threshold",
             "pp_pauli_weight_threshold",
             "pp_steps_between_trims",
+            "pp_steps_between_deduplications",
+            "path_integral_threshold",
             "mps_qubit_threshold",
             "noise_model",
             "noise_seed",
@@ -155,6 +160,135 @@ class TestOverride:
             f"MaestroConfig fields drifted; review override semantics. "
             f"missing={known - actual}, extra={actual - known}"
         )
+
+
+class TestToMaestroConfig:
+    """``_to_maestro_config`` builds a real ``maestro.SimulatorConfig``."""
+
+    def test_pauli_propagation_knobs_reach_maestro(self):
+        """Maestro binds these as properties, not constructor arguments."""
+        config = MaestroConfig(
+            simulation_type="PauliPropagator",
+            pp_coefficient_threshold=1e-3,
+            pp_pauli_weight_threshold=4,
+            pp_steps_between_trims=2,
+            pp_steps_between_deduplications=3,
+        )
+        sim_config = config._to_maestro_config(n_qubits=6)
+        assert sim_config.pp_coefficient_threshold == 1e-3
+        assert sim_config.pp_pauli_weight_threshold == 4
+        assert sim_config.pp_steps_between_trims == 2
+        assert sim_config.pp_steps_between_deduplications == 3
+
+    def test_unset_pauli_propagation_knobs_stay_none(self):
+        sim_config = MaestroConfig(
+            simulation_type="PauliPropagator"
+        )._to_maestro_config(n_qubits=6)
+        assert sim_config.pp_coefficient_threshold is None
+        assert sim_config.pp_pauli_weight_threshold is None
+        assert sim_config.pp_steps_between_trims is None
+
+    def test_precision_and_path_integral_threshold_reach_maestro(self):
+        """Also property-only knobs, like the pp_* family."""
+        sim_config = MaestroConfig(
+            simulation_type="PathIntegral",
+            precision=True,
+            path_integral_threshold=1e-6,
+        )._to_maestro_config(n_qubits=4)
+        assert sim_config.precision is True
+        assert sim_config.path_integral_threshold == 1e-6
+
+    def test_mps_fields_still_forwarded(self):
+        config = MaestroConfig(
+            simulation_type="MatrixProductState",
+            max_bond_dimension=32,
+            singular_value_threshold=1e-8,
+        )
+        sim_config = config._to_maestro_config(n_qubits=6)
+        assert sim_config.max_bond_dimension == 32
+        assert sim_config.singular_value_threshold == 1e-8
+
+    def test_auto_mps_selection_survives(self):
+        """Above ``mps_qubit_threshold`` the built config switches to MPS."""
+        sim_config = MaestroConfig(mps_qubit_threshold=4)._to_maestro_config(n_qubits=8)
+        assert sim_config.simulation_type == maestro.SimulationType.MatrixProductState
+        assert sim_config.max_bond_dimension == 64
+
+
+class TestPauliPropagationValidation:
+    """Rejects unusable Pauli-propagation settings and flags no-op ones."""
+
+    @pytest.mark.parametrize(
+        "field", ["pp_steps_between_trims", "pp_steps_between_deduplications"]
+    )
+    @pytest.mark.parametrize("cadence", [0, -1])
+    def test_non_positive_cadence_rejected(self, field, cadence):
+        """Maestro takes these modulo a gate index; 0 aborts with SIGFPE."""
+        with pytest.raises(ValueError, match="must be a positive integer"):
+            MaestroConfig(simulation_type="PauliPropagator", **{field: cadence})
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [("pp_coefficient_threshold", -1e-3), ("pp_pauli_weight_threshold", -1)],
+    )
+    def test_negative_threshold_rejected(self, field, value):
+        with pytest.raises(ValueError, match="must be non-negative"):
+            MaestroConfig(simulation_type="PauliPropagator", **{field: value})
+
+    @pytest.mark.parametrize(
+        "field, value",
+        [("pp_coefficient_threshold", 1e-3), ("pp_pauli_weight_threshold", 2)],
+    )
+    def test_threshold_without_cadence_warns(self, field, value):
+        config = MaestroConfig(simulation_type="PauliPropagator", **{field: value})
+        with pytest.warns(UserWarning, match="no effect unless"):
+            config._to_maestro_config(n_qubits=6)
+
+    def test_cadence_makes_threshold_active_without_warning(self):
+        config = MaestroConfig(
+            simulation_type="PauliPropagator",
+            pp_coefficient_threshold=1e-3,
+            pp_steps_between_deduplications=1,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            config._to_maestro_config(n_qubits=6)
+
+    def test_pp_knobs_on_other_simulation_type_warn(self):
+        config = MaestroConfig(
+            simulation_type="MatrixProductState", pp_steps_between_trims=1
+        )
+        with pytest.warns(UserWarning, match="only apply to PauliPropagator"):
+            config._to_maestro_config(n_qubits=6)
+
+    def test_partial_config_used_as_override_delta_is_silent(self):
+        """A threshold-only delta is legitimate; the merged config is what counts."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            delta = MaestroConfig(pp_coefficient_threshold=1e-6)
+            merged = MaestroConfig(
+                simulation_type="PauliPropagator", pp_steps_between_trims=1
+            ).override(delta)
+            merged._to_maestro_config(n_qubits=6)
+
+    def test_weight_threshold_at_qubit_count_warns(self):
+        config = MaestroConfig(
+            simulation_type="PauliPropagator",
+            pp_pauli_weight_threshold=4,
+            pp_steps_between_trims=1,
+        )
+        with pytest.warns(UserWarning, match="disables weight filtering"):
+            config._to_maestro_config(n_qubits=4)
+
+    def test_weight_threshold_below_qubit_count_is_silent(self):
+        config = MaestroConfig(
+            simulation_type="PauliPropagator",
+            pp_pauli_weight_threshold=3,
+            pp_steps_between_trims=1,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            config._to_maestro_config(n_qubits=4)
 
 
 class TestSimulatorPassThrough:
