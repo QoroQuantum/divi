@@ -7,6 +7,56 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0](https://github.com/QoroQuantum/divi/compare/v0.13.0...v0.14.0) (2026-08-21)
+
+
+### ✨ Added
+
+* **backends:** accept Qiskit circuits and bare lists in submit_circuits ([faed8a0](https://github.com/QoroQuantum/divi/commit/faed8a02986bca4bc3e4bbd093db12d85e8c9502))
+* **backends:** reach maestro's pp_* knobs and match its config surface ([2e313b2](https://github.com/QoroQuantum/divi/commit/2e313b24b8eb1477c5ac1bc1fe790ccd9acdb35d))
+* **qprog:** add active-space selection and coupling-graph fragmentation ([bbd05b7](https://github.com/QoroQuantum/divi/commit/bbd05b76f2e396b8dae66a0760a2331ce3105142))
+* **qprog:** add LUCJ ansatz and lower cost circuits to the QASM basis ([eb8f972](https://github.com/QoroQuantum/divi/commit/eb8f972b0d8b53d39559d139b064dd897f6ece04))
+* **qprog:** add LUCJ's trailing orbital rotation ([09cfd5f](https://github.com/QoroQuantum/divi/commit/09cfd5ffae2512e1519aa38eae17209494834c98))
+* **qprog:** add SQD post-processing and fragment integral machinery ([254604b](https://github.com/QoroQuantum/divi/commit/254604b87108ea5315b7a3a5cab447b4055f8808))
+* **qprog:** add the LASSQD workflow ([881e72c](https://github.com/QoroQuantum/divi/commit/881e72cdeb47a0fc5a112b2fc0f3f65350cba1f6))
+* **qprog:** LASSQD workflow, multi-round ensembles, and the LUCJ ansatz ([2c1884f](https://github.com/QoroQuantum/divi/commit/2c1884ff128a8d02054a8c34ba32406bddb647b3))
+* **qprog:** make ProgramEnsemble.run() an adaptive multi-round workflow ([ca0450d](https://github.com/QoroQuantum/divi/commit/ca0450d3fd3880afb4f5cf2bae40e0e3f793c84b))
+* **qprog:** reach U(n) in the LUCJ rotation and add carryover SQD ([3ba0cb7](https://github.com/QoroQuantum/divi/commit/3ba0cb7bd445c12981d286f49e50cbbebd42e6dd))
+* **qprog:** report LASSQD rounds and fix its CCSD seed basis ([9ec8a51](https://github.com/QoroQuantum/divi/commit/9ec8a512ba5044b62b17c031d719fc2d4f78309e))
+* **qprog:** support spin-polarized LASSQD fragments ([b35ed3d](https://github.com/QoroQuantum/divi/commit/b35ed3d6ec69b9c48ccfd40fa2524a33744f132e))
+
+
+### 🐛 Fixed
+
+* **qprog:** give each ansatz its own parameter-shift rule ([2e03d6d](https://github.com/QoroQuantum/divi/commit/2e03d6d7670f75aac2e8bd991df10901e1da2115))
+* **qprog:** make the LUCJ orbital rotation an orbital rotation ([8cc97d1](https://github.com/QoroQuantum/divi/commit/8cc97d118b10ffb74f19af1a39ca8a418fe65824))
+* scope the AI index and record SPSA's final exact loss ([231eeb6](https://github.com/QoroQuantum/divi/commit/231eeb6c912ee138f7a54c9b5e638ece6b2b9879))
+
+
+### 🔄 Changed
+
+* collapse duplicated pipeline, backend and ansatz plumbing ([4ba20f1](https://github.com/QoroQuantum/divi/commit/4ba20f14bc555b9ce37d80734595bad436af99e4))
+* **qprog:** speed up LASSQD's RDM recovery and sharpen its SQD subspace ([58b0907](https://github.com/QoroQuantum/divi/commit/58b0907905ed3f9a705b859d66c31625ffc0536b))
+* **qprog:** speed up LASSQD's spin-orbital integrals and ground-root solve ([f7c52ac](https://github.com/QoroQuantum/divi/commit/f7c52ac8e34a42614dc26a9cd5472260e760ffb7))
+* **qprog:** use an analytic orbital gradient in LASSQD ([22b1309](https://github.com/QoroQuantum/divi/commit/22b1309c4f3e456d157cecd658eed07edafa4990))
+* vectorize bitstring processing ([3b963e5](https://github.com/QoroQuantum/divi/commit/3b963e590dad79da8352e6723648e7e3fd150306))
+
+
+### 🔧 Internal
+
+* cover the gaps the review pass found ([e130afb](https://github.com/QoroQuantum/divi/commit/e130afbe6dd612bc284c085588818e1439ae1251))
+* install the chem extra for the docs and test jobs ([6570fd4](https://github.com/QoroQuantum/divi/commit/6570fd4882fd543156d143e6cc9ef902013300cb))
+* Merge pull request [#97](https://github.com/QoroQuantum/divi/issues/97) from QoroQuantum/feature/adaptive-ensemble-lassqd ([2c1884f](https://github.com/QoroQuantum/divi/commit/2c1884ff128a8d02054a8c34ba32406bddb647b3))
+* pin BLAS threads to one per process ([07aaa77](https://github.com/QoroQuantum/divi/commit/07aaa7700282a45e749590bd20224fb223cb1557))
+
+
+### 📝 Documentation
+
+* convert prose to British English ([4980c43](https://github.com/QoroQuantum/divi/commit/4980c4372f1b8c3092dc23484371d636ba7c4c16))
+* mark dashboard example code blocks and notify qoro-dash on push ([7378b7f](https://github.com/QoroQuantum/divi/commit/7378b7f3050c8e3fec9dcac8c5b4589c68bf4d87))
+* **qprog:** document the LASSQD workflow ([7d953cb](https://github.com/QoroQuantum/divi/commit/7d953cb3ea74196a587cc2ffcc0fa0f44bc2f567))
+* reorganize and streamline guides ([aadf9dd](https://github.com/QoroQuantum/divi/commit/aadf9dd4216df298c6dcf10b922569ac0b1f0d20))
+
 ## [0.13.0](https://github.com/QoroQuantum/divi/compare/v0.12.1...v0.13.0) (2026-07-29)
 
 ### ✨ Added
