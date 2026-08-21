@@ -57,7 +57,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         _template_param: Parameter | None = None,
         **kwargs,
     ):
-        """Initialize TimeEvolution.
+        """Initialise TimeEvolution.
 
         Args:
             hamiltonian: Hamiltonian to evolve under. Accepts anything

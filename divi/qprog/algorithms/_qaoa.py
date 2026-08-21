@@ -37,10 +37,10 @@ _UNSET: Any = object()
 
 
 class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
-    """Quantum Approximate Optimization Algorithm (QAOA) implementation.
+    """Quantum Approximate Optimisation Algorithm (QAOA) implementation.
 
     QAOA is a hybrid quantum-classical algorithm designed to solve combinatorial
-    optimization problems. It alternates between applying a cost Hamiltonian
+    optimisation problems. It alternates between applying a cost Hamiltonian
     (encoding the problem) and a mixer Hamiltonian (enabling exploration).
 
     The problem is provided as a :class:`~divi.qprog.problems.QAOAProblem` instance that supplies the
@@ -52,20 +52,20 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     mixer angle**: ``[γ_0, β_0, γ_1, β_1, ..., γ_{p-1}, β_{p-1}]`` (``γ`` drives
     the cost layer, ``β`` the mixer). Shape is ``(n_param_sets, 2 * n_layers)``;
     a single set may be passed as a 1-D array of length ``2 * n_layers``. To
-    warm-start from a characterization result's ``ar_vs_depth[p]`` entry, zip its
+    warm-start from a characterisation result's ``ar_vs_depth[p]`` entry, zip its
     ``gammas`` and ``betas`` in this interleaved order — e.g. for ``p`` layers::
 
         pt = result.ar_vs_depth[p - 1]
         initial_params = [x for g, b in zip(pt["gammas"], pt["betas"]) for x in (g, b)]
 
-    Only the shape is validated; an interleave in the wrong order is a silent
-    mis-start, so match this layout exactly.
+    Only the shape is validated; an interleave in the wrong order starts the
+    optimizer from silently wrong angles, so match this layout exactly.
 
     Args:
         problem: A :class:`~divi.qprog.problems.QAOAProblem` instance providing the QAOA ingredients.
         initial_state: Override the problem's recommended initial state.
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
-        max_iterations: Maximum number of optimization iterations. Defaults to 10.
+        max_iterations: Maximum number of optimisation iterations. Defaults to 10.
         n_layers: Number of QAOA layers. Defaults to 1.
         **kwargs: Additional keyword arguments passed to
             :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`, including ``optimizer``
@@ -82,7 +82,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         n_layers: int = 1,
         **kwargs,
     ):
-        """Initialize the QAOA algorithm.
+        """Initialise the QAOA algorithm.
 
         Args:
             problem: A :class:`~divi.qprog.problems.QAOAProblem` instance that provides cost/mixer
@@ -92,7 +92,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 If ``None``, uses ``problem.recommended_initial_state``.
             trotterization_strategy: Strategy for Hamiltonian evolution.
                 Defaults to :class:`~divi.hamiltonians.ExactTrotterization`.
-            max_iterations: Maximum number of optimization iterations.
+            max_iterations: Maximum number of optimisation iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
             **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
@@ -225,7 +225,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     @property
     def solution(self):
-        """Get the solution found by QAOA optimization.
+        """Get the solution found by QAOA optimisation.
 
         The return type depends on the Problem's decode function; ``None``
         is a legitimate decoded value after ``.run()``.
@@ -239,7 +239,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     @property
     def solution_bitstring(self) -> str:
-        """Most-probable bitstring measured at the optimized parameters.
+        """Most-probable bitstring measured at the optimised parameters.
 
         Always a string of ``0``/``1`` characters of length ``n_qubits``,
         regardless of how the problem's decode function shapes :attr:`solution`.

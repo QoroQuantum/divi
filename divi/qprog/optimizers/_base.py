@@ -24,7 +24,7 @@ class Optimizer(ABC):
     .. warning::
         **Thread Safety**: Optimizer instances are **not thread-safe**. They maintain
         internal state (e.g., current population, iteration count, RNG state) that changes
-        during optimization.
+        during optimisation.
 
         Do **not** share a single `Optimizer` instance across multiple `QuantumProgram`
         instances or threads running in parallel. Doing so will lead to race conditions,
@@ -39,7 +39,7 @@ class Optimizer(ABC):
     @abstractmethod
     def n_param_sets(self) -> int:
         """
-        Returns the number of parameter sets the optimizer can handle per optimization run.
+        Returns the number of parameter sets the optimizer can handle per optimisation run.
         Returns:
             int: Number of parameter sets.
         """
@@ -53,17 +53,17 @@ class Optimizer(ABC):
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
-        """Optimize the given cost function starting from initial parameters.
+        """Optimise the given cost function starting from initial parameters.
 
         Parameters:
-            cost_fn: The cost function to minimize.
-            initial_params: Initial parameters for the optimization.
+            cost_fn: The cost function to minimise.
+            initial_params: Initial parameters for the optimisation.
             callback_fn: Function called after each iteration with an OptimizeResult object.
             **kwargs: Additional keyword arguments for the optimizer:
 
                 - max_iterations (int, optional): Iterations to run in this call.
                   The caller subtracts whatever a previous run already spent, so a
-                  resumed optimization receives only what is left.
+                  resumed optimisation receives only what is left.
                   Defaults vary by optimizer (e.g., 5 for population-based optimizers,
                   None for some scipy methods).
                 - rng (np.random.Generator, optional): Random number generator for
@@ -119,10 +119,10 @@ class Optimizer(ABC):
 
     @abstractmethod
     def reset(self) -> None:
-        """Reset the optimizer's internal state to allow fresh optimization runs.
+        """Reset the optimizer's internal state to allow fresh optimisation runs.
 
-        Clears any state accumulated during previous optimization runs, allowing
-        the optimizer to be reused for new optimization problems without creating
+        Clears any state accumulated during previous optimisation runs, allowing
+        the optimizer to be reused for new optimisation problems without creating
         a new instance.
         """
         raise NotImplementedError("This method should be implemented by subclasses.")
@@ -132,7 +132,7 @@ class Optimizer(ABC):
         """Whether this optimizer can persist and restore its state mid-run.
 
         Programs guard on this before checkpointing so an optimizer that cannot
-        save state fails upfront rather than mid-optimization. Optimizers whose
+        save state fails upfront rather than mid-optimisation. Optimizers whose
         :meth:`save_state` raises :class:`NotImplementedError` override this to
         return ``False``.
         """
@@ -143,7 +143,7 @@ class Optimizer(ABC):
 
         Called at the start of
         :meth:`~divi.qprog.VariationalQuantumAlgorithm.run`, before
-        any optimization, so an incompatible optimizer/program pairing fails
+        any optimisation, so an incompatible optimizer/program pairing fails
         loudly and early. The base implementation accepts any program; override
         to raise when the optimizer's requirements are not met.
         """
@@ -153,7 +153,7 @@ class Optimizer(ABC):
     ) -> dict[str, Callable[[npt.NDArray[np.float64]], Any]]:
         """Extra per-run evaluators this optimizer needs from the program.
 
-        Called once by the variational algorithm before optimization. The
+        Called once by the variational algorithm before optimisation. The
         returned mapping may override ``"jac"`` and/or add ``"metric_fn"``;
         keys absent from the mapping fall back to the algorithm's defaults.
         The base implementation needs nothing extra and returns ``{}``.

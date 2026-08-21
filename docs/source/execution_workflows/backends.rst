@@ -13,7 +13,7 @@ targets without changing algorithm logic.
      - Start here when
      - Move elsewhere when
    * - :class:`~divi.backends.MaestroSimulator`
-     - Developing locally, running noiseless simulations, or modeling
+     - Developing locally, running noiseless simulations, or modelling
        hand-written Pauli-channel noise.
      - You need Qiskit-native calibration data or a cloud target.
    * - :class:`~divi.backends.QiskitSimulator`
@@ -184,7 +184,7 @@ one of five dispatch scenarios across four C++ entry points
      - Exact analytical mean: applies per-Pauli damping coefficients to
        noiseless expectation values.  Deterministic; zero Monte-Carlo overhead.
    * - ``None`` *(sampling mode)*
-     - ``noisy_execute`` with 1 realization
+     - ``noisy_execute`` with 1 realisation
      - One random Pauli error pattern per circuit; counts are stochastic.
        For statistical accuracy set an explicit count (e.g. ``noise_realizations=20``).
    * - Positive ``int`` *N* *(expval mode)*
@@ -249,7 +249,7 @@ QiskitSimulator
 ``optimization_level`` is forwarded to :func:`~qiskit.compiler.transpile` for
 every circuit the backend runs, and defaults to ``None`` — Qiskit's own choice.
 
-Under a noise model this is worth setting deliberately. Optimization rewrites a
+Under a noise model this is worth setting deliberately. Optimisation rewrites a
 circuit by how compressible it is, which is not uniform across a batch: a
 Clifford circuit collapses much further than one holding arbitrary rotations. So
 the circuits that execute can accumulate different amounts of noise than the
@@ -271,7 +271,7 @@ exactly that comparison, so it wants ``optimization_level=0``:
    )
 
 The same applies to a mirror-circuit benchmark: at any level above 0 a noiseless
-``U · U†`` can be optimized away to nothing.
+``U · U†`` can be optimised away to nothing.
 
 QoroService
 ------------
@@ -284,7 +284,7 @@ QoroService participates in two complementary batching mechanisms:
 
 1. **Backend-level packing** (:attr:`~divi.backends.JobConfig.use_circuit_packing`,
    enabled by default) — within a single ``submit_circuits`` call, circuits
-   are packed into one cloud job, amortizing the per-job scheduler cost.
+   are packed into one cloud job, amortising the per-job scheduler cost.
 2. **Ensemble-level merging** (:class:`~divi.qprog.ensemble.BatchConfig` on
    :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`) — merges submissions
    from multiple programs into one ``submit_circuits`` call.  See
@@ -320,14 +320,14 @@ Submitting and Monitoring Jobs
 
 .. note::
 
-   **Bitstring Ordering**: :class:`~divi.backends.QoroService` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labeled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
+   **Bitstring Ordering**: :class:`~divi.backends.QoroService` returns bitstrings in **Little Endian** ordering (least significant bit first, rightmost bit is qubit 0), but Hamiltonian operators passed via the ``ham_ops`` parameter should follow **Big Endian** ordering (most significant bit first, leftmost bit is qubit 0). For example, a 4-qubit system with qubits labelled 0-3: the bitstring ``"0011"`` in results represents qubit 0=1, qubit 1=1, qubit 2=0, qubit 3=0 (reading right to left), while the Hamiltonian operator ``"ZIZI"`` applies Z to qubit 0, I to qubit 1, Z to qubit 2, and I to qubit 3 (reading left to right).
 
 Configuring Jobs with JobConfig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 The :class:`~divi.backends.QoroService` uses a :class:`~divi.backends.JobConfig` object to manage settings for job submissions. You can configure it in two ways:
 
-1.  **Default Configuration**: Set a default :class:`~divi.backends.JobConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
+1.  **Default Configuration**: Set a default :class:`~divi.backends.JobConfig` when you initialise the service. This configuration will apply to all jobs unless you override it.
 2.  **Override Configuration**: For a specific job, you can provide an ``override_job_config`` to the ``submit_circuits`` method.
 
 .. code-block:: python
@@ -373,7 +373,7 @@ Control the simulator backend, simulation method, bond dimension, and runtime
 metadata for your jobs using :class:`~divi.backends.ExecutionConfig`. Like :class:`~divi.backends.JobConfig`,
 you can configure it in two ways:
 
-1.  **Default Configuration**: Set a default :class:`~divi.backends.ExecutionConfig` when you initialize the service. This configuration will apply to all jobs unless you override it.
+1.  **Default Configuration**: Set a default :class:`~divi.backends.ExecutionConfig` when you initialise the service. This configuration will apply to all jobs unless you override it.
 2.  **Per-submission Override**: Pass an ``execution_config`` to ``submit_circuits`` to override the default for a single job. Non-None fields in the override take precedence.
 
 .. code-block:: python

@@ -173,7 +173,7 @@ Invisible snippets: when and how
 Use ``.. invisible-code-block: python`` when:
 
 - A section has several short examples that share the same objects (for example, one
-  optimization run reused by several plotting calls).
+  optimisation run reused by several plotting calls).
 - The shared setup is runnable and needed for tests, but repetitive in the rendered guide.
 - You want to replace ``.. skip: next`` continuation fragments with executable docs.
 

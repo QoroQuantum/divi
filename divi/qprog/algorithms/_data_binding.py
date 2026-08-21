@@ -6,7 +6,7 @@
 
 Both :class:`~divi.qprog.algorithms.QNN` and
 :class:`~divi.qprog.algorithms.CustomVQA` (when given a feature batch) fan a
-classical feature batch across a parameterized circuit. The shared behavior —
+classical feature batch across a parameterised circuit. The shared behaviour —
 inserting a :class:`~divi.pipeline.stages.DataBindingStage` into the cost
 pipeline, resolving optional supervised labels, and sampled-class inference via
 :meth:`DataBindingMixin.predict` — lives in :class:`DataBindingMixin`.
@@ -79,7 +79,7 @@ def build_data_binding_stage(program) -> DataBindingStage:
 
 
 class DataBindingMixin(_MixinBase):
-    """Shared data-axis behavior for VQA subclasses that fan a feature batch out.
+    """Shared data-axis behaviour for VQA subclasses that fan a feature batch out.
 
     Mixed in *before* :class:`~divi.qprog.VariationalQuantumAlgorithm` so its
     :meth:`_assemble_pipeline` cooperatively wraps the base one (mirroring how
@@ -292,7 +292,7 @@ class DataBindingMixin(_MixinBase):
 
         Each row of ``features`` is bound into the composed circuit alongside the
         weights and the cost observable's expectation is estimated from shots —
-        the same score the loss optimizes, including ``loss_constant`` so it
+        the same score the loss optimises, including ``loss_constant`` so it
         matches the full observable. By default the sign of that score is the
         class label: ``+1`` for a non-negative score, ``-1`` otherwise. Pass
         ``return_scores=True`` to get the continuous scores instead (e.g. for a

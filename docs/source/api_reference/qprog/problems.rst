@@ -2,9 +2,9 @@ Problems
 ========
 
 QAOA and related solvers accept a :class:`~divi.qprog.problems.QAOAProblem`
-instance that encapsulates the optimization objective, mixer, initial state,
+instance that encapsulates the optimisation objective, mixer, initial state,
 and solution decoding. Divi provides concrete classes for common graph and
-binary optimization problems.
+binary optimisation problems.
 
 .. automodapi:: divi.qprog.problems
    :headings: ~^

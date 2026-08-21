@@ -33,7 +33,7 @@ from divi.pipeline.abc import ResultFormat, Stage
 class PipelineCadence(str, Enum):
     """How often a routine's pipeline runs over a program's lifetime.
 
-    Separates the recurring optimization workload from one-time readouts, which
+    Separates the recurring optimisation workload from one-time readouts, which
     are driven with different inputs: a recurring routine runs over the
     optimizer's whole working set, a one-time one over a single parameter set.
 

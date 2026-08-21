@@ -1,4 +1,4 @@
-Visualizing Variational Landscapes
+Visualising Variational Landscapes
 ==================================
 
 The :mod:`divi.viz` module provides loss-landscape scans and analysis tools for
@@ -45,7 +45,7 @@ Choosing a Scan Type
      - :class:`~divi.viz.NEBResult`
 
 Every scan function returns a result object with a ``.plot()`` method for
-quick visualization. Two-dimensional results also have ``.plot_3d()`` for
+quick visualisation. Two-dimensional results also have ``.plot_3d()`` for
 surface rendering.
 
 Basic Scans
@@ -85,9 +85,9 @@ The standalone API is useful when you want to make the scan call explicit:
 ``line.plot`` opens a matplotlib figure with the scanned offset on the x-axis and
 the objective value on the y-axis — useful for spotting barren plateaus or local
 minima along a single direction. ``plane.plot`` renders a filled contour plot
-over the two scan axes with the optimum at the center, giving a 2-D picture of
+over the two scan axes with the optimum at the centre, giving a 2-D picture of
 the local loss landscape. Both return the underlying :class:`matplotlib.figure.Figure`
-and :class:`matplotlib.axes.Axes` so you can customize the rendering.
+and :class:`matplotlib.axes.Axes` so you can customise the rendering.
 
 .. invisible-code-block: python
 
@@ -96,19 +96,19 @@ and :class:`matplotlib.axes.Axes` so you can customize the rendering.
    theta_2 = theta_1 + 0.05
    other_params = theta_2
 
-If ``center`` is omitted, the scan is centered on ``program.best_params`` from a
-previous optimization run.
+If ``center`` is omitted, the scan is centred on ``program.best_params`` from a
+previous optimisation run.
 
 By default, scalar spans use :math:`(-\pi, \pi)` along each scan axis. Omitted
 directions are filled with random vectors (in 2D, the second axis is orthogonal
 to the first). Pass an integer or :class:`numpy.random.Generator` as ``rng``
 for reproducible slices.
 
-Direction vectors are normalized to unit length by default, so span offsets are
+Direction vectors are normalised to unit length by default, so span offsets are
 in parameter-space Euclidean distance: ``offset=1.0`` moves exactly 1.0 in
 parameter space regardless of the direction's original length. Set
 ``normalize_directions=False`` to use the raw direction vector, where
-``offset=1.0`` moves by the full (unnormalized) direction. This matches the
+``offset=1.0`` moves by the full (unnormalised) direction. This matches the
 orqviz convention.
 
 Using ``program.viz``
@@ -133,14 +133,14 @@ PCA Scans
 
 A random-direction scan shows a slice of the landscape that may miss the
 structure the optimizer navigated. PCA scans address this: they build scan
-directions from the principal components of the optimization trajectory, showing
+directions from the principal components of the optimisation trajectory, showing
 the landscape along the directions that captured the most variance during
-optimization. With few iterations, best-so-far points can lie almost on a line
+optimisation. With few iterations, best-so-far points can lie almost on a line
 in parameter space (common with COBYLA early on), so give the run enough steps
 that the trajectory spans two independent directions — as in
 `tutorials/visualization/viz_qaoa_pce_comparison.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/visualization/viz_qaoa_pce_comparison.py>`_.
 
-Use :func:`~divi.viz.scan_pca` with parameter vectors from the optimization
+Use :func:`~divi.viz.scan_pca` with parameter vectors from the optimisation
 history:
 
 .. code-block:: python
@@ -171,7 +171,7 @@ same PC directions pass through the optimum.
 Periodic Wrapping for PCA
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Quantum gate parameters are typically :math:`2\pi`-periodic. When an optimization
+Quantum gate parameters are typically :math:`2\pi`-periodic. When an optimisation
 trajectory crosses the period boundary, PCA can see an artificial jump and
 produce distorted landscapes. Use :func:`~divi.viz.periodic_trajectory_wrap`
 before feeding samples to :func:`~divi.viz.scan_pca`:
@@ -191,7 +191,7 @@ Trajectory Overlay
 ~~~~~~~~~~~~~~~~~~
 
 Pass ``show_trajectory=True`` to :meth:`~divi.viz.PCAScanResult.plot` to draw
-the optimization path as a connected line on top of the heatmap:
+the optimisation path as a connected line on top of the heatmap:
 
 .. code-block:: python
 
@@ -293,7 +293,7 @@ Nudged Elastic Band (NEB)
 .. warning::
    NEB is **experimental**. Convergence is sensitive to hyperparameters.
 
-Use NEB when you have two candidate solutions and want to characterize the
+Use NEB when you have two candidate solutions and want to characterise the
 energy barrier between them — a low barrier suggests the solutions are
 connected, while a high barrier suggests distinct basins.
 
@@ -337,12 +337,12 @@ extra evaluations):
 
    plane.plot(show=True, show_gradients=True)
 
-Batching Behavior
------------------
+Batching Behaviour
+------------------
 
 Scans evaluate all grid points in a single batched call through the program's
 existing cost pipeline. This means scan evaluations reuse the same backend,
-batching, and circuit-compilation behavior as normal optimization. A 41x41 grid
+batching, and circuit-compilation behaviour as normal optimisation. A 41x41 grid
 sends 1,681 parameter sets in one batch, not 1,681 separate evaluations.
 
 Supported Programs

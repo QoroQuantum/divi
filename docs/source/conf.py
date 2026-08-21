@@ -299,11 +299,17 @@ linkcheck_rate_limit_timeout = 60  # Maximum wait time (seconds) when rate-limit
 # -- Spelling configuration --------------------------------------------------
 # https://sphinxcontrib-spelling.readthedocs.io/en/latest/customize.html
 
+# aspell's en_GB is strict -ise; enchant cannot reach the en_GB-ize variant, so
+# API names carrying -ize belong in the word list rather than being renamed.
+spelling_lang = "en_GB"
+tokenizer_lang = "en_GB"
+
 spelling_word_list_filename = "spelling_wordlist.txt"
 spelling_show_suggestions = True
 spelling_suggestions_path = "spelling_suggestions.txt"
 spelling_ignore_acronyms = True
-spelling_ignore_pypi_package_names = True
+# PyPI names a package for nearly every English word, whitelisting -ize spellings.
+spelling_ignore_pypi_package_names = False
 spelling_ignore_python_builtins = True
 spelling_ignore_importable_modules = True
 

@@ -139,7 +139,7 @@ class WState(InitialState):
     where \|W_n⟩ = (\|10…0⟩ + \|01…0⟩ + … + \|00…1⟩) / √n.
 
     Useful as the initial state for any one-hot encoded problem
-    (routing, assignment, scheduling, graph coloring, etc.).
+    (routing, assignment, scheduling, graph colouring, etc.).
 
     Args:
         block_size: Number of qubits per block (≥ 1).

@@ -5,7 +5,7 @@ Divi is framework-agnostic at its input boundary. You can author circuits in
 either PennyLane or Qiskit and hand them to Divi, which compiles, batches, and
 runs them through the same pipeline the built-in algorithms use. This guide
 covers how external circuits enter Divi and how to wrap your own circuit as an
-optimizable program — including QML-style data binding for quantum neural
+optimisable program — including QML-style data binding for quantum neural
 networks.
 
 .. note::
@@ -49,7 +49,7 @@ automatically — you don't need to build circuits manually for most use cases.
 When you need a **custom ansatz or circuit**, use
 :class:`~divi.qprog.algorithms.CustomVQA`. It lets you define your own circuit
 template and Hamiltonian while Divi handles compilation, execution, and
-optimization:
+optimisation:
 
 .. dashboard-example: custom
 
@@ -80,7 +80,7 @@ optimization:
    program.run(perform_final_computation=False)
 
 In this example, the ``0.0`` values in ``ops`` are placeholders. ``CustomVQA``
-replaces trainable slots with internal symbols and optimizes them. By default
+replaces trainable slots with internal symbols and optimises them. By default
 the optimizer sees a flat vector of those parameters; pass the optional
 ``param_shape`` only to reshape them (for example, into per-layer angle
 matrices).
@@ -147,7 +147,7 @@ index with ``data_param_indices`` instead of ``arg_shapes``/``data_arg``.
    (the ``n_qubits`` in ``range(n_qubits)`` above, loop bounds, and similar) —
    are neither data nor weights. Close over them in the enclosing scope (as
    ``n_qubits`` is above) or give them a Python default; a *no-default*
-   structural argument is symbolized like a weight and then breaks (e.g.
+   structural argument is symbolised like a weight and then breaks (e.g.
    ``range(<symbol>)``). The QNode is traced one sample at a time, so index by
    the structural size (``range(n_qubits)``) rather than the batch dimension
    (``len(inputs[0])``).

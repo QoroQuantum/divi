@@ -96,7 +96,7 @@ and reduction stay consistent:
   — it depends on the spec stage's ``reduce`` collapsing the circuit axis.
   Built-in spec stages (``CircuitSpecStage``, ``PennyLaneSpecStage``,
   ``QiskitSpecStage``) do this automatically for single-circuit batches.
-  Custom spec stages must mirror that behavior if you want ``result[()]`` to work.
+  Custom spec stages must mirror that behaviour if you want ``result[()]`` to work.
 
 Built-in Stages
 ---------------
@@ -148,7 +148,7 @@ Divi ships with the following built-in stages:
        See :doc:`../algorithms/improving_results_qem` for details.
    * - :class:`~divi.pipeline.stages.PauliTwirlStage`
      - Bundle
-     - Generates randomized Pauli-twirl variants of each circuit.
+     - Generates randomised Pauli-twirl variants of each circuit.
        Used alongside :class:`~divi.pipeline.stages.QEMStage` when the QEM
        protocol requests twirls (e.g. ``QuEPP(n_twirls=10)``).
    * - :class:`~divi.pipeline.stages.PCECostStage`
@@ -175,7 +175,7 @@ you think it is.
 
 It is deliberately a *back-of-the-envelope* instrument, not a cost model: the
 counts it reports describe one pass through the pipeline, and it does not
-attempt to predict a full optimization run (see
+attempt to predict a full optimisation run (see
 :ref:`what-a-dry-run-does-not-tell-you`).  Its strength is **comparison** —
 run it twice with different settings and read off what changed.
 
@@ -269,7 +269,7 @@ assumption.
    before concluding that it fits.
 
 **The report stops at one evaluation.**  How many evaluations an optimizer spends
-per step, and how many steps a run takes, are not modeled here: a gradient-free
+per step, and how many steps a run takes, are not modelled here: a gradient-free
 method decides as it goes, a line search spends what the landscape demands, and
 SPSA-style methods add fixed extras (a resampled gradient, a blocking baseline)
 that vary with their own settings.  Reaching a run total means multiplying by
@@ -441,14 +441,14 @@ protocol's ``PreprocessStage`` (its post-spec transform) → [error mitigation
 (+ Pauli twirls) when the QEM protocol applies to the result format] → terminal
 measurement.  :class:`~divi.qprog.VariationalQuantumAlgorithm` appends a
 ``ParameterBindingStage`` last; the base :class:`~divi.qprog.QuantumProgram`
-does **not** — a direct ``QuantumProgram`` subclass with a parameterized seed
+does **not** — a direct ``QuantumProgram`` subclass with a parameterised seed
 must add :class:`~divi.pipeline.stages.ParameterBindingStage` itself (or
 subclass ``VariationalQuantumAlgorithm``), or execution raises
 :class:`~divi.pipeline.abc.ContractViolation`.
 
 The **cost protocol** evaluates expectation values (or a classical objective)
-during optimization; the **sample protocol** samples the probability
-distribution afterward to extract the solution.  Whether error mitigation rides
+during optimisation; the **sample protocol** samples the probability
+distribution afterwards to extract the solution.  Whether error mitigation rides
 a protocol is decided by the QEM protocol itself
 (:meth:`~divi.circuits.qem.QEMProtocol.applies_to`), so extrapolation-style
 mitigation rides expectation-value protocols but not the probability-sampling

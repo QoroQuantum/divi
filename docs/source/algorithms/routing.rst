@@ -1,14 +1,14 @@
 Routing Problems (TSP & CVRP)
 =============================
 
-Divi provides specialized :class:`~divi.qprog.problems.TSPProblem` and
+Divi provides specialised :class:`~divi.qprog.problems.TSPProblem` and
 :class:`~divi.qprog.problems.CVRPProblem` classes for solving routing
 problems with QAOA.  Both are :class:`~divi.qprog.problems.QAOAProblem`
 subclasses and work with the same ``QAOA`` constructor described in
 :doc:`combinatorial_optimization_qaoa_pce`. With the default
 ``encoding="one_hot"``, they implement the
 **Constraint-Enhanced QAOA** (CE-QAOA) protocol [#onah2025]_, which uses
-block one-hot encoding with W-state initialization and an XY mixer to keep
+block one-hot encoding with W-state initialisation and an XY mixer to keep
 quantum amplitude concentrated on the feasible (permutation) subspace.
 
 Why CE-QAOA?
@@ -20,7 +20,7 @@ set (e.g. valid tours, or permutations more generally) is an
 exponentially small fraction of the full Hilbert space.  CE-QAOA avoids
 this by co-designing the encoding, initial state, and mixer:
 
-- **W-state initialization**: starts each qubit block in a uniform
+- **W-state initialisation**: starts each qubit block in a uniform
   superposition over one-hot basis states (exactly one city per slot).
 - **XY mixer**: all-to-all XY coupling within each block swaps
   excitations without creating or destroying them, preserving the
@@ -28,8 +28,8 @@ this by co-designing the encoding, initial state, and mixer:
 - **Reduced phase operator**: row constraints are enforced structurally,
   so only column and capacity penalties appear in the cost Hamiltonian.
 
-Traveling Salesman Problem (TSP)
---------------------------------
+Travelling Salesman Problem (TSP)
+---------------------------------
 
 Given a symmetric cost matrix, find the shortest tour visiting every city
 exactly once and returning to the start.
@@ -123,7 +123,7 @@ the feasible subspace:
      - Cost
    * - ``"one_hot"``
      - :math:`O(N)`
-     - W-state initialization and XY mixing preserve the one-hot constraint.
+     - W-state initialisation and XY mixing preserve the one-hot constraint.
      - Becomes impractical for large routing instances.
    * - ``"binary"``
      - :math:`O(\log N)`

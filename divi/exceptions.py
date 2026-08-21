@@ -8,7 +8,7 @@ class ExecutionCancelledError(Exception):
 
 
 class CharacterizationFailedError(Exception):
-    """A characterization job did not produce a usable report.
+    """A characterisation job did not produce a usable report.
 
     Raised when the server reports the job as failed, or returns it as
     complete with no analysis attached. Carries the ``job_id`` so the job
@@ -28,7 +28,7 @@ class CharacterizationFailedError(Exception):
 
 
 class CharacterizationSubmitError(Exception):
-    """A created characterization job did not return a usable response.
+    """A created characterisation job did not return a usable response.
 
     Carries the ``job_id`` and failed ``phase`` so callers can inspect or
     re-fetch the existing job instead of creating a second billable submission.

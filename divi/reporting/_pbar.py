@@ -34,9 +34,9 @@ class TerminalStatus(str, Enum):
     ABORTED = "Aborted"
 
 
-#: Color cycle assigned to flush groups in ensemble progress displays.
+#: Colour cycle assigned to flush groups in ensemble progress displays.
 #:
-#: Each running flush group is tinted with the next color in this tuple so
+#: Each running flush group is tinted with the next colour in this tuple so
 #: that progress rows can be visually associated with their participating
 #: programs.
 BATCH_COLORS = ("green", "cyan", "magenta", "yellow", "red", "blue")
@@ -447,7 +447,7 @@ def handle_batch_message(
     empty for batch rows; the indicator/text/spinner/status columns
     render normally.
 
-    Program-row coloring works by reading each task's ``program_key``
+    Program-row colouring works by reading each task's ``program_key``
     field — no parallel ``program_key → TaskID`` index needed.  Reading
     ``progress_bar._tasks`` mirrors the same pattern used elsewhere in
     the listener.

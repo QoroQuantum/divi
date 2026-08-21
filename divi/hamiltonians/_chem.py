@@ -77,7 +77,7 @@ def _spo_from_integrals(
             (nuclear repulsion plus any frozen-core energy).
         one_body_beta: Beta-channel one-electron integrals, for a
             spin-dependent one-body potential such as the exchange term of a
-            spin-polarized mean-field embedding. The two-body integrals are
+            spin-polarised mean-field embedding. The two-body integrals are
             spin-free regardless, being spatial-orbital integrals.
 
     Returns:

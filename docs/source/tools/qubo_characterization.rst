@@ -1,7 +1,7 @@
-QUBO Characterization Service
+QUBO Characterisation Service
 =============================
 
-The Qoro **QUBO Characterization Service** analyzes a QUBO or HUBO before you
+The Qoro **QUBO Characterisation Service** analyses a QUBO or HUBO before you
 spend quantum runs on it. It compares classical baselines, inspects the QAOA
 landscape, and reports whether a cheap classical route already makes QAOA a
 poor choice.
@@ -57,7 +57,7 @@ candidate is sufficient.
 When to Use It
 --------------
 
-Use characterization before QAOA when you need to:
+Use characterisation before QAOA when you need to:
 
 * decide whether a classical shortcut already makes a quantum run unnecessary;
 * choose initial QAOA angles without spending optimizer iterations on a blind
@@ -65,12 +65,12 @@ Use characterization before QAOA when you need to:
 * understand whether density, frustration, or symmetry makes low-depth QAOA
   unlikely to help;
 * size a penalty multiplier for a constrained formulation; or
-* analyze a HUBO already accepted by ``BinaryOptimizationProblem``.
+* analyse a HUBO already accepted by ``BinaryOptimizationProblem``.
 
-The service minimizes every submitted objective: reported energies are costs,
+The service minimises every submitted objective: reported energies are costs,
 and lower is better. One problem variable corresponds to one qubit.
 
-Characterization is diagnostic, not a benchmark of a particular QPU. It is
+Characterisation is diagnostic, not a benchmark of a particular QPU. It is
 most useful as a filter before execution and as a source of initial
 configuration for the QAOA run that follows.
 
@@ -140,7 +140,7 @@ may have estimated spectrum endpoints but no exact gap. Interpret ``None``
 together with the preset, regime, and estimation flags rather than as a failed
 job.
 
-``quality_score`` and ``hardness["difficulty"]`` summarize different
+``quality_score`` and ``hardness["difficulty"]`` summarise different
 things. Quality describes properties such as coefficient scaling and
 formulation structure. Difficulty combines the cost spectrum and other
 problem diagnostics. Neither is a prediction of quantum advantage.
@@ -196,12 +196,12 @@ The cost-spectrum fields have the following meanings:
    * - Field
      - Meaning
    * - ``cost_min`` / ``cost_max``
-     - Best and worst objective values used to normalize the QAOA expectation.
+     - Best and worst objective values used to normalise the QAOA expectation.
    * - ``cost_gap``
      - Difference between the lowest distinct energy levels, when the spectrum
        is exact.
    * - ``ground_state_degeneracy``
-     - Number of exact minimizers, when full enumeration is available.
+     - Number of exact minimisers, when full enumeration is available.
    * - ``cost_spectrum_estimated``
      - Whether the endpoints came from sampling rather than enumeration.
    * - ``approximation_ratio_error_bound``
@@ -272,9 +272,9 @@ server decide.
 
 This distinction matters when options come from a configuration file:
 ``parameter_sweep=None`` means "use the preset", while
-``parameter_sweep=True`` pins the behavior even if the preset changes.
+``parameter_sweep=True`` pins the behaviour even if the preset changes.
 Overriding a preset in an unexpected direction emits a ``UserWarning`` but
-the explicit value is honored.
+the explicit value is honoured.
 
 Fixed ``gamma`` and ``beta`` do not implicitly disable a preset's sweep.
 Use ``preset="fast"`` for a fixed-point evaluation without a sweep, or set
@@ -381,9 +381,9 @@ distribution: "redundant" means that the constraint carries negligible
 violating probability mass in that distribution, not that it is logically
 implied by the other constraints.
 
-The service tunes the penalty you supply; it does not synthesize missing
+The service tunes the penalty you supply; it does not synthesise missing
 penalty terms. A larger multiplier strengthens feasibility but can also widen
-the energy scale and make the QAOA landscape harder to optimize.
+the energy scale and make the QAOA landscape harder to optimise.
 
 Reading Recommendations Programmatically
 -----------------------------------------
@@ -426,7 +426,7 @@ Jobs move through ``PENDING``, ``RUNNING``, and a terminal
 ``COMPLETED``, ``FAILED``, or ``CANCELLED`` state. The convenience
 helper waits synchronously.
 
-Initialization and submission are not retried because both mutate server
+Initialisation and submission are not retried because both mutate server
 state. After job creation, an ambiguous submission, polling, or result-fetch
 failure raises :exc:`~divi.exceptions.CharacterizationSubmitError`. It
 preserves the existing ``job_id`` and identifies the failed ``phase``.
@@ -460,7 +460,7 @@ A completed job without a usable report also raises.
 Cost
 ----
 
-Characterization is priced by variable count. Preset choice does not affect the
+Characterisation is priced by variable count. Preset choice does not affect the
 charge, failed jobs are not billed, and fetching an existing result is free.
 See the `dashboard <https://dash.qoroquantum.net/>`_ for current tiers.
 

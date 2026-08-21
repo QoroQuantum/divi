@@ -182,7 +182,7 @@ class _SPSAConfigMixin:
         Costs one extra cost evaluation per step (the candidate's loss); the
         accepted value carries over as the next ``current_loss``, so it is not
         re-measured. The std band needs at least two prior losses; before that the
-        candidate is accepted (matching the start-up behavior of Spall's rule).
+        candidate is accepted (matching the start-up behaviour of Spall's rule).
 
         A non-finite candidate loss is treated as a rejection (hold ``theta``)
         rather than accepted — ``nan > x`` is ``False``, so without this guard a
@@ -318,7 +318,8 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
         blocking_tol: Reject a candidate whose loss exceeds the current loss by
             more than ``blocking_tol``·std of the recent window. This is the knob
             that absorbs cost noise in the accept/reject decision (``resamplings``
-            de-noises the gradient, not this single-evaluation comparison).
+            averages noise out of the gradient, not out of this
+            single-evaluation comparison).
         exact_loss: When ``True``, spend one extra unperturbed evaluation per step
             to record the exact ``f(theta)`` for the callback and best-iterate
             tracking, instead of the (biased but free) perturbation-average proxy.
@@ -429,7 +430,7 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
                         fun=np.atleast_1d(fun),
                         nit=k + 1,
                         success=True,
-                        message="Optimization in progress.",
+                        message="Optimisation in progress.",
                     )
                 )
 
@@ -450,7 +451,7 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
             fun=np.atleast_1d(best_fun),
             nit=max_iterations,
             success=True,
-            message="Optimization terminated: reached max_iterations.",
+            message="Optimisation terminated: reached max_iterations.",
         )
 
 
@@ -506,7 +507,8 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
         blocking_tol: Reject a candidate whose loss exceeds the current loss by
             more than ``blocking_tol``·std of the recent window. This is the knob
             that absorbs cost noise in the accept/reject decision (``resamplings``
-            de-noises the gradient/metric, not this single-evaluation comparison).
+            averages noise out of the gradient/metric, not out of this
+            single-evaluation comparison).
         exact_loss: When ``True``, spend one extra unperturbed evaluation per step
             to record the exact ``f(theta)`` for the callback and best-iterate
             tracking, instead of the (biased but free) perturbation-average proxy.
@@ -664,7 +666,7 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
                         fun=np.atleast_1d(fun),
                         nit=k + 1,
                         success=True,
-                        message="Optimization in progress.",
+                        message="Optimisation in progress.",
                     )
                 )
 
@@ -685,7 +687,7 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
             fun=np.atleast_1d(best_fun),
             nit=max_iterations,
             success=True,
-            message="Optimization terminated: reached max_iterations.",
+            message="Optimisation terminated: reached max_iterations.",
         )
 
 
@@ -769,7 +771,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         b: Small floor guarding divisions by a vanishing gradient norm.
         alpha/gamma/A: Spall gain-schedule knobs (default to constant gains).
         blocking/blocking_history/blocking_tol/exact_loss: Inherited look-ahead
-            blocking and loss-recording behavior (see :class:`SPSAOptimizer`).
+            blocking and loss-recording behaviour (see :class:`SPSAOptimizer`).
     """
 
     def __init__(
@@ -960,7 +962,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                     # generator uses a ½ prefactor, i.e. divides by 2. Rescale by
                     # ``eps_k`` so the estimate is the true parameter-shift
                     # gradient (½(f₊−f₋)·v), not the ``2/π``-scaled value the
-                    # finite-difference normalization would give.
+                    # finite-difference normalisation would give.
                     ghat_l = ghat_l * eps_k
                 ghats.append(ghat_l)
                 losses.append(0.5 * (f_plus + f_minus))
@@ -1011,7 +1013,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                         fun=np.atleast_1d(fun),
                         nit=k + 1,
                         success=True,
-                        message="Optimization in progress.",
+                        message="Optimisation in progress.",
                     )
                 )
 
@@ -1050,5 +1052,5 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
             fun=np.atleast_1d(best_fun),
             nit=max_iterations,
             success=True,
-            message="Optimization terminated: reached max_iterations.",
+            message="Optimisation terminated: reached max_iterations.",
         )

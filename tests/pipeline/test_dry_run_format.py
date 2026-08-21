@@ -849,7 +849,7 @@ def test_grouped_falls_back_when_nothing_groups(dummy_pipeline_env, capsys):
     # differ only in the observable, so a "different pipeline shape" claim would be
     # contradicted by the rows underneath it.
     assert "These 4 programs are all distinct" in out
-    assert "they differ in the objective they optimize" in out
+    assert "they differ in the objective they optimise" in out
     assert "Ensemble Dry Run" in out
     assert "Subtotal" not in out
 

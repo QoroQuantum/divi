@@ -338,13 +338,13 @@ _PARTITIONING_COMPATIBILITY_TIERS = {
 
 
 def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
-    """Visualize a graph with solution nodes highlighted.
+    """Visualise a graph with solution nodes highlighted.
 
-    Draws the graph with nodes colored to distinguish solution nodes (red) from
+    Draws the graph with nodes coloured to distinguish solution nodes (red) from
     other nodes (light blue).
 
     Args:
-        main_graph (nx.Graph): NetworkX graph to visualize.
+        main_graph (nx.Graph): NetworkX graph to visualise.
         partition_nodes: Collection of node indices that are part of the solution.
     """
     node_colors = [

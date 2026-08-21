@@ -2,7 +2,7 @@ Reporting
 =========
 
 The ``divi.reporting`` module provides logging, progress reporting, and
-visualization functionality for quantum program execution.
+visualisation functionality for quantum program execution.
 
 Usage
 -----
@@ -28,7 +28,7 @@ Advanced Features
    intended for advanced users and developers who need custom logging and progress
    reporting. Most users will not need to interact with these features directly.
 
-:func:`~divi.reporting.make_progress_bar` creates a customized Rich progress bar
+:func:`~divi.reporting.make_progress_bar` creates a customised Rich progress bar
 designed for quantum program execution tracking, with custom columns (job name,
 progress bar, status, elapsed time), a conditional spinner, emoji status
 indicators, Jupyter adaptation, and job-polling support for service-based

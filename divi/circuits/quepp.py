@@ -79,7 +79,7 @@ _RP_CONJUGATION: dict[str, dict[int, tuple[int, int]]] = {
     "z": {_PAULI_X: (_PAULI_Y, -1), _PAULI_Y: (_PAULI_X, 1), _PAULI_Z: (_PAULI_Z, 1)},
 }
 
-# Qiskit Clifford rotations for angle normalization (axis, n_mod_4) → gate or None.
+# Qiskit Clifford rotations for angle normalisation (axis, n_mod_4) → gate or None.
 #
 # Using the specialised gate classes (``SXGate``, ``SGate``) — rather than
 # ``RXGate(π/2)`` / ``RZGate(π/2)`` — ensures the n=1 entries do NOT match
@@ -1320,7 +1320,7 @@ class QuEPP(QEMProtocol):
 
     @staticmethod
     def _preprocess(dag: DAGCircuit, observable: SparsePauliOp) -> "_PreprocResult":
-        """Decompose, normalize, extract rotations + tableaus + obs terms."""
+        """Decompose, normalise, extract rotations + tableaus + obs terms."""
         target_qc = dag_to_circuit(dag)
         n_qubits = target_qc.num_qubits
         decomposed = _decompose_controlled_rotations(target_qc)

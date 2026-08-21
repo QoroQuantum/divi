@@ -7,9 +7,9 @@ What is Divi?
 -------------
 
 Divi is a Python library that automates the orchestration around quantum
-programs: circuit generation, batching, error mitigation, parameter optimization,
+programs: circuit generation, batching, error mitigation, parameter optimisation,
 and result aggregation. Whether you're studying molecular systems or solving
-combinatorial optimization problems, Divi handles the plumbing so you can focus
+combinatorial optimisation problems, Divi handles the plumbing so you can focus
 on the problem.
 
 **Core capabilities:**
@@ -71,7 +71,7 @@ close to the ``-1.137`` Hartree reference for this geometry and model.
 Choosing the Right Algorithm
 -----------------------------
 
-Divi offers specialized algorithms for different problem types:
+Divi offers specialised algorithms for different problem types:
 
 **VQE – Quantum Chemistry**
    Use :class:`~divi.qprog.algorithms.VQE` for molecular ground state calculations, dissociation curves, and electronic structure problems.
@@ -89,8 +89,8 @@ Divi offers specialized algorithms for different problem types:
           backend=MaestroSimulator()
       )
 
-**QAOA – Optimization Problems**
-   Use :class:`~divi.qprog.algorithms.QAOA` for combinatorial optimization: Max-Cut, Max-Clique, traveling salesman, QUBO/HUBO, and similar NP-hard problems (graphs or binary polynomial formulations).
+**QAOA – Optimisation Problems**
+   Use :class:`~divi.qprog.algorithms.QAOA` for combinatorial optimisation: Max-Cut, Max-Clique, travelling salesman, QUBO/HUBO, and similar NP-hard problems (graphs or binary polynomial formulations).
 
    .. dashboard-example: qaoa-basic
 
@@ -116,7 +116,7 @@ Divi offers specialized algorithms for different problem types:
       print(f"Solution: {qaoa.solution}")
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding**
-   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimization with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/algorithms/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
+   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimisation with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/algorithms/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
 
    .. dashboard-example: pce
 

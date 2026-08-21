@@ -52,14 +52,14 @@ class TrotterizationResult:
         A sampling result (``sampled_terms`` set) applies one evolution gate
         per sampled term — preserving sampling-with-replacement multiplicities
         — repeated ``n_steps`` times at ``time / n_steps`` per step. A
-        deterministic result synthesizes ``exp(-i t H)`` from
+        deterministic result synthesises ``exp(-i t H)`` from
         ``effective_hamiltonian`` via
         :class:`~qiskit.circuit.library.PauliEvolutionGate`
         (:class:`~qiskit.synthesis.LieTrotter` for ``order == 1``, else
         :class:`~qiskit.synthesis.SuzukiTrotter`), then lowers the circuit to
         ``basis_gates``.
 
-        Adjoint evolution is realized via negative time; single-term
+        Adjoint evolution is realised via negative time; single-term
         Hamiltonians use positive time to preserve the ``exp(-i t H)`` sign
         convention even when ``H`` carries its own coefficient sign. Returns the
         resulting circuit (a new object when synthesis required transpilation,
@@ -301,7 +301,7 @@ class QDrift(TrotterizationStrategy):
         *,
         rng: np.random.Generator | None = None,
     ) -> TrotterizationResult:
-        r"""Apply the ``QDrift`` randomized channel to a Hamiltonian.
+        r"""Apply the ``QDrift`` randomised channel to a Hamiltonian.
 
         Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
         randomly sample L terms and rescale their coefficients so that

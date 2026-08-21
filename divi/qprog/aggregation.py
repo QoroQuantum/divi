@@ -196,7 +196,7 @@ class HierarchicalStrategy(AggregationStrategy):
 
     - Groups are formed in decomposition order (consecutive program IDs); no
       coupling-aware grouping is performed. The benefit over a wide beam only
-      materializes when strongly-coupled partitions happen to land in the same
+      materialises when strongly-coupled partitions happen to land in the same
       group.
     - Cross-group interactions in ``evaluate_fn`` (e.g. penalties spanning
       partitions in different groups) are invisible during per-group pruning and

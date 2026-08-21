@@ -4,7 +4,7 @@ Divi Documentation
 Divi is a Python library for building and running quantum programs at scale.
 It sits above circuit-level frameworks like PennyLane and Qiskit and handles the
 orchestration that practitioners usually write by hand: circuit generation,
-batching, error mitigation, parameter optimization, and result aggregation.
+batching, error mitigation, parameter optimisation, and result aggregation.
 
 Why Divi?
 ---------
@@ -12,7 +12,7 @@ Why Divi?
 * **Batteries-included algorithms** — ready-to-run
   :class:`~divi.qprog.algorithms.VQE` for chemistry,
   :class:`~divi.qprog.algorithms.QAOA` / :class:`~divi.qprog.algorithms.PCE` for
-  combinatorial optimization, :class:`~divi.qprog.algorithms.TimeEvolution` for
+  combinatorial optimisation, :class:`~divi.qprog.algorithms.TimeEvolution` for
   dynamics, and :class:`~divi.qprog.algorithms.QNN` for quantum machine
   learning — or bring your own circuit with
   :class:`~divi.qprog.algorithms.CustomVQA`.

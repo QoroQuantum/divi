@@ -316,7 +316,7 @@ The ``program_state.json`` file contains:
 The ``optimizer_state.json`` file contains optimizer-specific data:
 
 - For ``MonteCarloOptimizer``: Population, evaluated population, losses, RNG state
-- For ``PymooOptimizer``: Serialized algorithm object and population
+- For ``PymooOptimizer``: Serialised algorithm object and population
 
 Best Practices
 --------------

@@ -2,7 +2,7 @@ Early Stopping
 ==============
 
 The early stopping module provides configurable criteria for terminating
-variational optimization when further iterations are unlikely to improve results.
+variational optimisation when further iterations are unlikely to improve results.
 Supported criteria include patience-based plateaus, gradient norm thresholds, and
 cost variance settling.
 

@@ -7,13 +7,13 @@
 Operates directly on the sparse *signed interaction matrix* ``Sigma`` of a QUBO
 (``Sigma[i, j]`` = quadratic coefficient of variables ``i, j``), so no graph
 object is constructed. Strongly-coupled variables are grouped together and weak
-inter-cluster couplings are cut, which minimizes the energy lost when a QUBO is
+inter-cluster couplings are cut, which minimises the energy lost when a QUBO is
 decomposed into independently-solved sub-problems.
 
 Two clustering methods are provided. The default *modularity* method runs Louvain
 community detection on the coupling-magnitude graph, auto-selecting the community
 count. The *signed multi-view spectral* method splits ``Sigma`` into a positive
-("repulsive") and negative ("attractive") view, builds the normalized Laplacian of
+("repulsive") and negative ("attractive") view, builds the normalised Laplacian of
 each, concatenates their leading spectral features, and runs k-means — respecting
 the sign/frustration structure of the couplings.
 
@@ -64,7 +64,7 @@ def bqm_to_sparse(bqm):
 
 
 def _view_features(W: sps.csr_matrix, k: int) -> np.ndarray | None:
-    """Leading ``k`` eigenvectors of a view's normalized Laplacian.
+    """Leading ``k`` eigenvectors of a view's normalised Laplacian.
 
     Returns ``None`` for an empty view (no couplings of that sign). Uses dense
     ``eigh`` for moderate sizes and sparse shift-invert ``eigsh`` above
@@ -122,7 +122,7 @@ def _multiview_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
 
 
 def _louvain_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
-    """Community labels from Louvain modularity maximization.
+    """Community labels from Louvain modularity maximisation.
 
     ``k`` is ignored — Louvain derives the community count from the graph itself.
     Edge weights are coupling *magnitudes* (Louvain requires non-negative weights),
@@ -220,7 +220,7 @@ def _partition(
     """Partition a QUBO's interaction matrix into variable-index clusters.
 
     Connected components are separated first (a zero-cost exact reduction), then
-    each component is clustered with ``labeler`` to honor ``config``'s
+    each component is clustered with ``labeler`` to honour ``config``'s
     ``max_n_nodes_per_cluster`` budget and ``minimum_n_clusters`` floor.
     """
     if (
@@ -273,7 +273,7 @@ def louvain_partition(
 
     Same component pre-split and budget/floor handling as
     :func:`signed_multiview_partition`, but clusters each over-budget component by
-    modularity maximization (coupling-magnitude weights) instead of spectral views.
+    modularity maximisation (coupling-magnitude weights) instead of spectral views.
 
     Returns:
         Integer-index arrays partitioning ``0..n-1``, one per cluster.
@@ -287,7 +287,7 @@ class CommunityDecomposer(traits.ProblemDecomposer, traits.SISO, Runnable):
     A drop-in ``hybrid`` decomposer — like D-Wave's ``EnergyImpactDecomposer`` or
     ``ComponentDecomposer`` — that groups strongly-coupled variables and cuts weak
     couplings, so little energy is lost at partition boundaries. Connected components
-    are separated first, then each component is clustered to honor the size budget.
+    are separated first, then each component is clustered to honour the size budget.
     Successive calls roll through the resulting clusters, one subproblem per iteration.
 
     Two clustering methods are available via ``method``:

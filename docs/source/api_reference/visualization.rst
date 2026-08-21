@@ -1,4 +1,4 @@
-Visualization
+Visualisation
 =============
 
 The :mod:`divi.viz` module provides loss-landscape scans, analysis tools, and

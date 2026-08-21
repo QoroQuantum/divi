@@ -1905,9 +1905,9 @@ class TestCanonicalResultFields:
         assert "light-cone" in s.lower()
 
     def test_summary_shows_normalized_cost_gap(self):
-        """D5: the summary leads with the scale-invariant normalized gap."""
+        """D5: the summary leads with the scale-invariant normalised gap."""
         s = self._result().summary()
-        assert "normalized" in s
+        assert "normalised" in s
 
     def test_summary_shows_relaxation_bound_when_present(self):
         """D4: the provable LP relaxation bound is surfaced in the summary."""

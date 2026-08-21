@@ -68,7 +68,7 @@ class ObservableMeasuringMixin:
         measure_all_qubits: bool = False,
         **kwargs,
     ):
-        """Initialize the measurement-config layer.
+        """Initialise the measurement-config layer.
 
         Args:
             grouping_strategy: Strategy for partitioning Hamiltonian terms

@@ -114,7 +114,7 @@ Pass ``selection="from_left"`` or ``"from_right"`` through
 specific gate classes.
 
 .. note::
-   With ``d`` foldable gates, effective scales are quantized in increments of
+   With ``d`` foldable gates, effective scales are quantised in increments of
    ``2/d``. ZNE forwards the effective scale and warns when requested scales
    collapse to one value.
 
@@ -220,7 +220,7 @@ observable group and emits a summary warning after the evaluation:
    or reducing noise.
 
 The η diagnostics carry no per-run counts, so each fires at most once for a
-whole optimization rather than once per iteration.
+whole optimisation rather than once per iteration.
 
 If you see this warning frequently, consider:
 
@@ -299,8 +299,8 @@ proxy for the target, which fails in ways worth knowing:
   substitutes an identity for a rotation, so error attached exclusively to the
   rotation gate has no counterpart in the ensemble and cannot be inferred from
   it. This is a limit of the protocol rather than of any particular backend.
-- **Transpiler optimization.** The ensemble circuits are Clifford, so an
-  optimizing transpiler compresses them much further than the target, and they
+- **Transpiler optimisation.** The ensemble circuits are Clifford, so an
+  optimising transpiler compresses them much further than the target, and they
   then see less noise than it does. On
   :class:`~divi.backends.QiskitSimulator` pass ``optimization_level=0``
   alongside your noise model; on hardware, transpile the ensemble and the

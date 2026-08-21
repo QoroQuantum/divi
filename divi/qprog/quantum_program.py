@@ -109,7 +109,7 @@ class QuantumProgram(ABC):
         suppress_performance_warnings: bool = False,
         **kwargs,
     ):
-        """Initialize the QuantumProgram.
+        """Initialise the QuantumProgram.
 
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
@@ -209,7 +209,7 @@ class QuantumProgram(ABC):
         """Set a cancellation event for graceful program termination.
 
         This method is called by batch runners to provide a mechanism
-        for stopping the optimization loop cleanly when requested.
+        for stopping the optimisation loop cleanly when requested.
 
         Args:
             event (Event): Threading Event object that signals cancellation when set.
@@ -286,7 +286,7 @@ class QuantumProgram(ABC):
         Ordering: ``spec_stage`` → ``extra_stages`` → [QEM (→ PauliTwirl) when
         applicable] → ``terminal_stage``.
 
-        Parameter-binding policy belongs to parameterized program classes, not
+        Parameter-binding policy belongs to parameterised program classes, not
         this shared assembler.
         """
         stages = [

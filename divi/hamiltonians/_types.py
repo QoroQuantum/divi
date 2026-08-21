@@ -25,7 +25,7 @@ CompiledBinaryPolynomial = tuple[
 
 @dataclass(frozen=True)
 class BinaryPolynomialProblem:
-    """Canonical internal representation for binary polynomial optimization problems."""
+    """Canonical internal representation for binary polynomial optimisation problems."""
 
     polynomial: dimod.BinaryPolynomial
     variable_order: tuple[Hashable, ...]

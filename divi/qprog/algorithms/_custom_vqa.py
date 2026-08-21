@@ -68,10 +68,10 @@ def _z_sum_observable(n_qubits: int, measured_wires: list[int]) -> SparsePauliOp
 
 
 class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
-    """Custom variational algorithm for a parameterized circuit.
+    """Custom variational algorithm for a parameterised circuit.
 
     Wraps a PennyLane ``QuantumScript``, a PennyLane ``QNode``, or a Qiskit
-    ``QuantumCircuit`` and optimizes its trainable parameters to minimize a
+    ``QuantumCircuit`` and optimises its trainable parameters to minimise a
     single expectation-value measurement. A ``QNode`` is converted to a
     ``QuantumScript`` upfront, with its required (no-default) arguments taken
     as the trainable parameters. Qiskit measurements on selected qubits
@@ -91,7 +91,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         param_shape: Shape of a single parameter set.
         n_qubits (int): Number of qubits in the circuit.
         n_layers (int): Layer count (fixed to 1 for this wrapper).
-        cost_hamiltonian: Observable being minimized, as a Qiskit
+        cost_hamiltonian: Observable being minimised, as a Qiskit
             ``SparsePauliOp``.
         loss_constant (float): Constant term extracted from the observable.
         measured_wires: For Qiskit input, the qubit indices targeted by
@@ -104,8 +104,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         loss_reduction: User-facing aggregation across samples when data
             binding is active; ignored otherwise.
         optimizer: Classical optimizer for parameter updates.
-        max_iterations (int): Maximum number of optimization iterations.
-        current_iteration (int): Current optimization iteration.
+        max_iterations (int): Maximum number of optimisation iterations.
+        current_iteration (int): Current optimisation iteration.
     """
 
     def __init__(
@@ -123,10 +123,10 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         max_iterations: int = 10,
         **kwargs,
     ) -> None:
-        """Initialize a CustomVQA instance.
+        """Initialise a CustomVQA instance.
 
         Args:
-            qscript: A parameterized ``QuantumScript`` or ``QNode`` with a
+            qscript: A parameterised ``QuantumScript`` or ``QNode`` with a
                 single expectation-value measurement, or a Qiskit
                 ``QuantumCircuit`` with computational-basis measurements
                 (mapped to a sum-of-Z observable on the measured wires).
@@ -138,7 +138,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 Structural values (qubit/layer counts used only for control
                 flow, never as gate angles) are neither data nor weights:
                 close over them in the enclosing scope or give them a default —
-                a no-default structural argument is symbolized like a weight and
+                a no-default structural argument is symbolised like a weight and
                 then breaks (e.g. ``range(<symbol>)``). The QNode is traced one
                 sample at a time, so index by the structural size
                 (``range(n_qubits)``), not the batch dimension
@@ -150,10 +150,10 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 parameters.
             data_param_indices: Integer indices (into the circuit's flat
                 parameter ordering) marking which parameters are bound
-                from ``feature_batch`` rather than optimized. For Qiskit
+                from ``feature_batch`` rather than optimised. For Qiskit
                 input, indices reference ``list(qc.parameters)``; for
                 PennyLane input, indices reference the trainable-parameter
-                ordering used to synthesize the internal parameter vector.
+                ordering used to synthesise the internal parameter vector.
                 Mutually required with ``feature_batch``.
             feature_batch: Classical feature batch of shape
                 ``(n_samples, len(data_param_indices))``. Mutually
@@ -175,7 +175,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 expectation value) is compared to its label via ``loss_fn``
                 before ``loss_reduction`` aggregates — turning the unsupervised
                 objective into a supervised training loss. ``None`` (default)
-                keeps the unsupervised behavior.
+                keeps the unsupervised behaviour.
             loss_fn: Per-sample supervised loss ``(prediction, label) ->
                 float``, used only when ``labels`` is given. ``"squared_error"``
                 (default) with the default ``"mean"`` reduction yields
@@ -187,7 +187,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 is set) into the scalar loss the optimizer sees. ``"mean"``
                 (default), ``"sum"``, or a callable ``(n_samples,) -> float``.
                 Ignored when ``data_param_indices`` is unset.
-            max_iterations: Maximum number of optimization iterations.
+            max_iterations: Maximum number of optimisation iterations.
             **kwargs: Additional keyword arguments passed to the parent
                 class, including backend and optimizer.
 

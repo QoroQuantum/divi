@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Binary optimization (QUBO / HUBO) problem class for QAOA."""
+"""Binary optimisation (QUBO / HUBO) problem class for QAOA."""
 
 import math
 from collections.abc import Callable, Hashable
@@ -108,8 +108,8 @@ def _induced_sub_qubo(bqm, variables):
 class BinaryOptimizationProblem(QAOAProblem):
     """Generic QUBO or HUBO problem for QAOA.
 
-    Wraps a binary optimization problem expressed as either a quadratic
-    form (QUBO) or higher-order polynomial (HUBO), normalizes it to a
+    Wraps a binary optimisation problem expressed as either a quadratic
+    form (QUBO) or higher-order polynomial (HUBO), normalises it to a
     canonical :class:`~divi.hamiltonians.BinaryPolynomialProblem`, and
     exposes the QAOA building blocks: cost Hamiltonian (via Ising
     conversion), standard X-mixer, and ground-state initial
@@ -144,11 +144,11 @@ class BinaryOptimizationProblem(QAOAProblem):
     Args:
         problem: Objective/cost QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
         penalty: Optional penalty-only QUBO/HUBO component. When provided, the
-            QAOA problem is the penalized objective
+            QAOA problem is the penalised objective
             ``problem + penalty_weight * penalty`` while the objective/penalty
-            split remains available for characterization.
+            split remains available for characterisation.
         penalty_weight: Multiplier applied to ``penalty`` when building the
-            penalized QUBO/HUBO. Defaults to ``1.0``.
+            penalised QUBO/HUBO. Defaults to ``1.0``.
         hamiltonian_builder: ``"native"`` (default) or ``"quadratized"``.
         quadratization_strength: Penalty strength for the quadratized
             builder. ``None`` (default) auto-picks
@@ -305,7 +305,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def canonical_problem(self):
-        """The normalized ``BinaryPolynomialProblem``."""
+        """The normalised ``BinaryPolynomialProblem``."""
         return self._canonical_problem
 
     @property
@@ -315,7 +315,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def objective_canonical_problem(self):
-        """The normalized objective/cost component."""
+        """The normalised objective/cost component."""
         return self._objective_canonical_problem
 
     @property
@@ -325,7 +325,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def penalty_canonical_problem(self):
-        """The normalized penalty-only component, if one was provided."""
+        """The normalised penalty-only component, if one was provided."""
         return self._penalty_canonical_problem
 
     @property
@@ -338,7 +338,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         """The QUBO/HUBO input used for QAOA.
 
         This is the original objective when no penalty was provided, otherwise
-        the combined penalized objective.
+        the combined penalised objective.
         """
         return self._raw_problem
 
@@ -510,7 +510,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         """Greedy single-bit-flip descent to a local minimum of the full BQM.
 
         Maintains an incremental effective field ``g = h + J @ x`` and updates only a
-        flipped variable's neighbors, so cost scales with the number of couplings. The
+        flipped variable's neighbours, so cost scales with the number of couplings. The
         per-node improvement threshold (see :meth:`_polish_fields`) stays above the
         incremental field's floating-point drift at any coefficient scale.
         """

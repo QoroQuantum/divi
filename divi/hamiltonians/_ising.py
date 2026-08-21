@@ -103,7 +103,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
             )
 
         # Collect signed contributions per Z-product subset in a list and
-        # finalize via ``math.fsum``; naive ``+=`` loses precision over the
+        # finalise via ``math.fsum``; naive ``+=`` loses precision over the
         # 2**k signed terms each degree-k monomial injects.
         z_term_parts: defaultdict[tuple[int, ...], list[float]] = defaultdict(list)
         constant_parts: list[float] = []
@@ -166,7 +166,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
 
 @dataclass(frozen=True)
 class QuadratizedIsingConverter(BinaryToIsingConverter):
-    """Convert binary polynomials to Ising operators via quadratization to QUBO/BQM.
+    """Convert binary polynomials to Ising operators via quadratisation to QUBO/BQM.
 
     The penalty term enforcing ``p == u·v`` for each aux-var substitution
     must dominate the objective for the QUBO's global minimum to coincide
@@ -302,7 +302,7 @@ def qubo_to_spo(
     Args:
         qubo: QUBO dict, HUBO dict, numpy matrix, BQM, or BinaryPolynomial.
         hamiltonian_builder: ``"native"`` or ``"quadratized"``.
-        quadratization_strength: Penalty for quadratization. ``None``
+        quadratization_strength: Penalty for quadratisation. ``None``
             (default) picks an adaptive strength — see
             :class:`QuadratizedIsingConverter`. Ignored when
             ``hamiltonian_builder="native"``.
@@ -335,13 +335,13 @@ def qubo_to_ising(
 ) -> IsingResult:
     """Convert a QUBO/HUBO to a cleaned Ising Hamiltonian.
 
-    Normalizes the input, converts via the selected Ising converter,
+    Normalises the input, converts via the selected Ising converter,
     cleans constant terms, and validates the result.
 
     Args:
         qubo: QUBO dict, HUBO dict, numpy matrix, BQM, or BinaryPolynomial.
         hamiltonian_builder: ``"native"`` or ``"quadratized"``.
-        quadratization_strength: Penalty for quadratization. ``None``
+        quadratization_strength: Penalty for quadratisation. ``None``
             (default) picks an adaptive strength ``2 * max(|hubo coeff|)``
             so the penalty dominates the objective for arbitrary problem
             scales — see :class:`QuadratizedIsingConverter`. Ignored when
@@ -425,7 +425,7 @@ def _convert_qubo_matrix_to_ising_spo(
     if warn_on_asymmetric and not _is_sanitized(qubo_matrix):
         warn(
             "The QUBO matrix is neither symmetric nor upper triangular."
-            " Symmetrizing it for the Ising Hamiltonian creation."
+            " Symmetrising it for the Ising Hamiltonian creation."
         )
 
     if sps.issparse(qubo_matrix):

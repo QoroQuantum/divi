@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""QUBO/HUBO characterization: serialization, result container, and public API."""
+"""QUBO/HUBO characterisation: serialisation, result container, and public API."""
 
 import json
 import logging
@@ -81,7 +81,7 @@ _VALIDATOR_STACKLEVEL = 3
 
 
 def _serialize_qubo_legacy(canonical) -> dict[str, float]:
-    """Serialize to the comma-key dict format, e.g. ``{"0": -1.0, "0,1": 2.0}``.
+    """Serialise to the comma-key dict format, e.g. ``{"0": -1.0, "0,1": 2.0}``.
 
     Term keys are original variable *names* (which may be strings for a
     ``dimod.BinaryQuadraticModel``), so they are remapped to integer indices
@@ -99,7 +99,7 @@ def _serialize_qubo_legacy(canonical) -> dict[str, float]:
 def _serialize_qubo_component_legacy(
     canonical, variable_to_idx: dict
 ) -> dict[str, float]:
-    """Serialize a component using another QUBO's variable indexing."""
+    """Serialise a component using another QUBO's variable indexing."""
     wire: dict[str, float] = {}
     for term_key, coeff in canonical.terms.items():
         if coeff == 0 or not term_key:
@@ -323,7 +323,7 @@ def _payload_size(payload) -> int:
 
 
 def _serialize_qubo_for_wire(problem: "BinaryOptimizationProblem") -> dict:
-    """Serialize a QUBO/HUBO to whichever wire format is smaller.
+    """Serialise a QUBO/HUBO to whichever wire format is smaller.
 
     Compares the JSON byte sizes of the legacy comma-key dict and the
     factored decomposition, returning the smaller. HUBO inputs (any term of
@@ -406,7 +406,7 @@ _WELL_TUNED_LABELS = {
 _STATE_TABLE_CAP = 20
 _STRUCTURAL_SENSITIVITY_TABLE_CAP = 16
 
-# Confidence border/label colors for the regime/certificate panel.
+# Confidence border/label colours for the regime/certificate panel.
 _CONFIDENCE_STYLES = {
     "proven": "green",
     "estimated": "yellow",
@@ -454,7 +454,7 @@ _TIMESTAMP_SUMMARY_FIELDS = (
 
 @dataclass
 class CharacterizationResult:
-    """Result container for QUBO/HUBO characterization.
+    """Result container for QUBO/HUBO characterisation.
 
     Returned by :meth:`~divi.backends.QoroService.characterize_and_validate` and
     :func:`~divi.backends.characterization.characterize_and_validate`. Displays a rich HTML report when
@@ -465,7 +465,7 @@ class CharacterizationResult:
     """
 
     job_id: str
-    """Unique identifier for the characterization job."""
+    """Unique identifier for the characterisation job."""
 
     status: str
     """Job status (``COMPLETED``, ``FAILED``, etc.)."""
@@ -487,11 +487,11 @@ class CharacterizationResult:
     """
 
     report: dict | None = field(default=None, repr=False)
-    """Full characterization report — quality score, state probabilities, etc."""
+    """Full characterisation report — quality score, state probabilities, etc."""
 
     recommendations: list[dict] = field(default_factory=list, repr=False)
     """Actionable suggestions for tuning the QUBO or QAOA setup, derived
-    from the characterization report.
+    from the characterisation report.
 
     Always a list — empty when no rules fire in a completed response.
     Each entry is a dict with these keys:
@@ -508,10 +508,10 @@ class CharacterizationResult:
     """
 
     created_at: str | None = None
-    """ISO timestamp when the characterization job was created."""
+    """ISO timestamp when the characterisation job was created."""
 
     completed_at: str | None = None
-    """ISO timestamp when the characterization job completed."""
+    """ISO timestamp when the characterisation job completed."""
 
     html: str = field(kw_only=True, default="", repr=False, compare=False)
     """Server-rendered HTML report. Empty when the HTML endpoint was unreachable."""
@@ -564,7 +564,7 @@ class CharacterizationResult:
         """Structural amenability score (0–100), reference-independent.
 
         Scale-invariant weighted sum of four structural components: weight
-        balance (35 points), normalized cost gap (35), coupling density (10),
+        balance (35 points), normalised cost gap (35), coupling density (10),
         and ground-state degeneracy (20). A high score means the QUBO is
         well-formed for QAOA, not that any depth will solve it.
 
@@ -798,7 +798,7 @@ class CharacterizationResult:
         Measured at the best swept parameters. The baseline is the *subspace*
         uniform ``1/2^k`` over the ``k`` simulated variable qubits (``k`` is
         the problem size only up to 15 qubits; above that it is the warm-start
-        neighborhood), NOT the full-space ``1/2^n`` used by the "× uniform"
+        neighbourhood), NOT the full-space ``1/2^n`` used by the "× uniform"
         cue in the rendered state-probabilities table — so the two can point
         different directions on the same report. Because ``k`` follows the
         :attr:`~CharacterizationOptions.preset`, this value is not comparable
@@ -818,7 +818,7 @@ class CharacterizationResult:
         little if greedy already reaches the optimum).
 
         ⟨C⟩ is evaluated by the light-cone engine on the uniform ``|+⟩`` state
-        over all qubits, at the engine's own per-depth optimized angles.
+        over all qubits, at the engine's own per-depth optimised angles.
         Those are **not** :attr:`best_parameters`, which comes from a separate
         subspace sweep and never feeds this value.
 
@@ -896,7 +896,7 @@ class CharacterizationResult:
         """Monotone predicted approximation ratio as a function of QAOA depth.
 
         Each entry has ``layers``, ``gammas``, ``betas``, ``energy``,
-        ``approximation_ratio``, and ``error_bound``. Angles are optimized
+        ``approximation_ratio``, and ``error_bound``. Angles are optimised
         afresh at each depth, seeded by interpolation from the depth below.
 
         Monotonicity is imposed rather than observed: a depth-``p`` optimum
@@ -913,7 +913,7 @@ class CharacterizationResult:
         Returns the swept angles as an ``initial_params`` array of shape
         ``(1, 2 * layers)``, ordered per layer as ``[γ₀, β₀, γ₁, β₁, …]`` — the
         exact layout ``QAOA.run(initial_params=...)`` expects — so warm-starting
-        a real run from a characterization is one line::
+        a real run from a characterisation is one line::
 
             result = characterize_and_validate(problem, service=service,
                                                options=CharacterizationOptions(parameter_sweep=True))
@@ -968,7 +968,7 @@ class CharacterizationResult:
 
     @property
     def state_probabilities(self) -> list[dict] | None:
-        """Per-state probability data from the characterization report."""
+        """Per-state probability data from the characterisation report."""
         return self._field("state_probabilities")
 
     @property
@@ -984,7 +984,7 @@ class CharacterizationResult:
         ``k``-qubit simulated subspace, and evaluated at the fixed diagnostic
         angles (``gamma``/``beta``, defaulting to 1.0/0.5) — **not** at
         :attr:`best_parameters`. Above 15 variables the subspace is a
-        greedy-chosen neighborhood, so this is a conditional rate within that
+        greedy-chosen neighbourhood, so this is a conditional rate within that
         pocket rather than a global one.
         """
         return self._field("feasibility_rate")
@@ -1001,9 +1001,9 @@ class CharacterizationResult:
         return pt.get("is_well_tuned") if isinstance(pt, dict) else None
 
     def summary(self) -> str:
-        """Return a rich text summary of the characterization result."""
+        """Return a rich text summary of the characterisation result."""
         lines = [
-            f"QUBO Characterization Result — Job {self.job_id[:8]}...",
+            f"QUBO Characterisation Result — Job {self.job_id[:8]}...",
             f"  Status: {self.status}",
         ]
         regime = self.regime
@@ -1063,11 +1063,11 @@ class CharacterizationResult:
             difficulty = self.hardness.get("difficulty", "unknown")
             lines.append(f"  Hardness: {difficulty}")
             if self.cost_gap is not None:
-                # Lead with the scale-invariant normalized gap (the one meant
+                # Lead with the scale-invariant normalised gap (the one meant
                 # for comparison); raw gap in parentheses.
                 if self.cost_gap_normalized is not None:
                     lines.append(
-                        f"    Cost Gap: {self.cost_gap_normalized:.4f} normalized ({self.cost_gap:.4f} raw)"
+                        f"    Cost Gap: {self.cost_gap_normalized:.4f} normalised ({self.cost_gap:.4f} raw)"
                     )
                 else:
                     lines.append(f"    Cost Gap: {self.cost_gap:.4f}")
@@ -1110,7 +1110,7 @@ class CharacterizationResult:
         return self.summary()
 
     def display(self) -> None:
-        """Print a rich console report of the characterization result.
+        """Print a rich console report of the characterisation result.
 
         Uses the ``rich`` library to display styled panels, tables, and
         gauges in the terminal.  In Jupyter notebooks, prefer evaluating
@@ -1444,7 +1444,7 @@ class CharacterizationOptions(BaseModel):
                     warnings.warn(
                         f"preset={self.preset!r} enables {flag} by default, "
                         f"but you explicitly set {flag}=False, which the "
-                        "server honors. Use preset='fast' for a run that "
+                        "server honours. Use preset='fast' for a run that "
                         "skips both analyses.",
                         UserWarning,
                         stacklevel=_VALIDATOR_STACKLEVEL,
@@ -1453,7 +1453,7 @@ class CharacterizationOptions(BaseModel):
         return self
 
     def _to_wire(self) -> dict | None:
-        """Serialize to the wire-format options dict (or ``None`` if empty).
+        """Serialise to the wire-format options dict (or ``None`` if empty).
 
         The three analysis flags default to ``None``, which drops them from the
         payload so the server's preset defaults decide. Only values the caller
@@ -1514,7 +1514,7 @@ def _render(result: "CharacterizationResult") -> None:
     console.print(
         Panel(
             result.summary(),
-            title="[cyan bold]QUBO Characterization Report[/cyan bold]",
+            title="[cyan bold]QUBO Characterisation Report[/cyan bold]",
             subtitle=f"[dim]Job {result.job_id[:12]}…[/dim]",
             border_style="cyan",
         )
@@ -1796,7 +1796,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
         )
     if status == "CANCELLED":
         raise ExecutionCancelledError(
-            f"Characterization job {job_id} was cancelled before completion."
+            f"Characterisation job {job_id} was cancelled before completion."
         )
     if status != "COMPLETED":
         raise CharacterizationFailedError(
@@ -1873,10 +1873,10 @@ def characterize_and_validate(
     service: QoroService,
     options: CharacterizationOptions | None = None,
 ) -> CharacterizationResult:
-    """One-call QUBO/HUBO characterization with rich notebook display.
+    """One-call QUBO/HUBO characterisation with rich notebook display.
 
     Converts the problem to wire format, submits it to the Qoro
-    Characterization Service, and returns a :class:`CharacterizationResult`
+    Characterisation Service, and returns a :class:`CharacterizationResult`
     that renders a styled report in Jupyter.
 
     Args:
@@ -1955,7 +1955,7 @@ def get_characterization_result(
     *,
     service: QoroService,
 ) -> CharacterizationResult:
-    """Wait for and retrieve a characterization result by job ID.
+    """Wait for and retrieve a characterisation result by job ID.
 
     Polling and retrieval do not cost credits. The service waits through
     ``PENDING`` and ``RUNNING`` according to its polling configuration,
@@ -1963,7 +1963,7 @@ def get_characterization_result(
     status error.
 
     Args:
-        job_id: Identifier of a previously submitted characterization job.
+        job_id: Identifier of a previously submitted characterisation job.
         service: A :class:`~divi.backends.QoroService` instance.
 
     Returns:

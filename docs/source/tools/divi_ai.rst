@@ -71,7 +71,7 @@ before launching so you know what to expect:
      - ~5.5 GB
      - 8K
 
-The **Qwen Coder** models are code-specialized and generally give better
+The **Qwen Coder** models are code-specialised and generally give better
 results for code generation. The **Gemma** models are general-purpose
 alternatives that work well for explanations and conceptual questions.
 Larger models produce better answers but need more RAM and run slower.

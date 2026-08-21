@@ -18,7 +18,7 @@ from scipy.interpolate import interp1d
 
 
 def _cumulative_distances(chain: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Normalized cumulative Euclidean distance along a chain."""
+    """Normalised cumulative Euclidean distance along a chain."""
     diffs = np.diff(chain, axis=0)
     seg_lengths = np.linalg.norm(diffs, axis=1)
     cum = np.concatenate([[0.0], np.cumsum(seg_lengths)])

@@ -561,7 +561,7 @@ class HartreeFockAnsatz(Ansatz):
     Hartree-Fock-based ansatz for quantum chemistry.
 
     This ansatz prepares the Hartree-Fock reference state and applies
-    parameterized single and double excitation gates. It's a simplified
+    parameterised single and double excitation gates. It's a simplified
     alternative to UCCSD, often used as a starting point for VQE calculations.
     """
 
@@ -827,7 +827,7 @@ def lucj_jastrow_pairs(
     opposite spin.
 
     Either argument defaults to LUCJ's local pattern -- same-spin nearest
-    neighbors and on-site opposite-spin pairs, the connectivity a heavy-hex
+    neighbours and on-site opposite-spin pairs, the connectivity a heavy-hex
     device supports without routing. An explicit list replaces that default:
     ``[]`` drops the channel entirely, and every pair recovers the unrestricted
     diagonal Coulomb operator. A same-spin pair must name two distinct orbitals;
@@ -885,13 +885,13 @@ class LUCJAnsatz(Ansatz):
     Each layer applies ``exp(K) exp(iJ) exp(-K)``, where ``K`` is a general
     orbital rotation -- a brick-wall network of Givens rotations, independent
     per spin sector -- and ``J`` is a diagonal Coulomb operator restricted to
-    same-orbital opposite-spin pairs plus same-spin neighbors. That restriction
+    same-orbital opposite-spin pairs plus same-spin neighbours. That restriction
     on ``J`` alone is what makes the ansatz *local*; the rotation is
     unrestricted. Both factors conserve particle number and Sz, which
-    sample-based diagonalization requires -- its symmetry filter checks alpha
+    sample-based diagonalisation requires -- its symmetry filter checks alpha
     and beta populations separately.
 
-    That default is the flavor the literature uses. Keywords select others:
+    That default is the flavour the literature uses. Keywords select others:
     ``trailing_rotation`` adds a closing orbital rotation per layer,
     ``shared_spin_params`` ties the two spin sectors together, ``rotation_depth``
     shortens each rotation network, and ``same_spin_pairs`` /
@@ -918,7 +918,7 @@ class LUCJAnsatz(Ansatz):
         A full-depth rotation takes two parameters per Givens pair -- an angle
         and a phase -- so ``n_orb * (n_orb - 1)`` per spin sector, and the
         default Jastrow adds ``n_orb`` on-site Coulomb terms plus one per
-        same-spin neighbor pair. Both are counted once per independent spin
+        same-spin neighbour pair. Both are counted once per independent spin
         sector: twice by default, once under ``shared_spin_params``. That leaves
         ``1`` for a single spatial orbital (``n_qubits == 2``), where only the
         on-site term survives.
@@ -999,7 +999,7 @@ class LUCJAnsatz(Ansatz):
                 ``rotation_depth`` (default ``None``, the full ``n_orb``
                 half-layers) truncates each rotation's brick-wall network.
                 ``same_spin_pairs`` and ``opposite_spin_pairs`` replace the
-                Jastrow's default local pattern -- same-spin nearest neighbors
+                Jastrow's default local pattern -- same-spin nearest neighbours
                 and on-site opposite-spin pairs -- with explicit
                 ``(orbital, orbital)`` pairs, from ``[]`` to every pair.
 

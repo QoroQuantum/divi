@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Metric estimators for natural-gradient optimization.
+"""Metric estimators for natural-gradient optimisation.
 
 A :class:`MetricEstimator` turns a program into a set of evaluators (a gradient
 and/or a metric) for a natural-gradient optimizer. Each estimator owns all
@@ -180,7 +180,7 @@ class MetricEstimator(ABC):
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
         """Raise :class:`~divi.pipeline.ContractViolation` if this metric cannot be
         applied to ``program``. Called at ``run()`` start so an incompatible pairing
-        fails loudly before any optimization."""
+        fails loudly before any optimisation."""
         raise NotImplementedError
 
     @abstractmethod

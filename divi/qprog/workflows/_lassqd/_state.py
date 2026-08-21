@@ -18,7 +18,7 @@ class FragmentSpec:
         orbitals: Canonical RHF molecular-orbital indices, in energy order —
             not the caller's own arbitrary numbering.
         n_alpha: Alpha electrons assigned to the fragment. May differ from
-            ``n_beta`` for a spin-polarized fragment.
+            ``n_beta`` for a spin-polarised fragment.
         n_beta: Beta electrons assigned to the fragment.
 
     Raises:
@@ -74,7 +74,7 @@ class FragmentState:
         rdm2: ``(n_orb,) * 4`` fragment 2-RDM, in the same ordering as
             ``rdm1``.
         params: The fragment VQE's converged parameters from the previous
-            round, or ``None`` for a fragment that has not been optimized
+            round, or ``None`` for a fragment that has not been optimised
             yet (e.g. a freshly built initial state).
         rdm1_alpha: Alpha-spin half of ``rdm1``, or ``None`` to assume the
             closed-shell split ``rdm1 / 2``. Needed for the cross-fragment
@@ -192,5 +192,5 @@ def validate_fragment_specs(
             f"Fragments declare {total_alpha} alpha and {total_beta} beta "
             f"electrons, a total Sz of {(total_alpha - total_beta) / 2}. Only "
             "closed-shell molecules are supported, so the fragments must sum "
-            "to Sz = 0 even where individual fragments are polarized."
+            "to Sz = 0 even where individual fragments are polarised."
         )

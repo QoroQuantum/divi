@@ -15,7 +15,7 @@ from divi.qprog.optimizers._base import Optimizer
 
 
 class ScipyMethod(Enum):
-    """Supported optimization methods from scipy.optimize."""
+    """Supported optimisation methods from scipy.optimize."""
 
     NELDER_MEAD = "Nelder-Mead"
     COBYLA = "COBYLA"
@@ -26,16 +26,16 @@ class ScipyOptimizer(Optimizer):
     """
     Optimizer wrapper for scipy.optimize methods.
 
-    Supports gradient-free and gradient-based optimization algorithms from scipy,
+    Supports gradient-free and gradient-based optimisation algorithms from scipy,
     including Nelder-Mead simplex, COBYLA, and L-BFGS-B.
     """
 
     def __init__(self, method: ScipyMethod):
         """
-        Initialize a scipy-based optimizer.
+        Initialise a scipy-based optimizer.
 
         Args:
-            method (ScipyMethod): The optimization algorithm to use.
+            method (ScipyMethod): The optimisation algorithm to use.
         """
         super().__init__()
 
@@ -43,7 +43,7 @@ class ScipyOptimizer(Optimizer):
 
     @property
     def supports_checkpointing(self) -> bool:
-        """``False`` — scipy.optimize exposes no mid-minimization state to save."""
+        """``False`` — scipy.optimize exposes no mid-minimisation state to save."""
         return False
 
     @property
@@ -52,7 +52,7 @@ class ScipyOptimizer(Optimizer):
         Get the number of parameter sets used by this optimizer.
 
         Returns:
-            int: Always returns 1, as scipy optimizers use single-point optimization.
+            int: Always returns 1, as scipy optimizers use single-point optimisation.
         """
         return 1
 
@@ -65,10 +65,10 @@ class ScipyOptimizer(Optimizer):
         **kwargs,
     ) -> OptimizeResult:
         """
-        Run the scipy optimization algorithm.
+        Run the scipy optimisation algorithm.
 
         Args:
-            cost_fn (Callable): Function to minimize. Should accept a 1D array of
+            cost_fn (Callable): Function to minimise. Should accept a 1D array of
                 parameters and return a scalar cost value.
             initial_params (npt.NDArray[np.float64]): Initial parameter values as a 1D or 2D array.
                 If 2D with shape (1, n_params), it will be squeezed to 1D.
@@ -81,7 +81,7 @@ class ScipyOptimizer(Optimizer):
                 - jac (Callable): Gradient function (only used for L-BFGS-B).
 
         Returns:
-            OptimizeResult: Optimization result with final parameters and cost value.
+            OptimizeResult: Optimisation result with final parameters and cost value.
         """
         max_iterations = kwargs.pop("max_iterations", None)
 
@@ -102,7 +102,7 @@ class ScipyOptimizer(Optimizer):
             # to use the callback fn for counting instead.
             maxiter = None
         else:
-            # Need to add one more iteration for Nelder-Mead's simplex initialization step
+            # Need to add one more iteration for Nelder-Mead's simplex initialisation step
             maxiter = (
                 max_iterations + 1
                 if self.method == ScipyMethod.NELDER_MEAD
@@ -126,7 +126,7 @@ class ScipyOptimizer(Optimizer):
     def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.
 
-        Scipy optimizers do not support saving state mid-minimization as scipy.optimize
+        Scipy optimizers do not support saving state mid-minimisation as scipy.optimize
         does not provide access to the internal optimizer state.
 
         Args:
@@ -136,8 +136,8 @@ class ScipyOptimizer(Optimizer):
             NotImplementedError: Always raised, as scipy optimizers cannot save state.
         """
         raise NotImplementedError(
-            "ScipyOptimizer does not support state saving. Scipy's optimization methods "
-            "do not provide access to internal optimizer state during minimization. "
+            "ScipyOptimizer does not support state saving. Scipy's optimisation methods "
+            "do not provide access to internal optimizer state during minimisation. "
             "Please use MonteCarloOptimizer or PymooOptimizer for checkpointing support."
         )
 
@@ -154,15 +154,15 @@ class ScipyOptimizer(Optimizer):
             NotImplementedError: Always raised, as scipy optimizers cannot load state.
         """
         raise NotImplementedError(
-            "ScipyOptimizer does not support state loading. Scipy's optimization methods "
-            "do not provide access to internal optimizer state during minimization. "
+            "ScipyOptimizer does not support state loading. Scipy's optimisation methods "
+            "do not provide access to internal optimizer state during minimisation. "
             "Please use MonteCarloOptimizer or PymooOptimizer for checkpointing support."
         )
 
     def reset(self) -> None:
         """Reset the optimizer's internal state.
 
-        ScipyOptimizer does not maintain internal state between optimization runs,
+        ScipyOptimizer does not maintain internal state between optimisation runs,
         so this method is a no-op.
         """
 

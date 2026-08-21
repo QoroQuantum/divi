@@ -99,7 +99,7 @@ class DryRunReport:
     """Complete dry-run report for a single pipeline.
 
     Every count describes **one evaluation** — one call to the objective the
-    optimizer is minimizing. That covers one parameter vector for most optimizers,
+    optimizer is minimising. That covers one parameter vector for most optimizers,
     but a population optimizer binds its whole working set per call, so the count
     covers all ``n_param_sets`` of them.
 
@@ -140,7 +140,7 @@ class DryRunReport:
     that path."""
 
     objective_fingerprint: Hashable | None = None
-    """Opaque fingerprint of what this pipeline optimizes — derived from the
+    """Opaque fingerprint of what this pipeline optimises — derived from the
     observable's Pauli labels and coefficients, or from the terminal stage's
     settings for a sampled readout.
 
@@ -392,7 +392,7 @@ def _objective_fingerprint(
     stages: Sequence[StageInfo],
     terminal_metadata: Mapping[str, Any],
 ) -> Hashable:
-    """Fingerprint what the pipeline optimizes.
+    """Fingerprint what the pipeline optimises.
 
     Combines the observable's coefficients, the loss shaping applied over it, and
     the measuring stage's own settings — a sampled readout has no observable, and
@@ -472,7 +472,7 @@ def dry_run_pipeline(
     env: PipelineEnv,
     cadence: PipelineCadence,
 ) -> DryRunReport:
-    """Analyze a pipeline trace and compute per-stage factor.
+    """Analyse a pipeline trace and compute per-stage factor.
 
     ``name`` and ``cadence`` describe the routine being previewed; neither is
     derivable from the trace.

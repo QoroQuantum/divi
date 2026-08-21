@@ -38,8 +38,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     """Variational Quantum Eigensolver (VQE) implementation.
 
     VQE is a hybrid quantum-classical algorithm used to find the ground state
-    energy of a given Hamiltonian. It works by preparing a parameterized quantum
-    state (ansatz) and optimizing the parameters to minimize the expectation
+    energy of a given Hamiltonian. It works by preparing a parameterised quantum
+    state (ansatz) and optimising the parameters to minimise the expectation
     value of the Hamiltonian.
 
     The algorithm can work with either:
@@ -47,16 +47,16 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     - A custom Hamiltonian operator
 
     Attributes:
-        ansatz (Ansatz): The parameterized quantum circuit ansatz.
+        ansatz (Ansatz): The parameterised quantum circuit ansatz.
         n_layers (int): Number of ansatz layers.
         n_qubits (int): Number of qubits in the system.
         n_electrons (int): Number of electrons (for molecular systems).
-        cost_hamiltonian: The Hamiltonian to minimize.
+        cost_hamiltonian: The Hamiltonian to minimise.
         loss_constant (float): Constant term extracted from the Hamiltonian.
         molecule: The molecule object (if applicable).
         optimizer: Classical optimizer for parameter updates.
-        max_iterations (int): Maximum number of optimization iterations.
-        current_iteration (int): Current optimization iteration.
+        max_iterations (int): Maximum number of optimisation iterations.
+        current_iteration (int): Current optimisation iteration.
     """
 
     def __init__(
@@ -75,7 +75,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         ansatz_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
-        """Initialize the VQE problem.
+        """Initialise the VQE problem.
 
         Args:
             hamiltonian: A Hamiltonian representing the problem — a PennyLane
@@ -93,8 +93,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             initial_state (InitialState | None): Initial state preparation.
                 Pass an :class:`~divi.qprog.algorithms.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
-            max_iterations (int): Maximum number of optimization iterations. Defaults to 10.
-            n_alpha (int | None): Alpha electrons, for a spin-polarized
+            max_iterations (int): Maximum number of optimisation iterations. Defaults to 10.
+            n_alpha (int | None): Alpha electrons, for a spin-polarised
                 reference. Must be given together with ``n_beta``; without both,
                 ansatzes that need a reference determinant assume the
                 closed-shell split. Defaults to None.

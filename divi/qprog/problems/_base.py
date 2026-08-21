@@ -30,14 +30,14 @@ class QAOAProblem(ABC):
     @property
     @abstractmethod
     def cost_hamiltonian(self) -> SparsePauliOp:
-        """The cost Hamiltonian encoding the optimization objective."""
+        """The cost Hamiltonian encoding the optimisation objective."""
 
     @property
     def mixer_hamiltonian(self) -> SparsePauliOp:
         """Mixer Hamiltonian for exploring the solution space.
 
         Defaults to the standard X mixer over the cost Hamiltonian qubits,
-        suitable for unconstrained binary optimization. Override this for
+        suitable for unconstrained binary optimisation. Override this for
         constrained feasible subspaces or problem-specific mixers.
         """
         return x_mixer(_require_qiskit_num_qubits(self.cost_hamiltonian.num_qubits))
@@ -152,7 +152,7 @@ class QAOAProblem(ABC):
     def evaluate_global_solution(self, solution: list[int]) -> float:
         """Score a complete global solution for beam search.
 
-        Lower scores are better. Problems with maximization objectives should
+        Lower scores are better. Problems with maximisation objectives should
         usually return a negated score here, then expose the natural objective
         value from :meth:`postprocess_candidates`.
         """

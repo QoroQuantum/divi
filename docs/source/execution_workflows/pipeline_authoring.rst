@@ -14,8 +14,8 @@ Start with CustomVQA
 --------------------
 
 Use :class:`~divi.qprog.algorithms.CustomVQA` when you already have a
-parameterized PennyLane ``QuantumScript`` or Qiskit ``QuantumCircuit``. It
-provides optimization, histories, and checkpointing without custom pipeline
+parameterised PennyLane ``QuantumScript`` or Qiskit ``QuantumCircuit``. It
+provides optimisation, histories, and checkpointing without custom pipeline
 code; :doc:`framework_integration` has complete examples. Its cost pipeline is:
 
 .. code-block:: text
@@ -370,7 +370,7 @@ A :class:`~divi.circuits.MetaCircuit` for EXPVALS mode is constructed with an
 ``observable`` keyword (a ``SparsePauliOp``); for PROBS/COUNTS mode use
 ``measured_wires`` instead.
 
-Direct ``QuantumProgram`` subclasses with parameterized seed circuits must
+Direct ``QuantumProgram`` subclasses with parameterised seed circuits must
 override ``_assemble_pipeline`` to add :class:`~divi.pipeline.stages.ParameterBindingStage`
 themselves — the base class does not append one.  Skipping it raises
 :class:`~divi.pipeline.abc.ContractViolation` at execution time.
@@ -646,7 +646,7 @@ declare their own constraints — for example, :class:`~divi.pipeline.stages.QEM
 with QuEPP requires a measurement-handling stage after it.  The pipeline also
 validates that at least one stage handles measurement before custom ``validate``
 hooks run, so a custom constraint requiring a ``MeasurementStage`` after it is
-pre-empted and unreachable.  Pick constraints that the built-in check does **not**
+ruled out and unreachable.  Pick constraints that the built-in check does **not**
 cover, for example ordering relative to another custom stage.
 
 Custom stages can participate in this by overriding the ``validate`` method.

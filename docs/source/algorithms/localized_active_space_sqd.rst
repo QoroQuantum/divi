@@ -1,4 +1,4 @@
-Localized Active-Space SQD (LASSQD)
+Localised Active-Space SQD (LASSQD)
 ====================================
 
 :class:`~divi.qprog.workflows.LASSQD` estimates the ground-state energy of a
@@ -6,9 +6,9 @@ molecule whose active space is too large for one VQE. It first partitions the
 active space. Each macro-cycle then:
 
 1. runs one embedded VQE per fragment;
-2. recovers fragment states with sample-based quantum diagonalization (SQD);
+2. recovers fragment states with sample-based quantum diagonalisation (SQD);
 3. reassembles the fragment reduced density matrices (RDMs); and
-4. re-optimizes the molecular orbitals against the active-space RDM.
+4. re-optimises the molecular orbitals against the active-space RDM.
 
 The cycle repeats until the total energy converges.
 
@@ -28,7 +28,7 @@ and only supports closed-shell molecules.
 
 Because :class:`~divi.qprog.workflows.LASSQD` subclasses
 :class:`~divi.qprog.ensemble.ProgramEnsemble`, its multi-round execution
-model, progress reporting, and circuit-batching behavior are the ones
+model, progress reporting, and circuit-batching behaviour are the ones
 described in :doc:`../execution_workflows/program_ensembles`; this page covers only what is
 specific to LASSQD.
 
@@ -124,10 +124,10 @@ through :class:`~divi.qprog.workflows.FragmentationConfig`.
 - ``active_orbitals`` — explicit MO columns, useful when character matters more
   than energy; pair with an appropriate mean field such as PySCF AVAS.
 
-**Partitioning.** The default localizes orbitals and merges them by coupling,
+**Partitioning.** The default localises orbitals and merges them by coupling,
 capped by ``max_orbitals_per_fragment`` (default 4); ``coupling_threshold``
 (default ``1e-3``) prunes weak edges. ``fragment_atoms`` instead assigns each
-localized orbital to an atom-defined fragment.
+localised orbital to an atom-defined fragment.
 
 **Spin.** ``local_spins`` supplies signed ``2S`` values per atom-defined
 fragment while preserving electron counts. These values must sum to zero,
@@ -149,7 +149,7 @@ Rounds Are Macro-Cycles
 -------------------------
 
 One LASSQD round runs every fragment VQE and SQD recovery, reassembles the RDM,
-and optimizes the orbitals. ``run(max_rounds=N)`` caps macro-cycles; ``None``
+and optimises the orbitals. ``run(max_rounds=N)`` caps macro-cycles; ``None``
 runs until consecutive energies differ by less than ``energy_tol`` (default
 ``1e-6`` Ha). Key results are:
 
@@ -206,7 +206,7 @@ Two consequences worth knowing before you trust a number:
 Carrying Configurations Between Recovery Iterations
 -----------------------------------------------------
 
-Without retention, each recovery iteration diagonalizes only the configurations
+Without retention, each recovery iteration diagonalises only the configurations
 it just sampled, so a determinant found early is lost as soon as sampling moves
 on. ``carryover_cutoff`` keeps the ones carrying real weight — the determinants
 of the winning batch whose coefficient exceeds that fraction of the largest —
@@ -258,7 +258,7 @@ space. Where sampling already covers that space — small fragments, or a genero
 fragment's full determinant count to see which regime you are in.
 
 Retention is scoped to one fragment solve. A determinant is a statement about a
-particular orbital basis, and every round re-optimizes the orbitals, so carrying
+particular orbital basis, and every round re-optimises the orbitals, so carrying
 bitstrings across rounds would require mapping them into the new basis first.
 
 .. _lassqd-subspace-floor:
@@ -277,7 +277,7 @@ exactly what was sampled.
 
 ``symmetrize_spin`` pools the alpha and beta halves together, so a sampled
 ``|1001>`` also offers ``|0110>`` and both singlet and triplet combinations can
-be formed. Ignored on spin-polarized fragments, where exchanging the sectors is
+be formed. Ignored on spin-polarised fragments, where exchanging the sectors is
 not a symmetry.
 
 ``recovery_energy_tol`` and ``recovery_occupancies_tol`` end a fragment's
@@ -300,7 +300,7 @@ Use the default :class:`~divi.qprog.algorithms.UCCSDAnsatz` unless you have
 validated :class:`~divi.qprog.algorithms.LUCJAnsatz`—the local unitary
 cluster-Jastrow alternative—at your fragment size. Both use fragment CCSD data.
 UCCSD reads amplitudes directly; LUCJ derives rotation and Coulomb parameters by
-double factorization and generally uses more parameters.
+double factorisation and generally uses more parameters.
 
 SQD needs coverage, not merely a low ansatz energy. An ansatz concentrated on
 one determinant starves recovery. Compare per-fragment subspace sizes in
@@ -311,7 +311,7 @@ For the truncated LUCJ circuit used in arXiv:2405.05068 and arXiv:2512.14936,
 set ``ansatz_kwargs={"trailing_rotation": True}`` with ``n_layers=1``. To reduce
 parameters, use ``shared_spin_params``, limit ``rotation_depth``, or specify
 ``same_spin_pairs`` / ``opposite_spin_pairs``. ``shared_spin_params`` cannot use
-the factorized seed and therefore starts from the optimizer initialization.
+the factorised seed and therefore starts from the optimizer initialisation.
 
 Next Steps
 ------------

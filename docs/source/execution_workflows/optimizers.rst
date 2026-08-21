@@ -45,16 +45,16 @@ methods are selected with :class:`~divi.qprog.optimizers.ScipyMethod`. The
 sections below explain the trade-offs and program-specific restrictions in
 more detail.
 
-Monte Carlo Optimization
+Monte Carlo Optimisation
 -------------------------
 
-The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimization approach. It works by randomly sampling the parameter space and selecting configurations that minimize the target cost function. This method is particularly useful when:
+The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimisation approach. It works by randomly sampling the parameter space and selecting configurations that minimise the target cost function. This method is particularly useful when:
 
-- The optimization landscape is rugged or non-convex.
+- The optimisation landscape is rugged or non-convex.
 - Gradients are not available or are unreliable.
 - A rough global search is preferred before local refinement.
 
-Monte Carlo optimization can help identify promising regions in high-dimensional parameter spaces before applying more refined methods.
+Monte Carlo optimisation can help identify promising regions in high-dimensional parameter spaces before applying more refined methods.
 
 Configure :class:`~divi.qprog.optimizers.MonteCarloOptimizer` by passing ``population_size`` (the number of parameter sets evaluated per iteration) and optionally ``n_best_sets`` (how many top-performing sets are carried to the next iteration) to its constructor. The read-only ``n_param_sets`` property then reflects the configured population size.
 
@@ -66,7 +66,7 @@ Divi provides several SciPy-based optimizers through the :class:`~divi.qprog.opt
 Nelder-Mead
 ^^^^^^^^^^^
 
-Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimization algorithm. It is ideal for local optimization in low to moderate dimensional spaces. The method iteratively refines a simplex (a geometrical figure defined by a set of parameter vectors) by evaluating cost function values and applying operations such as reflection, expansion, and contraction.
+Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimisation algorithm. It is ideal for local optimisation in low to moderate dimensional spaces. The method iteratively refines a simplex (a geometrical figure defined by a set of parameter vectors) by evaluating cost function values and applying operations such as reflection, expansion, and contraction.
 
 Use Nelder-Mead when:
 
@@ -116,11 +116,11 @@ Use L-BFGS-B when:
 COBYLA
 ^^^^^^
 
-COBYLA (Constrained Optimization BY Linear Approximations) [#powell1994]_ is a gradient-free, local optimization method—like Nelder-Mead—that supports nonlinear inequality constraints. It constructs successive linear approximations of the objective function and constraints, iteratively refining the solution within a trust region.
+COBYLA (Constrained Optimisation BY Linear Approximations) [#powell1994]_ is a gradient-free, local optimisation method—like Nelder-Mead—that supports nonlinear inequality constraints. It constructs successive linear approximations of the objective function and constraints, iteratively refining the solution within a trust region.
 
 Use COBYLA when:
 
-- Your optimization problem includes constraints.
+- Your optimisation problem includes constraints.
 - Gradients are inaccessible or too noisy.
 - You seek a reliable optimizer for low to moderate-dimensional spaces.
 
@@ -138,7 +138,7 @@ Divi also supports evolutionary algorithms through PyMOO:
 CMA-ES (Covariance Matrix Adaptation Evolution Strategy)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-CMA-ES [#hansen2001]_ is a stochastic, derivative-free method for numerical optimization of non-linear or non-convex continuous optimization problems.
+CMA-ES [#hansen2001]_ is a stochastic, derivative-free method for numerical optimisation of non-linear or non-convex continuous optimisation problems.
 
 .. code-block:: python
 
@@ -149,7 +149,7 @@ CMA-ES [#hansen2001]_ is a stochastic, derivative-free method for numerical opti
 Differential Evolution
 ^^^^^^^^^^^^^^^^^^^^^^
 
-Differential Evolution [#storn1997]_ is a method that optimizes a problem by iteratively trying to improve a candidate solution with regard to a given measure of quality.
+Differential Evolution [#storn1997]_ is a method that optimises a problem by iteratively trying to improve a candidate solution with regard to a given measure of quality.
 
 .. code-block:: python
 
@@ -159,7 +159,7 @@ Quantum Natural Gradient
 ------------------------
 
 The :class:`~divi.qprog.optimizers.QNGOptimizer` preconditions the
-parameter-shift gradient with a regularized metric:
+parameter-shift gradient with a regularised metric:
 
 .. math::
 
@@ -178,7 +178,7 @@ Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
   observable-independent and supports PCE with Pauli-rotation ansatze. It
   rejects unsupported/composite-angle gates and data-bound programs.
 
-``solver="tikhonov"`` regularizes flat directions; ``solver="pinv"`` uses a
+``solver="tikhonov"`` regularises flat directions; ``solver="pinv"`` uses a
 pseudo-inverse with cutoff ``rcond``.
 
 **Usage** is the same as any optimizer — pass an instance via the
@@ -269,7 +269,7 @@ SPSA with a pluggable metric:
 - :class:`~divi.qprog.optimizers.StochasticFidelityMetricEstimator` *(default)*
   adds four state-overlap evaluations per step to SPSA's two objective
   evaluations. It supports Qiskit-invertible ansatze, not data-bound programs.
-  QDrift uses one fixed ansatz realization.
+  QDrift uses one fixed ansatz realisation.
 
 - Fubini–Study or pullback estimators provide exact metrics, but their cost
   scales with parameter count.
@@ -348,7 +348,7 @@ parameters) where you want full visibility into the loss landscape.
 Use Grid Search when:
 
 - You have a small number of variational parameters (e.g. QAOA with 1 layer: γ and β).
-- You want to visualize the loss landscape.
+- You want to visualise the loss landscape.
 - You need a deterministic, reproducible sweep.
 - You want to warm-start a variational optimizer from the best grid point.
 
@@ -395,7 +395,7 @@ Program-Specific Constraints
 Early Stopping
 --------------
 
-Long-running optimizations can waste resources once convergence has effectively
+Long-running optimisations can waste resources once convergence has effectively
 stalled.  Divi's :class:`~divi.qprog.early_stopping.EarlyStopping` controller lets you
 terminate the loop automatically based on configurable criteria.
 
@@ -462,9 +462,9 @@ After the Run
 ^^^^^^^^^^^^^
 
 After ``run()`` completes, use :attr:`~divi.qprog.VariationalQuantumAlgorithm.stop_reason`
-to determine *why* optimization ended:
+to determine *why* optimisation ended:
 
-- ``None`` — optimization ran to ``max_iterations`` without triggering early stopping
+- ``None`` — optimisation ran to ``max_iterations`` without triggering early stopping
 - ``"patience_exceeded"`` — cost plateaued
 - ``"gradient_below_threshold"`` — gradient vanished
 - ``"cost_variance_settled"`` — cost variance settled
@@ -507,7 +507,7 @@ This exposes optimizer-specific diagnostics such as:
 .. note::
 
    ``optimize_result`` is always populated after :meth:`~divi.qprog.VariationalQuantumAlgorithm.run` completes.
-   When optimization converges normally, ``success`` is ``True``.
+   When optimisation converges normally, ``success`` is ``True``.
    When early stopping or cancellation terminates the run, ``success`` is
    ``False`` and the ``message`` field describes the reason.  The available
    attributes depend on the optimizer; see :class:`scipy.optimize.OptimizeResult`

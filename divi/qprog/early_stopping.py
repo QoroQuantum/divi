@@ -15,7 +15,7 @@ __all__ = ["EarlyStopping", "StopReason"]
 class StopReason(str, Enum):
     """Reason why early stopping was triggered.
 
-    Inherits from ``str`` so that values serialize naturally to JSON
+    Inherits from ``str`` so that values serialise naturally to JSON
     and can be compared directly with plain strings.
     """
 
@@ -30,11 +30,11 @@ class StopReason(str, Enum):
 
 
 class EarlyStopping:
-    """Early stopping controller for variational quantum algorithm optimization.
+    """Early stopping controller for variational quantum algorithm optimisation.
 
-    Tracks optimization progress and signals when to stop based on
+    Tracks optimisation progress and signals when to stop based on
     configurable criteria.  A single instance is created before the
-    optimization loop and :meth:`check` is called once per iteration.
+    optimisation loop and :meth:`check` is called once per iteration.
 
     Args:
         patience: Number of consecutive iterations with no improvement
@@ -102,7 +102,7 @@ class EarlyStopping:
 
         Returns:
             A :class:`StopReason` if any criterion triggered, otherwise
-            ``None`` (meaning optimization should continue).
+            ``None`` (meaning optimisation should continue).
         """
         # 1. Patience --------------------------------------------------
         if current_loss < self._tracked_best - self.min_delta:

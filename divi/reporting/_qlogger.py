@@ -43,7 +43,7 @@ def enable_logging(level=logging.INFO):
     """
     Enable logging for the divi package with Rich formatting.
 
-    Sets up a RichHandler that provides colorized, formatted log output
+    Sets up a RichHandler that provides colourised, formatted log output
     and removes the '._reporter' suffix from logger names.
 
     Args:

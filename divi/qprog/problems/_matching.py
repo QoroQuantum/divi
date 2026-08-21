@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Weighted matching problem for QAOA-based quantum optimization."""
+"""Weighted matching problem for QAOA-based quantum optimisation."""
 
 import warnings
 from collections.abc import Callable, Hashable
@@ -286,7 +286,7 @@ def _repair_matching(edges: list[tuple], graph: nx.Graph) -> list[tuple]:
 class MaxWeightMatchingProblem(QAOAProblem):
     """Maximum-weight matching problem for QAOA.
 
-    Given a weighted graph, finds a set of edges (matching) that maximizes
+    Given a weighted graph, finds a set of edges (matching) that maximises
     total weight while ensuring no two selected edges share a node.
 
     Can be used directly with :class:`~divi.qprog.algorithms.QAOA` for
@@ -475,7 +475,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
     def evaluate_global_solution(self, solution: list[int]) -> float:
         """Score a solution: negative (weight - conflict_penalty * conflicts).
 
-        Lower is better for beam search.  Maximizing weight while minimizing
+        Lower is better for beam search.  Maximising weight while minimising
         conflicts.
         """
         weight = 0.0

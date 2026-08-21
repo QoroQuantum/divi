@@ -10,7 +10,7 @@ Implements the frozen-core / active-space integral machinery for LASSQD:
    (:func:`cached_ao_eri`) and reused for every :func:`_total_energy`
    evaluation, rather than re-running a full four-index ``ao2mo.kernel``
    transform on every orbital-rotation loss evaluation.
-2. :func:`build_active_permutation` honors the caller's requested orbital
+2. :func:`build_active_permutation` honours the caller's requested orbital
    indices instead of silently discarding them for a contiguous range.
 """
 
@@ -32,7 +32,7 @@ ORBITAL_MINIMIZE_OPTIONS = {"ftol": 1e-12, "gtol": 1e-6}
 
 @dataclass(frozen=True)
 class OrbitalSolve:
-    """Outcome of one round's orbital re-optimization.
+    """Outcome of one round's orbital re-optimisation.
 
     Attributes:
         mo_coeff: The rotated MO coefficients.
@@ -66,7 +66,7 @@ class MOIntegrals:
     Every array is indexed over the active space alone, in the fragment-block
     order of the ``mo_coeff`` passed to :func:`transform_integrals`. The core
     and virtual blocks are not stored: the only consumer,
-    :func:`fragment_effective_integrals`, reads neither, and materializing the
+    :func:`fragment_effective_integrals`, reads neither, and materialising the
     full register costs ``n_orb ** 4``.
 
     Attributes:
@@ -94,7 +94,7 @@ def build_active_permutation(
     """Order orbitals as ``[core | fragment blocks | virtual]``.
 
     Downstream code assumes the active block is contiguous. This permutation
-    honors the caller's requested orbital indices (``FragmentSpec.orbitals``
+    honours the caller's requested orbital indices (``FragmentSpec.orbitals``
     is never sorted, so orbitals within a fragment, and fragments among
     themselves, keep the caller's order) while still producing that
     contiguous active block.
@@ -323,7 +323,7 @@ def _total_energy(
     ``ao_eri`` (see :func:`cached_ao_eri`) via ``ao2mo.incore.full`` rather
     than calling ``ao2mo.kernel(mol, mo_coeff)`` again on every evaluation.
     This is the dominant cost of a gradient-free orbital-rotation
-    optimization and must not be paid per loss evaluation.
+    optimisation and must not be paid per loss evaluation.
 
     Args:
         mol: A PySCF ``gto.Mole``.
@@ -526,7 +526,7 @@ def rotation_energy_gradient_fn(
 
     The gradient follows from the generalized Fock matrix
     ``F = h @ D.T + einsum("mqrs,nqrs->mn", g, d)``. Because the
-    parameterization is global (``expm`` of the full generator, not a step
+    parameterisation is global (``expm`` of the full generator, not a step
     from the current point), the chain rule through the matrix exponential is
     a Frechet pullback, ``M = expm_frechet(K.T, U @ 2F)``, and
     ``dE/dx_i = M[p, q] - M[q, p]``. At ``x = 0`` this reduces to
@@ -625,12 +625,12 @@ def optimize_orbitals(
     h_ao: np.ndarray,
     max_orbital_iterations: int | None = None,
 ) -> OrbitalSolve:
-    """Optimize molecular orbitals against the current active-space RDMs.
+    """Optimise molecular orbitals against the current active-space RDMs.
 
     Parameterizes an orbital rotation as the exponential of a skew-symmetric
     generator over a fixed set of allowed rotation pairs -- core-active,
     core-virtual, active-active across different fragments, and
-    active-virtual -- and minimizes :func:`_total_energy` over those rotation
+    active-virtual -- and minimises :func:`_total_energy` over those rotation
     angles with L-BFGS-B. The objective and its analytic gradient come from
     :func:`rotation_energy_gradient_fn`, so an iteration costs one four-index
     MO transform rather than the ``n_rot + 1`` a finite-difference gradient
@@ -731,7 +731,7 @@ def optimize_orbitals(
         converged = bool(res.success)
         if not converged:
             warn(
-                "Orbital optimization stopped without converging after "
+                "Orbital optimisation stopped without converging after "
                 f"{res.nit} iterations and {res.nfev} evaluations: "
                 f"{str(res.message).strip()}. The returned orbitals are the best "
                 "seen, so the energy is still an upper bound, but this round is "

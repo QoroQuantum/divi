@@ -1,7 +1,7 @@
 Optimizers
 ==========
 
-Divi provides multiple optimization strategies for quantum algorithm parameter
+Divi provides multiple optimisation strategies for quantum algorithm parameter
 tuning, from classical gradient-based methods to quantum-inspired approaches.
 
 .. automodapi:: divi.qprog.optimizers

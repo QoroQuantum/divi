@@ -2,7 +2,7 @@ Ground-State Energy Estimation with VQE
 =======================================
 
 The Variational Quantum Eigensolver (VQE) estimates a ground-state energy by
-optimizing a parameterized state against a Hamiltonian. Divi accepts the
+optimising a parameterised state against a Hamiltonian. Divi accepts the
 problem in the ecosystem where it already lives:
 
 .. list-table:: VQE inputs
@@ -118,7 +118,7 @@ Initial Parameters
 ^^^^^^^^^^^^^^^^^^
 
 Pass ``initial_params`` to ``run()`` to warm-start from known parameters or
-continue a geometry sweep or interrupted optimization. See
+continue a geometry sweep or interrupted optimisation. See
 :ref:`variational-run-controls`.
 
 Initial State
@@ -138,7 +138,7 @@ Available Ansätze
 
 Use a chemistry ansatz when its reference-state assumptions match the problem;
 use a hardware-efficient ansatz when circuit shape matters more than a
-chemistry-derived parameterization. See
+chemistry-derived parameterisation. See
 :doc:`/api_reference/qprog/algorithms` for constructor details.
 
 .. list-table:: Ansatz selection
@@ -308,7 +308,7 @@ Next Steps
 ----------
 
 - Try the runnable tutorials in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
-- Learn about :doc:`../execution_workflows/optimizers` for optimization strategies
+- Learn about :doc:`../execution_workflows/optimizers` for optimisation strategies
 - Explore :doc:`improving_results_qem` for error mitigation
 - Save and resume long runs with :doc:`../execution_workflows/resuming_long_runs`
-- Visualize the loss landscape with :doc:`../execution_workflows/visualization`
+- Visualise the loss landscape with :doc:`../execution_workflows/visualization`

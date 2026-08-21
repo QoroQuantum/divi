@@ -124,7 +124,7 @@ def _lookup_or_serialize(
     dag: DAGCircuit,
     precision: int,
 ) -> str:
-    """Find the pre-rendered parametric body for ``body_tag``, or serialize the DAG.
+    """Find the pre-rendered parametric body for ``body_tag``, or serialise the DAG.
 
     Upstream stages park their partial body at the tag they had when they
     ran; later stages (QEM, MeasurementStage, …) may extend ``body_tag``
@@ -136,7 +136,7 @@ def _lookup_or_serialize(
     fanned body at that body's exact data tag, and every fanned body reaches
     here with that tag as a prefix — so a data-fanned body always matches. A
     non-match means a body that was never data-fanned, whose ``dag`` is fully
-    parametric and serializes correctly.
+    parametric and serialises correctly.
     """
     if prefix_index is not None:
         index, lengths = prefix_index
@@ -362,7 +362,7 @@ class ParameterBindingStage(BundleStage):
             )
             # Parameters are left intact: their presence is the "this is a
             # template" signal and supplies the payload's parameter_names. A node
-            # with none serializes the same way and compiles down the bound route.
+            # with none serialises the same way and compiles down the bound route.
             out[key] = node.set_qasm_bodies(bodies)
         return out
 

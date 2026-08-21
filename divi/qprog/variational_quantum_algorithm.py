@@ -134,28 +134,28 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     """Base class for variational quantum algorithms.
 
     This class provides the foundation for implementing variational quantum
-    algorithms in Divi. It handles circuit execution, parameter optimization,
-    and result management for algorithms that optimize parameterized quantum
-    circuits to minimize cost functions.
+    algorithms in Divi. It handles circuit execution, parameter optimisation,
+    and result management for algorithms that optimise parameterised quantum
+    circuits to minimise cost functions.
 
     Variational algorithms work by:
-    1. Generating parameterized quantum circuits
+    1. Generating parameterised quantum circuits
     2. Executing circuits on quantum hardware/simulators
     3. Computing expectation values of cost Hamiltonians
     4. Using classical optimizers to update parameters
     5. Iterating until convergence
 
     Attributes:
-        _losses_history: History of loss values during optimization.
+        _losses_history: History of loss values during optimisation.
         _param_history: Raw per-callback parameter batches;
             use :meth:`param_history` to read copies with optional filtering.
-        _final_params: Final optimized parameters.
+        _final_params: Final optimised parameters.
         _best_params: Parameters that achieved the best loss.
-        _best_loss (float): Best loss achieved during optimization.
+        _best_loss (float): Best loss achieved during optimisation.
         _circuits: Generated quantum circuits.
         _total_circuit_count (int): Total number of circuits executed.
         _total_run_time (float): Total execution time in seconds.
-        _seed: Random seed for parameter initialization.
+        _seed: Random seed for parameter initialisation.
         _rng: Random number generator.
 
         _grouping_strategy: Strategy for grouping quantum operations.
@@ -167,7 +167,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     # Subclass-populated declarations.
     #
     # ``_supports_fixed_param_scans`` defaults to True; override to False for
-    # VQAs whose parameter space varies during optimization (e.g. depth
+    # VQAs whose parameter space varies during optimisation (e.g. depth
     # schedules) so ``divi.viz`` fixed-parameter scans reject them. The rest
     # have no default — each concrete VQA must assign them during ``__init__``
     # (or override as a property) or the corresponding methods will raise
@@ -195,7 +195,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         early_stopping: EarlyStopping | None = None,
         **kwargs,
     ):
-        """Initialize the VariationalQuantumAlgorithm.
+        """Initialise the VariationalQuantumAlgorithm.
 
         This constructor is specifically designed for hybrid quantum-classical
         variational algorithms. The instance variables `n_layers` and
@@ -205,16 +205,16 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         For exotic variational algorithms where these variables may not be applicable,
         the `_initialize_param_sets` method should be overridden to generate the
-        starting parameters for a fresh optimization run.
+        starting parameters for a fresh optimisation run.
 
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
-            optimizer (Optimizer): The optimizer to use for parameter optimization.
+            optimizer (Optimizer): The optimizer to use for parameter optimisation.
                 Required — passing ``None`` (or omitting it) raises ``ValueError``.
-            seed (int | None): Random seed for parameter initialization. Defaults to None.
+            seed (int | None): Random seed for parameter initialisation. Defaults to None.
             progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             early_stopping (EarlyStopping | None): Early stopping controller. When
-                provided, the optimization loop will be halted if any of the
+                provided, the optimisation loop will be halted if any of the
                 configured criteria are met (e.g. patience exceeded, gradient
                 below threshold, cost variance settled). Defaults to None.
 
@@ -280,7 +280,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             **kwargs,
         )
 
-        # --- Optimization Results & History ---
+        # --- Optimisation Results & History ---
         self._losses_history = []
         self._param_history: list[npt.NDArray[np.float64]] = []
         self._best_params = np.array([], dtype=np.float64)
@@ -322,10 +322,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._cost_circuit = None
 
     def _has_run_optimization(self) -> bool:
-        """Check if optimization has been run at least once.
+        """Check if optimisation has been run at least once.
 
         Returns:
-            bool: True if optimization has been run, False otherwise.
+            bool: True if optimisation has been run, False otherwise.
         """
         return len(self._losses_history) > 0
 
@@ -334,18 +334,18 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     @property
     def stop_reason(self) -> StopReason | None:
-        """Reason the optimization was stopped early, or ``None``.
+        """Reason the optimisation was stopped early, or ``None``.
 
         Returns:
             StopReason | None: The :class:`~divi.qprog.early_stopping.StopReason`
-                that triggered early stopping, or ``None`` if optimization
+                that triggered early stopping, or ``None`` if optimisation
                 completed normally or has not been run yet.
         """
         return self._stop_reason
 
     @property
     def losses_history(self) -> list[dict]:
-        """Get a copy of the optimization loss history.
+        """Get a copy of the optimisation loss history.
 
         Each entry is a dictionary mapping parameter indices to loss values.
 
@@ -355,7 +355,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         if not self._has_run_optimization():
             warn(
-                "losses_history is empty. Optimization has not been run yet. "
+                "losses_history is empty. Optimisation has not been run yet. "
                 f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
@@ -366,7 +366,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self,
         mode: ParamHistoryMode = "all_evaluated",
     ) -> list[npt.NDArray[np.float64]]:
-        """Parameter vectors recorded at each optimization callback.
+        """Parameter vectors recorded at each optimisation callback.
 
         Args:
             mode: Which rows to return for each iteration:
@@ -386,7 +386,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         if not self._has_run_optimization():
             warn(
-                "Parameter history is unavailable because optimization has not "
+                "Parameter history is unavailable because optimisation has not "
                 f"been run yet. {_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
@@ -427,7 +427,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         if not self._has_run_optimization():
             warn(
-                "min_losses_per_iteration is empty. Optimization has not been run yet. "
+                "min_losses_per_iteration is empty. Optimisation has not been run yet. "
                 f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
@@ -436,7 +436,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     @property
     def final_params(self) -> npt.NDArray[np.float64]:
-        """Get a copy of the final optimized parameters.
+        """Get a copy of the final optimised parameters.
 
         Returns:
             npt.NDArray[np.float64]: Copy of the final parameters. Modifications to this array
@@ -444,7 +444,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         if len(self._final_params) == 0 or not self._has_run_optimization():
             warn(
-                "final_params is not available. Optimization has not been run yet. "
+                "final_params is not available. Optimisation has not been run yet. "
                 f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
@@ -461,7 +461,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         if len(self._best_params) == 0 or not self._has_run_optimization():
             warn(
-                "best_params is not available. Optimization has not been run yet. "
+                "best_params is not available. Optimisation has not been run yet. "
                 f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
@@ -477,23 +477,23 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         if not self._has_run_optimization():
             warn(
-                "best_loss has not been computed yet. Optimization has not been run. "
+                "best_loss has not been computed yet. Optimisation has not been run. "
                 f"{_RUN_INSTRUCTION}",
                 UserWarning,
                 stacklevel=2,
             )
         elif self._best_loss == float("inf"):
-            # Defensive check: if optimization ran but best_loss is still inf, something is wrong
+            # Defensive check: if optimisation ran but best_loss is still inf, something is wrong
             raise RuntimeError(
-                "best_loss is still infinite after optimization. This indicates a problem "
-                "with the optimization process. The optimization callback may not have executed "
+                "best_loss is still infinite after optimisation. This indicates a problem "
+                "with the optimisation process. The optimisation callback may not have executed "
                 "correctly, or all computed losses were infinite."
             )
         return self._best_loss
 
     @property
     def viz(self):
-        """Access visualization helpers for this variational program.
+        """Access visualisation helpers for this variational program.
 
         The returned object exposes a thin convenience wrapper over the
         standalone :mod:`divi.viz` API, so scans can be written either as
@@ -530,7 +530,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     def cost_circuit(self) -> MetaCircuit:
         """The cost MetaCircuit for this program (lazily built, cached).
 
-        Note: When used with ProgramEnsemble, this is initialized sequentially
+        Note: When used with ProgramEnsemble, this is initialised sequentially
         in the main thread before parallel execution to avoid thread-safety issues.
         """
         if self._cost_circuit is None:
@@ -594,7 +594,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     def save_state(self, checkpoint_config: CheckpointConfig) -> Path:
         """Save the program state to a checkpoint directory."""
         if self.current_iteration == 0 and len(self._losses_history) == 0:
-            raise RuntimeError("Cannot save checkpoint: optimization has not been run.")
+            raise RuntimeError("Cannot save checkpoint: optimisation has not been run.")
 
         if checkpoint_config.checkpoint_dir is None:
             raise ValueError(
@@ -681,7 +681,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
 
     def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
-        """Generate fresh parameter sets for a new optimization run."""
+        """Generate fresh parameter sets for a new optimisation run."""
         return self._rng.uniform(
             0, 2 * np.pi, (self.optimizer.n_param_sets, self.n_params)
         )
@@ -789,7 +789,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         if self.max_iterations < 1:
             raise ValueError(
                 f"max_iterations must be >= 1, got {self.max_iterations}; run() "
-                "would warn and return without optimizing anything."
+                "would warn and return without optimising anything."
             )
 
     def _dry_run_env(
@@ -799,7 +799,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         The optimizer evaluates its recurring pipelines over a whole working set
         (a population, for population optimizers), which is what the default env
-        supplies. A ``ONCE`` routine instead runs after optimization at the
+        supplies. A ``ONCE`` routine instead runs after optimisation at the
         trained parameters — one set — so binding the working set there would
         report circuits the run never submits.
         """
@@ -831,7 +831,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         )
 
     def cost_preprocessor(self) -> CircuitPreprocessor:
-        """The preprocessor driving optimization: expectation of the cost observable.
+        """The preprocessor driving optimisation: expectation of the cost observable.
 
         Pass it to :meth:`~divi.qprog.QuantumProgram.evaluate` to measure the
         cost at chosen parameters, e.g.
@@ -908,7 +908,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """The ``(shifts, weights)`` this program differentiates with.
 
         Built on first use so a gradient-free run never pays for it, and so a
-        parameterization with no tractable exact rule only raises when a gradient
+        parameterisation with no tractable exact rule only raises when a gradient
         is actually requested.
         """
         frequencies = self._parameter_frequencies()
@@ -937,7 +937,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Supplies the variational parameter-model knowledge that
         :class:`~divi.qprog._solution_sampling_mixin.SolutionSamplingMixin` is
         agnostic to: ``None`` falls back to ``_best_params`` (raising if
-        optimization has not run), and explicit params are validated against
+        optimisation has not run), and explicit params are validated against
         ``n_layers * n_params_per_layer``.
         """
         if params is None:
@@ -973,10 +973,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         Args:
             initial_params (npt.NDArray[np.float64] | None): Optional initial parameter
-                sets for a fresh optimization run. Must have shape
+                sets for a fresh optimisation run. Must have shape
                 ``(n_param_sets, n_layers * n_params_per_layer)``. Cannot be
                 combined with a checkpoint-resumed optimizer state.
-            perform_final_computation (bool): Whether to perform final computation after optimization completes.
+            perform_final_computation (bool): Whether to perform final computation after optimisation completes.
                 Typically, this step involves sampling with the best found parameters to extract
                 solution probability distributions. Set this to False in warm-starting or pre-training
                 routines where the final sampling step is not needed. Defaults to True.
@@ -987,7 +987,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Returns:
             VariationalQuantumAlgorithm: Returns ``self`` for method chaining.
         """
-        # Initialize checkpointing
+        # Initialise checkpointing
         if checkpoint_config is None:
             checkpoint_config = CheckpointConfig()
 
@@ -1137,7 +1137,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             # The scipy implementation of COBYLA interprets the `maxiter` option
             # as the maximum number of function evaluations, not iterations.
             # To provide a consistent user experience, we disable `scipy`'s
-            # `maxiter` and manually stop the optimization from the callback
+            # `maxiter` and manually stop the optimisation from the callback
             # when the desired number of iterations is reached.
             # Counted against the program's own total rather than scipy's per-call
             # ``nit``, so a resumed run stops at the limit instead of restarting it.
@@ -1201,7 +1201,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 raise ExecutionCancelledError(message) from exc
             else:
                 self.optimize_result.success = True
-                self.optimize_result.message = "Optimization converged."
+                self.optimize_result.message = "Optimisation converged."
 
                 # Set _best_params from final result (source of truth); a
                 # non-finite loss never wins (falls back to the iteration-tracked

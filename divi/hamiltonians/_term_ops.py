@@ -237,7 +237,7 @@ def _clean_hamiltonian_spo(
 
     Set ``raise_on_constant=True`` to reject a constant-only operator instead —
     variational programs (VQE, QAOA, CustomVQA, QNN) have no objective to
-    minimize when nothing but identity terms remain. Callers that legitimately
+    minimise when nothing but identity terms remain. Callers that legitimately
     tolerate constants (e.g. time evolution) keep the default.
     """
     if spo.size == 0:
@@ -319,7 +319,7 @@ def _spo_to_qiskit_basis_gates_numeric(
         return
 
     sub = LieTrotter().synthesize(PauliEvolutionGate(spo, time=time))
-    # ``PauliEvolutionGate`` may synthesize to ``R{XX,YY,ZZ}Gate`` for
+    # ``PauliEvolutionGate`` may synthesise to ``R{XX,YY,ZZ}Gate`` for
     # two-qubit Pauli rotations — outside our QASM2 basis. ``decompose`` is
     # a no-op on instructions whose names aren't listed.
     sub = sub.decompose(["rxx", "ryy", "rzz"])
@@ -331,7 +331,7 @@ def _spo_to_qiskit_basis_gates_symbolic(
 ) -> None:
     """CX-RZ-CX ladder emitter for symbolic ``time``.
 
-    Qiskit's ``LieTrotter`` synthesizer only accepts numeric angles, so any
+    Qiskit's ``LieTrotter`` synthesiser only accepts numeric angles, so any
     ``Parameter`` / ``ParameterExpression`` ``time`` comes through here.
     """
     _assert_hermitian_spo(spo)

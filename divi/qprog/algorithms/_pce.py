@@ -201,7 +201,7 @@ def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int)
 
 class PCE(VQE):
     """
-    Generalized Pauli Correlation Encoding (PCE) VQE.
+    Generalised Pauli Correlation Encoding (PCE) VQE.
 
     Encodes an N-variable QUBO into qubits by mapping each variable to a parity
     (Pauli-Z correlation) of the measured bitstring. Qubit scaling depends on
@@ -225,7 +225,7 @@ class PCE(VQE):
     ):
         """
         Args:
-            problem (BinaryOptimizationProblem): The binary problem to minimize.
+            problem (BinaryOptimizationProblem): The binary problem to minimise.
                 Its combined objective + penalty QUBO/HUBO is used. Wrap a raw
                 QUBO/HUBO with ``BinaryOptimizationProblem(...)``.
             n_qubits (int | None): Optional override. Must be >= minimum for the
@@ -405,7 +405,7 @@ class PCE(VQE):
 
         Raises:
             RuntimeError: If probability distribution is not available because
-                optimization has not been run or final computation was not performed.
+                optimisation has not been run or final computation was not performed.
             ValueError: If min_prob is not in range [0.0, 1.0], n is negative,
                 or sort_by is not one of ``"prob"`` or ``"energy"``.
         """

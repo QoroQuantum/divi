@@ -181,7 +181,7 @@ def _sympy_to_qiskit(
 
 
 def _symbolize_trainable_subset(qscript: QuantumScript) -> QuantumScript:
-    """Symbolize concrete gate slots named by an explicit, proper-subset
+    """Symbolise concrete gate slots named by an explicit, proper-subset
     ``trainable_params`` so the conversion treats them as bindable.
 
     PennyLane defaults ``trainable_params`` to *all* gate-data slots; a proper
@@ -199,7 +199,7 @@ def _symbolize_trainable_subset(qscript: QuantumScript) -> QuantumScript:
         return qscript
     # Operation parameters occupy the leading slots of the flat parameter list;
     # measured-observable (Hamiltonian) coefficients follow them. Only gate
-    # slots are bindable knobs — never symbolize an observable's coefficient, or
+    # slots are bindable knobs — never symbolise an observable's coefficient, or
     # the measured operator would silently change.
     n_op_params = len(
         qscript.get_parameters(trainable_only=False, operations_only=True)
@@ -325,7 +325,7 @@ def _qscript_to_dag(
 
     # Decompose any gates outside the QASM2 basis (e.g. rxx/ryy/rzz from
     # Trotter decompositions) so the downstream dag_to_qasm_body emitter
-    # never sees instructions it doesn't recognise.  Optimization level 0
+    # never sees instructions it doesn't recognise.  Optimisation level 0
     # keeps the pass cheap — just a gate-by-gate substitution.
     qc = transpile(
         qc,

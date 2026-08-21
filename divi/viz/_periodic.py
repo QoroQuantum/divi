@@ -8,9 +8,9 @@
 """Periodic parameter wrapping for variational-program trajectories.
 
 Quantum gate parameters are typically :math:`2\\pi`-periodic.  When an
-optimization trajectory crosses the period boundary, PCA can see an
+optimisation trajectory crosses the period boundary, PCA can see an
 artificial jump and produce distorted landscapes.  The functions here
-re-center each parameter vector to its closest periodic copy relative to a
+re-centre each parameter vector to its closest periodic copy relative to a
 reference point, ensuring continuity along the trajectory.
 """
 

@@ -31,7 +31,7 @@ def _resolve_axes(ax=None, *, projection: str | None = None) -> tuple[Any, Any]:
 def _cell_edges_from_centers(
     centers: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
-    """Bin edges for :func:`matplotlib.axes.Axes.pcolormesh` from 1D cell centers."""
+    """Bin edges for :func:`matplotlib.axes.Axes.pcolormesh` from 1D cell centres."""
     c = np.asarray(centers, dtype=np.float64)
     n = int(c.size)
     if n == 0:
@@ -370,7 +370,7 @@ class PCAScanResult:
             ax: Optional matplotlib axes to draw into. When omitted, a new
                 figure and axes are created.
             show: Whether to call ``matplotlib.pyplot.show()`` after drawing.
-            levels: Number of discrete color bands (``BoundaryNorm``) for
+            levels: Number of discrete colour bands (``BoundaryNorm``) for
                 ``pcolormesh``.
             add_colorbar: Whether to attach a colorbar to the figure.
             show_samples: Whether to overlay the projected PCA samples on top of
@@ -536,7 +536,7 @@ class Fourier2DResult:
         Args:
             ax: Optional matplotlib axes. When omitted, a new figure is created.
             show: Whether to call ``matplotlib.pyplot.show()`` after drawing.
-            log_scale: Use logarithmic color scale (default ``True``). This
+            log_scale: Use logarithmic colour scale (default ``True``). This
                 makes non-DC frequency components visible when the DC component
                 dominates. Pass ``False`` for a linear scale.
             **imshow_kwargs: Additional keyword arguments forwarded to
@@ -587,7 +587,7 @@ class NEBResult:
 
     Contains the final relaxed chain (``path``, shape ``(n_pivots, n_params)``
     including fixed endpoints), objective values at each pivot (``energies``),
-    normalized cumulative distances (``path_distances``, ``[0, 1]``), a
+    normalised cumulative distances (``path_distances``, ``[0, 1]``), a
     history of all chains across iterations (``all_paths``), and the program
     class name (``program_type``).
     """
@@ -614,7 +614,7 @@ class NEBResult:
         defaults = {"marker": "o", "markersize": 4}
         defaults.update(plot_kwargs)
         ax.plot(self.path_distances, self.energies, **defaults)
-        ax.set_xlabel("Normalized path distance")
+        ax.set_xlabel("Normalised path distance")
         ax.set_ylabel("Objective")
         ax.set_title(f"{self.program_type} NEB Energy Profile")
 

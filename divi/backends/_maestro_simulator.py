@@ -47,7 +47,7 @@ _MPS_AUTO_BOND_DIMENSION = 64
 def _strip_id_gates(qasm: str) -> str:
     """Remove ``id`` (identity) gates from QASM.
 
-    Maestro's QASM parser does not recognize the ``id`` gate.
+    Maestro's QASM parser does not recognise the ``id`` gate.
     Since identity gates are no-ops, stripping them is safe.
     """
     return re.sub(r"id\s+q\[\d+\]\s*;\n?", "", qasm)
@@ -105,7 +105,7 @@ def _resolve_noise_realizations(
     or a positive ``int`` to forward to a Monte-Carlo entry point.
 
     Sampling has no analytical equivalent, so ``None`` collapses to ``1``
-    (a single noise realization).  Maestro's native default for
+    (a single noise realisation).  Maestro's native default for
     ``noisy_execute`` is 64; divi deliberately uses 1 to avoid silently
     multiplying the shot budget.
 
@@ -169,7 +169,7 @@ class MaestroConfig:
     :attr:`use_double_precision`, which covers the GPU simulators."""
 
     disable_optimized_swapping: bool = False
-    """Disable MPS swap-cost optimization."""
+    """Disable MPS swap-cost optimisation."""
 
     lookahead_depth: int = -1
     """Lookahead depth for the MPS swap optimizer.  ``-1`` is maestro's default."""
@@ -241,7 +241,7 @@ class MaestroConfig:
 
     * **Expval** — ``maestro.noisy_estimate``, which applies exact Pauli
       damping coefficients to noiseless expectation values.  Deterministic.
-    * **Sampling** — no analytical equivalent; falls back to one realization
+    * **Sampling** — no analytical equivalent; falls back to one realisation
       (``noisy_execute`` with ``noise_realizations=1``).
 
     A positive ``int`` ``N`` selects Monte-Carlo backends:
@@ -251,7 +251,7 @@ class MaestroConfig:
     * **Sampling** — ``maestro.noisy_execute``, which divides ``shots``
       across ``min(shots, N)`` batches, each with a freshly sampled noise
       pattern.  Total shot count is always ``shots``; if ``N > shots`` the
-      effective realization count is capped at ``shots``.
+      effective realisation count is capped at ``shots``.
 
     Note that ``noise_realizations=1`` is **not** equivalent to ``None``
     for expval — the former is one random Pauli sampling, the latter is
@@ -445,7 +445,7 @@ class MaestroSimulator(CircuitRunner):
     .. note::
 
         Maestro's C++ extension must be loaded before other C++ libraries
-        (Qiskit, PennyLane) to avoid initialization order conflicts.  This
+        (Qiskit, PennyLane) to avoid initialisation order conflicts.  This
         is handled automatically by ``divi/__init__.py``.
 
     Args:
@@ -470,7 +470,7 @@ class MaestroSimulator(CircuitRunner):
         super().__init__(shots=shots, track_depth=track_depth)
         self.config: MaestroConfig = config if config is not None else MaestroConfig()
 
-        # Per-instance circuit fan-out pool, lazy-initialized on first
+        # Per-instance circuit fan-out pool, lazy-initialised on first
         # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
         # GIL and use internal OpenMP threads, so we cap workers at cores/2
         # to leave headroom for that internal parallelism rather than
@@ -528,7 +528,7 @@ class MaestroSimulator(CircuitRunner):
         ``shutdown(wait=True)`` runs **outside** ``_executor_lock`` — a
         concurrent ``submit_circuits`` on another thread can grab the lock
         and lazily re-create a fresh pool while the old one drains, instead
-        of serializing behind a slow shutdown.  Subsequent submits therefore
+        of serialising behind a slow shutdown.  Subsequent submits therefore
         observe ``close()`` as "release current pool; new pool created on
         demand".
         """

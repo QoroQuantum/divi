@@ -1085,7 +1085,7 @@ class TestCheckpointing:
         """Test that save_state() raises RuntimeError if optimization hasn't been run."""
         checkpoint_dir = tmp_path / "checkpoint"
 
-        with pytest.raises(RuntimeError, match="optimization has not been run"):
+        with pytest.raises(RuntimeError, match="optimisation has not been run"):
             sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
 
     def test_automatic_checkpointing_in_run(self, sample_program, tmp_path, mocker):
@@ -1319,7 +1319,7 @@ class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
 
         with pytest.raises(
             RuntimeError,
-            match="best_loss is still infinite after optimization",
+            match="best_loss is still infinite after optimisation",
         ):
             _ = program.best_loss
 

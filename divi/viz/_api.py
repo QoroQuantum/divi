@@ -118,7 +118,7 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
 
     if not getattr(program, "_supports_fixed_param_scans", True):
         raise NotImplementedError(
-            f"{type(program).__name__} varies its parameter space during optimization "
+            f"{type(program).__name__} varies its parameter space during optimisation "
             "and has no fixed parameter space for these scans; use a fixed-depth variant."
         )
 
@@ -134,7 +134,7 @@ def _resolve_center(
         if not program._has_run_optimization() or len(program._best_params) == 0:
             raise ValueError(
                 "center must be provided unless the program already has best_params "
-                "from a previous optimization run."
+                "from a previous optimisation run."
             )
         center_arr = np.asarray(program._best_params, dtype=np.float64).reshape(-1)
     else:
@@ -174,7 +174,7 @@ def _resolve_1d_direction(
     rng: np.random.Generator,
     normalize_directions: bool,
 ) -> npt.NDArray[np.float64]:
-    """Validate or generate a 1D scan direction, optionally unit-normalizing."""
+    """Validate or generate a 1D scan direction, optionally unit-normalising."""
     if direction is None:
         direction_arr = _random_gaussian_direction(n_params, rng)
     else:
@@ -402,7 +402,7 @@ def scan_1d(
 ) -> Scan1DResult:
     """One-dimensional loss-landscape scan for a variational program.
 
-    The scan is constructed by taking a center point in parameter space and a
+    The scan is constructed by taking a centre point in parameter space and a
     direction vector, then evaluating the program's cost function at evenly
     spaced offsets along that line. Internally, the scan uses
     :meth:`~divi.qprog.VariationalQuantumAlgorithm._evaluate_cost_param_sets`
@@ -413,20 +413,20 @@ def scan_1d(
     default :math:`(-\\pi, \\pi)` and ``normalize_directions`` is ``False``: each
     offset :math:`t` maps to ``center + t * direction`` with the direction norm
     affecting Euclidean step size. The default ``normalize_directions=True``
-    keeps a unit direction so ``span`` is measured along a normalized axis.
+    keeps a unit direction so ``span`` is measured along a normalised axis.
 
     Args:
         program: Variational program to scan.
         center: Flat parameter vector around which the scan is performed. If
-            omitted, the scan centers on ``program.best_params`` from a previous
-            optimization run.
+            omitted, the scan centres on ``program.best_params`` from a previous
+            optimisation run.
         direction: Flat direction vector in parameter space. If omitted, a
             random direction is drawn (reproducible via ``rng``).
         n_points: Number of sample points along the scan line. Must be at least 2.
         span: Inclusive scalar offset range applied along ``direction`` (orqviz
             ``end_points`` default is :math:`(-\\pi, \\pi)`).
         normalize_directions: If ``True`` (default), non-zero ``direction`` is
-            unit-normalized before building ``center + t * direction``.
+            unit-normalised before building ``center + t * direction``.
         rng: Optional :class:`numpy.random.Generator` or integer seed used when
             ``direction`` is ``None``.
         reporter: Optional :class:`~divi.reporting.ProgressReporter`. When omitted,
@@ -495,7 +495,7 @@ def scan_2d(
 ) -> Scan2DResult:
     """Two-dimensional loss-landscape scan for a variational program.
 
-    The scan is constructed from a center point plus two linearly independent
+    The scan is constructed from a centre point plus two linearly independent
     directions in parameter space. A rectangular grid of offsets is generated,
     converted into concrete parameter sets, and evaluated using the program's
     batched cost pipeline.
@@ -508,8 +508,8 @@ def scan_2d(
     Args:
         program: Variational program to scan.
         center: Flat parameter vector around which the scan plane is defined. If
-            omitted, the scan centers on ``program.best_params`` from a previous
-            optimization run.
+            omitted, the scan centres on ``program.best_params`` from a previous
+            optimisation run.
         direction_x: First direction spanning the scan plane. If omitted, a
             random direction is drawn unless ``direction_y`` alone is given, in
             which case ``direction_x`` is a random vector orthogonal to
@@ -522,7 +522,7 @@ def scan_2d(
             :math:`(-\\pi, \\pi)`).
         span_y: Inclusive offset range along ``direction_y``.
         normalize_directions: If ``True`` (default), user-supplied directions are
-            unit-normalized; random supplementary directions are unit vectors. If
+            unit-normalised; random supplementary directions are unit vectors. If
             ``False``, coefficients multiply the raw direction vectors; random
             pairs keep matched norms like ``orqviz``.
         rng: Optional :class:`numpy.random.Generator` or integer seed for any
@@ -603,7 +603,7 @@ def scan_pca(
     each grid point through ``inverse_transform`` into full parameter space, and
     evaluates the program's cost function in one batch.
 
-    A typical choice for ``samples`` is the optimization trajectory::
+    A typical choice for ``samples`` is the optimisation trajectory::
 
         samples = np.vstack(program.param_history(mode="best_per_iteration"))
 
@@ -826,7 +826,7 @@ def scan_interp_2d(
 ) -> Scan2DResult:
     """Two-dimensional interpolation scan between two parameter vectors.
 
-    The x-direction is the unnormalized vector ``theta_2 - theta_1``, so
+    The x-direction is the unnormalised vector ``theta_2 - theta_1``, so
     offset ``t = 0`` corresponds to *theta_1* and ``t = 1`` to *theta_2*.  The
     y-direction is orthogonal to the interpolation vector and may be supplied or
     generated randomly.  This is the orqviz ``perform_2D_interpolation`` pattern.
@@ -961,7 +961,7 @@ def compute_hessian(
         gradient_method: Strategy for computing second derivatives.
             :attr:`GradientMethod.PARAMETER_SHIFT` (default) uses the
             double parameter-shift rule (exact for standard quantum gates).
-            :attr:`GradientMethod.FINITE_DIFFERENCE` uses centered finite
+            :attr:`GradientMethod.FINITE_DIFFERENCE` uses centred finite
             differences with step size *eps*.
         eps: Finite-difference step size.  Only used when *gradient_method*
             is :attr:`GradientMethod.FINITE_DIFFERENCE`.  Defaults to ``1e-3``.
@@ -1091,7 +1091,7 @@ def run_neb(
         gradient_method: Strategy for computing gradients.
             :attr:`GradientMethod.PARAMETER_SHIFT` (default) uses the
             parameter-shift rule.
-            :attr:`GradientMethod.FINITE_DIFFERENCE` uses centered finite
+            :attr:`GradientMethod.FINITE_DIFFERENCE` uses centred finite
             differences with step size *eps*.
         eps: Finite-difference step size.  Only used when *gradient_method*
             is :attr:`GradientMethod.FINITE_DIFFERENCE`.
@@ -1220,7 +1220,7 @@ class ProgramViz:
 
     This wrapper mirrors the standalone :mod:`divi.viz` scan API so users can
     write fluent calls such as ``program.viz.scan_1d(...)`` without changing the
-    underlying execution behavior.
+    underlying execution behaviour.
     """
 
     program: _SupportsVizScan
@@ -1247,7 +1247,7 @@ class ProgramViz:
             if not blocks:
                 raise ValueError(
                     "No param_history available — pass samples explicitly or "
-                    "run optimization first."
+                    "run optimisation first."
                 )
             samples = np.vstack(blocks)
             if wrap_periodic:

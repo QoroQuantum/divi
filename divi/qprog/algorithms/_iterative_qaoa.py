@@ -5,8 +5,8 @@
 """Iterative QAOA with parameter interpolation across increasing circuit depths.
 
 This module implements the iterative interpolation strategy for QAOA described in
-`arXiv:2504.01694 <https://arxiv.org/abs/2504.01694>`_. Instead of optimizing at a
-fixed depth with random initialization, the algorithm starts at depth p=1, optimizes,
+`arXiv:2504.01694 <https://arxiv.org/abs/2504.01694>`_. Instead of optimising at a
+fixed depth with random initialisation, the algorithm starts at depth p=1, optimises,
 then interpolates the optimal parameters to warm-start at depth p+1, repeating until
 a target depth or convergence criterion is met.
 
@@ -193,7 +193,7 @@ def interpolate_qaoa_params(
 class IterativeQAOA(QAOA):
     """Iterative QAOA with parameter interpolation across increasing depths.
 
-    Instead of optimizing at a single fixed depth, this class iteratively
+    Instead of optimising at a single fixed depth, this class iteratively
     increases the circuit depth from 1 to ``max_depth``, using the optimal
     parameters from depth p as a warm-start for depth p+1 via an
     interpolation strategy.
@@ -222,7 +222,7 @@ class IterativeQAOA(QAOA):
         strategy: Interpolation strategy for warm-starting. Defaults to INTERP.
         n_basis_terms: Number of basis terms for FOURIER/CHEBYSHEV strategies.
             Ignored for INTERP. Defaults to ``min(p, 5)`` when ``None``.
-        max_iterations_per_depth: Maximum optimization iterations per depth.
+        max_iterations_per_depth: Maximum optimisation iterations per depth.
             Can be an integer (same for all depths) or a callable
             ``(depth) -> int`` for adaptive budgets. Defaults to 10.
         convergence_threshold: If set, stop iterating when the absolute
@@ -284,7 +284,7 @@ class IterativeQAOA(QAOA):
         self._cost_circuit = None
 
     def _reset_optimization_state(self) -> None:
-        """Reset VQA optimization tracking state for a fresh run."""
+        """Reset VQA optimisation tracking state for a fresh run."""
         self._losses_history = []
         self._param_history = []
         self._best_params = np.array([], dtype=np.float64)
@@ -304,7 +304,7 @@ class IterativeQAOA(QAOA):
     ):
         """Run the iterative QAOA procedure across increasing depths.
 
-        At each depth from 1 to ``max_depth``, the algorithm optimizes the
+        At each depth from 1 to ``max_depth``, the algorithm optimises the
         QAOA parameters, then interpolates the best parameters to warm-start
         the next depth. After all depths are explored, the instance is
         restored to the depth that achieved the best overall loss.
@@ -398,7 +398,7 @@ class IterativeQAOA(QAOA):
 
     @property
     def depth_history(self) -> list[dict]:
-        """Per-depth optimization results.
+        """Per-depth optimisation results.
 
         Each entry is a dict with keys:
         ``depth``, ``best_loss``, ``best_params``, ``n_iterations``.

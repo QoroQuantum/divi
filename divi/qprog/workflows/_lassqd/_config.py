@@ -28,7 +28,7 @@ class FragmentationConfig:
     Args:
         active_spaces: Explicit fragment layout, one ``FragmentSpec`` per
             fragment. Fixes which orbitals are active, how they partition, and
-            each fragment's spin at once, and skips localization entirely.
+            each fragment's spin at once, and skips localisation entirely.
         n_active_orbitals: Total active orbitals to select around the HOMO-LUMO
             gap.
         active_orbitals: Explicit MO column indices forming the active space,
@@ -45,13 +45,13 @@ class FragmentationConfig:
             coupling graph. Ignored when ``active_spaces`` or ``fragment_atoms``
             is given.
         fragment_atoms: One sequence of atom indices per fragment. Assigns each
-            localized active orbital to the fragment owning the atom it sits on,
+            localised active orbital to the fragment owning the atom it sits on,
             replacing the coupling-graph clustering -- one fragment per metal
             centre, for instance.
         local_spins: Per-fragment ``2S``, in the order ``fragment_atoms`` names
             them. The fragment's electron count comes from its occupied
             orbitals, so this sets spin alone: ``n_alpha - n_beta = 2S``. Use it
-            for spin-polarized fragments, e.g. ``[2, -2]`` for an
+            for spin-polarised fragments, e.g. ``[2, -2]`` for an
             antiferromagnetically coupled dimer of local triplets. The fragments
             must still sum to ``Sz = 0``.
 
@@ -112,7 +112,7 @@ class FragmentationConfig:
                 raise ValueError(
                     "local_spins requires fragment_atoms: coupling-graph fragment "
                     "order depends on max_orbitals_per_fragment, coupling_threshold "
-                    "and the localization RNG, so a positional spin list would not "
+                    "and the localisation RNG, so a positional spin list would not "
                     "name a stable fragment."
                 )
             if len(self.local_spins) != len(self.fragment_atoms):
@@ -138,10 +138,10 @@ class FragmentationConfig:
 
 @dataclass(frozen=True)
 class SQDConfig:
-    """Sampling and diagonalization budget for each fragment's SQD solve.
+    """Sampling and diagonalisation budget for each fragment's SQD solve.
 
     Args:
-        n_batches: Subspaces diagonalized per recovery iteration; the lowest
+        n_batches: Subspaces diagonalised per recovery iteration; the lowest
             energy wins.
         batch_size: Configurations sampled per batch, so the subspace holds up
             to ``batch_size ** 2`` determinants. The accuracy knob; a
@@ -152,7 +152,7 @@ class SQDConfig:
             self-consistent passes over the sampled distribution, not optimizer
             steps.
         lambda_penalty: Weight of the ``S^2`` spin-contamination penalty added
-            to the projected Hamiltonian before diagonalization.
+            to the projected Hamiltonian before diagonalisation.
         carryover_cutoff: Carryover SQD's retention threshold
             (arXiv:2512.14936), on by default. Each recovery iteration retains
             the determinants whose coefficient exceeds this fraction of the

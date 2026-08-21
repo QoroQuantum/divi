@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The ``ham_ops`` string format: its wire serialization and its group layout.
+"""The ``ham_ops`` string format: its wire serialisation and its group layout.
 
 ``ham_ops`` is a semicolon-separated dense Pauli string (``;`` between terms,
 ``|`` between groups) produced upstream by

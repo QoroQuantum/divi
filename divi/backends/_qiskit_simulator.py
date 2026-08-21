@@ -178,7 +178,7 @@ class QiskitSimulator(CircuitRunner):
                 :func:`~qiskit.compiler.transpile` for every circuit this backend
                 runs. Defaults to None, leaving the choice to Qiskit.
 
-                Optimization rewrites a circuit by how compressible it is, which
+                Optimisation rewrites a circuit by how compressible it is, which
                 is not uniform across a batch, so under a noise model the
                 executed circuits can accumulate different amounts of noise than
                 the ones submitted. Protocols that compare circuits to each other
@@ -296,7 +296,7 @@ class QiskitSimulator(CircuitRunner):
 
         This method ensures deterministic results by running each circuit with its own
         simulator instance and the same seed. Used internally for debugging non-deterministic
-        behavior in batch execution.
+        behaviour in batch execution.
 
         Args:
             circuit_labels: List of circuit labels
@@ -337,11 +337,11 @@ class QiskitSimulator(CircuitRunner):
         if self.simulation_seed is not None:
             aer_simulator.set_options(seed_simulator=self.simulation_seed)
 
-        # Default to utilizing all allocated processes for threads
+        # Default to utilising all allocated processes for threads
         options = {"max_parallel_threads": self.n_processes}
 
         if num_circuits > 1:
-            # Batch mode: parallelize experiments
+            # Batch mode: parallelise experiments
             options.update(
                 {
                     "max_parallel_experiments": min(num_circuits, self.n_processes),
@@ -349,7 +349,7 @@ class QiskitSimulator(CircuitRunner):
                 }
             )
         elif self.shots >= self.n_processes:
-            # Single circuit, high shots: parallelize shots
+            # Single circuit, high shots: parallelise shots
             options.update(
                 {
                     "max_parallel_experiments": 1,
@@ -357,7 +357,7 @@ class QiskitSimulator(CircuitRunner):
                 }
             )
         else:
-            # Single circuit, low shots: default behavior (usually serial shots)
+            # Single circuit, low shots: default behaviour (usually serial shots)
             options.update(
                 {
                     "max_parallel_experiments": 1,
@@ -719,7 +719,7 @@ class QiskitSimulator(CircuitRunner):
                 "``precomputed_durations`` to be provided."
             )
 
-        # Optimization for trivial case
+        # Optimisation for trivial case
         if n_qpus >= len(estimated_run_times_sorted):
             return estimated_run_times_sorted[0] if estimated_run_times_sorted else 0.0
 

@@ -59,7 +59,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         seed: int | None = None,
         **kwargs,
     ):
-        """Initialize TimeEvolutionTrajectory.
+        """Initialise TimeEvolutionTrajectory.
 
         Args:
             hamiltonian: Hamiltonian to evolve under.

@@ -53,29 +53,29 @@ consistent interface.
 The :class:`~divi.qprog.VariationalQuantumAlgorithm` Class
 ----------------------------------------------------------------------------------------
 
-For algorithms that rely on optimizing parameters, Divi provides the
+For algorithms that rely on optimising parameters, Divi provides the
 :class:`~divi.qprog.VariationalQuantumAlgorithm`
 class. This is the base class for algorithms like
 :class:`~divi.qprog.algorithms.VQE` and :class:`~divi.qprog.algorithms.QAOA`,
-and it extends :class:`~divi.qprog.QuantumProgram` with optimization logic,
+and it extends :class:`~divi.qprog.QuantumProgram` with optimisation logic,
 history tracking, and convergence-aware execution on top of the same pipeline
 foundation.
 
 Every variational quantum program in Divi follows a consistent lifecycle:
 
-1. **Initialization** — Set up your problem, ansatz, optimizer, and backend
+1. **Initialisation** — Set up your problem, ansatz, optimizer, and backend
 2. **Expansion** — Generate circuit/evaluation work from the current parameters
 3. **Execution** — Run expanded work on the selected backend
 4. **Reduction** — Aggregate backend outputs into objective values and metrics
-5. **Optimization Loop** — Update parameters and repeat until stopping criteria are met
+5. **Optimisation Loop** — Update parameters and repeat until stopping criteria are met
 
 .. note::
    Internally, steps 2–5 are orchestrated by a **circuit pipeline** that uses an
    *expand → execute → reduce* pattern. You don't need to interact with the pipeline
    directly when using built-in algorithms, but understanding it enables powerful
-   customization. See :doc:`pipelines` for a deep dive.
+   customisation. See :doc:`pipelines` for a deep dive.
 
-``run()`` owns expansion through optimization. It validates parameter shapes,
+``run()`` owns expansion through optimisation. It validates parameter shapes,
 drives the optimizer, tracks histories and best/final parameters, applies early
 stopping, and optionally checkpoints. Algorithm pages provide complete setup
 examples.
@@ -86,9 +86,9 @@ examples.
 
 The most commonly accessed properties for result analysis:
 
-- ``best_loss`` - The best (lowest) loss value found during optimization
+- ``best_loss`` - The best (lowest) loss value found during optimisation
 - ``best_params`` - The parameters that achieved ``best_loss`` (may differ from final parameters)
-- ``final_params`` - The parameters from the last optimization iteration
+- ``final_params`` - The parameters from the last optimisation iteration
 - :attr:`~divi.qprog.VariationalQuantumAlgorithm.losses_history` - Full loss
   history as ``list[dict]``; each entry maps a parameter-set index to its loss
   for that iteration.  With population-based optimizers
@@ -147,9 +147,9 @@ Variational Run Controls and Outputs
 
 For deeper variational workflow details, use these focused guides:
 
-- :doc:`optimizers` for optimizer behavior and early stopping
+- :doc:`optimizers` for optimizer behaviour and early stopping
 - :doc:`resuming_long_runs` for checkpointing and state restore patterns
-- :doc:`visualization` for visualizing optimization trajectories, loss
+- :doc:`visualization` for visualising optimisation trajectories, loss
   landscapes, and related diagnostics based on ``losses_history`` and
   ``param_history(...)``
 - :doc:`program_ensembles` for multi-run orchestration and sweep-style workflows
@@ -186,7 +186,7 @@ when only the trained parameters matter.
    trained :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` —
    see :ref:`ensemble-sample-solution`.
 
-Analyzing Solution Distributions
+Analysing Solution Distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Solution-extracting programs expose

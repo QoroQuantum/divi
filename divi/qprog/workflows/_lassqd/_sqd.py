@@ -2,11 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Sample-based quantum diagonalization post-processing.
+"""Sample-based quantum diagonalisation post-processing.
 
 Implements self-consistent configuration recovery (arXiv:2405.05068): symmetry
 filtering, occupancy-guided bit-flip correction, batched determinant subspace
-construction, spin-penalized projected diagonalization, and reduced
+construction, spin-penalised projected diagonalisation, and reduced
 density-matrix reconstruction.
 """
 
@@ -95,7 +95,7 @@ def spin_orbital_integrals(
 
     Spin-orbitals are blocked: index ``p`` is alpha for ``p < n_orb`` and beta
     above. ``one_body_beta`` gives the beta channel a distinct one-body
-    potential, as a spin-polarized mean-field embedding produces.
+    potential, as a spin-polarised mean-field embedding produces.
     """
     if one_body_beta is None:
         one_body_beta = one_body
@@ -470,9 +470,9 @@ _ITERATIVE_TOLERANCE = 1e-10
 def ground_root(
     h_proj: np.ndarray, deviation: np.ndarray, lambda_penalty: float
 ) -> tuple[float, np.ndarray]:
-    """Lowest eigenpair of the spin-penalized projected Hamiltonian.
+    """Lowest eigenpair of the spin-penalised projected Hamiltonian.
 
-    ``H + lambda * deviation ** 2`` is what gets diagonalized, and only its
+    ``H + lambda * deviation ** 2`` is what gets diagonalised, and only its
     lowest root is ever read. Large subspaces therefore take a Lanczos solve
     with the penalty applied as an operator, which never forms the dense
     ``deviation @ deviation`` product; small ones fall back to the dense form.
@@ -594,7 +594,7 @@ def carryover_weights(
     eligible strings are ranked by their marginal weight over the whole subspace.
 
     The threshold is relative to the largest coefficient because the eigenvector
-    is normalized: its typical component falls as ``1 / sqrt(m)``, so a fixed
+    is normalised: its typical component falls as ``1 / sqrt(m)``, so a fixed
     threshold would prune almost nothing at large subspace sizes.
 
     Args:
@@ -742,7 +742,7 @@ class SQDResult:
     is also the layout PySCF's selected-CI routines take.
 
     Attributes:
-        energy: Lowest eigenvalue of the *spin-penalized* projected Hamiltonian,
+        energy: Lowest eigenvalue of the *spin-penalised* projected Hamiltonian,
             ``H + lambda (S^2 - s(s+1))^2``, plus ``constant`` -- not the bare
             expectation value ``<H>``. Batches are ranked on this deliberately,
             so a batch with a lower bare energy in the wrong spin sector loses;
@@ -808,7 +808,7 @@ class SQDSolver:
         occupancies_tol: float = 0.0,
         rng: np.random.Generator | None = None,
     ):
-        """Initialize the solver.
+        """Initialise the solver.
 
         Args:
             n_orb: Spatial orbitals in the fragment.
@@ -826,7 +826,7 @@ class SQDSolver:
                 winning batch's largest eigenvector coefficient. Determinants
                 above it are retained and later batches extended with their
                 alpha and beta halves; ``None`` (default) is conventional SQD.
-                Re-decided each iteration, and selected from the *penalized*
+                Re-decided each iteration, and selected from the *penalised*
                 ground state, so ``lambda_penalty`` influences what is kept.
             max_carryover: Keeps at most this many alpha and beta strings, the
                 heaviest, so retention can shrink between iterations. ``None``
@@ -943,7 +943,7 @@ class SQDSolver:
         best: SQDResult | None = None
 
         # Re-read each iteration, not accumulated: weights from differently
-        # normalized eigenvectors are not comparable, and a carried string is
+        # normalised eigenvectors are not comparable, and a carried string is
         # present in the current subspace anyway.
         carried_alpha: list[str] = []
         carried_beta: list[str] = []

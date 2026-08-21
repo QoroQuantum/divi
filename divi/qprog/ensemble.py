@@ -248,7 +248,7 @@ class ProgramEnsemble(ABC):
     computations that require more than one quantum program to achieve its goal.
 
     :meth:`run` executes the ensemble as a loop of *rounds*. Each round
-    materializes a fresh program map, runs those programs in parallel, and
+    materialises a fresh program map, runs those programs in parallel, and
     folds their results into a workflow state the next round can use. The loop
     ends when :meth:`is_complete` returns ``True`` or a ``max_rounds`` limit is
     hit.
@@ -265,7 +265,7 @@ class ProgramEnsemble(ABC):
             expectation value, etc) and handle such cases accordingly. Only the
             final round's programs remain in ``self.programs``.
 
-    Three further hooks are optional and default to single-round behavior:
+    Three further hooks are optional and default to single-round behaviour:
     :meth:`initial_state`, :meth:`update_state`, and :meth:`is_complete`.
     """
 
@@ -275,7 +275,7 @@ class ProgramEnsemble(ABC):
         *,
         reporting_level: ReportingLevel = ReportingLevel.COMPACT,
     ):
-        """Initialize the ensemble.
+        """Initialise the ensemble.
 
         Args:
             backend: Backend used to execute every sub-program's circuits.
@@ -309,7 +309,7 @@ class ProgramEnsemble(ABC):
         # ``None`` for a standalone ``run_one_round``.
         self._round_context: tuple[int, int | None] | None = None
         # True between ``create_programs()`` and the dispatch that consumes the
-        # resulting map. Lets ``run()`` distinguish a caller-materialized first
+        # resulting map. Lets ``run()`` distinguish a caller-materialised first
         # round from the previous round's spent programs.
         self._programs_pending = False
         # Set by join() when a round is cut short by KeyboardInterrupt, so
@@ -464,7 +464,7 @@ class ProgramEnsemble(ABC):
 
         Implementation Notes:
             - Subclasses should call `super().create_programs()` first to
-              initialize the progress queue and validate that no programs
+              initialise the progress queue and validate that no programs
               already exist.
             - An override must accept the state argument; `run()` passes the
               current workflow state positionally on every round.
@@ -476,7 +476,7 @@ class ProgramEnsemble(ABC):
 
         Side Effects:
             - Populates `self._programs` with program instances.
-            - Initializes `self._queue` for progress reporting. Sub-programs
+            - Initialises `self._queue` for progress reporting. Sub-programs
               bind to this exact queue at construction, so ``run()`` reuses it
               rather than re-creating it. ``self._done_event`` is created later,
               per-run, by ``run()``/``sample_solution()``.
@@ -518,7 +518,7 @@ class ProgramEnsemble(ABC):
 
         Called at the start of every :meth:`run` so a repeated workflow starts
         from round zero. Cumulative circuit and runtime counters survive, as
-        does any program map the caller materialized itself.
+        does any program map the caller materialised itself.
         """
         self._workflow_state = None
         self._stop_reason = None
@@ -648,7 +648,7 @@ class ProgramEnsemble(ABC):
 
         if self._executor is None:
             raise RuntimeError(
-                "Cannot submit program: executor is not initialized. Call run() first."
+                "Cannot submit program: executor is not initialised. Call run() first."
             )
         return self._executor.submit(_coordinated_task, program)
 
@@ -659,9 +659,9 @@ class ProgramEnsemble(ABC):
         batch_config: BatchConfig = BatchConfig(),
     ):
         """
-        Execute the currently materialized programs once.
+        Execute the currently materialised programs once.
 
-        Prefer :meth:`run`, which materializes programs and drives rounds for
+        Prefer :meth:`run`, which materialises programs and drives rounds for
         you. Reach for this only to dispatch without blocking, or to drive
         rounds yourself.
 
@@ -716,12 +716,12 @@ class ProgramEnsemble(ABC):
     ) -> "ProgramEnsemble":
         """Run this ensemble's state-dependent workflow to completion.
 
-        Each round materializes a fresh program map, runs it synchronously,
+        Each round materialises a fresh program map, runs it synchronously,
         then lets the subclass reduce its results into the next workflow state.
         ``run_one_round`` remains available for callers needing direct control
-        of a previously materialized program map.
+        of a previously materialised program map.
 
-        A program map materialized by the caller before this call is used
+        A program map materialised by the caller before this call is used
         as-is for the first round; later rounds always come from
         :meth:`create_programs`.
 
@@ -907,7 +907,7 @@ class ProgramEnsemble(ABC):
         }
         self._pb_task_map = {}
         # Guards ``_pb_task_map`` mutations and the snapshot taken when
-        # iterating ``progress_bar._tasks`` for batch coloring.  Any
+        # iterating ``progress_bar._tasks`` for batch colouring.  Any
         # cross-task field lookup that walks the Progress's task dict
         # must take this lock around the snapshot.
         self._pb_lock = Lock()

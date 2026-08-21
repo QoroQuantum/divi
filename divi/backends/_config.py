@@ -169,13 +169,13 @@ class ExecutionConfig:
         return ExecutionConfig(**current_attrs, _validate_input=False)
 
     def to_payload(self) -> dict:
-        """Serialize to the JSON body expected by the API.
+        """Serialise to the JSON body expected by the API.
 
         ``None`` fields are omitted; enum values are converted to their
         integer representation.
 
         Returns:
-            dict: JSON-serializable payload for
+            dict: JSON-serialisable payload for
                 ``POST /api/job/<job_id>/execution_config/``.
         """
         payload: dict = {}
@@ -248,7 +248,7 @@ class JobConfig:
     """The QPU system to target, can be a string name or a QPUSystem object."""
 
     use_circuit_packing: bool | None = None
-    """Whether to use circuit packing optimization."""
+    """Whether to use circuit packing optimisation."""
 
     tag: str = "default"
     """Tag to associate with the job for identification."""
@@ -289,7 +289,7 @@ class JobConfig:
         return JobConfig(**current_attrs)
 
     def __post_init__(self):
-        """Sanitizes and validates the configuration."""
+        """Sanitises and validates the configuration."""
         if self.shots is not None and self.shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
 

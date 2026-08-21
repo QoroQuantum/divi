@@ -70,7 +70,7 @@ _SEED_SPIN_ASYMMETRY_TOL = 1e-6
 _SEED_ACCEPTANCE_MARGIN = 1e-4
 
 # Coupled-cluster iterations allowed on a fragment. pyscf's default of 50 leaves
-# a localized fragment short of convergence where a few hundred reach it, and the
+# a localised fragment short of convergence where a few hundred reach it, and the
 # fragments are small enough that the extra cycles cost nothing.
 _SEED_CC_MAX_CYCLE = 500
 
@@ -103,7 +103,7 @@ class LASSQDRoundReport:
             rather than stopping on a budget or an energy-reduction floor.
         rotation_pairs: Orbital pairs the rotation spanned.
         recovery_seconds: Wall-clock time in SQD recovery for all fragments.
-        orbital_seconds: Wall-clock time in the orbital re-optimization.
+        orbital_seconds: Wall-clock time in the orbital re-optimisation.
     """
 
     number: int
@@ -141,7 +141,7 @@ class _FragmentVQE(VQE):
 
     Accepts an explicit ``seed_params`` vector and returns it from
     ``_initialize_param_sets`` instead of the optimizer's own random
-    initialization.
+    initialisation.
 
     Raises:
         ValueError: If ``seed_params`` is given and its length does not match
@@ -249,7 +249,7 @@ def _lucj_amplitude_seed(
     doubles carry it: reshaped over ``(occupied, virtual)`` pairs, their leading
     singular triplet gives one one-body operator per spin, and the square of a
     one-body operator is a diagonal Coulomb operator in the basis that
-    diagonalizes it -- exactly ``exp(K) exp(iJ) exp(-K)``'s content. So each
+    diagonalises it -- exactly ``exp(K) exp(iJ) exp(-K)``'s content. So each
     spin's eigenbasis is its rotation and the eigenvalues give
     ``J_pq = sigma * d_p * d_q``. ``t1`` supplies the trailing rotation.
 
@@ -266,14 +266,14 @@ def _lucj_amplitude_seed(
 
     Returns ``None`` if either spin sector's rotation cannot be realized, or if
     the ansatz ties the two sectors together (``shared_spin_params``), which a
-    factorization giving each its own rotation has nothing to say about.
+    factorisation giving each its own rotation has nothing to say about.
     """
     if ansatz_kwargs.get("shared_spin_params"):
         warn(
             f"CCSD seeding skipped for fragment {spec.orbitals}: the double "
-            "factorization gives each spin sector its own rotation, which "
+            "factorisation gives each spin sector its own rotation, which "
             "shared_spin_params cannot hold. Falling back to the optimizer's own "
-            "initialization.",
+            "initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -339,7 +339,7 @@ def _lucj_amplitude_seed(
         seed[cursor] = -0.5 * scale * diagonal_alpha[p] * diagonal_beta[q]
         cursor += 1
 
-    # The factorization holds only the cross term between the two sectors, so it
+    # The factorisation holds only the cross term between the two sectors, so it
     # says nothing about same-spin Coulomb weights; those stay at zero.
     cursor += 2 * len(same_pairs)
 
@@ -427,8 +427,8 @@ def _lucj_seed_params(
     """Run unrestricted CCSD on the fragment and factorize it onto LUCJ.
 
     Unrestricted rather than restricted because these fragments are routinely
-    spin-polarized, which a restricted reference cannot represent at all. The
-    one-body potential is still spin-averaged, so the reference is polarized only
+    spin-polarised, which a restricted reference cannot represent at all. The
+    one-body potential is still spin-averaged, so the reference is polarised only
     through its occupations.
     """
     try:
@@ -460,7 +460,7 @@ def _lucj_seed_params(
     except Exception as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimizer's own initialization.",
+            "Falling back to the optimizer's own initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -484,7 +484,7 @@ def _seed_energy_gain(
 
     Replaces a Hartree-Fock stationarity precondition, which rejected even an
     exact open-shell solution -- no single spatial basis makes both spin channels
-    of a polarized fragment stationary -- and could not catch a seed built in the
+    of a polarised fragment stationary -- and could not catch a seed built in the
     wrong orbital basis, since ``F_ov`` transforms as ``U_o^T F_ov U_v`` and so is
     invariant under exactly the rotation that misattaches amplitudes. Such a seed
     lands *above* the reference determinant, which this measures directly.
@@ -513,7 +513,7 @@ def _ccsd_seed_params(
 ) -> np.ndarray | None:
     """Map a fragment's CCSD amplitudes onto an ansatz parameter vector.
 
-    Optimization started from random parameters converges poorly, and SQD's
+    Optimisation started from random parameters converges poorly, and SQD's
     subspace quality depends directly on the sampled distribution covering
     the right determinants, so a fresh fragment's first round is seeded from
     coupled-cluster amplitudes computed on that fragment's own effective
@@ -526,11 +526,11 @@ def _ccsd_seed_params(
     :class:`~divi.qprog.algorithms.LUCJAnsatz`'s are rotation and Coulomb angles
     instead, so :func:`_lucj_seed_params` goes through the doubles tensor's
     double factorization. Any other ansatz warns and defers to the optimizer's
-    own initialization.
+    own initialisation.
 
     The CCSD runs in the fragment's own orbital basis, on the determinant the
     ansatz's Hartree-Fock reference prepares, rather than on a self-consistent
-    field's canonical orbitals. Fragment orbitals are localized, and an SCF
+    field's canonical orbitals. Fragment orbitals are localised, and an SCF
     would rotate within the occupied and virtual blocks -- leaving the reference
     determinant and its energy untouched while permuting which amplitude belongs
     to which orbital pair, so the resulting seed would be attached to the wrong
@@ -564,7 +564,7 @@ def _ccsd_seed_params(
             f"CCSD seeding skipped for fragment {spec.orbitals}: no "
             f"correspondence is defined between CCSD amplitudes and "
             f"{type(ansatz).__name__}'s parameters. Falling back to the "
-            "optimizer's own initialization.",
+            "optimizer's own initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -578,7 +578,7 @@ def _ccsd_seed_params(
             f"CCSD seeding skipped for fragment {spec.orbitals}: restricted "
             f"CCSD requires equal alpha/beta electron counts, got n_alpha="
             f"{spec.n_alpha}, n_beta={spec.n_beta}. Falling back to the "
-            "optimizer's own initialization.",
+            "optimizer's own initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -607,7 +607,7 @@ def _ccsd_seed_params(
     except Exception as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimizer's own initialization.",
+            "Falling back to the optimizer's own initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -656,12 +656,12 @@ def _diagonal_rdm_guess(
 
 
 class LASSQD(ProgramEnsemble):
-    """Localized active-space sample-based quantum diagonalization.
+    """Localised active-space sample-based quantum diagonalisation.
 
     Partitions a molecule's active space into fragments, runs one VQE per
     fragment against its own mean-field-embedded effective Hamiltonian, and
     (in later rounds) recovers the ground state via sample-based quantum
-    diagonalization. This class builds the workflow state and the per-round
+    diagonalisation. This class builds the workflow state and the per-round
     VQE programs; running rounds and aggregating results are handled
     elsewhere.
 
@@ -679,23 +679,23 @@ class LASSQD(ProgramEnsemble):
         fragmentation: Which orbitals are active and how they split into
             fragments, as a
             :class:`~divi.qprog.workflows.FragmentationConfig`.
-        sqd: Sampling and diagonalization budget per fragment solve, as an
+        sqd: Sampling and diagonalisation budget per fragment solve, as an
             :class:`~divi.qprog.workflows.SQDConfig`. Defaults to
             ``SQDConfig()``.
         ansatz: Per-fragment ansatz. Defaults to ``UCCSDAnsatz()``.
-        max_iterations: Max optimization iterations per fragment VQE. An
+        max_iterations: Max optimisation iterations per fragment VQE. An
             iteration is an optimizer step, not a circuit evaluation: a
             gradient-free method spends several evaluations per step and
             ``n_params + 1`` of them building its initial simplex before the
             first step, so this has to scale with the ansatz's parameter count.
         max_orbital_iterations: Cap on L-BFGS-B iterations in each round's
-            orbital re-optimization, a separate solve from the fragment VQEs and
+            orbital re-optimisation, a separate solve from the fragment VQEs and
             usually the round's dominant cost on a large register. ``None``
             leaves it uncapped. A capped round still returns its best orbitals
             but is not a stationary point, and reports as not converged.
         energy_tol: Macro-cycle stops once consecutive rounds' total energies
             differ by less than this (Hartree).
-        seed: Seed for fragmentation, localization, and SQD subsampling, also
+        seed: Seed for fragmentation, localisation, and SQD subsampling, also
             passed to the backend. Reproducibility is limited by the backend:
             :class:`~divi.backends.QiskitSimulator` seeds exactly, while
             :class:`~divi.backends.MaestroSimulator` cannot, so identical runs
@@ -996,7 +996,7 @@ class LASSQD(ProgramEnsemble):
 
         Seeding takes a single one-body matrix, so it gets the spin-averaged
         embedding potential. That only affects the optimizer's starting point,
-        not the Hamiltonian it optimizes against, which carries both channels --
+        not the Hamiltonian it optimises against, which carries both channels --
         but a spin-symmetric seed can still land a local optimizer in a
         different basin than the symmetry-broken solution, so a materially
         asymmetric embedding is warned about.
@@ -1027,7 +1027,7 @@ class LASSQD(ProgramEnsemble):
                     f"{spin_asymmetry:.3e} Hartree, because seeding takes a "
                     "single one-body matrix. The seed may sit in a different "
                     "basin than the symmetry-broken solution; the Hamiltonian "
-                    "being optimized keeps both channels.",
+                    "being optimised keeps both channels.",
                     UserWarning,
                     stacklevel=2,
                 )
@@ -1059,7 +1059,7 @@ class LASSQD(ProgramEnsemble):
                         f"{fragment.spec.orbitals}: the seed sits "
                         f"{-gain:+.3e} Hartree relative to the reference "
                         "determinant, so it carries no correlation energy. "
-                        "Falling back to the optimizer's own initialization.",
+                        "Falling back to the optimizer's own initialisation.",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -1110,7 +1110,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         re-deriving ``_rng`` from the stored seed and clearing ``_solvers``
         here, a second ``run()`` on the same instance would resume fragment
         0's SQD stream mid-sequence, draw different fragment seeds, and (in
-        automatic mode) re-draw the localization restarts from an advanced
+        automatic mode) re-draw the localisation restarts from an advanced
         generator instead of reproducing the first run.
         """
         super()._reset_workflow_state()
@@ -1191,7 +1191,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         the blocked SQD bitstring convention, recovers the ground state via
         that fragment's ``SQDSolver``, and rebuilds its spatial RDMs
         from the recovered subspace. The full active-space RDM is then
-        reassembled and the molecular orbitals re-optimized against it.
+        reassembled and the molecular orbitals re-optimised against it.
 
         The reassembled RDM includes the cross-fragment 2-RDM blocks, so it is
         the RDM of a product of fragment states and the returned ``energy`` is a
@@ -1205,7 +1205,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         Returns:
             A new :class:`~divi.qprog.workflows.LASSQDState` with updated
             ``mo_coeff``, per-fragment RDMs and parameters, ``energy`` (this
-            round's optimized total energy), and ``previous_energy`` (set to
+            round's optimised total energy), and ``previous_energy`` (set to
             ``state.energy``). ``state`` itself is left unmodified.
 
         Raises:
@@ -1229,7 +1229,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             raise RuntimeError(
                 "update_state received a different state than create_programs "
                 "built this round's circuits from; the reduction would use "
-                "different orbitals than the VQEs optimized against."
+                "different orbitals than the VQEs optimised against."
             )
 
         integrals, n_core = self._active_space_integrals(state)
@@ -1293,7 +1293,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         rdm1_active, rdm2_active = assemble_active_rdms(new_fragments)
         ao_eri, h_ao = self._cached_mol_integrals()
 
-        self._emit_workflow_round_stage("Re-optimizing orbitals")
+        self._emit_workflow_round_stage("Re-optimising orbitals")
         orbital_started = time.perf_counter()
         solve = optimize_orbitals(
             self._mol,
@@ -1338,7 +1338,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def is_complete(self, state: LASSQDState) -> bool:
         """Stop once the macro-cycle energy change falls below ``energy_tol``.
 
-        A round whose orbital optimization gave up does not count as converged,
+        A round whose orbital optimisation gave up does not count as converged,
         however small its energy change. ``optimize_orbitals`` is monotone -- it
         falls back to the unrotated orbitals rather than returning something
         worse -- so a stalled optimizer produces a round that barely moves and
@@ -1350,7 +1350,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         if not self._orbitals_converged:
             warn(
                 "The macro-cycle energy change is below energy_tol but the "
-                "orbital optimization did not converge, so this is not a fixed "
+                "orbital optimisation did not converge, so this is not a fixed "
                 "point. Continuing; raise the optimizer's iteration budget or "
                 "loosen energy_tol if this repeats.",
                 UserWarning,

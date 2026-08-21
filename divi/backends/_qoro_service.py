@@ -169,7 +169,7 @@ class JobType(Enum):
     """Compute expectation values for Hamiltonian operators."""
 
     CHARACTERIZE = "VALIDATE"
-    """Submit a QUBO/HUBO for characterization (no simulator/QPU needed).
+    """Submit a QUBO/HUBO for characterisation (no simulator/QPU needed).
 
     The wire value remains ``"VALIDATE"`` for server compatibility.
     """
@@ -218,7 +218,7 @@ class QoroService(CircuitRunner):
         max_retries: int | None = None,
         track_depth: bool = False,
     ):
-        """Initializes the QoroService client.
+        """Initialises the QoroService client.
 
         Args:
             auth_token (str | None, optional):
@@ -357,7 +357,7 @@ class QoroService(CircuitRunner):
         """
         Make an authenticated HTTP request to the Qoro API.
 
-        This internal method centralizes all API communication, handling authentication
+        This internal method centralises all API communication, handling authentication
         headers and error responses consistently.
 
         Args:
@@ -548,7 +548,7 @@ class QoroService(CircuitRunner):
         """
         Submit quantum circuits to the Qoro API for execution.
 
-        This method first initializes a job and then sends the circuits in
+        This method first initialises a job and then sends the circuits in
         one or more chunks, associating them all with a single job ID.
 
         Args:
@@ -689,7 +689,7 @@ class QoroService(CircuitRunner):
         else:
             execution_config = self.execution_config
 
-        # Initialize the job without circuits to get a job_id
+        # Initialise the job without circuits to get a job_id
         init_payload: dict[str, Any] = {
             "tag": job_config.tag,
             "job_type": job_type.value,
@@ -1299,7 +1299,7 @@ class QoroService(CircuitRunner):
                 polling_status.stop()
 
     # ------------------------------------------------------------------ #
-    # QUBO / HUBO Characterization
+    # QUBO / HUBO Characterisation
     # ------------------------------------------------------------------ #
 
     def characterize_and_validate(
@@ -1311,7 +1311,7 @@ class QoroService(CircuitRunner):
         job_id: str | None = None,
         tag: str = "divi-characterize",
     ) -> dict:
-        """Submit a QUBO for characterization, or fetch an existing result.
+        """Submit a QUBO for characterisation, or fetch an existing result.
 
         Submit mode performs init, synchronous analysis submission, and result
         retrieval. Fetch mode waits for an existing job to reach a terminal
@@ -1321,15 +1321,15 @@ class QoroService(CircuitRunner):
             qubo: Legacy comma-key QUBO/HUBO dict or a ``factored_v1``
                 envelope. Required in submit mode.
             reference_states: One or more binary reference bitstrings. Required
-                in submit mode by the Composer characterization engine.
+                in submit mode by the Composer characterisation engine.
             options: Optional server options, including ``preset``, ``analysis``,
                 ``ansatz``, ``subspace``, ``constraints``, and ``n_qubits``.
-            job_id: Existing characterization job to wait for and fetch. When
+            job_id: Existing characterisation job to wait for and fetch. When
                 set, submit-mode arguments are ignored.
-            tag: Job tag used during initialization.
+            tag: Job tag used during initialisation.
 
         Returns:
-            The raw characterization response. A failed or cancelled fetch
+            The raw characterisation response. A failed or cancelled fetch
             returns a minimal ``{"job_id": ..., "status": ...}`` response so
             the high-level wrapper can raise the corresponding domain error.
 
@@ -1342,7 +1342,7 @@ class QoroService(CircuitRunner):
                 and failures before a recoverable job ID exists.
 
         .. note::
-            Initialization and submission deliberately disable HTTP retries
+            Initialisation and submission deliberately disable HTTP retries
             because both mutate server state. Fetching by ``job_id`` is free.
         """
         if job_id is not None:
@@ -1383,10 +1383,10 @@ class QoroService(CircuitRunner):
             job_id = init_resp.json()["job_id"]
             if not isinstance(job_id, str):
                 raise ValueError(
-                    "Characterization initialization returned an invalid job_id."
+                    "Characterisation initialisation returned an invalid job_id."
                 )
             logger.info(
-                "Characterization job %s created. If this call does not return, "
+                "Characterisation job %s created. If this call does not return, "
                 "fetch the result with this id rather than resubmitting.",
                 job_id,
             )
@@ -1432,7 +1432,7 @@ class QoroService(CircuitRunner):
         return data
 
     def _fetch_characterization_html(self, job_id: str) -> str:
-        """Fetch the server-rendered HTML report for a characterization job.
+        """Fetch the server-rendered HTML report for a characterisation job.
 
         Used by :meth:`CharacterizationResult._repr_html_` to lazily render
         the result in Jupyter. The endpoint returns a self-contained HTML

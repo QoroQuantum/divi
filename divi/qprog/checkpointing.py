@@ -320,7 +320,7 @@ def _load_and_validate_pydantic_model(
 
 @dataclass(frozen=True)
 class CheckpointConfig:
-    """Configuration for checkpointing during optimization.
+    """Configuration for checkpointing during optimisation.
 
     Attributes:
         checkpoint_dir: Directory path for saving checkpoints.

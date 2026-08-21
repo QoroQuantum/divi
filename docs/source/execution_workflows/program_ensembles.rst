@@ -43,11 +43,11 @@ detail on its own page — this section gives a quick overview and links.
    matching partitioning are all covered in
    :doc:`../algorithms/combinatorial_optimization_qaoa_pce`.
 
-**Localized Active-Space SQD**
+**Localised Active-Space SQD**
    :class:`~divi.qprog.workflows.LASSQD` partitions a molecule's active space
    into fragments, runs one VQE per fragment against its own
    mean-field-embedded effective Hamiltonian, and recovers the ground state
-   via sample-based quantum diagonalization. See
+   via sample-based quantum diagonalisation. See
    :doc:`../algorithms/localized_active_space_sqd` for fragment specification, automatic
    fragmentation, and the accuracy characteristics of the reported energy.
 
@@ -147,7 +147,7 @@ larger ``n`` never inflates the search cost.
 
 **When to use hierarchical aggregation**
 
-- **Many partitions with localized coupling**: when strongly-coupled partitions can land in the same group, each group explores more alternatives before committing to a cross-group assignment — recovering combinations a greedy left-to-right beam would prune early.
+- **Many partitions with localised coupling**: when strongly-coupled partitions can land in the same group, each group explores more alternatives before committing to a cross-group assignment — recovering combinations a greedy left-to-right beam would prune early.
 - **Finer cost control**: ``merge_width`` caps per-merge cost independently of ``max_per_group``, a knob beam search does not offer.
 - **Prefer beam search** when coupling is global or unpredictable across partition boundaries: groups are formed in partition order, so the grouping then provides little benefit over a wider beam.
 
@@ -183,7 +183,7 @@ merged pool (without widening the search, as noted above).
 
 For constrained problems such as maximum-weight matching, partition boundaries
 can produce globally invalid raw candidates even when each partition candidate
-is locally valid. ``aggregate_results`` keeps the default forgiving behavior and
+is locally valid. ``aggregate_results`` keeps the default forgiving behaviour and
 repairs matching conflicts. To inspect only raw candidates that are already
 valid globally, use ``get_top_solutions(..., strict=True)``. The returned list
 may contain fewer than ``n`` entries.
@@ -252,13 +252,13 @@ results are ready to aggregate as soon as it returns:
 
    results = ensemble.run().aggregate_results()
 
-Internally ``run()`` drives a loop of *rounds*. Each round materializes a fresh
+Internally ``run()`` drives a loop of *rounds*. Each round materialises a fresh
 program map, executes it, and folds the results into a workflow state that the
 next round can use. The loop runs in this order:
 
 1. ``initial_state()`` — once, producing the first state.
 2. ``is_complete(state)`` — if ``True``, stop here.
-3. ``create_programs(state)`` — materialize this round's programs.
+3. ``create_programs(state)`` — materialise this round's programs.
 4. Execute those programs in parallel.
 5. ``update_state(state)`` — fold the results into the next state.
 6. Back to step 2.
@@ -381,7 +381,7 @@ every round and every run; the per-round deltas live in ``round_history``.
 Starting a new ``run()`` resets the workflow state and round history but keeps
 those lifetime totals.
 
-When a round fails — materializing its programs, executing them, or reducing
+When a round fails — materialising its programs, executing them, or reducing
 them — ``run()`` records the failed round and then *raises*, so ``FAILED`` is
 something you catch, not something you find on a returned ensemble. The
 exception is whatever the round raised, so catch broadly:
@@ -400,7 +400,7 @@ Controlling a single round
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 :meth:`~divi.qprog.ensemble.ProgramEnsemble.run_one_round` dispatches an
-already-materialized program map exactly once, and is the lower-level control
+already-materialised program map exactly once, and is the lower-level control
 surface behind ``run()``. Prefer ``run()``; reach for this only when you need
 to dispatch without blocking, or to drive rounds yourself:
 
@@ -413,10 +413,10 @@ to dispatch without blocking, or to drive rounds yourself:
    # ... do other work ...
    ensemble.join()
 
-If you materialize a program map yourself and then call ``run()``, that map is
+If you materialise a program map yourself and then call ``run()``, that map is
 used as the first round rather than being rebuilt — so calling
 ``create_programs()`` beforehand is safe. It just isn't needed: ``run()``
-materializes each round for you.
+materialises each round for you.
 
 .. _ensemble-reporting:
 
@@ -459,7 +459,7 @@ pipelines, or scripts whose stdout you parse.
    )
 
 The equivalent string works too — ``reporting_level="full"`` is accepted and
-coerced — and an unrecognized value raises :class:`ValueError` rather than
+coerced — and an unrecognised value raises :class:`ValueError` rather than
 silently falling back.
 
 Setting the ``DIVI_DISABLE_PROGRESS`` environment variable to a truthy value
@@ -544,7 +544,7 @@ Each iteration, the coordinator:
 **When to use batching**
 
 - **Cloud backends**: batching reduces API calls, queue slots, and polling.
-- **Local simulators**: batching adds synchronization without network savings.
+- **Local simulators**: batching adds synchronisation without network savings.
 
 **Limiting batch size**
 
@@ -619,4 +619,4 @@ Next Steps
 - :doc:`backends` — backend configuration and performance tuning.
 - :doc:`resuming_long_runs` — checkpointing the state of supported variational
   programs. Ensemble workflow state is not currently checkpointed as a unit.
-- :doc:`visualization` — result visualization, including :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.
+- :doc:`visualization` — result visualisation, including :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.

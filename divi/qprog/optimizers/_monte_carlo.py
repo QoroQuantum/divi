@@ -28,7 +28,7 @@ class MonteCarloState(BaseModel):
     n_best_sets: int
     keep_best_params: bool
     curr_iteration: int
-    # Store arrays as lists for JSON serialization
+    # Store arrays as lists for JSON serialisation
     # Population arrays are always 2D: (population_size, n_params)
     population: list[list[float]]
     evaluated_population: list[list[float]]
@@ -46,7 +46,7 @@ class MonteCarloOptimizer(Optimizer):
     Monte Carlo-based parameter search optimizer.
 
     This optimizer samples parameter space randomly, selects the best-performing
-    samples, and uses them as centers for the next generation of samples with
+    samples, and uses them as centres for the next generation of samples with
     decreasing variance. This implements a simple but effective evolutionary strategy.
     """
 
@@ -57,7 +57,7 @@ class MonteCarloOptimizer(Optimizer):
         keep_best_params: bool = False,
     ):
         """
-        Initialize a Monte Carlo optimizer.
+        Initialise a Monte Carlo optimizer.
 
         Args:
             population_size (int, optional): Size of the population for the algorithm.
@@ -88,7 +88,7 @@ class MonteCarloOptimizer(Optimizer):
         self._n_best_sets = n_best_sets
         self._keep_best_params = keep_best_params
 
-        # Optimization state (updated during optimize(), used for checkpointing)
+        # Optimisation state (updated during optimize(), used for checkpointing)
         self._curr_population: npt.NDArray[np.float64] | None = None
         self._curr_evaluated_population: npt.NDArray[np.float64] | None = None
         self._curr_losses: npt.NDArray[np.float64] | None = None
@@ -221,27 +221,27 @@ class MonteCarloOptimizer(Optimizer):
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
-        """Perform Monte Carlo optimization on the cost function.
+        """Perform Monte Carlo optimisation on the cost function.
 
         Parameters:
-            cost_fn: The cost function to minimize.
-            initial_params: Initial parameters for the optimization.
+            cost_fn: The cost function to minimise.
+            initial_params: Initial parameters for the optimisation.
             callback_fn: Optional callback function to monitor progress.
             **kwargs: Additional keyword arguments:
 
                 - max_iterations (int, optional): Iterations to run in this call.
                   The caller subtracts whatever a previous run already spent, so a
-                  resumed optimization receives only what is left. Defaults to 5.
+                  resumed optimisation receives only what is left. Defaults to 5.
                 - rng (np.random.Generator, optional): Random number generator for
                   parameter sampling. Defaults to a new generator if not provided.
 
         Returns:
-            Optimized parameters.
+            Optimised parameters.
         """
         rng = kwargs.pop("rng", np.random.default_rng())
         max_iterations = kwargs.pop("max_iterations", 5)
 
-        # Resume from checkpoint or initialize fresh
+        # Resume from checkpoint or initialise fresh
         if self._curr_population is not None and self._curr_iteration is not None:
             start_iter = self._curr_iteration + 1
             rng.bit_generator.state = self._curr_rng_state
@@ -320,7 +320,7 @@ class MonteCarloOptimizer(Optimizer):
             checkpoint_dir (Path | str): Directory path where the optimizer state will be saved.
 
         Raises:
-            RuntimeError: If optimization has not been run (no state to save).
+            RuntimeError: If optimisation has not been run (no state to save).
         """
         if (
             self._curr_population is None
@@ -339,7 +339,7 @@ class MonteCarloOptimizer(Optimizer):
         state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
         # RNG state is a dict/tuple structure, pickle it for bytes storage
-        # Then encode to base64 string for JSON serialization
+        # Then encode to base64 string for JSON serialisation
         rng_state_bytes = pickle.dumps(self._curr_rng_state)
         rng_state_b64 = base64.b64encode(rng_state_bytes).decode("ascii")
 
@@ -419,8 +419,8 @@ class MonteCarloOptimizer(Optimizer):
     def reset(self) -> None:
         """Reset the optimizer's internal state.
 
-        Clears all current optimization state (population, losses, iteration, RNG state),
-        allowing the optimizer to be reused for fresh optimization runs.
+        Clears all current optimisation state (population, losses, iteration, RNG state),
+        allowing the optimizer to be reused for fresh optimisation runs.
         """
         self._curr_population = None
         self._curr_evaluated_population = None

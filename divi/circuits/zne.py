@@ -352,7 +352,7 @@ class RichardsonExtrapolator:
 #: * Callables **consume** their input ``DAGCircuit`` — callers pass a
 #:   DAG they no longer need, and the fold is free to mutate it.
 #: * By convention ``folding_fn(dag, 1.0)`` returns the DAG unmodified
-#:   with ``effective_scale=1.0`` — both built-in folds honor this.
+#:   with ``effective_scale=1.0`` — both built-in folds honour this.
 FoldingFn = Callable[[DAGCircuit, float], tuple[DAGCircuit, float]]
 
 

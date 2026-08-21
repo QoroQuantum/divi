@@ -69,7 +69,7 @@ class PipelineResult(dict):
         ``result[()]`` gives the unsqueezed pipeline-internal form, but only
         when the spec stage's ``reduce`` collapses its own axis (which the
         built-in spec stages do for single-circuit batches).  Custom spec
-        stages must mirror that behavior; if they do not, the result will
+        stages must mirror that behaviour; if they do not, the result will
         not have a ``()`` key.  ``evaluate()`` returns
         ``{param_set_idx: value}`` where ``value`` is the unsqueezed form
         (e.g. ``[1.0]`` for a single expectation value, not ``1.0``).
@@ -290,14 +290,14 @@ class Stage(ABC, Generic[InT, OutT]):
         """Check this stage's position in the pipeline.
 
         Called by :class:`~divi.pipeline.CircuitPipeline` at construction
-        time after structural validation.  Override to inspect neighboring
+        time after structural validation.  Override to inspect neighbouring
         stages and either:
 
         * raise :class:`~divi.pipeline.abc.ContractViolation` if
           preconditions are not met, or
         * emit :class:`~divi.pipeline.DiviPerformanceWarning` for
           legal-but-slow configurations (e.g. expensive internal options,
-          known-bad neighboring stages).  Suppressed at the pipeline level
+          known-bad neighbouring stages).  Suppressed at the pipeline level
           via ``CircuitPipeline(..., suppress_performance_warnings=True)``.
 
         Args:

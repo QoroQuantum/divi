@@ -41,7 +41,7 @@ def create_tsp_qubo(
     (`arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_, Eq. 13) is
     used: row constraints (each time step has exactly one city) are
     **omitted** because they are enforced structurally by the W-state
-    initialization and XY mixer.  Only column constraints and the
+    initialisation and XY mixer.  Only column constraints and the
     objective remain.
 
     Args:
@@ -672,7 +672,7 @@ def create_cvrp_hubo_binary(
     capacity_penalty: float = 4.0,
     max_steps: int | None = None,
 ) -> tuple[dict[tuple[int, ...], float], BinaryBlockConfig]:
-    """Generate a HUBO (Higher-Order Binary Optimization) for CVRP with binary encoding.
+    """Generate a HUBO (Higher-Order Binary Optimisation) for CVRP with binary encoding.
 
     Each (vehicle, timestep) slot is encoded as a ``bits_per_slot``-bit
     integer representing which customer (1..N) is assigned, or 0 for
@@ -1505,7 +1505,7 @@ class _RoutingProblemBase(QAOAProblem):
 
 
 class TSPProblem(_RoutingProblemBase):
-    """Traveling Salesman Problem for QAOA.
+    """Travelling Salesman Problem for QAOA.
 
     Supports two encodings:
 

@@ -4,12 +4,12 @@
 
 """Quantum Neural Network (QNN) algorithm.
 
-A QNN learns weights of a parameterized quantum circuit so that the
+A QNN learns weights of a parameterised quantum circuit so that the
 expectation value of a chosen observable, averaged over a batch of classical
-feature vectors, is minimized. The circuit factors into two layers:
+feature vectors, is minimised. The circuit factors into two layers:
 
 * a :class:`~divi.qprog.algorithms.FeatureMap` that encodes each feature
-  vector ``x_i`` into circuit parameters bound from data — not optimized;
+  vector ``x_i`` into circuit parameters bound from data — not optimised;
 * an :class:`~divi.qprog.algorithms.Ansatz` (any existing Divi ansatz) whose
   parameters are the trainable weights.
 
@@ -43,7 +43,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
 
     Composes a :class:`~divi.qprog.algorithms.FeatureMap` (data-binding
     layer) with an :class:`~divi.qprog.algorithms.Ansatz` (trainable
-    layer) into a single parameterized circuit. At each optimization
+    layer) into a single parameterised circuit. At each optimisation
     step, the framework evaluates the cost observable on the composed
     circuit once per sample in ``feature_batch``, reduces the per-sample
     expectation values along the sample axis (mean by default), and
@@ -68,7 +68,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         labels (numpy.ndarray or None): Shape ``(n_samples,)`` supervised
             targets when training a supervised loss; ``None`` for the
             unsupervised objective.
-        cost_hamiltonian: The observable being minimized
+        cost_hamiltonian: The observable being minimised
             (:class:`~qiskit.quantum_info.SparsePauliOp`).
         loss_constant (float): Constant term extracted from the observable.
         loss_reduction: User-facing aggregation across samples —
@@ -76,8 +76,8 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
             The resolved callable is stored privately and forwarded to
             :class:`~divi.pipeline.stages.DataBindingStage`.
         optimizer: Classical optimizer for weight updates.
-        max_iterations (int): Maximum number of optimization iterations.
-        current_iteration (int): Current optimization iteration.
+        max_iterations (int): Maximum number of optimisation iterations.
+        current_iteration (int): Current optimisation iteration.
     """
 
     def __init__(
@@ -95,7 +95,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         max_iterations: int = 10,
         **kwargs,
     ) -> None:
-        """Initialize a QNN.
+        """Initialise a QNN.
 
         Args:
             n_qubits: Number of qubits in the circuit.
@@ -116,7 +116,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
                 observable's expectation value, in ``[-1, 1]`` for the default
                 parity observable) is compared to its label via ``loss_fn``,
                 and those per-sample losses are aggregated by
-                ``loss_reduction``. When ``None`` (default) the QNN minimizes
+                ``loss_reduction``. When ``None`` (default) the QNN minimises
                 the bare expectation value (unsupervised).
             loss_fn: Per-sample supervised loss ``(prediction, label) ->
                 float``, used only when ``labels`` is given. ``"squared_error"``
@@ -128,7 +128,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
                 when unsupervised, or per-sample losses when ``labels`` is set)
                 into the scalar the optimizer sees. ``"mean"`` (default),
                 ``"sum"``, or a callable ``np.ndarray (n_samples,) -> float``.
-            max_iterations: Maximum number of optimization iterations.
+            max_iterations: Maximum number of optimisation iterations.
             **kwargs: Forwarded to
                 :class:`~divi.qprog.VariationalQuantumAlgorithm`
                 (e.g. ``backend``, ``optimizer``, ``seed``).
@@ -251,6 +251,6 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         ``DataBindingStage`` swaps in per-sample variants (data substituted
         as floats) and rewrites ``parameters`` to the weight-only tuple
         before downstream stages run, so the parametric IR we hand to the
-        spec stage is the full ``(data + weights)`` parameterization.
+        spec stage is the full ``(data + weights)`` parameterisation.
         """
         return self._cost_meta_circuit(self._data_symbols + self._weight_symbols)

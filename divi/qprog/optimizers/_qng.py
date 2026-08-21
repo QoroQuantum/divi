@@ -22,7 +22,7 @@ from divi.qprog.optimizers._linalg import _regularized_solve
 class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
     """Quantum Natural Gradient optimizer.
 
-    Performs regularized natural-gradient descent
+    Performs regularised natural-gradient descent
 
     .. math::
         \\theta \\leftarrow \\theta - \\eta \\, (G + \\lambda I)^{-1} \\nabla L,
@@ -132,7 +132,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
         grad: npt.NDArray[np.float64],
         metric: npt.NDArray[np.float64],
     ) -> npt.NDArray[np.float64]:
-        """Precondition ``grad`` with the (regularized) inverse metric."""
+        """Precondition ``grad`` with the (regularised) inverse metric."""
         delta = _regularized_solve(
             grad,
             metric,
@@ -216,7 +216,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
                         fun=np.atleast_1d(fun),
                         nit=it + 1,
                         success=True,
-                        message="Optimization in progress.",
+                        message="Optimisation in progress.",
                     )
                 )
 
@@ -230,7 +230,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
             fun=np.atleast_1d(best_fun),
             nit=max_iterations,
             success=True,
-            message="Optimization terminated: reached max_iterations.",
+            message="Optimisation terminated: reached max_iterations.",
         )
 
     def get_config(self) -> dict[str, Any]:

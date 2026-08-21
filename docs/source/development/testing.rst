@@ -38,7 +38,7 @@ Divi supports parallel test execution using `pytest-xdist <https://pytest-xdist.
 
 **Test Markers**
 
-Divi uses custom pytest markers to categorize tests:
+Divi uses custom pytest markers to categorise tests:
 
 .. code-block:: bash
 
@@ -69,7 +69,7 @@ Tests under ``tests/`` mirror the ``divi/`` package layout. The only
 non-obvious split is within ``tests/qprog/``:
 
 - ``tests/qprog/problems/`` - one file per ``QAOAProblem`` subclass
-- ``tests/qprog/algorithms/`` - algorithm-generic behavior (QAOA pipeline, QDrift, VQE, PCE)
+- ``tests/qprog/algorithms/`` - algorithm-generic behaviour (QAOA pipeline, QDrift, VQE, PCE)
 - ``tests/qprog/workflows/`` - workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
 
 Shared test infrastructure
@@ -149,7 +149,7 @@ Tests within each file follow a layered structure, from isolated units to full i
 2. **Problem class** — construction, properties, input validation, error handling
 3. **QAOAProblem protocol hooks** — ``decompose``, ``extend_solution``, ``evaluate_global_solution``,
    ``initial_solution_size``, ``postprocess_candidates``
-4. **QAOA integration** — Problem + QAOA together (initialization, e2e runs, checkpointing)
+4. **QAOA integration** — Problem + QAOA together (initialisation, e2e runs, checkpointing)
 5. **PartitioningProgramEnsemble integration** — Problem + ensemble (program creation, aggregation, e2e)
 
 Example layout for a new problem:
@@ -191,7 +191,7 @@ Example layout for a new problem:
        @pytest.mark.e2e
        def test_partitioning_e2e(self, default_test_simulator): ...
 
-Generic ``PartitioningProgramEnsemble`` behavior (error handling, hook delegation) is tested
+Generic ``PartitioningProgramEnsemble`` behaviour (error handling, hook delegation) is tested
 once in ``tests/qprog/workflows/test_partitioning_ensemble.py`` using mocked problems — do
 not duplicate those tests in problem-specific files.
 
@@ -280,7 +280,7 @@ Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for clean mocking
 
 Key pytest settings in ``pytest.ini``:
 
-- Custom markers for test categorization (``requires_api_key``, ``e2e``)
+- Custom markers for test categorisation (``requires_api_key``, ``e2e``)
 - Deprecation and syntax warning filters for cleaner output
 
 **Coverage Reporting**

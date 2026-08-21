@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Cost-function domain logic: PennyLane Hamiltonian ops, Trotterization,
-binary-polynomial normalization + evaluation, and QUBO/HUBO-to-Ising
+binary-polynomial normalisation + evaluation, and QUBO/HUBO-to-Ising
 conversion.
 """
 

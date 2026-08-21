@@ -106,14 +106,14 @@ def _normalize_properties(
     if "qubits" not in normalized:
         normalized["qubits"] = []
 
-    # Normalize qubits (list of lists of Nduv objects)
+    # Normalise qubits (list of lists of Nduv objects)
     if "qubits" in normalized:
         normalized["qubits"] = [
             [_normalize_nduv(param, default_date) for param in qubit_params]
             for qubit_params in normalized["qubits"]
         ]
 
-    # Normalize gates (list of gate dicts with parameters)
+    # Normalise gates (list of gate dicts with parameters)
     if "gates" in normalized:
         normalized["gates"] = [
             {
@@ -126,7 +126,7 @@ def _normalize_properties(
             for gate in normalized["gates"]
         ]
 
-    # Normalize general (list of Nduv objects)
+    # Normalise general (list of Nduv objects)
     if "general" in normalized and normalized["general"]:
         normalized["general"] = [
             _normalize_nduv(param, default_date) for param in normalized["general"]
@@ -139,7 +139,7 @@ def _normalize_nduv(
     nduv: dict[str, Any], default_date: datetime.datetime
 ) -> dict[str, Any]:
     """
-    Normalize a single Nduv (Name, Date, Unit, Value) object by adding
+    Normalise a single Nduv (Name, Date, Unit, Value) object by adding
     missing required fields.
 
     Args:
@@ -233,7 +233,7 @@ def _gate_calibration_from_nduv_list(
 def _build_target_from_normalized(
     normalized_properties: dict[str, Any], n_qubits: int
 ) -> Target:
-    """Build a :class:`~qiskit.transpiler.Target` from a normalized properties dict.
+    """Build a :class:`~qiskit.transpiler.Target` from a normalised properties dict.
 
     The returned target carries the user's calibration into every consumer
     that reads ``backend.target`` — most importantly the transpiler and
@@ -306,7 +306,7 @@ def create_backend_from_properties(
 
     This function handles the complete workflow:
 
-    - Normalizes the properties dictionary (fills in missing fields).
+    - Normalises the properties dictionary (fills in missing fields).
     - Infers the number of qubits from the properties if not provided.
     - Creates a GenericBackendV2 backend whose ``target`` reflects the
       supplied calibration values (T1/T2, frequency, gate errors, gate
@@ -348,7 +348,7 @@ def create_backend_from_properties(
         >>> backend_large.num_qubits
         120
     """
-    # Normalize the properties first
+    # Normalise the properties first
     normalized_properties = _normalize_properties(properties, default_date)
 
     # Infer number of qubits from qubits list length if not provided

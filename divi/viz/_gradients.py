@@ -18,7 +18,7 @@ class GradientMethod(str, Enum):
     """Strategy for computing gradients in viz analysis functions.
 
     ``PARAMETER_SHIFT`` uses the parameter-shift rule (shift = π/2,
-    exact for standard quantum gates).  ``FINITE_DIFFERENCE`` uses centered
+    exact for standard quantum gates).  ``FINITE_DIFFERENCE`` uses centred
     finite differences with a configurable step size ``eps``.
     """
 
@@ -34,7 +34,7 @@ def _finite_difference_gradients(
     pivots: npt.NDArray[np.float64],
     eps: float,
 ) -> npt.NDArray[np.float64]:
-    """Compute gradients via centered finite differences (shift = *eps*)."""
+    """Compute gradients via centred finite differences (shift = *eps*)."""
     m, d = pivots.shape
     eye = eps * np.eye(d, dtype=np.float64)
 

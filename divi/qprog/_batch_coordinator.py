@@ -62,7 +62,7 @@ class BatchConfig:
     ensembles or to bound the merged-call payload, set the relevant knob.
 
     *Cloud submission* (e.g. :class:`~divi.backends.QoroService`) typically
-    benefits from one large merged job to amortize HTTP round trips.
+    benefits from one large merged job to amortise HTTP round trips.
     Pass ``-1`` to unleash every program concurrently::
 
         ensemble.run(
@@ -82,7 +82,7 @@ class BatchConfig:
             that moment — so an actual merged submission may exceed
             ``max_batch_size`` when programs submit multiple circuits per
             call.  ``None`` (the default) preserves the wait-for-all
-            barrier behavior.  Setting this value also couples the
+            barrier behaviour.  Setting this value also couples the
             executor pool size to it (when ``max_concurrent_programs``
             is unset): the pool is sized to
             ``min(max_batch_size, len(programs))`` so the barrier
@@ -111,7 +111,7 @@ class BatchConfig:
 
             When ``False`` (default), circuits are merged in submission-arrival
             order — the order in which program threads reach the flush barrier.
-            This preserves backward-compatible behavior.
+            This preserves backward-compatible behaviour.
 
             Set to ``True`` to merge circuits in a consistent, key-sorted order
             regardless of thread scheduling.  This ensures that

@@ -1,4 +1,4 @@
-Combinatorial Optimization with QAOA and PCE
+Combinatorial Optimisation with QAOA and PCE
 ============================================
 
 Divi provides several routes from a graph, QUBO, or HUBO to a binary solution.
@@ -22,7 +22,7 @@ Start with the problem representation and scale, then choose the solver:
        square-root qubit scaling at the cost of a different objective landscape.
    * - :class:`~divi.qprog.algorithms.IterativeQAOA`
      - You want to increase QAOA depth gradually and warm-start each depth.
-     - Runs several optimizations, but often starts deeper circuits from better
+     - Runs several optimisations, but often starts deeper circuits from better
        parameters.
    * - :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
      - The full problem should be decomposed into independently executable
@@ -49,7 +49,7 @@ sections below.
 
 Custom problems must provide ``cost_hamiltonian``, ``loss_constant``, and
 ``decode_fn``: the objective operator, its additive offset, and the function
-mapping a measured bitstring to a domain solution. Optional hooks customize the
+mapping a measured bitstring to a domain solution. Optional hooks customise the
 mixer, initial state, feasibility, repair, and partitioned aggregation. The cost Hamiltonian is a
 :class:`~qiskit.quantum_info.SparsePauliOp`; two helpers cover common inputs:
 
@@ -159,7 +159,7 @@ Built-in graph problems include:
    * - Problem class
      - Description
    * - :class:`~divi.qprog.problems.MaxCutProblem`\ ``(graph)``
-     - Divides a graph into two subsets to maximize the sum of edge weights between them.
+     - Divides a graph into two subsets to maximise the sum of edge weights between them.
    * - :class:`~divi.qprog.problems.MaxCliqueProblem`\ ``(graph)``
      - Finds the largest complete subgraph where every node is connected to every other.
    * - :class:`~divi.qprog.problems.MaxIndependentSetProblem`\ ``(graph)``
@@ -208,14 +208,14 @@ Example: Finding the max-clique of a graph:
 QUBO Problems
 -------------
 
-Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimization (QUBO) problems. Divi currently supports three ways to build a :class:`~divi.qprog.problems.BinaryOptimizationProblem`:
+Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimisation (QUBO) problems. Divi currently supports three ways to build a :class:`~divi.qprog.problems.BinaryOptimizationProblem`:
 
 1. **NumPy array** — pass a :class:`numpy.ndarray` or a :mod:`scipy.sparse` matrix directly
 2. **Dimod BQM** — use ``dimod`` to construct a :class:`dimod.BinaryQuadraticModel`
 3. **Nested list** — pass a Python list (converted to a NumPy array internally)
 
 For matrix and nested-list inputs, the solution is a binary
-:class:`numpy.ndarray`. A labeled BQM preserves its labels and returns a mapping.
+:class:`numpy.ndarray`. A labelled BQM preserves its labels and returns a mapping.
 
 NumPy Array-based Input
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -261,7 +261,7 @@ BinaryQuadraticModel Input
 
 Pass a :class:`dimod.BinaryQuadraticModel` to the same
 ``BinaryOptimizationProblem`` constructor. Variable labels are preserved, so a
-string-labeled BQM returns a mapping such as ``{"w": 0, "x": 1, "y": 0}``
+string-labelled BQM returns a mapping such as ``{"w": 0, "x": 1, "y": 0}``
 instead of an array. Evaluate it directly with ``bqm.energy(qaoa.solution)``.
 
 .. dashboard-example: bqm
@@ -300,10 +300,10 @@ Pauli Correlation Encoding (PCE)
 parity encoding. ``encoding_type="dense"`` needs
 :math:`\lceil\log_2(N + 1)\rceil` qubits for *N* variables;
 ``encoding_type="poly"`` chooses the smallest *q* for which
-:math:`q(q + 1)/2 \geq N`. Dense encoding minimizes qubit count, while the
+:math:`q(q + 1)/2 \geq N`. Dense encoding minimises qubit count, while the
 polynomial encoding uses lower-weight one- and two-qubit correlations.
 
-``alpha`` controls the objective used during optimization. Values below ``5``
+``alpha`` controls the objective used during optimisation. Values below ``5``
 use a smooth parity relaxation; values at or above ``5`` use a discrete,
 CVaR-style objective over sampled energies. Start with the default ``2.0``
 unless you specifically need the harder discrete objective.
@@ -341,7 +341,7 @@ unless you specifically need the harder discrete objective.
 HUBO Problems
 -------------
 
-Divi's QAOA solver supports Higher-Order Binary Optimization (HUBO) problems —
+Divi's QAOA solver supports Higher-Order Binary Optimisation (HUBO) problems —
 polynomials with cubic or higher-degree interactions.  A HUBO is passed as a
 dictionary mapping variable tuples to coefficients:
 
@@ -417,7 +417,7 @@ Matching Problems
 -----------------
 
 Divi supports maximum-weight matching via :class:`~divi.qprog.problems.MaxWeightMatchingProblem`.  Given
-a weighted graph, it finds a set of edges that maximizes total weight while
+a weighted graph, it finds a set of edges that maximises total weight while
 ensuring no two selected edges share a node.
 
 For small graphs, use directly with QAOA:
@@ -477,7 +477,7 @@ and optionally fills unmatched residual nodes using classical
 Iterative QAOA
 --------------
 
-Standard QAOA uses random initialization at a fixed circuit depth.
+Standard QAOA uses random initialisation at a fixed circuit depth.
 :class:`~divi.qprog.algorithms.IterativeQAOA` improves on this by iteratively
 increasing the depth from 1 to ``max_depth``, warm-starting each depth with
 parameters interpolated from the previous optimum.  This strategy, based on
@@ -680,7 +680,7 @@ The hybrid ``decomposer`` and optional ``composer`` are configured on
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` (how the large BQM is split
 and, for the default QAOA path, stitched back together). The helper only groups
 the usual ensemble calls; for progress output, circuit batching, and Ctrl+C
-behavior, see :doc:`../execution_workflows/program_ensembles`.
+behaviour, see :doc:`../execution_workflows/program_ensembles`.
 
 Structure-Aware Partitioning (Community Decomposer)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

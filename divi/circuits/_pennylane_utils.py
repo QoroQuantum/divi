@@ -37,7 +37,7 @@ _SHAPE_HINT = (
 
 
 def _warn_on_device_settings(qnode: QNode) -> None:
-    """Warn when a QNode declares a shot count divi will not honor.
+    """Warn when a QNode declares a shot count divi will not honour.
 
     Divi runs every QNode against its own configured backend with its own
     shot count, so device-level shots are silently ignored — flag them so

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Loss-landscape visualization for variational programs.
+"""Loss-landscape visualisation for variational programs.
 
 Provides one- and two-dimensional objective scans and a PCA-based plane scan.
 Evaluations use Divi's batched cost path. On

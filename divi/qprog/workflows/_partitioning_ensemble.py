@@ -17,7 +17,7 @@ from divi.qprog.problems._graphs import _GraphProblemBase
 
 
 class PartitioningProgramEnsemble(ProgramEnsemble):
-    """Generic orchestrator for partition-solve-aggregate quantum optimization.
+    """Generic orchestrator for partition-solve-aggregate quantum optimisation.
 
     Delegates all domain-specific logic to the :class:`~divi.qprog.problems.QAOAProblem` instance:
     decomposition, solution extension, evaluation, and result post-processing.
@@ -31,7 +31,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         optimizer: Optimizer for each sub-program.
         quantum_routine: Per-partition quantum algorithm.
             ``"qaoa"`` (default), ``"pce"``, or ``"iterative_qaoa"``.
-        max_iterations: Max optimization iterations per sub-program.
+        max_iterations: Max optimisation iterations per sub-program.
         **kwargs: If ``early_stopping`` is present it is extracted and
             deep-copied per sub-program.  ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live

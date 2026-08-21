@@ -512,7 +512,7 @@ def _merge_group_report(reports: list[DryRunReport]) -> DryRunReport:
 #: shot counts, and naming the consequence sends the reader hunting for a
 #: difference in the wrong place.
 _SIGNATURE_CAUSES = (
-    ("the objective they optimize", lambda r: r.objective_fingerprint),
+    ("the objective they optimise", lambda r: r.objective_fingerprint),
     ("batch size", lambda r: _stage_metadata_value_in(r.stages, "n_samples")),
     ("register width", lambda r: r.circuit_stats.get("max_width")),
     ("parameter count", lambda r: _declared_n_params(r)),

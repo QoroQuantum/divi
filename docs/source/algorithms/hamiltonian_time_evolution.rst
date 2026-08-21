@@ -1,7 +1,7 @@
 Hamiltonian Time Evolution
 ==========================
 
-The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomized term sampling for shallower circuits on large Hamiltonians).
+The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomised term sampling for shallower circuits on large Hamiltonians).
 
 It supports three output modes:
 
@@ -255,5 +255,5 @@ Next Steps
 ----------
 
 - Run the full tutorial scripts: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/dynamics/time_evolution.py>`_ — covers single-time-point evolution, trajectories, multi-observable groups, and QDrift — and `nmr_spectroscopy.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/nmr_spectroscopy.py>`_ — a 34-spin NMR simulation that demonstrates the cloud-merge recipe end-to-end.
-- Learn about optimization-based workflows in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
+- Learn about optimisation-based workflows in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
 - Explore backend choices in :doc:`../execution_workflows/backends`

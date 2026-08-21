@@ -3,9 +3,9 @@ Algorithms
 
 Divi provides implementations of popular quantum algorithms with a focus on
 scalability and ease of use. VQE targets ground-state energy estimation; QAOA
-and PCE target combinatorial optimization; :class:`~divi.qprog.algorithms.TimeEvolution`
+and PCE target combinatorial optimisation; :class:`~divi.qprog.algorithms.TimeEvolution`
 simulates Hamiltonian dynamics; :class:`~divi.qprog.algorithms.CustomVQA` lets you wrap
-an arbitrary parameterized circuit as a variational program.
+an arbitrary parameterised circuit as a variational program.
 
 .. automodapi:: divi.qprog.algorithms
    :headings: ~^
@@ -19,7 +19,7 @@ Trotterization Strategies
 
 QAOA uses a trotterization strategy to evolve the cost Hamiltonian. The default
 is :class:`~divi.hamiltonians.ExactTrotterization`; :class:`~divi.hamiltonians.QDrift`
-provides randomized sampling for shallower circuits at the cost of more circuits
+provides randomised sampling for shallower circuits at the cost of more circuits
 per iteration. See the :doc:`/api_reference/hamiltonians` reference page for full documentation.
 
 .. autosummary::

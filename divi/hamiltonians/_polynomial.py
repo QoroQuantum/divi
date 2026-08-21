@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Binary polynomial types, normalization, and JIT-compiled evaluation kernels.
+"""Binary polynomial types, normalisation, and JIT-compiled evaluation kernels.
 
-Handles HUBO/QUBO inputs, normalizes them to :class:`BinaryPolynomialProblem`,
+Handles HUBO/QUBO inputs, normalises them to :class:`BinaryPolynomialProblem`,
 and provides compiled evaluators used by both ``divi.qprog.algorithms._pce``
 and the ``PCECostStage`` pipeline stage.
 """
@@ -91,7 +91,7 @@ def _default_variable_order(variables: set[Hashable]) -> tuple[Hashable, ...]:
 
 
 def _normalize_hubo_term_key(term: Any) -> HUBOTerm:
-    """Validate and normalize a HUBO term key to a tuple."""
+    """Validate and normalise a HUBO term key to a tuple."""
     if isinstance(term, tuple):
         term_tuple = term
     elif isinstance(term, frozenset):
@@ -176,7 +176,7 @@ def normalize_binary_polynomial_problem(
     *,
     variable_order: tuple[Hashable, ...] | list[Hashable] | None = None,
 ) -> BinaryPolynomialProblem:
-    """Normalize QUBO/HUBO input into canonical binary-polynomial representation."""
+    """Normalise QUBO/HUBO input into canonical binary-polynomial representation."""
     if isinstance(problem, QUBOProblemTypes):
         polynomial = qubo_to_binary_polynomial(problem)
     else:
@@ -390,8 +390,8 @@ def _evaluate_binary_polynomial(
     """Evaluate binary polynomial energy for one or many assignments.
 
     Degree-1 terms are evaluated as ``c * x_i²`` rather than ``c * x_i`` to
-    undo the linearization (``x_i² → x_i``) applied during polynomial
-    normalization.  This is a no-op for binary values (``x² = x``) but
+    undo the linearisation (``x_i² → x_i``) applied during polynomial
+    normalisation.  This is a no-op for binary values (``x² = x``) but
     produces correct energies for continuous soft-relaxed values.
 
     Args:

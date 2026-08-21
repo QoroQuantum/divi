@@ -89,7 +89,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         decode_solution_fn: Callable[[str], Any] | None = None,
         **kwargs,
     ):
-        """Initialize the solution-sampling state.
+        """Initialise the solution-sampling state.
 
         Args:
             decode_solution_fn: Function mapping a bitstring (e.g. ``"0101"``) to a
@@ -114,14 +114,14 @@ class SolutionSamplingMixin(_SamplingMixinBase):
 
     @property
     def best_probs(self) -> dict[int, dict[str, float]]:
-        """Get normalized probabilities for the best parameters.
+        """Get normalised probabilities for the best parameters.
 
         This property provides access to the probability distribution computed
         by running measurement circuits with the best parameters found during
-        optimization. It maps each parameter-set index to that set's distribution
+        optimisation. It maps each parameter-set index to that set's distribution
         over bitstrings (computational basis states).
 
-        The probabilities are normalized and iterate in a deterministic order.
+        The probabilities are normalised and iterate in a deterministic order.
 
         Returns:
             dict[int, dict[str, float]]: Dictionary mapping each parameter-set
@@ -155,9 +155,9 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         """
         if not self._best_probs:
             warn(
-                "best_probs is empty. Either optimization has not been run yet, "
+                "best_probs is empty. Either optimisation has not been run yet, "
                 "or final computation was not performed. Call run() to execute "
-                "the optimization.",
+                "the optimisation.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -193,7 +193,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
 
         Raises:
             RuntimeError: If probability distribution is not available because
-                optimization has not been run or final computation was not performed.
+                optimisation has not been run or final computation was not performed.
             ValueError: If min_prob is not in range [0.0, 1.0] or n is negative.
 
         Note:
@@ -243,7 +243,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             raise RuntimeError(
                 "No probability distribution available. The final computation step "
                 "must be performed to compute the probability distribution. "
-                "Call run(perform_final_computation=True) to execute optimization "
+                "Call run(perform_final_computation=True) to execute optimisation "
                 "and compute the distribution."
             )
         # Ranking is over a single parameter set's distribution. The usual flow
@@ -289,11 +289,11 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         """Run the final measurement and decode the solution.
 
         Called by ``run()`` (with ``params=None``, falling back to the host's
-        trained parameters) after optimization completes. It can also be called
+        trained parameters) after optimisation completes. It can also be called
         directly with externally-provided ``params`` when you already have trained
         parameters (e.g. from a prior ``run()``, a checkpoint, or external
         training) and only need to sample the circuit — skipping the EXPECTATION
-        jobs that ``run()`` would otherwise dispatch during optimization.
+        jobs that ``run()`` would otherwise dispatch during optimisation.
 
         When called with explicit ``params``, this method does NOT mutate the
         host's optimizer state. Only the measurement-side attributes are updated:

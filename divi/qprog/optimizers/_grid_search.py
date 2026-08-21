@@ -31,7 +31,7 @@ class GridSearchOptimizer(Optimizer):
         param_ranges: list[tuple[float, float]] | None = None,
         grid_points: int = 20,
     ):
-        """Initialize a grid search optimizer.
+        """Initialise a grid search optimizer.
 
         Provide either *param_grid* directly or *param_ranges* + *grid_points*
         to auto-generate the grid.
@@ -82,7 +82,7 @@ class GridSearchOptimizer(Optimizer):
     ) -> OptimizeResult:
         """Evaluate all grid points and return the best parameters.
 
-        The *initial_params* argument is ignored in favor of the grid.
+        The *initial_params* argument is ignored in favour of the grid.
         The optimizer always runs for exactly 1 iteration regardless of
         *max_iterations*.
 

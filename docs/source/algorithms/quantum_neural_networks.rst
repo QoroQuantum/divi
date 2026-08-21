@@ -2,8 +2,8 @@ Quantum Neural Networks
 =======================
 
 :class:`~divi.qprog.algorithms.QNN` is Divi's first-class primitive for
-quantum machine learning. It trains the weights of a parameterized circuit over
-a batch of classical feature vectors. By default it minimizes the expectation
+quantum machine learning. It trains the weights of a parameterised circuit over
+a batch of classical feature vectors. By default it minimises the expectation
 value of a chosen observable averaged across the batch (unsupervised); pass
 ``labels`` to train a **supervised** loss instead. The quick start uses this
 supervised path; unsupervised reduction is described under
@@ -15,7 +15,7 @@ you** from two composable pieces:
 
 - a :class:`~divi.qprog.algorithms.FeatureMap` — the *data* layer. It encodes
   each feature vector into circuit parameters that are bound from data, never
-  optimized.
+  optimised.
 - an :class:`~divi.qprog.algorithms.Ansatz` — the *trainable* layer. Any Divi
   ansatz works; its parameters are the weights the optimizer updates.
 
@@ -27,7 +27,7 @@ The optimizer sees one scalar per weight candidate, never the data axis.
 Quick Start
 -----------
 
-Train a tiny 2-qubit classifier on four labeled samples:
+Train a tiny 2-qubit classifier on four labelled samples:
 
 .. code-block:: python
 
@@ -84,7 +84,7 @@ on the program via
 semantics and types.
 
 Per-iteration INFO log lines are emitted to the ``divi`` logger during
-optimization.  To silence them: ``from divi.reporting import disable_logging``
+optimisation.  To silence them: ``from divi.reporting import disable_logging``
 (call ``enable_logging()`` to restore).
 
 Inference
@@ -177,7 +177,7 @@ The Observable and the Loss
 defaults to the all-qubit parity ``Z ⊗ Z ⊗ … ⊗ Z``, which gives a single
 readout in ``[-1, 1]`` informed by every qubit. Pass your own to change the
 readout, e.g. ``SparsePauliOp.from_list([("ZI", 1.0)])`` to read a single qubit.
-Unsupervised mode minimizes this expectation directly; supervised mode compares
+Unsupervised mode minimises this expectation directly; supervised mode compares
 it with each label through ``loss_fn``.
 
 ``loss_reduction`` aggregates per-sample expectations in unsupervised mode and

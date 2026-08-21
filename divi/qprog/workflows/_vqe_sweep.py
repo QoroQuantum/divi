@@ -291,7 +291,7 @@ class MoleculeTransformer:
         bonds_to_transform: A subset of `atom_connectivity` that specifies the bonds to modify.
             If None, all bonds will be transformed.
         alignment_atoms: Indices of atoms onto which to align the orientation of the resulting
-            variants of the molecule. Only useful for visualization and debugging.
+            variants of the molecule. Only useful for visualisation and debugging.
             If None, no alignment is carried out.
     """
 
@@ -402,7 +402,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         **kwargs,
     ):
         """
-        Initialize a VQE hyperparameter sweep.
+        Initialise a VQE hyperparameter sweep.
 
         Parameters
         ----------
@@ -418,7 +418,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
             the provided ``hamiltonians`` are used directly and no molecular
             transformation is performed.
         optimizer: Optimizer
-            The optimization algorithm for the VQE runs.
+            The optimisation algorithm for the VQE runs.
         max_iterations: int
             The maximum number of optimizer iterations for each VQE run.
         **kwargs
@@ -525,7 +525,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
 
     def visualize_results(self, graph_type: Literal["line", "scatter"] = "line"):
         """
-        Visualize the results of the VQE problem.
+        Visualise the results of the VQE problem.
         """
         if graph_type not in ["line", "scatter"]:
             raise ValueError(
@@ -535,7 +535,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         if (transformer := self.molecule_transformer) is None:
             raise RuntimeError(
                 "visualize_results currently supports molecule-transformer sweeps only; "
-                "visualization for hamiltonians-only sweeps is not implemented."
+                "visualisation for hamiltonians-only sweeps is not implemented."
             )
 
         if self._executor is not None:

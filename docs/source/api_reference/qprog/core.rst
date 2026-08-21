@@ -34,5 +34,5 @@ Type Aliases
 
    Accepted values for
    :meth:`~divi.qprog.VariationalQuantumAlgorithm.param_history`:
-   ``"all_evaluated"`` returns every parameter vector seen during optimization;
+   ``"all_evaluated"`` returns every parameter vector seen during optimisation;
    ``"best_per_iteration"`` returns only the best vector from each iteration.

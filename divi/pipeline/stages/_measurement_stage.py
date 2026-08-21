@@ -54,7 +54,7 @@ def _warn_imag_coeffs(
     shot allocation will silently discard.  Hermitian operators may
     legitimately produce purely-imaginary coefficients (e.g. ``j*(O -
     O.adjoint())`` decompositions); the warning steers users to
-    ``0.5 * (O + O.adjoint())`` symmetrization.
+    ``0.5 * (O + O.adjoint())`` symmetrisation.
     """
     obs_iter = observable if isinstance(observable, tuple) else (observable,)
     for obs in obs_iter:
@@ -71,7 +71,7 @@ def _warn_imag_coeffs(
                 f"imaginary coefficients (max |Im(c)| = {max_imag:.3g}, "
                 f"max |c| = {max_abs:.3g}). Shot allocation uses only the "
                 f"real parts; if the operator is meant to be Hermitian, "
-                f"symmetrize it as 0.5 * (O + O.adjoint()) before "
+                f"symmetrise it as 0.5 * (O + O.adjoint()) before "
                 f"constructing the program.",
                 UserWarning,
                 stacklevel=3,

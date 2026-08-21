@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Problem classes for QAOA-compatible quantum optimization."""
+"""Problem classes for QAOA-compatible quantum optimisation."""
 
 from ._base import QAOAProblem
 from ._binary import BinaryOptimizationProblem

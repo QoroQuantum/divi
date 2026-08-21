@@ -42,7 +42,7 @@ class PymooState(BaseModel):
 
 
 class PymooMethod(Enum):
-    """Supported optimization methods from the pymoo library."""
+    """Supported optimisation methods from the pymoo library."""
 
     CMAES = "CMAES"
     DE = "DE"
@@ -50,18 +50,18 @@ class PymooMethod(Enum):
 
 class PymooOptimizer(Optimizer):
     """
-    Optimizer wrapper for pymoo optimization algorithms and CMA-ES.
+    Optimizer wrapper for pymoo optimisation algorithms and CMA-ES.
 
-    Supports population-based optimization methods from the pymoo library (DE)
+    Supports population-based optimisation methods from the pymoo library (DE)
     and the cma library (CMAES).
     """
 
     def __init__(self, method: PymooMethod, population_size: int = 50, **kwargs):
         """
-        Initialize a pymoo-based optimizer.
+        Initialise a pymoo-based optimizer.
 
         Args:
-            method (PymooMethod): The optimization algorithm to use (CMAES or DE).
+            method (PymooMethod): The optimisation algorithm to use (CMAES or DE).
             population_size (int, optional): Size of the population for the algorithm.
                 Defaults to 50.
             **kwargs: Additional algorithm-specific parameters passed to pymoo/cma.
@@ -72,7 +72,7 @@ class PymooOptimizer(Optimizer):
         self.population_size = population_size
         self.algorithm_kwargs = kwargs
 
-        # Optimization state (updated during optimize(), used for checkpointing)
+        # Optimisation state (updated during optimize(), used for checkpointing)
         self._curr_algorithm_obj: Any | None = None
 
     @property
@@ -81,7 +81,7 @@ class PymooOptimizer(Optimizer):
         Get the number of parameter sets (population size) used by this optimizer.
 
         Returns:
-            int: Population size for the optimization algorithm.
+            int: Population size for the optimisation algorithm.
         """
         if self.method.value == "DE":
             return self.population_size
@@ -108,7 +108,7 @@ class PymooOptimizer(Optimizer):
         initial_params: npt.NDArray[np.float64],
         rng: np.random.Generator,
     ) -> Any:
-        """Initialize CMA-ES strategy."""
+        """Initialise CMA-ES strategy."""
         # cma takes a single mean plus an initial sigma, not a population.
         x0 = initial_params[0]
 
@@ -133,7 +133,7 @@ class PymooOptimizer(Optimizer):
         initial_params: npt.NDArray[np.float64],
         rng: np.random.Generator,
     ) -> Any:
-        """Initialize Pymoo strategy (DE)."""
+        """Initialise Pymoo strategy (DE)."""
         optimizer_obj = globals()[self.method.value](
             pop_size=self.population_size,
             parallelize=False,
@@ -170,7 +170,7 @@ class PymooOptimizer(Optimizer):
         initial_params: npt.NDArray[np.float64],
         rng: np.random.Generator,
     ) -> Any:
-        """Initialize a fresh optimizer instance.
+        """Initialise a fresh optimizer instance.
 
         Args:
             initial_params: Initial parameter values.
@@ -190,10 +190,10 @@ class PymooOptimizer(Optimizer):
         iterations_to_run: int,
         callback_fn: Callable | None,
     ) -> OptimizeResult:
-        """Run CMA-ES optimization loop."""
+        """Run CMA-ES optimisation loop."""
         if self._curr_algorithm_obj is None:
             raise RuntimeError(
-                "_curr_algorithm_obj is not initialized; call optimize() first "
+                "_curr_algorithm_obj is not initialised; call optimize() first "
                 "so _initialize_optimizer runs."
             )
         es = self._curr_algorithm_obj
@@ -222,10 +222,10 @@ class PymooOptimizer(Optimizer):
         iterations_to_run: int,
         callback_fn: Callable | None,
     ) -> OptimizeResult:
-        """Run Pymoo (DE) optimization loop."""
+        """Run Pymoo (DE) optimisation loop."""
         if self._curr_algorithm_obj is None:
             raise RuntimeError(
-                "_curr_algorithm_obj is not initialized; call optimize() first "
+                "_curr_algorithm_obj is not initialised; call optimize() first "
                 "so _initialize_optimizer runs."
             )
         algo = self._curr_algorithm_obj
@@ -264,10 +264,10 @@ class PymooOptimizer(Optimizer):
         **kwargs,
     ):
         """
-        Run the optimization algorithm.
+        Run the optimisation algorithm.
 
         Args:
-            cost_fn (Callable): Function to minimize. Should accept a 2D array of
+            cost_fn (Callable): Function to minimise. Should accept a 2D array of
                 parameter sets and return an array of cost values.
             initial_params (npt.NDArray[np.float64], optional): Initial parameter values as a 2D array
                 of shape (n_param_sets, n_params). Should be None when resuming from a checkpoint.
@@ -277,15 +277,15 @@ class PymooOptimizer(Optimizer):
 
                 - max_iterations (int, optional): Iterations to run in this call.
                   The caller subtracts whatever a previous run already spent, so a
-                  resumed optimization receives only what is left. Defaults to 5.
+                  resumed optimisation receives only what is left. Defaults to 5.
                 - rng (np.random.Generator): Random number generator.
 
         Returns:
-            OptimizeResult: Optimization result with final parameters and cost value.
+            OptimizeResult: Optimisation result with final parameters and cost value.
         """
         max_iterations = kwargs.pop("max_iterations", 5)
 
-        # Resume from checkpoint or initialize fresh
+        # Resume from checkpoint or initialise fresh
         if self._curr_algorithm_obj is not None:
             iterations_to_run = max_iterations
         else:
@@ -309,11 +309,11 @@ class PymooOptimizer(Optimizer):
             checkpoint_dir (Path | str): Directory path where the optimizer state will be saved.
 
         Raises:
-            RuntimeError: If optimization has not been run (no state to save).
+            RuntimeError: If optimisation has not been run (no state to save).
         """
         if self._curr_algorithm_obj is None:
             raise RuntimeError(
-                "Cannot save checkpoint: optimization has not been run. "
+                "Cannot save checkpoint: optimisation has not been run. "
                 "At least one iteration must complete before saving optimizer state."
             )
 
@@ -376,7 +376,7 @@ class PymooOptimizer(Optimizer):
         """Reset the optimizer's internal state.
 
         Clears the current algorithm object, allowing the optimizer
-        to be reused for fresh optimization runs.
+        to be reused for fresh optimisation runs.
         """
         self._curr_algorithm_obj = None
 

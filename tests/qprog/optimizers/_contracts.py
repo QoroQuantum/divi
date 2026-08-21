@@ -159,5 +159,5 @@ def verify_save_without_prior_run_raises(
     optimizer: Optimizer,
     tmp_path: Path,
 ) -> None:
-    with pytest.raises(RuntimeError, match="optimization has not been run"):
+    with pytest.raises(RuntimeError, match="optimisation has not been run"):
         optimizer.save_state(str(tmp_path / "checkpoint"))

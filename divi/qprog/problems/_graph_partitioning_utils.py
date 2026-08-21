@@ -400,7 +400,7 @@ def draw_partitions(
     figsize: tuple[int, int] | None = (10, 8),
     node_size: int = 300,
 ):
-    """Draw a graph with nodes colored by partition.
+    """Draw a graph with nodes coloured by partition.
 
     Args:
         graph: The full graph.

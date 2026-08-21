@@ -1,7 +1,7 @@
 Checkpointing
 =============
 
-Divi provides checkpointing support for saving and resuming optimization state.
+Divi provides checkpointing support for saving and resuming optimisation state.
 :class:`~divi.qprog.checkpointing.CheckpointConfig` controls where and how often
 state is written; :class:`~divi.qprog.checkpointing.CheckpointInfo` describes a
 single checkpoint on disk.

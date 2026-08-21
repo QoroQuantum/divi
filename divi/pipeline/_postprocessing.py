@@ -122,7 +122,7 @@ def _batched_expectation(
         reduced_eigvals_matrix[obs_idx, :] = 1 - 2 * parity
 
     # 3. Build reduced count matrix (n_histograms × n_unique_states). Counts are
-    # exact in float64, so normalizing after the contraction rounds only once.
+    # exact in float64, so normalising after the contraction rounds only once.
     reduced_count_matrix = np.zeros((n_histograms, n_unique_states))
     totals = np.ones(n_histograms)
     for i, shots_dict in enumerate(shots_dicts):
