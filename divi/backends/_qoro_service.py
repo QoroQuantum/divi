@@ -33,7 +33,7 @@ from divi.qasm import (
 )
 
 from ._cancellation import _auto_cancellation_scope
-from ._circuit_runner import CircuitRunner
+from ._circuit_runner import CircuitBatch, CircuitRunner, normalise_circuit_batch
 from ._config import ExecutionConfig, JobConfig
 from ._execution_result import ExecutionResult
 from ._pauli_serde import compress_ham_ops
@@ -534,7 +534,7 @@ class QoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        circuits: CircuitBatch,
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -552,8 +552,10 @@ class QoroService(CircuitRunner):
         one or more chunks, associating them all with a single job ID.
 
         Args:
-            circuits (dict[str, str]):
-                Dictionary mapping unique circuit IDs to QASM circuit strings.
+            circuits:
+                Mapping of unique circuit ID → QASM string or
+                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
+                circuits labelled by positional index.
             ham_ops (str | None, optional):
                 String representing the Hamiltonian operators to measure, semicolon-separated.
                 Each term is a combination of Pauli operators, e.g. "XYZ;XXZ;ZIZ".
@@ -599,6 +601,8 @@ class QoroService(CircuitRunner):
             ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
                 to poll for results using backend.poll_job_status() and get_job_results().
         """
+        circuits = normalise_circuit_batch(circuits)
+
         # Create final job configuration by layering configurations:
         #    service defaults -> user overrides
         if override_job_config:

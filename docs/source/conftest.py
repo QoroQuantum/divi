@@ -13,7 +13,6 @@ Run: ``cd docs && make test-snippets``
 
 import os
 import shutil
-from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 
@@ -27,11 +26,13 @@ import matplotlib.pyplot as plt  # noqa: E402 — after matplotlib.use
 import numpy as np
 import pennylane as qp
 import pytest
+from qiskit import QuantumCircuit
 from sybil import Sybil
 from sybil.parsers.rest import PythonCodeBlockParser, SkipParser
 from sybil.region import Lexeme
 
 from divi.backends import (
+    CircuitBatch,
     CircuitRunner,
     ExecutionConfig,
     ExecutionResult,
@@ -39,6 +40,7 @@ from divi.backends import (
     JobStatus,
     MaestroSimulator,
     SimulatorCluster,
+    normalise_circuit_batch,
 )
 from divi.qprog import SuperpositionState
 
@@ -119,6 +121,14 @@ _QASM_STRING = (
 )
 
 
+def _bell_circuit() -> QuantumCircuit:
+    qc = QuantumCircuit(2, 2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure([0, 1], [0, 1])
+    return qc
+
+
 class DocStubQoroService(CircuitRunner):
     """Stand-in for :class:`~divi.backends.QoroService` — no network, deterministic."""
 
@@ -166,7 +176,7 @@ class DocStubQoroService(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        circuits: CircuitBatch,
         ham_ops=None,
         circuit_ham_map=None,
         job_type=None,
@@ -174,7 +184,7 @@ class DocStubQoroService(CircuitRunner):
         override_job_config=None,
         **kwargs,
     ) -> ExecutionResult:
-        self._pending_circuits = dict(circuits)
+        self._pending_circuits = normalise_circuit_batch(circuits)
         self._last_ham_ops = ham_ops
         return ExecutionResult(job_id="doc-sybil-qoro-job")
 
@@ -221,6 +231,9 @@ def setup(namespace):
     namespace["qasm_string"] = _QASM_STRING
     namespace["qasm_string_1"] = _QASM_STRING
     namespace["qasm_string_2"] = _QASM_STRING
+    namespace["qiskit_circuit"] = _bell_circuit()
+    namespace["qiskit_circuit_a"] = _bell_circuit()
+    namespace["qiskit_circuit_b"] = _bell_circuit()
     namespace["circuits"] = {"c0": _QASM_STRING}
     namespace["molecule"] = qp.qchem.Molecule(
         symbols=["H", "H"],

@@ -9,12 +9,13 @@ work to a remote scheduler and return a job handle, then expose polling,
 result-fetching, and cancellation against that handle.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from threading import Event
 from typing import Protocol, runtime_checkable
 
 import requests
 
+from ._circuit_runner import CircuitBatch
 from ._execution_result import ExecutionResult
 
 
@@ -36,19 +37,21 @@ class AsyncJobBackend(Protocol):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        circuits: CircuitBatch,
         *,
         cancellation_event: Event | None = None,
         **kwargs,
     ) -> ExecutionResult:
-        """Submit a batch of QASM circuits and return a handle.
+        """Submit a batch of circuits and return a handle.
 
         The returned :class:`~divi.backends.ExecutionResult` carries the
         scheduler-side ``job_id`` but no circuit results; populate it via
         :meth:`get_job_results` once polling reports a terminal status.
 
         Args:
-            circuits: Mapping of unique label → OpenQASM source.
+            circuits: Mapping of unique label → OpenQASM source or
+                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
+                circuits labelled by positional index.
             cancellation_event: When set, the implementation should refuse
                 to dispatch (or short-circuit dispatch) and raise
                 :class:`~divi.exceptions.ExecutionCancelledError`. The same

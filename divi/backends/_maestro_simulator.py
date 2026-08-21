@@ -7,7 +7,7 @@ import os
 import re
 import warnings
 import weakref
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
 from threading import Event, Lock
@@ -34,7 +34,7 @@ else:
 
 from qiskit import QuantumCircuit
 
-from ._circuit_runner import CircuitRunner
+from ._circuit_runner import CircuitBatch, CircuitRunner, normalise_circuit_batch
 from ._execution_result import ExecutionResult
 from ._pauli_serde import ham_ops_group_for_circuit
 from ._shot_allocation import from_wire, per_circuit, validate
@@ -555,7 +555,7 @@ class MaestroSimulator(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        circuits: CircuitBatch,
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -566,7 +566,9 @@ class MaestroSimulator(CircuitRunner):
         """Submit quantum circuits for execution on the maestro simulator.
 
         Args:
-            circuits: Dictionary mapping circuit labels to OpenQASM string representations.
+            circuits: Mapping of circuit label → OpenQASM string or
+                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
+                circuits labelled by positional index.
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. If None, runs in sampling mode.
             circuit_ham_map: Maps circuit index ranges to observable groups for
@@ -591,6 +593,8 @@ class MaestroSimulator(CircuitRunner):
             raise ExecutionCancelledError(
                 "Maestro batch cancelled before any circuit was dispatched"
             )
+
+        circuits = normalise_circuit_batch(circuits)
 
         if ham_ops is not None and shot_groups is not None:
             raise ValueError(

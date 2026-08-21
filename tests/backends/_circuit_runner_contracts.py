@@ -18,6 +18,7 @@ from collections.abc import Callable
 from threading import Event
 
 import pytest
+from qiskit import QuantumCircuit
 
 from divi.backends import CircuitRunner
 from divi.exceptions import ExecutionCancelledError
@@ -47,6 +48,23 @@ _CIRCUITS_ONE = {"c1": QASM_DEPTH_2}
 _CIRCUITS_TWO = {"c1": QASM_DEPTH_2, "c2": QASM_DEPTH_3}
 _BATCH_ONE = {"c1": QASM_DEPTH_2}
 _BATCH_TWO = {"c2": QASM_DEPTH_3, "c3": QASM_DEPTH_3}
+
+
+def _qiskit_depth_2() -> QuantumCircuit:
+    qc = QuantumCircuit(2, 2)
+    qc.h(0)
+    qc.measure(0, 0)
+    qc.measure(1, 1)
+    return qc
+
+
+def _qiskit_depth_3() -> QuantumCircuit:
+    qc = QuantumCircuit(2, 2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure(0, 0)
+    qc.measure(1, 1)
+    return qc
 
 
 def flatten_contract_cases(
@@ -130,6 +148,24 @@ def verify_std_depth_zero_for_single_value(runner: CircuitRunner) -> None:
     assert runner.std_depth() == 0.0
 
 
+def verify_accepts_sequence_of_qiskit_circuits(runner: CircuitRunner) -> None:
+    """A bare list of Qiskit circuits is accepted without a label mapping."""
+    assert runner.track_depth is True
+
+    runner.submit_circuits([_qiskit_depth_2(), _qiskit_depth_3()])
+
+    assert sorted(runner.depth_history[0]) == [2, 3]
+
+
+def verify_accepts_mapping_of_qiskit_circuits(runner: CircuitRunner) -> None:
+    """Qiskit circuits are accepted as mapping values, not just OpenQASM."""
+    assert runner.track_depth is True
+
+    runner.submit_circuits({"c1": _qiskit_depth_2(), "c2": _qiskit_depth_3()})
+
+    assert sorted(runner.depth_history[0]) == [2, 3]
+
+
 def verify_cancellation_before_dispatch(runner: CircuitRunner) -> None:
     """A pre-set ``cancellation_event`` aborts before backend dispatch."""
     event = Event()
@@ -149,6 +185,8 @@ DEPTH_CONTRACTS_ENABLED = [
     verify_clear_depth_history,
     verify_depth_history_returns_copy,
     verify_std_depth_zero_for_single_value,
+    verify_accepts_sequence_of_qiskit_circuits,
+    verify_accepts_mapping_of_qiskit_circuits,
 ]
 
 SYNC_CANCELLATION_CONTRACTS = [

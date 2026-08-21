@@ -37,10 +37,22 @@ Direct Submission and ``ExecutionResult``
 
 All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return an :class:`~divi.backends.ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
 
+**Accepted Input:**
+   Circuits may be given as a mapping of label → circuit, or as a bare
+   sequence whose labels become the positional indices ``"0"``, ``"1"``, …
+   Each circuit is either an OpenQASM string or a Qiskit
+   ``QuantumCircuit``, and the two may be mixed freely:
+
+   .. code-block:: python
+
+      backend.submit_circuits([qiskit_circuit_a, qiskit_circuit_b])
+      backend.submit_circuits({"ansatz": qiskit_circuit, "reference": qasm_string})
+
 **Result Format:**
    The ``results`` attribute is a list of dictionaries, each containing:
 
-   - ``label`` (str): The circuit label from your input dictionary
+   - ``label`` (str): The circuit label from your input dictionary, or the
+     positional index when circuits were passed as a sequence
    - ``results`` (dict): The execution results (bitstring counts for sampling mode, or expectation values for expectation mode)
 
    Example:

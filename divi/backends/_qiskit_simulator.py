@@ -7,7 +7,7 @@ import heapq
 import logging
 import os
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from functools import partial
 from multiprocessing import Pool, current_process
 from threading import Event
@@ -26,7 +26,7 @@ from qiskit_aer.noise import NoiseModel
 
 from divi.exceptions import ExecutionCancelledError
 
-from ._circuit_runner import CircuitRunner
+from ._circuit_runner import CircuitBatch, CircuitRunner, normalise_circuit_batch
 from ._execution_result import ExecutionResult
 from ._pauli_serde import ham_ops_group_for_circuit
 from ._shot_allocation import (
@@ -463,7 +463,7 @@ class QiskitSimulator(CircuitRunner):
 
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        circuits: CircuitBatch,
         *,
         ham_ops: str | None = None,
         circuit_ham_map: list[list[int]] | None = None,
@@ -474,7 +474,9 @@ class QiskitSimulator(CircuitRunner):
         """Submit multiple circuits for parallel simulation using Qiskit's built-in parallelism.
 
         Args:
-            circuits: Dictionary mapping circuit labels to OpenQASM string representations.
+            circuits: Mapping of circuit label → OpenQASM string or
+                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
+                circuits labelled by positional index.
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. Multiple groups can be pipe-delimited when
                 ``circuit_ham_map`` is provided. If None, runs in sampling mode.
@@ -494,6 +496,8 @@ class QiskitSimulator(CircuitRunner):
         """
         if cancellation_event is not None and cancellation_event.is_set():
             raise ExecutionCancelledError("Qiskit batch cancelled before dispatch")
+
+        circuits = normalise_circuit_batch(circuits)
 
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"

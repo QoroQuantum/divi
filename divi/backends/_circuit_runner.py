@@ -3,15 +3,60 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from threading import Event
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+from qiskit import QuantumCircuit, qasm2
+from qiskit.qasm2 import QASM2ExportError
 
 from divi.circuits import TemplateEntry
 
 from ._execution_result import ExecutionResult
+
+#: Accepted input to :meth:`CircuitRunner.submit_circuits`: a mapping of label →
+#: circuit, or a sequence of circuits labelled by positional index.
+CircuitBatch = Mapping[str, str | QuantumCircuit] | Sequence[str | QuantumCircuit]
+
+
+def _to_qasm(circuit: str | QuantumCircuit, label: str) -> str:
+    if isinstance(circuit, str):
+        return circuit
+    if isinstance(circuit, QuantumCircuit):
+        try:
+            return qasm2.dumps(circuit)
+        except QASM2ExportError as e:
+            raise ValueError(
+                f"Circuit '{label}' cannot be exported to OpenQASM 2: {e}"
+            ) from e
+    raise TypeError(
+        f"Circuit '{label}' must be an OpenQASM string or a QuantumCircuit, "
+        f"got {type(circuit).__name__}."
+    )
+
+
+def normalise_circuit_batch(circuits: CircuitBatch) -> dict[str, str]:
+    """Reduce any accepted circuit collection to label → OpenQASM.
+
+    Sequences are labelled by positional index. Qiskit circuits are exported
+    to OpenQASM 2.
+
+    Raises:
+        TypeError: If a single circuit is passed instead of a collection, or
+            an element is neither a string nor a QuantumCircuit.
+        ValueError: If a QuantumCircuit cannot be exported to OpenQASM 2.
+    """
+    if isinstance(circuits, (str, QuantumCircuit)):
+        raise TypeError(
+            "submit_circuits expects a collection of circuits; wrap a single "
+            "circuit in a list."
+        )
+
+    if isinstance(circuits, Mapping):
+        return {label: _to_qasm(c, label) for label, c in circuits.items()}
+
+    return {str(i): _to_qasm(c, str(i)) for i, c in enumerate(circuits)}
 
 
 @runtime_checkable
@@ -92,7 +137,7 @@ class CircuitRunner(ABC):
     @abstractmethod
     def submit_circuits(
         self,
-        circuits: Mapping[str, str],
+        circuits: CircuitBatch,
         *,
         cancellation_event: Event | None = None,
         **kwargs,
@@ -102,10 +147,13 @@ class CircuitRunner(ABC):
 
         This abstract method must be implemented by subclasses to define how
         circuits are executed on their respective backends (simulator, hardware, etc.).
+        Implementations must pass ``circuits`` through
+        :func:`~divi.backends.normalise_circuit_batch` before use.
 
         Args:
-            circuits (dict[str, str]): Dictionary mapping circuit labels to their
-                OpenQASM string representations.
+            circuits: Mapping of circuit label → OpenQASM string or
+                :class:`~qiskit.circuit.QuantumCircuit`, or a bare sequence of
+                circuits labelled by positional index.
             cancellation_event: When set, the backend aborts the batch and
                 raises :class:`~divi.exceptions.ExecutionCancelledError`.
                 Sync backends honour it between items; async backends thread
