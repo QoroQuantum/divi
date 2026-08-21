@@ -8,7 +8,8 @@ from http import HTTPStatus
 
 import pytest
 
-from divi.backends import QoroService, _qoro_service
+import divi.backends.runners._qoro as _qoro_service
+from divi.backends import QoroService
 
 
 @pytest.fixture

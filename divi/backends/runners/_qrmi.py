@@ -13,37 +13,29 @@ import importlib
 import json
 import logging
 import os
-import re
 import time
 from collections.abc import Mapping, Sequence
 from threading import Event, RLock
 from typing import Any
 
-from qiskit import QuantumCircuit
-
 from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 
-from ._circuit_runner import CircuitRunner
-from ._execution_result import ExecutionResult
-from ._maestro_simulator import _MPS_AUTO_BOND_DIMENSION, _strip_id_gates
-from ._pauli_serde import ham_ops_group_for_circuit
-from ._shot_allocation import from_wire, per_circuit, validate
+from .._base import CircuitRunner, ExecutionResult
+from .._cancellation import raise_if_cancelled
+from .._config import SimulationMethod, Simulator
+from .._maestro_protocol import (
+    MPS_AUTO_BOND_DIMENSION,
+    MPS_QUBIT_THRESHOLD,
+    counts_to_little_endian,
+    expvals_from_result,
+    qasm_n_qubits,
+    strip_id_gates,
+)
+from .._pauli_serde import ham_ops_terms_for_circuit
+from .._shot_allocation import per_circuit_or_none
 
 logger = logging.getLogger(__name__)
-
-#: ``SimulatorType`` ordinal. Renumbered on a server built ``-DNO_QISKIT_AER``,
-#: which the resource cannot report — read ``simulator`` off the result to see
-#: what actually ran.
-SIMULATOR_QCSIM = 1
-
-METHOD_STATEVECTOR = 0
-METHOD_MATRIX_PRODUCT_STATE = 1
-
-#: Qubit count above which MPS is selected automatically, as in MaestroConfig.
-_MPS_QUBIT_THRESHOLD = 22
-
-_QREG_RE = re.compile(r"qreg\s+q\[(\d+)\]")
 
 
 class QRMIBackend(CircuitRunner):
@@ -54,15 +46,18 @@ class QRMIBackend(CircuitRunner):
             in rather than constructed, since QRMI cannot discover that type.
         shots: Shots per circuit. Sent explicitly — Maestro defaults to 1.
         track_depth: Record per-circuit logical depth.
-        simulator_type: See :data:`SIMULATOR_QCSIM`.
-        simulation_method: ``None`` picks statevector, or MPS once the widest
-            circuit in a batch crosses ``mps_qubit_threshold``.
+        simulator_type: A :class:`~divi.backends.Simulator`. Its ordinals shift
+            on a server built ``-DNO_QISKIT_AER``, which the resource cannot
+            report — read ``simulator`` off the result to see what ran.
+        simulation_method: A :class:`~divi.backends.SimulationMethod`. ``None``
+            picks statevector, or MPS once the widest circuit in a batch
+            crosses ``mps_qubit_threshold``.
         max_bond_dimension: MPS bond-dimension cap. Defaults to 64 under
             auto-MPS.
         truncation_threshold: MPS singular-value truncation threshold.
-        mps_qubit_threshold: Auto-MPS cutoff. Match
-            :attr:`~divi.backends.MaestroConfig.mps_qubit_threshold` to keep
-            both channels routing alike.
+        mps_qubit_threshold: Auto-MPS cutoff. Shares its default with
+            :attr:`~divi.backends.MaestroConfig.mps_qubit_threshold`, so both
+            channels route a batch the same way.
         poll_interval: Seconds between status polls. Stay under the server's
             ~10 s session-idle timeout.
     """
@@ -73,17 +68,20 @@ class QRMIBackend(CircuitRunner):
         *,
         shots: int = 1024,
         track_depth: bool = False,
-        simulator_type: int = SIMULATOR_QCSIM,
-        simulation_method: int | None = None,
+        simulator_type: Simulator = Simulator.QCSim,
+        simulation_method: SimulationMethod | None = None,
         max_bond_dimension: int | None = None,
         truncation_threshold: float | None = None,
-        mps_qubit_threshold: int = _MPS_QUBIT_THRESHOLD,
+        mps_qubit_threshold: int = MPS_QUBIT_THRESHOLD,
         poll_interval: float = 0.05,
     ):
         super().__init__(shots=shots, track_depth=track_depth)
+        self._qrmi = _import_qrmi()
         self._resource = resource
-        self._simulator_type = simulator_type
-        self._simulation_method = simulation_method
+        self._simulator_type = Simulator(simulator_type)
+        self._simulation_method = (
+            None if simulation_method is None else SimulationMethod(simulation_method)
+        )
         self._max_bond_dimension = max_bond_dimension
         self._truncation_threshold = truncation_threshold
         self._mps_qubit_threshold = mps_qubit_threshold
@@ -157,7 +155,7 @@ class QRMIBackend(CircuitRunner):
 
     # --- Execution ---------------------------------------------------------
 
-    def _resolve_method(self, max_qubits: int) -> tuple[int, int | None]:
+    def _resolve_method(self, max_qubits: int) -> tuple[SimulationMethod, int | None]:
         """Pick the simulation method and bond dimension for a whole batch.
 
         Sized from the widest circuit, as MaestroSimulator does, so a batch
@@ -166,11 +164,15 @@ class QRMIBackend(CircuitRunner):
         method = self._simulation_method
         auto_mps = method is None and max_qubits > self._mps_qubit_threshold
         if method is None:
-            method = METHOD_MATRIX_PRODUCT_STATE if auto_mps else METHOD_STATEVECTOR
+            method = (
+                SimulationMethod.MatrixProductState
+                if auto_mps
+                else SimulationMethod.Statevector
+            )
 
         bond_dimension = self._max_bond_dimension
         if bond_dimension is None and auto_mps:
-            bond_dimension = _MPS_AUTO_BOND_DIMENSION
+            bond_dimension = MPS_AUTO_BOND_DIMENSION
         return method, bond_dimension
 
     def _config_json(self, shots: int, bond_dimension: int | None) -> str:
@@ -188,7 +190,7 @@ class QRMIBackend(CircuitRunner):
         qasm: str,
         *,
         n_qubits: int,
-        method: int,
+        method: SimulationMethod,
         config: str,
         job_type: str,
         observables: str,
@@ -199,24 +201,23 @@ class QRMIBackend(CircuitRunner):
         Holds the resource lock for the whole task, so concurrent callers
         queue rather than interleave calls into one QRMI resource.
         """
-        qrmi = _import_qrmi()
-        payload = qrmi.Payload.MaestroLocal(
+        payload = self._qrmi.Payload.MaestroLocal(
             input=qasm,
             job_type=job_type,
             qubits=n_qubits,
-            simulator_type=self._simulator_type,
-            simulation_method=method,
+            simulator_type=int(self._simulator_type),
+            simulation_method=int(method),
             observables=observables,
             config=config,
         )
 
         with self._lock:
-            return self._drive_task(qrmi, payload, cancellation_event)
+            return self._drive_task(payload, cancellation_event)
 
-    def _drive_task(self, qrmi, payload, cancellation_event: Event | None) -> dict:
+    def _drive_task(self, payload, cancellation_event: Event | None) -> dict:
         # Re-checked inside the lock: a thread that queued behind a long task
         # would otherwise dispatch a new one after the cancel arrived.
-        _raise_if_cancelled(cancellation_event, "before dispatch")
+        raise_if_cancelled(cancellation_event, "QRMI batch cancelled before dispatch")
 
         try:
             task_id = self._resource.task_start(payload)
@@ -229,7 +230,7 @@ class QRMIBackend(CircuitRunner):
             self._ensure_session(renew=True)
             task_id = self._resource.task_start(payload)
 
-        status_type = qrmi.TaskStatus
+        status_type = self._qrmi.TaskStatus
         while True:
             if cancellation_event is not None and cancellation_event.is_set():
                 # Only unstarted tasks are dropped; one already in the simulator
@@ -293,14 +294,11 @@ class QRMIBackend(CircuitRunner):
             ExecutionResult of counts per label, or expectation values keyed by
             Pauli term.
         """
-        _raise_if_cancelled(cancellation_event, "before any circuit was dispatched")
-
-        if ham_ops is not None and shot_groups is not None:
-            raise ValueError(
-                "shot_groups is incompatible with ham_ops: Maestro computes "
-                "expectation values analytically and ignores shot counts. "
-                "Pass exactly one."
-            )
+        raise_if_cancelled(
+            cancellation_event,
+            "QRMI batch cancelled before any circuit was dispatched",
+        )
+        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 
         circuits = bound_circuits(payloads)
         if not circuits:
@@ -308,33 +306,24 @@ class QRMIBackend(CircuitRunner):
 
         labels = list(circuits)
 
-        if self.track_depth:
-            # Measured before stripping, as MaestroSimulator does — Qiskit
-            # counts id as an operation, so the two would disagree otherwise.
-            self._depth_history.append(
-                [QuantumCircuit.from_qasm_str(q).depth() for q in circuits.values()]
-            )
+        # Measured before stripping — Qiskit counts id as an operation, so
+        # MaestroSimulator would otherwise disagree.
+        self._record_qasm_depths(circuits.values())
 
-        qasm_strings = [_strip_id_gates(q) for q in circuits.values()]
+        qasm_strings = [strip_id_gates(q) for q in circuits.values()]
 
-        if shot_groups is not None:
-            shot_ranges = from_wire(shot_groups)
-            validate(shot_ranges, len(labels))
-            per_circuit_shots = per_circuit(shot_ranges, len(labels))
-        else:
-            per_circuit_shots = None
+        per_circuit_shots = per_circuit_or_none(shot_groups, len(labels))
 
-        widths = [_n_qubits(q, label) for label, q in zip(labels, qasm_strings)]
+        widths = [qasm_n_qubits(q, label) for label, q in zip(labels, qasm_strings)]
         method, bond_dimension = self._resolve_method(max(widths))
 
         self._ensure_session()
 
-        results = []
+        results: list[dict] = []
         for index, (label, qasm) in enumerate(zip(labels, qasm_strings)):
-            if cancellation_event is not None and cancellation_event.is_set():
-                raise ExecutionCancelledError(
-                    "QRMI batch cancelled after partial completion"
-                )
+            raise_if_cancelled(
+                cancellation_event, "QRMI batch cancelled after partial completion"
+            )
 
             if ham_ops is None:
                 shots = (
@@ -351,34 +340,31 @@ class QRMIBackend(CircuitRunner):
                     observables="",
                     cancellation_event=cancellation_event,
                 )
-                # Maestro emits c[0] leftmost; Qiskit puts it rightmost.
-                counts = {bits[::-1]: n for bits, n in raw["counts"].items()}
-                results.append({"label": label, "results": counts})
+                results.append(
+                    {
+                        "label": label,
+                        "results": counts_to_little_endian(raw["counts"]),
+                    }
+                )
             else:
-                # A matched group holds no ``|``; the replace only flattens the
-                # fall-back case where every group applies to this circuit.
-                group = ham_ops_group_for_circuit(
-                    index, ham_ops, circuit_ham_map
-                ).replace("|", ";")
+                terms = ham_ops_terms_for_circuit(index, ham_ops, circuit_ham_map)
                 raw = self._run_task(
                     qasm,
                     n_qubits=widths[index],
                     method=method,
                     config=self._config_json(self.shots, bond_dimension),
                     job_type="estimate",
-                    observables=group,
+                    observables=";".join(terms),
                     cancellation_event=cancellation_event,
                 )
-                terms = group.split(";")
-                expvals = dict(zip(terms, raw["expectation_values"]))
-                results.append({"label": label, "results": expvals})
+                results.append(
+                    {
+                        "label": label,
+                        "results": expvals_from_result(raw, terms),
+                    }
+                )
 
         return ExecutionResult(results=results)
-
-
-def _raise_if_cancelled(event: Event | None, when: str) -> None:
-    if event is not None and event.is_set():
-        raise ExecutionCancelledError(f"QRMI batch cancelled {when}")
 
 
 #: What the server says when it has forgotten a session. Matched rather than
@@ -391,14 +377,6 @@ def _is_stale_session(exc: Exception) -> bool:
     """Whether a task failure means the server forgot our session."""
     message = str(exc).lower()
     return any(marker in message for marker in _STALE_SESSION_MARKERS)
-
-
-def _n_qubits(qasm: str, label: str) -> int:
-    """Read the register width the server should allocate."""
-    match = _QREG_RE.search(qasm)
-    if match is None:
-        raise ValueError(f"Circuit '{label}' declares no 'qreg q[N]'.")
-    return int(match.group(1))
 
 
 def _import_qrmi() -> Any:

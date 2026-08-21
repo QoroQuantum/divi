@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.backends._qrmi_backend."""
+"""Tests for divi.backends.runners._qrmi."""
 
 import json
 import os
@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
+import divi.backends.runners._qrmi as qrmi_module
 from divi.backends import QRMIBackend
-from divi.backends import _qrmi_backend as qrmi_module
 from divi.exceptions import ExecutionCancelledError
 from tests.backends._circuit_runner_contracts import SyncRunnerContractsBase
 from tests.backends._qrmi_fakes import FAKE_QRMI, FakeQuantumResource, FakeTaskStatus
@@ -383,7 +383,7 @@ class TestCancellation:
         backend._lock.release()
 
         with pytest.raises(ExecutionCancelledError):
-            backend._drive_task(FAKE_QRMI, object(), event)
+            backend._drive_task(object(), event)
 
         assert resource.payloads == []
 

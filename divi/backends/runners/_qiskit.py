@@ -25,12 +25,11 @@ from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
 from divi.circuits._payloads import CircuitPayload, bound_circuits
-from divi.exceptions import ExecutionCancelledError
 
-from ._circuit_runner import CircuitRunner
-from ._execution_result import ExecutionResult
-from ._pauli_serde import ham_ops_group_for_circuit
-from ._shot_allocation import (
+from .._base import CircuitRunner, ExecutionResult
+from .._cancellation import raise_if_cancelled
+from .._pauli_serde import ham_ops_terms_for_circuit
+from .._shot_allocation import (
     ShotRange,
     bucket_by_shots,
     from_wire,
@@ -369,29 +368,6 @@ class QiskitSimulator(CircuitRunner):
         aer_simulator.set_options(**options)
 
     @staticmethod
-    def _get_ham_ops_for_circuit(
-        circuit_index: int,
-        ham_ops: str,
-        circuit_ham_map: list[list[int]] | None,
-    ) -> list[str]:
-        """Resolve which Pauli operators apply to a given circuit.
-
-        Args:
-            circuit_index: Index of the circuit in the batch.
-            ham_ops: Semicolon-separated Pauli string, optionally with ``|``-delimited
-                groups when ``circuit_ham_map`` is provided.
-            circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group
-                to a contiguous slice of circuits.
-
-        Returns:
-            List of individual Pauli operator strings for this circuit.
-        """
-        # A matched group holds no ``|``, so the replace only flattens the
-        # fall-back case where every group applies.
-        group = ham_ops_group_for_circuit(circuit_index, ham_ops, circuit_ham_map)
-        return group.replace("|", ";").split(";")
-
-    @staticmethod
     def _prepare_expval_circuit(
         circuit: QuantumCircuit, pauli_ops: list[str]
     ) -> QuantumCircuit:
@@ -432,7 +408,7 @@ class QiskitSimulator(CircuitRunner):
         prepared = []
         per_circuit_ops: list[list[str]] = []
         for i, qc in enumerate(qiskit_circuits):
-            ops = self._get_ham_ops_for_circuit(i, ham_ops, circuit_ham_map)
+            ops = ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
             per_circuit_ops.append(ops)
             prepared.append(self._prepare_expval_circuit(qc, ops))
 
@@ -493,20 +469,14 @@ class QiskitSimulator(CircuitRunner):
         Returns:
             ExecutionResult containing either counts (sampling) or expectation values.
         """
-        if cancellation_event is not None and cancellation_event.is_set():
-            raise ExecutionCancelledError("Qiskit batch cancelled before dispatch")
+        raise_if_cancelled(cancellation_event, "Qiskit batch cancelled before dispatch")
+        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 
         circuits = bound_circuits(payloads)
 
         logger.debug(
             f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
         )
-
-        if ham_ops is not None and shot_groups is not None:
-            raise ValueError(
-                "shot_groups is incompatible with ham_ops: expectation-value "
-                "mode is analytical and ignores shot counts. Pass exactly one."
-            )
 
         # 1. Parse Circuits
         circuit_labels = list(circuits.keys())

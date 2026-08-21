@@ -4,7 +4,6 @@
 
 import logging
 import os
-import re
 import weakref
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -32,25 +31,20 @@ else:
         maestro = None
         _maestro_import_error = _err
 
-from qiskit import QuantumCircuit
-
-from ._circuit_runner import CircuitRunner
-from ._execution_result import ExecutionResult
-from ._pauli_serde import ham_ops_group_for_circuit
-from ._shot_allocation import from_wire, per_circuit, validate
+from .._base import CircuitRunner, ExecutionResult
+from .._cancellation import raise_if_cancelled
+from .._maestro_protocol import (
+    MPS_AUTO_BOND_DIMENSION,
+    MPS_QUBIT_THRESHOLD,
+    counts_to_little_endian,
+    expvals_from_result,
+    qasm_n_qubits,
+    strip_id_gates,
+)
+from .._pauli_serde import ham_ops_terms_for_circuit
+from .._shot_allocation import per_circuit_or_none
 
 logger = logging.getLogger(__name__)
-
-_MPS_AUTO_BOND_DIMENSION = 64
-
-
-def _strip_id_gates(qasm: str) -> str:
-    """Remove ``id`` (identity) gates from QASM.
-
-    Maestro's QASM parser does not recognize the ``id`` gate.
-    Since identity gates are no-ops, stripping them is safe.
-    """
-    return re.sub(r"id\s+q\[\d+\]\s*;\n?", "", qasm)
 
 
 def _run_with_cancellation(
@@ -174,7 +168,7 @@ class MaestroConfig:
     """Pauli-propagation steps between truncation passes.  ``None`` uses
     maestro's default."""
 
-    mps_qubit_threshold: int = 22
+    mps_qubit_threshold: int = MPS_QUBIT_THRESHOLD
     """Qubit count above which automatic MPS selection kicks in.  Only active
     when :attr:`simulation_type` is ``None``; has no effect when
     ``simulation_type`` is set explicitly.  Divi-specific; not forwarded to
@@ -235,9 +229,10 @@ class MaestroConfig:
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
 
-        "Non-default" here means a field whose value differs from the class default.
-        This keeps the override semantics consistent with
-        :class:`~divi.backends.ExecutionConfig`.
+        "Non-default" here means a field whose value differs from the class
+        default. :meth:`~divi.backends.ExecutionConfig.override` instead takes
+        every field that is not ``None``; the two differ for any field whose
+        default is something other than ``None``.
         """
         defaults = {f.name: f.default for f in fields(MaestroConfig)}
         merged = {f.name: getattr(self, f.name) for f in fields(MaestroConfig)}
@@ -287,7 +282,7 @@ class MaestroConfig:
         if self.max_bond_dimension is not None:
             kwargs["max_bond_dimension"] = self.max_bond_dimension
         elif auto_mps:
-            kwargs["max_bond_dimension"] = _MPS_AUTO_BOND_DIMENSION
+            kwargs["max_bond_dimension"] = MPS_AUTO_BOND_DIMENSION
 
         if self.singular_value_threshold is not None:
             kwargs["singular_value_threshold"] = self.singular_value_threshold
@@ -444,22 +439,6 @@ class MaestroSimulator(CircuitRunner):
         if executor is not None:
             executor.shutdown(wait=True)
 
-    def _get_ham_ops_for_circuit(
-        self,
-        circuit_index: int,
-        ham_ops: str,
-        circuit_ham_map: list[list[int]] | None,
-    ) -> str:
-        """Resolve which observable string applies to a given circuit index.
-
-        A matched group holds no ``|``; the replace only flattens the fall-back
-        case where every group applies, which maestro would otherwise read as
-        one pseudo-term.
-        """
-        return ham_ops_group_for_circuit(
-            circuit_index, ham_ops, circuit_ham_map
-        ).replace("|", ";")
-
     def submit_circuits(
         self,
         payloads: Sequence[CircuitPayload] | Mapping[str, str],
@@ -494,51 +473,33 @@ class MaestroSimulator(CircuitRunner):
         Returns:
             ExecutionResult containing either counts (sampling) or expectation values.
         """
-        if cancellation_event is not None and cancellation_event.is_set():
-            raise ExecutionCancelledError(
-                "Maestro batch cancelled before any circuit was dispatched"
-            )
-
-        if ham_ops is not None and shot_groups is not None:
-            raise ValueError(
-                "shot_groups is incompatible with ham_ops: maestro's "
-                "simple_estimate computes expectation values analytically "
-                "and ignores shot counts. Pass exactly one."
-            )
+        raise_if_cancelled(
+            cancellation_event,
+            "Maestro batch cancelled before any circuit was dispatched",
+        )
+        self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 
         circuits = bound_circuits(payloads)
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
 
-        if self.track_depth:
-            depths = [
-                QuantumCircuit.from_qasm_str(qasm).depth() for qasm in qasm_strings
-            ]
-            self._depth_history.append(depths)
+        self._record_qasm_depths(qasm_strings)
 
         # Determine max qubit count for automatic simulation type selection.
         max_qubits = max(
-            int(m.group(1))
-            for q in qasm_strings
-            if (m := re.search(r"qreg\s+q\[(\d+)\]", q))
+            qasm_n_qubits(qasm, label)
+            for label, qasm in zip(circuit_labels, qasm_strings)
         )
 
         # Pre-process: strip id gates (not supported by maestro's QASM parser).
-        qasm_strings = [_strip_id_gates(q) for q in qasm_strings]
+        qasm_strings = [strip_id_gates(q) for q in qasm_strings]
 
         sim_config = self.config._to_maestro_config(n_qubits=max_qubits)
 
         executor = self._get_executor()
 
         if ham_ops is None:
-            # Sampling mode — reverse bitstrings from maestro's big-endian
-            # (q[0] leftmost) to Qiskit's little-endian (q[0] rightmost).
-            if shot_groups is not None:
-                shot_ranges = from_wire(shot_groups)
-                validate(shot_ranges, len(circuit_labels))
-                per_circuit_shots = per_circuit(shot_ranges, len(circuit_labels))
-            else:
-                per_circuit_shots = None
+            per_circuit_shots = per_circuit_or_none(shot_groups, len(circuit_labels))
 
             def _run_sample(item):
                 i, label, qasm = item
@@ -566,8 +527,10 @@ class MaestroSimulator(CircuitRunner):
                         # all receive the same Pauli error pattern.
                         seed=self.config.noise_seed + i,
                     )
-                counts = {bs[::-1]: n for bs, n in raw["counts"].items()}
-                return {"label": label, "results": counts}
+                return {
+                    "label": label,
+                    "results": counts_to_little_endian(raw["counts"]),
+                }
 
             items = [
                 (i, label, qasm)
@@ -581,9 +544,8 @@ class MaestroSimulator(CircuitRunner):
             # collapse the statevector before expectation values are computed.
             def _run_estimate(item):
                 i, label, qasm = item
-                pauli_string = self._get_ham_ops_for_circuit(
-                    i, ham_ops, circuit_ham_map
-                )
+                terms = ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
+                pauli_string = ";".join(terms)
                 if self.config.noise_model is None:
                     raw = maestro.simple_estimate(
                         qasm,
@@ -615,9 +577,10 @@ class MaestroSimulator(CircuitRunner):
                             seed=self.config.noise_seed + i,
                             config=sim_config,
                         )
-                ops = pauli_string.split(";")
-                expvals = dict(zip(ops, raw["expectation_values"]))
-                return {"label": label, "results": expvals}
+                return {
+                    "label": label,
+                    "results": expvals_from_result(raw, terms),
+                }
 
             items = [
                 (i, label, qasm)
