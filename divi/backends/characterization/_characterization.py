@@ -30,7 +30,7 @@ from rich.table import Table
 from divi.exceptions import CharacterizationFailedError, ExecutionCancelledError
 from divi.qprog.problems import BinaryOptimizationProblem
 
-from .._qoro_service import QoroService
+from ..runners._qoro import QoroService
 
 logger = logging.getLogger(__name__)
 

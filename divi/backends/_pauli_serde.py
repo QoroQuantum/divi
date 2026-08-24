@@ -38,6 +38,20 @@ def ham_ops_group_for_circuit(
     return ham_ops
 
 
+def ham_ops_terms_for_circuit(
+    circuit_index: int,
+    ham_ops: str,
+    circuit_ham_map: list[list[int]] | None,
+) -> list[str]:
+    """The individual Pauli terms *circuit_index* was measured for.
+
+    A matched group holds no ``|``, so flattening only affects the fall-back
+    case where every group applies to this circuit.
+    """
+    group = ham_ops_group_for_circuit(circuit_index, ham_ops, circuit_ham_map)
+    return group.replace("|", ";").split(";")
+
+
 def _dense_to_sparse(term: str) -> str:
     """Convert a dense Pauli string to sparse notation.
 

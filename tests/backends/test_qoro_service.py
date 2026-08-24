@@ -16,6 +16,7 @@ import pytest
 import requests
 from qiskit.circuit import Parameter
 
+import divi.backends.runners._qoro as _qoro_service
 from divi.backends import (
     ExecutionConfig,
     ExecutionResult,
@@ -27,12 +28,6 @@ from divi.backends import (
     SimulationMethod,
     Simulator,
     SimulatorCluster,
-    _qoro_service,
-)
-from divi.backends._qoro_service import (
-    MaxRetriesReachedError,
-    _raise_with_details,
-    is_valid_qasm,
 )
 from divi.backends._systems import (
     get_available_qpu_systems,
@@ -43,6 +38,11 @@ from divi.backends._systems import (
     parse_simulator_clusters,
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
+)
+from divi.backends.runners._qoro import (
+    MaxRetriesReachedError,
+    _raise_with_details,
+    is_valid_qasm,
 )
 from divi.circuits._payloads import CircuitPayload
 from divi.exceptions import ExecutionCancelledError
@@ -69,7 +69,7 @@ class TestQoroServiceMock:
 
     def test_initialization_without_api_key_and_no_env_file(self, mocker):
         """Test initialization without API key, no .env, and no os.environ."""
-        mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
+        mock_dotenv = mocker.patch("divi.backends.runners._qoro.dotenv_values")
         mock_dotenv.return_value = {}
         mocker.patch.dict("os.environ", {}, clear=True)
 
@@ -84,7 +84,7 @@ class TestQoroServiceMock:
 
     def test_initialization_with_env_api_key(self, mocker, qoro_service_factory):
         """Test initialization with API key from .env file."""
-        mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
+        mock_dotenv = mocker.patch("divi.backends.runners._qoro.dotenv_values")
         mock_dotenv.return_value = {"QORO_API_KEY": "env_api_key"}
 
         service = qoro_service_factory(auth_token=None)
@@ -92,7 +92,7 @@ class TestQoroServiceMock:
 
     def test_initialization_with_os_environ_api_key(self, mocker, qoro_service_factory):
         """Test fallback to os.environ when .env has no key."""
-        mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
+        mock_dotenv = mocker.patch("divi.backends.runners._qoro.dotenv_values")
         mock_dotenv.return_value = {}  # .env missing QORO_API_KEY
         mocker.patch.dict("os.environ", {"QORO_API_KEY": "os_env_key"})
 
@@ -103,7 +103,7 @@ class TestQoroServiceMock:
         self, mocker, qoro_service_factory
     ):
         """Test that an explicit auth_token arg takes priority over env sources."""
-        mock_dotenv = mocker.patch("divi.backends._qoro_service.dotenv_values")
+        mock_dotenv = mocker.patch("divi.backends.runners._qoro.dotenv_values")
         mock_dotenv.return_value = {"QORO_API_KEY": "env_api_key"}
         mocker.patch.dict("os.environ", {"QORO_API_KEY": "os_env_key"})
 
@@ -245,7 +245,7 @@ class TestQoroServiceMock:
 
         # Test _split_circuits with large payload (force chunking)
         mocker.patch(
-            "divi.backends._qoro_service._MAX_PAYLOAD_SIZE_MB", new=0.0001
+            "divi.backends.runners._qoro._MAX_PAYLOAD_SIZE_MB", new=0.0001
         )  # Very small limit
 
         large_circuits = {
@@ -608,7 +608,7 @@ class TestQoroServiceMock:
                 raise
 
         mocker.patch(
-            "divi.backends._qoro_service._auto_cancellation_scope", preset_scope
+            "divi.backends.runners._qoro._auto_cancellation_scope", preset_scope
         )
 
         result = make_execution_result()
@@ -628,7 +628,7 @@ class TestQoroServiceMock:
             "_make_request",
             return_value=make_mock_status_response(mocker, JobStatus.COMPLETED),
         )
-        scope_spy = mocker.patch("divi.backends._qoro_service._auto_cancellation_scope")
+        scope_spy = mocker.patch("divi.backends.runners._qoro._auto_cancellation_scope")
 
         service.poll_job_status(
             make_execution_result(),
@@ -1162,7 +1162,7 @@ class TestQoroServiceMock:
         # Mock get_qpu_system
         mock_qpu_system = QPUSystem(name="resolved_qpu")
         mock_get_qpu = mocker.patch(
-            "divi.backends._qoro_service.get_qpu_system", return_value=mock_qpu_system
+            "divi.backends.runners._qoro.get_qpu_system", return_value=mock_qpu_system
         )
 
         override_conf = JobConfig(qpu_system="string_qpu_name")
@@ -1197,7 +1197,7 @@ class TestQoroServiceMock:
 
         mock_cluster = SimulatorCluster(name="resolved_cluster")
         mock_get_cluster = mocker.patch(
-            "divi.backends._qoro_service.get_simulator_cluster",
+            "divi.backends.runners._qoro.get_simulator_cluster",
             return_value=mock_cluster,
         )
 
@@ -1763,7 +1763,7 @@ class TestQoroServiceMock:
 
         # Test 3: Get job results success
         mocker.patch(
-            "divi.backends._qoro_service._decode_histogram_b64",
+            "divi.backends.runners._qoro._decode_histogram_b64",
             return_value={"decoded": "data"},
         )
         mock_json = {
@@ -1792,7 +1792,7 @@ class TestQoroServiceMock:
         mocker.patch.object(
             qoro_service_mock, "_make_request", return_value=mock_response_empty
         )
-        mock_decode = mocker.patch("divi.backends._qoro_service._decode_histogram_b64")
+        mock_decode = mocker.patch("divi.backends.runners._qoro._decode_histogram_b64")
         completed_result_empty = qoro_service_mock.get_job_results(
             make_execution_result("job_1")
         )
@@ -1802,7 +1802,7 @@ class TestQoroServiceMock:
 
         # Test 5: Get job results decoding error
         mocker.patch(
-            "divi.backends._qoro_service._decode_histogram_b64",
+            "divi.backends.runners._qoro._decode_histogram_b64",
             side_effect=ValueError("corrupt stream"),
         )
         mock_response_error = mocker.MagicMock(
@@ -1867,7 +1867,7 @@ class TestQoroServiceMock:
         """Results fit in one page — next is None, no further requests."""
         service = qoro_service_factory()
         mocker.patch(
-            "divi.backends._qoro_service._decode_histogram_b64",
+            "divi.backends.runners._qoro._decode_histogram_b64",
             side_effect=lambda x: x,
         )
         page = {
@@ -1926,7 +1926,7 @@ class TestQoroServiceMock:
         """160 results across two pages — all are collected."""
         service = qoro_service_factory()
         mocker.patch(
-            "divi.backends._qoro_service._decode_histogram_b64",
+            "divi.backends.runners._qoro._decode_histogram_b64",
             side_effect=lambda x: x,
         )
 
@@ -1967,7 +1967,7 @@ class TestQoroServiceMock:
         """HTTP error on the second page propagates correctly."""
         service = qoro_service_factory()
         mocker.patch(
-            "divi.backends._qoro_service._decode_histogram_b64",
+            "divi.backends.runners._qoro._decode_histogram_b64",
             side_effect=lambda x: x,
         )
 

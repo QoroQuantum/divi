@@ -38,19 +38,18 @@ from divi.qasm import (
     validate_qasm,
 )
 
-from ._cancellation import _auto_cancellation_scope
-from ._circuit_runner import CircuitRunner
-from ._config import ExecutionConfig, JobConfig
-from ._execution_result import ExecutionResult
-from ._pauli_serde import compress_ham_ops
-from ._results_processing import _decode_histogram_b64
-from ._shot_allocation import (
+from .._base import CircuitRunner, ExecutionResult
+from .._cancellation import _auto_cancellation_scope
+from .._config import ExecutionConfig, JobConfig
+from .._pauli_serde import compress_ham_ops
+from .._results_processing import _decode_histogram_b64
+from .._shot_allocation import (
     from_wire,
     restrict_to_chunk,
     to_wire,
     validate,
 )
-from ._systems import (
+from .._systems import (
     QPUSystem,
     SimulatorCluster,
     get_qpu_system,
@@ -617,7 +616,7 @@ class QoroService(CircuitRunner):
         mapping shape regardless of the parameters they started with.
 
         The two shapes resolve floats differently: the backend substitutes
-        via ``str(value)`` on the deserialized float, preserving the full
+        via ``str(value)`` on the decoded float, preserving the full
         Python repr, whereas bound QASM was rendered locally at the
         :class:`~divi.circuits.MetaCircuit`'s precision (8 decimals by
         default). Values that round-trip through both formatters give

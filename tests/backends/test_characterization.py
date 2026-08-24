@@ -1322,7 +1322,7 @@ class TestTopLevelCharacterize:
             side_effect=[mock_init, requests.exceptions.ReadTimeout("timed out")],
         )
 
-        with caplog.at_level(logging.INFO, logger="divi.backends._qoro_service"):
+        with caplog.at_level(logging.INFO, logger="divi.backends.runners._qoro"):
             with pytest.raises(CharacterizationSubmitError):
                 service.characterize_and_validate(
                     qubo={"0,0": -1.0}, reference_states=["0"]

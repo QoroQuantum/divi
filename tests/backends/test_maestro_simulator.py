@@ -9,9 +9,9 @@ from threading import Event, Thread
 
 import pytest
 
-import divi.backends._maestro_simulator as maestro_module
+import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
-from divi.backends._maestro_simulator import _run_with_cancellation
+from divi.backends.runners._maestro import _run_with_cancellation
 from divi.exceptions import ExecutionCancelledError
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
@@ -83,7 +83,7 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
 
 def _make_simulator(mocker, fake_maestro, *, config=None, **kwargs):
     """Instantiate MaestroSimulator with a pre-injected fake maestro module."""
-    mocker.patch("divi.backends._maestro_simulator.maestro", fake_maestro)
+    mocker.patch("divi.backends.runners._maestro.maestro", fake_maestro)
     return MaestroSimulator(config=config, **kwargs)
 
 
@@ -114,7 +114,7 @@ def _submit_config_arg(call):
 
 def test_import_error_without_maestro(mocker):
     """MaestroSimulator raises a helpful ImportError when maestro is missing."""
-    mocker.patch("divi.backends._maestro_simulator.maestro", None)
+    mocker.patch("divi.backends.runners._maestro.maestro", None)
     with pytest.raises(ImportError, match="qoro-maestro is required"):
         MaestroSimulator()
 
@@ -761,8 +761,7 @@ class TestExpvalSubmission:
 
     def test_expval_passes_measurements_through(self, mocker):
         """Maestro ignores terminal measurement on the estimate path, so
-        stripping it client-side changed no value and only let this channel
-        drift from the QRMI one."""
+        circuits reach it unchanged."""
         fake = _make_fake_maestro(mocker)
         fake.simple_estimate.side_effect = [
             {"expectation_values": [0.5]},

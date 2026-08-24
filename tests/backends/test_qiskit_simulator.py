@@ -11,7 +11,7 @@ from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
 from divi.backends import ExecutionResult, QiskitSimulator
-from divi.backends._qiskit_simulator import (
+from divi.backends.runners._qiskit import (
     FAKE_BACKENDS,
     _default_n_processes,
     _find_best_fake_backend,
@@ -116,7 +116,7 @@ class TestQiskitSimulatorInit:
     def test_init_none_uses_default(self, mocker):
         """When n_processes is None, the default is computed via _default_n_processes."""
         mocker.patch(
-            "divi.backends._qiskit_simulator._default_n_processes", return_value=5
+            "divi.backends.runners._qiskit._default_n_processes", return_value=5
         )
         sim = QiskitSimulator(n_processes=None)
         assert sim.n_processes == 5
@@ -159,7 +159,7 @@ class TestQiskitSimulatorProperties:
     def test_optimization_level_reaches_the_transpiler(self, mocker, level):
         """The setting is worthless unless it is threaded into transpile()."""
         spy = mocker.patch(
-            "divi.backends._qiskit_simulator.transpile",
+            "divi.backends.runners._qiskit.transpile",
             side_effect=lambda circuits, *a, **kw: circuits,
         )
         simulator = QiskitSimulator(shots=10, optimization_level=level)
@@ -205,14 +205,14 @@ class TestQiskitSimulatorSubmitCircuits:
         if use_from_backend:
             return (
                 mocker.patch(
-                    "divi.backends._qiskit_simulator.AerSimulator.from_backend",
+                    "divi.backends.runners._qiskit.AerSimulator.from_backend",
                     return_value=mock_aer,
                 ),
                 mock_aer,
             )
         else:
             mocker.patch(
-                "divi.backends._qiskit_simulator.AerSimulator",
+                "divi.backends.runners._qiskit.AerSimulator",
                 return_value=mock_aer,
             )
             return mock_aer
@@ -221,7 +221,7 @@ class TestQiskitSimulatorSubmitCircuits:
         """Helper to set up mock transpile."""
         mock_transpiled = QuantumCircuit(n_qubits)
         mocker.patch(
-            "divi.backends._qiskit_simulator.transpile",
+            "divi.backends.runners._qiskit.transpile",
             return_value=[mock_transpiled] * num_circuits,
         )
 
@@ -236,7 +236,7 @@ class TestQiskitSimulatorSubmitCircuits:
         # Mock the fake backend to avoid actual backend creation
         mock_backend_class = mocker.Mock()
         mocker.patch(
-            "divi.backends._qiskit_simulator._find_best_fake_backend",
+            "divi.backends.runners._qiskit._find_best_fake_backend",
             return_value=[mock_backend_class],
         )
 
@@ -319,7 +319,7 @@ class TestQiskitSimulatorSubmitCircuits:
         )
         self._setup_mock_transpile(mocker, num_circuits=2)
 
-        mock_logger = mocker.patch("divi.backends._qiskit_simulator.logger")
+        mock_logger = mocker.patch("divi.backends.runners._qiskit.logger")
 
         simulator.submit_circuits(circuits)
 
@@ -387,7 +387,7 @@ def _setup_qiskit_contract_mocks(mocker):
     mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
     mock_aer.run.return_value.result.return_value = mock_result
     mocker.patch(
-        "divi.backends._qiskit_simulator.AerSimulator",
+        "divi.backends.runners._qiskit.AerSimulator",
         return_value=mock_aer,
     )
 
@@ -398,7 +398,7 @@ def _setup_qiskit_contract_mocks(mocker):
         ]
 
     mocker.patch(
-        "divi.backends._qiskit_simulator.transpile",
+        "divi.backends.runners._qiskit.transpile",
         side_effect=_transpile_side_effect,
     )
     return mock_aer
@@ -490,49 +490,16 @@ class TestExpvalSubmission:
         mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
         mock_aer.run.return_value.result.return_value = mock_result
         mocker.patch(
-            "divi.backends._qiskit_simulator.AerSimulator",
+            "divi.backends.runners._qiskit.AerSimulator",
             return_value=mock_aer,
         )
         mocker.patch(
-            "divi.backends._qiskit_simulator.transpile",
+            "divi.backends.runners._qiskit.transpile",
             return_value=[QuantumCircuit(2)],
         )
 
         result = sim.submit_circuits({"c0": self.QASM_2Q})
         assert result.results[0]["results"] == {"00": 50, "11": 50}
-
-    def test_get_ham_ops_no_map(self):
-        """All circuits get all ops when circuit_ham_map is None."""
-        ops = QiskitSimulator._get_ham_ops_for_circuit(0, "ZI;IZ;XX", None)
-        assert ops == ["ZI", "IZ", "XX"]
-
-    def test_get_ham_ops_no_map_pipe_delimited(self):
-        """Pipe-delimited groups are flattened when no map provided."""
-        ops = QiskitSimulator._get_ham_ops_for_circuit(0, "ZI;IZ|XX;YY", None)
-        assert ops == ["ZI", "IZ", "XX", "YY"]
-
-    def test_get_ham_ops_with_map(self):
-        """[start, end) ranges with |‑delimited groups route correctly."""
-        ham_ops = "ZI;IZ|XX;YY"
-        circuit_ham_map = [[0, 3], [3, 5]]
-
-        assert QiskitSimulator._get_ham_ops_for_circuit(
-            0, ham_ops, circuit_ham_map
-        ) == ["ZI", "IZ"]
-        assert QiskitSimulator._get_ham_ops_for_circuit(
-            2, ham_ops, circuit_ham_map
-        ) == ["ZI", "IZ"]
-        assert QiskitSimulator._get_ham_ops_for_circuit(
-            3, ham_ops, circuit_ham_map
-        ) == ["XX", "YY"]
-        assert QiskitSimulator._get_ham_ops_for_circuit(
-            4, ham_ops, circuit_ham_map
-        ) == ["XX", "YY"]
-
-    def test_get_ham_ops_fallback(self):
-        """Circuit index outside all ranges falls back to all ops."""
-        ops = QiskitSimulator._get_ham_ops_for_circuit(10, "ZI|XX", [[0, 2], [2, 4]])
-        assert ops == ["ZI", "XX"]
 
     def test_expval_with_circuit_ham_map(self):
         """Different circuits get different observables via circuit_ham_map."""
@@ -608,7 +575,7 @@ class TestQiskitSimulatorRuntimeEstimation:
         # We need a real circuit for circuit_to_dag to work
         transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
         mocker.patch(
-            "divi.backends._qiskit_simulator.transpile",
+            "divi.backends.runners._qiskit.transpile",
             return_value=transpiled_circuit,
         )
 
@@ -651,13 +618,13 @@ class TestQiskitSimulatorRuntimeEstimation:
         mock_backend_instance.target = mock_target
 
         mocker.patch(
-            "divi.backends._qiskit_simulator._find_best_fake_backend",
+            "divi.backends.runners._qiskit._find_best_fake_backend",
             return_value=[mock_backend_cls],
         )
 
         transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
         mocker.patch(
-            "divi.backends._qiskit_simulator.transpile",
+            "divi.backends.runners._qiskit.transpile",
             return_value=transpiled_circuit,
         )
 
@@ -683,9 +650,9 @@ class TestQiskitSimulatorRuntimeEstimation:
             pool_kwargs.update(kwargs)
             return mock_pool_cm
 
-        mocker.patch("divi.backends._qiskit_simulator.Pool", side_effect=fake_pool)
+        mocker.patch("divi.backends.runners._qiskit.Pool", side_effect=fake_pool)
         mocker.patch(
-            "divi.backends._qiskit_simulator._default_n_processes",
+            "divi.backends.runners._qiskit._default_n_processes",
             return_value=7,
         )
 
@@ -701,11 +668,11 @@ class TestDefaultNProcesses:
         """Running in a worker thread limits to 2 cores."""
         mock_thread = mocker.Mock()
         mocker.patch(
-            "divi.backends._qiskit_simulator.threading.current_thread",
+            "divi.backends.runners._qiskit.threading.current_thread",
             return_value=mock_thread,
         )
         mocker.patch(
-            "divi.backends._qiskit_simulator.threading.main_thread",
+            "divi.backends.runners._qiskit.threading.main_thread",
             return_value=mocker.Mock(),
         )
         assert _default_n_processes() == 2
@@ -715,7 +682,7 @@ class TestDefaultNProcesses:
         mock_process = mocker.Mock()
         mock_process.name = "SpawnProcess-1"
         mocker.patch(
-            "divi.backends._qiskit_simulator.current_process",
+            "divi.backends.runners._qiskit.current_process",
             return_value=mock_process,
         )
         assert _default_n_processes() == 2
@@ -735,13 +702,13 @@ class TestDefaultNProcesses:
     def test_cpu_count_scaling(self, mocker, cpu_count, expected):
         """Correct scaling: small <= 4, medium <= 16, large > 16."""
         mocker.patch(
-            "divi.backends._qiskit_simulator.os.cpu_count", return_value=cpu_count
+            "divi.backends.runners._qiskit.os.cpu_count", return_value=cpu_count
         )
         assert _default_n_processes() == expected
 
     def test_cpu_count_none_falls_back_to_four(self, mocker):
         """When os.cpu_count() returns None, defaults to cpu_count=4 logic."""
-        mocker.patch("divi.backends._qiskit_simulator.os.cpu_count", return_value=None)
+        mocker.patch("divi.backends.runners._qiskit.os.cpu_count", return_value=None)
         # cpu_count=4 -> max(2, 4-1) = 3
         assert _default_n_processes() == 3
 

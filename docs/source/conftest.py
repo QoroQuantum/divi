@@ -32,7 +32,6 @@ from sybil.parsers.rest import PythonCodeBlockParser, SkipParser
 from sybil.region import Lexeme
 
 from divi.backends import (
-    CircuitBatch,
     CircuitRunner,
     ExecutionConfig,
     ExecutionResult,
@@ -40,7 +39,6 @@ from divi.backends import (
     JobStatus,
     MaestroSimulator,
     SimulatorCluster,
-    normalise_circuit_batch,
 )
 from divi.circuits._payloads import bound_circuits
 from divi.qprog import SuperpositionState
@@ -269,7 +267,7 @@ def teardown(namespace):
 def _doc_snippet_qoro_stub(session_mocker):
     """Replace ``QoroService`` so RST snippets never hit the network."""
     session_mocker.patch("divi.backends.QoroService", DocStubQoroService)
-    session_mocker.patch("divi.backends._qoro_service.QoroService", DocStubQoroService)
+    session_mocker.patch("divi.backends.runners._qoro.QoroService", DocStubQoroService)
 
 
 pytest_collect_file = Sybil(

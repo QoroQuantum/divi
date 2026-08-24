@@ -12,9 +12,15 @@ from threading import Event
 
 from divi.exceptions import ExecutionCancelledError
 
-from ._async_job_backend import AsyncJobBackend
+from ._base import AsyncJobBackend
 
 logger = logging.getLogger(__name__)
+
+
+def raise_if_cancelled(event: Event | None, message: str) -> None:
+    """Raise :class:`~divi.exceptions.ExecutionCancelledError` if *event* is set."""
+    if event is not None and event.is_set():
+        raise ExecutionCancelledError(message)
 
 
 @contextmanager

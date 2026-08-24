@@ -66,6 +66,20 @@ def per_circuit(ranges: list[ShotRange], n_circuits: int) -> list[int]:
     return out
 
 
+def per_circuit_or_none(
+    shot_groups: list[list[int]] | None, n_circuits: int
+) -> list[int] | None:
+    """Validate a wire-format allocation and expand it to one count per circuit.
+
+    ``None`` passes through, leaving the caller on its own shot count.
+    """
+    if shot_groups is None:
+        return None
+    ranges = from_wire(shot_groups)
+    validate(ranges, n_circuits)
+    return per_circuit(ranges, n_circuits)
+
+
 def bucket_by_shots(ranges: list[ShotRange]) -> dict[int, list[int]]:
     """Return ``{shots: indices}`` — circuits sharing a shot count.
 
