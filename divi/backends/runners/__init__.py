@@ -7,12 +7,14 @@
 from .._job_status import JobStatus
 from ._maestro import MaestroConfig, MaestroSimulator
 from ._qoro import JobType, QoroService
+from ._qrmi import QRMIBackend
 
 __all__ = [
     "JobStatus",
     "JobType",
     "MaestroConfig",
     "MaestroSimulator",
+    "QRMIBackend",
     "QiskitSimulator",
     "QoroService",
 ]
