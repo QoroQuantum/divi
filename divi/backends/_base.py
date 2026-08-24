@@ -8,7 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from threading import Event
-from typing import Protocol, runtime_checkable
+from typing import Protocol, Self, runtime_checkable
 
 import numpy as np
 import requests
@@ -74,7 +74,7 @@ class ExecutionResult:
         """
         return self.job_id is not None and self.results is None
 
-    def with_results(self, results: list[dict]) -> "ExecutionResult":
+    def with_results(self, results: list[dict]) -> Self:
         """Create a new ExecutionResult with results populated.
 
         This method creates a new instance with results set, effectively converting

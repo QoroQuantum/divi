@@ -29,7 +29,7 @@ their ``sample_solution`` overrides to validate explicit params before decoding.
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, NamedTuple, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Self, cast
 from warnings import warn
 
 import numpy as np
@@ -285,7 +285,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
-    ) -> "SolutionSamplingMixin":
+    ) -> Self:
         """Run the final measurement and decode the solution.
 
         Called by ``run()`` (with ``params=None``, falling back to the host's

@@ -6,7 +6,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import replace
 from functools import cached_property
-from typing import Literal
+from typing import Literal, Self
 from warnings import warn
 
 import numpy as np
@@ -348,7 +348,7 @@ class PCE(VQE):
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
-    ) -> "PCE":
+    ) -> Self:
         """Compute the final eigenstate and decode it into a PCE vector."""
         super().sample_solution(self._resolve_sample_params(params), **kwargs)
 

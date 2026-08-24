@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 from qiskit.circuit import Parameter, QuantumCircuit
@@ -305,7 +305,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             circuit_bodies=(((), dag),), precision=self._precision, **readout
         )
 
-    def run(self, **kwargs) -> "TimeEvolution":
+    def run(self, **kwargs) -> Self:
         """Execute time evolution.
 
         Returns:

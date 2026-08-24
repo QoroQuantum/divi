@@ -9,7 +9,7 @@ import logging
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Annotated, Literal
+from typing import Annotated, Literal, Self
 
 import numpy as np
 import requests
@@ -1156,7 +1156,7 @@ class _Subspace(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _check_subspace(self) -> "_Subspace":
+    def _check_subspace(self) -> Self:
         has_base = self.base_bitstring is not None
         has_variables = self.variable_qubits is not None
         has_auto_controls = any(
@@ -1215,7 +1215,7 @@ class _Constraint(BaseModel):
         return v
 
     @model_validator(mode="after")
-    def _require_weights(self) -> "_Constraint":
+    def _require_weights(self) -> Self:
         if self.type in ("inequality", "equality") and not self.weights:
             raise ValueError(f"'{self.type}' requires a non-empty 'weights' mapping.")
         return self
@@ -1398,7 +1398,7 @@ class CharacterizationOptions(BaseModel):
     """
 
     @model_validator(mode="after")
-    def _check_options(self) -> "CharacterizationOptions":
+    def _check_options(self) -> Self:
         if self.parameter_sweep and (self.gamma is not None or self.beta is not None):
             raise ValueError(
                 "parameter_sweep=True is mutually exclusive with fixed "

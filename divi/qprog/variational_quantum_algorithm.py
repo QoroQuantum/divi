@@ -975,7 +975,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         perform_final_computation: bool = True,
         checkpoint_config: CheckpointConfig | None = None,
         **kwargs,
-    ) -> "VariationalQuantumAlgorithm":
+    ) -> Self:
         """Run the variational quantum algorithm.
 
         The outputs are stored in the algorithm object and can be accessed via

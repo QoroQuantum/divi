@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from enum import Enum
 from queue import Queue
 from threading import Event, Lock, Thread
-from typing import Any, cast
+from typing import Any, Self, cast
 from warnings import warn
 
 import numpy as np
@@ -713,7 +713,7 @@ class ProgramEnsemble(ABC):
         *,
         max_rounds: int | None = None,
         batch_config: BatchConfig = BatchConfig(),
-    ) -> "ProgramEnsemble":
+    ) -> Self:
         """Run this ensemble's state-dependent workflow to completion.
 
         Each round materialises a fresh program map, runs it synchronously,
@@ -968,7 +968,7 @@ class ProgramEnsemble(ABC):
         blocking: bool = False,
         batch_config: BatchConfig = BatchConfig(),
         suppress_strict_warning: bool = False,
-    ) -> "ProgramEnsemble":
+    ) -> Self:
         """Sample every sub-program's circuit with trained parameters.
 
         Runs only the final measurement step on each sub-program — no

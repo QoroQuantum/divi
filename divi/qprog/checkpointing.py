@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 __all__ = [
     "CheckpointConfig",
@@ -349,9 +349,7 @@ class CheckpointConfig:
     checkpoint_interval: int | None = None
 
     @classmethod
-    def with_timestamped_dir(
-        cls, checkpoint_interval: int | None = None
-    ) -> "CheckpointConfig":
+    def with_timestamped_dir(cls, checkpoint_interval: int | None = None) -> Self:
         """Create CheckpointConfig with auto-generated directory name.
 
         Args:

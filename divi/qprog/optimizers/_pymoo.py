@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import cma
 import dill
@@ -336,7 +336,7 @@ class PymooOptimizer(Optimizer):
         _atomic_write(state_file, state.model_dump_json(indent=2))
 
     @classmethod
-    def load_state(cls, checkpoint_dir: Path | str) -> "PymooOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> Self:
         """Load the optimizer's internal state from a checkpoint directory.
 
         Creates a new PymooOptimizer instance with the state restored from the checkpoint.
@@ -380,9 +380,9 @@ class PymooOptimizer(Optimizer):
         """
         self._curr_algorithm_obj = None
 
-    def copy(self) -> "PymooOptimizer":
+    def copy(self) -> Self:
         """Fresh copy, rebuilt from configuration (drops the pymoo algorithm state)."""
-        return PymooOptimizer(
+        return type(self)(
             method=self.method,
             population_size=self.population_size,
             **self.algorithm_kwargs,

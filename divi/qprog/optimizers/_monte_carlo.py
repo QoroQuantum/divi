@@ -6,7 +6,7 @@ import base64
 import pickle
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -363,7 +363,7 @@ class MonteCarloOptimizer(Optimizer):
         _atomic_write(state_file, state.model_dump_json(indent=2))
 
     @classmethod
-    def load_state(cls, checkpoint_dir: Path | str) -> "MonteCarloOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> Self:
         """Load the optimizer's internal state from a checkpoint directory.
 
         Creates a new MonteCarloOptimizer instance with the state restored from the checkpoint.
@@ -430,9 +430,9 @@ class MonteCarloOptimizer(Optimizer):
         self._curr_best_params = None
         self._curr_best_loss = None
 
-    def copy(self) -> "MonteCarloOptimizer":
+    def copy(self) -> Self:
         """Fresh copy, rebuilt from configuration (drops population/RNG state)."""
-        return MonteCarloOptimizer(
+        return type(self)(
             population_size=self._population_size,
             n_best_sets=self._n_best_sets,
             keep_best_params=self._keep_best_params,

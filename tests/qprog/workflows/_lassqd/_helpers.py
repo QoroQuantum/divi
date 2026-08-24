@@ -6,6 +6,7 @@
 
 import itertools
 from dataclasses import fields
+from typing import Self
 
 import numpy as np
 import pytest
@@ -309,7 +310,7 @@ class ExactSamplerVQE(QuantumProgram):
     def has_results(self) -> bool:
         return self._has_results
 
-    def run(self, **kwargs) -> "ExactSamplerVQE":
+    def run(self, **kwargs) -> Self:
         """Diagonalize the fragment's qubit Hamiltonian and sample its ground state.
 
         Restricts the dense matrix to the computational basis states matching

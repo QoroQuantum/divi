@@ -7,7 +7,7 @@ from collections.abc import Hashable
 from contextlib import contextmanager
 from queue import Queue
 from threading import Event
-from typing import Any
+from typing import Any, Self
 from warnings import warn
 
 import numpy as np
@@ -191,7 +191,7 @@ class QuantumProgram(ABC):
         return self._total_run_time
 
     @abstractmethod
-    def run(self, **kwargs) -> "QuantumProgram":
+    def run(self, **kwargs) -> Self:
         """Execute the quantum algorithm.
 
         Args:

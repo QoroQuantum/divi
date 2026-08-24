@@ -4,7 +4,7 @@
 
 import logging
 import pickle
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -297,7 +297,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
-    ) -> "QAOA":
+    ) -> Self:
         """Run measurement circuits with the given parameters and decode the solution."""
         self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
 

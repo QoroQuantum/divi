@@ -5,7 +5,7 @@
 from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -142,7 +142,7 @@ class ScipyOptimizer(Optimizer):
         )
 
     @classmethod
-    def load_state(cls, checkpoint_dir: Path | str) -> "ScipyOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> Self:
         """Load the optimizer's internal state from a checkpoint directory.
 
         Scipy optimizers do not support loading state as they cannot save state.

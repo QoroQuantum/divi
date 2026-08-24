@@ -6,7 +6,7 @@ import json
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -146,7 +146,7 @@ class GridSearchOptimizer(Optimizer):
         _atomic_write(state_file, json.dumps(state, indent=2))
 
     @classmethod
-    def load_state(cls, checkpoint_dir: Path | str) -> "GridSearchOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> Self:
         """Load grid search state from checkpoint."""
         state_file = Path(checkpoint_dir) / OPTIMIZER_STATE_FILE
         with open(state_file) as f:
@@ -166,6 +166,6 @@ class GridSearchOptimizer(Optimizer):
         self._best_loss = None
         self._all_losses = None
 
-    def copy(self) -> "GridSearchOptimizer":
+    def copy(self) -> Self:
         """Fresh copy, rebuilt from the parameter grid (drops evaluated losses)."""
-        return GridSearchOptimizer(param_grid=self._param_grid.copy())
+        return type(self)(param_grid=self._param_grid.copy())

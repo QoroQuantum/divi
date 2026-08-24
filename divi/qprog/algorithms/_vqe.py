@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any
+from typing import Any, Self
 from warnings import warn
 
 import numpy as np
@@ -294,7 +294,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self,
         params: npt.NDArray[np.float64] | None = None,
         **kwargs,
-    ) -> "VQE":
+    ) -> Self:
         """Extract the eigenstate corresponding to the lowest energy found."""
         self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
 

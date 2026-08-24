@@ -8,8 +8,10 @@ import pytest
 from scipy.optimize import OptimizeResult
 
 from divi.qprog.optimizers import (
+    GridSearchOptimizer,
     MonteCarloOptimizer,
     Optimizer,
+    PymooMethod,
     PymooOptimizer,
     QNGOptimizer,
     QNSPSAOptimizer,
@@ -233,6 +235,34 @@ class TestOptimizerContract:
         result = contract_optimizer.optimize(cost_fn, initial_params, max_iterations=2)
         assert isinstance(result, OptimizeResult)
         assert result.x.shape == (self.n_params,)
+
+
+class _CustomMonteCarloOptimizer(MonteCarloOptimizer):
+    pass
+
+
+class _CustomPymooOptimizer(PymooOptimizer):
+    pass
+
+
+class _CustomGridSearchOptimizer(GridSearchOptimizer):
+    pass
+
+
+@pytest.mark.parametrize(
+    "make_optimizer",
+    [
+        lambda: _CustomMonteCarloOptimizer(population_size=5, n_best_sets=2),
+        lambda: _CustomPymooOptimizer(method=PymooMethod.CMAES, population_size=10),
+        lambda: _CustomGridSearchOptimizer(param_grid=np.zeros((4, 2))),
+    ],
+    ids=["monte-carlo", "pymoo", "grid-search"],
+)
+def test_copy_preserves_subclass_type(make_optimizer):
+    """copy() rebuilds the receiver's own type, not the class it was defined on."""
+    optimizer = make_optimizer()
+
+    assert type(optimizer.copy()) is type(optimizer)
 
 
 # --------------------------------------------------------------------------- #

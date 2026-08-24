@@ -4,7 +4,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -260,7 +260,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
         )
 
     @classmethod
-    def load_state(cls, checkpoint_dir: Path | str) -> "QNGOptimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> Self:
         """QNGOptimizer does not support state loading.
 
         Raises:

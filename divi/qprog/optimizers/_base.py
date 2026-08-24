@@ -6,7 +6,7 @@ import copy
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -104,7 +104,7 @@ class Optimizer(ABC):
 
     @classmethod
     @abstractmethod
-    def load_state(cls, checkpoint_dir: Path | str) -> "Optimizer":
+    def load_state(cls, checkpoint_dir: Path | str) -> Self:
         """Load the optimizer's internal state from a checkpoint directory.
 
         Creates a new optimizer instance with the state restored from the checkpoint.
@@ -173,7 +173,7 @@ class Optimizer(ABC):
         """
         return ()
 
-    def copy(self) -> "Optimizer":
+    def copy(self) -> Self:
         """Return a fresh instance with the same configuration and no accumulated
         run state.
 
