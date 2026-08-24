@@ -26,6 +26,7 @@ from .runners import (
     MaestroConfig,
     MaestroSimulator,
     QoroService,
+    QRMIBackend,
 )
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     "MaestroSimulator",
     "QPU",
     "QPUSystem",
+    "QRMIBackend",
     "QiskitSimulator",
     "QoroService",
     "QoroJobError",
