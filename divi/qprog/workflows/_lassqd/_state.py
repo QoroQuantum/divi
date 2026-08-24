@@ -112,12 +112,16 @@ class LASSQDState:
         energy: Total energy for this state, or ``inf`` if not yet computed.
         previous_energy: Total energy from the previous macro-cycle, or
             ``inf`` for the initial state.
+        orbitals_converged: Whether the orbital optimisation that produced
+            ``mo_coeff`` converged. ``True`` for an initial state, which has no
+            solve behind it.
     """
 
     mo_coeff: np.ndarray
     fragments: tuple[FragmentState, ...]
     energy: float = float("inf")
     previous_energy: float = float("inf")
+    orbitals_converged: bool = True
 
 
 def validate_fragment_specs(

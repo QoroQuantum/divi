@@ -869,19 +869,18 @@ def test_a_stalled_orbital_optimizer_is_not_reported_as_converged(
     reached a lower energy than a previous three-round "converged" result.
     """
     ensemble = _lassqd(dummy_expval_backend)
-    state = LASSQDState(
+    converged = LASSQDState(
         mo_coeff=np.eye(4),
         fragments=(),
         energy=-1.0,
         previous_energy=-1.0 + 1e-12,
     )
 
-    ensemble._orbitals_converged = True
-    assert ensemble.is_complete(state)
+    assert ensemble.is_complete(converged)
 
-    ensemble._orbitals_converged = False
+    stalled = dataclasses.replace(converged, orbitals_converged=False)
     with pytest.warns(UserWarning, match="did not converge"):
-        assert not ensemble.is_complete(state)
+        assert not ensemble.is_complete(stalled)
 
 
 @pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")

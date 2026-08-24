@@ -837,8 +837,6 @@ class LASSQD(ProgramEnsemble):
         self._solvers: dict[int, SQDSolver] = {}
         self._energy_history: list[float] = []
         self._round_reports: list[LASSQDRoundReport] = []
-        # No round has run, so nothing has stalled yet.
-        self._orbitals_converged = True
         self._ao_eri: np.ndarray | None = None
         self._h_ao: np.ndarray | None = None
 
@@ -1118,7 +1116,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._solvers.clear()
         self._energy_history.clear()
         self._round_reports.clear()
-        self._orbitals_converged = True
         if self._seed is not None and self.backend is not None:
             # No-op on backends that cannot seed their sampler, so a run stays
             # reproducible only as far as the backend allows.
@@ -1205,8 +1202,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         Returns:
             A new :class:`~divi.qprog.workflows.LASSQDState` with updated
             ``mo_coeff``, per-fragment RDMs and parameters, ``energy`` (this
-            round's optimised total energy), and ``previous_energy`` (set to
-            ``state.energy``). ``state`` itself is left unmodified.
+            round's optimised total energy), ``previous_energy`` (set to
+            ``state.energy``), and ``orbitals_converged``. ``state`` itself is
+            left unmodified.
 
         Raises:
             ValueError: If SQD recovery fails for some fragment (e.g. no
@@ -1306,7 +1304,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             h_ao,
             max_orbital_iterations=self._max_orbital_iterations,
         )
-        self._orbitals_converged = solve.converged
         self._energy_history.append(solve.energy)
 
         self._round_reports.append(
@@ -1333,6 +1330,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             fragments=tuple(new_fragments),
             energy=solve.energy,
             previous_energy=state.energy,
+            orbitals_converged=solve.converged,
         )
 
     def is_complete(self, state: LASSQDState) -> bool:
@@ -1347,7 +1345,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         """
         if not abs(state.energy - state.previous_energy) < self._energy_tol:
             return False
-        if not self._orbitals_converged:
+        if not state.orbitals_converged:
             warn(
                 "The macro-cycle energy change is below energy_tol but the "
                 "orbital optimisation did not converge, so this is not a fixed "
