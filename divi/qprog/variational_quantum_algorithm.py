@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from functools import cached_property
 from pathlib import Path
 from queue import Queue
-from typing import Any, ClassVar, Literal, TypeAlias, cast
+from typing import Any, ClassVar, Literal, Self, TypeAlias, cast
 from warnings import warn
 
 import numpy as np
@@ -46,6 +46,7 @@ from divi.qprog.checkpointing import (
 )
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.optimizers import (
+    GridSearchOptimizer,
     MonteCarloOptimizer,
     Optimizer,
     PymooOptimizer,
@@ -59,6 +60,14 @@ from divi.viz import ProgramViz
 logger = logging.getLogger(__name__)
 
 _RUN_INSTRUCTION = "Call run() to execute the optimization."
+
+# Every optimizer whose ``supports_checkpointing`` is True must appear here, or
+# its checkpoints would be written but never loadable.
+_CHECKPOINTABLE_OPTIMIZERS: dict[str, type[Optimizer]] = {
+    "GridSearchOptimizer": GridSearchOptimizer,
+    "MonteCarloOptimizer": MonteCarloOptimizer,
+    "PymooOptimizer": PymooOptimizer,
+}
 
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
 
@@ -623,7 +632,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         backend: CircuitRunner,
         subdirectory: str | None = None,
         **kwargs,
-    ) -> "VariationalQuantumAlgorithm":
+    ) -> Self:
         """Load program state from a checkpoint directory."""
         checkpoint_path = resolve_checkpoint_path(checkpoint_dir, subdirectory)
         state_file = checkpoint_path / PROGRAM_STATE_FILE
@@ -637,12 +646,14 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         # 2. Reconstruct Optimizer
         opt_config = state.optimizer_config
-        if opt_config.type == "MonteCarloOptimizer":
-            optimizer = MonteCarloOptimizer.load_state(checkpoint_path)
-        elif opt_config.type == "PymooOptimizer":
-            optimizer = PymooOptimizer.load_state(checkpoint_path)
-        else:
-            raise ValueError(f"Unsupported optimizer type: {opt_config.type}")
+        optimizer_class = _CHECKPOINTABLE_OPTIMIZERS.get(opt_config.type)
+        if optimizer_class is None:
+            supported = ", ".join(sorted(_CHECKPOINTABLE_OPTIMIZERS))
+            raise ValueError(
+                f"Unsupported optimizer type: {opt_config.type}. "
+                f"Checkpoints can be loaded for: {supported}."
+            )
+        optimizer = optimizer_class.load_state(checkpoint_path)
 
         # 3. Create Instance
         program = cls(backend=backend, optimizer=optimizer, seed=state.seed, **kwargs)
@@ -1063,6 +1074,16 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         jac_fn = extra_evaluators.get("jac")
 
         last_grad_norm: float | None = None
+        last_checkpointed_iteration: int | None = None
+
+        def _flush_final_checkpoint():
+            """Checkpoint the last iteration if the interval did not already."""
+            if (
+                checkpoint_config.checkpoint_dir is not None
+                and self.current_iteration > 0
+                and self.current_iteration != last_checkpointed_iteration
+            ):
+                self.save_state(checkpoint_config)
 
         def grad_fn(params):
             nonlocal last_grad_norm
@@ -1081,6 +1102,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             return grads
 
         def _iteration_counter(intermediate_result: OptimizeResult):
+            nonlocal last_checkpointed_iteration
 
             self._losses_history.append(
                 dict(
@@ -1116,6 +1138,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             # Checkpointing
             if checkpoint_config._should_checkpoint(self.current_iteration):
                 self.save_state(checkpoint_config)
+                last_checkpointed_iteration = self.current_iteration
 
             if self._cancellation_event and self._cancellation_event.is_set():
                 raise ExecutionCancelledError("Cancellation requested by batch.")
@@ -1198,6 +1221,13 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 self.reporter.info(
                     message=message, final_status=TerminalStatus.CANCELLED
                 )
+                try:
+                    _flush_final_checkpoint()
+                except Exception:
+                    logger.warning(
+                        "Failed to write a final checkpoint after cancellation.",
+                        exc_info=True,
+                    )
                 raise ExecutionCancelledError(message) from exc
             else:
                 self.optimize_result.success = True
@@ -1214,6 +1244,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         # Canonical 1-D best parameters (the optimizer result contract); the
         # early-stop/cancel branches above carry a 2-D (1, n) best, so squeeze.
         self._final_params = np.atleast_1d(np.asarray(self.optimize_result.x).squeeze())
+
+        _flush_final_checkpoint()
 
         if perform_final_computation and isinstance(self, SolutionSamplingMixin):
             self.sample_solution(**kwargs)

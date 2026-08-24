@@ -30,6 +30,9 @@ but the optimizer must also support restoring its state:
    * - :class:`~divi.qprog.optimizers.PymooOptimizer`
      - Yes
      - Supports CMA-ES and Differential Evolution state.
+   * - :class:`~divi.qprog.optimizers.GridSearchOptimizer`
+     - Yes
+     - Restores the grid and any losses already evaluated.
    * - :class:`~divi.qprog.optimizers.ScipyOptimizer`
      - No
      - The underlying SciPy methods do not expose resumable state.
@@ -83,6 +86,8 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
    vqe.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))
 
 By default, checkpoints are saved **every iteration**. Each checkpoint is stored in a subdirectory named ``checkpoint_{iteration:03d}`` (e.g., ``checkpoint_001``, ``checkpoint_002``).
+
+A run always checkpoints its final iteration, even when that iteration does not land on a ``checkpoint_interval`` boundary, and whether it ended by converging, by early stopping, or by cancellation. Nothing between the last interval boundary and the end of the run is lost.
 
 Checkpoint Interval
 ^^^^^^^^^^^^^^^^^^^
@@ -159,7 +164,7 @@ To resume from a checkpoint, use the ``load_state()`` class method:
 Loading Specific Checkpoints
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-By default, ``load_state()`` loads the latest checkpoint. To load a specific checkpoint:
+By default, ``load_state()`` loads the latest checkpoint whose files are both present. A checkpoint left incomplete by an interrupted write is skipped rather than treated as the latest, so the last good checkpoint stays reachable. To load a specific checkpoint:
 
 .. skip: next
 
@@ -304,6 +309,8 @@ Each checkpoint is stored in a subdirectory with the following structure:
    │   └── optimizer_state.json
    └── ...
 
+:class:`~divi.qprog.algorithms.IterativeQAOA` optimises at one depth after another and restarts its iteration count at each one, so it nests that layout one level deeper — ``depth_01/checkpoint_001``, ``depth_02/checkpoint_001``, and so on. Depths therefore never overwrite one another, and ``load_state()`` on the top-level directory resolves to the deepest depth that has a complete checkpoint. Resuming continues the depth schedule from there rather than restarting at depth 1.
+
 The ``program_state.json`` file contains:
 
 - Current iteration number
@@ -317,6 +324,7 @@ The ``optimizer_state.json`` file contains optimizer-specific data:
 
 - For ``MonteCarloOptimizer``: Population, evaluated population, losses, RNG state
 - For ``PymooOptimizer``: Serialised algorithm object and population
+- For ``GridSearchOptimizer``: Parameter grid, evaluated losses, best point
 
 Best Practices
 --------------

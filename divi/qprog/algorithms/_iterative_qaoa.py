@@ -18,14 +18,35 @@ Three interpolation strategies are provided:
 """
 
 from collections.abc import Callable
+from dataclasses import replace
 from enum import Enum
+from pathlib import Path
+from typing import Any, Self
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
 from qiskit.circuit import ParameterVector
 
+from divi.backends import CircuitRunner
+from divi.qprog.checkpointing import (
+    CheckpointConfig,
+    CheckpointNotFoundError,
+    _find_latest_checkpoint_subdir,
+)
+
 from ._qaoa import QAOA
+
+DEPTH_SUBDIR_PREFIX = "depth_"
+
+
+def _extract_depth_from_subdir(path: Path) -> int | None:
+    """Depth encoded in a ``depth_NN`` subdirectory name, or None if not one."""
+    if not path.is_dir() or not path.name.startswith(DEPTH_SUBDIR_PREFIX):
+        return None
+    suffix = path.name[len(DEPTH_SUBDIR_PREFIX) :]
+    return int(suffix) if suffix.isdigit() else None
+
 
 # ---------------------------------------------------------------------------
 # Interpolation strategies
@@ -233,6 +254,10 @@ class IterativeQAOA(QAOA):
 
     _supports_fixed_param_scans = False
 
+    # Set by _load_subclass_state so run() continues the depth schedule instead
+    # of restarting it; cleared once that run consumes it.
+    _resumed_from_checkpoint: bool = False
+
     def __init__(
         self,
         problem,
@@ -283,6 +308,94 @@ class IterativeQAOA(QAOA):
         self._preprocessor_pipeline_cache.clear()
         self._cost_circuit = None
 
+    def _save_subclass_state(self) -> dict[str, Any]:
+        """Save QAOA state plus the depth schedule's own progress."""
+        state = super()._save_subclass_state()
+        state.update(
+            {
+                "depth": self.n_layers,
+                "best_depth": self._best_depth,
+                "depth_history": [
+                    {**entry, "best_params": np.asarray(entry["best_params"]).tolist()}
+                    for entry in self._depth_history
+                ],
+            }
+        )
+        return state
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        """Restore the depth schedule and rebuild the ansatz at the saved depth."""
+        super()._load_subclass_state(state)
+
+        missing_keys = [
+            key for key in ("depth", "best_depth", "depth_history") if key not in state
+        ]
+        if missing_keys:
+            raise KeyError(
+                f"Corrupted checkpoint: missing required state keys: {missing_keys}"
+            )
+
+        self._best_depth = state["best_depth"]
+        self._depth_history = [
+            {
+                **entry,
+                "best_params": np.asarray(entry["best_params"], dtype=np.float64),
+            }
+            for entry in state["depth_history"]
+        ]
+        self._rebuild_for_depth(state["depth"])
+        self._resumed_from_checkpoint = True
+
+    @classmethod
+    def load_state(
+        cls,
+        checkpoint_dir: Path | str,
+        backend: CircuitRunner,
+        subdirectory: str | None = None,
+        **kwargs,
+    ) -> Self:
+        """Load from a checkpoint directory, resolving the deepest depth first.
+
+        ``run()`` writes each depth under its own ``depth_NN`` subdirectory, so
+        a directory holding those is resolved to the deepest one carrying a
+        complete checkpoint before the usual per-iteration resolution runs.
+        """
+        main_dir = Path(checkpoint_dir)
+        if subdirectory is None and main_dir.is_dir():
+            depth_dirs = sorted(
+                (
+                    d
+                    for d in main_dir.iterdir()
+                    if _extract_depth_from_subdir(d) is not None
+                ),
+                key=lambda d: _extract_depth_from_subdir(d) or -1,
+                reverse=True,
+            )
+            for depth_dir in depth_dirs:
+                try:
+                    _find_latest_checkpoint_subdir(depth_dir)
+                except CheckpointNotFoundError:
+                    continue
+                main_dir = depth_dir
+                break
+
+        return super().load_state(
+            main_dir, backend, subdirectory=subdirectory, **kwargs
+        )
+
+    @staticmethod
+    def _depth_checkpoint_config(
+        checkpoint_config: CheckpointConfig | None, depth: int
+    ) -> CheckpointConfig | None:
+        """Point ``checkpoint_config`` at this depth's own subdirectory."""
+        if checkpoint_config is None or checkpoint_config.checkpoint_dir is None:
+            return checkpoint_config
+        return replace(
+            checkpoint_config,
+            checkpoint_dir=Path(checkpoint_config.checkpoint_dir)
+            / f"{DEPTH_SUBDIR_PREFIX}{depth:02d}",
+        )
+
     def _reset_optimization_state(self) -> None:
         """Reset VQA optimisation tracking state for a fresh run."""
         self._losses_history = []
@@ -315,7 +428,10 @@ class IterativeQAOA(QAOA):
                 Passing a non-None value emits a ``UserWarning``.
             perform_final_computation: Whether to run the final measurement
                 at the best depth to extract the solution. Defaults to True.
-            checkpoint_config: Forwarded to each inner ``super().run()``.
+            checkpoint_config: Each depth is checkpointed under its own
+                ``depth_NN`` subdirectory of ``checkpoint_dir``, so depths do
+                not overwrite one another and
+                :meth:`load_state` can resume the schedule where it stopped.
             **kwargs: Additional keyword arguments passed to the parent ``run()``.
 
         Returns:
@@ -330,35 +446,65 @@ class IterativeQAOA(QAOA):
                 stacklevel=2,
             )
 
-        depth_history: list[dict] = []
-        prev_best_params: npt.NDArray[np.float64] | None = None
+        resuming = self._resumed_from_checkpoint
+        self._resumed_from_checkpoint = False
 
-        for depth in range(1, self._max_depth + 1):
+        # Mutated in place, never rebound: mid-depth checkpoints read
+        # self._depth_history and must see the depths already completed.
+        if resuming:
+            start_depth = len(self._depth_history) + 1
+            prev_best_params = (
+                self._depth_history[-1]["best_params"].copy()
+                if self._depth_history
+                else None
+            )
+        else:
+            self._depth_history.clear()
+            start_depth = 1
+            prev_best_params = None
+
+        for depth in range(start_depth, self._max_depth + 1):
             self.reporter.info(message=f"Depth {depth}/{self._max_depth}")
-            self._rebuild_for_depth(depth)
-            self._reset_optimization_state()
-            self.max_iterations = self._get_max_iters(depth)
             depth_initial_params = None
 
-            if depth > 1 and prev_best_params is not None:
-                interpolated = interpolate_qaoa_params(
-                    prev_best_params,
-                    depth - 1,
-                    self._strategy,
-                    self._n_basis_terms,
-                )
-                depth_initial_params = np.tile(
-                    interpolated, (self.optimizer.n_param_sets, 1)
+            # A checkpoint taken mid-depth already carries that depth's ansatz,
+            # parameters and optimizer state; continue it rather than restart it.
+            if (
+                resuming
+                and depth == start_depth
+                and self.n_layers == depth
+                and self.current_iteration > 0
+            ):
+                depth_exhausted = self.current_iteration >= self._get_max_iters(depth)
+            else:
+                depth_exhausted = False
+                self._rebuild_for_depth(depth)
+                self._reset_optimization_state()
+
+                if depth > 1 and prev_best_params is not None:
+                    interpolated = interpolate_qaoa_params(
+                        prev_best_params,
+                        depth - 1,
+                        self._strategy,
+                        self._n_basis_terms,
+                    )
+                    depth_initial_params = np.tile(
+                        interpolated, (self.optimizer.n_param_sets, 1)
+                    )
+
+            self.max_iterations = self._get_max_iters(depth)
+
+            if not depth_exhausted:
+                super().run(
+                    initial_params=depth_initial_params,
+                    perform_final_computation=False,
+                    checkpoint_config=self._depth_checkpoint_config(
+                        checkpoint_config, depth
+                    ),
+                    **kwargs,
                 )
 
-            super().run(
-                initial_params=depth_initial_params,
-                perform_final_computation=False,
-                checkpoint_config=checkpoint_config,
-                **kwargs,
-            )
-
-            depth_history.append(
+            self._depth_history.append(
                 {
                     "depth": depth,
                     "best_loss": self._best_loss,
@@ -371,14 +517,12 @@ class IterativeQAOA(QAOA):
             if (
                 self._convergence_threshold is not None
                 and depth > 1
-                and abs(depth_history[-2]["best_loss"] - self._best_loss)
+                and abs(self._depth_history[-2]["best_loss"] - self._best_loss)
                 < self._convergence_threshold
             ):
                 break
 
-        # Store history and find best depth
-        self._depth_history = depth_history
-        best_entry = min(depth_history, key=lambda d: d["best_loss"])
+        best_entry = min(self._depth_history, key=lambda d: d["best_loss"])
         self._best_depth = best_entry["depth"]
 
         # Restore the instance to the best depth

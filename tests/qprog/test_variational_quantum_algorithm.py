@@ -2,7 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import warnings
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -17,9 +19,14 @@ from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPreprocessor
 from divi.qprog._program_state import ProgramState
 from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
-from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
 from divi.qprog.early_stopping import EarlyStopping, StopReason
-from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import (
+    GridSearchOptimizer,
+    MonteCarloOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
@@ -1079,6 +1086,99 @@ class TestCheckpointing:
         # RNG bit-generator state round-trips so resumed runs are reproducible.
         assert fresh._rng.bit_generator.state == sample_program._rng.bit_generator.state
 
+    def test_grid_search_checkpoint_round_trips(self, mock_backend, tmp_path):
+        """Every optimizer that reports supports_checkpointing can be loaded back."""
+        grid = np.linspace(0.0, 1.0, 12).reshape(3, 4)
+        program = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=GridSearchOptimizer(param_grid=grid),
+        )
+        program.max_iterations = 1
+        program.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+            perform_final_computation=False,
+        )
+
+        loaded = SampleVQAProgram.load_state(
+            tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+        )
+
+        assert isinstance(loaded.optimizer, GridSearchOptimizer)
+        np.testing.assert_allclose(loaded.optimizer._param_grid, grid)
+        assert loaded.current_iteration == program.current_iteration
+
+    def test_load_state_rejects_uncheckpointable_optimizer(
+        self, mock_backend, tmp_path
+    ):
+        """An unknown optimizer type names the ones that can be loaded."""
+        checkpoint = tmp_path / "checkpoint_001"
+        checkpoint.mkdir()
+        (checkpoint / "optimizer_state.json").write_text("{}")
+        (checkpoint / "program_state.json").write_text(
+            json.dumps(
+                {
+                    "program_type": "SampleVQAProgram",
+                    "current_iteration": 1,
+                    "max_iterations": 1,
+                    "losses_history": [],
+                    "best_loss": 0.0,
+                    "total_circuit_count": 0,
+                    "total_run_time": 0.0,
+                    "seed": None,
+                    "grouping_strategy": None,
+                    "optimizer_config": {"type": "ScipyOptimizer", "config": {}},
+                    "subclass_state": {"data": {}},
+                }
+            )
+        )
+
+        with pytest.raises(ValueError, match="Checkpoints can be loaded for"):
+            SampleVQAProgram.load_state(
+                tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+            )
+
+    def test_stop_reason_round_trips(
+        self, sample_program, mock_backend, default_optimizer, mocker
+    ):
+        """A program that stopped early comes back reporting why."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+        sample_program._stop_reason = StopReason.PATIENCE_EXCEEDED
+
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        ProgramState.model_validate(sample_program).restore(fresh)
+
+        assert fresh.stop_reason is StopReason.PATIENCE_EXCEEDED
+
+    def test_stop_reason_absent_restores_as_none(
+        self, sample_program, mock_backend, default_optimizer, mocker
+    ):
+        """A run that never stopped early restores a null stop reason."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        fresh._stop_reason = StopReason.COST_VARIANCE_SETTLED
+        ProgramState.model_validate(sample_program).restore(fresh)
+
+        assert fresh.stop_reason is None
+
     def test_save_state_raises_error_before_optimization(
         self, sample_program, tmp_path
     ):
@@ -1122,16 +1222,76 @@ class TestCheckpointing:
             )
         )
 
-        # In the simulated loop of 3 iterations (1, 2, 3):
-        # Iter 1: 1 % 2 != 0 -> No save
-        # Iter 2: 2 % 2 == 0 -> Save
-        # Iter 3: 3 % 2 != 0 -> No save
-        # So save_state should be called exactly once
+        # Over iterations 1, 2, 3 the interval fires only at iteration 2; the
+        # final flush then saves iteration 3, so the run ends fully persisted.
+        assert sample_program.save_state.call_count == 2
+        for iteration in (2, 3):
+            assert (
+                tmp_path
+                / "interval_check"
+                / f"checkpoint_{iteration:03d}"
+                / "program_state.json"
+            ).exists()
+        assert not (tmp_path / "interval_check" / "checkpoint_001").exists()
+
+    def _cancel_after_one_iteration(self, program, mocker):
+        """Make the run cancel from within the callback, after iteration 1."""
+        mock_event = mocker.MagicMock()
+        mock_event.is_set.return_value = True
+        program._cancellation_event = mock_event
+        program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(program, n_iterations=1)
+        )
+
+    def test_cancelled_run_checkpoints_its_last_iteration(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Cancelling mid-run persists the work done before the interruption."""
+        self._cancel_after_one_iteration(sample_program, mocker)
+
+        # An interval that will not fire at iteration 1, so only the final
+        # flush can produce a checkpoint.
+        with pytest.raises(ExecutionCancelledError):
+            sample_program.run(
+                checkpoint_config=CheckpointConfig(
+                    checkpoint_dir=tmp_path, checkpoint_interval=5
+                )
+            )
+
+        assert (tmp_path / "checkpoint_001" / "program_state.json").exists()
+
+    def test_cancellation_survives_a_failing_final_checkpoint(
+        self, sample_program, tmp_path, mocker
+    ):
+        """A failed checkpoint write is logged, not raised over the cancellation."""
+        self._cancel_after_one_iteration(sample_program, mocker)
+        sample_program.save_state = mocker.Mock(side_effect=OSError("disk full"))
+
+        with pytest.raises(ExecutionCancelledError, match="Cancelled by user"):
+            sample_program.run(
+                checkpoint_config=CheckpointConfig(
+                    checkpoint_dir=tmp_path, checkpoint_interval=5
+                )
+            )
+
+        sample_program.save_state.assert_called_once()
+
+    def test_final_checkpoint_not_duplicated_on_interval_boundary(
+        self, sample_program, tmp_path, mocker
+    ):
+        """A run ending on an interval boundary is not checkpointed twice."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=2)
+        )
+        sample_program.save_state = mocker.Mock(wraps=sample_program.save_state)
+
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=tmp_path / "boundary", checkpoint_interval=2
+            )
+        )
+
         assert sample_program.save_state.call_count == 1
-        # Should have created checkpoint_002 subdirectory
-        assert (
-            tmp_path / "interval_check" / "checkpoint_002" / "program_state.json"
-        ).exists()
 
     def test_multiple_checkpoints_and_load_latest(
         self, sample_program, tmp_path, mocker
@@ -1698,6 +1858,36 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         # Should have stopped after patience+1 iterations (1 to set best, then 3 stale)
         assert program.current_iteration == 4
         assert program.stop_reason == StopReason.PATIENCE_EXCEEDED
+
+    def test_early_stopped_run_checkpoints_its_last_iteration(self, mocker, tmp_path):
+        """The iteration early stopping halts on is the one left on disk."""
+        program = self._create_program_with_mock_optimizer(
+            mocker, seed=42, early_stopping=EarlyStopping(patience=3, min_delta=0.0)
+        )
+        program.max_iterations = 100
+
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
+        program.optimizer.get_config.side_effect = lambda: {
+            "type": "MonteCarloOptimizer"
+        }
+        program.optimizer.save_state.side_effect = lambda path: (
+            Path(path) / "optimizer_state.json"
+        ).write_text("{}")
+
+        # An interval that cannot fire before patience runs out at iteration 4.
+        program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=tmp_path, checkpoint_interval=50
+            )
+        )
+
+        assert program.stop_reason is StopReason.PATIENCE_EXCEEDED
+        assert [info.iteration for info in list_checkpoints(tmp_path)] == [
+            program.current_iteration
+        ]
 
     def test_no_early_stopping_runs_all_iterations(self, mocker):
         """Verify normal behavior when early_stopping is None."""

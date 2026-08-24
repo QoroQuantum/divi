@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import shutil
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -20,6 +22,7 @@ from divi.qprog.algorithms._iterative_qaoa import (
     _interp,
     interpolate_qaoa_params,
 )
+from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
@@ -365,6 +368,109 @@ class TestIterativeQAOA:
         )
         iterative.run()
         assert iterative.n_layers == iterative.best_depth
+
+
+class TestIterativeQAOACheckpointing:
+    MAX_DEPTH = 3
+    ITERS_PER_DEPTH = 2
+
+    def _run_with_checkpoints(self, backend, checkpoint_dir):
+        program = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=self.MAX_DEPTH,
+            max_iterations_per_depth=self.ITERS_PER_DEPTH,
+            backend=backend,
+            optimizer=MonteCarloOptimizer(population_size=4, n_best_sets=2),
+            seed=1997,
+        )
+        program.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir),
+            perform_final_computation=False,
+        )
+        return program
+
+    def _load(self, backend, checkpoint_dir):
+        return IterativeQAOA.load_state(
+            checkpoint_dir,
+            backend=backend,
+            problem=MaxCutProblem(make_bull_graph()),
+            max_depth=self.MAX_DEPTH,
+            max_iterations_per_depth=self.ITERS_PER_DEPTH,
+        )
+
+    def test_each_depth_keeps_its_own_checkpoints(
+        self, default_test_simulator, tmp_path
+    ):
+        """Depths write to separate subdirectories instead of overwriting."""
+        self._run_with_checkpoints(default_test_simulator, tmp_path)
+
+        for depth in range(1, self.MAX_DEPTH + 1):
+            depth_dir = tmp_path / f"depth_{depth:02d}"
+            iterations = [info.iteration for info in list_checkpoints(depth_dir)]
+            assert iterations == list(range(1, self.ITERS_PER_DEPTH + 1))
+
+    def test_load_resolves_deepest_checkpoint(self, default_test_simulator, tmp_path):
+        """load_state picks the deepest depth and rebuilds its ansatz."""
+        self._run_with_checkpoints(default_test_simulator, tmp_path)
+
+        loaded = self._load(default_test_simulator, tmp_path)
+
+        assert loaded.n_layers == self.MAX_DEPTH
+        assert loaded.best_params.size == loaded.n_params
+        # The deepest checkpoint is written mid-depth, so the completed depths
+        # are the ones before it.
+        assert [entry["depth"] for entry in loaded.depth_history] == [1, 2]
+
+    def test_resume_continues_the_depth_schedule(
+        self, default_test_simulator, tmp_path
+    ):
+        """A resumed run finishes the remaining depths without restarting at 1."""
+        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        shutil.rmtree(tmp_path / f"depth_{self.MAX_DEPTH:02d}")
+
+        loaded = self._load(default_test_simulator, tmp_path)
+        assert loaded.n_layers == self.MAX_DEPTH - 1
+        assert len(loaded.depth_history) == self.MAX_DEPTH - 2
+
+        loaded.run(perform_final_computation=False)
+
+        assert [entry["depth"] for entry in loaded.depth_history] == list(
+            range(1, self.MAX_DEPTH + 1)
+        )
+
+    def test_resume_finishes_a_partially_optimised_depth(
+        self, default_test_simulator, tmp_path
+    ):
+        """A depth interrupted with budget left is continued, not restarted."""
+        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        deepest = tmp_path / f"depth_{self.MAX_DEPTH:02d}"
+        for info in list_checkpoints(deepest):
+            if info.iteration > 1:
+                shutil.rmtree(info.path)
+
+        loaded = self._load(default_test_simulator, tmp_path)
+        assert loaded.n_layers == self.MAX_DEPTH
+        assert loaded.current_iteration == 1
+        assert loaded.best_params.size == loaded.n_params
+
+        loaded.run(perform_final_computation=False)
+
+        deepest_entry = loaded.depth_history[-1]
+        assert deepest_entry["depth"] == self.MAX_DEPTH
+        assert deepest_entry["n_iterations"] == self.ITERS_PER_DEPTH
+        assert deepest_entry["best_params"].size == 2 * self.MAX_DEPTH
+
+    def test_second_run_does_not_accumulate_depth_history(
+        self, default_test_simulator, tmp_path
+    ):
+        """A repeated run replaces the depth history instead of appending to it."""
+        program = self._run_with_checkpoints(default_test_simulator, tmp_path)
+
+        program.run(perform_final_computation=False)
+
+        assert [entry["depth"] for entry in program.depth_history] == list(
+            range(1, self.MAX_DEPTH + 1)
+        )
 
 
 @pytest.mark.e2e

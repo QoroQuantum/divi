@@ -17,6 +17,8 @@ import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
 
+from divi.qprog.early_stopping import StopReason
+
 if TYPE_CHECKING:
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
@@ -132,6 +134,10 @@ class ProgramState(BaseModel):
                 setattr(program, target_attr, val)
 
         # 2. Restore complex state
+        program._stop_reason = (
+            StopReason(self.stop_reason) if self.stop_reason is not None else None
+        )
+
         if self.rng_state_bytes:
             program._rng.bit_generator.state = pickle.loads(self.rng_state_bytes)
 

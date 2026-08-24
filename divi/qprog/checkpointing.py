@@ -95,16 +95,20 @@ def _get_checkpoint_subdir_path(main_dir: Path, iteration: int) -> Path:
 
 
 def _find_latest_checkpoint_subdir(main_dir: Path) -> Path:
-    """Find the latest checkpoint subdirectory by iteration number.
+    """Find the latest complete checkpoint subdirectory by iteration number.
+
+    Incomplete checkpoints — a directory missing either state file, as left
+    behind by a write interrupted midway — are skipped, so an aborted save does
+    not hide the last good checkpoint.
 
     Args:
         main_dir (Path): Main checkpoint directory.
 
     Returns:
-        Path: Path to the latest checkpoint subdirectory.
+        Path: Path to the latest complete checkpoint subdirectory.
 
     Raises:
-        CheckpointNotFoundError: If no checkpoint subdirectories are found.
+        CheckpointNotFoundError: If no complete checkpoint subdirectory is found.
     """
     checkpoint_dirs = [
         d
@@ -123,7 +127,18 @@ def _find_latest_checkpoint_subdir(main_dir: Path) -> Path:
             available_directories=available_dirs,
         )
     checkpoint_dirs.sort(key=lambda d: _extract_iteration_from_subdir(d.name) or -1)
-    return checkpoint_dirs[-1]
+
+    complete_dirs = [d for d in checkpoint_dirs if _is_checkpoint_valid(d)]
+    if not complete_dirs:
+        raise CheckpointNotFoundError(
+            f"No complete checkpoint found in {main_dir}: every checkpoint "
+            f"subdirectory is missing {PROGRAM_STATE_FILE} or "
+            f"{OPTIMIZER_STATE_FILE}.",
+            main_dir=main_dir,
+            available_directories=[d.name for d in checkpoint_dirs],
+        )
+
+    return complete_dirs[-1]
 
 
 def resolve_checkpoint_path(

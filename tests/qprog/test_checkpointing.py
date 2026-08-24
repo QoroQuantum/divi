@@ -34,6 +34,16 @@ from divi.qprog.checkpointing import (
 )
 
 
+def make_checkpoint(main_dir: Path, iteration: int, complete: bool = True) -> Path:
+    """Create a checkpoint subdirectory, with or without both state files."""
+    path = main_dir / f"checkpoint_{iteration:03d}"
+    path.mkdir(parents=True, exist_ok=True)
+    (path / OPTIMIZER_STATE_FILE).write_text("{}")
+    if complete:
+        (path / PROGRAM_STATE_FILE).write_text("{}")
+    return path
+
+
 class TestNamingUtilities:
     """Tests for checkpoint naming utility functions."""
 
@@ -107,9 +117,9 @@ class TestDirectoryUtilities:
         main_dir.mkdir()
 
         # Create multiple checkpoint subdirectories
-        (main_dir / "checkpoint_001").mkdir()
-        (main_dir / "checkpoint_003").mkdir()
-        (main_dir / "checkpoint_002").mkdir()
+        make_checkpoint(main_dir, 1)
+        make_checkpoint(main_dir, 3)
+        make_checkpoint(main_dir, 2)
         (main_dir / "other_dir").mkdir()  # Should be ignored
 
         latest = _find_latest_checkpoint_subdir(main_dir)
@@ -130,12 +140,34 @@ class TestDirectoryUtilities:
         main_dir = tmp_path / "checkpoints"
         main_dir.mkdir()
 
-        (main_dir / "checkpoint_001").mkdir()
+        make_checkpoint(main_dir, 1)
         (main_dir / "checkpoint_invalid").mkdir()  # Should be ignored
-        (main_dir / "checkpoint_002").mkdir()
+        make_checkpoint(main_dir, 2)
 
         latest = _find_latest_checkpoint_subdir(main_dir)
         assert latest.name == "checkpoint_002"
+
+    def test_find_latest_checkpoint_subdir_skips_incomplete(self, tmp_path):
+        """A checkpoint missing a state file never hides the last complete one."""
+        main_dir = tmp_path / "checkpoints"
+        make_checkpoint(main_dir, 1)
+        make_checkpoint(main_dir, 2)
+        make_checkpoint(main_dir, 3, complete=False)
+
+        latest = _find_latest_checkpoint_subdir(main_dir)
+        assert latest.name == "checkpoint_002"
+
+    def test_find_latest_checkpoint_subdir_all_incomplete(self, tmp_path):
+        """When no checkpoint is complete, the error names the candidates."""
+        main_dir = tmp_path / "checkpoints"
+        make_checkpoint(main_dir, 1, complete=False)
+
+        with pytest.raises(
+            CheckpointNotFoundError, match="No complete checkpoint found"
+        ) as exc_info:
+            _find_latest_checkpoint_subdir(main_dir)
+
+        assert exc_info.value.available_directories == ["checkpoint_001"]
 
 
 class TestCheckpointConfig:
@@ -495,9 +527,9 @@ class TestResolveCheckpointPath:
         """resolve_checkpoint_path resolves the latest checkpoint if no subdirectory given."""
         main_dir = tmp_path / "checkpoints"
         main_dir.mkdir()
-        (main_dir / "checkpoint_001").mkdir()
-        (main_dir / "checkpoint_003").mkdir()
-        (main_dir / "checkpoint_002").mkdir()
+        make_checkpoint(main_dir, 1)
+        make_checkpoint(main_dir, 3)
+        make_checkpoint(main_dir, 2)
 
         result = resolve_checkpoint_path(main_dir)
         assert result.name == "checkpoint_003"
@@ -516,7 +548,7 @@ class TestResolveCheckpointPath:
         """resolve_checkpoint_path accepts a string path."""
         main_dir = tmp_path / "checkpoints"
         main_dir.mkdir()
-        (main_dir / "checkpoint_001").mkdir()
+        make_checkpoint(main_dir, 1)
 
         result = resolve_checkpoint_path(str(main_dir))
         assert result.name == "checkpoint_001"
