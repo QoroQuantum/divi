@@ -180,11 +180,11 @@ when only the trained parameters matter.
    ``current_iteration``).
 
    Call ``program.sample_solution(program.best_params)`` to skip training and
-   perform only the final measurement.
-
-   For the ensemble variant — one call to re-sample every partition of a
-   trained :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` —
-   see :ref:`ensemble-sample-solution`.
+   perform only the final measurement. Pass ``sampling_backend`` to the
+   constructor to run that final measurement on a different backend than
+   training used; see :ref:`ensemble-sample-solution` for the full precedence
+   rules and the ensemble-level equivalent — one call to re-sample every
+   partition of a trained :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`.
 
 Analysing Solution Distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

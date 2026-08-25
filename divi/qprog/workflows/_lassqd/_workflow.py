@@ -700,12 +700,12 @@ class LASSQD(ProgramEnsemble):
             :class:`~divi.backends.QiskitSimulator` seeds exactly, while
             :class:`~divi.backends.MaestroSimulator` cannot, so identical runs
             are not guaranteed to agree bit for bit there.
-        **kwargs: ``backend`` (required) and ``reporting_level`` are consumed
-            here; ``program_id`` and ``progress_queue`` are set internally and
-            must not be passed here. Any other keyword is forwarded verbatim
-            to every fragment's :class:`~divi.qprog.algorithms.VQE`, e.g.
-            ``grouping_strategy``, ``shot_distribution``, ``precision``, or
-            ``early_stopping``.
+        **kwargs: ``backend`` (required), ``sampling_backend``, and
+            ``reporting_level`` are consumed here; ``program_id`` and
+            ``progress_queue`` are set internally and must not be passed here.
+            Any other keyword is forwarded verbatim to every fragment's
+            :class:`~divi.qprog.algorithms.VQE`, e.g. ``grouping_strategy``,
+            ``shot_distribution``, ``precision``, or ``early_stopping``.
 
     Raises:
         ValueError: If ``fragmentation``'s ``active_orbitals`` has out-of-range
@@ -767,6 +767,7 @@ class LASSQD(ProgramEnsemble):
 
         super().__init__(
             backend=kwargs.pop("backend"),
+            sampling_backend=kwargs.pop("sampling_backend", None),
             reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
         )
 

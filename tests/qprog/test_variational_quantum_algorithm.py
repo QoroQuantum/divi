@@ -73,7 +73,7 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         )
         return qscript_to_meta(tape, precision=self._precision)
 
-    def _run_solution_measurement_for(self, param_sets):
+    def _run_solution_measurement_for(self, param_sets, *, backend=None):
         # This double's circuit measures an expectation value, not a sampling
         # distribution, so the real PROBS pipeline would yield malformed
         # ``_best_probs``. Sampling-distribution behavior is exercised by the
@@ -151,6 +151,48 @@ def test_solution_sampling_mixin_works_on_non_vqa_host(dummy_simulator):
     assert host._best_probs  # populated by the real PROBS sample pipeline
     top = host.get_top_solutions(n=2)
     assert top and isinstance(top[0], SolutionEntry)
+
+
+def test_solution_sampling_mixin_routes_sampling_to_configured_backend(
+    dummy_simulator, make_dummy_simulator, mocker
+):
+    """A configured sampling backend handles PROBS instead of the host backend."""
+    sampling_backend = make_dummy_simulator(100, seed=7)
+    primary_submit = mocker.spy(dummy_simulator, "submit_circuits")
+    sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+    host = _NonVQASampler(
+        backend=dummy_simulator,
+        sampling_backend=sampling_backend,
+    )
+
+    assert host.sampling_backend is sampling_backend
+    host.sample_solution(params=np.empty((1, 0), dtype=np.float64))
+
+    primary_submit.assert_not_called()
+    sampling_submit.assert_called_once()
+
+
+def test_sample_solution_backend_override_wins_over_configured_backend(
+    dummy_simulator, make_dummy_simulator, mocker
+):
+    """A one-call override wins without replacing the configured backend."""
+    sampling_backend = make_dummy_simulator(100, seed=7)
+    override_backend = make_dummy_simulator(100, seed=11)
+    configured_submit = mocker.spy(sampling_backend, "submit_circuits")
+    override_submit = mocker.spy(override_backend, "submit_circuits")
+    host = _NonVQASampler(
+        backend=dummy_simulator,
+        sampling_backend=sampling_backend,
+    )
+
+    host.sample_solution(
+        params=np.empty((1, 0), dtype=np.float64),
+        backend=override_backend,
+    )
+
+    configured_submit.assert_not_called()
+    override_submit.assert_called_once()
+    assert host.sampling_backend is sampling_backend
 
 
 class TestProgram:

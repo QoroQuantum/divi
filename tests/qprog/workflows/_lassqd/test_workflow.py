@@ -466,6 +466,23 @@ def test_extra_kwargs_are_forwarded_to_each_fragment_vqe(dummy_expval_backend):
         assert program.n_layers == 2
 
 
+def test_sampling_backend_stays_at_the_ensemble_boundary(
+    dummy_expval_backend, make_dummy_simulator
+):
+    """LASSQD coordinates sampling instead of leaking the backend to fragments."""
+    sampling_backend = make_dummy_simulator(100, seed=7)
+    ensemble = _lassqd(
+        dummy_expval_backend,
+        sampling_backend=sampling_backend,
+    )
+    ensemble.create_programs(ensemble.initial_state())
+
+    assert ensemble.sampling_backend is sampling_backend
+    assert all(
+        program.sampling_backend is None for program in ensemble.programs.values()
+    )
+
+
 def test_unknown_kwargs_raise_when_creating_programs(dummy_expval_backend):
     ensemble = _lassqd(dummy_expval_backend, bogus_kwarg=123)
     with pytest.raises(TypeError, match="bogus_kwarg"):
@@ -1496,6 +1513,30 @@ def test_polarized_fragments_run_the_full_macro_cycle(
     exact = fci.FCI(h4_chain_mean_field).kernel()[0]
     assert np.isfinite(ensemble.best_energy)
     assert ensemble.best_energy > exact - 1e-8
+
+
+@pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")
+def test_macro_cycle_uses_separate_optimization_and_sampling_backends(
+    default_test_simulator, sampling_test_simulator, mocker
+):
+    """One LASSQD round batches final fragment samples on its second backend."""
+    optimization_submit = mocker.spy(default_test_simulator, "submit_circuits")
+    sampling_submit = mocker.spy(sampling_test_simulator, "submit_circuits")
+    ensemble = _lassqd(
+        default_test_simulator,
+        sampling_backend=sampling_test_simulator,
+        max_iterations=1,
+        max_orbital_iterations=1,
+        n_batches=1,
+        n_recovery_iterations=1,
+    )
+
+    with pytest.warns(UserWarning, match="Orbital optimisation stopped"):
+        ensemble.run(max_rounds=1)
+
+    assert optimization_submit.call_count > 0
+    sampling_submit.assert_called_once()
+    assert len(ensemble.round_history) == 1
 
 
 def test_carryover_survives_a_full_macro_cycle(

@@ -390,6 +390,31 @@ def vqe_sweep_hamiltonian(
 class TestVQEHyperparameterSweep:
     """A test class to group all tests for the VQEHyperparameterSweep."""
 
+    def test_sampling_backend_is_owned_by_ensemble(
+        self,
+        default_test_simulator,
+        sampling_test_simulator,
+        h2_hamiltonian,
+        vqe_sweep_ansatze,
+        vqe_sweep_optimizer,
+        vqe_sweep_max_iterations,
+    ):
+        sweep = VQEHyperparameterSweep(
+            ansatze=vqe_sweep_ansatze,
+            hamiltonians=[h2_hamiltonian],
+            optimizer=vqe_sweep_optimizer,
+            max_iterations=vqe_sweep_max_iterations,
+            backend=default_test_simulator,
+            sampling_backend=sampling_test_simulator,
+        )
+
+        sweep.create_programs()
+
+        assert sweep.sampling_backend is sampling_test_simulator
+        assert all(
+            program.sampling_backend is None for program in sweep.programs.values()
+        )
+
     def test_verify_basic_behaviour(self, vqe_sweep, mocker):
         """Test that the sweep conforms to basic batch program behavior."""
         verify_basic_program_ensemble_behaviour(vqe_sweep, mocker)

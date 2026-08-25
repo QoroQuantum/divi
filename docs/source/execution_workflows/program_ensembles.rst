@@ -236,6 +236,71 @@ shared with :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`. No sub-program
 mutates its own optimizer-side state (``best_params``, ``losses_history``,
 ``current_iteration``).
 
+Separate Optimisation and Sampling Backends
+--------------------------------------------
+
+Programs that expose :meth:`~divi.qprog.SolutionSamplingMixin.sample_solution`
+accept an optional ``sampling_backend`` in addition to their normal ``backend``
+(also readable as a ``sampling_backend`` property). The normal backend
+executes optimisation and other circuit evaluations; the sampling backend
+executes only the final solution measurement. If ``sampling_backend`` is
+omitted, both phases use ``backend`` as before.
+
+Backend selection follows this precedence, for both a standalone program's
+``sample_solution`` and ``ensemble.sample_solution``:
+
+1. A one-call ``backend=...`` passed to ``sample_solution``.
+2. The configured ``sampling_backend``.
+3. The normal ``backend``.
+
+Solution-sampling ensembles accept the same ``sampling_backend`` constructor
+argument — step 2 above is then the *ensemble's* ``sampling_backend``. Every
+sub-program must expose ``sample_solution`` once it is set —
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.run` raises ``TypeError`` upfront
+otherwise — and ``run`` trains every sub-program before sampling any of them.
+Final measurements still participate in the ensemble's merged batching,
+cancellation, progress reporting, and accounting.
+
+.. skip: next
+
+.. code-block:: python
+
+   ensemble = PartitioningProgramEnsemble(
+       ...,
+       backend=optimisation_backend,
+       sampling_backend=sampling_backend,
+   )
+   ensemble.run()
+
+.. note::
+
+   A sub-program's own ``sampling_backend`` is ignored while it runs inside an
+   ensemble — only the ensemble's applies. It matters only when that
+   sub-program's ``sample_solution`` is called directly, outside an ensemble.
+
+For example, a one-off re-sampling job can use a third backend without changing
+the ensemble's persistent configuration:
+
+.. skip: next
+
+.. code-block:: python
+
+   ensemble.sample_solution(
+       backend=one_off_sampling_backend,
+       blocking=True,
+   )
+
+In merged mode, every sub-program's final measurement is submitted together to
+the selected backend, and each sub-program's own ``backend`` is restored once
+``join()`` returns — including on failure and cancellation.
+
+.. warning::
+
+   :meth:`~divi.qprog.ensemble.ProgramEnsemble.run_one_round` splits the same
+   way when ``sampling_backend`` is set, but only for ``blocking=True``:
+   sampling needs training to finish first, so ``blocking=False`` raises
+   ``ValueError``.
+
 
 .. _ensemble-lifecycle:
 
@@ -417,6 +482,9 @@ If you materialise a program map yourself and then call ``run()``, that map is
 used as the first round rather than being rebuilt — so calling
 ``create_programs()`` beforehand is safe. It just isn't needed: ``run()``
 materialises each round for you.
+
+See :ref:`ensemble-sample-solution` for how ``sampling_backend`` restricts
+``blocking=False`` here.
 
 .. _ensemble-reporting:
 

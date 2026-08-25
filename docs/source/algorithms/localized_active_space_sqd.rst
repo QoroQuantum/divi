@@ -63,6 +63,32 @@ calculation on the same active space:
    ensemble.run(max_rounds=2)
    print(f"Energy: {ensemble.energy:.6f} Ha")
 
+Separate Backends for Optimisation and SQD Sampling
+----------------------------------------------------
+
+Pass ``sampling_backend`` when fragment optimisation and the final SQD samples
+should run on a different backend. In each macro-cycle, LASSQD first optimises
+all fragment VQEs on ``backend`` with their automatic final measurements
+disabled. After every fragment has finished, it submits a separate final
+sampling phase through ``sampling_backend``. The fragment measurements remain
+eligible for the ensemble's merged batching.
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.backends import MaestroSimulator, QiskitSimulator
+
+   ensemble = LASSQD(
+       ...,
+       backend=MaestroSimulator(shots=500),
+       sampling_backend=QiskitSimulator(force_sampling=True, shots=4000),
+   )
+   ensemble.run(max_rounds=2)
+
+If ``sampling_backend`` is omitted, optimisation and final sampling both use
+``backend`` as before.
+
 .. important::
 
    Examples here run below :class:`~divi.qprog.workflows.SQDConfig`'s defaults

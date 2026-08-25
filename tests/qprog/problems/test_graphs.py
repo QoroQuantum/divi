@@ -615,7 +615,7 @@ class TestGraphInput:
         mocker.patch.object(
             qaoa_problem,
             "_run_solution_measurement_for",
-            side_effect=lambda _param_sets: setattr(
+            side_effect=lambda _param_sets, *, backend=None: setattr(
                 qaoa_problem, "_best_probs", mock_probs
             ),
         )

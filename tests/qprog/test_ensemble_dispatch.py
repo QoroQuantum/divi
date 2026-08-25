@@ -49,8 +49,8 @@ from tests.qprog._program_contracts import verify_basic_program_ensemble_behavio
 class SampleProgramEnsemble(ProgramEnsemble):
     """A mock ProgramEnsemble for testing."""
 
-    def __init__(self, backend):
-        super().__init__(backend)
+    def __init__(self, backend, **kwargs):
+        super().__init__(backend, **kwargs)
         self.max_iterations = 5
 
     def create_programs(self, state=None):
@@ -1582,9 +1582,8 @@ class TestExecutorSizing:
         assert soft_cap_warnings == []
 
 
-@pytest.fixture
-def small_partitioning_ensemble(dummy_simulator):
-    """A real PartitioningProgramEnsemble with two QAOA partitions."""
+def _small_partitioning_ensemble(backend, **kwargs):
+    """Build a real PartitioningProgramEnsemble with two QAOA partitions."""
     graph = nx.path_graph(4)
     problem = MaxCutProblem(
         graph,
@@ -1597,9 +1596,17 @@ def small_partitioning_ensemble(dummy_simulator):
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=2,
-        backend=dummy_simulator,
+        backend=backend,
+        **kwargs,
     )
     ensemble.create_programs()
+    return ensemble
+
+
+@pytest.fixture
+def small_partitioning_ensemble(dummy_simulator):
+    """A real PartitioningProgramEnsemble with two QAOA partitions."""
+    ensemble = _small_partitioning_ensemble(dummy_simulator)
     yield ensemble
     try:
         ensemble.reset()
@@ -1627,6 +1634,20 @@ class TestEnsembleSampleSolutionPreflight:
         with pytest.raises(TypeError, match="VariationalQuantumAlgorithm"):
             program_ensemble.sample_solution()
 
+    def test_workflow_rejects_non_vqa_programs_before_training(
+        self, dummy_simulator, make_dummy_simulator
+    ):
+        """A sampling backend cannot split a workflow with unsampleable children."""
+        ensemble = SampleProgramEnsemble(
+            backend=dummy_simulator,
+            sampling_backend=make_dummy_simulator(100, seed=7),
+        )
+
+        with pytest.raises(TypeError, match="sampling_backend.*variational"):
+            ensemble.run(max_rounds=1)
+
+        assert all(not program._ran for program in ensemble.programs.values())
+
     def test_unknown_key_raises(self, small_partitioning_ensemble):
         """Keys not in ``self._programs`` are rejected upfront."""
         with pytest.raises(ValueError, match="not in this ensemble"):
@@ -1650,6 +1671,174 @@ class TestEnsembleSampleSolutionPreflight:
 
 class TestEnsembleSampleSolution:
     """End-to-end behavior of the new sampling-only entry point."""
+
+    def test_overridden_measurement_hook_receives_the_routed_backend(
+        self, small_partitioning_ensemble, mocker
+    ):
+        """Ensemble routing calls an overridden hook with the swapped backend."""
+        ensemble = small_partitioning_ensemble
+        _seed_best_params(ensemble)
+        hooks = [
+            mocker.patch.object(
+                program,
+                "_run_solution_measurement_for",
+                side_effect=lambda _param_sets, *, backend=None, program=program: setattr(
+                    program, "_best_probs", {0: {"00": 1.0}}
+                ),
+            )
+            for program in ensemble.programs.values()
+        ]
+
+        ensemble.sample_solution(blocking=True)
+
+        assert all(hook.call_count == 1 for hook in hooks)
+
+    def test_shared_sampling_backend_is_owned_by_the_ensemble(
+        self, dummy_simulator, make_dummy_simulator
+    ):
+        """Children leave sampling routing to their ensemble coordinator."""
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        ensemble = _small_partitioning_ensemble(
+            dummy_simulator,
+            sampling_backend=sampling_backend,
+        )
+
+        try:
+            assert ensemble.sampling_backend is sampling_backend
+            assert all(
+                program.sampling_backend is None
+                for program in ensemble.programs.values()
+            )
+        finally:
+            ensemble.reset()
+
+    def test_direct_sampling_uses_the_configured_sampling_backend(
+        self, dummy_simulator, make_dummy_simulator, mocker
+    ):
+        """The ensemble-level default applies outside the workflow run path."""
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        primary_submit = mocker.spy(dummy_simulator, "submit_circuits")
+        sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+        ensemble = _small_partitioning_ensemble(
+            dummy_simulator,
+            sampling_backend=sampling_backend,
+        )
+        _seed_best_params(ensemble)
+
+        try:
+            ensemble.sample_solution(blocking=True)
+
+            primary_submit.assert_not_called()
+            sampling_submit.assert_called_once()
+        finally:
+            ensemble.reset()
+
+    def test_workflow_run_batches_final_sampling_on_sampling_backend(
+        self, dummy_simulator, make_dummy_simulator, mocker
+    ):
+        """Training completes before one merged sampling-only dispatch."""
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        primary_submit = mocker.spy(dummy_simulator, "submit_circuits")
+        sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+        ensemble = _small_partitioning_ensemble(
+            dummy_simulator,
+            sampling_backend=sampling_backend,
+        )
+
+        try:
+            ensemble.run()
+
+            assert primary_submit.call_count > 0
+            sampling_submit.assert_called_once()
+            assert all(program._best_probs for program in ensemble.programs.values())
+        finally:
+            ensemble.reset()
+
+    def test_run_one_round_blocking_batches_final_sampling_on_sampling_backend(
+        self, dummy_simulator, make_dummy_simulator, mocker
+    ):
+        """run_one_round(blocking=True) splits training from sampling too."""
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        primary_submit = mocker.spy(dummy_simulator, "submit_circuits")
+        sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+        ensemble = _small_partitioning_ensemble(
+            dummy_simulator,
+            sampling_backend=sampling_backend,
+        )
+
+        try:
+            ensemble.run_one_round(blocking=True)
+
+            assert primary_submit.call_count > 0
+            sampling_submit.assert_called_once()
+            assert all(program._best_probs for program in ensemble.programs.values())
+        finally:
+            ensemble.reset()
+
+    def test_run_one_round_nonblocking_rejects_sampling_backend(
+        self, dummy_simulator, make_dummy_simulator
+    ):
+        """run_one_round(blocking=False) can't split training from sampling."""
+        ensemble = _small_partitioning_ensemble(
+            dummy_simulator,
+            sampling_backend=make_dummy_simulator(100, seed=7),
+        )
+
+        try:
+            with pytest.raises(ValueError, match="blocking=False"):
+                ensemble.run_one_round(blocking=False)
+        finally:
+            ensemble.reset()
+
+    def test_backend_override_receives_one_merged_sampling_submission(
+        self, small_partitioning_ensemble, make_dummy_simulator, mocker
+    ):
+        """The ensemble override wins over primary and child sampling backends."""
+        ensemble = small_partitioning_ensemble
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        child_sampling_backend = make_dummy_simulator(100, seed=11)
+        primary_submit = mocker.spy(ensemble.backend, "submit_circuits")
+        sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+        child_sampling_submit = mocker.spy(child_sampling_backend, "submit_circuits")
+        for program in ensemble.programs.values():
+            program._sampling_backend = child_sampling_backend
+        _seed_best_params(ensemble)
+
+        ensemble.sample_solution(
+            blocking=True,
+            backend=sampling_backend,
+        )
+
+        primary_submit.assert_not_called()
+        child_sampling_submit.assert_not_called()
+        sampling_submit.assert_called_once()
+        assert all(
+            program.backend is ensemble.backend
+            for program in ensemble.programs.values()
+        )
+
+    def test_backend_override_routes_each_unbatched_sampling_submission(
+        self, small_partitioning_ensemble, make_dummy_simulator, mocker
+    ):
+        """Unbatched sampling uses the override and restores child backends."""
+        ensemble = small_partitioning_ensemble
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        primary_submit = mocker.spy(ensemble.backend, "submit_circuits")
+        sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+        _seed_best_params(ensemble)
+
+        ensemble.sample_solution(
+            blocking=True,
+            backend=sampling_backend,
+            batch_config=BatchConfig(mode=BatchMode.OFF),
+        )
+
+        primary_submit.assert_not_called()
+        assert sampling_submit.call_count == len(ensemble.programs)
+        assert all(
+            program.backend is ensemble.backend
+            for program in ensemble.programs.values()
+        )
 
     def test_full_dict_populates_best_probs(self, small_partitioning_ensemble):
         """Full dict path runs measurement on every program."""

@@ -35,6 +35,7 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 
+from divi.backends import CircuitRunner
 from divi.pipeline import CircuitPreprocessor, sample_preprocessor
 
 if TYPE_CHECKING:
@@ -87,6 +88,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         self,
         *args,
         decode_solution_fn: Callable[[str], Any] | None = None,
+        sampling_backend: CircuitRunner | None = None,
         **kwargs,
     ):
         """Initialise the solution-sampling state.
@@ -97,12 +99,15 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 numpy array, or a custom object). Called by
                 :meth:`get_top_solutions` when ``include_decoded=True`` and by
                 subclass solution decoding. Defaults to the identity function.
+            sampling_backend: Backend used only for solution sampling. ``None``
+                reuses the host program's backend.
             ``*args``, ``**kwargs``: Forwarded to the next class in the MRO (the
                 host program).
         """
         super().__init__(*args, **kwargs)
         self._best_probs: dict[int, dict[str, float]] = {}
         self._decode_solution_fn = decode_solution_fn or (lambda bitstring: bitstring)
+        self._sampling_backend = sampling_backend
 
     def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
         """Expose the sample routine for introspection alongside the host's."""
@@ -111,6 +116,11 @@ class SolutionSamplingMixin(_SamplingMixinBase):
     def _sample_preprocessor(self) -> CircuitPreprocessor:
         """The preprocessor sampling the prepared state in the computational basis."""
         return sample_preprocessor()
+
+    @property
+    def sampling_backend(self) -> CircuitRunner | None:
+        """Backend dedicated to solution sampling, when configured."""
+        return self._sampling_backend
 
     @property
     def best_probs(self) -> dict[int, dict[str, float]]:
@@ -284,6 +294,8 @@ class SolutionSamplingMixin(_SamplingMixinBase):
     def sample_solution(
         self,
         params: npt.NDArray[np.float64] | None = None,
+        *,
+        backend: CircuitRunner | None = None,
         **kwargs,
     ) -> Self:
         """Run the final measurement and decode the solution.
@@ -306,6 +318,8 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 ``None`` only when the host has an override that resolves the
                 fallback (e.g. :class:`~divi.qprog.VariationalQuantumAlgorithm`
                 falls back to ``_best_params``).
+            backend: One-call sampling backend override. ``None`` uses the
+                configured sampling backend, falling back to the host backend.
             **kwargs: Subclass-specific keyword arguments.
 
         Returns:
@@ -332,16 +346,26 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 )
             params = resolver(None)
         params_arr = np.asarray(params, dtype=np.float64)
-        self._run_solution_measurement_for(np.atleast_2d(params_arr))
+        selected_backend = backend if backend is not None else self._sampling_backend
+        self._run_solution_measurement_for(
+            np.atleast_2d(params_arr), backend=selected_backend
+        )
         return self
 
     def _run_solution_measurement_for(
-        self, param_sets: npt.NDArray[np.float64]
+        self,
+        param_sets: npt.NDArray[np.float64],
+        *,
+        backend: CircuitRunner | None = None,
     ) -> None:
         """Sample the prepared state for the provided parameter sets."""
         result = cast(
             "dict[int, dict[str, float] | list[dict[str, float]]]",
-            self.evaluate(np.atleast_2d(param_sets), self._sample_preprocessor()),
+            self.evaluate(
+                np.atleast_2d(param_sets),
+                self._sample_preprocessor(),
+                backend=backend,
+            ),
         )
         self._best_probs = {
             idx: _average_probabilities(value) for idx, value in result.items()

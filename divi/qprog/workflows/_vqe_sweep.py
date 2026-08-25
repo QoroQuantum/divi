@@ -424,10 +424,12 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         **kwargs
             Forwarded to the parent class. ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live
-            progress is shown.
+            progress is shown. ``sampling_backend`` optionally selects a
+            separate backend for final solution sampling.
         """
         super().__init__(
             backend=kwargs.pop("backend"),
+            sampling_backend=kwargs.pop("sampling_backend", None),
             reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
         )
 

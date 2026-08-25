@@ -35,8 +35,9 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         **kwargs: If ``early_stopping`` is present it is extracted and
             deep-copied per sub-program.  ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live
-            progress is shown.  Remaining kwargs are forwarded to the
-            engine constructor.
+            progress is shown.  ``sampling_backend`` optionally selects a
+            separate backend for final solution sampling.  Remaining kwargs
+            are forwarded to the engine constructor.
     """
 
     def __init__(
@@ -51,6 +52,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     ):
         super().__init__(
             backend=backend,
+            sampling_backend=kwargs.pop("sampling_backend", None),
             reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
         )
         self._problem = problem

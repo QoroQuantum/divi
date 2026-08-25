@@ -533,6 +533,7 @@ class QuantumProgram(ABC):
         params: "np.ndarray",
         preprocessor: CircuitPreprocessor,
         *,
+        backend: CircuitRunner | None = None,
         shots: int | None = None,
         return_variance: bool = False,
         preserve_keys: bool = False,
@@ -548,6 +549,8 @@ class QuantumProgram(ABC):
         Args:
             params: Parameter set(s) to evaluate; coerced to 2D ``(n_sets, n_params)``.
             preprocessor: Selects the routine (cost / sample / metric / ...).
+            backend: Per-evaluation backend override. ``None`` uses the program's
+                configured backend.
             shots: Per-evaluation shot-count override. ``None`` (default) uses the
                 backend's own shot count; shot-adaptive optimizers (e.g. SPSA's
                 ``M_k`` schedule) pass an explicit budget the static backend
@@ -579,6 +582,8 @@ class QuantumProgram(ABC):
             )
 
         env_overrides: dict[str, Any] = {"param_sets": np.atleast_2d(params)}
+        if backend is not None:
+            env_overrides["backend"] = backend
         if axes_to_preserve:
             env_overrides["axes_to_preserve"] = tuple(axes_to_preserve)
         if shots is not None:

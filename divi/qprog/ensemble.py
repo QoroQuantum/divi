@@ -158,6 +158,21 @@ def _resolve_worker_count(batch_config: BatchConfig, n_programs: int) -> int:
     )
 
 
+def _validate_sampling_programs(
+    programs: dict[Any, QuantumProgram], *, action: str
+) -> None:
+    """Require variational programs that expose solution sampling."""
+    for prog_id, program in programs.items():
+        if not isinstance(program, VariationalQuantumAlgorithm) or not isinstance(
+            program, SolutionSamplingMixin
+        ):
+            raise TypeError(
+                f"{action} requires variational solution-sampling sub-programs "
+                f"(VariationalQuantumAlgorithm + SolutionSamplingMixin); program "
+                f"{prog_id!r} is {type(program).__name__}."
+            )
+
+
 def _resolve_sampling_params(
     programs: dict[Any, QuantumProgram],
     params_per_program: dict[Any, npt.NDArray[np.float64]] | None,
@@ -181,13 +196,7 @@ def _resolve_sampling_params(
     if len(programs) == 0:
         raise RuntimeError("No programs to sample.")
 
-    for prog_id, program in programs.items():
-        if not isinstance(program, VariationalQuantumAlgorithm):
-            raise TypeError(
-                f"Program {prog_id!r} is {type(program).__name__}; "
-                f"sample_solution requires VariationalQuantumAlgorithm "
-                f"sub-programs."
-            )
+    _validate_sampling_programs(programs, action="sample_solution")
 
     if params_per_program is not None:
         unknown = set(params_per_program) - set(programs)
@@ -273,12 +282,15 @@ class ProgramEnsemble(ABC):
         self,
         backend: CircuitRunner,
         *,
+        sampling_backend: CircuitRunner | None = None,
         reporting_level: ReportingLevel = ReportingLevel.COMPACT,
     ):
         """Initialise the ensemble.
 
         Args:
             backend: Backend used to execute every sub-program's circuits.
+            sampling_backend: Backend used for the ensemble's final sampling
+                phase. ``None`` reuses ``backend``.
             reporting_level: How much live progress to render. See
                 :class:`~divi.qprog.ReportingLevel`; defaults to ``COMPACT``.
                 The ``DIVI_DISABLE_PROGRESS`` environment variable suppresses
@@ -287,6 +299,7 @@ class ProgramEnsemble(ABC):
         super().__init__()
 
         self.backend = backend
+        self._sampling_backend = sampling_backend
         self._executor = None
         self._programs = {}
         self._coordinator: _BatchCoordinator | None = None
@@ -334,6 +347,11 @@ class ProgramEnsemble(ABC):
 
         # Disable logging since we already have the bars to track progress
         disable_logging()
+
+    @property
+    def sampling_backend(self) -> CircuitRunner | None:
+        """Backend dedicated to final solution sampling, when configured."""
+        return self._sampling_backend
 
     @property
     def total_circuit_count(self):
@@ -549,8 +567,9 @@ class ProgramEnsemble(ABC):
         self._programs.clear()
         self._programs_pending = False
 
-        # Stop the executor before restoring backends so an in-flight worker
-        # hits the cancelled proxy rather than the restored real backend.
+        # Set cancellation and stop the executor before restoring backends,
+        # so an in-flight worker sees cancellation rather than the restored backend.
+        self._cancellation_event.set()
         if self._executor is not None:
             self._executor.shutdown(wait=False)
             self._executor = None
@@ -568,14 +587,13 @@ class ProgramEnsemble(ABC):
         self._reset_workflow_state()
 
     def _restore_program_backends(self) -> None:
-        """Undo the ``_ProxyBackend`` swap done for batched dispatch.
+        """Undo the backend swap done for a dispatch with a backend override.
 
         Batched dispatch replaces each sub-program's ``backend`` with a
-        ``_ProxyBackend`` bound to the coordinator. Once that coordinator is
-        shut down the proxy is dead, so restore the original backend —
-        symmetric with coordinator teardown — to keep each program usable
-        directly or in a later un-batched dispatch. Idempotent: the snapshot
-        is cleared after restoring.
+        ``_ProxyBackend`` bound to the coordinator; an un-batched dispatch
+        with a ``backend`` override swaps in that backend directly. Either
+        way, restore the original so each program is usable directly or in a
+        later dispatch. Idempotent: the snapshot is cleared after restoring.
         """
         for program, backend in self._program_original_backend.items():
             program.backend = backend
@@ -694,19 +712,54 @@ class ProgramEnsemble(ABC):
             RuntimeError: If an ensemble is already running, if no programs
                 have been created, or if the ensemble exceeds 256 programs
                 without an explicit batching strategy.
+            ValueError: If ``blocking=False`` while ``sampling_backend`` is
+                configured — the sampling phase needs training to finish first
+                and so cannot be split across a non-blocking dispatch.
 
         Note:
             In non-blocking mode, call `join()` later to wait for completion and
             collect results.
         """
-        dispatched = self._dispatch(
-            task_fn=_default_task_function,
-            blocking=blocking,
-            batch_config=batch_config,
-        )
+        if self._sampling_backend is not None and not blocking:
+            raise ValueError(
+                "run_one_round(blocking=False) can't honour sampling_backend: "
+                "sampling needs training to finish first. Pass blocking=True, "
+                "or unset sampling_backend."
+            )
+        dispatched = self._dispatch_round(blocking=blocking, batch_config=batch_config)
         # Submitted — a later run() must not treat this map as pending.
         self._programs_pending = False
         return dispatched
+
+    def _dispatch_round(self, *, blocking: bool, batch_config: BatchConfig) -> Self:
+        """Dispatch the currently materialised programs for one round.
+
+        Without ``sampling_backend`` this is a plain dispatch. With it,
+        training runs to completion first with each program's final sampling
+        disabled, then a separate sampling-only dispatch runs on
+        ``sampling_backend`` — so the first dispatch is always blocking
+        regardless of ``blocking``.
+        """
+        if self._sampling_backend is None:
+            return self._dispatch(
+                task_fn=_default_task_function,
+                blocking=blocking,
+                batch_config=batch_config,
+            )
+
+        _validate_sampling_programs(self._programs, action="sampling_backend workflow")
+
+        def _train_without_sampling(program: QuantumProgram):
+            return cast(VariationalQuantumAlgorithm, program).run(
+                perform_final_computation=False
+            )
+
+        self._dispatch(
+            task_fn=_train_without_sampling, blocking=True, batch_config=batch_config
+        )
+        if self._round_cancelled:
+            return self
+        return self.sample_solution(blocking=blocking, batch_config=batch_config)
 
     def run(
         self,
@@ -853,6 +906,7 @@ class ProgramEnsemble(ABC):
         task_fn: Callable[..., Any],
         blocking: bool,
         batch_config: BatchConfig,
+        backend: CircuitRunner | None = None,
     ):
         """Drive the ensemble lifecycle using ``task_fn`` per sub-program.
 
@@ -922,7 +976,11 @@ class ProgramEnsemble(ABC):
         # down on failure so the caller can retry cleanly.
         try:
             if batching_enabled:
-                self._install_coordinator(batch_config, n_workers)
+                self._install_coordinator(batch_config, n_workers, backend)
+            elif backend is not None:
+                for program in self._programs.values():
+                    self._program_original_backend[program] = program.backend
+                    program.backend = backend
             self._start_listener(prep_task_id)
 
             for program in self._programs.values():
@@ -965,6 +1023,7 @@ class ProgramEnsemble(ABC):
         self,
         params_per_program: dict[Any, npt.NDArray[np.float64]] | None = None,
         *,
+        backend: CircuitRunner | None = None,
         blocking: bool = False,
         batch_config: BatchConfig = BatchConfig(),
         suppress_strict_warning: bool = False,
@@ -993,6 +1052,9 @@ class ProgramEnsemble(ABC):
         Args:
             params_per_program: Optional mapping from program ID to
                 parameter set. See above for resolution semantics.
+            backend: Backend used for this sampling dispatch. ``None`` uses the
+                configured sampling backend, falling back to the ensemble's
+                primary backend.
             blocking: If ``True``, waits for all programs to complete
                 before returning. Defaults to ``False``.
             batch_config: Same semantics as :meth:`run`.
@@ -1022,14 +1084,18 @@ class ProgramEnsemble(ABC):
         program_to_id = {program: pid for pid, program in self._programs.items()}
 
         def _sample_solution_task(program: VariationalQuantumAlgorithm):
+            # Force the already-swapped program.backend so a program's own
+            # sampling_backend can't route around the merged-batching barrier.
             return cast(SolutionSamplingMixin, program).sample_solution(
-                resolved[program_to_id[program]]
+                resolved[program_to_id[program]], backend=program.backend
             )
 
+        selected_backend = backend if backend is not None else self._sampling_backend
         return self._dispatch(
             task_fn=_sample_solution_task,
             blocking=blocking,
             batch_config=batch_config,
+            backend=selected_backend,
         )
 
     def check_all_done(self) -> bool:
@@ -1062,10 +1128,16 @@ class ProgramEnsemble(ABC):
                 except Exception:
                     pass  # Skip failed futures
 
-    def _install_coordinator(self, batch_config: BatchConfig, n_workers: int) -> None:
+    def _install_coordinator(
+        self,
+        batch_config: BatchConfig,
+        n_workers: int,
+        backend: CircuitRunner | None = None,
+    ) -> None:
         """Create the batch coordinator and route every program through it."""
+        selected_backend = self.backend if backend is None else backend
         self._coordinator = _BatchCoordinator(
-            self.backend,
+            selected_backend,
             progress_queue=self._queue,
             batch_config=batch_config,
             n_workers=n_workers,
@@ -1077,7 +1149,7 @@ class ProgramEnsemble(ABC):
             self._coordinator.register_program(program_key)
             self._program_original_backend[program] = program.backend
             program.backend = _ProxyBackend(
-                self.backend, self._coordinator, program_key
+                selected_backend, self._coordinator, program_key
             )
 
     def _start_listener(self, prep_task_id) -> None:
@@ -1625,9 +1697,8 @@ class ProgramEnsemble(ABC):
                 if self._executor is not None:
                     executor, self._executor = self._executor, None
                     executor.shutdown(wait=True)
-
-                self._restore_program_backends()
             finally:
+                self._restore_program_backends()
                 self._teardown_progress_display()
 
             self._round_task_id = None
