@@ -8,7 +8,7 @@ import math
 import numbers
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, TypeIs
 
 import numpy as np
 from qiskit.circuit.library import PauliEvolutionGate
@@ -18,9 +18,14 @@ from qiskit.synthesis import LieTrotter
 from divi.hamiltonians._chem import qubit_operator_to_spo
 
 if TYPE_CHECKING:
+    from openfermion import QubitOperator as _QubitOperator
     from pennylane.operation import Operator as _PennyLaneOperator
 else:
     _PennyLaneOperator = Any
+    _QubitOperator = Any
+
+#: Every observable representation :func:`to_spo` normalises.
+ObservableInput = _PennyLaneOperator | SparsePauliOp | dict[str, float] | _QubitOperator
 
 
 def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
@@ -155,7 +160,7 @@ def _observable_to_sparse_pauli_op(
 
 
 def to_spo(
-    op: _PennyLaneOperator | SparsePauliOp | dict[str, float],
+    op: ObservableInput,
     *,
     wires=None,
 ) -> SparsePauliOp:
@@ -216,7 +221,7 @@ def to_spo(
     return spo
 
 
-def _is_openfermion_qubit_operator(op) -> bool:
+def _is_openfermion_qubit_operator(op) -> TypeIs[_QubitOperator]:
     """True if ``op`` is an OpenFermion ``QubitOperator`` (import-free fast path)."""
     if type(op).__name__ != "QubitOperator":
         return False

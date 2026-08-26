@@ -4,19 +4,66 @@
 
 import copy
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
 from itertools import product
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
-import pennylane as qp
 
+from divi.hamiltonians._term_ops import ObservableInput
 from divi.qprog import VQE, Ansatz, ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
+
+
+def _is_pyscf_molecule(molecule) -> bool:
+    try:
+        from pyscf import gto
+    except ImportError:
+        return False
+    return isinstance(molecule, gto.Mole)
+
+
+def _is_pennylane_molecule(molecule) -> bool:
+    try:
+        import pennylane as qp
+    except ImportError:
+        return False
+    return isinstance(molecule, qp.qchem.Molecule)
+
+
+def _normalise_molecule(molecule):
+    """Reduce a PySCF mean field to the molecule its geometry belongs to."""
+    try:
+        from pyscf import scf
+    except ImportError:
+        return molecule
+    return molecule.mol if isinstance(molecule, scf.hf.SCF) else molecule
+
+
+def _geometry_of(molecule) -> npt.NDArray:
+    """Atomic coordinates in Bohr — the native unit of both molecule types."""
+    if _is_pyscf_molecule(molecule):
+        return np.asarray(molecule.atom_coords())
+    return np.asarray(molecule.coordinates)
+
+
+def _atom_count(molecule) -> int:
+    if _is_pyscf_molecule(molecule):
+        return int(molecule.natm)
+    return len(molecule.symbols)
+
+
+def _with_geometry(molecule, coordinates: npt.NDArray):
+    """``molecule`` moved to ``coordinates`` (Bohr), leaving the original alone."""
+    if _is_pyscf_molecule(molecule):
+        return molecule.set_geom_(np.asarray(coordinates), unit="Bohr", inplace=False)
+    variant = copy.copy(molecule)
+    variant.coordinates = coordinates
+    return variant
 
 
 class _ZMatrixEntry(NamedTuple):
@@ -276,15 +323,21 @@ class MoleculeTransformer:
     This class generates variants of a base molecule by adjusting bond lengths
     according to specified modifiers. The modification mode is detected automatically.
 
+    Variants are emitted as the same type as ``base_molecule``, so a PennyLane
+    molecule sweeps into PennyLane molecules and a PySCF one into PySCF ones.
+
     Attributes:
-        base_molecule: The reference molecule used as a template for generating variants.
+        base_molecule: The reference molecule used as a template for generating
+            variants — a PennyLane ``qchem.Molecule`` or a PySCF ``gto.Mole``.
+            A PySCF mean field is reduced to the molecule it was built from.
         bond_modifiers: A list of values used to adjust bond lengths. The class will generate
             **one new molecule for each modifier** in this list. The modification
             mode is detected automatically:
             - **Scale mode**: If all values are positive, they are used as scaling
             factors (e.g., 1.1 for a 10% increase).
             - **Delta mode**: If any value is zero or negative, all values are
-            treated as additive changes to the bond length, in Ångstroms.
+            treated as additive changes to the bond length, in Bohr — the unit
+            both PennyLane and PySCF store coordinates in.
         atom_connectivity: A sequence of atom index pairs specifying the bonds in the molecule.
             If not provided, a chain structure will be assumed
             e.g.: `[(0, 1), (1, 2), (2, 3), ...]`.
@@ -295,7 +348,7 @@ class MoleculeTransformer:
             If None, no alignment is carried out.
     """
 
-    base_molecule: qp.qchem.Molecule
+    base_molecule: Any
     bond_modifiers: Sequence[float]
     atom_connectivity: Sequence[tuple[int, int]] | None = None
     bonds_to_transform: Sequence[tuple[int, int]] | None = None
@@ -304,9 +357,17 @@ class MoleculeTransformer:
     _mode: Literal["scale", "delta"] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
-        if not isinstance(self.base_molecule, qp.qchem.Molecule):
+        object.__setattr__(
+            self, "base_molecule", _normalise_molecule(self.base_molecule)
+        )
+        # PySCF first, so a PySCF sweep never imports PennyLane to reject it.
+        if not (
+            _is_pyscf_molecule(self.base_molecule)
+            or _is_pennylane_molecule(self.base_molecule)
+        ):
             raise ValueError(
-                "`base_molecule` is expected to be a Pennylane `Molecule` instance."
+                "`base_molecule` is expected to be a PennyLane `qchem.Molecule` "
+                "or a PySCF `gto.Mole` instance."
             )
 
         if not all(isinstance(x, (float, int)) for x in self.bond_modifiers):
@@ -319,7 +380,7 @@ class MoleculeTransformer:
             "scale" if all(v > 0 for v in self.bond_modifiers) else "delta",
         )
 
-        n_symbols = len(self.base_molecule.symbols)
+        n_symbols = _atom_count(self.base_molecule)
         atom_connectivity: Sequence[tuple[int, int]]
         if self.atom_connectivity is None:
             atom_connectivity = tuple(zip(range(n_symbols), range(1, n_symbols)))
@@ -355,9 +416,10 @@ class MoleculeTransformer:
                 "`alignment_atoms` need to be in range (0, len(molecule.symbols))"
             )
 
-    def generate(self) -> dict[float, qp.qchem.Molecule]:
+    def generate(self) -> dict[float, Any]:
+        """Bond-modified variants, each the same molecule type as the base."""
         variants = {}
-        original_coords = self.base_molecule.coordinates
+        original_coords = _geometry_of(self.base_molecule)
         mode = self._mode
 
         atom_connectivity = list(self.atom_connectivity or ())
@@ -380,9 +442,7 @@ class MoleculeTransformer:
                         transformed_coords, original_coords, self.alignment_atoms
                     )
 
-            mol = copy.copy(self.base_molecule)
-            mol.coordinates = transformed_coords
-            variants[value] = mol
+            variants[value] = _with_geometry(self.base_molecule, transformed_coords)
 
         return variants
 
@@ -396,7 +456,9 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         self,
         ansatze: Sequence[Ansatz],
         molecule_transformer: MoleculeTransformer | None = None,
-        hamiltonians: Sequence[qp.operation.Operator] | None = None,
+        hamiltonians: (
+            Sequence[ObservableInput] | Mapping[Any, ObservableInput] | None
+        ) = None,
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
         **kwargs,
@@ -408,8 +470,11 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         ----------
         ansatze: Sequence[Ansatz]
             A sequence of ansatz circuits to test.
-        hamiltonians: Sequence[qp.operation.Operator], optional
-            A sequence of Hamiltonians to use for the VQE runs. If ``None``
+        hamiltonians: Sequence[ObservableInput] | Mapping[Any, ObservableInput], optional
+            The Hamiltonians to use for the VQE runs — any form ``to_spo``
+            accepts (PennyLane operator, ``SparsePauliOp``, Pauli-string dict,
+            or OpenFermion ``QubitOperator``). A mapping keys each program by
+            its own key instead of by position. If ``None``
             (the default), no Hamiltonians are provided explicitly and
             molecule-based VQE runs will use their default Hamiltonians.
         molecule_transformer: MoleculeTransformer | None, optional

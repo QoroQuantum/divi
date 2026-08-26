@@ -605,7 +605,7 @@ QUBO Partitioning (QAOA or PCE)
    :class:`~divi.qprog.problems.CommunityDecomposer`, and the ``decomposer``
    argument itself — comes from the D-Wave ``hybrid`` package, which ships in
    the ``qubo-decompose`` extra:
-   ``pip install "qoro-divi[qubo-decompose]"``. Unpartitioned QUBO and HUBO
+   ``pip install "qoro-divi[qubo-decompose]"``. Plain QUBO and HUBO
    problems work on the core install — see :ref:`optional-extras`.
 
 For large QUBO problems, use :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` with a

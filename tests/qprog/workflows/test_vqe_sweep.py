@@ -8,6 +8,7 @@ import numpy as np
 import pennylane as qp
 import pytest
 from qiskit.circuit.library import RYGate
+from qiskit.quantum_info import SparsePauliOp
 from scipy.spatial.distance import pdist, squareform
 
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
@@ -37,6 +38,24 @@ def h2_molecule():
     symbols = ["H", "H"]
     coordinates = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]])
     return qp.qchem.Molecule(symbols, coordinates)
+
+
+@pytest.fixture
+def gto():
+    """PySCF's molecule builder; skips without the ``chem`` extra."""
+    return pytest.importorskip("pyscf.gto")
+
+
+@pytest.fixture
+def scf():
+    """PySCF's mean-field solvers; skips without the ``chem`` extra."""
+    return pytest.importorskip("pyscf.scf")
+
+
+@pytest.fixture
+def pyscf_h2_molecule(gto):
+    """H2 at a 1.4 Bohr bond length, as a PySCF molecule."""
+    return gto.M(atom="H 0 0 0; H 0 0 1.4", basis="sto-3g", unit="Bohr")
 
 
 @pytest.fixture
@@ -82,7 +101,7 @@ class TestMoleculeTransformerValidation:
     def test_invalid_base_molecule_type(self):
         """Test that a ValueError is raised for an invalid base_molecule type."""
         with pytest.raises(
-            ValueError, match="is expected to be a Pennylane `Molecule` instance"
+            ValueError, match="PennyLane `qchem.Molecule` or a PySCF `gto.Mole`"
         ):
             MoleculeTransformer(base_molecule="not_a_molecule", bond_modifiers=[1.1])
 
@@ -273,6 +292,36 @@ class TestMoleculeTransformerGeneration:
         assert np.allclose(variants[1.0].coordinates, water_molecule.coordinates)
         assert spy.call_count == 2
 
+    def test_generate_from_pyscf_molecule(self, gto, pyscf_h2_molecule):
+        """A PySCF base sweeps into PySCF variants, in the same Bohr geometry.
+
+        Both molecule types expose coordinates in Bohr, so the same modifier
+        scales the bond identically whichever stack supplied the molecule.
+        """
+        variants = MoleculeTransformer(
+            base_molecule=pyscf_h2_molecule, bond_modifiers=[0.5, 1.5]
+        ).generate()
+
+        assert set(variants) == {0.5, 1.5}
+        for modifier, variant in variants.items():
+            assert isinstance(variant, gto.Mole)
+            bond = np.linalg.norm(variant.atom_coords()[1] - variant.atom_coords()[0])
+            assert np.isclose(bond, 1.4 * modifier)
+
+        # The base must survive untouched — set_geom_ defaults to in-place.
+        assert np.isclose(np.linalg.norm(pyscf_h2_molecule.atom_coords()[1]), 1.4)
+
+    def test_pyscf_mean_field_is_reduced_to_its_molecule(
+        self, gto, scf, pyscf_h2_molecule
+    ):
+        """A converged mean field belongs to one geometry, so sweep its molecule."""
+        transformer = MoleculeTransformer(
+            base_molecule=scf.RHF(pyscf_h2_molecule), bond_modifiers=[1.5]
+        )
+
+        assert isinstance(transformer.base_molecule, gto.Mole)
+        assert isinstance(transformer.generate()[1.5], gto.Mole)
+
     def test_transformation_propagates_correctly_on_water(self, water_molecule):
         """
         Test that transforming one bond in a non-linear molecule (H2O) correctly
@@ -443,6 +492,38 @@ class TestVQEHyperparameterSweep:
         for program in vqe_sweep.programs.values():
             _assert_common_program_settings(program, vqe_sweep_max_iterations)
             assert program.molecule.symbols == ["H", "H"]
+
+    def test_sweep_over_a_pyscf_transformer_builds_real_programs(
+        self,
+        pyscf_h2_molecule,
+        default_test_simulator,
+        vqe_sweep_optimizer,
+        vqe_sweep_max_iterations,
+    ):
+        """The feature boundary: a PySCF transformer drives a whole sweep.
+
+        Nothing is mocked here — each variant has to survive VQE's own
+        molecule handling and produce a real cost Hamiltonian.
+        """
+        bond_modifiers = [1.0, 1.2]
+        sweep = VQEHyperparameterSweep(
+            ansatze=[HartreeFockAnsatz()],
+            molecule_transformer=MoleculeTransformer(
+                base_molecule=pyscf_h2_molecule, bond_modifiers=bond_modifiers
+            ),
+            optimizer=vqe_sweep_optimizer,
+            max_iterations=vqe_sweep_max_iterations,
+            backend=default_test_simulator,
+        )
+
+        sweep.create_programs()
+
+        assert len(sweep.programs) == len(bond_modifiers)
+        for modifier in bond_modifiers:
+            program = sweep.programs[(HartreeFockAnsatz().name, modifier)]
+            assert program.n_qubits == 4
+            assert program.n_electrons == 2
+            assert isinstance(program.cost_hamiltonian, SparsePauliOp)
 
     def test_correct_number_of_programs_created_hamiltonian(
         self, mocker, vqe_sweep_hamiltonian, vqe_sweep_max_iterations

@@ -246,8 +246,9 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 A few details worth calling out:
 
 - **Bond modifiers** — with the values above the sweep contracts all bonds by
-  -0.4 Å and -0.25 Å, stretches them by 0.25 Å and 0.4 Å, and also runs the
-  base molecule unchanged (the ``0`` entry).
+  -0.4 and -0.25 Bohr, stretches them by 0.25 and 0.4 Bohr, and also runs the
+  base molecule unchanged (the ``0`` entry). Deltas are Bohr because that is
+  the unit both PennyLane and PySCF store coordinates in.
 - **Ansatz comparison** — passing two ansätze runs every bond-modifier point
   under both :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
   :class:`~divi.qprog.algorithms.UCCSDAnsatz`, so you can compare accuracy

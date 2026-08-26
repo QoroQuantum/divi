@@ -60,7 +60,7 @@ Optional Extras
        D-Wave's own ``EnergyImpactDecomposer`` and ``SplatComposer``, and
        Divi's :class:`~divi.qprog.problems.CommunityDecomposer`.
      - ~145 MB
-     - Unpartitioned QUBO and HUBO problems — cost Hamiltonian, mixer, and
+     - Plain QUBO and HUBO problems — cost Hamiltonian, mixer, and
        solving without partitioning.
    * - ``chem``
      - Molecule inputs via PySCF, OpenFermion Hamiltonians,
