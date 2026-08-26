@@ -18,7 +18,10 @@ jobs:
       - uses: ./.github/actions/setup-divi
         with:
           python-version: "3.13"
-          sync-args: --group dev --extra chem
+          # Explicit extras, not ``--all-extras --no-extra ai``: the ``all``
+          # extra re-includes ``ai`` transitively, so the exclusion is a no-op.
+          # pyrefly type-checks all of ``divi/`` except ``divi/ai``.
+          sync-args: --group dev --extra chem --extra aer --extra qubo-decompose
 
       - name: Cache pre-commit hooks
         uses: actions/cache@v4

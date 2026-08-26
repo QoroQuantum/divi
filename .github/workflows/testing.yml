@@ -25,7 +25,7 @@ jobs:
       - uses: ./.github/actions/setup-divi
         with:
           python-version: ${{ matrix.python-version }}
-          sync-args: --group testing --extra ai --extra chem
+          sync-args: --group testing --all-extras
 
       - name: Run unit tests
         run: uv run pytest -n auto -m "not requires_api_key"
@@ -50,7 +50,7 @@ jobs:
       - uses: ./.github/actions/setup-divi
         with:
           python-version: ${{ matrix.python-version }}
-          sync-args: --group testing --extra ai --extra chem
+          sync-args: --group testing --all-extras
 
       - name: Run tutorial scripts
         shell: bash

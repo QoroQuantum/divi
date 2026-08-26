@@ -135,19 +135,10 @@ def transform_integrals(
         ao_eri: AO-basis electron-repulsion integral from :func:`cached_ao_eri`.
             Supplying it avoids rebuilding the AO integrals every round;
             ``None`` builds them here.
-
-    Raises:
-        ImportError: If the ``chem`` extra is not installed.
     """
-    try:
-        # optional ``chem`` extra
-        from pyscf import ao2mo
-        from pyscf.scf import hf
-    except ImportError as exc:
-        raise ImportError(
-            "transform_integrals requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
+    # optional ``chem`` extra
+    from pyscf import ao2mo
+    from pyscf.scf import hf
 
     if ao_eri is None:
         ao_eri = cached_ao_eri(mol)
@@ -428,19 +419,10 @@ def energy_and_generalized_fock(
     Returns:
         ``(energy, fock)`` with ``fock`` shaped ``(n_orb, n_orb)``; its virtual
         columns are zero, since the densities do not reach them.
-
-    Raises:
-        ImportError: If the ``chem`` extra is not installed.
     """
-    try:
-        # optional ``chem`` extra
-        from pyscf import ao2mo
-        from pyscf.scf import hf
-    except ImportError as exc:
-        raise ImportError(
-            "energy_and_generalized_fock requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
+    # optional ``chem`` extra
+    from pyscf import ao2mo
+    from pyscf.scf import hf
 
     n_orb = mo_coeff.shape[1]
     n_act = rdm1_active.shape[0]

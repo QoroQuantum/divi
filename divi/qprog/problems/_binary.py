@@ -6,10 +6,9 @@
 
 import math
 from collections.abc import Callable, Hashable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import dimod
-import hybrid
 import numpy as np
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
@@ -25,6 +24,21 @@ from divi.hamiltonians import (
 )
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
+
+if TYPE_CHECKING:
+    # pyrefly: ignore[missing-import]
+    import hybrid
+else:
+    try:
+        import hybrid
+    except ImportError:
+        hybrid = None
+
+_QUBO_DECOMPOSE_MSG = (
+    "BinaryOptimizationProblem's decompose() requires the 'qubo-decompose' extra; "
+    "install it with `pip install qoro-divi[qubo-decompose]`. Plain QUBO/HUBO "
+    "problems work without it."
+)
 
 
 def _merge_substates(_, substates):
@@ -168,6 +182,10 @@ class BinaryOptimizationProblem(QAOAProblem):
             minimum by greedy single-bit-flip descent against the full QUBO.
             Works with any ``decomposer``.
 
+    Raises:
+        ImportError: If ``decomposer`` is given but the ``qubo-decompose``
+            extra is not installed.
+
     Examples:
         >>> import numpy as np
         >>> from divi.qprog.problems import BinaryOptimizationProblem
@@ -184,10 +202,12 @@ class BinaryOptimizationProblem(QAOAProblem):
         penalty_weight: float = 1.0,
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
         quadratization_strength: float | None = None,
-        decomposer: hybrid.traits.ProblemDecomposer | None = None,
-        composer: hybrid.traits.SubsamplesComposer | None = None,
+        decomposer: "hybrid.traits.ProblemDecomposer | None" = None,
+        composer: "hybrid.traits.SubsamplesComposer | None" = None,
         local_search: bool = False,
     ):
+        if decomposer is not None and hybrid is None:
+            raise ImportError(_QUBO_DECOMPOSE_MSG)
         if hamiltonian_builder not in ("native", "quadratized"):
             raise ValueError(
                 "hamiltonian_builder must be either 'native' or 'quadratized'."

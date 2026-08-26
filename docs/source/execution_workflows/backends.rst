@@ -236,6 +236,12 @@ QiskitSimulator
 
 :class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with thread-count control and Qiskit-native noise configuration.  Use it when you need device-calibrated noise from a Qiskit fake backend, or when you have an existing ``qiskit_aer.noise.NoiseModel`` you want to run as-is.  For Pauli-channel noise written from scratch, :ref:`MaestroSimulator's noisy paths <noisy-simulation-maestro>` are usually faster.
 
+.. note::
+
+   Requires the ``aer`` extra: ``pip install "qoro-divi[aer]"``. The default
+   local simulator, :class:`~divi.backends.MaestroSimulator`, is part of the
+   core install — see :ref:`optional-extras`.
+
 .. code-block:: python
 
    from divi.backends import QiskitSimulator

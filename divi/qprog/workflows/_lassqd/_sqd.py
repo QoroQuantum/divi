@@ -1196,6 +1196,7 @@ def compute_spatial_rdms(
     if n_orb > _MAX_PYSCF_ORBITALS:
         return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)
 
+    # optional ``chem`` extra
     from pyscf.fci.selected_ci import _as_SCIvector, make_rdm1s, make_rdm2
 
     ci_strings = (

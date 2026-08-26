@@ -28,6 +28,7 @@ from qiskit.circuit.library import RXGate, RYGate, RZGate, RZZGate, XXPlusYYGate
 from scipy.optimize import least_squares
 
 from divi.circuits._conversions import _qscript_to_dag
+from divi.hamiltonians._chem import requires_chem_extra
 from divi.hamiltonians._term_ops import _HALF_PI
 
 
@@ -460,17 +461,12 @@ def _uccsd_template(
     another worker thread. The results are cached and shared, so callers must
     compose or bind without mutating them.
     """
-    try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+    with requires_chem_extra("UCCSDAnsatz"):
+        # pyrefly: ignore[missing-import]
         from qiskit_nature.second_q import mappers
 
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        # pyrefly: ignore[missing-import]
         from qiskit_nature.second_q.circuit import library
-    except ImportError as exc:
-        raise ImportError(
-            "UCCSDAnsatz requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
 
     # Interleaving must happen in the mapper: Jordan-Wigner parity strings are
     # built over the mapper's mode order, so permuting qubits afterwards leaves

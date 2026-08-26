@@ -269,7 +269,8 @@ Backend Options
    Use :class:`~divi.backends.MaestroSimulator` (shown in all examples above)
    for fast iteration, testing, and Pauli-channel noise. Use
    :class:`~divi.backends.QiskitSimulator` when you need Qiskit-native or
-   device-calibrated noise models.
+   device-calibrated noise models — it requires the ``aer`` extra
+   (:ref:`optional-extras`).
 
 **Cloud simulation & hardware**
    Access scalable cloud simulators (statevector, tensor-network, and more) through :class:`~divi.backends.QoroService`. Sign up at `dash.qoroquantum.net <https://dash.qoroquantum.net/>`_ to get started with free credits. For real quantum hardware access, `contact us <https://qoroquantum.net>`_:

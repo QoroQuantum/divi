@@ -268,18 +268,9 @@ def localize_blocks(
         reproducible under a fixed seed even when the optimizer reaches the
         same physical solution via a different column order on different
         runs.
-
-    Raises:
-        ImportError: If the ``chem`` extra is not installed.
     """
-    try:
-        # optional ``chem`` extra
-        from pyscf import lo
-    except ImportError as exc:
-        raise ImportError(
-            "LASSQD active-space localisation requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
+    # optional ``chem`` extra
+    from pyscf import lo
 
     n_restarts = 8
     localized = []
@@ -528,18 +519,9 @@ def _localized_active_space_integrals(
 
     Returns:
         ``(one_body, two_body)`` in the localised active basis.
-
-    Raises:
-        ImportError: If the ``chem`` extra is not installed.
     """
-    try:
-        # optional ``chem`` extra
-        from pyscf import ao2mo, scf
-    except ImportError as exc:
-        raise ImportError(
-            "auto_fragment_specs requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
+    # optional ``chem`` extra
+    from pyscf import ao2mo, scf
 
     n_act = localized.shape[1]
     h_ao = cached_h_ao(mol)

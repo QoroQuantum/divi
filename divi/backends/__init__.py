@@ -18,7 +18,6 @@ from .runners import (
     JobType,
     MaestroConfig,
     MaestroSimulator,
-    QiskitSimulator,
     QoroService,
 )
 
@@ -45,3 +44,12 @@ __all__ = [
     "normalise_circuit_batch",
     "reverse_dict_endianness",
 ]
+
+
+def __getattr__(name: str):
+    """Resolve :class:`QiskitSimulator` on first access."""
+    if name == "QiskitSimulator":
+        from .runners import QiskitSimulator
+
+        return QiskitSimulator
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

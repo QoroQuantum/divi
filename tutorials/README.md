@@ -17,7 +17,7 @@ Tutorials that use `get_backend()` from `_backend.py` accept these CLI flags:
 | Flag | Backend | Description |
 | ------ | --------- | ------------- |
 | `--local-maestro` (default) | `MaestroSimulator` | Local high-performance simulation |
-| `--local-qiskit` | `QiskitSimulator` | Local Qiskit Aer simulation |
+| `--local-qiskit` | `QiskitSimulator` | Local Qiskit Aer simulation (needs the `aer` extra) |
 | `--cloud-maestro` | `QoroService` | Qoro cloud backend |
 | `--force-sampling` | — | Disable exact expectation values; use shot-based sampling instead |
 
@@ -47,7 +47,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 
 - **`qubo_qaoa_vs_pce.py`** — Solving the same QUBO with QAOA and PCE side by side
 - **`qaoa_hubo.py`** — QAOA for Higher-Order Binary Optimization (HUBO) problems
-- **`qaoa_partitioning.py`** — Partition a large problem into many sub-programs (graph, QUBO, and edge-based entry points)
+- **`qaoa_partitioning.py`** — Partition a large problem into many sub-programs (graph, QUBO, and edge-based entry points). The QUBO path uses `CommunityDecomposer`, which needs the `qubo-decompose` extra
 - **`qaoa_graph_problems.py`** — QAOA on max clique and max-weight matching
 - **`qaoa_qdrift.py`** — QAOA with QDrift randomized Trotterization
 - **`iterative_qaoa.py`** — Iterative QAOA with parameter interpolation vs standard QAOA

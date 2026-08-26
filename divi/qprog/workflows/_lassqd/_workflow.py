@@ -15,7 +15,7 @@ import numpy as np
 from qiskit.quantum_info import Statevector
 from scipy.linalg import expm
 
-from divi.hamiltonians._chem import _spo_from_integrals
+from divi.hamiltonians._chem import _spo_from_integrals, requires_chem_extra
 from divi.qprog.algorithms import LUCJAnsatz, UCCSDAnsatz
 from divi.qprog.algorithms._ansatze import (
     Ansatz,
@@ -771,14 +771,8 @@ class LASSQD(ProgramEnsemble):
             reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
         )
 
-        try:
-            # optional ``chem`` extra
+        with requires_chem_extra("LASSQD"):
             from pyscf import gto, scf
-        except ImportError as exc:
-            raise ImportError(
-                "LASSQD requires the 'chem' extra; install it with "
-                "`pip install qoro-divi[chem]`."
-            ) from exc
 
         if isinstance(molecule, gto.Mole):
             self._mol = molecule

@@ -35,6 +35,14 @@ For the shortest introduction, start with the
 pip install qoro-divi
 ```
 
+That covers local and cloud execution, VQE, QAOA, and program ensembles.
+Heavier features live behind optional extras — `aer` (Qiskit Aer backends),
+`qubo-decompose` (partitioned QUBO solving), `chem` (PySCF/OpenFermion
+chemistry), `ai`, and `jupyter` — or `pip install "qoro-divi[all]"` for
+everything. See the
+**[installation guide](https://divi.readthedocs.io/en/latest/installation.html)**
+for what each unlocks and what keeps working without it.
+
 ### Nightly Builds
 
 To install the latest development build (published daily from `main`):
@@ -116,7 +124,7 @@ Answers questions about Divi APIs, generates code examples, and explains concept
 | **VQE & QAOA** | Built-in variational algorithms with pluggable ansätze and optimizers |
 | **Circuit Pipelines** | Expand → execute → reduce pattern for complex circuit workflows |
 | **Program Ensembles** | Parallel execution of multiple quantum programs with automatic scheduling, over one round or many adaptive ones |
-| **Flexible Backends** | `MaestroSimulator` for local simulation, `QiskitSimulator` for Qiskit-native noise models, `QoroService` for cloud execution |
+| **Flexible Backends** | `MaestroSimulator` for local simulation, `QiskitSimulator` for Qiskit-native noise models (extra: `aer`), `QoroService` for cloud execution |
 | **Execution Config** | Control bond dimension, simulator type, and simulation method per job |
 | **Live Reporting** | Real-time dashboards and convergence tracking via callbacks |
 
@@ -125,7 +133,7 @@ Answers questions about Divi APIs, generates code examples, and explains concept
 ```
 divi/
 ├── qprog/        # Quantum programs: VQE, QAOA, base classes, optimizers
-├── backends/     # Execution backends: MaestroSimulator, QiskitSimulator, QoroService
+├── backends/     # Execution backends: MaestroSimulator, QiskitSimulator (extra: aer), QoroService
 ├── circuits/     # MetaCircuit templates and Circuit instances
 ├── pipeline/     # Circuit pipeline stages (expand, execute, reduce)
 ├── hamiltonians  # Molecular Hamiltonian generation

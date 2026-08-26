@@ -20,7 +20,6 @@ from ._matching import (
     check_matching_matrix,
     is_valid_matching,
 )
-from ._qubo_partitioning_utils import CommunityDecomposer
 from ._routing import (
     BinaryBlockConfig,
     CVRPProblem,
@@ -62,3 +61,17 @@ __all__ = [
     "parse_vrp_solution",
     "tour_cost",
 ]
+
+
+def __getattr__(name: str):
+    """Resolve :class:`CommunityDecomposer` on first access."""
+    if name == "CommunityDecomposer":
+        try:
+            from ._community_decomposer import CommunityDecomposer
+        except ImportError as exc:
+            raise ImportError(
+                "CommunityDecomposer requires the 'qubo-decompose' extra; "
+                "install it with `pip install qoro-divi[qubo-decompose]`."
+            ) from exc
+        return CommunityDecomposer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

@@ -8,10 +8,27 @@ Both live behind the ``chem`` extra (``pyscf`` + ``openfermion``) and are
 lazily imported, so importing this module never requires them.
 """
 
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
+
+
+@contextmanager
+def requires_chem_extra(operation: str):
+    """Translate a missing ``chem`` dependency into an actionable error.
+
+    Wrap the ``chem``-only imports of *operation*, named as the user-facing
+    capability it backs.
+    """
+    try:
+        yield
+    except ImportError as exc:
+        raise ImportError(
+            f"{operation} requires the 'chem' extra; "
+            "install it with `pip install qoro-divi[chem]`."
+        ) from exc
 
 
 def qubit_operator_to_spo(
@@ -89,20 +106,15 @@ def _spo_from_integrals(
         ImportError: If the ``chem`` extra is not installed.
         ValueError: If the integral shapes are inconsistent.
     """
-    try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+    with requires_chem_extra("Building a molecular Hamiltonian"):
+        # pyrefly: ignore[missing-import]
         from openfermion import InteractionOperator, jordan_wigner
 
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        # pyrefly: ignore[missing-import]
         from openfermion.chem.molecular_data import spinorb_from_spatial
 
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+        # pyrefly: ignore[missing-import]
         from openfermion.config import EQ_TOLERANCE
-    except ImportError as exc:
-        raise ImportError(
-            "_spo_from_integrals requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
 
     one_body = np.asarray(one_body, dtype=float)
     two_body = np.asarray(two_body, dtype=float)
@@ -166,14 +178,9 @@ def molecular_hamiltonian_from_pyscf(molecule: Any) -> tuple[SparsePauliOp, int]
         NotImplementedError: If the system is open-shell (non-zero spin) or the
             mean-field is not restricted (2D ``mo_coeff``).
     """
-    try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
+    with requires_chem_extra("Building a molecular Hamiltonian from PySCF"):
+        # pyrefly: ignore[missing-import]
         from pyscf import ao2mo, gto, scf
-    except ImportError as exc:
-        raise ImportError(
-            "molecular_hamiltonian_from_pyscf requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        ) from exc
 
     if isinstance(molecule, gto.Mole):
         mean_field = None

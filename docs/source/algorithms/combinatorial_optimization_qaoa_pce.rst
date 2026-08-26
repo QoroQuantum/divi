@@ -598,9 +598,18 @@ with a graph problem configured for partitioning via
 QUBO Partitioning (QAOA or PCE)
 -------------------------------
 
+.. note::
+
+   Everything in this section — D-Wave's ``EnergyImpactDecomposer`` and
+   ``SplatComposer``, Divi's
+   :class:`~divi.qprog.problems.CommunityDecomposer`, and the ``decomposer``
+   argument itself — comes from the D-Wave ``hybrid`` package, which ships in
+   the ``qubo-decompose`` extra:
+   ``pip install "qoro-divi[qubo-decompose]"``. Unpartitioned QUBO and HUBO
+   problems work on the core install — see :ref:`optional-extras`.
+
 For large QUBO problems, use :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` with a
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` configured with D-Wave's hybrid decomposer/composer.
-This workflow requires the optional D-Wave ``hybrid`` package.
 You can choose the per-partition engine via ``quantum_routine``:
 
 - ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.

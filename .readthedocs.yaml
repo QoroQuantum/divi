@@ -14,7 +14,9 @@ build:
       - pip install uv
       # ``uv sync`` manages its own project env and does NOT respect
       # ``VIRTUAL_ENV``; use ``UV_PROJECT_ENVIRONMENT`` to point it at RTD's venv.
-      - UV_PROJECT_ENVIRONMENT=$READTHEDOCS_VIRTUALENV_PATH uv sync --no-default-groups --group docs --no-install-project
+      # ``aer`` and ``qubo-decompose`` are needed for automodapi to resolve
+      # ``QiskitSimulator`` and ``CommunityDecomposer``; no other extra is.
+      - UV_PROJECT_ENVIRONMENT=$READTHEDOCS_VIRTUALENV_PATH uv sync --no-default-groups --group docs --extra aer --extra qubo-decompose --no-install-project
 
 sphinx:
   configuration: docs/source/conf.py

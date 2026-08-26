@@ -44,51 +44,20 @@ a tour of the built-in algorithms, then explore :guilabel:`Algorithms` or
 Installation
 ============
 
-Divi can be installed using uv (recommended) or pip.
-
-If you have uv installed:
-
 .. code-block:: bash
 
-   uv add qoro-divi
+   uv add qoro-divi     # or: pip install qoro-divi
 
-Or if you want to install from source:
-
-.. code-block:: bash
-
-   git clone https://github.com/QoroQuantum/divi.git
-   cd divi
-   uv sync
-
-Alternatively, you can install using pip:
-
-.. code-block:: bash
-
-   pip install qoro-divi
-
-Nightly Builds
---------------
-
-Nightly development builds are published daily from ``main``. To install the latest nightly:
-
-.. code-block:: bash
-
-   pip install qoro-divi --pre
-
-Or pin a specific nightly by date:
-
-.. code-block:: bash
-
-   pip install qoro-divi==0.8.0.dev20260305
-
-.. note::
-
-   Nightly builds may contain unstable or experimental features.
-   For production use, stick with the stable release (``pip install qoro-divi``).
+That covers local and cloud execution, VQE, QAOA, and program ensembles.
+Heavier features — Qiskit Aer backends, partitioned QUBO solving, chemistry,
+and the ``divi-ai`` assistant — live behind optional extras. See
+:doc:`installation` for the full list, what each one unlocks, and what keeps
+working without it.
 
 .. toctree::
    :maxdepth: 1
 
+   installation
    quickstart
 
 .. toctree::

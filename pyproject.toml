@@ -25,8 +25,6 @@ dependencies = [
     # Quantum computing
     "pennylane>=0.45,<0.46",
     "qiskit>=2.3",
-    "qiskit-aer",
-    "qiskit-ibm-runtime>=0.45",
     # Scientific computing and numerical operations
     "numpy",
     "scipy>=1.16,<2.0",
@@ -38,15 +36,13 @@ dependencies = [
     "qoro-maestro==0.2.19",
     # Optimization algorithms
     "pymoo>=0.6,<0.7",
-    "dwave-hybrid>=0.6.14,<0.7.0",
+    "dimod>=0.12.22,<0.13",
     # Utilities
     "requests>=2.32,<3.0",
     "dill>=0.4,<0.5",
     "python-dotenv>=1.1.1,<2.0",
     "rich>=14.0",
     "matplotlib>=3.10,<4.0",
-    "ply>=3.11,<4.0",
-    "basis-set-exchange>=0.11",
     "pydantic>=2.10,<3.0",
     "numba>=0.64.0",
     "stim>=1.15.0,<2.0",
@@ -79,10 +75,20 @@ ai = [
     "huggingface-hub>=1.0",
     "docutils>=0.18",
 ]
+aer = [
+    "qiskit-aer",
+    "qiskit-ibm-runtime>=0.45",
+]
+qubo-decompose = [
+    "dwave-hybrid>=0.6.14,<0.7.0",
+]
 chem = [
     "pyscf>=2.0,<3.0; sys_platform != 'win32'",
     "openfermion>=1.5,<2.0",
     "qiskit-nature>=0.8.0,<0.9.0",
+]
+all = [
+    "qoro-divi[aer,ai,chem,jupyter,qubo-decompose]",
 ]
 
 
