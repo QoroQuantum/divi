@@ -5,9 +5,10 @@
 """Tests for divi.pipeline.stages._pennylane_spec_stage."""
 
 import numpy as np
-import pennylane as qp
 import pytest
 import sympy
+
+qp = pytest.importorskip("pennylane")
 
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import (

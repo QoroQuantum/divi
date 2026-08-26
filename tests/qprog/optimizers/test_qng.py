@@ -9,7 +9,6 @@ from typing import Any, cast
 
 import networkx as nx
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
@@ -307,7 +306,7 @@ def test_fubini_study_metric_smoke(default_test_simulator, default_optimizer):
 
 
 def test_fubini_study_matches_pennylane_block_diag(
-    default_test_simulator, default_optimizer
+    qp, default_test_simulator, default_optimizer
 ):
     """The block-diagonal FS metric agrees with PennyLane's reference, including
     off-diagonal blocks from an entangled prefix."""
@@ -680,7 +679,7 @@ def test_pullback_metric_is_symmetric_psd_low_rank(toy_vqe):
 
 
 @pytest.mark.e2e
-def test_qng_vqe_h2_converges(default_test_simulator):
+def test_qng_vqe_h2_converges(qp, default_test_simulator):
     """QNG drives a HartreeFock-ansatz VQE to the H2 ground-state energy."""
     seed = 1997
     default_test_simulator.set_seed(seed)

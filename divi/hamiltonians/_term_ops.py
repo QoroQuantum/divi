@@ -8,15 +8,19 @@ import math
 import numbers
 import warnings
 from collections.abc import Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
-import pennylane as qp
 from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
 
 from divi.hamiltonians._chem import qubit_operator_to_spo
+
+if TYPE_CHECKING:
+    from pennylane.operation import Operator as _PennyLaneOperator
+else:
+    _PennyLaneOperator = Any
 
 
 def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
@@ -108,7 +112,7 @@ def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
 
 
 def _observable_to_sparse_pauli_op(
-    obs: qp.operation.Operator,
+    obs: _PennyLaneOperator,
     wires,
 ) -> SparsePauliOp:
     """Convert a PennyLane observable to a Qiskit :class:`~qiskit.quantum_info.SparsePauliOp`.
@@ -151,13 +155,17 @@ def _observable_to_sparse_pauli_op(
 
 
 def to_spo(
-    op: qp.operation.Operator | SparsePauliOp | dict[str, float],
+    op: _PennyLaneOperator | SparsePauliOp | dict[str, float],
     *,
     wires=None,
 ) -> SparsePauliOp:
-    """Convert a PennyLane operator, ``SparsePauliOp``, Pauli-string dict, or
-    OpenFermion ``QubitOperator`` to ``SparsePauliOp``, validating Hermiticity
-    in every case. OpenFermion qubit ``q`` maps to circuit qubit ``q``; a
+    """Normalize an observable as a validated ``SparsePauliOp``.
+
+    Accepts a PennyLane operator, an existing ``SparsePauliOp``, a Pauli-string
+    dict, or an OpenFermion ``QubitOperator``. Existing ``SparsePauliOp`` inputs
+    are validated and returned unchanged, making this an idempotent boundary
+    for callers that accept multiple observable representations. OpenFermion
+    qubit ``q`` maps to circuit qubit ``q``; a
     ``QubitOperator`` narrower than the target circuit is sized to its own
     support here, so convert it explicitly with
     :func:`~divi.hamiltonians.qubit_operator_to_spo` (passing ``n_qubits``) to
@@ -180,7 +188,7 @@ def to_spo(
         representation is what stays consistent across both forms.
 
     Args:
-        op: Operator to convert.
+        op: Observable representation to normalize.
         wires: Optional wire register to resolve a PennyLane operator
             against. When ``None`` (default), falls back to ``op.wires``,
             which yields an SPO whose qubit count equals the operator's
@@ -220,7 +228,7 @@ def _is_openfermion_qubit_operator(op) -> bool:
     return isinstance(op, QubitOperator)
 
 
-def _spo_wires(op: qp.operation.Operator | SparsePauliOp) -> tuple:
+def _spo_wires(op: _PennyLaneOperator | SparsePauliOp) -> tuple:
     """Wire mapping aligned with :func:`to_spo` (qubit ``i`` ↔ ``wires[i]``)."""
     if isinstance(op, SparsePauliOp):
         return tuple(range(_require_qiskit_num_qubits(op.num_qubits)))

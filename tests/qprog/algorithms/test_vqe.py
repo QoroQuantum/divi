@@ -5,7 +5,6 @@
 import re
 
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
@@ -28,18 +27,25 @@ from tests.qprog._program_contracts import (
 
 
 @pytest.fixture
-def h2_molecule():
-    """Fixture for a simple H2 molecule."""
-    symbols = ["H", "H"]
+def h2_molecule(qp):
+    """H2 through the PennyLane molecule front door."""
     coordinates = np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-    return qp.qchem.Molecule(symbols, coordinates)
+    return qp.qchem.Molecule(["H", "H"], coordinates)
 
 
 @pytest.fixture
-def h2_hamiltonian(h2_molecule):
-    """Fixture for the H2 Hamiltonian."""
-    H, _ = qp.qchem.molecular_hamiltonian(h2_molecule)
-    return H
+def four_qubit_hamiltonian():
+    """Ising chain, transverse field, and one pair-hopping term.
+
+    Four qubits with a two-electron reference — the shape a chemistry
+    Hamiltonian has, without needing a chemistry stack to build it.
+    """
+    return SparsePauliOp.from_sparse_list(
+        [("ZZ", [q, q + 1], 1.0) for q in range(3)]
+        + [("X", [q], 0.5) for q in range(4)]
+        + [("XXYY", [0, 1, 2, 3], 0.25)],
+        num_qubits=4,
+    )
 
 
 # Ansaetze are now stateless, so we instantiate them once
@@ -133,11 +139,11 @@ def test_vqe_basic_initialization_with_molecule(
 
 
 def test_vqe_basic_initialization_with_hamiltonian(
-    default_test_simulator, h2_hamiltonian, default_optimizer
+    default_test_simulator, four_qubit_hamiltonian, default_optimizer
 ):
     """Test VQE initialization with a Hamiltonian object."""
     vqe_problem = VQE(
-        hamiltonian=h2_hamiltonian,
+        hamiltonian=four_qubit_hamiltonian,
         n_electrons=2,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
@@ -155,11 +161,13 @@ def test_vqe_basic_initialization_with_hamiltonian(
 
 
 def test_vqe_clean_hamiltonian_logic(
-    h2_hamiltonian, dummy_simulator, default_optimizer
+    four_qubit_hamiltonian, dummy_simulator, default_optimizer
 ):
     """Test that the Hamiltonian is cleaned correctly, separating the constant."""
     constant_value = 5.0
-    hamiltonian_with_constant = h2_hamiltonian + qp.Identity(0) * constant_value
+    hamiltonian_with_constant = four_qubit_hamiltonian + SparsePauliOp.from_list(
+        [("IIII", constant_value)]
+    )
 
     vqe_problem = VQE(
         hamiltonian=hamiltonian_with_constant,
@@ -169,10 +177,8 @@ def test_vqe_clean_hamiltonian_logic(
         optimizer=default_optimizer,
     )
 
-    coeffs, ops = h2_hamiltonian.terms()
-    original_constant = coeffs[ops.index(qp.Identity(0))]
-    expected_total_constant = original_constant + constant_value
-    assert np.isclose(vqe_problem.loss_constant, expected_total_constant)
+    # The fixture carries no identity row, so the whole constant is the one added.
+    assert np.isclose(vqe_problem.loss_constant, constant_value)
 
     # ``_clean_hamiltonian_spo`` partitions identity rows out of the SPO and
     # accumulates them into ``loss_constant``; verify no surviving identity
@@ -185,7 +191,7 @@ def test_vqe_clean_hamiltonian_logic(
 
 def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimizer):
     """Test VQE initialization fails with a constant-only Hamiltonian."""
-    hamiltonian = qp.Identity(0) * 5.0
+    hamiltonian = SparsePauliOp.from_list([("I", 5.0)])
     with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
         VQE(
             hamiltonian=hamiltonian,
@@ -210,17 +216,10 @@ def test_vqe_fail_with_neither_hamiltonian_nor_molecule(
         )
 
 
-@pytest.mark.parametrize(
-    "hamiltonian",
-    [0.5 * qp.Z(0), qp.Z(0)],
-    ids=["sprod", "bare_pauli"],
-)
-def test_vqe_single_term_hamiltonian_succeeds(
-    dummy_simulator, hamiltonian, default_optimizer
-):
-    """Single-term Hamiltonians (SProd, bare Pauli) initialize without operands error."""
+def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, default_optimizer):
+    """A one-term Hamiltonian initialises without an operands error."""
     vqe_problem = VQE(
-        hamiltonian=hamiltonian,
+        hamiltonian=SparsePauliOp.from_list([("Z", 0.5)]),
         n_electrons=1,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
@@ -416,10 +415,10 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
 
 class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     @pytest.fixture
-    def make_program(self, h2_hamiltonian, dummy_simulator, default_optimizer):
+    def make_program(self, four_qubit_hamiltonian, dummy_simulator, default_optimizer):
         def _make(**kwargs):
             return VQE(
-                hamiltonian=h2_hamiltonian,
+                hamiltonian=four_qubit_hamiltonian,
                 n_electrons=2,
                 ansatz=HartreeFockAnsatz(),
                 backend=dummy_simulator,

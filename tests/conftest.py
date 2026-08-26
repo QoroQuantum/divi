@@ -196,6 +196,17 @@ def default_optimizer():
     return MonteCarloOptimizer()
 
 
+@pytest.fixture(scope="session")
+def qp():
+    """PennyLane, skipped when the ``pennylane`` extra is not installed.
+
+    For front-door tests sitting in a module whose other tests are
+    PennyLane-free; a wholly PennyLane module takes one ``importorskip``
+    at the top instead.
+    """
+    return pytest.importorskip("pennylane")
+
+
 def is_assertion_error(err, *_) -> bool:
     return isinstance(err, AssertionError)
 

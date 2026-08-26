@@ -4,16 +4,21 @@
 
 """Tests for divi.circuits._pennylane_utils."""
 
-import pennylane as qp
 import pytest
 import sympy
-from pennylane.measurements import CountsMP, ExpectationMP, ProbabilityMP
+
+# Precedes the divi import below, which imports PennyLane itself.
+qp = pytest.importorskip("pennylane")
 
 from divi.circuits._pennylane_utils import (
     _detect_batch_input_argnames,
     _qnode_to_symbolic_qscript,
     _validate_single_measurement,
 )
+
+CountsMP = qp.measurements.CountsMP
+ExpectationMP = qp.measurements.ExpectationMP
+ProbabilityMP = qp.measurements.ProbabilityMP
 
 
 class TestQnodeToSymbolicQscript:

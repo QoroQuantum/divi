@@ -7,8 +7,6 @@
 import re
 from typing import cast
 
-import numpy as np
-import pennylane as qp
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
@@ -183,34 +181,43 @@ def measured_qubits(qasm: str) -> set[int]:
     }
 
 
+def meta_from_circuit(qc: QuantumCircuit, **kwargs) -> MetaCircuit:
+    """MetaCircuit wrapping ``qc`` as its single circuit body.
+
+    ``kwargs`` carry the readout: ``observable=`` for the expval path,
+    ``measured_wires=`` for the basis-sampling one.
+    """
+    return MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),), **kwargs)
+
+
 def two_group_meta() -> MetaCircuit:
     """MetaCircuit with 0.9*Z + 0.4*X for MeasurementStage to produce 2 groups."""
-    qc = QuantumCircuit(1)
-    qc.h(0)
-    observable = SparsePauliOp.from_list([("Z", 0.9), ("X", 0.4)])
-    return MetaCircuit(
-        circuit_bodies=(((), circuit_to_dag(qc)),),
-        observable=observable,
-    )
+    return meta_with_observable(SparsePauliOp.from_list([("Z", 0.9), ("X", 0.4)]))
 
 
 def meta_with_observable(observable: SparsePauliOp) -> MetaCircuit:
     """MetaCircuit over ``observable``'s register, carrying it as the observable."""
     qc = QuantumCircuit(observable.num_qubits)
     qc.h(range(observable.num_qubits))
-    return MetaCircuit(
-        circuit_bodies=(((), circuit_to_dag(qc)),),
-        observable=observable,
-    )
+    return meta_from_circuit(qc, observable=observable)
+
+
+# Ising chain plus a transverse field and one pair-hopping term. The hopping
+# term is what makes a width-4 basis change, so grouping has real work to do.
+FOUR_QUBIT_HAMILTONIAN = SparsePauliOp.from_sparse_list(
+    [("ZZ", [q, q + 1], 1.0) for q in range(3)]
+    + [("X", [q], 0.5) for q in range(4)]
+    + [("XXYY", [0, 1, 2, 3], 0.25)],
+    num_qubits=4,
+)
+N_ELECTRONS = 2
 
 
 def h2_vqe(backend, optimizer, **kwargs):
-    """An H₂ HartreeFock VQE — the molecule boilerplate the dry-run tests share."""
+    """A HartreeFock VQE — the boilerplate the dry-run tests share."""
     return VQE(
-        molecule=qp.qchem.Molecule(
-            symbols=["H", "H"],
-            coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.5)]),
-        ),
+        hamiltonian=FOUR_QUBIT_HAMILTONIAN,
+        n_electrons=N_ELECTRONS,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=backend,
@@ -223,10 +230,8 @@ def metric_compatible_vqe(backend, optimizer, n_layers: int = 1):
     """A VQE whose GenericLayerAnsatz is compatible with all three metric
     estimators (expval cost, invertible, FS-supported RY/RZ gates)."""
     return VQE(
-        molecule=qp.qchem.Molecule(
-            symbols=["H", "H"],
-            coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
-        ),
+        hamiltonian=FOUR_QUBIT_HAMILTONIAN,
+        n_electrons=N_ELECTRONS,
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=n_layers,
         backend=backend,

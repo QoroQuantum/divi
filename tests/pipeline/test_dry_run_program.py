@@ -8,7 +8,6 @@ import warnings
 
 import networkx as nx
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
@@ -156,8 +155,8 @@ class TestQuantumProgramDryRun:
     @pytest.fixture
     def time_evolution_program(self, default_test_simulator):
         return TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=SparsePauliOp.from_list([("X", 1.0), ("Z", 1.0)]),
+            observable=SparsePauliOp.from_list([("Z", 1.0)]),
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
         )
@@ -236,15 +235,10 @@ class TestQuantumProgramDryRun:
         """A block-diagonal Fubini-Study metric drives one prefix pipeline per
         commuting-gate block; each must appear with a unique report key (no
         same-named pipeline silently overwriting another)."""
-        vqe = VQE(
-            molecule=qp.qchem.Molecule(
-                symbols=["H", "H"],
-                coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
-            ),
-            ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+        vqe = metric_compatible_vqe(
+            default_test_simulator,
+            QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()),
             n_layers=2,
-            backend=default_test_simulator,
-            optimizer=QNGOptimizer(metric_estimator=FubiniStudyMetricEstimator()),
         )
         reports = vqe.dry_run()
         prefix_keys = [k for k in reports if k.startswith(f"{METRIC_ROUTINE}[block")]
@@ -512,7 +506,7 @@ class TestQuantumProgramDryRun:
     ):
         """With grouping off every group holds one term, so reading the width off
         the largest-by-size group degenerates to 1 — it must be the widest basis
-        change any group needs (H2 carries width-4 terms such as ``YXXY``)."""
+        change any group needs (the pair-hopping term spans all four qubits)."""
         vqe = h2_vqe(default_test_simulator, default_optimizer, grouping_strategy=None)
         meta = next(
             s.metadata

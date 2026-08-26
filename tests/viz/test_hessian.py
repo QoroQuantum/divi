@@ -3,29 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qp
 import pytest
-from qiskit.circuit.library import RYGate, RZGate
 
-from divi.qprog import VQE, GenericLayerAnsatz
 from divi.viz import GradientMethod, compute_hessian
-
-
-@pytest.fixture
-def basic_ansatz():
-    return GenericLayerAnsatz([RYGate, RZGate])
-
-
-@pytest.fixture
-def vqe_program(dummy_simulator, basic_ansatz, default_optimizer):
-    return VQE(
-        hamiltonian=qp.Z(0),
-        n_electrons=1,
-        ansatz=basic_ansatz,
-        n_layers=1,
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
-    )
 
 
 class TestComputeHessian:

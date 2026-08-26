@@ -31,11 +31,15 @@ from divi.qprog import (
     UCCSDAnsatz,
 )
 from divi.qprog.algorithms._ansatze import (
+    _emit_double_excitation,
     _emit_givens_rotation,
     _emit_rotation_block,
+    _emit_single_excitation,
+    _hf_occupation,
     _resolve_spin_counts,
     _rotation_one_particle,
     _rotation_schedule,
+    _spin_conserving_excitations,
     _uccsd_excitations,
     n_rotation_params,
     rotation_angles,
@@ -261,9 +265,8 @@ class TestQAOAAnsatz:
 @pytest.mark.parametrize("ansatz", [UCCSDAnsatz(), HartreeFockAnsatz()], ids=type)
 def test_chemistry_ansatz_names_a_missing_electron_count(ansatz, call):
     """A chemistry ansatz builds excitations from a reference state, so it cannot do
-    anything without ``n_electrons``. Omitting it used to surface as a comparison
-    against ``NoneType`` from inside PennyLane, naming neither the missing setting
-    nor the ansatz that needed it."""
+    anything without ``n_electrons``. The boundary names both the missing setting
+    and the ansatz that needs it."""
     with pytest.raises(ValueError, match="requires n_electrons"):
         call(ansatz)
 
@@ -378,6 +381,99 @@ class TestUCCSDAnsatz:
         assert probs[excited_label] == pytest.approx(np.sin(theta) ** 2, abs=0.02)
 
 
+def _single_excitation_matrix(theta: float) -> np.ndarray:
+    """Givens rotation on ``{|01>, |10>}``, qubit 0 most significant."""
+    matrix = np.eye(4)
+    matrix[1, 1] = matrix[2, 2] = np.cos(theta / 2)
+    matrix[1, 2], matrix[2, 1] = -np.sin(theta / 2), np.sin(theta / 2)
+    return matrix
+
+
+def _double_excitation_matrix(theta: float) -> np.ndarray:
+    """Givens rotation on ``{|0011>, |1100>}``, qubit 0 most significant."""
+    matrix = np.eye(16)
+    matrix[3, 3] = matrix[12, 12] = np.cos(theta / 2)
+    matrix[3, 12], matrix[12, 3] = -np.sin(theta / 2), np.sin(theta / 2)
+    return matrix
+
+
+def _bit_reversal(n_qubits: int) -> list[int]:
+    return [int(format(i, f"0{n_qubits}b")[::-1], 2) for i in range(2**n_qubits)]
+
+
+def _big_endian_operator(qc: QuantumCircuit) -> np.ndarray:
+    """``Operator(qc)`` re-indexed so qubit 0 is the most significant bit."""
+    perm = _bit_reversal(qc.num_qubits)
+    return Operator(qc).data[np.ix_(perm, perm)]
+
+
+def _embed(matrix: np.ndarray, wires: tuple[int, ...], n_qubits: int) -> np.ndarray:
+    """Embed a big-endian gate matrix acting on ``wires`` into ``n_qubits``."""
+    perm = _bit_reversal(len(wires))
+    gate_qc = QuantumCircuit(n_qubits)
+    gate_qc.unitary(Operator(matrix[np.ix_(perm, perm)]), list(wires))
+    return _big_endian_operator(gate_qc)
+
+
+def test_hf_occupation_fills_the_lowest_spin_orbitals():
+    assert _hf_occupation(2, 6) == (1, 1, 0, 0, 0, 0)
+    assert _hf_occupation(4, 6) == (1, 1, 1, 1, 0, 0)
+
+
+@pytest.mark.parametrize(
+    "n_electrons, n_qubits, expected_singles, expected_doubles",
+    [
+        (2, 4, [(0, 2), (1, 3)], [(0, 1, 2, 3)]),
+        (
+            2,
+            6,
+            [(0, 2), (0, 4), (1, 3), (1, 5)],
+            [(0, 1, 2, 3), (0, 1, 2, 5), (0, 1, 3, 4), (0, 1, 4, 5)],
+        ),
+    ],
+)
+def test_spin_conserving_excitations_enumerate_occupied_to_virtual(
+    n_electrons, n_qubits, expected_singles, expected_doubles
+):
+    """Even qubits carry spin-up, odd spin-down; only excitations preserving the
+    total spin projection are kept."""
+    singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+    assert singles == expected_singles
+    assert doubles == expected_doubles
+
+
+def test_emit_single_excitation_is_a_two_qubit_givens_rotation():
+    theta = 0.7137
+    qc = QuantumCircuit(2)
+    _emit_single_excitation(qc, theta, 0, 1)
+    assert np.allclose(_big_endian_operator(qc), _single_excitation_matrix(theta))
+
+
+def test_emit_double_excitation_is_a_four_qubit_givens_rotation():
+    theta = 0.7137
+    qc = QuantumCircuit(4)
+    _emit_double_excitation(qc, theta, 0, 1, 2, 3)
+    assert np.allclose(_big_endian_operator(qc), _double_excitation_matrix(theta))
+
+
+@pytest.mark.parametrize(
+    "emit, n_qubits, expected_cx",
+    [
+        (lambda qc, theta: _emit_single_excitation(qc, theta, 0, 1), 2, 2),
+        (lambda qc, theta: _emit_double_excitation(qc, theta, 0, 1, 2, 3), 4, 14),
+    ],
+    ids=["single", "double"],
+)
+def test_excitation_emitters_land_in_the_lowering_basis(emit, n_qubits, expected_cx):
+    """An excitation emitted outside ``{h, ry, cx}`` picks up extra single-qubit
+    depth when the circuit is lowered, for no change in entangling cost."""
+    qc = QuantumCircuit(n_qubits)
+    emit(qc, 0.7137)
+    names = gate_names(qc)
+    assert set(names) <= {"h", "ry", "cx"}
+    assert names.count("cx") == expected_cx
+
+
 class TestHartreeFockAnsatz:
     """Tests for the HartreeFockAnsatz class."""
 
@@ -396,6 +492,59 @@ class TestHartreeFockAnsatz:
         )
         assert qc.num_qubits == n_qubits
         assert len(qc.data) > 0
+
+    @pytest.mark.parametrize(
+        "n_electrons, match",
+        [
+            (False, "positive integer"),
+            (0, "positive integer"),
+            (-1, "positive integer"),
+            (1.5, "positive integer"),
+            (5, "cannot exceed"),
+        ],
+    )
+    def test_build_rejects_invalid_electron_count(self, n_electrons, match):
+        """Invalid references must fail before a circuit is silently prepared."""
+        with pytest.raises(ValueError, match=match):
+            HartreeFockAnsatz().build(
+                [0.0], n_qubits=4, n_layers=1, n_electrons=n_electrons
+            )
+
+    def test_build_rejects_a_fully_occupied_reference(self):
+        """An excitation ansatz needs at least one unoccupied spin-orbital."""
+        with pytest.raises(ValueError, match="virtual spin-orbital"):
+            HartreeFockAnsatz().build([], n_qubits=4, n_layers=1, n_electrons=4)
+
+    @pytest.mark.parametrize("n_qubits, n_layers", [(4, 1), (6, 1), (4, 2)])
+    def test_build_applies_doubles_before_singles(self, n_qubits, n_layers):
+        """Parameters are ordered singles-then-doubles, but the doubles are
+        applied first. The two orderings differ, so this pins the one the
+        excitation amplitudes were fitted against."""
+        n_electrons = 2
+        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+        per_layer = len(singles) + len(doubles)
+        params = np.linspace(0.11, 0.97, n_layers * per_layer)
+
+        expected = np.eye(2**n_qubits)
+        for layer in range(n_layers):
+            layer_params = params[layer * per_layer : (layer + 1) * per_layer]
+            for i, wires in enumerate(doubles):
+                gate = _double_excitation_matrix(layer_params[len(singles) + i])
+                expected = _embed(gate, wires, n_qubits) @ expected
+            for j, wires in enumerate(singles):
+                gate = _single_excitation_matrix(layer_params[j])
+                expected = _embed(gate, wires, n_qubits) @ expected
+
+        reference = np.zeros(2**n_qubits)
+        occupation = _hf_occupation(n_electrons, n_qubits)
+        reference[int("".join(map(str, occupation)), 2)] = 1.0
+
+        qc = HartreeFockAnsatz().build(
+            params, n_qubits, n_layers, n_electrons=n_electrons
+        )
+        actual = _big_endian_operator(qc) @ np.eye(2**n_qubits)[:, 0]
+
+        assert np.allclose(actual, expected @ reference)
 
 
 # --- Test QCCAnsatz ---
@@ -433,6 +582,31 @@ class TestQCCAnsatz:
         assert names.count("rz") == 9  # one RZ per two-qubit Pauli rotation
         assert names.count("h") == 12  # XX needs 4 H per pair × 3 pairs
         assert names.count("rx") == 12  # YY needs 4 RX per pair × 3 pairs
+
+    @pytest.mark.parametrize(
+        "n_electrons, match",
+        [
+            (False, "positive integer"),
+            (0, "positive integer"),
+            (-1, "positive integer"),
+            (1.5, "positive integer"),
+            (5, "cannot exceed"),
+        ],
+    )
+    def test_build_rejects_invalid_electron_count(self, n_electrons, match):
+        """Invalid references must fail instead of saturating the occupation."""
+        with pytest.raises(ValueError, match=match):
+            QCCAnsatz().build(
+                [0.0] * 13, n_qubits=4, n_layers=1, n_electrons=n_electrons
+            )
+
+    def test_build_validates_electron_count_before_parameter_shape(self):
+        with pytest.raises(ValueError, match="positive integer"):
+            QCCAnsatz().build([0.0], n_qubits=4, n_layers=2, n_electrons=0)
+
+    def test_build_accepts_a_fully_occupied_reference(self):
+        qc = QCCAnsatz().build([0.0] * 13, n_qubits=4, n_layers=1, n_electrons=4)
+        assert gate_names(qc)[:4] == ["x"] * 4
 
     def test_build_multi_layer(self):
         n_electrons, n_qubits, n_layers = 2, 4, 2

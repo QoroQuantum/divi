@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qp
 import pytest
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import qscript_to_meta
 from divi.pipeline import CircuitPipeline
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._postprocessing import (
@@ -18,7 +18,7 @@ from divi.pipeline._postprocessing import (
 )
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage
-from tests.pipeline._helpers import DummySpecStage
+from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
 
 
 class TestCountsToExpvals:
@@ -32,13 +32,14 @@ class TestCountsToExpvals:
         # q2=0, so <Z0>=<Z1>=-1 and <Z2>=+1. Three qubits (not two) so a partial
         # reversal is distinguishable from a full one: a 0<->2 swap would flip
         # <Z0> and <Z2> and be caught here.
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.Identity(0), qp.Identity(1), qp.Identity(2)],
-            measurements=[qp.expval(qp.Z(obs_qubit))],
+        observable = SparsePauliOp.from_sparse_list(
+            [("Z", [obs_qubit], 1.0)], num_qubits=3
         )
         pipeline = CircuitPipeline(
             stages=[
-                DummySpecStage(meta=qscript_to_meta(qscript)),
+                DummySpecStage(
+                    meta=meta_from_circuit(QuantumCircuit(3), observable=observable)
+                ),
                 MeasurementStage(grouping_strategy="wires"),
             ]
         )
@@ -54,11 +55,10 @@ class TestCountsToExpvals:
 
     def test_multi_obs_group_returns_dict_in_term_order(self, dummy_pipeline_env):
         # Three wire-disjoint terms -> per-term <Z_q> keyed by term index.
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.Identity(0), qp.Identity(1), qp.Identity(2)],
-            measurements=[qp.expval(0.5 * qp.Z(0) + 0.3 * qp.Z(1) + 0.2 * qp.Z(2))],
+        observable = SparsePauliOp.from_sparse_list(
+            [("Z", [0], 0.5), ("Z", [1], 0.3), ("Z", [2], 0.2)], num_qubits=3
         )
-        meta = qscript_to_meta(qscript)
+        meta = meta_from_circuit(QuantumCircuit(3), observable=observable)
 
         pipeline = CircuitPipeline(
             stages=[
@@ -93,46 +93,46 @@ class TestCountsToCostVariance:
     """Spec: _counts_to_cost_variance estimates shot-noise variance of the cost
     Var(<H>) = Σ_i c_i²(1 − <P_i>²)/M_g from raw counts."""
 
-    def _single_z_trace(self, dummy_pipeline_env):
+    @pytest.fixture
+    def single_z_trace(self, dummy_pipeline_env):
         """Forward pass for a single-qubit ``<Z0>`` cost (one measurement group).
 
         Uses ``wires`` grouping so a real counts-measured group is produced; the
         default would promote to the backend-native expval path (no counts), on
         which ``_counts_to_cost_variance`` is never invoked.
         """
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.Identity(0)],
-            measurements=[qp.expval(qp.Z(0))],
-        )
+        observable = SparsePauliOp.from_list([("Z", 1.0)])
         pipeline = CircuitPipeline(
             stages=[
-                DummySpecStage(meta=qscript_to_meta(qscript)),
+                DummySpecStage(
+                    meta=meta_from_circuit(QuantumCircuit(1), observable=observable)
+                ),
                 MeasurementStage(grouping_strategy="wires"),
             ]
         )
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
         return trace, batch_lineage(trace.final_batch)
 
-    def test_matches_analytic_formula(self, dummy_pipeline_env):
+    def test_matches_analytic_formula(self, single_z_trace):
         # <Z> = (75 - 25)/100 = 0.5, coeff = 1, M = 100
         # Var = 1²·(1 - 0.5²)/100 = 0.0075
-        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+        trace, lineage_by_label = single_z_trace
         raw: ChildResults = {bk: {"0": 75, "1": 25} for bk in lineage_by_label.values()}
         result = _counts_to_cost_variance(raw, trace.final_batch)
         assert result
         for v in result.values():
             assert v == pytest.approx(0.0075)
 
-    def test_zero_shots_returns_nan(self, dummy_pipeline_env):
-        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+    def test_zero_shots_returns_nan(self, single_z_trace):
+        trace, lineage_by_label = single_z_trace
         raw: ChildResults = {bk: {} for bk in lineage_by_label.values()}
         result = _counts_to_cost_variance(raw, trace.final_batch)
         assert result
         assert all(np.isnan(v) for v in result.values())
 
-    def test_saturated_pauli_clamps_to_nonnegative_zero(self, dummy_pipeline_env):
+    def test_saturated_pauli_clamps_to_nonnegative_zero(self, single_z_trace):
         # All shots in one eigenstate → <Z> = 1 → 1 − <Z>² = 0 (never negative).
-        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+        trace, lineage_by_label = single_z_trace
         raw: ChildResults = {bk: {"0": 100} for bk in lineage_by_label.values()}
         result = _counts_to_cost_variance(raw, trace.final_batch)
         assert result
@@ -140,8 +140,8 @@ class TestCountsToCostVariance:
             assert v == pytest.approx(0.0)
             assert v >= 0.0
 
-    def test_variance_scales_inversely_with_shots(self, dummy_pipeline_env):
-        trace, lineage_by_label = self._single_z_trace(dummy_pipeline_env)
+    def test_variance_scales_inversely_with_shots(self, single_z_trace):
+        trace, lineage_by_label = single_z_trace
         raw_low: ChildResults = {
             bk: {"0": 75, "1": 25} for bk in lineage_by_label.values()
         }

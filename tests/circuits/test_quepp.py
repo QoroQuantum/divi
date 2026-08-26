@@ -7,7 +7,6 @@
 import warnings
 
 import numpy as np
-import pennylane as qp
 import pytest
 import stim
 from qiskit import QuantumCircuit
@@ -17,7 +16,7 @@ from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 from qiskit_aer.noise import NoiseModel
 
 from divi.backends import QiskitSimulator
-from divi.circuits import qscript_to_meta
+from divi.circuits import MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
@@ -41,7 +40,28 @@ from divi.circuits.quepp import (
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
-from tests.pipeline._helpers import DummySpecStage
+from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
+
+_Z0 = SparsePauliOp.from_list([("Z", 1.0)])
+_Z0_2Q = SparsePauliOp.from_list([("IZ", 1.0)])
+_Z0Z1 = SparsePauliOp.from_list([("ZZ", 1.0)])
+
+
+def _rx_expval_meta(angle: float) -> MetaCircuit:
+    """Single ``RX(angle)`` measured as ``<Z0>``."""
+    qc = QuantumCircuit(1)
+    qc.rx(angle, 0)
+    return meta_from_circuit(qc, observable=_Z0)
+
+
+def _entangled_two_qubit_circuit() -> QuantumCircuit:
+    """The shared body of the end-to-end QuEPP pipeline tests."""
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.rx(0.3, 0)
+    qc.cx(0, 1)
+    qc.rz(0.7, 1)
+    return qc
 
 
 @pytest.fixture
@@ -1208,11 +1228,7 @@ class TestQuEPPPipelineIntegration:
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_pipeline_integration(self, dummy_pipeline_env):
         """QuEPP integrates correctly with QEMStage in a pipeline."""
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RX(0.5, wires=0)],
-            measurements=[qp.expval(qp.Z(0))],
-        )
-        meta = qscript_to_meta(qscript)
+        meta = _rx_expval_meta(0.5)
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta),
@@ -1229,11 +1245,7 @@ class TestQuEPPPipelineIntegration:
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_effectiveness_with_readout_noise(self):
         """QuEPP mitigates uniform readout noise on a real backend."""
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RX(0.8, wires=0)],
-            measurements=[qp.expval(qp.Z(0))],
-        )
-        meta = qscript_to_meta(qscript)
+        meta = _rx_expval_meta(0.8)
 
         noise = NoiseModel()
         noise.add_all_qubit_readout_error([[0.95, 0.05], [0.05, 0.95]])
@@ -1430,22 +1442,6 @@ class TestQuEPPMultiObservable:
         assert out_multi[0] == pytest.approx(out1[0], abs=1e-9)
         assert out_multi[1] == pytest.approx(out2[0], abs=1e-9)
 
-    def test_qscript_to_meta_multi_expval_populates_tuple(self):
-        """A multi-measurement qscript with N expvals → meta.observable
-        is a tuple of N SparsePauliOps."""
-        qc_pl = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1])],
-            measurements=[
-                qp.expval(qp.PauliZ(0)),
-                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
-            ],
-        )
-        meta = qscript_to_meta(qc_pl)
-        assert isinstance(meta.observable, tuple)
-        assert len(meta.observable) == 2
-        for obs in meta.observable:
-            assert isinstance(obs, SparsePauliOp)
-
     def test_empty_observables_tuple_rejected(self, qc_two_rotations):
         protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
         with pytest.raises(ValueError, match="at least one observable"):
@@ -1457,23 +1453,12 @@ class TestQuEPPMultiObservable:
         produces the same per-observable mitigated values as running each
         observable through its own pipeline.
         """
-        # Single multi-observable qscript (two expvals on QWC observables).
-        ops = [qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1]), qp.RZ(0.7, 1)]
-        multi_meta = qscript_to_meta(
-            qp.tape.QuantumScript(
-                ops=ops,
-                measurements=[
-                    qp.expval(qp.Z(0)),
-                    qp.expval(qp.Z(0) @ qp.Z(1)),
-                ],
-            )
-        )
-        single_meta_1 = qscript_to_meta(
-            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.Z(0))])
-        )
-        single_meta_2 = qscript_to_meta(
-            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.Z(0) @ qp.Z(1))])
-        )
+        # One circuit read out three ways: both QWC observables together, then
+        # each on its own.
+        qc = _entangled_two_qubit_circuit()
+        multi_meta = meta_from_circuit(qc, observable=(_Z0_2Q, _Z0Z1))
+        single_meta_1 = meta_from_circuit(qc, observable=_Z0_2Q)
+        single_meta_2 = meta_from_circuit(qc, observable=_Z0Z1)
 
         backend_kwargs = dict(
             shots=200000, simulation_seed=42, _deterministic_execution=True
@@ -1521,11 +1506,8 @@ class TestQuEPPMultiObservable:
         directly cannot show that, because it never builds the fan-out the
         stage would.
         """
-        ops = [qp.Hadamard(0), qp.RX(0.3, 0), qp.CNOT([0, 1]), qp.RZ(0.7, 1)]
-        hamiltonian = 0.7 * qp.Z(0) - 0.4 * qp.Z(1) + 0.9 * (qp.Z(0) @ qp.Z(1))
-        meta = qscript_to_meta(
-            qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(hamiltonian)])
-        )
+        hamiltonian = SparsePauliOp.from_list([("IZ", 0.7), ("ZI", -0.4), ("ZZ", 0.9)])
+        meta = meta_from_circuit(_entangled_two_qubit_circuit(), observable=hamiltonian)
         (spo,) = meta.observable
         assert len(spo.paulis) > 1, "fixture must be genuinely multi-term"
 

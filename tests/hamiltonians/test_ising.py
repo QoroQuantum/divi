@@ -9,7 +9,6 @@ from itertools import product as iterproduct
 
 import dimod
 import numpy as np
-import pennylane as qp
 import pytest
 import scipy.sparse as sps
 from qiskit.quantum_info import SparsePauliOp
@@ -28,6 +27,9 @@ from divi.hamiltonians._ising import (
     _is_sanitized,
     _resolve_ising_converter,
 )
+
+# H = Z_0 Z_1 - 0.5 Z_0 - 0.5 Z_1, in big-endian labels (qubit 0 rightmost).
+_SYMMETRIC_2Q_ISING = SparsePauliOp.from_list([("ZZ", 1.0), ("IZ", -0.5), ("ZI", -0.5)])
 
 
 def _spo_z_basis_energy(spo: SparsePauliOp, bits: tuple[int, ...]) -> float:
@@ -81,7 +83,7 @@ class TestQuboToIsingConversion:
         qubo_matrix = np.array([[-1.0, 2.0], [2.0, -1.0]])
         spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
+        expected = _SYMMETRIC_2Q_ISING
 
         assert np.isclose(constant, 0.0)
         assert spo.simplify() == expected.simplify()
@@ -91,7 +93,7 @@ class TestQuboToIsingConversion:
         qubo_matrix = np.array([[-1.0, 4.0], [0.0, -1.0]])
         spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
+        expected = _SYMMETRIC_2Q_ISING
 
         assert np.isclose(constant, 0.0)
         assert spo.simplify() == expected.simplify()
@@ -104,7 +106,7 @@ class TestQuboToIsingConversion:
             spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
         # Symmetrised version is [[-1, 2], [2, -1]] → same Ising as the symmetric test.
-        expected = to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
+        expected = _SYMMETRIC_2Q_ISING
 
         assert np.isclose(constant, 0.0)
         assert spo.simplify() == expected.simplify()
@@ -116,7 +118,7 @@ class TestQuboToIsingConversion:
         with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
             spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
+        expected = _SYMMETRIC_2Q_ISING
         assert np.isclose(constant, 0.0)
         assert spo.simplify() == expected.simplify()
 
@@ -125,7 +127,7 @@ class TestQuboToIsingConversion:
         qubo_matrix = np.array([[1.0, 0.0], [0.0, -2.0]])
         spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = to_spo(-0.5 * qp.Z(0) + 1.0 * qp.Z(1))
+        expected = SparsePauliOp.from_list([("IZ", -0.5), ("ZI", 1.0)])
 
         assert np.isclose(constant, -0.5)
         assert spo.simplify() == expected.simplify()
@@ -135,7 +137,7 @@ class TestQuboToIsingConversion:
         qubo_matrix = sps.csr_matrix([[-1.0, 2.0], [2.0, -1.0]])
         spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = to_spo(1.0 * (qp.Z(0) @ qp.Z(1)) - 0.5 * qp.Z(0) - 0.5 * qp.Z(1))
+        expected = _SYMMETRIC_2Q_ISING
 
         assert np.isclose(constant, 0.0)
         assert spo.simplify() == expected.simplify()
@@ -146,13 +148,15 @@ class TestQuboToIsingConversion:
 
         spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = to_spo(
-            1.0 * (qp.Z(0) @ qp.Z(1))
-            + 1.5 * (qp.Z(0) @ qp.Z(2))
-            + 2.5 * (qp.Z(1) @ qp.Z(2))
-            - 3.0 * qp.Z(0)
-            - 5.5 * qp.Z(1)
-            - 7.0 * qp.Z(2)
+        expected = SparsePauliOp.from_list(
+            [
+                ("IZZ", 1.0),
+                ("ZIZ", 1.5),
+                ("ZZI", 2.5),
+                ("IIZ", -3.0),
+                ("IZI", -5.5),
+                ("ZII", -7.0),
+            ]
         )
 
         assert np.isclose(constant, 10.5)

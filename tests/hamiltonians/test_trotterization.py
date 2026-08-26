@@ -5,11 +5,10 @@
 """Tests for TrotterizationStrategy implementations (ExactTrotterization, QDrift)."""
 
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians import ExactTrotterization, QDrift, to_spo
+from divi.hamiltonians import ExactTrotterization, QDrift
 
 
 @pytest.fixture
@@ -17,6 +16,16 @@ def simple_hamiltonian() -> SparsePauliOp:
     """Three-term SPO over 2 qubits (coeffs 1.0, 2.0, 3.0)."""
     # Qiskit big-endian: rightmost char is qubit 0.
     return SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)])
+
+
+single_term_hamiltonians = pytest.mark.parametrize(
+    "single_term_spo",
+    [
+        SparsePauliOp.from_list([("Z", 0.5)]),
+        SparsePauliOp.from_list([("Z", 1.0)]),
+    ],
+    ids=["scaled", "unit"],
+)
 
 
 class TestExactTrotterization:
@@ -64,34 +73,24 @@ class TestExactTrotterization:
             )
         assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
 
-    @pytest.mark.parametrize(
-        "single_term_pl",
-        [0.5 * qp.Z(0), qp.Z(0)],
-        ids=["sprod", "bare_pauli"],
-    )
-    def test_single_term_hamiltonian_with_keep_top_n(self, single_term_pl):
+    @single_term_hamiltonians
+    def test_single_term_hamiltonian_with_keep_top_n(self, single_term_spo):
         """Single-term operators work with keep_top_n; no len() error."""
-        single_term_spo = to_spo(single_term_pl)
         strategy = ExactTrotterization(keep_top_n=1)
         with pytest.warns(UserWarning, match="keep_top_n is greater than or equal"):
             result = strategy.process_hamiltonian(single_term_spo)
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
-    @pytest.mark.parametrize(
-        "single_term_pl",
-        [0.5 * qp.Z(0), qp.Z(0)],
-        ids=["sprod", "bare_pauli"],
-    )
-    def test_single_term_hamiltonian_with_keep_fraction(self, single_term_pl):
+    @single_term_hamiltonians
+    def test_single_term_hamiltonian_with_keep_fraction(self, single_term_spo):
         """Single-term operators work with keep_fraction; returns full operator."""
-        single_term_spo = to_spo(single_term_pl)
         strategy = ExactTrotterization(keep_fraction=0.5)
         result = strategy.process_hamiltonian(single_term_spo)
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
     def test_constant_only_hamiltonian_raises(self):
         """Constant-only Hamiltonian raises ValueError; rejected at boundary."""
-        constant_only = to_spo(qp.Identity(0) * 5.0)
+        constant_only = SparsePauliOp.from_list([("I", 5.0)])
         strategy = ExactTrotterization(keep_fraction=0.5)
         with pytest.raises(
             ValueError, match="Hamiltonian contains only constant terms"
@@ -136,7 +135,7 @@ class TestExactTrotterization:
 
     def test_exact_trotterization_has_no_mutable_call_state(self, simple_hamiltonian):
         strategy = ExactTrotterization(keep_top_n=1)
-        ham2 = to_spo((4.0 * qp.Z(0) + 5.0 * qp.Z(1)).simplify())
+        ham2 = SparsePauliOp.from_list([("IZ", 4.0), ("ZI", 5.0)])
 
         result1 = strategy.process_hamiltonian(simple_hamiltonian)
         result2 = strategy.process_hamiltonian(ham2)
@@ -260,14 +259,9 @@ class TestQDrift:
             == simple_hamiltonian.simplify()
         )
 
-    @pytest.mark.parametrize(
-        "single_term_pl",
-        [0.5 * qp.Z(0), qp.Z(0)],
-        ids=["sprod", "bare_pauli"],
-    )
-    def test_single_term_hamiltonian_with_keep_top_n(self, single_term_pl):
+    @single_term_hamiltonians
+    def test_single_term_hamiltonian_with_keep_top_n(self, single_term_spo):
         """Single-term operators work with QDrift keep_top_n; no len() error."""
-        single_term_spo = to_spo(single_term_pl)
         with pytest.warns(
             UserWarning,
             match="keep_top_n is greater than or equal|All terms were kept",
@@ -277,14 +271,9 @@ class TestQDrift:
             ).process_hamiltonian(single_term_spo)
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
-    @pytest.mark.parametrize(
-        "single_term_pl",
-        [0.5 * qp.Z(0), qp.Z(0)],
-        ids=["sprod", "bare_pauli"],
-    )
-    def test_single_term_hamiltonian_with_sampling_budget_only(self, single_term_pl):
+    @single_term_hamiltonians
+    def test_single_term_hamiltonian_with_sampling_budget_only(self, single_term_spo):
         """Single-term sampling preserves replacement multiplicity explicitly."""
-        single_term_spo = to_spo(single_term_pl)
         result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(single_term_spo)
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
         assert result.sampled_terms is not None

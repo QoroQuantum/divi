@@ -5,18 +5,16 @@
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
-import pennylane as qp
 import pytest
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
-from qiskit.circuit.library import RYGate, RZGate
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
 from sklearn.decomposition import PCA
 
 from divi.qprog import (
     PCE,
     QAOA,
-    VQE,
     CustomVQA,
-    GenericLayerAnsatz,
     IterativeQAOA,
     ScipyMethod,
     ScipyOptimizer,
@@ -24,23 +22,6 @@ from divi.qprog import (
 from divi.qprog.algorithms import InterpolationStrategy
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
-
-
-@pytest.fixture
-def basic_ansatz():
-    return GenericLayerAnsatz([RYGate, RZGate])
-
-
-@pytest.fixture
-def vqe_program(dummy_simulator, basic_ansatz, default_optimizer):
-    return VQE(
-        hamiltonian=qp.Z(0),
-        n_electrons=1,
-        ansatz=basic_ansatz,
-        n_layers=1,
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
-    )
 
 
 @pytest.fixture
@@ -67,13 +48,12 @@ def pce_program_soft(dummy_simulator, basic_ansatz, default_optimizer):
 
 @pytest.fixture
 def custom_vqa_program(dummy_simulator, default_optimizer):
-    qscript = qp.tape.QuantumScript(
-        ops=[qp.RX(0.0, wires=0), qp.RZ(0.0, wires=0)],
-        measurements=[qp.expval(qp.Z(0))],
-    )
-    return CustomVQA(
-        qscript=qscript, backend=dummy_simulator, optimizer=default_optimizer
-    )
+    """Two-parameter single-qubit circuit; the basis measurement reads as <Z0>."""
+    qc = QuantumCircuit(1, 1)
+    qc.rx(Parameter("theta"), 0)
+    qc.rz(Parameter("phi"), 0)
+    qc.measure(0, 0)
+    return CustomVQA(qscript=qc, backend=dummy_simulator, optimizer=default_optimizer)
 
 
 class TestDirectAPI:

@@ -4,12 +4,12 @@
 
 import math
 
-import pennylane as qp
 import pytest
 from qiskit.circuit import ParameterExpression
 from qiskit.converters import dag_to_circuit
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians import ExactTrotterization, QDrift, to_spo
+from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.qprog import TimeEvolutionTrajectory
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.ensemble import BatchConfig, BatchMode
@@ -17,10 +17,15 @@ from divi.qprog.workflows import _time_evolution_trajectory as workflow
 
 _PROB_TOL = 0.05
 
+_H_Z0_Z1 = SparsePauliOp.from_sparse_list(
+    [("Z", [0], 0.5), ("Z", [1], 0.3)], num_qubits=2
+)
+_Z0_2Q = SparsePauliOp.from_sparse_list([("Z", [0], 1.0)], num_qubits=2)
+
 
 @pytest.fixture
 def two_qubit_hamiltonian():
-    return 0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1)
+    return _H_Z0_Z1
 
 
 class TestTimeEvolutionTrajectoryInit:
@@ -191,7 +196,7 @@ class TestTimeEvolutionTrajectoryRun:
         traj = TimeEvolutionTrajectory(
             hamiltonian=two_qubit_hamiltonian,
             time_points=[0.5, 1.0],
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=default_test_simulator,
         )
         traj.create_programs()
@@ -298,7 +303,7 @@ class TestTimeEvolutionTrajectoryE2E:
     def test_x_rotation_trajectory(self, default_test_simulator):
         """H=X, |0⟩: at t=0 P(0)=1, at t=π/4 P(0)≈0.5, at t=π/2 P(1)=1."""
         traj = TimeEvolutionTrajectory(
-            hamiltonian=qp.PauliX(0),
+            hamiltonian=SparsePauliOp.from_list([("X", 1.0)]),
             time_points=[0.01, math.pi / 4, math.pi / 2],
             backend=default_test_simulator,
         )
@@ -321,7 +326,7 @@ class TestTimeEvolutionTrajectoryE2E:
     def test_eigenstate_stays_constant(self, default_test_simulator):
         """H=Z₀+Z₁, |00⟩ is eigenstate: P(00)=1 at all times."""
         traj = TimeEvolutionTrajectory(
-            hamiltonian=0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1),
+            hamiltonian=_H_Z0_Z1,
             time_points=[0.5, 1.0, 2.0],
             backend=default_test_simulator,
         )
@@ -337,7 +342,9 @@ class TestTimeEvolutionTrajectoryE2E:
 def cache_test_hamiltonian():
     """Multi-term H exercising both Z and XX terms — enough structural
     variety to hit non-trivial decomposition."""
-    return 0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1) + 0.2 * (qp.PauliX(0) @ qp.PauliX(1))
+    return SparsePauliOp.from_sparse_list(
+        [("Z", [0], 0.5), ("Z", [1], 0.3), ("XX", [0, 1], 0.2)], num_qubits=2
+    )
 
 
 def _build_meta_at(H, observable, time, backend, *, n_steps=1, order=1):
@@ -351,7 +358,7 @@ def _build_meta_at(H, observable, time, backend, *, n_steps=1, order=1):
         observable=observable,
         backend=backend,
     )
-    result = prog.trotterization_strategy.process_hamiltonian(to_spo(H))
+    result = prog.trotterization_strategy.process_hamiltonian(H)
     return prog._meta_circuit_factory(result, ham_id=0)
 
 
@@ -378,7 +385,7 @@ class TestCacheStructuralInvariant:
         self, cache_test_hamiltonian, dummy_simulator
     ):
         H = cache_test_hamiltonian
-        obs = qp.PauliZ(0)
+        obs = _Z0_2Q
         m1 = _build_meta_at(H, obs, 1.0, dummy_simulator)
         m2 = _build_meta_at(H, obs, 2.0, dummy_simulator)
         m05 = _build_meta_at(H, obs, 0.5, dummy_simulator)
@@ -389,7 +396,7 @@ class TestCacheStructuralInvariant:
         self, cache_test_hamiltonian, dummy_simulator
     ):
         H = cache_test_hamiltonian
-        obs = qp.PauliZ(0)
+        obs = _Z0_2Q
         m1 = _build_meta_at(H, obs, 1.0, dummy_simulator)
         m2 = _build_meta_at(H, obs, 2.0, dummy_simulator)
 
@@ -429,7 +436,7 @@ class TestCacheStructuralInvariant:
         """t=0 must keep the same DAG length — zero-angle rotations don't
         get pruned. If they did, the cache would inflate gate counts at t=0."""
         H = cache_test_hamiltonian
-        obs = qp.PauliZ(0)
+        obs = _Z0_2Q
         m1 = _build_meta_at(H, obs, 1.0, dummy_simulator)
         m0 = _build_meta_at(H, obs, 0.0, dummy_simulator)
         assert _dag_signature(m1) == _dag_signature(m0)
@@ -441,7 +448,7 @@ class TestCacheStructuralInvariant:
         more rotations; the topology and linear-scaling invariants must
         still hold."""
         H = cache_test_hamiltonian
-        obs = qp.PauliZ(0)
+        obs = _Z0_2Q
         m1 = _build_meta_at(H, obs, 1.0, dummy_simulator, n_steps=2)
         m2 = _build_meta_at(H, obs, 2.0, dummy_simulator, n_steps=2)
         assert _dag_signature(m1) == _dag_signature(m2)
@@ -458,7 +465,7 @@ class TestParametricTemplate:
         traj = TimeEvolutionTrajectory(
             hamiltonian=cache_test_hamiltonian,
             time_points=[0.0, 0.25, 0.5, 0.75, 1.0],
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=dummy_simulator,
         )
         template, t_param = traj._maybe_build_template()
@@ -479,7 +486,7 @@ class TestParametricTemplate:
         self, cache_test_hamiltonian, dummy_simulator
     ):
         H = cache_test_hamiltonian
-        obs = qp.PauliZ(0)
+        obs = _Z0_2Q
         traj = TimeEvolutionTrajectory(
             hamiltonian=H,
             time_points=[0.0, 0.25, 0.5, 0.75, 1.0],
@@ -628,7 +635,7 @@ def test_bound_angles_match_fresh_at_third_t(
     shots-based equivalence check has shot noise above any sub-1e-8 angle
     drift, so we verify circuit-level numeric agreement here directly."""
     H = cache_test_hamiltonian
-    obs = qp.PauliZ(0)
+    obs = _Z0_2Q
     # Build the trajectory's parametric template at this (n_steps, order).
     traj = TimeEvolutionTrajectory(
         hamiltonian=H,
@@ -672,7 +679,7 @@ def test_cached_and_uncached_results_agree(
     traj_cached = TimeEvolutionTrajectory(
         hamiltonian=cache_test_hamiltonian,
         time_points=time_points,
-        observable=qp.PauliZ(0),
+        observable=_Z0_2Q,
         backend=default_test_simulator,
     )
     traj_cached.create_programs()
@@ -685,7 +692,7 @@ def test_cached_and_uncached_results_agree(
     traj_un = TimeEvolutionTrajectory(
         hamiltonian=cache_test_hamiltonian,
         time_points=time_points,
-        observable=qp.PauliZ(0),
+        observable=_Z0_2Q,
         backend=default_test_simulator,
     )
     traj_un.create_programs()

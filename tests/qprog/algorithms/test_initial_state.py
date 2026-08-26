@@ -5,10 +5,9 @@
 """Tests for the shared initial-state utility and its integration into algorithms."""
 
 import networkx as nx
-import pennylane as qp
 import pytest
 import scipy.linalg
-from qiskit.quantum_info import Operator, Statevector
+from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 
 from divi.hamiltonians import xy_mixer
 from divi.qprog import QAOA, VQE, TimeEvolution
@@ -28,7 +27,7 @@ from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 @pytest.fixture
 def two_z_hamiltonian():
     """``Z₀ + Z₁`` — the shared two-qubit Hamiltonian for the integration tests."""
-    return qp.PauliZ(0) + qp.PauliZ(1)
+    return SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 1.0)])
 
 
 @pytest.fixture

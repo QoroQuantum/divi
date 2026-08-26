@@ -4,11 +4,10 @@
 
 """Tests for divi.pipeline.stages._trotter_spec_stage."""
 
-import pennylane as qp
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit, qscript_to_meta
+from divi.circuits import MetaCircuit
 from divi.hamiltonians import (
     ExactTrotterization,
     QDrift,
@@ -19,6 +18,7 @@ from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from tests.pipeline._helpers import meta_with_observable
 
 _Z0 = SparsePauliOp.from_list([("Z", 1.0)])
 _Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
@@ -36,13 +36,9 @@ class _DummyStrategy(TrotterizationStrategy):
 
 
 def _meta_factory(result, ham_id):
-    """Test factory: build a PL observable matching the SPO's single ``Z(0)`` term
-    so ``qscript_to_meta`` produces the same MetaCircuit shape that
-    TrotterSpecStage would otherwise emit on its own."""
-    qscript = qp.tape.QuantumScript(
-        ops=[qp.Hadamard(0)], measurements=[qp.expval(qp.Z(0))]
-    )
-    return qscript_to_meta(qscript)
+    """Test factory: the single-``Z(0)`` MetaCircuit shape TrotterSpecStage would
+    otherwise emit on its own."""
+    return meta_with_observable(_Z0)
 
 
 class TestExpand:

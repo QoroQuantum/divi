@@ -7,14 +7,13 @@
 import warnings
 
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import QiskitSimulator
-from divi.circuits import MetaCircuit, qscript_to_meta
+from divi.circuits import MetaCircuit
 from divi.pipeline import (
     CircuitPipeline,
     PipelineEnv,
@@ -39,6 +38,8 @@ from tests.pipeline._helpers import (
     ShotsBackendSpy,
     build_pipeline_with_shots,
     measured_qubits,
+    meta_from_circuit,
+    meta_with_observable,
     ones_execute_fn,
     two_group_pipeline_stages,
 )
@@ -833,7 +834,7 @@ class TestMeasurementStageShotDistributionBackendExpval:
         assert "per_group_shots" not in trace.env_artifacts
 
     def test_shot_distribution_keeps_expectation_values_exact(
-        self, default_test_simulator
+        self, qp, default_test_simulator
     ):
         """End-to-end: the same parameters must give the same energy every time.
 
@@ -1361,19 +1362,15 @@ class TestMeasurementStageTupleObservable:
 
 
 def _make_expval_meta():
-    qscript = qp.tape.QuantumScript(
-        ops=[qp.Hadamard(0), qp.Hadamard(1)],
-        measurements=[qp.expval(0.5 * qp.Z(0) + 0.3 * qp.Z(1))],
-    )
-    return qscript_to_meta(qscript)
+    """Two Hadamards carrying ``0.5*Z0 + 0.3*Z1`` as the observable."""
+    return meta_with_observable(SparsePauliOp.from_list([("IZ", 0.5), ("ZI", 0.3)]))
 
 
 def _make_probs_meta():
-    qscript = qp.tape.QuantumScript(
-        ops=[qp.Hadamard(0)],
-        measurements=[qp.probs()],
-    )
-    return qscript_to_meta(qscript)
+    """One Hadamard read out in the computational basis (no observable)."""
+    qc = QuantumCircuit(1)
+    qc.h(0)
+    return meta_from_circuit(qc, measured_wires=(0,))
 
 
 class TestHamOpsExpvalBackend:

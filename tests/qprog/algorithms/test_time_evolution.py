@@ -5,8 +5,8 @@
 import math
 import warnings
 
-import pennylane as qp
 import pytest
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import ExecutionResult, QiskitSimulator
 from divi.circuits import DEFAULT_PRECISION
@@ -24,6 +24,27 @@ def _evolution_pipeline(te):
     """The program's single pipeline for the evolution measurement protocol."""
     return te._build_preprocessor_pipeline(te._evolution_preprocessor())
 
+
+def _op(terms, n_qubits: int) -> SparsePauliOp:
+    """``[(paulis, qubits, coeff), ...]`` over an explicit register.
+
+    Observables are width-checked against the cost circuit, so the register a
+    term sits in is part of its meaning, not an incidental detail.
+    """
+    return SparsePauliOp.from_sparse_list(terms, num_qubits=n_qubits)
+
+
+# Single-qubit
+_H_X_PLUS_Z = _op([("X", [0], 1.0), ("Z", [0], 1.0)], 1)
+_Z0_1Q = _op([("Z", [0], 1.0)], 1)
+
+# Two-qubit
+_H_Z0_Z1 = _op([("Z", [0], 0.5), ("Z", [1], 0.3)], 2)
+_Z0_2Q = _op([("Z", [0], 1.0)], 2)
+_Z1_2Q = _op([("Z", [1], 1.0)], 2)
+_H_X0_PLUS_X1 = _op([("X", [0], 1.0), ("X", [1], 1.0)], 2)
+_H_HEIS_XX = _op([("XX", [0, 1], 1.0), ("YY", [0, 1], 1.0)], 2)
+_H_HEIS_XXX = _op([("XX", [0, 1], 1.0), ("YY", [0, 1], 1.0), ("ZZ", [0, 1], 1.0)], 2)
 
 # Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
 _PROB_TOL = 0.05
@@ -46,7 +67,7 @@ def _unit_expval_submit(payloads, **kwargs):
 
 @pytest.fixture
 def two_qubit_hamiltonian():
-    return 0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1)
+    return _H_Z0_Z1
 
 
 class TestTimeEvolutionInitialization:
@@ -68,7 +89,7 @@ class TestTimeEvolutionInitialization:
     def test_initialization_constant_hamiltonian_fails(self, default_test_simulator):
         with pytest.raises(ValueError, match="only constant terms"):
             TimeEvolution(
-                hamiltonian=qp.Identity(0) * 1.0,
+                hamiltonian=SparsePauliOp.from_list([("I", 1.0)]),
                 backend=default_test_simulator,
             )
 
@@ -177,7 +198,7 @@ class TestTimeEvolutionRun:
 
     def test_single_term_hamiltonian_fallback(self, default_test_simulator):
         """ExactTrotterization with keep_top_n=1 yields single-term; use evolve not TrotterProduct."""
-        h = 0.5 * qp.PauliX(0) + 0.3 * qp.PauliY(0)
+        h = _op([("X", [0], 0.5), ("Y", [0], 0.3)], 1)
         te = TimeEvolution(
             hamiltonian=h,
             trotterization_strategy=ExactTrotterization(keep_top_n=1),
@@ -196,7 +217,7 @@ class TestTimeEvolutionObservable:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=default_test_simulator,
         )
         te.run()
@@ -216,7 +237,7 @@ class TestTimeEvolutionObservable:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=qp.PauliZ(0) + qp.PauliZ(1),
+            observable=_Z0_2Q + _Z1_2Q,
             backend=dummy_expval_backend,
         )
         te.run()
@@ -236,7 +257,7 @@ class TestTimeEvolutionMultiObservable:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=[qp.PauliZ(0), qp.PauliZ(1)],
+            observable=[_Z0_2Q, _Z1_2Q],
             backend=default_test_simulator,
         )
         assert isinstance(te.observable, tuple)
@@ -248,7 +269,7 @@ class TestTimeEvolutionMultiObservable:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=(qp.PauliZ(0), qp.PauliZ(1)),
+            observable=(_Z0_2Q, _Z1_2Q),
             backend=default_test_simulator,
         )
         te.run()
@@ -265,7 +286,7 @@ class TestTimeEvolutionMultiObservable:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=default_test_simulator,
         )
         te.run()
@@ -295,17 +316,17 @@ class TestTimeEvolutionMultiObservable:
         )
         te_multi = TimeEvolution(
             **common,
-            observable=(qp.PauliZ(0), qp.PauliZ(1)),
+            observable=(_Z0_2Q, _Z1_2Q),
             backend=default_test_simulator,
         )
         te_multi.run()
 
         te_solo_0 = TimeEvolution(
-            **common, observable=qp.PauliZ(0), backend=default_test_simulator
+            **common, observable=_Z0_2Q, backend=default_test_simulator
         )
         te_solo_0.run()
         te_solo_1 = TimeEvolution(
-            **common, observable=qp.PauliZ(1), backend=default_test_simulator
+            **common, observable=_Z1_2Q, backend=default_test_simulator
         )
         te_solo_1.run()
 
@@ -325,7 +346,7 @@ class TestTimeEvolutionExpvalAccessor:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=default_test_simulator,
         )
         te.run()
@@ -339,7 +360,7 @@ class TestTimeEvolutionExpvalAccessor:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=[qp.PauliZ(0), qp.PauliZ(1)],
+            observable=[_Z0_2Q, _Z1_2Q],
             backend=default_test_simulator,
         )
         te.run()
@@ -376,7 +397,7 @@ class TestTimeEvolutionExpvalAccessor:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=[qp.PauliZ(0), qp.PauliZ(1)],
+            observable=[_Z0_2Q, _Z1_2Q],
             backend=dummy_expval_backend,
         )
         te.run()
@@ -391,7 +412,7 @@ class TestTimeEvolutionExpvalAccessor:
         """``expval()`` before ``run()`` raises a clear runtime error."""
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=default_test_simulator,
         )
         with pytest.raises(RuntimeError):
@@ -409,7 +430,7 @@ class TestTimeEvolutionSingleItemListPreserved:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=[qp.PauliZ(0)],
+            observable=[_Z0_2Q],
             backend=default_test_simulator,
         )
         te.run()
@@ -423,7 +444,7 @@ class TestTimeEvolutionSingleItemListPreserved:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             backend=default_test_simulator,
         )
         te.run()
@@ -435,7 +456,7 @@ class TestTimeEvolutionSingleItemListPreserved:
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
-            observable=(qp.PauliZ(0),),
+            observable=(_Z0_2Q,),
             backend=default_test_simulator,
         )
         te.run()
@@ -467,8 +488,8 @@ class TestTimeEvolutionQDrift:
     def test_expval_shot_backend_qdrift_aggregation(self, default_test_simulator):
         """QDrift with observable on shot backend averages expvals across samples."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_op([("X", [0], 1.0)], 1),
+            observable=_Z0_1Q,
             trotterization_strategy=QDrift(
                 sampling_budget=1,
                 seed=42,
@@ -482,11 +503,7 @@ class TestTimeEvolutionQDrift:
 
     def test_multi_sample_qdrift_expval_vs_sampling(self, default_test_simulator):
         """Multi-sample QDrift: expval backend and sampling backend agree."""
-        hamiltonian = qp.sum(
-            -(qp.PauliZ(0) @ qp.PauliZ(1)),
-            -qp.PauliX(0),
-            -qp.PauliX(1),
-        )
+        hamiltonian = _op([("ZZ", [0, 1], -1.0), ("X", [0], -1.0), ("X", [1], -1.0)], 2)
         qdrift_kwargs = dict(
             sampling_budget=50,
             seed=42,
@@ -526,7 +543,7 @@ class TestTimeEvolutionE2E:
     def test_h_x0_plus_x1_zeros_evolves_to_11(self, default_test_simulator):
         """H=X₀+X₁ (2-qubit, commuting): |00⟩ at t=π/2 → |11⟩, P(11)=1."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+            hamiltonian=_H_X0_PLUS_X1,
             time=math.pi / 2,
             backend=default_test_simulator,
         )
@@ -539,7 +556,7 @@ class TestTimeEvolutionE2E:
     def test_h_x_plus_z_full_rotation(self, default_test_simulator):
         """H=X+Z (1-qubit, non-commuting): |0⟩ at t=π/√2 → |0⟩ (full Bloch rotation)."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
             time=math.pi / math.sqrt(2),
             n_steps=10,
             backend=default_test_simulator,
@@ -552,7 +569,7 @@ class TestTimeEvolutionE2E:
     def test_heisenberg_xx_superposition_uniform(self, default_test_simulator):
         """Heisenberg XX (X₀X₁+Y₀Y₁, non-commuting): |++⟩ stays uniform, P(·)=0.25."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) @ qp.PauliX(1) + qp.PauliY(0) @ qp.PauliY(1),
+            hamiltonian=_H_HEIS_XX,
             time=math.pi / 4,
             initial_state=SuperpositionState(),
             backend=default_test_simulator,
@@ -567,11 +584,7 @@ class TestTimeEvolutionE2E:
     def test_heisenberg_xxx_superposition_uniform(self, default_test_simulator):
         """Heisenberg XXX (X₀X₁+Y₀Y₁+Z₀Z₁): |++⟩ stays uniform, P(·)=0.25."""
         te = TimeEvolution(
-            hamiltonian=(
-                qp.PauliX(0) @ qp.PauliX(1)
-                + qp.PauliY(0) @ qp.PauliY(1)
-                + qp.PauliZ(0) @ qp.PauliZ(1)
-            ),
+            hamiltonian=_H_HEIS_XXX,
             time=math.pi / 4,
             initial_state=SuperpositionState(),
             backend=default_test_simulator,
@@ -586,11 +599,7 @@ class TestTimeEvolutionE2E:
     def test_heisenberg_xxx_ones_stays_eigenstate(self, default_test_simulator):
         """Heisenberg XXX: |11⟩ is triplet eigenstate, P(11)=1."""
         te = TimeEvolution(
-            hamiltonian=(
-                qp.PauliX(0) @ qp.PauliX(1)
-                + qp.PauliY(0) @ qp.PauliY(1)
-                + qp.PauliZ(0) @ qp.PauliZ(1)
-            ),
+            hamiltonian=_H_HEIS_XXX,
             time=math.pi / 2,
             initial_state=OnesState(),
             backend=default_test_simulator,
@@ -604,7 +613,7 @@ class TestTimeEvolutionE2E:
     def test_qdrift_commuting_stays_eigenstate(self, default_test_simulator):
         """QDrift H=Z₀+Z₁: |00⟩ is eigenstate, multi-sample average P(00)=1."""
         te = TimeEvolution(
-            hamiltonian=0.5 * qp.PauliZ(0) + 0.3 * qp.PauliZ(1),
+            hamiltonian=_H_Z0_Z1,
             time=0.5,
             trotterization_strategy=QDrift(
                 sampling_budget=2,
@@ -621,7 +630,7 @@ class TestTimeEvolutionE2E:
     def test_qdrift_keep_top_n_evolves_correctly(self, default_test_simulator):
         """QDrift with keep_top_n=1: H=X₀+X₁, |00⟩ at t=π/2 → P(11)=1."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+            hamiltonian=_H_X0_PLUS_X1,
             time=math.pi / 2,
             trotterization_strategy=QDrift(
                 keep_top_n=1,
@@ -639,7 +648,7 @@ class TestTimeEvolutionE2E:
     def test_qdrift_heisenberg_xx_superposition_uniform(self, default_test_simulator):
         """QDrift Heisenberg XX (product operators): |++⟩ stays uniform, P(·)=0.25."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) @ qp.PauliX(1) + qp.PauliY(0) @ qp.PauliY(1),
+            hamiltonian=_H_HEIS_XX,
             time=math.pi / 4,
             initial_state=SuperpositionState(),
             trotterization_strategy=QDrift(
@@ -660,11 +669,7 @@ class TestTimeEvolutionE2E:
     def test_qdrift_heisenberg_xxx_ones_stays_eigenstate(self, default_test_simulator):
         """QDrift Heisenberg XXX: |11⟩ triplet eigenstate, P(11)=1."""
         te = TimeEvolution(
-            hamiltonian=(
-                qp.PauliX(0) @ qp.PauliX(1)
-                + qp.PauliY(0) @ qp.PauliY(1)
-                + qp.PauliZ(0) @ qp.PauliZ(1)
-            ),
+            hamiltonian=_H_HEIS_XXX,
             time=math.pi / 2,
             initial_state=OnesState(),
             trotterization_strategy=QDrift(
@@ -682,14 +687,10 @@ class TestTimeEvolutionE2E:
     def test_qdrift_tfim_non_commuting_expval(self):
         """QDrift TFIM 4q (non-commuting ZZ+X): Campbell's protocol matches exact."""
         backend = QiskitSimulator(shots=10000, _deterministic_execution=True)
-        hamiltonian = qp.sum(
-            -(qp.PauliZ(0) @ qp.PauliZ(1)),
-            -(qp.PauliZ(1) @ qp.PauliZ(2)),
-            -(qp.PauliZ(2) @ qp.PauliZ(3)),
-            -qp.PauliX(0),
-            -qp.PauliX(1),
-            -qp.PauliX(2),
-            -qp.PauliX(3),
+        hamiltonian = _op(
+            [("ZZ", [q, q + 1], -1.0) for q in range(3)]
+            + [("X", [q], -1.0) for q in range(4)],
+            4,
         )
 
         te_exact = TimeEvolution(
@@ -722,7 +723,7 @@ class TestTimeEvolutionE2E:
     def test_qdrift_x_plus_z_non_commuting_expval(self):
         """QDrift H=X+Z (non-commuting): Campbell's protocol matches exact."""
         backend = QiskitSimulator(shots=10000, _deterministic_execution=True)
-        hamiltonian = qp.PauliX(0) + qp.PauliZ(0)
+        hamiltonian = _H_X_PLUS_Z
 
         te_exact = TimeEvolution(
             hamiltonian=hamiltonian,
@@ -754,14 +755,14 @@ class TestTimeEvolutionE2E:
     def test_qdrift_reduces_circuit_op_count(self):
         """QDrift with sampling_budget < n_terms produces shallower circuits than exact."""
 
-        # 6-term, 3-qubit Hamiltonian
-        hamiltonian = (
-            qp.PauliX(0) @ qp.PauliX(1)
-            + qp.PauliY(0) @ qp.PauliY(1)
-            + qp.PauliZ(0) @ qp.PauliZ(1)
-            + qp.PauliX(1) @ qp.PauliX(2)
-            + qp.PauliY(1) @ qp.PauliY(2)
-            + qp.PauliZ(1) @ qp.PauliZ(2)
+        # 6-term, 3-qubit Heisenberg chain
+        hamiltonian = _op(
+            [
+                (pauli * 2, [q, q + 1], 1.0)
+                for q in range(2)
+                for pauli in ("X", "Y", "Z")
+            ],
+            3,
         )
 
         # Exact: evolves with all 6 terms across 4 Trotter steps
@@ -805,8 +806,8 @@ class TestTimeEvolutionQEM:
     def test_no_qem_protocol_unchanged(self, default_test_simulator):
         """Without qem_protocol, TimeEvolution pipeline has no QEM stages."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
         )
         stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
@@ -816,8 +817,8 @@ class TestTimeEvolutionQEM:
     def test_quepp_adds_qem_stage(self, default_test_simulator):
         """QuEPP with n_twirls=0 adds QEMStage only."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
         )
@@ -828,8 +829,8 @@ class TestTimeEvolutionQEM:
     def test_quepp_adds_twirl_stage(self, default_test_simulator):
         """QuEPP with n_twirls>0 adds both QEMStage and PauliTwirlStage."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=5),
         )
@@ -841,8 +842,8 @@ class TestTimeEvolutionQEM:
         """ZNE protocol adds QEMStage without PauliTwirlStage."""
         scale_factors = [1.0, 3.0, 5.0]
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
             qem_protocol=ZNE(
                 scale_factors=scale_factors,
@@ -857,7 +858,7 @@ class TestTimeEvolutionQEM:
         """With no observable the pipeline samples probabilities; ZNE (expval-only)
         must not ride it."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
             observable=None,
             backend=default_test_simulator,
             qem_protocol=ZNE(scale_factors=[1.0, 3.0]),
@@ -871,8 +872,8 @@ class TestTimeEvolutionQEM:
         """A plain (non-templated) TimeEvolution binds no parameters: the base
         assembler default is off for non-variational programs."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
         )
         stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
@@ -881,12 +882,12 @@ class TestTimeEvolutionQEM:
     def test_quepp_run_produces_mitigated_result(self):
         """QuEPP on TimeEvolution produces a scalar result."""
         backend = QiskitSimulator(shots=5000, _deterministic_execution=True)
-        hamiltonian = qp.PauliX(0) + qp.PauliZ(0)
+        hamiltonian = _H_X_PLUS_Z
 
         te = TimeEvolution(
             hamiltonian=hamiltonian,
             time=0.5,
-            observable=qp.PauliZ(0),
+            observable=_Z0_1Q,
             backend=backend,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
         )
@@ -899,8 +900,8 @@ class TestTimeEvolutionQEM:
     def test_dry_run_with_qem(self, default_test_simulator):
         """TimeEvolution.dry_run works and reports QEM stages."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=5),
         )
@@ -913,8 +914,8 @@ class TestTimeEvolutionQEM:
     def test_dry_run_without_qem(self, default_test_simulator):
         """TimeEvolution.dry_run works even without QEM."""
         te = TimeEvolution(
-            hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
-            observable=qp.PauliZ(0),
+            hamiltonian=_H_X_PLUS_Z,
+            observable=_Z0_1Q,
             backend=default_test_simulator,
         )
         reports = te.dry_run()
@@ -942,7 +943,7 @@ class TestTimeEvolutionMeasurementConfig:
     ):
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             grouping_strategy="wires",
             backend=default_test_simulator,
         )
@@ -953,7 +954,7 @@ class TestTimeEvolutionMeasurementConfig:
     ):
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
-            observable=qp.PauliZ(0),
+            observable=_Z0_2Q,
             shot_distribution="weighted",
             backend=default_test_simulator,
         )
@@ -966,7 +967,7 @@ class TestTimeEvolutionMeasurementConfig:
         with pytest.raises(ValueError, match="Invalid grouping_strategy"):
             TimeEvolution(
                 hamiltonian=two_qubit_hamiltonian,
-                observable=qp.PauliZ(0),
+                observable=_Z0_2Q,
                 grouping_strategy="_backend_expval",
                 backend=default_test_simulator,
             )
@@ -1000,7 +1001,7 @@ class TestTimeEvolutionMeasurementConfig:
         )
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
-            observable=(qp.PauliZ(0), qp.PauliZ(1)),
+            observable=(_Z0_2Q, _Z1_2Q),
             backend=dummy_expval_backend,
         )
         te.run()
@@ -1025,7 +1026,7 @@ class TestTimeEvolutionMeasurementConfig:
             warnings.simplefilter("ignore", UserWarning)
             te = TimeEvolution(
                 hamiltonian=two_qubit_hamiltonian,
-                observable=qp.PauliZ(0),
+                observable=_Z0_2Q,
                 grouping_strategy="qwc",
                 backend=dummy_expval_backend,
             )

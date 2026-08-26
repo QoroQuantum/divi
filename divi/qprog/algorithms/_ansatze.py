@@ -8,26 +8,24 @@ Every ``Ansatz.build`` creates and returns a :class:`~qiskit.circuit.QuantumCirc
 ``UCCSDAnsatz`` sources its excitations and Hartree-Fock reference from
 ``qiskit_nature`` (the ``chem`` extra), remapping that library's blocked spin
 ordering onto Divi's interleaved one. The remaining chemistry ansätze
-(``HartreeFockAnsatz``, ``QCCAnsatz``) source excitation / Hartree-Fock data
-from ``pennylane.qchem`` and route the PL gates through the local PL → Qiskit
-converter; consumers always see Qiskit instructions.
+(``HartreeFockAnsatz``, ``QCCAnsatz``) enumerate their own excitations and
+Hartree-Fock reference against the interleaved ordering.
 """
 
 import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
+from numbers import Integral
 from typing import Literal
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qp
 from qiskit.circuit import Gate, QuantumCircuit
 from qiskit.circuit.library import RXGate, RYGate, RZGate, RZZGate, XXPlusYYGate
 from scipy.optimize import least_squares
 
-from divi.circuits._conversions import _qscript_to_dag
 from divi.hamiltonians._chem import requires_chem_extra
 from divi.hamiltonians._term_ops import _HALF_PI
 
@@ -44,9 +42,9 @@ def _require_trainable_params(n_params: int, ansatz_name: str) -> int:
 def _require_n_electrons(kwargs: dict, ansatz_name: str) -> int:
     """Pop ``n_electrons``, rejecting a missing one by name.
 
-    A chemistry ansatz cannot enumerate excitations without it, and passing
-    ``None`` through surfaces as a comparison against ``NoneType`` from inside
-    PennyLane, naming neither the setting nor the ansatz.
+    A chemistry ansatz cannot prepare its reference state or enumerate
+    excitations without it, so reject the missing setting at the boundary that
+    can name the ansatz which needs it.
     """
     n_electrons = kwargs.pop("n_electrons", None)
     if n_electrons is None:
@@ -57,19 +55,6 @@ def _require_n_electrons(kwargs: dict, ansatz_name: str) -> int:
             "automatically; a raw Hamiltonian does not)."
         )
     return n_electrons
-
-
-def _pl_ops_to_qc(pl_ops: Sequence, n_qubits: int) -> QuantumCircuit:
-    """Translate ``pl_ops`` to Qiskit gates and return a circuit on ``n_qubits`` qubits."""
-    qc = QuantumCircuit(n_qubits)
-    if not pl_ops:
-        return qc
-    script = qp.tape.QuantumScript(list(pl_ops))
-    dag, _params, _wire_map = _qscript_to_dag(script)
-    for node in dag.topological_op_nodes():
-        qubit_indices = [dag.qubits.index(q) for q in node.qargs]
-        qc.append(node.op, [qc.qubits[i] for i in qubit_indices])
-    return qc
 
 
 class Ansatz(ABC):
@@ -563,10 +548,10 @@ class HartreeFockAnsatz(Ansatz):
 
     @staticmethod
     def n_params_per_layer(n_qubits: int, **kwargs) -> int:
-        """``len(singles) + len(doubles)`` from ``qp.qchem.excitations`` for
-        the given ``n_electrons`` (required kwarg)."""
+        """``len(singles) + len(doubles)`` spin-conserving excitations out of the
+        reference set by ``n_electrons`` (required kwarg)."""
         n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
-        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
+        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
 
@@ -577,27 +562,22 @@ class HartreeFockAnsatz(Ansatz):
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
-        singles, doubles = qp.qchem.excitations(n_electrons, n_qubits)
-        hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
+        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
-        pl_ops: list = []
-        for layer_idx, layer_params in enumerate(params):
-            layer_ops = list(
-                qp.AllSinglesDoubles.compute_decomposition(
-                    layer_params,
-                    wires=range(n_qubits),
-                    hf_state=hf_state,
-                    singles=singles,
-                    doubles=doubles,
-                )
-            )
-            # Only the first layer should prepare the Hartree-Fock state; reset
-            # the basis-state init for subsequent layers.
-            if layer_idx > 0:
-                layer_ops = [op for op in layer_ops if op.name != "BasisState"]
-            pl_ops.extend(layer_ops)
-        return _pl_ops_to_qc(pl_ops, n_qubits)
+        qc = QuantumCircuit(n_qubits)
+        for qubit, occupied in enumerate(_hf_occupation(n_electrons, n_qubits)):
+            if occupied:
+                qc.x(qubit)
+
+        # Amplitudes are ordered singles-then-doubles, but the doubles are
+        # applied first.
+        for layer_params in params:
+            for index, wires in enumerate(doubles):
+                _emit_double_excitation(qc, layer_params[len(singles) + index], *wires)
+            for index, wires in enumerate(singles):
+                _emit_single_excitation(qc, layer_params[index], *wires)
+        return qc
 
 
 class QCCAnsatz(Ansatz):
@@ -617,14 +597,13 @@ class QCCAnsatz(Ansatz):
 
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         n_electrons = _require_n_electrons(kwargs, "QCCAnsatz")
-        hf_state = qp.qchem.hf_state(n_electrons, n_qubits)
+        occupation = _hf_occupation(n_electrons, n_qubits)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
         qc = QuantumCircuit(n_qubits)
-        # Hartree-Fock prep: ``hf_state`` is a 0/1 vector of length n_qubits.
-        for q, bit in enumerate(hf_state):
-            if bit:
-                qc.x(q)
+        for qubit, occupied in enumerate(occupation):
+            if occupied:
+                qc.x(qubit)
 
         n_singles = n_qubits
         for layer_params in params:
@@ -1099,6 +1078,116 @@ class LUCJAnsatz(Ansatz):
                     )
 
         return circuit
+
+
+def _validate_reference_counts(
+    n_electrons: int, n_qubits: int, *, require_virtual: bool
+) -> None:
+    """Validate the electron count for a spin-orbital reference register."""
+    if isinstance(n_electrons, bool) or not isinstance(n_electrons, Integral):
+        raise ValueError(
+            f"n_electrons must be a positive integer; got {n_electrons!r}."
+        )
+    if n_electrons <= 0:
+        raise ValueError(
+            f"n_electrons must be a positive integer; got {n_electrons!r}."
+        )
+    if n_electrons > n_qubits:
+        raise ValueError(
+            f"n_electrons ({n_electrons}) cannot exceed n_qubits ({n_qubits})."
+        )
+    if require_virtual and n_electrons == n_qubits:
+        raise ValueError(
+            "An excitation ansatz requires at least one virtual spin-orbital; "
+            f"got n_electrons == n_qubits == {n_qubits}."
+        )
+
+
+def _hf_occupation(n_electrons: int, n_qubits: int) -> tuple[int, ...]:
+    """Occupation-number vector of the Hartree-Fock determinant."""
+    _validate_reference_counts(n_electrons, n_qubits, require_virtual=False)
+    return tuple(1 if i < n_electrons else 0 for i in range(n_qubits))
+
+
+def _spin_conserving_excitations(
+    n_electrons: int, n_qubits: int
+) -> tuple[list[tuple[int, int]], list[tuple[int, int, int, int]]]:
+    """Singles and doubles out of the Hartree-Fock reference.
+
+    Even qubits carry spin-up and odd qubits spin-down, so an excitation is kept
+    only when it leaves the total spin projection unchanged.
+    """
+    _validate_reference_counts(n_electrons, n_qubits, require_virtual=True)
+    spin_up = [qubit % 2 == 0 for qubit in range(n_qubits)]
+    singles = [
+        (r, p)
+        for r in range(n_electrons)
+        for p in range(n_electrons, n_qubits)
+        if spin_up[p] == spin_up[r]
+    ]
+    doubles = [
+        (s, r, q, p)
+        for s in range(n_electrons - 1)
+        for r in range(s + 1, n_electrons)
+        for q in range(n_electrons, n_qubits - 1)
+        for p in range(q + 1, n_qubits)
+        if spin_up[p] + spin_up[q] == spin_up[r] + spin_up[s]
+    ]
+    return singles, doubles
+
+
+def _emit_single_excitation(qc: QuantumCircuit, theta, w0: int, w1: int) -> None:
+    """Emit a Givens rotation mixing ``|01>`` and ``|10>`` on ``(w0, w1)``.
+
+    Two CNOTs and two ``RY(-theta/2)``, from figure 2 of Anselmetti et al.,
+    *New J. Phys.* **23** 113010 (2021), arXiv:2104.05695.
+    """
+    half = theta / 2
+    qc.h(w0)
+    qc.cx(w0, w1)
+    qc.ry(-half, w0)
+    qc.ry(-half, w1)
+    qc.cx(w0, w1)
+    qc.h(w0)
+
+
+def _emit_double_excitation(
+    qc: QuantumCircuit, theta, w0: int, w1: int, w2: int, w3: int
+) -> None:
+    """Emit a Givens rotation mixing ``|0011>`` and ``|1100>`` on ``(w0..w3)``.
+
+    Fourteen CNOTs and eight ``RY(±theta/8)``, from page 17 of Anselmetti et al.,
+    *New J. Phys.* **23** 113010 (2021), arXiv:2104.05695.
+    """
+    eighth = theta / 8
+    qc.cx(w2, w3)
+    qc.cx(w0, w2)
+    qc.h(w3)
+    qc.h(w0)
+    qc.cx(w2, w3)
+    qc.cx(w0, w1)
+    qc.ry(eighth, w1)
+    qc.ry(-eighth, w0)
+    qc.cx(w0, w3)
+    qc.h(w3)
+    qc.cx(w3, w1)
+    qc.ry(eighth, w1)
+    qc.ry(-eighth, w0)
+    qc.cx(w2, w1)
+    qc.cx(w2, w0)
+    qc.ry(-eighth, w1)
+    qc.ry(eighth, w0)
+    qc.cx(w3, w1)
+    qc.h(w3)
+    qc.cx(w0, w3)
+    qc.ry(-eighth, w1)
+    qc.ry(eighth, w0)
+    qc.cx(w0, w1)
+    qc.cx(w2, w0)
+    qc.h(w0)
+    qc.h(w3)
+    qc.cx(w0, w2)
+    qc.cx(w2, w3)
 
 
 def _emit_two_qubit_pauli_rot(

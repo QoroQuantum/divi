@@ -3,16 +3,17 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qp
 import pytest
+from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import measurement_qasms_from_groups, qscript_to_meta
+from divi.circuits import measurement_qasms_from_groups
 from divi.circuits._core import flatten_observable_tuple
 from divi.pipeline._grouping import (
     _compute_measurement_groups,
     _wire_grouping_from_labels,
 )
+from tests.pipeline._helpers import meta_from_circuit
 
 
 def _wrap(obs: SparsePauliOp) -> tuple[SparsePauliOp, ...]:
@@ -236,12 +237,10 @@ class TestComputeMeasurementGroupsMulti:
 
 
 def test_wires_and_empty_group_produce_same_measurement_qasm():
-    circuit = qp.tape.QuantumScript(
-        ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
-        measurements=[qp.probs()],
-    )
-    meta = qscript_to_meta(circuit)
-    n_qubits = meta.n_qubits
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.cx(0, 1)
+    n_qubits = meta_from_circuit(qc, measured_wires=(0, 1)).n_qubits
 
     qasms_explicit = measurement_qasms_from_groups(((),), n_qubits)
     assert len(qasms_explicit) == 1

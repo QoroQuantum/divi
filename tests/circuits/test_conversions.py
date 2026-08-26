@@ -7,7 +7,6 @@
 from collections import Counter
 
 import numpy as np
-import pennylane as qp
 import pytest
 import sympy as sp
 from qiskit import QuantumCircuit
@@ -29,6 +28,8 @@ from divi.circuits._conversions import (
     _symbolize_trainable_subset,
     _sympy_to_qiskit,
 )
+
+qp = pytest.importorskip("pennylane")
 
 
 class TestFormatBoundParam:

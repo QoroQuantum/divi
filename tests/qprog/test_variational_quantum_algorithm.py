@@ -8,13 +8,13 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pennylane as qp
 import pytest
-import sympy as sp
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import OptimizeResult
 
-from divi.circuits import MetaCircuit, dag_to_qasm_body, qscript_to_meta
-from divi.circuits._conversions import _qscript_to_dag
+from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPreprocessor
 from divi.qprog._program_state import ProgramState
@@ -33,6 +33,7 @@ from divi.qprog.variational_quantum_algorithm import (
     _compute_parameter_shift_rule,
 )
 from tests.conftest import DummyExpvalBackend, DummySimulator
+from tests.pipeline._helpers import meta_from_circuit
 
 
 @pytest.fixture
@@ -52,8 +53,8 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         super().__init__(backend=kwargs.pop("backend", None), **kwargs)
 
-        self.cost_hamiltonian = (
-            qp.PauliX(0) + qp.PauliZ(1) + qp.PauliX(0) @ qp.PauliZ(1)
+        self.cost_hamiltonian = SparsePauliOp.from_sparse_list(
+            [("X", [0], 1.0), ("Z", [1], 1.0), ("XZ", [0, 1], 1.0)], num_qubits=2
         )
         self.loss_constant = 0.0
 
@@ -62,16 +63,16 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         return self._n_params_per_layer
 
     def _create_cost_circuit(self) -> MetaCircuit:
-        symbols = [sp.Symbol("beta"), *sp.symarray("theta", 3)]
-        ops = [
-            qp.RX(symbols[0], wires=0),
-            qp.U3(*symbols[1:], wires=1),
-            qp.CNOT(wires=[0, 1]),
-        ]
-        tape = qp.tape.QuantumScript(
-            ops=ops, measurements=[qp.expval(self.cost_hamiltonian)]
+        qc = QuantumCircuit(2)
+        qc.rx(Parameter("beta"), 0)
+        qc.u(*(Parameter(f"theta_{i}") for i in range(3)), 1)
+        qc.cx(0, 1)
+        return meta_from_circuit(
+            qc,
+            parameters=tuple(qc.parameters),
+            observable=self.cost_hamiltonian,
+            precision=self._precision,
         )
-        return qscript_to_meta(tape, precision=self._precision)
 
     def _run_solution_measurement_for(self, param_sets, *, backend=None):
         # This double's circuit measures an expectation value, not a sampling
@@ -118,11 +119,12 @@ class _NonVQASampler(SolutionSamplingMixin, _BaseSampler):
 
     def __init__(self, backend, **kwargs):
         super().__init__(backend=backend, **kwargs)
-        tape = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.CNOT(wires=[0, 1])],
-            measurements=[qp.probs(wires=[0, 1])],
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.cx(0, 1)
+        self._meta = meta_from_circuit(
+            qc, measured_wires=(0, 1), precision=self._precision
         )
-        self._meta = qscript_to_meta(tape, precision=self._precision)
 
     @property
     def meta_circuit_factories(self):
@@ -1430,20 +1432,6 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
             precision=12,
         )
         assert program._precision == 12
-
-    def test_precision_used_in_qasm_conversion(self):
-        """Precision controls decimal digits in dag_to_qasm_body output."""
-        # Circuit with a known numeric constant (not symbolic).
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RZ(0.123456789, 0)],
-            measurements=[qp.expval(qp.Z(0))],
-        )
-        dag, _, _ = _qscript_to_dag(qscript)
-
-        body5 = dag_to_qasm_body(dag, precision=5)
-        body3 = dag_to_qasm_body(dag, precision=3)
-        assert "0.12346" in body5  # 5 digits, rounded
-        assert "0.123" in body3  # 3 digits, truncated
 
     def test_different_precision_values(self, mock_backend, default_optimizer):
         """Test that different precision values work correctly."""

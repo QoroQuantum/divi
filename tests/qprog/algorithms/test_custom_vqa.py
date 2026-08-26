@@ -3,11 +3,15 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
+
+# This remains a PennyLane integration suite until production CustomVQA can be
+# imported without PennyLane; Qiskit-input cases intentionally exercise the
+# shared front door in that mixed-input context.
+qp = pytest.importorskip("pennylane")
 
 from divi.pipeline.stages import DataBindingStage
 from divi.qprog import CustomVQA
