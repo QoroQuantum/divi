@@ -303,7 +303,7 @@ class TestTimeEvolutionTrajectoryE2E:
     def test_x_rotation_trajectory(self, default_test_simulator):
         """H=X, |0⟩: at t=0 P(0)=1, at t=π/4 P(0)≈0.5, at t=π/2 P(1)=1."""
         traj = TimeEvolutionTrajectory(
-            hamiltonian=SparsePauliOp.from_list([("X", 1.0)]),
+            hamiltonian=SparsePauliOp("X"),
             time_points=[0.01, math.pi / 4, math.pi / 2],
             backend=default_test_simulator,
         )

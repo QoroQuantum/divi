@@ -11,13 +11,11 @@ import pennylane as qp
 from pennylane.measurements import CountsMP, ExpectationMP, ProbabilityMP
 from pennylane.workflow.qnode import QNode
 
-from divi.circuits import (
-    MetaCircuit,
-    qscript_to_meta,
-)
-from divi.circuits._pennylane_utils import (
+from divi.circuits import MetaCircuit
+from divi.circuits._pennylane import (
     _qnode_to_symbolic_qscript,
     _validate_single_measurement,
+    qscript_to_meta,
 )
 from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageOutput
 from divi.pipeline.stages import CircuitSpecStage

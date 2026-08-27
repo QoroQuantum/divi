@@ -8,11 +8,6 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 
-# This remains a PennyLane integration suite until production CustomVQA can be
-# imported without PennyLane; Qiskit-input cases intentionally exercise the
-# shared front door in that mixed-input context.
-qp = pytest.importorskip("pennylane")
-
 from divi.pipeline.stages import DataBindingStage
 from divi.qprog import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
@@ -30,8 +25,12 @@ def _cost_stage_types(program):
     return [type(stage) for stage in pipeline.stages]
 
 
+def _unexpected_optional_probe(*args, **kwargs):
+    raise AssertionError("Qiskit input must not probe optional frontends")
+
+
 @pytest.fixture
-def simple_quantum_script():
+def simple_quantum_script(qp):
     """Fixture for a simple parameterized QuantumScript."""
     ops = [qp.RX(0.0, wires=0), qp.RZ(0.0, wires=0)]
     measurements = [qp.expval(qp.Z(0))]
@@ -39,7 +38,7 @@ def simple_quantum_script():
 
 
 @pytest.fixture
-def make_custom_vqa(simple_quantum_script, dummy_simulator, default_optimizer):
+def make_custom_vqa(request, dummy_simulator, default_optimizer):
     """Build a CustomVQA from the standard test defaults.
 
     ``qscript`` defaults to ``simple_quantum_script`` and ``backend`` /
@@ -48,7 +47,8 @@ def make_custom_vqa(simple_quantum_script, dummy_simulator, default_optimizer):
     """
 
     def _make(**kwargs):
-        kwargs.setdefault("qscript", simple_quantum_script)
+        if "qscript" not in kwargs:
+            kwargs["qscript"] = request.getfixturevalue("simple_quantum_script")
         kwargs.setdefault("backend", dummy_simulator)
         kwargs.setdefault("optimizer", default_optimizer)
         return CustomVQA(**kwargs)
@@ -134,6 +134,26 @@ def qiskit_circuit_complex_gates():
 class TestInitialization:
     """Test suite for CustomVQA initialization."""
 
+    def test_qiskit_input_does_not_probe_pennylane(
+        self,
+        qiskit_circuit_with_measurements,
+        dummy_simulator,
+        default_optimizer,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "divi.qprog.algorithms._custom_vqa.optional_module",
+            _unexpected_optional_probe,
+        )
+
+        program = CustomVQA(
+            qscript=qiskit_circuit_with_measurements,
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+
+        assert program.n_qubits == 1
+
     @pytest.mark.parametrize(
         "circuit_fixture,expected_n_qubits",
         [
@@ -172,7 +192,7 @@ class TestInitialization:
         assert program.param_shape == expected_shape
         assert program.n_params_per_layer == 2
 
-    def test_qnode_input_is_converted_to_quantum_script(self, make_custom_vqa):
+    def test_qnode_input_is_converted_to_quantum_script(self, qp, make_custom_vqa):
         """QNode inputs are accepted and converted via PennyLaneSpecStage."""
         dev = qp.device("default.qubit", wires=1)
 
@@ -188,7 +208,7 @@ class TestInitialization:
         assert program.n_params_per_layer == 2
 
     def test_reused_qnode_arg_ties_to_one_parameter(
-        self, default_test_simulator, make_custom_vqa
+        self, qp, default_test_simulator, make_custom_vqa
     ):
         """A function argument reused across gates is ONE optimizer knob.
 
@@ -211,7 +231,7 @@ class TestInitialization:
         assert loss == pytest.approx(np.cos(0.9), abs=0.05)
 
     def test_qnode_arg_expression_preserves_coefficient(
-        self, default_test_simulator, make_custom_vqa
+        self, qp, default_test_simulator, make_custom_vqa
     ):
         """A ``ParameterExpression`` arg (``RX(2*theta)``) keeps its coefficient.
 
@@ -251,12 +271,15 @@ class TestInitialization:
         assert isinstance(program.cost_hamiltonian, SparsePauliOp)
 
     @pytest.mark.parametrize(
-        "observable",
-        [0.5 * qp.Z(0), qp.Z(0)],
+        "observable_kind",
+        ["sprod", "bare_pauli"],
         ids=["sprod", "bare_pauli"],
     )
-    def test_single_term_observable_succeeds(self, observable, make_custom_vqa):
+    def test_single_term_observable_succeeds(
+        self, observable_kind, qp, make_custom_vqa
+    ):
         """Single-term observables (SProd, bare Pauli) initialize without operands error."""
+        observable = 0.5 * qp.Z(0) if observable_kind == "sprod" else qp.Z(0)
         ops = [qp.RX(0.0, wires=0)]
         measurements = [qp.expval(observable)]
         qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
@@ -274,7 +297,7 @@ class TestConstructionValidation:
         with pytest.raises(TypeError, match="must be a PennyLane QuantumScript"):
             make_custom_vqa(qscript="not a circuit")
 
-    def test_multiple_measurements_fails(self, make_custom_vqa):
+    def test_multiple_measurements_fails(self, qp, make_custom_vqa):
         """Test that QuantumScript with multiple measurements fails."""
         ops = [qp.RX(0.0, wires=0)]
         measurements = [qp.expval(qp.Z(0)), qp.expval(qp.Z(0))]
@@ -283,7 +306,7 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="exactly one measurement"):
             make_custom_vqa(qscript=qscript)
 
-    def test_no_measurement_fails(self, make_custom_vqa):
+    def test_no_measurement_fails(self, qp, make_custom_vqa):
         """Test that QuantumScript without measurement fails."""
         ops = [qp.RX(0.0, wires=0)]
         qscript = qp.tape.QuantumScript(ops=ops, measurements=[])
@@ -291,7 +314,7 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="exactly one measurement"):
             make_custom_vqa(qscript=qscript)
 
-    def test_non_expval_measurement_fails(self, make_custom_vqa):
+    def test_non_expval_measurement_fails(self, qp, make_custom_vqa):
         """Test that non-expectation-value measurement fails."""
         ops = [qp.RX(0.0, wires=0)]
         measurements = [qp.probs(wires=0)]
@@ -300,7 +323,7 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="expval"):
             make_custom_vqa(qscript=qscript)
 
-    def test_constant_only_hamiltonian_fails(self, make_custom_vqa):
+    def test_constant_only_hamiltonian_fails(self, qp, make_custom_vqa):
         """Test that constant-only Hamiltonian fails."""
         ops = [qp.RX(0.0, wires=0)]
         measurements = [qp.expval(qp.Identity(0) * 5.0)]
@@ -310,7 +333,7 @@ class TestConstructionValidation:
             make_custom_vqa(qscript=qscript)
 
     def test_pennylane_observable_with_coefficients_does_not_crash(
-        self, make_custom_vqa
+        self, qp, make_custom_vqa
     ):
         """An observable with non-Identity coefficients (e.g. ``0.5 * Z(0)``)
         must not have its coefficients substituted into the ``ParameterVector``
@@ -326,7 +349,7 @@ class TestConstructionValidation:
 
     @pytest.mark.e2e
     def test_pennylane_mixed_constant_observable_does_not_double_count(
-        self, default_test_simulator, make_custom_vqa
+        self, qp, default_test_simulator, make_custom_vqa
     ):
         """An observable like ``0.5 * Z(0) + 5.0 * Identity`` must yield
         the loss ``0.5 * <Z> + 5.0`` (constant added once), not
@@ -344,7 +367,9 @@ class TestConstructionValidation:
         # Correct: 0.5 * 1.0 + 5.0 = 5.5. Buggy double-count would be 10.5.
         assert losses[0] == pytest.approx(5.5, abs=0.05)
 
-    def test_pennylane_respects_user_set_trainable_params_filter(self, make_custom_vqa):
+    def test_pennylane_respects_user_set_trainable_params_filter(
+        self, qp, make_custom_vqa
+    ):
         """When the user pins ``qs.trainable_params`` to operation indices,
         observable-coefficient indices stay excluded even if they appear
         in the user's list."""
@@ -357,7 +382,7 @@ class TestConstructionValidation:
         # Two operation parameters; observable coefficient at index 2 is filtered out.
         assert program.n_params_per_layer == 2
 
-    def test_no_trainable_parameters_fails(self, make_custom_vqa):
+    def test_no_trainable_parameters_fails(self, qp, make_custom_vqa):
         """Test that QuantumScript without trainable parameters fails."""
         # Create a script with no operations (empty circuit)
         measurements = [qp.expval(qp.Z(0))]
@@ -399,7 +424,7 @@ class TestParameterHandling:
 
         assert program.param_shape == (2,)
 
-    def test_multiple_wire_observable(self, make_custom_vqa):
+    def test_multiple_wire_observable(self, qp, make_custom_vqa):
         """Test with observable on multiple wires."""
         ops = [qp.RX(0.0, wires=0), qp.RY(0.0, wires=1)]
         measurements = [qp.expval(qp.Z(0) @ qp.Z(1))]
@@ -613,7 +638,7 @@ def feature_batch_4x1():
 
 
 @pytest.fixture
-def angle_bel_qnode():
+def angle_bel_qnode(qp):
     """A 2-qubit ``AngleEmbedding(inputs)`` + ``BasicEntanglerLayers(weights)``
     QNode — the common data/weight skeleton used by the data-arg error-path
     tests."""
@@ -692,7 +717,7 @@ class TestDataBindingConstruction:
             )
 
     def test_multiarg_qnode_with_arg_shapes_and_data_arg(
-        self, default_test_simulator, make_custom_vqa
+        self, qp, default_test_simulator, make_custom_vqa
     ):
         """A two-argument template QNode (data + weights) ingests via arg_shapes
         + data_arg, optimizes only the weights, and matches PennyLane physics."""
@@ -731,7 +756,7 @@ class TestDataBindingConstruction:
         ]
         assert divi_loss == pytest.approx(float(np.mean(per_sample)), abs=0.05)
 
-    def test_batch_input_decorator_auto_detects_data_arg(self, make_custom_vqa):
+    def test_batch_input_decorator_auto_detects_data_arg(self, qp, make_custom_vqa):
         """A ``@qml.batch_input(argnum=...)`` QNode supplies the data axis; divi
         reads it so ``data_arg`` need not be passed."""
         n = 3
@@ -751,7 +776,9 @@ class TestDataBindingConstruction:
         # "inputs" (argnum 0) was detected as data → only the 9 weights remain.
         assert program.param_shape == (9,)
 
-    def test_explicit_data_arg_overrides_batch_input_detection(self, make_custom_vqa):
+    def test_explicit_data_arg_overrides_batch_input_detection(
+        self, qp, make_custom_vqa
+    ):
         # An explicit data_arg is honored even when batch_input is present.
         n = 2
 
@@ -784,7 +811,7 @@ class TestDataBindingConstruction:
                 data_arg="inputs",
             )
 
-    def test_data_arg_contributing_no_params_raises(self, make_custom_vqa):
+    def test_data_arg_contributing_no_params_raises(self, qp, make_custom_vqa):
         # `inputs` is declared the data arg but never reaches a gate, so it
         # contributes no trainable parameters.
         n = 2
@@ -803,7 +830,7 @@ class TestDataBindingConstruction:
                 feature_batch=np.zeros((2, n)),
             )
 
-    def test_multiple_batch_input_args_raise(self, make_custom_vqa):
+    def test_multiple_batch_input_args_raise(self, qp, make_custom_vqa):
         n = 2
 
         @qp.batch_input(argnum=[0, 1])
@@ -999,7 +1026,7 @@ class TestDataBindingConstruction:
         assert program.n_params_per_layer == 1
 
     def test_pennylane_data_binding_respects_trainable_params_order(
-        self, make_custom_vqa
+        self, qp, make_custom_vqa
     ):
         """``data_param_indices`` always refers to the trainable-param
         ordering, not the qscript's gate-construction order. With a

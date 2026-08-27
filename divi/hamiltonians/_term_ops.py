@@ -8,13 +8,14 @@ import math
 import numbers
 import warnings
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, Literal, TypeIs
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
 from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
 
+from divi._optional import optional_module
 from divi.hamiltonians._chem import qubit_operator_to_spo
 
 if TYPE_CHECKING:
@@ -216,20 +217,22 @@ def to_spo(
         spo = qubit_operator_to_spo(op)
         _assert_hermitian_spo(spo)
         return spo
-    spo = _observable_to_sparse_pauli_op(op, wires if wires is not None else op.wires)
+    pl_op = cast("_PennyLaneOperator", op)
+    spo = _observable_to_sparse_pauli_op(
+        pl_op, wires if wires is not None else pl_op.wires
+    )
     _assert_hermitian_spo(spo)
     return spo
 
 
-def _is_openfermion_qubit_operator(op) -> TypeIs[_QubitOperator]:
+def _is_openfermion_qubit_operator(op) -> bool:
     """True if ``op`` is an OpenFermion ``QubitOperator`` (import-free fast path)."""
     if type(op).__name__ != "QubitOperator":
         return False
-    try:
-        # pyrefly: ignore[missing-import]  # optional ``chem`` extra
-        from openfermion import QubitOperator
-    except ImportError:
+    openfermion = optional_module("openfermion")
+    if openfermion is None:
         return False
+    QubitOperator = openfermion.QubitOperator
     return isinstance(op, QubitOperator)
 
 

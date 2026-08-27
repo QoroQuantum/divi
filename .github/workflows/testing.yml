@@ -30,9 +30,55 @@ jobs:
       - name: Run unit tests
         run: uv run pytest -n auto -m "not requires_api_key"
 
+  minimal-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-divi
+        with:
+          python-version: "3.13"
+          sync-args: --group testing
+          save-cache: "false"
+
+      - name: Run tests
+        run: uv run --no-sync pytest -n auto -m "not requires_api_key"
+
+  isolated-extra-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        extra: [aer, ai, chem, pennylane, qubo-decompose]
+    name: Tests with ${{ matrix.extra }} only
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-divi
+        with:
+          python-version: "3.13"
+          sync-args: --group testing --extra ${{ matrix.extra }}
+          save-cache: "false"
+
+      - name: Run tests
+        run: uv run --no-sync pytest -n auto -m "not requires_api_key"
+
+  api-tests:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-divi
+        with:
+          python-version: "3.13"
+          sync-args: --group testing --all-extras
+          save-cache: "false"
+
       - name: Run API tests
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: uv run pytest --run-api-tests -m "requires_api_key"
+        run: >-
+          uv run --no-sync pytest --run-api-tests
+          -m "requires_api_key"
         env:
           QORO_API_KEY: ${{ secrets.QORO_API_KEY }}
           LOCKED_ACCOUNT_KEY: ${{ secrets.LOCKED_ACCOUNT_KEY }}

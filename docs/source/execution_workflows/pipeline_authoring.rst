@@ -65,7 +65,7 @@ rotation:
 
    ry_meta = MetaCircuit(
        circuit_bodies=(((), circuit_to_dag(ry_qc)),),
-       observable=SparsePauliOp.from_list([("Z", 1.0)]),
+       observable=SparsePauliOp("Z"),
        parameters=(ry_theta,),
    )
 
@@ -326,7 +326,7 @@ The following minimal example replicates each circuit body twice along a
    qc.h(0)
    meta = MetaCircuit(
        circuit_bodies=(((), circuit_to_dag(qc)),),
-       observable=SparsePauliOp.from_list([("Z", 1.0)]),
+       observable=SparsePauliOp("Z"),
    )
 
    pipeline = CircuitPipeline(stages=[
@@ -407,7 +407,7 @@ themselves — the base class does not append one.  Skipping it raises
            qc.ry(theta, 0)
            self._meta = MetaCircuit(
                circuit_bodies=(((), circuit_to_dag(qc)),),
-               observable=SparsePauliOp.from_list([("Z", 1.0)]),
+               observable=SparsePauliOp("Z"),
                parameters=(theta,),
            )
            self._result = None
@@ -474,8 +474,8 @@ VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
 
 .. code-block:: python
 
-   import numpy as np
-   import pennylane as qp
+   from qiskit import QuantumCircuit
+   from qiskit.circuit import Parameter
    from divi.qprog import CustomVQA
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
    from divi.pipeline import ResultFormat
@@ -498,14 +498,15 @@ VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
                extra_stages=(*extra_stages, ReplicaBundleStage(n=self._n_replicas)),
            )
 
-   # Build a minimal two-qubit Ising Hamiltonian for the test.
-   H = -1.0 * qp.Z(0) @ qp.Z(1) + 0.5 * qp.X(0) + 0.5 * qp.X(1)
-   ops = [qp.RY(0.0, wires=0), qp.RY(0.0, wires=1), qp.CNOT(wires=[0, 1])]
-   qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(H)])
-   qscript.trainable_params = [0, 1]
+   # A minimal two-qubit circuit; the basis measurement reads as a sum of Z.
+   circuit = QuantumCircuit(2, 2)
+   circuit.ry(Parameter("theta"), 0)
+   circuit.ry(Parameter("phi"), 1)
+   circuit.cx(0, 1)
+   circuit.measure([0, 1], [0, 1])
 
    program = ReplicatedCustomVQA(
-       qscript,
+       circuit,
        param_shape=(2,),
        n_replicas=2,
        max_iterations=3,

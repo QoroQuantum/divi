@@ -241,7 +241,7 @@ class TestAnalyticDryRun:
             return MetaCircuit(
                 circuit_bodies=(((), shared),),
                 parameters=(theta,),
-                observable=SparsePauliOp.from_list([("Z", 1.0)]),
+                observable=SparsePauliOp("Z"),
             )
 
         def mutate_in_place(m):

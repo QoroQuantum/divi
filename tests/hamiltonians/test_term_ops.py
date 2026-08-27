@@ -188,7 +188,7 @@ class TestSortHamiltonianTermsSpo:
 
     def test_single_row_passes_through(self):
         """A single-row SPO is returned unchanged (identity short-circuit)."""
-        spo = SparsePauliOp.from_list([("Z", 7.0)])
+        spo = 7.0 * SparsePauliOp("Z")
         assert _sort_hamiltonian_terms_spo(spo) is spo
 
 
@@ -309,9 +309,9 @@ class TestSpoToQiskitBasisGatesParity:
     @pytest.mark.parametrize(
         "spo, qubits",
         [
-            (SparsePauliOp.from_list([("Z", 1.0)]), [0]),
-            (SparsePauliOp.from_list([("X", 1.0)]), [0]),
-            (SparsePauliOp.from_list([("Y", 1.0)]), [0]),
+            (SparsePauliOp("Z"), [0]),
+            (SparsePauliOp("X"), [0]),
+            (SparsePauliOp("Y"), [0]),
             (SparsePauliOp.from_list([("ZZ", 0.5)]), [0, 1]),
             (SparsePauliOp.from_list([("XX", 0.7), ("YY", 0.7), ("ZZ", 0.3)]), [0, 1]),
             # X₀ and Z₀Z₁ anticommute on qubit 0 — a future change to
@@ -378,7 +378,7 @@ class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
         assert Operator(bound_with).equiv(Operator(bound_without), atol=1e-10)
 
     def test_parameter_expression_threads_through_gates(self):
-        spo = SparsePauliOp.from_list([("Z", 1.0)])
+        spo = SparsePauliOp("Z")
         t = Parameter("t")
         qc = _build_symbolic(spo, 2 * t + 1, [0], n_qubits=1)
         # The single emitted RZ should carry a ParameterExpression involving ``t``.

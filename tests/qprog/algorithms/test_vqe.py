@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import re
 
 import numpy as np
@@ -52,7 +53,13 @@ def four_qubit_hamiltonian():
 ANSAETZE_TO_TEST = {
     "argvalues": [
         HartreeFockAnsatz(),
-        UCCSDAnsatz(),
+        pytest.param(
+            UCCSDAnsatz(),
+            marks=pytest.mark.skipif(
+                importlib.util.find_spec("qiskit_nature") is None,
+                reason="requires the 'chem' extra",
+            ),
+        ),
         QCCAnsatz(),
         GenericLayerAnsatz([RYGate, RZGate]),
         QAOAAnsatz(),
@@ -191,7 +198,7 @@ def test_vqe_clean_hamiltonian_logic(
 
 def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimizer):
     """Test VQE initialization fails with a constant-only Hamiltonian."""
-    hamiltonian = SparsePauliOp.from_list([("I", 5.0)])
+    hamiltonian = 5.0 * SparsePauliOp("I")
     with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
         VQE(
             hamiltonian=hamiltonian,
@@ -219,7 +226,7 @@ def test_vqe_fail_with_neither_hamiltonian_nor_molecule(
 def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, default_optimizer):
     """A one-term Hamiltonian initialises without an operands error."""
     vqe_problem = VQE(
-        hamiltonian=SparsePauliOp.from_list([("Z", 0.5)]),
+        hamiltonian=0.5 * SparsePauliOp("Z"),
         n_electrons=1,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,

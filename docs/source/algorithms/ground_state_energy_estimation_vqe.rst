@@ -16,13 +16,17 @@ problem in the ecosystem where it already lives:
    * - ``molecule``
      - PennyLane ``qchem.Molecule``
      - Builds the molecular Hamiltonian automatically
-     - Default install
+     - ``pennylane``
    * - ``molecule``
      - PySCF ``gto.Mole`` or restricted mean-field object
      - Runs or reuses RHF, then builds the Hamiltonian
      - ``chem``
    * - ``hamiltonian``
-     - PennyLane operator or Qiskit ``SparsePauliOp``
+     - PennyLane operator
+     - Uses the supplied qubit Hamiltonian directly
+     - ``pennylane``
+   * - ``hamiltonian``
+     - Qiskit ``SparsePauliOp`` or a Pauli-string dictionary
      - Uses the supplied qubit Hamiltonian directly
      - Default install
    * - ``hamiltonian``
@@ -30,7 +34,8 @@ problem in the ecosystem where it already lives:
      - Converts it to Divi's internal operator form
      - ``chem``
 
-Install chemistry integrations with ``pip install qoro-divi[chem]``.
+Install PennyLane integrations with ``pip install "qoro-divi[pennylane]"`` or
+PySCF/OpenFermion integrations with ``pip install "qoro-divi[chem]"``.
 
 This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
@@ -48,17 +53,13 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
 
 .. code-block:: python
 
-   import numpy as np
-   import pennylane as qp
+   from pyscf import gto
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    # Create H2 molecule
-   mol = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-   )
+   mol = gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr")
 
    # Create VQE program
    vqe_problem = VQE(
@@ -207,15 +208,11 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
    from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer
    from divi.qprog.optimizers import MonteCarloOptimizer
-   import pennylane as qp
-   import numpy as np
+   from pyscf import gto
    from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
    from divi.backends import MaestroSimulator
 
-   mol = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
-   )
+   mol = gto.M(atom="H 0 0 0; H 0 0 0.5", basis="sto-3g", unit="Bohr")
    # Create molecule transformer for bond length variations
    transformer = MoleculeTransformer(
        base_molecule=mol,

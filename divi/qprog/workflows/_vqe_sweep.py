@@ -14,34 +14,30 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
+from divi._optional import optional_module
 from divi.hamiltonians._term_ops import ObservableInput
 from divi.qprog import VQE, Ansatz, ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 
 
 def _is_pyscf_molecule(molecule) -> bool:
-    try:
-        from pyscf import gto
-    except ImportError:
-        return False
-    return isinstance(molecule, gto.Mole)
+    gto = optional_module("pyscf.gto")
+    return gto is not None and isinstance(molecule, gto.Mole)
 
 
 def _is_pennylane_molecule(molecule) -> bool:
-    try:
-        import pennylane as qp
-    except ImportError:
-        return False
-    return isinstance(molecule, qp.qchem.Molecule)
+    qp = optional_module("pennylane")
+    return qp is not None and isinstance(molecule, qp.qchem.Molecule)
 
 
 def _normalise_molecule(molecule):
     """Reduce a PySCF mean field to the molecule its geometry belongs to."""
-    try:
-        from pyscf import scf
-    except ImportError:
-        return molecule
-    return molecule.mol if isinstance(molecule, scf.hf.SCF) else molecule
+    scf = optional_module("pyscf.scf")
+    return (
+        molecule.mol
+        if scf is not None and isinstance(molecule, scf.hf.SCF)
+        else molecule
+    )
 
 
 def _geometry_of(molecule) -> npt.NDArray:

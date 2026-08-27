@@ -312,7 +312,7 @@ class TestQuEPPLocalEffectiveness:
         qc.rx(angle, 0)
         return MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
-            observable=SparsePauliOp.from_list([("Z", 1.0)]),
+            observable=SparsePauliOp("Z"),
         )
 
     @staticmethod

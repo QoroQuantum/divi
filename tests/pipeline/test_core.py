@@ -79,7 +79,7 @@ def _parametric_meta_one_body():
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
         parameters=params,
-        observable=SparsePauliOp.from_list([("Z", 1.0)]),
+        observable=SparsePauliOp("Z"),
     )
 
 

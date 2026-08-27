@@ -3234,7 +3234,6 @@ dependencies = [
     { name = "networkx" },
     { name = "numba" },
     { name = "numpy" },
-    { name = "pennylane" },
     { name = "pydantic" },
     { name = "pymetis", marker = "sys_platform != 'win32'" },
     { name = "pymoo" },
@@ -3268,24 +3267,15 @@ ai = [
     { name = "textual" },
 ]
 all = [
-    { name = "bm25s" },
-    { name = "docutils" },
     { name = "dwave-hybrid" },
-    { name = "faiss-cpu" },
-    { name = "fastembed" },
-    { name = "huggingface-hub" },
     { name = "ipykernel" },
     { name = "ipywidgets" },
-    { name = "llama-cpp-python" },
     { name = "openfermion" },
-    { name = "platformdirs" },
-    { name = "psutil" },
-    { name = "pyperclip" },
+    { name = "pennylane" },
     { name = "pyscf", marker = "sys_platform != 'win32'" },
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
     { name = "qiskit-nature" },
-    { name = "textual" },
 ]
 chem = [
     { name = "openfermion" },
@@ -3295,6 +3285,9 @@ chem = [
 jupyter = [
     { name = "ipykernel" },
     { name = "ipywidgets" },
+]
+pennylane = [
+    { name = "pennylane" },
 ]
 qubo-decompose = [
     { name = "dwave-hybrid" },
@@ -3352,7 +3345,7 @@ requires-dist = [
     { name = "numba", specifier = ">=0.64.0" },
     { name = "numpy" },
     { name = "openfermion", marker = "extra == 'chem'", specifier = ">=1.5,<2.0" },
-    { name = "pennylane", specifier = ">=0.45,<0.46" },
+    { name = "pennylane", marker = "extra == 'pennylane'", specifier = ">=0.45,<0.46" },
     { name = "platformdirs", marker = "extra == 'ai'", specifier = ">=4.0,<5.0" },
     { name = "psutil", marker = "extra == 'ai'", specifier = ">=7.0,<8.0" },
     { name = "pydantic", specifier = ">=2.10,<3.0" },
@@ -3365,7 +3358,7 @@ requires-dist = [
     { name = "qiskit-aer", marker = "extra == 'aer'" },
     { name = "qiskit-ibm-runtime", marker = "extra == 'aer'", specifier = ">=0.45" },
     { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
-    { name = "qoro-divi", extras = ["aer", "ai", "chem", "jupyter", "qubo-decompose"], marker = "extra == 'all'" },
+    { name = "qoro-divi", extras = ["aer", "chem", "jupyter", "pennylane", "qubo-decompose"], marker = "extra == 'all'" },
     { name = "qoro-maestro", specifier = "==0.2.19" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=14.0" },
@@ -3375,7 +3368,7 @@ requires-dist = [
     { name = "sympy", specifier = ">=1.14,<2.0" },
     { name = "textual", marker = "extra == 'ai'", specifier = ">=8.1.1,<9.0.0" },
 ]
-provides-extras = ["jupyter", "ai", "aer", "qubo-decompose", "chem", "all"]
+provides-extras = ["jupyter", "ai", "aer", "qubo-decompose", "pennylane", "chem", "all"]
 
 [package.metadata.requires-dev]
 dev = [

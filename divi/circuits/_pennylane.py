@@ -2,22 +2,64 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""PennyLane adapter helpers: trace ``QNode``\\ s into symbolic
-``QuantumScript``\\ s, convert them to :class:`~divi.circuits.MetaCircuit`,
-and validate their measurements."""
+"""Convert PennyLane QNodes and QuantumScripts into Divi circuits."""
 
 import inspect
 import warnings
 from collections.abc import Callable, Mapping
+from typing import cast
 
 import numpy as np
 import pennylane as qp
 import sympy as sp
 from pennylane.tape import QuantumScript
 from pennylane.workflow.qnode import QNode
+from qiskit import transpile
+from qiskit.circuit import (
+    Parameter,
+    ParameterExpression,
+    QuantumCircuit,
+    QuantumRegister,
+)
+from qiskit.circuit.library import (
+    CCXGate,
+    CRXGate,
+    CRYGate,
+    CRZGate,
+    CSwapGate,
+    CXGate,
+    CZGate,
+    HGate,
+    IGate,
+    PhaseGate,
+    RXGate,
+    RYGate,
+    RZGate,
+    SdgGate,
+    SGate,
+    StatePreparation,
+    SwapGate,
+    SXdgGate,
+    SXGate,
+    TdgGate,
+    TGate,
+    U2Gate,
+    UGate,
+    UnitaryGate,
+    XGate,
+    YGate,
+    ZGate,
+)
+from qiskit.converters import circuit_to_dag
+from qiskit.dagcircuit import DAGCircuit
+from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._conversions import _PL_TO_QISKIT_GATE, qscript_to_meta
+from divi.circuits._conversions import (
+    _QISKIT_TO_QASM2,
+    _sympy_to_qiskit,
+)
 from divi.circuits._core import DEFAULT_PRECISION, MetaCircuit
+from divi.hamiltonians import to_spo
 
 _PROBE_SIZE = 100
 
@@ -34,6 +76,257 @@ _SHAPE_HINT = (
     "qnode_to_meta, or via CustomVQA's arg_shapes/data_arg) — or pass a "
     "QuantumScript with sympy symbols."
 )
+
+# PennyLane operation name to the equivalent Qiskit gate class.
+_PL_TO_QISKIT_GATE = {
+    "Identity": IGate,
+    "PauliX": XGate,
+    "PauliY": YGate,
+    "PauliZ": ZGate,
+    "Hadamard": HGate,
+    "S": SGate,
+    "Adjoint(S)": SdgGate,
+    "SX": SXGate,
+    "Adjoint(SX)": SXdgGate,
+    "T": TGate,
+    "Adjoint(T)": TdgGate,
+    "RX": RXGate,
+    "RY": RYGate,
+    "RZ": RZGate,
+    "PhaseShift": PhaseGate,
+    "U2": U2Gate,
+    "U3": UGate,
+    "CNOT": CXGate,
+    "CZ": CZGate,
+    "CRX": CRXGate,
+    "CRY": CRYGate,
+    "CRZ": CRZGate,
+    "SWAP": SwapGate,
+    "Toffoli": CCXGate,
+    "CSWAP": CSwapGate,
+    "QubitUnitary": UnitaryGate,
+    "StatePrep": StatePreparation,
+}
+
+_REVERSE_WIRES = {"QubitUnitary", "StatePrep"}
+
+
+def _qscript_to_qiskit_circuit(
+    qscript: QuantumScript, register_size: int
+) -> QuantumCircuit:
+    """Build a Qiskit circuit from a fully decomposed QuantumScript."""
+    register = QuantumRegister(register_size)
+    circuit = QuantumCircuit(register)
+    for operation in qscript.operations:
+        params = operation.parameters
+        for index, parameter in enumerate(params):
+            if isinstance(parameter, np.ndarray):
+                params[index] = parameter.tolist()
+        qubits = [register[wire] for wire in operation.wires.labels]
+        if operation.name in _REVERSE_WIRES:
+            qubits.reverse()
+        # pyrefly: ignore[bad-argument-type]
+        gate = _PL_TO_QISKIT_GATE[operation.name](*params)
+        circuit.append(gate, qubits)
+    return circuit
+
+
+def _fresh_symbols(n_symbols: int, existing_values: list) -> list[sp.Symbol]:
+    """Create symbols whose names cannot alias existing parameters."""
+    taken: set[str] = set()
+    for value in existing_values:
+        if isinstance(value, sp.Expr):
+            taken |= {str(symbol) for symbol in value.free_symbols}
+        elif isinstance(value, ParameterExpression):
+            taken |= {parameter.name for parameter in value.parameters}
+
+    fresh: list[sp.Symbol] = []
+    counter = 0
+    while len(fresh) < n_symbols:
+        name = f"p{counter}"
+        if name not in taken:
+            fresh.append(sp.Symbol(name))
+        counter += 1
+    return fresh
+
+
+def _symbolize_trainable_subset(qscript: QuantumScript) -> QuantumScript:
+    """Make an explicit proper subset of concrete operation slots symbolic."""
+    all_values = qscript.get_parameters(trainable_only=False)
+    trainable = list(qscript.trainable_params)
+    if not trainable or len(trainable) >= len(all_values):
+        return qscript
+
+    n_operation_params = len(
+        qscript.get_parameters(trainable_only=False, operations_only=True)
+    )
+    concrete = [
+        index
+        for index in trainable
+        if index < n_operation_params
+        and not isinstance(all_values[index], (sp.Expr, ParameterExpression))
+    ]
+    if not concrete:
+        return qscript
+
+    symbols = _fresh_symbols(len(concrete), all_values)
+    return qscript.bind_new_parameters(cast(list, symbols), concrete)
+
+
+def _symbolize_trainable_ops(qscript: QuantumScript) -> QuantumScript:
+    """Make concrete trainable operation slots symbolic for optimisation."""
+    n_op_params = sum(len(op.data) for op in qscript.operations)
+    trainable = [i for i in qscript.trainable_params if i < n_op_params]
+    if qscript.trainable_params and not trainable:
+        raise ValueError(
+            "QuantumScript's trainable_params point only at observable "
+            "coefficients; CustomVQA only trains operation parameters. "
+            "Remove observable-coefficient indices from qs.trainable_params."
+        )
+    values = qscript.get_parameters(trainable_only=False)
+    already_symbolic = any(
+        isinstance(values[i], (sp.Expr, ParameterExpression)) for i in trainable
+    )
+    if already_symbolic or not trainable:
+        return qscript
+    symbols = sp.symbols(f"p0:{len(trainable)}")
+    return qscript.bind_new_parameters(list(symbols), trainable)
+
+
+def _validate_expectation_measurement(qscript: QuantumScript, *, caller: str) -> None:
+    """Require one expectation measurement with an explicit observable."""
+    _validate_single_measurement(
+        qscript,
+        allowed=(qp.measurements.ExpectationMP,),
+        caller=caller,
+        description="expectation-value (expval())",
+    )
+    if qscript.measurements[0].obs is None:
+        raise ValueError(
+            f"{caller} requires the QuantumScript's expectation-value "
+            "measurement to declare an observable; got expval() with obs=None."
+        )
+
+
+def _qscript_to_dag(
+    qscript: QuantumScript,
+) -> tuple[DAGCircuit, tuple[Parameter, ...], dict | None]:
+    """Convert a PennyLane QuantumScript into a Qiskit DAGCircuit."""
+    ordered_qiskit_params: list[Parameter] = []
+    ordered_sympy_symbols: list[sp.Symbol] = []
+    seen_qiskit: set[Parameter] = set()
+    seen_sympy: set[sp.Symbol] = set()
+    for operation in qscript.operations:
+        for parameter in operation.data:
+            if isinstance(parameter, ParameterExpression):
+                for qiskit_parameter in parameter.parameters:
+                    if qiskit_parameter not in seen_qiskit:
+                        seen_qiskit.add(qiskit_parameter)
+                        ordered_qiskit_params.append(qiskit_parameter)
+            elif isinstance(parameter, sp.Expr):
+                for symbol in parameter.free_symbols:
+                    if symbol not in seen_sympy:
+                        seen_sympy.add(symbol)
+                        ordered_sympy_symbols.append(symbol)
+
+    parameter_map: dict[sp.Symbol, Parameter] | None = None
+    if ordered_sympy_symbols:
+        parameter_map = {
+            symbol: Parameter(str(symbol)) for symbol in ordered_sympy_symbols
+        }
+
+    wires = qscript.wires
+    needs_wire_map = any(not isinstance(wire, int) for wire in wires) or set(
+        wires
+    ) != set(range(len(wires)))
+    wire_map: dict | None = None
+    if needs_wire_map:
+        wire_map = {wire: index for index, wire in enumerate(wires)}
+        mapped_qscripts, _ = qp.map_wires(qscript, wire_map=wire_map)
+        qscript = mapped_qscripts[0]
+
+    operation_script = qp.tape.QuantumScript(qscript.operations)
+    [decomposed], _ = qp.transforms.decompose(
+        operation_script,
+        stopping_condition=lambda operation: operation.name in _PL_TO_QISKIT_GATE,
+    )
+
+    if ordered_sympy_symbols and parameter_map:
+        new_values: list = []
+        indices: list[int] = []
+        for index, parameter in enumerate(decomposed.get_parameters()):
+            if isinstance(parameter, sp.Expr) and not parameter.is_Number:
+                new_values.append(_sympy_to_qiskit(parameter, parameter_map))
+                indices.append(index)
+        if indices:
+            decomposed = decomposed.bind_new_parameters(new_values, indices)
+
+    circuit = _qscript_to_qiskit_circuit(decomposed, register_size=len(qscript.wires))
+    circuit = transpile(
+        circuit,
+        basis_gates=list(_QISKIT_TO_QASM2),
+        optimization_level=0,
+    )
+
+    sympy_params = (
+        tuple(parameter_map[symbol] for symbol in ordered_sympy_symbols)
+        if ordered_sympy_symbols and parameter_map
+        else ()
+    )
+    ordered_params = tuple(ordered_qiskit_params) + sympy_params
+    return circuit_to_dag(circuit), ordered_params, wire_map
+
+
+def qscript_to_meta(
+    qscript: QuantumScript,
+    precision: int = DEFAULT_PRECISION,
+    parameter_order: tuple[Parameter, ...] | None = None,
+    was_multi_obs: bool | None = None,
+) -> MetaCircuit:
+    """Convert a PennyLane QuantumScript into a MetaCircuit."""
+    measurements = list(qscript.measurements)
+    qscript = _symbolize_trainable_subset(qscript)
+    dag, inferred_params, _ = _qscript_to_dag(qscript)
+    params = parameter_order if parameter_order is not None else inferred_params
+
+    observable: tuple[SparsePauliOp, ...] | None = None
+    measured_wires = None
+    expval_measurements = [
+        measurement
+        for measurement in measurements
+        if isinstance(measurement, qp.measurements.ExpectationMP)
+    ]
+    if expval_measurements:
+        if len(expval_measurements) != len(measurements):
+            raise ValueError(
+                "qscript_to_meta: mixing `expval` with `probs`/`counts` "
+                "measurements in a single QuantumScript is not supported."
+            )
+        operators: list[SparsePauliOp] = []
+        for measurement in expval_measurements:
+            if measurement.obs is None:
+                raise ValueError(
+                    "ExpectationMP without an observable is not supported."
+                )
+            operators.append(to_spo(measurement.obs, wires=qscript.wires))
+        observable = tuple(operators)
+    elif measurements:
+        first = measurements[0]
+        if isinstance(first, (qp.measurements.ProbabilityMP, qp.measurements.CountsMP)):
+            target_wires = first.wires if len(first.wires) else qscript.wires
+            measured_wires = tuple(qscript.wires.index(wire) for wire in target_wires)
+
+    if was_multi_obs is None:
+        was_multi_obs = len(expval_measurements) > 1
+
+    return MetaCircuit(
+        circuit_bodies=(((), dag),),
+        parameters=params,
+        observable=observable,
+        measured_wires=measured_wires,
+        precision=precision,
+        _was_multi_obs=was_multi_obs,
+    )
 
 
 def _warn_on_device_settings(qnode: QNode) -> None:

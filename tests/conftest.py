@@ -2,10 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
 import logging
 import os
 import random
 import re
+from pathlib import Path
 
 # Pin BLAS to one thread per process. Must be set before numpy loads, since BLAS
 # reads its thread count at library load. Under ``-n auto`` each xdist worker
@@ -36,16 +38,22 @@ import warnings
 import pytest
 from dotenv import load_dotenv
 
+import divi.backends as backends
 from divi.backends import (
     CircuitRunner,
     ExecutionResult,
     MaestroSimulator,
-    QiskitSimulator,
 )
 from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
+
+
+def pytest_ignore_collect(collection_path: Path, config):
+    ai_tests = Path(__file__).parent / "ai"
+    in_ai_tests = collection_path == ai_tests or ai_tests in collection_path.parents
+    return in_ai_tests and importlib.util.find_spec("bm25s") is None
 
 
 @pytest.fixture
@@ -186,7 +194,11 @@ def sampling_test_simulator():
     expval-capable backend the measurement stage promotes to the analytic path,
     which submits one circuit and allocates no per-group shots.
     """
-    return QiskitSimulator(force_sampling=True, shots=1200)
+    try:
+        simulator_cls = backends.QiskitSimulator
+    except ImportError as exc:
+        pytest.skip(str(exc))
+    return simulator_cls(force_sampling=True, shots=1200)
 
 
 @pytest.fixture

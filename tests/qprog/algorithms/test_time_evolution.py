@@ -8,6 +8,8 @@ import warnings
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
+pytest.importorskip("qiskit_aer")
+
 from divi.backends import ExecutionResult, QiskitSimulator
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits._payloads import bound_circuits
@@ -89,7 +91,7 @@ class TestTimeEvolutionInitialization:
     def test_initialization_constant_hamiltonian_fails(self, default_test_simulator):
         with pytest.raises(ValueError, match="only constant terms"):
             TimeEvolution(
-                hamiltonian=SparsePauliOp.from_list([("I", 1.0)]),
+                hamiltonian=SparsePauliOp("I"),
                 backend=default_test_simulator,
             )
 

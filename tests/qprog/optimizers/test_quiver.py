@@ -12,6 +12,8 @@ import pytest
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
+pytest.importorskip("qiskit_aer")
+
 from divi.backends import QiskitSimulator
 from divi.qprog import QAOA, VQE, QUIVEROptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz

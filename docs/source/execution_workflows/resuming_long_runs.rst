@@ -57,19 +57,15 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
 
 .. code-block:: python
 
-   import numpy as np
    from pathlib import Path
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.backends import MaestroSimulator
-   import pennylane as qp
+   from pyscf import gto
 
    # Create a molecule
-   mol = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-   )
+   mol = gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr")
 
    # Create VQE program
    vqe = VQE(

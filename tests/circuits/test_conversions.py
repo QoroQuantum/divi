@@ -2,34 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.circuits._conversions."""
-
-from collections import Counter
+"""Tests for PennyLane-free circuit conversion utilities."""
 
 import numpy as np
 import pytest
 import sympy as sp
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.converters import circuit_to_dag
 
-from divi.circuits import (
-    build_template,
-    dag_to_qasm_body,
-    qscript_to_meta,
-    render_template,
-)
+from divi.circuits import dag_to_qasm_body
 from divi.circuits._conversions import (
     _assert_finite,
     _format_bound_param,
     _format_gate_param,
-    _fresh_symbols,
-    _qscript_to_dag,
-    _symbolize_trainable_subset,
     _sympy_to_qiskit,
 )
-
-qp = pytest.importorskip("pennylane")
 
 
 class TestFormatBoundParam:
@@ -38,9 +26,9 @@ class TestFormatBoundParam:
         [
             (0.0, "0"),
             (-0.0, "0"),
-            (4.9e-9, "0"),  # sub-precision radian angle rounds toward 0
+            (4.9e-9, "0"),
             (np.pi, "3.14159265"),
-            (1234567.891, "1234567.891"),  # large angle keeps integer digits
+            (1234567.891, "1234567.891"),
         ],
     )
     def test_renders_finite_angles(self, value, expected):
@@ -48,8 +36,6 @@ class TestFormatBoundParam:
 
 
 class TestAssertFinite:
-    """Finiteness is enforced at the value-ingestion boundary, not the render leaf."""
-
     @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
     def test_rejects_non_finite(self, bad):
         values = np.array([[0.0, bad], [1.0, 2.0]])
@@ -62,49 +48,17 @@ class TestAssertFinite:
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
 def test_format_gate_param_rejects_non_finite(bad):
-    """The DAG-serialisation leaf guards non-finite numeric angles, so the
-    finiteness check is uniform across the binding/serialisation paths."""
     with pytest.raises(ValueError, match="non-finite gate parameter"):
         _format_gate_param(bad, 8)
 
 
-class TestSymbolizeTrainableSubset:
-    """A proper-subset ``trainable_params`` symbolizes only operation slots."""
-
-    def test_leaves_observable_coefficient_untouched(self):
-        """Observable/Hamiltonian coefficients must never be symbolized, or the
-        measured operator would silently change."""
-        ops = [qp.RX(0.1, wires=0), qp.RY(0.2, wires=0)]
-        hamiltonian = qp.Hamiltonian([0.7], [qp.Z(0)])
-        qs = qp.tape.QuantumScript(ops, [qp.expval(hamiltonian)])
-        # Trainable subset points only at the observable coefficient (index 2,
-        # after the two gate params), a proper subset of all parameters.
-        qs.trainable_params = [2]
-
-        out = _symbolize_trainable_subset(qs)
-
-        # The coefficient stays concrete; the operation angles are unchanged.
-        assert out.get_parameters(trainable_only=False)[2] == 0.7
-
-    def test_fresh_symbols_avoid_name_collision(self):
-        """Injected symbols skip names already present so they are not merged
-        with a pre-existing parameter by the template renderer."""
-        existing = [sp.Symbol("p0") + sp.Symbol("p2")]
-        fresh = _fresh_symbols(2, existing)
-        names = {s.name for s in fresh}
-        assert names.isdisjoint({"p0", "p2"})
-        assert len(names) == 2
-
-
 class TestSympyToQiskit:
-    """Conversion of sympy expressions into Qiskit ParameterExpression / float."""
-
     def test_bare_symbol_maps_to_parameter(self):
         theta = sp.Symbol("theta")
-        p = Parameter("theta")
-        out = _sympy_to_qiskit(theta, {theta: p})
+        parameter = Parameter("theta")
+        out = _sympy_to_qiskit(theta, {theta: parameter})
         assert isinstance(out, ParameterExpression)
-        assert float(out.bind({p: 2.5})) == pytest.approx(2.5)
+        assert float(out.bind({parameter: 2.5})) == pytest.approx(2.5)
 
     def test_numeric_constants_return_float(self):
         assert _sympy_to_qiskit(sp.Float(1.25), {}) == 1.25
@@ -120,26 +74,25 @@ class TestSympyToQiskit:
         pa, pb = Parameter("a"), Parameter("b")
         out = _sympy_to_qiskit(a + b, {a: pa, b: pb})
         assert isinstance(out, ParameterExpression)
-        # Evaluates correctly after binding.
         assert float(out.bind({pa: 1.0, pb: 2.0})) == pytest.approx(3.0)
 
     def test_mul_with_numeric_coefficient(self):
         theta = sp.Symbol("theta")
-        p = Parameter("theta")
-        out = _sympy_to_qiskit(2 * theta, {theta: p})
-        assert float(out.bind({p: 0.5})) == pytest.approx(1.0)
+        parameter = Parameter("theta")
+        out = _sympy_to_qiskit(2 * theta, {theta: parameter})
+        assert float(out.bind({parameter: 0.5})) == pytest.approx(1.0)
 
     def test_pow_composes(self):
         theta = sp.Symbol("theta")
-        p = Parameter("theta")
-        out = _sympy_to_qiskit(theta**2, {theta: p})
-        assert float(out.bind({p: 3.0})) == pytest.approx(9.0)
+        parameter = Parameter("theta")
+        out = _sympy_to_qiskit(theta**2, {theta: parameter})
+        assert float(out.bind({parameter: 3.0})) == pytest.approx(9.0)
 
     def test_sin_maps_to_parameter_method(self):
         theta = sp.Symbol("theta")
-        p = Parameter("theta")
-        out = _sympy_to_qiskit(sp.sin(theta), {theta: p})
-        assert float(out.bind({p: np.pi / 2})) == pytest.approx(1.0)
+        parameter = Parameter("theta")
+        out = _sympy_to_qiskit(sp.sin(theta), {theta: parameter})
+        assert float(out.bind({parameter: np.pi / 2})) == pytest.approx(1.0)
 
     def test_unmapped_symbol_raises(self):
         theta = sp.Symbol("theta")
@@ -147,91 +100,16 @@ class TestSympyToQiskit:
             _sympy_to_qiskit(theta, {})
 
     def test_unknown_expression_type_raises(self):
-        # Factorial isn't in the supported set.
         x = sp.Symbol("x")
         with pytest.raises(NotImplementedError):
             _sympy_to_qiskit(sp.factorial(x), {x: Parameter("x")})
 
 
-class TestQScriptToDag:
-    """End-to-end QuantumScript → DAG conversion."""
-
-    def test_non_parametric_circuit(self):
-        ops = [qp.Hadamard(0), qp.CNOT([0, 1]), qp.PauliZ(1)]
-        qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.PauliZ(0))])
-        dag, params, _ = _qscript_to_dag(qscript)
-        assert params == ()
-        gate_names = Counter(node.op.name for node in dag.op_nodes())
-        assert gate_names == {"h": 1, "cx": 1, "z": 1}
-
-    def test_parametric_qaoa_layer(self):
-        # 3 qubits, ring graph, 1 QAOA layer.
-        gamma, beta = sp.symbols("gamma beta")
-        ops = [
-            qp.Hadamard(0),
-            qp.Hadamard(1),
-            qp.Hadamard(2),
-            qp.CNOT([0, 1]),
-            qp.RZ(gamma, 1),
-            qp.CNOT([0, 1]),
-            qp.CNOT([1, 2]),
-            qp.RZ(gamma, 2),
-            qp.CNOT([1, 2]),
-            qp.CNOT([2, 0]),
-            qp.RZ(gamma, 0),
-            qp.CNOT([2, 0]),
-            qp.RX(beta, 0),
-            qp.RX(beta, 1),
-            qp.RX(beta, 2),
-        ]
-        qscript = qp.tape.QuantumScript(
-            ops=ops,
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-        dag, params, _ = _qscript_to_dag(qscript)
-        # Parameters come out in first-appearance order: gamma then beta.
-        assert [p.name for p in params] == ["gamma", "beta"]
-        # Gate count matches input (no decomposition needed for these ops).
-        assert dag.size() == len(ops)
-
-    def test_parameters_preserve_first_appearance_order(self):
-        a, b, c = sp.symbols("a b c")
-        # QScript references c, then a, then b.
-        ops = [qp.RX(c, 0), qp.RY(a, 0), qp.RZ(b, 0)]
-        qscript = qp.tape.QuantumScript(
-            ops=ops,
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-        _, params, _ = _qscript_to_dag(qscript)
-        assert [p.name for p in params] == ["c", "a", "b"]
-
-    def test_compound_sympy_expression(self):
-        theta = sp.Symbol("theta")
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RX(2 * theta, 0)],
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-        dag, (p,), _ = _qscript_to_dag(qscript)
-        op = next(iter(dag.op_nodes()))
-        assert op.op.name == "rx"
-        # The single parameter should be a ParameterExpression evaluating
-        # to 2*theta: bind theta=1.0 → 2.0.
-        (expr,) = op.op.params
-        assert isinstance(expr, ParameterExpression)
-        assert float(expr.bind({p: 1.0})) == pytest.approx(2.0)
-
-
 class TestDagToQasmBody:
-    """Body-only parametric QASM emission."""
-
     def test_preamble_is_not_emitted(self):
-        dag, _, _ = _qscript_to_dag(
-            qp.tape.QuantumScript(
-                ops=[qp.Hadamard(0)],
-                measurements=[qp.expval(qp.PauliZ(0))],
-            )
-        )
-        body = dag_to_qasm_body(dag)
+        circuit = QuantumCircuit(1)
+        circuit.h(0)
+        body = dag_to_qasm_body(circuit_to_dag(circuit))
         assert "OPENQASM" not in body
         assert "include" not in body
         assert "qreg" not in body
@@ -239,218 +117,19 @@ class TestDagToQasmBody:
         assert "h q[0];" in body
 
     def test_parametric_gate_emits_identifier(self):
-        theta = sp.Symbol("theta")
-        dag, (p,), _ = _qscript_to_dag(
-            qp.tape.QuantumScript(
-                ops=[qp.RX(theta, 0)],
-                measurements=[qp.expval(qp.PauliZ(0))],
-            )
-        )
-        body = dag_to_qasm_body(dag)
+        circuit = QuantumCircuit(1)
+        circuit.rx(Parameter("theta"), 0)
+        body = dag_to_qasm_body(circuit_to_dag(circuit))
         assert "rx(theta) q[0];" in body
 
     def test_numeric_gate_uses_precision(self):
-        dag, _, _ = _qscript_to_dag(
-            qp.tape.QuantumScript(
-                ops=[qp.RX(0.123456789, 0)],
-                measurements=[qp.expval(qp.PauliZ(0))],
-            )
-        )
-        body3 = dag_to_qasm_body(dag, precision=3)
-        body5 = dag_to_qasm_body(dag, precision=5)
-        assert "rx(0.123) q[0];" in body3
-        assert "rx(0.12346) q[0];" in body5
+        circuit = QuantumCircuit(1)
+        circuit.rx(0.123456789, 0)
+        dag = circuit_to_dag(circuit)
+        assert "rx(0.123) q[0];" in dag_to_qasm_body(dag, precision=3)
+        assert "rx(0.12346) q[0];" in dag_to_qasm_body(dag, precision=5)
 
     def test_cnot_emits_two_qubit_args(self):
-        dag, _, _ = _qscript_to_dag(
-            qp.tape.QuantumScript(
-                ops=[qp.CNOT([0, 1])],
-                measurements=[qp.expval(qp.PauliZ(0))],
-            )
-        )
-        assert "cx q[0],q[1];" in dag_to_qasm_body(dag)
-
-
-class TestEndToEndEquivalence:
-    """Round-trip: qscript → DAG → body-only QASM, bound via template, executes
-    the same unitary as the current PennyLane-based path."""
-
-    @staticmethod
-    def _bound_unitary(body_qasm_with_preamble: str, n_qubits: int) -> np.ndarray:
-        qc = QuantumCircuit.from_qasm_str(body_qasm_with_preamble)
-        return Operator(qc).data
-
-    @staticmethod
-    def _preamble(n_qubits: int) -> str:
-        return 'OPENQASM 2.0;\ninclude "qelib1.inc";\n' f"qreg q[{n_qubits}];\n"
-
-    def test_qaoa_3q_unitary_matches_current_path(self):
-        gamma, beta = sp.symbols("gamma beta")
-        ops = [
-            qp.Hadamard(0),
-            qp.Hadamard(1),
-            qp.Hadamard(2),
-            qp.CNOT([0, 1]),
-            qp.RZ(gamma, 1),
-            qp.CNOT([0, 1]),
-            qp.CNOT([1, 2]),
-            qp.RZ(gamma, 2),
-            qp.CNOT([1, 2]),
-            qp.RX(beta, 0),
-            qp.RX(beta, 1),
-            qp.RX(beta, 2),
-        ]
-        qscript = qp.tape.QuantumScript(
-            ops=ops,
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-
-        # PL qscript → DAG → body-only parametric QASM → template → bound QASM.
-        # Cross-check: the same qscript with numeric values substituted should
-        # produce the same unitary as binding via template.
-        dag, params, _ = _qscript_to_dag(qscript)
-        body = dag_to_qasm_body(dag, precision=8)
-        template = build_template(body, tuple(p.name for p in params))
-        bound_body = render_template(template, ("0.30000000", "1.10000000"))
-        u_bound = self._bound_unitary(self._preamble(3) + bound_body, 3)
-
-        # Reference: build the same qscript with concrete numeric angles.
-        ref_ops = [
-            (
-                o.__class__(
-                    *(
-                        (0.3 if s is gamma else 1.1 if s is beta else p)
-                        for p, s in zip(o.parameters, [gamma] + [beta])
-                    ),
-                    wires=o.wires,
-                )
-                if o.name == "RZ" or o.name == "RX"
-                else o
-            )
-            for o in ops
-        ]
-        ref_qscript = qp.tape.QuantumScript(
-            ops=[
-                qp.Hadamard(0),
-                qp.Hadamard(1),
-                qp.Hadamard(2),
-                qp.CNOT([0, 1]),
-                qp.RZ(0.3, 1),
-                qp.CNOT([0, 1]),
-                qp.CNOT([1, 2]),
-                qp.RZ(0.3, 2),
-                qp.CNOT([1, 2]),
-                qp.RX(1.1, 0),
-                qp.RX(1.1, 1),
-                qp.RX(1.1, 2),
-            ],
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-        ref_dag, _, _ = _qscript_to_dag(ref_qscript)
-        ref_body = dag_to_qasm_body(ref_dag, precision=8)
-        u_ref = self._bound_unitary(self._preamble(3) + ref_body, 3)
-        assert np.allclose(u_bound, u_ref, atol=1e-10)
-
-    def test_compound_expression_round_trip(self):
-        theta = sp.Symbol("theta")
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RX(2 * theta, 0), qp.RY(theta + 1, 0)],
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-        dag, (p,), _ = _qscript_to_dag(qscript)
-        body = dag_to_qasm_body(dag, precision=8)
-        # The parametric QASM should mention `theta` as an identifier and
-        # the arithmetic should survive — it's fine if Qiskit re-orders
-        # (e.g. "2*theta" vs "theta*2") as long as the semantics match.
-        assert "theta" in body
-        # Numeric round-trip: bind theta=0.5 → rx(1.0), ry(1.5).
-        template = build_template(body, (p.name,))
-        bound_body = render_template(template, ("0.50000000",))
-        qc = QuantumCircuit.from_qasm_str(self._preamble(1) + bound_body)
-        u = Operator(qc).data
-        # Reference: same two gates with concrete numeric values.
-        ref_qc = QuantumCircuit(1)
-        ref_qc.rx(1.0, 0)
-        ref_qc.ry(1.5, 0)
-        u_ref = Operator(ref_qc).data
-        assert np.allclose(u, u_ref, atol=1e-10)
-
-
-class TestQscriptToMetaObservable:
-    """``meta.observable`` shape varies with the qscript's measurement(s)."""
-
-    def test_single_expval_yields_length_one_tuple(self):
-        qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)],
-            measurements=[qp.expval(qp.PauliZ(0))],
-        )
-        meta = qscript_to_meta(qs)
-        assert isinstance(meta.observable, tuple)
-        assert len(meta.observable) == 1
-        assert isinstance(meta.observable[0], SparsePauliOp)
-        assert meta.measured_wires is None
-
-    def test_two_expvals_yields_tuple_of_sparse_pauli_ops(self):
-        qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
-            measurements=[
-                qp.expval(qp.PauliZ(0)),
-                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
-            ],
-        )
-        meta = qscript_to_meta(qs)
-        assert isinstance(meta.observable, tuple)
-        assert len(meta.observable) == 2
-        for obs in meta.observable:
-            assert isinstance(obs, SparsePauliOp)
-        assert meta.measured_wires is None
-
-    def test_three_expvals_preserve_order(self):
-        """Tuple entries are in the same order as the qscript's measurements."""
-        ops = [qp.Hadamard(0), qp.CNOT([0, 1])]
-        qs = qp.tape.QuantumScript(
-            ops=ops,
-            measurements=[
-                qp.expval(qp.PauliX(0)),
-                qp.expval(qp.PauliY(0)),
-                qp.expval(qp.PauliZ(0)),
-            ],
-        )
-        meta = qscript_to_meta(qs)
-        labels = [str(o.paulis.to_labels()[0]) for o in meta.observable]
-        # Qiskit labels are little-endian (qubit 0 on the right).  PauliX(0)
-        # on a 2-qubit wire frame → "IX"; PauliY(0) → "IY"; PauliZ(0) → "IZ".
-        assert labels == ["IX", "IY", "IZ"]
-
-    def test_mixing_multi_expval_with_probs_raises(self):
-        """Mixed measurement types on the multi-expval path are rejected —
-        the multi-observable code path expects every measurement to be an
-        expval."""
-        qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)],
-            measurements=[
-                qp.expval(qp.PauliZ(0)),
-                qp.expval(qp.PauliX(0)),
-                qp.probs(wires=[0]),
-            ],
-        )
-        with pytest.raises(ValueError, match="mixing"):
-            qscript_to_meta(qs)
-
-    def test_single_probs_yields_measured_wires_no_observable(self):
-        qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)],
-            measurements=[qp.probs(wires=[0])],
-        )
-        meta = qscript_to_meta(qs)
-        assert meta.observable is None
-        assert meta.measured_wires == (0,)
-
-    def test_no_measurement_yields_no_observable(self):
-        qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)],
-            measurements=[],
-        )
-        meta = qscript_to_meta(qs)
-        assert meta.observable is None
-        assert meta.measured_wires is None
+        circuit = QuantumCircuit(2)
+        circuit.cx(0, 1)
+        assert "cx q[0],q[1];" in dag_to_qasm_body(circuit_to_dag(circuit))

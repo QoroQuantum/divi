@@ -5,7 +5,6 @@
 from itertools import product
 
 import numpy as np
-import pennylane as qp
 import pytest
 from qiskit.circuit.library import RYGate
 from qiskit.quantum_info import SparsePauliOp
@@ -33,7 +32,7 @@ from tests.qprog._program_contracts import verify_basic_program_ensemble_behavio
 
 
 @pytest.fixture
-def h2_molecule():
+def h2_molecule(qp):
     """Fixture for a simple H2 molecule with a bond length of 0.74 Å."""
     symbols = ["H", "H"]
     coordinates = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]])
@@ -59,7 +58,7 @@ def pyscf_h2_molecule(gto):
 
 
 @pytest.fixture
-def water_molecule():
+def water_molecule(qp):
     """Fixture for a water molecule (H2O), which has a non-linear structure."""
     symbols = ["O", "H", "H"]
     # Standard coordinates for H2O with the Oxygen atom at the origin
@@ -377,7 +376,7 @@ def vqe_sweep_max_iterations():
 
 
 @pytest.fixture
-def h2_hamiltonian(h2_molecule):
+def h2_hamiltonian(h2_molecule, qp):
     """Fixture for an H2 molecular Hamiltonian."""
     hamiltonian, _ = qp.qchem.molecular_hamiltonian(h2_molecule)
     return hamiltonian
@@ -582,7 +581,11 @@ class TestVQEHyperparameterSweep:
         )
 
     def test_hamiltonian_constant_only_raises(
-        self, default_test_simulator, vqe_sweep_optimizer, vqe_sweep_max_iterations
+        self,
+        qp,
+        default_test_simulator,
+        vqe_sweep_optimizer,
+        vqe_sweep_max_iterations,
     ):
         """Test that constant-only Hamiltonians are rejected during program creation."""
         vqe_sweep = VQEHyperparameterSweep(
@@ -601,6 +604,7 @@ class TestVQEHyperparameterSweep:
 
     def test_molecule_transformer_and_hamiltonians_rejected(
         self,
+        qp,
         default_test_simulator,
         h2_molecule,
         vqe_sweep_optimizer,

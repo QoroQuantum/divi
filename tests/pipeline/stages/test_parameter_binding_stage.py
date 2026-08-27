@@ -46,7 +46,7 @@ def _parametric_meta(symbol_names: tuple[str, ...] = ("theta", "phi")) -> MetaCi
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
         parameters=params,
-        observable=SparsePauliOp.from_list([("Z", 1.0)]),
+        observable=SparsePauliOp("Z"),
     )
 
 
@@ -152,7 +152,7 @@ class TestParameterBindingStage:
         meta = MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
             parameters=(),
-            observable=SparsePauliOp.from_list([("Z", 1.0)]),
+            observable=SparsePauliOp("Z"),
         )
         sentinel_body = "// DATA-BAKED\nrx(0.5) q[0];\n"
         meta_with_pre = meta.set_qasm_bodies(((((), sentinel_body),)))

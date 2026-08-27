@@ -2,21 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, Self
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Self, TypeAlias
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qp
 from qiskit import transpile
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.converters import circuit_to_dag
-from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2
-from divi.hamiltonians._chem import molecular_hamiltonian_from_pyscf
+from divi.hamiltonians._molecular import molecular_hamiltonian
 from divi.hamiltonians._term_ops import (
+    ObservableInput,
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
     to_spo,
@@ -32,6 +33,15 @@ from divi.qprog.algorithms import (
     ZerosState,
 )
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+
+if TYPE_CHECKING:
+    from pennylane.qchem import Molecule as PennyLaneMolecule
+    from pyscf.gto import Mole as PySCFMolecule
+    from pyscf.scf.hf import SCF as PySCFMeanField
+
+    MoleculeInput: TypeAlias = PennyLaneMolecule | PySCFMolecule | PySCFMeanField
+else:
+    MoleculeInput: TypeAlias = Any
 
 
 class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
@@ -61,10 +71,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        hamiltonian: (
-            qp.operation.Operator | SparsePauliOp | dict[str, float] | None
-        ) = None,
-        molecule: qp.qchem.Molecule | Any | None = None,
+        hamiltonian: ObservableInput | None = None,
+        molecule: MoleculeInput | None = None,
         n_electrons: int | None = None,
         n_layers: int = 1,
         ansatz: Ansatz | None = None,
@@ -213,13 +221,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         if molecule is not None:
             self.molecule = molecule
-            if isinstance(molecule, qp.qchem.Molecule):
-                hamiltonian, _ = qp.qchem.molecular_hamiltonian(molecule)
-                self.n_electrons = molecule.n_electrons
-            else:
-                hamiltonian, self.n_electrons = molecular_hamiltonian_from_pyscf(
-                    molecule
-                )
+            hamiltonian, self.n_electrons = molecular_hamiltonian(molecule)
 
             if (n_electrons is not None) and self.n_electrons != n_electrons:
                 warn(

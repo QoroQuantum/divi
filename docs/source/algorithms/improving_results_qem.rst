@@ -61,8 +61,7 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    from divi.qprog import VQE
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.backends import QiskitSimulator
-   import pennylane as qp
-   import numpy as np
+   from pyscf import gto
 
    # Create a ZNE protocol with three noise scale factors.  The default
    # folding function is global unitary folding, which supports both
@@ -75,9 +74,8 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    )
 
    # Apply to VQE
-   h2_molecule = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
+   h2_molecule = gto.M(
+       atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr"
    )
 
    vqe = VQE(

@@ -90,7 +90,7 @@ class _ParametricProgram(QuantumProgram):
         qc.ry(theta, 0)
         self._meta = MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
-            observable=SparsePauliOp.from_list([("Z", 1.0)]),
+            observable=SparsePauliOp("Z"),
             parameters=(theta,),
         )
 
@@ -156,7 +156,7 @@ class TestQuantumProgramDryRun:
     def time_evolution_program(self, default_test_simulator):
         return TimeEvolution(
             hamiltonian=SparsePauliOp.from_list([("X", 1.0), ("Z", 1.0)]),
-            observable=SparsePauliOp.from_list([("Z", 1.0)]),
+            observable=SparsePauliOp("Z"),
             backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
         )

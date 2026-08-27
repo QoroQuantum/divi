@@ -2,33 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from __future__ import annotations
+
 import inspect
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import TYPE_CHECKING, Any, cast
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-import pennylane as qp
-import sympy as sp
-from pennylane.measurements import ExpectationMP
-from pennylane.workflow.qnode import QNode
 from qiskit import QuantumCircuit
-from qiskit.circuit import ParameterExpression
 from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import (
-    MetaCircuit,
-    qscript_to_meta,
-)
-from divi.circuits._pennylane_utils import (
-    _detect_batch_input_argnames,
-    _qnode_to_symbolic_qscript,
-    _symbol_arg_name,
-    _validate_single_measurement,
-)
+from divi._optional import optional_module
+from divi.circuits import MetaCircuit
 from divi.hamiltonians._mixers import single_pauli_label
+
+if TYPE_CHECKING:
+    from pennylane.tape import QuantumScript
+    from pennylane.workflow.qnode import QNode
+else:
+    QNode = QuantumScript = Any
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
 from divi.qprog.algorithms._data_binding import (
@@ -110,7 +105,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        qscript: qp.tape.QuantumScript | QNode | QuantumCircuit,
+        qscript: QuantumScript | QNode | QuantumCircuit,
         *,
         param_shape: tuple[int, ...] | int | None = None,
         data_param_indices: Sequence[int] | None = None,
@@ -203,16 +198,26 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 "Specify the data axis with either data_arg (by argument name) "
                 "or data_param_indices (by index), not both."
             )
-        if (arg_shapes is not None or data_arg is not None) and not isinstance(
-            qscript, QNode
-        ):
+        if isinstance(qscript, QuantumCircuit):
+            is_qnode = False
+            is_quantum_script = False
+        else:
+            qp = optional_module("pennylane")
+            is_qnode = qp is not None and isinstance(qscript, qp.QNode)
+            is_quantum_script = qp is not None and isinstance(
+                qscript, qp.tape.QuantumScript
+            )
+        if (arg_shapes is not None or data_arg is not None) and not is_qnode:
             raise ValueError("arg_shapes and data_arg are only valid for QNode inputs.")
 
-        if isinstance(qscript, QNode):
-            if data_arg is None and data_param_indices is None:
-                data_arg = self._infer_data_arg_from_batch_input(qscript)
+        if is_qnode:
+            from divi.circuits._pennylane import _qnode_to_symbolic_qscript
 
-            sig_args = list(inspect.signature(qscript.func).parameters)
+            qnode = cast(QNode, qscript)
+            if data_arg is None and data_param_indices is None:
+                data_arg = self._infer_data_arg_from_batch_input(qnode)
+
+            sig_args = list(inspect.signature(qnode.func).parameters)
             unknown = set(arg_shapes or {}) - set(sig_args)
             if unknown:
                 raise ValueError(
@@ -235,8 +240,9 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 n_features = np.atleast_2d(np.asarray(feature_batch)).shape[1]
                 shapes.setdefault(data_arg, (n_features,))
             qscript = _qnode_to_symbolic_qscript(
-                qscript, arg_shapes=shapes if shapes else None
+                qnode, arg_shapes=shapes if shapes else None
             )
+            is_quantum_script = True
 
         self.qscript = qscript
         self.n_layers = 1
@@ -251,8 +257,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
 
         if isinstance(qscript, QuantumCircuit):
             base_params = self._prepare_qiskit_input(qscript)
-        elif isinstance(qscript, qp.tape.QuantumScript):
-            base_params = self._prepare_pennylane_input(qscript)
+        elif is_quantum_script:
+            base_params = self._prepare_pennylane_input(cast(QuantumScript, qscript))
         else:
             raise TypeError(
                 "qscript must be a PennyLane QuantumScript, PennyLane "
@@ -265,6 +271,9 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         self._base_params = base_params
 
         if data_arg is not None:
+            # data_arg is QNode-only, so PennyLane is present by this point.
+            from divi.circuits._pennylane import _symbol_arg_name
+
             data_param_indices = [
                 i
                 for i, p in enumerate(base_params)
@@ -295,6 +304,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         has no detectable batch_input transform. Raises if more than one
         argument is batched, since a single data axis is supported.
         """
+        from divi.circuits._pennylane import _detect_batch_input_argnames
+
         detected = _detect_batch_input_argnames(qnode)
         if not detected:
             return None
@@ -343,7 +354,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         self._set_cost_hamiltonian(_z_sum_observable(qc.num_qubits, measured_wires))
         return np.array(list(qc.parameters), dtype=object)
 
-    def _prepare_pennylane_input(self, qs: qp.tape.QuantumScript) -> np.ndarray:
+    def _prepare_pennylane_input(self, qs: QuantumScript) -> np.ndarray:
         """Set state for a PennyLane ``QuantumScript`` input; return base parameters.
 
         Trainable operation parameters are made symbolic, then a single
@@ -351,57 +362,22 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         the composed circuit, and the Qiskit parameter vector — the conversion
         is the sole authority for sympy→Qiskit, dedup, and ordering.
         """
-        _validate_single_measurement(
-            qs,
-            allowed=(ExpectationMP,),
-            caller="CustomVQA",
-            description="expectation-value (expval())",
+        from divi.circuits._pennylane import (
+            _symbolize_trainable_ops,
+            _validate_expectation_measurement,
+            qscript_to_meta,
         )
-        if qs.measurements[0].obs is None:
-            raise ValueError(
-                "CustomVQA requires the QuantumScript's expectation-value "
-                "measurement to declare an observable; got expval() with "
-                "obs=None."
-            )
+
+        _validate_expectation_measurement(qs, caller="CustomVQA")
         self.n_qubits = qs.num_wires
 
-        meta = qscript_to_meta(
-            self._symbolize_trainable_ops(qs), precision=self._precision
-        )
+        meta = qscript_to_meta(_symbolize_trainable_ops(qs), precision=self._precision)
         observable = meta.observable
         if observable is None:
             raise ValueError("Converted QuantumScript has no observable to optimize.")
         self._set_cost_hamiltonian(observable[0])
         self._composed_circuit = dag_to_circuit(meta.circuit_bodies[0][1])
         return np.array(meta.parameters, dtype=object)
-
-    def _symbolize_trainable_ops(
-        self, qs: qp.tape.QuantumScript
-    ) -> qp.tape.QuantumScript:
-        """Ensure the trainable operation parameters are symbolic before conversion.
-
-        A QNode-derived script is already symbolic and passes through unchanged
-        (its ties and expressions intact). A fully concrete script has its
-        trainable operation slots replaced with fresh symbols so the conversion
-        exposes them as parameters; concrete slots that are not trainable stay
-        baked in.
-        """
-        n_op_params = sum(len(op.data) for op in qs.operations)
-        trainable = [i for i in qs.trainable_params if i < n_op_params]
-        if qs.trainable_params and not trainable:
-            raise ValueError(
-                "QuantumScript's trainable_params point only at observable "
-                "coefficients; CustomVQA only trains operation parameters. "
-                "Remove observable-coefficient indices from qs.trainable_params."
-            )
-        values = qs.get_parameters(trainable_only=False)
-        already_symbolic = any(
-            isinstance(values[i], (sp.Expr, ParameterExpression)) for i in trainable
-        )
-        if already_symbolic or not trainable:
-            return qs
-        symbols = sp.symbols(f"p0:{len(trainable)}")
-        return qs.bind_new_parameters(list(symbols), trainable)
 
     def _configure_data_binding(
         self,

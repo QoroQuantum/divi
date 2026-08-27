@@ -5,9 +5,9 @@
 """Shared problem constants and helpers for QAOA/PCE e2e-style tests."""
 
 import dimod
-import hybrid
 import networkx as nx
 import numpy as np
+import pytest
 
 from divi.qprog.problems import BinaryOptimizationProblem
 
@@ -78,6 +78,7 @@ def make_decomposed_problem(source, *, decomposer_size: int = 2):
     ``source`` may be any input the problem accepts (BQM, QUBO matrix, …).
     Used by partition-aggregation tests that need a decomposable problem.
     """
+    hybrid = pytest.importorskip("hybrid")
     return BinaryOptimizationProblem(
         source, decomposer=hybrid.EnergyImpactDecomposer(size=decomposer_size)
     )

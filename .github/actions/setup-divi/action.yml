@@ -8,6 +8,10 @@ inputs:
   sync-args:
     description: Group/extra selectors passed to `uv sync` (e.g. "--group testing --extra ai"). `--no-default-groups` is always added.
     required: true
+  save-cache:
+    description: Whether to save the uv cache after the job. Restore is always enabled.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -18,6 +22,7 @@ runs:
         enable-cache: true
         prune-cache: false
         cache-suffix: ${{ inputs.python-version }}
+        save-cache: ${{ inputs.save-cache }}
 
     - name: Set up Python
       uses: actions/setup-python@v6

@@ -6,6 +6,9 @@ import warnings
 
 import pytest
 from qiskit import QuantumCircuit, qasm2
+
+pytest.importorskip("qiskit_aer")
+
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2

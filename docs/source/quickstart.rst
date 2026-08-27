@@ -25,19 +25,24 @@ Five-Minute Tutorial
 
 Let's solve a quantum chemistry problem - finding the ground state energy of a hydrogen molecule:
 
+Molecule inputs come from the ``chem`` extra. Install it first:
+
+.. code-block:: bash
+
+   pip install "qoro-divi[chem]"
+
 .. dashboard-example: dry-run
 
 .. code-block:: python
 
-   import numpy as np
-   import pennylane as qp
+   from pyscf import gto
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
    # Step 1: Define your molecule
-   h2_molecule = qp.qchem.Molecule(
-      symbols=["H", "H"], coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
+   h2_molecule = gto.M(
+      atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr"
    )
 
    # Step 2: Choose your optimizer
@@ -149,12 +154,14 @@ Divi offers specialised algorithms for different problem types:
    .. code-block:: python
 
       import math
-      import pennylane as qp
+      from qiskit.quantum_info import SparsePauliOp
       from divi.qprog import TimeEvolution
       from divi.backends import MaestroSimulator
 
       te = TimeEvolution(
-          hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+          hamiltonian=SparsePauliOp.from_sparse_list(
+              [("X", [0], 1.0), ("X", [1], 1.0)], num_qubits=2
+          ),
           time=math.pi / 2,
           backend=MaestroSimulator(shots=5000),
       )

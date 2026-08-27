@@ -24,7 +24,7 @@ def basic_ansatz():
 def vqe_program(dummy_simulator, basic_ansatz, default_optimizer):
     """Single-qubit ``<Z>`` VQE — the smallest program with a real cost surface."""
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("Z", 1.0)]),
+        hamiltonian=SparsePauliOp("Z"),
         n_electrons=1,
         ansatz=basic_ansatz,
         n_layers=1,

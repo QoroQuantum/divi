@@ -17,14 +17,16 @@ Use probability mode when you want a final-state distribution:
 .. code-block:: python
 
    import math
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
    te = TimeEvolution(
-       hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+       hamiltonian=SparsePauliOp.from_sparse_list(
+           [("X", [0], 1.0), ("X", [1], 1.0)], num_qubits=2
+       ),
        time=math.pi / 2,
        backend=backend,
    )
@@ -41,17 +43,17 @@ Provide ``observable=...`` to estimate expectation values after evolution:
 
 .. code-block:: python
 
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
    te = TimeEvolution(
-       hamiltonian=qp.PauliX(0) + qp.PauliZ(0),
+       hamiltonian=SparsePauliOp("X") + SparsePauliOp("Z"),
        time=0.6,
        n_steps=8,
-       observable=qp.PauliZ(0),
+       observable=SparsePauliOp("Z"),
        backend=backend,
    )
    te.run()
@@ -75,16 +77,23 @@ the same order as the input observables, and the cost is shared across them:
 .. code-block:: python
 
    import math
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
+   def two_qubit(*terms):
+       return SparsePauliOp.from_sparse_list(list(terms), num_qubits=2)
+
    te = TimeEvolution(
-       hamiltonian=qp.PauliX(0) + qp.PauliX(1),
+       hamiltonian=two_qubit(("X", [0], 1.0), ("X", [1], 1.0)),
        time=math.pi / 2,
-       observable=[qp.PauliZ(0), qp.PauliZ(1), qp.PauliZ(0) @ qp.PauliZ(1)],
+       observable=[
+           two_qubit(("Z", [0], 1.0)),
+           two_qubit(("Z", [1], 1.0)),
+           two_qubit(("ZZ", [0, 1], 1.0)),
+       ],
        backend=backend,
    )
    te.run()
@@ -118,12 +127,13 @@ must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
 
 .. code-block:: python
 
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
-   H = 0.7 * qp.PauliZ(0) + 0.4 * qp.PauliX(0)
+   H = 0.7 * SparsePauliOp("Z") + 0.4 * SparsePauliOp("X")
+   Z0 = SparsePauliOp("Z")
 
    # Second-order Suzuki-Trotter with 8 steps for tighter accuracy.
    te = TimeEvolution(
@@ -131,7 +141,7 @@ must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
        time=1.0,
        n_steps=8,
        order=2,
-       observable=qp.PauliZ(0),
+       observable=Z0,
        backend=backend,
    )
    te.run()
@@ -151,7 +161,7 @@ keeps the N largest-magnitude terms, ``keep_fraction`` keeps a fraction in
        hamiltonian=H,
        trotterization_strategy=ExactTrotterization(keep_top_n=1),
        time=1.0,
-       observable=qp.PauliZ(0),
+       observable=Z0,
        backend=backend,
    )
    te.run()
@@ -163,7 +173,7 @@ For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample
 
 .. code-block:: python
 
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.hamiltonians import QDrift
    from divi.qprog import SuperpositionState, TimeEvolution
@@ -178,7 +188,9 @@ For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample
    )
 
    te = TimeEvolution(
-       hamiltonian=0.7 * qp.PauliZ(0) + 0.4 * qp.PauliX(0) + 0.2 * qp.PauliZ(1),
+       hamiltonian=SparsePauliOp.from_sparse_list(
+           [("Z", [0], 0.7), ("X", [0], 0.4), ("Z", [1], 0.2)], num_qubits=2
+       ),
        trotterization_strategy=qdrift,
        time=0.8,
        initial_state=SuperpositionState(),
@@ -206,16 +218,16 @@ collects results into a time-ordered mapping.
 
    import math
    import numpy as np
-   import pennylane as qp
+   from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.qprog import TimeEvolutionTrajectory
 
    backend = MaestroSimulator(shots=5000)
 
    trajectory = TimeEvolutionTrajectory(
-       hamiltonian=qp.PauliX(0),
+       hamiltonian=SparsePauliOp("X"),
        time_points=np.linspace(0.01, math.pi, 20).tolist(),
-       observable=qp.PauliZ(0),
+       observable=SparsePauliOp("Z"),
        backend=backend,
    )
    trajectory.run()

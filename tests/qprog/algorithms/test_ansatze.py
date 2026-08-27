@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib.util
+
 import numpy as np
 import pytest
 from qiskit.circuit import ParameterVector, QuantumCircuit
@@ -45,6 +47,16 @@ from divi.qprog.algorithms._ansatze import (
     rotation_angles,
 )
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
+
+_needs_qiskit_nature = pytest.mark.skipif(
+    importlib.util.find_spec("qiskit_nature") is None,
+    reason="requires the 'chem' extra",
+)
+
+_needs_openfermion = pytest.mark.skipif(
+    importlib.util.find_spec("openfermion") is None,
+    reason="requires the 'chem' extra",
+)
 
 
 def _build_circuit(ansatz, params, n_qubits, n_layers, **kwargs) -> QuantumCircuit:
@@ -278,6 +290,7 @@ def test_qcc_ansatz_names_a_missing_electron_count():
         QCCAnsatz().build([0.1] * 6, 4, 1)
 
 
+@_needs_qiskit_nature
 class TestUCCSDAnsatz:
     """Tests for the UCCSDAnsatz class."""
 
@@ -729,6 +742,7 @@ def _finite_difference_gradient(vqe, params, step=1e-4):
         (LUCJAnsatz, 6, 2, 1, {"same_spin_pairs": [], "opposite_spin_pairs": [(0, 2)]}),
     ],
 )
+@_needs_openfermion
 def test_declared_frequencies_give_exact_gradients(
     ansatz_factory,
     n_qubits,

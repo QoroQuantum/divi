@@ -56,15 +56,17 @@ The standalone API is useful when you want to make the scan call explicit:
 .. code-block:: python
 
    import numpy as np
-   import pennylane as qp
    from qiskit.circuit.library import RYGate, RZGate
+   from qiskit.quantum_info import SparsePauliOp
 
    from divi.backends import MaestroSimulator
    from divi.qprog import GenericLayerAnsatz, VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.viz import scan_1d, scan_2d
 
-   hamiltonian = -1.0 * qp.Z(0) + 0.5 * qp.Z(0) @ qp.Z(1)
+   hamiltonian = SparsePauliOp.from_sparse_list(
+       [("Z", [0], -1.0), ("ZZ", [0, 1], 0.5)], num_qubits=2
+   )
 
    vqe = VQE(
        hamiltonian=hamiltonian,

@@ -24,6 +24,7 @@ from ._mixers import (
     x_mixer,
     xy_mixer,
 )
+from ._molecular import molecular_hamiltonian
 from ._polynomial import (
     compile_problem,
     hubo_to_binary_polynomial,
@@ -62,6 +63,7 @@ __all__ = [
     "TrotterizationStrategy",
     "TrotterizationResult",
     "bit_driver",
+    "molecular_hamiltonian",
     "molecular_hamiltonian_from_pyscf",
     "qubit_operator_to_spo",
     "to_spo",

@@ -21,8 +21,8 @@ def simple_hamiltonian() -> SparsePauliOp:
 single_term_hamiltonians = pytest.mark.parametrize(
     "single_term_spo",
     [
-        SparsePauliOp.from_list([("Z", 0.5)]),
-        SparsePauliOp.from_list([("Z", 1.0)]),
+        0.5 * SparsePauliOp("Z"),
+        SparsePauliOp("Z"),
     ],
     ids=["scaled", "unit"],
 )
@@ -90,7 +90,7 @@ class TestExactTrotterization:
 
     def test_constant_only_hamiltonian_raises(self):
         """Constant-only Hamiltonian raises ValueError; rejected at boundary."""
-        constant_only = SparsePauliOp.from_list([("I", 5.0)])
+        constant_only = 5.0 * SparsePauliOp("I")
         strategy = ExactTrotterization(keep_fraction=0.5)
         with pytest.raises(
             ValueError, match="Hamiltonian contains only constant terms"

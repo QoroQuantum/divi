@@ -20,9 +20,9 @@ from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
 from tests.pipeline._helpers import meta_with_observable
 
-_Z0 = SparsePauliOp.from_list([("Z", 1.0)])
+_Z0 = SparsePauliOp("Z")
 _Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
-_I0 = SparsePauliOp.from_list([("I", 1.0)])
+_I0 = SparsePauliOp("I")
 
 
 class _DummyStrategy(TrotterizationStrategy):
@@ -84,7 +84,7 @@ class TestExpand:
             _DummyStrategy(n=1), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(SparsePauliOp.from_list([("Z", 1.0)]), env)
+        batch, token = stage.expand(SparsePauliOp("Z"), env)
 
         assert len(batch) == 1
         assert token["n_terms"] == 1

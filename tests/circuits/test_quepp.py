@@ -13,6 +13,9 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
+
+pytest.importorskip("qiskit_aer")
+
 from qiskit_aer.noise import NoiseModel
 
 from divi.backends import QiskitSimulator
@@ -42,7 +45,7 @@ from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
 from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
 
-_Z0 = SparsePauliOp.from_list([("Z", 1.0)])
+_Z0 = SparsePauliOp("Z")
 _Z0_2Q = SparsePauliOp.from_list([("IZ", 1.0)])
 _Z0Z1 = SparsePauliOp.from_list([("ZZ", 1.0)])
 
@@ -371,7 +374,7 @@ class TestAllCosPaths:
         angle = 0.7
         qc = _rx_qc(angle)  # Rx(θ) on qubit 0
         nc = _normalize_circuit(qc)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         rots = _extract_rotation_gates(nc)
         tabs = _build_clifford_tableaus(nc, rots)
         inv_tabs = [t.inverse() for t in tabs]
@@ -389,7 +392,7 @@ class TestAllCosPaths:
         """Observable that never propagates to a diagonal Pauli yields no path."""
         qc = _rx_qc(0.4)
         nc = _normalize_circuit(qc)
-        obs = SparsePauliOp.from_list([("X", 1.0)])  # X commutes with Rx
+        obs = SparsePauliOp("X")  # X commutes with Rx
         rots = _extract_rotation_gates(nc)
         tabs = _build_clifford_tableaus(nc, rots)
         inv_tabs = [t.inverse() for t in tabs]
@@ -706,7 +709,7 @@ class TestQuEPPNoDiagonalPathsWarning:
 
     def test_warns_on_zero_diagonal_paths_in_expand(self):
         proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         with warnings.catch_warnings():
             # The truncation-ratio warning also fires on this tiny circuit
             # (K/n_rot = 100%); silence it so pytest.warns sees the target.
@@ -716,7 +719,7 @@ class TestQuEPPNoDiagonalPathsWarning:
 
     def test_warns_on_zero_diagonal_paths_in_dry_expand(self):
         proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
             with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
@@ -726,8 +729,8 @@ class TestQuEPPNoDiagonalPathsWarning:
         # Two failing observables in one tuple → ONE batched warning that
         # mentions both indices, not two separate warnings.
         proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        bad1 = SparsePauliOp.from_list([("Z", 1.0)])
-        bad2 = SparsePauliOp.from_list([("Z", 0.5)])
+        bad1 = SparsePauliOp("Z")
+        bad2 = 0.5 * SparsePauliOp("Z")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             proto.expand(circuit_to_dag(self._h_then_rz_qc()), (bad1, bad2))
@@ -743,7 +746,7 @@ class TestQuEPPNoDiagonalPathsWarning:
         qc = QuantumCircuit(1)
         qc.rx(0.7, 0)
         proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
@@ -756,7 +759,7 @@ class TestQuEPPNoDiagonalPathsWarning:
         qc = QuantumCircuit(1)
         qc.h(0)
         proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
             proto.expand(circuit_to_dag(qc), (obs,))
@@ -796,7 +799,7 @@ class TestSymbolicExpand:
         theta = Parameter("theta")
         qc = QuantumCircuit(1)
         qc.rx(theta, 0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         p = QuEPP(sampling="montecarlo", n_samples=10, truncation_order=1, n_twirls=0)
         with pytest.warns(UserWarning, match="Monte Carlo"):
             _, ctx = p.expand(circuit_to_dag(qc), obs)
@@ -908,7 +911,7 @@ class TestCPTExpansion:
         """Rx(θ) with Z observable → cos(θ)."""
         angle = 0.8
         qc = _rx_qc(angle)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(qc), obs
         )
@@ -924,7 +927,7 @@ class TestCPTExpansion:
         qc.rx(0.3, 0)
         qc.h(0)
         qc.ry(0.5, 0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(qc), obs
         )
@@ -952,7 +955,7 @@ class TestCPTExpansion:
         not diagonal, so the path has zero contribution.
         """
         qc = _rx_qc(0.5)
-        obs = SparsePauliOp.from_list([("X", 1.0)])
+        obs = SparsePauliOp("X")
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
             circuit_to_dag(qc), obs
         )
@@ -989,7 +992,7 @@ def test_cpt_accuracy_with_normalization():
     """CPT expansion on normalized circuit still recovers exact value."""
     angle = 1.2  # > π/4, so normalization kicks in
     qc = _rx_qc(angle)
-    obs = SparsePauliOp.from_list([("Z", 1.0)])
+    obs = SparsePauliOp("Z")
     _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
         circuit_to_dag(qc), obs
     )
@@ -1004,7 +1007,7 @@ def test_mc_weights_are_cpt_coefficients():
     angle = 0.5
     qc = _rx_qc(angle)
     nc = _normalize_circuit(qc)
-    obs = SparsePauliOp.from_list([("Z", 1.0)])
+    obs = SparsePauliOp("Z")
     rots = _extract_rotation_gates(nc)
     tabs = _build_clifford_tableaus(nc, rots)
     obs_terms = _obs_to_stim_terms(obs, 1)
@@ -1027,7 +1030,7 @@ class TestQuEPPRoundTrip:
         angle = 0.8
         qc = _rx_qc(angle)
         exact = np.cos(angle)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         protocol = QuEPP(sampling="exhaustive", truncation_order=10, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         qr = [exact]
@@ -1040,7 +1043,7 @@ class TestQuEPPRoundTrip:
         angle = 0.8
         qc = _rx_qc(angle)
         exact = np.cos(angle)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         protocol = QuEPP(sampling="exhaustive", truncation_order=10, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         noise_factor = 0.9
@@ -1184,7 +1187,7 @@ def test_hybrid_normalization():
     # Rx(π/2) is concrete Clifford → normalized away; Rx(theta) is symbolic → kept
     qc.rx(np.pi / 2, 0)
     qc.rx(theta, 0)
-    obs = SparsePauliOp.from_list([("Z", 1.0)])
+    obs = SparsePauliOp("Z")
     _, ctx = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0).expand(
         circuit_to_dag(qc), obs
     )
@@ -1364,7 +1367,7 @@ class TestQuEPPMultiObservable:
     def test_path_dag_dedup_across_observables(self):
         qc = QuantumCircuit(1)
         qc.rx(0.4, 0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -1381,7 +1384,7 @@ class TestQuEPPMultiObservable:
         observable solo — path enumeration is not duplicated."""
         qc = QuantumCircuit(1)
         qc.rx(0.4, 0)
-        obs = SparsePauliOp.from_list([("Z", 1.0)])
+        obs = SparsePauliOp("Z")
         protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")

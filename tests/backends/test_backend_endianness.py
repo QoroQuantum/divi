@@ -11,6 +11,8 @@ QiskitSimulator is the ground truth.
 
 import pytest
 
+pytest.importorskip("qiskit_aer")
+
 from divi.backends import JobConfig, JobStatus, QiskitSimulator, QoroService
 
 

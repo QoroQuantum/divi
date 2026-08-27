@@ -12,6 +12,8 @@ from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
+pytest.importorskip("qiskit_aer")
+
 from divi.backends import QiskitSimulator
 from divi.circuits import MetaCircuit
 from divi.pipeline import (
@@ -1311,8 +1313,8 @@ class TestMeasurementStageTupleObservable:
         meta = MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
             observable=(
-                SparsePauliOp.from_list([("Z", 1.0)]),
-                SparsePauliOp.from_list([("Z", -1.0)]),
+                SparsePauliOp("Z"),
+                -SparsePauliOp("Z"),
             ),
         )
         backend = make_dummy_simulator(200)
@@ -1341,8 +1343,8 @@ class TestMeasurementStageTupleObservable:
         meta = MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
             observable=(
-                SparsePauliOp.from_list([("Z", 1.0)]),
-                SparsePauliOp.from_list([("Z", -1.0)]),
+                SparsePauliOp("Z"),
+                -SparsePauliOp("Z"),
             ),
         )
         env = PipelineEnv(backend=default_test_simulator)

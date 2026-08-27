@@ -185,8 +185,7 @@ tree output:
 
 .. code-block:: python
 
-   import numpy as np
-   import pennylane as qp
+   from pyscf import gto
 
    from divi.backends import QiskitSimulator
    from divi.circuits.quepp import QuEPP
@@ -194,10 +193,7 @@ tree output:
    from divi.qprog import VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
-   h2_molecule = qp.qchem.Molecule(
-       symbols=["H", "H"],
-       coordinates=np.array([(0.0, 0.0, 0.0), (0.0, 0.0, 0.74)]),
-   )
+   h2_molecule = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Bohr")
 
    vqe = VQE(
        molecule=h2_molecule,

@@ -7,6 +7,9 @@ import math
 
 import pytest
 from qiskit import QuantumCircuit, transpile
+
+pytest.importorskip("qiskit_aer")
+
 from qiskit_aer import AerSimulator
 from qiskit_aer.noise import NoiseModel
 

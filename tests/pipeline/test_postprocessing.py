@@ -101,7 +101,7 @@ class TestCountsToCostVariance:
         default would promote to the backend-native expval path (no counts), on
         which ``_counts_to_cost_variance`` is never invoked.
         """
-        observable = SparsePauliOp.from_list([("Z", 1.0)])
+        observable = SparsePauliOp("Z")
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(

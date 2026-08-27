@@ -2,23 +2,42 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for divi.circuits._pennylane_utils."""
+"""Tests for Divi's PennyLane circuit adapter."""
 
+from collections import Counter
+
+import numpy as np
 import pytest
 import sympy
+import sympy as sp
+from qiskit import QuantumCircuit
+from qiskit.circuit import ParameterExpression
+from qiskit.quantum_info import Operator, SparsePauliOp
 
 # Precedes the divi import below, which imports PennyLane itself.
 qp = pytest.importorskip("pennylane")
 
-from divi.circuits._pennylane_utils import (
+from divi.circuits import build_template, dag_to_qasm_body, render_template
+from divi.circuits._pennylane import (
     _detect_batch_input_argnames,
+    _fresh_symbols,
     _qnode_to_symbolic_qscript,
+    _qscript_to_dag,
+    _symbolize_trainable_subset,
     _validate_single_measurement,
+    qscript_to_meta,
 )
 
 CountsMP = qp.measurements.CountsMP
 ExpectationMP = qp.measurements.ExpectationMP
 ProbabilityMP = qp.measurements.ProbabilityMP
+
+
+def test_public_pennylane_conversion_exports():
+    from divi.circuits import qnode_to_meta, qscript_to_meta
+
+    assert callable(qnode_to_meta)
+    assert callable(qscript_to_meta)
 
 
 class TestQnodeToSymbolicQscript:
@@ -295,3 +314,231 @@ class TestValidateSingleMeasurement:
             _validate_single_measurement(
                 probs_script, allowed=(ExpectationMP,), caller="X"
             )
+
+
+class TestSymbolizeTrainableSubset:
+    """A proper-subset ``trainable_params`` symbolizes only operation slots."""
+
+    def test_leaves_observable_coefficient_untouched(self):
+        """Observable coefficients must never become circuit parameters."""
+        ops = [qp.RX(0.1, wires=0), qp.RY(0.2, wires=0)]
+        hamiltonian = qp.Hamiltonian([0.7], [qp.Z(0)])
+        qs = qp.tape.QuantumScript(ops, [qp.expval(hamiltonian)])
+        qs.trainable_params = [2]
+
+        out = _symbolize_trainable_subset(qs)
+
+        assert out.get_parameters(trainable_only=False)[2] == 0.7
+
+    def test_fresh_symbols_avoid_name_collision(self):
+        existing = [sp.Symbol("p0") + sp.Symbol("p2")]
+        fresh = _fresh_symbols(2, existing)
+        names = {symbol.name for symbol in fresh}
+        assert names.isdisjoint({"p0", "p2"})
+        assert len(names) == 2
+
+
+class TestQScriptToDag:
+    """End-to-end QuantumScript to DAG conversion."""
+
+    def test_non_parametric_circuit(self):
+        ops = [qp.Hadamard(0), qp.CNOT([0, 1]), qp.PauliZ(1)]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.PauliZ(0))])
+        dag, params, _ = _qscript_to_dag(qscript)
+        assert params == ()
+        gate_names = Counter(node.op.name for node in dag.op_nodes())
+        assert gate_names == {"h": 1, "cx": 1, "z": 1}
+
+    def test_parametric_qaoa_layer(self):
+        gamma, beta = sp.symbols("gamma beta")
+        ops = [
+            qp.Hadamard(0),
+            qp.Hadamard(1),
+            qp.Hadamard(2),
+            qp.CNOT([0, 1]),
+            qp.RZ(gamma, 1),
+            qp.CNOT([0, 1]),
+            qp.CNOT([1, 2]),
+            qp.RZ(gamma, 2),
+            qp.CNOT([1, 2]),
+            qp.CNOT([2, 0]),
+            qp.RZ(gamma, 0),
+            qp.CNOT([2, 0]),
+            qp.RX(beta, 0),
+            qp.RX(beta, 1),
+            qp.RX(beta, 2),
+        ]
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.PauliZ(0))])
+        dag, params, _ = _qscript_to_dag(qscript)
+        assert [param.name for param in params] == ["gamma", "beta"]
+        assert dag.size() == len(ops)
+
+    def test_parameters_preserve_first_appearance_order(self):
+        a, b, c = sp.symbols("a b c")
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(c, 0), qp.RY(a, 0), qp.RZ(b, 0)],
+            measurements=[qp.expval(qp.PauliZ(0))],
+        )
+        _, params, _ = _qscript_to_dag(qscript)
+        assert [param.name for param in params] == ["c", "a", "b"]
+
+    def test_compound_sympy_expression(self):
+        theta = sp.Symbol("theta")
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(2 * theta, 0)],
+            measurements=[qp.expval(qp.PauliZ(0))],
+        )
+        dag, (param,), _ = _qscript_to_dag(qscript)
+        operation = next(iter(dag.op_nodes()))
+        assert operation.op.name == "rx"
+        (expression,) = operation.op.params
+        assert isinstance(expression, ParameterExpression)
+        assert float(expression.bind({param: 1.0})) == pytest.approx(2.0)
+
+
+class TestEndToEndEquivalence:
+    """PennyLane conversion and QASM binding preserve circuit semantics."""
+
+    @staticmethod
+    def _bound_unitary(body_qasm_with_preamble: str) -> np.ndarray:
+        return Operator(QuantumCircuit.from_qasm_str(body_qasm_with_preamble)).data
+
+    @staticmethod
+    def _preamble(n_qubits: int) -> str:
+        return 'OPENQASM 2.0;\ninclude "qelib1.inc";\n' f"qreg q[{n_qubits}];\n"
+
+    def test_qaoa_3q_unitary_matches_numeric_conversion(self):
+        gamma, beta = sp.symbols("gamma beta")
+        qscript = qp.tape.QuantumScript(
+            ops=[
+                qp.Hadamard(0),
+                qp.Hadamard(1),
+                qp.Hadamard(2),
+                qp.CNOT([0, 1]),
+                qp.RZ(gamma, 1),
+                qp.CNOT([0, 1]),
+                qp.CNOT([1, 2]),
+                qp.RZ(gamma, 2),
+                qp.CNOT([1, 2]),
+                qp.RX(beta, 0),
+                qp.RX(beta, 1),
+                qp.RX(beta, 2),
+            ],
+            measurements=[qp.expval(qp.PauliZ(0))],
+        )
+        dag, params, _ = _qscript_to_dag(qscript)
+        body = dag_to_qasm_body(dag, precision=8)
+        template = build_template(body, tuple(param.name for param in params))
+        bound_body = render_template(template, ("0.30000000", "1.10000000"))
+        actual = self._bound_unitary(self._preamble(3) + bound_body)
+
+        reference = qp.tape.QuantumScript(
+            ops=[
+                qp.Hadamard(0),
+                qp.Hadamard(1),
+                qp.Hadamard(2),
+                qp.CNOT([0, 1]),
+                qp.RZ(0.3, 1),
+                qp.CNOT([0, 1]),
+                qp.CNOT([1, 2]),
+                qp.RZ(0.3, 2),
+                qp.CNOT([1, 2]),
+                qp.RX(1.1, 0),
+                qp.RX(1.1, 1),
+                qp.RX(1.1, 2),
+            ],
+            measurements=[qp.expval(qp.PauliZ(0))],
+        )
+        reference_dag, _, _ = _qscript_to_dag(reference)
+        expected = self._bound_unitary(
+            self._preamble(3) + dag_to_qasm_body(reference_dag, precision=8)
+        )
+        assert np.allclose(actual, expected, atol=1e-10)
+
+    def test_compound_expression_round_trip(self):
+        theta = sp.Symbol("theta")
+        qscript = qp.tape.QuantumScript(
+            ops=[qp.RX(2 * theta, 0), qp.RY(theta + 1, 0)],
+            measurements=[qp.expval(qp.PauliZ(0))],
+        )
+        dag, (param,), _ = _qscript_to_dag(qscript)
+        body = dag_to_qasm_body(dag, precision=8)
+        assert "theta" in body
+        template = build_template(body, (param.name,))
+        bound_body = render_template(template, ("0.50000000",))
+        actual = self._bound_unitary(self._preamble(1) + bound_body)
+        reference = QuantumCircuit(1)
+        reference.rx(1.0, 0)
+        reference.ry(1.5, 0)
+        assert np.allclose(actual, Operator(reference).data, atol=1e-10)
+
+
+class TestQscriptToMetaObservable:
+    """``MetaCircuit.observable`` reflects the QuantumScript measurement shape."""
+
+    def test_single_expval_yields_length_one_tuple(self):
+        script = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)], measurements=[qp.expval(qp.PauliZ(0))]
+        )
+        meta = qscript_to_meta(script)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 1
+        assert isinstance(meta.observable[0], SparsePauliOp)
+        assert meta.measured_wires is None
+
+    def test_two_expvals_yields_tuple_of_sparse_pauli_ops(self):
+        script = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
+            measurements=[
+                qp.expval(qp.PauliZ(0)),
+                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
+            ],
+        )
+        meta = qscript_to_meta(script)
+        assert isinstance(meta.observable, tuple)
+        assert len(meta.observable) == 2
+        assert all(isinstance(obs, SparsePauliOp) for obs in meta.observable)
+        assert meta.measured_wires is None
+
+    def test_three_expvals_preserve_order(self):
+        script = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
+            measurements=[
+                qp.expval(qp.PauliX(0)),
+                qp.expval(qp.PauliY(0)),
+                qp.expval(qp.PauliZ(0)),
+            ],
+        )
+        meta = qscript_to_meta(script)
+        assert [str(obs.paulis.to_labels()[0]) for obs in meta.observable] == [
+            "IX",
+            "IY",
+            "IZ",
+        ]
+
+    def test_mixing_multi_expval_with_probs_raises(self):
+        script = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)],
+            measurements=[
+                qp.expval(qp.PauliZ(0)),
+                qp.expval(qp.PauliX(0)),
+                qp.probs(wires=[0]),
+            ],
+        )
+        with pytest.raises(ValueError, match="mixing"):
+            qscript_to_meta(script)
+
+    def test_single_probs_yields_measured_wires_no_observable(self):
+        script = qp.tape.QuantumScript(
+            ops=[qp.Hadamard(0)], measurements=[qp.probs(wires=[0])]
+        )
+        meta = qscript_to_meta(script)
+        assert meta.observable is None
+        assert meta.measured_wires == (0,)
+
+    def test_no_measurement_yields_no_observable(self):
+        meta = qscript_to_meta(
+            qp.tape.QuantumScript(ops=[qp.Hadamard(0)], measurements=[])
+        )
+        assert meta.observable is None
+        assert meta.measured_wires is None

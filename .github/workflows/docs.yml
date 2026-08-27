@@ -26,10 +26,7 @@ jobs:
       - uses: ./.github/actions/setup-divi
         with:
           python-version: ${{ matrix.python-version }}
-          # Explicit extras, not ``--all-extras --no-extra ai``: the ``all``
-          # extra re-includes ``ai`` transitively, so the exclusion is a no-op.
-          # ``chem`` is needed by the LASSQD/VQE doc snippets.
-          sync-args: --group docs --group testing --extra chem --extra aer --extra qubo-decompose
+          sync-args: --group docs --group testing --all-extras --no-extra ai
 
       - name: Test documentation code snippets
         run: |

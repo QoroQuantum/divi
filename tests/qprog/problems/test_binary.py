@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import dimod
-import hybrid
 import numpy as np
 import pytest
 import scipy.sparse as sps
+
+hybrid = pytest.importorskip("hybrid")
+
 from hybrid.exceptions import EndOfStream
 from qiskit.circuit.library import RYGate, RZGate
 

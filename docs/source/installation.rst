@@ -47,6 +47,12 @@ Optional Extras
      - Unlocks
      - Adds
      - Works without it
+   * - ``pennylane``
+     - PennyLane ``QNode`` and ``QuantumScript`` conversion, PennyLane
+       operators, and PennyLane ``qchem.Molecule`` inputs.
+     - ~165 MB
+     - Qiskit circuits and ``SparsePauliOp`` Hamiltonians, including VQE and
+       QAOA; PySCF/OpenFermion chemistry remains available through ``chem``.
    * - ``aer``
      - :class:`~divi.backends.QiskitSimulator` — Qiskit Aer noise models and
        IBM fake-backend calibration data.
@@ -86,9 +92,10 @@ Install one extra, or several at once:
 .. code-block:: bash
 
    pip install "qoro-divi[aer]"
-   pip install "qoro-divi[aer,chem]"
+   pip install "qoro-divi[pennylane]"
+   pip install "qoro-divi[aer,chem,pennylane]"
 
-   uv add "qoro-divi[aer,chem]"
+   uv add "qoro-divi[aer,chem,pennylane]"
 
 To pull in everything:
 
@@ -106,7 +113,7 @@ Working from a source checkout with uv, the equivalents are:
 
 .. code-block:: bash
 
-   uv sync --extra aer --extra chem
+   uv sync --extra aer --extra chem --extra pennylane
    uv sync --all-extras
    uv sync --all-extras --no-extra ai
 
