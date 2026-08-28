@@ -18,6 +18,21 @@ import pytest
 
 from divi.backends import MaestroConfig, MaestroSimulator
 
+# MaestroConfig fields never forwarded to maestro.SimulatorConfig.
+DIVI_ONLY_FIELDS = frozenset(
+    {"mps_qubit_threshold", "noise_model", "noise_seed", "noise_realizations"}
+)
+
+
+def upstream_config_fields() -> set[str]:
+    """Writable data attributes bound on ``maestro.SimulatorConfig``."""
+    return {
+        name
+        for name in dir(maestro.SimulatorConfig)
+        if not name.startswith("_")
+        and not callable(getattr(maestro.SimulatorConfig, name))
+    }
+
 
 class TestDefaults:
     """Documented defaults on a bare ``MaestroConfig()``."""
@@ -160,6 +175,33 @@ class TestOverride:
             f"MaestroConfig fields drifted; review override semantics. "
             f"missing={known - actual}, extra={actual - known}"
         )
+
+
+class TestUpstreamFieldParity:
+    """``MaestroConfig`` and ``maestro.SimulatorConfig`` expose the same knobs."""
+
+    def test_every_forwarded_field_exists_upstream(self):
+        """A renamed or removed upstream knob fails here, not at execution time."""
+        forwarded = {f.name for f in fields(MaestroConfig)} - DIVI_ONLY_FIELDS
+        missing = forwarded - upstream_config_fields()
+        assert not missing, (
+            "MaestroConfig forwards fields that maestro.SimulatorConfig no longer "
+            f"binds: {sorted(missing)}. Rename them or move them into "
+            "DIVI_ONLY_FIELDS."
+        )
+
+    def test_every_upstream_field_is_exposed(self):
+        """A knob added upstream is invisible to Divi users until wired in here."""
+        unexposed = upstream_config_fields() - {f.name for f in fields(MaestroConfig)}
+        assert not unexposed, (
+            "maestro.SimulatorConfig binds knobs MaestroConfig does not expose: "
+            f"{sorted(unexposed)}. Add a field and forward it in "
+            "_to_maestro_config."
+        )
+
+    def test_divi_only_fields_are_real_fields(self):
+        """Guards the exclusion set itself against a rename on the Divi side."""
+        assert DIVI_ONLY_FIELDS <= {f.name for f in fields(MaestroConfig)}
 
 
 class TestToMaestroConfig:

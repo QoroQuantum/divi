@@ -121,11 +121,6 @@ class MaestroConfig:
     corresponding maestro enum members, e.g. ``"QCSim"``, ``"Gpu"``,
     ``"Statevector"``, ``"MatrixProductState"``.  ``None`` means "use maestro's
     default".
-
-    Every field is explicit — unknown options raise ``TypeError`` at
-    construction time instead of being silently dropped by a ``**kwargs``
-    passthrough, so upstream changes to ``maestro.SimulatorConfig`` surface
-    as loud failures.
     """
 
     simulator_type: str | None = None
