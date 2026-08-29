@@ -33,7 +33,7 @@ from ._active_space import (
     split_active_orbitals,
 )
 from ._active_space import validate_fragment_atoms as _validate_fragment_atoms
-from ._config import FragmentationConfig, SQDConfig
+from ._config import FragmentationConfig, LASSQDPreparationMode, SQDConfig
 from ._integrals import (
     MOIntegrals,
     assemble_active_rdms,
@@ -43,6 +43,10 @@ from ._integrals import (
     fragment_effective_integrals,
     optimize_orbitals,
     transform_integrals,
+)
+from ._preparation import (
+    LinearMethodFragmentProgram,
+    rotate_rdms_to_fragment_basis,
 )
 from ._sqd import (
     SQDSolver,
@@ -658,12 +662,13 @@ def _diagonal_rdm_guess(
 class LASSQD(ProgramEnsemble):
     """Localised active-space sample-based quantum diagonalisation.
 
-    Partitions a molecule's active space into fragments, runs one VQE per
-    fragment against its own mean-field-embedded effective Hamiltonian, and
-    (in later rounds) recovers the ground state via sample-based quantum
-    diagonalisation. This class builds the workflow state and the per-round
-    VQE programs; running rounds and aggregating results are handled
-    elsewhere.
+    Partitions a molecule's active space into fragments, prepares one circuit
+    per fragment, and recovers each fragment state via sample-based quantum
+    diagonalisation. By default, fragment preparation follows the reference
+    implementation: ROHF and CCSD seed a one-repetition LUCJ operator, ffsim's
+    exact linear method optimizes it classically, and the backend samples only
+    the final circuit. Backend-driven VQE preparation is available through
+    ``preparation_mode='vqe'``.
 
     :attr:`energy` is a variational upper bound -- the assembled RDM is that of
     a product of fragment states, so the energy is a genuine expectation value.
@@ -676,18 +681,22 @@ class LASSQD(ProgramEnsemble):
             in :meth:`initial_state`) or a restricted mean-field object —
             not a PennyLane ``qchem.Molecule``. Closed-shell (RHF) only.
         optimizer: Optimizer template, deep-copied for each fragment's VQE.
+            Required only when ``preparation_mode='vqe'`` and rejected by the
+            default linear-method path.
         fragmentation: Which orbitals are active and how they split into
             fragments, as a
             :class:`~divi.qprog.workflows.FragmentationConfig`.
         sqd: Sampling and diagonalisation budget per fragment solve, as an
             :class:`~divi.qprog.workflows.SQDConfig`. Defaults to
             ``SQDConfig()``.
-        ansatz: Per-fragment ansatz. Defaults to ``UCCSDAnsatz()``.
-        max_iterations: Max optimisation iterations per fragment VQE. An
-            iteration is an optimizer step, not a circuit evaluation: a
-            gradient-free method spends several evaluations per step and
-            ``n_params + 1`` of them building its initial simplex before the
-            first step, so this has to scale with the ansatz's parameter count.
+        ansatz: Per-fragment ansatz. The default path uses ``LUCJAnsatz`` as
+            its public configuration marker while constructing the numerical
+            ffsim circuit directly. VQE mode uses ``UCCSDAnsatz()`` when this
+            argument is omitted and warns so that the implicit choice is visible.
+        preparation_mode: Fragment-circuit preparation strategy. Defaults to
+            ``'linear_method'``; use ``'vqe'`` to restore backend-driven
+            parameter optimization.
+        max_iterations: Max optimisation iterations per fragment in VQE mode.
         max_orbital_iterations: Cap on L-BFGS-B iterations in each round's
             orbital re-optimisation, a separate solve from the fragment VQEs and
             usually the round's dominant cost on a large register. ``None``
@@ -703,9 +712,10 @@ class LASSQD(ProgramEnsemble):
         **kwargs: ``backend`` (required), ``sampling_backend``, and
             ``reporting_level`` are consumed here; ``program_id`` and
             ``progress_queue`` are set internally and must not be passed here.
-            Any other keyword is forwarded verbatim to every fragment's
-            :class:`~divi.qprog.algorithms.VQE`, e.g. ``grouping_strategy``,
-            ``shot_distribution``, ``precision``, or ``early_stopping``.
+            Other keywords are forwarded to each fragment program. Shared
+            quantum-program options such as ``precision`` and ``qem_protocol``
+            work in either mode; VQE-specific options such as
+            ``grouping_strategy`` and ``early_stopping`` require VQE mode.
 
     Raises:
         ValueError: If ``fragmentation``'s ``active_orbitals`` has out-of-range
@@ -729,16 +739,47 @@ class LASSQD(ProgramEnsemble):
         self,
         molecule: Any,
         *,
-        optimizer: Optimizer,
+        optimizer: Optimizer | None = None,
         fragmentation: FragmentationConfig,
         sqd: SQDConfig | None = None,
         ansatz: Ansatz | None = None,
+        preparation_mode: LASSQDPreparationMode | str = (
+            LASSQDPreparationMode.LINEAR_METHOD
+        ),
         max_iterations: int = 10,
         max_orbital_iterations: int | None = None,
         energy_tol: float = 1e-6,
         seed: int | None = None,
         **kwargs,
     ):
+        try:
+            preparation_mode = LASSQDPreparationMode(preparation_mode)
+        except ValueError as exc:
+            choices = ", ".join(mode.value for mode in LASSQDPreparationMode)
+            raise ValueError(
+                f"Unknown LASSQD preparation_mode {preparation_mode!r}; "
+                f"choose one of: {choices}."
+            ) from exc
+        if preparation_mode is LASSQDPreparationMode.VQE and optimizer is None:
+            raise TypeError("optimizer is required when preparation_mode='vqe'.")
+        if (
+            preparation_mode is LASSQDPreparationMode.LINEAR_METHOD
+            and ansatz is not None
+            and type(ansatz) is not LUCJAnsatz
+        ):
+            raise TypeError(
+                "The linear_method preparation mode requires LUCJAnsatz in its "
+                "default form; "
+                "select preparation_mode='vqe' to use another ansatz."
+            )
+        if (
+            preparation_mode is LASSQDPreparationMode.LINEAR_METHOD
+            and optimizer is not None
+        ):
+            raise TypeError(
+                "optimizer is only used by preparation_mode='vqe'; omit it for "
+                "the paper-faithful linear_method path."
+            )
         if max_iterations < 1:
             raise ValueError(
                 f"max_iterations must be at least 1; got {max_iterations}."
@@ -819,7 +860,21 @@ class LASSQD(ProgramEnsemble):
 
         self._fragmentation = fragmentation
         self._sqd = SQDConfig() if sqd is None else sqd
-        self._ansatz: Ansatz = UCCSDAnsatz() if ansatz is None else ansatz
+        self._preparation_mode = preparation_mode
+        if preparation_mode is LASSQDPreparationMode.VQE and ansatz is None:
+            warn(
+                "VQE preparation selected without an ansatz; using "
+                "UCCSDAnsatz by default. Pass ansatz explicitly "
+                "to make the preparation choice unambiguous.",
+                UserWarning,
+                stacklevel=2,
+            )
+        default_ansatz = (
+            UCCSDAnsatz()
+            if preparation_mode is LASSQDPreparationMode.VQE
+            else LUCJAnsatz()
+        )
+        self._ansatz: Ansatz = default_ansatz if ansatz is None else ansatz
         self._optimizer = optimizer
         self._max_iterations = max_iterations
         self._max_orbital_iterations = max_orbital_iterations
@@ -834,6 +889,16 @@ class LASSQD(ProgramEnsemble):
         self._round_reports: list[LASSQDRoundReport] = []
         self._ao_eri: np.ndarray | None = None
         self._h_ao: np.ndarray | None = None
+
+    @property
+    def preparation_mode(self) -> LASSQDPreparationMode:
+        """Fragment-circuit preparation strategy."""
+        return self._preparation_mode
+
+    @property
+    def ansatz(self) -> Ansatz:
+        """Ansatz selected for fragment preparation."""
+        return self._ansatz
 
     def initial_state(self) -> LASSQDState:
         """Resolve fragments and build the initial workflow state.
@@ -938,7 +1003,7 @@ class LASSQD(ProgramEnsemble):
         return LASSQDState(mo_coeff=mo_coeff, fragments=tuple(fragments))
 
     def create_programs(self, state: LASSQDState | None = None):
-        """Create one fragment VQE per fragment in ``state``.
+        """Create one preparation-and-sampling program per fragment in ``state``.
 
         Args:
             state: Workflow state to build programs from. Defaults to a
@@ -979,10 +1044,10 @@ class LASSQD(ProgramEnsemble):
         g_frag: np.ndarray,
         program_id: str,
         seed: int,
-    ) -> _FragmentVQE:
-        """Build one fragment's VQE program from its effective integrals.
+    ) -> _FragmentVQE | LinearMethodFragmentProgram:
+        """Build one fragment preparation program from its effective integrals.
 
-        A fresh fragment (``fragment.params is None``) is seeded from its
+        In VQE mode, a fresh fragment (``fragment.params is None``) is seeded from its
         own CCSD amplitudes via :func:`_ccsd_seed_params`; a fragment
         warm-started from a previous round uses ``fragment.params`` directly
         and never calls CCSD.
@@ -994,6 +1059,20 @@ class LASSQD(ProgramEnsemble):
         different basin than the symmetry-broken solution, so a materially
         asymmetric embedding is warned about.
         """
+        if self._preparation_mode is LASSQDPreparationMode.LINEAR_METHOD:
+            return LinearMethodFragmentProgram(
+                h_alpha,
+                h_beta,
+                g_frag,
+                fragment.spec,
+                backend=self.backend,
+                sampling_backend=self.sampling_backend,
+                program_id=program_id,
+                progress_queue=self._queue,
+                seed=seed,
+                **self._extra_kwargs,
+            )
+
         hamiltonian = _spo_from_integrals(
             h_alpha, g_frag, constant=0.0, one_body_beta=h_beta
         )
@@ -1237,9 +1316,16 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             program_id = f"fragment_{index}"
             program = programs[program_id]
             spec = fragment.spec
-            h_alpha, h_beta, g_frag = fragment_effective_integrals(
-                integrals, state.fragments, index
-            )
+            if isinstance(program, LinearMethodFragmentProgram):
+                h_alpha = program.h_alpha
+                h_beta = program.h_beta
+                g_frag = program.two_body
+                orbital_rotation = program.orbital_rotation
+            else:
+                h_alpha, h_beta, g_frag = fragment_effective_integrals(
+                    integrals, state.fragments, index
+                )
+                orbital_rotation = None
 
             probs = next(iter(program.best_probs.values()))
             sqd_probs = probs_to_sqd_bitstrings(probs, spec.n_orbitals)
@@ -1271,6 +1357,14 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 result.amplitudes,
                 spec.n_orbitals,
             )
+            if orbital_rotation is not None:
+                rdm1, rdm2, rdm1_alpha, rdm1_beta = rotate_rdms_to_fragment_basis(
+                    rdm1,
+                    rdm2,
+                    rdm1_alpha,
+                    rdm1_beta,
+                    orbital_rotation,
+                )
             new_fragments.append(
                 FragmentState(
                     spec=spec,

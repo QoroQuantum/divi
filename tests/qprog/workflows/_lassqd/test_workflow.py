@@ -30,6 +30,7 @@ from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import (
     LASSQD,
     FragmentationConfig,
+    LASSQDPreparationMode,
     ReportingLevel,
     WorkflowStatus,
 )
@@ -37,6 +38,9 @@ from divi.qprog.algorithms import LUCJAnsatz, QCCAnsatz, UCCSDAnsatz
 from divi.qprog.algorithms._ansatze import _uccsd_excitations
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.workflows._lassqd import _workflow
+from divi.qprog.workflows._lassqd._preparation import (
+    LinearMethodFragmentProgram,
+)
 from divi.qprog.workflows._lassqd._sqd import SQDResult
 from divi.qprog.workflows._lassqd._state import (
     FragmentSpec,
@@ -190,12 +194,20 @@ def test_validate_fragment_specs_rejects_a_fully_occupied_fragment():
         validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
 
 
-def _lassqd(backend, **overrides):
+_H4_FRAGMENTS = (
+    FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+    FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+)
+
+
+def _lassqd(backend, *, preparation_mode=LASSQDPreparationMode.VQE, **overrides):
+    """Two-fragment H4 ensemble with a sampling budget sized for the suite.
+
+    VQE mode supplies an optimizer and UCCSD ansatz unless overridden, while
+    linear-method mode keeps its production defaults.
+    """
     kwargs = dict(
-        active_spaces=[
-            FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-            FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
-        ],
+        active_spaces=list(_H4_FRAGMENTS),
         max_iterations=3,
         n_batches=2,
         batch_size=8,
@@ -203,13 +215,106 @@ def _lassqd(backend, **overrides):
         seed=42,
     )
     kwargs.update(overrides)
+    if preparation_mode is LASSQDPreparationMode.VQE:
+        kwargs.setdefault("optimizer", ScipyOptimizer(ScipyMethod.COBYLA))
+        kwargs.setdefault("ansatz", UCCSDAnsatz())
     return LASSQD(
         h4_chain(),
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=preparation_mode,
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(**kwargs),
     )
+
+
+def _raw_lassqd(backend, **kwargs):
+    """Construct LASSQD directly, without :func:`_lassqd`'s mode-aware defaults."""
+    return LASSQD(
+        h4_chain(),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **kwargs,
+        **lassqd_kwargs(active_spaces=list(_H4_FRAGMENTS)),
+    )
+
+
+def test_defaults_to_paper_linear_method_and_lucj(dummy_expval_backend):
+    ensemble = _raw_lassqd(dummy_expval_backend)
+
+    assert ensemble.preparation_mode is LASSQDPreparationMode.LINEAR_METHOD
+    assert isinstance(ensemble.ansatz, LUCJAnsatz)
+
+
+def test_rejects_unknown_preparation_mode(dummy_expval_backend):
+    with pytest.raises(ValueError, match="Unknown LASSQD preparation_mode"):
+        _raw_lassqd(dummy_expval_backend, preparation_mode="not-a-mode")
+
+
+class CustomLUCJAnsatz(LUCJAnsatz):
+    """LUCJ variant whose behavior cannot be represented by the paper path."""
+
+
+def test_linear_method_rejects_custom_lucj_subclass(dummy_expval_backend):
+    with pytest.raises(TypeError, match="default form"):
+        _raw_lassqd(dummy_expval_backend, ansatz=CustomLUCJAnsatz())
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        pytest.param(
+            dict(preparation_mode=LASSQDPreparationMode.VQE),
+            "optimizer is required",
+            id="vqe-without-optimizer",
+        ),
+        pytest.param(
+            dict(ansatz=UCCSDAnsatz()),
+            "requires LUCJAnsatz",
+            id="linear-method-with-foreign-ansatz",
+        ),
+        pytest.param(
+            dict(optimizer=ScipyOptimizer(ScipyMethod.COBYLA)),
+            "only used by",
+            id="linear-method-with-optimizer",
+        ),
+    ],
+)
+def test_preparation_mode_rejects_mismatched_configuration(
+    dummy_expval_backend, kwargs, match
+):
+    """Each message must be distinguishable: both optimizer errors mention
+    'optimizer' and 'vqe', so a loose pattern would let one guard pass the
+    other's test."""
+    with pytest.raises(TypeError, match=match):
+        _raw_lassqd(dummy_expval_backend, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("ansatz_kwargs", "expected_warnings"),
+    [
+        pytest.param({}, 1, id="implicit-uccsd-warns"),
+        pytest.param({"ansatz": UCCSDAnsatz()}, 0, id="explicit-uccsd-silent"),
+    ],
+)
+def test_vqe_mode_warns_only_when_it_implicitly_selects_uccsd(
+    dummy_expval_backend, recwarn, ansatz_kwargs, expected_warnings
+):
+    ensemble = _raw_lassqd(
+        dummy_expval_backend,
+        preparation_mode="vqe",
+        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        **ansatz_kwargs,
+    )
+
+    ansatz_warnings = [
+        recorded
+        for recorded in recwarn
+        if issubclass(recorded.category, UserWarning)
+        and "UCCSDAnsatz" in str(recorded.message)
+    ]
+    assert len(ansatz_warnings) == expected_warnings
+    assert ensemble.preparation_mode is LASSQDPreparationMode.VQE
+    assert isinstance(ensemble.ansatz, UCCSDAnsatz)
 
 
 def test_rejects_both_explicit_and_automatic_fragments(dummy_expval_backend):
@@ -316,6 +421,7 @@ def test_rejects_open_shell_molecules(dummy_expval_backend):
         LASSQD(
             triplet,
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+            preparation_mode=LASSQDPreparationMode.VQE,
             backend=dummy_expval_backend,
             **lassqd_kwargs(
                 active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)]
@@ -420,11 +526,63 @@ def test_create_programs_uses_the_configured_ansatz(dummy_expval_backend):
         assert isinstance(program.ansatz, LUCJAnsatz)
 
 
-def test_create_programs_defaults_to_uccsd(dummy_expval_backend):
-    ensemble = _lassqd(dummy_expval_backend)
+@pytest.mark.parametrize(
+    ("preparation_mode", "expected_type"),
+    [
+        (LASSQDPreparationMode.LINEAR_METHOD, LinearMethodFragmentProgram),
+        (LASSQDPreparationMode.VQE, _workflow._FragmentVQE),
+    ],
+    ids=["linear-method", "vqe"],
+)
+def test_create_programs_builds_the_program_type_for_its_mode(
+    dummy_expval_backend, preparation_mode, expected_type
+):
+    ensemble = _lassqd(dummy_expval_backend, preparation_mode=preparation_mode)
     ensemble.create_programs(ensemble.initial_state())
-    for program in ensemble.programs.values():
-        assert isinstance(program.ansatz, UCCSDAnsatz)
+
+    assert len(ensemble.programs) == 2
+    assert all(
+        isinstance(program, expected_type) for program in ensemble.programs.values()
+    )
+    if preparation_mode is LASSQDPreparationMode.VQE:
+        assert all(
+            program.ansatz is ensemble.ansatz for program in ensemble.programs.values()
+        )
+
+
+def test_linear_method_defers_classical_preparation_to_dispatch(
+    dummy_expval_backend, mocker
+):
+    prepare = mocker.patch(
+        "divi.qprog.workflows._lassqd._preparation.prepare_lucj_fragment"
+    )
+    ensemble = _lassqd(
+        dummy_expval_backend, preparation_mode=LASSQDPreparationMode.LINEAR_METHOD
+    )
+
+    ensemble.create_programs(ensemble.initial_state())
+
+    prepare.assert_not_called()
+
+
+def test_linear_method_samples_once_per_fragment_over_a_macro_cycle(
+    default_test_simulator,
+):
+    ensemble = _lassqd(
+        default_test_simulator,
+        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        seed=9,
+    )
+
+    ensemble.run(max_rounds=1)
+
+    assert all(program.has_results() for program in ensemble.programs.values())
+    assert all(
+        program.total_circuit_count == 1 for program in ensemble.programs.values()
+    )
+    assert ensemble.total_circuit_count == 2
+    assert np.isfinite(ensemble.energy)
+    assert ensemble.stop_reason is WorkflowStatus.MAX_ROUNDS
 
 
 def test_fragment_programs_get_distinct_seeds(dummy_expval_backend):
@@ -453,6 +611,7 @@ def test_missing_backend_raises_type_error():
         LASSQD(
             h4_chain(),
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+            preparation_mode=LASSQDPreparationMode.VQE,
             **lassqd_kwargs(
                 active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)]
             ),
@@ -752,6 +911,8 @@ def _h8_lassqd(backend, local_spins=None):
     return LASSQD(
         h8_chain(),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=LASSQDPreparationMode.VQE,
+        ansatz=UCCSDAnsatz(),
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(
@@ -801,6 +962,24 @@ POLARIZED_SPECS = [
     FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=1),
     FragmentSpec(orbitals=(2, 3), n_alpha=0, n_beta=1),
 ]
+
+
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
+def test_default_linear_method_runs_a_beta_majority_fragment(
+    default_test_simulator,
+):
+    ensemble = _lassqd(
+        default_test_simulator,
+        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        active_spaces=POLARIZED_SPECS,
+        seed=9,
+    )
+
+    ensemble.run(max_rounds=1)
+
+    assert np.isfinite(ensemble.energy)
+    assert ensemble.best_energy == ensemble.energy
+    assert all(program.has_results() for program in ensemble.programs.values())
 
 
 def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
@@ -1723,6 +1902,8 @@ def test_repeated_runs_start_from_a_clean_state(dummy_expval_backend, mocker):
     ensemble = LASSQD(
         h4_chain(),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=LASSQDPreparationMode.VQE,
+        ansatz=UCCSDAnsatz(),
         backend=dummy_expval_backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(
@@ -1750,6 +1931,33 @@ def test_repeated_runs_start_from_a_clean_state(dummy_expval_backend, mocker):
 
 @pytest.mark.e2e
 @pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
+def test_default_linear_method_h2_reaches_chemical_accuracy_over_two_rounds(
+    default_test_simulator,
+):
+    mean_field = scf.RHF(h2_molecule()).run(verbose=0)
+    exact = fci.FCI(mean_field).kernel()[0]
+    ensemble = LASSQD(
+        h2_molecule(),
+        backend=default_test_simulator,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(
+            active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+            n_batches=24,
+            batch_size=256,
+            n_recovery_iterations=3,
+            seed=7,
+        ),
+    )
+
+    ensemble.run(max_rounds=2)
+
+    assert len(ensemble.round_history) == 2
+    assert ensemble.best_energy == pytest.approx(exact, abs=1e-6)
+    assert ensemble.best_energy >= exact - 1e-8
+
+
+@pytest.mark.e2e
+@pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
 def test_single_fragment_h2_reaches_chemical_accuracy(default_test_simulator):
     """One fragment covering the whole space degenerates to plain SQD, so FCI
     is an exact variational bound (no cross-fragment 2-RDM blocks are zeroed)
@@ -1773,6 +1981,8 @@ def test_single_fragment_h2_reaches_chemical_accuracy(default_test_simulator):
     ensemble = LASSQD(
         h2_molecule(),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=LASSQDPreparationMode.VQE,
+        ansatz=UCCSDAnsatz(),
         backend=default_test_simulator,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(
@@ -1812,6 +2022,8 @@ def test_two_fragment_h4_lands_on_the_product_state_energy(
     ensemble = LASSQD(
         h4_chain(),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=LASSQDPreparationMode.VQE,
+        ansatz=UCCSDAnsatz(),
         backend=default_test_simulator,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(

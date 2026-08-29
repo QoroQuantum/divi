@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import warnings
 from pathlib import Path
 
 # Pin BLAS to one thread per process. Must be set before numpy loads, since BLAS
@@ -33,8 +34,6 @@ matplotlib.use("Agg")
 _stevedore_logger = logging.getLogger("stevedore.extension")
 _stevedore_logger.setLevel(logging.CRITICAL)
 
-import warnings
-
 import pytest
 from dotenv import load_dotenv
 
@@ -48,6 +47,17 @@ from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    """Suppress only Python's repeated JAX warning during worker forks."""
+    config.addinivalue_line(
+        "filterwarnings",
+        r"ignore:os\.fork\(\) was called\. os\.fork\(\) is incompatible with "
+        r"multithreaded code, and JAX is multithreaded, so this will likely "
+        r"lead to a deadlock\.:RuntimeWarning",
+    )
 
 
 def pytest_ignore_collect(collection_path: Path, config):

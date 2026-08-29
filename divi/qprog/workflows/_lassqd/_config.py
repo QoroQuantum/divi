@@ -6,6 +6,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 
 from ._state import FragmentSpec
 
@@ -13,6 +14,13 @@ from ._state import FragmentSpec
 # coefficient. arXiv:2512.14936 sweeps it over 1e-1 to 1e-8 and converges from
 # 1e-3 down; without carryover at all their macro-cycle energies oscillate.
 _DEFAULT_CARRYOVER_CUTOFF = 1e-5
+
+
+class LASSQDPreparationMode(StrEnum):
+    """How each LASSQD fragment's sampling circuit is prepared."""
+
+    LINEAR_METHOD = "linear_method"
+    VQE = "vqe"
 
 
 @dataclass(frozen=True)

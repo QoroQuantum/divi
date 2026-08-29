@@ -15,7 +15,13 @@ from pyscf import ao2mo, cc, fci, gto, scf
 from qiskit.quantum_info import SparsePauliOp, Statevector
 
 from divi.hamiltonians._chem import _spo_from_integrals
-from divi.qprog import LASSQD, FragmentationConfig, ReportingLevel, SQDConfig
+from divi.qprog import (
+    LASSQD,
+    FragmentationConfig,
+    LASSQDPreparationMode,
+    ReportingLevel,
+    SQDConfig,
+)
 from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.quantum_program import QuantumProgram
@@ -144,11 +150,13 @@ def h8_frontier_lassqd(backend=None, **overrides):
         n_active_orbitals=8,
         max_orbitals_per_fragment=4,
         seed=0,
+        ansatz=UCCSDAnsatz(),
     )
     kwargs.update(overrides)
     return LASSQD(
         h8_chain(),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=LASSQDPreparationMode.VQE,
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(**kwargs),
@@ -395,11 +403,13 @@ def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
         batch_size=8,
         n_recovery_iterations=2,
         seed=seed,
+        ansatz=UCCSDAnsatz(),
     )
     kwargs.update(overrides)
     ensemble = LASSQD(
         h4_chain(),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        preparation_mode=LASSQDPreparationMode.VQE,
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(**kwargs),

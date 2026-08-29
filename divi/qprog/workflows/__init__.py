@@ -7,6 +7,7 @@ from ._lassqd import (
     FragmentationConfig,
     FragmentSpec,
     FragmentState,
+    LASSQDPreparationMode,
     LASSQDRoundReport,
     LASSQDState,
     SQDConfig,

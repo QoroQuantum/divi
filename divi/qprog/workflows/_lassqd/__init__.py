@@ -4,7 +4,7 @@
 
 """Localised active-space sample-based quantum diagonalisation."""
 
-from ._config import FragmentationConfig, SQDConfig
+from ._config import FragmentationConfig, LASSQDPreparationMode, SQDConfig
 from ._state import FragmentSpec, FragmentState, LASSQDState
 from ._workflow import LASSQD, LASSQDRoundReport
 
@@ -13,6 +13,7 @@ __all__ = [
     "FragmentSpec",
     "FragmentState",
     "LASSQD",
+    "LASSQDPreparationMode",
     "LASSQDRoundReport",
     "LASSQDState",
     "SQDConfig",

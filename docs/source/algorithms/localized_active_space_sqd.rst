@@ -2,13 +2,15 @@ Localised Active-Space SQD (LASSQD)
 ====================================
 
 :class:`~divi.qprog.workflows.LASSQD` estimates the ground-state energy of a
-molecule whose active space is too large for one VQE. It first partitions the
-active space. Each macro-cycle then:
+molecule whose active space is too large for one circuit. It first partitions
+the active space. Each macro-cycle then:
 
-1. runs one embedded VQE per fragment;
-2. recovers fragment states with sample-based quantum diagonalisation (SQD);
-3. reassembles the fragment reduced density matrices (RDMs); and
-4. re-optimises the molecular orbitals against the active-space RDM.
+1. prepares each fragment's LUCJ circuit classically from CCSD with ffsim's
+   exact-statevector linear method;
+2. samples each final circuit once on a quantum backend;
+3. recovers fragment states with sample-based quantum diagonalisation (SQD);
+4. reassembles the fragment reduced density matrices (RDMs); and
+5. re-optimises the molecular orbitals against the active-space RDM.
 
 The cycle repeats until the total energy converges.
 
@@ -16,8 +18,8 @@ The cycle repeats until the total energy converges.
 handful of orbitals) is better served by :class:`~divi.qprog.algorithms.VQE`
 directly — see :doc:`ground_state_energy_estimation_vqe`. LASSQD trades exact
 treatment of inter-fragment correlation for the ability to scale the active
-space past what a single circuit's qubit count and optimizer can support,
-by splitting it into VQE-sized pieces. Read
+space past what a single circuit's qubit count can support by splitting it into
+smaller pieces. Read
 :ref:`lassqd-accuracy-characteristics` below before treating its output as
 a chemistry-grade energy.
 
@@ -45,7 +47,6 @@ calculation on the same active space:
    from pyscf import gto
    from divi.backends import MaestroSimulator
    from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec, SQDConfig
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
 
@@ -55,39 +56,64 @@ calculation on the same active space:
            active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
        ),
        sqd=SQDConfig(n_batches=4, batch_size=128, n_recovery_iterations=1),
-       optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-       max_iterations=5,
        seed=0,
        backend=MaestroSimulator(shots=500),
    )
+   print(ensemble.preparation_mode.value)  # linear_method
+   print(type(ensemble.ansatz).__name__)   # LUCJAnsatz
    ensemble.run(max_rounds=2)
    print(f"Energy: {ensemble.energy:.6f} Ha")
 
-Separate Backends for Optimisation and SQD Sampling
-----------------------------------------------------
+LUCJ and VQE Preparation
+--------------------------
 
-Pass ``sampling_backend`` when fragment optimisation and the final SQD samples
-should run on a different backend. In each macro-cycle, LASSQD first optimises
-all fragment VQEs on ``backend`` with their automatic final measurements
-disabled. After every fragment has finished, it submits a separate final
-sampling phase through ``sampling_backend``. The fragment measurements remain
-eligible for the ensemble's merged batching.
+The default ``linear_method`` preparation follows arXiv:2512.14936: CCSD seeds
+a one-repetition spin-unbalanced LUCJ operator. The CCSD amplitudes are fitted
+subject to the paper's local interaction graph, ffsim optimises the resulting
+operator classically, and only the final computational-basis sample reaches
+``backend``. Independent fragment preparations remain separate ensemble
+programs and can run in parallel.
+
+For a spin-polarised fragment, ROHF and ffsim use the paper's single one-body
+preparation Hamiltonian. SQD diagonalisation receives both physical-spin
+one-body tensors, rotated into the sampled orbital basis, so the signed
+embedding field remains present during recovery. Non-finite CCSD amplitudes or
+linear-method parameters raise ``RuntimeError`` with the affected fragment
+before a circuit is submitted.
+
+VQE preparation is available as an explicit alternative. Select
+:attr:`~divi.qprog.workflows.LASSQDPreparationMode.VQE`, provide an optimizer,
+and optionally choose another Divi ansatz. In that mode ``backend`` runs the
+VQE expectation-value loop and ``sampling_backend`` can run the separate final
+SQD sample:
 
 .. skip: next
 
 .. code-block:: python
 
    from divi.backends import MaestroSimulator, QiskitSimulator
+   from divi.qprog import LASSQDPreparationMode
+   from divi.qprog.algorithms import UCCSDAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
    ensemble = LASSQD(
        ...,
+       preparation_mode=LASSQDPreparationMode.VQE,
+       ansatz=UCCSDAnsatz(),
+       optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
        backend=MaestroSimulator(shots=500),
        sampling_backend=QiskitSimulator(force_sampling=True, shots=4000),
    )
    ensemble.run(max_rounds=2)
 
-If ``sampling_backend`` is omitted, optimisation and final sampling both use
-``backend`` as before.
+If ``sampling_backend`` is omitted, VQE optimisation and final sampling both
+use ``backend``. In the default mode, ``sampling_backend`` simply overrides
+``backend`` for the one final sample.
+
+VQE mode selects :class:`~divi.qprog.algorithms.UCCSDAnsatz` when ``ansatz`` is
+omitted and emits a warning about the implicit choice. Pass the ansatz
+explicitly, as above, for reproducible configuration. The resolved choices are
+always available as ``ensemble.preparation_mode`` and ``ensemble.ansatz``.
 
 .. important::
 
@@ -174,8 +200,9 @@ automatic graph-fragment order is unstable.
 Rounds Are Macro-Cycles
 -------------------------
 
-One LASSQD round runs every fragment VQE and SQD recovery, reassembles the RDM,
-and optimises the orbitals. ``run(max_rounds=N)`` caps macro-cycles; ``None``
+One LASSQD round prepares and samples every fragment, runs SQD recovery,
+reassembles the RDM, and optimises the orbitals. ``run(max_rounds=N)`` caps
+macro-cycles; ``None``
 runs until consecutive energies differ by less than ``energy_tol`` (default
 ``1e-6`` Ha). Key results are:
 
@@ -319,25 +346,30 @@ is ``LASSQD``'s own ``energy_tol``, which ends the macro-cycle.
    Enable it only once you have confirmed that recovery, rather than the orbital
    solve, is what your runs spend their time on.
 
-Choosing an Ansatz
---------------------
+Choosing a Preparation Mode
+-----------------------------
 
-Use the default :class:`~divi.qprog.algorithms.UCCSDAnsatz` unless you have
-validated :class:`~divi.qprog.algorithms.LUCJAnsatz`—the local unitary
-cluster-Jastrow alternative—at your fragment size. Both use fragment CCSD data.
-UCCSD reads amplitudes directly; LUCJ derives rotation and Coulomb parameters by
-double factorisation and generally uses more parameters.
+The paper-faithful default always uses ffsim's spin-unbalanced LUCJ operator.
+Its parameter vector and numeric orbital-rotation decomposition are owned by
+ffsim; they are not interchangeable with Divi's symbolic
+:class:`~divi.qprog.algorithms.LUCJAnsatz` parameters. The default
+``LUCJAnsatz`` instance is therefore a configuration marker in this mode;
+custom subclasses require the VQE route.
+
+Select :attr:`~divi.qprog.workflows.LASSQDPreparationMode.VQE` to use a Divi
+ansatz in a quantum optimisation loop. It defaults to
+:class:`~divi.qprog.algorithms.UCCSDAnsatz`, with a warning when that choice is
+implicit, and accepts :class:`~divi.qprog.algorithms.LUCJAnsatz` or another
+compatible ansatz.
 
 SQD needs coverage, not merely a low ansatz energy. An ansatz concentrated on
 one determinant starves recovery. Compare per-fragment subspace sizes in
 :attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
 full determinant count.
 
-For the truncated LUCJ circuit used in arXiv:2405.05068 and arXiv:2512.14936,
-set ``ansatz_kwargs={"trailing_rotation": True}`` with ``n_layers=1``. To reduce
-parameters, use ``shared_spin_params``, limit ``rotation_depth``, or specify
-``same_spin_pairs`` / ``opposite_spin_pairs``. ``shared_spin_params`` cannot use
-the factorised seed and therefore starts from the optimizer initialisation.
+The default path fixes the paper's one-repetition topology, including its final
+orbital rotation and local interaction pairs. ``n_layers`` and
+``ansatz_kwargs`` configure only the explicit VQE route.
 
 Next Steps
 ------------
