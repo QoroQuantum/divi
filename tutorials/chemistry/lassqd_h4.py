@@ -50,7 +50,6 @@ from divi.qprog import (
     ReportingLevel,
     SQDConfig,
 )
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 
 
@@ -67,7 +66,6 @@ def main() -> None:
     correlation = casci_energy - mean_field.e_tot
 
     settings = dict(
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         sqd=SQDConfig(n_batches=6, batch_size=32, n_recovery_iterations=3),
         max_iterations=60,
         seed=7,

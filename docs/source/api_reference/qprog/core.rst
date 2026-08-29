@@ -22,7 +22,7 @@ uniform return type for decoded solutions.
    :skip: MetricEstimator, PullbackMetricEstimator, FubiniStudyMetricEstimator, StochasticFidelityMetricEstimator
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
    :skip: LASSQD, FragmentSpec, FragmentState, LASSQDRoundReport, LASSQDState
-   :skip: FragmentationConfig, SQDConfig
+   :skip: FragmentationConfig, LASSQDPreparationMode, SQDConfig
    :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
    :skip: ParamHistoryMode
 

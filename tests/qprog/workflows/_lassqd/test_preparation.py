@@ -6,11 +6,12 @@
 
 from types import SimpleNamespace
 
-import ffsim
 import numpy as np
 import pytest
 from qiskit import ClassicalRegister, QuantumCircuit
 from qiskit.quantum_info import Statevector
+
+ffsim = pytest.importorskip("ffsim")
 
 from divi.qprog.workflows._lassqd import _preparation as preparation
 from divi.qprog.workflows._lassqd._preparation import (
