@@ -20,8 +20,12 @@ import divi.backends.runners._qoro as _qoro_service
 from divi.backends import (
     ExecutionConfig,
     ExecutionResult,
+    InsufficientCreditsError,
+    JobCancelledError,
     JobConfig,
+    JobFailedError,
     JobStatus,
+    JobTimedOutError,
     JobType,
     QoroService,
     QPUSystem,
@@ -60,6 +64,63 @@ from tests.backends._helpers import (
     make_mock_status_response,
     make_qasm_payload,
 )
+
+
+class TestQoroJobStatusAPI:
+    def test_single_poll_returns_a_known_nonterminal_status(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory(auth_token="test_token")
+        response = mocker.Mock()
+        response.json.return_value = {"status": "SCHEDULED"}
+        mocker.patch.object(service, "_make_request", return_value=response)
+
+        assert service.poll_job_status(make_execution_result()) is JobStatus.SCHEDULED
+
+    def test_looping_poll_waits_through_every_nonterminal_status(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=4, polling_interval=0
+        )
+        responses = []
+        for status in ["PENDING", "SCHEDULED", "PAUSED", "COMPLETED"]:
+            response = mocker.Mock()
+            response.json.return_value = {"status": status}
+            responses.append(response)
+        mocker.patch.object(service, "_make_request", side_effect=responses)
+
+        status = service.poll_job_status(
+            make_execution_result(), loop_until_complete=True, verbose=False
+        )
+
+        assert status is JobStatus.COMPLETED
+
+    @pytest.mark.parametrize(
+        ("status", "exception_type"),
+        [
+            ("FAILED", JobFailedError),
+            ("CANCELLED", JobCancelledError),
+            ("INSUFFICIENT_CREDITS", InsufficientCreditsError),
+            ("TIMED_OUT", JobTimedOutError),
+        ],
+    )
+    def test_looping_poll_raises_the_terminal_status_error(
+        self, mocker, qoro_service_factory, status, exception_type
+    ):
+        service = qoro_service_factory(auth_token="test_token")
+        response = mocker.Mock()
+        response.json.return_value = {"status": status}
+        mocker.patch.object(service, "_make_request", return_value=response)
+        execution_result = make_execution_result(job_id="failed-job")
+
+        with pytest.raises(exception_type) as exc_info:
+            service.poll_job_status(
+                execution_result, loop_until_complete=True, verbose=False
+            )
+
+        assert exc_info.value.job_id == "failed-job"
+        assert exc_info.value.status == JobStatus(status)
 
 
 class TestQoroServiceMock:
@@ -418,8 +479,8 @@ class TestQoroServiceMock:
         ):
             get_simulator_cluster("missing")
 
-    def test_poll_job_status_comprehensive(self, mocker, qoro_service_factory):
-        """Test poll_job_status functionality."""
+    def test_job_status_api_comprehensive(self, mocker, qoro_service_factory):
+        """Test one-shot status inspection and terminal waiting."""
         service = qoro_service_factory(
             auth_token="test_token", max_retries=3, polling_interval=0.01
         )
@@ -456,12 +517,12 @@ class TestQoroServiceMock:
         ]
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
         on_complete_callback = mocker.MagicMock()
-        status = service.poll_job_status(
-            make_execution_result(),
-            loop_until_complete=True,
-            on_complete=on_complete_callback,
-        )
-        assert status == JobStatus.FAILED
+        with pytest.raises(JobFailedError):
+            service.poll_job_status(
+                make_execution_result(),
+                loop_until_complete=True,
+                on_complete=on_complete_callback,
+            )
         on_complete_callback.assert_called_once()
 
         # Test 4: Max retries reached
@@ -493,12 +554,12 @@ class TestQoroServiceMock:
         ]
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
         on_complete_callback = mocker.MagicMock()
-        status = service.poll_job_status(
-            make_execution_result(),
-            loop_until_complete=True,
-            on_complete=on_complete_callback,
-        )
-        assert status == JobStatus.CANCELLED
+        with pytest.raises(JobCancelledError):
+            service.poll_job_status(
+                make_execution_result(),
+                loop_until_complete=True,
+                on_complete=on_complete_callback,
+            )
         on_complete_callback.assert_called_once()
 
     def test_on_complete_receives_decoded_payload(self, mocker, qoro_service_factory):
@@ -582,8 +643,8 @@ class TestQoroServiceMock:
     def test_poll_job_status_auto_cancels_remote_job_on_user_cancel(
         self, mocker, qoro_service_factory
     ):
-        """Direct callers (``loop_until_complete=True``, no caller-supplied
-        ``cancellation_event``) get an auto-installed SIGINT funnel plus
+        """Direct callers without a caller-supplied cancellation event get an
+        auto-installed SIGINT funnel plus
         best-effort remote-job cleanup. We patch the scope helper to yield a
         pre-set event so the loop exits on iteration one, then assert
         ``cancel_job`` was invoked by the scope's cleanup path."""
@@ -683,6 +744,53 @@ class TestQoroServiceMock:
         assert "unexpected" not in captured, captured.get("unexpected")
         assert isinstance(captured.get("exc"), ExecutionCancelledError)
 
+    def test_poll_job_status_local_cancel_during_request_takes_precedence(
+        self, mocker, qoro_service_factory
+    ):
+        """A locally requested cancellation remains cooperative cancellation
+        when the in-flight status request subsequently reports ``CANCELLED``.
+        """
+        service = qoro_service_factory(auth_token="test_token")
+        cancel_event = Event()
+
+        def cancel_during_request(*args, **kwargs):
+            cancel_event.set()
+            return make_mock_status_response(mocker, JobStatus.CANCELLED)
+
+        mocker.patch.object(service, "_make_request", side_effect=cancel_during_request)
+
+        with pytest.raises(ExecutionCancelledError):
+            service.poll_job_status(
+                make_execution_result(),
+                loop_until_complete=True,
+                cancellation_event=cancel_event,
+            )
+
+    def test_poll_job_status_completed_response_takes_precedence_over_local_cancel(
+        self, mocker, qoro_service_factory
+    ):
+        """A cancellation requested during the final status request cannot
+        undo a job that the response confirms has already completed.
+        """
+        service = qoro_service_factory(auth_token="test_token")
+        cancel_event = Event()
+
+        def complete_during_request(*args, **kwargs):
+            cancel_event.set()
+            return make_mock_status_response(mocker, JobStatus.COMPLETED)
+
+        mocker.patch.object(
+            service, "_make_request", side_effect=complete_during_request
+        )
+
+        status = service.poll_job_status(
+            make_execution_result(),
+            loop_until_complete=True,
+            cancellation_event=cancel_event,
+        )
+
+        assert status is JobStatus.COMPLETED
+
     def test_poll_job_status_no_cancellation_event_unchanged(
         self, mocker, qoro_service_factory
     ):
@@ -701,7 +809,9 @@ class TestQoroServiceMock:
             ],
         )
         status = service.poll_job_status(
-            make_execution_result(), loop_until_complete=True, cancellation_event=None
+            make_execution_result(),
+            loop_until_complete=True,
+            cancellation_event=None,
         )
         assert status == JobStatus.COMPLETED
 

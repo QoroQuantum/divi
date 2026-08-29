@@ -4,8 +4,9 @@
 
 """The concrete :class:`~divi.backends.CircuitRunner` implementations."""
 
+from .._job_status import JobStatus
 from ._maestro import MaestroConfig, MaestroSimulator
-from ._qoro import JobStatus, JobType, QoroService
+from ._qoro import JobType, QoroService
 
 __all__ = [
     "JobStatus",

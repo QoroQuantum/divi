@@ -762,18 +762,10 @@ class _BatchCoordinator:
             cancellation_event=self._cancelled,
         )
 
-        if status == JobStatus.FAILED:
-            raise RuntimeError(
-                f"Merged batch job {execution_result.job_id} has failed."
-            )
-        if status == JobStatus.CANCELLED:
-            raise ExecutionCancelledError(
-                f"Merged batch job {execution_result.job_id} was cancelled."
-            )
         if status != JobStatus.COMPLETED:
             raise RuntimeError(
                 f"Merged batch job {execution_result.job_id} "
-                f"ended with unexpected status: {status}"
+                f"returned unexpected status from poll_job_status: {status}"
             )
 
         completed = backend.get_job_results(execution_result)

@@ -27,9 +27,13 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from divi.exceptions import CharacterizationFailedError, ExecutionCancelledError
+from divi.exceptions import (
+    CharacterizationFailedError,
+    ExecutionCancelledError,
+)
 from divi.qprog.problems import BinaryOptimizationProblem
 
+from .._job_status import InsufficientCreditsError, JobTimedOutError
 from ..runners._qoro import QoroService
 
 logger = logging.getLogger(__name__)
@@ -1798,6 +1802,10 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
         raise ExecutionCancelledError(
             f"Characterisation job {job_id} was cancelled before completion."
         )
+    if status == "INSUFFICIENT_CREDITS":
+        raise InsufficientCreditsError(job_id)
+    if status == "TIMED_OUT":
+        raise JobTimedOutError(job_id)
     if status != "COMPLETED":
         raise CharacterizationFailedError(
             job_id,
@@ -1905,6 +1913,9 @@ def characterize_and_validate(
         ~divi.exceptions.CharacterizationFailedError: If the job failed or
             completed carrying no analysis.
         ~divi.exceptions.ExecutionCancelledError: If the job was cancelled.
+        ~divi.backends.InsufficientCreditsError: If the account lacks the
+            credits required to run the job.
+        ~divi.backends.JobTimedOutError: If server-side execution timed out.
 
     Examples:
         >>> import numpy as np
@@ -1958,9 +1969,8 @@ def get_characterization_result(
     """Wait for and retrieve a characterisation result by job ID.
 
     Polling and retrieval do not cost credits. The service waits through
-    ``PENDING`` and ``RUNNING`` according to its polling configuration,
-    then returns the completed report or raises the corresponding terminal
-    status error.
+    nonterminal statuses according to its polling configuration, then returns
+    the completed report or raises the corresponding terminal-status error.
 
     Args:
         job_id: Identifier of a previously submitted characterisation job.
@@ -1973,6 +1983,9 @@ def get_characterization_result(
         ~divi.exceptions.CharacterizationFailedError: If the job failed or
             completed without analysis.
         ~divi.exceptions.ExecutionCancelledError: If the job was cancelled.
+        ~divi.backends.InsufficientCreditsError: If the account lacks the
+            credits required to run the job.
+        ~divi.backends.JobTimedOutError: If server-side execution timed out.
         ~divi.exceptions.CharacterizationSubmitError: If status polling or
             result retrieval fails ambiguously after retries.
 

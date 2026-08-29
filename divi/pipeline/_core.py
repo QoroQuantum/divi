@@ -147,24 +147,10 @@ def _wait_for_async_result(backend, execution_result, env):
         cancellation_event=env.cancellation_event,
     )
 
-    if status == JobStatus.FAILED:
-        raise RuntimeError(f"Job {job_id} has failed")
-
-    if status == JobStatus.CANCELLED:
-        # Distinguish a local cancel (our event was set → user/coordinator
-        # asked) from a scheduler-side cancel (eviction, quota, admin stop).
-        # The former is the graceful user-cancellation path; the latter is
-        # an unexpected interruption that the caller should not confuse with
-        # an intentional shutdown.
-        if env.cancellation_event is not None and env.cancellation_event.is_set():
-            raise ExecutionCancelledError(f"Job {job_id} was cancelled")
-        raise RuntimeError(
-            f"Job {job_id} was cancelled by the scheduler "
-            "(no local cancellation requested)"
-        )
-
     if status != JobStatus.COMPLETED:
-        raise RuntimeError("Job has not completed yet, cannot post-process results")
+        raise RuntimeError(
+            f"Backend poll_job_status returned unexpected status {status} for job {job_id}"
+        )
 
     return backend.get_job_results(execution_result)
 

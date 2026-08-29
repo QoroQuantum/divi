@@ -15,7 +15,13 @@ from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
+from divi.backends import (
+    AsyncJobBackend,
+    ExecutionResult,
+    JobCancelledError,
+    JobFailedError,
+    JobStatus,
+)
 from divi.backends._cancellation import _best_effort_cancel_job
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
@@ -909,10 +915,11 @@ def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
 class TestWaitForAsyncResult:
     """Tests for _wait_for_async_result: polling and cancellation handling."""
 
-    def test_cancelled_with_event_raises_cancelled_error(self, mocker):
-        """When job is CANCELLED and cancellation event is set, raises ExecutionCancelledError."""
+    def test_execution_cancelled_error_propagates(self, mocker):
+        """The pipeline boundary preserves a backend's cooperative-cancel error."""
         mock_backend = mocker.Mock()
-        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
+        backend_error = ExecutionCancelledError("Polling cancelled for job test_job.")
+        mock_backend.poll_job_status.side_effect = backend_error
         mock_backend.max_retries = 100
 
         cancel_event = Event()
@@ -921,24 +928,26 @@ class TestWaitForAsyncResult:
 
         execution_result = ExecutionResult(job_id="test_job")
 
-        with pytest.raises(ExecutionCancelledError, match="Job test_job was cancelled"):
+        with pytest.raises(ExecutionCancelledError, match="test_job") as exc:
             _wait_for_async_result(mock_backend, execution_result, env)
+        assert exc.value is backend_error
 
-    def test_cancelled_without_event_raises_runtime_error(self, mocker):
-        """Backend-reported CANCELLED without a local cancellation request
-        is a scheduler-side eviction, not a user cancel. It must surface as
-        ``RuntimeError`` so eviction-driven failures aren't disguised as
-        intentional shutdowns."""
+    def test_job_cancelled_error_propagates(self, mocker):
+        """The pipeline boundary preserves a scheduler-cancellation error."""
         mock_backend = mocker.Mock()
-        mock_backend.poll_job_status.return_value = JobStatus.CANCELLED
+        backend_error = JobCancelledError("test_job")
+        mock_backend.poll_job_status.side_effect = backend_error
         mock_backend.max_retries = 100
 
         env = PipelineEnv(backend=mock_backend)
 
         execution_result = ExecutionResult(job_id="test_job")
 
-        with pytest.raises(RuntimeError, match="cancelled by the scheduler"):
+        with pytest.raises(
+            JobCancelledError, match="cancelled by the scheduler"
+        ) as exc:
             _wait_for_async_result(mock_backend, execution_result, env)
+        assert exc.value is backend_error
 
     def test_missing_job_id_raises_value_error(self):
         """ExecutionResult without a job_id raises ValueError immediately."""
@@ -949,27 +958,28 @@ class TestWaitForAsyncResult:
             _wait_for_async_result(object(), execution_result, env)
 
     def test_failed_status_raises_runtime_error(self, mocker):
-        """FAILED job status raises RuntimeError."""
+        """A typed terminal error from the backend reaches the pipeline caller."""
         mock_backend = mocker.Mock()
-        mock_backend.poll_job_status.return_value = JobStatus.FAILED
+        mock_backend.poll_job_status.side_effect = JobFailedError("job_fail")
         mock_backend.max_retries = 100
 
         env = PipelineEnv(backend=mock_backend)
         execution_result = ExecutionResult(job_id="job_fail")
 
-        with pytest.raises(RuntimeError, match="Job job_fail has failed"):
+        with pytest.raises(JobFailedError, match="job_fail"):
             _wait_for_async_result(mock_backend, execution_result, env)
 
-    def test_non_completed_status_raises_runtime_error(self, mocker):
-        """A status that is neither COMPLETED, FAILED, nor CANCELLED raises RuntimeError."""
+    @pytest.mark.parametrize("status", [JobStatus.RUNNING, JobStatus.FAILED])
+    def test_unexpected_returned_status_raises_runtime_error(self, mocker, status):
+        """Waiting backends must return only COMPLETED; any other return is invalid."""
         mock_backend = mocker.Mock()
-        mock_backend.poll_job_status.return_value = JobStatus.RUNNING
+        mock_backend.poll_job_status.return_value = status
         mock_backend.max_retries = 100
 
         env = PipelineEnv(backend=mock_backend)
         execution_result = ExecutionResult(job_id="job_stuck")
 
-        with pytest.raises(RuntimeError, match="has not completed yet"):
+        with pytest.raises(RuntimeError, match=f"returned unexpected status {status}"):
             _wait_for_async_result(mock_backend, execution_result, env)
 
     def test_completed_returns_job_results(self, mocker):

@@ -2,6 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+__all__ = [
+    "CharacterizationFailedError",
+    "CharacterizationSubmitError",
+    "ExecutionCancelledError",
+]
+
 
 class ExecutionCancelledError(Exception):
     """Signal that a running program, job, or batch was cooperatively cancelled."""

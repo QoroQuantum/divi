@@ -11,10 +11,17 @@ from ._base import (
     normalise_circuit_batch,
 )
 from ._config import ExecutionConfig, JobConfig, SimulationMethod, Simulator
+from ._job_status import (
+    InsufficientCreditsError,
+    JobCancelledError,
+    JobFailedError,
+    JobStatus,
+    JobTimedOutError,
+    QoroJobError,
+)
 from ._results_processing import convert_counts_to_probs, reverse_dict_endianness
 from ._systems import QPU, QPUSystem, SimulatorCluster
 from .runners import (
-    JobStatus,
     JobType,
     MaestroConfig,
     MaestroSimulator,
@@ -27,8 +34,12 @@ __all__ = [
     "CircuitRunner",
     "ExecutionConfig",
     "ExecutionResult",
+    "InsufficientCreditsError",
     "JobConfig",
+    "JobCancelledError",
+    "JobFailedError",
     "JobStatus",
+    "JobTimedOutError",
     "JobType",
     "MaestroConfig",
     "MaestroSimulator",
@@ -36,6 +47,7 @@ __all__ = [
     "QPUSystem",
     "QiskitSimulator",
     "QoroService",
+    "QoroJobError",
     "SimulationMethod",
     "Simulator",
     "SimulatorCluster",

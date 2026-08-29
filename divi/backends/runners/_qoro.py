@@ -31,7 +31,10 @@ from divi.circuits._payloads import (
     bound_circuits,
     is_bound,
 )
-from divi.exceptions import CharacterizationSubmitError, ExecutionCancelledError
+from divi.exceptions import (
+    CharacterizationSubmitError,
+    ExecutionCancelledError,
+)
 from divi.qasm import (
     _format_validation_error_with_context,
     is_valid_qasm,
@@ -41,6 +44,14 @@ from divi.qasm import (
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import _auto_cancellation_scope
 from .._config import ExecutionConfig, JobConfig
+from .._job_status import (
+    InsufficientCreditsError,
+    JobCancelledError,
+    JobFailedError,
+    JobStatus,
+    JobTimedOutError,
+    QoroJobError,
+)
 from .._pauli_serde import compress_ham_ops
 from .._results_processing import _decode_histogram_b64
 from .._shot_allocation import (
@@ -143,25 +154,6 @@ def _greedy_size_chunks(
         chunks.append(current)
 
     return chunks
-
-
-class JobStatus(Enum):
-    """Status of a job on the Qoro Service."""
-
-    PENDING = "PENDING"
-    """Job is queued and waiting to be processed."""
-
-    RUNNING = "RUNNING"
-    """Job is currently being executed."""
-
-    COMPLETED = "COMPLETED"
-    """Job has finished successfully."""
-
-    FAILED = "FAILED"
-    """Job execution encountered an error."""
-
-    CANCELLED = "CANCELLED"
-    """Job was cancelled before completion."""
 
 
 class JobType(Enum):
@@ -1092,20 +1084,16 @@ class QoroService(CircuitRunner):
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
     ) -> JobStatus:
-        """
-        Get the status of a job and optionally execute a function on completion.
+        """Inspect a Qoro job once, or wait and raise on terminal failure.
 
-        When ``loop_until_complete`` is ``True`` and the caller does not supply a
-        ``cancellation_event``, the service installs a SIGINT funnel for the
-        duration of the wait and best-effort cancels the remote job on Ctrl+C —
-        so direct callers (e.g. ``service.poll_job_status(..., loop_until_complete=True)``
-        in a script) get the same clean cancellation UX as pipeline-driven callers.
-        Wrappers that pass their own event (the pipeline) opt out and retain
-        cleanup ownership.
+        Waiting callers without a ``cancellation_event`` get a SIGINT funnel
+        that best-effort cancels the remote job on Ctrl+C. Wrappers that pass
+        their own event retain cleanup ownership.
 
         Args:
             execution_result: An ExecutionResult instance with a job_id to check.
-            loop_until_complete (bool): If True, polls until the job is complete or failed.
+            loop_until_complete: Return after one request when ``False``. When
+                ``True``, wait for ``COMPLETED`` or raise for terminal failure.
             on_complete (Callable, optional): A function called with the decoded
                 final status payload when the job reaches a terminal state.
                 Consumers read ``run_time`` from it to accumulate
@@ -1116,24 +1104,30 @@ class QoroService(CircuitRunner):
             cancellation_event (Event, optional): When provided, the polling loop
                 waits on this Event between attempts instead of plain
                 ``time.sleep`` so that ``Event.set()`` interrupts the next sleep
-                window and raises :class:`~divi.exceptions.ExecutionCancelledError`.  An
-                in-flight HTTP request is **not** interrupted — worst-case
-                cancellation latency is bounded by the per-request ``timeout``
-                rather than the polling interval.
+                window and raises :class:`~divi.exceptions.ExecutionCancelledError`.
+                An in-flight HTTP request is **not** interrupted. If that request
+                reports ``COMPLETED``, completion takes precedence; otherwise
+                cancellation takes precedence as soon as the request returns.
+                Worst-case cancellation latency is bounded by the request timeout.
 
         Returns:
-            JobStatus: The current job status.
+            The current status for a one-shot poll, or ``COMPLETED`` when waiting.
 
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
-            ExecutionCancelledError: If ``cancellation_event`` was set during
-                a polling-interval wait.
+            ExecutionCancelledError: If ``cancellation_event`` is set while
+                polling or during a polling-interval wait.
+            JobFailedError: If the job reaches ``FAILED``.
+            JobCancelledError: If the scheduler reports ``CANCELLED``.
+            InsufficientCreditsError: If the job lacks execution credits.
+            JobTimedOutError: If the server-side execution deadline expires.
         """
         job_id = self._extract_job_id(execution_result)
 
-        # Take ownership of cancellation lifecycle for direct callers
-        # (loop wait, no caller event); otherwise pass the caller's event
-        # through unchanged via a no-op context.
+        if not loop_until_complete:
+            response = self._make_request("get", f"job/{job_id}/status/", timeout=200)
+            return JobStatus(response.json()["status"])
+
         scope = (
             _auto_cancellation_scope(self, execution_result)
             if loop_until_complete and cancellation_event is None
@@ -1161,16 +1155,11 @@ class QoroService(CircuitRunner):
 
         try:
             with scope as cancellation_event:
-                if not loop_until_complete:
-                    response = self._make_request(
-                        "get", f"job/{job_id}/status/", timeout=200
-                    )
-                    return JobStatus(response.json()["status"])
-
-                terminal_statuses = {
-                    JobStatus.COMPLETED,
-                    JobStatus.FAILED,
-                    JobStatus.CANCELLED,
+                terminal_errors = {
+                    JobStatus.FAILED: JobFailedError,
+                    JobStatus.CANCELLED: JobCancelledError,
+                    JobStatus.INSUFFICIENT_CREDITS: InsufficientCreditsError,
+                    JobStatus.TIMED_OUT: JobTimedOutError,
                 }
 
                 attempts = (
@@ -1190,10 +1179,18 @@ class QoroService(CircuitRunner):
                     payload = response.json()
                     status = JobStatus(payload["status"])
 
-                    if status in terminal_statuses:
+                    if status is JobStatus.COMPLETED:
                         if on_complete:
                             on_complete(payload)
                         return status
+                    if cancellation_event is not None and cancellation_event.is_set():
+                        raise ExecutionCancelledError(
+                            f"Polling cancelled for job {job_id}."
+                        )
+                    if error_type := terminal_errors.get(status):
+                        if on_complete:
+                            on_complete(payload)
+                        raise error_type(job_id)
 
                     update_fn(retry_count, status.value)
 
@@ -1259,20 +1256,19 @@ class QoroService(CircuitRunner):
         """
         if job_id is not None:
             try:
-                status = self.poll_job_status(
+                self.poll_job_status(
                     ExecutionResult(job_id=job_id),
                     loop_until_complete=True,
                     verbose=False,
                 )
+            except QoroJobError as exc:
+                return {"job_id": job_id, "status": exc.status}
             except requests.RequestException as exc:
                 if not _is_recoverable_characterization_error(exc):
                     raise
                 raise CharacterizationSubmitError(
                     job_id, exc, phase="status polling"
                 ) from exc
-
-            if status != JobStatus.COMPLETED:
-                return {"job_id": job_id, "status": status.value}
         else:
             if qubo is None:
                 raise ValueError(

@@ -246,8 +246,8 @@ class AsyncJobBackend(Protocol):
 
     Implementations submit work to a scheduler (cloud HPC, hardware queue,
     etc.) and return an :class:`~divi.backends.ExecutionResult` carrying a
-    ``job_id`` rather than circuit results. Callers then poll for status via
-    :meth:`poll_job_status`, fetch outcomes with :meth:`get_job_results`,
+    ``job_id`` rather than circuit results. Callers inspect or wait for state
+    via :meth:`poll_job_status`, fetch outcomes with :meth:`get_job_results`,
     and may :meth:`cancel_job` an in-flight handle.
     """
 
@@ -291,13 +291,12 @@ class AsyncJobBackend(Protocol):
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
     ):
-        """Query the scheduler-side job state; optionally block until terminal.
+        """Inspect once, or wait for success and raise on terminal failure.
 
         Args:
             execution_result: Handle returned by :meth:`submit_circuits`.
-            loop_until_complete: If ``True``, poll until a terminal status
-                (``COMPLETED`` / ``FAILED`` / ``CANCELLED``); otherwise return
-                after a single query.
+            loop_until_complete: When ``False``, return the current status.
+                When ``True``, poll until completion or terminal failure.
             on_complete: Invoked with the decoded final status payload when a
                 terminal status is reached. Backends that report no timing
                 metadata may skip the call.
@@ -312,7 +311,14 @@ class AsyncJobBackend(Protocol):
                 bounded by the per-request timeout.
 
         Returns:
-            The most recent :class:`~divi.backends.JobStatus`.
+            The current status for a one-shot poll, or ``COMPLETED`` when waiting.
+
+        Raises:
+            ~divi.exceptions.ExecutionCancelledError: If local cancellation is
+                requested while waiting.
+            ~divi.backends.QoroJobError: If a Qoro job reaches an unsuccessful
+                terminal status while waiting. Other implementations may raise
+                their corresponding backend-specific terminal-job exception.
         """
         ...
 

@@ -22,6 +22,8 @@ import requests
 
 from divi.backends import (
     ExecutionResult,
+    InsufficientCreditsError,
+    JobTimedOutError,
     JobType,
     QoroService,
 )
@@ -929,6 +931,8 @@ class TestQoroServiceCharacterize:
         [
             ("FAILED", CharacterizationFailedError),
             ("CANCELLED", ExecutionCancelledError),
+            ("INSUFFICIENT_CREDITS", InsufficientCreditsError),
+            ("TIMED_OUT", JobTimedOutError),
         ],
     )
     def test_fetch_by_job_id_surfaces_terminal_status(
