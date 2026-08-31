@@ -53,21 +53,6 @@ class TestTimeEvolutionTrajectoryInit:
                 backend=dummy_simulator,
             )
 
-    @pytest.mark.parametrize("reserved", ["program_id", "progress_queue"])
-    def test_reserved_kwargs_in_extra_raise(
-        self, two_qubit_hamiltonian, dummy_simulator, reserved
-    ):
-        """``program_id`` and ``progress_queue`` are set internally by the
-        trajectory; passing them via kwargs would collide with the per-time-
-        point program construction."""
-        with pytest.raises(TypeError, match="sets .* internally"):
-            TimeEvolutionTrajectory(
-                hamiltonian=two_qubit_hamiltonian,
-                time_points=[0.0, 0.5],
-                backend=dummy_simulator,
-                **{reserved: "stub"},
-            )
-
 
 class TestTimeEvolutionTrajectoryKwargForwarding:
     """``**kwargs`` reach every per-time-point ``TimeEvolution``."""
@@ -141,7 +126,7 @@ class TestTimeEvolutionTrajectoryCreatePrograms:
         traj.create_programs()
         assert len(traj.programs) == 3
 
-    def test_program_ids_contain_time_values(
+    def test_program_map_keys_contain_time_values(
         self, two_qubit_hamiltonian, dummy_simulator
     ):
         traj = TimeEvolutionTrajectory(
@@ -152,6 +137,9 @@ class TestTimeEvolutionTrajectoryCreatePrograms:
         traj.create_programs()
         assert "t=0.1" in traj.programs
         assert "t=0.5" in traj.programs
+        assert all(
+            not hasattr(program, "program_id") for program in traj.programs.values()
+        )
 
     def test_programs_have_correct_time(self, two_qubit_hamiltonian, dummy_simulator):
         traj = TimeEvolutionTrajectory(

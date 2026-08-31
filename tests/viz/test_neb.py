@@ -11,6 +11,24 @@ from divi.viz._gradients import _finite_difference_gradients, _parameter_shift_g
 
 
 class TestRunNEB:
+    def test_uses_one_direct_session_and_closes_it_on_failure(
+        self, vqe_program, mocker
+    ):
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        with pytest.raises(ValueError, match="n_pivots must be >= 3"):
+            run_neb(vqe_program, np.zeros(2), np.ones(2), n_pivots=2)
+
+        direct.assert_called_once()
+        session.__enter__.assert_called_once_with()
+        assert session.__exit__.call_count == 1
+        assert session.__exit__.call_args.args[0] is ValueError
+
     def test_shapes(self, vqe_program):
         t1 = np.array([0.0, 0.0])
         t2 = np.array([1.0, 1.0])

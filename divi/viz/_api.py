@@ -26,14 +26,17 @@ default to :math:`(-\\pi, \\pi)`, omitted directions are drawn at random
 plane scans.
 """
 
+from collections.abc import Callable, Hashable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypeAlias
+from functools import wraps
+from typing import Concatenate, Literal, ParamSpec, Protocol, TypeAlias, TypeVar
 
 import numpy as np
 import numpy.typing as npt
 from sklearn.decomposition import PCA
 
-from divi.reporting import LoggingProgressReporter, ProgressReporter
+from divi.reporting._events import ProgressEmitter, ProgressEvent, TerminalStatus
 
 from ._gradients import GradientMethod, _compute_gradients
 from ._neb import (
@@ -56,11 +59,15 @@ _DEFAULT_SCAN_SPAN: tuple[float, float] = (-np.pi, np.pi)
 
 VizRng: TypeAlias = np.random.Generator | int | None
 OptionalArray: TypeAlias = npt.ArrayLike | None
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 
 class _SupportsVizScan(Protocol):
     n_layers: int
     _best_params: npt.NDArray[np.float64]
+    _progress_key: Hashable
+    _progress_emitter: ProgressEmitter
 
     @property
     def n_params_per_layer(self) -> int: ...
@@ -76,29 +83,68 @@ class _SupportsVizScan(Protocol):
         self, param_sets: npt.NDArray[np.float64], **kwargs
     ) -> dict[int, float]: ...
 
+    def _ensure_progress_session(
+        self, label: str, total: int | None
+    ) -> AbstractContextManager[None]: ...
 
-def _resolve_viz_reporter(program: _SupportsVizScan) -> ProgressReporter:
-    """Return the program's reporter, falling back to a logging reporter."""
-    r = getattr(program, "reporter", None)
-    return r if isinstance(r, ProgressReporter) else LoggingProgressReporter()
+
+def _with_viz_progress(
+    label: str,
+) -> Callable[
+    [Callable[Concatenate[_SupportsVizScan, _P], _R]],
+    Callable[Concatenate[_SupportsVizScan, _P], _R],
+]:
+    """Run one visualisation operation within one program progress scope."""
+
+    def decorate(
+        operation: Callable[Concatenate[_SupportsVizScan, _P], _R],
+    ) -> Callable[Concatenate[_SupportsVizScan, _P], _R]:
+        @wraps(operation)
+        def wrapped(
+            program: _SupportsVizScan, *args: _P.args, **kwargs: _P.kwargs
+        ) -> _R:
+            _require_supported_program(program)
+            with program._ensure_progress_session(
+                label=f"divi.viz {label}", total=None
+            ):
+                result = operation(program, *args, **kwargs)
+                program._progress_emitter(
+                    ProgressEvent.finish(
+                        program._progress_key,
+                        TerminalStatus.SUCCESS,
+                        detail=f"divi.viz {label}: finished.",
+                    )
+                )
+                return result
+
+        return wrapped
+
+    return decorate
 
 
 def _evaluate_param_sets_reported(
     program: _SupportsVizScan,
     param_sets: npt.NDArray[np.float64],
     *,
-    reporter: ProgressReporter,
     scan_label: str,
 ) -> npt.NDArray[np.float64]:
     """Single batched evaluation with start/finish messaging."""
     n_points = int(param_sets.shape[0])
-    reporter.info(
-        message=(f"💸 divi.viz {scan_label}: evaluating {n_points} parameter set(s)"),
-        iteration=0,
+    program._progress_emitter(
+        ProgressEvent.show(
+            program._progress_key,
+            f"💸 divi.viz {scan_label}: evaluating {n_points} parameter set(s)",
+        )
     )
     values = _evaluate_param_sets(program, param_sets)
-    reporter.info(
-        f"divi.viz {scan_label}: finished ({n_points} evaluations).",
+    program._progress_emitter(
+        ProgressEvent.advance(program._progress_key, amount=n_points)
+    )
+    program._progress_emitter(
+        ProgressEvent.show(
+            program._progress_key,
+            f"divi.viz {scan_label}: finished ({n_points} evaluations).",
+        )
     )
     return values
 
@@ -109,8 +155,18 @@ def _n_program_params(program: _SupportsVizScan) -> int:
 
 def _require_supported_program(program: _SupportsVizScan) -> None:
     """Raise if *program* lacks the viz protocol or has a variable parameter space."""
-    required_attrs = ("n_layers", "n_params_per_layer", "_best_params")
-    required_methods = ("_has_run_optimization", "_evaluate_cost_param_sets")
+    required_attrs = (
+        "n_layers",
+        "n_params_per_layer",
+        "_best_params",
+        "_progress_key",
+    )
+    required_methods = (
+        "_has_run_optimization",
+        "_evaluate_cost_param_sets",
+        "_ensure_progress_session",
+        "_progress_emitter",
+    )
     if not all(hasattr(program, attr) for attr in required_attrs) or not all(
         callable(getattr(program, name, None)) for name in required_methods
     ):
@@ -389,6 +445,7 @@ def _param_sets_from_pca_grid(
     return (pca.inverse_transform(coefs) + shift).astype(np.float64)
 
 
+@_with_viz_progress("1D scan")
 def scan_1d(
     program: _SupportsVizScan,
     *,
@@ -398,7 +455,6 @@ def scan_1d(
     span: tuple[float, float] = _DEFAULT_SCAN_SPAN,
     normalize_directions: bool = True,
     rng: VizRng = None,
-    reporter: ProgressReporter | None = None,
 ) -> Scan1DResult:
     """One-dimensional loss-landscape scan for a variational program.
 
@@ -429,11 +485,6 @@ def scan_1d(
             unit-normalised before building ``center + t * direction``.
         rng: Optional :class:`numpy.random.Generator` or integer seed used when
             ``direction`` is ``None``.
-        reporter: Optional :class:`~divi.reporting.ProgressReporter`. When omitted,
-            uses ``program.reporter`` if present, otherwise
-            :class:`~divi.reporting.LoggingProgressReporter`. Start/finish messages
-            are emitted around the single batched evaluation (same pattern as
-            :class:`~divi.qprog.VariationalQuantumAlgorithm.run`).
     Returns:
         Scan1DResult: Object containing offsets, sampled loss values, the
         concrete parameter sets that were evaluated, and plotting helpers.
@@ -445,9 +496,6 @@ def scan_1d(
         ValueError: If ``center`` or ``direction`` has the wrong shape, if
             ``direction`` is zero, or if ``n_points`` is invalid.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
-
     if n_points < 2:
         raise ValueError(f"n_points must be >= 2, got {n_points}")
 
@@ -466,7 +514,6 @@ def scan_1d(
     values = _evaluate_param_sets_reported(
         program,
         param_sets,
-        reporter=rep,
         scan_label="1D scan",
     )
 
@@ -480,6 +527,7 @@ def scan_1d(
     )
 
 
+@_with_viz_progress("2D scan")
 def scan_2d(
     program: _SupportsVizScan,
     *,
@@ -491,7 +539,6 @@ def scan_2d(
     span_y: tuple[float, float] = _DEFAULT_SCAN_SPAN,
     normalize_directions: bool = True,
     rng: VizRng = None,
-    reporter: ProgressReporter | None = None,
 ) -> Scan2DResult:
     """Two-dimensional loss-landscape scan for a variational program.
 
@@ -527,7 +574,6 @@ def scan_2d(
             pairs keep matched norms like ``orqviz``.
         rng: Optional :class:`numpy.random.Generator` or integer seed for any
             randomly generated directions.
-        reporter: See :func:`scan_1d`.
     Returns:
         Scan2DResult: Object containing the sampled grid, loss values,
         evaluated parameter sets, and plotting helpers.
@@ -538,9 +584,6 @@ def scan_2d(
         ValueError: If the directions have the wrong shape, are zero, are not
             linearly independent, or if ``grid_shape`` is invalid.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
-
     n_x, n_y = grid_shape
     if n_x < 2 or n_y < 2:
         raise ValueError(f"grid_shape entries must be >= 2, got {grid_shape}")
@@ -568,7 +611,6 @@ def scan_2d(
     values = _evaluate_param_sets_reported(
         program,
         param_sets,
-        reporter=rep,
         scan_label="2D scan",
     ).reshape(n_y, n_x)
 
@@ -584,6 +626,7 @@ def scan_2d(
     )
 
 
+@_with_viz_progress("PCA scan")
 def scan_pca(
     program: _SupportsVizScan,
     *,
@@ -594,7 +637,6 @@ def scan_pca(
     offset: float | tuple[float, float] = (-1.0, 1.0),
     span_x: tuple[float, float] | None = None,
     span_y: tuple[float, float] | None = None,
-    reporter: ProgressReporter | None = None,
 ) -> PCAScanResult:
     """Evaluate a 2D scan in PCA score space (orqviz-compatible layout).
 
@@ -631,7 +673,6 @@ def scan_pca(
         span_x: If given together with ``span_y``, fixed PC0 score range
             (bypasses automatic endpoints).
         span_y: Fixed PC1 score range; must be set if ``span_x`` is set.
-        reporter: See :func:`scan_1d`.
 
     Returns:
         PCAScanResult: Grid in PCA score coordinates, loss values, full
@@ -643,9 +684,6 @@ def scan_pca(
         NotImplementedError: If ``program`` is an ``IterativeQAOA`` instance.
         ValueError: If shapes, ranks, ``grid_shape``, or span arguments are invalid.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
-
     n_x, n_y = grid_shape
     if n_x < 2 or n_y < 2:
         raise ValueError(f"grid_shape entries must be >= 2, got {grid_shape}")
@@ -721,7 +759,6 @@ def scan_pca(
     flat_values = _evaluate_param_sets_reported(
         program,
         param_sets,
-        reporter=rep,
         scan_label="PCA scan",
     )
     values = flat_values.reshape(n_y, n_x)
@@ -746,13 +783,13 @@ def scan_pca(
     )
 
 
+@_with_viz_progress("1D interpolation")
 def scan_interp_1d(
     program: _SupportsVizScan,
     theta_1: npt.ArrayLike,
     theta_2: npt.ArrayLike,
     *,
     n_points: int = 51,
-    reporter: ProgressReporter | None = None,
 ) -> Scan1DResult:
     """One-dimensional interpolation scan between two parameter vectors.
 
@@ -766,7 +803,6 @@ def scan_interp_1d(
         theta_2: Ending parameter vector.
         n_points: Number of sample points along the interpolation line.
             Must be at least 2.
-        reporter: Optional :class:`~divi.reporting.ProgressReporter`.
 
     Returns:
         Scan1DResult: ``offsets`` are the *t* values; ``center`` is *theta_1*;
@@ -777,9 +813,6 @@ def scan_interp_1d(
         NotImplementedError: If ``program`` is an ``IterativeQAOA`` instance.
         ValueError: If shapes do not match or ``n_points`` is invalid.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
-
     if n_points < 2:
         raise ValueError(f"n_points must be >= 2, got {n_points}")
 
@@ -798,7 +831,6 @@ def scan_interp_1d(
     values = _evaluate_param_sets_reported(
         program,
         param_sets,
-        reporter=rep,
         scan_label="1D interpolation",
     )
 
@@ -812,6 +844,7 @@ def scan_interp_1d(
     )
 
 
+@_with_viz_progress("2D interpolation")
 def scan_interp_2d(
     program: _SupportsVizScan,
     theta_1: npt.ArrayLike,
@@ -822,7 +855,6 @@ def scan_interp_2d(
     span_x: tuple[float, float] = (-0.5, 1.5),
     span_y: tuple[float, float] = (-0.5, 0.5),
     rng: VizRng = None,
-    reporter: ProgressReporter | None = None,
 ) -> Scan2DResult:
     """Two-dimensional interpolation scan between two parameter vectors.
 
@@ -849,7 +881,6 @@ def scan_interp_2d(
             norm.
         rng: Optional seed or :class:`numpy.random.Generator` for the random
             y-direction.
-        reporter: Optional :class:`~divi.reporting.ProgressReporter`.
 
     Returns:
         Scan2DResult: ``center`` is *theta_1*; ``direction_x`` is
@@ -861,9 +892,6 @@ def scan_interp_2d(
         ValueError: If shapes do not match, directions are zero/parallel, or
             ``grid_shape`` is invalid.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
-
     n_x, n_y = grid_shape
     if n_x < 2 or n_y < 2:
         raise ValueError(f"grid_shape entries must be >= 2, got {grid_shape}")
@@ -919,7 +947,6 @@ def scan_interp_2d(
     values = _evaluate_param_sets_reported(
         program,
         param_sets,
-        reporter=rep,
         scan_label="2D interpolation",
     ).reshape(n_y, n_x)
 
@@ -935,13 +962,13 @@ def scan_interp_2d(
     )
 
 
+@_with_viz_progress("Hessian")
 def compute_hessian(
     program: _SupportsVizScan,
     center: npt.ArrayLike,
     *,
     gradient_method: GradientMethod = GradientMethod.PARAMETER_SHIFT,
     eps: float = 1e-3,
-    reporter: ProgressReporter | None = None,
 ) -> HessianResult:
     """Compute the Hessian matrix at *center*.
 
@@ -965,7 +992,6 @@ def compute_hessian(
             differences with step size *eps*.
         eps: Finite-difference step size.  Only used when *gradient_method*
             is :attr:`GradientMethod.FINITE_DIFFERENCE`.  Defaults to ``1e-3``.
-        reporter: Optional :class:`~divi.reporting.ProgressReporter`.
 
     Returns:
         HessianResult: Hessian matrix, eigenvalues (ascending), eigenvectors,
@@ -976,8 +1002,6 @@ def compute_hessian(
         NotImplementedError: If ``program`` is an ``IterativeQAOA`` instance.
         ValueError: If ``center`` has the wrong shape or ``eps`` is non-positive.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
     gradient_method = GradientMethod(gradient_method)
 
     if gradient_method is GradientMethod.FINITE_DIFFERENCE and eps <= 0:
@@ -1020,9 +1044,7 @@ def compute_hessian(
         cross_probes[4 * k + 3] = c - eye_cross[i] - eye_cross[j]
 
     param_sets = np.concatenate([[c], diag_probes, cross_probes])
-    vals = _evaluate_param_sets_reported(
-        program, param_sets, reporter=rep, scan_label="Hessian"
-    )
+    vals = _evaluate_param_sets_reported(program, param_sets, scan_label="Hessian")
     if not np.all(np.isfinite(vals)):
         raise ValueError(
             "Cost evaluations returned NaN or Inf; Hessian cannot be computed."
@@ -1055,6 +1077,7 @@ def compute_hessian(
     )
 
 
+@_with_viz_progress("NEB")
 def run_neb(
     program: _SupportsVizScan,
     theta_1: npt.ArrayLike,
@@ -1066,7 +1089,6 @@ def run_neb(
     gradient_method: GradientMethod = GradientMethod.PARAMETER_SHIFT,
     eps: float = 1e-3,
     convergence_tol: float | None = None,
-    reporter: ProgressReporter | None = None,
 ) -> NEBResult:
     """Find a minimum-energy path between two parameter vectors via NEB.
 
@@ -1097,7 +1119,6 @@ def run_neb(
             is :attr:`GradientMethod.FINITE_DIFFERENCE`.
         convergence_tol: If set, stop early when the maximum pivot
             displacement in a step falls below this threshold.
-        reporter: Optional :class:`~divi.reporting.ProgressReporter`.
 
     Returns:
         NEBResult: Relaxed path, energies, cumulative distances, and the
@@ -1108,8 +1129,6 @@ def run_neb(
         NotImplementedError: If ``program`` is an ``IterativeQAOA`` instance.
         ValueError: If shapes mismatch or ``n_pivots < 3``.
     """
-    _require_supported_program(program)
-    rep = reporter if reporter is not None else _resolve_viz_reporter(program)
     gradient_method = GradientMethod(gradient_method)
 
     if n_pivots < 3:
@@ -1137,7 +1156,13 @@ def run_neb(
         )
         perp_grads = _neb_perpendicular_gradients(chain, grads)
 
-        rep.info(f"divi.viz NEB: step {step + 1}/{n_steps}")
+        program._progress_emitter(
+            ProgressEvent.show(
+                program._progress_key,
+                f"divi.viz NEB: step {step + 1}/{n_steps}",
+            )
+        )
+        program._progress_emitter(ProgressEvent.advance(program._progress_key))
 
         displacement = learning_rate * perp_grads
         chain[1:-1] = interior - displacement
@@ -1150,16 +1175,17 @@ def run_neb(
         if convergence_tol is not None:
             max_disp = float(np.max(np.linalg.norm(displacement, axis=1)))
             if max_disp < convergence_tol:
-                rep.info(
-                    f"divi.viz NEB: converged at step {step + 1} "
-                    f"(max displacement {max_disp:.2e} < {convergence_tol:.2e})"
+                program._progress_emitter(
+                    ProgressEvent.show(
+                        program._progress_key,
+                        f"divi.viz NEB: converged at step {step + 1} "
+                        f"(max displacement {max_disp:.2e} < {convergence_tol:.2e})",
+                    )
                 )
                 break
 
     # Final energy evaluation.
-    energies = _evaluate_param_sets_reported(
-        program, chain, reporter=rep, scan_label="NEB final"
-    )
+    energies = _evaluate_param_sets_reported(program, chain, scan_label="NEB final")
     distances = _cumulative_distances(chain)
 
     return NEBResult(

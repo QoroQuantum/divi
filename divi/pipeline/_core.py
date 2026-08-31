@@ -13,10 +13,11 @@ from typing import Any
 from rich.console import Console
 from rich.tree import Tree
 
-from divi.backends import JobStatus
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
+from divi.backends._job_status import JobStatus
 from divi.circuits._payloads import bound_circuits, is_bound
 from divi.exceptions import ExecutionCancelledError
+from divi.reporting._events import ProgressEvent
 
 from ._compilation import (
     _batch_has_free_parameters,
@@ -97,14 +98,15 @@ def format_pipeline_tree(trace: PipelineTrace) -> None:
 
 
 def _report_pipeline_stage(env: "PipelineEnv", stage_name: str | None) -> None:
-    """Emit a classical-pipeline progress message, if a reporter is attached.
+    """Emit a classical-pipeline phase event when reporting is bound.
 
-    Passing ``None`` clears any lingering pipeline-stage indicator once
-    the forward pass is complete and execution is about to begin.
+    Passing ``None`` clears any lingering phase once the forward pass is
+    complete and execution is about to begin.
     """
-    if env.reporter is None:
+    if env._progress_emitter is None or env._progress_key is None:
         return
-    env.reporter.info(message="", pipeline_stage=stage_name)
+    message = f"Pipeline: {stage_name}" if stage_name else ""
+    env._progress_emitter(ProgressEvent.show(env._progress_key, message))
 
 
 def _wait_for_async_result(backend, execution_result, env):
@@ -116,16 +118,22 @@ def _wait_for_async_result(backend, execution_result, env):
     if job_id is None:
         raise ValueError("ExecutionResult must have a job_id for async completion")
 
-    # Build the poll callback if reporter is available
+    # Build the poll callback when progress delivery is bound.
     progress_callback = None
-    if env.reporter is not None:
-        progress_callback = lambda n_polls, status: env.reporter.info(
-            message="",
-            poll_attempt=n_polls,
-            max_retries=backend.max_retries,
-            service_job_id=job_id,
-            job_status=status,
-        )
+    if env._progress_emitter is not None and env._progress_key is not None:
+        progress_emitter = env._progress_emitter
+        progress_key = env._progress_key
+
+        def progress_callback(n_polls, status):
+            progress_emitter(
+                ProgressEvent.polling(
+                    progress_key,
+                    job_id=job_id,
+                    status=status,
+                    attempt=n_polls,
+                    limit=getattr(backend, "max_retries", None),
+                )
+            )
 
     # Runtime tracking via env.artifacts
     def _track_runtime(response):
@@ -441,7 +449,7 @@ class CircuitPipeline:
 
         Args:
             initial_spec: Input for the spec stage (typically a Hamiltonian).
-            env: Pipeline environment (backend, reporter, etc.).
+            env: Pipeline environment (backend, progress emitter, etc.).
             bypass_cache: When True, ignore any cached forward trace and
                 recompute the full forward pass from the beginning.
             execute_fn: (trace, env) → raw_results. Defaults to the built-in
@@ -497,11 +505,9 @@ class CircuitPipeline:
                 result._squeeze = False
             return result
         finally:
-            # A pipeline run owns only its transient stage/polling status;
-            # clear it so no run leaks a live spinner. The iteration-level
-            # message, owned by the optimizer loop, is preserved.
-            if env.reporter is not None:
-                env.reporter.end_pipeline_run()
+            # A pipeline run owns only its transient stage/polling phase;
+            # clear it so no run leaks a live spinner.
+            _report_pipeline_stage(env, None)
 
     def run_forward_pass(
         self,

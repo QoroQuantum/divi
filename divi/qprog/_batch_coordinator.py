@@ -10,11 +10,10 @@ improving backend utilization.
 """
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Hashable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
-from queue import Queue
 from threading import Event, Lock, Thread
 from typing import NamedTuple
 
@@ -23,21 +22,25 @@ from divi.backends import (
     CircuitBatch,
     CircuitRunner,
     ExecutionResult,
-    JobStatus,
 )
+from divi.backends._job_status import JobStatus, QoroJobError
 from divi.backends._shot_allocation import from_wire, to_wire
 from divi.circuits._payloads import (
     CircuitPayload,
     bound_circuits,
 )
 from divi.exceptions import ExecutionCancelledError
-from divi.reporting import BATCH_COLORS
+from divi.reporting._events import (
+    ProgressEmitter,
+    ProgressEvent,
+    ProgressScope,
+    TerminalStatus,
+    discard_progress_event,
+)
 
 logger = logging.getLogger(__name__)
 
-# Separator used to namespace circuit tags per program.
-# Chosen because it never appears in CircuitTag encoded strings.
-_TAG_SEP = "@"
+_BATCH_COLORS = ("green", "cyan", "magenta", "yellow", "red", "blue")
 
 
 class BatchMode(Enum):
@@ -171,7 +174,27 @@ class _PendingEntry(NamedTuple):
 
 
 # Batch dict type used throughout the coordinator.
-_Batch = dict[str, _PendingEntry]
+_Batch = dict[Hashable, _PendingEntry]
+
+
+def _route_batch_circuits(
+    batch: _Batch,
+) -> tuple[_Batch, dict[str, tuple[Hashable, str]]]:
+    """Replace circuit labels with opaque tokens and retain their routes."""
+    routed_batch: _Batch = {}
+    circuit_routes: dict[str, tuple[Hashable, str]] = {}
+    for program_key, entry in batch.items():
+        routed_circuits = {}
+        for original_label, qasm in entry.circuits.items():
+            token = str(len(circuit_routes))
+            routed_circuits[token] = qasm
+            circuit_routes[token] = (program_key, original_label)
+        routed_batch[program_key] = _PendingEntry(
+            routed_circuits,
+            entry.kwargs,
+            entry.future,
+        )
+    return routed_batch, circuit_routes
 
 
 class _FlushGroup:
@@ -179,9 +202,9 @@ class _FlushGroup:
 
     __slots__ = ("futures", "execution_result", "color", "program_keys", "label")
 
-    def __init__(self, futures: dict[str, Future], color: str, label: str = ""):
+    def __init__(self, futures: dict[Hashable, Future], color: str, label: str = ""):
         self.futures = futures
-        self.program_keys = set(futures.keys())
+        self.program_keys = tuple(futures)
         self.color = color
         self.label = label
         self.execution_result: ExecutionResult | None = None
@@ -192,6 +215,13 @@ def _fail_futures(batch: _Batch, exc: BaseException) -> None:
     for entry in batch.values():
         if not entry.future.done():
             entry.future.set_exception(exc)
+
+
+def _job_status_from_backend_exception(exc: BaseException) -> JobStatus | None:
+    """Recover a canonical terminal job status without masking ``exc``."""
+    if not isinstance(exc, QoroJobError):
+        return None
+    return JobStatus.coerce(exc.status)
 
 
 class _BatchCoordinator:
@@ -213,14 +243,16 @@ class _BatchCoordinator:
     def __init__(
         self,
         real_backend: CircuitRunner,
-        progress_queue: Queue | None = None,
+        progress_emitter: ProgressEmitter = discard_progress_event,
         batch_config: BatchConfig | None = None,
         *,
+        preparation_key: Hashable | None = None,
         n_workers: int | None = None,
         cancellation_event: Event | None = None,
     ):
         self._real_backend = real_backend
-        self._progress_queue = progress_queue
+        self._progress_emitter = progress_emitter
+        self._preparation_key = preparation_key
         self._batch_config = batch_config or BatchConfig()
         self._lock = Lock()
         # Shared cancellation Event with the enclosing ProgramEnsemble so that
@@ -242,12 +274,12 @@ class _BatchCoordinator:
         self._n_workers = n_workers
 
         # Programs currently executing (not yet finished their run()).
-        self._active_programs: set[str] = set()
+        self._active_programs: set[Hashable] = set()
 
         # Programs that have already emitted their prep-progress signal —
         # used to make the prep-row tick exactly once per program even
         # when a program submits multiple times during its lifetime.
-        self._prep_emitted: set[str] = set()
+        self._prep_emitted: set[Hashable] = set()
 
         # Pending submissions waiting for the barrier.
         self._pending: _Batch = {}
@@ -265,17 +297,18 @@ class _BatchCoordinator:
 
         # Color cycling for flush group indicators.
         self._color_index = 0
+        self._batch_sequence = 0
 
     # ------------------------------------------------------------------
     # Registration
     # ------------------------------------------------------------------
 
-    def register_program(self, program_key: str) -> None:
+    def register_program(self, program_key: Hashable) -> None:
         """Register a program as active before it starts executing."""
         with self._lock:
             self._active_programs.add(program_key)
 
-    def deregister_program(self, program_key: str) -> None:
+    def deregister_program(self, program_key: Hashable) -> None:
         """Remove a program from the active set.
 
         If the reduced active set means the barrier is now met for the
@@ -292,15 +325,15 @@ class _BatchCoordinator:
 
     def submit(
         self,
-        program_key: str,
-        prefixed_circuits: dict[str, str],
+        program_key: Hashable,
+        circuits: dict[str, str],
         **kwargs,
     ) -> tuple[list[dict], float]:
         """Submit circuits and block until the merged job returns results.
 
         Args:
             program_key: Unique identifier for the calling program.
-            prefixed_circuits: Circuit dict with tags already namespaced.
+            circuits: Bound circuits keyed by their original labels.
             **kwargs: Backend kwargs forwarded to ``submit_circuits``.
 
         Returns:
@@ -315,9 +348,7 @@ class _BatchCoordinator:
             if self._cancelled.is_set():
                 raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
-            self._pending[program_key] = _PendingEntry(
-                prefixed_circuits, kwargs, future
-            )
+            self._pending[program_key] = _PendingEntry(circuits, kwargs, future)
 
             first_submit = program_key not in self._prep_emitted
             if first_submit:
@@ -330,8 +361,8 @@ class _BatchCoordinator:
         # ensemble's "Submitting circuits" row tick up.  Done per-program
         # on first submit so multi-iteration programs don't reset the
         # bar mid-run.
-        if first_submit and self._progress_queue is not None:
-            self._progress_queue.put({"prep_advance": True, "program_key": program_key})
+        if first_submit and self._preparation_key is not None:
+            self._progress_emitter(ProgressEvent.advance(self._preparation_key))
 
         # Block until this program's results are ready.
         return future.result()
@@ -364,7 +395,7 @@ class _BatchCoordinator:
 
     def _next_color(self) -> str:
         """Return the next color in the cycle (lock must be held)."""
-        color = BATCH_COLORS[self._color_index % len(BATCH_COLORS)]
+        color = _BATCH_COLORS[self._color_index % len(_BATCH_COLORS)]
         self._color_index += 1
         return color
 
@@ -400,29 +431,32 @@ class _BatchCoordinator:
             self._flush_threads.append(thread)
         thread.start()
 
-    def _send_batch_progress(
+    def _register_batch_progress(
         self,
         flush_group: _FlushGroup,
         *,
-        n_circuits: int = 0,
-        n_programs: int = 0,
-        **kwargs,
-    ) -> None:
-        """Send a batch-level progress message to the queue."""
-        if self._progress_queue is None:
-            return
-        msg = {
-            "batch": True,
-            "batch_id": id(flush_group),
-            "batch_label": flush_group.label,
-            "batch_color": flush_group.color,
-            "program_keys": list(flush_group.program_keys),
-            "n_circuits": n_circuits,
-            "n_programs": n_programs,
-            "progress": 0,
-            **kwargs,
-        }
-        self._progress_queue.put(msg)
+        n_circuits: int,
+        n_programs: int,
+    ) -> Hashable:
+        """Register one dynamically discovered merged-submission progress key."""
+        with self._lock:
+            progress_key = ("batch", self._batch_sequence)
+            self._batch_sequence += 1
+        circuit_word = "circuit" if n_circuits == 1 else "circuits"
+        program_word = "program" if n_programs == 1 else "programs"
+        qualifier = f" {flush_group.label}" if flush_group.label else ""
+        self._progress_emitter(
+            ProgressEvent.register(
+                progress_key,
+                ProgressScope.BATCH,
+                f"Batch{qualifier} ({n_circuits} {circuit_word}, "
+                f"{n_programs} {program_word})",
+                None,
+                batch_color=flush_group.color,
+                program_keys=flush_group.program_keys,
+            )
+        )
+        return progress_key
 
     @staticmethod
     def _merge_circuits_and_kwargs(
@@ -525,7 +559,7 @@ class _BatchCoordinator:
             return merged, merged_kw
 
         # Group by ham_ops so circuits with the same observable are contiguous.
-        ham_to_programs: dict[str, list[str]] = {}
+        ham_to_programs: dict[str, list[Hashable]] = {}
         for prog_key, entry in batch.items():
             ham = entry.kwargs.get("ham_ops")
             if ham is None:
@@ -622,14 +656,12 @@ class _BatchCoordinator:
                 self._submit_sub_batch(sub_batch, sub_fg)
 
         except ExecutionCancelledError:
-            self._send_batch_progress(flush_group, final_status="Cancelled")
             _fail_futures(
                 batch, ExecutionCancelledError("Batch coordinator has been cancelled.")
             )
         except BaseException as exc:
             # BaseException, not Exception: any failure here must fail the
             # waiting futures, else their ``result()`` blocks forever.
-            self._send_batch_progress(flush_group, final_status="Failed")
             _fail_futures(batch, exc)
         finally:
             with self._in_flight_lock:
@@ -644,63 +676,97 @@ class _BatchCoordinator:
         increment ``_total_runtime`` immediately so that a later sub-batch
         failing within the same flush does not erase this credit.
         """
-        merged_circuits, submit_kwargs = self._merge_circuits_and_kwargs(sub_batch)
+        routed_batch, circuit_routes = _route_batch_circuits(sub_batch)
+        merged_circuits, submit_kwargs = self._merge_circuits_and_kwargs(routed_batch)
 
         n_circuits = len(merged_circuits)
         n_programs = len(sub_batch)
 
-        self._send_batch_progress(
+        batch_progress_key = self._register_batch_progress(
             flush_group,
             n_circuits=n_circuits,
             n_programs=n_programs,
         )
-
-        execution_result = self._real_backend.submit_circuits(
-            merged_circuits, **submit_kwargs
-        )
-        flush_group.execution_result = execution_result
-
-        if self._cancelled.is_set():
-            raise ExecutionCancelledError("Batch coordinator has been cancelled.")
-
-        # --- Collect results (sync or async) ---
-        runtime = 0.0
-        if execution_result.job_id is not None:
-            results_list, runtime = self._poll_and_get_results(
-                execution_result, flush_group, n_circuits, n_programs
+        try:
+            execution_result = self._real_backend.submit_circuits(
+                merged_circuits, **submit_kwargs
             )
+            flush_group.execution_result = execution_result
+
+            if self._cancelled.is_set():
+                raise ExecutionCancelledError("Batch coordinator has been cancelled.")
+
+            # --- Collect results (sync or async) ---
+            runtime = 0.0
+            if execution_result.job_id is not None:
+                results_list, runtime = self._poll_and_get_results(
+                    execution_result,
+                    batch_progress_key,
+                )
+                final_job_status = JobStatus.COMPLETED
+            else:
+                final_job_status = None
+                results_list = execution_result.results
+                if results_list is None:
+                    raise ValueError("ExecutionResult has neither results nor job_id.")
+
+            # Parse and account for the complete backend response before
+            # declaring the batch successful. Future resolution stays after
+            # the finish event so a waiting ensemble cannot close the session
+            # before it observes the terminal batch lifecycle.
+            program_results: dict[Hashable, list[dict]] = {}
+            for item in results_list:
+                backend_label = item["label"]
+                try:
+                    program_key, original_label = circuit_routes[backend_label]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"Backend returned unknown circuit label {backend_label!r}."
+                    ) from exc
+                program_results.setdefault(program_key, []).append(
+                    {"label": original_label, "results": item["results"]}
+                )
+
+            if runtime:
+                with self._lock:
+                    self._total_runtime += runtime
+
+            per_program_runtime = runtime / n_programs if n_programs > 0 else 0.0
+        except ExecutionCancelledError as exc:
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    batch_progress_key,
+                    TerminalStatus.CANCELLED,
+                    detail=str(exc),
+                )
+            )
+            raise
+        except BaseException as exc:
+            job_status = _job_status_from_backend_exception(exc)
+            terminal_status = (
+                TerminalStatus.CANCELLED
+                if job_status is JobStatus.CANCELLED
+                else TerminalStatus.FAILED
+            )
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    batch_progress_key,
+                    terminal_status,
+                    job_status=job_status,
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
+            )
+            raise
         else:
-            results_list = execution_result.results
-            if results_list is None:
-                raise ValueError("ExecutionResult has neither results nor job_id.")
-
-        self._send_batch_progress(
-            flush_group,
-            n_circuits=n_circuits,
-            n_programs=n_programs,
-            final_status="Success",
-        )
-
-        # --- Demultiplex results by tag prefix ---
-        program_results: dict[str, list[dict]] = {}
-        for item in results_list:
-            prefix, original_label = item["label"].split(_TAG_SEP, 1)
-            program_results.setdefault(prefix, []).append(
-                {"label": original_label, "results": item["results"]}
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    batch_progress_key,
+                    TerminalStatus.SUCCESS,
+                    job_status=final_job_status,
+                )
             )
-
-        # Credit runtime *before* resolving futures.  The flush runs on a
-        # daemon thread, and resolving a future unblocks the waiting program,
-        # which lets the ensemble's join() proceed and read ``total_runtime``.
-        # Crediting after resolution races that read and can drop this flush's
-        # runtime.  Crediting per successful sub-batch also means a later
-        # sub-batch failing within the same flush does not erase this credit.
-        if runtime:
-            with self._lock:
-                self._total_runtime += runtime
 
         # --- Resolve futures ---
-        per_program_runtime = runtime / n_programs if n_programs > 0 else 0.0
         for prog_key, entry in sub_batch.items():
             if not entry.future.done():
                 entry.future.set_result(
@@ -716,9 +782,7 @@ class _BatchCoordinator:
     def _poll_and_get_results(
         self,
         execution_result: ExecutionResult,
-        flush_group: _FlushGroup,
-        n_circuits: int,
-        n_programs: int,
+        batch_progress_key: Hashable,
     ) -> tuple[list[dict], float]:
         """Poll an async job to completion and return (results, runtime)."""
         if not isinstance(self._real_backend, AsyncJobBackend):
@@ -729,6 +793,9 @@ class _BatchCoordinator:
                 "cancel_job)."
             )
         backend = self._real_backend
+        job_id = execution_result.job_id
+        if job_id is None:
+            raise ValueError("Async batch polling requires a job_id.")
 
         runtime = 0.0
 
@@ -740,14 +807,14 @@ class _BatchCoordinator:
                 runtime = sum(float(r.json()["run_time"]) for r in response)
 
         def _progress_callback(n_polls, job_status):
-            self._send_batch_progress(
-                flush_group,
-                n_circuits=n_circuits,
-                n_programs=n_programs,
-                service_job_id=execution_result.job_id,
-                job_status=job_status,
-                poll_attempt=n_polls,
-                max_retries=getattr(self._real_backend, "max_retries", 0),
+            self._progress_emitter(
+                ProgressEvent.polling(
+                    batch_progress_key,
+                    job_id=job_id,
+                    status=job_status,
+                    attempt=n_polls,
+                    limit=getattr(self._real_backend, "max_retries", None),
+                )
             )
 
         # Pass the coordinator's cancellation Event to the backend so that
@@ -762,7 +829,7 @@ class _BatchCoordinator:
             cancellation_event=self._cancelled,
         )
 
-        if status != JobStatus.COMPLETED:
+        if JobStatus.coerce(status) is not JobStatus.COMPLETED:
             raise RuntimeError(
                 f"Merged batch job {execution_result.job_id} "
                 f"returned unexpected status from poll_job_status: {status}"
@@ -863,7 +930,7 @@ class _ProxyBackend(CircuitRunner):
         self,
         real_backend: CircuitRunner,
         coordinator: _BatchCoordinator,
-        program_key: str,
+        program_key: Hashable,
     ):
         super().__init__(shots=real_backend.shots)
         self._real = real_backend
@@ -900,13 +967,8 @@ class _ProxyBackend(CircuitRunner):
     def submit_circuits(
         self, payloads: Sequence[CircuitPayload] | CircuitBatch, **kwargs
     ) -> ExecutionResult:
-        """Prefix tags, submit to coordinator, return sync results."""
-        prefixed = {
-            f"{self._program_key}{_TAG_SEP}{tag}": qasm
-            for tag, qasm in bound_circuits(payloads).items()
-        }
-
+        """Submit bound circuits to the coordinator and return sync results."""
         results, _runtime = self._coordinator.submit(
-            self._program_key, prefixed, **kwargs
+            self._program_key, bound_circuits(payloads), **kwargs
         )
         return ExecutionResult(results=results)

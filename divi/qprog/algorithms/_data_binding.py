@@ -388,9 +388,10 @@ class DataBindingMixin(_MixinBase):
         )
         # Base env (not the mixin override): the predict pipeline has no
         # DataBindingStage, so feature_batch/labels must not enter the env.
-        # reporter=None keeps inference silent — no progress spinner.
+        # The discard emitter keeps inference silent — no progress view.
         env = super()._build_pipeline_env(
-            param_sets=np.atleast_2d(param_sets), reporter=None
+            param_sets=np.atleast_2d(param_sets),
+            progress_emitter=None,
         )
         result = pipeline.run(initial_spec=spec, env=env)
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)

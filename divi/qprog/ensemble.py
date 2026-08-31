@@ -5,22 +5,18 @@
 import atexit
 import logging
 import os
-import time
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import Enum
-from queue import Queue
-from threading import Event, Lock, Thread
+from threading import Event
 from typing import Any, Self, cast
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from rich.console import Console
-from rich.panel import Panel
-from rich.traceback import Traceback
 
 from divi.backends import CircuitRunner
 from divi.exceptions import ExecutionCancelledError
@@ -34,13 +30,17 @@ from divi.qprog._batch_coordinator import (
 from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.reporting import (
+from divi.reporting._events import (
+    ProgressEmitter,
+    ProgressEvent,
+    ProgressScope,
     TerminalStatus,
-    disable_logging,
-    make_progress_display,
-    queue_listener,
+    discard_progress_event,
 )
-from divi.reporting._pbar import _drain_queue_quietly
+from divi.reporting._logging import log_progress_event
+from divi.reporting._rich import render_failure
+from divi.reporting._session import ProgressSession, _environment_disables_progress
+from divi.reporting._state import ProgressState
 
 __all__ = [
     "BatchConfig",
@@ -102,9 +102,6 @@ _BARRIER_PROGRAM_LIMIT = 256
 #: Above this many ``max_concurrent_programs``, ``run`` warns to flag a
 #: likely misuse of the knob (e.g. the user wanted ``max_batch_size``).
 _CONCURRENT_PROGRAMS_SOFT_CAP = 1024
-
-#: Seconds to wait for the progress listener thread to exit during teardown.
-_LISTENER_JOIN_TIMEOUT = 5.0
 
 
 def _default_task_function(program: QuantumProgram):
@@ -303,7 +300,6 @@ class ProgramEnsemble(ABC):
         self._executor = None
         self._programs = {}
         self._coordinator: _BatchCoordinator | None = None
-        self._program_key_map: dict[QuantumProgram, str] = {}
         # Real backend per program, saved before batching swaps in a proxy.
         self._program_original_backend: dict[QuantumProgram, CircuitRunner] = {}
         # Per-program counter values captured at the start of each dispatch.
@@ -329,24 +325,19 @@ class ProgramEnsemble(ABC):
         # run() can stop the workflow instead of starting another round.
         self._round_cancelled = False
 
-        self._progress_bar = None
-        self._live_display = None
-        self._listener_thread: Thread | None = None
-        self._hide_program_rows = False
-        self._round_task_id = None
-        self._pb_task_map: dict[Any, Any] = {}
-        self._pb_lock = Lock()
-        # Created per dispatch; declared here so teardown paths never have to
-        # probe for their existence.
-        self._queue: Queue | None = None
-        self._done_event: Event | None = None
+        self._progress_session: ProgressSession | None = None
+        self._progress_bindings: ExitStack | None = None
+        self._progress_emitter: ProgressEmitter = (
+            discard_progress_event
+            if self.reporting_level is ReportingLevel.OFF
+            or _environment_disables_progress()
+            else log_progress_event
+        )
+        self._preparation_registered = False
+        self._workflow_registered = False
+        self._workflow_message: str | None = None
         self._cancellation_event = Event()
         self._future_to_program: dict[Future, QuantumProgram] = {}
-
-        self._is_jupyter = Console().is_jupyter
-
-        # Disable logging since we already have the bars to track progress
-        disable_logging()
 
     @property
     def sampling_backend(self) -> CircuitRunner | None:
@@ -482,8 +473,7 @@ class ProgramEnsemble(ABC):
 
         Implementation Notes:
             - Subclasses should call `super().create_programs()` first to
-              initialise the progress queue and validate that no programs
-              already exist.
+              validate that no programs already exist.
             - An override must accept the state argument; `run()` passes the
               current workflow state positionally on every round.
             - After calling super(), subclasses should populate `self.programs` or
@@ -494,10 +484,6 @@ class ProgramEnsemble(ABC):
 
         Side Effects:
             - Populates `self._programs` with program instances.
-            - Initialises `self._queue` for progress reporting. Sub-programs
-              bind to this exact queue at construction, so ``run()`` reuses it
-              rather than re-creating it. ``self._done_event`` is created later,
-              per-run, by ``run()``/``sample_solution()``.
 
         Raises:
             RuntimeError: If programs already exist (should call `reset()` first).
@@ -519,7 +505,6 @@ class ProgramEnsemble(ABC):
                 "Some programs already exist. Complete the pending round with run() "
                 "or call reset() before creating a new program map."
             )
-        self._queue = Queue()
         self._programs_pending = True
 
     def _clear_completed_round(self) -> None:
@@ -548,9 +533,10 @@ class ProgramEnsemble(ABC):
         """
         Reset the ensemble to its initial state.
 
-        Clears all programs, stops any running executors, terminates listener threads,
-        and stops progress bars. This allows the ensemble to be reused for a new set of
-        programs. Also clears :attr:`workflow_state`, :attr:`stop_reason` and
+        Clears all programs, stops any running executors, closes the queued
+        progress session, and restores program emitters. This allows the
+        ensemble to be reused for a new set of programs. Also clears
+        :attr:`workflow_state`, :attr:`stop_reason` and
         :attr:`round_history`; the lifetime :attr:`total_circuit_count` and
         :attr:`total_run_time` counters survive.
 
@@ -558,32 +544,34 @@ class ProgramEnsemble(ABC):
             Any running programs will be forcefully stopped. Results from incomplete
             programs will be lost.
         """
-        # Shutdown coordinator before clearing programs
+        if self._progress_bindings is not None:
+            for program in self._programs.values():
+                self._emit_progress_message(
+                    program._progress_key,
+                    final_status=TerminalStatus.CANCELLED,
+                    message="Reset by caller",
+                )
+            self._finish_workflow_progress(TerminalStatus.CANCELLED)
+
+        # Stop workers before restoring their temporary backends and emitter
+        # bindings. A worker may own a nested progress context, so allowing it
+        # to outlive teardown can restore an emitter for an already-closed
+        # session.
+        self._cancellation_event.set()
         if self._coordinator is not None:
             self._coordinator.shutdown()
             self._coordinator = None
-        self._program_key_map.clear()
 
-        self._programs.clear()
-        self._programs_pending = False
-
-        # Set cancellation and stop the executor before restoring backends,
-        # so an in-flight worker sees cancellation rather than the restored backend.
-        self._cancellation_event.set()
         if self._executor is not None:
-            self._executor.shutdown(wait=False)
+            self._executor.shutdown(wait=True, cancel_futures=True)
             self._executor = None
             self.futures.clear()
 
         self._restore_program_backends()
+        self._teardown_progress_session()
 
-        # Programs may still be mid-flight after a wait=False shutdown, so
-        # skip the drain.
-        self._teardown_progress_display(drain=False)
-        self._done_event = None
-        self._progress_bar = None
-        self._pb_task_map.clear()
-        self._round_task_id = None
+        self._programs.clear()
+        self._programs_pending = False
         self._reset_workflow_state()
 
     def _restore_program_backends(self) -> None:
@@ -633,35 +621,14 @@ class ProgramEnsemble(ABC):
         if hasattr(program, "_set_cancellation_event"):
             program._set_cancellation_event(self._cancellation_event)
 
-        if self._progress_bar is not None:
-            with self._pb_lock:
-                total = getattr(
-                    program,
-                    "_expected_total_iterations",
-                    getattr(self, "max_iterations", 1),
-                )
-                task_id = self._progress_bar.add_task(
-                    "",
-                    job_name=f"Program {program.program_id}",
-                    total=total,
-                    completed=0,
-                    message="",
-                    batch_color="",
-                    row_kind="program",
-                    program_key=self._program_key_map.get(program),
-                    final_status=None,
-                    visible=not self._hide_program_rows,
-                )
-                self._pb_task_map[program.program_id] = task_id
-
         coordinator = self._coordinator
-        program_key = self._program_key_map.get(program)
+        program_key = program._progress_key
 
         def _coordinated_task(prog):
             try:
                 return task_fn(prog)
             finally:
-                if coordinator is not None and program_key is not None:
+                if coordinator is not None:
                     coordinator.deregister_program(program_key)
 
         if self._executor is None:
@@ -911,7 +878,7 @@ class ProgramEnsemble(ABC):
         """Drive the ensemble lifecycle using ``task_fn`` per sub-program.
 
         Shared by :meth:`run` (training) and :meth:`sample_solution` (sampling).
-        Owns the executor, ``_BatchCoordinator``, progress UI, listener thread,
+        Owns the executor, ``_BatchCoordinator``, queued progress session,
         submission loop, error cleanup, and the blocking/non-blocking return.
         """
         if self._executor is not None:
@@ -920,20 +887,6 @@ class ProgramEnsemble(ABC):
         if len(self._programs) == 0:
             raise RuntimeError("No programs to run.")
 
-        # Reuse the queue from create_programs() — sub-programs bind their
-        # reporters to it at construction, so re-creating it here would orphan
-        # every per-program update.
-        if self._queue is None:
-            raise RuntimeError("Call create_programs() before run().")
-        # Clear any messages left on the persistent queue by a prior dispatch.
-        _drain_queue_quietly(self._queue)
-        self._done_event = Event()
-
-        # Drop any display from a previous dispatch before the validation
-        # below can raise, so a rejected dispatch leaves nothing to tear down.
-        self._progress_bar = None
-        self._live_display = None
-        self._round_task_id = None
         batching_enabled = batch_config.mode is BatchMode.MERGED
 
         # Validate that all program instances are unique to prevent thread-safety issues
@@ -945,27 +898,25 @@ class ProgramEnsemble(ABC):
                 "You must provide a unique instance for each program ID."
             )
 
+        program_keys = [program._progress_key for program in program_instances]
+        if len(set(program_keys)) != len(program_keys):
+            raise RuntimeError(
+                "Duplicate progress keys detected in ensemble. "
+                "Copied or pickle-restored QuantumProgram instances retain their "
+                "source identity and cannot run alongside it; construct each "
+                "ensemble program independently."
+            )
+
         n_workers = _resolve_worker_count(batch_config, len(self._programs))
 
-        prep_task_id = self._build_progress_display(batching_enabled)
-
-        self._executor = ThreadPoolExecutor(max_workers=n_workers)
         self._cancellation_event = Event()
         self.futures.clear()
         self._future_to_program.clear()
-        self._program_key_map.clear()
         # Per-program counter values at dispatch start; join() adds the delta.
         self._dispatch_count_baseline = {
             program: (program._total_circuit_count, program._total_run_time)
             for program in self._programs.values()
         }
-        self._pb_task_map = {}
-        # Guards ``_pb_task_map`` mutations and the snapshot taken when
-        # iterating ``progress_bar._tasks`` for batch colouring.  Any
-        # cross-task field lookup that walks the Progress's task dict
-        # must take this lock around the snapshot.
-        self._pb_lock = Lock()
-        self._listener_thread = None
 
         # Setup → registration → executor.submit happen sequentially on the
         # main thread.  If any of them raises after partial work is done
@@ -975,13 +926,14 @@ class ProgramEnsemble(ABC):
         # hold for survivors and they'd hang forever.  Tear everything
         # down on failure so the caller can retry cleanly.
         try:
+            self._start_progress_session(batching_enabled)
+            self._executor = ThreadPoolExecutor(max_workers=n_workers)
             if batching_enabled:
                 self._install_coordinator(batch_config, n_workers, backend)
             elif backend is not None:
                 for program in self._programs.values():
                     self._program_original_backend[program] = program.backend
                     program.backend = backend
-            self._start_listener(prep_task_id)
 
             for program in self._programs.values():
                 future = self._add_program_to_executor(program, task_fn)
@@ -989,26 +941,24 @@ class ProgramEnsemble(ABC):
                 self._future_to_program[future] = program
 
         except BaseException:
-            # Tear down: shut down coordinator (clears state under lock),
-            # signal/join the listener if it was started, stop live display,
-            # and shut down the executor.  Any half-submitted futures will
-            # resolve with ExecutionCancelledError via coordinator.cancel().
-            if self._coordinator is not None:
-                self._coordinator.shutdown()
+            # Tear down any half-submitted futures and restore all temporary
+            # backend/emitter bindings so the caller can retry cleanly. Signal
+            # every submitted worker and retain ownership until it exits;
+            # otherwise an unbatched worker could outlive the closed session
+            # and race a subsequent dispatch of the same stateful program.
+            self._cancellation_event.set()
+            try:
+                if self._coordinator is not None:
+                    self._coordinator.shutdown()
+                if self._executor is not None:
+                    self._executor.shutdown(wait=True)
+            finally:
                 self._coordinator = None
-            self._program_key_map.clear()
-
-            # Producers may still be mid-flight here, so skip the queue drain.
-            self._teardown_progress_display(drain=False)
-            self._progress_bar = None
-            self._round_task_id = None
-
-            if self._executor is not None:
-                self._executor.shutdown(wait=False)
                 self._executor = None
-            self._restore_program_backends()
-            self.futures.clear()
-            self._future_to_program.clear()
+                self._restore_program_backends()
+                self._teardown_progress_session()
+                self.futures.clear()
+                self._future_to_program.clear()
             raise
 
         if not blocking:
@@ -1138,241 +1088,180 @@ class ProgramEnsemble(ABC):
         selected_backend = self.backend if backend is None else backend
         self._coordinator = _BatchCoordinator(
             selected_backend,
-            progress_queue=self._queue,
+            progress_emitter=self._progress_emitter,
             batch_config=batch_config,
+            preparation_key=(
+                ("preparation", id(self)) if self._preparation_registered else None
+            ),
             n_workers=n_workers,
             cancellation_event=self._cancellation_event,
         )
-        for idx, program in enumerate(self._programs.values()):
-            program_key = str(idx)
-            self._program_key_map[program] = program_key
+        for program in self._programs.values():
+            program_key = program._progress_key
             self._coordinator.register_program(program_key)
             self._program_original_backend[program] = program.backend
             program.backend = _ProxyBackend(
                 selected_backend, self._coordinator, program_key
             )
 
-    def _start_listener(self, prep_task_id) -> None:
-        """Start the Live display and its queue-listener thread, if enabled."""
-        if self._progress_bar is None or self._live_display is None:
-            return
-        self._live_display.start()
+    def _start_progress_session(self, batching_enabled: bool) -> None:
+        """Create one dispatch session and bind all participating emitters."""
+        self._teardown_progress_session()
+        self._preparation_registered = False
+        self._workflow_registered = False
+        self._workflow_message = None
 
-        # Co-allocated with ``_progress_bar`` in the setup path, so a
-        # progress-active branch implies both of these are live.
-        assert self._done_event is not None
-        assert self._queue is not None
-        queue_obj = self._queue
-        progress_bar = self._progress_bar
-        pb_task_map = self._pb_task_map
-        done_event = self._done_event
-        pb_lock = self._pb_lock
-        hide_program_rows = self._hide_program_rows
-        round_task_id = self._round_task_id
-
-        def _listener_runner():
-            # Spawn-side guard: if ``queue_listener`` dies for any reason —
-            # including signature errors before its body runs — drain the
-            # queue so any ``queue.join()`` caller doesn't hang waiting for
-            # ``task_done()`` calls that will never come.
-            try:
-                queue_listener(
-                    queue_obj,
-                    progress_bar,
-                    pb_task_map,
-                    done_event,
-                    pb_lock,
-                    hide_program_rows=hide_program_rows,
-                    prep_task_id=prep_task_id,
-                    round_task_id=round_task_id,
+        if (
+            self.reporting_level is ReportingLevel.OFF
+            or _environment_disables_progress()
+        ):
+            self._progress_session = None
+            progress_emitter = discard_progress_event
+        else:
+            state = ProgressState(
+                hide_successful_programs=(
+                    self.reporting_level is ReportingLevel.COMPACT
                 )
-            except BaseException:
-                _drain_queue_quietly(queue_obj)
-                raise
-
-        self._listener_thread = Thread(target=_listener_runner, daemon=True)
-        self._listener_thread.start()
-
-    def _build_progress_display(self, batching_enabled: bool):
-        """Create this dispatch's progress display and its standing rows.
-
-        Returns the "Submitting circuits" row's task id, or ``None`` when that
-        row does not apply.
-        """
-        # Only FULL asks for every program row; COMPACT hides successful ones
-        # and the listener reveals failures.
-        self._hide_program_rows = self.reporting_level is not ReportingLevel.FULL
-        if self.reporting_level is ReportingLevel.OFF:
-            return None
-
-        self._progress_bar, self._live_display = make_progress_display(
-            is_jupyter=self._is_jupyter
-        )
-        if self._progress_bar is None:
-            return None
-
-        if self._round_context is not None:
-            round_number, max_rounds = self._round_context
-            round_label = (
-                f"Round {round_number}/{max_rounds}"
-                if max_rounds is not None
-                else f"Round {round_number}"
             )
-            self._round_task_id = self._add_standing_row(
-                job_name="Workflow",
-                total=None,
-                message=f"{round_label} — {len(self._programs)} programs",
-                row_kind="workflow",
-            )
+            self._progress_session = ProgressSession.queued(state)
+            progress_emitter = self._progress_session.emit
 
-        if self._hide_program_rows and batching_enabled:
-            # Only the coordinator emits ``prep_advance``, so this row is
-            # created for merged dispatch only — it could never advance under
-            # BatchMode.OFF.  It ticks up as each program makes its first
-            # ``submit`` call, reaching len(programs) just as the merged
-            # backend submission fires.
-            return self._add_standing_row(
-                job_name="Submitting circuits",
-                total=len(self._programs),
-                message="",
-                row_kind="program",
-            )
-        return None
+        bindings = ExitStack()
+        self._progress_bindings = bindings
+        self._progress_emitter = progress_emitter
+        try:
+            for program in self._programs.values():
+                bindings.enter_context(program._bind_progress_emitter(progress_emitter))
 
-    def _add_standing_row(
-        self, *, job_name: str, total: int | None, message: str, row_kind: str
-    ):
-        """Add a non-program progress row that lives for the whole dispatch."""
-        assert self._progress_bar is not None
-        return self._progress_bar.add_task(
-            "",
-            job_name=job_name,
-            total=total,
-            completed=0,
-            message=message,
-            batch_color="",
-            row_kind=row_kind,
-            program_key=None,
-            final_status=None,
-        )
-
-    def _teardown_progress_display(self, *, drain: bool = True) -> None:
-        """Drain, stop and release the round's listener thread and Live display.
-
-        ``drain=False`` skips the queue drain for abort paths, where producers
-        may still be running and the drain could block.
-        """
-        if drain and self._listener_thread is not None:
-            self._wait_for_listener_drain()
-        if self._done_event is not None:
-            self._done_event.set()
-        if self._listener_thread is not None:
-            self._listener_thread.join(timeout=_LISTENER_JOIN_TIMEOUT)
-            if self._listener_thread.is_alive():
-                warn("Listener thread did not terminate within timeout.")
-            self._listener_thread = None
-        if self._live_display is not None:
-            try:
-                self._live_display.stop()
-            except Exception:
-                pass  # Already stopped or not running
-            self._live_display = None
-
-    def _wait_for_listener_drain(self, timeout: float = 30.0) -> None:
-        """Wait for the listener to drain the queue, with a watchdog.
-
-        ``queue.join()`` blocks until ``task_done()`` count matches
-        ``put()`` count.  This helper polls for drain progress and bails
-        out on either of two failure modes so ``ensemble.join()`` never
-        hangs:
-
-        - **Listener dead**: the loop returns immediately with a warning.
-        - **Listener alive but stuck**: after ``timeout`` seconds with
-          no drain progress the loop returns with a warning.  Display
-          will be incomplete but the program exits.
-        """
-        if self._listener_thread is None or self._queue is None:
-            return
-        deadline = time.monotonic() + timeout
-        while self._queue.unfinished_tasks > 0:
-            if not self._listener_thread.is_alive():
-                warn(
-                    "Progress listener thread died before draining the queue; "
-                    "some terminal-status updates may be missing from the "
-                    "displayed progress.",
-                    RuntimeWarning,
-                    stacklevel=2,
-                )
+            if self._progress_session is None:
                 return
-            if time.monotonic() >= deadline:
-                warn(
-                    f"Progress listener did not drain within {timeout:.0f}s; "
-                    "some terminal-status updates may be missing.",
-                    RuntimeWarning,
-                    stacklevel=2,
+
+            if self._round_context is not None:
+                round_number, max_rounds = self._round_context
+                round_label = (
+                    f"Round {round_number}/{max_rounds}"
+                    if max_rounds is not None
+                    else f"Round {round_number}"
                 )
-                return
-            time.sleep(0.05)
+                self._workflow_message = (
+                    f"{round_label} — {len(self._programs)} programs"
+                )
+                workflow_key = ("workflow", id(self))
+                progress_emitter(
+                    ProgressEvent.register(
+                        workflow_key,
+                        ProgressScope.WORKFLOW,
+                        "Workflow",
+                        None,
+                    )
+                )
+                progress_emitter(
+                    ProgressEvent.show(workflow_key, self._workflow_message)
+                )
+                self._workflow_registered = True
+
+            if self.reporting_level is ReportingLevel.COMPACT and batching_enabled:
+                progress_emitter(
+                    ProgressEvent.register(
+                        ("preparation", id(self)),
+                        ProgressScope.PREPARATION,
+                        "Submitting circuits",
+                        len(self._programs),
+                    )
+                )
+                self._preparation_registered = True
+
+            for map_key, program in self._programs.items():
+                total = getattr(
+                    program,
+                    "_expected_total_iterations",
+                    getattr(self, "max_iterations", 1),
+                )
+                progress_emitter(
+                    ProgressEvent.register(
+                        program._progress_key,
+                        ProgressScope.PROGRAM,
+                        f"Program {map_key}",
+                        total,
+                        visible=self.reporting_level is ReportingLevel.FULL,
+                    )
+                )
+        except BaseException:
+            self._teardown_progress_session()
+            raise
+
+    def _teardown_progress_session(self) -> None:
+        """Drain/close the session, then restore every bound program emitter."""
+        session = self._progress_session
+        bindings, self._progress_bindings = self._progress_bindings, None
+        try:
+            if session is not None:
+                session.close()
+        finally:
+            if bindings is not None:
+                bindings.close()
+            self._progress_emitter = (
+                discard_progress_event
+                if self.reporting_level is ReportingLevel.OFF
+                or _environment_disables_progress()
+                else log_progress_event
+            )
 
     def _emit_progress_message(
         self,
-        prog_id: str | None,
+        program_key: Hashable | None,
         *,
         final_status: TerminalStatus | None = None,
         message: str | None = None,
     ) -> None:
-        """Put a synthetic progress message on the listener queue.
-
-        Used by failure / cancellation paths so every progress mutation
-        flows through the same single-writer queue → listener pipeline,
-        keeping ordering coherent with the worker-emitted messages.
-
-        No-op when there is no progress display: without a listener
-        nothing would consume the message.
-        """
-        if prog_id is None or self._queue is None or self._progress_bar is None:
+        """Emit typed program feedback through the dispatch's single writer."""
+        if program_key is None:
             return
-        payload: dict[str, Any] = {"job_id": prog_id, "progress": 0}
-        if final_status is not None:
-            payload["final_status"] = final_status
         if message is not None:
-            payload["message"] = message
-        self._queue.put(payload)
+            self._progress_emitter(ProgressEvent.show(program_key, message))
+        if final_status is not None:
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    program_key,
+                    final_status,
+                    detail=message,
+                )
+            )
 
-    def _emit_workflow_round_stage(self, message: str, *, final: bool = False) -> None:
+    def _emit_workflow_stage(self, message: str, *, final: bool = False) -> None:
         """Name the stage a multi-stage ``update_state`` is currently in.
 
-        Written to the workflow-round row while a listener is consuming the
-        queue, and logged otherwise -- ``update_state`` runs after the round's
-        display has been torn down, so nothing would drain a queued payload
-        there. ``final`` marks the message as the round's outcome rather than a
-        stage it passed through.
+        Active dispatches route the phase through their queued session;
+        classical reduction after dispatch uses the normal logging emitter.
         """
-        listener_alive = (
-            self._listener_thread is not None and self._listener_thread.is_alive()
-        )
-        if self._queue is None or self._progress_bar is None or not listener_alive:
-            if final or self.reporting_level is not ReportingLevel.OFF:
-                logger.info(message)
-            return
-        payload: dict[str, Any] = {"workflow_round": True, "message": message}
         if final:
-            payload["final_status"] = TerminalStatus.SUCCESS
-        self._queue.put(payload)
-
-    def _emit_workflow_round_message(self, final_status: TerminalStatus) -> None:
-        """Put the round's terminal status on the listener queue.
-
-        No-op for a standalone ``run_one_round`` (no round row) or when
-        there is no progress display to consume the message.
-        """
-        if (
-            self._round_task_id is None
-            or self._queue is None
-            or self._progress_bar is None
-        ):
+            logger.info(message)
             return
-        self._queue.put({"workflow_round": True, "final_status": final_status})
+        if self.reporting_level is ReportingLevel.OFF:
+            return
+        if not self._workflow_registered:
+            return
+        self._progress_emitter(ProgressEvent.show(("workflow", id(self)), message))
+
+    def _finish_workflow_progress(self, final_status: TerminalStatus) -> None:
+        """Finish the registered standing rows for this workflow round."""
+        if self._preparation_registered:
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    ("preparation", id(self)),
+                    final_status,
+                )
+            )
+            self._preparation_registered = False
+        if self._workflow_registered:
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    ("workflow", id(self)),
+                    final_status,
+                    detail=self._workflow_message,
+                )
+            )
+            self._workflow_registered = False
 
     def _stop_remaining_programs(
         self,
@@ -1432,7 +1321,7 @@ class ProgramEnsemble(ABC):
                         else:
                             status, message = failed_status, failed_message
                         self._emit_progress_message(
-                            program.program_id,
+                            program._progress_key,
                             final_status=status,
                             message=message,
                         )
@@ -1449,14 +1338,14 @@ class ProgramEnsemble(ABC):
                     program.cancel_unfinished_job()
                 unstoppable_futures.append(future)
                 self._emit_progress_message(
-                    program.program_id,
+                    program._progress_key,
                     message="Finishing... ⏳",
                 )
 
         # Immediately mark successfully cancelled tasks
         for program in successfully_cancelled:
             self._emit_progress_message(
-                program.program_id,
+                program._progress_key,
                 final_status=pending_status,
                 message=pending_message,
             )
@@ -1465,7 +1354,7 @@ class ProgramEnsemble(ABC):
         for future in as_completed(unstoppable_futures):
             program = self._future_to_program[future]
             self._emit_progress_message(
-                program.program_id,
+                program._progress_key,
                 final_status=running_status,
                 message=running_message,
             )
@@ -1518,33 +1407,22 @@ class ProgramEnsemble(ABC):
         if not failures:
             return
 
-        console = self._failure_console()
-        for program, exc in failures:
-            label = (
-                f" (Program {program.program_id})"
-                if program.program_id is not None
-                else ""
-            )
-            self._print_failure_panel(console, exc, label)
-            console.print(Traceback.from_exception(type(exc), exc, exc.__traceback__))
-
-    def _failure_console(self) -> Console:
-        """The progress display's console, or a fresh stderr one."""
-        if self._progress_bar is not None:
-            return self._progress_bar.console
-        return Console(stderr=True)
-
-    @staticmethod
-    def _print_failure_panel(console: Console, exc: BaseException, label: str) -> None:
-        """Render one program failure as a Rich panel."""
-        console.print(
-            Panel(
-                f"[bold]{type(exc).__name__}[/bold]: {exc}",
-                title=f"[bold red]Program Failure{label}[/bold red]",
-                subtitle="[dim]Traceback follows[/dim]",
-                border_style="red",
-            )
+        console = (
+            self._progress_session.console
+            if self._progress_session is not None
+            else None
         )
+        for program, exc in failures:
+            map_key = next(
+                (
+                    key
+                    for key, candidate in self._programs.items()
+                    if candidate is program
+                ),
+                None,
+            )
+            label = f" (Program {map_key})" if map_key is not None else ""
+            render_failure(exc, label=label, console=console)
 
     def _handle_failure(self, failed_future: Future | None) -> None:
         """Handle a program failure by stopping remaining programs.
@@ -1561,7 +1439,7 @@ class ProgramEnsemble(ABC):
             failed_program = self._future_to_program.get(failed_future)
             if failed_program is not None:
                 self._emit_progress_message(
-                    failed_program.program_id,
+                    failed_program._progress_key,
                     final_status=TerminalStatus.FAILED,
                     message="Job failed",
                 )
@@ -1604,17 +1482,25 @@ class ProgramEnsemble(ABC):
             # If a task fails, future.result() will raise the exception immediately.
             for future in as_completed(self.futures):
                 completed_futures.append(future.result())
-            self._emit_workflow_round_message(TerminalStatus.SUCCESS)
+                program = self._future_to_program.get(future)
+                if program is not None:
+                    self._emit_progress_message(
+                        program._progress_key,
+                        final_status=TerminalStatus.SUCCESS,
+                    )
+            self._finish_workflow_progress(TerminalStatus.SUCCESS)
 
         except KeyboardInterrupt:
             self._round_cancelled = True
-            if self._progress_bar is not None:
-                self._progress_bar.console.print(
-                    "[bold yellow]Shutdown signal received, waiting for programs "
-                    "to finish current iteration...[/bold yellow]"
+            if self._workflow_registered:
+                self._progress_emitter(
+                    ProgressEvent.show(
+                        ("workflow", id(self)),
+                        "Shutdown signal received; waiting for programs to finish",
+                    )
                 )
             self._handle_cancellation()
-            self._emit_workflow_round_message(TerminalStatus.CANCELLED)
+            self._finish_workflow_progress(TerminalStatus.CANCELLED)
 
             # Re-collect all completed results from scratch to avoid duplicates
             # from the as_completed loop above.
@@ -1645,7 +1531,7 @@ class ProgramEnsemble(ABC):
             # _handle_failure renders a panel per failed program, so every
             # failure is reported rather than only this first one.
             self._handle_failure(failed_future)
-            self._emit_workflow_round_message(TerminalStatus.FAILED)
+            self._finish_workflow_progress(TerminalStatus.FAILED)
 
             # Re-collect all completed results from scratch to avoid duplicates
             # from the as_completed loop above.
@@ -1699,9 +1585,7 @@ class ProgramEnsemble(ABC):
                     executor.shutdown(wait=True)
             finally:
                 self._restore_program_backends()
-                self._teardown_progress_display()
-
-            self._round_task_id = None
+                self._teardown_progress_session()
 
         # After successful cleanup, try to unregister the hook.
         try:

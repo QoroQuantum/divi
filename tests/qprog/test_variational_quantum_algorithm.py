@@ -32,6 +32,7 @@ from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
     _compute_parameter_shift_rule,
 )
+from divi.reporting._events import ProgressEvent, TerminalStatus
 from tests.conftest import DummyExpvalBackend, DummySimulator
 from tests.pipeline._helpers import meta_from_circuit
 
@@ -661,6 +662,53 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
 
         mock_optimizer.optimize.side_effect = mock_optimize_logic
         program.optimizer = mock_optimizer
+
+    def test_run_uses_one_direct_session_and_emits_typed_progress(self, mocker):
+        """A standalone run owns one session and starts visible iterations at one."""
+        program = self._create_program_with_mock_optimizer(mocker, seed=42)
+        program.max_iterations = 1
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        params = np.array([[0.1, 0.2, 0.3, 0.4]])
+        self.setup_mock_optimizer(program, mocker, [(params, -0.5)])
+
+        emitted = []
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        session.emit.side_effect = emitted.append
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        program.run(perform_final_computation=False)
+
+        direct.assert_called_once()
+        session.__enter__.assert_called_once_with()
+        session.__exit__.assert_called_once_with(None, None, None)
+        assert (
+            ProgressEvent.show(
+                progress_key=program._progress_key,
+                message="Iteration #1: Optimising",
+            )
+            in emitted
+        )
+        assert (
+            ProgressEvent.advance(
+                progress_key=program._progress_key,
+                loss=-0.5,
+            )
+            in emitted
+        )
+        assert (
+            ProgressEvent.finish(
+                progress_key=program._progress_key,
+                status=TerminalStatus.SUCCESS,
+                detail="Finished successfully!",
+            )
+            in emitted
+        )
 
     def test_run_rejects_a_keyword_no_layer_consumes(self, mocker):
         """``run()`` forwards ``**kwargs`` through several layers, each popping what

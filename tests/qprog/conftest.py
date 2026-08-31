@@ -6,6 +6,8 @@
 
 import pytest
 
+from divi.reporting._session import ProgressSession
+from tests.qprog._helpers import RecordingProgressSession
 from tests.qprog.optimizers._contracts import (
     CHECKPOINTING_VARIANT_IDS,
     OPTIMIZER_VARIANTS,
@@ -17,6 +19,21 @@ _CHECKPOINTING_OPTIMIZERS = [
     for opt_id, factory in OPTIMIZER_VARIANTS
     if opt_id in CHECKPOINTING_VARIANT_IDS
 ]
+
+
+@pytest.fixture
+def recording_direct_sessions(monkeypatch):
+    """Route direct ownership through real sessions exposed to the test."""
+    sessions: list[RecordingProgressSession] = []
+
+    def make_direct(state, **kwargs):
+        del kwargs
+        session = RecordingProgressSession(state)
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(ProgressSession, "direct", staticmethod(make_direct))
+    return sessions
 
 
 def _fixture_kwargs(variants):

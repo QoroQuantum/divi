@@ -9,6 +9,24 @@ from divi.viz import GradientMethod, compute_hessian
 
 
 class TestComputeHessian:
+    def test_uses_one_direct_session_and_closes_it_on_failure(
+        self, vqe_program, mocker
+    ):
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        with pytest.raises(ValueError, match="center must have shape"):
+            compute_hessian(vqe_program, np.zeros(5))
+
+        direct.assert_called_once()
+        session.__enter__.assert_called_once_with()
+        assert session.__exit__.call_count == 1
+        assert session.__exit__.call_args.args[0] is ValueError
+
     def test_returns_symmetric_matrix(self, vqe_program):
         center = np.zeros(2)
         result = compute_hessian(vqe_program, center)

@@ -34,6 +34,7 @@ from divi.qprog.checkpointing import (
     CheckpointNotFoundError,
     _find_latest_checkpoint_subdir,
 )
+from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
 
 from ._qaoa import QAOA
 
@@ -415,6 +416,33 @@ class IterativeQAOA(QAOA):
         checkpoint_config=None,
         **kwargs,
     ):
+        """Run the depth schedule within one standalone progress operation."""
+        with self._ensure_progress_session(
+            label="Iterative QAOA",
+            total=self._expected_total_iterations,
+        ):
+            result = self._run_depth_schedule(
+                initial_params=initial_params,
+                perform_final_computation=perform_final_computation,
+                checkpoint_config=checkpoint_config,
+                **kwargs,
+            )
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    self._progress_key,
+                    TerminalStatus.SUCCESS,
+                    detail="Finished successfully!",
+                )
+            )
+            return result
+
+    def _run_depth_schedule(
+        self,
+        initial_params=None,
+        perform_final_computation=True,
+        checkpoint_config=None,
+        **kwargs,
+    ):
         """Run the iterative QAOA procedure across increasing depths.
 
         At each depth from 1 to ``max_depth``, the algorithm optimises the
@@ -464,7 +492,11 @@ class IterativeQAOA(QAOA):
             prev_best_params = None
 
         for depth in range(start_depth, self._max_depth + 1):
-            self.reporter.info(message=f"Depth {depth}/{self._max_depth}")
+            self._progress_emitter(
+                ProgressEvent.show(
+                    self._progress_key, f"Depth {depth}/{self._max_depth}"
+                )
+            )
             depth_initial_params = None
 
             # A checkpoint taken mid-depth already carries that depth's ansatz,
@@ -495,14 +527,26 @@ class IterativeQAOA(QAOA):
             self.max_iterations = self._get_max_iters(depth)
 
             if not depth_exhausted:
-                super().run(
-                    initial_params=depth_initial_params,
-                    perform_final_computation=False,
-                    checkpoint_config=self._depth_checkpoint_config(
-                        checkpoint_config, depth
-                    ),
-                    **kwargs,
-                )
+                outer_emitter = self._progress_emitter
+
+                def emit_depth_event(event):
+                    if (
+                        event.kind is EventKind.FINISH
+                        and event.progress_key == self._progress_key
+                        and event.terminal_status is TerminalStatus.SUCCESS
+                    ):
+                        return
+                    outer_emitter(event)
+
+                with self._bind_progress_emitter(emit_depth_event):
+                    super().run(
+                        initial_params=depth_initial_params,
+                        perform_final_computation=False,
+                        checkpoint_config=self._depth_checkpoint_config(
+                            checkpoint_config, depth
+                        ),
+                        **kwargs,
+                    )
 
             self._depth_history.append(
                 {

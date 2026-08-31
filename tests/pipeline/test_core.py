@@ -7,6 +7,7 @@
 import signal
 import threading
 import warnings
+from inspect import signature
 from threading import Event
 
 import pytest
@@ -55,6 +56,7 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     PauliTwirlStage,
 )
+from divi.reporting._events import ProgressEvent
 
 from ._helpers import (
     DummySpecStage,
@@ -69,10 +71,61 @@ from ._helpers import (
 )
 
 
+def test_pipeline_env_keeps_progress_transport_out_of_public_constructor(
+    dummy_simulator,
+):
+    parameters = signature(PipelineEnv).parameters
+    assert "progress_emitter" not in parameters
+    assert "progress_key" not in parameters
+
+    events: list[ProgressEvent] = []
+    emitter = events.append
+    env = PipelineEnv(backend=dummy_simulator)
+    env._bind_progress(emitter, "program")
+
+    assert env._progress_emitter is emitter
+    assert env._progress_key == "program"
+
+
 def _compile_bound(batch):
     """Lower an already-bound batch to ``{label: qasm}`` plus its lineage map."""
     payloads, lineage_by_label = _compile_batch(batch, [[]])
     return bound_circuits(payloads), lineage_by_label
+
+
+class ProtocolAsyncBackendWithoutMaxRetries:
+    """AsyncJobBackend implementation with no optional retry-limit attribute."""
+
+    @property
+    def shots(self) -> int:
+        return 100
+
+    def submit_circuits(self, payloads, *, cancellation_event=None, **kwargs):
+        del payloads, cancellation_event, kwargs
+        return ExecutionResult(job_id="job_poll")
+
+    def poll_job_status(
+        self,
+        execution_result,
+        loop_until_complete=False,
+        on_complete=None,
+        verbose=True,
+        progress_callback=None,
+        cancellation_event=None,
+    ):
+        del execution_result, loop_until_complete, on_complete, verbose
+        del cancellation_event
+        if progress_callback is not None:
+            progress_callback(3, JobStatus.RUNNING.value)
+        return JobStatus.COMPLETED
+
+    def get_job_results(self, execution_result):
+        del execution_result
+        return ExecutionResult(results=[], job_id="job_poll")
+
+    def cancel_job(self, execution_result):
+        del execution_result
+        return None
 
 
 def _parametric_meta_one_body():
@@ -802,93 +855,72 @@ def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
     assert next(iter(reduced)) == (("spec", "circ"),)
 
 
-class TestPipelineReporterHooks:
-    """Spec: CircuitPipeline emits ``pipeline_stage`` progress events per stage."""
+class TestPipelineProgressEvents:
+    """CircuitPipeline emits typed phase events for one progress key."""
 
-    def _collect_stage_events(self, reporter_mock) -> list[str | None]:
-        events: list[str | None] = []
-        for call in reporter_mock.info.call_args_list:
-            kwargs = call.kwargs
-            if "pipeline_stage" in kwargs:
-                events.append(kwargs["pipeline_stage"])
-        return events
-
-    def test_reports_spec_stage_name_on_forward_pass(self, dummy_pipeline_env, mocker):
-        reporter = mocker.MagicMock()
-        dummy_pipeline_env.reporter = reporter
+    def test_reports_spec_stage_name_on_forward_pass(self, dummy_pipeline_env):
+        events: list[ProgressEvent] = []
+        dummy_pipeline_env._bind_progress(events.append, "program")
 
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
         pipeline.run_forward_pass("x", dummy_pipeline_env)
 
-        events = self._collect_stage_events(reporter)
-        assert events == ["DummySpecStage", "MeasurementStage"]
+        assert events == [
+            ProgressEvent.show("program", "Pipeline: DummySpecStage"),
+            ProgressEvent.show("program", "Pipeline: MeasurementStage"),
+        ]
 
-    def test_reports_each_bundle_stage_in_order(self, dummy_pipeline_env, mocker):
-        reporter = mocker.MagicMock()
-        dummy_pipeline_env.reporter = reporter
+    def test_reports_each_bundle_stage_in_order(self, dummy_pipeline_env):
+        events: list[ProgressEvent] = []
+        dummy_pipeline_env._bind_progress(events.append, "program")
 
         pipeline = CircuitPipeline(
             stages=two_group_pipeline_stages(fanout=("fold", 2)),
         )
         pipeline.run_forward_pass("x", dummy_pipeline_env)
 
-        events = self._collect_stage_events(reporter)
         assert events == [
-            "DummySpecStage",
-            "MeasurementStage",
-            "FanoutAndSumStage:fold",
+            ProgressEvent.show("program", "Pipeline: DummySpecStage"),
+            ProgressEvent.show("program", "Pipeline: MeasurementStage"),
+            ProgressEvent.show("program", "Pipeline: FanoutAndSumStage:fold"),
         ]
 
-    def test_run_clears_pipeline_stage_before_execution(
-        self, dummy_pipeline_env, mocker
-    ):
-        """``run()`` clears the pipeline-stage indicator before execute_fn."""
-        reporter = mocker.MagicMock()
-        dummy_pipeline_env.reporter = reporter
+    def test_run_clears_phase_in_finally_on_success(self, dummy_pipeline_env):
+        events: list[ProgressEvent] = []
+        dummy_pipeline_env._bind_progress(events.append, "program")
+
+        def execute_after_checkpoint(trace, env):
+            events.clear()
+            return ones_execute_fn(trace, env)
 
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
         pipeline.run(
-            initial_spec="x", env=dummy_pipeline_env, execute_fn=ones_execute_fn
+            initial_spec="x",
+            env=dummy_pipeline_env,
+            execute_fn=execute_after_checkpoint,
         )
 
-        events = self._collect_stage_events(reporter)
-        # Last event must be a clear (None) so the spinner drops "Pipeline: ..."
-        # before submission/polling takes over.
-        assert events[-1] is None
-        assert events[:-1] == ["DummySpecStage", "MeasurementStage"]
+        assert events == [ProgressEvent.show("program", "")]
 
-    def test_missing_reporter_does_not_break_forward_pass(self, dummy_pipeline_env):
-        """Pipelines must work identically when ``env.reporter`` is None."""
-        assert dummy_pipeline_env.reporter is None
+    def test_missing_emitter_does_not_break_forward_pass(self, dummy_pipeline_env):
+        assert dummy_pipeline_env._progress_emitter is None
 
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
         trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        assert trace.final_batch  # forward pass succeeded
+        assert trace.final_batch
 
-    def test_run_clears_transient_status_on_success(self, dummy_pipeline_env, mocker):
-        """run() ends with end_pipeline_run() so a one-shot run can't leak a
-        live spinner."""
-        reporter = mocker.MagicMock()
-        dummy_pipeline_env.reporter = reporter
-
-        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
-        pipeline.run(
-            initial_spec="x", env=dummy_pipeline_env, execute_fn=ones_execute_fn
-        )
-        reporter.end_pipeline_run.assert_called_once()
-
-    def test_run_clears_transient_status_on_exception(self, dummy_pipeline_env, mocker):
-        """The cleanup must run even when execution raises mid-pipeline."""
-        reporter = mocker.MagicMock()
-        dummy_pipeline_env.reporter = reporter
+    def test_run_clears_phase_in_finally_on_exception(self, dummy_pipeline_env):
+        events: list[ProgressEvent] = []
+        dummy_pipeline_env._bind_progress(events.append, "program")
 
         def boom(trace, env):
+            events.clear()
             raise RuntimeError("backend exploded")
 
         pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
         with pytest.raises(RuntimeError, match="backend exploded"):
             pipeline.run(initial_spec="x", env=dummy_pipeline_env, execute_fn=boom)
-        reporter.end_pipeline_run.assert_called_once()
+        assert events == [ProgressEvent.show("program", "")]
 
 
 def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
@@ -914,6 +946,88 @@ def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
 
 class TestWaitForAsyncResult:
     """Tests for _wait_for_async_result: polling and cancellation handling."""
+
+    def test_polling_callback_emits_typed_event(self, mocker):
+        backend = mocker.Mock()
+        backend.max_retries = 100
+        backend.get_job_results.return_value = ExecutionResult(
+            results=[], job_id="job_poll"
+        )
+
+        def fake_poll(
+            execution_result,
+            *,
+            loop_until_complete,
+            on_complete,
+            verbose,
+            progress_callback,
+            cancellation_event=None,
+        ):
+            progress_callback(3, JobStatus.RUNNING.value)
+            return JobStatus.COMPLETED
+
+        backend.poll_job_status.side_effect = fake_poll
+        events: list[ProgressEvent] = []
+        env = PipelineEnv(backend=backend)
+        env._bind_progress(events.append, "program")
+
+        _wait_for_async_result(backend, ExecutionResult(job_id="job_poll"), env)
+
+        assert events == [
+            ProgressEvent.polling(
+                "program",
+                job_id="job_poll",
+                status=JobStatus.RUNNING,
+                attempt=3,
+                limit=100,
+            )
+        ]
+        assert events[0].job_status is JobStatus.RUNNING
+
+    def test_backend_specific_polling_status_is_reported_without_aborting(self, mocker):
+        backend = mocker.Mock()
+        backend.max_retries = 100
+        backend.get_job_results.return_value = ExecutionResult(
+            results=[], job_id="job_poll"
+        )
+
+        def fake_poll(
+            execution_result,
+            *,
+            loop_until_complete,
+            on_complete,
+            verbose,
+            progress_callback,
+            cancellation_event=None,
+        ):
+            progress_callback(3, "BACKEND_SPECIFIC_WAIT")
+            return JobStatus.COMPLETED
+
+        backend.poll_job_status.side_effect = fake_poll
+        events: list[ProgressEvent] = []
+        env = PipelineEnv(backend=backend)
+        env._bind_progress(events.append, "program")
+
+        _wait_for_async_result(backend, ExecutionResult(job_id="job_poll"), env)
+
+        assert events == [
+            ProgressEvent.show(
+                "program",
+                "Backend status BACKEND_SPECIFIC_WAIT for job job_poll (attempt 3)",
+            )
+        ]
+
+    def test_polling_without_optional_max_retries_uses_unlimited_limit(self):
+        backend = ProtocolAsyncBackendWithoutMaxRetries()
+        events: list[ProgressEvent] = []
+        env = PipelineEnv(backend=backend)
+        env._bind_progress(events.append, "program")
+
+        _wait_for_async_result(backend, ExecutionResult(job_id="job_poll"), env)
+
+        assert isinstance(backend, AsyncJobBackend)
+        assert events[0].job_status is JobStatus.RUNNING
+        assert events[0].max_retries is None
 
     def test_execution_cancelled_error_propagates(self, mocker):
         """The pipeline boundary preserves a backend's cooperative-cancel error."""

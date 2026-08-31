@@ -21,6 +21,7 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import InterpolationStrategy
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
+from divi.reporting._events import ProgressEvent
 from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
 
 
@@ -57,6 +58,69 @@ def custom_vqa_program(dummy_simulator, default_optimizer):
 
 
 class TestDirectAPI:
+    def test_unsupported_program_retains_documented_type_error(self):
+        with pytest.raises(
+            TypeError,
+            match="divi.viz currently supports VariationalQuantumAlgorithm only",
+        ):
+            scan_1d(object(), center=np.zeros(1), n_points=2)
+
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            lambda program: scan_1d(program, center=np.zeros(2), n_points=3),
+            lambda program: scan_2d(
+                program, center=np.zeros(2), grid_shape=(2, 2), rng=0
+            ),
+            lambda program: scan_pca(
+                program,
+                center=np.zeros(2),
+                samples=np.array([[-1.0, 0.0], [0.0, -1.0], [0.0, 1.0], [1.0, 0.0]]),
+                grid_shape=(2, 2),
+            ),
+            lambda program: scan_interp_1d(
+                program, np.zeros(2), np.ones(2), n_points=3
+            ),
+            lambda program: scan_interp_2d(
+                program, np.zeros(2), np.ones(2), grid_shape=(2, 2), rng=0
+            ),
+        ],
+    )
+    def test_each_scan_uses_one_direct_session(self, vqe_program, mocker, operation):
+        emitted = []
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        session.emit.side_effect = emitted.append
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        operation(vqe_program)
+
+        direct.assert_called_once()
+        session.__enter__.assert_called_once_with()
+        session.__exit__.assert_called_once_with(None, None, None)
+        assert any(
+            event.kind == ProgressEvent.show(vqe_program._progress_key, "").kind
+            for event in emitted
+        )
+
+    def test_scan_closes_direct_session_on_validation_error(self, vqe_program, mocker):
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        with pytest.raises(ValueError, match="n_points must be >= 2"):
+            scan_1d(vqe_program, center=np.zeros(2), n_points=1)
+
+        direct.assert_called_once()
+        assert session.__exit__.call_count == 1
+        assert session.__exit__.call_args.args[0] is ValueError
+
     def test_scan_1d_vqe_returns_expected_shapes(self, vqe_program):
         center = np.zeros(vqe_program.get_expected_param_shape()[1])
         result = scan_1d(vqe_program, center=center, n_points=5, span=(-0.5, 0.5))

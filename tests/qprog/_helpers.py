@@ -5,6 +5,21 @@
 """Shared program stubs for ``ProgramEnsemble`` tests."""
 
 from divi.qprog.quantum_program import QuantumProgram
+from divi.reporting._events import ProgressEvent
+from divi.reporting._session import ProgressSession
+from divi.reporting._state import ProgressState
+
+
+class RecordingProgressSession(ProgressSession):
+    """Real direct session that also records its typed input events."""
+
+    def __init__(self, state: ProgressState) -> None:
+        super().__init__(state, lambda _state, _affected: None, lambda: None)
+        self.emitted: list[ProgressEvent] = []
+
+    def emit(self, event: ProgressEvent) -> None:
+        self.emitted.append(event)
+        super().emit(event)
 
 
 class _FakeRunResult:

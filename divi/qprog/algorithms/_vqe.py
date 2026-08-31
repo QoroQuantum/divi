@@ -33,6 +33,7 @@ from divi.qprog.algorithms import (
     ZerosState,
 )
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.reporting._events import ProgressEvent
 
 if TYPE_CHECKING:
     from pennylane.qchem import Molecule as PennyLaneMolecule
@@ -298,19 +299,28 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         **kwargs,
     ) -> Self:
         """Extract the eigenstate corresponding to the lowest energy found."""
-        self.reporter.info(message="🏁 Computing Final Eigenstate 🏁", overwrite=True)
-
-        super().sample_solution(self._resolve_sample_params(params), **kwargs)
-
-        if self._best_probs:
-            best_measurement_probs = next(iter(self._best_probs.values()))
-            eigenstate_bitstring = max(
-                best_measurement_probs, key=best_measurement_probs.__getitem__
+        with self._ensure_progress_session(label="VQE solution sampling", total=None):
+            self._progress_emitter(
+                ProgressEvent.show(
+                    self._progress_key, "🏁 Computing Final Eigenstate 🏁"
+                )
             )
-            self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
 
-        self.reporter.info(message="🏁 Computed Final Eigenstate! 🏁")
-        return self
+            super().sample_solution(self._resolve_sample_params(params), **kwargs)
+
+            if self._best_probs:
+                best_measurement_probs = next(iter(self._best_probs.values()))
+                eigenstate_bitstring = max(
+                    best_measurement_probs, key=best_measurement_probs.__getitem__
+                )
+                self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
+
+            self._progress_emitter(
+                ProgressEvent.show(
+                    self._progress_key, "🏁 Computed Final Eigenstate! 🏁"
+                )
+            )
+            return self
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save VQE-specific runtime state."""

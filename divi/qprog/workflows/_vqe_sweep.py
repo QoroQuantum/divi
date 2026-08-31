@@ -554,12 +554,10 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         ):
             _job_id = (ansatz.name, item_id)
             self._programs[_job_id] = self._constructor(
-                program_id=_job_id,
                 molecule=molecule,
                 hamiltonian=hamiltonian,
                 ansatz=ansatz,
                 optimizer=self._optimizer_template.copy(),
-                progress_queue=self._queue,
             )
 
     def aggregate_results(self):

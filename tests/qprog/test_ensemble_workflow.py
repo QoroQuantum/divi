@@ -21,7 +21,15 @@ from divi.qprog.ensemble import (
     RoundRecord,
     WorkflowStatus,
 )
-from divi.reporting import TerminalStatus
+from divi.reporting._events import (
+    EventKind,
+    ProgressEvent,
+    ProgressScope,
+    TerminalStatus,
+)
+from divi.reporting._logging import log_progress_event
+from divi.reporting._session import ProgressSession
+from divi.reporting._state import ProgressState
 from tests.qprog._helpers import FailingTestProgram, SimpleTestProgram
 
 # Each round of _LifecycleEnsemble contributes these totals via
@@ -75,13 +83,12 @@ class _LifecycleEnsemble(ProgramEnsemble):
         for idx in range(self._n_programs_for(state)):
             prog_id = f"r{round_number}p{idx}"
             programs[prog_id] = (
-                FailingTestProgram(backend=self.backend, program_id=prog_id)
+                FailingTestProgram(backend=self.backend)
                 if failing
                 else SimpleTestProgram(
                     10 if idx == 0 else 5,
                     5.5 if idx == 0 else 10.0,
                     backend=self.backend,
-                    program_id=prog_id,
                 )
             )
         self.programs = programs
@@ -105,16 +112,28 @@ class _OneShotEnsemble(ProgramEnsemble):
     def create_programs(self, state=None):
         super().create_programs()
         self.programs = {
-            "prog1": SimpleTestProgram(
-                10, 5.5, backend=self.backend, program_id="prog1"
-            ),
-            "prog2": SimpleTestProgram(
-                5, 10.0, backend=self.backend, program_id="prog2"
-            ),
+            "prog1": SimpleTestProgram(10, 5.5, backend=self.backend),
+            "prog2": SimpleTestProgram(5, 10.0, backend=self.backend),
         }
 
     def aggregate_results(self):
         return None
+
+
+class _RecordingSession:
+    """Synchronous session double retaining the real progress reducer."""
+
+    def __init__(self, state: ProgressState):
+        self.state = state
+        self.events: list[ProgressEvent] = []
+        self.closed = False
+
+    def emit(self, event: ProgressEvent) -> None:
+        self.events.append(event)
+        self.state.apply(event)
+
+    def close(self) -> None:
+        self.closed = True
 
 
 @pytest.fixture
@@ -561,6 +580,10 @@ class TestRoundFailureHandling:
         assert ensemble._executor is None
         assert ensemble._coordinator is None
         assert ensemble._round_context is None
+        assert all(
+            program._progress_emitter is log_progress_event
+            for program in ensemble.programs.values()
+        )
 
     def test_keyboard_interrupt_aborts_the_workflow(self, lifecycle_ensemble, mocker):
         """Ctrl-C during a round must stop run(), not start the next round."""
@@ -602,8 +625,11 @@ class TestRoundFailureHandling:
         assert ensemble.stop_reason == WorkflowStatus.CANCELLED
         assert [r.status for r in ensemble.round_history] == [WorkflowStatus.CANCELLED]
         assert ensemble._executor is None
-        assert ensemble._live_display is None
         assert ensemble._coordinator is None
+        assert all(
+            program._progress_emitter is log_progress_event
+            for program in ensemble.programs.values()
+        )
         # The interrupted round's results never reach the state.
         assert ensemble.workflow_state == 0
 
@@ -656,28 +682,33 @@ class TestRunOneRoundInteropWithRun:
 
 
 class TestReportingLevels:
-    """Row visibility and round-row rendering per :class:`ReportingLevel`."""
+    """Visibility and standing-row lifecycles are reducer state."""
 
-    def _program_rows(self, progress):
-        """Per-program rows only — the prep row is also tagged ``program``."""
+    def test_unregistered_workflow_stage_is_not_emitted(self, dummy_simulator):
+        ensemble = _OneShotEnsemble(
+            backend=dummy_simulator,
+            reporting_level=ReportingLevel.COMPACT,
+        )
+        events: list[ProgressEvent] = []
+        ensemble._progress_emitter = events.append
+
+        ensemble._emit_workflow_stage("Reducing samples")
+
+        assert events == []
+
+    @staticmethod
+    def _scope_targets(ensemble, scope):
+        session = ensemble._progress_session
+        assert session is not None
         return [
-            task
-            for task in progress.tasks
-            if task.fields.get("row_kind") == "program"
-            and task.fields.get("job_name", "").startswith("Program ")
+            target for target in session.state.targets.values() if target.scope is scope
         ]
 
-    def _workflow_rows(self, progress):
-        return [
-            task for task in progress.tasks if task.fields.get("row_kind") == "workflow"
-        ]
-
-    def test_off_creates_no_display_but_keeps_history(self, lifecycle_ensemble):
+    def test_off_creates_no_session_but_keeps_history(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(n_rounds=1, reporting_level=ReportingLevel.OFF)
         ensemble.run()
 
-        assert ensemble._progress_bar is None
-        assert ensemble._listener_thread is None
+        assert ensemble._progress_session is None
         assert len(ensemble.round_history) == 1
 
     def test_compact_hides_program_rows(self, lifecycle_ensemble):
@@ -686,17 +717,17 @@ class TestReportingLevels:
         )
         ensemble.run()
 
-        program_rows = self._program_rows(ensemble._progress_bar)
-        assert program_rows, "expected per-program rows to exist"
-        assert all(not row.visible for row in program_rows)
+        program_keys = self._scope_targets(ensemble, ProgressScope.PROGRAM)
+        assert program_keys
+        assert all(not target.visible for target in program_keys)
 
     def test_full_shows_program_rows(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(n_rounds=1, reporting_level=ReportingLevel.FULL)
         ensemble.run()
 
-        program_rows = self._program_rows(ensemble._progress_bar)
-        assert program_rows
-        assert all(row.visible for row in program_rows)
+        program_keys = self._scope_targets(ensemble, ProgressScope.PROGRAM)
+        assert program_keys
+        assert all(target.visible for target in program_keys)
 
     def test_full_shows_program_rows_for_a_large_ensemble(self, lifecycle_ensemble):
         """Row visibility is driven only by the level, not the program count."""
@@ -707,21 +738,21 @@ class TestReportingLevels:
         )
         ensemble.run(batch_config=BatchConfig(max_batch_size=8))
 
-        program_rows = self._program_rows(ensemble._progress_bar)
-        assert len(program_rows) == 70
-        assert all(row.visible for row in program_rows)
+        program_keys = self._scope_targets(ensemble, ProgressScope.PROGRAM)
+        assert len(program_keys) == 70
+        assert all(target.visible for target in program_keys)
 
     @pytest.mark.parametrize("level", [ReportingLevel.COMPACT, ReportingLevel.FULL])
     def test_workflow_round_row_is_rendered(self, lifecycle_ensemble, level):
         ensemble = lifecycle_ensemble(n_rounds=1, reporting_level=level)
         ensemble.run(max_rounds=1)
 
-        workflow_rows = self._workflow_rows(ensemble._progress_bar)
-        assert len(workflow_rows) == 1
-        row = workflow_rows[0]
-        assert row.fields["job_name"] == "Workflow"
-        assert "Round 1/1" in row.fields["message"]
-        assert "2 programs" in row.fields["message"]
+        workflow_targets = self._scope_targets(ensemble, ProgressScope.WORKFLOW)
+        assert len(workflow_targets) == 1
+        target = workflow_targets[0]
+        assert target.label == "Workflow"
+        assert "Round 1/1" in target.detail
+        assert "2 programs" in target.detail
 
     def test_round_row_reports_round_number_without_a_limit(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(
@@ -729,9 +760,8 @@ class TestReportingLevels:
         )
         ensemble.run()
 
-        # Only the last round's display survives teardown.
-        row = self._workflow_rows(ensemble._progress_bar)[0]
-        assert row.fields["message"].startswith("Round 2 ")
+        target = self._scope_targets(ensemble, ProgressScope.WORKFLOW)[0]
+        assert target.detail.startswith("Round 2 ")
 
     def test_round_row_marked_successful(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(
@@ -739,8 +769,8 @@ class TestReportingLevels:
         )
         ensemble.run()
 
-        row = self._workflow_rows(ensemble._progress_bar)[0]
-        assert row.fields["final_status"] == TerminalStatus.SUCCESS
+        target = self._scope_targets(ensemble, ProgressScope.WORKFLOW)[0]
+        assert target.terminal_status is TerminalStatus.SUCCESS
 
     def test_round_row_marked_failed(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(
@@ -749,8 +779,8 @@ class TestReportingLevels:
         with pytest.raises(RuntimeError):
             ensemble.run()
 
-        row = self._workflow_rows(ensemble._progress_bar)[0]
-        assert row.fields["final_status"] == TerminalStatus.FAILED
+        target = self._scope_targets(ensemble, ProgressScope.WORKFLOW)[0]
+        assert target.terminal_status is TerminalStatus.FAILED
 
     def test_no_round_row_for_standalone_run_one_round(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(
@@ -759,7 +789,7 @@ class TestReportingLevels:
         ensemble.create_programs(0)
         ensemble.run_one_round(blocking=True)
 
-        assert self._workflow_rows(ensemble._progress_bar) == []
+        assert self._scope_targets(ensemble, ProgressScope.WORKFLOW) == []
 
     def test_no_prep_row_without_merged_batching(self, lifecycle_ensemble):
         """Regression: the prep row can only advance under merged dispatch."""
@@ -768,12 +798,7 @@ class TestReportingLevels:
         )
         ensemble.run(batch_config=BatchConfig(mode=BatchMode.OFF))
 
-        prep_rows = [
-            task
-            for task in ensemble._progress_bar.tasks
-            if task.fields.get("job_name") == "Submitting circuits"
-        ]
-        assert prep_rows == []
+        assert self._scope_targets(ensemble, ProgressScope.PREPARATION) == []
 
     def test_compact_reveals_a_failed_program_row(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(
@@ -782,20 +807,41 @@ class TestReportingLevels:
         with pytest.raises(RuntimeError):
             ensemble.run()
 
-        program_rows = self._program_rows(ensemble._progress_bar)
+        program_keys = self._scope_targets(ensemble, ProgressScope.PROGRAM)
         assert any(
-            row.visible for row in program_rows
+            target.visible for target in program_keys
         ), "a failed program row must be revealed even in COMPACT"
 
-    def test_env_var_suppresses_display_at_every_level(
-        self, lifecycle_ensemble, monkeypatch
+    def test_workflow_and_preparation_use_typed_target_lifecycles(
+        self, lifecycle_ensemble, mocker
     ):
-        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", "1")
-        ensemble = lifecycle_ensemble(n_rounds=1, reporting_level=ReportingLevel.FULL)
-        ensemble.run()
+        ensemble = lifecycle_ensemble(
+            n_rounds=1, reporting_level=ReportingLevel.COMPACT
+        )
+        session = _RecordingSession(ProgressState(hide_successful_programs=True))
+        mocker.patch.object(ProgressSession, "queued", return_value=session)
 
-        assert ensemble._progress_bar is None
-        assert len(ensemble.round_history) == 1
+        ensemble.run(max_rounds=1)
+
+        workflow_key = ("workflow", id(ensemble))
+        preparation_key = ("preparation", id(ensemble))
+        workflow_events = [
+            event for event in session.events if event.progress_key == workflow_key
+        ]
+        preparation_events = [
+            event for event in session.events if event.progress_key == preparation_key
+        ]
+        assert [event.kind for event in workflow_events] == [
+            EventKind.REGISTER,
+            EventKind.SHOW,
+            EventKind.FINISH,
+        ]
+        assert preparation_events[0].kind is EventKind.REGISTER
+        # These stub programs do not submit circuits. Coordinator coverage
+        # separately proves first submissions emit preparation advances.
+        assert preparation_events[1:-1] == []
+        assert preparation_events[-1].kind is EventKind.FINISH
+        assert preparation_events[-1].terminal_status is TerminalStatus.SUCCESS
 
     def test_default_level_is_compact(self, dummy_simulator):
         ensemble = _LifecycleEnsemble(backend=dummy_simulator, n_rounds=1)
@@ -829,6 +875,6 @@ class TestReportingLevels:
         ensemble = lifecycle_ensemble(n_rounds=1, reporting_level="full")
         ensemble.run()
 
-        program_rows = self._program_rows(ensemble._progress_bar)
-        assert program_rows
-        assert all(row.visible for row in program_rows)
+        program_keys = self._scope_targets(ensemble, ProgressScope.PROGRAM)
+        assert program_keys
+        assert all(target.visible for target in program_keys)

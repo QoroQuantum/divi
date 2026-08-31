@@ -6,9 +6,8 @@ import logging
 import pickle
 from abc import abstractmethod
 from collections.abc import Sequence
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
-from queue import Queue
 from typing import Any, ClassVar, Literal, Self, TypeAlias, cast
 from warnings import warn
 
@@ -54,7 +53,10 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
-from divi.reporting import TerminalStatus
+from divi.reporting._events import (
+    ProgressEvent,
+    TerminalStatus,
+)
 from divi.viz import ProgramViz
 
 logger = logging.getLogger(__name__)
@@ -70,6 +72,19 @@ _CHECKPOINTABLE_OPTIMIZERS: dict[str, type[Optimizer]] = {
 }
 
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
+
+
+def _with_optimisation_progress(run_method):
+    """Bind one direct session around an otherwise unbound VQA run."""
+
+    @wraps(run_method)
+    def wrapped(self, *args, **kwargs):
+        max_iterations = kwargs.get("max_iterations", self.max_iterations)
+        total = max(0, max_iterations - self.current_iteration)
+        with self._ensure_progress_session(label="Optimising", total=total):
+            return run_method(self, *args, **kwargs)
+
+    return wrapped
 
 
 def _compute_parameter_shift_rule(
@@ -200,7 +215,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         backend: CircuitRunner,
         optimizer: Optimizer | None = None,
         seed: int | None = None,
-        progress_queue: Queue | None = None,
         early_stopping: EarlyStopping | None = None,
         **kwargs,
     ):
@@ -221,7 +235,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             optimizer (Optimizer): The optimizer to use for parameter optimisation.
                 Required — passing ``None`` (or omitting it) raises ``ValueError``.
             seed (int | None): Random seed for parameter initialisation. Defaults to None.
-            progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
             early_stopping (EarlyStopping | None): Early stopping controller. When
                 provided, the optimisation loop will be halted if any of the
                 configured criteria are met (e.g. patience exceeded, gradient
@@ -279,13 +292,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             :class:`~divi.qprog.SolutionSamplingMixin`.
         """
 
-        program_id = kwargs.pop("program_id", None)
-
         super().__init__(
             backend=backend,
             seed=seed,
-            progress_queue=progress_queue,
-            program_id=program_id,
             **kwargs,
         )
 
@@ -823,7 +832,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         )
         n_params = self._routine_parameter_count(preprocessor) or self.n_params
         return self._build_pipeline_env(
-            rng=rng, reporter=None, param_sets=np.zeros((n_rows, n_params))
+            rng=rng,
+            progress_emitter=None,
+            param_sets=np.zeros((n_rows, n_params)),
         )
 
     def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
@@ -969,6 +980,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
         return params_arr
 
+    @_with_optimisation_progress
     def run(
         self,
         initial_params: npt.NDArray[np.float64] | None = None,
@@ -1043,8 +1055,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         def cost_fn(params, *, shots=None, return_variance=False):
             self._evaluation_counter += 1
-            self.reporter.info(
-                message="💸 Computing Cost 💸", iteration=self.current_iteration
+            self._progress_emitter(
+                ProgressEvent.show(
+                    self._progress_key,
+                    f"Iteration #{self.current_iteration + 1}: Optimising",
+                )
             )
 
             values_map = self._evaluate_cost_param_sets(
@@ -1088,8 +1103,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         def grad_fn(params):
             nonlocal last_grad_norm
 
-            self.reporter.info(
-                message="📈 Computing Gradients 📈", iteration=self.current_iteration
+            self._progress_emitter(
+                ProgressEvent.show(
+                    self._progress_key,
+                    f"Iteration #{self.current_iteration + 1}: Computing gradients",
+                )
             )
 
             if jac_fn is not None:
@@ -1131,8 +1149,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
             self.current_iteration += 1
 
-            self.reporter.update(
-                iteration=self.current_iteration, loss=float(current_loss)
+            self._progress_emitter(
+                ProgressEvent.advance(
+                    self._progress_key,
+                    loss=float(current_loss),
+                )
             )
 
             # Checkpointing
@@ -1151,9 +1172,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 )
                 if reason is not None:
                     self._stop_reason = reason
-                    self.reporter.info(
-                        message=f"Early stopping triggered: {reason.value}",
-                        iteration=self.current_iteration,
+                    self._progress_emitter(
+                        ProgressEvent.show(
+                            self._progress_key,
+                            f"Early stopping triggered: {reason.value}",
+                        )
                     )
                     raise StopIteration
 
@@ -1171,7 +1194,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             ):
                 raise StopIteration
 
-        self.reporter.info(message="Finished Setup")
+        self._progress_emitter(ProgressEvent.show(self._progress_key, "Finished Setup"))
 
         resolved_initial_params = self._resolve_initial_param_sets(initial_params)
 
@@ -1218,8 +1241,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 )
                 # The pipeline already best-effort-cancelled the in-flight
                 # job when it raised; no redundant call needed here.
-                self.reporter.info(
-                    message=message, final_status=TerminalStatus.CANCELLED
+                self._progress_emitter(
+                    ProgressEvent.finish(
+                        self._progress_key,
+                        TerminalStatus.CANCELLED,
+                        detail=message,
+                    )
                 )
                 try:
                     _flush_final_checkpoint()
@@ -1250,8 +1277,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         if perform_final_computation and isinstance(self, SolutionSamplingMixin):
             self.sample_solution(**kwargs)
 
-        self.reporter.info(
-            message="Finished successfully!", final_status=TerminalStatus.SUCCESS
+        self._progress_emitter(
+            ProgressEvent.finish(
+                self._progress_key,
+                TerminalStatus.SUCCESS,
+                detail="Finished successfully!",
+            )
         )
 
         return self

@@ -710,9 +710,8 @@ class LASSQD(ProgramEnsemble):
             :class:`~divi.backends.MaestroSimulator` cannot, so identical runs
             are not guaranteed to agree bit for bit there.
         **kwargs: ``backend`` (required), ``sampling_backend``, and
-            ``reporting_level`` are consumed here; ``program_id`` and
-            ``progress_queue`` are set internally and must not be passed here.
-            Other keywords are forwarded to each fragment program. Shared
+            ``reporting_level`` are consumed here. Other keywords are
+            forwarded to each fragment program. Shared
             quantum-program options such as ``precision`` and ``qem_protocol``
             work in either mode; VQE-specific options such as
             ``grouping_strategy`` and ``early_stopping`` require VQE mode.
@@ -726,8 +725,7 @@ class LASSQD(ProgramEnsemble):
             is not positive; or if any fragment leaves no excitation available,
             fragments overlap, or the fragments do not sum to ``Sz = 0``. The
             configuration objects validate their own fields on construction.
-        TypeError: If ``program_id`` or ``progress_queue`` is passed via
-            ``kwargs``, if ``backend`` is missing, if ``molecule`` is
+        TypeError: If ``backend`` is missing, if ``molecule`` is
             neither a PySCF ``Mole`` nor a restricted mean-field, or if
             ``ansatz`` is not an :class:`~divi.qprog.algorithms.Ansatz`.
         NotImplementedError: If the molecule is open-shell, or its mean-field
@@ -795,12 +793,6 @@ class LASSQD(ProgramEnsemble):
             raise TypeError(
                 f"ansatz must be an Ansatz instance; got {type(ansatz).__name__}."
             )
-        for reserved in ("program_id", "progress_queue"):
-            if reserved in kwargs:
-                raise TypeError(
-                    f"LASSQD sets {reserved!r} internally; do not pass it via "
-                    "kwargs."
-                )
         if "backend" not in kwargs:
             raise TypeError(
                 "LASSQD.__init__ missing required keyword-only argument: 'backend'."
@@ -1032,7 +1024,6 @@ class LASSQD(ProgramEnsemble):
                 h_alpha,
                 h_beta,
                 g_frag,
-                prog_id,
                 int(fragment_seeds[index]),
             )
 
@@ -1042,7 +1033,6 @@ class LASSQD(ProgramEnsemble):
         h_alpha: np.ndarray,
         h_beta: np.ndarray,
         g_frag: np.ndarray,
-        program_id: str,
         seed: int,
     ) -> _FragmentVQE | LinearMethodFragmentProgram:
         """Build one fragment preparation program from its effective integrals.
@@ -1067,8 +1057,6 @@ class LASSQD(ProgramEnsemble):
                 fragment.spec,
                 backend=self.backend,
                 sampling_backend=self.sampling_backend,
-                program_id=program_id,
-                progress_queue=self._queue,
                 seed=seed,
                 **self._extra_kwargs,
             )
@@ -1146,8 +1134,6 @@ class LASSQD(ProgramEnsemble):
             optimizer=copy.deepcopy(self._optimizer),
             max_iterations=self._max_iterations,
             backend=self.backend,
-            program_id=program_id,
-            progress_queue=self._queue,
             seed=seed,
             seed_params=seed_params,
             **self._extra_kwargs,
@@ -1306,7 +1292,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
         integrals, n_core = self._active_space_integrals(state)
 
-        self._emit_workflow_round_stage("Recovering fragment subspaces (SQD)")
+        self._emit_workflow_stage("Recovering fragment subspaces (SQD)")
         recovery_started = time.perf_counter()
         programs = self.programs
         new_fragments = []
@@ -1376,11 +1362,11 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 )
             )
 
-        self._emit_workflow_round_stage("Assembling active-space RDMs")
+        self._emit_workflow_stage("Assembling active-space RDMs")
         rdm1_active, rdm2_active = assemble_active_rdms(new_fragments)
         ao_eri, h_ao = self._cached_mol_integrals()
 
-        self._emit_workflow_round_stage("Re-optimising orbitals")
+        self._emit_workflow_stage("Re-optimising orbitals")
         orbital_started = time.perf_counter()
         solve = optimize_orbitals(
             self._mol,
@@ -1412,7 +1398,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 orbital_seconds=time.perf_counter() - orbital_started,
             )
         )
-        self._emit_workflow_round_stage(self._round_reports[-1].summary(), final=True)
+        self._emit_workflow_stage(self._round_reports[-1].summary(), final=True)
 
         return LASSQDState(
             mo_coeff=solve.mo_coeff,

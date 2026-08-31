@@ -83,9 +83,11 @@ on the program via
 :ref:`reading results <reading-results>` in core concepts for their
 semantics and types.
 
-Per-iteration INFO log lines are emitted to the ``divi`` logger during
-optimisation.  To silence them: ``from divi.reporting import disable_logging``
-(call ``enable_logging()`` to restore).
+Standalone optimisation progress is rendered for each run. Divi does not
+configure a logging handler on import; applications that want Rich-formatted
+non-interactive progress logs can call
+``from divi.reporting import enable_logging``. Call ``disable_logging()`` to
+remove only that Divi-owned handler again.
 
 Inference
 ---------

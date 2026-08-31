@@ -33,7 +33,7 @@ from divi.pipeline.stages import ParameterBindingStage, TrotterSpecStage
 from divi.qprog import ObservableMeasuringMixin
 from divi.qprog.algorithms import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
-from divi.reporting import TerminalStatus
+from divi.reporting._events import ProgressEvent, TerminalStatus
 
 
 class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
@@ -86,7 +86,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
                   :class:`~divi.pipeline.stages.MeasurementStage`'s QWC
                   grouping; QuEPP shares the target circuit and dedupes
                   path DAGs across observables.
-            **kwargs: Passed to QuantumProgram (backend, seed, progress_queue, etc.).
+            **kwargs: Passed to QuantumProgram (backend, seed, etc.).
                 Accepts ``qem_protocol`` for quantum error mitigation (requires
                 ``observable`` to be set, since QEM operates on expectation values).
         """
@@ -311,27 +311,35 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         Returns:
             TimeEvolution: Returns ``self`` for method chaining.
         """
-        reject_unclaimed_run_kwargs(self, kwargs)
-        result = self.evaluate(self._evolution_params(), self._evolution_preprocessor())
-
-        if len(result) != 1:
-            raise RuntimeError(
-                f"Expected exactly 1 pipeline result, got {len(result)}."
+        with self._ensure_progress_session(label="Time evolution", total=1):
+            reject_unclaimed_run_kwargs(self, kwargs)
+            result = self.evaluate(
+                self._evolution_params(), self._evolution_preprocessor()
             )
-        (raw,) = result.values()
-        if self.observable is None:
-            self._results = raw
-        elif isinstance(self.observable, tuple):
-            self._results = [float(v) for v in raw]
-        else:
-            (single,) = raw
-            self._results = float(single)
 
-        self.reporter.info(
-            message="Finished successfully!", final_status=TerminalStatus.SUCCESS
-        )
+            if len(result) != 1:
+                raise RuntimeError(
+                    f"Expected exactly 1 pipeline result, got {len(result)}."
+                )
+            (raw,) = result.values()
+            if self.observable is None:
+                self._results = raw
+            elif isinstance(self.observable, tuple):
+                self._results = [float(v) for v in raw]
+            else:
+                (single,) = raw
+                self._results = float(single)
 
-        return self
+            self._progress_emitter(ProgressEvent.advance(self._progress_key))
+            self._progress_emitter(
+                ProgressEvent.finish(
+                    self._progress_key,
+                    TerminalStatus.SUCCESS,
+                    detail="Finished successfully!",
+                )
+            )
+
+            return self
 
     def _normalise_observable(self, observable):
         """Convert observables to ``SparsePauliOp`` on the cost-circuit wires."""

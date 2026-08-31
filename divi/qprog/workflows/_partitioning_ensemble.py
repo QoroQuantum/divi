@@ -96,13 +96,11 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def _make_program_args(self, prog_id) -> dict:
+    def _make_program_args(self) -> dict:
         """Return common kwargs for instantiating a sub-program."""
         return dict(
-            program_id=prog_id,
             optimizer=self._optimizer_template.copy(),
             early_stopping=copy.deepcopy(self._early_stopping_template),
-            progress_queue=self._queue,
         )
 
     def _check_best_probs_available(self):
@@ -124,7 +122,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         for prog_id, sub_problem in sub_problems.items():
             self._programs[prog_id] = self._constructor(
                 problem=sub_problem,
-                **self._make_program_args(prog_id),
+                **self._make_program_args(),
             )
 
     def _aggregate(self, strategy, top_n):

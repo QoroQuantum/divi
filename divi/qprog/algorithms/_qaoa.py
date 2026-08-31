@@ -29,6 +29,7 @@ from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingM
 from divi.qprog.algorithms import InitialState
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.reporting._events import ProgressEvent
 
 logger = logging.getLogger(__name__)
 
@@ -299,17 +300,22 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         **kwargs,
     ) -> Self:
         """Run measurement circuits with the given parameters and decode the solution."""
-        self.reporter.info(message="🏁 Computing Final Solution 🏁", overwrite=True)
+        with self._ensure_progress_session(label="QAOA solution sampling", total=None):
+            self._progress_emitter(
+                ProgressEvent.show(self._progress_key, "🏁 Computing Final Solution 🏁")
+            )
 
-        super().sample_solution(self._resolve_sample_params(params), **kwargs)
+            super().sample_solution(self._resolve_sample_params(params), **kwargs)
 
-        best_probs = next(iter(self._best_probs.values()))
-        best_bitstring = max(best_probs, key=best_probs.__getitem__)
-        self._solution_bitstring = best_bitstring
-        self._decoded_solution = self._decode_solution_fn(best_bitstring)
+            best_probs = next(iter(self._best_probs.values()))
+            best_bitstring = max(best_probs, key=best_probs.__getitem__)
+            self._solution_bitstring = best_bitstring
+            self._decoded_solution = self._decode_solution_fn(best_bitstring)
 
-        self.reporter.info(message="🏁 Computed Final Solution! 🏁")
-        return self
+            self._progress_emitter(
+                ProgressEvent.show(self._progress_key, "🏁 Computed Final Solution! 🏁")
+            )
+            return self
 
     def get_top_solutions(
         self,

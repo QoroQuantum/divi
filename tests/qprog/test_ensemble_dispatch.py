@@ -10,20 +10,17 @@ accounting, and dry runs. The multi-round workflow loop that drives repeated
 dispatches lives in ``test_ensemble_workflow.py``.
 """
 
+import copy
 import os
+import pickle
 import re
 import threading
 import warnings
-from concurrent.futures import Future, ThreadPoolExecutor
-from multiprocessing import Event
-from threading import Event as ThreadingEvent
-from threading import Thread
+from concurrent.futures import Future
 
 import networkx as nx
 import numpy as np
 import pytest
-from rich.panel import Panel
-from rich.traceback import Traceback
 
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
@@ -33,11 +30,20 @@ from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
     ProgramEnsemble,
+    ReportingLevel,
 )
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
 from divi.qprog.workflows import PartitioningProgramEnsemble
-from divi.reporting import TerminalStatus
+from divi.reporting._events import (
+    EventKind,
+    ProgressEvent,
+    ProgressScope,
+    TerminalStatus,
+    discard_progress_event,
+)
+from divi.reporting._session import ProgressSession
+from divi.reporting._state import ProgressState
 from tests.qprog._helpers import (
     SimpleTestProgram,
     _FakeRunResult,
@@ -57,12 +63,8 @@ class SampleProgramEnsemble(ProgramEnsemble):
         """Creates a set of mock programs."""
         super().create_programs()
         self.programs = {
-            "prog1": SimpleTestProgram(
-                10, 5.5, backend=self.backend, program_id="prog1"
-            ),
-            "prog2": SimpleTestProgram(
-                5, 10.0, backend=self.backend, program_id="prog2"
-            ),
+            "prog1": SimpleTestProgram(10, 5.5, backend=self.backend),
+            "prog2": SimpleTestProgram(5, 10.0, backend=self.backend),
         }
 
     def aggregate_results(self):
@@ -70,6 +72,82 @@ class SampleProgramEnsemble(ProgramEnsemble):
         # The super() call is important to trigger checks and the join()
         super().aggregate_results()
         return sum(p.circ_count for p in self.programs.values())
+
+
+class _RecordingSession:
+    """Synchronous session double that retains real reducer behaviour."""
+
+    def __init__(self, state: ProgressState):
+        self.state = state
+        self.events: list[ProgressEvent] = []
+        self.closed = False
+
+    def emit(self, event: ProgressEvent) -> None:
+        self.events.append(event)
+        self.state.apply(event)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _CancellationBlockingProgram(SimpleTestProgram):
+    """Block the first run until its ensemble cancellation event is set."""
+
+    def __init__(self, *, backend, started: threading.Event, finished: threading.Event):
+        super().__init__(1, 0.1, backend=backend)
+        self.started = started
+        self.finished = finished
+        self.run_count = 0
+        self.emitter_when_cancelled = None
+
+    def run(self):
+        self.run_count += 1
+        if self.run_count == 1:
+            self.started.set()
+            if self._cancellation_event is None:
+                raise RuntimeError("cancellation event was not installed")
+            if not self._cancellation_event.wait(timeout=5):
+                raise RuntimeError("worker was not cancelled during setup cleanup")
+            self.emitter_when_cancelled = self._progress_emitter
+            self.finished.set()
+        return super().run()
+
+
+class _NestedEmitterBlockingProgram(SimpleTestProgram):
+    """Hold a worker-owned emitter binding open until reset cancellation."""
+
+    def __init__(
+        self,
+        *,
+        backend,
+        entered: threading.Event,
+        cancelled: threading.Event,
+        release: threading.Event,
+        finished: threading.Event,
+    ):
+        super().__init__(1, 0.1, backend=backend)
+        self.entered = entered
+        self.cancelled = cancelled
+        self.release = release
+        self.finished = finished
+
+    def run(self):
+        outer_emitter = self._progress_emitter
+
+        def emit_nested(event):
+            outer_emitter(event)
+
+        with self._bind_progress_emitter(emit_nested):
+            self.entered.set()
+            if self._cancellation_event is None:
+                raise RuntimeError("cancellation event was not installed")
+            if not self._cancellation_event.wait(timeout=5):
+                raise RuntimeError("worker was not cancelled during reset")
+            self.cancelled.set()
+            if not self.release.wait(timeout=5):
+                raise RuntimeError("test did not release cancelled worker")
+        self.finished.set()
+        return self
 
 
 @pytest.fixture
@@ -82,24 +160,13 @@ def program_ensemble(dummy_simulator):
         pass  # Don't break test teardown due to a race condition
 
 
-@pytest.fixture(autouse=True)
-def stop_live_display(program_ensemble):
-    """Fixture to automatically stop any active Rich progress bars after a test."""
-    yield
-    if (
-        hasattr(program_ensemble, "_progress_bar")
-        and program_ensemble._progress_bar is not None
-        and not program_ensemble._progress_bar.finished
-    ):
-        program_ensemble._progress_bar.stop()
-
-
 class TestProgramEnsemble:
     def test_correct_initialization(self, program_ensemble):
         assert program_ensemble._executor is None
         assert len(program_ensemble.programs) == 0
         assert program_ensemble.total_circuit_count == 0
         assert program_ensemble.total_run_time == 0.0
+        assert program_ensemble._progress_session is None
 
     def test_public_import_surface(self):
         # Guards against __init__.py regressions: everything ensemble.py
@@ -118,46 +185,75 @@ class TestProgramEnsemble:
         assert len(program_ensemble.programs) == 2
         assert "prog1" in program_ensemble.programs
         assert "prog2" in program_ensemble.programs
-        assert hasattr(program_ensemble._queue, "get")  # Check if it's queue-like
-        # create_programs() only sets up the progress queue (sub-programs bind
-        # to it at construction). _done_event is created per-run by run().
-        assert program_ensemble._done_event is None
+        assert program_ensemble._progress_session is None
 
-    def test_reset_cleans_up_all_resources(self, program_ensemble, mocker):
-        """Tests that reset() correctly shuts down and cleans up all resources."""
-        # First, create programs to initialize the manager, queue, etc.
+    def test_reset_closes_session_and_restores_program_emitters(self, program_ensemble):
         program_ensemble.create_programs()
-        # Now, simulate a running state by creating an executor and futures.
-        # run() creates _done_event per-run, so set it up here to mirror that.
-        program_ensemble._done_event = ThreadingEvent()
-        program_ensemble._executor = mocker.MagicMock(spec=ThreadPoolExecutor)
-        program_ensemble._listener_thread = mocker.MagicMock(spec=Thread)
-        program_ensemble._progress_bar = mocker.MagicMock()
-        program_ensemble._live_display = mocker.MagicMock()
-        program_ensemble.futures = [mocker.MagicMock()]
-        program_ensemble._pb_task_map = {}
+        programs = tuple(program_ensemble.programs.values())
+        original_emitters = tuple(program._progress_emitter for program in programs)
+        program_ensemble.run_one_round(blocking=False)
+        session = program_ensemble._progress_session
 
-        # Configure the mock to behave like a stopped thread to prevent warnings
-        program_ensemble._listener_thread.is_alive.return_value = False
+        assert session is not None
+        assert all(
+            program._progress_emitter is not original
+            for program, original in zip(programs, original_emitters, strict=True)
+        )
 
-        # Spy on the original objects before they are cleared
-        mock_executor = program_ensemble._executor
-        done_event_set_spy = mocker.spy(program_ensemble._done_event, "set")
-        mock_listener_thread = program_ensemble._listener_thread
-        mock_live_display = program_ensemble._live_display
-
-        # Call the method under test
         program_ensemble.reset()
 
-        # Assert that cleanup methods were called on the spied objects
-        mock_executor.shutdown.assert_called_once_with(wait=False)
-        done_event_set_spy.assert_called_once()
-        mock_listener_thread.join.assert_called_once()
-        mock_live_display.stop.assert_called_once()
-
-        # Assert that state attributes are cleared
         assert program_ensemble._executor is None
         assert program_ensemble.futures == []
+        assert all(
+            program._progress_emitter is original
+            for program, original in zip(programs, original_emitters, strict=True)
+        )
+
+    def test_reset_waits_for_worker_emitter_bindings_before_teardown(
+        self, dummy_simulator
+    ):
+        entered = threading.Event()
+        cancelled = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+        reset_done = threading.Event()
+        reset_errors = []
+        program = _NestedEmitterBlockingProgram(
+            backend=dummy_simulator,
+            entered=entered,
+            cancelled=cancelled,
+            release=release,
+            finished=finished,
+        )
+        original_emitter = program._progress_emitter
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.programs = {"blocking": program}
+        ensemble.run_one_round(
+            blocking=False,
+            batch_config=BatchConfig(mode=BatchMode.OFF),
+        )
+        assert entered.wait(timeout=2)
+
+        def _reset():
+            try:
+                ensemble.reset()
+            except BaseException as exc:
+                reset_errors.append(exc)
+            finally:
+                reset_done.set()
+
+        reset_thread = threading.Thread(target=_reset)
+        reset_thread.start()
+        assert cancelled.wait(timeout=2)
+        returned_before_worker = reset_done.wait(timeout=1)
+        release.set()
+        assert reset_done.wait(timeout=2)
+        reset_thread.join(timeout=2)
+
+        assert not returned_before_worker
+        assert finished.is_set()
+        assert reset_errors == []
+        assert program._progress_emitter is original_emitter
 
     def test_total_circuit_count_setter(self, program_ensemble):
         with pytest.raises(
@@ -338,32 +434,202 @@ class TestProgramEnsemble:
 
         assert result == 15  # 10 + 5
 
-    def test_reset_listener_thread_timeout(self, program_ensemble, mocker):
-        """Test reset handles listener thread timeout warning."""
+    def test_one_queued_session_is_created_per_dispatch(self, program_ensemble, mocker):
+        queued = mocker.spy(ProgressSession, "queued")
         program_ensemble.create_programs()
-        program_ensemble._done_event = Event()
-        mock_thread = mocker.MagicMock(spec=Thread)
-        mock_thread.is_alive.return_value = True  # Simulate timeout
-        program_ensemble._listener_thread = mock_thread
 
-        with pytest.warns(UserWarning, match="Listener thread did not terminate"):
-            program_ensemble.reset()
-        mock_thread.join.assert_called_once_with(
-            timeout=ensemble_module._LISTENER_JOIN_TIMEOUT
+        program_ensemble.run_one_round(blocking=True)
+
+        assert queued.call_count == 1
+
+    def test_program_targets_register_before_executor_submission(
+        self, program_ensemble, mocker
+    ):
+        program_ensemble.create_programs()
+        session = _RecordingSession(ProgressState(hide_successful_programs=True))
+        mocker.patch.object(ProgressSession, "queued", return_value=session)
+        original_add = program_ensemble._add_program_to_executor
+
+        def _assert_registered(program, task_fn):
+            target = program._progress_key
+            assert any(
+                event.kind is EventKind.REGISTER and event.progress_key == target
+                for event in session.events
+            )
+            return original_add(program, task_fn)
+
+        mocker.patch.object(
+            program_ensemble,
+            "_add_program_to_executor",
+            side_effect=_assert_registered,
         )
 
-    def test_reset_progress_bar_exception(self, program_ensemble, mocker):
-        """Test reset handles live display stop exception."""
-        program_ensemble.create_programs()
-        mock_live_display = mocker.MagicMock()
-        mock_live_display.stop.side_effect = Exception("Stop failed")
-        program_ensemble._live_display = mock_live_display
-        program_ensemble._progress_bar = mocker.MagicMock()
-        program_ensemble._pb_task_map = {}
+        program_ensemble.run_one_round(blocking=True)
 
-        # Should not raise exception, just pass silently
-        program_ensemble.reset()
-        mock_live_display.stop.assert_called_once()
+    def test_compact_program_is_initially_not_visible(self, program_ensemble, mocker):
+        program_ensemble.create_programs()
+        sessions: list[_RecordingSession] = []
+
+        def _record_session(state, **kwargs):
+            del kwargs
+            session = _RecordingSession(state)
+            sessions.append(session)
+            return session
+
+        mocker.patch.object(ProgressSession, "queued", side_effect=_record_session)
+
+        program_ensemble._start_progress_session(batching_enabled=False)
+
+        compact_state = sessions[0].state
+        program = program_ensemble.programs["prog1"]
+        assert compact_state.get(program._progress_key).visible is False
+
+    def test_failed_compact_program_becomes_visible(self, program_ensemble, mocker):
+        program_ensemble.create_programs()
+        sessions: list[_RecordingSession] = []
+
+        def _record_session(state, **kwargs):
+            del kwargs
+            session = _RecordingSession(state)
+            sessions.append(session)
+            return session
+
+        mocker.patch.object(ProgressSession, "queued", side_effect=_record_session)
+        program_ensemble._start_progress_session(batching_enabled=False)
+        program = program_ensemble.programs["prog1"]
+
+        sessions[0].emit(
+            ProgressEvent.finish(program._progress_key, TerminalStatus.FAILED)
+        )
+
+        failed_compact_state = sessions[0].state
+        assert failed_compact_state.get(program._progress_key).visible is True
+
+    def test_full_program_is_initially_visible(self, dummy_simulator, mocker):
+        ensemble = SampleProgramEnsemble(
+            backend=dummy_simulator, reporting_level=ReportingLevel.FULL
+        )
+        ensemble.create_programs()
+        sessions: list[_RecordingSession] = []
+
+        def _record_session(state, **kwargs):
+            del kwargs
+            session = _RecordingSession(state)
+            sessions.append(session)
+            return session
+
+        mocker.patch.object(ProgressSession, "queued", side_effect=_record_session)
+
+        try:
+            ensemble._start_progress_session(batching_enabled=False)
+            full_state = sessions[0].state
+            program = ensemble.programs["prog1"]
+            assert full_state.get(program._progress_key).visible is True
+        finally:
+            ensemble.reset()
+
+    def test_successful_dispatch_restores_program_emitters(self, program_ensemble):
+        program_ensemble.create_programs()
+        programs = tuple(program_ensemble.programs.values())
+        originals = tuple(program._progress_emitter for program in programs)
+
+        program_ensemble.run_one_round(blocking=True)
+
+        assert all(
+            program._progress_emitter is original
+            for program, original in zip(programs, originals, strict=True)
+        )
+
+    def test_off_binds_discard_emitter_without_touching_logger(
+        self, dummy_simulator, mocker
+    ):
+        ensemble = SampleProgramEnsemble(
+            backend=dummy_simulator, reporting_level=ReportingLevel.OFF
+        )
+        ensemble.create_programs()
+        seen_emitters = []
+        original_add = ensemble._add_program_to_executor
+
+        def _record_emitter(program, task_fn):
+            seen_emitters.append(program._progress_emitter)
+            return original_add(program, task_fn)
+
+        mocker.patch.object(
+            ensemble, "_add_program_to_executor", side_effect=_record_emitter
+        )
+        logger = ensemble_module.logger
+        level = logger.level
+        handlers = tuple(logger.handlers)
+
+        ensemble.run_one_round(blocking=True)
+
+        assert seen_emitters == [discard_progress_event, discard_progress_event]
+        assert ensemble._progress_session is None
+        assert logger.level == level
+        assert tuple(logger.handlers) == handlers
+
+    def test_off_remains_silent_after_dispatch_teardown(self, dummy_simulator, caplog):
+        ensemble = SampleProgramEnsemble(
+            backend=dummy_simulator, reporting_level=ReportingLevel.OFF
+        )
+        ensemble.create_programs()
+        ensemble.run_one_round(blocking=True)
+
+        caplog.clear()
+        with caplog.at_level("INFO", logger="divi"):
+            ensemble._progress_emitter(
+                ProgressEvent.show(("workflow", id(ensemble)), "late event")
+            )
+
+        assert caplog.records == []
+
+    @pytest.mark.parametrize(
+        "reporting_level", [ReportingLevel.COMPACT, ReportingLevel.FULL]
+    )
+    def test_env_var_suppresses_session_without_touching_logging(
+        self, dummy_simulator, mocker, monkeypatch, reporting_level
+    ):
+        monkeypatch.setenv("DIVI_DISABLE_PROGRESS", "1")
+        ensemble = SampleProgramEnsemble(
+            backend=dummy_simulator,
+            reporting_level=reporting_level,
+        )
+        ensemble.create_programs()
+        seen_emitters = []
+        original_add = ensemble._add_program_to_executor
+
+        def _record_emitter(program, task_fn):
+            seen_emitters.append(program._progress_emitter)
+            return original_add(program, task_fn)
+
+        mocker.patch.object(
+            ensemble, "_add_program_to_executor", side_effect=_record_emitter
+        )
+        queued = mocker.spy(ProgressSession, "queued")
+        logger = ensemble_module.logger
+        level = logger.level
+        handlers = tuple(logger.handlers)
+        disabled = logger.disabled
+
+        ensemble.run_one_round(blocking=True)
+
+        queued.assert_not_called()
+        assert seen_emitters == [discard_progress_event, discard_progress_event]
+        assert ensemble._progress_session is None
+        assert logger.level == level
+        assert tuple(logger.handlers) == handlers
+        assert logger.disabled is disabled
+
+    def test_ensemble_owns_no_direct_rich_progress_objects(self, program_ensemble):
+        program_ensemble.create_programs()
+        program_ensemble.run_one_round(blocking=True)
+
+        assert not hasattr(program_ensemble, "_progress_bar")
+        assert not hasattr(program_ensemble, "_live_display")
+        assert not hasattr(program_ensemble, "_listener_thread")
+        assert not hasattr(program_ensemble, "_pb_task_map")
+        assert not hasattr(program_ensemble, "_queue")
+        assert not hasattr(program_ensemble, "_done_event")
 
     def test_atexit_cleanup_warning(self, program_ensemble, mocker):
         """Test atexit cleanup hook issues warning."""
@@ -377,75 +643,27 @@ class TestProgramEnsemble:
         ):
             program_ensemble._atexit_cleanup_hook()
 
-    def test_emit_progress_message_puts_on_queue(self, program_ensemble, mocker):
-        """Synthetic terminal-status messages flow through the queue —
-        not direct ``progress_bar.update`` calls — so the listener stays
-        the single writer of the display."""
-        program_ensemble.create_programs()
-        program_ensemble._progress_bar = mocker.MagicMock()
-        program_ensemble._emit_progress_message(
-            "prog1", final_status=TerminalStatus.FAILED, message="Job failed"
-        )
-        msg = program_ensemble._queue.get_nowait()
-        assert msg == {
-            "job_id": "prog1",
-            "progress": 0,
-            "final_status": TerminalStatus.FAILED,
-            "message": "Job failed",
-        }
-
-    def test_emit_progress_message_no_op_without_program_id(
-        self, program_ensemble, mocker
+    def test_typed_program_message_and_finish_use_the_bound_emitter(
+        self, program_ensemble
     ):
         program_ensemble.create_programs()
-        program_ensemble._progress_bar = mocker.MagicMock()
+        session = _RecordingSession(ProgressState())
+        target = program_ensemble.programs["prog1"]._progress_key
+        session.emit(
+            ProgressEvent.register(
+                target, ProgressScope.PROGRAM, "Program prog1", total=1
+            )
+        )
+        program_ensemble._progress_emitter = session.emit
+
         program_ensemble._emit_progress_message(
-            None, final_status=TerminalStatus.FAILED
+            target, final_status=TerminalStatus.FAILED, message="Job failed"
         )
-        assert program_ensemble._queue.empty()
 
-    def test_emit_progress_message_no_op_without_progress_bar(self, program_ensemble):
-        """When no progress display is active, emitting a message is a
-        no-op — without a listener nothing would consume it."""
-        program_ensemble.create_programs()
-        assert program_ensemble._progress_bar is None
-        program_ensemble._emit_progress_message(
-            "prog1", final_status=TerminalStatus.FAILED
-        )
-        assert program_ensemble._queue.empty()
-
-    def test_wait_for_listener_drain_bails_on_dead_listener(
-        self, program_ensemble, mocker
-    ):
-        """If the listener thread has died, ``_wait_for_listener_drain``
-        warns and returns rather than hanging on ``queue.join()``."""
-        program_ensemble.create_programs()
-        program_ensemble._listener_thread = mocker.MagicMock()
-        program_ensemble._listener_thread.is_alive.return_value = False
-        # Put a message on the queue with no listener to drain it.
-        program_ensemble._queue.put({"job_id": "prog1", "progress": 0})
-
-        with pytest.warns(RuntimeWarning, match="listener thread died"):
-            program_ensemble._wait_for_listener_drain()
-
-    def test_wait_for_listener_drain_bails_on_timeout(self, program_ensemble, mocker):
-        """A live-but-stuck listener must not hang ``join()``: after the
-        configured timeout the watchdog warns and returns."""
-        program_ensemble.create_programs()
-        program_ensemble._listener_thread = mocker.MagicMock()
-        program_ensemble._listener_thread.is_alive.return_value = (
-            True  # alive but stuck
-        )
-        program_ensemble._queue.put({"job_id": "prog1", "progress": 0})
-
-        with pytest.warns(RuntimeWarning, match="did not drain within"):
-            program_ensemble._wait_for_listener_drain(timeout=0.2)
-
-        # Drop the live mock before fixture teardown — otherwise reset()
-        # would treat ``is_alive()`` as still True and emit its own
-        # "Listener thread did not terminate" warning, polluting the
-        # test's warning capture for downstream runs.
-        program_ensemble._listener_thread = None
+        assert session.events[-2:] == [
+            ProgressEvent.show(target, "Job failed"),
+            ProgressEvent.finish(target, TerminalStatus.FAILED, detail="Job failed"),
+        ]
 
     def test_handle_cancellation_phases(self, program_ensemble, mocker):
         """Test all three phases of cancellation handling.
@@ -456,7 +674,6 @@ class TestProgramEnsemble:
         """
         program_ensemble.create_programs()
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
-        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         future1, future2, future3 = Future(), Future(), Future()
@@ -496,7 +713,6 @@ class TestProgramEnsemble:
         not a real failure — it must show ``CANCELLED``, not ``FAILED``."""
         program_ensemble.create_programs()
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
-        program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         failed_future = Future()
@@ -528,7 +744,6 @@ class TestProgramEnsemble:
         masking it as CANCELLED would hide real bugs from the user."""
         program_ensemble.create_programs()
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
-        program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         failed_future = Future()
@@ -559,10 +774,9 @@ class TestProgramEnsemble:
         path. Otherwise the user only sees a red progress row and never
         learns what went wrong."""
         program_ensemble.create_programs()
-        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
+        program_ensemble._start_progress_session(batching_enabled=False)
         program_ensemble._cancellation_event = mocker.MagicMock()
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
 
         failed_future = Future()
         failed_future.set_exception(RuntimeError("boom"))
@@ -578,23 +792,14 @@ class TestProgramEnsemble:
 
         program_ensemble._handle_cancellation()
 
-        printed = [
-            call.args[0] for call in mock_progress_bar.console.print.call_args_list
-        ]
-        panels = [p for p in printed if isinstance(p, Panel)]
-        tracebacks = [p for p in printed if isinstance(p, Traceback)]
-        # One failure → exactly one summary panel and one traceback render.
-        assert len(panels) == 1
-        assert len(tracebacks) == 1
-
-        panel_text = str(panels[0].renderable)
-        assert "RuntimeError" in panel_text
-        assert "boom" in panel_text
-        # The cancelled program is not rendered as a failure.
-        assert "ExecutionCancelledError" not in panel_text
-        # Failed program is identified by id.
-        prog1_id = program_ensemble.programs["prog1"].program_id
-        assert prog1_id in str(panels[0].title)
+        render_failure.assert_called_once()
+        exc = render_failure.call_args.args[0]
+        assert isinstance(exc, RuntimeError)
+        assert str(exc) == "boom"
+        assert render_failure.call_args.kwargs == {
+            "label": " (Program prog1)",
+            "console": program_ensemble._progress_session.console,
+        }
 
     def test_cancellation_without_failures_prints_no_failure_panels(
         self, program_ensemble, mocker
@@ -603,10 +808,8 @@ class TestProgramEnsemble:
         no Rich failure panels should be printed — only the existing
         progress-row status updates."""
         program_ensemble.create_programs()
-        program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
 
         cancelled_future = Future()
         cancelled_future.set_exception(ExecutionCancelledError("Cancelled by user"))
@@ -619,14 +822,12 @@ class TestProgramEnsemble:
 
         program_ensemble._handle_cancellation()
 
-        # No Panel/Traceback emission should have happened on the console.
-        assert mock_progress_bar.console.print.call_count == 0
+        render_failure.assert_not_called()
 
     def test_handle_cancellation_unstoppable_futures(self, program_ensemble, mocker):
         """Test cancellation handling with unstoppable futures."""
         program_ensemble.create_programs()
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
-        program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         future = Future()
@@ -655,9 +856,6 @@ class TestProgramEnsemble:
     ):
         """Test that _handle_cancellation calls cancel_unfinished_job for unstoppable futures."""
         program_ensemble.create_programs()
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
-        program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         future = Future()
@@ -682,9 +880,6 @@ class TestProgramEnsemble:
     ):
         """Test that _handle_cancellation delegates to backend.cancel_job via cancel_unfinished_job."""
         program_ensemble.create_programs()
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
-        program_ensemble._pb_task_map = {"prog1": 1}
         program_ensemble._cancellation_event = mocker.MagicMock()
 
         future = Future()
@@ -742,7 +937,6 @@ class TestProgramEnsemble:
         program_ensemble.create_programs()
         program_ensemble.run_one_round(blocking=False)
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
-        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
         f_bad = Future()
         f_bad.set_exception(RuntimeError("Job xyz has failed."))
@@ -773,7 +967,7 @@ class TestProgramEnsemble:
             if call.kwargs.get("final_status") is TerminalStatus.FAILED
         ]
         assert any(
-            call.args[0] == progs[0].program_id for call in failed_calls
+            call.args[0] == progs[0]._progress_key for call in failed_calls
         ), "the failed program's row was not emitted with final_status=Failed"
 
     def test_handle_failure_non_batched_cancels_jobs(self, program_ensemble, mocker):
@@ -781,10 +975,6 @@ class TestProgramEnsemble:
         program_ensemble.create_programs()
         program_ensemble.run_one_round(blocking=False)
         program_ensemble._coordinator = None
-
-        mock_progress_bar = mocker.MagicMock()
-        program_ensemble._progress_bar = mock_progress_bar
-        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
         f_bad = Future()
         f_bad.set_exception(RuntimeError("Job xyz has failed."))
@@ -855,7 +1045,6 @@ class TestProgramEnsemble:
         program_ensemble.create_programs()
         program_ensemble.run_one_round(blocking=False)
         spy = mocker.spy(program_ensemble, "_emit_progress_message")
-        program_ensemble._pb_task_map = {"prog1": 1, "prog2": 2}
 
         # Simulate _fail_futures setting the same exception on all futures
         shared_exc = RuntimeError("Merged batch job xyz has failed.")
@@ -883,12 +1072,12 @@ class TestProgramEnsemble:
 
         # Both programs' rows should have been emitted with the FAILED
         # enum member specifically.
-        failed_prog_ids = {
+        failed_targets = {
             call.args[0]
             for call in spy.call_args_list
             if call.kwargs.get("final_status") is TerminalStatus.FAILED
         }
-        assert failed_prog_ids == {"prog1", "prog2"}
+        assert failed_targets == {program._progress_key for program in progs}
 
     def test_join_early_return_no_executor(self, program_ensemble):
         """Test join returns early when no executor."""
@@ -960,7 +1149,7 @@ class TestProgramEnsemble:
         program_ensemble._future_to_program = {
             f1: progs[0],
             f2: progs[1],
-            f_bad: mocker.Mock(program_id="prog_bad"),
+            f_bad: mocker.Mock(_progress_key="prog_bad"),
         }
 
         call_count = [0]
@@ -993,6 +1182,40 @@ class TestProgramEnsemble:
 
         with pytest.raises(RuntimeError, match="Duplicate program instances"):
             program_ensemble.run()
+
+    def test_run_rejects_deepcopied_program_target_collision_before_session(
+        self, program_ensemble, mocker
+    ):
+        program_ensemble.create_programs()
+        original = program_ensemble.programs["prog1"]
+        copied = copy.deepcopy(original)
+        assert copied is not original
+        assert copied._progress_key == original._progress_key
+        program_ensemble.programs = {"original": original, "copied": copied}
+        queued = mocker.spy(ProgressSession, "queued")
+
+        with pytest.raises(RuntimeError, match="Duplicate progress keys"):
+            program_ensemble.run_one_round(blocking=True)
+
+        queued.assert_not_called()
+        assert program_ensemble._executor is None
+
+    def test_run_rejects_pickle_restored_target_collision_before_session(
+        self, program_ensemble, mocker
+    ):
+        program_ensemble.create_programs()
+        original = program_ensemble.programs["prog1"]
+        restored = pickle.loads(pickle.dumps(original))
+        assert restored is not original
+        assert restored._progress_key == original._progress_key
+        program_ensemble.programs = {"original": original, "restored": restored}
+        queued = mocker.spy(ProgressSession, "queued")
+
+        with pytest.raises(RuntimeError, match="Duplicate progress keys"):
+            program_ensemble.run_one_round(blocking=True)
+
+        queued.assert_not_called()
+        assert program_ensemble._executor is None
 
     def test_atexit_unregister_failure(self, program_ensemble, mocker):
         """Test atexit unregister handles TypeError."""
@@ -1055,11 +1278,11 @@ class TestRegistrationFailureCleanup:
         ensemble = SampleProgramEnsemble(backend=dummy_simulator)
         ensemble.create_programs()
         ensemble.programs = {
-            f"prog{i}": SimpleTestProgram(
-                1, 0.1, backend=dummy_simulator, program_id=f"prog{i}"
-            )
+            f"prog{i}": SimpleTestProgram(1, 0.1, backend=dummy_simulator)
             for i in range(1, 5)
         }
+        programs = tuple(ensemble.programs.values())
+        original_emitters = tuple(program._progress_emitter for program in programs)
 
         # Capture the coordinator instance via a side-effect on
         # construction so we can inspect its state *after* run() has
@@ -1096,6 +1319,10 @@ class TestRegistrationFailureCleanup:
         # Coordinator + executor handle on the ensemble should be cleared.
         assert ensemble._coordinator is None
         assert ensemble._executor is None
+        assert all(
+            program._progress_emitter is original
+            for program, original in zip(programs, original_emitters, strict=True)
+        )
         assert self._flush_threads_alive() == baseline_alive
 
     def test_run_recovers_after_registration_failure(self, dummy_simulator, mocker):
@@ -1122,6 +1349,72 @@ class TestRegistrationFailureCleanup:
         # implementation, so the second run() should succeed end-to-end.
         ensemble.run_one_round(blocking=True)
         assert ensemble.aggregate_results() == 15
+
+    def test_unbatched_partial_submission_waits_before_restoring_and_reuse(
+        self, dummy_simulator, mocker
+    ):
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.create_programs()
+        started = threading.Event()
+        finished = threading.Event()
+        blocking = _CancellationBlockingProgram(
+            backend=dummy_simulator,
+            started=started,
+            finished=finished,
+        )
+        other = SimpleTestProgram(1, 0.1, backend=dummy_simulator)
+        ensemble.programs = {"blocking": blocking, "other": other}
+        originals = tuple(
+            program._progress_emitter for program in ensemble.programs.values()
+        )
+        original_add = ensemble._add_program_to_executor
+        submission_count = 0
+
+        def _fail_second_submission(program, task_fn):
+            nonlocal submission_count
+            submission_count += 1
+            if submission_count == 2:
+                raise RuntimeError("second submission failed")
+            future = original_add(program, task_fn)
+            if submission_count == 1:
+                assert started.wait(timeout=2)
+            return future
+
+        mocker.patch.object(
+            ensemble,
+            "_add_program_to_executor",
+            side_effect=_fail_second_submission,
+        )
+
+        try:
+            with pytest.raises(RuntimeError, match="second submission failed"):
+                ensemble.run_one_round(
+                    blocking=False,
+                    batch_config=BatchConfig(mode=BatchMode.OFF),
+                )
+
+            assert ensemble._cancellation_event.is_set()
+            assert finished.is_set()
+            assert blocking.emitter_when_cancelled is not originals[0]
+            assert ensemble._executor is None
+            assert ensemble.futures == []
+            assert all(
+                program._progress_emitter is original
+                for program, original in zip(
+                    ensemble.programs.values(), originals, strict=True
+                )
+            )
+
+            ensemble.run_one_round(
+                blocking=True,
+                batch_config=BatchConfig(mode=BatchMode.OFF),
+            )
+            assert blocking.run_count == 2
+            assert other.has_results()
+        finally:
+            ensemble._cancellation_event.set()
+            finished.wait(timeout=2)
+            ensemble.reset()
 
 
 def test_cancellation_event_is_shared_with_coordinator(dummy_simulator):
@@ -1179,9 +1472,7 @@ class _ParameterizedEnsemble(ProgramEnsemble):
     def create_programs(self):
         super().create_programs()
         self.programs = {
-            f"prog_{i}": SimpleTestProgram(
-                1, 0.0, backend=self.backend, program_id=f"prog_{i}"
-            )
+            f"prog_{i}": SimpleTestProgram(1, 0.0, backend=self.backend)
             for i in range(self._n_programs)
         }
 
@@ -1226,7 +1517,6 @@ class _SubmittingEnsemble(ProgramEnsemble):
             f"prog_{i}": _SubmittingProgram(
                 n_circuits=self._n_circuits_per_program,
                 backend=self.backend,
-                program_id=f"prog_{i}",
             )
             for i in range(self._n_programs)
         }
@@ -1286,7 +1576,6 @@ class _AccumulatingEnsemble(ProgramEnsemble):
                 circ_per_call=circ,
                 time_per_call=runtime,
                 backend=self.backend,
-                program_id=pid,
             )
             for pid, (circ, runtime) in self._specs.items()
         }
@@ -1971,21 +2260,6 @@ class TestEnsembleRedispatchLifecycle:
 
         for program in ensemble.programs.values():
             assert program._best_probs
-
-    def test_unbatched_dispatch_clears_stale_program_keys(
-        self, small_partitioning_ensemble
-    ):
-        """An un-batched dispatch following a batched one must not inherit the
-        ``_program_key_map`` populated by the batched dispatch.
-        """
-        ensemble = small_partitioning_ensemble
-        ensemble.run_one_round(blocking=True)  # MERGED populates _program_key_map
-
-        ensemble.sample_solution(
-            blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
-        )
-
-        assert ensemble._program_key_map == {}
 
 
 class TestEnsembleCountAccounting:

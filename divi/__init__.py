@@ -11,11 +11,13 @@ try:
 except ImportError:
     pass
 
+import logging as _logging
+
 from rich.traceback import install as _install_rich_tracebacks
 
-from .reporting import enable_logging
-
-enable_logging()
+_logger = _logging.getLogger(__name__)
+if not _logger.handlers:
+    _logger.addHandler(_logging.NullHandler())
 
 # Replace Python's default excepthook with Rich's pretty traceback renderer.
 # Applies process-wide on first ``import divi``. Cancellation paths still

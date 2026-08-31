@@ -28,6 +28,7 @@ from divi.qprog.problems import (
     MaxCliqueProblem,
     MaxCutProblem,
 )
+from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
 from tests.qprog.problems._helpers import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
 
 
@@ -142,6 +143,29 @@ class TestInterpolateQaoaParams:
 
 
 class TestIterativeQAOA:
+    def test_run_uses_one_direct_session_for_the_full_depth_schedule(
+        self, default_test_simulator, mocker
+    ):
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=2,
+            max_iterations_per_depth=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        )
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        iterative.run(perform_final_computation=False)
+
+        direct.assert_called_once()
+        session.__enter__.assert_called_once_with()
+        session.__exit__.assert_called_once_with(None, None, None)
+
     def test_runs_through_depths(self, default_test_simulator):
         graph = make_bull_graph()
         iterative = IterativeQAOA(
@@ -333,8 +357,8 @@ class TestIterativeQAOA:
         # depth 1 → 2, depth 2 → 3, depth 3 → 4 = 9
         assert iterative._expected_total_iterations == 9
 
-    def test_depth_info_reported(self, default_test_simulator, mocker):
-        """Reporter receives depth info messages during run."""
+    def test_depth_info_is_emitted_as_typed_progress(self, default_test_simulator):
+        """Each depth is exposed through the program's bound event emitter."""
         graph = make_bull_graph()
         iterative = IterativeQAOA(
             MaxCutProblem(graph),
@@ -344,16 +368,56 @@ class TestIterativeQAOA:
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         )
-        spy = mocker.patch.object(
-            iterative.reporter, "info", wraps=iterative.reporter.info
-        )
-        iterative.run()
+        emitted = []
+        with iterative._bind_progress_emitter(emitted.append):
+            iterative.run()
 
-        depth_messages = [call for call in spy.call_args_list if "Depth" in str(call)]
-        assert len(depth_messages) == 3
-        assert depth_messages[0] == mocker.call(message="Depth 1/3")
-        assert depth_messages[1] == mocker.call(message="Depth 2/3")
-        assert depth_messages[2] == mocker.call(message="Depth 3/3")
+        assert [
+            event
+            for event in emitted
+            if event.message is not None and event.message.startswith("Depth")
+        ] == [
+            ProgressEvent.show(iterative._progress_key, "Depth 1/3"),
+            ProgressEvent.show(iterative._progress_key, "Depth 2/3"),
+            ProgressEvent.show(iterative._progress_key, "Depth 3/3"),
+        ]
+
+    def test_depth_run_forwards_success_finish_for_another_target(
+        self, default_test_simulator, mocker
+    ):
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=1,
+            strategy=InterpolationStrategy.INTERP,
+            max_iterations_per_depth=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        )
+        other_finish = ProgressEvent.finish("other-target", TerminalStatus.SUCCESS)
+
+        def run_one_depth(program, **kwargs):
+            program._progress_emitter(other_finish)
+            program._best_loss = 0.0
+            program._best_params = np.zeros(program.n_params)
+            program.current_iteration = 1
+            return program
+
+        mocker.patch(
+            "divi.qprog.variational_quantum_algorithm."
+            "VariationalQuantumAlgorithm.run",
+            autospec=True,
+            side_effect=run_one_depth,
+        )
+        emitted = []
+
+        with iterative._bind_progress_emitter(emitted.append):
+            iterative.run(perform_final_computation=False)
+
+        assert [
+            event
+            for event in emitted
+            if event.kind is EventKind.FINISH and event.progress_key == "other-target"
+        ] == [other_finish]
 
     def test_n_layers_matches_best_depth(self, default_test_simulator):
         """After run, instance n_layers should match best_depth."""

@@ -80,9 +80,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 ``grouping_strategy``, ``shot_distribution``, ``precision``,
                 and any other ``QuantumProgram`` / ``ObservableMeasuringMixin``
                 kwarg that should apply uniformly across the trajectory.
-                ``program_id`` and ``progress_queue`` are set internally and
-                must not be passed here.  ``reporting_level`` is consumed here
-                rather than forwarded, and accepts a
+                ``reporting_level`` is consumed here rather than forwarded,
+                and accepts a
                 :class:`~divi.qprog.ReportingLevel` controlling how much
                 live progress is shown.
         """
@@ -96,13 +95,6 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             raise ValueError("time_points must not be empty.")
         if len(set(time_points)) != len(time_points):
             raise ValueError("time_points must not contain duplicates.")
-
-        for reserved in ("program_id", "progress_queue"):
-            if reserved in kwargs:
-                raise TypeError(
-                    f"TimeEvolutionTrajectory sets {reserved!r} internally; "
-                    f"do not pass it via kwargs."
-                )
 
         self._hamiltonian = hamiltonian
         self._time_points = time_points
@@ -132,8 +124,6 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 observable=self._observable,
                 backend=self.backend,
                 seed=self._seed,
-                program_id=prog_id,
-                progress_queue=self._queue,
                 _template_meta=template_meta,
                 _template_param=t_param,
                 **self._extra_kwargs,

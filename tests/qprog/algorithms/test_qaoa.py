@@ -28,6 +28,7 @@ from divi.qprog.problems import (
     MaxCutProblem,
     QAOAProblem,
 )
+from divi.reporting._events import EventKind, TerminalStatus
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
@@ -224,7 +225,7 @@ class TestQAOAQDriftMultiSample:
         assert ham_ids == {0, 1, 2}
 
     @pytest.mark.e2e
-    def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator, mocker):
+    def test_multi_sample_qaoa_e2e_solution(self, default_test_simulator):
         """QAOA with multi-sample QDrift runs to completion and finds correct MAXCUT."""
         G = make_bull_graph()
         default_test_simulator.set_seed(1997)
@@ -246,14 +247,16 @@ class TestQAOAQDriftMultiSample:
             seed=1997,
         )
 
-        # COBYLA may converge before max_iterations; pin the history length to the
-        # per-iteration callback count rather than the nominal cap.
-        iteration_spy = mocker.spy(qaoa.reporter, "update")
-        qaoa.run()
+        emitted = []
+        with qaoa._bind_progress_emitter(emitted.append):
+            qaoa.run()
 
         assert qaoa.total_circuit_count > 0
         assert qaoa.total_run_time >= 0
-        assert len(qaoa.losses_history) == iteration_spy.call_count
+        iteration_events = [
+            event for event in emitted if event.kind is EventKind.ADVANCE
+        ]
+        assert len(qaoa.losses_history) == len(iteration_events)
         assert qaoa.best_loss < float("inf")
 
         # At least one of the top solutions achieves the optimal cut (more stable
@@ -471,6 +474,24 @@ class TestSampleSolution:
         assert len(qaoa.solution_bitstring) == qaoa.n_qubits
         assert qaoa.best_probs  # measurement probs were populated
         assert qaoa.total_circuit_count > 0
+
+    def test_standalone_sampling_uses_one_direct_progress_session(
+        self, default_test_simulator, default_optimizer, recording_direct_sessions
+    ):
+        qaoa = self._make_qaoa(default_test_simulator, default_optimizer)
+
+        qaoa.sample_solution(np.array([0.1, 0.2]))
+
+        assert len(recording_direct_sessions) == 1
+        session = recording_direct_sessions[0]
+        terminal_events = [
+            event for event in session.emitted if event.kind is EventKind.FINISH
+        ]
+        assert len(terminal_events) == 1
+        assert terminal_events[0].terminal_status is TerminalStatus.SUCCESS
+        assert session.state.get(qaoa._progress_key).terminal_status is (
+            TerminalStatus.SUCCESS
+        )
 
     def test_skips_cost_pipeline(
         self, mocker, default_test_simulator, default_optimizer

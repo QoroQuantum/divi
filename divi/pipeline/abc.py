@@ -14,7 +14,7 @@ import numpy.typing as npt
 
 from divi.backends import CircuitRunner
 from divi.circuits import AxisLabel, MetaCircuit
-from divi.reporting import ProgressReporter
+from divi.reporting._events import ProgressEmitter
 
 __all__ = [
     "BundleStage",
@@ -185,8 +185,10 @@ class PipelineEnv:
     artifacts: dict = field(default_factory=dict)
     """Mutable output dict populated during execution (e.g. ``circuit_count``)."""
 
-    reporter: ProgressReporter | None = None
-    """Progress reporter for async polling feedback."""
+    _progress_emitter: ProgressEmitter | None = field(
+        default=None, init=False, repr=False
+    )
+    _progress_key: Hashable | None = field(default=None, init=False, repr=False)
 
     cancellation_event: Event | None = None
     """Threading event signalling cancellation (set by ProgramEnsemble)."""
@@ -221,6 +223,15 @@ class PipelineEnv:
     axes_to_preserve: tuple[str, ...] = ()
     """Stage axes that should not be reduced away. Advanced callers use this
     when they need branch-level results after normal downstream reductions."""
+
+    def _bind_progress(
+        self,
+        progress_emitter: ProgressEmitter | None,
+        progress_key: Hashable | None,
+    ) -> None:
+        """Bind internal reporting transport for this pipeline run."""
+        self._progress_emitter = progress_emitter
+        self._progress_key = progress_key
 
     @property
     def effective_shots(self) -> int:

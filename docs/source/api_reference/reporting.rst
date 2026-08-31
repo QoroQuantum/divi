@@ -1,44 +1,33 @@
 Reporting
 =========
 
-The ``divi.reporting`` module provides logging, progress reporting, and
-visualisation functionality for quantum program execution.
+The public ``divi.reporting`` API controls Divi's optional Rich logging
+handler. Progress rendering is managed internally by each operation.
 
 Usage
 -----
 
-Logging is enabled automatically on import; call
-:func:`~divi.reporting.disable_logging` to silence it.
+Importing Divi does not configure logging. Call
+:func:`~divi.reporting.enable_logging` to add Divi's Rich handler and
+:func:`~divi.reporting.disable_logging` to remove it again. These functions
+leave application-owned handlers unchanged. When the existing effective
+threshold would suppress the requested level, ``enable_logging()`` temporarily
+lowers the ``divi`` logger threshold; ``disable_logging()`` restores the old
+explicit level unless the application changed it in the meantime.
+These logging controls do not select or suppress progress rendering. Set
+``DIVI_DISABLE_PROGRESS`` to ``1``, ``true``, ``yes``, or ``on`` to silence
+progress output for both standalone programs and ensembles; ordinary Divi log
+messages are unaffected.
 
 .. code-block:: python
 
-   from divi.reporting import enable_logging, disable_logging
+   from divi.reporting import disable_logging, enable_logging
 
-   # Enable logging (called automatically on import)
+   # Opt in to Rich-formatted Divi logs.
    enable_logging()
 
-   # Disable logging if needed
+   # Remove only the handler installed above.
    disable_logging()
-
-Advanced Features
------------------
-
-.. warning::
-   **Developer-Facing Features**: The progress bar and progress reporting systems are
-   intended for advanced users and developers who need custom logging and progress
-   reporting. Most users will not need to interact with these features directly.
-
-:func:`~divi.reporting.make_progress_bar` creates a customised Rich progress bar
-designed for quantum program execution tracking, with custom columns (job name,
-progress bar, status, elapsed time), a conditional spinner, emoji status
-indicators, Jupyter adaptation, and job-polling support for service-based
-backends.
-
-Divi also includes a progress reporting system for real-time feedback during
-long-running quantum computations. The system supports both console logging
-(:class:`~divi.reporting.LoggingProgressReporter`) and queue-based progress
-updates (:class:`~divi.reporting.QueueProgressReporter`) for integration with
-external monitoring systems.
 
 .. automodapi:: divi.reporting
    :no-heading:

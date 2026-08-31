@@ -294,13 +294,9 @@ class ExactSamplerVQE(QuantumProgram):
         spec: FragmentSpec,
         *,
         backend,
-        program_id: str | None = None,
-        progress_queue=None,
         best_params: np.ndarray = _STUB_BEST_PARAMS,
     ):
-        super().__init__(
-            backend=backend, program_id=program_id, progress_queue=progress_queue
-        )
+        super().__init__(backend=backend)
         self._hamiltonian = hamiltonian
         self._spec = spec
         self._best_probs: dict[int, dict[str, float]] = {}
@@ -362,9 +358,7 @@ class ExactSamplerVQE(QuantumProgram):
         return self
 
 
-def _build_exact_sampler_program(
-    self, fragment, h_alpha, h_beta, g_frag, program_id, seed
-):
+def _build_exact_sampler_program(self, fragment, h_alpha, h_beta, g_frag, seed):
     """Replacement for ``LASSQD._build_fragment_program`` used by
     :func:`build_exact_sampler_lassqd`."""
     hamiltonian = _spo_from_integrals(
@@ -374,8 +368,6 @@ def _build_exact_sampler_program(
         hamiltonian,
         fragment.spec,
         backend=self.backend,
-        program_id=program_id,
-        progress_queue=self._queue,
     )
 
 

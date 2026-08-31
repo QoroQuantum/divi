@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from enum import StrEnum
+from typing import Self
 
 __all__ = [
     "InsufficientCreditsError",
@@ -43,6 +44,14 @@ class JobStatus(StrEnum):
 
     TIMED_OUT = "TIMED_OUT"
     """Job exceeded its server-side execution deadline."""
+
+    @classmethod
+    def coerce(cls, value: object) -> Self | None:
+        """Return the canonical status for a known backend value."""
+        try:
+            return cls(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class QoroJobError(Exception):

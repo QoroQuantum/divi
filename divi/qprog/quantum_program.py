@@ -3,9 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from collections.abc import Hashable
+from collections.abc import Hashable, Iterator
 from contextlib import contextmanager
-from queue import Queue
 from threading import Event
 from typing import Any, Self
 from warnings import warn
@@ -14,8 +13,10 @@ import numpy as np
 
 from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
+from divi.backends._job_status import JobStatus, QoroJobError
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.qem import _NoMitigation
+from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
     CircuitPreprocessor,
@@ -34,11 +35,16 @@ from divi.pipeline.stages import (
     PreprocessStage,
     QEMStage,
 )
-from divi.reporting import (
-    LoggingProgressReporter,
-    ProgressReporter,
-    QueueProgressReporter,
+from divi.reporting._events import (
+    ProgressEmitter,
+    ProgressEvent,
+    ProgressScope,
+    TerminalStatus,
+    discard_progress_event,
 )
+from divi.reporting._logging import log_progress_event
+from divi.reporting._session import ProgressSession, _environment_disables_progress
+from divi.reporting._state import ProgressState
 
 
 def reject_unclaimed_run_kwargs(program: object, kwargs: dict[str, Any]) -> None:
@@ -65,6 +71,27 @@ def reject_unclaimed_run_kwargs(program: object, kwargs: dict[str, Any]) -> None
             "instead: program.dry_run()."
         )
     raise TypeError(message)
+
+
+def _terminal_progress_for_exception(
+    exc: BaseException,
+) -> tuple[TerminalStatus, JobStatus | None]:
+    """Map an execution exception to its terminal reporting outcome."""
+    if isinstance(exc, ExecutionCancelledError):
+        return TerminalStatus.CANCELLED, None
+
+    if isinstance(exc, QoroJobError):
+        job_status = JobStatus.coerce(exc.status)
+        terminal_status = (
+            TerminalStatus.CANCELLED
+            if job_status is JobStatus.CANCELLED
+            else TerminalStatus.FAILED
+        )
+        return terminal_status, job_status
+
+    if not isinstance(exc, Exception):
+        return TerminalStatus.ABORTED, None
+    return TerminalStatus.FAILED, None
 
 
 class QuantumProgram(ABC):
@@ -96,15 +123,12 @@ class QuantumProgram(ABC):
     Attributes:
         backend: The quantum circuit execution backend.
         _seed: Random seed for reproducible results.
-        _progress_queue: Queue for progress reporting.
     """
 
     def __init__(
         self,
         backend: CircuitRunner,
         seed: int | None = None,
-        progress_queue: Queue | None = None,
-        program_id: str | None = None,
         precision: int = DEFAULT_PRECISION,
         suppress_performance_warnings: bool = False,
         **kwargs,
@@ -114,10 +138,6 @@ class QuantumProgram(ABC):
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
             seed (int | None): Random seed for reproducible results. Defaults to None.
-            progress_queue (Queue | None): Queue for progress reporting. Defaults to None.
-            program_id (str | None): Program identifier for progress reporting in
-                batch operations. If provided along with progress_queue, enables
-                queue-based progress reporting.
             precision (int): Decimal places for numeric parameter values in
                 QASM emission.  Higher values produce longer QASM strings;
                 lower values shrink them at the cost of parameter resolution.
@@ -132,7 +152,6 @@ class QuantumProgram(ABC):
 
         self.backend = backend
         self._seed = seed
-        self._progress_queue = progress_queue
         self._precision = precision
         self._suppress_performance_warnings = suppress_performance_warnings
 
@@ -164,14 +183,68 @@ class QuantumProgram(ABC):
             else int(np.random.default_rng().integers(0, 2**63))
         )
 
-        # --- Progress Reporting ---
-        self.program_id = program_id
+        self._progress_key: Hashable = id(self)
+        self._progress_emitter: ProgressEmitter = log_progress_event
 
-        self.reporter: ProgressReporter
-        if progress_queue and self.program_id is not None:
-            self.reporter = QueueProgressReporter(self.program_id, progress_queue)
-        else:
-            self.reporter = LoggingProgressReporter()
+    @contextmanager
+    def _bind_progress_emitter(
+        self, progress_emitter: ProgressEmitter
+    ) -> Iterator[None]:
+        """Temporarily route this program's events to ``progress_emitter``."""
+        previous = self._progress_emitter
+        self._progress_emitter = progress_emitter
+        try:
+            yield
+        finally:
+            self._progress_emitter = previous
+
+    @contextmanager
+    def _ensure_progress_session(self, label: str, total: int | None) -> Iterator[None]:
+        """Give an unbound standalone operation a direct progress session."""
+        if _environment_disables_progress():
+            with self._bind_progress_emitter(discard_progress_event):
+                yield
+            return
+
+        if self._progress_emitter is not log_progress_event:
+            yield
+            return
+
+        state = ProgressState()
+        with ProgressSession.direct(state) as session:
+            with self._bind_progress_emitter(session.emit):
+                session.emit(
+                    ProgressEvent.register(
+                        self._progress_key,
+                        ProgressScope.PROGRAM,
+                        label,
+                        total,
+                    )
+                )
+                try:
+                    yield
+                except BaseException as exc:
+                    if session.state.get(self._progress_key).terminal_status is None:
+                        terminal_status, job_status = _terminal_progress_for_exception(
+                            exc
+                        )
+                        session.emit(
+                            ProgressEvent.finish(
+                                self._progress_key,
+                                terminal_status,
+                                job_status=job_status,
+                                detail=f"{type(exc).__name__}: {exc}",
+                            )
+                        )
+                    raise
+                else:
+                    if session.state.get(self._progress_key).terminal_status is None:
+                        session.emit(
+                            ProgressEvent.finish(
+                                self._progress_key,
+                                TerminalStatus.SUCCESS,
+                            )
+                        )
 
     @property
     def precision(self) -> int:
@@ -401,10 +474,10 @@ class QuantumProgram(ABC):
     ) -> PipelineEnv:
         """The env used to preview one pipeline.
 
-        ``reporter=None`` keeps the preview silent. Subclasses override to narrow
-        the env per routine, since not every pipeline is driven with the same
-        inputs (a one-time readout binds different parameters than the optimizer's
-        working set).
+        ``progress_emitter=None`` keeps the preview silent. Subclasses override to
+        narrow the env per routine, since not every pipeline is driven with the
+        same inputs (a one-time readout binds different parameters than the
+        optimizer's working set).
 
         A parametric seed gets one zero-filled vector of its own width; without it
         the binding stage sees an empty one and reports ``n_params: 0``.
@@ -413,7 +486,7 @@ class QuantumProgram(ABC):
         n_params = self._routine_parameter_count(preprocessor)
         if n_params:
             overrides["param_sets"] = np.zeros((1, n_params))
-        return self._build_pipeline_env(rng=rng, reporter=None, **overrides)
+        return self._build_pipeline_env(rng=rng, progress_emitter=None, **overrides)
 
     def _routine_parameter_count(self, preprocessor: CircuitPreprocessor) -> int:
         """Free parameters the binding stage expects for ``preprocessor``.
@@ -445,15 +518,18 @@ class QuantumProgram(ABC):
         Subclasses may override to inject additional fields (e.g. ``param_sets``
         in :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`).
         """
+        progress_emitter = overrides.pop("progress_emitter", self._progress_emitter)
+        progress_key = overrides.pop("progress_key", self._progress_key)
         env_kwargs = {
             "backend": self.backend,
-            "reporter": self.reporter,
             "cancellation_event": self._cancellation_event,
             "evaluation_counter": self._evaluation_counter,
             "base_seed": self._base_seed,
         }
         env_kwargs.update(overrides)  # caller-supplied values win
-        return PipelineEnv(**env_kwargs)
+        env = PipelineEnv(**env_kwargs)
+        env._bind_progress(progress_emitter, progress_key)
+        return env
 
     def _execute(self, pipeline: CircuitPipeline, initial_spec: Any, **env_overrides):
         """Run ``pipeline`` and fold its execution artifacts into program totals.

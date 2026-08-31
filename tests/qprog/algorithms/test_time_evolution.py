@@ -19,6 +19,7 @@ from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.pipeline import PipelineCadence
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
+from divi.reporting._events import ProgressEvent, TerminalStatus
 from tests.qprog._program_contracts import ObservableMeasuringContractsBase
 
 
@@ -159,6 +160,52 @@ class TestTimeEvolutionGenerateCircuits:
 
 
 class TestTimeEvolutionRun:
+    def test_run_uses_one_direct_session_and_closes_it_on_failure(
+        self, two_qubit_hamiltonian, default_test_simulator, mocker
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=default_test_simulator,
+        )
+        mocker.patch.object(
+            te, "evaluate", side_effect=RuntimeError("evolution failed")
+        )
+        session = mocker.MagicMock()
+        session.__enter__.return_value = session
+        direct = mocker.patch(
+            "divi.qprog.quantum_program.ProgressSession.direct",
+            return_value=session,
+        )
+
+        with pytest.raises(RuntimeError, match="evolution failed"):
+            te.run()
+
+        direct.assert_called_once()
+        session.__enter__.assert_called_once_with()
+        assert session.__exit__.call_count == 1
+        assert session.__exit__.call_args.args[0] is RuntimeError
+
+    def test_run_emits_typed_completion(self, two_qubit_hamiltonian, mocker):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=mocker.MagicMock(),
+        )
+        mocker.patch.object(te, "evaluate", return_value={0: {"0": 1.0}})
+        emitted = []
+
+        with te._bind_progress_emitter(emitted.append):
+            te.run()
+
+        assert ProgressEvent.advance(te._progress_key) in emitted
+        assert (
+            ProgressEvent.finish(
+                te._progress_key,
+                TerminalStatus.SUCCESS,
+                detail="Finished successfully!",
+            )
+            in emitted
+        )
+
     def test_run_probs_mode(self, two_qubit_hamiltonian, default_test_simulator):
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,

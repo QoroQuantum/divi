@@ -20,6 +20,7 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.reporting._events import EventKind, TerminalStatus
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
@@ -235,6 +236,37 @@ def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, default_optimizer
     )
     assert vqe_problem.cost_hamiltonian is not None
     assert vqe_problem.n_qubits == 1
+
+
+class TestSampleSolutionProgress:
+    @staticmethod
+    def _make_vqe(backend, optimizer):
+        return VQE(
+            hamiltonian=SparsePauliOp("Z"),
+            n_electrons=1,
+            ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+            n_layers=1,
+            backend=backend,
+            optimizer=optimizer,
+        )
+
+    def test_standalone_sampling_uses_one_direct_progress_session(
+        self, default_test_simulator, default_optimizer, recording_direct_sessions
+    ):
+        vqe = self._make_vqe(default_test_simulator, default_optimizer)
+
+        vqe.sample_solution(np.array([0.1, 0.2]))
+
+        assert len(recording_direct_sessions) == 1
+        session = recording_direct_sessions[0]
+        terminal_events = [
+            event for event in session.emitted if event.kind is EventKind.FINISH
+        ]
+        assert len(terminal_events) == 1
+        assert terminal_events[0].terminal_status is TerminalStatus.SUCCESS
+        assert session.state.get(vqe._progress_key).terminal_status is (
+            TerminalStatus.SUCCESS
+        )
 
 
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)

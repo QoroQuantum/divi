@@ -332,7 +332,6 @@ def test_linear_method_program_prepares_classically_then_samples_once(
         np.zeros((2, 2, 2, 2)),
         spec,
         backend=dummy_simulator,
-        program_id="fragment_0",
         seed=7,
     )
 

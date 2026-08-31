@@ -1009,7 +1009,7 @@ def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
         )
         with pytest.warns(UserWarning, match="CCSD"):
             program = ensemble._build_fragment_program(
-                fragment, h_alpha, h_beta, g_frag, f"fragment_{index}", seed=0
+                fragment, h_alpha, h_beta, g_frag, seed=0
             )
 
         program.sample_solution(params=np.zeros(program.n_params))
@@ -1102,9 +1102,7 @@ def test_seeding_warns_when_the_embedding_is_spin_asymmetric(default_test_simula
     assert np.abs(h_alpha - h_beta).max() > 1e-6
 
     with pytest.warns(UserWarning, match="spin channels differ"):
-        ensemble._build_fragment_program(
-            fragments[0], h_alpha, h_beta, g_frag, "fragment_0", seed=0
-        )
+        ensemble._build_fragment_program(fragments[0], h_alpha, h_beta, g_frag, seed=0)
 
 
 def test_ccsd_seed_params_skips_an_ansatz_with_no_correspondence(dummy_expval_backend):
@@ -1549,7 +1547,7 @@ def test_update_state_names_each_reduction_stage(exact_sampler_lassqd, mocker):
     distinguishes SQD recovery from the orbital solve rather than only showing
     that a round is open."""
     ensemble, state = exact_sampler_lassqd
-    spy = mocker.spy(ensemble, "_emit_workflow_round_stage")
+    spy = mocker.spy(ensemble, "_emit_workflow_stage")
 
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)

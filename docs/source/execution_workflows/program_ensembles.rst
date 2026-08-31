@@ -531,8 +531,9 @@ coerced — and an unrecognised value raises :class:`ValueError` rather than
 silently falling back.
 
 Setting the ``DIVI_DISABLE_PROGRESS`` environment variable to a truthy value
-(``1``, ``true``, ``yes``, ``on``) suppresses all visual output regardless of
-the level — useful in CI. Round history is still retained.
+(``1``, ``true``, ``yes``, ``on``) suppresses progress output from standalone
+programs and ensembles regardless of the level — useful in CI. Ordinary log
+messages are unaffected, and round history is still retained.
 
 Custom Ensemble Workflows
 -------------------------

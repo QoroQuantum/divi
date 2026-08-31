@@ -39,6 +39,19 @@ def test_job_status_matches_usher_contract():
 
 
 @pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (JobStatus.RUNNING, JobStatus.RUNNING),
+        ("RUNNING", JobStatus.RUNNING),
+        ("BACKEND_SPECIFIC", None),
+        (None, None),
+    ],
+)
+def test_job_status_coerce_returns_known_status_or_none(value, expected):
+    assert JobStatus.coerce(value) is expected
+
+
+@pytest.mark.parametrize(
     ("exception_type", "status"),
     [
         (JobFailedError, JobStatus.FAILED),

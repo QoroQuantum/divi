@@ -92,8 +92,7 @@ autodoc_pydantic_field_doc_policy = "docstring"
 automodapi_toctreedirnm = "api_reference/generated"
 automodapi_inheritance_diagram = False  # divi doesn't pull in graphviz
 # ``False`` avoids documenting inherited methods in each subclass page, which
-# would otherwise duplicate method registrations (e.g. ``update``/``info``
-# from ``ProgressReporter`` appearing in both parent and child stub pages).
+# would otherwise duplicate method registrations across parent and child stubs.
 automodsumm_inherited_members = False
 
 # -- sphinx-copybutton configuration -----------------------------------------
