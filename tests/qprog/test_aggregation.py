@@ -162,25 +162,12 @@ def hierarchical_aggregate(*args, **kwargs):
             {"beam_width": 1, "n_partition_candidates": -3},
             "n_partition_candidates must be >= 1",
         ),
-        (
-            {"beam_width": 5, "n_partition_candidates": 2},
-            "n_partition_candidates.*must be >= beam_width",
-        ),
-        # n_partition_candidates must be >= beam_width *after* the top_n bump
-        # (beam_width 2 -> 5, so 3 < 5 raises). The message must surface the
-        # original beam_width and the bump so it is actionable.
-        (
-            {"beam_width": 2, "n_partition_candidates": 3, "top_n": 5},
-            r"bumped from 2 to 5 to satisfy top_n=5",
-        ),
     ],
     ids=[
         "beam_width_zero",
         "beam_width_negative",
         "n_partition_candidates_zero",
         "n_partition_candidates_negative",
-        "n_partition_candidates_lt_beam_width",
-        "n_partition_candidates_lt_bumped_beam_width",
     ],
 )
 def test_beam_search_invalid_params_raise(kwargs, match):
@@ -192,6 +179,102 @@ def test_beam_search_invalid_params_raise(kwargs, match):
             evaluate_fn=lambda s: 0.0,
             **kwargs,
         )
+
+
+def _three_var_cost_table():
+    """Objective whose optimum hides behind a prefix a width-2 beam prunes.
+
+    Prefix scores (third variable still at 0) rank ``(1,1)`` third, so a beam of
+    width 2 discards it, yet ``(1,1,1)`` is the global minimum.
+    """
+    return {
+        (0, 0, 0): 0.0,
+        (1, 0, 0): -5.0,
+        (0, 1, 0): -4.0,
+        (1, 1, 0): -3.0,
+        (0, 0, 1): 1.0,
+        (1, 0, 1): -6.0,
+        (0, 1, 1): -5.0,
+        (1, 1, 1): -20.0,
+    }
+
+
+def test_beam_width_above_n_partition_candidates_is_allowed():
+    """A beam wider than the per-partition candidate pool is a valid search."""
+    programs, var_maps = _single_var_programs(3)
+
+    results = beam_search_top_n(
+        programs=programs,
+        initial_solution=[0, 0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=_sum_evaluate,
+        beam_width=8,
+        n_partition_candidates=2,
+    )
+
+    assert results and len(results[0][1]) == 3
+
+
+def test_wide_beam_over_narrow_candidate_pool_beats_matched_width():
+    """Beam capacity is ``n_partition_candidates ** partitions``, so widening the
+    beam alone — without fetching more candidates — finds strictly better solutions."""
+    cost_table = _three_var_cost_table()
+
+    def evaluate(solution):
+        return cost_table[tuple(solution)]
+
+    programs, var_maps = _single_var_programs(3)
+    kwargs = dict(
+        programs=programs,
+        initial_solution=[0, 0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=evaluate,
+        n_partition_candidates=2,
+    )
+
+    matched = beam_search_aggregate(**kwargs, beam_width=2)
+    wide = beam_search_aggregate(**kwargs, beam_width=8)
+
+    assert evaluate(wide) < evaluate(matched)
+    assert wide == [1, 1, 1]
+
+
+def test_fetch_count_follows_n_partition_candidates_not_beam_width(mocker):
+    """The branching factor stays ``n_partition_candidates`` when the beam is wider."""
+    programs, var_maps = _single_var_programs(2)
+    spies = {
+        pid: mocker.spy(program, "get_top_solutions")
+        for pid, program in programs.items()
+    }
+
+    beam_search_aggregate(
+        programs=programs,
+        initial_solution=[0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=_sum_evaluate,
+        beam_width=16,
+        n_partition_candidates=2,
+    )
+
+    for spy in spies.values():
+        spy.assert_called_once_with(n=2, include_decoded=True)
+
+
+def test_beam_wider_than_reachable_returns_only_reachable_solutions():
+    """Unreachable beam slots stay empty rather than being padded."""
+    programs, var_maps = _single_var_programs(1)
+
+    results = beam_search_top_n(
+        programs=programs,
+        initial_solution=[0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=_sum_evaluate,
+        beam_width=100,
+        n_partition_candidates=2,
+        top_n=100,
+    )
+
+    assert len(results) == 2
 
 
 class TestBeamSearchAggregateGreedy:
@@ -702,10 +785,9 @@ class TestBeamSearchAggregateTopN:
         # beam_width is bumped to top_n=10.
         assert len(results) == 1
 
-    def test_top_n_bump_accepts_n_partition_candidates_at_bumped_width(self):
-        """The companion to the bumped-beam validation: when n_partition_candidates
-        satisfies the *bumped* beam_width it must NOT raise, and returns top_n.
-        """
+    def test_top_n_bump_with_explicit_n_partition_candidates(self):
+        """An explicit n_partition_candidates does not interfere with the top_n
+        bump: the call still returns top_n solutions."""
         programs, var_maps = self._make_two_partition_setup()
         results = beam_search_top_n(
             programs=programs,

@@ -108,7 +108,7 @@ parameters:
 
 .. tip::
 
-   Setting ``n_partition_candidates`` higher than ``beam_width`` is useful when you want each partition to propose many alternatives (wider local search) while keeping memory usage controlled (narrow beam).
+   The two settings are independent, and either can be the larger one. Raising ``n_partition_candidates`` above ``beam_width`` lets each partition propose many alternatives (wider local search) while the beam stays narrow. Raising ``beam_width`` above ``n_partition_candidates`` goes the other way: the beam holds *combinations* of per-partition choices, so across ``P`` partitions it can retain up to ``n_partition_candidates ** P`` of them. That is usually the cheaper way to widen the search, because the number of candidates fetched per partition — and therefore the branching factor at every step — stays small.
 
 Hierarchical aggregation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~

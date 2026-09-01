@@ -84,7 +84,11 @@ class BeamSearchStrategy(AggregationStrategy):
             all extensions (exhaustive). Internally bumped to at least ``top_n`` so
             the beam can return enough solutions.
         n_partition_candidates: Candidates to fetch from each partition. Defaults to
-            ``beam_width`` (or all when exhaustive). Must be ``>= beam_width``.
+            ``beam_width`` (or all when exhaustive). Independent of ``beam_width``:
+            the beam retains *combinations* of per-partition choices, so over ``P``
+            partitions it can hold up to ``n_partition_candidates ** P`` entries.
+            Pinning this below a wide ``beam_width`` is the cheap way to widen the
+            search, since it keeps the branching factor small.
     """
 
     beam_width: int | None = 1
@@ -112,28 +116,10 @@ class BeamSearchStrategy(AggregationStrategy):
 
         # Ensure the beam retains enough candidates for top_n.
         beam_width = self.beam_width
-        bumped = beam_width is not None and beam_width < top_n
-        if bumped:
+        if beam_width is not None and beam_width < top_n:
             beam_width = top_n
 
         n_partition_candidates = self.n_partition_candidates
-        if (
-            beam_width is not None
-            and n_partition_candidates is not None
-            and n_partition_candidates < beam_width
-        ):
-            beam_width_detail = (
-                f"beam_width (bumped from {self.beam_width} to {beam_width} "
-                f"to satisfy top_n={top_n})"
-                if bumped
-                else f"beam_width ({beam_width})"
-            )
-            raise ValueError(
-                f"n_partition_candidates ({n_partition_candidates}) must be >= "
-                f"{beam_width_detail}. Extracting fewer candidates than the "
-                f"beam width wastes beam capacity."
-            )
-
         if n_partition_candidates is not None:
             n_fetch = n_partition_candidates
         elif beam_width is not None:
