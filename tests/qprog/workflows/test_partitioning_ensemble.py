@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import networkx as nx
+import numpy as np
 import pytest
 
 from divi.qprog import QAOA, VariationalQuantumAlgorithm
 from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.aggregation import BeamSearchStrategy, HierarchicalStrategy
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
+    BinaryOptimizationProblem,
     MaxCutProblem,
     MaxWeightMatchingProblem,
     is_valid_matching,
@@ -119,6 +122,36 @@ def _attach_program_with_candidates(ensemble, mocker, decoded_candidates):
 
 
 class TestPartitioningProgramEnsemble:
+    def test_checkpointing_rejects_arbitrary_binary_decomposer(
+        self, dummy_simulator, tmp_path
+    ):
+        hybrid = pytest.importorskip("hybrid")
+        qubo = np.ones((4, 4)) - np.eye(4)
+        problem = BinaryOptimizationProblem(
+            qubo, decomposer=hybrid.EnergyImpactDecomposer(size=2)
+        )
+        ensemble = _make_ensemble(problem, dummy_simulator)
+
+        with pytest.raises(ValueError, match="deterministic decomposer"):
+            ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+    def test_checkpointing_accepts_seeded_community_decomposer(
+        self, dummy_simulator, tmp_path
+    ):
+        decomposers = pytest.importorskip(
+            "divi.qprog.problems._community_decomposer",
+            reason="requires the 'qubo-decompose' extra",
+        )
+        qubo = np.ones((4, 4)) - np.eye(4)
+        problem = BinaryOptimizationProblem(
+            qubo, decomposer=decomposers.CommunityDecomposer(max_cluster_size=2)
+        )
+        ensemble = _make_ensemble(problem, dummy_simulator)
+
+        ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert (tmp_path / "round_001" / "round_completion.json").is_file()
+
     def test_aggregate_results_calls_problem_hooks(self, mocker, dummy_simulator):
         problem = _make_stub_problem(mocker, solution_size=2)
         ensemble = _make_ensemble(problem, dummy_simulator)

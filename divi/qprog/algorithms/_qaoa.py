@@ -25,6 +25,7 @@ from divi.hamiltonians._term_ops import (
 )
 from divi.pipeline import Stage
 from divi.pipeline.stages import TrotterSpecStage
+from divi.qprog._program_checkpoint import _to_jsonable
 from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.algorithms import InitialState
 from divi.qprog.problems import QAOAProblem
@@ -187,8 +188,8 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             None if self._solution_bitstring is _UNSET else self._solution_bitstring
         )
         return {
-            "problem_metadata": self.problem_metadata,
-            "decoded_solution": decoded,
+            "problem_metadata": _to_jsonable(self.problem_metadata),
+            "decoded_solution": _to_jsonable(decoded),
             "solution_bitstring": bitstring,
             "loss_constant": self.loss_constant,
             "trotterization_strategy": pickle.dumps(

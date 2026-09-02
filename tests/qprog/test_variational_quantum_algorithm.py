@@ -9,15 +9,17 @@ from typing import Any
 
 import numpy as np
 import pytest
+from pydantic import ValidationError
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import OptimizeResult
 
+import divi.qprog._program_checkpoint as program_checkpoint_module
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPreprocessor
-from divi.qprog._program_state import ProgramState
+from divi.qprog._program_checkpoint import VQACheckpoint
 from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
 from divi.qprog.early_stopping import EarlyStopping, StopReason
@@ -58,6 +60,7 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             [("X", [0], 1.0), ("Z", [1], 1.0), ("XZ", [0, 1], 1.0)], num_qubits=2
         )
         self.loss_constant = 0.0
+        self.checkpointed_value = None
 
     @property
     def n_params_per_layer(self) -> int:
@@ -94,11 +97,11 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save SampleVQAProgram-specific state."""
-        return {}
+        return {"checkpointed_value": self.checkpointed_value}
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Load SampleVQAProgram-specific state."""
-        ...
+        self.checkpointed_value = state.get("checkpointed_value")
 
 
 class _BaseSampler(QuantumProgram):
@@ -985,6 +988,19 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
 
 
 class TestCheckpointing:
+    def test_vqa_checkpoint_kind_controls_optimizer_state(self, sample_program):
+        completed = program_checkpoint_module.VQACheckpoint.from_program(
+            sample_program,
+            kind="program_completion",
+        )
+        iterative = program_checkpoint_module.VQACheckpoint.from_program(
+            sample_program,
+            kind="iteration",
+        )
+
+        assert completed.optimizer_config is None
+        assert iterative.optimizer_config is not None
+
     """Tests for VariationalQuantumAlgorithm checkpointing functionality."""
 
     @pytest.fixture
@@ -1080,7 +1096,7 @@ class TestCheckpointing:
 
     def test_save_state_serializes_populated_best_probs(self, sample_program, mocker):
         # Regression: _best_probs is dict[int, dict[str, float]] (a param-set
-        # index to its bitstring distribution), so ProgramState.best_probs must
+        # index to its bitstring distribution), so VQACheckpoint.best_probs must
         # accept nested dicts rather than a flat dict[str, float].
         sample_program.optimizer.optimize = mocker.Mock(
             side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
@@ -1088,7 +1104,7 @@ class TestCheckpointing:
         sample_program.run(max_iterations=1)
         sample_program._best_probs = {0: {"01": 0.5, "10": 0.5}}
 
-        state = ProgramState.model_validate(sample_program)
+        state = VQACheckpoint.from_program(sample_program, kind="iteration")
 
         assert state.best_probs == {0: {"01": 0.5, "10": 0.5}}
 
@@ -1140,10 +1156,105 @@ class TestCheckpointing:
             [[0.1, 0.2, 0.3, 0.4]],
         )
 
-    def test_program_state_restore_applies_fields_onto_fresh_program(
+    def test_restore_state_applies_checkpoint_to_existing_program(
+        self, sample_program, mock_backend, default_optimizer, tmp_path, mocker
+    ):
+        """Ensembles can restore a program they have already reconstructed."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(
+                sample_program,
+                n_iterations=3,
+                result_x=np.array([[0.1, 0.2, 0.3, 0.4]]),
+                result_fun=np.array([0.123]),
+            )
+        )
+        sample_program.run(max_iterations=3, perform_final_computation=False)
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=tmp_path))
+
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+
+        restored = fresh._restore_state(tmp_path)
+
+        assert restored is fresh
+        assert fresh.current_iteration == 3
+        assert fresh._best_loss == 0.123
+        assert isinstance(fresh.optimizer, MonteCarloOptimizer)
+        np.testing.assert_allclose(fresh._best_params, [0.1, 0.2, 0.3, 0.4])
+
+    def test_restore_state_rolls_back_when_subclass_restore_fails(
+        self, sample_program, mock_backend, default_optimizer, tmp_path, mocker
+    ):
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program)
+        )
+        sample_program.run(max_iterations=1, perform_final_computation=False)
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=tmp_path))
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        original_optimizer = fresh.optimizer
+        fresh.current_iteration = 7
+        fresh.max_iterations = 11
+        fresh.checkpointed_value = "fresh"
+        fresh._preprocessor_pipeline_cache["sentinel"] = object()
+
+        def fail_after_mutation(state):
+            fresh.checkpointed_value = "mutated"
+            fresh._preprocessor_pipeline_cache.clear()
+            raise ValueError("stale subclass state")
+
+        mocker.patch.object(fresh, "_load_subclass_state", fail_after_mutation)
+
+        with pytest.raises(ValueError, match="stale subclass state"):
+            fresh._restore_state(tmp_path)
+
+        assert fresh.current_iteration == 7
+        assert fresh.max_iterations == 11
+        assert fresh.checkpointed_value == "fresh"
+        assert "sentinel" in fresh._preprocessor_pipeline_cache
+        assert fresh.optimizer is original_optimizer
+
+    def test_restore_state_rejects_a_different_program_type(
+        self, sample_program, mock_backend, default_optimizer, tmp_path, mocker
+    ):
+        """A manifest/path mix-up cannot silently mutate the wrong program."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1, perform_final_computation=False)
+        checkpoint = sample_program.save_state(
+            CheckpointConfig(checkpoint_dir=tmp_path)
+        )
+        state_file = checkpoint / "program_state.json"
+        state = json.loads(state_file.read_text())
+        state["program_type"] = "SomeOtherProgram"
+        state_file.write_text(json.dumps(state))
+
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+
+        with pytest.raises(ValueError, match="SomeOtherProgram"):
+            fresh._restore_state(tmp_path)
+
+        assert fresh.current_iteration == 0
+        assert fresh.optimizer is default_optimizer
+
+    def test_vqa_checkpoint_restore_applies_fields_onto_fresh_program(
         self, sample_program, mock_backend, default_optimizer, mocker
     ):
-        """ProgramState.restore() writes every mapped attribute back onto a fresh
+        """VQACheckpoint.restore() writes every mapped attribute back onto a fresh
         program (in-memory, no disk): scalars, numpy-coerced params, the ndarray
         _param_history, the nested _best_probs, and the RNG bit-generator state."""
         sample_program.optimizer.optimize = mocker.Mock(
@@ -1156,7 +1267,7 @@ class TestCheckpointing:
         )
         sample_program.run(max_iterations=3)
         sample_program._best_probs = {0: {"0101": 1.0}}
-        state = ProgramState.model_validate(sample_program)
+        state = VQACheckpoint.from_program(sample_program, kind="iteration")
 
         fresh = SampleVQAProgram(
             circ_count=0,
@@ -1177,6 +1288,112 @@ class TestCheckpointing:
         assert fresh._param_history[0].dtype == np.float64
         # RNG bit-generator state round-trips so resumed runs are reproducible.
         assert fresh._rng.bit_generator.state == sample_program._rng.bit_generator.state
+
+    def test_iterative_vqa_checkpoint_requires_optimizer_config(self, sample_program):
+        payload = VQACheckpoint.from_program(
+            sample_program, kind="iteration"
+        ).model_dump()
+        payload.pop("optimizer_config")
+
+        with pytest.raises(ValidationError, match="optimizer_config"):
+            VQACheckpoint.model_validate(payload)
+
+    def test_completed_state_round_trips_without_optimizer_checkpointing(
+        self, mock_backend, tmp_path
+    ):
+        program = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            seed=17,
+        )
+        program.current_iteration = 2
+        program.max_iterations = 4
+        program._losses_history = [{"0": 0.5}, {"0": 0.25}]
+        program._param_history = [
+            np.array([[0.1, 0.2, 0.3, 0.4]]),
+            np.array([[0.4, 0.3, 0.2, 0.1]]),
+        ]
+        program._best_loss = 0.25
+        program._best_params = np.array([0.4, 0.3, 0.2, 0.1])
+        program._final_params = np.array([0.4, 0.3, 0.2, 0.1])
+        program._best_probs = {0: {"01": 0.75, "10": 0.25}}
+        program._stop_reason = StopReason.PATIENCE_EXCEEDED
+        program._total_circuit_count = 12
+        program._total_run_time = 1.5
+        program.checkpointed_value = "terminal"
+        program._rng.random()
+
+        checkpoint = program._make_checkpoint(tmp_path)
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            seed=17,
+        )
+        fresh._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+
+        assert isinstance(checkpoint, VQACheckpoint)
+        assert checkpoint.kind == "program_completion"
+        assert fresh.current_iteration == 2
+        assert fresh.max_iterations == 4
+        assert fresh._losses_history == program._losses_history
+        assert fresh._best_loss == 0.25
+        assert fresh._best_probs == program._best_probs
+        assert fresh._stop_reason is StopReason.PATIENCE_EXCEEDED
+        assert fresh._total_circuit_count == 12
+        assert fresh._total_run_time == 1.5
+        assert fresh.checkpointed_value == "terminal"
+        assert fresh._rng.bit_generator.state == program._rng.bit_generator.state
+        np.testing.assert_allclose(fresh._best_params, program._best_params)
+        np.testing.assert_allclose(fresh._final_params, program._final_params)
+        assert all(isinstance(block, np.ndarray) for block in fresh._param_history)
+
+    def test_completed_restore_rejects_an_iterative_vqa_checkpoint(
+        self, sample_program, tmp_path
+    ):
+        sample_program._best_loss = 0.0
+        checkpoint = VQACheckpoint.from_program(
+            sample_program,
+            kind="iteration",
+        )
+
+        with pytest.raises(ValueError, match="completed VQA checkpoint"):
+            sample_program._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+
+    def test_completed_state_restore_rolls_back_when_subclass_restore_fails(
+        self, sample_program, mock_backend, default_optimizer, tmp_path, mocker
+    ):
+        sample_program.checkpointed_value = "checkpoint"
+        sample_program._best_loss = 0.0
+        checkpoint = sample_program._make_checkpoint(tmp_path)
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        fresh.current_iteration = 7
+        fresh.max_iterations = 11
+        fresh.checkpointed_value = "fresh"
+        fresh._preprocessor_pipeline_cache["sentinel"] = object()
+
+        def fail_after_mutation(state):
+            fresh.checkpointed_value = "mutated"
+            fresh._preprocessor_pipeline_cache.clear()
+            raise ValueError("stale completed state")
+
+        mocker.patch.object(fresh, "_load_subclass_state", fail_after_mutation)
+
+        with pytest.raises(ValueError, match="stale completed state"):
+            fresh._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+
+        assert fresh.current_iteration == 7
+        assert fresh.max_iterations == 11
+        assert fresh.checkpointed_value == "fresh"
+        assert "sentinel" in fresh._preprocessor_pipeline_cache
 
     def test_grid_search_checkpoint_round_trips(self, mock_backend, tmp_path):
         """Every optimizer that reports supports_checkpointing can be loaded back."""
@@ -1211,6 +1428,7 @@ class TestCheckpointing:
         (checkpoint / "program_state.json").write_text(
             json.dumps(
                 {
+                    "kind": "iteration",
                     "program_type": "SampleVQAProgram",
                     "current_iteration": 1,
                     "max_iterations": 1,
@@ -1247,7 +1465,7 @@ class TestCheckpointing:
             backend=mock_backend,
             optimizer=default_optimizer,
         )
-        ProgramState.model_validate(sample_program).restore(fresh)
+        VQACheckpoint.from_program(sample_program, kind="iteration").restore(fresh)
 
         assert fresh.stop_reason is StopReason.PATIENCE_EXCEEDED
 
@@ -1267,7 +1485,7 @@ class TestCheckpointing:
             optimizer=default_optimizer,
         )
         fresh._stop_reason = StopReason.COST_VARIANCE_SETTLED
-        ProgramState.model_validate(sample_program).restore(fresh)
+        VQACheckpoint.from_program(sample_program, kind="iteration").restore(fresh)
 
         assert fresh.stop_reason is None
 
@@ -1380,10 +1598,36 @@ class TestCheckpointing:
         sample_program.run(
             checkpoint_config=CheckpointConfig(
                 checkpoint_dir=tmp_path / "boundary", checkpoint_interval=2
-            )
+            ),
+            perform_final_computation=False,
         )
 
         assert sample_program.save_state.call_count == 1
+
+    def test_terminal_checkpoint_includes_final_sample(
+        self, sample_program, tmp_path, mocker
+    ):
+        """The terminal save overwrites an interval save with sampled results."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+
+        def sample_solution(**kwargs):
+            sample_program._best_probs = {0: {"01": 1.0}}
+            return sample_program
+
+        sample_program.sample_solution = mocker.Mock(side_effect=sample_solution)
+
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=tmp_path, checkpoint_interval=1
+            )
+        )
+
+        state = json.loads(
+            (tmp_path / "checkpoint_001" / "program_state.json").read_text()
+        )
+        assert state["best_probs"] == {"0": {"01": 1.0}}
 
     def test_multiple_checkpoints_and_load_latest(
         self, sample_program, tmp_path, mocker

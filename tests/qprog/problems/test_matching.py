@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import random
+
 import networkx as nx
 import numpy as np
 import pytest
@@ -210,6 +212,34 @@ class TestPartitionGraphByEdges:
         )
         assert all(sg.size() <= 2 for sg in parts)
 
+    def test_spectral_partition_is_independent_of_global_rng(self):
+        graph = nx.cycle_graph(8)
+        random_state = np.random.get_state()
+        try:
+            np.random.seed(1)
+            first = _partition_graph_by_edges(graph, 2, algorithm="spectral")
+            np.random.seed(2)
+            second = _partition_graph_by_edges(graph, 2, algorithm="spectral")
+        finally:
+            np.random.set_state(random_state)
+
+        assert [set(part) for part in first] == [set(part) for part in second]
+
+    def test_partition_order_does_not_depend_on_bisection_order(
+        self, diamond_graph, mocker
+    ):
+        split = mocker.patch.object(
+            _matching_module,
+            "_kl_bisect",
+            side_effect=[({2, 3}, {0, 1}), ({0, 1}, {2, 3})],
+        )
+
+        first = _partition_graph_by_edges(diamond_graph, 2)
+        second = _partition_graph_by_edges(diamond_graph, 2)
+
+        assert split.call_count == 2
+        assert [set(part) for part in first] == [set(part) for part in second]
+
     def test_invalid_algorithm_raises(self, path_graph):
         with pytest.raises(ValueError, match="Unsupported"):
             _partition_graph_by_edges(path_graph, max_edges=2, algorithm="bogus")
@@ -313,6 +343,21 @@ class TestMaxWeightMatchingProblem:
         assert len(subs) > 1
         for prog_id, sub in subs.items():
             assert isinstance(sub, BinaryOptimizationProblem)
+
+    def test_default_partitioning_is_independent_of_global_rng(self):
+        graph = nx.cycle_graph(8)
+        random_state = random.getstate()
+        try:
+            random.seed(1)
+            first = MaxWeightMatchingProblem(graph, max_edges_per_partition=2)
+            first.decompose()
+            random.seed(2)
+            second = MaxWeightMatchingProblem(graph, max_edges_per_partition=2)
+            second.decompose()
+        finally:
+            random.setstate(random_state)
+
+        assert first._edge_index_maps == second._edge_index_maps
 
     def test_extend_solution(self, diamond_graph):
         p = MaxWeightMatchingProblem(diamond_graph, max_edges_per_partition=2)

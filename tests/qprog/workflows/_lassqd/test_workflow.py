@@ -2043,3 +2043,84 @@ def test_two_fragment_h4_lands_on_the_product_state_energy(
 
     assert ensemble.energy > casci, "a product state cannot beat CASCI"
     assert ensemble.energy <= mean_field.e_tot + 1e-5
+
+
+def test_workflow_checkpoint_state_round_trips_npz(
+    exact_sampler_lassqd, tmp_path, mocker
+):
+    exact_sampler_lassqd, state = exact_sampler_lassqd
+    fragment = state.fragments[0]
+    state = LASSQDState(
+        mo_coeff=state.mo_coeff + 0.125,
+        fragments=(
+            FragmentState(
+                spec=fragment.spec,
+                rdm1=fragment.rdm1 + 0.1,
+                rdm2=fragment.rdm2 + 0.2,
+                params=np.arange(3, dtype=float),
+                rdm1_alpha=fragment.rdm1 / 3,
+                rdm1_beta=fragment.rdm1 * 2 / 3,
+            ),
+            state.fragments[1],
+        ),
+        energy=-1.25,
+        previous_energy=-1.0,
+        orbitals_converged=False,
+    )
+    exact_sampler_lassqd._energy_history = [-1.0, -1.25]
+    exact_sampler_lassqd._round_reports = [
+        _workflow.LASSQDRoundReport(
+            number=1,
+            energy=-1.25,
+            energy_change=-0.25,
+            subspace_sizes=(2,),
+            orbital_iterations=3,
+            orbital_evaluations=4,
+            orbital_gradient_norm=0.01,
+            orbital_converged=False,
+            rotation_pairs=5,
+            recovery_seconds=0.2,
+            orbital_seconds=0.3,
+        )
+    ]
+    solver = exact_sampler_lassqd._solver_for(0, fragment.spec)
+    solver.occupancy[:] = 0.375
+    expected_rng_state = exact_sampler_lassqd._rng.bit_generator.state
+
+    payload = exact_sampler_lassqd._save_workflow_checkpoint_state(
+        state, tmp_path, "output_state"
+    )
+    exact_sampler_lassqd._rng.random()
+    exact_sampler_lassqd._energy_history.clear()
+    exact_sampler_lassqd._solvers.clear()
+    seed_spy = mocker.spy(exact_sampler_lassqd.backend, "set_seed")
+
+    restored = exact_sampler_lassqd._load_workflow_checkpoint_state(
+        payload, tmp_path, "output_state"
+    )
+
+    np.testing.assert_array_equal(restored.mo_coeff, state.mo_coeff)
+    np.testing.assert_array_equal(restored.fragments[0].rdm2, state.fragments[0].rdm2)
+    np.testing.assert_array_equal(restored.fragments[0].params, [0.0, 1.0, 2.0])
+    assert restored.energy == -1.25
+    assert restored.previous_energy == -1.0
+    assert not restored.orbitals_converged
+    assert exact_sampler_lassqd.energy_history == (-1.0, -1.25)
+    assert exact_sampler_lassqd.round_reports[0].subspace_sizes == (2,)
+    assert exact_sampler_lassqd._rng.bit_generator.state == expected_rng_state
+    np.testing.assert_array_equal(exact_sampler_lassqd._solvers[0].occupancy, 0.375)
+    seed_spy.assert_called_once_with(exact_sampler_lassqd._seed)
+
+
+def test_workflow_checkpoint_rejects_a_different_explicit_fragment_layout(
+    exact_sampler_lassqd, dummy_expval_backend, tmp_path
+):
+    source, state = exact_sampler_lassqd
+    payload = source._save_workflow_checkpoint_state(state, tmp_path, "output_state")
+    target = _lassqd(
+        dummy_expval_backend,
+        active_spaces=[FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)],
+    )
+
+    with pytest.raises(ValueError, match="fragment layout"):
+        target._load_workflow_checkpoint_state(payload, tmp_path, "output_state")

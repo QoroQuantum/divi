@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Demonstrates checkpointing functionality for variational quantum algorithms.
+"""Demonstrates checkpointing for quantum programs and program ensembles.
 
 This example shows how to:
 - Save checkpoints during optimization
@@ -10,6 +10,7 @@ This example shows how to:
 - Adjust iteration targets after loading
 - List and inspect checkpoints
 - Sample directly from a checkpoint's parameters via ``sample_solution``
+- Restore a completed ensemble without rerunning its children
 """
 
 import shutil
@@ -18,7 +19,12 @@ from pathlib import Path
 import numpy as np
 import pennylane as qp
 
-from divi.qprog import VQE, HartreeFockAnsatz
+from divi.qprog import (
+    VQE,
+    HartreeFockAnsatz,
+    MoleculeTransformer,
+    VQEHyperparameterSweep,
+)
 from divi.qprog.checkpointing import (
     CheckpointConfig,
     get_checkpoint_info,
@@ -32,6 +38,7 @@ if __name__ == "__main__":
     # Set up checkpoint directories
     checkpoint_dir = Path("checkpoint_demo")
     checkpoint_dir_interval = Path("checkpoint_demo_interval")
+    ensemble_checkpoint_dir = Path("checkpoint_demo_ensemble")
 
     try:
         # Create molecule
@@ -147,11 +154,42 @@ if __name__ == "__main__":
         print(f"Circuits used (measurement only): {vqe4.total_circuit_count}")
 
         print("\n" + "=" * 60)
+        print("Step 6: Restore a completed program ensemble")
+        print("=" * 60)
+
+        transformer = MoleculeTransformer(base_molecule=mol, bond_modifiers=[0.0])
+        sweep = VQEHyperparameterSweep(
+            molecule_transformer=transformer,
+            ansatze=[HartreeFockAnsatz()],
+            optimizer=MonteCarloOptimizer(population_size=10),
+            max_iterations=1,
+            backend=get_backend(),
+        )
+        sweep.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=ensemble_checkpoint_dir)
+        )
+
+        restored_sweep = VQEHyperparameterSweep(
+            molecule_transformer=transformer,
+            ansatze=[HartreeFockAnsatz()],
+            optimizer=MonteCarloOptimizer(population_size=10),
+            max_iterations=1,
+            backend=get_backend(),
+        ).restore_state(ensemble_checkpoint_dir)
+        restored_sweep.run()
+        print(f"Restored rounds: {len(restored_sweep.round_history)}")
+        print(f"Restored circuits: {restored_sweep.total_circuit_count}")
+
+        print("\n" + "=" * 60)
         print("Checkpointing demo complete!")
         print("=" * 60)
     finally:
         # Clean up checkpoint directories
-        for dir_path in [checkpoint_dir, checkpoint_dir_interval]:
+        for dir_path in [
+            checkpoint_dir,
+            checkpoint_dir_interval,
+            ensemble_checkpoint_dir,
+        ]:
             if dir_path.exists():
                 shutil.rmtree(dir_path)
                 print(f"Cleaned up: {dir_path}")

@@ -59,6 +59,7 @@ CustomVQA
 CVaR
 cvrp
 decomposer
+decomposers
 deduped
 dedupes
 deduplicated

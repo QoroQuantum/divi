@@ -10,9 +10,20 @@ Covers the ``initial_state`` → ``create_programs`` → dispatch → ``update_s
 mechanics live in ``test_ensemble_dispatch.py``.
 """
 
+import json
+from pathlib import Path
+from threading import Event
+
 import pytest
 
 import divi.qprog.ensemble as ensemble_module
+from divi.qprog._ensemble_checkpoint import (
+    ProgramRoundRecord,
+    RoundCheckpoint,
+    _encode_program_id,
+)
+from divi.qprog._program_checkpoint import ProgramCheckpoint
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
@@ -21,6 +32,7 @@ from divi.qprog.ensemble import (
     RoundRecord,
     WorkflowStatus,
 )
+from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import (
     EventKind,
     ProgressEvent,
@@ -36,6 +48,88 @@ from tests.qprog._helpers import FailingTestProgram, SimpleTestProgram
 # SimpleTestProgram(10, 5.5) + SimpleTestProgram(5, 10.0).
 _CIRCUITS_PER_ROUND = 15
 _RUNTIME_PER_ROUND = 15.5
+
+
+class _TerminalTestCheckpoint(ProgramCheckpoint):
+    value: int
+
+
+class _TerminalTestProgram(QuantumProgram):
+    def __init__(self, slot, tracker, completed, *, fail, backend):
+        super().__init__(backend=backend)
+        self.slot = slot
+        self.tracker = tracker
+        self.completed = completed
+        self.fail = fail
+        self.value = None
+
+    def run(self):
+        self.tracker[self.slot] += 1
+        if self.fail:
+            assert self.completed.wait(timeout=2)
+            raise RuntimeError("planned child failure")
+        self.value = self.slot + 10
+        self._total_circuit_count = self.slot + 1
+        self._total_run_time = self.slot + 0.5
+        self.completed.set()
+        return self
+
+    def has_results(self):
+        return self.value is not None
+
+    def _make_checkpoint(self, checkpoint_dir: Path):
+        return _TerminalTestCheckpoint(
+            program_type=type(self).__name__,
+            total_circuit_count=self.total_circuit_count,
+            total_run_time=self.total_run_time,
+            value=self.value,
+        )
+
+    def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
+        checkpoint = _TerminalTestCheckpoint.model_validate_json(checkpoint_json)
+        self.value = checkpoint.value
+        return True
+
+
+class _TerminalTestEnsemble(ProgramEnsemble):
+    def __init__(self, backend, tracker, *, fail_second):
+        super().__init__(backend=backend)
+        self.tracker = tracker
+        self.fail_second = fail_second
+        self.completed = Event()
+
+    def initial_state(self):
+        return 0
+
+    def create_programs(self, state=None):
+        super().create_programs()
+        self.programs = {
+            "first": _TerminalTestProgram(
+                0, self.tracker, self.completed, fail=False, backend=self.backend
+            ),
+            "second": _TerminalTestProgram(
+                1,
+                self.tracker,
+                self.completed,
+                fail=self.fail_second,
+                backend=self.backend,
+            ),
+        }
+
+    def update_state(self, state):
+        return state + 1
+
+    def is_complete(self, state):
+        return state >= 1
+
+    def aggregate_results(self):
+        return self.workflow_state
+
+    def _save_workflow_checkpoint_state(self, state, round_dir, stem):
+        return {"value": state}
+
+    def _load_workflow_checkpoint_state(self, payload, round_dir, stem):
+        return payload["value"]
 
 
 class _LifecycleEnsemble(ProgramEnsemble):
@@ -104,6 +198,12 @@ class _LifecycleEnsemble(ProgramEnsemble):
 
     def aggregate_results(self):
         return self.workflow_state
+
+    def _save_workflow_checkpoint_state(self, state, round_dir, stem):
+        return {"value": state}
+
+    def _load_workflow_checkpoint_state(self, payload, round_dir, stem):
+        return payload["value"]
 
 
 class _OneShotEnsemble(ProgramEnsemble):
@@ -246,6 +346,315 @@ class TestLifecycleHookContract:
         assert ensemble.stop_reason == WorkflowStatus.COMPLETE
         assert len(ensemble.round_history) == 1
         assert ensemble.workflow_state is None
+
+
+class TestEnsembleCheckpointing:
+    def test_interrupted_round_reuses_its_child_directory(
+        self, dummy_simulator, tmp_path
+    ):
+        program = _TerminalTestProgram(
+            0, [0], Event(), fail=False, backend=dummy_simulator
+        )
+        round_path = tmp_path / "round_001"
+
+        def prepare(interrupted_checkpoint=None):
+            return ensemble_module._RoundCheckpointSession.prepare(
+                checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+                round_path=round_path,
+                ensemble_type="tests.TerminalTestEnsemble",
+                round_index=1,
+                ensemble_state={"value": 0},
+                programs=[program],
+                child_recovery_states=[
+                    ProgramRoundRecord(
+                        program_id=_encode_program_id("first"),
+                        program_type="tests.TerminalTestProgram",
+                        circuit_count_at_round_start=0,
+                        run_time_at_round_start=0.0,
+                    )
+                ],
+                interrupted_checkpoint=interrupted_checkpoint,
+            )
+
+        first = prepare()
+        active = RoundCheckpoint.model_validate_json(
+            (round_path / "round_start.json").read_text()
+        )
+        second = prepare(active)
+
+        assert first.checkpoint_path_by_program[program] == round_path / "program_000"
+        assert second.checkpoint_path_by_program[program] == round_path / "program_000"
+        assert (
+            RoundCheckpoint.model_validate_json(
+                (round_path / "round_start.json").read_text()
+            )
+            == active
+        )
+
+    def test_fresh_run_rejects_a_checkpoint_root_from_an_older_run(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        first = lifecycle_ensemble(n_rounds=1)
+        first.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+        second = lifecycle_ensemble(n_rounds=1)
+
+        with pytest.raises(
+            RuntimeError, match="already contains an ensemble checkpoint"
+        ):
+            second.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert second.workflow_state is None
+        assert second.round_history == ()
+
+    def test_completed_round_restores_and_continues_cumulative_limit(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        original = lifecycle_ensemble(n_rounds=3)
+        original.run(
+            max_rounds=1,
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+        )
+
+        restored = lifecycle_ensemble(n_rounds=3)
+        assert restored.restore_state(tmp_path) is restored
+
+        assert restored.workflow_state == 1
+        assert restored._round_index == 1
+        assert restored.round_history == original.round_history
+        assert restored.total_circuit_count == original.total_circuit_count
+        assert restored.stop_reason is None
+
+        restored.run(max_rounds=2)
+
+        assert restored.workflow_state == 2
+        assert restored.stop_reason is WorkflowStatus.MAX_ROUNDS
+        assert [record.number for record in restored.round_history] == [1, 2]
+
+    def test_one_shot_completed_checkpoint_stays_complete(
+        self, dummy_simulator, tmp_path
+    ):
+        original = _OneShotEnsemble(
+            backend=dummy_simulator, reporting_level=ReportingLevel.OFF
+        )
+        original.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        restored = _OneShotEnsemble(
+            backend=dummy_simulator, reporting_level=ReportingLevel.FULL
+        )
+        restored.restore_state(tmp_path).run()
+
+        assert len(restored.round_history) == 1
+        assert restored.stop_reason is WorkflowStatus.COMPLETE
+        assert restored.reporting_level is ReportingLevel.FULL
+
+    def test_failed_round_restores_its_input_and_reenters_same_round(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        failed = lifecycle_ensemble(n_rounds=2)
+        failed._total_circuit_count = 100
+        failed._total_run_time = 50.0
+        normal_update = failed.update_state
+
+        def fail_second_reduction(state):
+            if state == 1:
+                raise RuntimeError("reduction boom")
+            return normal_update(state)
+
+        failed.update_state = fail_second_reduction
+        with pytest.raises(RuntimeError):
+            failed.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        resumed = lifecycle_ensemble(n_rounds=2)
+        resumed.restore_state(tmp_path)
+
+        assert resumed.workflow_state == 1
+        assert resumed._round_index == 1
+        assert resumed.total_circuit_count == 115
+        assert resumed.total_run_time == 65.5
+
+        resumed.run()
+
+        assert resumed.states_seen == [1]
+        assert resumed.workflow_state == 2
+        assert [record.number for record in resumed.round_history] == [1, 2]
+        assert (tmp_path / "round_002" / "round_completion.json").is_file()
+
+    def test_interrupted_restore_rejects_previous_round_from_another_ensemble(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        failed = lifecycle_ensemble(n_rounds=2)
+        normal_update = failed.update_state
+
+        def fail_second_reduction(state):
+            if state == 1:
+                raise RuntimeError("reduction boom")
+            return normal_update(state)
+
+        failed.update_state = fail_second_reduction
+        with pytest.raises(RuntimeError, match="reduction boom"):
+            failed.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        previous_marker = tmp_path / "round_001" / "round_completion.json"
+        previous = json.loads(previous_marker.read_text())
+        previous["ensemble_type"] = "tests.OtherEnsemble"
+        previous_marker.write_text(json.dumps(previous))
+
+        with pytest.raises(ValueError, match="earlier completed round"):
+            lifecycle_ensemble(n_rounds=2).restore_state(tmp_path)
+
+    def test_restore_rejects_pre_materialized_programs(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        original = lifecycle_ensemble(n_rounds=1)
+        original.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+        target = lifecycle_ensemble(n_rounds=1)
+        target.create_programs(0)
+
+        with pytest.raises(RuntimeError, match="pre-materialized"):
+            target.restore_state(tmp_path)
+
+    def test_completed_marker_failure_records_failed_round(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        ensemble = lifecycle_ensemble(n_rounds=1)
+        save_state = ensemble._save_workflow_checkpoint_state
+
+        def fail_output(state, round_dir, stem):
+            if stem == "output_state":
+                raise OSError("disk full")
+            return save_state(state, round_dir, stem)
+
+        ensemble._save_workflow_checkpoint_state = fail_output
+
+        with pytest.raises(OSError, match="disk full"):
+            ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert ensemble.stop_reason is WorkflowStatus.FAILED
+        assert ensemble.round_history[-1].status is WorkflowStatus.FAILED
+        assert (tmp_path / "round_001" / "round_start.json").is_file()
+        assert not (tmp_path / "round_001" / "round_completion.json").exists()
+
+    def test_completed_child_is_not_reexecuted_after_round_failure(
+        self, make_dummy_simulator, tmp_path
+    ):
+        tracker = [0, 0]
+        first_backend = make_dummy_simulator(100)
+        first = _TerminalTestEnsemble(first_backend, tracker, fail_second=True)
+        config = CheckpointConfig(checkpoint_dir=tmp_path)
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            first.run(checkpoint_config=config)
+
+        marker = json.loads(
+            (
+                tmp_path / "round_001" / "program_000" / "program_completion.json"
+            ).read_text()
+        )
+        assert "phase" not in marker
+        assert marker["value"] == 10
+        assert "payload" not in marker
+
+        replacement_backend = make_dummy_simulator(100)
+        restored = _TerminalTestEnsemble(
+            replacement_backend, tracker, fail_second=False
+        ).restore_state(tmp_path)
+        restored.run()
+
+        assert tracker == [1, 2]
+        assert restored.programs["first"].value == 10
+        assert restored.programs["second"].value == 11
+        assert restored.programs["first"].backend is replacement_backend
+        assert restored.total_circuit_count == 3
+        assert restored.total_run_time == 2.0
+
+    def test_corrupt_completed_child_restarts_from_round_input(
+        self, dummy_simulator, tmp_path
+    ):
+        tracker = [0, 0]
+        first = _TerminalTestEnsemble(dummy_simulator, tracker, fail_second=True)
+        config = CheckpointConfig(checkpoint_dir=tmp_path)
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            first.run(checkpoint_config=config)
+
+        marker = tmp_path / "round_001" / "program_000" / "program_completion.json"
+        marker.write_text("not json")
+        restored = _TerminalTestEnsemble(
+            dummy_simulator, tracker, fail_second=False
+        ).restore_state(tmp_path)
+        restored.run()
+
+        assert tracker == [2, 2]
+        assert restored.programs["first"].value == 10
+
+    def test_completed_child_with_negative_accounting_restarts_before_mutation(
+        self, dummy_simulator, tmp_path
+    ):
+        tracker = [0, 0]
+        first = _TerminalTestEnsemble(dummy_simulator, tracker, fail_second=True)
+        config = CheckpointConfig(checkpoint_dir=tmp_path)
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            first.run(checkpoint_config=config)
+
+        checkpoint_path = tmp_path / "round_001" / "round_start.json"
+        checkpoint = json.loads(checkpoint_path.read_text())
+        checkpoint["programs"][0]["circuit_count_at_round_start"] = 2
+        checkpoint_path.write_text(json.dumps(checkpoint))
+
+        restored = _TerminalTestEnsemble(
+            dummy_simulator, tracker, fail_second=False
+        ).restore_state(tmp_path)
+        restored.run()
+
+        assert tracker == [2, 2]
+        assert restored.programs["first"].value == 10
+
+    def test_iterative_child_accounting_is_validated_before_restore(
+        self, tmp_path, mocker
+    ):
+        program = mocker.MagicMock()
+        program.total_circuit_count = 1
+        program.total_run_time = 0.5
+        checkpoint_state = mocker.Mock(
+            total_circuit_count=1,
+            total_run_time=0.5,
+        )
+        program._load_checkpoint_state.return_value = (tmp_path, checkpoint_state)
+        child_state = ProgramRoundRecord(
+            program_id=_encode_program_id("child"),
+            program_type="tests.IterativeChild",
+            circuit_count_at_round_start=2,
+            run_time_at_round_start=1.0,
+        )
+        session = ensemble_module._RoundCheckpointSession(
+            checkpoint_path_by_program={program: tmp_path},
+            iterative_config_by_program={
+                program: CheckpointConfig(checkpoint_dir=tmp_path)
+            },
+            restored_programs=set(),
+        )
+
+        session._recover([program], {program: child_state})
+
+        program._restore_loaded_checkpoint.assert_not_called()
+        assert not session.was_restored(program)
+
+    def test_completed_child_checkpoint_failure_fails_round(
+        self, dummy_simulator, tmp_path, mocker
+    ):
+        tracker = [0, 0]
+        ensemble = _TerminalTestEnsemble(dummy_simulator, tracker, fail_second=False)
+        mocker.patch.object(
+            _TerminalTestProgram,
+            "_make_checkpoint",
+            side_effect=OSError("disk full"),
+        )
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+            ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert ensemble.stop_reason is WorkflowStatus.FAILED
 
 
 class TestAdaptiveRounds:

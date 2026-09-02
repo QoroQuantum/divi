@@ -5,6 +5,7 @@
 """Checkpointing utilities for variational quantum algorithms."""
 
 import json
+import os
 import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -215,6 +216,17 @@ class CheckpointCorruptedError(CheckpointError):
         self.details = details
 
 
+def _fsync_directory(path: Path) -> None:
+    """Persist directory-entry changes where the platform supports it."""
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _atomic_write(path: Path, content: str) -> None:
     """Write content to a file atomically using a temporary file and rename.
 
@@ -232,7 +244,10 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         with open(temp_file, "w") as f:
             f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
         temp_file.replace(path)
+        _fsync_directory(path.parent)
     except Exception as e:
         if temp_file.exists():
             temp_file.unlink()

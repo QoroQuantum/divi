@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import copy
 import logging
 import pickle
 from abc import abstractmethod
@@ -32,7 +33,11 @@ from divi.pipeline import (
 from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
 from divi.pipeline.stages import ParameterBindingStage
 from divi.qprog import ObservableMeasuringMixin
-from divi.qprog._program_state import OptimizerConfig, ProgramState, SubclassState
+from divi.qprog._program_checkpoint import (
+    OptimizerConfig,
+    SubclassState,
+    VQACheckpoint,
+)
 from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
@@ -209,6 +214,23 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     _best_params: npt.NDArray[np.float64]
     _final_params: npt.NDArray[np.float64]
     _cost_circuit: MetaCircuit | None
+
+    def _make_checkpoint(
+        self,
+        checkpoint_dir: Path,
+    ) -> VQACheckpoint:
+        return VQACheckpoint.from_program(self, kind="program_completion")
+
+    def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
+        checkpoint = VQACheckpoint.model_validate_json(checkpoint_json)
+        if checkpoint.program_type != type(self).__name__:
+            raise ValueError(
+                f"Checkpoint is for {checkpoint.program_type}, not {type(self).__name__}."
+            )
+        if checkpoint.kind != "program_completion":
+            raise ValueError("Expected a completed VQA checkpoint.")
+        self._apply_checkpoint_state(checkpoint)
+        return True
 
     def __init__(
         self,
@@ -627,12 +649,104 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self.optimizer.save_state(checkpoint_path)
 
         # 2. Save Program State (Pydantic pulls data via validation_aliases)
-        state = ProgramState.model_validate(self)
+        state = VQACheckpoint.from_program(self, kind="iteration")
 
         state_file = checkpoint_path / PROGRAM_STATE_FILE
         _atomic_write(state_file, state.model_dump_json(indent=2))
 
         return checkpoint_path
+
+    @classmethod
+    def _resolve_checkpoint_path(
+        cls,
+        checkpoint_dir: Path | str,
+        subdirectory: str | None = None,
+    ) -> Path:
+        """Resolve a program checkpoint, allowing subclasses to add nesting."""
+        return resolve_checkpoint_path(checkpoint_dir, subdirectory)
+
+    @classmethod
+    def _load_checkpoint_state(
+        cls,
+        checkpoint_dir: Path | str,
+        subdirectory: str | None = None,
+    ) -> tuple[Path, VQACheckpoint]:
+        """Read and validate the program portion of a checkpoint."""
+        checkpoint_path = cls._resolve_checkpoint_path(checkpoint_dir, subdirectory)
+        state = _load_and_validate_pydantic_model(
+            checkpoint_path / PROGRAM_STATE_FILE,
+            VQACheckpoint,
+            required_fields=["kind", "program_type", "current_iteration"],
+        )
+        if state.kind != "iteration":
+            raise ValueError("Expected an iterative VQA checkpoint.")
+        if state.program_type != cls.__name__:
+            raise ValueError(
+                f"Checkpoint contains {state.program_type}, not {cls.__name__}."
+            )
+        return checkpoint_path, state
+
+    @staticmethod
+    def _load_checkpoint_optimizer(
+        checkpoint_path: Path, state: VQACheckpoint
+    ) -> Optimizer:
+        """Reconstruct the optimizer recorded in a program checkpoint."""
+        opt_config = state.optimizer_config
+        if opt_config is None:
+            raise ValueError("Iterative checkpoint has no optimizer configuration.")
+        optimizer_class = _CHECKPOINTABLE_OPTIMIZERS.get(opt_config.type)
+        if optimizer_class is None:
+            supported = ", ".join(sorted(_CHECKPOINTABLE_OPTIMIZERS))
+            raise ValueError(
+                f"Unsupported optimizer type: {opt_config.type}. "
+                f"Checkpoints can be loaded for: {supported}."
+            )
+        return optimizer_class.load_state(checkpoint_path)
+
+    def _restore_state(
+        self,
+        checkpoint_dir: Path | str,
+        subdirectory: str | None = None,
+    ) -> Self:
+        """Restore a checkpoint onto this already-constructed program."""
+        checkpoint_path, state = type(self)._load_checkpoint_state(
+            checkpoint_dir, subdirectory
+        )
+        return self._restore_loaded_checkpoint(checkpoint_path, state)
+
+    def _restore_loaded_checkpoint(
+        self, checkpoint_path: Path, state: VQACheckpoint
+    ) -> Self:
+        """Apply an already loaded checkpoint to this program."""
+        optimizer = self._load_checkpoint_optimizer(checkpoint_path, state)
+        self._apply_checkpoint_state(state, optimizer=optimizer)
+        return self
+
+    def _apply_checkpoint_state(
+        self,
+        state: VQACheckpoint,
+        *,
+        optimizer: Optimizer | None = None,
+    ) -> None:
+        """Apply validated state atomically to this program instance."""
+        attributes = {
+            name: (
+                value.copy()
+                if isinstance(value, (dict, list, set, np.ndarray))
+                else value
+            )
+            for name, value in self.__dict__.items()
+        }
+        rng_state = copy.deepcopy(self._rng.bit_generator.state)
+        try:
+            if optimizer is not None:
+                self.optimizer = optimizer
+            state.restore(self)
+        except Exception:
+            self.__dict__.clear()
+            self.__dict__.update(attributes)
+            self._rng.bit_generator.state = rng_state
+            raise
 
     @classmethod
     def load_state(
@@ -643,33 +757,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         **kwargs,
     ) -> Self:
         """Load program state from a checkpoint directory."""
-        checkpoint_path = resolve_checkpoint_path(checkpoint_dir, subdirectory)
-        state_file = checkpoint_path / PROGRAM_STATE_FILE
-
-        # 1. Load Pydantic Model
-        state = _load_and_validate_pydantic_model(
-            state_file,
-            ProgramState,
-            required_fields=["program_type", "current_iteration"],
+        checkpoint_path, state = cls._load_checkpoint_state(
+            checkpoint_dir, subdirectory
         )
-
-        # 2. Reconstruct Optimizer
-        opt_config = state.optimizer_config
-        optimizer_class = _CHECKPOINTABLE_OPTIMIZERS.get(opt_config.type)
-        if optimizer_class is None:
-            supported = ", ".join(sorted(_CHECKPOINTABLE_OPTIMIZERS))
-            raise ValueError(
-                f"Unsupported optimizer type: {opt_config.type}. "
-                f"Checkpoints can be loaded for: {supported}."
-            )
-        optimizer = optimizer_class.load_state(checkpoint_path)
-
-        # 3. Create Instance
+        optimizer = cls._load_checkpoint_optimizer(checkpoint_path, state)
         program = cls(backend=backend, optimizer=optimizer, seed=state.seed, **kwargs)
-
-        # 4. Restore State
         state.restore(program)
-
         return program
 
     def get_expected_param_shape(self) -> tuple[int, int]:
@@ -1091,12 +1184,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         last_grad_norm: float | None = None
         last_checkpointed_iteration: int | None = None
 
-        def _flush_final_checkpoint():
+        def _flush_final_checkpoint(*, force: bool = False):
             """Checkpoint the last iteration if the interval did not already."""
             if (
                 checkpoint_config.checkpoint_dir is not None
                 and self.current_iteration > 0
-                and self.current_iteration != last_checkpointed_iteration
+                and (force or self.current_iteration != last_checkpointed_iteration)
             ):
                 self.save_state(checkpoint_config)
 
@@ -1272,10 +1365,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         # early-stop/cancel branches above carry a 2-D (1, n) best, so squeeze.
         self._final_params = np.atleast_1d(np.asarray(self.optimize_result.x).squeeze())
 
-        _flush_final_checkpoint()
-
         if perform_final_computation and isinstance(self, SolutionSamplingMixin):
             self.sample_solution(**kwargs)
+            _flush_final_checkpoint(force=True)
+        else:
+            _flush_final_checkpoint()
 
         self._progress_emitter(
             ProgressEvent.finish(

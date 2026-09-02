@@ -275,17 +275,19 @@ class TestGraphPartitioningConfig:
         assert len(result) == 3
         mock_split.assert_called_once_with(G, algorithm, 3)
 
-    def test_split_graph_kernighan_lin(self):
+    def test_split_graph_kernighan_lin(self, mocker):
         G = nx.path_graph(6)
         config = GraphPartitioningConfig(
             minimum_n_clusters=10, partitioning_algorithm="kernighan_lin"
         )
+        split = mocker.spy(nx.algorithms.community, "kernighan_lin_bisection")
 
         result = _split_graph(G, config)
 
         assert isinstance(result, Sequence)
         assert len(result) == 2
         assert set(result[0][1]) | set(result[1][1]) == set(G.nodes)
+        split.assert_called_once_with(G, seed=0)
 
     def test_split_graph_kernighan_lin_returns_copies(self):
         """Subgraphs returned by _split_graph are independent copies, not views."""

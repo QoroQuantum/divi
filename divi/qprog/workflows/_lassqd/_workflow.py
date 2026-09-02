@@ -5,9 +5,12 @@
 """The LASSQD program ensemble: construction and per-round program creation."""
 
 import copy
+import os
+import tempfile
 import time
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 from warnings import warn
 
@@ -666,7 +669,7 @@ class LASSQD(ProgramEnsemble):
     per fragment, and recovers each fragment state via sample-based quantum
     diagonalisation. By default, fragment preparation follows the reference
     implementation: ROHF and CCSD seed a one-repetition LUCJ operator, ffsim's
-    exact linear method optimizes it classically, and the backend samples only
+    exact linear method optimises it classically, and the backend samples only
     the final circuit. Backend-driven VQE preparation is available through
     ``preparation_mode='vqe'``.
 
@@ -1180,6 +1183,275 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             # No-op on backends that cannot seed their sampler, so a run stays
             # reproducible only as far as the backend allows.
             self.backend.set_seed(self._seed)
+
+    def _save_workflow_checkpoint_state(
+        self, state: Any, round_dir: Path, stem: str
+    ) -> dict[str, Any]:
+        """Write an explicit, non-pickled snapshot of mutable LASSQD state."""
+        if not isinstance(state, LASSQDState):
+            raise TypeError(
+                f"LASSQD checkpoint state must be LASSQDState, got "
+                f"{type(state).__name__}."
+            )
+
+        arrays: dict[str, np.ndarray] = {
+            "mo_coeff": state.mo_coeff,
+            "energy": np.asarray(state.energy),
+            "previous_energy": np.asarray(state.previous_energy),
+            "orbitals_converged": np.asarray(state.orbitals_converged),
+            "energy_history": np.asarray(self._energy_history, dtype=np.float64),
+        }
+        fragments = []
+        for index, fragment in enumerate(state.fragments):
+            prefix = f"fragment_{index}"
+            arrays[f"{prefix}_rdm1"] = fragment.rdm1
+            arrays[f"{prefix}_rdm2"] = fragment.rdm2
+            params_present = fragment.params is not None
+            alpha_present = fragment.rdm1_alpha is not None
+            beta_present = fragment.rdm1_beta is not None
+            if fragment.params is not None:
+                arrays[f"{prefix}_params"] = fragment.params
+            if fragment.rdm1_alpha is not None:
+                arrays[f"{prefix}_rdm1_alpha"] = fragment.rdm1_alpha
+            if fragment.rdm1_beta is not None:
+                arrays[f"{prefix}_rdm1_beta"] = fragment.rdm1_beta
+            fragments.append(
+                {
+                    "orbitals": list(fragment.spec.orbitals),
+                    "n_alpha": fragment.spec.n_alpha,
+                    "n_beta": fragment.spec.n_beta,
+                    "params": params_present,
+                    "rdm1_alpha": alpha_present,
+                    "rdm1_beta": beta_present,
+                }
+            )
+
+        solvers = []
+        for index, solver in sorted(self._solvers.items()):
+            arrays[f"solver_{index}_occupancy"] = solver.occupancy
+            solvers.append(
+                {"index": index, "rng_state": solver._rng.bit_generator.state}
+            )
+
+        artifact = f"{stem}.npz"
+        round_dir.mkdir(parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=round_dir, suffix=".npz", delete=False
+            ) as handle:
+                temporary_path = Path(handle.name)
+                np.savez(handle, **arrays)  # pyrefly: ignore[bad-argument-type]
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary_path, round_dir / artifact)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+
+        reports = []
+        for report in self._round_reports:
+            data: dict[str, Any] = asdict(report)
+            data["subspace_sizes"] = list(report.subspace_sizes)
+            reports.append(data)
+        return {
+            "artifact": artifact,
+            "fragments": fragments,
+            "rng_state": self._rng.bit_generator.state,
+            "solvers": solvers,
+            "round_reports": reports,
+        }
+
+    def _load_workflow_checkpoint_state(
+        self, payload: dict[str, Any], round_dir: Path, stem: str
+    ) -> LASSQDState:
+        """Load and validate an explicit LASSQD NPZ snapshot."""
+        artifact = payload.get("artifact")
+        if not isinstance(artifact, str):
+            raise ValueError("LASSQD checkpoint is missing its NPZ artifact.")
+        if artifact != f"{stem}.npz":
+            raise ValueError("LASSQD checkpoint references the wrong state artifact.")
+        artifact_path = round_dir / artifact
+        fragment_metadata = payload.get("fragments")
+        if not isinstance(fragment_metadata, list) or not fragment_metadata:
+            raise ValueError("LASSQD checkpoint has no fragment metadata.")
+
+        with np.load(artifact_path, allow_pickle=False) as stored:
+            required = {
+                "mo_coeff",
+                "energy",
+                "previous_energy",
+                "orbitals_converged",
+                "energy_history",
+            }
+            missing = required - set(stored.files)
+            if missing:
+                raise ValueError(
+                    f"LASSQD checkpoint artifact is missing arrays: {sorted(missing)}"
+                )
+            fragments = []
+            for index, metadata in enumerate(fragment_metadata):
+                prefix = f"fragment_{index}"
+                for suffix in ("rdm1", "rdm2"):
+                    if f"{prefix}_{suffix}" not in stored:
+                        raise ValueError(
+                            f"LASSQD checkpoint is missing {prefix}_{suffix}."
+                        )
+                spec = FragmentSpec(
+                    tuple(metadata["orbitals"]),
+                    metadata["n_alpha"],
+                    metadata["n_beta"],
+                )
+                rdm1 = stored[f"{prefix}_rdm1"].copy()
+                rdm2 = stored[f"{prefix}_rdm2"].copy()
+                expected_rdm1_shape = (spec.n_orbitals,) * 2
+                expected_rdm2_shape = (spec.n_orbitals,) * 4
+                if (
+                    rdm1.shape != expected_rdm1_shape
+                    or rdm2.shape != expected_rdm2_shape
+                ):
+                    raise ValueError(
+                        f"LASSQD checkpoint fragment {index} has invalid RDM shapes."
+                    )
+                params = (
+                    stored[f"{prefix}_params"].copy()
+                    if metadata.get("params")
+                    else None
+                )
+                rdm1_alpha = (
+                    stored[f"{prefix}_rdm1_alpha"].copy()
+                    if metadata.get("rdm1_alpha")
+                    else None
+                )
+                rdm1_beta = (
+                    stored[f"{prefix}_rdm1_beta"].copy()
+                    if metadata.get("rdm1_beta")
+                    else None
+                )
+                if params is not None and params.ndim != 1:
+                    raise ValueError(
+                        f"LASSQD checkpoint fragment {index} parameters are not 1-D."
+                    )
+                if any(
+                    spin_rdm is not None and spin_rdm.shape != expected_rdm1_shape
+                    for spin_rdm in (rdm1_alpha, rdm1_beta)
+                ):
+                    raise ValueError(
+                        f"LASSQD checkpoint fragment {index} has invalid spin RDMs."
+                    )
+                fragments.append(
+                    FragmentState(
+                        spec=spec,
+                        rdm1=rdm1,
+                        rdm2=rdm2,
+                        params=params,
+                        rdm1_alpha=rdm1_alpha,
+                        rdm1_beta=rdm1_beta,
+                    )
+                )
+            mo_coeff = stored["mo_coeff"].copy()
+            if mo_coeff.ndim != 2:
+                raise ValueError("LASSQD checkpoint MO coefficients are not 2-D.")
+            n_orbitals_total = self._mol.nao_nr()
+            if mo_coeff.shape != (n_orbitals_total, n_orbitals_total):
+                raise ValueError(
+                    "LASSQD checkpoint MO coefficients do not match the molecule."
+                )
+            specs = [fragment.spec for fragment in fragments]
+            validate_fragment_specs(specs, n_orbitals_total, self._mol.nelectron // 2)
+            explicit_specs = self._fragmentation.active_spaces
+            if explicit_specs is not None and tuple(specs) != tuple(explicit_specs):
+                raise ValueError(
+                    "LASSQD checkpoint fragment layout does not match the "
+                    "configured active_spaces."
+                )
+            for scalar_name in ("energy", "previous_energy", "orbitals_converged"):
+                if stored[scalar_name].shape != ():
+                    raise ValueError(
+                        f"LASSQD checkpoint {scalar_name} must be a scalar."
+                    )
+            if stored["energy_history"].ndim != 1:
+                raise ValueError("LASSQD checkpoint energy history is not 1-D.")
+            state = LASSQDState(
+                mo_coeff=mo_coeff,
+                fragments=tuple(fragments),
+                energy=float(stored["energy"]),
+                previous_energy=float(stored["previous_energy"]),
+                orbitals_converged=bool(stored["orbitals_converged"]),
+            )
+            energy_history = stored["energy_history"].astype(float).tolist()
+            solver_occupancies = {
+                metadata["index"]: stored[
+                    f"solver_{metadata['index']}_occupancy"
+                ].copy()
+                for metadata in payload.get("solvers", [])
+            }
+
+        rng_state = payload.get("rng_state")
+        if not isinstance(rng_state, dict):
+            raise ValueError("LASSQD checkpoint is missing RNG state.")
+        reports = []
+        for report in payload.get("round_reports", []):
+            reports.append(
+                LASSQDRoundReport(
+                    number=int(report["number"]),
+                    energy=float(report["energy"]),
+                    energy_change=(
+                        None
+                        if report["energy_change"] is None
+                        else float(report["energy_change"])
+                    ),
+                    subspace_sizes=tuple(
+                        int(size) for size in report["subspace_sizes"]
+                    ),
+                    orbital_iterations=int(report["orbital_iterations"]),
+                    orbital_evaluations=int(report["orbital_evaluations"]),
+                    orbital_gradient_norm=float(report["orbital_gradient_norm"]),
+                    orbital_converged=bool(report["orbital_converged"]),
+                    rotation_pairs=int(report["rotation_pairs"]),
+                    recovery_seconds=float(report["recovery_seconds"]),
+                    orbital_seconds=float(report["orbital_seconds"]),
+                )
+            )
+
+        solver_metadata = payload.get("solvers", [])
+        if not isinstance(solver_metadata, list):
+            raise ValueError("LASSQD checkpoint solver metadata must be a list.")
+        solver_indices = [metadata.get("index") for metadata in solver_metadata]
+        if (
+            any(not isinstance(index, int) for index in solver_indices)
+            or len(set(solver_indices)) != len(solver_indices)
+            or any(not 0 <= index < len(state.fragments) for index in solver_indices)
+        ):
+            raise ValueError("LASSQD checkpoint has invalid solver fragment indices.")
+        validation_rng = np.random.default_rng()
+        validation_rng.bit_generator.state = rng_state
+        for metadata in solver_metadata:
+            solver_rng_state = metadata.get("rng_state")
+            if not isinstance(solver_rng_state, dict):
+                raise ValueError("LASSQD checkpoint is missing solver RNG state.")
+            validation_rng.bit_generator.state = solver_rng_state
+            occupancy = solver_occupancies[metadata["index"]]
+            if occupancy.shape != (
+                2,
+                state.fragments[metadata["index"]].spec.n_orbitals,
+            ):
+                raise ValueError("LASSQD checkpoint has invalid solver occupancy.")
+
+        self._rng.bit_generator.state = rng_state
+        self._solvers.clear()
+        for metadata in solver_metadata:
+            index = metadata["index"]
+            solver = self._solver_for(index, state.fragments[index].spec)
+            solver.occupancy = solver_occupancies[index]
+            solver._rng.bit_generator.state = metadata["rng_state"]
+        self._rng.bit_generator.state = rng_state
+        self._energy_history = energy_history
+        self._round_reports = reports
+        self._state = state
+        if self._seed is not None and self.backend is not None:
+            self.backend.set_seed(self._seed)
+        return state
 
     def _solver_for(self, index: int, spec: FragmentSpec) -> SQDSolver:
         """Return this fragment's cached ``SQDSolver``, building it once.
