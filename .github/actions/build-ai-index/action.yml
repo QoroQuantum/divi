@@ -1,5 +1,5 @@
 name: Build divi-ai index
-description: Cache the fastembed embedding model and build the divi-ai search index. Requires `uv sync --extra ai` to have run first.
+description: Cache the fastembed embedding model and chunk embeddings, then build the divi-ai search index. Requires `uv sync --extra ai` to have run first.
 
 inputs:
   hf-token:
@@ -17,6 +17,16 @@ runs:
         key: fastembed-${{ runner.os }}-${{ hashFiles('divi/ai/_indexer.py') }}
         restore-keys: |
           fastembed-${{ runner.os }}-
+
+    - name: Cache chunk embeddings
+      uses: actions/cache@v4
+      with:
+        path: .cache/divi-ai-embeddings.npz
+        # run_id never matches an existing entry, so every run saves the
+        # refreshed cache; restore-keys picks up the most recent one.
+        key: divi-ai-embeddings-${{ runner.os }}-${{ github.run_id }}
+        restore-keys: |
+          divi-ai-embeddings-${{ runner.os }}-
 
     - name: Build divi-ai search index
       shell: bash

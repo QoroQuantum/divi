@@ -48,6 +48,10 @@ _SAMPLE_QUERIES = [
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
+# Lives under the already-gitignored .cache/ so it never reaches a commit or
+# the wheel — it is a build accelerator, not a shipped artifact.
+DEFAULT_EMBED_CACHE = REPO_ROOT / ".cache" / "divi-ai-embeddings.npz"
+
 console = Console()
 
 # ---------------------------------------------------------------------------
@@ -79,14 +83,18 @@ def cmd_help(args: argparse.Namespace) -> None:
 
 def cmd_build(args: argparse.Namespace) -> None:
     """Build the FAISS index from the local repository."""
+    cache_path = None if args.no_cache else DEFAULT_EMBED_CACHE
+
     console.print(f"[bold]Repo root:[/bold]  {REPO_ROOT}")
-    console.print(f"[bold]Output dir:[/bold] {DATA_DIR}\n")
+    console.print(f"[bold]Output dir:[/bold] {DATA_DIR}")
+    console.print(f"[bold]Embed cache:[/bold] {cache_path or 'disabled'}\n")
 
     index, chunks = build_index(
         [REPO_ROOT],
         output_dir=DATA_DIR,
         batch_size=args.batch_size,
         threads=args.threads,
+        cache_path=cache_path,
     )
     build_project_meta(REPO_ROOT, output_dir=DATA_DIR)
 
@@ -239,6 +247,11 @@ def main() -> None:
         type=int,
         default=None,
         help="Embedder thread count (default: cpu_count() - 2, min 1).",
+    )
+    build_parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Embed every chunk from scratch, ignoring and not writing the cache.",
     )
 
     search_parser = _add_command(

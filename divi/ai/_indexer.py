@@ -20,12 +20,15 @@ Chunking strategies:
 """
 
 import ast
+import hashlib
 import json
 import os
 import re
 import subprocess
 import tomllib
+import zipfile
 from dataclasses import asdict
+from importlib import metadata
 from pathlib import Path
 
 import bm25s
@@ -51,6 +54,10 @@ EMBEDDING_MODEL = "jinaai/jina-embeddings-v2-base-code"
 CHUNK_SIZE = 1024  # characters for docs (approximate token proxy)
 CHUNK_OVERLAP = 128
 MIN_CHUNK_LENGTH = 50  # skip chunks shorter than this
+
+# Bump to invalidate every cached embedding when the embed input changes shape
+# without any of the constants above changing.
+_EMBED_CACHE_VERSION = 1
 
 EXTENSIONS = {".py", ".rst", ".md"}
 
@@ -802,11 +809,72 @@ def _collect_files(source_dirs: list[Path]) -> list[Path]:
 # ---------------------------------------------------------------------------
 
 
+def _embed_cache_salt() -> str:
+    """Fingerprint what produces a vector, beyond the chunk text itself.
+
+    A cache carrying a different salt is discarded rather than reused — a
+    vector produced by another model or another version of the embedding
+    library is wrong, not merely stale, and mixing it with freshly embedded
+    rows would corrupt retrieval silently. Chunker settings need no entry
+    here: the cache key is the digest of the final chunk text, so any
+    chunking change already changes the key.
+    """
+    try:
+        fastembed_version = metadata.version("fastembed")
+    except metadata.PackageNotFoundError:
+        fastembed_version = "unknown"
+
+    parts = (
+        EMBEDDING_MODEL,
+        fastembed_version,
+        str(_EMBED_CACHE_VERSION),
+    )
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _load_embed_cache(path: Path | None) -> dict[str, np.ndarray]:
+    """Load ``digest -> vector`` from *path*, or return empty on any mismatch."""
+    if path is None or not path.exists():
+        return {}
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            if str(data["salt"]) != _embed_cache_salt():
+                return {}
+            keys = data["keys"]
+            vectors = data["vectors"]
+            if len(keys) != len(vectors):
+                return {}
+            return {str(k): v for k, v in zip(keys, vectors)}
+    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+        return {}
+
+
+def _save_embed_cache(path: Path, entries: dict[str, np.ndarray]) -> None:
+    """Write *entries* to *path* atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    keys = list(entries)
+    stacked = (
+        np.stack([entries[k] for k in keys]).astype(np.float32, copy=False)
+        if keys
+        else np.empty((0, 0), dtype=np.float32)
+    )
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    with tmp.open("wb") as fh:
+        np.savez(
+            fh,
+            salt=np.array(_embed_cache_salt()),
+            keys=np.array(keys, dtype=np.str_),
+            vectors=stacked,
+        )
+    tmp.replace(path)
+
+
 def build_index(
     source_dirs: list[Path],
     output_dir: Path,
     batch_size: int = 16,
     threads: int | None = None,
+    cache_path: Path | None = None,
 ) -> tuple[faiss.IndexFlatIP, list[ChunkMeta]]:
     """Build a FAISS index from source files and write it to *output_dir*.
 
@@ -820,6 +888,11 @@ def build_index(
         Directories (and individual files) to scan.
     output_dir:
         Directory to write the index files into.
+    cache_path:
+        Optional ``.npz`` cache of previously computed embeddings, keyed by
+        chunk-text digest. Chunks whose text is unchanged since the last
+        build are reused instead of re-embedded, and the file is rewritten
+        holding exactly the chunks of this build. ``None`` disables it.
 
     Returns
     -------
@@ -893,46 +966,74 @@ def build_index(
         max_threads = max(1, threads)
     else:
         max_threads = max(1, (os.cpu_count() or 4) - 2)
-    print(
-        f"Embedding {len(all_chunks)} chunks "
-        f"({py_count} .py files, {doc_count} doc files) "
-        f"using {max_threads} threads …"
-    )
-    # Disable ONNX Runtime's CPU memory arena: it never returns memory to the OS,
-    # which OOMs late in the embed loop on larger corpora / higher thread counts.
-    embedder = TextEmbedding(
-        model_name=EMBEDDING_MODEL,
-        threads=max_threads,
-        extra_session_options={"enable_cpu_mem_arena": False},
-    )
-
     all_chunks.sort(key=lambda c: len(_strip_embed_prefix(c.text)), reverse=True)
 
     # Embed the body text only — strip [Source: ...] / [Module: ...] prefix
     # lines that inflate cosine similarity for every chunk.
     texts = [_strip_embed_prefix(c.text) for c in all_chunks]
+    digests = [hashlib.sha256(t.encode("utf-8")).hexdigest() for t in texts]
 
-    try:
-        is_tty = Console().is_terminal
-        if is_tty:
-            vectors = list(
-                track(
-                    embedder.embed(texts, batch_size=batch_size),
-                    total=len(texts),
-                    description="Embedding …",
+    cache = _load_embed_cache(cache_path)
+
+    # One entry per distinct unseen digest — duplicate texts embed once.
+    pending: list[int] = []
+    queued: set[str] = set()
+    for i, digest in enumerate(digests):
+        if digest not in cache and digest not in queued:
+            queued.add(digest)
+            pending.append(i)
+
+    print(
+        f"Embedding {len(pending)} of {len(all_chunks)} chunks "
+        f"({len(all_chunks) - len(pending)} reused from cache, "
+        f"{py_count} .py files, {doc_count} doc files) "
+        f"using {max_threads} threads …"
+    )
+
+    fresh: dict[str, np.ndarray] = {}
+    if pending:
+        # Disable ONNX Runtime's CPU memory arena: it never returns memory to the OS,
+        # which OOMs late in the embed loop on larger corpora / higher thread counts.
+        embedder = TextEmbedding(
+            model_name=EMBEDDING_MODEL,
+            threads=max_threads,
+            extra_session_options={"enable_cpu_mem_arena": False},
+        )
+        pending_texts = [texts[i] for i in pending]
+
+        try:
+            is_tty = Console().is_terminal
+            if is_tty:
+                vectors = list(
+                    track(
+                        embedder.embed(pending_texts, batch_size=batch_size),
+                        total=len(pending_texts),
+                        description="Embedding …",
+                    )
                 )
-            )
-        else:
-            vectors = []
-            total = len(texts)
-            for i, vec in enumerate(embedder.embed(texts, batch_size=batch_size), 1):
-                vectors.append(vec)
-                if i % 100 == 0 or i == total:
-                    print(f"  Embedded {i}/{total} chunks", flush=True)
-    except KeyboardInterrupt:
-        print("\nInterrupted — index not saved.")
-        raise SystemExit(1)
-    embeddings = np.array(vectors, dtype=np.float32)
+            else:
+                vectors = []
+                total = len(pending_texts)
+                for i, vec in enumerate(
+                    embedder.embed(pending_texts, batch_size=batch_size), 1
+                ):
+                    vectors.append(vec)
+                    if i % 100 == 0 or i == total:
+                        print(f"  Embedded {i}/{total} chunks", flush=True)
+        except KeyboardInterrupt:
+            print("\nInterrupted — index not saved.")
+            raise SystemExit(1)
+
+        for i, vec in zip(pending, vectors):
+            fresh[digests[i]] = vec
+
+    # Index by digest so row *i* matches all_chunks[i] whatever the cache held.
+    lookup = cache | fresh
+    embeddings = np.array([lookup[d] for d in digests], dtype=np.float32)
+
+    if cache_path is not None:
+        # Rewrite with exactly this build's chunks so deleted ones age out.
+        _save_embed_cache(cache_path, {d: lookup[d] for d in digests})
 
     # Normalise for cosine similarity via inner product
     faiss.normalize_L2(embeddings)
