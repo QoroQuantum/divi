@@ -30,8 +30,10 @@ from divi.qprog.problems import (
 from divi.qprog.problems._graph_partitioning_utils import (
     _apply_split_with_relabel,
     _bisect_with_predicate,
+    _merge_edgeless_clusters,
     _node_partition_graph,
     _pygraph_to_nx,
+    _relabeled_subgraph_with_ids,
     _split_graph,
 )
 
@@ -600,6 +602,131 @@ def test_decompose_with_pygraph_input():
         all_orig_ids |= set(local_to_global.values())
     # Reverse maps collectively cover the original graph's node indices.
     assert all_orig_ids == set(g.node_indexes())
+
+
+def _clusters_from_ids(graph, id_groups):
+    """Build the partitioner's ``(relabeled_subgraph, cluster_ids)`` shape."""
+    return [_relabeled_subgraph_with_ids(graph, ids) for ids in id_groups]
+
+
+def _ids_containing(clusters, node):
+    """The ``cluster_ids`` of the cluster holding ``node``."""
+    return next(sorted(ids) for _sub, ids in clusters if node in ids)
+
+
+def test_merge_edgeless_picks_most_connected_target():
+    # Node 4 is edgeless on its own; it has 2 edges into [2, 3] and 1 into [0, 1].
+    graph = nx.Graph([(0, 1), (2, 3), (4, 2), (4, 3), (4, 0)])
+    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
+    config = GraphPartitioningConfig(minimum_n_clusters=1)
+
+    merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert len(merged) == 2
+    assert _ids_containing(merged, 4) == [2, 3, 4]
+    _assert_partitions_correct(graph, merged)
+
+
+def test_merge_edgeless_respects_max_nodes_over_connectivity():
+    # Node 5 has 3 edges into [2, 3, 4] and 1 into [0, 1], but the better-connected
+    # cluster is already at the cap, so the orphan must go to the one with room.
+    graph = nx.Graph([(0, 1), (2, 3), (3, 4), (5, 2), (5, 3), (5, 4), (5, 0)])
+    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3, 4], [5]])
+    config = GraphPartitioningConfig(max_n_nodes_per_cluster=3)
+
+    merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert len(merged) == 2
+    assert _ids_containing(merged, 5) == [0, 1, 5]
+    for sub, _ids in merged:
+        assert _num_nodes(sub) <= 3
+
+
+def test_merge_edgeless_raises_when_no_cluster_has_room():
+    graph = nx.Graph([(0, 1), (2, 3), (4, 0), (4, 2)])
+    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
+    config = GraphPartitioningConfig(max_n_nodes_per_cluster=2)
+
+    with pytest.raises(ValueError, match="no cluster has room"):
+        _merge_edgeless_clusters(graph, clusters, config)
+
+
+def test_merge_edgeless_isolated_vertex_goes_to_smallest_cluster():
+    # Node 5 has no edges anywhere, so every target scores zero and the
+    # tie-break by size decides.
+    graph = nx.Graph([(0, 1), (1, 2), (3, 4)])
+    graph.add_node(5)
+    clusters = _clusters_from_ids(graph, [[0, 1, 2], [3, 4], [5]])
+    config = GraphPartitioningConfig(minimum_n_clusters=1)
+
+    merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert len(merged) == 2
+    assert _ids_containing(merged, 5) == [3, 4, 5]
+
+
+def test_merge_edgeless_warns_when_dropping_below_min_clusters():
+    graph = nx.Graph([(0, 1), (2, 3), (4, 0)])
+    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
+    config = GraphPartitioningConfig(minimum_n_clusters=3)
+
+    with pytest.warns(UserWarning, match="below the requested 'minimum_n_clusters'"):
+        merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert len(merged) == 2
+
+
+def test_merge_edgeless_raises_when_every_cluster_is_edgeless():
+    graph = nx.Graph()
+    graph.add_nodes_from(range(3))
+    clusters = _clusters_from_ids(graph, [[0], [1], [2]])
+    config = GraphPartitioningConfig(minimum_n_clusters=1)
+
+    with pytest.raises(ValueError, match="every cluster is edgeless"):
+        _merge_edgeless_clusters(graph, clusters, config)
+
+
+def test_merge_edgeless_is_noop_when_all_clusters_have_edges():
+    graph = nx.Graph([(0, 1), (2, 3), (1, 2)])
+    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3]])
+    config = GraphPartitioningConfig(max_n_nodes_per_cluster=2)
+
+    merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert [ids for _sub, ids in merged] == [ids for _sub, ids in clusters]
+
+
+def test_merge_edgeless_preserves_pygraph_type():
+    graph = _make_pygraph_path(5)
+    graph.add_node(5)  # isolated, so it forms an edgeless cluster
+    clusters = _clusters_from_ids(graph, [[0, 1, 2], [3, 4], [5]])
+    config = GraphPartitioningConfig(minimum_n_clusters=1)
+
+    merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert len(merged) == 2
+    for sub, _ids in merged:
+        assert isinstance(sub, rx.PyGraph)
+    _assert_partitions_correct(graph, merged)
+
+
+@pytest.mark.usefixtures("_raise_qubit_ceiling")
+@pytest.mark.parametrize("seed", [100, 101, 102, 103, 104])
+def test_decompose_survives_dense_graphs(seed):
+    """Regression: dense graphs used to shed singleton clusters, whose
+    constant-only MaxCut Hamiltonian made ``decompose()`` raise."""
+    graph = nx.gnp_random_graph(12, 0.85, seed=seed)
+    problem = MaxCutProblem(
+        graph, config=GraphPartitioningConfig(max_n_nodes_per_cluster=4)
+    )
+
+    sub_problems = problem.decompose()
+
+    assert sub_problems
+    for prog_id, sub in sub_problems.items():
+        # Every sub-problem built, so no cluster was left without internal edges.
+        assert sub.cost_hamiltonian.size > 0
+        assert len(problem._reverse_index_maps[prog_id]) == len(sub.graph)
 
 
 class TestPyGraphToNxConversion:

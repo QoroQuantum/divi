@@ -283,6 +283,110 @@ def _split_graph(
         )
 
 
+def _num_edges(graph: GraphProblemTypes) -> int:
+    """Edge count for either supported graph type."""
+    if isinstance(graph, rx.PyGraph):
+        return graph.num_edges()
+    return graph.number_of_edges()
+
+
+def _merge_edgeless_clusters(
+    graph: GraphProblemTypes,
+    clusters: Sequence[_SubgraphWithIds],
+    partitioning_config: GraphPartitioningConfig,
+) -> list[_SubgraphWithIds]:
+    """Fold clusters with no internal edges into a neighbouring cluster.
+
+    Recursive bisection of a dense graph peels off lone vertices to satisfy the
+    size constraints.  Such a cluster carries no intra-cluster objective, and
+    for cut-style problems its Hamiltonian is constant, which problem
+    construction rejects.  Each one is merged into the cluster it has the most
+    connecting edges to, restricted to clusters with room under
+    ``max_n_nodes_per_cluster``; ties break towards the smaller cluster, then
+    the earlier one, so the result stays deterministic.
+
+    Args:
+        graph: The original graph the clusters were partitioned from.
+        clusters: ``(relabeled_subgraph, cluster_ids)`` pairs to repair.
+        partitioning_config: The configuration the partition was built under.
+
+    Returns:
+        The repaired cluster list, relabeled ``0..M-1`` as on input.
+
+    Raises:
+        ValueError: If every cluster is edgeless, or no cluster has room for an
+            edgeless one under ``max_n_nodes_per_cluster``.
+    """
+    edgeless_positions = [
+        i for i, (sub, _ids) in enumerate(clusters) if _num_edges(sub) == 0
+    ]
+    if not edgeless_positions:
+        return list(clusters)
+
+    target_ids: dict[int, list] = {
+        i: list(ids) for i, (sub, ids) in enumerate(clusters) if _num_edges(sub) != 0
+    }
+    if not target_ids:
+        raise ValueError(
+            "Cannot repair the partition: every cluster is edgeless, so there is "
+            "no cluster with internal edges to merge into. The graph has too few "
+            "edges for the requested partitioning."
+        )
+
+    cap = partitioning_config.max_n_nodes_per_cluster
+
+    for position in edgeless_positions:
+        orphan_ids = list(clusters[position][1])
+        candidates = [
+            i
+            for i, ids in target_ids.items()
+            if cap is None or len(ids) + len(orphan_ids) <= cap
+        ]
+        if not candidates:
+            raise ValueError(
+                f"Cannot merge edgeless cluster {sorted(orphan_ids)}: no cluster "
+                f"has room under 'max_n_nodes_per_cluster'={cap}. The graph is "
+                "too dense to split this small — raise "
+                "'max_n_nodes_per_cluster' or lower 'minimum_n_clusters'."
+            )
+
+        # Prefer the most strongly connected target, then the smallest, then the
+        # earliest, keeping the choice independent of dict iteration accidents.
+        scored = [
+            (
+                -sum(
+                    len(set(graph.neighbors(node)) & set(target_ids[i]))
+                    for node in orphan_ids
+                ),
+                len(target_ids[i]),
+                i,
+            )
+            for i in candidates
+        ]
+        best = min(scored)[2]
+        target_ids[best] = target_ids[best] + orphan_ids
+
+    merged = [
+        (
+            clusters[i]
+            if ids == list(clusters[i][1])
+            else _relabeled_subgraph_with_ids(graph, ids)
+        )
+        for i, ids in target_ids.items()
+    ]
+
+    minimum = partitioning_config.minimum_n_clusters
+    if minimum is not None and len(merged) < minimum:
+        warn(
+            f"Merging edgeless clusters left {len(merged)} cluster(s), below the "
+            f"requested 'minimum_n_clusters'={minimum}.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    return merged
+
+
 HeapEntry = tuple[int, int, GraphProblemTypes, list]
 
 
@@ -384,13 +488,20 @@ def _node_partition_graph(
             partitioning_config,
         )
 
-    if any(-sg[0] > _MAXIMUM_AVAILABLE_QUBITS for sg in subgraphs):
+    # Repair before the budget check: merging changes cluster sizes.
+    clusters = _merge_edgeless_clusters(
+        graph,
+        [(sub, ids) for (_, _, sub, ids) in subgraphs],
+        partitioning_config,
+    )
+
+    if any(len(sub) > _MAXIMUM_AVAILABLE_QUBITS for sub, _ids in clusters):
         warn(
             "At least one cluster has more nodes than what can be executed on "
             f"the available backends: {_MAXIMUM_AVAILABLE_QUBITS} qubits."
         )
 
-    return [(graph, ids) for (_, _, graph, ids) in subgraphs]
+    return clusters
 
 
 def draw_partitions(
