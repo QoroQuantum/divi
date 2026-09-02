@@ -55,6 +55,8 @@ class CommunityDecomposer(traits.ProblemDecomposer, traits.SISO, Runnable):
         ImportError: If the ``qubo-decompose`` extra is not installed.
     """
 
+    _reproducible = True
+
     def __init__(
         self,
         *,

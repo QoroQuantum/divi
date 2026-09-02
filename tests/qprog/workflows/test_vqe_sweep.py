@@ -11,6 +11,7 @@ from qiskit.quantum_info import SparsePauliOp
 from scipy.spatial.distance import pdist, squareform
 
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.workflows import (
     MoleculeTransformer,
@@ -436,6 +437,26 @@ def vqe_sweep_hamiltonian(
 
 
 class TestVQEHyperparameterSweep:
+    def test_child_checkpoints_use_distinct_derived_directories(
+        self, vqe_sweep_hamiltonian, tmp_path
+    ):
+        vqe_sweep_hamiltonian.create_programs()
+        vqe_sweep_hamiltonian._round_index = 1
+        original = CheckpointConfig(checkpoint_dir=tmp_path, checkpoint_interval=2)
+
+        session = vqe_sweep_hamiltonian._prepare_checkpoint_session(None, original)
+        configs = session.iterative_config_by_program
+
+        assert set(configs) == set(vqe_sweep_hamiltonian.programs.values())
+        paths = [config.checkpoint_dir for config in configs.values()]
+        assert len(set(paths)) == len(paths)
+        assert {path.name for path in paths} == {
+            f"program_{slot:03d}" for slot in range(len(paths))
+        }
+        assert {path.parent.name for path in paths} == {"round_001"}
+        assert all(config.checkpoint_interval == 2 for config in configs.values())
+        assert original.checkpoint_dir == tmp_path
+
     """A test class to group all tests for the VQEHyperparameterSweep."""
 
     def test_sampling_backend_is_owned_by_ensemble(

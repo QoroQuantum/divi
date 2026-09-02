@@ -4,19 +4,29 @@
 
 """Paper-faithful classical LUCJ preparation for LASSQD fragments."""
 
+import hashlib
+import os
+import tempfile
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self, cast
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 from warnings import warn
 
 import numpy as np
+from pydantic import Field, model_validator
 from qiskit import ClassicalRegister, QuantumCircuit, transpile
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians._chem import requires_chem_extra
 from divi.pipeline import sample_preprocessor
 from divi.pipeline.stages import QiskitSpecStage
+from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog._solution_sampling_mixin import _average_probabilities
-from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
+from divi.qprog.checkpointing import _fsync_directory
+from divi.qprog.quantum_program import (
+    QuantumProgram,
+    reject_unclaimed_run_kwargs,
+)
 
 from ._state import FragmentSpec
 
@@ -57,6 +67,31 @@ class LUCJPreparation:
     orbital_rotation: np.ndarray
 
 
+@dataclass(frozen=True)
+class _LinearMethodResult:
+    params: np.ndarray
+    h_alpha: np.ndarray
+    h_beta: np.ndarray
+    two_body: np.ndarray
+    orbital_rotation: np.ndarray
+
+
+class _LinearMethodCheckpoint(ProgramCheckpoint):
+    state_file: Literal["completed_state.npz"]
+    state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    best_probs: dict[int, dict[str, float]]
+
+    @model_validator(mode="after")
+    def _validate_probabilities(self) -> Self:
+        if any(
+            not np.isfinite(probability) or probability < 0
+            for probabilities in self.best_probs.values()
+            for probability in probabilities.values()
+        ):
+            raise ValueError("Completed fragment probabilities must be finite")
+        return self
+
+
 class LinearMethodFragmentProgram(QuantumProgram):
     """Classically prepare one fragment and submit only its final sample."""
 
@@ -76,6 +111,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
         self.spec = spec
         self._sampling_backend = sampling_backend
         self._preparation: LUCJPreparation | None = None
+        self._terminal_result: _LinearMethodResult | None = None
         self._best_probs: dict[int, dict[str, float]] = {}
 
     def run(self, **kwargs) -> Self:
@@ -86,6 +122,13 @@ class LinearMethodFragmentProgram(QuantumProgram):
             self._input_h_beta,
             self._input_two_body,
             self.spec,
+        )
+        self._terminal_result = _LinearMethodResult(
+            params=self._preparation.params,
+            h_alpha=self._preparation.h_alpha,
+            h_beta=self._preparation.h_beta,
+            two_body=self._preparation.two_body,
+            orbital_rotation=self._preparation.orbital_rotation,
         )
         result = cast(
             "dict[int, dict[str, float] | list[dict[str, float]]]",
@@ -108,7 +151,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
     @property
     def best_params(self) -> np.ndarray:
         """Optimized ffsim LUCJ parameter vector."""
-        return self._require_preparation().params
+        return self._require_terminal_result().params
 
     @property
     def best_probs(self) -> dict[int, dict[str, float]]:
@@ -118,22 +161,107 @@ class LinearMethodFragmentProgram(QuantumProgram):
     @property
     def h_alpha(self) -> np.ndarray:
         """Alpha one-body integrals in the sampled determinant basis."""
-        return self._require_preparation().h_alpha
+        return self._require_terminal_result().h_alpha
 
     @property
     def h_beta(self) -> np.ndarray:
         """Beta one-body integrals in the sampled determinant basis."""
-        return self._require_preparation().h_beta
+        return self._require_terminal_result().h_beta
 
     @property
     def two_body(self) -> np.ndarray:
         """Two-body integrals in the sampled determinant basis."""
-        return self._require_preparation().two_body
+        return self._require_terminal_result().two_body
 
     @property
     def orbital_rotation(self) -> np.ndarray:
         """Rotation from the workflow fragment basis to the sampled basis."""
-        return self._require_preparation().orbital_rotation
+        return self._require_terminal_result().orbital_rotation
+
+    def _make_checkpoint(
+        self,
+        checkpoint_dir: Path,
+    ) -> _LinearMethodCheckpoint:
+        result = self._require_terminal_result()
+        artifact = "completed_state.npz"
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                dir=checkpoint_dir, suffix=".npz", delete=False
+            ) as handle:
+                temporary_path = Path(handle.name)
+                np.savez(
+                    handle,
+                    params=result.params,
+                    h_alpha=result.h_alpha,
+                    h_beta=result.h_beta,
+                    two_body=result.two_body,
+                    orbital_rotation=result.orbital_rotation,
+                )
+                handle.flush()
+                os.fsync(handle.fileno())
+            with temporary_path.open("rb") as handle:
+                state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+            os.replace(temporary_path, checkpoint_dir / artifact)
+            _fsync_directory(checkpoint_dir)
+        finally:
+            if temporary_path is not None and temporary_path.exists():
+                temporary_path.unlink()
+        return _LinearMethodCheckpoint.model_validate(
+            {
+                "program_type": type(self).__name__,
+                "total_circuit_count": self.total_circuit_count,
+                "total_run_time": self.total_run_time,
+                "state_file": artifact,
+                "state_sha256": state_sha256,
+                "best_probs": self._best_probs,
+            }
+        )
+
+    def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
+        checkpoint = _LinearMethodCheckpoint.model_validate_json(checkpoint_json)
+        if checkpoint.program_type != type(self).__name__:
+            raise ValueError("Checkpoint is for a different program type.")
+        artifact = checkpoint_dir / checkpoint.state_file
+        with artifact.open("rb") as handle:
+            state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+        if state_sha256 != checkpoint.state_sha256:
+            raise ValueError("Completed fragment state digest does not match metadata")
+
+        with np.load(artifact, allow_pickle=False) as archive:
+            required = {
+                "params",
+                "h_alpha",
+                "h_beta",
+                "two_body",
+                "orbital_rotation",
+            }
+            if set(archive.files) != required:
+                raise ValueError("Completed fragment state has missing or extra arrays")
+            arrays = {name: np.asarray(archive[name]) for name in required}
+
+        expected_shapes = {
+            "h_alpha": self._input_h_alpha.shape,
+            "h_beta": self._input_h_beta.shape,
+            "two_body": self._input_two_body.shape,
+            "orbital_rotation": self._input_h_alpha.shape,
+        }
+        if arrays["params"].ndim != 1 or any(
+            arrays[name].shape != shape for name, shape in expected_shapes.items()
+        ):
+            raise ValueError("Completed fragment state has incompatible array shapes")
+        if any(
+            not np.issubdtype(array.dtype, np.number) or not np.all(np.isfinite(array))
+            for array in arrays.values()
+        ):
+            raise ValueError(
+                "Completed fragment state arrays must be finite numeric data"
+            )
+
+        result = _LinearMethodResult(**arrays)
+        self._terminal_result = result
+        self._best_probs = checkpoint.best_probs
+        return True
 
     def _spec_stage(self):
         return QiskitSpecStage()
@@ -145,6 +273,11 @@ class LinearMethodFragmentProgram(QuantumProgram):
         if self._preparation is None:
             raise RuntimeError("The fragment has not been prepared; call run() first.")
         return self._preparation
+
+    def _require_terminal_result(self) -> _LinearMethodResult:
+        if self._terminal_result is None:
+            raise RuntimeError("The fragment has not been prepared; call run() first.")
+        return self._terminal_result
 
 
 def paper_lucj_interaction_pairs(

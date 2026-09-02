@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
+from pydantic import Field
 from qiskit.circuit import Parameter, QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
@@ -31,9 +33,14 @@ from divi.pipeline import (
 )
 from divi.pipeline.stages import ParameterBindingStage, TrotterSpecStage
 from divi.qprog import ObservableMeasuringMixin
+from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.algorithms import InitialState, ZerosState
 from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
 from divi.reporting._events import ProgressEvent, TerminalStatus
+
+
+class _TimeEvolutionCheckpoint(ProgramCheckpoint):
+    results: dict[str, float] | float | list[float] = Field(validation_alias="_results")
 
 
 class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
@@ -43,6 +50,21 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
     Trotter-Suzuki decomposition. Uses Divi's TrotterizationStrategy
     (``ExactTrotterization``, ``QDrift``) for term selection and approximation.
     """
+
+    def _make_checkpoint(
+        self,
+        checkpoint_dir: Path,
+    ) -> _TimeEvolutionCheckpoint:
+        if self._results is None:
+            raise RuntimeError("TimeEvolution has no completed results to checkpoint.")
+        return _TimeEvolutionCheckpoint._from_program(self)
+
+    def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
+        checkpoint = _TimeEvolutionCheckpoint.model_validate_json(checkpoint_json)
+        if checkpoint.program_type != type(self).__name__:
+            raise ValueError("Checkpoint is for a different program type.")
+        self._results = checkpoint.results
+        return True
 
     def __init__(
         self,

@@ -20,6 +20,7 @@ from divi.circuits import DEFAULT_PRECISION
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import PipelineEnv
 from divi.pipeline._core import _wait_for_async_result
+from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import (
     EventKind,
@@ -88,7 +89,32 @@ class ConcreteQuantumProgram(QuantumProgram):
 
 
 class TestQuantumProgramBase:
+    def test_program_checkpoint_has_no_vqa_phase(self):
+        assert "phase" not in ProgramCheckpoint.model_fields
+
+        checkpoint = ProgramCheckpoint(
+            program_type="tests.ConcreteQuantumProgram",
+            total_circuit_count=3,
+            total_run_time=1.5,
+        )
+
+        assert "phase" not in checkpoint.model_dump()
+
     """Tests for QuantumProgram abstract base class contract and core functionality."""
+
+    def test_completed_checkpointing_is_unsupported_by_default(
+        self, dummy_simulator, tmp_path
+    ):
+        program = ConcreteQuantumProgram(dummy_simulator)
+
+        assert program._make_checkpoint(tmp_path) is None
+        assert program._restore_checkpoint("{}", tmp_path) is False
+        assert program.has_results() is False
+
+    def test_quantum_program_has_no_checkpoint_identity_protocol(self, dummy_simulator):
+        program = ConcreteQuantumProgram(dummy_simulator)
+
+        assert not hasattr(program, "_checkpoint_computation_identity")
 
     def test_quantum_program_uses_logging_emitter_by_default(
         self, default_test_simulator

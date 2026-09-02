@@ -17,21 +17,23 @@ Three interpolation strategies are provided:
 - **CHEBYSHEV**: Chebyshev polynomial basis representation
 """
 
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
 from qiskit.circuit import ParameterVector
 
-from divi.backends import CircuitRunner
 from divi.qprog.checkpointing import (
+    PROGRAM_STATE_FILE,
     CheckpointConfig,
     CheckpointNotFoundError,
+    _atomic_write,
     _find_latest_checkpoint_subdir,
 )
 from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
@@ -39,6 +41,7 @@ from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
 from ._qaoa import QAOA
 
 DEPTH_SUBDIR_PREFIX = "depth_"
+TERMINAL_STATE_FILE = "iterative_terminal.json"
 
 
 def _extract_depth_from_subdir(path: Path) -> int | None:
@@ -348,14 +351,12 @@ class IterativeQAOA(QAOA):
         self._resumed_from_checkpoint = True
 
     @classmethod
-    def load_state(
+    def _resolve_checkpoint_path(
         cls,
         checkpoint_dir: Path | str,
-        backend: CircuitRunner,
         subdirectory: str | None = None,
-        **kwargs,
-    ) -> Self:
-        """Load from a checkpoint directory, resolving the deepest depth first.
+    ) -> Path:
+        """Resolve the deepest checkpointed depth before its iteration.
 
         ``run()`` writes each depth under its own ``depth_NN`` subdirectory, so
         a directory holding those is resolved to the deepest one carrying a
@@ -363,6 +364,20 @@ class IterativeQAOA(QAOA):
         """
         main_dir = Path(checkpoint_dir)
         if subdirectory is None and main_dir.is_dir():
+            terminal_file = main_dir / TERMINAL_STATE_FILE
+            if terminal_file.is_file():
+                try:
+                    terminal = json.loads(terminal_file.read_text())
+                    terminal_depth = terminal["depth"]
+                    if not isinstance(terminal_depth, int):
+                        raise ValueError
+                    terminal_dir = (
+                        main_dir / f"{DEPTH_SUBDIR_PREFIX}{terminal_depth:02d}"
+                    )
+                    _find_latest_checkpoint_subdir(terminal_dir)
+                    main_dir = terminal_dir
+                except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+                    pass
             depth_dirs = sorted(
                 (
                     d
@@ -373,6 +388,8 @@ class IterativeQAOA(QAOA):
                 reverse=True,
             )
             for depth_dir in depth_dirs:
+                if main_dir != Path(checkpoint_dir):
+                    break
                 try:
                     _find_latest_checkpoint_subdir(depth_dir)
                 except CheckpointNotFoundError:
@@ -380,8 +397,36 @@ class IterativeQAOA(QAOA):
                 main_dir = depth_dir
                 break
 
-        return super().load_state(
-            main_dir, backend, subdirectory=subdirectory, **kwargs
+        return super()._resolve_checkpoint_path(main_dir, subdirectory)
+
+    def _write_terminal_checkpoint(self, checkpoint_config: CheckpointConfig) -> None:
+        """Make the sampled best-depth state the root checkpoint target."""
+        if checkpoint_config.checkpoint_dir is None:
+            return
+        root = Path(checkpoint_config.checkpoint_dir)
+        depth_dir = root / f"{DEPTH_SUBDIR_PREFIX}{self._best_depth:02d}"
+        checkpoint_path = _find_latest_checkpoint_subdir(depth_dir)
+        _, stored = type(self)._load_checkpoint_state(depth_dir)
+        current = self._make_checkpoint(checkpoint_path)
+        terminal_state = stored.model_copy(
+            update={
+                "best_loss": current.best_loss,
+                "best_probs": current.best_probs,
+                "best_params": current.best_params,
+                "final_params": current.final_params,
+                "total_circuit_count": current.total_circuit_count,
+                "total_run_time": current.total_run_time,
+                "rng_state_bytes": current.rng_state_bytes,
+                "subclass_state": current.subclass_state,
+            }
+        )
+        _atomic_write(
+            checkpoint_path / PROGRAM_STATE_FILE,
+            terminal_state.model_dump_json(indent=2),
+        )
+        _atomic_write(
+            root / TERMINAL_STATE_FILE,
+            json.dumps({"depth": self._best_depth}, indent=2),
         )
 
     @staticmethod
@@ -459,7 +504,8 @@ class IterativeQAOA(QAOA):
             checkpoint_config: Each depth is checkpointed under its own
                 ``depth_NN`` subdirectory of ``checkpoint_dir``, so depths do
                 not overwrite one another and
-                :meth:`load_state` can resume the schedule where it stopped.
+                :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.load_state`
+                can resume the schedule where it stopped.
             **kwargs: Additional keyword arguments passed to the parent ``run()``.
 
         Returns:
@@ -472,6 +518,14 @@ class IterativeQAOA(QAOA):
                 "parameters. Use QAOA directly if you want to seed the first run.",
                 UserWarning,
                 stacklevel=2,
+            )
+
+        if (
+            checkpoint_config is not None
+            and checkpoint_config.checkpoint_dir is not None
+        ):
+            (Path(checkpoint_config.checkpoint_dir) / TERMINAL_STATE_FILE).unlink(
+                missing_ok=True
             )
 
         resuming = self._resumed_from_checkpoint
@@ -572,10 +626,13 @@ class IterativeQAOA(QAOA):
         # Restore the instance to the best depth
         self._rebuild_for_depth(self._best_depth)
         self._best_params = best_entry["best_params"]
+        self._final_params = self._best_params.copy()
         self._best_loss = best_entry["best_loss"]
 
         if perform_final_computation:
             self.sample_solution(**kwargs)
+            if checkpoint_config is not None:
+                self._write_terminal_checkpoint(checkpoint_config)
 
         return self
 

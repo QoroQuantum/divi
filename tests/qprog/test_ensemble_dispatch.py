@@ -26,6 +26,7 @@ import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
 from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
@@ -2023,7 +2024,7 @@ class TestEnsembleSampleSolution:
             ensemble.reset()
 
     def test_workflow_run_batches_final_sampling_on_sampling_backend(
-        self, dummy_simulator, make_dummy_simulator, mocker
+        self, dummy_simulator, make_dummy_simulator, mocker, tmp_path
     ):
         """Training completes before one merged sampling-only dispatch."""
         sampling_backend = make_dummy_simulator(100, seed=7)
@@ -2035,11 +2036,15 @@ class TestEnsembleSampleSolution:
         )
 
         try:
-            ensemble.run()
+            ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
 
             assert primary_submit.call_count > 0
             sampling_submit.assert_called_once()
             assert all(program._best_probs for program in ensemble.programs.values())
+            markers = list(
+                (tmp_path / "round_001").glob("program_*/program_completion.json")
+            )
+            assert len(markers) == len(ensemble.programs)
         finally:
             ensemble.reset()
 

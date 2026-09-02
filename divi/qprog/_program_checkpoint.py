@@ -10,17 +10,98 @@ the optimizer).
 """
 
 import pickle
+from collections.abc import Collection
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from divi.qprog.early_stopping import StopReason
 
 if TYPE_CHECKING:
+    from divi.qprog.quantum_program import QuantumProgram
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+
+
+class _ProgramAttributeView:
+    """Expose program attributes while treating exclusions as absent fields."""
+
+    def __init__(
+        self,
+        program: "QuantumProgram",
+        excluded_attributes: Collection[str] = (),
+        values: dict[str, Any] | None = None,
+    ):
+        self._program = program
+        self._excluded_attributes = frozenset(excluded_attributes)
+        self._values = values or {}
+
+    def __getattr__(self, name: str) -> Any:
+        if name in self._excluded_attributes:
+            raise AttributeError(name)
+        if name in self._values:
+            return self._values[name]
+        if name == "_serialized_program_type":
+            return type(self._program).__name__
+        return getattr(self._program, name)
+
+
+class ProgramCheckpoint(BaseModel):
+    """Metadata shared by program checkpoints."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        from_attributes=True,
+        populate_by_name=True,
+    )
+
+    version: Literal["1.0"] = "1.0"
+    program_type: str = Field(min_length=1, validation_alias="_serialized_program_type")
+    total_circuit_count: int = Field(ge=0, validation_alias="_total_circuit_count")
+    total_run_time: float = Field(
+        ge=0, allow_inf_nan=False, validation_alias="_total_run_time"
+    )
+
+    @classmethod
+    def _from_program(
+        cls,
+        program: "QuantumProgram",
+        *,
+        excluded_attributes: Collection[str] = (),
+        values: dict[str, Any] | None = None,
+    ) -> Self:
+        return cls.model_validate(
+            _ProgramAttributeView(program, excluded_attributes, values)
+        )
+
+
+def _to_jsonable(value: Any) -> Any:
+    """Coerce numpy scalars and arrays to their plain-Python equivalents.
+
+    :attr:`SubclassState.data` is untyped, so a subclass storing numpy — a
+    problem's ``decode_fn`` may return an array of bits, or a
+    ``{variable: numpy scalar}`` mapping — otherwise reaches the JSON
+    serialiser as a type it cannot write. Restores as plain Python.
+    """
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(item) for item in value]
+    return value
 
 
 class SubclassState(BaseModel):
@@ -36,14 +117,10 @@ class OptimizerConfig(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
 
 
-class ProgramState(BaseModel):
-    """Pydantic model for VariationalQuantumAlgorithm state."""
+class VQACheckpoint(ProgramCheckpoint):
+    """Iterative or completed state for a variational quantum algorithm."""
 
-    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
-
-    # Metadata
-    program_type: str = Field(validation_alias="_serialized_program_type")
-    version: str = "1.0"
+    kind: Literal["iteration", "program_completion"]
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
 
     # Core Algorithm State (mapped to private attributes)
@@ -59,8 +136,6 @@ class ProgramState(BaseModel):
     best_probs: dict[int, dict[str, float]] = Field(
         default_factory=dict, validation_alias="_best_probs"
     )
-    total_circuit_count: int = Field(validation_alias="_total_circuit_count")
-    total_run_time: float = Field(validation_alias="_total_run_time")
     seed: int | None = Field(validation_alias="_seed")
     stop_reason: str | None = Field(
         default=None, validation_alias="_serialized_stop_reason"
@@ -79,10 +154,34 @@ class ProgramState(BaseModel):
     rng_state_bytes: bytes | None = Field(
         default=None, validation_alias="_serialized_rng_state"
     )
-    optimizer_config: OptimizerConfig = Field(
-        validation_alias="_serialized_optimizer_config"
-    )
     subclass_state: SubclassState = Field(validation_alias="_serialized_subclass_state")
+    optimizer_config: OptimizerConfig | None = Field(
+        default=None, validation_alias="_serialized_optimizer_config"
+    )
+
+    @model_validator(mode="after")
+    def _validate_kind(self) -> Self:
+        if (self.kind == "iteration") != (self.optimizer_config is not None):
+            raise ValueError(
+                "optimizer_config is required for iterative VQA checkpoints"
+            )
+        return self
+
+    @classmethod
+    def from_program(
+        cls,
+        program: "QuantumProgram",
+        *,
+        kind: Literal["iteration", "program_completion"],
+    ) -> Self:
+        excluded = (
+            ("_serialized_optimizer_config",) if kind == "program_completion" else ()
+        )
+        return cls._from_program(
+            program,
+            excluded_attributes=excluded,
+            values={"kind": kind},
+        )
 
     @field_serializer("rng_state_bytes")
     def serialize_bytes(self, v: bytes | None, _info):
@@ -99,11 +198,7 @@ class ProgramState(BaseModel):
         """Accept nested lists or per-iteration ndarray snapshots from disk or program."""
         if not v:
             return []
-        rows: list[list[list[float]]] = []
-        for item in v:
-            arr = np.asarray(item, dtype=np.float64)
-            rows.append(arr.tolist())
-        return rows
+        return [np.asarray(item, dtype=np.float64).tolist() for item in v]
 
     @field_serializer("best_params", "final_params")
     def serialize_arrays(self, v: npt.NDArray | list | None, _info):

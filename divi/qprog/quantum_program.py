@@ -5,6 +5,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from threading import Event
 from typing import Any, Self
 from warnings import warn
@@ -35,6 +36,7 @@ from divi.pipeline.stages import (
     PreprocessStage,
     QEMStage,
 )
+from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.reporting._events import (
     ProgressEmitter,
     ProgressEvent,
@@ -124,6 +126,15 @@ class QuantumProgram(ABC):
         backend: The quantum circuit execution backend.
         _seed: Random seed for reproducible results.
     """
+
+    def _make_checkpoint(
+        self,
+        checkpoint_dir: Path,
+    ) -> ProgramCheckpoint | None:
+        return None
+
+    def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
+        return False
 
     def __init__(
         self,

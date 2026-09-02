@@ -263,7 +263,7 @@ def _split_graph(
             _pygraph_to_nx(graph) if isinstance(graph, rx.PyGraph) else graph
         )
         nx_results: list[tuple[nx.Graph, list]] = []
-        for part in nx.algorithms.community.kernighan_lin_bisection(nx_graph):
+        for part in nx.algorithms.community.kernighan_lin_bisection(nx_graph, seed=0):
             cluster = list(part)
             relabeled = nx.relabel_nodes(
                 nx_graph.subgraph(cluster).copy(),

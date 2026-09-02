@@ -1,7 +1,12 @@
 Resuming Long-Running or Interrupted Runs
 =========================================
 
-Checkpointing saves :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm` run state to disk via :class:`~divi.qprog.checkpointing.CheckpointConfig` so you can resume after interruptions, inspect intermediate progress, or raise ``max_iterations`` after a reload.
+Checkpointing saves program state to disk via
+:class:`~divi.qprog.checkpointing.CheckpointConfig` so you can resume after
+interruptions, inspect intermediate progress, or raise ``max_iterations`` after
+a reload. It covers both individual
+:class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
+runs and complete :class:`~divi.qprog.ensemble.ProgramEnsemble` workflows.
 
 Overview
 --------
@@ -12,6 +17,8 @@ On each checkpoint, Divi writes **program** state (parameters, losses, iteration
 - **Debug** — inspect intermediate parameters and losses on disk
 - **Chunk long jobs** — stop and restart without re-running from scratch
 - **Raise iteration caps** — increase ``max_iterations`` after :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.load_state`
+- **Resume ensemble rounds** — restore workflow state, accounting, and eligible
+  child optimizers without repeating completed rounds
 
 Checkpointing is available to variational programs such as
 :class:`~divi.qprog.algorithms.VQE` and :class:`~divi.qprog.algorithms.QAOA`,
@@ -176,6 +183,36 @@ By default, ``load_state()`` loads the latest checkpoint whose files are both pr
        n_layers=2,
    )
 
+.. _resuming-ensembles:
+
+Ensemble Workflows
+------------------
+
+Ensembles use the same :class:`~divi.qprog.checkpointing.CheckpointConfig`, but
+restore onto a newly constructed ensemble instance because its constructor
+defines the workflow and problem configuration:
+
+.. skip: next
+
+.. code-block:: python
+
+   checkpoint_dir = Path("ensemble_checkpoints")
+   config = CheckpointConfig(checkpoint_dir=checkpoint_dir)
+
+   ensemble.run(max_rounds=6, checkpoint_config=config)
+
+   resumed = make_the_same_ensemble(backend)
+   resumed.restore_state(checkpoint_dir)
+   resumed.run(max_rounds=6)
+
+Completed rounds resume from their output state. Interrupted rounds resume from
+their saved input state and reconstruct the entire program manifest before any
+child state is applied. Children whose terminal results were saved are reused
+without rerunning; otherwise eligible variational children continue from their
+optimizer checkpoints, and unsupported or damaged children restart within that
+round. See :ref:`ensemble-checkpointing` for the eligibility rules, custom
+workflow-state hooks, and safety constraints.
+
 Complete Example: :class:`~divi.qprog.algorithms.QAOA` with Checkpointing
 --------------------------------------------------------------------------
 
@@ -307,6 +344,52 @@ Each checkpoint is stored in a subdirectory with the following structure:
 
 :class:`~divi.qprog.algorithms.IterativeQAOA` optimises at one depth after another and restarts its iteration count at each one, so it nests that layout one level deeper — ``depth_01/checkpoint_001``, ``depth_02/checkpoint_001``, and so on. Depths therefore never overwrite one another, and ``load_state()`` on the top-level directory resolves to the deepest depth that has a complete checkpoint. Resuming continues the depth schedule from there rather than restarting at depth 1.
 
+.. _ensemble-checkpoint-layout:
+
+Ensemble checkpoint structure
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+An ensemble checkpoint is organised by workflow round:
+
+.. code-block:: text
+
+   ensemble_checkpoint_dir/
+   ├── round_001/
+   │   ├── round_start.json       # Ordered child descriptors
+   │   ├── round_completion.json  # Completed output and accounting
+   │   ├── program_000/
+   │   │   ├── checkpoint_.../       # Iterative VQA state
+   │   │   └── program_completion.json # Terminal child state
+   │   └── program_001/
+   │       └── ...
+   └── round_002/
+       ├── round_start.json
+       └── ...
+
+``round_start.json`` records the ordered program IDs and types expected when the
+interrupted round is reconstructed. The reconstructed structure must match
+before child state is restored. ``create_programs(state)`` must therefore be
+deterministic for a fixed ensemble configuration and restored state; workflows
+with nondeterministic generation must persist and reuse those choices as part of
+their workflow state.
+
+Checkpointed :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` runs
+with :class:`~divi.qprog.problems.BinaryOptimizationProblem` require a
+reproducible decomposer. Divi's seeded
+:class:`~divi.qprog.problems.CommunityDecomposer` is supported; arbitrary
+``hybrid`` decomposers are rejected because they cannot guarantee that a
+reconstructed program slot represents the same subproblem.
+
+Each child writes ``program_completion.json`` only after its terminal result is
+available. That marker is preferred over iterative optimizer checkpoints, so a
+completed child is not rerun even when its optimizer itself cannot checkpoint.
+If terminal state is missing or invalid, Divi falls back to the latest complete
+iterative checkpoint and then to a fresh child. ``round_completion.json`` is
+written only after the round's state reduction succeeds, so its presence marks
+a completed round. Workflows with state may place explicitly referenced
+artifacts such as LASSQD's ``input_state.npz`` and ``output_state.npz``
+alongside these markers.
+
 The ``program_state.json`` file contains:
 
 - Current iteration number
@@ -377,11 +460,15 @@ Limitations
 - Checkpoints are **not portable** across different Python versions or library versions
 - Problem configuration must be **manually provided** when loading (not stored in checkpoint)
 - Checkpoint files can be **large** for population-based optimizers (MonteCarlo, Pymoo)
+- A child that is not eligible for mid-round restore restarts from the ensemble
+  round's saved input state
 
 Next Steps
 ----------
 
 - :doc:`core_concepts` — parameters, ``best_params`` vs ``final_params``, and warm-starting
 - :doc:`optimizers` — which optimizers support resume and how ``run()`` interacts with checkpoints
+- :doc:`program_ensembles` — ensemble round semantics, child eligibility, and
+  custom workflow-state checkpointing
 - :doc:`visualization` — trajectories using ``losses_history`` / ``param_history`` after long runs
 - :doc:`../api_reference/qprog/checkpointing` — ``CheckpointConfig``, ``list_checkpoints``, and exceptions

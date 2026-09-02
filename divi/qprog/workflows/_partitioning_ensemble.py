@@ -13,6 +13,7 @@ from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import QAOAProblem
+from divi.qprog.problems._binary import BinaryOptimizationProblem
 from divi.qprog.problems._graphs import _GraphProblemBase
 
 
@@ -124,6 +125,17 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
                 problem=sub_problem,
                 **self._make_program_args(),
             )
+
+    def _child_recovery_states(self):
+        if (
+            isinstance(self._problem, BinaryOptimizationProblem)
+            and not self._problem._has_reproducible_decomposition()
+        ):
+            raise ValueError(
+                "Ensemble checkpointing requires a deterministic decomposer for "
+                "BinaryOptimizationProblem."
+            )
+        return super()._child_recovery_states()
 
     def _aggregate(self, strategy, top_n):
         def _extend_fn(current, prog_id, candidate):

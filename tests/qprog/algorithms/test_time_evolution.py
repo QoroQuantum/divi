@@ -513,6 +513,57 @@ class TestTimeEvolutionSingleItemListPreserved:
         assert len(te.results) == 1
 
 
+class TestTimeEvolutionCompletedCheckpointing:
+    @pytest.mark.parametrize(
+        ("observable", "results"),
+        [
+            (None, {"00": 0.75, "11": 0.25}),
+            (_Z0_2Q, 0.25),
+            ((_Z0_2Q, _Z1_2Q), [0.25, -0.5]),
+        ],
+        ids=["probabilities", "scalar-expval", "multiple-expvals"],
+    )
+    def test_completed_state_round_trips_without_backend_work(
+        self,
+        two_qubit_hamiltonian,
+        dummy_simulator,
+        tmp_path,
+        mocker,
+        observable,
+        results,
+    ):
+        source = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=observable,
+            backend=dummy_simulator,
+        )
+        source._results = results
+        checkpoint = source._make_checkpoint(tmp_path)
+
+        target = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=observable,
+            backend=dummy_simulator,
+        )
+        submit = mocker.spy(dummy_simulator, "submit_circuits")
+        target._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+
+        assert "phase" not in checkpoint.model_dump()
+        assert target.results == results
+        submit.assert_not_called()
+
+    def test_save_rejects_a_program_without_results(
+        self, two_qubit_hamiltonian, dummy_simulator, tmp_path
+    ):
+        program = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=dummy_simulator,
+        )
+
+        with pytest.raises(RuntimeError, match="no completed results"):
+            program._make_checkpoint(tmp_path)
+
+
 class TestTimeEvolutionQDrift:
     def test_qdrift_multi_sample_averages_probs(
         self, two_qubit_hamiltonian, default_test_simulator

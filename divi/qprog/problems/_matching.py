@@ -131,7 +131,7 @@ def _partition_graph_by_edges(
     graph: nx.Graph,
     max_edges: int,
     algorithm: Literal["kernighan_lin", "spectral"] = "kernighan_lin",
-    seed: int | None = None,
+    seed: int | None = 0,
 ) -> list[nx.Graph]:
     """Recursively partition a graph until each subgraph has <= *max_edges* edges.
 
@@ -160,6 +160,12 @@ def _partition_graph_by_edges(
             f"Unsupported partitioning algorithm: {algorithm!r}. "
             "Supported: 'kernighan_lin', 'spectral'."
         )
+
+    node_order = {node: index for index, node in enumerate(graph)}
+    if tuple(sorted(node_order[node] for node in part_b)) < tuple(
+        sorted(node_order[node] for node in part_a)
+    ):
+        part_a, part_b = part_b, part_a
 
     sg_a = graph.subgraph(part_a).copy()
     sg_b = graph.subgraph(part_b).copy()
@@ -199,7 +205,8 @@ def _kl_bisect(graph: nx.Graph, seed: int | None = None) -> tuple[set, set]:
 def _spectral_bisect(graph: nx.Graph) -> tuple[set, set]:
     """Fiedler-vector bisection on the graph Laplacian."""
     L = nx.laplacian_matrix(graph).astype(float)
-    _eigenvalues, eigenvectors = spla.eigsh(L, k=2, which="SM")
+    v0 = np.linspace(1.0, 2.0, graph.number_of_nodes())
+    _eigenvalues, eigenvectors = spla.eigsh(L, k=2, which="SM", v0=v0)
     fiedler = eigenvectors[:, 1]
     median = np.median(fiedler)
 
@@ -337,7 +344,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         max_edges_per_partition: int | None = None,
         partition_algorithm: Literal["kernighan_lin", "spectral"] = "kernighan_lin",
         use_classical_cleanup: bool = True,
-        seed: int | None = None,
+        seed: int | None = 0,
     ):
         self._graph = graph
         self._penalty_scale = penalty_scale

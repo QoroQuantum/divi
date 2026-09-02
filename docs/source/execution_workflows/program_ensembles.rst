@@ -8,7 +8,9 @@ dissociation curves, problem decomposition, and algorithm comparison.
 
 An ensemble can also run over several *rounds*, choosing each round's programs
 from what the previous round measured — the basis for iterative refinement and
-other adaptive workflows. See `The Workflow Lifecycle`_.
+other adaptive workflows. Ensemble checkpointing preserves that round state and,
+where supported, the progress of individual variational programs. See
+`Checkpointing Ensemble Workflows`_.
 
 Use this page in increasing order of control:
 
@@ -415,6 +417,100 @@ results never reach it — whether the interrupt landed in the dispatch or in
    ``max_concurrent_programs`` explicitly (see :ref:`circuit-batching`) when
    later rounds may produce many more programs than the first.
 
+.. _ensemble-checkpointing:
+
+Checkpointing Ensemble Workflows
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Pass a :class:`~divi.qprog.checkpointing.CheckpointConfig` to
+:meth:`~divi.qprog.ensemble.ProgramEnsemble.run` to checkpoint an entire
+workflow, not just a single variational program:
+
+.. skip: next
+
+.. code-block:: python
+
+   from pathlib import Path
+
+   from divi.qprog.checkpointing import CheckpointConfig
+
+   checkpoint_dir = Path("checkpoints/lassqd")
+   ensemble.run(
+       max_rounds=8,
+       checkpoint_config=CheckpointConfig(
+           checkpoint_dir=checkpoint_dir,
+           checkpoint_interval=5,
+       ),
+   )
+
+At the start of each round, Divi saves the round's input workflow state and a
+manifest describing its program IDs, types, and slots. After
+``update_state()`` succeeds, it atomically records the completed round,
+including ``round_history`` and cumulative circuit/runtime counters. A crash
+therefore resolves to either the last completed round or the input of the
+interrupted round; partially reduced state is never treated as complete.
+
+To resume, construct the same ensemble configuration, restore it in place, and
+call ``run()``:
+
+.. skip: next
+
+.. code-block:: python
+
+   resumed = make_the_same_ensemble(backend)
+   resumed.restore_state(checkpoint_dir)
+   resumed.run(max_rounds=8)
+
+The resumed ``run()`` reuses the restored checkpoint directory automatically.
+Pass ``checkpoint_config`` again only to change settings such as the child
+checkpoint interval. ``max_rounds`` remains a cumulative round limit: restoring
+after round 3 and running with ``max_rounds=8`` permits rounds 4 through 8.
+
+If a round was interrupted, Divi reconstructs its complete program manifest
+before restoring any child. A structural mismatch in program order, ID, or type
+rejects the checkpoint before partial restoration can occur. Consequently,
+``create_programs(state)`` must reproduce the same ordered children for the same
+ensemble configuration and restored state. An ensemble whose program generation
+uses nondeterministic choices must save those choices in its workflow state and
+reuse them while reconstructing the interrupted round.
+
+For each child, Divi first restores a validated terminal result. If none is
+available, an eligible
+:class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
+continues from its latest complete optimizer checkpoint. Missing, damaged, or
+unsupported child state falls back to a fresh run. All paths still dispatch the
+child through the normal worker and batching lifecycle.
+
+.. important::
+
+   A fresh run refuses a directory that already contains an ensemble
+   checkpoint. Call :meth:`~divi.qprog.ensemble.ProgramEnsemble.restore_state`
+   or choose a new directory; silently mixing two workflow histories is not
+   allowed. A checkpoint directory is owned by one running process; concurrent
+   writers or restorers are not supported. Restore also requires an empty
+   program map, so do not call ``create_programs()`` first.
+
+When ``BatchMode.MERGED`` combines children into shared
+backend submissions, Divi cannot attribute backend runtime to individual
+programs. Recovered circuit accounting remains exact, but cumulative runtime
+does not include the recovered children's share of an interrupted merged
+round.
+
+One-shot ensembles use the built-in ``None`` workflow-state serialisation.
+Custom ensembles with state must override ``_save_workflow_checkpoint_state`` and
+``_load_workflow_checkpoint_state`` with an explicit, validated format. The
+built-in :class:`~divi.qprog.workflows.LASSQD` workflow does this for molecular
+orbitals, fragment RDMs, solver occupancy, reports, and RNG state without
+pickle. Its fragment programs also store terminal numerical results in a
+validated NumPy sidecar. Time-evolution trajectories, VQE hyperparameter
+sweeps, and partitioning ensembles reuse completed children. Partitioning
+combines problem-owned partition mappings with program-owned computation
+identities so restored results cannot be applied to a different subproblem.
+
+See :ref:`ensemble-checkpoint-layout` for the on-disk layout and
+:doc:`resuming_long_runs` for optimizer compatibility and single-program
+checkpoint behaviour.
+
 Inspecting what happened
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -686,6 +782,6 @@ Next Steps
 ----------
 
 - :doc:`backends` — backend configuration and performance tuning.
-- :doc:`resuming_long_runs` — checkpointing the state of supported variational
-  programs. Ensemble workflow state is not currently checkpointed as a unit.
+- :doc:`resuming_long_runs` — checkpointing and restoring individual programs
+  and complete ensemble workflows.
 - :doc:`visualization` — result visualisation, including :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.

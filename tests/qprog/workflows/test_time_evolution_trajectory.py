@@ -12,6 +12,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.qprog import TimeEvolutionTrajectory
 from divi.qprog.algorithms import TimeEvolution
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import BatchConfig, BatchMode
 from divi.qprog.workflows import _time_evolution_trajectory as workflow
 
@@ -163,6 +164,30 @@ class TestTimeEvolutionTrajectoryCreatePrograms:
 
 
 class TestTimeEvolutionTrajectoryRun:
+    def test_checkpointing_never_passes_vqa_arguments(
+        self, two_qubit_hamiltonian, dummy_simulator, tmp_path, mocker
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.5, 1.0],
+            backend=dummy_simulator,
+        )
+        run_spy = mocker.spy(TimeEvolution, "run")
+
+        traj.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert run_spy.call_count == 2
+        assert all(
+            "checkpoint_config" not in call.kwargs for call in run_spy.call_args_list
+        )
+        restored = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.5, 1.0],
+            backend=dummy_simulator,
+        )
+        restored.restore_state(tmp_path).run()
+        assert restored.stop_reason.value == "complete"
+
     def test_run_probs_mode(self, two_qubit_hamiltonian, default_test_simulator):
         traj = TimeEvolutionTrajectory(
             hamiltonian=two_qubit_hamiltonian,

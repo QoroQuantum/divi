@@ -485,6 +485,52 @@ class TestIterativeQAOACheckpointing:
         # are the ones before it.
         assert [entry["depth"] for entry in loaded.depth_history] == [1, 2]
 
+    def test_restore_existing_instance_resolves_deepest_checkpoint(
+        self, default_test_simulator, tmp_path
+    ):
+        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        target = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=self.MAX_DEPTH,
+            max_iterations_per_depth=self.ITERS_PER_DEPTH,
+            backend=default_test_simulator,
+            optimizer=MonteCarloOptimizer(population_size=4, n_best_sets=2),
+        )
+
+        target._restore_state(tmp_path)
+
+        assert target.n_layers == self.MAX_DEPTH
+        assert target.current_iteration == self.ITERS_PER_DEPTH
+
+    def test_terminal_checkpoint_restores_sampled_best_depth(
+        self, default_test_simulator, tmp_path
+    ):
+        program = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=self.MAX_DEPTH,
+            max_iterations_per_depth=self.ITERS_PER_DEPTH,
+            backend=default_test_simulator,
+            optimizer=MonteCarloOptimizer(population_size=4, n_best_sets=2),
+            seed=1997,
+        )
+        program.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+            perform_final_computation=True,
+        )
+        loaded = self._load(default_test_simulator, tmp_path)
+
+        assert loaded.n_layers == program.best_depth
+        assert loaded.best_probs == program.best_probs
+        assert [entry["depth"] for entry in loaded.depth_history] == [
+            entry["depth"] for entry in program.depth_history
+        ]
+        for loaded_entry, original_entry in zip(
+            loaded.depth_history, program.depth_history
+        ):
+            np.testing.assert_allclose(
+                loaded_entry["best_params"], original_entry["best_params"]
+            )
+
     def test_resume_continues_the_depth_schedule(
         self, default_test_simulator, tmp_path
     ):

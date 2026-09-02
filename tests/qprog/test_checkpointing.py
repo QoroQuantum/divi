@@ -4,6 +4,7 @@
 
 """Tests for checkpointing utilities."""
 
+import os
 from dataclasses import FrozenInstanceError
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
+import divi.qprog.checkpointing as checkpointing_module
 from divi.qprog.checkpointing import (
     OPTIMIZER_STATE_FILE,
     PROGRAM_STATE_FILE,
@@ -562,6 +564,15 @@ class TestValidationAndAtomicWrite:
         target = tmp_path / "output.json"
         _atomic_write(target, '{"key": "value"}')
         assert target.read_text() == '{"key": "value"}'
+
+    def test_atomic_write_syncs_file_and_directory(self, tmp_path, mocker):
+        file_sync = mocker.spy(os, "fsync")
+        directory_sync = mocker.spy(checkpointing_module, "_fsync_directory")
+
+        _atomic_write(tmp_path / "output.json", "{}")
+
+        assert file_sync.call_count >= 1
+        directory_sync.assert_called_once_with(tmp_path)
 
     def test_atomic_write_cleans_up_temp_on_failure(self, tmp_path, mocker):
         """If rename fails, the temp file must be cleaned up."""

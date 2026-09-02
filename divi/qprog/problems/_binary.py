@@ -412,6 +412,10 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         return sub_problems
 
+    def _has_reproducible_decomposition(self) -> bool:
+        """Whether repeated decomposition preserves program-slot meaning."""
+        return bool(getattr(self._decomposer, "_reproducible", False))
+
     def initial_solution_size(self) -> int:
         """Number of variables in the global solution vector.
 

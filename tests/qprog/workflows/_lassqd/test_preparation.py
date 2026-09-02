@@ -4,6 +4,7 @@
 
 """Tests for paper-faithful LASSQD fragment-circuit preparation."""
 
+import hashlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -304,7 +305,7 @@ def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
 
 
 def test_linear_method_program_prepares_classically_then_samples_once(
-    dummy_simulator, mocker
+    dummy_simulator, mocker, tmp_path
 ):
     circuit = QuantumCircuit(4)
     circuit.x(0)
@@ -348,6 +349,87 @@ def test_linear_method_program_prepares_classically_then_samples_once(
     np.testing.assert_allclose(program.h_beta, preparation.h_beta)
     np.testing.assert_allclose(program.two_body, preparation.two_body)
     np.testing.assert_allclose(program.orbital_rotation, preparation.orbital_rotation)
+
+    checkpoint = program._make_checkpoint(tmp_path)
+    restored = LinearMethodFragmentProgram(
+        np.eye(2),
+        np.eye(2),
+        np.zeros((2, 2, 2, 2)),
+        spec,
+        backend=dummy_simulator,
+        seed=7,
+    )
+    prepare.reset_mock()
+    submit.reset_mock()
+
+    restored._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+
+    assert "phase" not in checkpoint.model_dump()
+    prepare.assert_not_called()
+    submit.assert_not_called()
+    assert restored.best_probs == program.best_probs
+    np.testing.assert_allclose(restored.best_params, program.best_params)
+    np.testing.assert_allclose(restored.h_alpha, program.h_alpha)
+    np.testing.assert_allclose(restored.h_beta, program.h_beta)
+    np.testing.assert_allclose(restored.two_body, program.two_body)
+    np.testing.assert_allclose(restored.orbital_rotation, program.orbital_rotation)
+
+    mismatched = LinearMethodFragmentProgram(
+        np.eye(2),
+        np.eye(2),
+        np.zeros((2, 2, 2, 2)),
+        spec,
+        backend=dummy_simulator,
+        seed=7,
+    )
+    mismatched_checkpoint = checkpoint.model_copy(update={"state_sha256": "0" * 64})
+
+    with pytest.raises(ValueError, match="digest"):
+        mismatched._restore_checkpoint(
+            mismatched_checkpoint.model_dump_json(), tmp_path
+        )
+    assert not mismatched.has_results()
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["params", "h_alpha", "h_beta", "two_body", "orbital_rotation"],
+)
+def test_completed_linear_method_state_requires_every_array(
+    missing, dummy_simulator, tmp_path
+):
+    arrays = {
+        "params": np.array([0.1]),
+        "h_alpha": np.eye(2),
+        "h_beta": np.eye(2),
+        "two_body": np.zeros((2, 2, 2, 2)),
+        "orbital_rotation": np.eye(2),
+    }
+    arrays.pop(missing)
+    state_path = tmp_path / "completed_state.npz"
+    np.savez(state_path, **arrays)
+    with state_path.open("rb") as handle:
+        state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+    program = LinearMethodFragmentProgram(
+        np.eye(2),
+        np.eye(2),
+        np.zeros((2, 2, 2, 2)),
+        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+        backend=dummy_simulator,
+    )
+
+    with pytest.raises(ValueError, match="missing or extra arrays"):
+        checkpoint = preparation._LinearMethodCheckpoint(
+            program_type="LinearMethodFragmentProgram",
+            total_circuit_count=0,
+            total_run_time=0.0,
+            state_file="completed_state.npz",
+            state_sha256=state_sha256,
+            best_probs={0: {"0011": 1.0}},
+        )
+        program._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+
+    assert not program.has_results()
 
 
 def test_rotates_sqd_rdms_back_to_the_workflow_fragment_basis():
