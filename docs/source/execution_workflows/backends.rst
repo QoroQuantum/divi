@@ -300,17 +300,18 @@ QoroService
 
 QoroService participates in two complementary batching mechanisms:
 
-1. **Backend-level packing** (:attr:`~divi.backends.JobConfig.use_circuit_packing`,
-   enabled by default) — within a single ``submit_circuits`` call, circuits
-   are packed into one cloud job, amortising the per-job scheduler cost.
+1. **QPU-side circuit packing** (:attr:`~divi.backends.JobConfig.use_circuit_packing`,
+   enabled by default) — packs circuits together onto the target QPU. This
+   does not change how many cloud jobs are submitted; it can reduce the
+   number of QPU jobs scheduled.
 2. **Ensemble-level merging** (:class:`~divi.qprog.ensemble.BatchConfig` on
    :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`) — merges submissions
    from multiple programs into one ``submit_circuits`` call.  See
    :ref:`circuit-batching`.
 
 The two compose: ensemble-level merging yields one large
-``submit_circuits`` call per flush, which backend-level packing then sends
-as a single cloud job.
+``submit_circuits`` call per flush, and QPU-side packing then decides how
+those circuits are grouped onto QPU jobs.
 
 Submitting and Monitoring Jobs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
