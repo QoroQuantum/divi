@@ -16,7 +16,7 @@ from divi.qprog import (
     GenericLayerAnsatz,
     ZZFeatureMap,
 )
-from divi.qprog.algorithms._data_binding import DataBindingMixin
+from divi.qprog.mixins import DataBindingMixin
 from divi.qprog.optimizers import QNSPSAOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests.qprog._program_contracts import (
@@ -194,12 +194,12 @@ class TestConstructionValidation:
     def test_labels_default_unsupervised(self, make_qnn):
         program = make_qnn()
         assert program.labels is None
-        assert program._sample_loss_fn is None
+        assert program.sample_loss is None
 
     def test_labels_stored_when_supervised(self, make_qnn):
         program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
         np.testing.assert_array_equal(program.labels, [0.0, 1.0, 0.0, 1.0])
-        assert callable(program._sample_loss_fn)
+        assert callable(program.sample_loss)
 
     def test_labels_wrong_length_rejected(self, make_qnn):
         with pytest.raises(ValueError, match="labels has 2 entries but feature_batch"):

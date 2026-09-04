@@ -10,11 +10,12 @@ classical feature batch across a parameterised circuit. The shared behaviour —
 inserting a :class:`~divi.pipeline.stages.DataBindingStage` into the cost
 pipeline, resolving optional supervised labels, and sampled-class inference via
 :meth:`DataBindingMixin.predict` — lives in :class:`DataBindingMixin`.
-``build_data_binding_stage`` owns the single stage construction so the two
-stay in lockstep as the stage's signature evolves.
 
 Each subclass still builds its own data/weight parameter split and composed
-circuit; the mixin only orchestrates the data axis on top of that state.
+circuit; the mixin only orchestrates the data axis on top of that state. Every
+attribute of that state carries a class-level default here, so the data-free
+case (a plain ``CustomVQA``) reads as an ordinary attribute access rather than
+a defaulted lookup.
 """
 
 from collections.abc import Callable, Iterable
@@ -41,6 +42,7 @@ from divi.pipeline.stages import (
 if TYPE_CHECKING:
     from qiskit import QuantumCircuit
     from qiskit.circuit import Parameter
+    from qiskit.dagcircuit import DAGCircuit
 
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
@@ -57,25 +59,6 @@ _LOSS_FN_IGNORED_MSG = (
     "loss_fn was provided but labels is None, so loss_fn is ignored. Pass "
     "labels (with a feature_batch) to train a supervised loss."
 )
-
-
-def build_data_binding_stage(program) -> DataBindingStage:
-    """Build a :class:`DataBindingStage` from ``program``'s data-binding config.
-
-    ``program`` must have ``_data_symbols``, ``_loss_reduction_fn``, and
-    ``loss_constant`` set. ``_sample_loss_fn`` is optional (``None`` keeps the
-    unsupervised path). The per-run ``feature_batch`` and ``labels`` are *not*
-    passed here — the mixin injects them into the
-    :class:`~divi.pipeline.abc.PipelineEnv`, and the stage reads them at run
-    time; the circuit, weight parameters, and rendering precision all come from
-    the MetaCircuit batch.
-    """
-    return DataBindingStage(
-        data_params=program._data_symbols,
-        loss_reduction=program._loss_reduction_fn,
-        loss_constant=program.loss_constant,
-        sample_loss=getattr(program, "_sample_loss_fn", None),
-    )
 
 
 class DataBindingMixin(_MixinBase):
@@ -95,14 +78,26 @@ class DataBindingMixin(_MixinBase):
     coordinate.
     """
 
-    # Data-binding state each subclass populates; the rest of the host interface
-    # comes from VariationalQuantumAlgorithm (resolved via ``_MixinBase``).
-    _data_symbols: tuple["Parameter", ...]
-    _weight_symbols: tuple["Parameter", ...]
+    # Data-binding state each subclass populates; the defaults describe a host
+    # with no data axis, which sets only the subset it needs.
+    _data_symbols: tuple["Parameter", ...] = ()
+    _weight_symbols: tuple["Parameter", ...] = ()
     _composed_circuit: "QuantumCircuit"
-    feature_batch: npt.NDArray[np.float64] | None
-    labels: npt.NDArray[np.float64] | None
-    _sample_loss_fn: Callable[[float, float], float] | None
+    _composed_dag: "DAGCircuit | None" = None
+    feature_batch: npt.NDArray[np.float64] | None = None
+    labels: npt.NDArray[np.float64] | None = None
+    _sample_loss_fn: Callable[[float, float], float] | None = None
+    _loss_reduction_fn: Callable[[np.ndarray], float]
+
+    @property
+    def sample_loss(self) -> Callable[[float, float], float] | None:
+        """Per-sample supervised loss ``(prediction, label) -> float``.
+
+        ``None`` for the unsupervised objective, which is also the value for a
+        host with no data axis at all. Resolved from the constructor's
+        ``loss_fn`` when ``labels`` are supplied.
+        """
+        return self._sample_loss_fn
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -125,7 +120,22 @@ class DataBindingMixin(_MixinBase):
     def _loss_constant_consumed(self) -> bool:
         # DataBindingStage folds loss_constant into each per-sample value, so
         # the base cost path must not re-add it.
-        return getattr(self, "feature_batch", None) is not None
+        return self.feature_batch is not None
+
+    def _build_data_binding_stage(self) -> DataBindingStage:
+        """Build the :class:`DataBindingStage` for this program's data axis.
+
+        The per-run ``feature_batch`` and ``labels`` are *not* passed here — the
+        mixin injects them into the :class:`~divi.pipeline.abc.PipelineEnv`, and
+        the stage reads them at run time; the circuit, weight parameters, and
+        rendering precision all come from the MetaCircuit batch.
+        """
+        return DataBindingStage(
+            data_params=self._data_symbols,
+            loss_reduction=self._loss_reduction_fn,
+            loss_constant=self.loss_constant,
+            sample_loss=self._sample_loss_fn,
+        )
 
     def _assemble_pipeline(
         self,
@@ -141,8 +151,8 @@ class DataBindingMixin(_MixinBase):
         feature batch (a plain ``CustomVQA``) this is a no-op delegating to the
         base assembler. Applies to every pipeline assembled — cost and metric alike.
         """
-        if getattr(self, "feature_batch", None) is not None:
-            extra_stages = (build_data_binding_stage(self), *extra_stages)
+        if self.feature_batch is not None:
+            extra_stages = (self._build_data_binding_stage(), *extra_stages)
         return super()._assemble_pipeline(
             spec_stage,
             terminal_stage,
@@ -155,9 +165,9 @@ class DataBindingMixin(_MixinBase):
         env so :class:`~divi.pipeline.stages.DataBindingStage` can read them,
         alongside the ``param_sets`` the base VQA adds. No-op when there is no
         data binding (a plain ``CustomVQA``)."""
-        if getattr(self, "feature_batch", None) is not None:
+        if self.feature_batch is not None:
             overrides.setdefault("feature_batch", self.feature_batch)
-            overrides.setdefault("labels", getattr(self, "labels", None))
+            overrides.setdefault("labels", self.labels)
         return super()._build_pipeline_env(**overrides)
 
     def _resolve_supervision(
@@ -195,8 +205,7 @@ class DataBindingMixin(_MixinBase):
         and under-reports by its whole size.
         """
         super()._validate_before_preview()
-        # Only set when a data axis was configured.
-        data_symbols = getattr(self, "_data_symbols", ())
+        data_symbols = self._data_symbols
         batch = self.feature_batch
         if batch is None:
             if data_symbols:
@@ -270,7 +279,7 @@ class DataBindingMixin(_MixinBase):
         the parameter *order* stays subclass-owned (QNN: data+weights; CustomVQA:
         the original circuit order). The composed DAG is converted once.
         """
-        dag = getattr(self, "_composed_dag", None)
+        dag = self._composed_dag
         if dag is None:
             dag = circuit_to_dag(self._composed_circuit)
             self._composed_dag = dag
@@ -320,7 +329,7 @@ class DataBindingMixin(_MixinBase):
                 ``None`` and the program has not been trained yet.
             ValueError: On a feature-column or weight-length mismatch.
         """
-        if getattr(self, "_data_symbols", None) is None:
+        if not self._data_symbols:
             raise RuntimeError(
                 "predict() requires a data axis, but this program was created "
                 "without a feature_batch."

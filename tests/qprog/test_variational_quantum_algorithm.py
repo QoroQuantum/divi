@@ -20,9 +20,9 @@ from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPreprocessor
 from divi.qprog._program_checkpoint import VQACheckpoint
-from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
 from divi.qprog.early_stopping import EarlyStopping, StopReason
+from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,

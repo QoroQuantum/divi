@@ -32,6 +32,7 @@ from divi.pipeline._result_keys_operations import (
     group_by_branch_and_param_set,
 )
 from divi.pipeline.abc import ContractViolation
+from divi.qprog.mixins import DataBindingMixin
 
 if TYPE_CHECKING:
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
@@ -40,6 +41,7 @@ if TYPE_CHECKING:
 # vector; ``fidelity_fn`` takes ``(theta, perturbations)``. Hence ``Callable[...]``.
 Evaluators = dict[str, Callable[..., Any]]
 _METRIC_BRANCH_AXES = ("ham", "circuit")
+
 
 #: Report key for a metric routine. One name for every estimator: what a reader
 #: needs is that the optimizer runs a metric routine and what it costs, while
@@ -147,12 +149,12 @@ def _zeros_probability(
 def _reject_data_bound(program: "VariationalQuantumAlgorithm", metric: str) -> None:
     """Raise :class:`ContractViolation` for a data-bound program — its ansatz
     state depends on the data input, so the metric geometry is data-dependent."""
-    if getattr(program, "feature_batch", None) is None:
+    if not isinstance(program, DataBindingMixin) or program.feature_batch is None:
         return
     # Only the unsupervised case has a metric alternative. Recommending pullback
     # unconditionally sent supervised users in a circle, since pullback rejects a
     # per-sample loss and pointed them back here.
-    if getattr(program, "_sample_loss_fn", None) is not None:
+    if program.sample_loss is not None:
         raise ContractViolation(
             f"The {metric} metric does not support data-bound programs, and no "
             "metric estimator supports a supervised (labelled) data-binding loss: "
@@ -267,7 +269,7 @@ class PullbackMetricEstimator(MetricEstimator):
                 "a classical objective (e.g. PCE). Use the Fubini–Study estimator "
                 "(FubiniStudyMetricEstimator) instead."
             )
-        if getattr(program, "_sample_loss_fn", None) is not None:
+        if isinstance(program, DataBindingMixin) and program.sample_loss is not None:
             raise ContractViolation(
                 "The pullback metric is invalid for a supervised data-binding "
                 "loss: the per-sample loss is a non-linear function of the "

@@ -22,7 +22,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
+from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 
 __all__ = [
     "AggregationStrategy",

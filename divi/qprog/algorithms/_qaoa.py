@@ -26,8 +26,8 @@ from divi.hamiltonians._term_ops import (
 from divi.pipeline import Stage
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog._program_checkpoint import _to_jsonable
-from divi.qprog._solution_sampling_mixin import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.algorithms import InitialState
+from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent

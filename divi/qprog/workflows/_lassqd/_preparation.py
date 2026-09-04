@@ -21,8 +21,8 @@ from divi.hamiltonians._chem import requires_chem_extra
 from divi.pipeline import sample_preprocessor
 from divi.pipeline.stages import QiskitSpecStage
 from divi.qprog._program_checkpoint import ProgramCheckpoint
-from divi.qprog._solution_sampling_mixin import _average_probabilities
 from divi.qprog.checkpointing import _fsync_directory
+from divi.qprog.mixins._solution_sampling import _average_probabilities
 from divi.qprog.quantum_program import (
     QuantumProgram,
     reject_unclaimed_run_kwargs,

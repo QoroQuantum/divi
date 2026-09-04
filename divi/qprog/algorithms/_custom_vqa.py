@@ -26,7 +26,7 @@ else:
     QNode = QuantumScript = Any
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
-from divi.qprog.algorithms._data_binding import (
+from divi.qprog.mixins._data_binding import (
     _LOSS_FN_IGNORED_MSG,
     DataBindingMixin,
 )

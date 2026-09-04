@@ -23,7 +23,7 @@ from divi.qprog import (
     ScipyOptimizer,
     VariationalQuantumAlgorithm,
 )
-from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
+from divi.qprog.mixins import SolutionSamplingMixin
 
 
 def verify_cost_circuit(obj: QuantumProgram) -> None:

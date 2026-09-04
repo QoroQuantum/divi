@@ -682,7 +682,7 @@ class TestDataBindingConstruction:
             labels=[1.0, -1.0, 1.0, -1.0],
         )
         np.testing.assert_array_equal(program.labels, [1.0, -1.0, 1.0, -1.0])
-        assert callable(program._sample_loss_fn)
+        assert callable(program.sample_loss)
 
     def test_supervised_labels_default_none(
         self, data_circuit, feature_batch_4x1, make_custom_vqa
@@ -692,7 +692,7 @@ class TestDataBindingConstruction:
             qscript=qc, data_param_indices=data_idx, feature_batch=feature_batch_4x1
         )
         assert program.labels is None
-        assert program._sample_loss_fn is None
+        assert program.sample_loss is None
 
     def test_labels_without_data_binding_rejected(self, make_custom_vqa):
         with pytest.raises(ValueError, match="labels require data binding"):

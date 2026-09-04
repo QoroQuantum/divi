@@ -93,7 +93,7 @@ Inference
 ---------
 
 After ``run()``, score a fresh feature batch with
-:meth:`~divi.qprog.algorithms.DataBindingMixin.predict`. It binds each row's
+:meth:`~divi.qprog.DataBindingMixin.predict`. It binds each row's
 features with the trained weights, estimates the cost observable per sample, and
 returns the **sign** as a class label in ``{-1, +1}``.  For continuous /
 regression output — or to apply a custom threshold — pass
@@ -129,7 +129,7 @@ way ``predict`` returns a ``numpy.ndarray`` of shape ``(n_samples,)``:
    scores = program.predict(X_new, params=trained_weights, return_scores=True)  # raw ⟨H⟩ per row
 
 When called after training, ``params`` defaults to ``best_params``. Pass
-``return_scores=True`` to :meth:`~divi.qprog.algorithms.DataBindingMixin.predict` for the
+``return_scores=True`` to :meth:`~divi.qprog.DataBindingMixin.predict` for the
 continuous scores if you want to apply your own decision threshold. The same method is
 available on :class:`~divi.qprog.algorithms.CustomVQA` when it has a data axis.
 

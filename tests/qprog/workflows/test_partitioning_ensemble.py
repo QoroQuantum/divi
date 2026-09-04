@@ -7,9 +7,9 @@ import numpy as np
 import pytest
 
 from divi.qprog import QAOA, VariationalQuantumAlgorithm
-from divi.qprog._solution_sampling_mixin import SolutionEntry
 from divi.qprog.aggregation import BeamSearchStrategy, HierarchicalStrategy
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.mixins import SolutionEntry
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,

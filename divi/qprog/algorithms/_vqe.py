@@ -22,7 +22,6 @@ from divi.hamiltonians._term_ops import (
     _require_qiskit_num_qubits,
     to_spo,
 )
-from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.algorithms import (
     Ansatz,
     HartreeFockAnsatz,
@@ -32,6 +31,7 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
     ZerosState,
 )
+from divi.qprog.mixins import SolutionSamplingMixin
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent
 

@@ -32,13 +32,11 @@ from divi.pipeline import (
 )
 from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
 from divi.pipeline.stages import ParameterBindingStage
-from divi.qprog import ObservableMeasuringMixin
 from divi.qprog._program_checkpoint import (
     OptimizerConfig,
     SubclassState,
     VQACheckpoint,
 )
-from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
     CheckpointConfig,
@@ -49,6 +47,7 @@ from divi.qprog.checkpointing import (
     resolve_checkpoint_path,
 )
 from divi.qprog.early_stopping import EarlyStopping, StopReason
+from divi.qprog.mixins import ObservableMeasuringMixin, SolutionSamplingMixin
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,

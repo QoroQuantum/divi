@@ -40,13 +40,13 @@ from divi.qprog._ensemble_checkpoint import (
     _round_dir,
 )
 from divi.qprog._program_checkpoint import ProgramCheckpoint
-from divi.qprog._solution_sampling_mixin import SolutionSamplingMixin
 from divi.qprog.checkpointing import (
     CheckpointConfig,
     CheckpointNotFoundError,
     _atomic_write,
     _ensure_checkpoint_dir,
 )
+from divi.qprog.mixins import SolutionSamplingMixin
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import (
