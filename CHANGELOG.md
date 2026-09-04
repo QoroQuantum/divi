@@ -7,6 +7,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/QoroQuantum/divi/compare/v0.14.0...v0.15.0) (2026-09-04)
+
+
+### ✨ Added
+
+* **qprog:** add spin-moment extraction to solution sampling ([58b7a50](https://github.com/QoroQuantum/divi/commit/58b7a506c93450ac612f9446b2046b68a6395681))
+
+
+### 🐛 Fixed
+
+* **qprog:** merge edgeless clusters when partitioning graphs ([a3d62a3](https://github.com/QoroQuantum/divi/commit/a3d62a34b20e60203c50007ad4a2fc81ae1ed54b))
+
+
+### 🔄 Changed
+
+* **ai:** cache chunk embeddings between index builds ([33b516b](https://github.com/QoroQuantum/divi/commit/33b516bf21186569dc3faf4452901865350b612e))
+* **lassqd:** avoid pyscf's direct-SCF buffer in core-potential build ([5b5955b](https://github.com/QoroQuantum/divi/commit/5b5955b7ed9b3db76710a57d5c452f1d6b35a312))
+* **qprog:** collect capability mixins into divi.qprog.mixins ([53c2462](https://github.com/QoroQuantum/divi/commit/53c246250c75d6f2fd82a95cca414f647694d1c7))
+
+
+### 📝 Documentation
+
+* **backends:** correct QoroService circuit packing description ([98a93c5](https://github.com/QoroQuantum/divi/commit/98a93c5427314cd34b57fbfbe1ce70c2bf5a281c))
+
 ## [0.14.0](https://github.com/QoroQuantum/divi/compare/v0.13.0...v0.14.0) (2026-09-02)
 
 ### ✨ Added
