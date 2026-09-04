@@ -530,7 +530,7 @@ def _localized_active_space_integrals(
     if core_indices:
         c_core = mo_coeff[:, core_indices]
         dm_core = c_core @ c_core.T
-        j_core_ao, k_core_ao = scf.hf.get_jk(mol, dm_core)
+        j_core_ao, k_core_ao = scf.RHF(mol).get_jk(mol, dm_core)
         # pyrefly: ignore[unsupported-operation]  # get_jk is untyped in pyscf
         h_ao = h_ao + 2.0 * j_core_ao - k_core_ao
 
