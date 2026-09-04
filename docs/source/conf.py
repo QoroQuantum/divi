@@ -157,6 +157,10 @@ intersphinx_mapping = {
     "rustworkx": ("https://www.rustworkx.org/", None),
 }
 
+# Unset, the connect timeout is unbounded and one unreachable inventory stalls
+# the build until the kernel abandons the connect.
+intersphinx_timeout = 30
+
 # -- Nitpick: suppress cross-reference warnings ---------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#confval-nitpick_ignore_regex
 #

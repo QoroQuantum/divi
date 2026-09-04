@@ -173,6 +173,100 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             )
         return self._best_probs.copy()
 
+    def _single_distribution(self) -> dict[str, float]:
+        """The distribution of the first sampled parameter set.
+
+        The usual flow samples one set (the trained best params); only an
+        explicit multi-row ``sample_solution()`` leaves several, in which case
+        the first is used and the caller is pointed at ``best_probs``.
+
+        Call this directly from the public method that needs it — the warning
+        it emits is reported at that method's own call site.
+
+        Raises:
+            RuntimeError: If no distribution has been measured yet.
+        """
+        if not self._best_probs:
+            raise RuntimeError(
+                "No probability distribution available. The final computation step "
+                "must be performed to compute the probability distribution. "
+                "Call run(perform_final_computation=True) to execute optimisation "
+                "and compute the distribution."
+            )
+        if len(self._best_probs) > 1:
+            warn(
+                f"{len(self._best_probs)} parameter sets were sampled; "
+                "only the first (lowest-index) set is used. "
+                "Access best_probs for the per-set distributions.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return next(iter(self._best_probs.values()))
+
+    def get_correlations(self) -> npt.NDArray[np.float64]:
+        r"""Get the two-point spin correlations of the sampled state.
+
+        Returns the matrix :math:`Z_{ij} = \langle Z_i Z_j \rangle`, evaluated
+        over the measured distribution as
+        :math:`\sum_x p(x)\, s_i(x)\, s_j(x)` with bits read as spins in the
+        Ising convention (``0`` maps to ``+1``, ``1`` maps to ``-1``). Entries
+        near ``+1`` mark wires that agree across the distribution, near ``-1``
+        wires that disagree, and near ``0`` wires the state leaves undecided.
+
+        Index ``i`` refers to position ``i`` of the measured bitstrings, the
+        same ordering ``decode_solution_fn`` uses, so for a graph problem it is
+        the wire label at that position.
+
+        Returns:
+            npt.NDArray[np.float64]: Symmetric ``(n_wires, n_wires)`` matrix
+                whose diagonal is exactly 1.0.
+
+        Raises:
+            RuntimeError: If no distribution is available because optimisation
+                has not been run or final computation was not performed.
+            ValueError: If the distribution mixes bitstring widths.
+
+        Note:
+            Probabilities are used as measured. If several parameter sets were
+            sampled, only the first is used and a warning is emitted.
+
+        Example:
+            >>> program.run(perform_final_computation=True)
+            >>> correlations = program.get_correlations()
+            >>> correlations[0, 1]  # how wires 0 and 1 relate
+            0.87
+        """
+        return _spin_moments(self._single_distribution())[1]
+
+    def get_magnetisations(self) -> npt.NDArray[np.float64]:
+        r"""Get the single-site spin expectations of the sampled state.
+
+        Returns the vector :math:`m_i = \langle Z_i \rangle`, evaluated over
+        the measured distribution as :math:`\sum_x p(x)\, s_i(x)` under the
+        same spin convention and wire ordering as :meth:`get_correlations`.
+        Entries near ``+/-1`` mark wires the state has decided; entries near
+        ``0`` mark wires it has not.
+
+        Returns:
+            npt.NDArray[np.float64]: Vector of length ``n_wires`` with entries
+                in range [-1.0, 1.0].
+
+        Raises:
+            RuntimeError: If no distribution is available because optimisation
+                has not been run or final computation was not performed.
+            ValueError: If the distribution mixes bitstring widths.
+
+        Note:
+            Probabilities are used as measured. If several parameter sets were
+            sampled, only the first is used and a warning is emitted.
+
+        Example:
+            >>> program.run(perform_final_computation=True)
+            >>> program.get_magnetisations()
+            array([ 0.92, -0.88,  0.04])
+        """
+        return _spin_moments(self._single_distribution())[0]
+
     def get_top_solutions(
         self, n: int = 10, *, min_prob: float = 0.0, include_decoded: bool = False
     ) -> list[SolutionEntry]:
@@ -248,27 +342,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         if n == 0:
             return []
 
-        # Require probability distribution to exist
-        if not self._best_probs:
-            raise RuntimeError(
-                "No probability distribution available. The final computation step "
-                "must be performed to compute the probability distribution. "
-                "Call run(perform_final_computation=True) to execute optimisation "
-                "and compute the distribution."
-            )
-        # Ranking is over a single parameter set's distribution. The usual flow
-        # samples one set (the trained best params); only an explicit multi-row
-        # sample_solution() leaves several, in which case we rank the first and
-        # point users to best_probs for the rest.
-        if len(self._best_probs) > 1:
-            warn(
-                f"{len(self._best_probs)} parameter sets were sampled; "
-                "get_top_solutions ranks only the first (lowest-index) set. "
-                "Access best_probs for the per-set distributions.",
-                UserWarning,
-                stacklevel=2,
-            )
-        probs_dict = next(iter(self._best_probs.values()))
+        probs_dict = self._single_distribution()
 
         # Filter by minimum probability and get top n sorted by probability (descending),
         # then bitstring (ascending) for deterministic tie-breaking
@@ -370,6 +444,41 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         self._best_probs = {
             idx: _average_probabilities(value) for idx, value in result.items()
         }
+
+
+def _spin_moments(
+    probs_dict: dict[str, float],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """First and second spin moments of a bitstring distribution.
+
+    Bits map to spins in the Ising convention (``0 -> +1``, ``1 -> -1``), with
+    bitstring position ``i`` denoting wire ``i`` — the same ordering
+    ``decode_solution_fn`` uses.
+
+    Returns:
+        The magnetisation vector and the correlation matrix, in that order.
+
+    Raises:
+        ValueError: If the distribution mixes bitstring widths.
+    """
+    bitstrings = list(probs_dict)
+    widths = {len(bitstring) for bitstring in bitstrings}
+    if len(widths) > 1:
+        raise ValueError(
+            f"All bitstrings must have the same length to index wires "
+            f"consistently, but the distribution mixes widths {sorted(widths)}."
+        )
+
+    probabilities = np.fromiter(probs_dict.values(), dtype=np.float64)
+    bits = np.frombuffer("".join(bitstrings).encode(), dtype=np.uint8).reshape(
+        len(bitstrings), widths.pop()
+    ) - ord("0")
+    spins = 1.0 - 2.0 * bits.astype(np.float64)
+
+    magnetisations = probabilities @ spins
+    correlations = spins.T @ (probabilities[:, np.newaxis] * spins)
+    np.fill_diagonal(correlations, 1.0)
+    return magnetisations, correlations
 
 
 def _average_probabilities(

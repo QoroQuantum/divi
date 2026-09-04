@@ -488,8 +488,8 @@ class BaseVariationalQuantumAlgorithmTest:
     def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
         """Helper to create a program with a synthetic probability distribution."""
         program = self._create_program_with_mock_optimizer(mocker, **kwargs)
-        # Wrap in nested structure: {tag: {bitstring: prob}} to match production
-        program._best_probs = {"0_NoMitigation:0_ham:0_0": probs_dict}
+        # Wrap in the production shape: {param_set_index: {bitstring: prob}}
+        program._best_probs = {0: probs_dict}
         # Mark as having run optimization to avoid warnings
         program._losses_history = [{0: -1.0}]
         return program
@@ -1884,7 +1884,7 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
             0: {"00": 0.6, "11": 0.4},
             1: {"01": 0.9, "10": 0.1},
         }
-        with pytest.warns(UserWarning, match="ranks only the first"):
+        with pytest.warns(UserWarning, match="only the first"):
             result = program.get_top_solutions(n=2)
         assert [s.bitstring for s in result] == ["00", "11"]
 
@@ -2081,6 +2081,106 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         for i in range(10):
             assert result[i].bitstring == f"{i:04b}"
             assert result[i].decoded is None  # Default include_decoded=False
+
+
+class TestSpinMomentsAPI(BaseVariationalQuantumAlgorithmTest):
+    """Test suite for get_correlations() and get_magnetisations()."""
+
+    def test_perfectly_correlated_distribution(self, mocker):
+        """An equal mix of "00" and "11" agrees on every pair and has zero bias."""
+        program = self._setup_program_with_probs(mocker, {"00": 0.5, "11": 0.5})
+
+        np.testing.assert_allclose(program.get_correlations(), np.ones((2, 2)))
+        np.testing.assert_allclose(program.get_magnetisations(), np.zeros(2))
+
+    def test_perfectly_anticorrelated_distribution(self, mocker):
+        """An equal mix of "01" and "10" disagrees on every pair."""
+        program = self._setup_program_with_probs(mocker, {"01": 0.5, "10": 0.5})
+
+        np.testing.assert_allclose(
+            program.get_correlations(), np.array([[1.0, -1.0], [-1.0, 1.0]])
+        )
+        np.testing.assert_allclose(program.get_magnetisations(), np.zeros(2))
+
+    def test_deterministic_bitstring_saturates_moments(self, mocker):
+        """A single certain bitstring pins every spin to +/-1."""
+        program = self._setup_program_with_probs(mocker, {"010": 1.0})
+
+        spins = np.array([1.0, -1.0, 1.0])
+        np.testing.assert_allclose(program.get_magnetisations(), spins)
+        np.testing.assert_allclose(program.get_correlations(), np.outer(spins, spins))
+
+    def test_matches_hand_computed_mixed_distribution(self, mocker):
+        """Values match the explicit sum over p(x) * s_i * s_j."""
+        probs = {"00": 0.5, "01": 0.2, "10": 0.2, "11": 0.1}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        expected_corr = np.zeros((2, 2))
+        expected_mag = np.zeros(2)
+        for bitstring, prob in probs.items():
+            spins = np.array([1 - 2 * int(bit) for bit in bitstring])
+            expected_corr += prob * np.outer(spins, spins)
+            expected_mag += prob * spins
+
+        np.testing.assert_allclose(program.get_correlations(), expected_corr)
+        np.testing.assert_allclose(program.get_magnetisations(), expected_mag)
+
+    def test_correlations_are_symmetric_with_unit_diagonal(self, mocker):
+        """Z is symmetric and <Z_i^2> == 1 regardless of the distribution."""
+        probs = {"011": 0.4, "101": 0.35, "000": 0.25}
+        program = self._setup_program_with_probs(mocker, probs)
+
+        correlations = program.get_correlations()
+
+        np.testing.assert_allclose(correlations, correlations.T)
+        np.testing.assert_allclose(np.diag(correlations), np.ones(3))
+
+    def test_index_order_follows_bitstring_position(self, mocker):
+        """Index i refers to bitstring position i, as decode_solution_fn does."""
+        program = self._setup_program_with_probs(mocker, {"100": 1.0})
+
+        # Only wire 0 is set, so it anticorrelates with the two unset wires.
+        np.testing.assert_allclose(
+            program.get_correlations()[0], np.array([1.0, -1.0, -1.0])
+        )
+
+    def test_partially_correlated_pair_is_between_the_extremes(self, mocker):
+        """A 75/25 agree/disagree split gives a correlation of 0.5."""
+        program = self._setup_program_with_probs(mocker, {"00": 0.75, "01": 0.25})
+
+        assert program.get_correlations()[0, 1] == pytest.approx(0.5)
+
+    @pytest.mark.parametrize("method", ["get_correlations", "get_magnetisations"])
+    def test_raises_when_no_probs(self, mocker, method):
+        """Both moments require a sampled distribution."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._best_probs = {}
+
+        with pytest.raises(
+            RuntimeError,
+            match="No probability distribution available.*perform_final_computation=True",
+        ):
+            getattr(program, method)()
+
+    @pytest.mark.parametrize("method", ["get_correlations", "get_magnetisations"])
+    def test_warns_and_uses_first_of_multiple_param_sets(self, mocker, method):
+        """With several sampled sets, the first is used and a warning is emitted."""
+        program = self._setup_program_with_probs(mocker, {"00": 1.0})
+        program._best_probs = {0: {"00": 1.0}, 1: {"11": 1.0}}
+
+        with pytest.warns(UserWarning, match="only the first"):
+            result = getattr(program, method)()
+
+        # The first set is all-zeros, so every spin sits at +1.
+        np.testing.assert_allclose(result, np.ones_like(result))
+
+    @pytest.mark.parametrize("method", ["get_correlations", "get_magnetisations"])
+    def test_ragged_bitstrings_raise(self, mocker, method):
+        """Bitstrings of differing width have no consistent wire indexing."""
+        program = self._setup_program_with_probs(mocker, {"00": 0.5, "111": 0.5})
+
+        with pytest.raises(ValueError, match="same length"):
+            getattr(program, method)()
 
 
 class TestSolutionEntryNamedTuple:

@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
+import warnings
 from collections.abc import Sequence
 
 try:
@@ -502,6 +503,26 @@ class TestGraphPartitioningConfig:
         _assert_partitions_correct(graph, result, expected_n_clusters=2)
         assert mock_bisect.call_count >= 1
 
+    def test_min_clusters_undershot_by_edgeless_merge_warns(self, mocker):
+        graph = nx.cycle_graph(6)
+        mocker.patch(
+            f"{_bisect_with_predicate.__module__}.{_bisect_with_predicate.__name__}",
+            return_value=[
+                (0, 0, nx.Graph([(0, 1), (1, 2)]), [0, 1, 2]),
+                (0, 1, nx.Graph([(0, 1)]), [3, 4]),
+                (0, 2, nx.empty_graph(1), [5]),
+            ],
+        )
+
+        config = GraphPartitioningConfig(minimum_n_clusters=3)
+
+        with pytest.warns(
+            UserWarning, match="below the requested 'minimum_n_clusters'"
+        ):
+            result = _node_partition_graph(graph, config)
+
+        _assert_partitions_correct(graph, result, expected_n_clusters=2)
+
     @pytest.mark.usefixtures("_raise_qubit_ceiling")
     @pytest.mark.parametrize("graph_factories", GRAPH_FACTORIES)
     @pytest.mark.parametrize(
@@ -513,14 +534,25 @@ class TestGraphPartitioningConfig:
         ],
     )
     def test_partition_with_min_clusters(self, algorithm, graph_factories):
+        """The minimum is best-effort: undershooting it must be announced."""
         _, complete_factory, _ = graph_factories
         G = complete_factory(100)
         n_clusters = 6
         config = GraphPartitioningConfig(
             minimum_n_clusters=n_clusters, partitioning_algorithm=algorithm
         )
-        partitions = _node_partition_graph(G, config)
-        _assert_partitions_correct(G, partitions, expected_n_clusters=n_clusters)
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            partitions = _node_partition_graph(G, config)
+
+        _assert_partitions_correct(G, partitions)
+        # Which nodes a bisection peels off a complete graph is eigensolver-dependent.
+        if len(partitions) < n_clusters:
+            assert any(
+                "below the requested 'minimum_n_clusters'" in str(entry.message)
+                for entry in caught
+            )
 
     @pytest.mark.usefixtures("_raise_qubit_ceiling")
     @pytest.mark.parametrize("graph_factories", GRAPH_FACTORIES)

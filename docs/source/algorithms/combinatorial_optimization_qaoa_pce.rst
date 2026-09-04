@@ -547,6 +547,43 @@ iterations to deeper circuits:
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
    )
 
+Spin Moments
+------------
+
+Beyond the top bitstrings, the measured distribution yields
+:math:`\langle Z_i Z_j \rangle` via
+:meth:`~divi.qprog.SolutionSamplingMixin.get_correlations` — how strongly wires
+*i* and *j* agree (``+1``) or disagree (``-1``) — and :math:`\langle Z_i \rangle`
+via :meth:`~divi.qprog.SolutionSamplingMixin.get_magnetisations`. Pairs near
+:math:`\pm 1` are effectively decided and can be frozen to shrink the problem,
+as recursive QAOA does. Wires are indexed by bitstring position, matching
+:attr:`~divi.qprog.problems.QAOAProblem.decode_fn`.
+
+.. code-block:: python
+
+   import networkx as nx
+   import numpy as np
+   from divi.qprog import QAOA
+   from divi.qprog.problems import MaxCutProblem
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import MaestroSimulator
+
+   qaoa_problem = QAOA(
+       MaxCutProblem(nx.cycle_graph(6)),
+       n_layers=1,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=5,
+       backend=MaestroSimulator(shots=2000),
+   )
+   qaoa_problem.run()
+
+   correlations = qaoa_problem.get_correlations()
+
+   # Strongest pair, ignoring the unit diagonal.
+   off_diagonal = np.triu(np.abs(correlations), k=1)
+   i, j = np.unravel_index(np.argmax(off_diagonal), off_diagonal.shape)
+   print(f"Wires {i} and {j}: {correlations[i, j]:+.3f}")
+
 Graph Partitioning QAOA
 -----------------------
 
