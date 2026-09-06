@@ -11,7 +11,7 @@ runs:
   using: composite
   steps:
     - name: Cache embedding model
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cache/fastembed
         key: fastembed-${{ runner.os }}-${{ hashFiles('divi/ai/_indexer.py') }}
@@ -19,7 +19,7 @@ runs:
           fastembed-${{ runner.os }}-
 
     - name: Cache chunk embeddings
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: .cache/divi-ai-embeddings.npz
         # run_id never matches an existing entry, so every run saves the

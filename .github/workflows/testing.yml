@@ -11,6 +11,7 @@ permissions:
 
 jobs:
   tests:
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -31,6 +32,7 @@ jobs:
         run: uv run pytest -n auto -m "not requires_api_key"
 
   minimal-tests:
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -45,6 +47,7 @@ jobs:
         run: uv run --no-sync pytest -n auto -m "not requires_api_key"
 
   isolated-extra-tests:
+    if: ${{ !startsWith(github.head_ref, 'release-please--') }}
     strategy:
       fail-fast: false
       matrix:
