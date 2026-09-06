@@ -26,10 +26,7 @@
 > [!TIP]
 > **Using Claude Code, Cursor, or another LLM coding agent?** Divi is indexed on [Context7](https://context7.com/qoroquantum/divi) — point your agent at `/qoroquantum/divi` to pull current, version-specific Divi docs and snippets directly into its context.
 
-## ⚡ At-Scale Example
-
-For the shortest introduction, start with the
-**[five-minute tutorial](https://divi.readthedocs.io/en/latest/quickstart.html)**.
+## 📦 Installation
 
 ```bash
 pip install qoro-divi
@@ -50,6 +47,16 @@ To install the latest development build (published daily from `main`):
 ```bash
 pip install qoro-divi --pre
 ```
+
+### Learning Divi
+
+For the shortest introduction, start with the
+**[five-minute tutorial](https://divi.readthedocs.io/en/latest/quickstart.html)**.
+Algorithm guides, execution guides, and the API reference live at
+**[divi.readthedocs.io](https://divi.readthedocs.io)**; hands-on examples are in
+the [`tutorials/`](tutorials/) folder.
+
+## ⚡ At-Scale Example
 
 Split a graph into quantum-sized MaxCut problems, solve the partitions, and
 stitch their candidates into a global solution:
@@ -115,7 +122,7 @@ pip install qoro-divi[ai]
 divi-ai
 ```
 
-Answers questions about Divi APIs, generates code examples, and explains concepts — powered by a local LLM that runs entirely on your machine. See the [full documentation](https://divi.readthedocs.io/tools/divi_ai.html) for model options and usage.
+Answers questions about Divi APIs, generates code examples, and explains concepts — powered by a local LLM that runs entirely on your machine. See the [full documentation](https://divi.readthedocs.io/en/latest/tools/divi_ai.html) for model options and usage.
 
 ## 🧩 Key Features
 
@@ -127,25 +134,6 @@ Answers questions about Divi APIs, generates code examples, and explains concept
 | **Flexible Backends** | `MaestroSimulator` for local simulation, `QiskitSimulator` for Qiskit-native noise models (extra: `aer`), `QoroService` for cloud execution |
 | **Execution Config** | Control bond dimension, simulator type, and simulation method per job |
 | **Live Reporting** | Real-time dashboards and convergence tracking via callbacks |
-
-## 🏗️ Architecture
-
-```
-divi/
-├── qprog/        # Quantum programs: VQE, QAOA, base classes, optimizers
-├── backends/     # Execution backends: MaestroSimulator, QiskitSimulator (extra: aer), QoroService
-├── circuits/     # MetaCircuit templates and Circuit instances
-├── pipeline/     # Circuit pipeline stages (expand, execute, reduce)
-├── hamiltonians  # Molecular Hamiltonian generation
-├── reporting/    # Live reporting and visualization callbacks
-└── ai/           # Offline documentation chatbot (divi-ai)
-```
-
-## 📚 Documentation
-
-Algorithm guides, execution guides, and API reference: **[divi.readthedocs.io](https://divi.readthedocs.io)**
-
-Hands-on examples are in the [`tutorials/`](tutorials/) folder.
 
 ## Contributing
 
