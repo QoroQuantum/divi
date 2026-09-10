@@ -1969,7 +1969,7 @@ def get_characterization_result(
     """Wait for and retrieve a characterisation result by job ID.
 
     Polling and retrieval do not cost credits. The service waits through
-    nonterminal statuses according to its polling configuration, then returns
+    non-terminal statuses according to its polling configuration, then returns
     the completed report or raises the corresponding terminal-status error.
 
     Args:

@@ -152,6 +152,7 @@ Kalos
 Kashefi
 kernighan
 Killoran
+Kraus
 kwarg
 kwargs
 lexicographically
@@ -298,6 +299,7 @@ shorthands
 Spall
 spo
 Springer
+sqd
 sqrt
 stabilizer
 statevector

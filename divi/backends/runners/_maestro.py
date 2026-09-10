@@ -8,7 +8,7 @@ import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from threading import Event, Lock
 from typing import TYPE_CHECKING, Any
 
@@ -106,6 +106,26 @@ def _resolve_noise_realizations(
     return realizations
 
 
+TRUNCATION_MODES = ("relative_max", "discarded_weight")
+KRAUS_COMPLETENESS_CHECKS = ("ignore", "warn", "strict")
+
+# Maestro applies at most one SVD solver per backend, so two flags set in the
+# same group would silently make the winner depend on maestro's ordering.
+GPU_SVD_FLAG_GROUPS = tuple(
+    tuple(
+        f"{prefix}_use_{solver}" for solver in ("gesvd", "gesvdj", "gesvdp", "gesvdr")
+    )
+    for prefix in ("mps", "mpo", "tensor_network")
+)
+
+# Forwarded only when True — maestro's own defaults are False.
+BOOLEAN_FLAG_FIELDS = (
+    "mpo_restore_trace_after_truncation",
+    "mpo_hermitize_after_truncation",
+    *(name for group in GPU_SVD_FLAG_GROUPS for name in group),
+)
+
+
 @dataclass(frozen=True)
 class MaestroConfig:
     """Configuration object for :class:`MaestroSimulator`.
@@ -180,6 +200,74 @@ class MaestroConfig:
     """Trim threshold for PathIntegral simulation.  ``None`` uses maestro's
     default (no trimming)."""
 
+    truncation_mode: str | None = None
+    """SVD truncation convention for MPS and MPO simulation — ``"relative_max"``
+    (keep singular values above ``singular_value_threshold`` times the largest)
+    or ``"discarded_weight"`` (discard the smallest until their cumulative
+    squared weight reaches the threshold).  ``None`` uses maestro's default,
+    ``"discarded_weight"``.  Only QCSim and the GPU backend support
+    ``"relative_max"``; Qiskit Aer raises if it is requested."""
+
+    seed: int | None = None
+    """Seed for maestro's own stochastic simulation, covering measurement
+    sampling and any randomised backend internals.  ``None`` lets maestro seed
+    itself from system entropy.  Distinct from :attr:`noise_seed`, which seeds
+    Pauli-error sampling in the noisy entry points."""
+
+    gpu_device: int | None = None
+    """CUDA-visible device ordinal for the ``"Gpu"`` simulator type.  ``None``
+    uses maestro's default device."""
+
+    mpo_kraus_completeness_check: str | None = None
+    """How the MPO simulator reacts to Kraus operators that do not sum to the
+    identity — ``"ignore"``, ``"warn"`` or ``"strict"`` (raise).  ``None`` uses
+    maestro's default."""
+
+    mpo_restore_trace_after_truncation: bool = False
+    """Rescale the MPO to unit trace after each truncation pass."""
+
+    mpo_hermitize_after_truncation: bool = False
+    """Make the MPO Hermitian again after each truncation pass."""
+
+    mps_use_gesvd: bool = False
+    """Select the ``gesvd`` GPU SVD solver for MPS truncation."""
+
+    mps_use_gesvdj: bool = False
+    """Select the Jacobi ``gesvdj`` GPU SVD solver for MPS truncation."""
+
+    mps_use_gesvdp: bool = False
+    """Select the polar ``gesvdp`` GPU SVD solver for MPS truncation."""
+
+    mps_use_gesvdr: bool = False
+    """Select the randomised ``gesvdr`` GPU SVD solver for MPS truncation."""
+
+    mpo_use_gesvd: bool = False
+    """Select the ``gesvd`` GPU SVD solver for MPO truncation."""
+
+    mpo_use_gesvdj: bool = False
+    """Select the Jacobi ``gesvdj`` GPU SVD solver for MPO truncation."""
+
+    mpo_use_gesvdp: bool = False
+    """Select the polar ``gesvdp`` GPU SVD solver for MPO truncation."""
+
+    mpo_use_gesvdr: bool = False
+    """Select the randomised ``gesvdr`` GPU SVD solver for MPO truncation."""
+
+    tensor_network_use_gesvd: bool = False
+    """Select the ``gesvd`` GPU SVD solver for tensor-network truncation."""
+
+    tensor_network_use_gesvdj: bool = False
+    """Select the Jacobi ``gesvdj`` GPU SVD solver for tensor-network
+    truncation."""
+
+    tensor_network_use_gesvdp: bool = False
+    """Select the polar ``gesvdp`` GPU SVD solver for tensor-network
+    truncation."""
+
+    tensor_network_use_gesvdr: bool = False
+    """Select the randomised ``gesvdr`` GPU SVD solver for tensor-network
+    truncation."""
+
     mps_qubit_threshold: int = MPS_QUBIT_THRESHOLD
     """Qubit count above which automatic MPS selection kicks in.  Only active
     when :attr:`simulation_type` is ``None``; has no effect when
@@ -208,10 +296,8 @@ class MaestroConfig:
     sampled from the noise model.  Expectation-value runs
     (``noisy_estimate_montecarlo``) are fully reproducible because the
     inner loop is analytical.  Noisy *sampling* runs (``noisy_execute``)
-    are only partially reproducible: the same Pauli errors are injected,
-    but the shot-count outcomes still vary across runs because Maestro's
-    measurement sampler initialises its own RNG from system entropy on
-    every call.
+    also need :attr:`seed`, which pins the measurement sampler; without it
+    the same Pauli errors are injected but the shot counts still vary.
 
     Divi-specific; not forwarded to ``maestro.SimulatorConfig``."""
 
@@ -264,6 +350,29 @@ class MaestroConfig:
             # aborts the process with SIGFPE rather than raising.
             if cadence is not None and cadence < 1:
                 raise ValueError(f"{name} must be a positive integer. Got {cadence}.")
+
+        for name, allowed in (
+            ("truncation_mode", TRUNCATION_MODES),
+            ("mpo_kraus_completeness_check", KRAUS_COMPLETENESS_CHECKS),
+        ):
+            value = getattr(self, name)
+            if value is not None and value not in allowed:
+                raise ValueError(f"{name} must be one of {allowed}. Got {value!r}.")
+
+        if self.gpu_device is not None and self.gpu_device < 0:
+            raise ValueError(
+                f"gpu_device must be a non-negative integer. Got {self.gpu_device}."
+            )
+
+        if self.seed is not None and self.seed < 0:
+            raise ValueError(f"seed must be a non-negative integer. Got {self.seed}.")
+
+        for group in GPU_SVD_FLAG_GROUPS:
+            enabled = [name for name in group if getattr(self, name)]
+            if len(enabled) > 1:
+                raise ValueError(
+                    f"At most one of {group} may be set. Got {tuple(enabled)}."
+                )
 
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
@@ -323,8 +432,15 @@ class MaestroConfig:
         elif auto_mps:
             kwargs["max_bond_dimension"] = MPS_AUTO_BOND_DIMENSION
 
-        if self.singular_value_threshold is not None:
-            kwargs["singular_value_threshold"] = self.singular_value_threshold
+        for name in (
+            "singular_value_threshold",
+            "truncation_mode",
+            "seed",
+            "gpu_device",
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                kwargs[name] = value
 
         if self.use_double_precision:
             kwargs["use_double_precision"] = True
@@ -349,10 +465,15 @@ class MaestroConfig:
             "pp_steps_between_trims": self.pp_steps_between_trims,
             "pp_steps_between_deduplications": self.pp_steps_between_deduplications,
             "path_integral_threshold": self.path_integral_threshold,
+            "mpo_kraus_completeness_check": self.mpo_kraus_completeness_check,
         }
         for name, value in property_settings.items():
             if value is not None:
                 setattr(config, name, value)
+
+        for name in BOOLEAN_FLAG_FIELDS:
+            if getattr(self, name):
+                setattr(config, name, True)
 
         # Warned here, not in __post_init__: a config is also an override delta,
         # where a threshold and its cadence can arrive from opposite sides.
@@ -435,6 +556,11 @@ class MaestroSimulator(CircuitRunner):
             method, bond dimension, noise model, and related knobs.  Defaults
             to ``MaestroConfig()``.
         track_depth: Record circuit depth per submission. Defaults to False.
+        force_sampling: If True, route observable measurements through
+            shot-based sampling instead of maestro's native estimation.
+            Needed for readout-error channels, which maestro applies after
+            measurement and so are absent from the analytical estimate.
+            Defaults to False.
     """
 
     def __init__(
@@ -442,6 +568,7 @@ class MaestroSimulator(CircuitRunner):
         shots: int = 5000,
         config: MaestroConfig | None = None,
         track_depth: bool = False,
+        force_sampling: bool = False,
     ):
         if maestro is None:
             raise ImportError(
@@ -450,6 +577,7 @@ class MaestroSimulator(CircuitRunner):
 
         super().__init__(shots=shots, track_depth=track_depth)
         self.config: MaestroConfig = config if config is not None else MaestroConfig()
+        self._force_sampling = force_sampling
 
         # Per-instance circuit fan-out pool, lazy-initialised on first
         # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
@@ -464,8 +592,8 @@ class MaestroSimulator(CircuitRunner):
 
     @property
     def supports_expval(self) -> bool:
-        """Maestro supports native observable estimation."""
-        return True
+        """Maestro supports native observable estimation unless sampling is forced."""
+        return not self._force_sampling
 
     @property
     def is_async(self) -> bool:
@@ -473,7 +601,16 @@ class MaestroSimulator(CircuitRunner):
         return False
 
     def set_seed(self, seed: int) -> None:
-        """No-op — maestro does not yet expose seeding from C++."""
+        """Seed maestro's simulation RNG.
+
+        Rebinds ``config`` with :attr:`MaestroConfig.seed` set, so the seed
+        reaches every subsequent submission; a seed already on the config is
+        overwritten.  Assigning a new ``config`` afterwards discards it.
+
+        Args:
+            seed: Non-negative seed value.
+        """
+        self.config = replace(self.config, seed=seed)
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the per-instance circuit fan-out pool, creating it lazily.

@@ -11,12 +11,18 @@ simulator-side noisy-execution paths are exercised in
 """
 
 import warnings
-from dataclasses import asdict, fields, replace
+from dataclasses import FrozenInstanceError, asdict, fields, replace
 
 import maestro
 import pytest
 
 from divi.backends import MaestroConfig, MaestroSimulator
+from divi.backends.runners._maestro import (
+    BOOLEAN_FLAG_FIELDS,
+    GPU_SVD_FLAG_GROUPS,
+    KRAUS_COMPLETENESS_CHECKS,
+    TRUNCATION_MODES,
+)
 
 # MaestroConfig fields never forwarded to maestro.SimulatorConfig.
 DIVI_ONLY_FIELDS = frozenset(
@@ -55,6 +61,12 @@ class TestDefaults:
         assert config.lookahead_depth == -1
         assert config.mps_measure_no_collapse is True
         assert config.mps_qubit_threshold == 22
+        assert config.truncation_mode is None
+        assert config.seed is None
+        assert config.gpu_device is None
+        assert config.mpo_kraus_completeness_check is None
+        for field in BOOLEAN_FLAG_FIELDS:
+            assert getattr(config, field) is False, field
 
 
 class TestExplicitConstruction:
@@ -70,6 +82,12 @@ class TestExplicitConstruction:
         nm = mocker.MagicMock(name="NoiseModel")
         config = MaestroConfig(noise_model=nm)
         assert config.noise_model is nm
+
+    def test_frozen(self):
+        """Fields cannot be reassigned after construction."""
+        config = MaestroConfig(simulation_type="Statevector")
+        with pytest.raises(FrozenInstanceError):
+            config.simulation_type = "MatrixProductState"
 
     def test_equality_on_value(self):
         """Frozen dataclass — value-equal configs compare equal."""
@@ -165,10 +183,15 @@ class TestOverride:
             "pp_steps_between_trims",
             "pp_steps_between_deduplications",
             "path_integral_threshold",
+            "truncation_mode",
+            "seed",
+            "gpu_device",
+            "mpo_kraus_completeness_check",
             "mps_qubit_threshold",
             "noise_model",
             "noise_seed",
             "noise_realizations",
+            *BOOLEAN_FLAG_FIELDS,
         }
         actual = {f.name for f in fields(MaestroConfig)}
         assert actual == known, (
@@ -249,6 +272,47 @@ class TestToMaestroConfig:
         sim_config = config._to_maestro_config(n_qubits=6)
         assert sim_config.max_bond_dimension == 32
         assert sim_config.singular_value_threshold == 1e-8
+
+    def test_constructor_knobs_reach_maestro(self):
+        """``truncation_mode``, ``seed`` and ``gpu_device`` are constructor args."""
+        sim_config = MaestroConfig(
+            simulation_type="MatrixProductState",
+            truncation_mode="relative_max",
+            seed=1234,
+            gpu_device=1,
+        )._to_maestro_config(n_qubits=6)
+        assert sim_config.truncation_mode == "relative_max"
+        assert sim_config.seed == 1234
+        assert sim_config.gpu_device == 1
+
+    def test_mpo_kraus_completeness_check_reaches_maestro(self):
+        """Property-only, like the pp_* family."""
+        sim_config = MaestroConfig(
+            simulation_type="MatrixProductOperator",
+            mpo_kraus_completeness_check="strict",
+        )._to_maestro_config(n_qubits=4)
+        assert sim_config.mpo_kraus_completeness_check == "strict"
+
+    @pytest.mark.parametrize("solver", ("gesvd", "gesvdj", "gesvdp", "gesvdr"))
+    def test_boolean_flags_reach_maestro_when_set(self, solver):
+        """One solver per group is legal — the exclusion is within a group."""
+        flags = {
+            f"{prefix}_use_{solver}": True
+            for prefix in ("mps", "mpo", "tensor_network")
+        }
+        flags["mpo_restore_trace_after_truncation"] = True
+        flags["mpo_hermitize_after_truncation"] = True
+
+        sim_config = MaestroConfig(**flags)._to_maestro_config(n_qubits=4)
+
+        for field in flags:
+            assert getattr(sim_config, field) is True, field
+
+    def test_unset_boolean_flags_stay_false(self):
+        """Nothing is forwarded on a bare config."""
+        sim_config = MaestroConfig()._to_maestro_config(n_qubits=4)
+        for field in BOOLEAN_FLAG_FIELDS:
+            assert getattr(sim_config, field) is False, field
 
     def test_auto_mps_selection_survives(self):
         """Above ``mps_qubit_threshold`` the built config switches to MPS."""
@@ -333,6 +397,42 @@ class TestPauliPropagationValidation:
             config._to_maestro_config(n_qubits=4)
 
 
+class TestBackendKnobValidation:
+    """Rejects values maestro would silently ignore or abort on."""
+
+    def test_invalid_truncation_mode_rejected(self):
+        with pytest.raises(ValueError, match="truncation_mode must be one of"):
+            MaestroConfig(truncation_mode="relative")
+
+    def test_invalid_kraus_completeness_check_rejected(self):
+        with pytest.raises(
+            ValueError, match="mpo_kraus_completeness_check must be one of"
+        ):
+            MaestroConfig(mpo_kraus_completeness_check="raise")
+
+    def test_allow_listed_values_are_accepted(self):
+        for mode in TRUNCATION_MODES:
+            assert MaestroConfig(truncation_mode=mode).truncation_mode == mode
+        for check in KRAUS_COMPLETENESS_CHECKS:
+            config = MaestroConfig(mpo_kraus_completeness_check=check)
+            assert config.mpo_kraus_completeness_check == check
+
+    def test_negative_gpu_device_rejected(self):
+        """Maestro's own setter raises; divi fails at construction instead."""
+        with pytest.raises(ValueError, match="gpu_device must be a non-negative"):
+            MaestroConfig(gpu_device=-1)
+
+    def test_negative_seed_rejected(self):
+        with pytest.raises(ValueError, match="seed must be a non-negative"):
+            MaestroConfig(seed=-1)
+
+    @pytest.mark.parametrize("group", GPU_SVD_FLAG_GROUPS)
+    def test_two_svd_solvers_in_one_group_rejected(self, group):
+        """Maestro applies one solver per backend, so the winner would be arbitrary."""
+        with pytest.raises(ValueError, match="At most one of"):
+            MaestroConfig(**{group[0]: True, group[1]: True})
+
+
 class TestSimulatorPassThrough:
     """``MaestroSimulator(MaestroConfig(...))`` carries the config verbatim."""
 
@@ -340,6 +440,21 @@ class TestSimulatorPassThrough:
         config = MaestroConfig(noise_seed=13, noise_realizations=5)
         sim = MaestroSimulator(config=config)
         assert sim.config is config
+
+    def test_set_seed_replaces_only_the_seed(self, mocker):
+        nm = mocker.MagicMock(name="NoiseModel")
+        sim = MaestroSimulator(
+            config=MaestroConfig(seed=1, noise_seed=13, noise_model=nm)
+        )
+        sim.set_seed(2)
+        assert sim.config.seed == 2
+        assert sim.config.noise_seed == 13
+        assert sim.config.noise_model is nm
+
+    def test_set_seed_rejects_negative(self):
+        sim = MaestroSimulator()
+        with pytest.raises(ValueError, match="seed must be a non-negative"):
+            sim.set_seed(-1)
 
     def test_loose_noise_kwarg_rejected_on_simulator(self):
         """``MaestroSimulator`` does not accept loose noise kwargs — they live on

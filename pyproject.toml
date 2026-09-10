@@ -32,7 +32,7 @@ dependencies = [
     # Graph operations and partitioning
     "networkx>=3.5,<4.0",
     "pymetis>=2025.1.1,<2026.0.0; sys_platform != 'win32'",
-    "qoro-maestro==0.2.19",
+    "qoro-maestro==0.3.1",
     # Optimization algorithms
     "pymoo>=0.6,<0.7",
     "dimod>=0.12.22,<0.13",
@@ -160,3 +160,6 @@ project-includes = [
 project-excludes = [
     "divi/ai/**/*.py",
 ]
+# maestro 0.3.1 re-exports its compiled module via ``from .maestro import *``,
+# which pyrefly cannot resolve attributes through.
+replace-imports-with-any = ["maestro"]

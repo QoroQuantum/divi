@@ -36,6 +36,15 @@ _BELL_QASM = (
 )
 
 
+def _bell_counts(seed, *, noise_model=None, shots=400):
+    """Sample the Bell circuit on real maestro under ``seed``."""
+    sim = MaestroSimulator(
+        shots=shots,
+        config=MaestroConfig(seed=seed, noise_model=noise_model),
+    )
+    return sim.submit_circuits({"c0": _BELL_QASM}).results[0]["results"]
+
+
 def _make_fake_maestro(mocker, counts=None, expvals=None):
     """Return a mock ``maestro`` module with ``simple_execute`` and circuit API."""
     maestro = mocker.MagicMock()
@@ -119,58 +128,14 @@ def test_import_error_without_maestro(mocker):
         MaestroSimulator()
 
 
-class TestMaestroConfig:
-    def test_defaults(self):
-        """Default MaestroConfig matches maestro's SimulatorConfig defaults."""
-        cfg = MaestroConfig()
-        assert cfg.simulator_type is None
-        assert cfg.simulation_type is None
-        assert cfg.max_bond_dimension is None
-        assert cfg.singular_value_threshold is None
-        assert cfg.use_double_precision is False
-        assert cfg.disable_optimized_swapping is False
-        assert cfg.lookahead_depth == -1
-        assert cfg.mps_measure_no_collapse is True
-        assert cfg.mps_qubit_threshold == 22
-
-    def test_frozen(self):
-        """MaestroConfig is a frozen dataclass — attributes are immutable."""
-        cfg = MaestroConfig(simulation_type="Statevector")
-        with pytest.raises(Exception):  # FrozenInstanceError
-            cfg.simulation_type = "MatrixProductState"
-
-    def test_override_replaces_non_default_fields(self):
-        """override() copies only non-default fields from ``other``."""
-        base = MaestroConfig(
-            simulation_type="Statevector",
-            max_bond_dimension=128,
-        )
-        override = MaestroConfig(max_bond_dimension=256)
-        merged = base.override(override)
-
-        assert merged.simulation_type == "Statevector"  # preserved from base
-        assert merged.max_bond_dimension == 256  # taken from override
-
-    def test_override_returns_new_instance(self):
-        """override() never mutates the original."""
-        base = MaestroConfig(simulation_type="Statevector")
-        override = MaestroConfig(simulation_type="MatrixProductState")
-        merged = base.override(override)
-
-        assert base.simulation_type == "Statevector"
-        assert merged is not base
-        assert merged.simulation_type == "MatrixProductState"
-
-    def test_rejects_unknown_field(self):
-        """Unknown fields raise TypeError — no silent kwarg-dropping."""
-        with pytest.raises(TypeError):
-            MaestroConfig(bogus_field=1)
-
-
 class TestProperties:
     def test_supports_expval(self, mocker):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
         assert sim.supports_expval is True
+
+    def test_force_sampling_disables_expval(self, mocker):
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker), force_sampling=True)
+        assert sim.supports_expval is False
 
     def test_is_async(self, mocker):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
@@ -422,6 +387,9 @@ class TestSamplingSubmission:
         assert "disable_optimized_swapping" not in kwargs
         assert "lookahead_depth" not in kwargs
         assert "mps_measure_no_collapse" not in kwargs
+        assert "truncation_mode" not in kwargs
+        assert "seed" not in kwargs
+        assert "gpu_device" not in kwargs
 
 
 class TestParallelExecution:
@@ -1237,18 +1205,16 @@ class TestRealMaestroIntegration:
             if not name.startswith("_")
         }
         _divi_only = {
-            # mps_qubit_threshold is divi-side auto-MPS logic, not a maestro knob.
+            # Divi-side auto-MPS logic, not a maestro knob.
             "mps_qubit_threshold",
-            # Noise lives on MaestroConfig but is consumed by the noisy entry
-            # points (noisy_execute / noisy_estimate / *_montecarlo) — Maestro
-            # keeps noise out of SimulatorConfig itself.
+            # Consumed by the noisy entry points; maestro keeps noise out of
+            # SimulatorConfig itself.
             "noise_model",
             "noise_seed",
             "noise_realizations",
         }
-        # Guard: if any divi-only field is removed from MaestroConfig, the
-        # exclusion set would silently over-exclude and the parity check would
-        # pass even though a field went missing.
+        # Guard against the exclusion set silently over-excluding a field that
+        # was removed from MaestroConfig.
         assert _divi_only <= {f.name for f in fields(MaestroConfig)}, (
             f"Exclusion set names fields no longer in MaestroConfig: "
             f"{_divi_only - {f.name for f in fields(MaestroConfig)}}"
@@ -1267,6 +1233,9 @@ class TestRealMaestroIntegration:
         maestro renames or removes one of the kwargs we forward, the nanobind
         dispatcher raises ``TypeError`` here — catching the class of break
         that slipped past us on the previous maestro release.
+
+        ``gpu_device`` is the one exclusion: it selects a CUDA device, so
+        setting it makes the run depend on the host having one.
         """
         cfg = MaestroConfig(
             simulator_type="QCSim",
@@ -1277,12 +1246,48 @@ class TestRealMaestroIntegration:
             disable_optimized_swapping=True,
             lookahead_depth=2,
             mps_measure_no_collapse=False,
+            truncation_mode="relative_max",
+            seed=99,
+            mpo_kraus_completeness_check="warn",
+            mpo_restore_trace_after_truncation=True,
+            mpo_hermitize_after_truncation=True,
+            mps_use_gesvdj=True,
+            mpo_use_gesvdp=True,
+            tensor_network_use_gesvdr=True,
         )
         sim = MaestroSimulator(shots=100, config=cfg)
 
         result = sim.submit_circuits({"c0": _BELL_QASM})
 
         assert sum(result.results[0]["results"].values()) == 100
+
+    def test_seed_pins_and_varies_the_sampling_stream(self):
+        """The same seed repeats a stream; different seeds produce different ones."""
+        assert _bell_counts(1234) == _bell_counts(1234)
+        draws = {tuple(sorted(_bell_counts(seed).items())) for seed in range(5)}
+        assert len(draws) > 1
+
+    def test_unseeded_sampling_is_not_pinned(self):
+        """Without a seed maestro draws from system entropy.
+
+        Five draws, not two: at 400 shots the Bell counts have a standard
+        deviation near 10, so a single pair collides about 3% of the time.
+        """
+        draws = {tuple(sorted(_bell_counts(None).items())) for _ in range(5)}
+        assert len(draws) > 1
+
+    def test_seeded_noisy_sampling_is_reproducible(self):
+        """``seed`` pins the noisy sampling path too, not just the noiseless one.
+
+        ``noise_seed`` alone covers the Pauli error patterns; the counts come
+        from the measurement sampler, which is what ``seed`` reaches.
+        """
+        noise_model = _real_maestro.NoiseModel()
+        noise_model.set_all_depolarizing(num_qubits=2, p=0.05)
+
+        assert _bell_counts(21, noise_model=noise_model) == _bell_counts(
+            21, noise_model=noise_model
+        )
 
     def test_expval_path_on_real_maestro(self):
         """The simple_estimate call path is covered separately from simple_execute."""

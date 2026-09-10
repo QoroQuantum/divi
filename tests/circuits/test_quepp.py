@@ -6,6 +6,7 @@
 
 import warnings
 
+import maestro
 import numpy as np
 import pytest
 import stim
@@ -14,11 +15,7 @@ from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 
-pytest.importorskip("qiskit_aer")
-
-from qiskit_aer.noise import NoiseModel
-
-from divi.backends import QiskitSimulator
+from divi.backends import MaestroConfig, MaestroSimulator
 from divi.circuits import MetaCircuit
 from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import (
@@ -48,6 +45,15 @@ from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
 _Z0 = SparsePauliOp("Z")
 _Z0_2Q = SparsePauliOp.from_list([("IZ", 1.0)])
 _Z0Z1 = SparsePauliOp.from_list([("ZZ", 1.0)])
+
+
+def _quepp_backend(*, force_sampling: bool = False, **config_kwargs):
+    """A seeded maestro backend at the shot count the end-to-end tests need."""
+    return MaestroSimulator(
+        shots=200000,
+        force_sampling=force_sampling,
+        config=MaestroConfig(seed=42, **config_kwargs),
+    )
 
 
 def _rx_expval_meta(angle: float) -> MetaCircuit:
@@ -1250,14 +1256,14 @@ class TestQuEPPPipelineIntegration:
         """QuEPP mitigates uniform readout noise on a real backend."""
         meta = _rx_expval_meta(0.8)
 
-        noise = NoiseModel()
-        noise.add_all_qubit_readout_error([[0.95, 0.05], [0.05, 0.95]])
+        noise = maestro.NoiseModel()
+        noise.set_all_readout_error(1, 0.05)
 
-        shared = dict(shots=200000, simulation_seed=42, _deterministic_execution=True)
-
+        # Readout error is applied after measurement, so maestro's analytical
+        # estimate never sees it — every arm here has to sample.
         exact = list(
             CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
-            .run(meta, PipelineEnv(backend=QiskitSimulator(**shared)))
+            .run(meta, PipelineEnv(backend=_quepp_backend(force_sampling=True)))
             .values()
         )[0][0]
 
@@ -1265,7 +1271,9 @@ class TestQuEPPPipelineIntegration:
             CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
             .run(
                 meta,
-                PipelineEnv(backend=QiskitSimulator(noise_model=noise, **shared)),
+                PipelineEnv(
+                    backend=_quepp_backend(force_sampling=True, noise_model=noise)
+                ),
             )
             .values()
         )[0][0]
@@ -1287,7 +1295,9 @@ class TestQuEPPPipelineIntegration:
             )
             .run(
                 meta,
-                PipelineEnv(backend=QiskitSimulator(noise_model=noise, **shared)),
+                PipelineEnv(
+                    backend=_quepp_backend(force_sampling=True, noise_model=noise)
+                ),
             )
             .values()
         )[0][0]
@@ -1463,10 +1473,6 @@ class TestQuEPPMultiObservable:
         single_meta_1 = meta_from_circuit(qc, observable=_Z0_2Q)
         single_meta_2 = meta_from_circuit(qc, observable=_Z0Z1)
 
-        backend_kwargs = dict(
-            shots=200000, simulation_seed=42, _deterministic_execution=True
-        )
-
         def _run(meta):
             return list(
                 CircuitPipeline(
@@ -1483,7 +1489,7 @@ class TestQuEPPMultiObservable:
                     ],
                     suppress_performance_warnings=True,
                 )
-                .run(meta, PipelineEnv(backend=QiskitSimulator(**backend_kwargs)))
+                .run(meta, PipelineEnv(backend=_quepp_backend()))
                 .values()
             )[0]
 
@@ -1527,14 +1533,7 @@ class TestQuEPPMultiObservable:
                 ],
                 suppress_performance_warnings=True,
             )
-            .run(
-                meta,
-                PipelineEnv(
-                    backend=QiskitSimulator(
-                        shots=200000, simulation_seed=42, _deterministic_execution=True
-                    )
-                ),
-            )
+            .run(meta, PipelineEnv(backend=_quepp_backend()))
             .values()
         )[0]
 

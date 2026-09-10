@@ -480,7 +480,7 @@ Backend Comparison
      - Qiskit fake backends & noise models
      - Hardware noise (real QPUs)
    * - **Seed / Reproducibility**
-     - ``noise_seed`` (noisy paths only, defaults to ``42``)
+     - ``seed`` (measurement sampling) and ``noise_seed`` (noisy paths, defaults to ``42``)
      - ``simulation_seed`` parameter
      - N/A
    * - **Depth Tracking**
@@ -505,7 +505,7 @@ Operational notes
 
 .. _operational-notes-shot-reproducibility:
 
-* **Shot reproducibility**: :meth:`~divi.backends.MaestroSimulator.set_seed` is a no-op — Maestro's noiseless simulators seed their measurement RNG from system entropy.  :attr:`~divi.backends.MaestroConfig.noise_seed` pins **Pauli error patterns** for noisy execution (each circuit gets ``noise_seed + i``), so noisy expval runs are fully reproducible; noisy sampling counts still vary because Maestro's measurement sampler re-seeds from entropy each call.  For reproducible noiseless counts, use :class:`~divi.backends.QiskitSimulator` with ``simulation_seed``.
+* **Shot reproducibility**: :attr:`~divi.backends.MaestroConfig.seed` pins Maestro's measurement sampler, so seeded sampling runs repeat exactly; :meth:`~divi.backends.MaestroSimulator.set_seed` sets the same knob on an existing simulator.  Left unset, the sampler draws from system entropy.  :attr:`~divi.backends.MaestroConfig.noise_seed` is separate and pins **Pauli error patterns** for noisy execution (each circuit gets ``noise_seed + i``), which is enough on its own for noisy expval runs; reproducible *noisy sampling* needs both seeds.
 * **QoroService latency**: Client-side wait time is dominated by how you poll; tune ``polling_interval`` and ``max_retries`` on :class:`~divi.backends.QoroService`. For fast inner loops, use a local simulator; cloud queue time is outside the client library.
 
 Next Steps

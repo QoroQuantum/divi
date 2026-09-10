@@ -10,7 +10,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 pytest.importorskip("qiskit_aer")
 
-from divi.backends import ExecutionResult, QiskitSimulator
+from divi.backends import ExecutionResult, MaestroSimulator, QiskitSimulator
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import QuEPP
@@ -784,9 +784,8 @@ class TestTimeEvolutionE2E:
         probs = te.results
         assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
 
-    def test_qdrift_tfim_non_commuting_expval(self):
+    def test_qdrift_tfim_non_commuting_expval(self, default_test_simulator):
         """QDrift TFIM 4q (non-commuting ZZ+X): Campbell's protocol matches exact."""
-        backend = QiskitSimulator(shots=10000, _deterministic_execution=True)
         hamiltonian = _op(
             [("ZZ", [q, q + 1], -1.0) for q in range(3)]
             + [("X", [q], -1.0) for q in range(4)],
@@ -799,7 +798,7 @@ class TestTimeEvolutionE2E:
             n_steps=10,
             observable=hamiltonian,
             trotterization_strategy=ExactTrotterization(),
-            backend=backend,
+            backend=default_test_simulator,
         )
         te_exact.run()
 
@@ -814,15 +813,14 @@ class TestTimeEvolutionE2E:
                 n_hamiltonians_per_iteration=20,
                 sampling_strategy="weighted",
             ),
-            backend=backend,
+            backend=default_test_simulator,
         )
         te_qdrift.run()
 
         assert abs(te_exact.results - te_qdrift.results) < _QDRIFT_EXPVAL_TOL
 
-    def test_qdrift_x_plus_z_non_commuting_expval(self):
+    def test_qdrift_x_plus_z_non_commuting_expval(self, default_test_simulator):
         """QDrift H=X+Z (non-commuting): Campbell's protocol matches exact."""
-        backend = QiskitSimulator(shots=10000, _deterministic_execution=True)
         hamiltonian = _H_X_PLUS_Z
 
         te_exact = TimeEvolution(
@@ -831,7 +829,7 @@ class TestTimeEvolutionE2E:
             n_steps=10,
             observable=hamiltonian,
             trotterization_strategy=ExactTrotterization(),
-            backend=backend,
+            backend=default_test_simulator,
         )
         te_exact.run()
 
@@ -846,7 +844,7 @@ class TestTimeEvolutionE2E:
                 n_hamiltonians_per_iteration=20,
                 sampling_strategy="weighted",
             ),
-            backend=backend,
+            backend=default_test_simulator,
         )
         te_qdrift.run()
 
@@ -866,9 +864,7 @@ class TestTimeEvolutionE2E:
         )
 
         # Exact: evolves with all 6 terms across 4 Trotter steps
-        backend_exact = QiskitSimulator(
-            shots=1000, track_depth=True, _deterministic_execution=True
-        )
+        backend_exact = MaestroSimulator(shots=1000, track_depth=True)
         te_exact = TimeEvolution(
             hamiltonian=hamiltonian,
             time=0.5,
@@ -880,9 +876,7 @@ class TestTimeEvolutionE2E:
         exact_depth = backend_exact.average_depth()
 
         # QDrift: samples only 2 of the 6 terms
-        backend_qdrift = QiskitSimulator(
-            shots=1000, track_depth=True, _deterministic_execution=True
-        )
+        backend_qdrift = MaestroSimulator(shots=1000, track_depth=True)
         te_qdrift = TimeEvolution(
             hamiltonian=hamiltonian,
             time=0.5,
@@ -979,16 +973,15 @@ class TestTimeEvolutionQEM:
         stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
         assert "ParameterBindingStage" not in stage_names
 
-    def test_quepp_run_produces_mitigated_result(self):
+    def test_quepp_run_produces_mitigated_result(self, default_test_simulator):
         """QuEPP on TimeEvolution produces a scalar result."""
-        backend = QiskitSimulator(shots=5000, _deterministic_execution=True)
         hamiltonian = _H_X_PLUS_Z
 
         te = TimeEvolution(
             hamiltonian=hamiltonian,
             time=0.5,
             observable=_Z0_1Q,
-            backend=backend,
+            backend=default_test_simulator,
             qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
         )
         te.run()
