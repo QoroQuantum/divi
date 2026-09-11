@@ -10,3 +10,11 @@ tuning, from classical gradient-based methods to quantum-inspired approaches.
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
+   :skip: MonteCarloState
+   :skip: PymooState
+
+.. autopydantic_model:: divi.qprog.optimizers.MonteCarloState
+   :members:
+
+.. autopydantic_model:: divi.qprog.optimizers.PymooState
+   :members:

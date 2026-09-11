@@ -435,6 +435,92 @@ class TestQoroServiceMock:
         assert result[1].minimum_tier == "PRO"
         mock_update_cache.assert_called_once_with(result)
 
+    def test_fetch_vendor_blueprints(self, mocker, qoro_service_factory):
+        """Test fetch_vendor_blueprints returns the payload keyed by vendor."""
+        mock_json_data = {
+            "ibm": {
+                "label": "IBM",
+                "credentials": [
+                    {
+                        "name": "IBM_TOKEN",
+                        "kind": "text",
+                        "required": True,
+                        "secret": True,
+                        "choices": [],
+                        "default": None,
+                    }
+                ],
+                "device": [
+                    {
+                        "name": "TRANSPILE_LEVEL",
+                        "kind": "number",
+                        "required": False,
+                        "secret": False,
+                        "choices": [],
+                        "default": 2,
+                    },
+                    {
+                        "name": "USE_TWIRLING",
+                        "kind": "toggle",
+                        "required": False,
+                        "secret": False,
+                        "choices": ["true", "false"],
+                        "default": "false",
+                        # Not one of the documented five: the reshape must pass
+                        # unrecognised spec fields through untouched.
+                        "help_text": "Enable Pauli twirling.",
+                    },
+                ],
+            },
+            "braket": {"label": "BRAKET", "credentials": [], "device": []},
+        }
+
+        service = qoro_service_factory()
+
+        mock_response = mocker.MagicMock()
+        mock_response.json.return_value = mock_json_data
+        mock_request = mocker.patch.object(
+            service, "_make_request", return_value=mock_response
+        )
+
+        result = service.fetch_vendor_blueprints()
+
+        mock_request.assert_called_once_with(
+            "get", "vendor-config-blueprint/", timeout=10
+        )
+        assert result == {
+            "ibm": {
+                "label": "IBM",
+                "credentials": {
+                    "IBM_TOKEN": {
+                        "kind": "text",
+                        "required": True,
+                        "secret": True,
+                        "choices": [],
+                        "default": None,
+                    }
+                },
+                "device": {
+                    "TRANSPILE_LEVEL": {
+                        "kind": "number",
+                        "required": False,
+                        "secret": False,
+                        "choices": [],
+                        "default": 2,
+                    },
+                    "USE_TWIRLING": {
+                        "kind": "toggle",
+                        "required": False,
+                        "secret": False,
+                        "choices": ["true", "false"],
+                        "default": "false",
+                        "help_text": "Enable Pauli twirling.",
+                    },
+                },
+            },
+            "braket": {"label": "BRAKET", "credentials": {}, "device": {}},
+        }
+
     def test_parse_simulator_clusters(self):
         """Test parse_simulator_clusters handles various JSON shapes."""
         clusters = parse_simulator_clusters(
@@ -972,7 +1058,7 @@ class TestQoroServiceMock:
                 bond_dimension=64,
                 simulation_method=SimulationMethod.MatrixProductState,
                 simulator=Simulator.QCSim,
-                api_meta={"optimization_level": 2},
+                extra_kwargs={"optimization_level": 2},
             ),
         )
 
@@ -2195,7 +2281,7 @@ class TestQoroServiceMock:
             truncation_threshold=1e-8,
             simulator=Simulator.QCSim,
             simulation_method=SimulationMethod.MatrixProductState,
-            api_meta={"optimization_level": 2},
+            extra_kwargs={"optimization_level": 2},
         )
         result = service.set_execution_config(make_execution_result("job_1"), config)
 
@@ -2233,7 +2319,7 @@ class TestQoroServiceMock:
             service.set_execution_config(make_execution_result("job_1"), config)
 
     def test_set_execution_config_validation_error(self, mocker, qoro_service_factory):
-        """Test 400 Bad Request for invalid api_meta keys."""
+        """Test 400 Bad Request for settings keys the service does not accept."""
         service = qoro_service_factory()
         mock_response = mocker.MagicMock()
         mock_response.status_code = 400
@@ -2247,7 +2333,7 @@ class TestQoroServiceMock:
 
         mocker.patch.object(service, "_make_request", side_effect=mock_error)
 
-        config = ExecutionConfig(api_meta={"invalid_key": 42})
+        config = ExecutionConfig(extra_kwargs={"invalid_key": 42})
         with pytest.raises(requests.exceptions.HTTPError, match="400 Bad Request"):
             service.set_execution_config(make_execution_result("job_1"), config)
 
@@ -2301,7 +2387,7 @@ class TestQoroServiceMock:
         assert config.truncation_threshold == 1e-8
         assert config.simulator == Simulator.QCSim
         assert config.simulation_method == SimulationMethod.MatrixProductState
-        assert config.api_meta == {"optimization_level": 2}
+        assert config.extra_kwargs == {"optimization_level": 2}
 
     def test_get_execution_config_not_found(self, mocker, qoro_service_factory):
         """Test 404 when no execution config exists for the job."""
@@ -2604,6 +2690,17 @@ class TestQoroServiceWithApiKey:
         if systems:
             assert isinstance(systems[0], QPUSystem)
 
+    def test_fetch_vendor_blueprints(self, qoro_service):
+        """Tests fetching the vendor config blueprints."""
+        blueprints = qoro_service.fetch_vendor_blueprints()
+        assert isinstance(blueprints, dict)
+        for vendor, blueprint in blueprints.items():
+            assert isinstance(vendor, str)
+            assert isinstance(blueprint["label"], str)
+            for section in ("credentials", "device"):
+                assert all(isinstance(key, str) for key in blueprint[section])
+                assert all("name" not in spec for spec in blueprint[section].values())
+
     def test_get_job_results(self, qoro_service, circuits):
         """Tests submitting a job, polling until complete, and fetching results."""
         # Use only one circuit for a quicker test
@@ -2779,7 +2876,7 @@ class TestQoroServiceWithApiKey:
             bond_dimension=16,
             simulator=Simulator.QCSim,
             simulation_method=SimulationMethod.MatrixProductState,
-            api_meta={"optimization_level": 1},
+            extra_kwargs={"optimization_level": 1},
         )
         try:
             response = qoro_service.set_execution_config(result, config)
@@ -2797,7 +2894,7 @@ class TestQoroServiceWithApiKey:
         assert retrieved.bond_dimension == 16
         assert retrieved.simulator == Simulator.QCSim
         assert retrieved.simulation_method == SimulationMethod.MatrixProductState
-        assert retrieved.api_meta == {"optimization_level": 1}
+        assert retrieved.extra_kwargs == {"optimization_level": 1}
 
     def test_set_and_get_noise_config(self, qoro_service, circuits):
         """Noise fields (noisy_device, noise_realizations) round-trip."""
@@ -2818,7 +2915,7 @@ class TestQoroServiceWithApiKey:
             bond_dimension=16,
             simulator=Simulator.QCSim,
             simulation_method=SimulationMethod.MatrixProductState,
-            api_meta={"optimization_level": 1},
+            extra_kwargs={"optimization_level": 1},
         )
         result = qoro_service.submit_circuits(
             single_circuit, override_execution_config=config
@@ -2829,7 +2926,7 @@ class TestQoroServiceWithApiKey:
         assert retrieved.bond_dimension == 16
         assert retrieved.simulator == Simulator.QCSim
         assert retrieved.simulation_method == SimulationMethod.MatrixProductState
-        assert retrieved.api_meta == {"optimization_level": 1}
+        assert retrieved.extra_kwargs == {"optimization_level": 1}
 
     def test_parametric_submission_returns_job_id(self, qoro_service):
         """Templated submission round-trips through the real API and returns

@@ -3,8 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
-from dataclasses import InitVar, dataclass, field, fields
 from enum import IntEnum
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ._systems import QPUSystem, SimulatorCluster
 
@@ -50,8 +52,86 @@ class SimulationMethod(IntEnum):
     """Extended stabilizer simulation."""
 
 
-@dataclass(frozen=True)
-class ExecutionConfig:
+class DeviceConfig(BaseModel):
+    """Per-job overrides for the device settings of the target QPU.
+
+    Each QPU carries these settings already, configured on the Qoro dashboard.
+    Setting one here overrides it for a single job; anything left unset keeps
+    the target's stored value.
+
+    Written in Python spelling and translated to the service's own on the way
+    out, so ``use_twirling=True`` is sent as ``"USE_TWIRLING": "true"`` — the
+    exact string the vendor workers compare against.
+
+    Which settings a given QPU accepts depends on its vendor, and a setting the
+    target's vendor does not recognise is ignored rather than rejected. Use
+    :meth:`~divi.backends.QoroService.fetch_vendor_blueprints` to see what each
+    vendor takes. ``extra`` carries anything the service has added since this
+    version of Divi, written in the service's own spelling.
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", alias_generator=str.upper, populate_by_name=True
+    )
+
+    ibm_device: str | None = None
+    """Name of the IBM backend to run on, e.g. ``"ibm_fez"``."""
+
+    transpile_level: int | None = Field(default=None, ge=0, le=3)
+    """Qiskit optimisation level, 0 to 3."""
+
+    use_twirling: bool | None = None
+    """Enable Pauli twirling."""
+
+    use_mitigation: bool | None = None
+    """Enable error mitigation."""
+
+    use_error_suppression: bool | None = None
+    """Enable error suppression."""
+
+    aggressive_compiling: bool | None = None
+    """Try several transpilation seeds and keep the lowest-noise circuit."""
+
+    aggressive_compiling_seeds: int | None = Field(default=None, gt=0)
+    """How many seeds aggressive compiling tries."""
+
+    iqm_device_url: str | None = None
+    """URL of the IQM device; its last segment names the device."""
+
+    device_max_shots_per_batch: int | None = Field(default=None, gt=0)
+    """Largest shot count the device accepts in one batch."""
+
+    extra: dict[str, Any] = Field(default_factory=dict)
+    """Settings this version of Divi does not model, keyed as the service
+    spells them. Values are sent unchanged."""
+
+    @model_validator(mode="after")
+    def _reject_shadowed_extras(self):
+        """An ``extra`` key that duplicates a field would silently win."""
+        modelled = {
+            spec.alias or name
+            for name, spec in type(self).model_fields.items()
+            if name != "extra"
+        }
+        clashes = sorted(modelled & set(self.extra))
+        if clashes:
+            raise ValueError(
+                f"{clashes} are already fields on DeviceConfig; set them directly "
+                "instead of through 'extra'."
+            )
+        return self
+
+    def to_api_meta(self) -> dict:
+        """Flatten to the keys the service expects, dropping unset settings."""
+        payload = self.model_dump(by_alias=True, exclude_none=True, exclude={"extra"})
+        canonical = {
+            key: str(value).lower() if isinstance(value, bool) else value
+            for key, value in payload.items()
+        }
+        return canonical | self.extra
+
+
+class ExecutionConfig(BaseModel):
     """Execution configuration for a Qoro Service job.
 
     All fields are optional. When set on a job via
@@ -59,10 +139,12 @@ class ExecutionConfig:
     omitted from the request so the server keeps its own defaults.
     """
 
-    bond_dimension: int | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    bond_dimension: int | None = Field(default=None, gt=0)
     """MPS bond dimension."""
 
-    truncation_threshold: float | None = None
+    truncation_threshold: float | None = Field(default=None, ge=0)
     """MPS truncation threshold."""
 
     simulator: Simulator | None = None
@@ -74,55 +156,26 @@ class ExecutionConfig:
     noisy_device: str | None = None
     """Name of a noisy device backend to emulate (e.g. ``"ibm_fake_fez"``)."""
 
-    noise_realizations: int | None = None
+    noise_realizations: int | None = Field(default=None, gt=0)
     """Number of noise realizations to average over."""
 
-    noise_scaling_factor: float | None = None
+    noise_scaling_factor: float | None = Field(default=None, ge=0, le=1)
     """Scaling factor applied to the device noise, between 0 and 1."""
 
-    api_meta: dict | None = field(default=None)
-    """Runtime pass-through metadata. Forwarded to the cloud runtime;
-    unknown keys are rejected server-side. Allowed keys and value types:
+    device_config: DeviceConfig | None = None
+    """Per-job overrides for the target QPU's device settings."""
 
-    * ``optimization_level`` (``int``)
-    * ``resilience_level`` (``int``)
-    * ``max_execution_time`` (``int``) — seconds
-    * ``transpilation_seed`` (``int``)
-    * ``layout_method`` (``str``)
-    * ``routing_method`` (``str``)
-    * ``approximation_degree`` (``int`` or ``float``)
+    extra_kwargs: dict | None = None
+    """Escape hatch for runtime settings Divi does not model, passed to the
+    service unchanged; unknown keys are rejected server-side.
+
+    Prefer :attr:`~divi.backends.ExecutionConfig.device_config` for device
+    settings — it is typed, and it spells them the way the service expects.
     """
 
-    _validate_input: InitVar[bool] = True
-    """Internal: ``False`` skips input guards on reconstruction paths."""
-
-    def __post_init__(self, _validate_input: bool):
-        """Validates the configuration."""
-        if not _validate_input:
-            return
-
-        if self.bond_dimension is not None and self.bond_dimension <= 0:
-            raise ValueError(
-                f"bond_dimension must be a positive integer. Got {self.bond_dimension}."
-            )
-
-        if self.truncation_threshold is not None and self.truncation_threshold < 0:
-            raise ValueError(
-                f"truncation_threshold must be non-negative. Got {self.truncation_threshold}."
-            )
-
-        if self.noise_realizations is not None and self.noise_realizations <= 0:
-            raise ValueError(
-                f"noise_realizations must be a positive integer. Got {self.noise_realizations}."
-            )
-
-        if self.noise_scaling_factor is not None and not (
-            0 <= self.noise_scaling_factor <= 1
-        ):
-            raise ValueError(
-                f"noise_scaling_factor must be between 0 and 1. Got {self.noise_scaling_factor}."
-            )
-
+    @model_validator(mode="after")
+    def _warn_on_inert_combinations(self):
+        """Flags settings that are accepted but will not do what they look like."""
         if self.noisy_device is not None and self.noise_scaling_factor == 0:
             warnings.warn(
                 f"noise_scaling_factor=0 cancels all noise from noisy_device "
@@ -145,6 +198,8 @@ class ExecutionConfig:
                 stacklevel=3,
             )
 
+        return self
+
     def override(self, other: "ExecutionConfig") -> "ExecutionConfig":
         """Creates a new config by overriding attributes with non-None values.
 
@@ -159,20 +214,21 @@ class ExecutionConfig:
         Returns:
             A new ExecutionConfig instance with the merged configurations.
         """
-        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
+        current_attrs = dict(self)
 
-        for f in fields(other):
-            other_value = getattr(other, f.name)
+        for name in type(other).model_fields:
+            other_value = getattr(other, name)
             if other_value is not None:
-                current_attrs[f.name] = other_value
+                current_attrs[name] = other_value
 
-        return ExecutionConfig(**current_attrs, _validate_input=False)
+        return ExecutionConfig.model_construct(**current_attrs)
 
     def to_payload(self) -> dict:
         """Serialise to the JSON body expected by the API.
 
         ``None`` fields are omitted; enum values are converted to their
-        integer representation.
+        integer representation. :attr:`~divi.backends.ExecutionConfig.device_config`
+        is flattened into the same settings field the service reads both from.
 
         Returns:
             dict: JSON-serialisable payload for
@@ -194,14 +250,31 @@ class ExecutionConfig:
             payload["noise_realizations"] = self.noise_realizations
         if self.noise_scaling_factor is not None:
             payload["noise_scaling_factor"] = self.noise_scaling_factor
-        if self.api_meta is not None:
-            payload["api_meta"] = self.api_meta
+        api_meta = dict(self.extra_kwargs) if self.extra_kwargs is not None else {}
+        if self.device_config is not None:
+            device = self.device_config.to_api_meta()
+            clashes = sorted(set(api_meta) & set(device))
+            if clashes:
+                raise ValueError(
+                    f"{clashes} set on both device_config and extra_kwargs. Keep "
+                    "device settings on device_config."
+                )
+            api_meta |= device
+        if api_meta:
+            payload["api_meta"] = api_meta
 
         return payload
 
     @staticmethod
     def from_response(data: dict) -> "ExecutionConfig":
         """Construct an ``ExecutionConfig`` from an API response dictionary.
+
+        Values are taken as the service reported them: this reflects a job's
+        stored configuration, so a value outside the range this class accepts
+        on input is still what that job will run with. The service reports one
+        settings field and does not say which half a key came from, so it lands
+        whole on :attr:`~divi.backends.ExecutionConfig.extra_kwargs` rather than
+        split across :attr:`~divi.backends.ExecutionConfig.device_config`.
 
         Args:
             data: The ``execution_configuration`` dict from the API response.
@@ -212,7 +285,7 @@ class ExecutionConfig:
         raw_simulator = data.get("simulator_type")
         raw_simulation_method = data.get("simulation_type")
 
-        return ExecutionConfig(
+        return ExecutionConfig.model_construct(
             bond_dimension=data.get("bond_dimension"),
             truncation_threshold=data.get("truncation_threshold"),
             simulator=(Simulator(raw_simulator) if raw_simulator is not None else None),
@@ -224,13 +297,12 @@ class ExecutionConfig:
             noisy_device=data.get("noisy_device"),
             noise_realizations=data.get("noise_realizations"),
             noise_scaling_factor=data.get("noise_scaling_factor"),
-            api_meta=data.get("api_meta"),
-            _validate_input=False,
+            device_config=None,
+            extra_kwargs=data.get("api_meta"),
         )
 
 
-@dataclass(frozen=True)
-class JobConfig:
+class JobConfig(BaseModel):
     """Configuration for a Qoro Service job.
 
     Exactly one of ``simulator_cluster`` or ``qpu_system`` should be set to
@@ -238,7 +310,9 @@ class JobConfig:
     ``qoro_maestro`` simulator cluster.
     """
 
-    shots: int | None = None
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    shots: int | None = Field(default=None, gt=0)
     """Number of shots for the job."""
 
     simulator_cluster: SimulatorCluster | str | None = None
@@ -247,13 +321,14 @@ class JobConfig:
     qpu_system: QPUSystem | str | None = None
     """The QPU system to target, can be a string name or a QPUSystem object."""
 
-    use_circuit_packing: bool | None = None
+    use_circuit_packing: bool | None = Field(default=None, strict=True)
     """Whether to use circuit packing optimisation."""
 
-    tag: str = "default"
-    """Tag to associate with the job for identification."""
+    tag: str | None = "default"
+    """Tag to associate with the job for identification. ``None`` in an
+    override means "keep the base tag"."""
 
-    force_sampling: bool = False
+    force_sampling: bool = Field(default=False, strict=True)
     """Whether to force sampling instead of expectation value measurements."""
 
     def override(self, other: "JobConfig") -> "JobConfig":
@@ -273,12 +348,12 @@ class JobConfig:
         Returns:
             A new JobConfig instance with the merged configurations.
         """
-        current_attrs = {f.name: getattr(self, f.name) for f in fields(self)}
+        current_attrs = dict(self)
 
-        for f in fields(other):
-            other_value = getattr(other, f.name)
+        for name in type(other).model_fields:
+            other_value = getattr(other, name)
             if other_value is not None:
-                current_attrs[f.name] = other_value
+                current_attrs[name] = other_value
 
         # Ensure mutual exclusivity: if override sets one target, clear the other
         if other.simulator_cluster is not None:
@@ -288,33 +363,11 @@ class JobConfig:
 
         return JobConfig(**current_attrs)
 
-    def __post_init__(self):
-        """Sanitises and validates the configuration."""
-        if self.shots is not None and self.shots <= 0:
-            raise ValueError(f"Shots must be a positive integer. Got {self.shots}.")
-
+    @model_validator(mode="after")
+    def _check_single_target(self):
+        """A job targets one place; string names are resolved later in QoroService."""
         if self.simulator_cluster is not None and self.qpu_system is not None:
             raise ValueError(
                 "Provide either 'simulator_cluster' or 'qpu_system', not both."
             )
-
-        if isinstance(self.simulator_cluster, str):
-            pass  # Deferred resolution in QoroService
-        elif self.simulator_cluster is not None and not isinstance(
-            self.simulator_cluster, SimulatorCluster
-        ):
-            raise TypeError(
-                f"Expected a SimulatorCluster instance or str, got {type(self.simulator_cluster)}"
-            )
-
-        if isinstance(self.qpu_system, str):
-            pass  # Deferred resolution in QoroService
-        elif self.qpu_system is not None and not isinstance(self.qpu_system, QPUSystem):
-            raise TypeError(
-                f"Expected a QPUSystem instance or str, got {type(self.qpu_system)}"
-            )
-
-        if self.use_circuit_packing is not None and not isinstance(
-            self.use_circuit_packing, bool
-        ):
-            raise TypeError(f"Expected a bool, got {type(self.use_circuit_packing)}")
+        return self

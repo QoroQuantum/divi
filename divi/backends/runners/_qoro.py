@@ -12,7 +12,6 @@ import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
-from dataclasses import replace
 from enum import Enum
 from http import HTTPStatus
 from threading import Event
@@ -108,6 +107,13 @@ def _raise_with_details(resp: requests.Response):
             body = text[:500] + ("..." if len(text) > 500 else "")
     msg = f"{resp.status_code} {resp.reason}: {body}"
     raise requests.HTTPError(msg, response=resp)
+
+
+def _by_config_key(specs: Iterable[Mapping]) -> dict[str, dict[str, Any]]:
+    """Re-key a blueprint's field specs by the config key they describe."""
+    return {
+        spec["name"]: {k: v for k, v in spec.items() if k != "name"} for spec in specs
+    }
 
 
 def _is_recoverable_characterization_error(exc: Exception) -> bool:
@@ -335,15 +341,17 @@ class QoroService(CircuitRunner):
                 f"Defaulting to simulator cluster '{_DEFAULT_SIMULATOR_CLUSTER.name}'.",
                 stacklevel=2,
             )
-            return replace(config, simulator_cluster=_DEFAULT_SIMULATOR_CLUSTER)
+            return config.model_copy(
+                update={"simulator_cluster": _DEFAULT_SIMULATOR_CLUSTER}
+            )
 
         if isinstance(config.simulator_cluster, str):
             resolved = get_simulator_cluster(config.simulator_cluster)
-            return replace(config, simulator_cluster=resolved)
+            return config.model_copy(update={"simulator_cluster": resolved})
 
         if isinstance(config.qpu_system, str):
             resolved = get_qpu_system(config.qpu_system)
-            return replace(config, qpu_system=resolved)
+            return config.model_copy(update={"qpu_system": resolved})
 
         return config
 
@@ -445,6 +453,35 @@ class QoroService(CircuitRunner):
         clusters = parse_simulator_clusters(response.json())
         update_simulator_clusters_cache(clusters)
         return clusters
+
+    def fetch_vendor_blueprints(self) -> dict[str, dict[str, Any]]:
+        """
+        Get the config shape each QPU vendor accepts from the Qoro API.
+
+        Describes shape only: no stored values are returned, and never a
+        credential. Each QPU carries its own stored values, set on the Qoro
+        dashboard; the ``device`` settings listed here may also be overridden
+        for a single job with :class:`~divi.backends.DeviceConfig`.
+
+        Returns:
+            Blueprints keyed by vendor name (e.g. ``"ibm"``, ``"iqm"``), each
+            holding a ``label`` plus ``credentials`` and ``device`` maps of
+            config key to its ``kind``, ``required``, ``secret``, ``choices``
+            and ``default``::
+
+                blueprints["ibm"]["device"]["TRANSPILE_LEVEL"]["default"]
+
+            A vendor whose shape is not modelled yet reports empty maps.
+        """
+        response = self._make_request("get", "vendor-config-blueprint/", timeout=10)
+        return {
+            vendor: {
+                "label": blueprint["label"],
+                "credentials": _by_config_key(blueprint["credentials"]),
+                "device": _by_config_key(blueprint["device"]),
+            }
+            for vendor, blueprint in response.json().items()
+        }
 
     def get_credit_balance(self) -> dict:
         """
@@ -984,8 +1021,8 @@ class QoroService(CircuitRunner):
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
             requests.exceptions.HTTPError:
-                - 400: Validation errors (unknown ``api_meta`` keys, wrong
-                  types, payload too large).
+                - 400: Validation errors (unknown settings keys, wrong types,
+                  payload too large).
                 - 403: ``bond_dimension`` exceeds the user's tier cap.
                 - 409: Job is not in ``PENDING`` status.
         """

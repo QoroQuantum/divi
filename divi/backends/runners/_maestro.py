@@ -8,29 +8,15 @@ import warnings
 import weakref
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, fields, replace
 from threading import Event, Lock
-from typing import TYPE_CHECKING, Any
+from typing import Any
+
+# pyrefly: ignore[missing-import]  # ``maestro`` ships as a compiled wheel
+import maestro
+from pydantic import BaseModel, ConfigDict, SkipValidation, model_validator
 
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
-
-if TYPE_CHECKING:
-    # For type checkers, assume maestro is always available — runtime code
-    # that uses it is gated behind MaestroSimulator.__init__'s availability
-    # check, so the type-checker view matches post-init invariants.
-    # pyrefly: ignore[missing-import]  # ``maestro`` ships separately
-    import maestro
-
-    _maestro_import_error: ImportError | None = None
-else:
-    try:
-        import maestro
-
-        _maestro_import_error = None
-    except ImportError as _err:
-        maestro = None
-        _maestro_import_error = _err
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
@@ -126,8 +112,7 @@ BOOLEAN_FLAG_FIELDS = (
 )
 
 
-@dataclass(frozen=True)
-class MaestroConfig:
+class MaestroConfig(BaseModel):
     """Configuration object for :class:`MaestroSimulator`.
 
     Each field maps directly to an identically-named field on
@@ -142,6 +127,8 @@ class MaestroConfig:
     ``"Statevector"``, ``"MatrixProductState"``.  ``None`` means "use maestro's
     default".
     """
+
+    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
 
     simulator_type: str | None = None
     """Maestro simulator type, e.g. ``"QCSim"`` or ``"Gpu"``.  ``None`` uses
@@ -274,7 +261,7 @@ class MaestroConfig:
     ``simulation_type`` is set explicitly.  Divi-specific; not forwarded to
     ``maestro.SimulatorConfig``."""
 
-    noise_model: "maestro.NoiseModel | None" = None
+    noise_model: SkipValidation["maestro.NoiseModel | None"] = None
     """Maestro ``NoiseModel`` object.  ``None`` (default) disables noise —
     circuits run via ``simple_execute`` (sampling) or ``simple_estimate``
     (expval).  When set, dispatch routes to ``noisy_execute`` /
@@ -324,7 +311,8 @@ class MaestroConfig:
     the exact analytical average.  Divi-specific; not forwarded to
     ``maestro.SimulatorConfig``."""
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def _validate_knobs(self):
         """Validate the Pauli-propagation knobs and warn about no-op combinations."""
         if (
             self.pp_coefficient_threshold is not None
@@ -374,6 +362,8 @@ class MaestroConfig:
                     f"At most one of {group} may be set. Got {tuple(enabled)}."
                 )
 
+        return self
+
     def override(self, other: "MaestroConfig") -> "MaestroConfig":
         """Return a new config overriding fields with non-default values from ``other``.
 
@@ -382,18 +372,17 @@ class MaestroConfig:
         every field that is not ``None``; the two differ for any field whose
         default is something other than ``None``.
         """
-        defaults = {f.name: f.default for f in fields(MaestroConfig)}
-        merged = {f.name: getattr(self, f.name) for f in fields(MaestroConfig)}
+        merged = dict(self)
 
-        for f in fields(MaestroConfig):
-            other_value = getattr(other, f.name)
+        for name, spec in MaestroConfig.model_fields.items():
+            other_value = getattr(other, name)
             # Relies on != with the default sentinel.  Safe for scalar fields and
             # for noise_model because None is the default — any non-None object
             # evaluates != None as True.  If two non-None NoiseModel instances ever
             # need to be distinguished by value equality this logic would need
             # an identity check (``is not``) instead.
-            if other_value != defaults[f.name]:
-                merged[f.name] = other_value
+            if other_value != spec.default:
+                merged[name] = other_value
 
         return MaestroConfig(**merged)
 
@@ -570,11 +559,6 @@ class MaestroSimulator(CircuitRunner):
         track_depth: bool = False,
         force_sampling: bool = False,
     ):
-        if maestro is None:
-            raise ImportError(
-                "qoro-maestro is required for MaestroSimulator but could not be imported."
-            ) from _maestro_import_error
-
         super().__init__(shots=shots, track_depth=track_depth)
         self.config: MaestroConfig = config if config is not None else MaestroConfig()
         self._force_sampling = force_sampling
@@ -610,7 +594,7 @@ class MaestroSimulator(CircuitRunner):
         Args:
             seed: Non-negative seed value.
         """
-        self.config = replace(self.config, seed=seed)
+        self.config = MaestroConfig.model_validate(dict(self.config) | {"seed": seed})
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the per-instance circuit fan-out pool, creating it lazily.

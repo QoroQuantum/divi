@@ -4,11 +4,11 @@
 
 """Unit tests for :mod:`divi.backends._config`."""
 
-import dataclasses
-
 import pytest
+from pydantic import ValidationError
 
 from divi.backends import (
+    DeviceConfig,
     ExecutionConfig,
     JobConfig,
     QPUSystem,
@@ -45,7 +45,7 @@ class TestJobConfig:
         ids=["integer_input", "list_input", "dict_input"],
     )
     def test_qpu_system_failure(self, invalid_input):
-        with pytest.raises(TypeError):
+        with pytest.raises(ValidationError):
             JobConfig(qpu_system=invalid_input)
 
     def test_simulator_cluster_accepts_valid_types(self):
@@ -58,7 +58,7 @@ class TestJobConfig:
 
     def test_simulator_cluster_rejects_invalid_types(self):
         for invalid in (123, ["a"], {"a": "b"}):
-            with pytest.raises(TypeError):
+            with pytest.raises(ValidationError):
                 JobConfig(simulator_cluster=invalid)
 
     def test_rejects_both_targets(self):
@@ -72,20 +72,20 @@ class TestJobConfig:
         config = JobConfig(shots=100)
         assert config.shots == 100
 
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+        with pytest.raises(ValidationError, match="greater than 0"):
             JobConfig(shots=0)
 
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+        with pytest.raises(ValidationError, match="greater than 0"):
             JobConfig(shots=-1)
 
     def test_use_circuit_packing_type_validation(self):
         config = JobConfig(use_circuit_packing=True)
         assert config.use_circuit_packing is True
 
-        with pytest.raises(TypeError, match="Expected a bool"):
+        with pytest.raises(ValidationError, match="valid boolean"):
             JobConfig(use_circuit_packing="true")
 
-        with pytest.raises(TypeError, match="Expected a bool"):
+        with pytest.raises(ValidationError, match="valid boolean"):
             JobConfig(use_circuit_packing=1)
 
     def test_override_basic(self):
@@ -229,10 +229,10 @@ class TestJobConfig:
     def test_override_validation_after_override(self):
         base = JobConfig(shots=1000)
 
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+        with pytest.raises(ValidationError, match="greater than 0"):
             base.override(JobConfig(shots=-1))
 
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
+        with pytest.raises(ValidationError, match="greater than 0"):
             base.override(JobConfig(shots=0))
 
         result = base.override(JobConfig(shots=500))
@@ -286,14 +286,14 @@ class TestExecutionConfigOverride:
         assert result.noisy_device is None
         assert result.noise_realizations is None
         assert result.noise_scaling_factor is None
-        assert result.api_meta is None
+        assert result.extra_kwargs is None
 
-    def test_override_api_meta(self):
-        """api_meta from `other` should replace (not merge) the base value."""
-        base = ExecutionConfig(api_meta={"optimization_level": 1})
-        other = ExecutionConfig(api_meta={"resilience_level": 2})
+    def test_override_extra_kwargs(self):
+        """extra_kwargs from `other` should replace (not merge) the base value."""
+        base = ExecutionConfig(extra_kwargs={"optimization_level": 1})
+        other = ExecutionConfig(extra_kwargs={"resilience_level": 2})
         result = base.override(other)
-        assert result.api_meta == {"resilience_level": 2}
+        assert result.extra_kwargs == {"resilience_level": 2}
 
 
 class TestExecutionConfigPayload:
@@ -309,7 +309,7 @@ class TestExecutionConfigPayload:
             noisy_device="ibm_fake_fez",
             noise_realizations=10,
             noise_scaling_factor=0.5,
-            api_meta={"optimization_level": 2},
+            extra_kwargs={"optimization_level": 2},
         )
         payload = config.to_payload()
         assert payload == {
@@ -345,7 +345,7 @@ class TestExecutionConfigPayload:
             noisy_device="ibm_fake_fez",
             noise_realizations=5,
             noise_scaling_factor=0.25,
-            api_meta={"max_execution_time": 300},
+            extra_kwargs={"max_execution_time": 300},
         )
         reconstructed = ExecutionConfig.from_response(original.to_payload())
         assert reconstructed == original
@@ -362,23 +362,21 @@ class TestExecutionConfigPayload:
 @pytest.mark.parametrize("invalid_value", [0, -1, -10])
 def test_bond_dimension_rejects_non_positive(invalid_value):
     """bond_dimension must be a positive integer."""
-    with pytest.raises(ValueError, match="bond_dimension must be a positive integer"):
+    with pytest.raises(ValidationError, match="greater than 0"):
         ExecutionConfig(bond_dimension=invalid_value)
 
 
 @pytest.mark.parametrize("invalid_value", [-1e-8, -0.5, -10])
 def test_truncation_threshold_rejects_negative(invalid_value):
     """truncation_threshold must be non-negative."""
-    with pytest.raises(ValueError, match="truncation_threshold must be non-negative"):
+    with pytest.raises(ValidationError, match="greater than or equal to 0"):
         ExecutionConfig(truncation_threshold=invalid_value)
 
 
 @pytest.mark.parametrize("invalid_value", [0, -1, -10])
 def test_noise_realizations_rejects_non_positive(invalid_value):
     """noise_realizations must be a positive integer."""
-    with pytest.raises(
-        ValueError, match="noise_realizations must be a positive integer"
-    ):
+    with pytest.raises(ValidationError, match="greater than 0"):
         ExecutionConfig(noise_realizations=invalid_value)
 
 
@@ -412,7 +410,7 @@ def test_mps_only_fields_silent_with_no_method(recwarn):
 def test_noise_scaling_factor_rejects_out_of_range(invalid_value):
     """noise_scaling_factor must lie between 0 and 1."""
     with pytest.raises(
-        ValueError, match="noise_scaling_factor must be between 0 and 1"
+        ValidationError, match="greater than or equal to 0|less than or equal to 1"
     ):
         ExecutionConfig(noise_scaling_factor=invalid_value)
 
@@ -464,15 +462,141 @@ def test_override_skips_validation_and_warnings(recwarn):
     assert len(recwarn) == 0
 
 
-def test_validate_input_flag_excluded_from_fields_and_payload():
-    """The private _validate_input InitVar must not leak into fields or payload."""
-    field_names = {f.name for f in dataclasses.fields(ExecutionConfig)}
-    assert "_validate_input" not in field_names
-    assert "_validate_input" not in ExecutionConfig(bond_dimension=64).to_payload()
+def test_payload_carries_only_public_fields():
+    """``to_payload`` emits wire keys only, never internals."""
+    payload = ExecutionConfig(bond_dimension=64).to_payload()
+    assert payload == {"bond_dimension": 64}
 
 
 def test_frozen():
-    """Mutating a frozen dataclass should raise an error."""
+    """Mutating a frozen config should raise an error."""
     config = ExecutionConfig(bond_dimension=32)
-    with pytest.raises(AttributeError):
+    with pytest.raises(ValidationError):
         config.bond_dimension = 64
+
+
+class TestDeviceConfig:
+    """Per-job device overrides and their translation to the wire format."""
+
+    def test_python_names_become_service_names(self):
+        config = DeviceConfig(transpile_level=0, ibm_device="ibm_fez")
+        assert config.to_api_meta() == {"TRANSPILE_LEVEL": 0, "IBM_DEVICE": "ibm_fez"}
+
+    def test_a_blueprint_key_may_be_used_verbatim(self):
+        """A key copied from ``fetch_vendor_blueprints`` needs no rewriting."""
+        assert DeviceConfig(TRANSPILE_LEVEL=0) == DeviceConfig(transpile_level=0)
+
+    @pytest.mark.parametrize(("written", "sent"), [(True, "true"), (False, "false")])
+    def test_a_bool_is_sent_as_the_string_workers_compare(self, written, sent):
+        """The vendor workers compare these as strings, never as JSON booleans."""
+        assert DeviceConfig(use_twirling=written).to_api_meta() == {
+            "USE_TWIRLING": sent
+        }
+
+    def test_unset_settings_are_omitted(self):
+        """An omitted setting keeps the target QPU's stored value."""
+        assert DeviceConfig().to_api_meta() == {}
+
+    def test_extra_passes_through_unchanged(self):
+        """A setting newer than this Divi release still reaches the service."""
+        config = DeviceConfig(use_mitigation=True, extra={"NEW_KNOB": "x"})
+        assert config.to_api_meta() == {"USE_MITIGATION": "true", "NEW_KNOB": "x"}
+
+    def test_a_misspelled_setting_is_rejected(self):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            DeviceConfig(transpil_level=1)
+
+    def test_out_of_range_transpile_level_is_rejected(self):
+        with pytest.raises(ValidationError, match="less than or equal to 3"):
+            DeviceConfig(transpile_level=9)
+
+    def test_extra_may_not_shadow_a_field(self):
+        """Otherwise the raw spelling would silently win over the typed one."""
+        with pytest.raises(ValidationError, match="set them directly"):
+            DeviceConfig(transpile_level=1, extra={"TRANSPILE_LEVEL": 2})
+
+    def test_frozen(self):
+        """Mutating a constructed config should raise an error."""
+        config = DeviceConfig(transpile_level=1)
+        with pytest.raises(ValidationError):
+            config.transpile_level = 2
+
+    @pytest.mark.parametrize(
+        "field", ["aggressive_compiling_seeds", "device_max_shots_per_batch"]
+    )
+    def test_positive_only_settings_reject_zero(self, field):
+        with pytest.raises(ValidationError, match="greater than 0"):
+            DeviceConfig(**{field: 0})
+
+    def test_every_setting_reaches_the_payload_together(self):
+        """Guards against a serialisation regression that only drops some fields."""
+        config = DeviceConfig(
+            ibm_device="ibm_fez",
+            transpile_level=1,
+            use_twirling=True,
+            use_mitigation=False,
+            use_error_suppression=True,
+            aggressive_compiling=False,
+            aggressive_compiling_seeds=8,
+            iqm_device_url="https://example.invalid/garnet",
+            device_max_shots_per_batch=4096,
+        )
+        assert config.to_api_meta() == {
+            "IBM_DEVICE": "ibm_fez",
+            "TRANSPILE_LEVEL": 1,
+            "USE_TWIRLING": "true",
+            "USE_MITIGATION": "false",
+            "USE_ERROR_SUPPRESSION": "true",
+            "AGGRESSIVE_COMPILING": "false",
+            "AGGRESSIVE_COMPILING_SEEDS": 8,
+            "IQM_DEVICE_URL": "https://example.invalid/garnet",
+            "DEVICE_MAX_SHOTS_PER_BATCH": 4096,
+        }
+
+
+class TestDeviceConfigInPayload:
+    """How ``device_config`` reaches the request body."""
+
+    def test_flattens_into_api_meta(self):
+        config = ExecutionConfig(
+            bond_dimension=64, device_config=DeviceConfig(transpile_level=0)
+        )
+        assert config.to_payload() == {
+            "bond_dimension": 64,
+            "api_meta": {"TRANSPILE_LEVEL": 0},
+        }
+
+    def test_merges_with_extra_kwargs(self):
+        config = ExecutionConfig(
+            device_config=DeviceConfig(transpile_level=2),
+            extra_kwargs={"optimization_level": 3},
+        )
+        assert config.to_payload() == {
+            "api_meta": {"optimization_level": 3, "TRANSPILE_LEVEL": 2}
+        }
+
+    def test_a_key_set_on_both_is_rejected(self):
+        config = ExecutionConfig(
+            device_config=DeviceConfig(transpile_level=1),
+            extra_kwargs={"TRANSPILE_LEVEL": 2},
+        )
+        with pytest.raises(ValueError, match="set on both"):
+            config.to_payload()
+
+    def test_empty_device_config_adds_no_api_meta(self):
+        config = ExecutionConfig(bond_dimension=64, device_config=DeviceConfig())
+        assert config.to_payload() == {"bond_dimension": 64}
+
+    def test_override_replaces_device_config_wholesale(self):
+        """``device_config`` merges like any other field: non-None wins, atomically."""
+        base = ExecutionConfig(device_config=DeviceConfig(transpile_level=1))
+        other = ExecutionConfig(device_config=DeviceConfig(use_twirling=True))
+
+        result = base.override(other)
+        assert result.device_config.to_api_meta() == {"USE_TWIRLING": "true"}
+
+    def test_override_without_device_config_keeps_the_base(self):
+        base = ExecutionConfig(device_config=DeviceConfig(transpile_level=1))
+
+        result = base.override(ExecutionConfig(bond_dimension=64))
+        assert result.device_config.to_api_meta() == {"TRANSPILE_LEVEL": 1}

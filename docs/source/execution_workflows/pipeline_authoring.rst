@@ -429,7 +429,7 @@ themselves — the base class does not append one.  Skipping it raises
                *extra_stages,
                *self._mitigation_stages(result_format),
                terminal_stage,
-               ParameterBindingStage(),   # must come last
+               ParameterBindingStage(),   # last keeps binding on its fast path
            ])
 
        def run(self):

@@ -4,9 +4,9 @@
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import fields
 from threading import Event, Thread
 
+import maestro
 import pytest
 
 import divi.backends.runners._maestro as maestro_module
@@ -18,15 +18,6 @@ from tests.backends._circuit_runner_contracts import (
     QASM_DEPTH_2,
     QASM_DEPTH_3,
     SyncRunnerContractsBase,
-)
-
-try:
-    import maestro as _real_maestro
-except ImportError:
-    _real_maestro = None
-
-requires_real_maestro = pytest.mark.skipif(
-    _real_maestro is None, reason="qoro-maestro is not installed"
 )
 
 _BELL_QASM = (
@@ -119,13 +110,6 @@ def _sim_config_call(fake_maestro):
 def _submit_config_arg(call):
     """Pull the ``config=`` kwarg from a ``simple_execute``/``simple_estimate`` call."""
     return call[1]["config"]
-
-
-def test_import_error_without_maestro(mocker):
-    """MaestroSimulator raises a helpful ImportError when maestro is missing."""
-    mocker.patch("divi.backends.runners._maestro.maestro", None)
-    with pytest.raises(ImportError, match="qoro-maestro is required"):
-        MaestroSimulator()
 
 
 class TestProperties:
@@ -1189,20 +1173,17 @@ class TestShotGroupsSampling:
 # added knob will fail one of the assertions below and force a review.
 
 
-@requires_real_maestro
-class TestRealMaestroIntegration:
+class TestMaestroIntegration:
     def test_knob_parity_with_maestro_simulator_config(self):
         """MaestroConfig must cover every knob on maestro.SimulatorConfig.
 
         Compares field names by introspecting ``maestro.SimulatorConfig``'s
-        data descriptors against ``MaestroConfig``'s dataclass fields.  Any
+        data descriptors against ``MaestroConfig``'s model fields.  Any
         drift — maestro adds, removes, or renames a knob — fails here and
         forces a deliberate decision about whether to expose it.
         """
         maestro_fields = {
-            name
-            for name in dir(_real_maestro.SimulatorConfig)
-            if not name.startswith("_")
+            name for name in dir(maestro.SimulatorConfig) if not name.startswith("_")
         }
         _divi_only = {
             # Divi-side auto-MPS logic, not a maestro knob.
@@ -1215,18 +1196,18 @@ class TestRealMaestroIntegration:
         }
         # Guard against the exclusion set silently over-excluding a field that
         # was removed from MaestroConfig.
-        assert _divi_only <= {f.name for f in fields(MaestroConfig)}, (
+        assert _divi_only <= set(MaestroConfig.model_fields), (
             f"Exclusion set names fields no longer in MaestroConfig: "
-            f"{_divi_only - {f.name for f in fields(MaestroConfig)}}"
+            f"{_divi_only - set(MaestroConfig.model_fields)}"
         )
-        divi_fields = {f.name for f in fields(MaestroConfig)} - _divi_only
+        divi_fields = set(MaestroConfig.model_fields) - _divi_only
         assert maestro_fields == divi_fields, (
             "MaestroConfig is out of sync with maestro.SimulatorConfig.\n"
             f"  Missing in MaestroConfig: {sorted(maestro_fields - divi_fields)}\n"
             f"  Extra in MaestroConfig:   {sorted(divi_fields - maestro_fields)}"
         )
 
-    def test_every_knob_round_trips_to_real_maestro(self):
+    def test_every_knob_round_trips_to_maestro(self):
         """Every MaestroConfig field survives the hand-off to real maestro.
 
         Sets every knob to a non-default value and runs a small circuit.  If
@@ -1282,14 +1263,14 @@ class TestRealMaestroIntegration:
         ``noise_seed`` alone covers the Pauli error patterns; the counts come
         from the measurement sampler, which is what ``seed`` reaches.
         """
-        noise_model = _real_maestro.NoiseModel()
+        noise_model = maestro.NoiseModel()
         noise_model.set_all_depolarizing(num_qubits=2, p=0.05)
 
         assert _bell_counts(21, noise_model=noise_model) == _bell_counts(
             21, noise_model=noise_model
         )
 
-    def test_expval_path_on_real_maestro(self):
+    def test_expval_path_on_maestro(self):
         """The simple_estimate call path is covered separately from simple_execute."""
         sim = MaestroSimulator(shots=100)
 

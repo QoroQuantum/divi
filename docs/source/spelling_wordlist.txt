@@ -27,6 +27,7 @@ bitstring
 bitstrings
 booleans
 bools
+Braket
 Broyden
 cacheable
 callables
@@ -133,6 +134,7 @@ idx
 iHt
 implementers
 init
+IQM
 initialized
 inspectable
 instantiation

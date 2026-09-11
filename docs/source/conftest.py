@@ -13,7 +13,6 @@ Run: ``cd docs && make test-snippets``
 
 import os
 import shutil
-from dataclasses import replace
 from pathlib import Path
 
 import matplotlib
@@ -142,7 +141,9 @@ class DocStubQoroService(CircuitRunner):
     ):
         jc = job_config or JobConfig(shots=1000)
         if jc.simulator_cluster is None and jc.qpu_system is None:
-            jc = replace(jc, simulator_cluster=SimulatorCluster(name="qoro_maestro"))
+            jc = jc.model_copy(
+                update={"simulator_cluster": SimulatorCluster(name="qoro_maestro")}
+            )
         super().__init__(shots=jc.shots, track_depth=track_depth)
         self._job_config = jc
         self._execution_config = execution_config
@@ -215,6 +216,46 @@ class DocStubQoroService(CircuitRunner):
 
     def set_execution_config(self, execution_result, config):
         return {"status": "ok", "job_id": execution_result.job_id}
+
+    def fetch_vendor_blueprints(self):
+        return {
+            "ibm": {
+                "label": "IBM",
+                "credentials": {
+                    "IBM_TOKEN": {
+                        "kind": "text",
+                        "required": True,
+                        "secret": True,
+                        "choices": [],
+                        "default": None,
+                    },
+                },
+                "device": {
+                    "IBM_DEVICE": {
+                        "kind": "text",
+                        "required": True,
+                        "secret": False,
+                        "choices": [],
+                        "default": None,
+                    },
+                    "TRANSPILE_LEVEL": {
+                        "kind": "number",
+                        "required": False,
+                        "secret": False,
+                        "choices": [],
+                        "default": 2,
+                    },
+                    "USE_TWIRLING": {
+                        "kind": "toggle",
+                        "required": False,
+                        "secret": False,
+                        "choices": ["true", "false"],
+                        "default": "false",
+                    },
+                },
+            },
+            "braket": {"label": "BRAKET", "credentials": {}, "device": {}},
+        }
 
 
 def setup(namespace):
