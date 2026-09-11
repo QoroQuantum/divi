@@ -10,7 +10,13 @@ from ._base import (
     ExecutionResult,
     normalise_circuit_batch,
 )
-from ._config import ExecutionConfig, JobConfig, SimulationMethod, Simulator
+from ._config import (
+    DeviceConfig,
+    ExecutionConfig,
+    JobConfig,
+    SimulationMethod,
+    Simulator,
+)
 from ._job_status import (
     InsufficientCreditsError,
     JobCancelledError,
@@ -32,6 +38,7 @@ __all__ = [
     "AsyncJobBackend",
     "CircuitBatch",
     "CircuitRunner",
+    "DeviceConfig",
     "ExecutionConfig",
     "ExecutionResult",
     "InsufficientCreditsError",

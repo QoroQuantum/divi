@@ -6,75 +6,80 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
 from threading import RLock
+
+from pydantic import BaseModel, ConfigDict, Field
 
 _AVAILABLE_QPU_SYSTEMS: dict[str, QPUSystem] = {}
 _AVAILABLE_SIMULATOR_CLUSTERS: dict[str, SimulatorCluster] = {}
 _CACHE_LOCK = RLock()
 
 
-@dataclass(frozen=True, repr=True)
-class QPU:
-    """Represents a single Quantum Processing Unit (QPU).
+class _Target(BaseModel):
+    """Base for the targets the Qoro API describes.
 
-    Attributes:
-        nickname: The unique name or identifier for the QPU.
-        q_bits: The number of qubits in the QPU.
-        status: The current operational status of the QPU.
-        system_kind: The type of technology the QPU uses.
+    Unknown fields are ignored rather than rejected: the service adds fields to
+    these payloads over time, and a client that refuses them cannot be upgraded
+    independently of the server. Frozen so they stay safe to cache.
     """
+
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+
+class QPU(_Target):
+    """Represents a single Quantum Processing Unit (QPU)."""
 
     nickname: str
+    """The unique name or identifier for the QPU."""
+
     q_bits: int
+    """The number of qubits in the QPU."""
+
     status: str
+    """The current operational status of the QPU."""
+
     system_kind: str
+    """The type of technology the QPU uses."""
+
+    vendor_type: str | None = None
+    """The vendor this QPU routes to, when the service reports one."""
 
 
-@dataclass(frozen=True, repr=True)
-class QPUSystem:
-    """Represents a collection of QPUs that form a quantum computing system.
-
-    Attributes:
-        name: The name of the QPU system.
-        qpus: A list of QPU objects that are part of this system.
-        access_level: The access level granted to the user for this system (e.g., 'PUBLIC').
-        supports_expval: Whether the system supports expectation value jobs.
-    """
+class QPUSystem(_Target):
+    """Represents a collection of QPUs that form a quantum computing system."""
 
     name: str
-    qpus: list[QPU] = field(default_factory=list)
+    """The name of the QPU system."""
+
+    qpus: list[QPU] = Field(default_factory=list)
+    """A list of QPU objects that are part of this system."""
+
     access_level: str = "PUBLIC"
+    """The access level granted to the user for this system (e.g., 'PUBLIC')."""
+
     supports_expval: bool = False
+    """Whether the system supports expectation value jobs."""
 
 
-@dataclass(frozen=True, repr=True)
-class SimulatorCluster:
-    """Represents a simulator cluster for cloud-based quantum simulation.
-
-    Attributes:
-        name: The name of the simulator cluster.
-        access_level: The access level for this cluster (e.g., 'PUBLIC', 'ADMIN').
-        minimum_tier: The minimum token tier required to access this cluster.
-        supports_expval: Whether the cluster supports expectation value jobs.
-    """
+class SimulatorCluster(_Target):
+    """Represents a simulator cluster for cloud-based quantum simulation."""
 
     name: str
+    """The name of the simulator cluster."""
+
     access_level: str = "PUBLIC"
+    """The access level for this cluster (e.g., 'PUBLIC', 'ADMIN')."""
+
     minimum_tier: str = "FREE"
+    """The minimum token tier required to access this cluster."""
+
     supports_expval: bool = True
+    """Whether the cluster supports expectation value jobs."""
 
 
 def parse_qpu_systems(json_data: list) -> list[QPUSystem]:
     """Parses a list of QPU system data from JSON into QPUSystem objects."""
-    return [
-        QPUSystem(
-            name=system_data["name"],
-            qpus=[QPU(**qpu) for qpu in system_data.get("qpus", [])],
-            access_level=system_data["access_level"],
-        )
-        for system_data in json_data
-    ]
+    return [QPUSystem.model_validate(system_data) for system_data in json_data]
 
 
 def update_qpu_systems_cache(systems: list[QPUSystem]):
@@ -83,7 +88,7 @@ def update_qpu_systems_cache(systems: list[QPUSystem]):
         _AVAILABLE_QPU_SYSTEMS.clear()
         for system in systems:
             if system.name == "qoro_maestro":
-                system = replace(system, supports_expval=True)
+                system = system.model_copy(update={"supports_expval": True})
             _AVAILABLE_QPU_SYSTEMS[system.name] = system
 
 
@@ -121,14 +126,7 @@ def get_available_qpu_systems() -> list[QPUSystem]:
 
 def parse_simulator_clusters(json_data: list) -> list[SimulatorCluster]:
     """Parses a list of simulator cluster data from JSON into SimulatorCluster objects."""
-    return [
-        SimulatorCluster(
-            name=cluster_data["name"],
-            access_level=cluster_data.get("access_level", "PUBLIC"),
-            minimum_tier=cluster_data.get("minimum_tier", "FREE"),
-        )
-        for cluster_data in json_data
-    ]
+    return [SimulatorCluster.model_validate(cluster_data) for cluster_data in json_data]
 
 
 def update_simulator_clusters_cache(clusters: list[SimulatorCluster]):

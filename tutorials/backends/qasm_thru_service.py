@@ -103,7 +103,7 @@ if __name__ == "__main__":
 
     # Per-submission overrides are still possible; non-None fields win.
     override_exec = ExecutionConfig(
-        bond_dimension=32, api_meta={"optimization_level": 2}
+        bond_dimension=32, extra_kwargs={"optimization_level": 2}
     )
     exec_result = service_with_exec.submit_circuits(
         {"circuit_0": circuit},
@@ -116,7 +116,7 @@ if __name__ == "__main__":
     print(f"Retrieved bond_dimension: {retrieved_config.bond_dimension}")
     print(f"Retrieved simulator: {retrieved_config.simulator}")
     print(f"Retrieved simulation_method: {retrieved_config.simulation_method}")
-    print(f"Retrieved api_meta: {retrieved_config.api_meta}")
+    print(f"Retrieved extra_kwargs: {retrieved_config.extra_kwargs}")
 
     # Complete the job and clean up.
     service.poll_job_status(exec_result, loop_until_complete=True)

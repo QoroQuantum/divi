@@ -11,10 +11,10 @@ simulator-side noisy-execution paths are exercised in
 """
 
 import warnings
-from dataclasses import FrozenInstanceError, asdict, fields, replace
 
 import maestro
 import pytest
+from pydantic import ValidationError
 
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends.runners._maestro import (
@@ -86,35 +86,34 @@ class TestExplicitConstruction:
     def test_frozen(self):
         """Fields cannot be reassigned after construction."""
         config = MaestroConfig(simulation_type="Statevector")
-        with pytest.raises(FrozenInstanceError):
+        with pytest.raises(ValidationError):
             config.simulation_type = "MatrixProductState"
 
     def test_equality_on_value(self):
-        """Frozen dataclass — value-equal configs compare equal."""
+        """Value-equal configs compare equal."""
         a = MaestroConfig(noise_seed=11, noise_realizations=8)
         b = MaestroConfig(noise_seed=11, noise_realizations=8)
         assert a == b
 
-    def test_asdict_round_trip_scalar_fields(self):
-        """``asdict`` round-trips configs whose ``noise_model`` is ``None``.
+    def test_dump_round_trip_scalar_fields(self):
+        """``model_dump`` round-trips configs whose ``noise_model`` is ``None``.
 
-        Scoped to scalar fields — :meth:`dataclasses.asdict` deep-copies
-        and recurses, which is not safe in general for a
-        ``maestro.NoiseModel`` (a C++-binding object).  See
+        Scoped to scalar fields — dumping recurses, which is not safe in
+        general for a ``maestro.NoiseModel`` (a C++-binding object).  See
         :func:`test_carries_noise_model_object_through` for the
         identity-preserving construction path that downstream code
         actually relies on.
         """
         a = MaestroConfig(noise_seed=11, noise_realizations=8)
-        b = MaestroConfig(**asdict(a))
+        b = MaestroConfig(**a.model_dump())
         assert a == b
 
-    def test_round_trip_via_replace_preserves_noise_model_identity(self, mocker):
-        """``dataclasses.replace`` rebuilds a config without recursing into
+    def test_round_trip_via_copy_preserves_noise_model_identity(self, mocker):
+        """``model_copy`` rebuilds a config without recursing into
         ``noise_model``, so the mock object survives by reference."""
         nm = mocker.MagicMock(name="NoiseModel")
         a = MaestroConfig(noise_model=nm, noise_seed=7)
-        b = replace(a)
+        b = a.model_copy()
         assert b.noise_model is nm
         assert b.noise_seed == 7
 
@@ -122,13 +121,13 @@ class TestExplicitConstruction:
 class TestUnknownKwargRejection:
     """Unknown options must raise — no silent ``**kwargs`` passthrough."""
 
-    def test_unknown_kwarg_raises_type_error(self):
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
+    def test_unknown_kwarg_is_rejected(self):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             MaestroConfig(no_such_field=1)
 
-    def test_unknown_noise_kwarg_raises_type_error(self):
+    def test_unknown_noise_kwarg_is_rejected(self):
         """Guards against typos like ``noise_realisations`` (British spelling)."""
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
             MaestroConfig(noise_realisations=4)
 
 
@@ -193,7 +192,7 @@ class TestOverride:
             "noise_realizations",
             *BOOLEAN_FLAG_FIELDS,
         }
-        actual = {f.name for f in fields(MaestroConfig)}
+        actual = set(MaestroConfig.model_fields)
         assert actual == known, (
             f"MaestroConfig fields drifted; review override semantics. "
             f"missing={known - actual}, extra={actual - known}"
@@ -205,7 +204,7 @@ class TestUpstreamFieldParity:
 
     def test_every_forwarded_field_exists_upstream(self):
         """A renamed or removed upstream knob fails here, not at execution time."""
-        forwarded = {f.name for f in fields(MaestroConfig)} - DIVI_ONLY_FIELDS
+        forwarded = set(MaestroConfig.model_fields) - DIVI_ONLY_FIELDS
         missing = forwarded - upstream_config_fields()
         assert not missing, (
             "MaestroConfig forwards fields that maestro.SimulatorConfig no longer "
@@ -215,7 +214,7 @@ class TestUpstreamFieldParity:
 
     def test_every_upstream_field_is_exposed(self):
         """A knob added upstream is invisible to Divi users until wired in here."""
-        unexposed = upstream_config_fields() - {f.name for f in fields(MaestroConfig)}
+        unexposed = upstream_config_fields() - set(MaestroConfig.model_fields)
         assert not unexposed, (
             "maestro.SimulatorConfig binds knobs MaestroConfig does not expose: "
             f"{sorted(unexposed)}. Add a field and forward it in "
@@ -224,7 +223,7 @@ class TestUpstreamFieldParity:
 
     def test_divi_only_fields_are_real_fields(self):
         """Guards the exclusion set itself against a rename on the Divi side."""
-        assert DIVI_ONLY_FIELDS <= {f.name for f in fields(MaestroConfig)}
+        assert DIVI_ONLY_FIELDS <= set(MaestroConfig.model_fields)
 
 
 class TestToMaestroConfig:

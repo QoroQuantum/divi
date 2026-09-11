@@ -18,6 +18,37 @@ interface for handling both synchronous and asynchronous backend responses.
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
+   :skip: DeviceConfig
+   :skip: ExecutionConfig
+   :skip: JobConfig
+   :skip: MaestroConfig
+   :skip: QPU
+   :skip: QPUSystem
+   :skip: SimulatorCluster
+
+Configuration and Targets
+-------------------------
+
+.. autopydantic_model:: divi.backends.JobConfig
+   :members:
+
+.. autopydantic_model:: divi.backends.ExecutionConfig
+   :members:
+
+.. autopydantic_model:: divi.backends.DeviceConfig
+   :members:
+
+.. autopydantic_model:: divi.backends.MaestroConfig
+   :members:
+
+.. autopydantic_model:: divi.backends.QPU
+   :members:
+
+.. autopydantic_model:: divi.backends.QPUSystem
+   :members:
+
+.. autopydantic_model:: divi.backends.SimulatorCluster
+   :members:
 
 Characterisation
 ----------------

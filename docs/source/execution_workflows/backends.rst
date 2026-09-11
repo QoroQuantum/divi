@@ -413,10 +413,10 @@ you can configure it in two ways:
    result = service.submit_circuits(circuits)
 
    # 2. Override specific fields for a single submission
-   override = ExecutionConfig(bond_dimension=512, api_meta={"optimization_level": 2})
+   override = ExecutionConfig(bond_dimension=512)
    result = service.submit_circuits(circuits, override_execution_config=override)
-   # Uses bond_dimension=512 and api_meta from the override,
-   # but keeps simulator and simulation_method from the default.
+   # Uses bond_dimension=512 from the override, but keeps simulator and
+   # simulation_method from the default.
 
    # Retrieve the configuration to verify
    retrieved = service.get_execution_config(result)
@@ -435,7 +435,95 @@ replaces the previous execution configuration for that job.
 
    The ``bond_dimension`` field is subject to tier-based caps. Free-tier users are limited to a maximum of 32. Exceeding the cap returns a ``403 Forbidden`` error.
 
-The ``api_meta`` field accepts runtime pass-through metadata. Allowed keys are documented on :class:`~divi.backends.ExecutionConfig` in :doc:`../api_reference/backends` (e.g. ``optimization_level``, ``resilience_level``, ``max_execution_time``).
+To override the target QPU's own device settings for a single job, use
+:attr:`~divi.backends.ExecutionConfig.device_config` — see
+:ref:`device-settings-per-job` below. For a runtime setting Divi does not model
+at all, :attr:`~divi.backends.ExecutionConfig.extra_kwargs` is passed to the
+service unchanged.
+
+Inspecting Vendor Configuration Blueprints
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Each QPU vendor that Qoro can route to — IBM, IQM, Amazon Braket — accepts its
+own set of configuration keys, such as a transpilation level or an error
+mitigation toggle. :meth:`~divi.backends.QoroService.fetch_vendor_blueprints`
+reports which keys each vendor accepts, so you can see what is tunable on the
+hardware you are targeting without consulting the dashboard.
+
+The reply describes *shape only*. It carries no stored values and never a
+credential, and it is keyed for direct lookup: one dictionary per vendor, each
+holding a ``label`` plus ``credentials`` and ``device`` maps of configuration
+key to its ``kind``, ``required``, ``secret``, ``choices`` and ``default``.
+
+.. code-block:: python
+
+   from divi.backends import QoroService
+
+   service = QoroService()
+   blueprints = service.fetch_vendor_blueprints()
+
+   # Read one option directly
+   print(blueprints["ibm"]["device"]["TRANSPILE_LEVEL"]["default"])   # 2
+   print(blueprints["ibm"]["device"]["USE_TWIRLING"]["choices"])      # ['true', 'false']
+
+   # Or list everything one vendor exposes
+   for key, spec in blueprints["ibm"]["device"].items():
+       requirement = "required" if spec["required"] else f"default={spec['default']!r}"
+       print(f"{key}: {spec['kind']}, {requirement}")
+
+A vendor whose configuration shape Qoro does not yet describe reports empty
+``credentials`` and ``device`` maps:
+
+.. code-block:: python
+
+   print(blueprints["braket"]["device"])   # {}
+
+.. _device-settings-per-job:
+
+Overriding Device Settings for One Job
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every ``device`` setting a blueprint lists can be overridden for a single job
+with :class:`~divi.backends.DeviceConfig`. Settings you name apply to that run
+only; anything you leave out keeps the value stored on the target QPU.
+
+.. code-block:: python
+
+   from divi.backends import DeviceConfig, ExecutionConfig
+
+   config = ExecutionConfig(
+       device_config=DeviceConfig(transpile_level=0, use_twirling=True),
+   )
+
+Write settings in Python spelling and let Divi translate them — the example
+above reaches the service as ``{"TRANSPILE_LEVEL": 0, "USE_TWIRLING": "true"}``,
+where the toggle is the exact string the vendor workers compare against.
+
+Either spelling is accepted, so a key copied straight from a blueprint works
+without rewriting it:
+
+.. code-block:: python
+
+   DeviceConfig(TRANSPILE_LEVEL=0) == DeviceConfig(transpile_level=0)
+
+Which settings a QPU honours depends on its vendor. A setting its vendor does
+not recognise is ignored rather than rejected, so an IQM-only value on an IBM
+target simply has no effect.
+
+For a setting newer than your installed version of Divi, pass it through
+``extra`` in the service's own spelling:
+
+.. code-block:: python
+
+   DeviceConfig(transpile_level=1, extra={"SOME_NEW_KNOB": "value"})
+
+.. note::
+
+   A blueprint reports what a vendor *accepts*, not what your target is
+   currently set to — the stored values live on the dashboard. Nor does the QPU
+   system listing say which vendor a given system routes to, so pair this with
+   :meth:`~divi.backends.QoroService.fetch_qpu_systems` for orientation rather
+   than treating it as a description of a specific run.
 
 .. _Backend Selection Guide:
 
