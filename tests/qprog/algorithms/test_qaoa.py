@@ -22,6 +22,7 @@ from divi.qprog import (
     ScipyOptimizer,
 )
 from divi.qprog.algorithms import IterativeQAOA, SuperpositionState
+from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
@@ -119,20 +120,84 @@ class TestGeneralQAOA:
 
         verify_correct_circuit_count(qaoa_problem)
 
-    def test_gradient_is_refused_rather_than_silently_wrong(
+    def test_gradient_rule_uses_the_hamiltonian_frequency_content(
         self, dummy_simulator, default_optimizer
     ):
-        """A layer angle drives one rotation per Hamiltonian term, so the
-        two-term rule returns a near-zero gradient instead of the true one."""
         qaoa = QAOA(
             MaxCutProblem(nx.bull_graph()),
-            n_layers=1,
+            n_layers=2,
             optimizer=default_optimizer,
             max_iterations=1,
             backend=dummy_simulator,
         )
-        with pytest.raises(NotImplementedError, match="no parameter-shift gradient"):
-            qaoa._grad_shift_rule
+
+        assert qaoa._parameter_frequencies() == [
+            (1.0, 5),
+            (2.0, 5),
+            (1.0, 5),
+            (2.0, 5),
+        ]
+        shifts, weights = qaoa._grad_shift_rule
+        assert shifts.shape == (40, 4)
+        assert weights.shape == (4, 40)
+
+    def test_hamiltonian_frequency_family_accepts_commensurate_weights(self):
+        hamiltonian = SparsePauliOp(["ZI", "IZ"], coeffs=[0.25, 0.5])
+
+        assert _hamiltonian_parameter_frequency(hamiltonian) == (0.5, 3)
+
+    def test_hamiltonian_frequency_family_rejects_incommensurate_weights(self):
+        hamiltonian = SparsePauliOp(["ZI", "IZ"], coeffs=[0.5, np.sqrt(2)])
+
+        with pytest.raises(NotImplementedError, match="commensurate"):
+            _hamiltonian_parameter_frequency(hamiltonian)
+
+    def test_hamiltonian_frequency_family_reports_large_shift_rule(self):
+        hamiltonian = SparsePauliOp(
+            ["ZI", "IZ", "ZZ"],
+            coeffs=[0.37, 0.42, 0.58],
+        )
+
+        assert _hamiltonian_parameter_frequency(hamiltonian) == (0.02, 137)
+
+    @pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+    def test_qaoa_rejects_invalid_shift_evaluation_limit(
+        self,
+        limit,
+        gradient_free_optimizer,
+        default_test_simulator,
+    ):
+        with pytest.raises(ValueError, match="positive integer or None"):
+            QAOA(
+                MaxCutProblem(nx.path_graph(2)),
+                optimizer=gradient_free_optimizer,
+                backend=default_test_simulator,
+                max_shift_evaluations_per_parameter=limit,
+            )
+
+    def test_qaoa_shift_limit_reports_full_gradient_cost(
+        self,
+        gradient_free_optimizer,
+        default_test_simulator,
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.complete_graph(3)),
+            optimizer=gradient_free_optimizer,
+            backend=default_test_simulator,
+        )
+        qaoa.cost_hamiltonian = SparsePauliOp(
+            ["ZII", "IZI", "IIZ"],
+            coeffs=[0.37, 0.42, 0.58],
+        )
+
+        with pytest.raises(
+            NotImplementedError,
+            match="full 2-parameter gradient requires 280 evaluations",
+        ):
+            qaoa._parameter_frequencies()
+
+        qaoa.max_shift_evaluations_per_parameter = None
+        assert qaoa._parameter_frequencies()[0] == (0.02, 137)
 
     def test_a_gradient_free_run_never_builds_a_shift_rule(
         self, gradient_free_optimizer, dummy_simulator

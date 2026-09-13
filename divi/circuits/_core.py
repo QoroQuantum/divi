@@ -160,6 +160,9 @@ class MetaCircuit:
     """Per-observable-group shot allocation (``group_index -> shots``) when a
     ``shot_distribution`` is active; ``None`` otherwise."""
 
+    param_group_shots: Mapping[int, Mapping[int, int]] | None = None
+    """Per-parameter-set observable-group shots for estimator-sample batches."""
+
     backend_ham_ops: str | None = None
     """Observable string handed to the backend for analytic expectation
     values (``_backend_expval`` grouping); ``None`` for counts-based paths."""
@@ -238,6 +241,12 @@ class MetaCircuit:
     def set_group_shots(self, group_shots: Mapping[int, int]) -> MetaCircuit:
         """Return a new MetaCircuit with per-group shot allocation set."""
         return replace(self, group_shots=group_shots)
+
+    def set_param_group_shots(
+        self, param_group_shots: Mapping[int, Mapping[int, int]]
+    ) -> MetaCircuit:
+        """Return a new MetaCircuit with per-parameter-set group allocations."""
+        return replace(self, param_group_shots=param_group_shots)
 
     def set_backend_ham_ops(self, ham_ops: str) -> MetaCircuit:
         """Return a new MetaCircuit with the backend observable string set."""

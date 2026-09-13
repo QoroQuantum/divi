@@ -18,7 +18,7 @@ from scipy.optimize import OptimizeResult
 import divi.qprog._program_checkpoint as program_checkpoint_module
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline import CircuitPreprocessor
+from divi.pipeline import CircuitPreprocessor, CostEstimate
 from divi.qprog._program_checkpoint import VQACheckpoint
 from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
 from divi.qprog.early_stopping import EarlyStopping, StopReason
@@ -371,6 +371,25 @@ class TestProgram:
         )
         assert list(losses.items()) == [(0, 11.0), (1, 12.0)]
 
+    def test_evaluate_cost_param_sets_threads_estimator_samples(self, mocker):
+        program = self._create_sample_program(mocker)
+        evaluate = mocker.patch.object(
+            program,
+            "evaluate",
+            return_value=({0: [1.0], 1: [2.0]}, {0: 0.1, 1: 0.2}),
+        )
+        param_sets = np.zeros((2, 4))
+
+        losses = program._evaluate_cost_param_sets(
+            param_sets,
+            estimator_samples=[2, 8],
+            collect_variance=True,
+        )
+
+        assert evaluate.call_args.kwargs["estimator_samples"] == [2, 8]
+        assert evaluate.call_args.kwargs["return_variance"] is True
+        assert losses == {0: 1.0, 1: 2.0}
+
     def test_evaluate_routes_initial_spec_and_params_to_execute(self, mocker):
         """``evaluate`` itself (not only ``_evaluate_cost_param_sets``) wires the
         ``_initial_spec`` seed and param sets into the pipeline execution."""
@@ -395,6 +414,95 @@ class TestProgram:
         program.evaluate(np.zeros((1, 4)), program.cost_preprocessor(), shots=512)
 
         assert execute.call_args.kwargs["shots_override"] == 512
+
+    def test_evaluate_estimator_samples_threads_scalar_to_execute(self, mocker):
+        program = self._create_sample_program(mocker)
+        execute = mocker.patch.object(
+            program, "_execute", return_value={(("param_set", 0),): [1.0]}
+        )
+
+        program.evaluate(
+            np.zeros((1, 4)), program.cost_preprocessor(), estimator_samples=32
+        )
+
+        assert execute.call_args.kwargs["estimator_samples"].by_param_set == (32,)
+
+    def test_evaluate_estimator_samples_threads_per_set_budgets(self, mocker):
+        program = self._create_sample_program(mocker)
+        execute = mocker.patch.object(
+            program,
+            "_execute",
+            return_value={
+                (("param_set", 0),): [1.0],
+                (("param_set", 1),): [1.0],
+            },
+        )
+
+        program.evaluate(
+            np.zeros((2, 4)),
+            program.cost_preprocessor(),
+            estimator_samples=[2, 8],
+        )
+
+        assert execute.call_args.kwargs["estimator_samples"].by_param_set == (2, 8)
+
+    def test_evaluate_returns_estimator_sufficient_statistics(self, mocker):
+        program = self._create_sample_program(mocker)
+        mocker.patch.object(
+            program,
+            "_execute",
+            return_value={(("param_set", 0),): [1.25]},
+        )
+        program._last_cost_variance = {(("param_set", 0),): 0.125}
+
+        estimates = program.evaluate_estimates(
+            np.zeros((1, 4)),
+            program.cost_preprocessor(),
+            estimator_samples=8,
+        )
+
+        assert estimates == {
+            0: CostEstimate(
+                mean=1.25,
+                variance_of_mean=0.125,
+                single_shot_variance=1.0,
+                samples_used=8,
+            )
+        }
+
+    @pytest.mark.parametrize("estimator_samples", [0, -1, 1.5, [2, 0], [2, -1]])
+    def test_evaluate_rejects_non_positive_estimator_samples(
+        self, mocker, estimator_samples
+    ):
+        program = self._create_sample_program(mocker)
+
+        with pytest.raises(ValueError, match="positive"):
+            program.evaluate(
+                np.zeros((2, 4)),
+                program.cost_preprocessor(),
+                estimator_samples=estimator_samples,
+            )
+
+    def test_evaluate_rejects_wrong_number_of_estimator_samples(self, mocker):
+        program = self._create_sample_program(mocker)
+
+        with pytest.raises(ValueError, match="one value per parameter set"):
+            program.evaluate(
+                np.zeros((2, 4)),
+                program.cost_preprocessor(),
+                estimator_samples=[2],
+            )
+
+    def test_evaluate_rejects_shots_with_estimator_samples(self, mocker):
+        program = self._create_sample_program(mocker)
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            program.evaluate(
+                np.zeros((1, 4)),
+                program.cost_preprocessor(),
+                shots=100,
+                estimator_samples=8,
+            )
 
     def test_evaluate_return_variance_returns_values_and_variances(self, mocker):
         program = self._create_sample_program(mocker)

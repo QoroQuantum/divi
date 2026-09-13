@@ -53,6 +53,7 @@ from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     Optimizer,
     PymooOptimizer,
+    RosalinOptimizer,
     ScipyMethod,
     ScipyOptimizer,
 )
@@ -73,6 +74,7 @@ _CHECKPOINTABLE_OPTIMIZERS: dict[str, type[Optimizer]] = {
     "GridSearchOptimizer": GridSearchOptimizer,
     "MonteCarloOptimizer": MonteCarloOptimizer,
     "PymooOptimizer": PymooOptimizer,
+    "RosalinOptimizer": RosalinOptimizer,
 }
 
 ParamHistoryMode: TypeAlias = Literal["all_evaluated", "best_per_iteration"]
@@ -979,6 +981,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         param_sets: npt.NDArray[np.float64],
         *,
         shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
         collect_variance: bool = False,
         **kwargs,
     ) -> dict[int, float]:
@@ -986,6 +989,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         ``shots`` overrides the per-evaluation measurement budget without
         mutating the immutable backend (see :attr:`PipelineEnv.effective_shots`).
+        ``estimator_samples`` assigns a weighted-random-sampling budget to each
+        parameter set and is mutually exclusive with ``shots``.
         ``collect_variance`` asks the pipeline to also estimate the shot-noise
         variance of each cost value, stashed on ``_last_cost_variance`` and read
         back via :meth:`_cost_shot_variances`.
@@ -997,6 +1002,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             np.atleast_2d(param_sets),
             self.cost_preprocessor(),
             shots=shots,
+            estimator_samples=estimator_samples,
             return_variance=collect_variance,
         )
         if collect_variance:
@@ -1145,7 +1151,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
             return self
 
-        def cost_fn(params, *, shots=None, return_variance=False):
+        def cost_fn(
+            params, *, shots=None, estimator_samples=None, return_variance=False
+        ):
             self._evaluation_counter += 1
             self._progress_emitter(
                 ProgressEvent.show(
@@ -1157,6 +1165,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             values_map = self._evaluate_cost_param_sets(
                 np.atleast_2d(params),
                 shots=shots,
+                estimator_samples=estimator_samples,
                 collect_variance=return_variance,
                 **kwargs,
             )
@@ -1244,7 +1253,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 current_loss = float("nan")
             else:
                 current_loss = float(fun[best_idx])
-                if current_loss < self._best_loss:
+                if intermediate_result.get("track_best", True) is False:
+                    self._best_loss = current_loss
+                    self._best_params = intermediate_result.x[best_idx].copy()
+                elif current_loss < self._best_loss:
                     self._best_loss = current_loss
                     self._best_params = intermediate_result.x[best_idx].copy()
 
@@ -1315,6 +1327,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             if key != "jac":
                 optimize_kwargs[key] = evaluator
 
+        resource_start = (
+            self.total_device_shots,
+            self.total_circuit_count,
+            self.total_backend_jobs,
+        )
         with self._install_cancellation_handler():
             try:
                 self.optimize_result = self.optimizer.optimize(**optimize_kwargs)
@@ -1368,6 +1385,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 best_idx = _argmin_finite(self.optimize_result.fun)
                 if best_idx is not None:
                     self._best_params = x[best_idx].copy()
+                    self._best_loss = float(
+                        np.asarray(self.optimize_result.fun).ravel()[best_idx]
+                    )
+
+        self.optimize_result.device_shots_used = (
+            self.total_device_shots - resource_start[0]
+        )
+        self.optimize_result.circuits_used = (
+            self.total_circuit_count - resource_start[1]
+        )
+        self.optimize_result.backend_jobs_used = (
+            self.total_backend_jobs - resource_start[2]
+        )
 
         # Canonical 1-D best parameters (the optimizer result contract); the
         # early-stop/cancel branches above carry a 2-D (1, n) best, so squeeze.

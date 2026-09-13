@@ -29,7 +29,24 @@ def _initial_params(optimizer: Optimizer, seed: int = 42) -> np.ndarray:
     return rng.random((optimizer.n_param_sets, 4)) * 2 * np.pi
 
 
+def _variance_aware_sphere(
+    params: np.ndarray,
+    *,
+    estimator_samples=None,
+    return_variance: bool = False,
+):
+    values = sphere_cost_fn_batch_aware(params)
+    if not return_variance:
+        return values
+    return values, np.zeros(len(np.atleast_2d(params)), dtype=np.float64)
+
+
+setattr(_variance_aware_sphere, "supports_variance", True)
+
+
 def _cost_fn(optimizer: Optimizer) -> Callable[[np.ndarray], float | np.ndarray]:
+    if getattr(optimizer, "requires_variance", False):
+        return _variance_aware_sphere
     if optimizer.n_param_sets == 1:
         return sphere_cost_fn_single
     return sphere_cost_fn_population

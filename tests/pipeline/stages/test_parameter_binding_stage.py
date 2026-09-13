@@ -342,6 +342,11 @@ class TestParameterBindingStageDeferredBinding:
         batch_with_shots = {(("spec", "c"),): meta.set_group_shots({0: 100})}
         assert stage._defers_binding(batch_with_shots, env) is False
 
+        batch_with_param_shots = {
+            (("spec", "c"),): meta.set_param_group_shots({0: {0: 100}})
+        }
+        assert stage._defers_binding(batch_with_param_shots, env) is False
+
     def test_introspect_agrees_with_the_path_actually_taken(self):
         """A dry run must not claim binding is deferred when it is not: the
         reported flag and ``_defers_binding`` read the same predicate."""

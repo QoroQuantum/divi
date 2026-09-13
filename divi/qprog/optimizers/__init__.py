@@ -21,6 +21,7 @@ from divi.qprog.optimizers._grid_search import GridSearchOptimizer
 from divi.qprog.optimizers._monte_carlo import MonteCarloOptimizer, MonteCarloState
 from divi.qprog.optimizers._pymoo import PymooMethod, PymooOptimizer, PymooState
 from divi.qprog.optimizers._qng import QNGOptimizer
+from divi.qprog.optimizers._rosalin import RosalinOptimizer
 from divi.qprog.optimizers._scipy import ScipyMethod, ScipyOptimizer
 from divi.qprog.optimizers._spsa import (
     QNSPSAOptimizer,
@@ -42,6 +43,7 @@ __all__ = [
     "QNGOptimizer",
     "QNSPSAOptimizer",
     "QUIVEROptimizer",
+    "RosalinOptimizer",
     "SPSAOptimizer",
     "ScipyMethod",
     "ScipyOptimizer",

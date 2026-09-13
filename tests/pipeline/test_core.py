@@ -506,6 +506,27 @@ class TestCompileQasmPayloadBatch:
         )
         assert not _batch_has_free_parameters(bound_trace.final_batch)
 
+    def test_compile_prunes_zero_shot_parameter_group_pairs(self):
+        param_sets = [[0.1, 0.2], [0.3, 0.4]]
+        trace = run_binding_pipeline(
+            _multi_pauli_parametric_meta(),
+            backend=FakeBackend(supports_expval=False),
+            param_sets=param_sets,
+        )
+        key, node = next(iter(trace.final_batch.items()))
+        node = node.set_param_group_shots({0: {0: 2}, 1: {1: 8}})
+
+        entries, lineage = _compile_batch({key: node}, param_sets)
+
+        assert len(entries) == 2
+        assert {
+            tuple(axis for axis in branch if axis[0] in {"param_set", "obs_group"})
+            for branch in lineage.values()
+        } == {
+            (("param_set", 0), ("obs_group", 0)),
+            (("param_set", 1), ("obs_group", 1)),
+        }
+
     def test_execute_rejects_unbound_batch_when_backend_cannot_resolve(self):
         """Reaching execute with free parameters still present (e.g. no
         ParameterBindingStage ran) on a backend that does not resolve
@@ -1320,6 +1341,7 @@ class TestDefaultExecuteFnCancellation:
         backend = mocker.Mock(spec=AsyncJobBackend)
         backend.supports_expval = False
         backend.resolves_parameters = False
+        backend.shots = 100
         backend.max_retries = 1
         backend.submit_circuits.return_value = ExecutionResult(job_id="job_42")
         if raise_on_poll:
@@ -1471,6 +1493,22 @@ class TestBuildShotGroupsPure:
             [0, 1, 100],
             [1, 2, 200],
         ]
+
+    def test_parameter_sets_can_have_independent_group_allocations(self):
+        circuits = {"a": "x", "b": "x", "c": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("param_set", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("param_set", 1), ("obs_group", 0)),
+            "c": (("circuit", 0), ("param_set", 1), ("obs_group", 1)),
+        }
+        per_param_group = {(("circuit", 0),): {0: {0: 2}, 1: {0: 3, 1: 5}}}
+
+        assert _build_shot_groups(
+            circuits,
+            lineage,
+            per_group_shots={},
+            per_param_group_shots=per_param_group,
+        ) == [[0, 1, 2], [1, 2, 3], [2, 3, 5]]
 
 
 class TestMeasurementExclusivity:

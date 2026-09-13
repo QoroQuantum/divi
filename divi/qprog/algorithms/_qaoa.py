@@ -4,6 +4,8 @@
 
 import logging
 import pickle
+from fractions import Fraction
+from math import gcd, lcm
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -36,6 +38,40 @@ logger = logging.getLogger(__name__)
 
 # Sentinel distinguishing 'run() not yet called' from a decoded solution of ``None``.
 _UNSET: Any = object()
+_MAX_PARAMETER_SHIFT_EVALUATIONS = 256
+
+
+def _hamiltonian_parameter_frequency(
+    hamiltonian: SparsePauliOp,
+) -> tuple[float, int]:
+    """Return a harmonic frequency superset for one shared evolution angle."""
+    active_terms = np.any(hamiltonian.paulis.x | hamiltonian.paulis.z, axis=1)
+    frequencies = 2 * np.abs(hamiltonian.coeffs.real[active_terms])
+    frequencies = frequencies[frequencies > 1e-12]
+    if frequencies.size == 0:
+        return 1.0, 1
+
+    rational = [
+        Fraction(float(value)).limit_denominator(10_000) for value in frequencies
+    ]
+    if any(
+        not np.isclose(float(value), frequency, rtol=1e-10, atol=1e-12)
+        for value, frequency in zip(rational, frequencies)
+    ):
+        raise NotImplementedError(
+            "QAOA parameter-shift gradients require commensurate Hamiltonian "
+            "coefficients. Use a gradient-free optimizer or SPSA for this problem."
+        )
+
+    common_denominator = lcm(*(value.denominator for value in rational))
+    integer_frequencies = [
+        value.numerator * (common_denominator // value.denominator)
+        for value in rational
+    ]
+    divisor = gcd(*integer_frequencies)
+    omega = divisor / common_denominator
+    order = sum(value // divisor for value in integer_frequencies)
+    return float(omega), order
 
 
 class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
@@ -69,6 +105,8 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
         max_iterations: Maximum number of optimisation iterations. Defaults to 10.
         n_layers: Number of QAOA layers. Defaults to 1.
+        max_shift_evaluations_per_parameter: Safety limit for generalized
+            parameter-shift evaluations per parameter. Set to ``None`` to opt out.
         **kwargs: Additional keyword arguments passed to
             :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`, including ``optimizer``
             and ``backend``.
@@ -82,6 +120,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         trotterization_strategy: TrotterizationStrategy | None = None,
         max_iterations: int = 10,
         n_layers: int = 1,
+        max_shift_evaluations_per_parameter: int | None = (
+            _MAX_PARAMETER_SHIFT_EVALUATIONS
+        ),
         **kwargs,
     ):
         """Initialise the QAOA algorithm.
@@ -97,6 +138,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             max_iterations: Maximum number of optimisation iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
+            max_shift_evaluations_per_parameter: Safety limit for generalized
+                parameter-shift evaluations per parameter. Set to ``None`` to
+                permit arbitrarily large rules.
             **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
                 including ``optimizer`` and ``backend``.
         """
@@ -104,6 +148,15 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             raise TypeError(
                 f"initial_state must be an InitialState instance or None, "
                 f"got {type(initial_state).__name__}"
+            )
+        if max_shift_evaluations_per_parameter is not None and (
+            isinstance(max_shift_evaluations_per_parameter, bool)
+            or not isinstance(max_shift_evaluations_per_parameter, int)
+            or max_shift_evaluations_per_parameter < 1
+        ):
+            raise ValueError(
+                "max_shift_evaluations_per_parameter must be a positive integer "
+                "or None."
             )
 
         super().__init__(**kwargs)
@@ -116,6 +169,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.loss_constant = problem.loss_constant
         self.initial_state = initial_state or problem.recommended_initial_state
         self.problem_metadata = getattr(problem, "metadata", {})
+        self.max_shift_evaluations_per_parameter = max_shift_evaluations_per_parameter
 
         # Canonical wire mapping aligned with the cost SPO; problems may
         # surface domain-level labels (e.g. graph node names) via
@@ -152,13 +206,31 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         return 2
 
     def _parameter_frequencies(self):
-        raise NotImplementedError(
-            "QAOA has no parameter-shift gradient. Each layer angle drives one "
-            "rotation per Hamiltonian term at an angle scaled by that term's "
-            "coefficient, so its frequency content is set by the Hamiltonian and "
-            "the two-term rule silently returns a near-zero gradient. Use a "
-            "gradient-free optimizer (e.g. COBYLA) or a stochastic one (e.g. SPSA)."
-        )
+        """Hamiltonian-derived frequency families for each shared layer angle."""
+        if not isinstance(self.trotterization_strategy, ExactTrotterization):
+            raise NotImplementedError(
+                "QAOA has no parameter-shift gradient for stochastic or "
+                "approximate trotterization. Use a gradient-free optimizer or SPSA."
+            )
+        per_layer = [
+            _hamiltonian_parameter_frequency(self.cost_hamiltonian),
+            _hamiltonian_parameter_frequency(self.mixer_hamiltonian),
+        ]
+        evaluation_counts = [2 * order for _frequency, order in per_layer]
+        limit = self.max_shift_evaluations_per_parameter
+        if limit is not None and any(count > limit for count in evaluation_counts):
+            total_evaluations = self.n_layers * sum(evaluation_counts)
+            raise NotImplementedError(
+                "QAOA parameter-shift gradients require "
+                f"{evaluation_counts[0]} cost and {evaluation_counts[1]} mixer "
+                "circuit evaluations per parameter; the full "
+                f"{self.n_params}-parameter gradient requires "
+                f"{total_evaluations} evaluations, and the per-parameter limit "
+                f"is {limit}. Increase max_shift_evaluations_per_parameter, "
+                "set it to None to opt out, or use a gradient-free optimizer "
+                "or SPSA for this problem."
+            )
+        return per_layer * self.n_layers
 
     def _spec_stage(self) -> Stage:
         # QAOA trotterizes the cost Hamiltonian into the ansatz: seeded with
@@ -192,6 +264,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             "decoded_solution": _to_jsonable(decoded),
             "solution_bitstring": bitstring,
             "loss_constant": self.loss_constant,
+            "max_shift_evaluations_per_parameter": (
+                self.max_shift_evaluations_per_parameter
+            ),
             "trotterization_strategy": pickle.dumps(
                 self.trotterization_strategy, protocol=pickle.HIGHEST_PROTOCOL
             ).hex(),
@@ -221,6 +296,10 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             _UNSET if loaded_bitstring is None else loaded_bitstring
         )
         self.loss_constant = state["loss_constant"]
+        self.max_shift_evaluations_per_parameter = state.get(
+            "max_shift_evaluations_per_parameter",
+            self.max_shift_evaluations_per_parameter,
+        )
         self.trotterization_strategy = pickle.loads(
             bytes.fromhex(state["trotterization_strategy"])
         )

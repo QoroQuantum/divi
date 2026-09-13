@@ -5,7 +5,6 @@
 """Tests for paper-faithful LASSQD fragment-circuit preparation."""
 
 import hashlib
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -75,7 +74,7 @@ def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
 
     minimize = mocker.patch(
         "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: SimpleNamespace(x=x0),
+        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=x0),
     )
     from_amplitudes = mocker.spy(ffsim.UCJOpSpinUnbalanced, "from_t_amplitudes")
 
@@ -118,15 +117,15 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
     ).to_parameters(interaction_pairs=pairs)
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation._fragment_rohf",
-        return_value=SimpleNamespace(mo_coeff=np.eye(4)),
+        return_value=mocker.Mock(mo_coeff=np.eye(4)),
     )
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation._fragment_ccsd",
-        return_value=SimpleNamespace(t1=t1, t2=t2),
+        return_value=mocker.Mock(t1=t1, t2=t2),
     )
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: SimpleNamespace(x=x0),
+        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=x0),
     )
 
     result = prepare_lucj_fragment(
@@ -143,11 +142,11 @@ def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     rotation = np.array([[0.0, -1.0], [1.0, 0.0]])
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation._fragment_rohf",
-        return_value=SimpleNamespace(mo_coeff=rotation),
+        return_value=mocker.Mock(mo_coeff=rotation),
     )
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation._fragment_ccsd",
-        return_value=SimpleNamespace(
+        return_value=mocker.Mock(
             t1=(np.zeros((1, 1)), np.zeros((1, 1))),
             t2=(
                 np.zeros((1, 1, 1, 1)),
@@ -158,7 +157,7 @@ def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     )
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: SimpleNamespace(x=x0),
+        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=x0),
     )
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
@@ -221,13 +220,15 @@ def test_fragment_rohf_uses_positive_local_spin_for_beta_majority(mocker):
     assert rohf.call_args.args[0].spin == 1
 
 
-def test_beta_majority_ccsd_amplitudes_are_relabelled_to_physical_spin_channels():
+def test_beta_majority_ccsd_amplitudes_are_relabelled_to_physical_spin_channels(
+    mocker,
+):
     t1_majority = np.array([[11.0], [12.0]])
     t1_minority = np.array([[21.0, 22.0]])
     t2_majority = np.arange(4.0).reshape(2, 2, 1, 1) + 100.0
     t2_mixed = np.arange(4.0).reshape(2, 1, 1, 2) + 200.0
     t2_minority = np.arange(4.0).reshape(1, 1, 2, 2) + 300.0
-    coupled_cluster = SimpleNamespace(
+    coupled_cluster = mocker.Mock(
         t1=(t1_majority, t1_minority),
         t2=(t2_majority, t2_mixed, t2_minority),
     )
@@ -246,11 +247,11 @@ def test_non_finite_ccsd_amplitudes_fail_before_factorization(mocker):
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation._fragment_rohf",
-        return_value=SimpleNamespace(mo_coeff=np.eye(2)),
+        return_value=mocker.Mock(mo_coeff=np.eye(2)),
     )
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation._fragment_ccsd",
-        return_value=SimpleNamespace(
+        return_value=mocker.Mock(
             t1=(np.zeros((1, 1)), np.zeros((1, 1))),
             t2=(
                 np.zeros((1, 1, 1, 1)),
@@ -273,7 +274,7 @@ def test_non_finite_linear_method_result_fails_before_circuit_construction(mocke
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
     mocker.patch(
         "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: SimpleNamespace(
+        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(
             x=np.full_like(x0, np.nan)
         ),
     )

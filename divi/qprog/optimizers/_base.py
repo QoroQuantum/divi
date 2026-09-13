@@ -154,9 +154,10 @@ class Optimizer(ABC):
         """Extra per-run evaluators this optimizer needs from the program.
 
         Called once by the variational algorithm before optimisation. The
-        returned mapping may override ``"jac"`` and/or add ``"metric_fn"``;
-        keys absent from the mapping fall back to the algorithm's defaults.
-        The base implementation needs nothing extra and returns ``{}``.
+        returned mapping may override ``"jac"`` or add another optimizer-specific
+        evaluator such as ``"metric_fn"`` or ``"shift_rule"``. Keys absent from
+        the mapping fall back to the algorithm's defaults. The base implementation
+        needs nothing extra and returns ``{}``.
         """
         return {}
 

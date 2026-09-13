@@ -141,6 +141,9 @@ class VQACheckpoint(ProgramCheckpoint):
         default=None, validation_alias="_serialized_stop_reason"
     )
     grouping_strategy: str | None = Field(validation_alias="_grouping_strategy")
+    shot_distribution: Literal["uniform", "weighted", "weighted_random"] | None = Field(
+        default=None, validation_alias="_shot_distribution"
+    )
 
     # Arrays
     best_params: list[float] | None = Field(

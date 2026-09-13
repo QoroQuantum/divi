@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from collections.abc import Hashable, Iterator
+from collections.abc import Hashable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
@@ -21,6 +21,7 @@ from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
     CircuitPreprocessor,
+    CostEstimate,
     DryRunReport,
     PipelineEnv,
     PipelineResult,
@@ -29,6 +30,7 @@ from divi.pipeline import (
     dry_run_pipeline,
 )
 from divi.pipeline._result_keys_operations import extract_param_set_idx
+from divi.pipeline.abc import _EstimatorSamplePlan
 from divi.pipeline.stages import (
     CircuitSpecStage,
     MeasurementStage,
@@ -174,6 +176,8 @@ class QuantumProgram(ABC):
             raise TypeError(f"Unexpected keyword argument(s): {unexpected}")
 
         self._total_circuit_count = 0
+        self._total_device_shots = 0
+        self._total_backend_jobs = 0
         self._total_run_time = 0.0
         self._current_execution_result = None
         self._last_cost_variance = None
@@ -267,6 +271,16 @@ class QuantumProgram(ABC):
         """Cumulative count of circuits submitted for execution across all
         runs of this program."""
         return self._total_circuit_count
+
+    @property
+    def total_device_shots(self) -> int:
+        """Cumulative circuit repetitions submitted across all executions."""
+        return self._total_device_shots
+
+    @property
+    def total_backend_jobs(self) -> int:
+        """Cumulative backend submissions made across all executions."""
+        return self._total_backend_jobs
 
     @property
     def total_run_time(self) -> float:
@@ -551,6 +565,8 @@ class QuantumProgram(ABC):
         env = self._build_pipeline_env(**env_overrides)
         result = pipeline.run(initial_spec=initial_spec, env=env)
         self._total_circuit_count += env.artifacts.get("circuit_count", 0)
+        self._total_device_shots += env.artifacts.get("device_shots", 0)
+        self._total_backend_jobs += env.artifacts.get("backend_jobs", 0)
         self._total_run_time += env.artifacts.get("run_time", 0.0)
         self._current_execution_result = env.artifacts.get("_current_execution_result")
         self._last_cost_variance = env.artifacts.get("cost_variance")
@@ -622,6 +638,7 @@ class QuantumProgram(ABC):
         *,
         backend: CircuitRunner | None = None,
         shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
         return_variance: bool = False,
         preserve_keys: bool = False,
         axes_to_preserve: tuple[str, ...] = (),
@@ -642,6 +659,10 @@ class QuantumProgram(ABC):
                 backend's own shot count; shot-adaptive optimizers (e.g. SPSA's
                 ``M_k`` schedule) pass an explicit budget the static backend
                 cannot supply.
+            estimator_samples: Total weighted-random operator samples, either one
+                budget shared by every parameter set or one budget per set. This
+                is distinct from backend shots and is mutually exclusive with
+                ``shots``.
             return_variance: Also return per-set shot-noise variance.
             preserve_keys: Output control. When ``True``, return the raw
                 pipeline-result dict (keyed by full ``(axis, value)`` keys)
@@ -668,13 +689,20 @@ class QuantumProgram(ABC):
                 "preserved axes collide during param_set collapse."
             )
 
-        env_overrides: dict[str, Any] = {"param_sets": np.atleast_2d(params)}
+        param_sets = np.atleast_2d(params)
+        env_overrides: dict[str, Any] = {"param_sets": param_sets}
         if backend is not None:
             env_overrides["backend"] = backend
         if axes_to_preserve:
             env_overrides["axes_to_preserve"] = tuple(axes_to_preserve)
         if shots is not None:
             env_overrides["shots_override"] = int(shots)
+        if estimator_samples is not None:
+            if shots is not None:
+                raise ValueError("shots and estimator_samples are mutually exclusive.")
+            env_overrides["estimator_samples"] = _EstimatorSamplePlan.from_value(
+                estimator_samples, len(param_sets)
+            )
         if return_variance:
             env_overrides["collect_variance"] = True
 
@@ -697,6 +725,40 @@ class QuantumProgram(ABC):
             return values
 
         return values, self._cost_shot_variances(values)
+
+    def evaluate_estimates(
+        self,
+        params: "np.ndarray",
+        preprocessor: CircuitPreprocessor,
+        *,
+        estimator_samples: int | Sequence[int],
+        backend: CircuitRunner | None = None,
+    ) -> dict[int, CostEstimate]:
+        """Return sufficient statistics for sampled scalar cost estimates."""
+        param_sets = np.atleast_2d(params)
+        sample_plan = _EstimatorSamplePlan.from_value(
+            estimator_samples, len(param_sets)
+        )
+        evaluated = self.evaluate(
+            param_sets,
+            preprocessor,
+            backend=backend,
+            estimator_samples=sample_plan.by_param_set,
+            return_variance=True,
+        )
+        assert isinstance(evaluated, tuple)
+        values, variances = evaluated
+        return {
+            param_idx: CostEstimate(
+                mean=float(np.asarray(value).squeeze()),
+                variance_of_mean=float(variances[param_idx]),
+                single_shot_variance=float(
+                    variances[param_idx] * sample_plan.resolve(param_idx)
+                ),
+                samples_used=sample_plan.resolve(param_idx),
+            )
+            for param_idx, value in values.items()
+        }
 
     def _cost_shot_variances(self, values: dict[int, float]) -> dict[int, float]:
         """Map the last pipeline run's shot-noise variance to each param-set index.

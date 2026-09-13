@@ -958,7 +958,11 @@ class QoroService(CircuitRunner):
             if response.status_code != HTTPStatus.OK:
                 _raise_with_details(response)
 
-        return ExecutionResult(results=None, job_id=job_id)
+        return ExecutionResult(
+            results=None,
+            job_id=job_id,
+            backend_jobs=len(call_plan),
+        )
 
     def delete_job(self, execution_result: ExecutionResult) -> requests.Response:
         """
