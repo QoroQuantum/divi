@@ -269,7 +269,9 @@ class TestStrictAggregation:
         _attach_program_with_candidates(ensemble, mocker, [[1, 1], [1, 0]])
 
         ensemble.get_top_solutions(
-            n=2, strategy=BeamSearchStrategy(beam_width=None), strict=True
+            n=2,
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None),
+            strict=True,
         )
 
         problem.postprocess_candidates.assert_called_once()
@@ -284,7 +286,9 @@ class TestStrictAggregation:
         prog = _attach_program_with_candidates(ensemble, mocker, [[1, 1, 1], [1, 1, 0]])
 
         ensemble.get_top_solutions(
-            n=1, strategy=BeamSearchStrategy(beam_width=None), strict=True
+            n=1,
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None),
+            strict=True,
         )
 
         prog.get_top_solutions.assert_called_once_with(n=2**20, include_decoded=True)
@@ -305,13 +309,19 @@ class TestStrictAggregation:
         with pytest.warns(UserWarning, match="No valid matching candidates"):
             assert (
                 ensemble.get_top_solutions(
-                    n=1, strategy=BeamSearchStrategy(beam_width=None), strict=True
+                    n=1,
+                    strategy=BeamSearchStrategy(
+                        beam_width=None, n_partition_candidates=None
+                    ),
+                    strict=True,
                 )
                 == []
             )
 
         results = ensemble.get_top_solutions(
-            n=3, strategy=BeamSearchStrategy(beam_width=None), strict=True
+            n=3,
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None),
+            strict=True,
         )
         assert results == [([(0, 1)], 10.0), ([(1, 2)], 10.0)]
 
@@ -327,7 +337,9 @@ class TestStrictAggregation:
 
         with pytest.warns(UserWarning, match="was not a valid matching"):
             matching, weight = ensemble.aggregate_results(
-                strategy=BeamSearchStrategy(beam_width=None)
+                strategy=BeamSearchStrategy(
+                    beam_width=None, n_partition_candidates=None
+                )
             )
 
         assert is_valid_matching(matching)
