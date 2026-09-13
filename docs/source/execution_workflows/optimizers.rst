@@ -30,10 +30,15 @@ usually matter more than the algorithm name.
      - Controlled by direction count ``V``
      - Parameter-shift mode is exact only where the program provides an exact
        shift rule.
+   * - ROSALIN or gCANS
+     - Shot-limited, expectation-valued VQAs with exact parameter-shift rules
+     - Adaptive samples for every gradient component
+     - Sensitive to learning rate and minimum shots; generalized QAOA rules can
+       require many evaluations.
    * - L-BFGS-B or QNG
      - Smooth objectives with an exact program gradient
      - Parameter-shift and, for QNG, metric evaluations
-     - Not supported by QAOA, which has no exact two-term parameter-shift rule.
+     - QAOA may require a high-order generalized shift rule.
    * - Grid search
      - One or two parameters, especially shallow QAOA
      - Exponential in parameter count
@@ -102,12 +107,13 @@ Use L-BFGS-B when:
 
 .. note::
 
-   :class:`~divi.qprog.algorithms.QAOA` has no exact parameter-shift rule. Each
-   layer angle drives one rotation per Hamiltonian term, at an angle scaled by
-   that term's coefficient, so its gradient is not recoverable from a single
-   pair of shifted evaluations. Gradient-based optimizers — L-BFGS-B and the
-   natural-gradient optimizers — raise on QAOA rather than return a wrong
-   gradient. Use a gradient-free or evolutionary optimizer instead.
+   :class:`~divi.qprog.algorithms.QAOA` generally has no exact *two-term*
+   parameter-shift rule because a shared layer angle drives many Hamiltonian
+   terms. For exact trotterization, Divi derives a generalized rule from the
+   Hamiltonian frequencies [#wierichs2022]_. The rule may require many circuit
+   evaluations, especially for weighted objectives, so QAOA applies
+   ``max_shift_evaluations_per_parameter`` as a safety limit. Stochastic or
+   approximate trotterization still requires SPSA or a gradient-free method.
 
 .. code-block:: python
 
@@ -388,6 +394,41 @@ them with ``exact_loss=True``.
    dominates. Compare optimizers by requested shots rather than circuit count:
    changing ``M`` can make the latter misleading.
 
+.. _rosalin-optimizer:
+
+ROSALIN and gCANS (Adaptive Gradient Shots)
+--------------------------------------------
+
+:class:`~divi.qprog.optimizers.RosalinOptimizer` combines weighted random
+operator sampling with adaptive samples for each parameter-shift gradient
+component. ``allocation="icans"`` implements the individual CANS rule
+[#kubler2020]_ used by ROSALIN [#arrasmith2020]_; ``allocation="gcans"`` uses
+the global gain-per-shot rule [#gu2021]_.
+
+.. code-block:: python
+
+   from divi.qprog.optimizers import RosalinOptimizer
+
+   optimizer = RosalinOptimizer(
+       learning_rate=0.05,
+       total_shots=100_000,
+       lipschitz=1.0,  # use a valid bound for the target objective
+       min_shots=2,
+       allocation="icans",  # or "gcans"
+   )
+
+Use it with an expectation-valued VQA configured with
+``shot_distribution="weighted_random"`` on a sampling backend.
+
+iCANS allocates shots independently by coordinate and retains the original
+``smax`` cap. gCANS instead maximizes expected improvement per total gradient
+shot and does not use that cap. Neither rule is universally better: validate
+``learning_rate`` and ``min_shots`` against the target circuit and noise model.
+Weighted random operator sampling is most useful for Hamiltonians with several
+measurement groups. A diagonal QAOA cost often has only one group, leaving no
+operator-selection advantage; generalized parameter shifts can then make SPSA
+substantially cheaper.
+
 Grid Search
 -----------
 
@@ -432,9 +473,10 @@ A warning is issued if ``max_iterations > 1`` is supplied.
 Program-Specific Constraints
 ----------------------------
 
-- :class:`~divi.qprog.algorithms.QAOA` has no exact two-term parameter-shift
-  gradient. Use gradient-free SciPy methods, evolutionary methods, SPSA,
-  QN-SPSA, QUIVER in finite-difference mode, or a low-dimensional grid search.
+- :class:`~divi.qprog.algorithms.QAOA` can derive an exact generalized
+  parameter-shift rule under exact trotterization, subject to its evaluation
+  safety limit. For large rules, prefer SPSA, a gradient-free method, or a
+  low-dimensional grid search.
 - VQE and ``CustomVQA`` can use exact-gradient methods only when their ansatz
   declares a valid parameter-shift spectrum.
 - PCE uses a classical counts-based objective. Default pullback QNG does not
@@ -591,3 +633,11 @@ References
 .. [#gacon2021] Gacon, J., Zoufal, C., Carleo, G., & Woerner, S. (2021). Simultaneous perturbation stochastic approximation of the quantum Fisher information. *Quantum*, 5, 567.
 
 .. [#coyle2026] Coyle, B., Raj, S., Umathe, V., Cherrat, E. A., & Kashefi, E. (2026). Adaptive directional gradients for parameterised quantum circuits. *arXiv preprint* arXiv:2606.09734.
+
+.. [#kubler2020] Kübler, J. M., Arrasmith, A., Cincio, L., & Coles, P. J. (2020). `An Adaptive Optimizer for Measurement-Frugal Variational Algorithms <https://doi.org/10.22331/q-2020-05-11-263>`_. *Quantum*, 4, 263.
+
+.. [#arrasmith2020] Arrasmith, A., Cincio, L., Somma, R. D., & Coles, P. J. (2020). `Operator Sampling for Shot-frugal Optimization in Variational Algorithms <https://arxiv.org/abs/2004.06252>`_. arXiv:2004.06252.
+
+.. [#gu2021] Gu, A., Lowe, A., Dub, P. A., Coles, P. J., & Arrasmith, A. (2021). `Adaptive shot allocation for fast convergence in variational quantum algorithms <https://arxiv.org/abs/2108.10434>`_. arXiv:2108.10434.
+
+.. [#wierichs2022] Wierichs, D., Izaac, J., Wang, C., & Lin, C. Y.-Y. (2022). `General parameter-shift rules for quantum gradients <https://doi.org/10.22331/q-2022-03-30-677>`_. *Quantum*, 6, 677.

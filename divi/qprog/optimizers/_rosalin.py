@@ -7,7 +7,7 @@
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import numpy as np
 import numpy.typing as npt
@@ -53,6 +53,44 @@ def _icans_shots_and_gains(
     )
     smax = int(shots[int(np.nanargmax(gains_per_evaluation))])
     return np.clip(shots, min_shots, smax), gains
+
+
+def _gcans_shots(
+    gradient_ema: npt.NDArray[np.float64],
+    variance_ema: npt.NDArray[np.float64],
+    *,
+    learning_rate: float,
+    lipschitz: float,
+    bias_term: float,
+    min_shots: int,
+    evaluation_counts: npt.NDArray[np.int64] | None = None,
+) -> npt.NDArray[np.int64]:
+    """Compute paper equation 13, generalized to unequal shift-rule costs."""
+    factor = 2 * lipschitz * learning_rate / (2 - lipschitz * learning_rate)
+    standard_deviations = np.sqrt(np.maximum(variance_ema, 0.0))
+    costs = (
+        np.ones_like(standard_deviations)
+        if evaluation_counts is None
+        else np.asarray(evaluation_counts, dtype=np.float64)
+    )
+    if np.any(costs <= 0):
+        raise ValueError("evaluation_counts must be positive.")
+
+    weighted_deviation = np.sum(standard_deviations * np.sqrt(costs))
+    denominator = float(gradient_ema @ gradient_ema) + bias_term
+    raw_shots = (
+        factor
+        * standard_deviations
+        * weighted_deviation
+        / (np.sqrt(costs) * denominator)
+    )
+    finite_shots = np.nan_to_num(
+        raw_shots,
+        nan=float(min_shots),
+        posinf=float(np.iinfo(np.int32).max),
+        neginf=float(min_shots),
+    )
+    return np.maximum(np.ceil(finite_shots), min_shots).astype(np.int64)
 
 
 def _fit_shots_to_budget(
@@ -131,7 +169,7 @@ def _shift_rule_layout(
 
 
 class RosalinOptimizer(Optimizer):
-    r"""ROSALIN with weighted-random sampling and iCANS shot allocation.
+    r"""ROSALIN with weighted-random sampling and adaptive shot allocation.
 
     Each iteration evaluates the current loss and the program's complete
     parameter-shift recipe in one batch. The gradient coordinates receive
@@ -140,8 +178,11 @@ class RosalinOptimizer(Optimizer):
     iteration telemetry; noisy current-point estimates are never compared to
     select a best iterate. All samples count toward ``total_shots``.
 
+    See :ref:`rosalin-optimizer` for algorithm background, primary references,
+    and selection guidance.
+
     Args:
-        learning_rate: Constant iCANS step size :math:`\alpha`.
+        learning_rate: Constant gradient-descent step size :math:`\alpha`.
         total_shots: Maximum estimator-sample budget for the whole run. This is
             distinct from the backend's per-circuit ``shots`` setting. It is a
             hard ceiling, not a target: ``max_iterations`` may terminate the
@@ -151,7 +192,10 @@ class RosalinOptimizer(Optimizer):
         min_shots: Persistent minimum samples allocated to every expectation
             estimate. Must be at least two to estimate variance.
         ema_decay: Exponential-moving-average decay :math:`\mu`.
-        bias: Positive stabilizer :math:`b` in the iCANS denominator.
+        bias: Positive stabilizer :math:`b` in the allocation denominator.
+        allocation: Adaptive allocation rule. ``"icans"`` optimizes each
+            gradient coordinate independently; ``"gcans"`` optimizes expected
+            improvement per shot across the complete gradient.
     """
 
     requires_variance = True
@@ -164,6 +208,7 @@ class RosalinOptimizer(Optimizer):
         min_shots: int = 2,
         ema_decay: float = 0.99,
         bias: float = 1e-6,
+        allocation: Literal["icans", "gcans"] = "icans",
     ):
         if learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {learning_rate}.")
@@ -187,6 +232,10 @@ class RosalinOptimizer(Optimizer):
             )
         if bias <= 0:
             raise ValueError(f"bias must be positive, got {bias}.")
+        if allocation not in ("icans", "gcans"):
+            raise ValueError(
+                "allocation must be either 'icans' or 'gcans', " f"got {allocation!r}."
+            )
 
         self.learning_rate = float(learning_rate)
         self.total_shots = total_shots
@@ -194,6 +243,7 @@ class RosalinOptimizer(Optimizer):
         self.min_shots = min_shots
         self.ema_decay = float(ema_decay)
         self.bias = float(bias)
+        self.allocation = allocation
         self._theta: npt.NDArray[np.float64] | None = None
         self._shots: npt.NDArray[np.int64] | None = None
         self._gradient_ema: npt.NDArray[np.float64] | None = None
@@ -352,15 +402,25 @@ class RosalinOptimizer(Optimizer):
             correction = 1 - self.ema_decay**nit
             corrected_gradient = gradient_ema / correction
             corrected_variance = variance_ema / correction
-            shots, _ = _icans_shots_and_gains(
-                corrected_gradient,
-                corrected_variance,
-                learning_rate=self.learning_rate,
-                lipschitz=self.lipschitz,
-                bias_term=self.bias * self.ema_decay ** (nit - 1),
-                min_shots=self.min_shots,
-                evaluation_counts=evaluation_counts,
-            )
+            allocation_kwargs = {
+                "learning_rate": self.learning_rate,
+                "lipschitz": self.lipschitz,
+                "bias_term": self.bias * self.ema_decay ** (nit - 1),
+                "min_shots": self.min_shots,
+                "evaluation_counts": evaluation_counts,
+            }
+            if self.allocation == "icans":
+                shots, _ = _icans_shots_and_gains(
+                    corrected_gradient,
+                    corrected_variance,
+                    **allocation_kwargs,
+                )
+            else:
+                shots = _gcans_shots(
+                    corrected_gradient,
+                    corrected_variance,
+                    **allocation_kwargs,
+                )
 
             self._theta = theta.copy()
             self._shots = shots.copy()
@@ -417,6 +477,7 @@ class RosalinOptimizer(Optimizer):
             "min_shots": self.min_shots,
             "ema_decay": self.ema_decay,
             "bias": self.bias,
+            "allocation": self.allocation,
         }
 
     def save_state(self, checkpoint_dir: Path | str) -> None:

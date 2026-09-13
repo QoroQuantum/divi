@@ -14,7 +14,7 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import RosalinOptimizer
-from divi.qprog.optimizers._rosalin import _icans_shots_and_gains
+from divi.qprog.optimizers._rosalin import _gcans_shots, _icans_shots_and_gains
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 
 
@@ -131,6 +131,44 @@ def test_icans_caps_low_gain_flat_direction_at_best_gain_allocation(min_shots):
     np.testing.assert_array_equal(shots, [min_shots, min_shots])
 
 
+def test_gcans_allocation_matches_the_paper_formula():
+    gradients = np.array([2.0, 1.0])
+    variances = np.array([400.0, 100.0])
+
+    shots = _gcans_shots(
+        gradients,
+        variances,
+        learning_rate=0.2,
+        lipschitz=2.0,
+        bias_term=0.25,
+        min_shots=2,
+    )
+
+    factor = 2 * 2.0 * 0.2 / (2 - 2.0 * 0.2)
+    standard_deviations = np.sqrt(variances)
+    expected = np.ceil(
+        factor
+        * standard_deviations
+        * np.sum(standard_deviations)
+        / (gradients @ gradients + 0.25)
+    )
+    np.testing.assert_array_equal(shots, expected.astype(int))
+
+
+def test_gcans_accounts_for_generalized_shift_evaluation_costs():
+    shots = _gcans_shots(
+        np.array([0.2, 0.2]),
+        np.array([1.0, 1.0]),
+        learning_rate=0.1,
+        lipschitz=1.0,
+        bias_term=1e-12,
+        min_shots=2,
+        evaluation_counts=np.array([2, 8]),
+    )
+
+    assert shots[0] > shots[1]
+
+
 def test_rosalin_allocation_can_grow_across_iterations():
     callbacks = []
     optimizer = RosalinOptimizer(
@@ -154,6 +192,30 @@ def test_rosalin_allocation_can_grow_across_iterations():
     assert result.shots_used == 32
     assert result.shots_used < optimizer.total_shots
     assert result.message == "Optimisation terminated: reached max_iterations."
+
+
+def test_rosalin_can_use_gcans_allocation():
+    callbacks = []
+    optimizer = RosalinOptimizer(
+        learning_rate=0.1,
+        total_shots=100,
+        lipschitz=1.0,
+        min_shots=2,
+        ema_decay=0.0,
+        bias=1e-12,
+        allocation="gcans",
+    )
+
+    result = optimizer.optimize(
+        _controlled_gradient_cost,
+        np.zeros(2),
+        callback_fn=callbacks.append,
+        max_iterations=2,
+    )
+
+    np.testing.assert_array_equal(callbacks[0].shots_per_parameter, [2, 2])
+    np.testing.assert_array_equal(callbacks[1].shots_per_parameter, [6, 8])
+    assert result.shots_used == 40
 
 
 def test_rosalin_batches_current_loss_and_all_parameter_shifts():
@@ -350,6 +412,7 @@ def test_rosalin_returns_last_evaluated_iterate_instead_of_noisy_minimum():
         ({"min_shots": 1}, "min_shots"),
         ({"ema_decay": 1.0}, "ema_decay"),
         ({"bias": 0.0}, "bias"),
+        ({"allocation": "other"}, "allocation"),
     ],
 )
 def test_rosalin_constructor_validation(kwargs, match):
@@ -427,11 +490,13 @@ def test_rosalin_requires_weighted_random_sampling(mocker):
         optimizer.validate_program(mocker.Mock(_shot_distribution="weighted"))
 
 
-def test_rosalin_runs_through_weighted_random_vqe(sampling_test_simulator):
+@pytest.mark.parametrize("allocation", ["icans", "gcans"])
+def test_rosalin_runs_through_weighted_random_vqe(sampling_test_simulator, allocation):
     optimizer = RosalinOptimizer(
         learning_rate=0.2,
         total_shots=120,
         lipschitz=1.0,
+        allocation=allocation,
     )
     vqe = VQE(
         hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
@@ -464,6 +529,7 @@ def test_rosalin_config_and_copy_preserve_constructor_settings():
         min_shots=3,
         ema_decay=0.8,
         bias=1e-5,
+        allocation="gcans",
     )
 
     config = optimizer.get_config()
@@ -477,6 +543,7 @@ def test_rosalin_config_and_copy_preserve_constructor_settings():
         "min_shots": 3,
         "ema_decay": 0.8,
         "bias": 1e-5,
+        "allocation": "gcans",
     }
     assert copied is not optimizer
     assert copied.get_config() == config
@@ -488,6 +555,7 @@ def test_rosalin_checkpoint_resume_matches_uninterrupted_run(tmp_path):
         "total_shots": 500,
         "lipschitz": 2.0,
         "ema_decay": 0.8,
+        "allocation": "gcans",
     }
     initial = np.array([0.4, 0.8])
     uninterrupted = RosalinOptimizer(**settings)

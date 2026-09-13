@@ -92,6 +92,21 @@ def _resolve_noise_realizations(
     return realizations
 
 
+def _requires_full_noise(noise_model: Any) -> bool:
+    """Return whether a Maestro model needs the combined-noise entry points."""
+    return any(
+        getattr(noise_model, capability, lambda: False)() is True
+        for capability in (
+            "has_coherent",
+            "has_t1",
+            "has_thermal_relaxation",
+            "has_additional_quantum_channels",
+            "has_correlated",
+            "has_crosstalk",
+        )
+    )
+
+
 TRUNCATION_MODES = ("relative_max", "discarded_weight")
 KRAUS_COMPLETENESS_CHECKS = ("ignore", "warn", "strict")
 
@@ -725,14 +740,19 @@ class MaestroSimulator(CircuitRunner):
                     realizations = _resolve_noise_realizations(
                         self.config.noise_realizations, sampling=True
                     )
-                    raw = maestro.noisy_execute(
+                    execute = (
+                        maestro.full_noise_execute
+                        if _requires_full_noise(self.config.noise_model)
+                        else maestro.noisy_execute
+                    )
+                    raw = execute(
                         maestro_circuit,
                         self.config.noise_model,
                         config=sim_config,
                         shots=shots,
                         noise_realizations=realizations,
                         # Derive a per-circuit seed so circuits in a batch don't
-                        # all receive the same Pauli error pattern.
+                        # all receive the same noise trajectory.
                         seed=self.config.noise_seed + i,
                     )
                 return {
@@ -767,7 +787,16 @@ class MaestroSimulator(CircuitRunner):
                     realizations = _resolve_noise_realizations(
                         self.config.noise_realizations, sampling=False
                     )
-                    if realizations is None:
+                    if _requires_full_noise(self.config.noise_model):
+                        raw = maestro.full_noise_estimate(
+                            maestro_circuit,
+                            observables=pauli_string,
+                            noise_model=self.config.noise_model,
+                            config=sim_config,
+                            noise_realizations=realizations or 1,
+                            seed=self.config.noise_seed + i,
+                        )
+                    elif realizations is None:
                         raw = maestro.noisy_estimate(
                             maestro_circuit,
                             observables=pauli_string,
