@@ -277,33 +277,31 @@ def test_beam_wider_than_reachable_returns_only_reachable_solutions():
     assert len(results) == 2
 
 
-class TestBeamSearchAggregateGreedy:
-    """Test greedy mode (beam_width=1)."""
+class TestBeamSearchAggregateDefaultsAndGreedy:
+    """Test the shipped defaults and explicit greedy mode."""
 
-    def test_default_strategy_is_greedy(self):
-        """The shipped default ``BeamSearchStrategy()`` is greedy (beam_width=1).
+    def test_default_strategy_uses_balanced_search(self, mocker):
+        """The shipped defaults pin the balanced quality/runtime configuration."""
+        strategy = BeamSearchStrategy()
+        assert strategy.beam_width == 256
+        assert strategy.n_partition_candidates == 6
 
-        The other helpers default ``beam_width=None`` (exhaustive); this pins the
-        production default directly so it can't silently change.
-        """
-        assert BeamSearchStrategy().beam_width == 1
-
-        # Greedy fetches only 1 candidate per partition, so it commits to A's
-        # first candidate ([1,0], the lower-prob-but-first) and never sees [0,1].
         candidates_a = [
             SolutionEntry(bitstring="10", prob=0.6, decoded=[1, 0]),
             SolutionEntry(bitstring="01", prob=0.4, decoded=[0, 1]),
         ]
         programs = _mock_programs({"A": candidates_a})
+        get_top_solutions = mocker.spy(programs["A"], "get_top_solutions")
         var_maps = {"A": [0, 1]}
 
-        result = BeamSearchStrategy().aggregate(
+        result = strategy.aggregate(
             programs=programs,
             initial_solution=[0, 0],
             extend_fn=_write_extend(var_maps),
             evaluate_fn=_neg_sum_evaluate,
         )
 
+        get_top_solutions.assert_called_once_with(n=6, include_decoded=True)
         assert result == [(pytest.approx(-1.0), [1, 0])]
 
     def test_single_partition_single_candidate(self):
@@ -799,6 +797,30 @@ class TestBeamSearchAggregateTopN:
             top_n=5,
         )
         assert len(results) == 5
+
+    def test_default_fetch_is_bumped_to_top_n(self, mocker):
+        """The default candidate cap does not under-fill a top-N request."""
+        candidates = [
+            SolutionEntry(
+                bitstring=f"{value:04b}",
+                prob=1.0 / 10,
+                decoded=[int(bit) for bit in f"{value:04b}"],
+            )
+            for value in range(10)
+        ]
+        programs = _mock_programs({"A": candidates})
+        get_top_solutions = mocker.spy(programs["A"], "get_top_solutions")
+
+        results = BeamSearchStrategy().aggregate(
+            programs=programs,
+            initial_solution=[0, 0, 0, 0],
+            extend_fn=_write_extend({"A": [0, 1, 2, 3]}),
+            evaluate_fn=_sum_evaluate,
+            top_n=10,
+        )
+
+        get_top_solutions.assert_called_once_with(n=10, include_decoded=True)
+        assert len(results) == 10
 
 
 # ──────────────────────────────────────────────────────────────────────

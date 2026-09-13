@@ -77,22 +77,28 @@ class BeamSearchStrategy(AggregationStrategy):
 
     At each partition step, every retained partial solution is extended by every
     fetched candidate, all extensions are scored, and only the best ``beam_width``
-    are kept. ``beam_width=1`` is greedy; ``beam_width=None`` is exhaustive.
+    are kept. ``beam_width=1`` is greedy. Setting both ``beam_width`` and
+    ``n_partition_candidates`` to ``None`` disables beam pruning and requests up to
+    :math:`2^{20}` candidates from each partition.
 
     Args:
         beam_width: Maximum candidates to retain per partition step. ``None`` keeps
-            all extensions (exhaustive). Internally bumped to at least ``top_n`` so
-            the beam can return enough solutions.
+            all extensions formed from the fetched partition candidates. Defaults to
+            256 and is internally bumped to at least ``top_n`` so the beam can return
+            enough solutions.
         n_partition_candidates: Candidates to fetch from each partition. Defaults to
-            ``beam_width`` (or all when exhaustive). Independent of ``beam_width``:
-            the beam retains *combinations* of per-partition choices, so over ``P``
+            6 and is internally bumped to at least ``top_n``. ``None`` fetches
+            ``beam_width`` candidates when the beam is bounded; when both settings
+            are ``None``, it requests up to :math:`2^{20}` measured candidates.
+            When set explicitly, this value is independent of ``beam_width``: the
+            beam retains *combinations* of per-partition choices, so over ``P``
             partitions it can hold up to ``n_partition_candidates ** P`` entries.
-            Pinning this below a wide ``beam_width`` is the cheap way to widen the
-            search, since it keeps the branching factor small.
+            Pinning this below a wide beam is the cheap way to widen the search,
+            since it keeps the branching factor small.
     """
 
-    beam_width: int | None = 1
-    n_partition_candidates: int | None = None
+    beam_width: int | None = 256
+    n_partition_candidates: int | None = 6
 
     def __post_init__(self):
         if self.beam_width is not None and self.beam_width < 1:
@@ -121,7 +127,7 @@ class BeamSearchStrategy(AggregationStrategy):
 
         n_partition_candidates = self.n_partition_candidates
         if n_partition_candidates is not None:
-            n_fetch = n_partition_candidates
+            n_fetch = max(n_partition_candidates, top_n)
         elif beam_width is not None:
             n_fetch = beam_width
         else:

@@ -72,8 +72,10 @@ Beam search
 partitions, keeping the best partial solutions at each step. It takes two
 parameters:
 
-- ``beam_width`` — how many partial solutions are kept after each partition step.
-- ``n_partition_candidates`` — how many candidates to extract from each partition (defaults to ``beam_width``).
+- ``beam_width`` — how many partial solutions are kept after each partition step
+  (defaults to 256).
+- ``n_partition_candidates`` — how many candidates to extract from each partition
+  (defaults to 6 and rises to the requested number of top solutions when needed).
 
 .. skip: next
 
@@ -81,12 +83,15 @@ parameters:
 
    from divi.qprog import BeamSearchStrategy
 
-   # Greedy (default): single best candidate per partition
+   # Balanced default: beam width 256, with 6 candidates per partition
+   solution, energy = qaoa_partition.aggregate_results()
+
+   # Greedy: single best candidate per partition
    solution, energy = qaoa_partition.aggregate_results(
-       strategy=BeamSearchStrategy(beam_width=1)
+       strategy=BeamSearchStrategy(beam_width=1, n_partition_candidates=1)
    )
 
-   # Beam search: keep the top 5 partial solutions after each partition step
+   # Custom beam search: keep the top 5 partial solutions after each partition step
    solution, energy = qaoa_partition.aggregate_results(
        strategy=BeamSearchStrategy(beam_width=5)
    )
@@ -97,16 +102,25 @@ parameters:
        strategy=BeamSearchStrategy(beam_width=3, n_partition_candidates=10)
    )
 
-   # Exhaustive: try all candidate combinations (expensive for many partitions)
+   # No beam pruning; request up to 2**20 candidates from every partition
    solution, energy = qaoa_partition.aggregate_results(
-       strategy=BeamSearchStrategy(beam_width=None)
+       strategy=BeamSearchStrategy(
+           beam_width=None, n_partition_candidates=None
+       )
    )
 
 **When to use beam search**
 
-- **Greedy** (``beam_width=1``): Fast, good for problems with low inter-partition coupling.
-- **Bounded beam** (``beam_width=k``): Good trade-off for problems with moderate coupling between partitions. Start with ``beam_width=3`` and increase if solution quality improves.
-- **Exhaustive** (``beam_width=None``): Guarantees the global optimum across all candidate combinations, but scales exponentially with the number of partitions.
+- **Balanced default** (``beam_width=256``, ``n_partition_candidates=6``):
+  General-purpose quality/runtime trade-off.
+- **Greedy** (both settings equal to 1): Fast, good for problems with low
+  inter-partition coupling.
+- **Bounded beam** (``beam_width=k``): Custom cost/quality trade-off for problems
+  with moderate coupling between partitions.
+- **Unpruned** (both settings equal to ``None``): Requests up to :math:`2^{20}`
+  candidates per partition and keeps every resulting combination. This is exhaustive
+  when each measured candidate pool fits under that cap, but scales exponentially
+  with the number of partitions.
 
 .. tip::
 
