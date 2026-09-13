@@ -500,8 +500,9 @@ Available strategies (see :data:`~divi.pipeline.ShotDistStrategy`):
 
 - ``"uniform"`` — equal split across groups.
 - ``"weighted"`` — proportional to coefficient L1 norm, with exact total.
-- ``"weighted_random"`` — multinomial allocation, reproducible with a seeded
-  ``env.rng``.
+- ``"weighted_random"`` — the unbiased weighted-random operator estimator of
+  `Arrasmith et al. <https://arxiv.org/abs/2004.06252>`_; it uses multinomial
+  allocation and is reproducible with a seeded ``env.rng``.
 - A callable ``(group_l1_norms, total_shots) -> per_group_shots`` for
   fully custom allocation.
 
@@ -509,8 +510,12 @@ A :meth:`~divi.qprog.QuantumProgram.dry_run` exposes allocations under
 ``env_artifacts["per_group_shots"]``. Variational algorithms accept the same
 option directly, for example ``VQE(..., shot_distribution="weighted")``.
 
-Zero-shot groups are skipped and contribute zero. A :class:`UserWarning`
-reports their fraction of the Hamiltonian L1 norm.
+For ``"weighted_random"``, a group receiving zero draws contributes no sample;
+the measured groups are inverse-probability weighted so the complete estimator
+remains unbiased even when the total budget is smaller than the number of
+groups. For other distributions, a zero-shot group is skipped and contributes
+zero, which is generally biased. A :class:`UserWarning` reports the omitted
+fraction of the Hamiltonian L1 norm in that case.
 
 Allocation requires ``supports_expval=False``; ``grouping_strategy`` alone does
 not force sampling. Use ``QiskitSimulator(force_sampling=True)`` or

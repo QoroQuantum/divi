@@ -64,6 +64,7 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
         counts = {"00": 2500, "11": 2500}
     maestro.simple_execute.return_value = {"counts": counts}
     maestro.noisy_execute.return_value = {"counts": counts}
+    maestro.full_noise_execute.return_value = {"counts": counts}
 
     # Expval — maestro returns {"expectation_values": [...], ...}
     if expvals is None:
@@ -71,6 +72,7 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
     maestro.simple_estimate.return_value = {"expectation_values": expvals}
     maestro.noisy_estimate.return_value = {"expectation_values": expvals}
     maestro.noisy_estimate_montecarlo.return_value = {"expectation_values": expvals}
+    maestro.full_noise_estimate.return_value = {"expectation_values": expvals}
 
     # ``QasmToCirc().parse_and_translate(qasm) -> "MaestroCircuit"`` —
     # tag the parser so we can assert it was used (instead of the raw qasm).
@@ -893,6 +895,28 @@ class TestNoisySamplingSubmission:
         fake.QasmToCirc.assert_called_once()
         fake.QasmToCirc.return_value.parse_and_translate.assert_called_once()
 
+    @pytest.mark.parametrize(
+        "capability",
+        [
+            "has_coherent",
+            "has_t1",
+            "has_thermal_relaxation",
+            "has_additional_quantum_channels",
+            "has_correlated",
+            "has_crosstalk",
+        ],
+    )
+    def test_richer_noise_routes_to_full_noise_execute(self, mocker, capability):
+        fake = _make_fake_maestro(mocker)
+        sim, noise_model = _make_noisy_sim(mocker, fake)
+        getattr(noise_model, capability).return_value = True
+
+        sim.submit_circuits({"c0": _BELL_QASM})
+
+        fake.full_noise_execute.assert_called_once()
+        fake.noisy_execute.assert_not_called()
+        assert fake.full_noise_execute.call_args.args[1] is noise_model
+
     def test_noisy_execute_passes_noise_model_seed_and_default_realizations(
         self, mocker
     ):
@@ -982,6 +1006,32 @@ class TestNoisyExpvalSubmission:
         fake.noisy_estimate.assert_called_once()
         fake.noisy_estimate_montecarlo.assert_not_called()
         fake.simple_estimate.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "capability",
+        [
+            "has_coherent",
+            "has_t1",
+            "has_thermal_relaxation",
+            "has_additional_quantum_channels",
+            "has_correlated",
+            "has_crosstalk",
+        ],
+    )
+    def test_richer_noise_routes_to_full_noise_estimate(self, mocker, capability):
+        fake = _make_fake_maestro(mocker)
+        sim, noise_model = _make_noisy_sim(mocker, fake, noise_realizations=5)
+        getattr(noise_model, capability).return_value = True
+
+        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
+
+        fake.full_noise_estimate.assert_called_once()
+        fake.noisy_estimate.assert_not_called()
+        fake.noisy_estimate_montecarlo.assert_not_called()
+        call = fake.full_noise_estimate.call_args
+        assert call.kwargs["noise_model"] is noise_model
+        assert call.kwargs["noise_realizations"] == 5
+        assert call.kwargs["observables"] == "ZI;IZ"
 
     def test_analytical_noisy_estimate_does_not_receive_seed(self, mocker):
         """``noisy_estimate`` (analytical) must not receive ``seed=`` — it is only
