@@ -28,6 +28,63 @@ _BIT_CHARS = frozenset("01")
 _PAULI_CHARS = frozenset("IXYZ")
 
 
+def _bitstring_eigenvalues(
+    bitstrings: Sequence[str], pauli_labels: Sequence[str], n_qubits: int
+) -> npt.NDArray[np.float64]:
+    """Return Pauli eigenvalues for each measured bitstring."""
+    offending = next((bs for bs in bitstrings if len(bs) != n_qubits), None)
+    if offending is not None:
+        raise ValueError(
+            f"Backend returned {len(offending)}-bit histogram keys "
+            f"for an {n_qubits}-qubit circuit; expected full-width keys "
+            f"(creg c[{n_qubits}]). Partial-measurement circuits must still "
+            f"report all classical bits. If your backend cannot, set "
+            f"measure_all_qubits=True to measure the full register."
+        )
+    malformed = next((bs for bs in bitstrings if not set(bs) <= _BIT_CHARS), None)
+    if malformed is not None:
+        raise ValueError(f"Backend returned a non-binary histogram key: {malformed!r}.")
+
+    n_states = len(bitstrings)
+    if n_qubits <= 64:
+        states_as_int = np.array([int(bs, 2) for bs in bitstrings], dtype=np.uint64)
+        state_bits = None
+    else:
+        states_as_int = None
+        state_chars = np.frombuffer(
+            "".join(bitstrings).encode("ascii"), dtype=np.uint8
+        ).reshape(n_states, n_qubits)
+        state_bits = state_chars - np.uint8(ord("0"))
+
+    eigenvalues = np.zeros((len(pauli_labels), n_states))
+    for obs_idx, label in enumerate(pauli_labels):
+        if len(label) != n_qubits:
+            raise ValueError(
+                f"Expected a {n_qubits}-character Pauli label, got {len(label)}."
+            )
+        if not set(label) <= _PAULI_CHARS:
+            raise ValueError(f"Pauli label {label!r} contains characters outside IXYZ.")
+
+        active_positions = [i for i, pauli in enumerate(label) if pauli != "I"]
+        if not active_positions:
+            eigenvalues[obs_idx, :] = 1.0
+            continue
+
+        positions = np.array(active_positions, dtype=np.uint32)
+        if states_as_int is not None:
+            shifts = n_qubits - 1 - positions
+            bits = (states_as_int[:, np.newaxis] >> shifts) & 1
+        elif state_bits is not None:
+            bits = state_bits[:, positions]
+        else:
+            raise RuntimeError("unreachable: states_as_int or state_bits must be set")
+
+        parity = bits.sum(axis=1, dtype=np.int64) & 1
+        eigenvalues[obs_idx, :] = 1 - 2 * parity
+
+    return eigenvalues
+
+
 def _batched_expectation(
     shots_dicts: Sequence[Mapping[str, int]],
     pauli_labels: Sequence[str],
@@ -45,7 +102,6 @@ def _batched_expectation(
         Array of shape ``(n_observables, n_histograms)``.
     """
     n_histograms = len(shots_dicts)
-    n_observables = len(pauli_labels)
 
     # 1. Aggregate unique measured states.
     all_measured_bitstrings: set[str] = set()
@@ -55,73 +111,9 @@ def _batched_expectation(
     unique_bitstrings = sorted(all_measured_bitstrings)
     n_unique_states = len(unique_bitstrings)
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
+    eigenvalues = _bitstring_eigenvalues(unique_bitstrings, pauli_labels, n_qubits)
 
-    # Positional decoding assumes full-width keys (creg c[n_qubits]); a backend
-    # that narrows keys to only measured clbits would misalign every index.
-    offending = next((bs for bs in unique_bitstrings if len(bs) != n_qubits), None)
-    if offending is not None:
-        raise ValueError(
-            f"Backend returned {len(offending)}-bit histogram keys "
-            f"for an {n_qubits}-qubit circuit; expected full-width keys "
-            f"(creg c[{n_qubits}]). Partial-measurement circuits must still "
-            f"report all classical bits. If your backend cannot, set "
-            f"measure_all_qubits=True to measure the full register."
-        )
-    malformed = next(
-        (bs for bs in unique_bitstrings if not set(bs) <= _BIT_CHARS), None
-    )
-    if malformed is not None:
-        raise ValueError(f"Backend returned a non-binary histogram key: {malformed!r}.")
-
-    # 2. Build reduced eigenvalue matrix (n_observables × n_unique_states).
-    if n_qubits <= 64:
-        unique_states_int = np.array(
-            [int(bs, 2) for bs in unique_bitstrings], dtype=np.uint64
-        )
-        state_bits = None
-    else:
-        unique_states_int = None
-        state_chars = np.frombuffer(
-            "".join(unique_bitstrings).encode("ascii"), dtype=np.uint8
-        ).reshape(n_unique_states, n_qubits)
-        state_bits = state_chars - np.uint8(ord("0"))
-
-    reduced_eigvals_matrix = np.zeros((n_observables, n_unique_states))
-
-    for obs_idx, label in enumerate(pauli_labels):
-        if len(label) != n_qubits:
-            raise ValueError(
-                f"Expected a {n_qubits}-character Pauli label, got {len(label)}."
-            )
-        if not set(label) <= _PAULI_CHARS:
-            raise ValueError(f"Pauli label {label!r} contains characters outside IXYZ.")
-
-        # Active qubit positions (non-I) — big-endian, so position i = qubit i.
-        active_positions = [i for i, c in enumerate(label) if c != "I"]
-
-        if not active_positions:
-            # Pure identity — expectation value is always 1.
-            reduced_eigvals_matrix[obs_idx, :] = 1.0
-            continue
-
-        positions = np.array(active_positions, dtype=np.uint32)
-
-        if unique_states_int is not None:
-            shifts = n_qubits - 1 - positions
-            bits = (unique_states_int[:, np.newaxis] >> shifts) & 1
-        elif state_bits is not None:
-            bits = state_bits[:, positions]
-        else:
-            raise RuntimeError(
-                "unreachable: unique_states_int or state_bits must be set"
-            )
-
-        # X, Y and Z are isospectral with eigenvalues ±1, so a Pauli product's
-        # eigenvalue is (-1) ** (ones measured at its non-identity positions).
-        parity = bits.sum(axis=1, dtype=np.int64) & 1
-        reduced_eigvals_matrix[obs_idx, :] = 1 - 2 * parity
-
-    # 3. Build reduced count matrix (n_histograms × n_unique_states). Counts are
+    # 2. Build reduced count matrix (n_histograms × n_unique_states). Counts are
     # exact in float64, so normalising after the contraction rounds only once.
     reduced_count_matrix = np.zeros((n_histograms, n_unique_states))
     totals = np.ones(n_histograms)
@@ -132,8 +124,8 @@ def _batched_expectation(
             col_idx = bitstring_to_idx_map[bitstring]
             reduced_count_matrix[i, col_idx] = count
 
-    # 4. Final (n_observables, n_histograms).
-    return ((reduced_count_matrix @ reduced_eigvals_matrix.T) / totals[:, None]).T
+    # 3. Final (n_observables, n_histograms).
+    return ((reduced_count_matrix @ eigenvalues.T) / totals[:, None]).T
 
 
 def _reverse_endianness(counts: Mapping) -> dict:
@@ -291,6 +283,85 @@ def _counts_to_cost_variance(
         prev = out.get(base_key, 0.0)
         # Once a base key is nan (multi-observable / degenerate group) keep it nan.
         out[base_key] = prev if np.isnan(prev) else prev + group_var
+
+    return out
+
+
+def _counts_to_wrs_cost_variance(
+    raw: ChildResults,
+    batch: dict[Any, MetaCircuit],
+    probabilities_by_spec: Mapping[tuple, Mapping[int, float]],
+) -> dict[tuple, float]:
+    """Estimate the variance of a weighted-random-sampling cost estimator.
+
+    Each measured bitstring contributes ``A_g / p_g``, where ``A_g`` is the
+    signed Hamiltonian contribution of the selected commuting group and
+    ``p_g`` is that group's sampling probability. The sample variance of these
+    inverse-probability-weighted values includes both quantum measurement noise
+    and multinomial group-selection noise, including covariance between terms
+    measured from the same bitstring.
+    """
+    batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
+    coeffs_by_bk = {bk: _observable_coeff_map(node) for bk, node in batch.items()}
+    probability_keys = set(probabilities_by_spec)
+    # Per-result weighted Welford state: (sample count, mean, centered sum of
+    # squares). Updating once per histogram bin avoids expanding individual
+    # shots and avoids cancellation in ``sum(y²) - sum(y)² / n``.
+    moments: dict[tuple, tuple[int, float, float]] = {}
+    invalid_keys: set[tuple] = set()
+
+    for branch_key, counts in raw.items():
+        bk, group_labels, n_qubits = _resolve_group(
+            branch_key, batch_keys, labels_by_bk, nq_by_bk
+        )
+        base_key = tuple(ax for ax in branch_key if ax[0] != "obs_group")
+        coeff_map = coeffs_by_bk[bk]
+        if coeff_map is None or not isinstance(counts, Mapping):
+            invalid_keys.add(base_key)
+            continue
+
+        counts = _reverse_endianness(counts)
+        if sum(counts.values()) <= 0:
+            invalid_keys.add(base_key)
+            continue
+        group_idx = next(value for axis, value in branch_key if axis == "obs_group")
+        probability_key = _find_batch_key(base_key, probability_keys)
+        probability = probabilities_by_spec[probability_key][group_idx]
+        if probability <= 0:
+            invalid_keys.add(base_key)
+            continue
+
+        labels = [str(label) for label in group_labels]
+        coefficients = np.asarray(
+            [coeff_map.get(label, 0.0) for label in labels], dtype=np.float64
+        )
+        bitstrings = sorted(counts)
+        group_values = coefficients @ _bitstring_eigenvalues(
+            bitstrings, labels, n_qubits
+        )
+        n_shots, mean_y, m2_y = moments.get(base_key, (0, 0.0, 0.0))
+
+        for bitstring, group_value in zip(bitstrings, group_values, strict=True):
+            count = counts[bitstring]
+            weighted_value = float(group_value / probability)
+            updated_shots = n_shots + count
+            delta = weighted_value - mean_y
+            mean_y += delta * count / updated_shots
+            m2_y += delta * delta * n_shots * count / updated_shots
+            n_shots = updated_shots
+
+        moments[base_key] = n_shots, mean_y, m2_y
+
+    out: dict[tuple, float] = {}
+    for base_key in moments.keys() | invalid_keys:
+        if base_key in invalid_keys:
+            out[base_key] = float("nan")
+            continue
+        n_shots, _mean_y, m2_y = moments[base_key]
+        if n_shots < 2:
+            out[base_key] = float("nan")
+            continue
+        out[base_key] = max(0.0, m2_y) / (n_shots * (n_shots - 1))
 
     return out
 

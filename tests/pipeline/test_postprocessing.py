@@ -14,6 +14,7 @@ from divi.pipeline._postprocessing import (
     _counts_to_cost_variance,
     _counts_to_expvals,
     _counts_to_probs,
+    _counts_to_wrs_cost_variance,
     _expval_dicts_to_indexed,
 )
 from divi.pipeline.abc import ChildResults
@@ -156,6 +157,68 @@ class TestCountsToCostVariance:
         )
         # Same <Z>=0.5, 10× shots → exactly 10× smaller variance.
         assert var_low == pytest.approx(10.0 * var_high)
+
+
+class TestCountsToWRSCostVariance:
+    @pytest.fixture
+    def wrs_trace(self, dummy_pipeline_env):
+        observable = SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(
+                    meta=meta_from_circuit(QuantumCircuit(1), observable=observable)
+                ),
+                MeasurementStage(
+                    grouping_strategy="wires", shot_distribution="weighted_random"
+                ),
+            ]
+        )
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        token = trace.stage_tokens[1]
+        probabilities = {
+            key: plan.probabilities_by_group
+            for key, plan in token.group_shot_plans_by_spec.items()
+        }
+        return trace, batch_lineage(trace.final_batch), probabilities
+
+    def test_single_shot_variance_is_undefined(self, wrs_trace):
+        trace, lineage_by_label, probabilities = wrs_trace
+        branch_key = next(iter(lineage_by_label.values()))
+        raw: ChildResults = {branch_key: {"0": 1}}
+
+        result = _counts_to_wrs_cost_variance(raw, trace.final_batch, probabilities)
+
+        assert np.isnan(next(iter(result.values())))
+
+    def test_includes_covariance_within_a_commuting_group(self, dummy_pipeline_env):
+        observable = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(
+                    meta=meta_from_circuit(QuantumCircuit(2), observable=observable)
+                ),
+                MeasurementStage(
+                    grouping_strategy="wires", shot_distribution="weighted_random"
+                ),
+            ]
+        )
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        token = trace.stage_tokens[1]
+        probabilities = {
+            key: plan.probabilities_by_group
+            for key, plan in token.group_shot_plans_by_spec.items()
+        }
+        branch_key = next(iter(batch_lineage(trace.final_batch).values()))
+
+        result = _counts_to_wrs_cost_variance(
+            {branch_key: {"00": 1, "11": 1}},
+            trace.final_batch,
+            probabilities,
+        )
+
+        # Per-shot group values are +2 and -2. Their sample variance divided
+        # by two is 4; treating both Pauli terms independently would miss half.
+        assert next(iter(result.values())) == pytest.approx(4.0)
 
 
 class TestBatchedExpectation:

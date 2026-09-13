@@ -1024,6 +1024,7 @@ class TestQoroServiceMock:
 
         assert isinstance(result, ExecutionResult)
         assert result.job_id == "mock_job_id"
+        assert result.backend_jobs == 2
         assert mock_make_request.call_count == 3  # 1 for init, 2 for add_circuits
 
         # Check that the first add_circuits call is not finalized

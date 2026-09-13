@@ -296,7 +296,9 @@ class ParameterBindingStage(BundleStage):
         return (
             env.backend.resolves_parameters
             and self._fast_path
-            and not any(meta.group_shots for meta in batch.values())
+            and not any(
+                meta.group_shots or meta.param_group_shots for meta in batch.values()
+            )
         )
 
     def _run_fast(

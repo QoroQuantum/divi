@@ -47,6 +47,7 @@ from .abc import (
     Stage,
     StageOutput,
     StageToken,
+    _ScopedStageToken,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,12 +164,37 @@ def _wait_for_async_result(backend, execution_result, env):
     return backend.get_job_results(execution_result)
 
 
+def _shot_count_for_branch(
+    branch_key: tuple,
+    spec_keys: Sequence[tuple],
+    per_group_shots: dict[tuple, dict[int, int]],
+    per_param_group_shots: dict[tuple, dict[int, dict[int, int]]],
+) -> int | None:
+    """Resolve one compiled branch to its measurement-stage shot allocation."""
+    branch_axes = set(branch_key)
+    spec_match = next(
+        (spec_key for spec_key in spec_keys if set(spec_key) <= branch_axes), None
+    )
+    obs_group = next((value for axis, value in branch_key if axis == "obs_group"), None)
+    if spec_match is None or obs_group is None:
+        return None
+
+    if spec_match not in per_param_group_shots:
+        return per_group_shots[spec_match].get(obs_group)
+
+    param_set = next((value for axis, value in branch_key if axis == "param_set"), None)
+    if param_set is None:
+        return None
+    return per_param_group_shots[spec_match].get(param_set, {}).get(obs_group)
+
+
 def _build_shot_groups(
     circuits: dict[str, str],
     lineage_by_label: dict[str, tuple],
-    per_group_shots: dict[tuple, dict[int, int]],
+    per_group_shots: dict[tuple, dict[int, int]] | None = None,
+    per_param_group_shots: dict[tuple, dict[int, dict[int, int]]] | None = None,
 ) -> list[list[int]] | None:
-    """Translate per-spec/per-group shot allocations into backend ``shot_groups``.
+    """Translate measurement allocations into backend ``shot_groups``.
 
     The backend interface accepts ``shot_groups`` as a list of
     ``[start, end, shots]`` triples covering the iteration order of
@@ -176,19 +202,18 @@ def _build_shot_groups(
     collapsed into a single range. Returns ``None`` if no per-group
     allocation applies (every circuit's spec is unmapped).
     """
-    spec_keys = list(per_group_shots.keys())
-    per_circuit_shots: list[int | None] = []
-    for label in circuits:
-        branch_key = lineage_by_label[label]
-        branch_axes = set(branch_key)
-        spec_match = next(
-            (sk for sk in spec_keys if set(sk).issubset(branch_axes)), None
+    per_group_shots = per_group_shots or {}
+    per_param_group_shots = per_param_group_shots or {}
+    spec_keys = list(dict.fromkeys((*per_param_group_shots, *per_group_shots)))
+    per_circuit_shots = [
+        _shot_count_for_branch(
+            lineage_by_label[label],
+            spec_keys,
+            per_group_shots,
+            per_param_group_shots,
         )
-        obs_group_idx = next((v for ax, v in branch_key if ax == "obs_group"), None)
-        if spec_match is None or obs_group_idx is None:
-            per_circuit_shots.append(None)
-            continue
-        per_circuit_shots.append(per_group_shots[spec_match].get(obs_group_idx))
+        for label in circuits
+    ]
 
     if all(s is None for s in per_circuit_shots):
         return None
@@ -214,7 +239,7 @@ def _build_shot_groups(
 
 
 def _measurement_artifacts(batch: MetaCircuitBatch) -> dict[str, Any]:
-    """Reconstruct ``ham_ops`` / ``per_group_shots`` from circuit-level metadata.
+    """Reconstruct measurement submission metadata from circuit metadata.
 
     The measurement stage records these on each :class:`MetaCircuit`; this
     gathers them back into the artifact shape used for backend submission and
@@ -226,6 +251,13 @@ def _measurement_artifacts(batch: MetaCircuitBatch) -> dict[str, Any]:
     }
     if per_group_shots:
         artifacts["per_group_shots"] = per_group_shots
+    per_param_group_shots = {
+        key: meta.param_group_shots
+        for key, meta in batch.items()
+        if meta.param_group_shots
+    }
+    if per_param_group_shots:
+        artifacts["per_param_group_shots"] = per_param_group_shots
     ham_ops = next(
         (m.backend_ham_ops for m in batch.values() if m.backend_ham_ops is not None),
         None,
@@ -233,6 +265,27 @@ def _measurement_artifacts(batch: MetaCircuitBatch) -> dict[str, Any]:
     if ham_ops is not None:
         artifacts["ham_ops"] = ham_ops
     return artifacts
+
+
+def _record_submission_resources(
+    env: PipelineEnv,
+    circuit_count: int,
+    ham_ops: str | None,
+    shot_groups: list[list[int]] | None,
+) -> None:
+    """Record samples requested by one pending backend submission."""
+    if ham_ops is not None:
+        device_shots = 0
+    elif shot_groups is not None:
+        device_shots = sum((end - start) * shots for start, end, shots in shot_groups)
+    else:
+        device_shots = circuit_count * env.effective_shots
+    env.artifacts["device_shots"] = device_shots
+
+    if env.estimator_samples is not None:
+        env.artifacts["estimator_samples_requested"] = sum(
+            env.estimator_samples.by_param_set
+        )
 
 
 def _default_execute_fn(
@@ -263,14 +316,26 @@ def _default_execute_fn(
         submit_kwargs["ham_ops"] = ham_ops
 
     per_group_shots = artifacts.get("per_group_shots")
-    if per_group_shots and is_bound(payloads):
+    per_param_group_shots = artifacts.get("per_param_group_shots")
+    shot_groups = None
+    if (per_group_shots or per_param_group_shots) and is_bound(payloads):
         # Per-group shots attach to concrete circuits, so the binding stage
         # has already bound them.
         shot_groups = _build_shot_groups(
-            bound_circuits(payloads), lineage_by_label, per_group_shots
+            bound_circuits(payloads),
+            lineage_by_label,
+            per_group_shots,
+            per_param_group_shots,
         )
         if shot_groups is not None:
             submit_kwargs["shot_groups"] = shot_groups
+
+    _record_submission_resources(
+        env,
+        env.artifacts["circuit_count"],
+        ham_ops,
+        shot_groups,
+    )
 
     if env.cancellation_event is not None and env.cancellation_event.is_set():
         raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
@@ -278,6 +343,7 @@ def _default_execute_fn(
     result = backend.submit_circuits(
         payloads, cancellation_event=env.cancellation_event, **submit_kwargs
     )
+    env.artifacts["backend_jobs"] = result.backend_jobs
 
     # Store for cancellation support (read by cancel_unfinished_job)
     env.artifacts["_current_execution_result"] = result
@@ -393,6 +459,25 @@ def _validate_stage_order(stages: Sequence[Stage]) -> None:
         )
 
 
+def _measurement_cost_variance(
+    stages: Sequence[Stage], raw: ChildResults, trace: PipelineTrace
+) -> dict[tuple, float]:
+    """Delegate variance semantics to the pipeline's measurement stage."""
+    measurement_idx, measurement_stage = next(
+        (idx, stage)
+        for idx, stage in enumerate(stages)
+        if isinstance(stage, BundleStage) and stage.handles_measurement
+    )
+    cost_variance = measurement_stage._estimate_cost_variance(
+        raw, trace.final_batch, trace.stage_tokens[measurement_idx]
+    )
+    return (
+        cost_variance
+        if cost_variance is not None
+        else _counts_to_cost_variance(raw, trace.final_batch)
+    )
+
+
 class CircuitPipeline:
     """
     Single ordered pipeline: one spec stage, then bundle stages.
@@ -495,8 +580,8 @@ class CircuitPipeline:
                         raw = _expval_dicts_to_indexed(raw, ham_ops)
                     else:
                         if env.collect_variance:
-                            env.artifacts["cost_variance"] = _counts_to_cost_variance(
-                                raw, plan.final_batch
+                            env.artifacts["cost_variance"] = _measurement_cost_variance(
+                                self._stages, raw, plan
                             )
                         raw = _counts_to_expvals(raw, plan.final_batch)
 
@@ -573,7 +658,11 @@ class CircuitPipeline:
         cached = None if (bypass_cache or dry) else self._forward_cache.get(cache_key)
 
         recompute_from_idx = next(
-            (idx for idx, stage in enumerate(self._stages) if stage.volatile),
+            (
+                idx
+                for idx, stage in enumerate(self._stages)
+                if stage.is_volatile_for(env)
+            ),
             None,
         )
 
@@ -739,6 +828,8 @@ def _scope_token(
     circuit-body axes like ``param_set`` but not measurement-body axes
     like ``obs_group``).
     """
+    if isinstance(token, _ScopedStageToken):
+        return token.scoped_to(foreign_key, foreign_axes)
     if not isinstance(token, dict):
         return token
 

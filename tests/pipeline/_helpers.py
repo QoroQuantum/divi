@@ -432,8 +432,9 @@ class ShotsBackendSpy(CircuitRunner):
 class RecordingBackend(CircuitRunner):
     """Captures kwargs passed to ``submit_circuits`` by ``_default_execute_fn``."""
 
-    def __init__(self, shots: int = 1000) -> None:
+    def __init__(self, shots: int = 1000, backend_jobs: int = 1) -> None:
         super().__init__(shots=shots)
+        self.backend_jobs = backend_jobs
         self.last_circuits: dict[str, str] | None = None
         self.last_kwargs: dict = {}
 
@@ -452,4 +453,4 @@ class RecordingBackend(CircuitRunner):
             {"label": label, "results": {"0": kwargs.get("shots_for_label", 100)}}
             for label in self.last_circuits
         ]
-        return ExecutionResult(results=results)
+        return ExecutionResult(results=results, backend_jobs=self.backend_jobs)

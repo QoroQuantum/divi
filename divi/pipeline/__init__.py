@@ -38,6 +38,7 @@ from ._result_keys_operations import (
 from ._shot_distribution import ShotDistStrategy
 from .abc import (
     ContractViolation,
+    CostEstimate,
     DiviPerformanceWarning,
     NodeKey,
     ResultFormat,
@@ -48,6 +49,7 @@ __all__ = [
     "BundleStage",
     "CircuitPipeline",
     "ContractViolation",
+    "CostEstimate",
     "DiviPerformanceWarning",
     "DryRunReport",
     "EnsembleReports",

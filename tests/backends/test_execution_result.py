@@ -17,6 +17,7 @@ class TestExecutionResult:
         res = ExecutionResult()
         assert res.results is None
         assert res.job_id is None
+        assert res.backend_jobs == 1
         assert res.is_async() is False
 
     def test_init_sync(self):
@@ -44,7 +45,7 @@ class TestExecutionResult:
 
     def test_with_results(self):
         """Test with_results method."""
-        res_async = ExecutionResult(job_id="job-123")
+        res_async = ExecutionResult(job_id="job-123", backend_jobs=3)
         results = [{"label": "test", "results": {}}]
 
         res_completed = res_async.with_results(results)
@@ -52,6 +53,7 @@ class TestExecutionResult:
         # Check new instance
         assert res_completed is not res_async
         assert res_completed.job_id == "job-123"
+        assert res_completed.backend_jobs == 3
         assert res_completed.results == results
         assert res_completed.is_async() is False
 

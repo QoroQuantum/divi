@@ -84,6 +84,26 @@ def _row_keys(
     return [((*batch_key, *body_tag, *meas_tag), None)]
 
 
+def _has_param_group_allocation(
+    node: MetaCircuit, body_tag: tuple, meas_tag: tuple
+) -> bool:
+    """Whether a bound parameter/group branch received estimator samples."""
+    allocation = node.param_group_shots
+    if allocation is None:
+        return True
+
+    param_idx = next(
+        (value for axis, value in body_tag if axis == PARAM_SET_AXIS), None
+    )
+    group_idx = next((value for axis, value in meas_tag if axis == "obs_group"), None)
+    if param_idx is None or group_idx is None:
+        raise ValueError(
+            "Per-parameter-set group shots require bound param_set body tags and "
+            "obs_group measurement tags."
+        )
+    return allocation.get(param_idx, {}).get(group_idx, 0) > 0
+
+
 def batch_lineage(batch: dict[Any, MetaCircuit]) -> dict[str, BranchKey]:
     """The ``label -> branch key`` map the batch would submit under.
 
@@ -151,6 +171,8 @@ def _compile_batch(
         for (body_tag, body), (meas_tag, meas_qasm) in product(
             bodies, node.measurement_qasms
         ):
+            if not _has_param_group_allocation(node, body_tag, meas_tag):
+                continue
             param_set_rows: list[tuple[str, tuple[float, ...]]] = []
             for branch_key, i in _row_keys(
                 batch_key, body_tag, meas_tag, node, len(param_array)

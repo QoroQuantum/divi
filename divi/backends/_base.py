@@ -65,6 +65,9 @@ class ExecutionResult:
     job_id: str | None = None
     """Job identifier for asynchronous backends."""
 
+    backend_jobs: int = 1
+    """Number of physical backend submissions represented by this result."""
+
     def is_async(self) -> bool:
         """Check if this result represents an async job.
 

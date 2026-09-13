@@ -7,7 +7,7 @@ from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import Event
-from typing import Any, Generic, NamedTuple, TypeVar
+from typing import Any, Generic, NamedTuple, Protocol, TypeVar, runtime_checkable
 
 import numpy as np
 import numpy.typing as npt
@@ -18,6 +18,7 @@ from divi.reporting._events import ProgressEmitter
 
 __all__ = [
     "BundleStage",
+    "CostEstimate",
     "ContractViolation",
     "DiviPerformanceWarning",
     "ExpansionResult",
@@ -38,6 +39,66 @@ BranchKey = tuple[AxisLabel, ...]  # Full branch key: (axis_name, value) pairs.
 ChildResults = dict[Any, Any]
 
 StageToken = Any
+
+
+@runtime_checkable
+class _ScopedStageToken(Protocol):
+    """Stage token that can isolate metadata for a downstream-axis group."""
+
+    def scoped_to(self, foreign_key: tuple, foreign_axes: set[str]) -> StageToken: ...
+
+
+@dataclass(frozen=True)
+class CostEstimate:
+    """Sufficient statistics for one sampled scalar cost estimate."""
+
+    mean: float
+    variance_of_mean: float
+    single_shot_variance: float
+    samples_used: int
+
+
+@dataclass(frozen=True)
+class _EstimatorSamplePlan:
+    """Validated estimator-sample budgets resolved by parameter-set index."""
+
+    by_param_set: tuple[int, ...]
+
+    @classmethod
+    def from_value(
+        cls,
+        value: int | Sequence[int],
+        n_param_sets: int,
+    ) -> "_EstimatorSamplePlan":
+        if isinstance(value, bool):
+            raise ValueError("estimator_samples must be a positive integer.")
+        if isinstance(value, (int, np.integer)):
+            if value <= 0:
+                raise ValueError("estimator_samples must be positive.")
+            return cls((int(value),) * n_param_sets)
+        if not isinstance(value, Sequence):
+            raise ValueError(
+                "estimator_samples must be a positive integer or a sequence "
+                "of positive integers."
+            )
+
+        budgets = tuple(value)
+        if len(budgets) != n_param_sets:
+            raise ValueError(
+                "estimator_samples must contain one value per parameter set."
+            )
+        if any(
+            not isinstance(sample_count, (int, np.integer))
+            or isinstance(sample_count, bool)
+            or sample_count <= 0
+            for sample_count in budgets
+        ):
+            raise ValueError("estimator_samples values must be positive integers.")
+        return cls(tuple(map(int, budgets)))
+
+    def resolve(self, param_set: int) -> int:
+        """Return the estimator-sample budget for one parameter-set branch."""
+        return self.by_param_set[param_set]
 
 
 class PipelineResult(dict):
@@ -214,6 +275,13 @@ class PipelineEnv:
     drive an adaptive shot count (e.g. QUIVER's ``M``-adaptivity). ``None`` falls
     back to the backend's configured shots."""
 
+    estimator_samples: _EstimatorSamplePlan | None = None
+    """Validated weighted-random estimator samples by parameter set.
+
+    Unlike :attr:`shots_override`, each value is a total random-operator sample
+    budget that the measurement stage distributes across observable groups.
+    """
+
     collect_variance: bool = False
     """When ``True``, measurement stages also estimate the shot-noise variance of
     each cost value from raw counts and write it to ``artifacts['cost_variance']``
@@ -282,6 +350,10 @@ class Stage(ABC, Generic[InT, OutT]):
         """Whether this stage's output must be recomputed on every forward pass
         (rather than reused from cache), invalidating reuse from this point on."""
         return False
+
+    def is_volatile_for(self, env: "PipelineEnv") -> bool:
+        """Whether this stage must be recomputed for the current environment."""
+        return self.volatile
 
     def cache_key_extras(self, env: "PipelineEnv") -> tuple[Hashable, ...]:
         """Hashable env inputs that this stage reads during :meth:`expand`.
@@ -433,3 +505,12 @@ class BundleStage(Stage[MetaCircuitBatch, MetaCircuitBatch], ABC):
     ) -> ChildResults:
         """Identity by default; override if this stage reduces results."""
         return results
+
+    def _estimate_cost_variance(
+        self,
+        raw: ChildResults,
+        batch: MetaCircuitBatch,
+        token: StageToken,
+    ) -> dict[tuple, float] | None:
+        """Estimate cost variance when this stage owns measurement semantics."""
+        return None

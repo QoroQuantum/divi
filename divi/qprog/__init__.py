@@ -9,6 +9,8 @@ from ._metrics import (
     StochasticFidelityMetricEstimator,
 )
 from ._types import GraphProblemTypes
+
+# isort: off
 from .mixins import (
     DataBindingMixin,
     ObservableMeasuringMixin,
@@ -61,10 +63,13 @@ from .optimizers import (
     QNGOptimizer,
     QNSPSAOptimizer,
     QUIVEROptimizer,
+    RosalinOptimizer,
     ScipyMethod,
     ScipyOptimizer,
     SPSAOptimizer,
 )
+
+# isort: on
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import (
     ParamHistoryMode,

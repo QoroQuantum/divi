@@ -4,7 +4,7 @@
 
 import warnings
 from collections.abc import Callable, Hashable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -18,7 +18,12 @@ from divi.pipeline._grouping import (
     BACKEND_EXPVAL_GROUPS,
     _compute_measurement_groups,
 )
+from divi.pipeline._postprocessing import (
+    _counts_to_cost_variance,
+    _counts_to_wrs_cost_variance,
+)
 from divi.pipeline._result_keys_operations import (
+    PARAM_SET_AXIS,
     group_by_base_key,
     reduce_postprocess_ordered,
     strip_axis_from_label,
@@ -82,15 +87,65 @@ def _warn_imag_coeffs(
             return
 
 
-def _allocate_per_group_shots(
+def _split_identity_offset(observable: SparsePauliOp) -> tuple[SparsePauliOp, float]:
+    """Remove identity terms and return their exact real-valued contribution."""
+    identity = np.asarray(
+        [set(label) <= {"I"} for label in observable.paulis.to_labels()], dtype=bool
+    )
+    offset = float(np.asarray(observable.coeffs).real[identity].sum())
+    sampled_indices = np.flatnonzero(~identity)
+    if not len(sampled_indices):
+        raise ValueError(
+            "estimator_samples cannot be used with an identity-only observable; "
+            "its expectation is already an exact constant."
+        )
+    return observable[sampled_indices], offset
+
+
+@dataclass(frozen=True)
+class _GroupShotPlan:
+    """Shot allocation plus the adjustments needed during reduction."""
+
+    surviving_indices: list[int]
+    shots_by_group: dict[int, int] | None
+    missing_group_results: dict[int, object] = field(default_factory=dict)
+    scales_by_group: dict[int, float] = field(default_factory=dict)
+    probabilities_by_group: dict[int, float] = field(default_factory=dict)
+
+
+def _scale_group_result(result: Any, scale: float) -> Any:
+    """Scale either a scalar or indexed group expectation result."""
+    if scale == 1.0:
+        return result
+    if isinstance(result, dict):
+        return {idx: scale * value for idx, value in result.items()}
+    return scale * result
+
+
+def _apply_group_shot_plan(
+    group_results: dict[int, Any], plan: _GroupShotPlan | None
+) -> dict[int, Any]:
+    """Apply missing-group defaults and estimator scales in one pass."""
+    if plan is None:
+        return group_results
+    measured_results = {
+        group_idx: _scale_group_result(result, plan.scales_by_group.get(group_idx, 1.0))
+        for group_idx, result in group_results.items()
+    }
+    return {**plan.missing_group_results, **measured_results}
+
+
+def _plan_group_shots(
     spec_key: object,
     observable,
     measurement_groups: tuple[tuple[object, ...], ...],
     partition_indices: list[list[int]],
     env: PipelineEnv,
     shot_distribution: ShotDistStrategy | None,
-) -> tuple[list[int], dict[int, object], dict[int, int] | None]:
-    """Compute per-group shots and identify dropped (zero-shot) groups.
+    *,
+    total_shots: int | None = None,
+) -> _GroupShotPlan:
+    """Plan per-group execution and subsequent estimator adjustments.
 
     Pure helper — no instance state. Reads ``env.backend.shots`` and
     ``env.rng`` from the pipeline environment, and ``shot_distribution``
@@ -100,17 +155,12 @@ def _allocate_per_group_shots(
     only); imaginary-coefficient diagnostics are emitted earlier by
     :func:`_warn_imag_coeffs` against the user's original observable.
 
-    Returns:
-        surviving_indices: Original indices of groups to actually submit.
-        zero_shot_groups: ``{orig_idx: zero_result_for_group}`` for each
-            group that received zero shots; the reduce step injects these
-            so the postprocessing function still receives one entry per group.
-        surviving_shots: ``{orig_idx: shots}`` for each surviving group,
-            or ``None`` when ``shot_distribution`` is not configured.
+    The returned plan keeps allocation and reduction metadata together so the
+    coefficient norms used for weighted random sampling are computed once.
     """
     n_groups = len(measurement_groups)
     if n_groups == 0:
-        return list(range(n_groups)), {}, None
+        return _GroupShotPlan([], None)
 
     if shot_distribution is None:
         # No distribution: every group gets the full per-evaluation budget. When
@@ -119,18 +169,18 @@ def _allocate_per_group_shots(
         # ``shot_groups`` submission path (the backend otherwise uses its own
         # ``shots``); without an override leave allocation to the backend.
         if env.shots_override is None:
-            return list(range(n_groups)), {}, None
-        return (
-            list(range(n_groups)),
-            {},
-            {i: env.shots_override for i in range(n_groups)},
+            return _GroupShotPlan(list(range(n_groups)), None)
+        return _GroupShotPlan(
+            surviving_indices=list(range(n_groups)),
+            shots_by_group={i: env.shots_override for i in range(n_groups)},
         )
 
+    effective_shots = env.effective_shots if total_shots is None else total_shots
     coefficients = np.asarray(observable.coeffs).real.astype(np.float64)
     group_norms = _compute_group_l1_norms(coefficients, partition_indices)
     per_group_shots = _compute_shot_distribution(
         group_norms,
-        env.effective_shots,
+        effective_shots,
         shot_distribution,
         rng=env.rng,
     )
@@ -145,8 +195,8 @@ def _allocate_per_group_shots(
         else:
             dropped_indices.append(idx)
 
-    zero_shot_groups: dict[int, object] = {}
-    if dropped_indices:
+    missing_group_results: dict[int, object] = {}
+    if dropped_indices and shot_distribution != "weighted_random":
         # Quantify the bias introduced by dropping these groups. The
         # estimator is biased by sum(c_i * <h_i>) over the dropped terms;
         # |bias| <= sum_{dropped} ||c_i||_1 = sum(group_norms[dropped]),
@@ -170,15 +220,75 @@ def _allocate_per_group_shots(
             UserWarning,
             stacklevel=2,
         )
-        for idx in dropped_indices:
-            # Match the shape that the postprocessing function expects:
-            # a dict {obs_idx_within_group: 0.0} works for both single-
-            # and multi-observable groups.
-            zero_shot_groups[idx] = {
-                j: 0.0 for j in range(len(measurement_groups[idx]))
-            }
+    for idx in dropped_indices:
+        # Match the shape that the postprocessing function expects: a dict
+        # {obs_idx_within_group: 0.0} works for both single- and
+        # multi-observable groups. For weighted random sampling this represents
+        # an absent draw, not a deterministic approximation of the group.
+        missing_group_results[idx] = {
+            j: 0.0 for j in range(len(measurement_groups[idx]))
+        }
 
-    return surviving_indices, zero_shot_groups, surviving_shots
+    scales_by_group: dict[int, float] = {}
+    probabilities_by_group: dict[int, float] = {}
+    if shot_distribution == "weighted_random":
+        total_weight = float(sum(group_norms))
+        probabilities_by_group = (
+            {
+                idx: group_norm / total_weight
+                for idx, group_norm in enumerate(group_norms)
+            }
+            if total_weight > 0
+            else {idx: 1.0 / n_groups for idx in range(n_groups)}
+        )
+        scales_by_group = {
+            idx: shots / (effective_shots * probabilities_by_group[idx])
+            for idx, shots in surviving_shots.items()
+        }
+
+    return _GroupShotPlan(
+        surviving_indices=surviving_indices,
+        shots_by_group=surviving_shots,
+        missing_group_results=missing_group_results,
+        scales_by_group=scales_by_group,
+        probabilities_by_group=probabilities_by_group,
+    )
+
+
+def _plans_for_spec(
+    spec_key: tuple,
+    observable: SparsePauliOp,
+    measurement_groups: tuple[tuple[object, ...], ...],
+    partition_indices: list[list[int]],
+    env: PipelineEnv,
+    shot_distribution: ShotDistStrategy | None,
+    sample_budgets: tuple[int, ...] | None,
+) -> dict[tuple, _GroupShotPlan]:
+    """Build the execution plans for one observable specification."""
+    if sample_budgets is None:
+        return {
+            spec_key: _plan_group_shots(
+                spec_key,
+                observable,
+                measurement_groups,
+                partition_indices,
+                env,
+                shot_distribution,
+            )
+        }
+
+    return {
+        (*spec_key, (PARAM_SET_AXIS, param_idx)): _plan_group_shots(
+            (*spec_key, (PARAM_SET_AXIS, param_idx)),
+            observable,
+            measurement_groups,
+            partition_indices,
+            env,
+            "weighted_random",
+            total_shots=budget,
+        )
+        for param_idx, budget in enumerate(sample_budgets)
+    }
 
 
 @dataclass(frozen=True)
@@ -188,13 +298,11 @@ class MeasurementToken:
     postprocess_fn_by_spec: dict[object, Callable] = field(default_factory=dict)
     """Per-spec postprocessing functions (combine groups with coefficients)."""
 
-    zero_shot_groups_by_spec: dict[object, dict[int, object]] = field(
-        default_factory=dict
-    )
-    """Per-spec ``{obs_group_idx: zero_result_for_group}`` for groups that
-    adaptive shot allocation assigned zero shots.  Injected back into the
-    grouped results before postprocessing so those groups contribute zero
-    to the final energy."""
+    group_shot_plans_by_spec: dict[tuple, _GroupShotPlan] = field(default_factory=dict)
+    """Per-spec execution and estimator-adjustment plans."""
+
+    constant_offsets_by_spec: dict[tuple, float] = field(default_factory=dict)
+    """Exact identity contributions excluded from random-operator sampling."""
 
     is_probs: bool = False
     """True when this is a probabilities measurement (no observable grouping)."""
@@ -207,6 +315,31 @@ class MeasurementToken:
     """Number of single-Pauli terms in the source observable (only set for
     the ``_backend_expval`` path, where ``measurement_groups`` is a sentinel
     empty group)."""
+
+    def scoped_to(
+        self, foreign_key: tuple, foreign_axes: set[str]
+    ) -> "MeasurementToken":
+        """Select and strip metadata for one downstream-axis reduction group."""
+        foreign_set = set(foreign_key)
+
+        def scoped(entries: dict) -> dict:
+            return {
+                tuple(axis for axis in key if axis[0] not in foreign_axes): value
+                for key, value in entries.items()
+                if {
+                    axis
+                    for axis in key
+                    if isinstance(axis, tuple) and axis[0] in foreign_axes
+                }
+                <= foreign_set
+            }
+
+        return replace(
+            self,
+            postprocess_fn_by_spec=scoped(self.postprocess_fn_by_spec),
+            group_shot_plans_by_spec=scoped(self.group_shot_plans_by_spec),
+            constant_offsets_by_spec=scoped(self.constant_offsets_by_spec),
+        )
 
 
 class MeasurementStage(BundleStage):
@@ -255,6 +388,10 @@ class MeasurementStage(BundleStage):
         return self._shot_distribution == "weighted_random" or callable(
             self._shot_distribution
         )
+
+    def is_volatile_for(self, env: PipelineEnv) -> bool:
+        """Estimator sampling redraws operators on every evaluation."""
+        return self.volatile or env.estimator_samples is not None
 
     def cache_key_extras(self, env) -> tuple[Hashable, ...]:
         """Fold the effective shot budget / variance flag into the forward-pass
@@ -356,7 +493,7 @@ class MeasurementStage(BundleStage):
 
         Group count is the source of truth for the measurement fan-out, so
         we always run ``_compute_measurement_groups`` and
-        ``_allocate_per_group_shots`` (both cheap, pure numpy / analytic).
+        ``_plan_group_shots`` (both cheap, pure numpy / analytic).
         Only the per-group QASM string generation is swapped for a
         placeholder so the emitted batch has correct shape without
         materialising measurement circuits.
@@ -435,6 +572,60 @@ class MeasurementStage(BundleStage):
         token = MeasurementToken(is_probs=True)
         return StageOutput(batch=out, token=token)
 
+    def _resolve_expval_mode(
+        self,
+        batch: MetaCircuitBatch,
+        env: PipelineEnv,
+    ) -> tuple[GroupingStrategy, tuple[int, ...] | None]:
+        """Resolve backend-aware grouping and optional estimator budgets."""
+        estimator_samples = env.estimator_samples
+        if estimator_samples is not None:
+            if env.backend.supports_expval:
+                raise ValueError(
+                    "estimator_samples requires a sampling backend; analytic "
+                    "expectation-value backends do not consume shots."
+                )
+            if self._shot_distribution not in (None, "weighted_random"):
+                raise ValueError(
+                    "estimator_samples selects weighted-random sampling and cannot "
+                    "be combined with another shot_distribution strategy."
+                )
+            sample_budgets = estimator_samples.by_param_set
+        else:
+            sample_budgets = None
+
+        strategy = self._grouping_strategy
+        if strategy in ("qwc", BACKEND_EXPVAL) and env.backend.supports_expval:
+            # The analytic path emits one shared ham_ops, so every circuit must
+            # carry the same observable tuple.
+            first_obs = next(iter(batch.values())).observable
+            all_same_obs = all(meta.observable == first_obs for meta in batch.values())
+            strategy = BACKEND_EXPVAL if all_same_obs else "qwc"
+
+        if (
+            self._shot_distribution is not None
+            and self._grouping_strategy == BACKEND_EXPVAL
+        ):
+            raise ValueError(
+                "shot_distribution is incompatible with the '_backend_expval' grouping "
+                "strategy: the backend computes expectation values analytically and "
+                "ignores shots. Set grouping_strategy to 'qwc', 'wires', or None."
+            )
+        if self._shot_distribution is not None and strategy == BACKEND_EXPVAL:
+            warnings.warn(
+                f"shot_distribution is set but backend "
+                f"{type(env.backend).__name__} computes expectation values "
+                "analytically (supports_expval=True), so per-group shot "
+                "allocation does not change the (exact) result. Use a "
+                "sampling backend for shot_distribution to take effect — e.g. "
+                "QiskitSimulator(force_sampling=True), or QoroService with "
+                "JobConfig(force_sampling=True).",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        return strategy, sample_budgets
+
     # ------------------------------------------------------------------ #
     # Expval path
     # ------------------------------------------------------------------ #
@@ -453,44 +644,13 @@ class MeasurementStage(BundleStage):
         placeholder factory so the batch shape is preserved without
         serialising diagonalising gates + ``measure`` instructions.
         """
-        strategy = self._grouping_strategy
-        if strategy in ("qwc", BACKEND_EXPVAL) and env.backend.supports_expval:
-            # Promote to the backend's analytic expval path only when every
-            # circuit in the batch carries the same observable(s): that path
-            # emits a single shared ham_ops, so a batch with differing
-            # observables (single- or multi-observable) must stay on qwc.
-            first_obs = next(iter(batch.values())).observable
-            all_same_obs = all(meta.observable == first_obs for meta in batch.values())
-            strategy = BACKEND_EXPVAL if all_same_obs else "qwc"
-
-        if (
-            self._shot_distribution is not None
-            and self._grouping_strategy == BACKEND_EXPVAL
-        ):
-            raise ValueError(
-                "shot_distribution is incompatible with the '_backend_expval' grouping "
-                "strategy: the backend computes expectation values analytically and "
-                "ignores shots. Set grouping_strategy to 'qwc', 'wires', or None."
-            )
-        if self._shot_distribution is not None and strategy == BACKEND_EXPVAL:
-            # The analytic path submits one circuit for the whole observable, so
-            # there are no groups to allocate across.
-            warnings.warn(
-                f"shot_distribution is set but backend "
-                f"{type(env.backend).__name__} computes expectation values "
-                "analytically (supports_expval=True), so per-group shot "
-                "allocation does not change the (exact) result. Use a "
-                "sampling backend for shot_distribution to take effect — e.g. "
-                "QiskitSimulator(force_sampling=True), or QoroService with "
-                "JobConfig(force_sampling=True).",
-                UserWarning,
-                stacklevel=2,
-            )
+        strategy, sample_budgets = self._resolve_expval_mode(batch, env)
 
         result: MetaCircuitBatch = {}
         postprocess_fn_by_spec: dict[object, Callable] = {}
         n_observable_terms: int | None = None
-        zero_shot_groups_by_spec: dict[object, dict[int, object]] = {}
+        group_shot_plans_by_spec: dict[tuple, _GroupShotPlan] = {}
+        constant_offsets_by_spec: dict[tuple, float] = {}
         sample_union: SparsePauliOp | None = None
 
         # Full measurement when opted out, COUNTS/PROBS override, or the analytic
@@ -512,6 +672,16 @@ class MeasurementStage(BundleStage):
             assert isinstance(meta.observable, tuple)
             observable = meta.observable
             _warn_imag_coeffs(observable, key)
+            constant_offset = 0.0
+            if sample_budgets is not None:
+                if len(observable) != 1:
+                    raise ValueError(
+                        "estimator_samples requires one scalar observable per circuit."
+                    )
+                sampled_observable, constant_offset = _split_identity_offset(
+                    observable[0]
+                )
+                observable = (sampled_observable,)
 
             measurement_groups, partition_indices, postprocessing_fn, union_obs = (
                 _compute_measurement_groups(observable, strategy, meta.n_qubits)
@@ -524,18 +694,23 @@ class MeasurementStage(BundleStage):
             # reuse its union directly instead of redoing the symplectic dedup.
             if sample_union is None:
                 sample_union = union_obs
-            surviving_indices, zero_shot_groups, surviving_shots = (
-                _allocate_per_group_shots(
-                    key,
-                    union_obs,
-                    measurement_groups,
-                    partition_indices,
-                    env,
-                    self._shot_distribution,
-                )
+            plans = _plans_for_spec(
+                key,
+                union_obs,
+                measurement_groups,
+                partition_indices,
+                env,
+                self._shot_distribution,
+                sample_budgets,
             )
-            if zero_shot_groups:
-                zero_shot_groups_by_spec[key] = zero_shot_groups
+            group_shot_plans_by_spec.update(plans)
+            surviving_indices = sorted(
+                {
+                    group_idx
+                    for plan in plans.values()
+                    for group_idx in plan.surviving_indices
+                }
+            )
             if not surviving_indices:
                 # Every group dropped: there is nothing to submit and nothing to
                 # postprocess. Failing here beats emitting an unmeasured circuit,
@@ -559,8 +734,11 @@ class MeasurementStage(BundleStage):
             # Keep the *full* measurement_groups on the MetaCircuit so that
             # _counts_to_expvals can index into it by the original obs_group
             # tag carried on each surviving label.
+            measurement_meta = (
+                meta.set_observable(observable) if sample_budgets is not None else meta
+            )
             new_meta = (
-                meta.set_measurement_bodies(tagged_measurement_qasms)
+                measurement_meta.set_measurement_bodies(tagged_measurement_qasms)
                 .set_measurement_groups(measurement_groups)
                 .set_result_format(ResultFormat.EXPVALS)
             )
@@ -569,10 +747,26 @@ class MeasurementStage(BundleStage):
             # override is meaningless there, so never materialise group shots on
             # that path — the override is silently ignored, as analytic expval
             # ignores shots by definition.
-            if surviving_shots is not None and strategy != BACKEND_EXPVAL:
-                new_meta = new_meta.set_group_shots(surviving_shots)
+            if sample_budgets is not None:
+                new_meta = new_meta.set_param_group_shots(
+                    {
+                        param_idx: plans[
+                            (*key, (PARAM_SET_AXIS, param_idx))
+                        ].shots_by_group
+                        or {}
+                        for param_idx in range(len(sample_budgets))
+                    }
+                )
+            else:
+                shot_plan = plans[key]
+                if shot_plan.shots_by_group is not None and strategy != BACKEND_EXPVAL:
+                    new_meta = new_meta.set_group_shots(shot_plan.shots_by_group)
             result[key] = new_meta
-            postprocess_fn_by_spec[key] = postprocessing_fn
+            for plan_key in plans:
+                postprocess_fn_by_spec[plan_key] = postprocessing_fn
+            if sample_budgets is not None:
+                for plan_key in plans:
+                    constant_offsets_by_spec[plan_key] = constant_offset
 
         if strategy == BACKEND_EXPVAL and sample_union is not None:
             ham_ops = _sparse_pauli_op_to_ham_string(sample_union)
@@ -584,7 +778,8 @@ class MeasurementStage(BundleStage):
             postprocess_fn_by_spec=postprocess_fn_by_spec,
             effective_strategy=strategy,
             n_observable_terms=n_observable_terms,
-            zero_shot_groups_by_spec=zero_shot_groups_by_spec,
+            group_shot_plans_by_spec=group_shot_plans_by_spec,
+            constant_offsets_by_spec=constant_offsets_by_spec,
         )
         return StageOutput(batch=result, token=token)
 
@@ -636,6 +831,14 @@ class MeasurementStage(BundleStage):
 
         info["n_groups"] = len(groups)
         info["n_pauli_terms"] = sum(len(g) for g in groups)
+        if env.estimator_samples is not None:
+            info["estimator_samples_per_param_set"] = list(
+                env.estimator_samples.by_param_set
+            )
+            plans = getattr(token, "group_shot_plans_by_spec", {}).values()
+            info["device_shots"] = sum(
+                sum((plan.shots_by_group or {}).values()) for plan in plans
+            )
         # Report the consequence rather than echoing the flag: with measure_all
         # off, each group reads only the qubits it acts on, so the outcome space a
         # user sees is narrower than the register.
@@ -685,6 +888,22 @@ class MeasurementStage(BundleStage):
     # Reduce
     # ------------------------------------------------------------------ #
 
+    def _estimate_cost_variance(
+        self,
+        raw: ChildResults,
+        batch: MetaCircuitBatch,
+        token: StageToken,
+    ) -> dict[tuple, float]:
+        """Estimate variance according to this stage's sampling strategy."""
+        probabilities_by_spec = {
+            key: plan.probabilities_by_group
+            for key, plan in token.group_shot_plans_by_spec.items()
+            if plan.probabilities_by_group
+        }
+        if probabilities_by_spec:
+            return _counts_to_wrs_cost_variance(raw, batch, probabilities_by_spec)
+        return _counts_to_cost_variance(raw, batch)
+
     def reduce(
         self, results: ChildResults, env: PipelineEnv, token: StageToken
     ) -> ChildResults:
@@ -722,23 +941,22 @@ class MeasurementStage(BundleStage):
     ) -> ChildResults:
         """Combine expval results across measurement groups."""
         grouped = group_by_base_key(results, OBS_GROUP_AXIS, indexed=True)
-
-        # Inject zero results for groups that adaptive shot allocation
-        # assigned zero shots. The postprocessing function expects one entry
-        # per original measurement group; the zero fills make those terms
-        # contribute zero to the final sum. Built as an explicit merge
-        # (zero-shot groups ∪ measured results, with measured results winning
-        # on collisions) so the input dicts are never mutated in place.
-        if token.zero_shot_groups_by_spec:
-            grouped = {
-                base_key: {
-                    **token.zero_shot_groups_by_spec.get(base_key, {}),
-                    **group_dict,
-                }
-                for base_key, group_dict in grouped.items()
-            }
+        grouped = {
+            base_key: _apply_group_shot_plan(
+                group_dict, token.group_shot_plans_by_spec.get(base_key)
+            )
+            for base_key, group_dict in grouped.items()
+        }
 
         postprocess_fn_by_base = {
             base_key: token.postprocess_fn_by_spec[base_key] for base_key in grouped
         }
-        return reduce_postprocess_ordered(grouped, postprocess_fn_by_base)
+        reduced = reduce_postprocess_ordered(grouped, postprocess_fn_by_base)
+        return {
+            base_key: (
+                [value[0] + token.constant_offsets_by_spec[base_key], *value[1:]]
+                if base_key in token.constant_offsets_by_spec
+                else value
+            )
+            for base_key, value in reduced.items()
+        }
