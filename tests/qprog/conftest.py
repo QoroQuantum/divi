@@ -6,18 +6,28 @@
 
 import pytest
 
+from divi.qprog.optimizers import (
+    MonteCarloOptimizer,
+    PymooMethod,
+    PymooOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.reporting._session import ProgressSession
 from tests.qprog._helpers import RecordingProgressSession
-from tests.qprog.optimizers._contracts import (
-    CHECKPOINTING_VARIANT_IDS,
-    OPTIMIZER_VARIANTS,
-)
 
-# Subset that supports save/load checkpointing.
+_OPTIMIZER_FACTORIES = [
+    ("monte-carlo", lambda: MonteCarloOptimizer(population_size=5, n_best_sets=2)),
+    ("l-bfgs-b", lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B)),
+    ("cobyla", lambda: ScipyOptimizer(method=ScipyMethod.COBYLA)),
+    ("nelder-mead", lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)),
+    ("cmaes", lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=10)),
+    ("de", lambda: PymooOptimizer(method=PymooMethod.DE, population_size=5)),
+]
 _CHECKPOINTING_OPTIMIZERS = [
-    (opt_id, factory)
-    for opt_id, factory in OPTIMIZER_VARIANTS
-    if opt_id in CHECKPOINTING_VARIANT_IDS
+    variant
+    for variant in _OPTIMIZER_FACTORIES
+    if variant[0] in {"monte-carlo", "cmaes", "de"}
 ]
 
 
@@ -41,23 +51,19 @@ def _fixture_kwargs(variants):
     return {"params": list(factories), "ids": list(ids)}
 
 
-@pytest.fixture(**_fixture_kwargs(OPTIMIZER_VARIANTS))
+@pytest.fixture(**_fixture_kwargs(_OPTIMIZER_FACTORIES))
 def optimizer(request):
-    """Parametrize over every supported optimizer variant. Returns a fresh instance."""
+    """Parametrize over every general optimizer used by qprog tests."""
     return request.param()
 
 
 @pytest.fixture(
     **_fixture_kwargs(
-        [
-            (opt_id, factory)
-            for opt_id, factory in OPTIMIZER_VARIANTS
-            if opt_id != "l-bfgs-b"
-        ]
+        [variant for variant in _OPTIMIZER_FACTORIES if variant[0] != "l-bfgs-b"]
     )
 )
 def gradient_free_optimizer(request):
-    """Parametrize over the variants that need no gradient.
+    """Parametrize over general optimizers that need no exact gradient.
 
     For programs with no exact parameter-shift rule, such as
     :class:`~divi.qprog.algorithms.QAOA`.

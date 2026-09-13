@@ -15,11 +15,34 @@ from qiskit.quantum_info import SparsePauliOp
 pytest.importorskip("qiskit_aer")
 
 from divi.backends import QiskitSimulator
-from divi.qprog import QAOA, VQE, QUIVEROptimizer
+from divi.qprog import QAOA, VQE, EarlyStopping, QUIVEROptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.early_stopping import StopReason
 from divi.qprog.optimizers._spsa import _cost_fn_supports_variance, _spsa_gradient
 from divi.qprog.problems import MaxCutProblem
-from tests.qprog.optimizers._contracts import sphere_cost_fn_batch_aware as _sphere
+from tests.qprog.optimizers._helpers import sphere_cost_fn_batch_aware as _sphere
+
+
+def test_optimizer_contract(gradient_optimizer_contract):
+    gradient_optimizer_contract(QUIVEROptimizer(learning_rate=0.1), {})
+
+
+@pytest.fixture(
+    params=[
+        lambda: QUIVEROptimizer(learning_rate=0.1),
+        lambda: QUIVEROptimizer(learning_rate=0.1, adapt_V=False, adapt_M=False),
+    ],
+    ids=["adaptive", "fixed"],
+)
+def noisy_quiver_optimizer_factory(request):
+    return request.param
+
+
+def test_noisy_optimizer_contract(
+    noisy_quiver_optimizer_factory, noisy_optimizer_contract
+):
+    noisy_optimizer_contract(noisy_quiver_optimizer_factory, {}, ceiling=0.20)
+
 
 # --------------------------------------------------------------------------- #
 # Forward-gradient optimizer
@@ -145,9 +168,15 @@ def test_quiver_requires_initial_params():
         ({"V_init": 0}, "resamplings must be >= 1"),
         ({"V_min": 2, "V_init": 1}, "V_min <= V_init <= V_max"),
         ({"V_max": 1, "V_init": 2}, "V_min <= V_init <= V_max"),
-        ({"M_min": 5, "M_init": 1}, "M_min <= M_init <= M_max"),
+        ({"M_min": 5, "M_init": 1}, "M_min <= M_init"),
+        ({"M_init": 10, "M_max": 5}, "M_init <= M_max"),
         ({"mu": 1.0}, "mu must be in"),
-        ({"lipschitz": 0.0}, "lipschitz must be positive"),
+        ({"allocation_alpha": 0.0}, "allocation_alpha must be positive"),
+        (
+            {"target_gradient_variance": 0.0},
+            "target_gradient_variance must be positive",
+        ),
+        ({"warmup": -1}, "warmup must be non-negative"),
         ({"derivative_mode": "nope"}, "derivative_mode must be"),
     ],
 )
@@ -168,15 +197,24 @@ def test_quiver_does_not_support_checkpointing(tmp_path):
     opt.reset()  # no-op
 
 
-def test_copy_preserves_quiver_config():
-    opt = QUIVEROptimizer(
+def test_quiver_config_defaults_and_copy():
+    """``V_init=2`` gives the directional-variance estimate its two samples, and
+    ``M_init``/``M_max`` of ``None`` inherit and cap at the backend's shot count.
+    An explicit configuration survives ``copy()`` intact."""
+    defaults = QUIVEROptimizer()
+    assert defaults.V_init == 2
+    assert defaults.V_min == 1
+    assert defaults.M_init is None
+    assert defaults.M_max is None
+    assert defaults.mu == pytest.approx(0.9)
+
+    clone = QUIVEROptimizer(
         learning_rate=0.05,
         epsilon=0.2,
         V_init=3,
         M_init=250,
         derivative_mode="parameter_shift",
-    )
-    clone = opt.copy()
+    ).copy()
     assert isinstance(clone, QUIVEROptimizer)
     assert clone.learning_rate == 0.05
     assert clone.epsilon == 0.2
@@ -187,17 +225,81 @@ def test_copy_preserves_quiver_config():
     assert clone.adapt_M is True
 
 
-def test_quiver_warns_once_when_step_leaves_stability_regime():
-    """L*a_k >= 2 (here L=2 via lipschitz, a_k=1) leaves the gCANS regime and
-    warns exactly once over the whole run, not once per step."""
-    with pytest.warns(UserWarning, match="gCANS stability") as record:
-        QUIVEROptimizer(learning_rate=1.0, lipschitz=2.0, V_init=2).optimize(
-            _sphere,
+def test_quiver_joint_allocation_matches_published_rule():
+    optimizer = QUIVEROptimizer(
+        allocation_alpha=2.0,
+        target_gradient_variance=0.5,
+    )
+
+    V_star, M_star = optimizer._allocation_targets(
+        n_params=5,
+        gradient_norm_squared=3.0,
+        measurement_variance=4.0,
+    )
+
+    assert V_star == pytest.approx(36.0)
+    assert M_star == pytest.approx(10.0 / 3.0)
+
+
+@pytest.mark.parametrize(
+    ("target", "current", "lower", "expected"),
+    [
+        (100.0, 4, 2, 6),  # rise capped at rate_up * current
+        (0.0, 4, 2, 3),  # fall capped at rate_down * current
+        (0.0, 2, 1, 1),  # floor wins over the rate limit
+        (100.0, 1, 2, 2),  # hard bound wins when the intervals do not overlap
+    ],
+)
+def test_quiver_rate_limits_allocation_changes(target, current, lower, expected):
+    optimizer = QUIVEROptimizer(V_init=4, V_min=2, V_max=20)
+
+    assert optimizer._rate_limited_integer(target, current, lower, 20) == expected
+
+
+def test_quiver_default_learning_rate_scales_adams_update_by_dimension():
+    opt = QUIVEROptimizer(calibration_steps=10)
+    gain = opt._calibrated_learning_rate(
+        _sphere,
+        np.ones(100),
+        np.random.default_rng(0),
+    )
+
+    assert gain == pytest.approx(2.0 * (2.0 * np.pi / 10.0) / 100.0)
+
+
+def test_quiver_default_first_step_descends_on_a_sparse_high_dimensional_sphere():
+    start = np.zeros(100)
+    start[0] = 1.0
+    seen = []
+
+    QUIVEROptimizer(adapt_V=False, adapt_M=False).optimize(
+        _sphere,
+        initial_params=start,
+        max_iterations=2,
+        callback_fn=lambda result: seen.append(result.x.squeeze().copy()),
+        rng=np.random.default_rng(0),
+    )
+
+    assert _sphere(seen[1]) < _sphere(start)
+
+
+def test_quiver_never_spends_calibration_evaluations():
+    """Unlike SPSA, QUIVER derives its gain from the dimension alone, so neither
+    the default nor an explicit rate costs a calibration pass."""
+    for kwargs in ({}, {"learning_rate": 0.1}):
+        calls = {"n": 0}
+
+        def counting(params, calls=calls):
+            calls["n"] += 1
+            return _sphere(params)
+
+        QUIVEROptimizer(V_init=1, V_min=1, **kwargs).optimize(
+            counting,
             initial_params=np.array([1.0, 1.0]),
             max_iterations=3,
             rng=np.random.default_rng(0),
         )
-    assert sum("gCANS stability" in str(w.message) for w in record) == 1
+        assert calls["n"] == 3  # one gradient batch per step, nothing else
 
 
 # --------------------------------------------------------------------------- #
@@ -205,7 +307,7 @@ def test_quiver_warns_once_when_step_leaves_stability_regime():
 # --------------------------------------------------------------------------- #
 
 
-def _shot_based_vqe(optimizer):
+def _shot_based_vqe(optimizer, *, early_stopping=None):
     """A VQE on a shot-based simulator, where the cost closure can expose a
     measurement-variance estimate and honour a per-evaluation shot budget."""
     return VQE(
@@ -214,6 +316,7 @@ def _shot_based_vqe(optimizer):
         n_layers=1,
         backend=QiskitSimulator(shots=4000, force_sampling=True),
         optimizer=optimizer,
+        early_stopping=early_stopping,
         seed=1997,
     )
 
@@ -350,7 +453,7 @@ def test_quiver_parameter_shift_uses_half_prefactor():
     (½·(f₊−f₋)), not the 2/π-scaled finite-difference value. On the sinusoidal
     cost f(θ)=−cos(θ) (a stand-in for a real PQC, unlike the quadratic sphere
     where ÷2ε is coincidentally exact) the analytic gradient is sin(θ); the
-    first step must move by learning_rate·sin(θ₀)."""
+    first Adam step must move in the sign of the recovered gradient."""
 
     def cost(params):  # batch-aware: (k, 1) -> (k,)
         return -np.cos(np.atleast_2d(params)).sum(axis=1)
@@ -359,7 +462,9 @@ def test_quiver_parameter_shift_uses_half_prefactor():
     captured = []
     QUIVEROptimizer(
         learning_rate=0.5,
+        alpha=0.0,  # constant Adam learning rate
         V_init=1,
+        V_min=1,
         adapt_V=False,
         adapt_M=False,
         derivative_mode="parameter_shift",
@@ -370,9 +475,9 @@ def test_quiver_parameter_shift_uses_half_prefactor():
         callback_fn=lambda r: captured.append(np.atleast_1d(r.x.squeeze()).copy()),
         rng=np.random.default_rng(0),
     )
-    # Callback fires before each step; captured[1] is θ after the first step.
-    ghat = (theta0 - captured[1]) / 0.5
-    np.testing.assert_allclose(ghat, np.sin(theta0), atol=1e-6)
+    # Callback fires before each step; Adam's bias-corrected first update has
+    # magnitude learning_rate and the sign of the recovered gradient.
+    np.testing.assert_allclose(captured[1], theta0 - 0.5, atol=1e-6)
 
 
 def test_quiver_exact_loss_records_final_step():
@@ -461,7 +566,7 @@ def test_quiver_adapt_v_changes_evaluation_count():
     )
     calls_adaptive, fn_adaptive = _counting_sphere()
     QUIVEROptimizer(
-        learning_rate=0.3, V_init=2, V_min=1, V_max=10, adapt_V=True, adapt_M=False
+        learning_rate=0.3, V_init=2, V_max=10, adapt_V=True, adapt_M=False
     ).optimize(
         fn_adaptive,
         initial_params=np.array([1.5, -1.0, 0.7]),
@@ -503,14 +608,18 @@ def test_quiver_exact_loss_spends_one_extra_evaluation_per_step():
     perturbation calls, plus a single final-iterate evaluation after the loop
     (so best-tracking covers the last step). V fixed at 2, adaptation off."""
     calls_base, fn_base = _counting_sphere()
-    QUIVEROptimizer(V_init=2, adapt_V=False, adapt_M=False, exact_loss=False).optimize(
+    QUIVEROptimizer(
+        learning_rate=0.1, V_init=2, adapt_V=False, adapt_M=False, exact_loss=False
+    ).optimize(
         fn_base,
         initial_params=np.array([1.0, 1.0]),
         max_iterations=5,
         rng=np.random.default_rng(0),
     )
     calls_exact, fn_exact = _counting_sphere()
-    QUIVEROptimizer(V_init=2, adapt_V=False, adapt_M=False, exact_loss=True).optimize(
+    QUIVEROptimizer(
+        learning_rate=0.1, V_init=2, adapt_V=False, adapt_M=False, exact_loss=True
+    ).optimize(
         fn_exact,
         initial_params=np.array([1.0, 1.0]),
         max_iterations=5,
@@ -521,16 +630,10 @@ def test_quiver_exact_loss_spends_one_extra_evaluation_per_step():
     assert calls_exact["n"] == calls_base["n"] + 5 + 1
 
 
-def test_quiver_adapt_m_updates_shot_budget_to_backend(default_optimizer):
-    """The headline feature: with ``adapt_M`` the per-evaluation shot budget
-    forwarded to the backend changes across iterations (the closed loop)."""
-    vqe = _shot_based_vqe(default_optimizer)
-    vqe.backend.set_seed(11)
-    vqe.optimizer = QUIVEROptimizer(
-        learning_rate=0.2, epsilon=0.1, V_init=2, M_init=80, M_min=10, M_max=5000
-    )
-    vqe.max_iterations = 10
-
+def _record_forwarded_shots(vqe, optimizer, max_iterations):
+    """Run ``vqe`` and return every per-evaluation shot count it forwarded."""
+    vqe.optimizer = optimizer
+    vqe.max_iterations = max_iterations
     seen_shots: list[int] = []
     original = vqe.backend.submit_circuits
 
@@ -542,8 +645,59 @@ def test_quiver_adapt_m_updates_shot_budget_to_backend(default_optimizer):
 
     vqe.backend.submit_circuits = spy
     vqe.run(perform_final_computation=False)
-    # M starts at M_init and the adaptation moves it at least once.
+    return seen_shots
+
+
+def test_quiver_adapt_m_updates_shot_budget_to_backend(default_optimizer):
+    """The headline feature: with ``adapt_M`` the per-evaluation shot budget
+    forwarded to the backend changes across iterations (the closed loop)."""
+    vqe = _shot_based_vqe(default_optimizer)
+    vqe.backend.set_seed(11)
+    seen_shots = _record_forwarded_shots(
+        vqe,
+        QUIVEROptimizer(
+            learning_rate=0.2, epsilon=0.1, V_init=2, M_init=80, M_min=10, M_max=5000
+        ),
+        max_iterations=10,
+    )
+
     assert len(set(seen_shots)) >= 2
+
+
+def test_quiver_default_m_inherits_and_caps_at_backend_shots(default_optimizer):
+    """With no ``M_init`` the budget starts at the backend's own shot count and
+    never exceeds it, so adaptation cannot silently outspend the user."""
+    vqe = _shot_based_vqe(default_optimizer)
+    seen_shots = _record_forwarded_shots(
+        vqe,
+        QUIVEROptimizer(learning_rate=0.2, adapt_V=False, adapt_M=True),
+        max_iterations=8,
+    )
+
+    assert seen_shots
+    assert seen_shots[0] == vqe.backend.shots
+    assert max(seen_shots) <= vqe.backend.shots
+
+
+def test_quiver_gradient_drives_vqa_early_stopping(default_optimizer):
+    vqe = _shot_based_vqe(
+        default_optimizer,
+        early_stopping=EarlyStopping(
+            patience=10,
+            grad_norm_threshold=np.inf,
+        ),
+    )
+    vqe.optimizer = QUIVEROptimizer(
+        learning_rate=0.2,
+        adapt_V=False,
+        adapt_M=False,
+    )
+    vqe.max_iterations = 5
+
+    vqe.run(perform_final_computation=False)
+
+    assert vqe.current_iteration == 1
+    assert vqe.stop_reason is StopReason.GRADIENT_BELOW_THRESHOLD
 
 
 def test_quiver_adapt_m_warns_with_shot_distribution(default_optimizer):

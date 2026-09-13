@@ -4,8 +4,6 @@
 
 """Tests for the SPSA and QN-SPSA optimizers and the state-overlap primitive."""
 
-from collections import deque
-
 import networkx as nx
 import numpy as np
 import pytest
@@ -37,7 +35,75 @@ from divi.qprog.optimizers._spsa import (
     _spsa_gradient,
 )
 from divi.qprog.problems import MaxCutProblem
-from tests.qprog.optimizers._contracts import sphere_cost_fn_batch_aware as _sphere
+from tests.qprog.optimizers._helpers import (
+    bowl_jac,
+    bowl_metric,
+)
+from tests.qprog.optimizers._helpers import sphere_cost_fn_batch_aware as _sphere
+
+
+@pytest.fixture(
+    params=[
+        (lambda: SPSAOptimizer(learning_rate=0.2, c=0.1), {}),
+        (
+            lambda: QNSPSAOptimizer(learning_rate=0.2, c=0.1),
+            {"metric_fn": lambda x: np.eye(np.asarray(x).reshape(-1).shape[0])},
+        ),
+    ],
+    ids=["default", "quantum-natural"],
+)
+def spsa_contract_case(request):
+    factory, optimize_kwargs = request.param
+    return factory(), optimize_kwargs
+
+
+def test_optimizer_contract(spsa_contract_case, gradient_optimizer_contract):
+    optimizer, optimize_kwargs = spsa_contract_case
+    gradient_optimizer_contract(optimizer, optimize_kwargs)
+
+
+_BOWL_EVALUATORS = {"jac": bowl_jac, "metric_fn": bowl_metric}
+
+
+@pytest.fixture(
+    params=[
+        (lambda: SPSAOptimizer(learning_rate=0.2, c=0.2), {}, 0.10),
+        (
+            lambda: SPSAOptimizer(learning_rate=0.2, c=0.2, blocking=True),
+            {},
+            0.10,
+        ),
+        (
+            lambda: SPSAOptimizer(learning_rate=0.2, c=0.2, resamplings=4),
+            {},
+            0.10,
+        ),
+        (
+            lambda: QNSPSAOptimizer(learning_rate=0.1, c=0.2),
+            _BOWL_EVALUATORS,
+            0.60,
+        ),
+        (
+            lambda: QNSPSAOptimizer(learning_rate=0.1, c=0.2, blocking=True),
+            _BOWL_EVALUATORS,
+            0.60,
+        ),
+    ],
+    ids=[
+        "default",
+        "blocking",
+        "resampled",
+        "quantum-natural",
+        "quantum-natural-blocking",
+    ],
+)
+def noisy_spsa_contract_case(request):
+    return request.param
+
+
+def test_noisy_optimizer_contract(noisy_spsa_contract_case, noisy_optimizer_contract):
+    noisy_optimizer_contract(*noisy_spsa_contract_case)
+
 
 # --------------------------------------------------------------------------- #
 # Batch-aware test costs (the real cost_fn handles 2D batches; SPSA evaluates
@@ -199,53 +265,106 @@ def test_spsa_callback_stop_iteration_propagates():
 
 
 def test_block_or_step_rejects_worsening_candidate():
-    """Look-ahead blocking accepts an improving candidate and rejects a worsening
-    one (beyond the std band), holding the iterate."""
-    opt = SPSAOptimizer(blocking=True, blocking_history=3, blocking_tol=2.0)
-    recent = deque([1.0, 1.0, 1.0], maxlen=3)  # mean 1, std 0 -> band 0
+    """Look-ahead blocking accepts an improving candidate and rejects one that
+    worsens the loss by more than ``allowed_increase``, holding the iterate."""
+    opt = SPSAOptimizer(blocking=True)
     theta, proposed = np.array([0.0, 0.0]), np.array([1.0, 1.0])
 
     # candidate worsens the loss (sphere: 0 -> 2) beyond the band -> rejected, holds.
     nxt, loss = opt._block_or_step(
-        _sphere, theta, proposed, current_loss=0.0, recent=recent
+        _sphere, theta, proposed, current_loss=0.0, allowed_increase=0.5
     )
     np.testing.assert_array_equal(nxt, theta)
     assert loss == 0.0
 
     # candidate improves the loss (2 -> 0) -> accepted, moves, loss updates.
     nxt, loss = opt._block_or_step(
-        _sphere, proposed, theta, current_loss=2.0, recent=recent
+        _sphere, proposed, theta, current_loss=2.0, allowed_increase=0.5
     )
     np.testing.assert_array_equal(nxt, theta)
     assert loss == pytest.approx(0.0)
 
 
-def test_block_or_step_startup_accepts_with_too_little_history():
-    """With fewer than two prior losses the band is infinite, so any candidate is
-    accepted (Spall start-up: need >=2 samples to estimate dispersion)."""
-    opt = SPSAOptimizer(blocking=True, blocking_history=5, blocking_tol=2.0)
-    theta, proposed = np.array([0.0]), np.array([10.0])  # catastrophically worse
+def test_block_or_step_accepts_a_regression_inside_the_band():
+    """The band is what absorbs shot noise: a candidate worse by less than
+    ``allowed_increase`` is still accepted, so a noisy run keeps moving."""
+    opt = SPSAOptimizer(blocking=True)
+    theta, proposed = np.array([0.0]), np.array([1.0])  # sphere: 0 -> 1
+
     nxt, loss = opt._block_or_step(
-        _sphere, theta, proposed, current_loss=0.0, recent=deque([9999.0], maxlen=5)
+        _sphere, theta, proposed, current_loss=0.0, allowed_increase=2.0
     )
-    np.testing.assert_array_equal(nxt, proposed)  # accepted despite worsening
-    assert loss == pytest.approx(_sphere(proposed))
+    np.testing.assert_array_equal(nxt, proposed)
+    assert loss == pytest.approx(1.0)
 
 
 def test_block_or_step_rejects_nonfinite_candidate():
     """A NaN candidate loss is held (not accepted) — without this guard NaN would
-    slip through (`nan > x` is False) and poison the recent window."""
-    opt = SPSAOptimizer(blocking=True, blocking_history=3, blocking_tol=2.0)
-    recent = deque([1.0, 1.0, 1.0], maxlen=3)
+    slip through, since ``nan > x`` is False."""
+    opt = SPSAOptimizer(blocking=True)
     nxt, loss = opt._block_or_step(
         lambda x: float("nan"),
         np.array([0.0]),
         np.array([0.5]),
         current_loss=1.0,
-        recent=recent,
+        allowed_increase=1.0,
     )
     np.testing.assert_array_equal(nxt, np.array([0.0]))  # held at theta
-    assert loss == 1.0  # current_loss unchanged (window not poisoned)
+    assert loss == 1.0
+
+
+@pytest.mark.filterwarnings("ignore:.*appears to be diverging.*:UserWarning")
+def test_an_all_nan_cost_reports_failure_rather_than_an_infinite_loss():
+    """When nothing finite is ever measured there is no result to report, so the
+    untouched starting point must not come back as an optimum."""
+    start = np.ones(4)
+
+    result = SPSAOptimizer(learning_rate=0.2, c=0.2).optimize(
+        lambda params: np.full(np.atleast_2d(params).shape[0], np.nan),
+        start,
+        max_iterations=10,
+        rng=np.random.default_rng(1997),
+    )
+
+    assert not result.success
+    assert "no finite cost value" in result.message
+    np.testing.assert_allclose(np.ravel(result.x), start)
+
+
+def test_blocking_band_is_calibrated_from_the_loss_noise():
+    """``allowed_increase`` defaults to twice the loss's standard deviation at the
+    starting point, so it admits shot noise and scales with the problem."""
+    sigma = 0.3
+    rng = np.random.default_rng(1997)
+
+    def noisy(params):
+        rows = np.atleast_2d(params)
+        values = np.sum(rows**2, axis=1) + rng.normal(0.0, sigma, size=rows.shape[0])
+        return values if rows.shape[0] > 1 else float(values[0])
+
+    optimizer = SPSAOptimizer(blocking=True, calibration_steps=400)
+
+    band = optimizer._calibrated_allowed_increase(noisy, np.zeros(3))
+
+    assert band == pytest.approx(2.0 * sigma, rel=0.25)
+
+
+def test_explicit_allowed_increase_is_used_verbatim():
+    """A supplied band skips calibration entirely."""
+    optimizer = SPSAOptimizer(blocking=True, allowed_increase=1.5)
+
+    assert optimizer._calibrated_allowed_increase(
+        _sphere, np.zeros(3)
+    ) == pytest.approx(1.5)
+
+
+def test_blocking_band_is_zero_when_calibration_losses_are_all_non_finite():
+    optimizer = SPSAOptimizer(blocking=True, calibration_steps=4)
+
+    def non_finite(params):
+        return np.full(np.atleast_2d(params).shape[0], np.nan)
+
+    assert optimizer._calibrated_allowed_increase(non_finite, np.zeros(3)) == 0.0
 
 
 def test_spsa_blocking_still_converges():
@@ -276,6 +395,7 @@ def test_spsa_blocking_records_final_accepted_step():
     assert not np.allclose(result.x, start)
 
 
+@pytest.mark.filterwarnings("ignore:.*blocking has rejected.*:UserWarning")
 def test_blocking_prevents_divergence():
     """Look-ahead blocking keeps a would-be-divergent run bounded.
 
@@ -299,7 +419,11 @@ def test_blocking_prevents_divergence():
     def peak(blocking):
         traj = []
         QNSPSAOptimizer(
-            learning_rate=0.5, c=0.1, regularization=1e-3, blocking=blocking
+            learning_rate=0.5,
+            c=0.1,
+            regularization=1e-3,
+            blocking=blocking,
+            max_step_norm=None,
         ).optimize(
             quad,
             initial_params=np.ones(d),
@@ -332,7 +456,12 @@ def test_diverging_run_emits_warning():
         return np.array([1.0 - 0.5 * (p @ metric @ p) for p in perts])
 
     with pytest.warns(UserWarning, match="diverging"):
-        QNSPSAOptimizer(learning_rate=0.5, c=0.1, regularization=1e-3).optimize(
+        QNSPSAOptimizer(
+            learning_rate=0.5,
+            c=0.1,
+            regularization=1e-3,
+            max_step_norm=None,
+        ).optimize(
             quad,
             initial_params=np.ones(d),
             max_iterations=120,
@@ -368,7 +497,8 @@ def test_spsa_resamplings_averages_over_extra_samples():
         calls["n"] += 1
         return _sphere(params)
 
-    SPSAOptimizer(resamplings=2).optimize(
+    # An explicit learning_rate skips calibration, which would add its own evals.
+    SPSAOptimizer(learning_rate=0.2, resamplings=2).optimize(
         counting,
         initial_params=np.array([1.0, 1.0]),
         max_iterations=3,
@@ -378,21 +508,22 @@ def test_spsa_resamplings_averages_over_extra_samples():
 
 
 def test_spsa_blocking_counts_initial_and_per_step_evals():
-    """blocking issues one seed eval before the loop and one candidate eval/step."""
+    """blocking issues one band-calibration batch and one seed eval before the
+    loop, then one candidate eval per step."""
     calls = {"n": 0}
 
     def counting(params):
         calls["n"] += 1
         return _sphere(params)
 
-    SPSAOptimizer(blocking=True).optimize(
+    SPSAOptimizer(learning_rate=0.2, blocking=True).optimize(
         counting,
         initial_params=np.array([1.0, 1.0]),
         max_iterations=3,
         rng=np.random.default_rng(0),
     )
-    # 1 seed + 3 steps × (1 gradient batch + 1 candidate eval) = 7
-    assert calls["n"] == 1 + 3 * 2
+    # 1 band calibration batch + 1 seed + 3 steps × (1 gradient + 1 candidate)
+    assert calls["n"] == 1 + 1 + 3 * 2
 
 
 def test_spsa_exact_loss_records_unperturbed_value():
@@ -404,7 +535,7 @@ def test_spsa_exact_loss_records_unperturbed_value():
         return _sphere(params)
 
     captured = []
-    SPSAOptimizer(exact_loss=True).optimize(
+    SPSAOptimizer(learning_rate=0.2, exact_loss=True).optimize(
         counting,
         initial_params=np.array([1.0, 1.0]),
         callback_fn=lambda res: captured.append((res.x.squeeze().copy(), res.fun[0])),
@@ -482,7 +613,8 @@ def test_zero_iterations_raises(factory):
         ({"learning_rate": 0.0}, "learning_rate must be positive"),
         ({"c": -1.0}, "c must be positive"),
         ({"resamplings": 0}, "resamplings must be >= 1"),
-        ({"blocking_history": 0}, "blocking_history must be >= 1"),
+        ({"allowed_increase": -1.0}, "allowed_increase must be non-negative"),
+        ({"calibration_steps": 0}, "calibration_steps must be >= 1"),
     ],
 )
 def test_spsa_constructor_validation(kwargs, match):
@@ -528,8 +660,9 @@ def test_copy_preserves_spsa_config():
         gamma=0.2,
         A=5.0,
         blocking=True,
-        blocking_tol=3.0,
+        allowed_increase=3.0,
         resamplings=2,
+        calibration_steps=7,
     )
     clone = opt.copy()
     assert isinstance(clone, SPSAOptimizer)
@@ -539,8 +672,9 @@ def test_copy_preserves_spsa_config():
     assert clone.gamma == 0.2
     assert clone.A == 5.0
     assert clone.blocking is True
-    assert clone.blocking_tol == 3.0
+    assert clone.allowed_increase == 3.0
     assert clone.resamplings == 2
+    assert clone.calibration_steps == 7
 
 
 # --------------------------------------------------------------------------- #
@@ -640,8 +774,9 @@ def test_qnspsa_does_not_support_checkpointing(tmp_path):
 
 
 def test_qnspsa_blocking_counts_cost_and_fidelity_evals():
-    """QN-SPSA + blocking: cost_fn = 1 seed + steps×(resamplings + 1 candidate);
-    fidelity_fn = steps×resamplings (the metric path, separate from cost_fn)."""
+    """QN-SPSA + blocking: cost_fn = 1 band calibration + 1 seed +
+    steps×(resamplings + 1 candidate); fidelity_fn = steps×resamplings (the
+    metric path, separate from cost_fn)."""
     cost_calls = {"n": 0}
     fid_calls = {"n": 0}
 
@@ -653,14 +788,15 @@ def test_qnspsa_blocking_counts_cost_and_fidelity_evals():
         fid_calls["n"] += 1
         return np.ones(len(perts))
 
-    QNSPSAOptimizer(blocking=True).optimize(
+    QNSPSAOptimizer(learning_rate=0.01, blocking=True).optimize(
         counting_cost,
         initial_params=np.array([1.0, 1.0]),
         max_iterations=3,
         fidelity_fn=counting_fid,
         rng=np.random.default_rng(0),
     )
-    assert cost_calls["n"] == 1 + 3 * (1 + 1)  # seed + steps×(grad batch + candidate)
+    # band calibration + seed + steps×(grad batch + candidate)
+    assert cost_calls["n"] == 1 + 1 + 3 * (1 + 1)
     assert fid_calls["n"] == 3 * 1  # steps × resamplings
 
 
@@ -677,6 +813,24 @@ def test_copy_preserves_qnspsa_config():
     assert isinstance(clone.metric_estimator, FubiniStudyMetricEstimator)
     assert clone is not opt
     assert clone.metric_estimator is not estimator  # independent copy, not shared
+
+
+def test_qnspsa_default_trust_region_bounds_a_near_singular_metric_step():
+    start = np.ones(4)
+    seen = []
+    optimizer = QNSPSAOptimizer(exact_loss=True, calibration_steps=8)
+
+    optimizer.optimize(
+        _sphere,
+        initial_params=start,
+        max_iterations=2,
+        metric_fn=lambda _theta: 1e-6 * np.eye(start.size),
+        callback_fn=lambda result: seen.append(result.x.squeeze().copy()),
+        rng=np.random.default_rng(0),
+    )
+
+    assert optimizer.max_step_norm == pytest.approx(2.0 * np.pi / 10.0)
+    assert np.linalg.norm(seen[1] - seen[0]) <= optimizer.max_step_norm + 1e-12
 
 
 def test_copy_preserves_exact_loss_flag():

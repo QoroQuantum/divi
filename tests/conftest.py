@@ -37,7 +37,6 @@ _stevedore_logger.setLevel(logging.CRITICAL)
 import pytest
 from dotenv import load_dotenv
 
-import divi.backends as backends
 from divi.backends import (
     CircuitRunner,
     ExecutionResult,
@@ -204,11 +203,7 @@ def sampling_test_simulator():
     expval-capable backend the measurement stage promotes to the analytic path,
     which submits one circuit and allocates no per-group shots.
     """
-    try:
-        simulator_cls = backends.QiskitSimulator
-    except ImportError as exc:
-        pytest.skip(str(exc))
-    return simulator_cls(force_sampling=True, shots=1200)
+    return MaestroSimulator(shots=1200, force_sampling=True)
 
 
 @pytest.fixture

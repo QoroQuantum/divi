@@ -181,6 +181,14 @@ Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
 ``solver="tikhonov"`` regularises flat directions; ``solver="pinv"`` uses a
 pseudo-inverse with cutoff ``rcond``.
 
+.. note::
+
+   Under ``"tikhonov"``, :math:`\lambda` must be large relative to the metric's
+   own scale, not merely positive: the step along a flat direction grows as
+   :math:`1/\lambda`, so ``1e-12`` gives a finite but enormous update. Keep
+   ``scale_regularization=True`` (the default), or set ``max_step_norm``. An
+   under-damped step is reported once per run.
+
 **Usage** is the same as any optimizer — pass an instance via the
 ``optimizer=`` argument and call ``run()``:
 
@@ -242,17 +250,29 @@ The two points share a batch, so stochastic costs use one sampled Hamiltonian.
 
    from divi.qprog.optimizers import SPSAOptimizer
 
-   optimizer = SPSAOptimizer(learning_rate=0.2, c=0.2)
+   optimizer = SPSAOptimizer()
 
-Set ``c`` near the cost's shot-noise standard deviation, then tune
-``learning_rate``. ``resamplings`` reduces gradient variance at proportional
-cost. ``blocking`` spends an extra evaluation to reject steps that exceed
-``blocking_tol`` times recent loss variation.
+With no ``learning_rate``, the gain is **calibrated**: 25 sampled directions fix
+it so the first step is about ``2*pi/10`` in parameter space, matching the gain
+to a curvature scale the caller rarely knows. Costs ``2 * calibration_steps``
+evaluations once; pass ``learning_rate=`` to skip it.
+
+Set ``c`` near the cost's shot-noise standard deviation — below it the measured
+derivative is noise and the run does worse than not optimising.
+``resamplings`` reduces gradient variance at proportional cost. ``blocking``
+spends an extra evaluation to reject steps whose loss rises by more than
+``allowed_increase``, which defaults to twice the loss's standard deviation at
+the start point and is fixed for the run.
 
 .. note::
 
-   A 1000× loss increase warns once. Enable ``blocking``, raise
-   ``regularization``, or lower ``learning_rate``.
+   A 1000× loss increase warns once. Enable ``blocking`` or lower
+   ``learning_rate``.
+
+.. note::
+
+   A non-finite cost holds the step rather than entering the parameters. If no
+   evaluation is ever finite the result carries ``success=False``.
 
 .. note::
 
@@ -279,7 +299,7 @@ SPSA with a pluggable metric:
    from divi.qprog.optimizers import QNSPSAOptimizer
 
    # Faithful stochastic-fidelity metric (default)
-   optimizer = QNSPSAOptimizer(learning_rate=0.01, c=0.2, regularization=1e-3)
+   optimizer = QNSPSAOptimizer(c=0.2, regularization=1e-3)
 
    # Or reuse an exact metric with the SPSA gradient
    from divi.qprog.optimizers import FubiniStudyMetricEstimator
@@ -288,16 +308,17 @@ SPSA with a pluggable metric:
        metric_estimator=FubiniStudyMetricEstimator(),
    )
 
-QN-SPSA usually needs a smaller ``learning_rate`` than SPSA. For unstable runs,
-raise ``resamplings`` or ``regularization``, or enable ``blocking``.
+QN-SPSA bounds the preconditioned update to ``2*pi/10`` by default — the trust
+region acts after the metric solve, where a small eigenvalue can otherwise
+amplify a well-calibrated gradient. ``max_step_norm=None`` disables it. For
+noisy runs, raise ``resamplings`` or ``regularization``, or enable ``blocking``.
 
 .. note::
 
    Like QNG, neither SPSA nor QN-SPSA supports checkpointing
    (``supports_checkpointing`` is ``False``): their only persistent state is the
    parameter vector, which the variational algorithm already records. The
-   per-step gains, blocking history, and running-average metric are recomputed
-   each run.
+   calibrated gains and running-average metric are recomputed each run.
 
 QUIVER (Adaptive Directional Gradients)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -315,27 +336,57 @@ gradient from ``V`` random directional derivatives:
 This costs :math:`2V` evaluations: ``V=1`` resembles SPSA; larger ``V`` trades
 cost for precision.
 
-QUIVER can adapt ``V`` and the per-direction shot count ``M``:
+QUIVER uses Adam and adapts ``V`` and the per-direction shot count ``M`` with
+the paper's joint minimum-cost rule:
 
-- ``V`` follows directional-sample spread.
-- ``M`` follows measurement variance on sampling backends and stays fixed on
-  native-expval backends.
+.. math::
+
+   V^* = \frac{(N-1+\alpha_a)\widehat g^2}{\tau^2},
+   \qquad
+   M^* = \frac{N\widehat\sigma^2}{\alpha_a\widehat g^2}.
+
+The squared reconstructed-gradient norm and per-direction measurement variance
+are exponential moving averages. ``warmup`` holds the initial allocation fixed
+while they settle; later changes are limited to 0.7×–1.5× per step before the
+``V`` and ``M`` clamps are applied.
+
+``M_init=None`` inherits the backend's shot count, which also becomes the
+``M_max`` cap: ``M`` may fall and recover but never silently exceed that
+baseline. Pass a larger ``M_max`` to opt into late-run shot growth. ``M`` adapts
+only when the cost function exposes Divi's shot/variance contract; ``V`` adapts
+regardless, starting at 2, falling to 1, capped at ``min(n_params, 8)`` unless
+``V_max`` is given.
 
 .. code-block:: python
 
    from divi.qprog.optimizers import QUIVEROptimizer
 
-   optimizer = QUIVEROptimizer(learning_rate=0.1, epsilon=0.1, V_init=2)
+   optimizer = QUIVEROptimizer(
+       epsilon=0.1,
+       allocation_alpha=1.0,
+   )
+
+``target_gradient_variance`` is loss-scale dependent; its default anchors the
+first :math:`V^*` to ``V_init``. Pass a value to enforce an absolute target.
 
 Use ``derivative_mode="parameter_shift"`` where an exact directional shift is
 valid; ``adapt_V=False`` or ``adapt_M=False`` pins the budget. QUIVER supports
-SPSA's ``blocking`` and ``exact_loss`` options, but not checkpointing.
+SPSA's ``blocking`` and ``exact_loss`` options, but not checkpointing. With no
+explicit ``learning_rate``, its Adam rate is ``2*(2*pi/10)/n_params``, which
+stays conservative for sparse high-dimensional gradients.
+
+QUIVER reports its reconstructed gradient to
+:class:`~divi.qprog.early_stopping.EarlyStopping`, so ``grad_norm_threshold``
+can stop a converged run before the allocation rule spends an explicit
+``M_max``. Patience and cost-variance stopping need unperturbed losses, so pair
+them with ``exact_loss=True``.
 
 .. note::
 
    Adaptive ``M`` disables circuit-template batching and cannot combine with
    ``shot_distribution``. Prefer fixed ``M`` when cloud submission overhead
-   dominates.
+   dominates. Compare optimizers by requested shots rather than circuit count:
+   changing ``M`` can make the latter misleading.
 
 Grid Search
 -----------

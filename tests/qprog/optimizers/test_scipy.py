@@ -11,9 +11,21 @@ from divi.qprog.optimizers import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from tests.qprog.optimizers._contracts import (
+from tests.qprog.optimizers._helpers import (
     sphere_cost_fn_single,
 )
+
+
+@pytest.fixture(
+    params=[ScipyMethod.L_BFGS_B, ScipyMethod.COBYLA, ScipyMethod.NELDER_MEAD],
+    ids=lambda method: method.value,
+)
+def scipy_contract_optimizer(request):
+    return ScipyOptimizer(method=request.param)
+
+
+def test_optimizer_contract(scipy_contract_optimizer, optimizer_contract):
+    optimizer_contract(scipy_contract_optimizer)
 
 
 class TestScipyOptimizer:

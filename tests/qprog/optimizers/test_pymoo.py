@@ -11,14 +11,35 @@ from divi.qprog.optimizers import (
     PymooMethod,
     PymooOptimizer,
 )
-from tests.qprog.optimizers._contracts import (
-    sphere_cost_fn_population,
+from tests.qprog.optimizers._checkpointing_contracts import (
     verify_load_state_raises_file_not_found,
     verify_save_creates_checkpoint_file,
     verify_save_creates_directory_if_needed,
     verify_save_load_round_trip,
-    verify_save_without_prior_run_raises,
 )
+from tests.qprog.optimizers._helpers import sphere_cost_fn_population
+
+
+@pytest.fixture(
+    params=[(PymooMethod.CMAES, 10), (PymooMethod.DE, 5)],
+    ids=["cmaes", "de"],
+)
+def pymoo_contract_optimizer(request):
+    method, population_size = request.param
+    return PymooOptimizer(method=method, population_size=population_size)
+
+
+def test_optimizer_contract(pymoo_contract_optimizer, optimizer_contract):
+    optimizer_contract(pymoo_contract_optimizer)
+
+
+class _CustomPymooOptimizer(PymooOptimizer):
+    pass
+
+
+def test_copy_preserves_subclass_type():
+    optimizer = _CustomPymooOptimizer(method=PymooMethod.CMAES, population_size=5)
+    assert type(optimizer.copy()) is _CustomPymooOptimizer
 
 
 class TestPymooOptimizer:
@@ -56,13 +77,13 @@ class TestPymooOptimizer:
             sphere_cost_fn_population,
             self.rng,
             tmp_path,
-            PymooOptimizer.load_state,
         )
 
     def test_save_state_without_prior_run_raises(self, tmp_path):
         """Saving without having run optimize should raise a clear error."""
         optimizer = PymooOptimizer(method=PymooMethod.CMAES, population_size=5)
-        verify_save_without_prior_run_raises(optimizer, tmp_path)
+        with pytest.raises(RuntimeError, match="optimisation has not been run"):
+            optimizer.save_state(str(tmp_path / "checkpoint"))
 
     def test_save_state_preserves_configuration(self, tmp_path):
         """Test that save_state() saves optimizer configuration correctly."""
