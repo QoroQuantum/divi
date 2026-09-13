@@ -10,9 +10,18 @@ import pytest
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
 )
-from tests.qprog.optimizers._contracts import (
+from tests.qprog.optimizers._helpers import (
     sphere_cost_fn_population,
 )
+
+
+class _CustomGridSearchOptimizer(GridSearchOptimizer):
+    pass
+
+
+def test_copy_preserves_subclass_type():
+    optimizer = _CustomGridSearchOptimizer(param_ranges=[(-1, 1)], grid_points=5)
+    assert type(optimizer.copy()) is _CustomGridSearchOptimizer
 
 
 class TestGridSearchOptimizer:

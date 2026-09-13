@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -17,6 +18,10 @@ from divi.qprog._metrics import (
 )
 from divi.qprog.optimizers._base import Optimizer
 from divi.qprog.optimizers._linalg import _regularized_solve
+
+#: Scale-weighted gradient amplification above which a step is reported as
+#: under-damped rather than merely preconditioned.
+_AMPLIFICATION_WARN_FACTOR = 1e6
 
 
 class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
@@ -47,7 +52,10 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
         step_size: Learning rate :math:`\\eta` for the parameter update.
         regularization: Tikhonov damping :math:`\\lambda` added to the metric
             diagonal before solving. Must be positive when ``solver`` is
-            ``"tikhonov"`` so the damped system is positive-definite.
+            ``"tikhonov"`` so the damped system is positive-definite, and large
+            relative to the metric's own scale: the step along a null direction
+            grows as :math:`1/\\lambda`, so ``1e-12`` yields a finite but
+            enormous update. Warned about once per run.
         scale_regularization: When ``True``, scale :math:`\\lambda` by
             ``max(1, mean(diag(G)))`` so the damping tracks the metric's
             magnitude instead of being fixed in absolute terms.
@@ -132,7 +140,19 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
         grad: npt.NDArray[np.float64],
         metric: npt.NDArray[np.float64],
     ) -> npt.NDArray[np.float64]:
-        """Precondition ``grad`` with the (regularised) inverse metric."""
+        """Precondition ``grad`` with the (regularised) inverse metric.
+
+        Raises :class:`FloatingPointError` when ``grad`` or ``metric`` is
+        non-finite, and when the resulting update is.
+        """
+        if not (np.all(np.isfinite(grad)) and np.all(np.isfinite(metric))):
+            raise FloatingPointError(
+                "QNGOptimizer received a non-finite gradient or metric. The "
+                "iterate has diverged, or the cost function returned a "
+                "non-finite value. Lower `step_size`, raise `regularization`, "
+                "or set `max_step_norm`."
+            )
+
         delta = _regularized_solve(
             grad,
             metric,
@@ -155,6 +175,44 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
             if update_norm > self.max_step_norm:
                 delta = delta * (self.max_step_norm / update_norm)
         return delta
+
+    def _warn_if_underdamped(
+        self,
+        grad: npt.NDArray[np.float64],
+        metric: npt.NDArray[np.float64],
+        delta: npt.NDArray[np.float64],
+        already_warned: bool,
+    ) -> bool:
+        """Warn once when the step is dominated by the metric's near-null space.
+
+        A :math:`\\lambda` far below the metric's own scale still yields a finite
+        update, so :meth:`_natural_gradient` lets it through; the step simply
+        grows as :math:`1/\\lambda`. The amplification is weighted by the metric's
+        scale so a well-conditioned metric of small magnitude does not trip it.
+        Silent when ``max_step_norm`` already bounds the step.
+        """
+        if already_warned or self.max_step_norm is not None:
+            return already_warned
+        # A diverging run overflows these to inf, which compares correctly here.
+        with np.errstate(over="ignore"):
+            grad_norm = float(np.linalg.norm(grad))
+            delta_norm = float(np.linalg.norm(delta))
+            scale = float(np.mean(np.abs(np.diag(metric))))
+            amplification = scale * delta_norm / grad_norm if grad_norm else 0.0
+        if amplification <= _AMPLIFICATION_WARN_FACTOR:
+            return already_warned
+        effective_lambda = self.regularization * (
+            max(1.0, scale) if self.scale_regularization else 1.0
+        )
+        warnings.warn(
+            f"{type(self).__name__}: the damped solve amplified the gradient by "
+            f"{amplification:.3e} relative to the metric's own scale; the damping "
+            f"actually applied (lambda={effective_lambda:.3e}) is small against "
+            "that scale, so the step is dominated by the metric's near-null "
+            "space. Raise `regularization` or set `max_step_norm`.",
+            stacklevel=3,
+        )
+        return True
 
     def optimize(
         self,
@@ -197,6 +255,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
 
         best_x = theta.copy()
         best_fun = np.inf
+        underdamped_warned = False
 
         for it in range(max_iterations):
             fun = float(np.asarray(cost_fn(theta)).reshape(-1)[0])
@@ -221,6 +280,9 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
                 )
 
             delta = self._natural_gradient(grad, metric)
+            underdamped_warned = self._warn_if_underdamped(
+                grad, metric, delta, underdamped_warned
+            )
             theta = theta - self.step_size * delta
 
         return OptimizeResult(

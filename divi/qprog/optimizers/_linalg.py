@@ -41,9 +41,10 @@ def _regularized_solve(
     except np.linalg.LinAlgError as exc:
         raise np.linalg.LinAlgError(
             "Regularized natural-gradient solve failed: the damped metric "
-            "(G + λI) is not positive-definite — the metric is rank-deficient "
-            "and regularization is too small to lift it (λ=0 leaves it "
-            "singular). Raise `regularization` or use solver='pinv'."
+            "(G + λI) is not positive-definite. λ must exceed the most negative "
+            "eigenvalue of G, which a rank-deficient metric leaves at zero and a "
+            "shot-noisy one can push below it. Raise `regularization` or use "
+            "solver='pinv'."
         ) from exc
 
 

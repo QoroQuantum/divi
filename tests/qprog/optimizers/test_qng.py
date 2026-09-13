@@ -38,6 +38,25 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import QNGOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
+from tests.qprog.optimizers._helpers import bowl_jac, bowl_metric
+
+
+def test_optimizer_contract(gradient_optimizer_contract):
+    optimizer = QNGOptimizer(step_size=0.2)
+    optimize_kwargs = {
+        "jac": lambda x: 2 * x,
+        "metric_fn": lambda x: np.eye(len(x)),
+    }
+    gradient_optimizer_contract(optimizer, optimize_kwargs)
+
+
+def test_noisy_optimizer_contract(noisy_optimizer_contract):
+    noisy_optimizer_contract(
+        lambda: QNGOptimizer(step_size=0.1, regularization=1e-2, max_step_norm=1.0),
+        {"jac": bowl_jac, "metric_fn": bowl_metric},
+        ceiling=0.05,
+    )
+
 
 # --------------------------------------------------------------------------- #
 # Optimizer numerics (no quantum backend)

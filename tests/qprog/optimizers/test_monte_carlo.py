@@ -11,13 +11,33 @@ from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     Optimizer,
 )
-from tests.qprog.optimizers._contracts import (
-    sphere_cost_fn_population,
+from tests.qprog.optimizers._checkpointing_contracts import (
     verify_load_state_raises_file_not_found,
     verify_save_creates_checkpoint_file,
     verify_save_creates_directory_if_needed,
     verify_save_load_round_trip,
 )
+from tests.qprog.optimizers._helpers import sphere_cost_fn_population
+
+
+@pytest.fixture(params=[False, True], ids=["default", "keep-best"])
+def monte_carlo_contract_optimizer(request):
+    return MonteCarloOptimizer(
+        population_size=10, n_best_sets=3, keep_best_params=request.param
+    )
+
+
+def test_optimizer_contract(monte_carlo_contract_optimizer, optimizer_contract):
+    optimizer_contract(monte_carlo_contract_optimizer)
+
+
+class _CustomMonteCarloOptimizer(MonteCarloOptimizer):
+    pass
+
+
+def test_copy_preserves_subclass_type():
+    optimizer = _CustomMonteCarloOptimizer(population_size=5, n_best_sets=2)
+    assert type(optimizer.copy()) is _CustomMonteCarloOptimizer
 
 
 class TestMonteCarloOptimizer:
@@ -167,7 +187,6 @@ class TestMonteCarloOptimizer:
             sphere_cost_fn_population,
             self.rng,
             tmp_path,
-            MonteCarloOptimizer.load_state,
         )
 
     def test_save_state_preserves_configuration(self, tmp_path):

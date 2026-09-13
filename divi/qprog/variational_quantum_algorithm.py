@@ -1173,6 +1173,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         # Advertise the shot-variance channel so variance-aware optimizers (e.g.
         # QUIVER) can use it without sniffing this closure's signature.
         setattr(cost_fn, "supports_variance", True)
+        # Let shot-adaptive optimizers inherit the backend budget unless the
+        # user explicitly supplies their own initial allocation.
+        setattr(cost_fn, "default_shots", self.backend.shots)
 
         # Let the optimizer contribute any extra evaluators it needs (e.g. a
         # metric-based optimizer binds its metric estimator to this program and
@@ -1212,7 +1215,13 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             return grads
 
         def _iteration_counter(intermediate_result: OptimizeResult):
-            nonlocal last_checkpointed_iteration
+            nonlocal last_checkpointed_iteration, last_grad_norm
+
+            callback_jac = intermediate_result.get("jac")
+            if callback_jac is not None:
+                last_grad_norm = float(
+                    np.linalg.norm(np.asarray(callback_jac, dtype=np.float64))
+                )
 
             self._losses_history.append(
                 dict(

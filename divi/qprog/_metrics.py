@@ -439,7 +439,9 @@ class FubiniStudyMetricEstimator(MetricEstimator):
     For each block of mutually-commuting parametric gates with Hermitian
     generators ``K_i``, the metric on the pre-block state is
     ``g_ij = 1/2 <{K_i, K_j}> - <K_i><K_j>``. The blocks are stacked block-
-    diagonally. Unlike the pullback metric this is independent of the loss
+    diagonally and pulled back to the parameter basis, so a parameter driving
+    several gates collects the contribution of each of its generators. Unlike
+    the pullback metric this is independent of the loss
     observable — it is the geometry of the ansatz state — so it applies to any
     program with a supported Pauli-rotation ansatz (including PCE, whose loss is
     a classical objective). It provides only ``metric_fn``; the gradient falls
@@ -470,7 +472,8 @@ class FubiniStudyMetricEstimator(MetricEstimator):
                     )
                     for a, ia in enumerate(indices):
                         for b, ib in enumerate(indices):
-                            metric[ia, ib] = block[a, b]
+                            # One parameter may drive several gates; they add.
+                            metric[ia, ib] += block[a, b]
             return np.mean(list(branch_metrics.values()), axis=0)
 
         return {"metric_fn": metric_fn}

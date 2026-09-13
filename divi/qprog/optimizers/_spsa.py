@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
-from collections import deque
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -31,6 +30,14 @@ FidelityFn = Callable[
     [npt.NDArray[np.float64], list[npt.NDArray[np.float64]]],
     npt.NDArray[np.float64],
 ]
+
+
+#: Target size of the first update in parameter space when the learning rate is
+#: calibrated rather than supplied (Spall's guidance, as used by Qiskit's SPSA).
+_TARGET_STEP_MAGNITUDE = 2 * np.pi / 10
+
+#: Below this, the measured directional derivative is treated as no signal.
+_CALIBRATION_FLOOR = 1e-10
 
 
 def _spsa_gain_a(k: int, a: float, A: float, alpha: float) -> float:
@@ -105,35 +112,40 @@ def _fidelity_metric_sample(
 
 
 class _SPSAConfigMixin:
-    """Shared SPSA gain-schedule config + validation for SPSA and QN-SPSA.
+    """Shared SPSA gain-schedule config, calibration and validation.
 
     Holds Spall's gain-sequence hyperparameters and an optional look-ahead
-    blocking guard. Neither optimizer keeps mid-run state on the instance — the
-    per-run iterate, blocking history, and (for QN-SPSA) the running-average
-    metric live as locals inside ``optimize``.
+    blocking guard. No mid-run state lives on the instance — the per-run iterate,
+    calibrated gains and running-average metric are locals inside ``optimize``.
     """
 
     def __init__(
         self,
-        learning_rate: float,
+        learning_rate: float | None,
         c: float,
         alpha: float,
         gamma: float,
         A: float | None,
         resamplings: int,
         blocking: bool,
-        blocking_history: int,
-        blocking_tol: float,
+        allowed_increase: float | None,
         exact_loss: bool,
+        calibration_steps: int,
     ):
-        if learning_rate <= 0:
+        if learning_rate is not None and learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {learning_rate}.")
         if c <= 0:
             raise ValueError(f"c must be positive, got {c}.")
         if resamplings < 1:
             raise ValueError(f"resamplings must be >= 1, got {resamplings}.")
-        if blocking_history < 1:
-            raise ValueError(f"blocking_history must be >= 1, got {blocking_history}.")
+        if allowed_increase is not None and allowed_increase < 0:
+            raise ValueError(
+                f"allowed_increase must be non-negative, got {allowed_increase}."
+            )
+        if calibration_steps < 1:
+            raise ValueError(
+                f"calibration_steps must be >= 1, got {calibration_steps}."
+            )
 
         self.learning_rate = learning_rate
         self.c = c
@@ -142,14 +154,65 @@ class _SPSAConfigMixin:
         self.A = A
         self.resamplings = resamplings
         self.blocking = blocking
-        self.blocking_history = blocking_history
-        self.blocking_tol = blocking_tol
+        self.allowed_increase = allowed_increase
         self.exact_loss = exact_loss
+        self.calibration_steps = calibration_steps
 
     @property
     def n_param_sets(self) -> int:
         """Number of parameter sets per step — always ``1`` (single-point)."""
         return 1
+
+    def _calibrated_learning_rate(
+        self,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        theta: npt.NDArray[np.float64],
+        rng: np.random.Generator,
+    ) -> float:
+        """``learning_rate``, measured from the loss when it was not supplied.
+
+        Averages the magnitude of the SPSA directional derivative over
+        ``calibration_steps`` random directions and returns the gain that makes
+        the first update about :data:`_TARGET_STEP_MAGNITUDE` in parameter space.
+        A fixed gain has to match the loss's own scale to be stable, which the
+        caller cannot know in advance; this measures it in ``2 *
+        calibration_steps`` evaluations.
+        """
+        if self.learning_rate is not None:
+            return self.learning_rate
+
+        magnitudes = []
+        for _ in range(self.calibration_steps):
+            _, _, f_plus, f_minus = _spsa_gradient(cost_fn, theta, self.c, rng)
+            magnitudes.append(abs((f_plus - f_minus) / (2.0 * self.c)))
+
+        finite = [m for m in magnitudes if np.isfinite(m)]
+        average = float(np.mean(finite)) if finite else 0.0
+        if average < _CALIBRATION_FLOOR:
+            return _TARGET_STEP_MAGNITUDE
+        return _TARGET_STEP_MAGNITUDE / average
+
+    def _calibrated_allowed_increase(
+        self,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        theta: npt.NDArray[np.float64],
+    ) -> float:
+        """``allowed_increase``, measured from the loss when it was not supplied.
+
+        Twice the standard deviation of the loss at the starting point, so the
+        band admits ordinary shot noise and rejects a genuine regression. Fixed
+        for the run: a band recomputed from accepted losses collapses to zero
+        once a few steps in a row are rejected, and then nothing can be accepted
+        again.
+        """
+        if self.allowed_increase is not None:
+            return self.allowed_increase
+
+        repeats = np.tile(theta, (self.calibration_steps, 1))
+        values = np.asarray(cost_fn(repeats), dtype=np.float64).reshape(-1)
+        finite_values = values[np.isfinite(values)]
+        spread = float(np.std(finite_values)) if finite_values.size else 0.0
+        return 2.0 * spread
 
     def _step_loss(
         self,
@@ -173,28 +236,53 @@ class _SPSAConfigMixin:
         theta: npt.NDArray[np.float64],
         proposed: npt.NDArray[np.float64],
         current_loss: float,
-        recent: deque[float],
+        allowed_increase: float,
     ) -> tuple[npt.NDArray[np.float64], float]:
         """Look-ahead blocking (Spall/Gacon): move to ``proposed`` only if its loss
-        does not exceed ``current_loss`` by more than ``blocking_tol``·std(``recent``);
-        otherwise hold ``theta``. Returns ``(next_theta, loss_at_next_theta)``.
+        does not exceed ``current_loss`` by more than ``allowed_increase``;
+        otherwise hold ``theta``.
 
         Costs one extra cost evaluation per step (the candidate's loss); the
         accepted value carries over as the next ``current_loss``, so it is not
-        re-measured. The std band needs at least two prior losses; before that the
-        candidate is accepted (matching the start-up behaviour of Spall's rule).
+        re-measured.
 
-        A non-finite candidate loss is treated as a rejection (hold ``theta``)
-        rather than accepted — ``nan > x`` is ``False``, so without this guard a
-        NaN candidate would slip through and poison the ``recent`` window,
-        permanently disabling blocking. Holding keeps the run bounded and the next
-        gradient is taken at the finite held point.
+        A non-finite candidate loss is treated as a rejection rather than accepted
+        — ``nan > x`` is ``False``, so without this guard a NaN candidate would
+        slip through into the iterate.
+
+        Returns ``(next_theta, loss_at_next_theta)``.
         """
         f_proposed = float(np.asarray(cost_fn(proposed)).reshape(-1)[0])
-        band = self.blocking_tol * float(np.std(recent)) if len(recent) >= 2 else np.inf
-        if not np.isfinite(f_proposed) or f_proposed > current_loss + band:
+        if not np.isfinite(f_proposed) or f_proposed > current_loss + allowed_increase:
             return theta, current_loss
         return proposed, f_proposed
+
+    def _final_result(
+        self,
+        best_x: npt.NDArray[np.float64],
+        best_fun: float,
+        max_iterations: int,
+    ) -> OptimizeResult:
+        """The run's result, reporting ``success=False`` when no finite cost was
+        ever observed and ``best_fun`` is therefore still its ``inf`` seed."""
+        if not np.isfinite(best_fun):
+            return OptimizeResult(
+                x=best_x,
+                fun=np.atleast_1d(best_fun),
+                nit=max_iterations,
+                success=False,
+                message=(
+                    "Optimisation failed: no finite cost value was observed in "
+                    f"{max_iterations} iterations."
+                ),
+            )
+        return OptimizeResult(
+            x=best_x,
+            fun=np.atleast_1d(best_fun),
+            nit=max_iterations,
+            success=True,
+            message="Optimisation terminated: reached max_iterations.",
+        )
 
     def _fold_final_iterate(
         self,
@@ -301,6 +389,10 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
 
     Args:
         learning_rate: Spall's :math:`a` — the learning-rate gain numerator.
+            ``None`` (the default) calibrates it against the loss at the starting
+            point, which costs ``2 * calibration_steps`` evaluations and is what
+            keeps the run stable on a landscape whose scale the caller does not
+            know. Pass a float to skip that and fix the gain.
         c: Perturbation-size gain numerator :math:`c` (≈ the std of the cost
             noise is a good starting scale).
         alpha: Decay exponent for the learning-rate gain (Spall default 0.602).
@@ -310,35 +402,34 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
             to reduce variance (each costs two more evaluations).
         blocking: Enable look-ahead blocking — evaluate the candidate's loss and
             reject the step if it exceeds the current loss by more than
-            ``blocking_tol``·std of the recent window, otherwise accept. Prevents
-            runaway divergence on noisy/high-curvature landscapes. Costs one extra
-            evaluation per step, plus one at the start to seed the baseline. Off by
-            default.
-        blocking_history: Window length for the std band used by ``blocking``.
-        blocking_tol: Reject a candidate whose loss exceeds the current loss by
-            more than ``blocking_tol``·std of the recent window. This is the knob
-            that absorbs cost noise in the accept/reject decision (``resamplings``
-            averages noise out of the gradient, not out of this
-            single-evaluation comparison).
+            ``allowed_increase``, otherwise accept. Prevents runaway divergence on
+            noisy/high-curvature landscapes. Costs one extra evaluation per step,
+            plus one at the start to seed the baseline. Off by default.
+        allowed_increase: How much the loss may rise and the step still be
+            accepted. ``None`` (the default) calibrates it to twice the standard
+            deviation of the loss at the starting point, so the band admits
+            ordinary shot noise. Only read when ``blocking`` is set.
         exact_loss: When ``True``, spend one extra unperturbed evaluation per step
             to record the exact ``f(theta)`` for the callback and best-iterate
             tracking, instead of the (biased but free) perturbation-average proxy.
             Has no effect when ``blocking`` is set — blocking already records the
             exact loss.
+        calibration_steps: Random directions averaged when calibrating
+            ``learning_rate``, and repeats used for ``allowed_increase``.
     """
 
     def __init__(
         self,
-        learning_rate: float = 0.2,
+        learning_rate: float | None = None,
         c: float = 0.2,
         alpha: float = 0.602,
         gamma: float = 0.101,
         A: float | None = None,
         resamplings: int = 1,
         blocking: bool = False,
-        blocking_history: int = 5,
-        blocking_tol: float = 2.0,
+        allowed_increase: float | None = None,
         exact_loss: bool = False,
+        calibration_steps: int = 25,
     ):
         super().__init__(
             learning_rate=learning_rate,
@@ -348,9 +439,9 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
             A=A,
             resamplings=resamplings,
             blocking=blocking,
-            blocking_history=blocking_history,
-            blocking_tol=blocking_tol,
+            allowed_increase=allowed_increase,
             exact_loss=exact_loss,
+            calibration_steps=calibration_steps,
         )
 
     def optimize(
@@ -367,7 +458,8 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
                 sample so both perturbations share one stochastic-cost draw.
             initial_params: Starting parameters (1D, or 2D with a single row).
             callback_fn: Called after each step with an ``OptimizeResult`` whose
-                ``x`` is 2D and ``fun`` is 1D. May raise ``StopIteration``.
+                ``x`` and ``jac`` are 2D and ``fun`` is 1D; ``jac`` contains the
+                reconstructed directional gradient. May raise ``StopIteration``.
             **kwargs: ``max_iterations`` (default 50, must be >= 1) and ``rng``
                 (the perturbation directions — pass it for reproducible runs).
                 ``jac`` and ``metric_fn`` are accepted and ignored (SPSA is
@@ -385,10 +477,13 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
 
         theta = np.atleast_1d(np.asarray(initial_params, dtype=np.float64).squeeze())
         A = self.A if self.A is not None else 0.1 * max_iterations
+        learning_rate = self._calibrated_learning_rate(cost_fn, theta, rng)
+        allowed_increase = (
+            self._calibrated_allowed_increase(cost_fn, theta) if self.blocking else 0.0
+        )
 
         best_x = theta.copy()
         best_fun = np.inf
-        recent: deque[float] = deque(maxlen=self.blocking_history)
         # Seeded only for the blocking path; off it the value is never read (``fun``
         # routes through ``_step_loss`` instead).
         current_loss: float = (
@@ -399,7 +494,7 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
 
         for k in range(max_iterations):
             c_k = _spsa_gain_c(k, self.c, self.gamma)
-            a_k = _spsa_gain_a(k, self.learning_rate, A, self.alpha)
+            a_k = _spsa_gain_a(k, learning_rate, A, self.alpha)
 
             ghats = []
             losses = []
@@ -419,7 +514,6 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
                 fun, reference_loss, diverged_warned
             )
 
-            recent.append(fun)
             if fun < best_fun:
                 best_fun = fun
                 best_x = theta.copy()
@@ -434,25 +528,21 @@ class SPSAOptimizer(_SPSAConfigMixin, Optimizer):
                     )
                 )
 
+            # Holding a non-finite step keeps it out of the iterate for good.
             proposed = theta - a_k * ghat
-            if self.blocking:
-                theta, current_loss = self._block_or_step(
-                    cost_fn, theta, proposed, current_loss, recent
-                )
-            else:
-                theta = proposed
+            if np.all(np.isfinite(proposed)):
+                if self.blocking:
+                    theta, current_loss = self._block_or_step(
+                        cost_fn, theta, proposed, current_loss, allowed_increase
+                    )
+                else:
+                    theta = proposed
 
         best_x, best_fun = self._fold_final_iterate(
             cost_fn, theta, current_loss, best_x, best_fun
         )
 
-        return OptimizeResult(
-            x=best_x,
-            fun=np.atleast_1d(best_fun),
-            nit=max_iterations,
-            success=True,
-            message="Optimisation terminated: reached max_iterations.",
-        )
+        return self._final_result(best_x, best_fun, max_iterations)
 
 
 class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
@@ -489,6 +579,8 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
 
     Args:
         learning_rate: Spall's :math:`a` — the learning-rate gain numerator.
+            ``None`` (the default) calibrates it against the loss at the starting
+            point; see :class:`SPSAOptimizer`.
         c: Perturbation-size gain numerator :math:`c`.
         alpha: Decay exponent for the learning-rate gain (Spall default 0.602).
         gamma: Decay exponent for the perturbation gain (Spall default 0.101).
@@ -498,29 +590,29 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
         resamplings: Average this many independent gradient/metric samples per
             step to reduce variance.
         blocking: Enable look-ahead blocking (reject a step whose candidate loss
-            exceeds the current loss by more than ``blocking_tol``·std of the
-            recent window). Recommended for high-dimensional or noisy runs where
-            the stochastic metric can otherwise drive a divergent step. Costs one
-            extra evaluation per step, plus one at the start to seed the baseline.
-            Off by default.
-        blocking_history: Window length for the std band used by ``blocking``.
-        blocking_tol: Reject a candidate whose loss exceeds the current loss by
-            more than ``blocking_tol``·std of the recent window. This is the knob
-            that absorbs cost noise in the accept/reject decision (``resamplings``
-            averages noise out of the gradient/metric, not out of this
-            single-evaluation comparison).
+            exceeds the current loss by more than ``allowed_increase``).
+            Recommended for high-dimensional or noisy runs where the stochastic
+            metric can otherwise drive a divergent step. Costs one extra
+            evaluation per step, plus one at the start to seed the baseline. Off
+            by default.
+        allowed_increase: How much the loss may rise and the step still be
+            accepted; ``None`` calibrates it. See :class:`SPSAOptimizer`.
         exact_loss: When ``True``, spend one extra unperturbed evaluation per step
             to record the exact ``f(theta)`` for the callback and best-iterate
             tracking, instead of the (biased but free) perturbation-average proxy.
             Has no effect when ``blocking`` is set — blocking already records the
             exact loss.
+        calibration_steps: Random directions averaged when calibrating.
         metric_estimator: Strategy supplying the metric. Defaults to the
             stochastic-fidelity estimator (the faithful QN-SPSA metric).
+        max_step_norm: Trust-region radius for the full natural-gradient update.
+            The default bounds metric amplification to the same ``2π/10`` scale
+            used by automatic SPSA gain calibration. Set to ``None`` to disable.
     """
 
     def __init__(
         self,
-        learning_rate: float = 0.01,
+        learning_rate: float | None = None,
         c: float = 0.2,
         alpha: float = 0.602,
         gamma: float = 0.101,
@@ -528,10 +620,11 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
         regularization: float = 1e-3,
         resamplings: int = 1,
         blocking: bool = False,
-        blocking_history: int = 5,
-        blocking_tol: float = 2.0,
+        allowed_increase: float | None = None,
         exact_loss: bool = False,
+        calibration_steps: int = 25,
         metric_estimator: MetricEstimator | None = None,
+        max_step_norm: float | None = 2.0 * np.pi / 10.0,
     ):
         super().__init__(
             learning_rate=learning_rate,
@@ -541,16 +634,21 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
             A=A,
             resamplings=resamplings,
             blocking=blocking,
-            blocking_history=blocking_history,
-            blocking_tol=blocking_tol,
+            allowed_increase=allowed_increase,
             exact_loss=exact_loss,
+            calibration_steps=calibration_steps,
         )
         if regularization < 0:
             raise ValueError(
                 f"regularization must be non-negative, got {regularization}."
             )
+        if max_step_norm is not None and max_step_norm <= 0:
+            raise ValueError(
+                f"max_step_norm must be positive or None, got {max_step_norm}."
+            )
         self.regularization = regularization
         self.metric_estimator = metric_estimator or StochasticFidelityMetricEstimator()
+        self.max_step_norm = max_step_norm
 
     def optimize(
         self,
@@ -593,12 +691,15 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
         theta = np.atleast_1d(np.asarray(initial_params, dtype=np.float64).squeeze())
         n_params = theta.shape[0]
         A = self.A if self.A is not None else 0.1 * max_iterations
+        learning_rate = self._calibrated_learning_rate(cost_fn, theta, rng)
+        allowed_increase = (
+            self._calibrated_allowed_increase(cost_fn, theta) if self.blocking else 0.0
+        )
 
         g_bar = np.eye(n_params)
         metric_samples = 1  # the identity seed counts as the first metric sample
         best_x = theta.copy()
         best_fun = np.inf
-        recent: deque[float] = deque(maxlen=self.blocking_history)
         # Seeded only for the blocking path; off it the value is never read (``fun``
         # routes through ``_step_loss`` instead).
         current_loss: float = (
@@ -609,7 +710,7 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
 
         for k in range(max_iterations):
             c_k = _spsa_gain_c(k, self.c, self.gamma)
-            a_k = _spsa_gain_a(k, self.learning_rate, A, self.alpha)
+            a_k = _spsa_gain_a(k, learning_rate, A, self.alpha)
 
             ghats = []
             losses = []
@@ -638,24 +739,19 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
                 # Fold the raw sample into the running average, keeping the
                 # identity seed as the first sample so it conditions the early
                 # (noisy, low-rank) solves instead of being discarded at k=0.
-                g_bar = (metric_samples * g_bar + np.mean(raws, axis=0)) / (
-                    metric_samples + 1.0
-                )
-                metric_samples += 1
+                # A non-finite sample would poison the average permanently.
+                raw = np.mean(raws, axis=0)
+                if np.all(np.isfinite(raw)):
+                    g_bar = (metric_samples * g_bar + raw) / (metric_samples + 1.0)
+                    metric_samples += 1
             else:
                 g_bar = np.asarray(metric_fn(theta), dtype=np.float64)
 
-            g_reg = _matrix_abs_psd(g_bar) + self.regularization * np.eye(n_params)
-            delta = _regularized_solve(
-                ghat,
-                g_reg,
-                solver="tikhonov",
-                regularization=0.0,
-                scale_regularization=False,
-                rcond=1e-6,
+            # The eigendecomposition and solve below both reject a nan.
+            step_is_usable = bool(
+                np.all(np.isfinite(ghat)) and np.all(np.isfinite(g_bar))
             )
 
-            recent.append(fun)
             if fun < best_fun:
                 best_fun = fun
                 best_x = theta.copy()
@@ -670,25 +766,38 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
                     )
                 )
 
-            proposed = theta - a_k * delta
-            if self.blocking:
-                theta, current_loss = self._block_or_step(
-                    cost_fn, theta, proposed, current_loss, recent
+            if step_is_usable:
+                g_reg = _matrix_abs_psd(g_bar) + self.regularization * np.eye(n_params)
+                delta = _regularized_solve(
+                    ghat,
+                    g_reg,
+                    solver="tikhonov",
+                    regularization=0.0,
+                    scale_regularization=False,
+                    rcond=1e-6,
                 )
-            else:
-                theta = proposed
+                update = a_k * delta
+                update_norm = float(np.linalg.norm(update))
+                if (
+                    self.max_step_norm is not None
+                    and np.isfinite(update_norm)
+                    and update_norm > self.max_step_norm
+                ):
+                    update *= self.max_step_norm / update_norm
+                proposed = theta - update
+                if np.all(np.isfinite(proposed)):
+                    if self.blocking:
+                        theta, current_loss = self._block_or_step(
+                            cost_fn, theta, proposed, current_loss, allowed_increase
+                        )
+                    else:
+                        theta = proposed
 
         best_x, best_fun = self._fold_final_iterate(
             cost_fn, theta, current_loss, best_x, best_fun
         )
 
-        return OptimizeResult(
-            x=best_x,
-            fun=np.atleast_1d(best_fun),
-            nit=max_iterations,
-            success=True,
-            message="Optimisation terminated: reached max_iterations.",
-        )
+        return self._final_result(best_x, best_fun, max_iterations)
 
 
 def _cost_fn_supports_variance(cost_fn: Callable) -> bool:
@@ -714,29 +823,26 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         \tilde\nabla^{\mathsf F} f = \frac{1}{V}\sum_{\ell=1}^{V}
         \Big(\frac{f(\theta+\varepsilon v_\ell) - f(\theta-\varepsilon v_\ell)}
         {2\varepsilon}\Big)\, v_\ell ,
-        \qquad \theta \leftarrow \theta - a_k\,\tilde\nabla^{\mathsf F} f ,
 
-    costing ``2V`` evaluations per step. This unifies SPSA (``V=1``,
-    finite-difference), random coordinate descent (``V=1``, parameter-shift
-    directional derivative) and the full parameter-shift rule (``V=N``) under one
-    tunable ``V``.
+    costing ``2V`` evaluations per step. With the Rademacher directions used by
+    this implementation, ``V=1`` is SPSA and larger ``V`` averages independent
+    directional estimates. The wider framework in the paper also recovers random
+    coordinate descent and the full parameter-shift rule with basis directions;
+    this class does not implement that alternative direction distribution.
 
-    QUIVER additionally adapts ``V`` and the per-direction shot count ``M`` each
-    step (iCANS/gCANS-style), maximising expected progress per measurement shot:
+    QUIVER additionally adapts ``V`` and the per-direction shot count ``M`` with
+    the paper's joint minimum-cost allocation rule:
 
-    * **``V`` from the sample spread (no backend variance needed).** The ``V``
-      i.i.d. directional samples already estimate the forward-gradient variance
-      ``S²``; more directions are spent when the relative gradient variance is
-      high and fewer as the estimate concentrates. This encodes the paper's
-      assumption that measurement noise concentrates uniformly across random
-      directions, so allocation is by *number of directions*, not per-parameter.
-    * **``M`` from the injected measurement variance.** When the variational
-      algorithm's cost closure exposes a shot-noise variance (shot-based
-      backends), QUIVER reads the single-shot cost variance and sets ``M`` to
-      balance derivative noise against the gradient signal. On native-expval
-      backends or a plain ``cost_fn`` (no variance channel) it falls back to a
-      fixed ``M`` and ``V``-from-spread only — still a valid forward-gradient
-      optimizer.
+    .. math::
+        V^* = \frac{(N - 1 + \alpha_a)\widehat g^2}{\tau^2},
+        \qquad
+        M^* = \frac{N\widehat\sigma^2}{\alpha_a\widehat g^2}.
+
+    Here ``gradient_norm_squared`` and ``measurement_variance`` are exponential
+    moving averages of the reconstructed gradient norm and the per-direction
+    measurement variance. The allocations are held fixed during ``warmup`` and then
+    rate-limited before their integer clamps are applied. Parameter updates use
+    Adam, as in the published algorithm.
 
     .. note::
         A per-evaluation shot budget is delivered to the backend as explicit
@@ -750,53 +856,75 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
     ``jac``/``metric_fn`` supplied by the variational algorithm is ignored.
 
     Args:
-        learning_rate: Step-size numerator ``a`` (constant by default; the gain
-            schedule reuses Spall's ``a/(A+k+1)**alpha`` with ``alpha=0``).
+        learning_rate: Adam step-size numerator ``a`` in
+            ``a/(A+k+1)**alpha``. ``None`` chooses
+            ``2(2π/10)/n_params``. The inverse-dimension scaling is conservative
+            for sparse gradients, whose forward estimate has nonzero entries in
+            every parameter.
         epsilon: Finite-difference step ``ε`` (paper default ``0.1``); for
             ``derivative_mode='parameter_shift'`` the shift ``π/2`` is used
             instead.
         V_init/V_min/V_max: Initial / minimum / maximum number of random
-            directions per step.
+            directions per step. ``V_max=None`` applies a practical automatic
+            cap of ``min(n_params, 8)`` (never below ``V_init`` or ``V_min``),
+            avoiding parameter-shift-scale work by default on large models.
         M_init/M_min/M_max: Initial / minimum / maximum shots per directional
-            evaluation (only adapted on shot-based backends).
+            evaluation (only adapted on shot-based backends). ``M_init=None``
+            inherits the backend's configured shot count instead of silently
+            replacing it. ``M_max=None`` caps adaptation at that effective
+            initial count; pass a larger value to opt into late-run shot growth.
         adapt_V: Adapt the number of directions from the sample spread.
         adapt_M: Adapt the shot budget from the injected measurement variance.
         derivative_mode: ``'finite_diff'`` (default, central difference with step
-            ``ε``) or ``'parameter_shift'`` (directional shift ``π/2``; exact only
-            for equal-eigenvalue generators along basis directions, otherwise an
-            approximation).
-        lipschitz: Smoothness constant ``L`` for the gain bound; when ``None`` the
-            optimal step ``a = 1/L`` is taken to be ``learning_rate``.
-        mu: EMA decay for the running gradient / variance estimates.
+            ``ε``) or ``'parameter_shift'`` (directional shift ``π/2``). Because
+            this class samples Rademacher rather than basis directions, the latter
+            is generally an approximation for multi-parameter circuits.
+        allocation_alpha: Positive dimensionless allocation ratio
+            :math:`\alpha_a` from the joint rule.
+        target_gradient_variance: Positive target absolute reconstructed-gradient
+            variance :math:`\tau^2`. ``None`` anchors the first allocation target
+            to ``V_init``, avoiding an arbitrary loss-scale-dependent default.
+        warmup: Number of initial steps for which ``V`` and ``M`` stay fixed.
+        rate_down/rate_up: Multiplicative bounds on an allocation change.
+        mu: EMA decay for the gradient-norm and directional-variance estimates.
+        adam_beta1/adam_beta2/adam_epsilon: Adam moment parameters.
         b: Small floor guarding divisions by a vanishing gradient norm.
-        alpha/gamma/A: Spall gain-schedule knobs (default to constant gains).
-        blocking/blocking_history/blocking_tol/exact_loss: Inherited look-ahead
-            blocking and loss-recording behaviour (see :class:`SPSAOptimizer`).
+        alpha/gamma/A: Spall gain-schedule knobs; both exponents default to 0, the
+            paper's constant step.
+        blocking/allowed_increase/exact_loss/calibration_steps: Inherited
+            look-ahead blocking and calibration (see :class:`SPSAOptimizer`).
     """
 
     def __init__(
         self,
-        learning_rate: float = 0.1,
+        learning_rate: float | None = None,
         epsilon: float = 0.1,
-        V_init: int = 1,
+        V_init: int = 2,
         V_min: int = 1,
-        V_max: int = 50,
-        M_init: int = 100,
+        V_max: int | None = None,
+        M_init: int | None = None,
         M_min: int = 10,
-        M_max: int = 10000,
+        M_max: int | None = None,
         adapt_V: bool = True,
         adapt_M: bool = True,
         derivative_mode: Literal["finite_diff", "parameter_shift"] = "finite_diff",
-        lipschitz: float | None = None,
-        mu: float = 0.99,
+        allocation_alpha: float = 1.0,
+        target_gradient_variance: float | None = None,
+        warmup: int = 5,
+        rate_down: float = 0.7,
+        rate_up: float = 1.5,
+        mu: float = 0.9,
+        adam_beta1: float = 0.9,
+        adam_beta2: float = 0.999,
+        adam_epsilon: float = 1e-8,
         b: float = 1e-6,
         alpha: float = 0.0,
         gamma: float = 0.0,
         A: float | None = None,
         blocking: bool = False,
-        blocking_history: int = 5,
-        blocking_tol: float = 2.0,
+        allowed_increase: float | None = None,
         exact_loss: bool = False,
+        calibration_steps: int = 25,
     ):
         super().__init__(
             learning_rate=learning_rate,
@@ -806,24 +934,50 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
             A=A,
             resamplings=V_init,
             blocking=blocking,
-            blocking_history=blocking_history,
-            blocking_tol=blocking_tol,
+            allowed_increase=allowed_increase,
             exact_loss=exact_loss,
+            calibration_steps=calibration_steps,
         )
-        if not (1 <= V_min <= V_init <= V_max):
+        if not (1 <= V_min <= V_init) or (V_max is not None and V_init > V_max):
             raise ValueError(
-                "Require 1 <= V_min <= V_init <= V_max, got "
+                "Require 1 <= V_min <= V_init <= V_max when V_max is set, got "
                 f"V_min={V_min}, V_init={V_init}, V_max={V_max}."
             )
-        if not (1 <= M_min <= M_init <= M_max):
+        if M_min < 1 or (M_init is not None and M_init < M_min):
             raise ValueError(
-                "Require 1 <= M_min <= M_init <= M_max, got "
+                "Require 1 <= M_min and, when set, M_min <= M_init, got "
+                f"M_min={M_min}, M_init={M_init}, M_max={M_max}."
+            )
+        if M_max is not None and (
+            M_max < M_min or (M_init is not None and M_init > M_max)
+        ):
+            raise ValueError(
+                "When M_max is set, require M_min <= M_max and "
+                "M_init <= M_max, got "
                 f"M_min={M_min}, M_init={M_init}, M_max={M_max}."
             )
         if not (0.0 < mu < 1.0):
             raise ValueError(f"mu must be in (0, 1), got {mu}.")
-        if lipschitz is not None and lipschitz <= 0:
-            raise ValueError(f"lipschitz must be positive, got {lipschitz}.")
+        if allocation_alpha <= 0:
+            raise ValueError(
+                f"allocation_alpha must be positive, got {allocation_alpha}."
+            )
+        if target_gradient_variance is not None and target_gradient_variance <= 0:
+            raise ValueError(
+                "target_gradient_variance must be positive, got "
+                f"{target_gradient_variance}."
+            )
+        if warmup < 0:
+            raise ValueError(f"warmup must be non-negative, got {warmup}.")
+        if not (0.0 < rate_down <= 1.0 <= rate_up):
+            raise ValueError(
+                "Require 0 < rate_down <= 1 <= rate_up, got "
+                f"rate_down={rate_down}, rate_up={rate_up}."
+            )
+        if not (0.0 < adam_beta1 < 1.0 and 0.0 < adam_beta2 < 1.0):
+            raise ValueError("adam_beta1 and adam_beta2 must both be in (0, 1).")
+        if adam_epsilon <= 0:
+            raise ValueError(f"adam_epsilon must be positive, got {adam_epsilon}.")
         if derivative_mode not in ("finite_diff", "parameter_shift"):
             raise ValueError(
                 "derivative_mode must be 'finite_diff' or 'parameter_shift', "
@@ -840,9 +994,80 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         self.adapt_V = adapt_V
         self.adapt_M = adapt_M
         self.derivative_mode = derivative_mode
-        self.lipschitz = lipschitz
+        self.allocation_alpha = allocation_alpha
+        self.target_gradient_variance = target_gradient_variance
+        self.warmup = warmup
+        self.rate_down = rate_down
+        self.rate_up = rate_up
         self.mu = mu
+        self.adam_beta1 = adam_beta1
+        self.adam_beta2 = adam_beta2
+        self.adam_epsilon = adam_epsilon
         self.b = b
+
+    def _allocation_targets(
+        self,
+        n_params: int,
+        gradient_norm_squared: float,
+        measurement_variance: float,
+        target_gradient_variance: float | None = None,
+    ) -> tuple[float, float]:
+        """Return the published joint ``(V*, M*)`` allocation."""
+        g2 = max(float(gradient_norm_squared), self.b)
+        tau2 = (
+            self.target_gradient_variance
+            if target_gradient_variance is None
+            else target_gradient_variance
+        )
+        if tau2 is None:
+            raise ValueError(
+                "target_gradient_variance must be supplied before allocation."
+            )
+        V_star = (n_params - 1.0 + self.allocation_alpha) * g2 / tau2
+        M_star = (
+            n_params
+            * max(float(measurement_variance), 0.0)
+            / (self.allocation_alpha * g2)
+        )
+        return V_star, M_star
+
+    def _rate_limited_integer(
+        self,
+        target: float,
+        current: int,
+        lower: int,
+        upper: int,
+    ) -> int:
+        """Clamp and round one allocation without exceeding its rate limits."""
+        rate_lower = max(float(lower), self.rate_down * current)
+        rate_upper = min(float(upper), self.rate_up * current)
+        if rate_lower > rate_upper:
+            # A current allocation can be outside newly changed hard bounds.
+            # No value then satisfies both intervals, so honour the hard bound.
+            return int(np.clip(current, lower, upper))
+        clipped = float(np.clip(target, rate_lower, rate_upper))
+        # Apply the paper's multiplicative clamp in the continuous domain before
+        # integerising. Ceil-ing the lower rate bound first pins V=2 forever:
+        # ceil(0.7 * 2) == 2, so the configured V_min=1 is unreachable.
+        return int(np.clip(np.floor(clipped + 0.5), lower, upper))
+
+    def _calibrated_learning_rate(
+        self,
+        cost_fn: Callable[[npt.NDArray[np.float64]], float | npt.NDArray[np.float64]],
+        theta: npt.NDArray[np.float64],
+        rng: np.random.Generator,
+    ) -> float:
+        """Return the explicit rate or conservatively dimension-scale Adam.
+
+        Adam normalizes the gradient magnitude, so applying SPSA's loss-scale
+        calibration as well would double-normalize it. A Rademacher estimate has
+        a nonzero entry in every parameter when its directional derivative is
+        nonzero. Inverse-dimension scaling keeps even a sparse-gradient first
+        step inside the forward-estimator descent regime.
+        """
+        if self.learning_rate is not None:
+            return self.learning_rate
+        return 2.0 * _TARGET_STEP_MAGNITUDE / theta.shape[0]
 
     def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
         """Warn when ``adapt_M`` is combined with a configured shot distribution.
@@ -909,13 +1134,22 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         shift = (0.5 * np.pi) if self.derivative_mode == "parameter_shift" else None
 
         supports_variance = _cost_fn_supports_variance(cost_fn)
-        M_k: int | None = self.M_init  # adapted shot budget; read live by cost_only
+        inherited_shots = int(getattr(cost_fn, "default_shots", self.M_min))
+        initial_shots = inherited_shots if self.M_init is None else self.M_init
+        M_max = max(initial_shots, self.M_min) if self.M_max is None else self.M_max
+        M_k = int(
+            np.clip(
+                initial_shots,
+                self.M_min,
+                M_max,
+            )
+        )
         last_variance: npt.NDArray[np.float64] | None = None
 
         def cost_only(
             batch: npt.NDArray[np.float64],
         ) -> npt.NDArray[np.float64]:
-            """Loss-only adapter; stashes the latest measurement variance."""
+            """Loss-only adapter that forwards the live shot allocation."""
             nonlocal last_variance
             if supports_variance:
                 # The variational algorithm's cost closure accepts these kwargs
@@ -928,30 +1162,45 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 return np.asarray(losses, dtype=np.float64).reshape(-1)
             return np.asarray(cost_fn(batch), dtype=np.float64).reshape(-1)
 
-        # gCANS optimal step a* = 1/L; default L so that a* == learning_rate.
-        L = self.lipschitz if self.lipschitz is not None else 1.0 / self.learning_rate
-
+        learning_rate = self._calibrated_learning_rate(cost_only, theta, rng)
+        allowed_increase = (
+            self._calibrated_allowed_increase(cost_only, theta)
+            if self.blocking
+            else 0.0
+        )
+        n_params = theta.shape[0]
+        V_max = (
+            max(self.V_init, self.V_min, min(n_params, 8))
+            if self.V_max is None
+            else self.V_max
+        )
+        if self.V_init > V_max or self.V_min > V_max:
+            raise ValueError(
+                "V_init and V_min cannot exceed the effective V_max "
+                f"({V_max}) for {n_params} parameters."
+            )
         V_k = self.V_init
-        chi = np.zeros_like(theta)  # EMA of the gradient estimate
-        xi = 0.0  # EMA of the scalar gradient-sample variance
+        gradient_norm_squared_ema: float | None = None
+        measurement_variance_ema: float | None = None
+        target_gradient_variance = self.target_gradient_variance
+        adam_first_moment = np.zeros_like(theta)
+        adam_second_moment = np.zeros_like(theta)
 
         best_x = theta.copy()
         best_fun = np.inf
-        recent: deque[float] = deque(maxlen=self.blocking_history)
         current_loss: float = (
             float(np.asarray(cost_only(theta)).reshape(-1)[0]) if self.blocking else 0.0
         )
         reference_loss: float | None = None
         diverged_warned = False
-        step_size_warned = False
 
         for k in range(max_iterations):
             eps_k = shift if shift is not None else _spsa_gain_c(k, self.c, self.gamma)
-            a_k = _spsa_gain_a(k, self.learning_rate, A, self.alpha)
+            a_k = _spsa_gain_a(k, learning_rate, A, self.alpha)
 
             ghats = []
             losses = []
-            var_samples: list[float] = []
+            measurement_variances: list[float] = []
             for _ in range(V_k):
                 ghat_l, _, f_plus, f_minus = _spsa_gradient(
                     cost_only, theta, eps_k, rng
@@ -966,30 +1215,49 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                     ghat_l = ghat_l * eps_k
                 ghats.append(ghat_l)
                 losses.append(0.5 * (f_plus + f_minus))
-                v = last_variance
-                if v is not None and len(v) and np.all(np.isfinite(v)):
-                    # Reported variance is Var(<H>) at M_k shots; recover the
-                    # single-shot cost variance as Var·M.
-                    m_now = M_k if M_k is not None else 1
-                    var_samples.append(float(np.mean(v)) * float(m_now))
+                variances = last_variance
+                if (
+                    variances is not None
+                    and variances.size >= 2
+                    and np.all(np.isfinite(variances[:2]))
+                ):
+                    derivative_scale = 0.5 if shift is not None else 1.0 / (2.0 * eps_k)
+                    measurement_variances.append(
+                        cast(int, M_k)
+                        * derivative_scale**2
+                        * float(np.sum(variances[:2]))
+                    )
 
             ghat = np.mean(ghats, axis=0)
-
-            # Variance of the single-direction estimator across the V samples
-            # (sum of per-component variances); folds in both direction and
-            # measurement noise. Needs >= 2 samples, else carry the prior EMA.
-            if V_k >= 2:
-                spread = np.stack(ghats) - ghat
-                S2 = float(np.sum(spread * spread) / (V_k - 1))
-            else:
-                S2 = xi  # reuse last estimate when a single direction was drawn
-
-            chi = self.mu * chi + (1.0 - self.mu) * ghat
-            xi = self.mu * xi + (1.0 - self.mu) * S2
-            bias_corr = 1.0 - self.mu ** (k + 1)
-            chi_hat = chi / bias_corr
-            xi_hat = xi / bias_corr
-            g2 = float(chi_hat @ chi_hat) + self.b
+            step_is_usable = bool(np.all(np.isfinite(ghat)))
+            if step_is_usable:
+                # Algorithm 1 of Coyle et al. plugs the raw reconstructed-
+                # gradient norm into the allocation EMA. It is upward-biased by
+                # the directional estimator's own V-dependent variance, but
+                # debiasing it here would no longer implement the published rule.
+                gradient_norm_squared = float(ghat @ ghat)
+                if gradient_norm_squared_ema is None:
+                    gradient_norm_squared_ema = gradient_norm_squared
+                    if target_gradient_variance is None:
+                        target_gradient_variance = (
+                            (n_params - 1.0 + self.allocation_alpha)
+                            * max(gradient_norm_squared, self.b)
+                            / self.V_init
+                        )
+                else:
+                    gradient_norm_squared_ema = (
+                        self.mu * gradient_norm_squared_ema
+                        + (1.0 - self.mu) * gradient_norm_squared
+                    )
+                if measurement_variances:
+                    measurement_variance = float(np.mean(measurement_variances))
+                    if measurement_variance_ema is None:
+                        measurement_variance_ema = measurement_variance
+                    else:
+                        measurement_variance_ema = (
+                            self.mu * measurement_variance_ema
+                            + (1.0 - self.mu) * measurement_variance
+                        )
 
             fun = (
                 current_loss
@@ -1002,7 +1270,6 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 fun, reference_loss, diverged_warned
             )
 
-            recent.append(fun)
             if fun < best_fun:
                 best_fun = fun
                 best_x = theta.copy()
@@ -1011,46 +1278,57 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                     OptimizeResult(
                         x=np.atleast_2d(theta.copy()),
                         fun=np.atleast_1d(fun),
+                        jac=np.atleast_2d(ghat.copy()),
                         nit=k + 1,
                         success=True,
                         message="Optimisation in progress.",
                     )
                 )
 
-            proposed = theta - a_k * ghat
-            if self.blocking:
-                theta, current_loss = self._block_or_step(
-                    cost_only, theta, proposed, current_loss, recent
+            if step_is_usable:
+                adam_first_moment = (
+                    self.adam_beta1 * adam_first_moment + (1.0 - self.adam_beta1) * ghat
                 )
-            else:
-                theta = proposed
+                adam_second_moment = (
+                    self.adam_beta2 * adam_second_moment
+                    + (1.0 - self.adam_beta2) * ghat * ghat
+                )
+                adam_first_hat = adam_first_moment / (1.0 - self.adam_beta1 ** (k + 1))
+                adam_second_hat = adam_second_moment / (
+                    1.0 - self.adam_beta2 ** (k + 1)
+                )
+                proposed = theta - a_k * adam_first_hat / (
+                    np.sqrt(adam_second_hat) + self.adam_epsilon
+                )
+                if np.all(np.isfinite(proposed)):
+                    if self.blocking:
+                        theta, current_loss = self._block_or_step(
+                            cost_only, theta, proposed, current_loss, allowed_increase
+                        )
+                    else:
+                        theta = proposed
 
             # --- Adapt (V, M) for the next step ---
-            if not step_size_warned and L * a_k >= 2.0:
-                warnings.warn(
-                    f"{type(self).__name__}: L*a_k = {L * a_k:.3g} >= 2 leaves the "
-                    "gCANS stability regime (requires a < 2/L); the (V, M) "
-                    "allocation will saturate at its bounds. Lower learning_rate "
-                    "or raise lipschitz.",
-                    stacklevel=2,
+            if k >= self.warmup and gradient_norm_squared_ema is not None:
+                V_star, M_star = self._allocation_targets(
+                    n_params,
+                    gradient_norm_squared_ema,
+                    measurement_variance_ema or 0.0,
+                    target_gradient_variance,
                 )
-                step_size_warned = True
-            kappa = (2.0 * L * a_k) / max(2.0 - L * a_k, self.b)
-            if self.adapt_V:
-                V_k = int(np.clip(np.ceil(kappa * xi_hat / g2), self.V_min, self.V_max))
-            if self.adapt_M and supports_variance and var_samples:
-                sigma2 = float(np.mean(var_samples))
-                M_next = np.ceil(kappa * sigma2 / (2.0 * eps_k * eps_k * g2))
-                M_k = int(np.clip(M_next, self.M_min, self.M_max))
+                if self.adapt_V and np.isfinite(V_star):
+                    V_k = self._rate_limited_integer(V_star, V_k, self.V_min, V_max)
+                if (
+                    self.adapt_M
+                    and measurement_variance_ema is not None
+                    and np.isfinite(M_star)
+                ):
+                    M_k = self._rate_limited_integer(
+                        M_star, cast(int, M_k), self.M_min, M_max
+                    )
 
         best_x, best_fun = self._fold_final_iterate(
             cost_only, theta, current_loss, best_x, best_fun
         )
 
-        return OptimizeResult(
-            x=best_x,
-            fun=np.atleast_1d(best_fun),
-            nit=max_iterations,
-            success=True,
-            message="Optimisation terminated: reached max_iterations.",
-        )
+        return self._final_result(best_x, best_fun, max_iterations)
