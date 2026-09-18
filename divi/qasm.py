@@ -101,8 +101,26 @@ def _strip_comments(src: str) -> str:
     return _LINE_COMMENT_RE.sub("", _BLOCK_COMMENT_RE.sub("", src))
 
 
-def _lex(src: str) -> list[Tok]:
+def _param_regex(parameters: Collection[str]) -> re.Pattern[str] | None:
+    """Match any declared parameter name verbatim, longest name first.
+
+    Placeholder names are substitution tokens, not QASM identifiers: a
+    ``ParameterVector`` element is ``w_0[3]`` and Greek letters are common.
+    The boundary guards mirror
+    :func:`divi.circuits._qasm_template.build_template`, so the validator
+    accepts exactly the occurrences that binding will replace.
+    """
+    if not parameters:
+        return None
+    escaped = sorted((re.escape(name) for name in parameters), key=len, reverse=True)
+    return re.compile(
+        r"(?<![A-Za-z0-9_])(?:" + "|".join(escaped) + r")(?![A-Za-z0-9_])"
+    )
+
+
+def _lex(src: str, parameters: Collection[str] = ()) -> list[Tok]:
     src = _strip_comments(src)
+    param_re = _param_regex(parameters)
     i, n = 0, len(src)
     line, line_start = 1, 0
     out: list[Tok] = []
@@ -116,6 +134,12 @@ def _lex(src: str) -> list[Tok]:
                 line_start = m.end() - (len(chunk) - chunk.rfind("\n") - 1)
             i = m.end()
             continue
+        if param_re is not None:
+            m = param_re.match(src, i)
+            if m:
+                out.append(Tok("PARAM", m.group(0), i, line, i - line_start + 1))
+                i = m.end()
+                continue
         m = TOKEN_REGEX.match(src, i)
         if not m:
             snippet = src[i : i + 20].replace("\n", "\\n")
@@ -616,6 +640,15 @@ class Parser:
 
     def _expr_atom(self, allow_id: bool):
         t = self.peek()
+        if t.type == "PARAM":
+            # Gate bodies see only their own formals, so a caller-declared
+            # placeholder is an unknown symbol there.
+            if self.in_gate_def and t.value not in self.g_params:
+                raise SyntaxError(
+                    f"Unknown symbol '{t.value}' in expression at {t.line}:{t.col}"
+                )
+            self.match("PARAM")
+            return
         if t.type == "NUMBER":
             self.match("NUMBER")
             return
@@ -686,12 +719,14 @@ def validate_qasm(src: str, parameters: Collection[str] = ()) -> None:
 
     Args:
         src: The QASM source to validate.
-        parameters: Names that may appear as bare identifiers in gate
-            arguments, for validating a parametric template before its
-            values are substituted. Any identifier not named here is still
-            rejected as an unknown symbol.
+        parameters: Placeholder names that may appear in gate arguments, for
+            validating a parametric template before its values are
+            substituted. They are matched verbatim rather than as QASM
+            identifiers, so subscripted and non-ASCII names such as
+            ``w_0[3]`` or ``β[0]`` are accepted. Any identifier not named
+            here is still rejected as an unknown symbol.
     """
-    toks = _lex(src)
+    toks = _lex(src, parameters)
     Parser(toks, parameters).parse()
 
 

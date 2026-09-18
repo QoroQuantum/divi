@@ -415,3 +415,36 @@ mygate(0.5) q[0];
 """
 
     assert is_valid_qasm(qasm, ("theta_0",)) is False
+
+
+VECTOR_TEMPLATE = """OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[2];
+creg c[2];
+rz(1*β[0]) q[0];
+cx q[1],q[0];
+ry(2*w_0[1]+pi/2) q[1];
+measure q[0] -> c[0];
+"""
+
+
+def test_subscripted_and_non_ascii_placeholders_validate():
+    """``ParameterVector`` elements and Greek names are substitution tokens,
+    not QASM identifiers, so they validate once declared."""
+    assert is_valid_qasm(VECTOR_TEMPLATE, ("β[0]", "w_0[1]")) is True
+
+
+def test_subscripted_placeholders_are_rejected_when_undeclared():
+    assert is_valid_qasm(VECTOR_TEMPLATE, ("w_0[1]",)) is False
+
+
+def test_a_placeholder_does_not_match_inside_a_longer_identifier():
+    """A parameter named ``x`` must not be seen inside ``cx`` or ``rx``."""
+    qasm = """OPENQASM 2.0;
+include "qelib1.inc";
+qreg q[2];
+rx(x) q[0];
+cx q[0],q[1];
+"""
+
+    assert is_valid_qasm(qasm, ("x",)) is True
