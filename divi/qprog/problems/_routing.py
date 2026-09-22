@@ -8,6 +8,7 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from heapq import heappop, heappush
 from pathlib import Path
 from typing import Any, Literal
 
@@ -552,6 +553,12 @@ def repair_cvrp_solution(
             repaired[v, t, cust] = 1
             slot_to_customer[(v, t)] = cust
 
+    customer_demands = np.asarray(demands)[customers]
+    vehicle_loads = np.einsum("vtc,c->v", repaired, customer_demands)
+    empty_slots = [
+        list(np.flatnonzero(repaired[v].sum(axis=1) == 0)) for v in range(n_vehicles)
+    ]
+
     # Check capacity and greedily reassign overflows
     for v in range(n_vehicles):
         vehicle_demand = 0.0
@@ -562,28 +569,25 @@ def repair_cvrp_solution(
                 if vehicle_demand + cust_demand > capacity + 1e-9:
                     # Try to move to another vehicle with remaining capacity
                     repaired[v, t, cust_idx] = 0
+                    vehicle_loads[v] -= cust_demand
                     placed = False
                     for v2 in range(n_vehicles):
                         if v2 == v:
                             continue
-                        v2_demand = sum(
-                            demands[customers[i]]
-                            for t2 in range(max_steps)
-                            for i in range(n_customers)
-                            if repaired[v2, t2, i] == 1
-                        )
-                        if v2_demand + cust_demand <= capacity + 1e-9:
-                            # Find empty slot
-                            for t2 in range(max_steps):
-                                if repaired[v2, t2].sum() == 0:
-                                    repaired[v2, t2, cust_idx] = 1
-                                    placed = True
-                                    break
-                            if placed:
-                                break
+                        if (
+                            empty_slots[v2]
+                            and vehicle_loads[v2] + cust_demand <= capacity + 1e-9
+                        ):
+                            t2 = heappop(empty_slots[v2])
+                            repaired[v2, t2, cust_idx] = 1
+                            vehicle_loads[v2] += cust_demand
+                            heappush(empty_slots[v], t)
+                            placed = True
+                            break
                     if not placed:
                         # Last resort: put it back
                         repaired[v, t, cust_idx] = 1
+                        vehicle_loads[v] += cust_demand
                         vehicle_demand += cust_demand
                 else:
                     vehicle_demand += cust_demand

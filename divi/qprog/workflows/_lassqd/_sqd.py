@@ -1228,14 +1228,17 @@ def _spatial_rdms_exact(
     m_dim = len(eigenvector)
 
     dets_spin = [spatial_to_spin_occupations(d[0], d[1], n_orb) for d in subspace_dets]
+    det_masks = [sum(1 << orbital for orbital in det) for det in dets_spin]
 
     n_spin = 2 * n_orb
     rdm1_spin = np.zeros((n_spin, n_spin))
     rdm2_spin = np.zeros((n_spin, n_spin, n_spin, n_spin))
     for i in range(m_dim):
         det_i = dets_spin[i]
+        det_i_mask = det_masks[i]
         for j in range(m_dim):
             det_j = dets_spin[j]
+            det_j_mask = det_masks[j]
             val_ij = eigenvector[i] * eigenvector[j]
 
             for q in det_j:
@@ -1243,9 +1246,10 @@ def _spatial_rdms_exact(
                 if sign_q == 0 or occ_1 is None:
                     continue
 
-                diff = set(det_i) - set(occ_1)
-                if len(diff) == 1:
-                    p = next(iter(diff))
+                occ_1_mask = det_j_mask ^ (1 << q)
+                diff = det_i_mask & ~occ_1_mask
+                if diff.bit_count() == 1:
+                    p = diff.bit_length() - 1
                     sign_p, occ_final = _creation_sign(occ_1, p)
                     if sign_p != 0 and occ_final == det_i:
                         rdm1_spin[p, q] += val_ij * sign_p * sign_q
@@ -1254,9 +1258,12 @@ def _spatial_rdms_exact(
                     sign_s, occ_2 = _annihilation_sign(occ_1, s)
                     if sign_s == 0 or occ_2 is None:
                         continue
-                    diff = set(det_i) - set(occ_2)
-                    if len(diff) == 2:
-                        p_cand, r_cand = list(diff)
+                    occ_2_mask = occ_1_mask ^ (1 << s)
+                    diff = det_i_mask & ~occ_2_mask
+                    if diff.bit_count() == 2:
+                        p_bit = diff & -diff
+                        p_cand = p_bit.bit_length() - 1
+                        r_cand = (diff ^ p_bit).bit_length() - 1
                         for p, r in [(p_cand, r_cand), (r_cand, p_cand)]:
                             sign_r, occ_3 = _creation_sign(occ_2, r)
                             if sign_r == 0:

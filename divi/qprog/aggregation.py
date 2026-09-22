@@ -20,6 +20,7 @@ Two strategies are provided:
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from heapq import nsmallest
 from typing import Any
 
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
@@ -143,16 +144,17 @@ class BeamSearchStrategy(AggregationStrategy):
             if not candidates:
                 continue
 
-            new_beam: list[tuple[float, list[int]]] = []
-            for _, partial_solution in beam:
-                for candidate in candidates:
-                    extended = extend_fn(partial_solution, prog_id, candidate)
-                    new_beam.append((evaluate_fn(extended), extended))
+            def extensions():
+                for _, partial_solution in beam:
+                    for candidate in candidates:
+                        extended = extend_fn(partial_solution, prog_id, candidate)
+                        yield evaluate_fn(extended), extended
 
-            new_beam.sort(key=lambda entry: entry[0])
-            beam = new_beam[:beam_width] if beam_width is not None else new_beam
+            if beam_width is None:
+                beam = sorted(extensions(), key=lambda entry: entry[0])
+            else:
+                beam = nsmallest(beam_width, extensions(), key=lambda entry: entry[0])
 
-        beam.sort(key=lambda entry: entry[0])
         return beam[:top_n]
 
 
@@ -270,20 +272,17 @@ class HierarchicalStrategy(AggregationStrategy):
             if not cands:
                 return base_pool
 
-            extended: list[_PoolEntry] = []
-            for _, solution, selections in base_pool:
-                for candidate in cands:
-                    new_sol = extend_fn(solution, pid, candidate)
-                    extended.append(
-                        (
+            def extensions():
+                for _, solution, selections in base_pool:
+                    for candidate in cands:
+                        new_sol = extend_fn(solution, pid, candidate)
+                        yield (
                             evaluate_fn(new_sol),
                             new_sol,
                             selections + [(pid, candidate)],
                         )
-                    )
 
-            extended.sort(key=lambda entry: entry[0])
-            return extended[:cap]
+            return nsmallest(cap, extensions(), key=lambda entry: entry[0])
 
         # Solve each group independently with a beam of width `search_cap`. When a
         # single group produces the final result (no merges), its last step keeps
@@ -320,19 +319,19 @@ class HierarchicalStrategy(AggregationStrategy):
                     next_level.append(pool_a or pool_b)
                     continue
 
-                merged: list[_PoolEntry] = []
-                for _, sol_a, sel_a in pool_a[:merge_width]:
-                    for _, _, sel_b in pool_b[:merge_width]:
-                        combined = list(sol_a)
-                        for pid, candidate in sel_b:
-                            combined = extend_fn(combined, pid, candidate)
-                        merged.append((evaluate_fn(combined), combined, sel_a + sel_b))
+                def merged_entries():
+                    for _, sol_a, sel_a in pool_a[:merge_width]:
+                        for _, _, sel_b in pool_b[:merge_width]:
+                            combined = list(sol_a)
+                            for pid, candidate in sel_b:
+                                combined = extend_fn(combined, pid, candidate)
+                            yield evaluate_fn(combined), combined, sel_a + sel_b
 
-                merged.sort(key=lambda entry: entry[0])
-                next_level.append(merged[:out_cap])
+                next_level.append(
+                    nsmallest(out_cap, merged_entries(), key=lambda entry: entry[0])
+                )
 
             group_pools = next_level
 
         final = group_pools[0] if group_pools else []
-        final.sort(key=lambda entry: entry[0])
         return [(score, solution) for score, solution, _ in final[:top_n]]

@@ -115,14 +115,17 @@ def _compute_parameter_shift_rule(
         ValueError: If any ``omega`` is not positive or ``order`` is below 1.
     """
     n_params = len(frequencies)
-    shift_blocks = []
-    weight_blocks = []
-    for index, (omega, order) in enumerate(frequencies):
+    for omega, order in frequencies:
         if not omega > 0:
             raise ValueError(f"omega must be positive; got {omega}.")
         if order < 1:
             raise ValueError(f"order must be at least 1; got {order}.")
 
+    n_evaluations = sum(2 * order for _, order in frequencies)
+    shifts_out = np.zeros((n_evaluations, n_params))
+    weights_out = np.zeros((n_params, n_evaluations))
+    offset = 0
+    for index, (omega, order) in enumerate(frequencies):
         term = np.arange(1, 2 * order + 1)
         shifts = (2 * term - 1) * np.pi / (2 * order * omega)
         # The energy has period 2 pi / omega, so folding the shifts into its
@@ -136,16 +139,12 @@ def _compute_parameter_shift_rule(
             / (4 * order * np.sin((2 * term - 1) * np.pi / (4 * order)) ** 2)
         )
 
-        block = np.zeros((len(shifts), n_params))
-        block[:, index] = shifts
-        shift_blocks.append(block)
-        weights = np.zeros((n_params, len(shifts)))
-        weights[index, :] = coefficients
-        weight_blocks.append(weights)
+        stop = offset + len(shifts)
+        shifts_out[offset:stop, index] = shifts
+        weights_out[index, offset:stop] = coefficients
+        offset = stop
 
-    if not shift_blocks:
-        return np.zeros((0, 0)), np.zeros((0, 0))
-    return np.vstack(shift_blocks), np.hstack(weight_blocks)
+    return shifts_out, weights_out
 
 
 def _argmin_finite(values: npt.NDArray[np.float64]) -> int | None:

@@ -15,7 +15,7 @@ which metric is in play.
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
@@ -580,9 +580,36 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
         return {"fidelity_fn": fidelity_fn}
 
 
+@dataclass(frozen=True)
+class _PrefixOpsView(Sequence[tuple]):
+    """Immutable prefix view over one shared operation tape."""
+
+    operations: tuple[tuple, ...]
+    stop: int
+
+    def __len__(self) -> int:
+        return self.stop
+
+    def __iter__(self):
+        for index in range(self.stop):
+            yield self.operations[index]
+
+    def __getitem__(self, index):
+        if isinstance(index, slice):
+            return tuple(
+                self.operations[position]
+                for position in range(*index.indices(self.stop))
+            )
+        if index < 0:
+            index += self.stop
+        if index < 0 or index >= self.stop:
+            raise IndexError(index)
+        return self.operations[index]
+
+
 def _fs_blocks(
     cost_circuit: MetaCircuit,
-) -> tuple[list[tuple[list, list]], list[Parameter], int]:
+) -> tuple[list[tuple[Sequence[tuple], list]], list[Parameter], int]:
     """Layer the ansatz into blocks of commuting parametric gates.
 
     Returns ``(blocks, full_params, n_qubits)`` where each block is
@@ -594,19 +621,20 @@ def _fs_blocks(
     """
     dag = cost_circuit.circuit_bodies[0][1]
     full_params = list(cost_circuit.parameters)
+    param_indices = {param: index for index, param in enumerate(full_params)}
     n = dag.num_qubits()
 
-    blocks: list[tuple[list, list]] = []
+    block_boundaries: list[tuple[int, list]] = []
     prefix_ops: list[tuple] = []
     cur: list[tuple[int, SparsePauliOp]] = []
     cur_wires: set[int] = set()
-    cur_prefix: list[tuple] = []
+    cur_prefix_end = 0
 
     def close() -> None:
-        nonlocal cur, cur_wires, cur_prefix
+        nonlocal cur, cur_wires, cur_prefix_end
         if cur:
-            blocks.append((cur_prefix, cur))
-        cur, cur_wires, cur_prefix = [], set(), []
+            block_boundaries.append((cur_prefix_end, cur))
+        cur, cur_wires, cur_prefix_end = [], set(), 0
 
     # Walk in original circuit insertion order: ``dag.op_nodes()`` yields nodes in
     # insertion order, whereas ``topological_op_nodes()`` ASAP-reschedules and would
@@ -614,13 +642,14 @@ def _fs_blocks(
     for node in dag.op_nodes():
         parametric = [p for p in node.op.params if isinstance(p, ParameterExpression)]
         wires = [dag.find_bit(q).index for q in node.qargs]
+        wire_set = set(wires)
         if parametric:
             pauli = _GATE_GENERATORS.get(node.op.name)
             angle = node.op.params[0]
-            if pauli is None or len(parametric) != 1 or angle not in full_params:
+            if pauli is None or len(parametric) != 1 or angle not in param_indices:
                 detail = (
                     _FS_UNSUPPORTED_ANGLE.format(angle=str(angle))
-                    if pauli is not None and angle not in full_params
+                    if pauli is not None and angle not in param_indices
                     else ""
                 )
                 raise ContractViolation(
@@ -629,16 +658,21 @@ def _fs_blocks(
             generator = SparsePauliOp.from_sparse_list(
                 [(pauli, wires, 0.5)], num_qubits=n
             )
-            if cur and set(wires) & cur_wires:
+            if cur and wire_set & cur_wires:
                 close()
             if not cur:
-                cur_prefix = list(prefix_ops)
-            cur.append((full_params.index(angle), generator))
-            cur_wires |= set(wires)
+                cur_prefix_end = len(prefix_ops)
+            cur.append((param_indices[angle], generator))
+            cur_wires |= wire_set
         else:
             close()
         prefix_ops.append((node.op, wires))
     close()
+    operation_tape = tuple(prefix_ops)
+    blocks: list[tuple[Sequence[tuple], list]] = [
+        (_PrefixOpsView(operation_tape, prefix_end), entries)
+        for prefix_end, entries in block_boundaries
+    ]
     return blocks, full_params, n
 
 
@@ -715,8 +749,9 @@ def _measure_prefix_paulis(
         reference_prefix_ops, full_params, n_qubits
     )
     reference_prefix_param_names = tuple(p.name for p in reference_prefix_params)
+    param_indices = {param: index for index, param in enumerate(full_params)}
     values = np.array(
-        [[theta[full_params.index(p)] for p in reference_prefix_params]],
+        [[theta[param_indices[p]] for p in reference_prefix_params]],
         dtype=np.float64,
     )
 
@@ -751,7 +786,7 @@ def _measure_prefix_paulis(
 
 
 def _fs_prefix_params(
-    prefix_ops: list[tuple],
+    prefix_ops: Sequence[tuple],
     full_params: list[Parameter],
     n_qubits: int,
 ) -> tuple[Parameter, ...]:

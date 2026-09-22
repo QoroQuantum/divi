@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+from scipy.sparse import csr_matrix
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._result_keys_operations import _find_batch_key
@@ -113,19 +114,46 @@ def _batched_expectation(
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
     eigenvalues = _bitstring_eigenvalues(unique_bitstrings, pauli_labels, n_qubits)
 
-    # 2. Build reduced count matrix (n_histograms × n_unique_states). Counts are
-    # exact in float64, so normalising after the contraction rounds only once.
-    reduced_count_matrix = np.zeros((n_histograms, n_unique_states))
     totals = np.ones(n_histograms)
-    for i, shots_dict in enumerate(shots_dicts):
-        # An empty histogram leaves a zero row; a divisor of 1 keeps it 0, not nan.
-        totals[i] = sum(shots_dict.values()) or 1.0
-        for bitstring, count in shots_dict.items():
-            col_idx = bitstring_to_idx_map[bitstring]
-            reduced_count_matrix[i, col_idx] = count
+    dense_size = n_histograms * n_unique_states
+    n_counts = sum(map(len, shots_dicts))
+    index_size = np.dtype(np.intp).itemsize
+    dense_bytes = dense_size * np.dtype(np.float64).itemsize
+    sparse_bytes = (
+        n_counts * (np.dtype(np.float64).itemsize + index_size)
+        + (n_histograms + 1) * index_size
+    )
+    use_sparse = dense_size > 1_000_000 and sparse_bytes < dense_bytes
 
-    # 3. Final (n_observables, n_histograms).
-    return ((reduced_count_matrix @ eigenvalues.T) / totals[:, None]).T
+    if not use_sparse:
+        count_matrix = np.zeros((n_histograms, n_unique_states))
+        for i, shots_dict in enumerate(shots_dicts):
+            totals[i] = sum(shots_dict.values()) or 1.0
+            for bitstring, count in shots_dict.items():
+                count_matrix[i, bitstring_to_idx_map[bitstring]] = count
+    else:
+        # Large batches usually contain sparse histograms. Build CSR storage in
+        # one allocation instead of materialising every histogram/state pair.
+        indices = np.empty(n_counts, dtype=np.intp)
+        data = np.empty(n_counts, dtype=np.float64)
+        indptr = np.empty(n_histograms + 1, dtype=np.intp)
+        indptr[0] = 0
+        offset = 0
+        for i, shots_dict in enumerate(shots_dicts):
+            size = len(shots_dict)
+            end = offset + size
+            indices[offset:end] = [
+                bitstring_to_idx_map[bitstring] for bitstring in shots_dict
+            ]
+            data[offset:end] = list(shots_dict.values())
+            totals[i] = sum(shots_dict.values()) or 1.0
+            offset = end
+            indptr[i + 1] = end
+        count_matrix = csr_matrix(
+            (data, indices, indptr), shape=(n_histograms, n_unique_states)
+        )
+
+    return (count_matrix @ eigenvalues.T / totals[:, None]).T
 
 
 def _reverse_endianness(counts: Mapping) -> dict:

@@ -366,10 +366,13 @@ class TestBatchedExpectation:
 
     def test_empty_histogram_stays_zero(self):
         """An empty histogram is a finite zero row rather than ``nan``."""
-        result = _batched_expectation([{}], ["I"], n_qubits=1)
+        histograms = [{format(i, "065b"): 1} for i in range(1001)] + [{}]
+        result = _batched_expectation(histograms, ["I" * 65], n_qubits=65)
 
-        assert np.isfinite(result[0, 0])
-        assert result[0, 0] == 0.0
+        assert result.shape == (1, 1002)
+        assert np.all(result[0, :-1] == 1.0)
+        assert np.isfinite(result[0, -1])
+        assert result[0, -1] == 0.0
 
     @pytest.mark.parametrize("n_qubits", [64, 65])
     def test_dense_label_is_a_parity_not_a_lookup_table(self, n_qubits):

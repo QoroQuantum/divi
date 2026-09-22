@@ -137,6 +137,7 @@ def _observable_to_sparse_pauli_op(
             f"convert to SparsePauliOp."
         )
     wire_list = list(wires)
+    wire_indices = {wire: index for index, wire in enumerate(wire_list)}
     num_qubits = len(wire_list)
 
     sparse: list[tuple[str, list[int], float]] = []
@@ -154,7 +155,7 @@ def _observable_to_sparse_pauli_op(
             sparse.append(("", [], c.real))
         else:
             pauli_chars = "".join(ch for _, ch in pw_items)
-            qubit_indices = [wire_list.index(w) for w, _ in pw_items]
+            qubit_indices = [wire_indices[w] for w, _ in pw_items]
             sparse.append((pauli_chars, qubit_indices, c.real))
 
     return SparsePauliOp.from_sparse_list(sparse, num_qubits=num_qubits)

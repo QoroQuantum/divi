@@ -285,15 +285,19 @@ def measurement_qasms_from_groups(
     for group in measurement_groups:
         # Determine per-qubit basis from labels. QWC guarantees each qubit
         # has at most one non-I Pauli across all labels in the group.
-        basis = ["I"] * n_qubits
+        active_basis: dict[int, str] = {}
         for label in group:
             for q, char in enumerate(label):
                 if char != "I":
-                    basis[q] = char
+                    if q >= n_qubits:
+                        raise IndexError("list assignment index out of range")
+                    active_basis[q] = char
 
         # Emit diagonalising gates.
         diag_parts: list[str] = []
-        for q, b in enumerate(basis):
+        active = sorted(active_basis)
+        for q in active:
+            b = active_basis[q]
             if b == "X":
                 diag_parts.append(f"h q[{q}];\n")
             elif b == "Y":
@@ -301,7 +305,6 @@ def measurement_qasms_from_groups(
             # Z and I: no rotation needed.
         diag_qasm = "".join(diag_parts)
 
-        active = [q for q in range(n_qubits) if basis[q] != "I"]
         if measure_all:
             measured = range(n_qubits)
         elif not active:
