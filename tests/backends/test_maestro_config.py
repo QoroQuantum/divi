@@ -64,6 +64,7 @@ class TestDefaults:
         assert config.truncation_mode is None
         assert config.seed is None
         assert config.gpu_device is None
+        assert config.distributed_options is None
         assert config.mpo_kraus_completeness_check is None
         for field in BOOLEAN_FLAG_FIELDS:
             assert getattr(config, field) is False, field
@@ -185,6 +186,7 @@ class TestOverride:
             "truncation_mode",
             "seed",
             "gpu_device",
+            "distributed_options",
             "mpo_kraus_completeness_check",
             "mps_qubit_threshold",
             "noise_model",
@@ -273,16 +275,24 @@ class TestToMaestroConfig:
         assert sim_config.singular_value_threshold == 1e-8
 
     def test_constructor_knobs_reach_maestro(self):
-        """``truncation_mode``, ``seed`` and ``gpu_device`` are constructor args."""
+        """``truncation_mode``, ``seed``, ``gpu_device`` and
+        ``distributed_options`` are constructor args."""
+        options = {"distributed_devices": "0,1", "mpi_communicator": "0"}
         sim_config = MaestroConfig(
             simulation_type="MatrixProductState",
             truncation_mode="relative_max",
             seed=1234,
             gpu_device=1,
+            distributed_options=options,
         )._to_maestro_config(n_qubits=6)
         assert sim_config.truncation_mode == "relative_max"
         assert sim_config.seed == 1234
         assert sim_config.gpu_device == 1
+        assert sim_config.distributed_options == options
+
+    def test_unset_distributed_options_stay_empty(self):
+        sim_config = MaestroConfig()._to_maestro_config(n_qubits=4)
+        assert sim_config.distributed_options == {}
 
     def test_mpo_kraus_completeness_check_reaches_maestro(self):
         """Property-only, like the pp_* family."""
@@ -424,6 +434,17 @@ class TestBackendKnobValidation:
     def test_negative_seed_rejected(self):
         with pytest.raises(ValueError, match="seed must be a non-negative"):
             MaestroConfig(seed=-1)
+
+    def test_unprefixed_distributed_option_rejected(self):
+        """Maestro raises at execution time; divi fails at construction instead."""
+        with pytest.raises(ValueError, match=r"Got \['gpu_device'\]"):
+            MaestroConfig(
+                distributed_options={"distributed_flags": "8", "gpu_device": "0"}
+            )
+
+    def test_non_string_distributed_option_value_rejected(self):
+        with pytest.raises(ValidationError, match="distributed_options"):
+            MaestroConfig(distributed_options={"distributed_flags": 8})
 
     @pytest.mark.parametrize("group", GPU_SVD_FLAG_GROUPS)
     def test_two_svd_solvers_in_one_group_rejected(self, group):

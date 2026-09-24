@@ -220,6 +220,14 @@ class MaestroConfig(BaseModel):
     """CUDA-visible device ordinal for the ``"Gpu"`` simulator type.  ``None``
     uses maestro's default device."""
 
+    distributed_options: dict[str, str] | None = None
+    """Settings for the ``"DistributedGpu"`` and ``"DistributedMpiGpu"``
+    simulator types, applied before the state is allocated.  Keys start with
+    ``distributed_`` or ``mpi_`` and values are strings, e.g.
+    ``{"distributed_devices": "0,1"}``; an MPI communicator is passed as
+    ``{"mpi_communicator": str(comm.py2f())}``.  ``None`` uses maestro's
+    defaults."""
+
     mpo_kraus_completeness_check: str | None = None
     """How the MPO simulator reacts to Kraus operators that do not sum to the
     identity — ``"ignore"``, ``"warn"`` or ``"strict"`` (raise).  ``None`` uses
@@ -370,6 +378,18 @@ class MaestroConfig(BaseModel):
         if self.seed is not None and self.seed < 0:
             raise ValueError(f"seed must be a non-negative integer. Got {self.seed}.")
 
+        if self.distributed_options is not None:
+            invalid = sorted(
+                key
+                for key in self.distributed_options
+                if not key.startswith(("distributed_", "mpi_"))
+            )
+            if invalid:
+                raise ValueError(
+                    "distributed_options keys must start with 'distributed_' or "
+                    f"'mpi_'. Got {invalid}."
+                )
+
         for group in GPU_SVD_FLAG_GROUPS:
             enabled = [name for name in group if getattr(self, name)]
             if len(enabled) > 1:
@@ -441,6 +461,7 @@ class MaestroConfig(BaseModel):
             "truncation_mode",
             "seed",
             "gpu_device",
+            "distributed_options",
         ):
             value = getattr(self, name)
             if value is not None:
