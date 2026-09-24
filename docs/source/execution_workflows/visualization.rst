@@ -62,6 +62,7 @@ The standalone API is useful when you want to make the scan call explicit:
    from divi.backends import MaestroSimulator
    from divi.qprog import GenericLayerAnsatz, VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import HamiltonianProblem
    from divi.viz import scan_1d, scan_2d
 
    hamiltonian = SparsePauliOp.from_sparse_list(
@@ -69,7 +70,7 @@ The standalone API is useful when you want to make the scan call explicit:
    )
 
    vqe = VQE(
-       hamiltonian=hamiltonian,
+       HamiltonianProblem(hamiltonian),
        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),

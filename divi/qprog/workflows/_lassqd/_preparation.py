@@ -9,20 +9,24 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Self, cast
+from typing import Any, Literal, Self, cast
 from warnings import warn
 
+import ffsim
+import ffsim.optimize
+import ffsim.qiskit
 import numpy as np
 from pydantic import Field, model_validator
+from pyscf import ao2mo, cc, gto, scf
 from qiskit import ClassicalRegister, QuantumCircuit, transpile
 
 from divi.backends import CircuitRunner
-from divi.hamiltonians._chem import requires_chem_extra
 from divi.pipeline import sample_preprocessor
 from divi.pipeline.stages import QiskitSpecStage
 from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.checkpointing import _fsync_directory
 from divi.qprog.mixins._solution_sampling import _average_probabilities
+from divi.qprog.problems import MolecularProblem
 from divi.qprog.quantum_program import (
     QuantumProgram,
     reject_unclaimed_run_kwargs,
@@ -30,29 +34,7 @@ from divi.qprog.quantum_program import (
 
 from ._state import FragmentSpec
 
-if TYPE_CHECKING:
-    import ffsim
-    from ffsim.optimize import minimize_linear_method
-else:
-    try:
-        # optional chemistry extra
-        import ffsim
-        from ffsim.optimize import minimize_linear_method
-    except ImportError:
-        ffsim = None
-        minimize_linear_method = None
-
-
 _CC_MAX_CYCLE = 500
-
-
-def _require_ffsim() -> None:
-    """Raise the standard actionable error when ffsim is unavailable."""
-    if ffsim is None or minimize_linear_method is None:
-        raise ImportError(
-            "LASSQD linear-method preparation requires the 'chem' extra; "
-            "install it with `pip install qoro-divi[chem]`."
-        )
 
 
 @dataclass(frozen=True)
@@ -97,17 +79,13 @@ class LinearMethodFragmentProgram(QuantumProgram):
 
     def __init__(
         self,
-        h_alpha: np.ndarray,
-        h_beta: np.ndarray,
-        two_body: np.ndarray,
+        problem: MolecularProblem,
         spec: FragmentSpec,
         sampling_backend: CircuitRunner | None = None,
         **kwargs,
     ):
         super().__init__(**kwargs)
-        self._input_h_alpha = np.asarray(h_alpha)
-        self._input_h_beta = np.asarray(h_beta)
-        self._input_two_body = np.asarray(two_body)
+        self.problem = problem
         self.spec = spec
         self._sampling_backend = sampling_backend
         self._preparation: LUCJPreparation | None = None
@@ -118,9 +96,9 @@ class LinearMethodFragmentProgram(QuantumProgram):
         """Optimize the fragment classically, then sample its final circuit."""
         reject_unclaimed_run_kwargs(self, kwargs)
         self._preparation = prepare_lucj_fragment(
-            self._input_h_alpha,
-            self._input_h_beta,
-            self._input_two_body,
+            self.problem.one_body,
+            self.problem.one_body_beta,
+            self.problem.two_body,
             self.spec,
         )
         self._terminal_result = _LinearMethodResult(
@@ -240,11 +218,12 @@ class LinearMethodFragmentProgram(QuantumProgram):
                 raise ValueError("Completed fragment state has missing or extra arrays")
             arrays = {name: np.asarray(archive[name]) for name in required}
 
+        one_body_shape = self.problem.one_body.shape
         expected_shapes = {
-            "h_alpha": self._input_h_alpha.shape,
-            "h_beta": self._input_h_beta.shape,
-            "two_body": self._input_two_body.shape,
-            "orbital_rotation": self._input_h_alpha.shape,
+            "h_alpha": one_body_shape,
+            "h_beta": one_body_shape,
+            "two_body": self.problem.two_body.shape,
+            "orbital_rotation": one_body_shape,
         }
         if arrays["params"].ndim != 1 or any(
             arrays[name].shape != shape for name, shape in expected_shapes.items()
@@ -299,7 +278,6 @@ def build_lucj_circuit(
     n_electrons: tuple[int, int],
 ) -> QuantumCircuit:
     """Build the optimized ffsim circuit on Divi's interleaved spin wires."""
-    _require_ffsim()
 
     circuit = QuantumCircuit(2 * n_orbitals)
     grouped_spin_wires = [
@@ -444,8 +422,6 @@ def _fragment_rohf(
     spec: FragmentSpec,
 ):
     """Solve the fragment ROHF problem whose orbitals define the LUCJ basis."""
-    with requires_chem_extra("LASSQD linear-method preparation"):
-        from pyscf import ao2mo, gto, scf
 
     n_orbitals = spec.n_orbitals
     molecule = gto.M(verbose=0)
@@ -471,8 +447,6 @@ def _fragment_rohf(
 
 def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
     """Compute the paper's CCSD seed, retaining best amplitudes at the limit."""
-    with requires_chem_extra("LASSQD linear-method preparation"):
-        from pyscf import cc
 
     coupled_cluster = cc.CCSD(mean_field)
     coupled_cluster.max_cycle = _CC_MAX_CYCLE
@@ -500,7 +474,6 @@ def prepare_lucj_fragment(
     Both physical-spin one-body tensors are returned in that sampled orbital
     basis for the subsequent SQD diagonalisation.
     """
-    _require_ffsim()
 
     mean_field = _fragment_rohf(h_alpha, two_body, spec)
     orbital_rotation = np.asarray(mean_field.mo_coeff)
@@ -553,7 +526,7 @@ def prepare_lucj_fragment(
             nelec=n_electrons,
         )
 
-    result = minimize_linear_method(
+    result = ffsim.optimize.minimize_linear_method(
         params_to_vec,
         hamiltonian,
         x0=initial_params,

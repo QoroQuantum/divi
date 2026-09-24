@@ -21,6 +21,8 @@ from warnings import warn
 
 import numpy as np
 import scipy.linalg
+from pyscf import ao2mo
+from pyscf.scf import hf
 from scipy.optimize import minimize
 
 from ._state import FragmentSpec, FragmentState
@@ -136,9 +138,6 @@ def transform_integrals(
             Supplying it avoids rebuilding the AO integrals every round;
             ``None`` builds them here.
     """
-    # optional ``chem`` extra
-    from pyscf import ao2mo
-    from pyscf.scf import hf
 
     if ao_eri is None:
         ao_eri = cached_ao_eri(mol)
@@ -420,9 +419,6 @@ def energy_and_generalized_fock(
         ``(energy, fock)`` with ``fock`` shaped ``(n_orb, n_orb)``; its virtual
         columns are zero, since the densities do not reach them.
     """
-    # optional ``chem`` extra
-    from pyscf import ao2mo
-    from pyscf.scf import hf
 
     n_orb = mo_coeff.shape[1]
     n_act = rdm1_active.shape[0]

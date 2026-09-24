@@ -32,6 +32,7 @@ from divi.qprog.checkpointing import (
     list_checkpoints,
 )
 from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":
@@ -45,6 +46,7 @@ if __name__ == "__main__":
         mol = qp.qchem.Molecule(
             symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
         )
+        problem = MolecularProblem.from_molecule(mol)
 
         # Initial run - save checkpoints every iteration
         print("=" * 60)
@@ -52,7 +54,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         vqe1 = VQE(
-            molecule=mol,
+            problem,
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=10),
@@ -94,7 +96,7 @@ if __name__ == "__main__":
         vqe2 = VQE.load_state(
             checkpoint_dir=checkpoint_dir,
             backend=get_backend(),
-            molecule=mol,
+            problem=problem,
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
         )
@@ -116,7 +118,7 @@ if __name__ == "__main__":
         print("=" * 60)
 
         vqe3 = VQE(
-            molecule=mol,
+            problem,
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=10),
@@ -145,7 +147,7 @@ if __name__ == "__main__":
         vqe4 = VQE.load_state(
             checkpoint_dir=checkpoint_dir,
             backend=get_backend(),
-            molecule=mol,
+            problem=problem,
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
         )

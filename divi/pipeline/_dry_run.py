@@ -17,11 +17,13 @@ from statistics import mean, pstdev
 from typing import Any, TypeAlias
 
 from qiskit.dagcircuit import DAGCircuit
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._compilation import _effective_bodies
 from divi.pipeline._preprocessor import PipelineCadence
 from divi.pipeline.abc import (
+    BundleStage,
     MetaCircuitBatch,
     PipelineEnv,
     PipelineTrace,
@@ -327,13 +329,10 @@ def _total_shots(batch: MetaCircuitBatch, env: PipelineEnv) -> int:
 
     A ``shot_distribution`` allocates per-group shot budgets (``group_shots``),
     so those circuits sum their own allocation; otherwise every circuit runs at
-    the backend's configured shots. Returns ``0`` when the backend reports no
-    shot count (analytic expectation values consume none).
+    the backend's configured shots.
     """
     backend_shots = (
-        env.shots_override
-        if env.shots_override is not None
-        else getattr(env.backend, "shots", None)
+        env.shots_override if env.shots_override is not None else env.backend.shots
     )
     total = 0
     for mc in batch.values():
@@ -341,7 +340,7 @@ def _total_shots(batch: MetaCircuitBatch, env: PipelineEnv) -> int:
             # Distinct tags, matching total_circuits: a collapsed body is never
             # submitted, so it is never billed shots either.
             total += _distinct_body_tags(mc) * sum(mc.group_shots.values())
-        elif backend_shots is not None:
+        else:
             total += _submitted_count(mc) * backend_shots
     return total
 
@@ -364,21 +363,17 @@ def _measures_observable_per_term(trace: PipelineTrace) -> bool:
 _OBJECTIVE_COEFF_DIGITS = 9
 
 
-def _observable_fingerprint(obs: Any) -> Hashable:
+def _observable_fingerprint(obs: SparsePauliOp | tuple) -> Hashable:
     if isinstance(obs, tuple):
         return tuple(_observable_fingerprint(o) for o in obs)
-    paulis = getattr(obs, "paulis", None)
-    coeffs = getattr(obs, "coeffs", None)
-    if paulis is None or coeffs is None:
-        return repr(obs)
     return (
-        tuple(str(p) for p in paulis),
+        tuple(str(p) for p in obs.paulis),
         tuple(
             (
                 round(complex(c).real, _OBJECTIVE_COEFF_DIGITS),
                 round(complex(c).imag, _OBJECTIVE_COEFF_DIGITS),
             )
-            for c in coeffs
+            for c in obs.coeffs
         ),
     )
 
@@ -433,8 +428,7 @@ def _terminal_metadata(
     which a valid pipeline cannot be.
     """
     for stage, info in zip(stages, infos):
-        # Only BundleStage declares it; a spec stage has no such attribute.
-        if getattr(stage, "handles_measurement", False):
+        if isinstance(stage, BundleStage) and stage.handles_measurement:
             return info.metadata
     return infos[-1].metadata if infos else {}
 
@@ -490,10 +484,10 @@ def dry_run_pipeline(
     infos.append(
         StageInfo(
             name=type(spec_stage).__name__,
-            axis=getattr(spec_stage, "axis_name", None),
+            axis=spec_stage.axis_name,
             factor=float(prev_logical),
             metadata=spec_meta,
-            label=getattr(spec_stage, "name", None),
+            label=spec_stage.name,
         )
     )
 
@@ -514,10 +508,10 @@ def dry_run_pipeline(
         infos.append(
             StageInfo(
                 name=type(stage).__name__,
-                axis=getattr(stage, "axis_name", None),
+                axis=stage.axis_name,
                 factor=factor,
                 metadata=meta,
-                label=getattr(stage, "name", None),
+                label=stage.name,
             )
         )
         prev_logical = cur_logical

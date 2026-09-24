@@ -2,40 +2,59 @@ Ground-State Energy Estimation with VQE
 =======================================
 
 The Variational Quantum Eigensolver (VQE) estimates a ground-state energy by
-optimising a parameterised state against a Hamiltonian. Divi accepts the
-problem in the ecosystem where it already lives:
+optimising a parameterised state against a Hamiltonian. :class:`~divi.qprog.algorithms.VQE`
+takes its problem wrapped in a :class:`~divi.qprog.problems.HamiltonianProblem`.
+Pick the constructor matching what you already have:
 
-.. list-table:: VQE inputs
+- **A qubit Hamiltonian** — wrap it in
+  ``HamiltonianProblem(hamiltonian)`` (:class:`~divi.qprog.problems.HamiltonianProblem`).
+  Add ``n_electrons`` only if you plan to use a chemistry ansatz such as
+  :class:`~divi.qprog.algorithms.HartreeFockAnsatz` or
+  :class:`~divi.qprog.algorithms.UCCSDAnsatz`, which need it to build a
+  reference determinant.
+- **A molecule** (PySCF or PennyLane) — call
+  :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`. Divi runs
+  Hartree-Fock and supplies both the qubit Hamiltonian and the electron
+  counts.
+- **Your own one-/two-electron integrals** — construct
+  ``MolecularProblem(one_body, two_body, n_alpha=..., n_beta=...)``
+  (:class:`~divi.qprog.problems.MolecularProblem`) directly.
+
+:class:`~divi.qprog.problems.MolecularProblem` subclasses
+:class:`~divi.qprog.problems.HamiltonianProblem`, so the wrapper always carries
+electron counts alongside the Hamiltonian — the piece chemistry ansätze need
+that a bare Hamiltonian does not supply on its own. Divi accepts the problem in
+the ecosystem where it already lives:
+
+.. list-table:: Problem construction
    :header-rows: 1
-   :widths: 20 38 27 15
+   :widths: 32 38 30
 
-   * - Argument
-     - Accepted object
-     - What Divi does
+   * - Constructor
+     - Input
      - Extra
-   * - ``molecule``
+   * - ``MolecularProblem.from_molecule(molecule)``
      - PennyLane ``qchem.Molecule``
-     - Builds the molecular Hamiltonian automatically
      - ``pennylane``
-   * - ``molecule``
+   * - ``MolecularProblem.from_molecule(molecule)``
      - PySCF ``gto.Mole`` or restricted mean-field object
-     - Runs or reuses RHF, then builds the Hamiltonian
      - ``chem``
-   * - ``hamiltonian``
+   * - ``MolecularProblem(one_body, two_body, n_alpha=.., n_beta=..)``
+     - Raw one-/two-electron integrals, chemist order ``(pq|rs)``
+     - ``chem`` (building the Hamiltonian uses OpenFermion)
+   * - ``HamiltonianProblem(hamiltonian)``
      - PennyLane operator
-     - Uses the supplied qubit Hamiltonian directly
      - ``pennylane``
-   * - ``hamiltonian``
+   * - ``HamiltonianProblem(hamiltonian)``
      - Qiskit ``SparsePauliOp`` or a Pauli-string dictionary
-     - Uses the supplied qubit Hamiltonian directly
      - Default install
-   * - ``hamiltonian``
+   * - ``HamiltonianProblem(hamiltonian)``
      - OpenFermion ``QubitOperator``
-     - Converts it to Divi's internal operator form
      - ``chem``
 
-Install PennyLane integrations with ``pip install "qoro-divi[pennylane]"`` or
-PySCF/OpenFermion integrations with ``pip install "qoro-divi[chem]"``.
+Both classes live in ``divi.qprog.problems``. Install PennyLane
+integrations with ``pip install "qoro-divi[pennylane]"`` or PySCF/OpenFermion
+integrations with ``pip install "qoro-divi[chem]"``.
 
 This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
@@ -56,14 +75,16 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
    from pyscf import gto
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroSimulator
 
    # Create H2 molecule
    mol = gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr")
+   problem = MolecularProblem.from_molecule(mol)
 
    # Create VQE program
    vqe_problem = VQE(
-       molecule=mol,
+       problem,
        ansatz=HartreeFockAnsatz(),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
@@ -89,16 +110,20 @@ PySCF and OpenFermion Inputs
 
 Choose PennyLane, PySCF, or OpenFermion based on where your molecule or
 Hamiltonian already lives — Divi does not require converting between
-ecosystems before handing an object to :class:`~divi.qprog.algorithms.VQE`.
+ecosystems before building a problem for :class:`~divi.qprog.algorithms.VQE`.
 
-Pass a PySCF ``gto.Mole`` or restricted mean-field object as ``molecule=``.
-Divi runs or reuses RHF and builds the Hamiltonian through
-:func:`~divi.hamiltonians.molecular_hamiltonian_from_pyscf`. This requires the
-``chem`` extra.
+Pass a PySCF ``gto.Mole`` or restricted mean-field object to
+:meth:`~divi.qprog.problems.MolecularProblem.from_molecule`. When the
+resulting problem is passed to :class:`~divi.qprog.algorithms.VQE`, VQE reads
+``problem.hamiltonian`` during construction, which runs (or reuses) RHF and
+builds the Jordan-Wigner qubit Hamiltonian at that point — this requires the
+``chem`` extra. Building a problem that is never passed to a VQE, or reading
+its ``one_body``/``two_body`` integrals directly, computes them lazily on
+first access instead.
 
 OpenFermion ``QubitOperator`` inputs also require ``chem``. OpenFermion qubit
-``q`` maps to Divi circuit qubit ``q``. Convert explicitly when the target
-register is wider than the operator support:
+``q`` maps to Divi circuit qubit ``q``. Convert explicitly and wrap the result
+in a :class:`~divi.qprog.problems.HamiltonianProblem`:
 
 .. skip: next
 
@@ -106,14 +131,43 @@ register is wider than the operator support:
 
    from openfermion import QubitOperator
    from divi.hamiltonians import qubit_operator_to_spo
+   from divi.qprog.problems import HamiltonianProblem
    qop = QubitOperator("Z0 Z1", 1.0) + QubitOperator("X0", 0.5)
    ham = qubit_operator_to_spo(qop, n_qubits=4)
+   problem = HamiltonianProblem(ham)
 
 Hamiltonian Input
 ^^^^^^^^^^^^^^^^^
 
-Pass a PennyLane or Qiskit Hamiltonian as ``hamiltonian=``. Chemistry ansätze
-such as UCCSD and Hartree–Fock also require ``n_electrons``.
+Wrap a PennyLane or Qiskit Hamiltonian in
+:class:`~divi.qprog.problems.HamiltonianProblem`. VQE's default ansatz is
+:class:`~divi.qprog.algorithms.HartreeFockAnsatz`, which needs electron counts
+to build its reference determinant — a Hamiltonian with no chemistry meaning
+therefore needs either an explicit non-chemistry ansatz, such as
+:class:`~divi.qprog.algorithms.GenericLayerAnsatz`, or ``n_electrons`` (or
+``n_alpha``/``n_beta`` together, for a spin-polarised reference):
+
+.. code-block:: python
+
+   from qiskit.circuit.library import RYGate, RZGate
+   from qiskit.quantum_info import SparsePauliOp
+   from divi.qprog import GenericLayerAnsatz, VQE
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import HamiltonianProblem
+   from divi.backends import MaestroSimulator
+
+   hamiltonian = SparsePauliOp.from_sparse_list(
+       [("Z", [0], -1.0), ("ZZ", [0, 1], 0.5)], num_qubits=2
+   )
+   vqe = VQE(
+       HamiltonianProblem(hamiltonian),
+       ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=10,
+       backend=MaestroSimulator(),
+   )
+   vqe.run()
 
 Initial Parameters
 ^^^^^^^^^^^^^^^^^^
@@ -254,6 +308,46 @@ A few details worth calling out:
   parallel, and blocks the script until every one of them finishes before
   returning.
 
+Sweeping Over Arbitrary Problems
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Pass ``problems`` instead of ``molecule_transformer`` to sweep over a set of
+:class:`~divi.qprog.problems.HamiltonianProblem` instances that are not
+related bond-length variants of one molecule — for example, several distinct
+molecules or Hamiltonians. A ``Mapping`` keys each resulting program by its own
+label instead of by position:
+
+.. code-block:: python
+
+   from divi.qprog import VQEHyperparameterSweep, HartreeFockAnsatz
+   from divi.qprog.optimizers import MonteCarloOptimizer
+   from divi.qprog.problems import MolecularProblem
+   from pyscf import gto
+   from divi.backends import MaestroSimulator
+
+   problems = {
+       "H2": MolecularProblem.from_molecule(
+           gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
+       ),
+       "LiH": MolecularProblem.from_molecule(
+           gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g")
+       ),
+   }
+
+   sweep = VQEHyperparameterSweep(
+       problems=problems,
+       ansatze=[HartreeFockAnsatz()],
+       optimizer=MonteCarloOptimizer(population_size=10, n_best_sets=3),
+       max_iterations=10,
+       backend=MaestroSimulator(shots=5000),
+   )
+   sweep.run()
+
+``molecule_transformer`` and ``problems`` are mutually exclusive.
+:meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results` plots
+against the bond-modifier axis, so it only supports ``molecule_transformer``
+sweeps; a ``problems`` sweep reads its results from ``sweep.programs`` instead.
+
 .. tip::
 
    When using a sampling backend (e.g. ``QiskitSimulator`` or ``QoroService``
@@ -282,10 +376,12 @@ groups:
 .. code-block:: python
 
    from divi.qprog import VQE
+   from divi.qprog.problems import MolecularProblem
    from divi.backends import QiskitSimulator
 
+   problem = MolecularProblem.from_molecule(mol)
    vqe = VQE(
-       molecule=mol,
+       problem,
        ansatz=UCCSDAnsatz(),
        optimizer=mc_optimizer,
        backend=QiskitSimulator(force_sampling=True, shots=2000),

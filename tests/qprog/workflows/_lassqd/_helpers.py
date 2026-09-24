@@ -24,6 +24,7 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MolecularProblem
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.workflows._lassqd._active_space import localize_blocks
 from divi.qprog.workflows._lassqd._integrals import (
@@ -86,6 +87,17 @@ def fragment_integrals(ensemble, mo_coeff, fragments, index):
     n_act = sum(fragment.spec.n_orbitals for fragment in fragments)
     integrals = transform_integrals(ensemble._mol, mo_coeff, n_core, n_act)
     return fragment_effective_integrals(integrals, fragments, index)
+
+
+def fragment_problem(h_alpha, h_beta, g_frag, spec):
+    """The embedded problem ``LASSQD.create_programs`` hands a fragment program."""
+    return MolecularProblem(
+        h_alpha,
+        g_frag,
+        n_alpha=spec.n_alpha,
+        n_beta=spec.n_beta,
+        one_body_beta=h_beta,
+    )
 
 
 def embedded_fragment_ccsd(h_eff, g_frag, spec):
@@ -154,7 +166,7 @@ def h8_frontier_lassqd(backend=None, **overrides):
     )
     kwargs.update(overrides)
     return LASSQD(
-        h8_chain(),
+        MolecularProblem.from_molecule(h8_chain()),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         preparation_mode=LASSQDPreparationMode.VQE,
         backend=backend,
@@ -177,9 +189,26 @@ def h8_chain():
 
 
 @pytest.fixture(scope="session")
+def h2_mean_field():
+    """RHF mean field for ``h2_molecule()``, computed once per test session."""
+    return scf.RHF(h2_molecule()).run(verbose=0)
+
+
+@pytest.fixture(scope="session")
 def h4_chain_mean_field():
     """RHF mean field for ``h4_chain()``, computed once per test session."""
     return scf.RHF(h4_chain()).run(verbose=0)
+
+
+def mo_integrals(mean_field):
+    """``(one_body, two_body, n_orb, constant)`` over every MO of an RHF solve,
+    with ``two_body`` in chemist order and ``constant`` the nuclear repulsion."""
+    mol = mean_field.mol
+    mo_coeff = np.asarray(mean_field.mo_coeff)
+    n_orb = mo_coeff.shape[1]
+    one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
+    two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orb)
+    return one_body, two_body, n_orb, float(mol.energy_nuc())
 
 
 @pytest.fixture(scope="session")
@@ -358,17 +387,10 @@ class ExactSamplerVQE(QuantumProgram):
         return self
 
 
-def _build_exact_sampler_program(self, fragment, h_alpha, h_beta, g_frag, seed):
+def _build_exact_sampler_program(self, fragment, problem, seed):
     """Replacement for ``LASSQD._build_fragment_program`` used by
     :func:`build_exact_sampler_lassqd`."""
-    hamiltonian = _spo_from_integrals(
-        h_alpha, g_frag, constant=0.0, one_body_beta=h_beta
-    )
-    return ExactSamplerVQE(
-        hamiltonian,
-        fragment.spec,
-        backend=self.backend,
-    )
+    return ExactSamplerVQE(problem.hamiltonian, fragment.spec, backend=self.backend)
 
 
 def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
@@ -399,7 +421,7 @@ def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
     )
     kwargs.update(overrides)
     ensemble = LASSQD(
-        h4_chain(),
+        MolecularProblem.from_molecule(h4_chain()),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         preparation_mode=LASSQDPreparationMode.VQE,
         backend=backend,

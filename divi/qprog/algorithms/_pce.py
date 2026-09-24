@@ -22,7 +22,7 @@ from divi.pipeline.stages import PCECostStage
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 from divi.qprog.mixins import SolutionEntry
-from divi.qprog.problems import BinaryOptimizationProblem
+from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -292,7 +292,7 @@ class PCE(VQE):
         # (PCECostStage replaces MeasurementStage there), but it still
         # configures the measurement pipeline used by ``sample_solution``,
         # so it flows through unchanged.
-        super().__init__(hamiltonian=placeholder_hamiltonian, **kwargs)
+        super().__init__(HamiltonianProblem(placeholder_hamiltonian), **kwargs)
 
     @cached_property
     def _pce_cost_preprocessor(self) -> CircuitPreprocessor:

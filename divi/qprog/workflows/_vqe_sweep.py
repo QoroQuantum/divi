@@ -14,48 +14,37 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-from divi._optional import optional_module
-from divi.hamiltonians._term_ops import ObservableInput
+from divi.hamiltonians._molecular import (
+    is_pennylane_molecule,
+    is_pyscf_mean_field,
+    is_pyscf_mole,
+)
 from divi.qprog import VQE, Ansatz, ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
-
-
-def _is_pyscf_molecule(molecule) -> bool:
-    gto = optional_module("pyscf.gto")
-    return gto is not None and isinstance(molecule, gto.Mole)
-
-
-def _is_pennylane_molecule(molecule) -> bool:
-    qp = optional_module("pennylane")
-    return qp is not None and isinstance(molecule, qp.qchem.Molecule)
+from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 
 
 def _normalise_molecule(molecule):
     """Reduce a PySCF mean field to the molecule its geometry belongs to."""
-    scf = optional_module("pyscf.scf")
-    return (
-        molecule.mol
-        if scf is not None and isinstance(molecule, scf.hf.SCF)
-        else molecule
-    )
+    return molecule.mol if is_pyscf_mean_field(molecule) else molecule
 
 
 def _geometry_of(molecule) -> npt.NDArray:
     """Atomic coordinates in Bohr — the native unit of both molecule types."""
-    if _is_pyscf_molecule(molecule):
+    if is_pyscf_mole(molecule):
         return np.asarray(molecule.atom_coords())
     return np.asarray(molecule.coordinates)
 
 
 def _atom_count(molecule) -> int:
-    if _is_pyscf_molecule(molecule):
+    if is_pyscf_mole(molecule):
         return int(molecule.natm)
     return len(molecule.symbols)
 
 
 def _with_geometry(molecule, coordinates: npt.NDArray):
     """``molecule`` moved to ``coordinates`` (Bohr), leaving the original alone."""
-    if _is_pyscf_molecule(molecule):
+    if is_pyscf_mole(molecule):
         return molecule.set_geom_(np.asarray(coordinates), unit="Bohr", inplace=False)
     variant = copy.copy(molecule)
     variant.coordinates = coordinates
@@ -356,10 +345,9 @@ class MoleculeTransformer:
         object.__setattr__(
             self, "base_molecule", _normalise_molecule(self.base_molecule)
         )
-        # PySCF first, so a PySCF sweep never imports PennyLane to reject it.
         if not (
-            _is_pyscf_molecule(self.base_molecule)
-            or _is_pennylane_molecule(self.base_molecule)
+            is_pyscf_mole(self.base_molecule)
+            or is_pennylane_molecule(self.base_molecule)
         ):
             raise ValueError(
                 "`base_molecule` is expected to be a PennyLane `qchem.Molecule` "
@@ -452,8 +440,8 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         self,
         ansatze: Sequence[Ansatz],
         molecule_transformer: MoleculeTransformer | None = None,
-        hamiltonians: (
-            Sequence[ObservableInput] | Mapping[Any, ObservableInput] | None
+        problems: (
+            Sequence[HamiltonianProblem] | Mapping[Any, HamiltonianProblem] | None
         ) = None,
         optimizer: Optimizer | None = None,
         max_iterations: int = 10,
@@ -466,18 +454,16 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         ----------
         ansatze: Sequence[Ansatz]
             A sequence of ansatz circuits to test.
-        hamiltonians: Sequence[ObservableInput] | Mapping[Any, ObservableInput], optional
-            The Hamiltonians to use for the VQE runs — any form ``to_spo``
-            accepts (PennyLane operator, ``SparsePauliOp``, Pauli-string dict,
-            or OpenFermion ``QubitOperator``). A mapping keys each program by
-            its own key instead of by position. If ``None``
-            (the default), no Hamiltonians are provided explicitly and
-            molecule-based VQE runs will use their default Hamiltonians.
+        problems: Sequence[HamiltonianProblem] | Mapping[Any, HamiltonianProblem], optional
+            The problems to use for the VQE runs. A mapping keys each program
+            by its own key instead of by position. If ``None`` (the default),
+            the problems come from ``molecule_transformer``'s variants.
         molecule_transformer: MoleculeTransformer | None, optional
             A `MoleculeTransformer` object defining the configuration for
-            generating the molecule variants. If ``None`` (the default),
-            the provided ``hamiltonians`` are used directly and no molecular
-            transformation is performed.
+            generating the molecule variants, each solved as an
+            :class:`~divi.qprog.problems.MolecularProblem`. If
+            ``None`` (the default), the provided ``problems`` are used
+            directly and no molecular transformation is performed.
         optimizer: Optimizer
             The optimisation algorithm for the VQE runs.
         max_iterations: int
@@ -496,19 +482,19 @@ class VQEHyperparameterSweep(ProgramEnsemble):
 
         self.molecule_transformer = molecule_transformer
         self.ansatze = ansatze
-        self.hamiltonians = hamiltonians
+        self.problems = problems
         self.max_iterations = max_iterations
 
-        if molecule_transformer is not None and hamiltonians is not None:
+        if molecule_transformer is not None and problems is not None:
             raise ValueError(
                 "VQEHyperparameterSweep supports either a molecule sweep "
-                "(via molecule_transformer) or a Hamiltonian sweep (via hamiltonians), "
+                "(via molecule_transformer) or a problem sweep (via problems), "
                 "but not both."
             )
 
-        if molecule_transformer is None and not hamiltonians:
+        if molecule_transformer is None and not problems:
             raise ValueError(
-                "At least one of molecule_transformer or hamiltonians must be provided."
+                "At least one of molecule_transformer or problems must be provided."
             )
 
         self._optimizer_template = (
@@ -534,28 +520,19 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         """
         super().create_programs()
 
-        # Molecule sweep or Hamiltonian sweep
         if self.molecule_transformer is not None:
-            molecule_variants = self.molecule_transformer.generate()
-            sweep_items = (
-                (modifier, molecule, None)
-                for modifier, molecule in molecule_variants.items()
-            )
+            sweep_items = [
+                (modifier, MolecularProblem.from_molecule(molecule))
+                for modifier, molecule in self.molecule_transformer.generate().items()
+            ]
+        elif isinstance(self.problems, Mapping):
+            sweep_items = list(self.problems.items())
         else:
-            hamiltonians = self.hamiltonians or ()
-            if isinstance(hamiltonians, dict):
-                h_items = hamiltonians.items()
-            else:
-                h_items = enumerate(hamiltonians)
-            sweep_items = ((h_id, None, hamiltonian) for h_id, hamiltonian in h_items)
+            sweep_items = list(enumerate(self.problems or ()))
 
-        for ansatz, (item_id, molecule, hamiltonian) in product(
-            self.ansatze, sweep_items
-        ):
-            _job_id = (ansatz.name, item_id)
-            self._programs[_job_id] = self._constructor(
-                molecule=molecule,
-                hamiltonian=hamiltonian,
+        for ansatz, (item_id, problem) in product(self.ansatze, sweep_items):
+            self._programs[(ansatz.name, item_id)] = self._constructor(
+                problem,
                 ansatz=ansatz,
                 optimizer=self._optimizer_template.copy(),
             )
@@ -596,7 +573,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         if (transformer := self.molecule_transformer) is None:
             raise RuntimeError(
                 "visualize_results currently supports molecule-transformer sweeps only; "
-                "visualisation for hamiltonians-only sweeps is not implemented."
+                "visualisation for problem sweeps is not implemented."
             )
 
         if self._executor is not None:

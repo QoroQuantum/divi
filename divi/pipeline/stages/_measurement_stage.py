@@ -52,14 +52,7 @@ def _warn_imag_coeffs(
 ) -> None:
     """Warn if any observable term carries a non-negligible imaginary coefficient.
 
-    Runs at the boundary of :class:`MeasurementStage` — before the
-    observable is flattened via :func:`flatten_observable_tuple` (which
-    drops imaginary parts via ``np.real``) — so the diagnostic still
-    fires when the user's original coefficients carry information that
-    shot allocation will silently discard.  Hermitian operators may
-    legitimately produce purely-imaginary coefficients (e.g. ``j*(O -
-    O.adjoint())`` decompositions); the warning steers users to
-    ``0.5 * (O + O.adjoint())`` symmetrisation.
+    Runs before flattening, which keeps only the real parts.
     """
     obs_iter = observable if isinstance(observable, tuple) else (observable,)
     for obs in obs_iter:
@@ -81,9 +74,6 @@ def _warn_imag_coeffs(
                 UserWarning,
                 stacklevel=3,
             )
-            # One warning per spec is sufficient — the user needs to
-            # inspect their construction once, not once per offending
-            # tuple element.
             return
 
 
@@ -145,29 +135,17 @@ def _plan_group_shots(
     *,
     total_shots: int | None = None,
 ) -> _GroupShotPlan:
-    """Plan per-group execution and subsequent estimator adjustments.
+    """Plan per-group shots and the estimator adjustments applied during reduction.
 
-    Pure helper — no instance state. Reads ``env.backend.shots`` and
-    ``env.rng`` from the pipeline environment, and ``shot_distribution``
-    from the caller.
-
-    The ``observable`` here is the post-flatten union (real coefficients
-    only); imaginary-coefficient diagnostics are emitted earlier by
-    :func:`_warn_imag_coeffs` against the user's original observable.
-
-    The returned plan keeps allocation and reduction metadata together so the
-    coefficient norms used for weighted random sampling are computed once.
+    ``observable`` is the flattened union, with real coefficients only.
     """
     n_groups = len(measurement_groups)
     if n_groups == 0:
         return _GroupShotPlan([], None)
 
     if shot_distribution is None:
-        # No distribution: every group gets the full per-evaluation budget. When
-        # an evaluation overrides the shot count (``shots_override``), materialise
-        # it as uniform per-group shots so it reaches the backend via the
-        # ``shot_groups`` submission path (the backend otherwise uses its own
-        # ``shots``); without an override leave allocation to the backend.
+        # Every group gets the full budget; an override becomes uniform group
+        # shots so it reaches the backend.
         if env.shots_override is None:
             return _GroupShotPlan(list(range(n_groups)), None)
         return _GroupShotPlan(
@@ -197,12 +175,7 @@ def _plan_group_shots(
 
     missing_group_results: dict[int, object] = {}
     if dropped_indices and shot_distribution != "weighted_random":
-        # Quantify the bias introduced by dropping these groups. The
-        # estimator is biased by sum(c_i * <h_i>) over the dropped terms;
-        # |bias| <= sum_{dropped} ||c_i||_1 = sum(group_norms[dropped]),
-        # since |<h_i>| <= 1 for any Pauli string. Reporting the dropped
-        # fraction of total L1 norm tells the user whether the skipped terms
-        # are negligible or load-bearing.
+        # |bias| <= L1 norm of the dropped groups, since |<h_i>| <= 1.
         dropped_norm = sum(group_norms[i] for i in dropped_indices)
         total_norm = sum(group_norms)
         dropped_fraction = dropped_norm / total_norm if total_norm > 0 else 0.0
@@ -221,10 +194,7 @@ def _plan_group_shots(
             stacklevel=2,
         )
     for idx in dropped_indices:
-        # Match the shape that the postprocessing function expects: a dict
-        # {obs_idx_within_group: 0.0} works for both single- and
-        # multi-observable groups. For weighted random sampling this represents
-        # an absent draw, not a deterministic approximation of the group.
+        # Zero per observable in the group (an absent draw for weighted_random).
         missing_group_results[idx] = {
             j: 0.0 for j in range(len(measurement_groups[idx]))
         }
@@ -371,19 +341,14 @@ class MeasurementStage(BundleStage):
 
     @property
     def consumes_dag_bodies(self) -> bool:
-        # Reads only ``meta.observable`` / ``meta.measured_wires`` /
-        # ``meta.n_qubits`` — never touches body DAG contents.
+        # Reads only observable, measured_wires and n_qubits.
         return False
 
     @property
     def volatile(self) -> bool:
-        """True only for genuinely non-deterministic shot-distribution strategies.
+        """True for shot distributions that draw from ``env.rng``.
 
-        ``"weighted_random"`` and user-supplied callables draw from ``env.rng``
-        and must re-run on every call. The built-in deterministic strategies
-        (``"uniform"``, ``"weighted"``) are pure functions of the observable
-        and the shot count, so they stay cacheable; cache invalidation on
-        shot-count changes is delegated to :meth:`cache_key_extras`.
+        That is ``"weighted_random"`` and user-supplied callables.
         """
         return self._shot_distribution == "weighted_random" or callable(
             self._shot_distribution
@@ -394,17 +359,10 @@ class MeasurementStage(BundleStage):
         return self.volatile or env.estimator_samples is not None
 
     def cache_key_extras(self, env) -> tuple[Hashable, ...]:
-        """Fold the effective shot budget / variance flag into the forward-pass
-        cache key.
+        """Extra forward-pass cache key parts.
 
-        A configured shot distribution (even the deterministic ones) reads the
-        shot budget during :meth:`expand` to compute the per-group allocation;
-        so does an active ``shots_override`` (which materialises uniform
-        per-group shots). Including the budget means a re-run with a different
-        one triggers fresh allocation rather than replaying a stale one.
-        ``collect_variance`` is folded in too, since it changes the per-call
-        post-processing. Returns ``()`` in the default case (no distribution, no
-        override, no variance) so caching is unaffected.
+        Includes the effective shot budget when a shot distribution or
+        ``shots_override`` is active, and ``collect_variance`` when set.
         """
         extras: tuple[Hashable, ...] = ()
         if self._shot_distribution is not None or env.shots_override is not None:
@@ -489,15 +447,7 @@ class MeasurementStage(BundleStage):
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
-        """Analytic path: keep grouping + shot allocation, skip QASM rendering.
-
-        Group count is the source of truth for the measurement fan-out, so
-        we always run ``_compute_measurement_groups`` and
-        ``_plan_group_shots`` (both cheap, pure numpy / analytic).
-        Only the per-group QASM string generation is swapped for a
-        placeholder so the emitted batch has correct shape without
-        materialising measurement circuits.
-        """
+        """Same grouping and shot allocation as :meth:`expand`, with placeholder QASM."""
         return self._dispatch(
             batch,
             env,
@@ -513,15 +463,8 @@ class MeasurementStage(BundleStage):
         expval_qasm_factory: Callable,
         probs_qasm_factory: Callable,
     ) -> StageOutput[MetaCircuitBatch]:
-        """Shared front-end for both real and dry paths.
-
-        Picks the expval vs probs branch from the first MetaCircuit's shape
-        and applies the ``result_format_override``, exactly as the legacy
-        ``expand`` did — only the QASM factory differs between modes.
-        """
+        """Pick the expval or probs path and apply ``result_format_override``."""
         sample_meta = next(iter(batch.values()))
-        # Probs/counts circuits carry measured_wires; expval circuits carry
-        # observable.  Exactly one is expected to be set.
         if sample_meta.observable is not None:
             result = self._expand_expval(batch, env, expval_qasm_factory)
         elif sample_meta.measured_wires is not None:
@@ -557,8 +500,6 @@ class MeasurementStage(BundleStage):
         for key, meta in batch.items():
             wires = meta.measured_wires
             if wires is None:
-                # Defensive: expand() already dispatched based on observable
-                # vs measured_wires, but the batch might be heterogeneous.
                 raise ValueError(
                     f"MeasurementStage (probs path): key '{key}' has no "
                     "measured_wires set."
@@ -638,11 +579,8 @@ class MeasurementStage(BundleStage):
     ) -> StageOutput[MetaCircuitBatch]:
         """Group observables and generate measurement QASM (or ham_ops).
 
-        ``qasm_factory`` turns ``(surviving_groups, n_qubits, measure_all=...)``
-        into a tuple of per-group measurement QASMs. :meth:`expand` passes
-        :func:`measurement_qasms_from_groups`; :meth:`dry_expand` passes a
-        placeholder factory so the batch shape is preserved without
-        serialising diagonalising gates + ``measure`` instructions.
+        ``qasm_factory`` maps ``(surviving_groups, n_qubits, measure_all=...)``
+        to one measurement QASM per group.
         """
         strategy, sample_budgets = self._resolve_expval_mode(batch, env)
 
@@ -689,9 +627,6 @@ class MeasurementStage(BundleStage):
             if strategy == BACKEND_EXPVAL and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)
 
-            # Shot allocation weights groups by the union's coefficient L1 norm.
-            # ``_compute_measurement_groups`` already flattened the observable;
-            # reuse its union directly instead of redoing the symplectic dedup.
             if sample_union is None:
                 sample_union = union_obs
             plans = _plans_for_spec(
@@ -712,9 +647,6 @@ class MeasurementStage(BundleStage):
                 }
             )
             if not surviving_indices:
-                # Every group dropped: there is nothing to submit and nothing to
-                # postprocess. Failing here beats emitting an unmeasured circuit,
-                # which previews as a plausible count and dies at execution.
                 raise ValueError(
                     f"shot_distribution assigned zero shots to every measurement "
                     f"group of '{key}', so no circuit can be submitted. Raise the "
@@ -731,9 +663,7 @@ class MeasurementStage(BundleStage):
                 for orig_idx, meas_qasm in zip(surviving_indices, measurement_qasms)
             )
 
-            # Keep the *full* measurement_groups on the MetaCircuit so that
-            # _counts_to_expvals can index into it by the original obs_group
-            # tag carried on each surviving label.
+            # Keep all groups: results are indexed by their original obs_group tag.
             measurement_meta = (
                 meta.set_observable(observable) if sample_budgets is not None else meta
             )
@@ -742,11 +672,6 @@ class MeasurementStage(BundleStage):
                 .set_measurement_groups(measurement_groups)
                 .set_result_format(ResultFormat.EXPVALS)
             )
-            # The backend-native expval path evaluates analytically and rejects
-            # per-circuit shot_groups (incompatible with ham_ops). A shots
-            # override is meaningless there, so never materialise group shots on
-            # that path — the override is silently ignored, as analytic expval
-            # ignores shots by definition.
             if sample_budgets is not None:
                 new_meta = new_meta.set_param_group_shots(
                     {
@@ -759,6 +684,7 @@ class MeasurementStage(BundleStage):
                 )
             else:
                 shot_plan = plans[key]
+                # Analytic expval ignores shots and rejects shot_groups.
                 if shot_plan.shots_by_group is not None and strategy != BACKEND_EXPVAL:
                     new_meta = new_meta.set_group_shots(shot_plan.shots_by_group)
             result[key] = new_meta
@@ -798,33 +724,20 @@ class MeasurementStage(BundleStage):
         if meta is None:
             return info
 
-        # Backend-native expval: measurement_groups is a sentinel empty group
-        # because the backend evaluates the full observable directly. The
-        # Pauli-term count is the actionable figure; the raw observable string
-        # is redundant with it and only adds noise to the report.
-        #
-        # Recognise the sentinel groups too, not the strategy alone: the strategy
-        # is resolved inside ``expand`` and reaches us only via the token, and
-        # without it the branch below would read the empty group as a real one and
-        # report a zero-term, zero-qubit observable.
+        # Analytic expval carries sentinel groups; check them too, since the
+        # strategy is only known from the token.
         if (
             effective_strategy == BACKEND_EXPVAL
             or meta.measurement_groups == BACKEND_EXPVAL_GROUPS
         ):
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
-                # Pauli-term count across observables, distinct from
-                # TrotterSpec's ``n_terms`` (Hamiltonian-term count).
                 info["n_pauli_terms"] = token.n_observable_terms
             return info
 
         groups = meta.measurement_groups
         if not groups:
-            # A computational-basis readout (solution sampling): there is no
-            # observable to partition, so group and term counts do not apply —
-            # reporting them as zeros reads as a misconfigured stage. Drop the
-            # configured ``strategy`` too: nothing was grouped, and a row saying
-            # "qwc" beside "no observable" describes work that did not happen.
+            # Computational-basis readout: nothing was grouped.
             info.pop("strategy", None)
             info["readout"] = "computational basis (no observable)"
             return info
@@ -839,52 +752,28 @@ class MeasurementStage(BundleStage):
             info["device_shots"] = sum(
                 sum((plan.shots_by_group or {}).values()) for plan in plans
             )
-        # Report the consequence rather than echoing the flag: with measure_all
-        # off, each group reads only the qubits it acts on, so the outcome space a
-        # user sees is narrower than the register.
         info["measured_qubits"] = (
             "all" if self._measure_all else "per group (observable support only)"
         )
-        # Two complementary "biggest measurement" stats: how many Pauli strings
-        # the largest group contains, and the widest basis change any group
-        # requires (qubits it touches, i.e. non-I positions across its members).
-        # The first answers "how much QWC saves us"; the second answers "how big
-        # a basis change does this pipeline need" — maximised over all groups, not
-        # read off the largest-by-size one, which is meaningless when every group
-        # holds a single term.
-        if groups:
-            info["largest_group_size"] = max(len(g) for g in groups)
-            widths = (
-                len({q for label in g for q, c in enumerate(str(label)) if c != "I"})
-                for g in groups
-            )
-            info["largest_group_width"] = max(widths)
+        # Most terms in one group, and most qubits any group's basis change touches.
+        info["largest_group_size"] = max(len(g) for g in groups)
+        info["largest_group_width"] = max(
+            len({q for label in g for q, c in enumerate(str(label)) if c != "I"})
+            for g in groups
+        )
 
-        # Shot-budget surface: tells the user what each circuit will be
-        # billed for (or how the budget was distributed across QWC groups).
-        backend_shots = getattr(env.backend, "shots", None)
-        if backend_shots is not None:
-            spec_pgs = next(
-                (m.group_shots for m in batch.values() if m.group_shots), None
-            )
-            if spec_pgs:
-                # Shot-distribution strategy active — each group gets its
-                # own slice; surface the range so users see the spread.
-                values = sorted(spec_pgs.values())
-                # Named as a range: a plural key beside ``n_groups: 5`` reads as a
-                # per-group enumeration, and a two-element value then looks wrong.
-                info["shots_per_group_range"] = [values[0], values[-1]]
-                # A starved budget drops zero-shot groups, so ``n_groups`` counts
-                # groups formed while only these are submitted. Without this,
-                # n_groups × shots_per_group_range reads as the whole budget when the
-                # total (correctly) reports a fraction of it.
-                if len(spec_pgs) != len(groups):
-                    info["n_groups_submitted"] = len(spec_pgs)
-            else:
-                # Default: every circuit submitted with backend.shots.
-                info["shots_per_circuit"] = backend_shots
+        spec_pgs = next((m.group_shots for m in batch.values() if m.group_shots), None)
+        if spec_pgs:
+            values = sorted(spec_pgs.values())
+            info["shots_per_group_range"] = [values[0], values[-1]]
+            # Zero-shot groups are dropped, so fewer than n_groups may be submitted.
+            if len(spec_pgs) != len(groups):
+                info["n_groups_submitted"] = len(spec_pgs)
+        else:
+            info["shots_per_circuit"] = env.effective_shots
         return info
 
+    # ------------------------------------------------------------------ #
     # Reduce
     # ------------------------------------------------------------------ #
 

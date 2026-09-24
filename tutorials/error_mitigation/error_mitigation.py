@@ -26,6 +26,7 @@ from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MolecularProblem
 
 
 def _print_mitigation_comparison(runs, reference_energy):
@@ -55,6 +56,7 @@ if __name__ == "__main__":
         symbols=["H", "H"],
         coordinates=np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]]),
     )
+    problem = MolecularProblem.from_molecule(mol)
 
     noise_model = NoiseModel()
     noise_model.add_all_qubit_quantum_error(
@@ -71,7 +73,7 @@ if __name__ == "__main__":
 
     # --- Shared VQE settings across methods ---
     common = dict(
-        molecule=mol,
+        problem=problem,
         n_layers=1,
         ansatz=HartreeFockAnsatz(),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),

@@ -17,7 +17,7 @@ from divi.pipeline import CircuitPreprocessor, ResultFormat
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
 from divi.qprog import PCE, VQE, CustomVQA
 from divi.qprog.algorithms import GenericLayerAnsatz
-from divi.qprog.problems import BinaryOptimizationProblem
+from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
 
 
 def _stage_types(pipeline):
@@ -40,7 +40,7 @@ def _metric_pipeline(program):
 @pytest.fixture
 def vqe(dummy_simulator, default_optimizer):
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)]),
+        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=dummy_simulator,
@@ -51,7 +51,7 @@ def vqe(dummy_simulator, default_optimizer):
 @pytest.fixture
 def mitigated_vqe(dummy_simulator, default_optimizer):
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)]),
+        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=dummy_simulator,
@@ -124,7 +124,7 @@ def test_twirl_stage_draws_from_the_program_seed(dummy_simulator, default_optimi
 
     def twirled(seed):
         program = VQE(
-            hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)]),
+            HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
             ansatz=GenericLayerAnsatz([RYGate]),
             n_layers=1,
             backend=dummy_simulator,

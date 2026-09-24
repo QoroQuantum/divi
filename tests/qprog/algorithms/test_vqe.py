@@ -20,6 +20,7 @@ from divi.qprog.algorithms import (
     UCCSDAnsatz,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 from divi.reporting._events import EventKind, TerminalStatus
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
@@ -29,10 +30,9 @@ from tests.qprog._program_contracts import (
 
 
 @pytest.fixture
-def h2_molecule(qp):
+def h2_problem(pennylane_h2):
     """H2 through the PennyLane molecule front door."""
-    coordinates = np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
-    return qp.qchem.Molecule(["H", "H"], coordinates)
+    return MolecularProblem.from_molecule(pennylane_h2)
 
 
 @pytest.fixture
@@ -70,52 +70,31 @@ ANSAETZE_TO_TEST = {
 
 
 def test_vqe_initialization_with_pyscf_molecule(
-    default_test_simulator, default_optimizer
+    default_test_simulator, default_optimizer, pyscf_h2
 ):
     """VQE accepts a PySCF molecule and builds the same H2 problem."""
     pytest.importorskip("openfermion")
-    gto = pytest.importorskip("pyscf.gto")
 
-    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
     vqe_problem = VQE(
-        molecule=mol,
+        MolecularProblem.from_molecule(pyscf_h2),
         ansatz=HartreeFockAnsatz(),
         backend=default_test_simulator,
         optimizer=default_optimizer,
     )
 
-    assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
-
-
-def test_vqe_pyscf_molecule_warns_on_n_electrons_mismatch(
-    dummy_simulator, default_optimizer
-):
-    """A caller-supplied n_electrons that disagrees with the pyscf molecule warns."""
-    pytest.importorskip("openfermion")
-    gto = pytest.importorskip("pyscf.gto")
-
-    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g")
-    with pytest.warns(UserWarning, match="not consistent"):
-        VQE(
-            molecule=mol,
-            n_electrons=99,
-            backend=dummy_simulator,
-            optimizer=default_optimizer,
-        )
 
 
 def test_vqe_initialization_with_qubit_operator_hamiltonian(
     dummy_simulator, default_optimizer
 ):
-    """VQE accepts an OpenFermion QubitOperator as the hamiltonian input."""
+    """VQE accepts a problem built from an OpenFermion QubitOperator."""
     QubitOperator = pytest.importorskip("openfermion").QubitOperator
 
     qop = QubitOperator("Z0 Z1", 1.0) + QubitOperator("X0", 0.3)
     vqe_problem = VQE(
-        hamiltonian=qop,
-        n_electrons=2,
+        HamiltonianProblem(qop, n_electrons=2),
         backend=dummy_simulator,
         optimizer=default_optimizer,
     )
@@ -125,11 +104,11 @@ def test_vqe_initialization_with_qubit_operator_hamiltonian(
 
 
 def test_vqe_basic_initialization_with_molecule(
-    default_test_simulator, h2_molecule, default_optimizer
+    default_test_simulator, h2_problem, default_optimizer
 ):
-    """Test VQE initialization with a molecule object."""
+    """Test VQE initialization with a problem built from a molecule."""
     vqe_problem = VQE(
-        molecule=h2_molecule,
+        h2_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,  # n_layers is passed to VQE again
         backend=default_test_simulator,
@@ -137,9 +116,7 @@ def test_vqe_basic_initialization_with_molecule(
     )
 
     assert vqe_problem.backend.shots == 5000
-    assert vqe_problem.molecule == h2_molecule
     assert vqe_problem.n_layers == 1  # Assert on VQE instance
-    assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
@@ -149,10 +126,9 @@ def test_vqe_basic_initialization_with_molecule(
 def test_vqe_basic_initialization_with_hamiltonian(
     default_test_simulator, four_qubit_hamiltonian, default_optimizer
 ):
-    """Test VQE initialization with a Hamiltonian object."""
+    """Test VQE initialization with a problem wrapping a Hamiltonian."""
     vqe_problem = VQE(
-        hamiltonian=four_qubit_hamiltonian,
-        n_electrons=2,
+        HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=default_test_simulator,
@@ -161,7 +137,6 @@ def test_vqe_basic_initialization_with_hamiltonian(
 
     assert vqe_problem.backend.shots == 5000
     assert vqe_problem.n_layers == 1
-    assert vqe_problem.n_electrons == 2
     assert vqe_problem.n_qubits == 4
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
@@ -178,8 +153,7 @@ def test_vqe_clean_hamiltonian_logic(
     )
 
     vqe_problem = VQE(
-        hamiltonian=hamiltonian_with_constant,
-        n_electrons=2,
+        HamiltonianProblem(hamiltonian_with_constant, n_electrons=2),
         ansatz=HartreeFockAnsatz(),
         backend=dummy_simulator,
         optimizer=default_optimizer,
@@ -202,22 +176,18 @@ def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimi
     hamiltonian = 5.0 * SparsePauliOp("I")
     with pytest.raises(ValueError, match="Hamiltonian contains only constant terms."):
         VQE(
-            hamiltonian=hamiltonian,
-            n_electrons=2,
+            HamiltonianProblem(hamiltonian, n_electrons=2),
             ansatz=HartreeFockAnsatz(),
             backend=dummy_simulator,
             optimizer=default_optimizer,
         )
 
 
-def test_vqe_fail_with_neither_hamiltonian_nor_molecule(
-    dummy_simulator, default_optimizer
-):
-    """VQE raises ValueError when neither hamiltonian nor molecule is provided."""
-    with pytest.raises(
-        ValueError, match="Either one of `molecule` and `hamiltonian` must be provided"
-    ):
+def test_vqe_fail_with_bare_hamiltonian(dummy_simulator, default_optimizer):
+    """VQE raises TypeError when given an operator instead of a HamiltonianProblem."""
+    with pytest.raises(TypeError, match="problem must be a HamiltonianProblem"):
         VQE(
+            SparsePauliOp("Z"),
             ansatz=HartreeFockAnsatz(),
             backend=dummy_simulator,
             optimizer=default_optimizer,
@@ -227,8 +197,7 @@ def test_vqe_fail_with_neither_hamiltonian_nor_molecule(
 def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, default_optimizer):
     """A one-term Hamiltonian initialises without an operands error."""
     vqe_problem = VQE(
-        hamiltonian=0.5 * SparsePauliOp("Z"),
-        n_electrons=1,
+        HamiltonianProblem(0.5 * SparsePauliOp("Z"), n_electrons=1),
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=dummy_simulator,
@@ -242,8 +211,7 @@ class TestSampleSolutionProgress:
     @staticmethod
     def _make_vqe(backend, optimizer):
         return VQE(
-            hamiltonian=SparsePauliOp("Z"),
-            n_electrons=1,
+            HamiltonianProblem(SparsePauliOp("Z"), n_electrons=1),
             ansatz=GenericLayerAnsatz([RYGate, RZGate]),
             n_layers=1,
             backend=backend,
@@ -272,11 +240,11 @@ class TestSampleSolutionProgress:
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
 @pytest.mark.parametrize("n_layers", [1, 2])
 def test_meta_circuit_qasm(
-    ansatz_obj, n_layers, h2_molecule, dummy_simulator, default_optimizer
+    ansatz_obj, n_layers, h2_problem, dummy_simulator, default_optimizer
 ):
     """Test the QASM representation of the meta circuits."""
     vqe_problem = VQE(
-        molecule=h2_molecule,
+        h2_problem,
         ansatz=ansatz_obj,
         n_layers=n_layers,
         backend=dummy_simulator,
@@ -291,16 +259,16 @@ def test_meta_circuit_qasm(
     total_params = vqe_problem.n_layers * vqe_problem.n_params_per_layer
     assert len(set(matches)) == total_params
     assert len(set(matches)) // n_layers == ansatz_obj.n_params_per_layer(
-        vqe_problem.n_qubits, n_electrons=vqe_problem.n_electrons
+        vqe_problem.n_qubits, n_electrons=h2_problem.n_electrons
     )
 
 
 def test_vqe_correct_circuits_count_and_energies(
-    optimizer, dummy_simulator, h2_molecule
+    optimizer, dummy_simulator, h2_problem
 ):
     """Test circuit counts and energy calculations after a VQE run."""
     vqe_problem = VQE(
-        molecule=h2_molecule,
+        h2_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=optimizer,
@@ -313,7 +281,7 @@ def test_vqe_correct_circuits_count_and_energies(
 
 
 def test_vqe_lucj_ansatz_runs_to_completion(
-    default_test_simulator, default_optimizer, h2_molecule
+    default_test_simulator, default_optimizer, h2_problem
 ):
     """Regression test: VQE(LUCJAnsatz()) must complete a run.
 
@@ -322,7 +290,7 @@ def test_vqe_lucj_ansatz_runs_to_completion(
     emitter unlowered, raising ``ValueError`` at circuit submission.
     """
     vqe_problem = VQE(
-        molecule=h2_molecule,
+        h2_problem,
         ansatz=LUCJAnsatz(),
         n_layers=1,
         optimizer=default_optimizer,
@@ -337,13 +305,13 @@ def test_vqe_lucj_ansatz_runs_to_completion(
 
 
 @pytest.mark.e2e
-def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_molecule):
+def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_problem):
     """Test that VQE finds the correct ground state for the H2 molecule."""
 
     default_test_simulator.set_seed(1997)
 
     vqe_problem = VQE(
-        molecule=h2_molecule,
+        h2_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=optimizer,
@@ -372,7 +340,7 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_mole
 
 @pytest.mark.e2e
 def test_vqe_h2_molecule_e2e_checkpointing_resume(
-    checkpointing_optimizer, default_test_simulator, h2_molecule, tmp_path
+    checkpointing_optimizer, default_test_simulator, h2_problem, tmp_path
 ):
     """Test VQE e2e with checkpointing and multiple resume cycles.
 
@@ -384,7 +352,7 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
 
     # First run: iterations 1-2
     vqe_problem1 = VQE(
-        molecule=h2_molecule,
+        h2_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=checkpointing_optimizer,
@@ -409,7 +377,7 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     vqe_problem2 = VQE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
-        molecule=h2_molecule,
+        problem=h2_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
     )
@@ -428,7 +396,7 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     vqe_problem3 = VQE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
-        molecule=h2_molecule,
+        problem=h2_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
     )
@@ -457,8 +425,7 @@ class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     def make_program(self, four_qubit_hamiltonian, dummy_simulator, default_optimizer):
         def _make(**kwargs):
             return VQE(
-                hamiltonian=four_qubit_hamiltonian,
-                n_electrons=2,
+                HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
                 ansatz=HartreeFockAnsatz(),
                 backend=dummy_simulator,
                 optimizer=default_optimizer,

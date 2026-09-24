@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import heapq
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
@@ -16,6 +17,7 @@ import scipy.sparse as sps
 from matplotlib import colormaps
 from sklearn.cluster import SpectralClustering
 
+from divi._optional import optional_module
 from divi.qprog import GraphProblemTypes
 
 # TODO: Make this dynamic through an interaction with usher
@@ -197,14 +199,15 @@ def _apply_split_with_relabel(
         )
         parts = sc.fit_predict(adj_matrix)
     elif algorithm == "metis":
-        try:
-            from pymetis import part_graph
-        except ImportError as e:
+        if sys.platform == "win32" and optional_module("pymetis") is None:
             raise ImportError(
-                "pymetis is required for the 'metis' partitioning algorithm but could not be "
-                "imported. On Windows, install via conda: conda install -c conda-forge pymetis. "
-                "Otherwise use 'spectral' or 'kernighan_lin' instead."
-            ) from e
+                "The 'metis' partitioning algorithm needs pymetis, which is not "
+                "installed on Windows by default; install it via conda: "
+                "conda install -c conda-forge pymetis. Otherwise use 'spectral' "
+                "or 'kernighan_lin' instead."
+            )
+        from pymetis import part_graph
+
         adj_list, node_ids = _metis_inputs(graph)
         _, parts = part_graph(n_clusters, adjacency=adj_list)
     else:

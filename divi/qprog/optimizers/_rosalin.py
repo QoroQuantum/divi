@@ -65,7 +65,7 @@ def _gcans_shots(
     min_shots: int,
     evaluation_counts: npt.NDArray[np.int64] | None = None,
 ) -> npt.NDArray[np.int64]:
-    """Compute paper equation 13, generalized to unequal shift-rule costs."""
+    """Compute paper equation 13, generalised to unequal shift-rule costs."""
     factor = 2 * lipschitz * learning_rate / (2 - lipschitz * learning_rate)
     standard_deviations = np.sqrt(np.maximum(variance_ema, 0.0))
     costs = (
@@ -173,7 +173,7 @@ class RosalinOptimizer(Optimizer):
 
     Each iteration evaluates the current loss and the program's complete
     parameter-shift recipe in one batch. The gradient coordinates receive
-    independent adaptive sample counts; generalized rules may use more than two
+    independent adaptive sample counts; generalised rules may use more than two
     evaluations per coordinate. The current loss uses ``min_shots`` as
     iteration telemetry; noisy current-point estimates are never compared to
     select a best iterate. All samples count toward ``total_shots``.
@@ -192,9 +192,9 @@ class RosalinOptimizer(Optimizer):
         min_shots: Persistent minimum samples allocated to every expectation
             estimate. Must be at least two to estimate variance.
         ema_decay: Exponential-moving-average decay :math:`\mu`.
-        bias: Positive stabilizer :math:`b` in the allocation denominator.
-        allocation: Adaptive allocation rule. ``"icans"`` optimizes each
-            gradient coordinate independently; ``"gcans"`` optimizes expected
+        bias: Positive stabiliser :math:`b` in the allocation denominator.
+        allocation: Adaptive allocation rule. ``"icans"`` optimises each
+            gradient coordinate independently; ``"gcans"`` optimises expected
             improvement per shot across the complete gradient.
     """
 
@@ -255,18 +255,18 @@ class RosalinOptimizer(Optimizer):
 
     @property
     def n_param_sets(self) -> int:
-        """Number of independent iterates optimized at once."""
+        """Number of independent iterates optimised at once."""
         return 1
 
     def validate_program(self, program) -> None:
         """Require the weighted-random estimator used by ROSALIN."""
-        if getattr(program, "_shot_distribution", None) != "weighted_random":
+        if program._shot_distribution != "weighted_random":
             raise ValueError(
                 "RosalinOptimizer requires shot_distribution='weighted_random'."
             )
 
     def build_evaluators(self, program) -> dict[str, Callable[..., Any]]:
-        """Bind the program's generalized parameter-shift recipe."""
+        """Bind the program's generalised parameter-shift recipe."""
         return {"shift_rule": lambda: program._grad_shift_rule}
 
     def optimize(
@@ -276,7 +276,7 @@ class RosalinOptimizer(Optimizer):
         callback_fn: Callable[[OptimizeResult], Any] | None = None,
         **kwargs,
     ) -> OptimizeResult:
-        """Optimize until the shot budget or ``max_iterations`` is exhausted."""
+        """Optimise until the shot budget or ``max_iterations`` is exhausted."""
         max_iterations = self._resolve_max_iterations(kwargs)
         shift_rule = kwargs.pop("shift_rule", None)
         kwargs.pop("rng", None)

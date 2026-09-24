@@ -3,11 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib
+import sys
 from types import ModuleType
 
 import pytest
 
-from divi._optional import import_optional, optional_module
+from divi._optional import import_optional, module_if_imported, optional_module
 
 
 def test_optional_module_returns_imported_module(mocker):
@@ -44,3 +45,23 @@ def test_import_optional_names_capability_and_extra(mocker):
         ),
     ):
         import_optional("pennylane", extra="pennylane", capability="QNode conversion")
+
+
+def test_import_optional_appends_the_hint(mocker):
+    missing = ModuleNotFoundError("missing", name="qiskit_aer")
+    mocker.patch.object(importlib, "import_module", side_effect=missing)
+
+    with pytest.raises(ImportError, match=r"qoro-divi\[aer\]`\. Use Maestro\.$"):
+        import_optional(
+            "qiskit_aer", extra="aer", capability="Simulation", hint="Use Maestro."
+        )
+
+
+def test_module_if_imported_reads_sys_modules_without_importing(mocker, monkeypatch):
+    importer = mocker.spy(importlib, "import_module")
+    already_loaded = ModuleType("already_loaded")
+    monkeypatch.setitem(sys.modules, "already_loaded", already_loaded)
+
+    assert module_if_imported("already_loaded") is already_loaded
+    assert module_if_imported("never_imported_by_divi") is None
+    importer.assert_not_called()

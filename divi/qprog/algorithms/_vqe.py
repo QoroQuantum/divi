@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self, TypeAlias
+from typing import Any, Self
 from warnings import warn
 
 import numpy as np
@@ -15,12 +15,9 @@ from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2
-from divi.hamiltonians._molecular import molecular_hamiltonian
 from divi.hamiltonians._term_ops import (
-    ObservableInput,
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
-    to_spo,
 )
 from divi.qprog.algorithms import (
     Ansatz,
@@ -32,17 +29,9 @@ from divi.qprog.algorithms import (
     ZerosState,
 )
 from divi.qprog.mixins import SolutionSamplingMixin
+from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent
-
-if TYPE_CHECKING:
-    from pennylane.qchem import Molecule as PennyLaneMolecule
-    from pyscf.gto import Mole as PySCFMolecule
-    from pyscf.scf.hf import SCF as PySCFMeanField
-
-    MoleculeInput: TypeAlias = PennyLaneMolecule | PySCFMolecule | PySCFMeanField
-else:
-    MoleculeInput: TypeAlias = Any
 
 
 class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
@@ -53,18 +42,17 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     state (ansatz) and optimising the parameters to minimise the expectation
     value of the Hamiltonian.
 
-    The algorithm can work with either:
-    - A molecular Hamiltonian (for quantum chemistry problems)
-    - A custom Hamiltonian operator
+    The problem is a :class:`~divi.qprog.problems.HamiltonianProblem`: a bare
+    qubit Hamiltonian, or an
+    :class:`~divi.qprog.problems.MolecularProblem` built from a
+    molecule or from integrals.
 
     Attributes:
         ansatz (Ansatz): The parameterised quantum circuit ansatz.
         n_layers (int): Number of ansatz layers.
         n_qubits (int): Number of qubits in the system.
-        n_electrons (int): Number of electrons (for molecular systems).
         cost_hamiltonian: The Hamiltonian to minimise.
         loss_constant (float): Constant term extracted from the Hamiltonian.
-        molecule: The molecule object (if applicable).
         optimizer: Classical optimizer for parameter updates.
         max_iterations (int): Maximum number of optimisation iterations.
         current_iteration (int): Current optimisation iteration.
@@ -72,30 +60,21 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def __init__(
         self,
-        hamiltonian: ObservableInput | None = None,
-        molecule: MoleculeInput | None = None,
-        n_electrons: int | None = None,
+        problem: HamiltonianProblem,
+        *,
         n_layers: int = 1,
         ansatz: Ansatz | None = None,
         initial_state: InitialState | None = None,
         max_iterations=10,
-        n_alpha: int | None = None,
-        n_beta: int | None = None,
         ansatz_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
         """Initialise the VQE problem.
 
         Args:
-            hamiltonian: A Hamiltonian representing the problem — a PennyLane
-                operator, a Qiskit ``SparsePauliOp``, a divi Pauli-string dict,
-                or an OpenFermion ``QubitOperator`` (requires the ``chem``
-                extra). Defaults to None.
-            molecule: The molecule representing the problem. Either a PennyLane
-                ``qp.qchem.Molecule`` or a PySCF ``gto.Mole`` / restricted
-                mean-field object (requires the ``chem`` extra). Defaults to None.
-            n_electrons (int | None): Number of electrons associated with the Hamiltonian.
-                Only needed when a Hamiltonian is given. Defaults to None.
+            problem: The :class:`~divi.qprog.problems.HamiltonianProblem` to
+                solve. Its electron counts, when set, reach ansatzes that
+                prepare a reference determinant.
             n_layers (int): Number of ansatz layers. Defaults to 1.
             ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
@@ -103,19 +82,26 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 Pass an :class:`~divi.qprog.algorithms.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
             max_iterations (int): Maximum number of optimisation iterations. Defaults to 10.
-            n_alpha (int | None): Alpha electrons, for a spin-polarised
-                reference. Must be given together with ``n_beta``; without both,
-                ansatzes that need a reference determinant assume the
-                closed-shell split. Defaults to None.
-            n_beta (int | None): Beta electrons, under the same convention.
-                Defaults to None.
             ansatz_kwargs (dict | None): Ansatz-specific options, forwarded to
                 both ``n_params_per_layer`` and ``build`` so the parameter count
                 and the circuit stay in agreement (e.g.
                 ``{"trailing_rotation": True}`` for
                 :class:`~divi.qprog.algorithms.LUCJAnsatz`). Defaults to None.
             **kwargs: Additional keyword arguments passed to the parent class.
+
+        Raises:
+            TypeError: If ``problem`` is not a
+                :class:`~divi.qprog.problems.HamiltonianProblem`.
+            ValueError: If the problem's Hamiltonian contains only constant
+                terms.
         """
+        if not isinstance(problem, HamiltonianProblem):
+            raise TypeError(
+                "problem must be a HamiltonianProblem; got "
+                f"{type(problem).__name__}. Wrap a bare operator in "
+                "HamiltonianProblem, or a molecule in "
+                "MolecularProblem.from_molecule."
+            )
         super().__init__(**kwargs)
 
         self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
@@ -126,19 +112,17 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         self._eigenstate = None
 
-        self._process_problem_input(
-            hamiltonian=hamiltonian, molecule=molecule, n_electrons=n_electrons
+        self._problem = problem
+        cost_spo = problem.hamiltonian
+        self.n_qubits = _require_qiskit_num_qubits(cost_spo.num_qubits)
+        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
+            cost_spo, raise_on_constant=True
         )
 
-        if (n_alpha is None) != (n_beta is None):
-            raise ValueError(
-                "n_alpha and n_beta must be given together; got "
-                f"n_alpha={n_alpha}, n_beta={n_beta}."
-            )
         self._spin_kwargs: dict[str, int] = (
             {}
-            if n_alpha is None or n_beta is None
-            else {"n_alpha": n_alpha, "n_beta": n_beta}
+            if problem.n_alpha is None or problem.n_beta is None
+            else {"n_alpha": problem.n_alpha, "n_beta": problem.n_beta}
         )
         # Merged into every ansatz call, so the count and the circuit agree.
         self._ansatz_kwargs: dict[str, Any] = dict(ansatz_kwargs or {})
@@ -171,7 +155,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """
         return self.ansatz.n_params_per_layer(
             self.n_qubits,
-            n_electrons=self.n_electrons,
+            n_electrons=self._problem.n_electrons,
             **self._spin_kwargs,
             **self._ansatz_kwargs,
         )
@@ -180,7 +164,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """The ansatz's per-layer frequencies, repeated across layers."""
         per_layer = self.ansatz.parameter_frequencies(
             self.n_qubits,
-            n_electrons=self.n_electrons,
+            n_electrons=self._problem.n_electrons,
             **self._spin_kwargs,
             **self._ansatz_kwargs,
         )
@@ -196,48 +180,6 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """
         return self._eigenstate
 
-    def _process_problem_input(self, hamiltonian, molecule, n_electrons):
-        """Process and validate the VQE problem input.
-
-        Handles both Hamiltonian-based and molecule-based problem specifications,
-        extracting the necessary information (n_qubits, n_electrons, hamiltonian).
-
-        Args:
-            hamiltonian: PennyLane operator, SparsePauliOp, or OpenFermion
-                QubitOperator, or None.
-            molecule: PennyLane Molecule, PySCF Mole / mean-field, or None.
-            n_electrons: Number of electrons or None.
-
-        Raises:
-            ValueError: If neither hamiltonian nor molecule is provided.
-            UserWarning: If n_electrons conflicts with the molecule's electron count.
-        """
-        if hamiltonian is None and molecule is None:
-            raise ValueError(
-                "Either one of `molecule` and `hamiltonian` must be provided."
-            )
-
-        if hamiltonian is not None:
-            self.n_electrons = n_electrons
-
-        if molecule is not None:
-            self.molecule = molecule
-            hamiltonian, self.n_electrons = molecular_hamiltonian(molecule)
-
-            if (n_electrons is not None) and self.n_electrons != n_electrons:
-                warn(
-                    "`n_electrons` is provided but not consistent with the molecule's. "
-                    f"Got {n_electrons}, but molecule has {self.n_electrons}. "
-                    "The molecular value will be used.",
-                    UserWarning,
-                )
-
-        cost_spo = to_spo(hamiltonian)
-        self.n_qubits = _require_qiskit_num_qubits(cost_spo.num_qubits)
-        self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
-            cost_spo, raise_on_constant=True
-        )
-
     def _cost_meta_from_ansatz(
         self, prefix: QuantumCircuit | None = None, /, **ansatz_kwargs
     ) -> MetaCircuit:
@@ -247,8 +189,9 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         parameter count and the circuit cannot disagree. ``prefix`` is
         positional so an ansatz keyword of the same name cannot capture it.
         """
+        n_electrons = self._problem.n_electrons
         n_params = self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=self.n_electrons, **ansatz_kwargs
+            self.n_qubits, n_electrons=n_electrons, **ansatz_kwargs
         )
         weights = np.array(
             [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
@@ -263,7 +206,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 weights,
                 n_qubits=self.n_qubits,
                 n_layers=self.n_layers,
-                n_electrons=self.n_electrons,
+                n_electrons=n_electrons,
                 **ansatz_kwargs,
             ),
             inplace=True,

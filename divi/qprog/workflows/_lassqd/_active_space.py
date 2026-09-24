@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 import networkx as nx
 import numpy as np
+from pyscf import ao2mo, lo, scf
 
 from ._integrals import cached_h_ao
 from ._state import FragmentSpec
@@ -269,8 +270,6 @@ def localize_blocks(
         same physical solution via a different column order on different
         runs.
     """
-    # optional ``chem`` extra
-    from pyscf import lo
 
     n_restarts = 8
     localized = []
@@ -520,8 +519,6 @@ def _localized_active_space_integrals(
     Returns:
         ``(one_body, two_body)`` in the localised active basis.
     """
-    # optional ``chem`` extra
-    from pyscf import ao2mo, scf
 
     n_act = localized.shape[1]
     h_ao = cached_h_ao(mol)

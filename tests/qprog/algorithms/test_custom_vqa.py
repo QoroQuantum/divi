@@ -142,7 +142,7 @@ class TestInitialization:
         monkeypatch,
     ):
         monkeypatch.setattr(
-            "divi.qprog.algorithms._custom_vqa.optional_module",
+            "divi.qprog.algorithms._custom_vqa.module_if_imported",
             _unexpected_optional_probe,
         )
 

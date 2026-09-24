@@ -395,7 +395,8 @@ def _unsafe_downstream_dag_consumers(stages: Sequence[Stage], idx: int) -> list[
     return [
         s
         for s in stages[idx + 1 :]
-        if getattr(s, "consumes_dag_bodies", True) and not _has_custom_dry_expand(s)
+        if (not isinstance(s, BundleStage) or s.consumes_dag_bodies)
+        and not _has_custom_dry_expand(s)
     ]
 
 

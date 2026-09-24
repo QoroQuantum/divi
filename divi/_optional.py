@@ -5,6 +5,7 @@
 """Precise loading for dependencies provided through optional extras."""
 
 import importlib
+import sys
 from types import ModuleType
 
 
@@ -24,12 +25,28 @@ def optional_module(module_name: str) -> ModuleType | None:
         raise
 
 
-def import_optional(module_name: str, *, extra: str, capability: str) -> ModuleType:
-    """Import an optional module or raise an error naming its Divi extra."""
+def module_if_imported(module_name: str) -> ModuleType | None:
+    """*module_name* if it is already imported, else ``None``; never imports it.
+
+    For detecting an input's type: an instance of an optional package's class
+    can only exist once that package has been imported.
+    """
+    return sys.modules.get(module_name)
+
+
+def import_optional(
+    module_name: str, *, extra: str, capability: str, hint: str | None = None
+) -> ModuleType:
+    """Import an optional module or raise an error naming its Divi extra.
+
+    ``hint`` is appended to the error message, e.g. to point at an alternative
+    that needs no extra.
+    """
     module = optional_module(module_name)
     if module is None:
-        raise ImportError(
+        message = (
             f"{capability} requires the '{extra}' extra; install it with "
             f"`pip install qoro-divi[{extra}]`."
         )
+        raise ImportError(message if hint is None else f"{message} {hint}")
     return module

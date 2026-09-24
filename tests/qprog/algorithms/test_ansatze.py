@@ -46,6 +46,7 @@ from divi.qprog.algorithms._ansatze import (
     n_rotation_params,
     rotation_angles,
 )
+from divi.qprog.problems import HamiltonianProblem
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 _needs_qiskit_nature = pytest.mark.skipif(
@@ -523,6 +524,27 @@ class TestHartreeFockAnsatz:
                 [0.0], n_qubits=4, n_layers=1, n_electrons=n_electrons
             )
 
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda n_electrons=2, **spin: HartreeFockAnsatz.n_params_per_layer(
+                4, n_electrons=n_electrons, **spin
+            ),
+            lambda n_electrons=2, **spin: HartreeFockAnsatz().build(
+                [0.0] * 3, n_qubits=4, n_layers=1, n_electrons=n_electrons, **spin
+            ),
+        ],
+        ids=["n_params_per_layer", "build"],
+    )
+    def test_rejects_a_spin_polarised_reference(self, call):
+        """Its reference is closed-shell, so an uneven split or odd total must
+        not be ignored."""
+        call(n_alpha=1, n_beta=1)
+        with pytest.raises(ValueError, match="closed-shell"):
+            call(n_alpha=2, n_beta=0)
+        with pytest.raises(ValueError, match="closed-shell"):
+            call(n_electrons=3)
+
     def test_build_rejects_a_fully_occupied_reference(self):
         """An excitation ansatz needs at least one unoccupied spin-orbital."""
         with pytest.raises(ValueError, match="virtual spin-orbital"):
@@ -644,12 +666,12 @@ def _make_uccsd_vqe(n_qubits, n_electrons, backend, optimizer, **spin_counts):
     the computational basis regardless of the attached observable.
     """
     return VQE(
-        hamiltonian={"Z" + "I" * (n_qubits - 1): 1.0},
-        n_electrons=n_electrons,
+        HamiltonianProblem(
+            {"Z" + "I" * (n_qubits - 1): 1.0}, n_electrons=n_electrons, **spin_counts
+        ),
         ansatz=UCCSDAnsatz(),
         backend=backend,
         optimizer=optimizer,
-        **spin_counts,
     )
 
 
@@ -670,14 +692,12 @@ def _make_lucj_vqe(
     """
     hamiltonian = {"Z" + "I" * (n_qubits - 1): 1.0}
     return VQE(
-        hamiltonian=hamiltonian,
-        n_electrons=n_electrons,
+        HamiltonianProblem(hamiltonian, n_electrons=n_electrons, **spin_counts),
         n_layers=n_layers,
         ansatz=LUCJAnsatz(),
         backend=backend,
         optimizer=optimizer,
         ansatz_kwargs=ansatz_kwargs,
-        **spin_counts,
     )
 
 
@@ -773,8 +793,7 @@ def test_declared_frequencies_give_exact_gradients(
     """
     hamiltonian = _particle_conserving_hamiltonian(n_qubits // 2)
     vqe = VQE(
-        hamiltonian=hamiltonian,
-        n_electrons=n_electrons,
+        HamiltonianProblem(hamiltonian, n_electrons=n_electrons),
         n_layers=n_layers,
         ansatz=ansatz_factory(),
         backend=default_test_simulator,

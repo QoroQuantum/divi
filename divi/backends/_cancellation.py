@@ -64,7 +64,7 @@ def _best_effort_cancel_job(backend, execution_result) -> None:
     """
     if not isinstance(backend, AsyncJobBackend):
         return
-    if execution_result is None or getattr(execution_result, "job_id", None) is None:
+    if execution_result is None or execution_result.job_id is None:
         return
     try:
         backend.cancel_job(execution_result)

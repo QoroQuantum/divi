@@ -28,6 +28,7 @@ from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import QNGOptimizer, QNSPSAOptimizer
 from divi.qprog.optimizers._linalg import _matrix_abs_psd, _regularized_solve
 from divi.qprog.optimizers._spsa import _fidelity_metric_sample, _spsa_gain_c
+from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 
 
@@ -89,7 +90,9 @@ def _bind_pullback(vqe, jacobian, coeffs, monkeypatch):
 def injectable_vqe(dummy_simulator, default_optimizer):
     """A 2-qubit VQE whose metric measurement seam is meant to be monkeypatched."""
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=dummy_simulator,

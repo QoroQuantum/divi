@@ -192,11 +192,12 @@ tree output:
    from divi.pipeline import format_dry_run
    from divi.qprog import VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import MolecularProblem
 
    h2_molecule = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Bohr")
 
    vqe = VQE(
-       molecule=h2_molecule,
+       MolecularProblem.from_molecule(h2_molecule),
        qem_protocol=QuEPP(truncation_order=1, n_twirls=10),
        backend=QiskitSimulator(qiskit_backend="auto"),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),

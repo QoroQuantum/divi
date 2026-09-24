@@ -6,6 +6,7 @@
 
 import math
 from collections.abc import Callable, Hashable
+from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
 import dimod
@@ -14,6 +15,7 @@ import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 from qiskit.quantum_info import SparsePauliOp
 
+from divi._optional import import_optional
 from divi.hamiltonians import (
     HUBOProblemTypes,
     IsingResult,
@@ -28,23 +30,21 @@ from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
 if TYPE_CHECKING:
     # pyrefly: ignore[missing-import]
     import hybrid
-else:
-    try:
-        import hybrid
-    except ImportError:
-        hybrid = None
 
-_QUBO_DECOMPOSE_MSG = (
-    "BinaryOptimizationProblem's decompose() requires the 'qubo-decompose' extra; "
-    "install it with `pip install qoro-divi[qubo-decompose]`. Plain QUBO/HUBO "
-    "problems work without it."
-)
+
+def _hybrid() -> ModuleType:
+    return import_optional(
+        "hybrid",
+        extra="qubo-decompose",
+        capability="Partitioning a BinaryOptimizationProblem",
+        hint="Plain QUBO/HUBO problems work without it.",
+    )
 
 
 def _merge_substates(_, substates):
     """Merge two hybrid framework substates by stacking their sample sets."""
     a, b = substates
-    return a.updated(subsamples=hybrid.hstack_samplesets(a.subsamples, b.subsamples))
+    return a.updated(subsamples=_hybrid().hstack_samplesets(a.subsamples, b.subsamples))
 
 
 def _sanitize_problem_input(qubo):
@@ -206,8 +206,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         composer: "hybrid.traits.SubsamplesComposer | None" = None,
         local_search: bool = False,
     ):
-        if decomposer is not None and hybrid is None:
-            raise ImportError(_QUBO_DECOMPOSE_MSG)
+        hybrid = _hybrid() if decomposer is not None else None
         if hamiltonian_builder not in ("native", "quadratized"):
             raise ValueError(
                 "hamiltonian_builder must be either 'native' or 'quadratized'."
@@ -254,7 +253,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._local_search = bool(local_search)
         self._polish_cache: tuple | None = None
         self._bqm: dimod.BinaryQuadraticModel | None
-        if decomposer is not None:
+        if hybrid is not None:
             _, self._bqm = _sanitize_problem_input(self._raw_problem)
             self._partitioning = hybrid.Unwind(decomposer)
             self._aggregating = hybrid.Reduce(hybrid.Lambda(_merge_substates)) | (
@@ -381,7 +380,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._variable_maps = {}
         self._trivial_program_ids = set()
 
-        init_state = hybrid.State.from_problem(self._bqm)
+        init_state = _hybrid().State.from_problem(self._bqm)
         _bqm_partitions = self._partitioning.run(init_state).result()
 
         all_variables = list(self._bqm.variables)
@@ -505,7 +504,7 @@ class BinaryOptimizationProblem(QAOAProblem):
             )
             states_copy[prog_id] = bqm_subproblem_state.updated(subsamples=sample_set)
 
-        states = hybrid.States(*list(states_copy.values()))
+        states = _hybrid().States(*list(states_copy.values()))
         final_state = self._aggregating.run(states).result()
 
         sol, energy, _ = final_state.samples.record[0]

@@ -68,15 +68,17 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import MonteCarloOptimizer
+   from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroSimulator
    from pyscf import gto
 
    # Create a molecule
    mol = gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr")
+   problem = MolecularProblem.from_molecule(mol)
 
    # Create VQE program
    vqe = VQE(
-       molecule=mol,
+       problem,
        ansatz=HartreeFockAnsatz(),
        n_layers=2,
        max_iterations=10,
@@ -99,7 +101,7 @@ To save checkpoints less frequently, set the ``checkpoint_interval`` parameter:
 
 .. invisible-code-block: python
 
-   vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
+   vqe = VQE(problem, ansatz=HartreeFockAnsatz(), n_layers=2,
              max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
 .. code-block:: python
@@ -119,7 +121,7 @@ You can automatically generate a timestamped checkpoint directory:
 
 .. invisible-code-block: python
 
-   vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
+   vqe = VQE(problem, ansatz=HartreeFockAnsatz(), n_layers=2,
              max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
 .. code-block:: python
@@ -132,7 +134,7 @@ Or with a checkpoint interval:
 
 .. invisible-code-block: python
 
-   vqe = VQE(molecule=mol, ansatz=HartreeFockAnsatz(), n_layers=2,
+   vqe = VQE(problem, ansatz=HartreeFockAnsatz(), n_layers=2,
              max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
 .. code-block:: python
@@ -153,7 +155,7 @@ To resume from a checkpoint, use the ``load_state()`` class method:
    vqe_resumed = VQE.load_state(
        checkpoint_dir="my_checkpoints",
        backend=MaestroSimulator(),
-       molecule=mol,  # Must provide original problem configuration
+       problem=problem,  # Must provide original problem configuration
        ansatz=HartreeFockAnsatz(),
        n_layers=2,
    )
@@ -178,7 +180,7 @@ By default, ``load_state()`` loads the latest checkpoint whose files are both pr
        checkpoint_dir="my_checkpoints",
        backend=MaestroSimulator(),
        subdirectory="checkpoint_005",  # Specific checkpoint subdirectory
-       molecule=mol,
+       problem=problem,
        ansatz=HartreeFockAnsatz(),
        n_layers=2,
    )
@@ -444,7 +446,7 @@ Handle load failures explicitly when you build tooling or CLIs:
        vqe = VQE.load_state(
            Path("my_checkpoints"),
            backend=MaestroSimulator(),
-           molecule=mol,
+           problem=problem,
            ansatz=HartreeFockAnsatz(),
            n_layers=2,
        )

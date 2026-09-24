@@ -278,11 +278,9 @@ class PauliTwirlStage(BundleStage):
         # reads DAGs, and (b) ParameterBindingStage is upstream so the
         # K topologically-identical variants share a gate sequence.
         no_dag_consumer_after = not any(
-            getattr(s, "consumes_dag_bodies", True) for s in after
+            not isinstance(s, BundleStage) or s.consumes_dag_bodies for s in after
         )
-        param_set_upstream = any(
-            getattr(s, "axis_name", None) == PARAM_SET_AXIS for s in before
-        )
+        param_set_upstream = any(s.axis_name == PARAM_SET_AXIS for s in before)
         self._fast_path = no_dag_consumer_after and param_set_upstream
 
     def _rng_for_twirl(self, twirl_idx: int) -> random.Random:

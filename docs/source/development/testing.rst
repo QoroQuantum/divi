@@ -221,6 +221,7 @@ or in a shared fixture:
    from pyscf import gto
    from divi.qprog import VQE
    from divi.qprog.algorithms import HartreeFockAnsatz
+   from divi.qprog.problems import MolecularProblem
 
    def test_vqe_initialization(dummy_simulator):
        """Test that VQE initializes correctly with mock backend."""
@@ -229,7 +230,7 @@ or in a shared fixture:
            atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr"
        )
        vqe = VQE(
-           molecule=mol,
+           MolecularProblem.from_molecule(mol),
            ansatz=HartreeFockAnsatz(),
            backend=dummy_simulator,
        )

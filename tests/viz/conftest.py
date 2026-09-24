@@ -13,6 +13,7 @@ from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.qprog import VQE, GenericLayerAnsatz
+from divi.qprog.problems import HamiltonianProblem
 
 
 @pytest.fixture
@@ -24,8 +25,7 @@ def basic_ansatz():
 def vqe_program(dummy_simulator, basic_ansatz, default_optimizer):
     """Single-qubit ``<Z>`` VQE — the smallest program with a real cost surface."""
     return VQE(
-        hamiltonian=SparsePauliOp("Z"),
-        n_electrons=1,
+        HamiltonianProblem(SparsePauliOp("Z"), n_electrons=1),
         ansatz=basic_ansatz,
         n_layers=1,
         backend=dummy_simulator,

@@ -14,10 +14,8 @@ pytest.importorskip("pyscf")
 from pyscf import ao2mo, fci, mcscf, scf
 from pyscf.fci import cistring
 
-from divi.hamiltonians._chem import (
-    _spo_from_integrals,
-    molecular_hamiltonian_from_pyscf,
-)
+from divi.hamiltonians import molecular_hamiltonian_from_pyscf
+from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog.workflows._lassqd import _integrals as _integrals_module
 from divi.qprog.workflows._lassqd._integrals import (
     ORBITAL_MINIMIZE_OPTIONS,
@@ -36,24 +34,19 @@ from divi.qprog.workflows._lassqd._integrals import (
 from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     dense_fci_energy,
-    h2_molecule,
-    h4_chain,
+    h2_mean_field,
+    h4_chain_mean_field,
+    mo_integrals,
     orbital_rotation_case,
 )
 
 
-def test_spo_from_integrals_matches_whole_molecule_builder():
+def test_spo_from_integrals_matches_whole_molecule_builder(h2_mean_field):
     """Handed full-molecule integrals, the new builder must reproduce the old one."""
-    mol = h2_molecule()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    n_orb = mo_coeff.shape[1]
+    one_body, two_body, _, constant = mo_integrals(h2_mean_field)
 
-    one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
-    two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orb)
-
-    expected, _ = molecular_hamiltonian_from_pyscf(mean_field)
-    actual = _spo_from_integrals(one_body, two_body, float(mol.energy_nuc()))
+    expected, _ = molecular_hamiltonian_from_pyscf(h2_mean_field)
+    actual = _spo_from_integrals(one_body, two_body, constant)
 
     assert actual.num_qubits == expected.num_qubits
     np.testing.assert_allclose(
@@ -63,16 +56,9 @@ def test_spo_from_integrals_matches_whole_molecule_builder():
     )
 
 
-def test_spo_from_integrals_ground_state_matches_fci():
+def test_spo_from_integrals_ground_state_matches_fci(h2_mean_field):
     """The FCI energy for the (1, 1) sector must appear in the operator's spectrum."""
-    mol = h2_molecule()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    n_orb = mo_coeff.shape[1]
-
-    one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
-    two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orb)
-    constant = float(mol.energy_nuc())
+    one_body, two_body, _, constant = mo_integrals(h2_mean_field)
 
     spo = _spo_from_integrals(one_body, two_body, constant)
     expected = dense_fci_energy(one_body, two_body, 1, 1, constant)
@@ -112,12 +98,11 @@ def test_build_active_permutation_places_core_first():
     assert 4 not in permutation[:2]
 
 
-def test_single_fragment_effective_integrals_are_the_bare_block():
+def test_single_fragment_effective_integrals_are_the_bare_block(h2_mean_field):
     """With one fragment and no core, h_eff is just the MO block."""
-    mol = h2_molecule()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=2)
+    integrals = transform_integrals(
+        h2_mean_field.mol, h2_mean_field.mo_coeff, n_core=0, n_act=2
+    )
 
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
     state = FragmentState(spec=spec, rdm1=np.zeros((2, 2)), rdm2=np.zeros((2,) * 4))
@@ -128,7 +113,9 @@ def test_single_fragment_effective_integrals_are_the_bare_block():
     np.testing.assert_allclose(g_frag, integrals.g_act, atol=1e-12)
 
 
-def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
+def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential(
+    h4_chain_mean_field,
+):
     """A doubly occupied other fragment is indistinguishable from frozen core,
     so PySCF's ``CASCI.get_h1eff()`` is an independent oracle for the
     embedding potential.
@@ -139,10 +126,9 @@ def test_two_fragment_effective_integrals_match_pyscfs_embedding_potential():
     spin-traced, so contracting it against ``2J - K`` -- coefficients that
     already assume double occupancy -- double-counted exactly.
     """
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
+    mean_field = h4_chain_mean_field
     mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
+    integrals = transform_integrals(mean_field.mol, mo_coeff, n_core=0, n_act=4)
 
     states = [
         FragmentState(
@@ -225,7 +211,7 @@ def test_optimize_orbitals_reports_whether_it_converged(orbital_rotation_case):
     assert starved_solve.energy >= converged_solve.energy - 1e-12
 
 
-def test_polarized_neighbour_splits_the_embedding_by_spin():
+def test_polarized_neighbour_splits_the_embedding_by_spin(h4_chain_mean_field):
     """A spin-polarized neighbour must give the two spin channels different
     one-body potentials, matching AO-basis Coulomb/exchange builds.
 
@@ -235,8 +221,8 @@ def test_polarized_neighbour_splits_the_embedding_by_spin():
     solver cannot see the sign of its neighbour's local moment, which is what
     generates inter-fragment magnetic coupling.
     """
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
+    mean_field = h4_chain_mean_field
+    mol = mean_field.mol
     mo_coeff = np.asarray(mean_field.mo_coeff)
     ao_eri = cached_ao_eri(mol)
     integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=4, ao_eri=ao_eri)
@@ -283,13 +269,12 @@ def test_polarized_neighbour_splits_the_embedding_by_spin():
     )
 
 
-def test_closed_shell_neighbour_leaves_the_channels_identical():
+def test_closed_shell_neighbour_leaves_the_channels_identical(h4_chain_mean_field):
     """With no spin density in the neighbour the two channels must coincide, so
     the spin-resolved path is a strict generalization of the spin-traced one."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
+    integrals = transform_integrals(
+        h4_chain_mean_field.mol, h4_chain_mean_field.mo_coeff, n_core=0, n_act=4
+    )
 
     states = [
         FragmentState(
@@ -309,12 +294,11 @@ def test_closed_shell_neighbour_leaves_the_channels_identical():
     np.testing.assert_allclose(h_alpha, h_beta, atol=1e-14)
 
 
-def test_fragment_hamiltonian_ground_state_matches_fci():
+def test_fragment_hamiltonian_ground_state_matches_fci(h2_mean_field):
     """End-to-end: effective integrals -> SparsePauliOp -> lowest eigenvalue."""
-    mol = h2_molecule()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    integrals = transform_integrals(mol, mo_coeff, n_core=0, n_act=2)
+    integrals = transform_integrals(
+        h2_mean_field.mol, h2_mean_field.mo_coeff, n_core=0, n_act=2
+    )
 
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
     state = FragmentState(spec=spec, rdm1=np.zeros((2, 2)), rdm2=np.zeros((2,) * 4))
@@ -474,22 +458,18 @@ def test_assemble_active_rdms_exchange_uses_per_spin_densities():
     assert rdm2_traced[0, 1, 1, 0] == pytest.approx(-0.5)
 
 
-def test_total_energy_matches_fci_for_full_active_space():
+def test_total_energy_matches_fci_for_full_active_space(h4_chain_mean_field):
     """With n_core=0 and the exact FCI RDMs, _total_energy must equal the FCI energy."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    n_orb = mo_coeff.shape[1]
-
-    one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
-    two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orb)
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    one_body, two_body, n_orb, constant = mo_integrals(h4_chain_mean_field)
 
     n_alpha, n_beta = 2, 2
     electronic_energy, civec = fci.direct_spin1.kernel(
         one_body, two_body, n_orb, (n_alpha, n_beta)
     )
     rdm1, rdm2 = fci.direct_spin1.make_rdm12(civec, n_orb, (n_alpha, n_beta))
-    expected = electronic_energy + mol.energy_nuc()
+    expected = electronic_energy + constant
 
     ao_eri = cached_ao_eri(mol)
     h_ao = cached_h_ao(mol)
@@ -498,17 +478,18 @@ def test_total_energy_matches_fci_for_full_active_space():
     assert energy == pytest.approx(expected, abs=1e-10)
 
 
-def test_fragment_effective_integrals_matches_casci_h1eff_with_frozen_core():
+def test_fragment_effective_integrals_matches_casci_h1eff_with_frozen_core(
+    h4_chain_mean_field,
+):
     """With a real n_core=1 frozen core, h_eff must equal CASCI's active Fock."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
+    mean_field = h4_chain_mean_field
     mo_coeff = np.asarray(mean_field.mo_coeff)
 
     mc = mcscf.CASCI(mean_field, 2, 2)
     mc.mo_coeff = mo_coeff
     h1eff, _ = mc.get_h1eff()
 
-    integrals = transform_integrals(mol, mo_coeff, n_core=1, n_act=2)
+    integrals = transform_integrals(mean_field.mol, mo_coeff, n_core=1, n_act=2)
     spec = FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1)
     state = FragmentState(spec=spec, rdm1=np.zeros((2, 2)), rdm2=np.zeros((2,) * 4))
 
@@ -517,12 +498,11 @@ def test_fragment_effective_integrals_matches_casci_h1eff_with_frozen_core():
     np.testing.assert_allclose(h_eff, h1eff, atol=1e-10)
 
 
-def test_total_energy_matches_casci_with_frozen_core():
+def test_total_energy_matches_casci_with_frozen_core(h4_chain_mean_field):
     """_total_energy must reproduce a CASCI total energy through a real frozen core."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
+    mol = h4_chain_mean_field.mol
 
-    mc = mcscf.CASCI(mean_field, 2, 2)
+    mc = mcscf.CASCI(h4_chain_mean_field, 2, 2)
     mc.kernel()
 
     mo_coeff = np.asarray(mc.mo_coeff)
@@ -535,7 +515,9 @@ def test_total_energy_matches_casci_with_frozen_core():
     assert energy == pytest.approx(mc.e_tot, abs=1e-8)
 
 
-def test_fragment_effective_integrals_honors_noncontiguous_permutation():
+def test_fragment_effective_integrals_honors_noncontiguous_permutation(
+    h4_chain_mean_field,
+):
     """A non-identity, non-contiguous permutation must still index the caller's
     orbitals.
 
@@ -543,9 +525,8 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation():
     *indexing* and not the coefficients; those are pinned independently against
     PySCF in ``test_two_fragment_effective_integrals_match_pyscfs_embedding_potential``.
     """
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
 
     specs = [
         FragmentSpec(orbitals=(0, 3), n_alpha=1, n_beta=1),
@@ -621,7 +602,9 @@ def _diagonal_active_rdms(n_act):
     return rdm1_active, rdm2_active
 
 
-def test_optimize_orbitals_spans_all_four_rotation_categories(mocker):
+def test_optimize_orbitals_spans_all_four_rotation_categories(
+    mocker, h4_chain_mean_field
+):
     """With only two 2-orbital fragments and no frozen core or virtuals, the
     active-active fixtures elsewhere in this test module never populate the
     core-active, core-virtual, or active-virtual rotation categories. Build a
@@ -629,9 +612,8 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(mocker):
     four categories are exercised, and confirm both the exact rotation count
     and that the resulting orbitals stay orthonormal under the AO overlap --
     the property a non-skew-symmetric generator would violate."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     n_orb_total = mo_coeff.shape[1]
 
     specs = [
@@ -673,17 +655,18 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(mocker):
     np.testing.assert_allclose(gram, np.eye(n_orb_total), atol=1e-10)
 
 
-def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom():
+def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom(
+    h2_mean_field,
+):
     """A single fragment spanning the whole active space, with no frozen core
     and no virtuals, leaves zero rotation pairs. ``scipy.optimize.minimize``
     called with a zero-length ``x0`` never evaluates the objective and
     reports a spurious ``fun=0.0``; ``optimize_orbitals`` must not surface
     that value as the energy, and must leave the coefficients unrotated."""
-    mol = h2_molecule()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
+    mol = h2_mean_field.mol
+    mo_coeff = np.asarray(h2_mean_field.mo_coeff)
 
-    energy_fci, civec = fci.FCI(mean_field).kernel()
+    energy_fci, civec = fci.FCI(h2_mean_field).kernel()
     rdm1, rdm2 = fci.direct_spin1.make_rdm12(civec, 2, (1, 1))
     ao_eri = cached_ao_eri(mol)
     h_ao = cached_h_ao(mol)
@@ -699,13 +682,14 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom():
     assert solve.n_iterations == 0
 
 
-def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(mocker):
+def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(
+    mocker, h4_chain_mean_field
+):
     """If ``minimize`` returns a result whose energy is worse than doing no
     rotation at all, that result must be discarded in favor of the baseline,
     keeping the routine monotone regardless of what scipy reports."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     n_act = 4
     rdm1_active, rdm2_active = _diagonal_active_rdms(n_act)
     ao_eri = cached_ao_eri(mol)

@@ -34,7 +34,7 @@ from divi.qprog.optimizers._spsa import (
     _spsa_gain_c,
     _spsa_gradient,
 )
-from divi.qprog.problems import MaxCutProblem
+from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
 from tests.qprog.optimizers._helpers import (
     bowl_jac,
     bowl_metric,
@@ -923,7 +923,9 @@ def test_overlap_matches_statevector_inner_product():
 @pytest.fixture
 def toy_vqe(default_test_simulator, default_optimizer):
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=default_test_simulator,

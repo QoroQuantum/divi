@@ -17,6 +17,7 @@ from dataclasses import dataclass
 import numpy as np
 import scipy.linalg
 import scipy.sparse.linalg
+from pyscf.fci import selected_ci
 
 #: Determinant rows per pass in :func:`projected_matrices`. The pair arrays it
 #: builds scale with this times the subspace size, so a fixed block keeps peak
@@ -1196,17 +1197,16 @@ def compute_spatial_rdms(
     if n_orb > _MAX_PYSCF_ORBITALS:
         return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)
 
-    # optional ``chem`` extra
-    from pyscf.fci.selected_ci import _as_SCIvector, make_rdm1s, make_rdm2
-
     ci_strings = (
         np.array([ci_string_to_int(half) for half in strings_alpha], dtype=np.int64),
         np.array([ci_string_to_int(half) for half in strings_beta], dtype=np.int64),
     )
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    civec = _as_SCIvector(np.ascontiguousarray(amplitudes, dtype=float), ci_strings)
-    rdm1_alpha, rdm1_beta = make_rdm1s(civec, n_orb, nelec)
-    rdm2 = make_rdm2(civec, n_orb, nelec)
+    civec = selected_ci._as_SCIvector(
+        np.ascontiguousarray(amplitudes, dtype=float), ci_strings
+    )
+    rdm1_alpha, rdm1_beta = selected_ci.make_rdm1s(civec, n_orb, nelec)
+    rdm2 = selected_ci.make_rdm2(civec, n_orb, nelec)
     return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta
 
 

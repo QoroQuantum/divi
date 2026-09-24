@@ -34,6 +34,7 @@ matplotlib.use("Agg")
 _stevedore_logger = logging.getLogger("stevedore.extension")
 _stevedore_logger.setLevel(logging.CRITICAL)
 
+import numpy as np
 import pytest
 from dotenv import load_dotenv
 
@@ -222,6 +223,20 @@ def qp():
     at the top instead.
     """
     return pytest.importorskip("pennylane")
+
+
+@pytest.fixture
+def pennylane_h2(qp):
+    """H2 in STO-3G at 1.3228 Bohr, as a PennyLane molecule."""
+    coordinates = np.array([[0.0, 0.0, -0.6614], [0.0, 0.0, 0.6614]])
+    return qp.qchem.Molecule(["H", "H"], coordinates)
+
+
+@pytest.fixture
+def pyscf_h2():
+    """H2 in STO-3G at 0.74 Angstrom, as a PySCF molecule (``chem`` extra)."""
+    gto = pytest.importorskip("pyscf.gto")
+    return gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
 
 
 def is_assertion_error(err, *_) -> bool:

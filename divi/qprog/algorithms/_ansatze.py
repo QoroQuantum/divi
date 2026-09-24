@@ -26,7 +26,7 @@ from qiskit.circuit import Gate, QuantumCircuit
 from qiskit.circuit.library import RXGate, RYGate, RZGate, RZZGate, XXPlusYYGate
 from scipy.optimize import least_squares
 
-from divi.hamiltonians._chem import requires_chem_extra
+from divi._optional import import_optional
 from divi.hamiltonians._term_ops import _HALF_PI
 
 
@@ -50,11 +50,24 @@ def _require_n_electrons(kwargs: dict, ansatz_name: str) -> int:
     if n_electrons is None:
         raise ValueError(
             f"{ansatz_name} requires n_electrons: it builds excitations from a "
-            "reference state, which needs the electron count. Pass "
-            "n_electrons=... to the program (a molecule input supplies it "
-            "automatically; a raw Hamiltonian does not)."
+            "reference state, which needs the electron count. Set n_electrons "
+            "on the program's HamiltonianProblem (MolecularProblem "
+            "supplies it automatically)."
         )
     return n_electrons
+
+
+def _require_balanced_spin(kwargs: dict, n_electrons: int, ansatz_name: str) -> None:
+    """Pop ``n_alpha``/``n_beta``, rejecting a spin-polarised reference by name."""
+    n_alpha = kwargs.pop("n_alpha", None)
+    n_beta = kwargs.pop("n_beta", None)
+    if n_alpha != n_beta or n_electrons % 2:
+        raise ValueError(
+            f"{ansatz_name} prepares a closed-shell reference, so it cannot "
+            f"honour n_electrons={n_electrons}, n_alpha={n_alpha}, "
+            f"n_beta={n_beta}. Use UCCSDAnsatz or LUCJAnsatz for a "
+            "spin-polarised reference."
+        )
 
 
 class Ansatz(ABC):
@@ -446,12 +459,12 @@ def _uccsd_template(
     another worker thread. The results are cached and shared, so callers must
     compose or bind without mutating them.
     """
-    with requires_chem_extra("UCCSDAnsatz"):
-        # pyrefly: ignore[missing-import]
-        from qiskit_nature.second_q import mappers
-
-        # pyrefly: ignore[missing-import]
-        from qiskit_nature.second_q.circuit import library
+    mappers = import_optional(
+        "qiskit_nature.second_q.mappers", extra="chem", capability="UCCSDAnsatz"
+    )
+    library = import_optional(
+        "qiskit_nature.second_q.circuit.library", extra="chem", capability="UCCSDAnsatz"
+    )
 
     # Interleaving must happen in the mapper: Jordan-Wigner parity strings are
     # built over the mapper's mode order, so permuting qubits afterwards leaves
@@ -544,6 +557,8 @@ class HartreeFockAnsatz(Ansatz):
     This ansatz prepares the Hartree-Fock reference state and applies
     parameterised single and double excitation gates. It's a simplified
     alternative to UCCSD, often used as a starting point for VQE calculations.
+    The reference is closed-shell: an odd ``n_electrons`` or unequal
+    ``n_alpha`` and ``n_beta`` raise ``ValueError``.
     """
 
     @staticmethod
@@ -552,6 +567,7 @@ class HartreeFockAnsatz(Ansatz):
         reference set by ``n_electrons`` (required kwarg)."""
         n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
         singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+        _require_balanced_spin(kwargs, n_electrons, "HartreeFockAnsatz")
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
 
@@ -563,6 +579,7 @@ class HartreeFockAnsatz(Ansatz):
     def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
         n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
         singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+        _require_balanced_spin(kwargs, n_electrons, "HartreeFockAnsatz")
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
         qc = QuantumCircuit(n_qubits)

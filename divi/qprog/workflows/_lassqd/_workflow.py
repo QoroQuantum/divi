@@ -15,10 +15,12 @@ from typing import Any
 from warnings import warn
 
 import numpy as np
+from pyscf import ao2mo, cc, gto, scf
+from pyscf.cc import addons as cc_addons
 from qiskit.quantum_info import Statevector
 from scipy.linalg import expm
 
-from divi.hamiltonians._chem import _spo_from_integrals, requires_chem_extra
+from divi.hamiltonians._molecular import is_pyscf_input, split_pyscf_input
 from divi.qprog.algorithms import LUCJAnsatz, UCCSDAnsatz
 from divi.qprog.algorithms._ansatze import (
     Ansatz,
@@ -30,6 +32,7 @@ from divi.qprog.algorithms._ansatze import (
 from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import Optimizer
+from divi.qprog.problems import MolecularProblem
 
 from ._active_space import (
     auto_fragment_specs,
@@ -57,15 +60,6 @@ from ._sqd import (
     probs_to_sqd_bitstrings,
 )
 from ._state import FragmentSpec, FragmentState, LASSQDState, validate_fragment_specs
-
-try:
-    # optional ``chem`` extra
-    from pyscf import cc
-    from pyscf.cc import addons as cc_addons
-except ImportError:
-    cc = None
-    cc_addons = None
-
 
 # Below this the two spin channels of an embedding potential are the same matrix
 # to seeding precision, so averaging them for the seed costs nothing.
@@ -198,9 +192,7 @@ def _uccsd_amplitude_seed(
     Only the first layer is seeded; further layers have no corresponding CCSD
     amplitude and stay at zero.
     """
-    # pyrefly: ignore[missing-attribute]  # cc_addons is None only if pyscf is absent
     t1_full = cc_addons.spatial2spin(coupled_cluster.t1)
-    # pyrefly: ignore[missing-attribute]  # cc_addons is None only if pyscf is absent
     t2_full = cc_addons.spatial2spin(coupled_cluster.t2)
     n_spatial = spec.n_orbitals
     n_occupied = spec.n_alpha
@@ -379,22 +371,23 @@ def _lucj_amplitude_seed(
 
 
 def _embedded_mean_field(
-    scf_method: str,
     h_eff: np.ndarray,
     g_frag: np.ndarray,
     spec: FragmentSpec,
     mo_coeff: np.ndarray,
     occupations: np.ndarray,
+    *,
+    unrestricted: bool,
 ):
     """A pyscf mean field carrying the fragment's integrals and reference.
+
+    ``unrestricted`` selects UHF over RHF.
 
     The molecule is a shell -- the integrals are supplied directly, so the only
     real inputs are the electron count and spin. Orbital energies come from the
     Fock diagonal in the given basis, which need not diagonalize it; coupled
     cluster is solved non-canonically either way.
     """
-    # optional ``chem`` extra
-    from pyscf import ao2mo, gto, scf
 
     n_orb = spec.n_orbitals
     fake_mol = gto.M(verbose=0)
@@ -402,7 +395,7 @@ def _embedded_mean_field(
     fake_mol.spin = spec.n_alpha - spec.n_beta
     fake_mol.incore_anyway = True
 
-    mean_field = getattr(scf, scf_method)(fake_mol)
+    mean_field: Any = (scf.UHF if unrestricted else scf.RHF)(fake_mol)
     # overriding with fragment integrals
     mean_field.get_hcore = lambda *args: h_eff
     # overriding with fragment integrals
@@ -444,15 +437,14 @@ def _lucj_seed_params(
         occupations[0, : spec.n_alpha] = 1.0
         occupations[1, : spec.n_beta] = 1.0
         mean_field = _embedded_mean_field(
-            "UHF",
             h_eff,
             g_frag,
             spec,
             np.array([np.eye(n_orb), np.eye(n_orb)]),
             occupations,
+            unrestricted=True,
         )
 
-        # pyrefly: ignore[missing-attribute]  # cc is None only if pyscf is absent
         coupled_cluster = cc.UCCSD(mean_field)
         coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
         coupled_cluster.kernel()
@@ -596,10 +588,9 @@ def _ccsd_seed_params(
         occupations = np.zeros(n_orb)
         occupations[: spec.n_alpha] = 2.0
         mean_field = _embedded_mean_field(
-            "RHF", h_eff, g_frag, spec, np.eye(n_orb), occupations
+            h_eff, g_frag, spec, np.eye(n_orb), occupations, unrestricted=False
         )
 
-        # pyrefly: ignore[missing-attribute]  # cc is None only if pyscf is absent
         coupled_cluster = cc.CCSD(mean_field)
         coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
         coupled_cluster.kernel()
@@ -680,9 +671,13 @@ class LASSQD(ProgramEnsemble):
     :ref:`lassqd-accuracy-characteristics` in the LASSQD guide.
 
     Args:
-        molecule: A PySCF ``gto.Mole`` (an RHF calculation is run on it lazily,
-            in :meth:`initial_state`) or a restricted mean-field object —
-            not a PennyLane ``qchem.Molecule``. Closed-shell (RHF) only.
+        problem: An :class:`~divi.qprog.problems.MolecularProblem`
+            built by :meth:`~divi.qprog.problems.MolecularProblem.\
+from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
+            lazily, in :meth:`initial_state`) or a restricted mean-field
+            object — not from a PennyLane ``qchem.Molecule`` or from bare
+            integrals, since the orbital optimisation needs the atomic-orbital
+            basis. Closed-shell (RHF) only.
         optimizer: Optimizer template, deep-copied for each fragment's VQE.
             Required only when ``preparation_mode='vqe'`` and rejected by the
             default linear-method path.
@@ -728,17 +723,15 @@ class LASSQD(ProgramEnsemble):
             is not positive; or if any fragment leaves no excitation available,
             fragments overlap, or the fragments do not sum to ``Sz = 0``. The
             configuration objects validate their own fields on construction.
-        TypeError: If ``backend`` is missing, if ``molecule`` is
-            neither a PySCF ``Mole`` nor a restricted mean-field, or if
-            ``ansatz`` is not an :class:`~divi.qprog.algorithms.Ansatz`.
-        NotImplementedError: If the molecule is open-shell, or its mean-field
-            is not restricted (non-2D ``mo_coeff``).
+        TypeError: If ``backend`` is missing, if ``problem`` was not built
+            from a PySCF ``Mole`` or mean-field, or if ``ansatz`` is not an
+            :class:`~divi.qprog.algorithms.Ansatz`.
         ImportError: If the ``chem`` extra is not installed.
     """
 
     def __init__(
         self,
-        molecule: Any,
+        problem: MolecularProblem,
         *,
         optimizer: Optimizer | None = None,
         fragmentation: FragmentationConfig,
@@ -807,35 +800,19 @@ class LASSQD(ProgramEnsemble):
             reporting_level=kwargs.pop("reporting_level", ReportingLevel.COMPACT),
         )
 
-        with requires_chem_extra("LASSQD"):
-            from pyscf import gto, scf
-
-        if isinstance(molecule, gto.Mole):
-            self._mol = molecule
-            mean_field = None
-        elif isinstance(molecule, scf.hf.SCF):
-            mean_field = molecule
-            self._mol = mean_field.mol
-        else:
+        if not isinstance(problem, MolecularProblem) or problem.molecule is None:
             raise TypeError(
-                "LASSQD expects a pyscf Mole or restricted mean-field object, "
-                f"got {type(molecule).__name__}."
+                "LASSQD expects a MolecularProblem built with "
+                "from_molecule; bare integrals carry no atomic-orbital basis. "
+                f"Got {type(problem).__name__}."
             )
-
-        if self._mol.spin != 0:
-            raise NotImplementedError(
-                "Only closed-shell (RHF) systems are supported; got an "
-                f"open-shell molecule with spin={self._mol.spin}."
+        molecule = problem.molecule
+        if not is_pyscf_input(molecule):
+            raise TypeError(
+                "LASSQD needs a problem built from a pyscf Mole or restricted "
+                f"mean-field object, got {type(molecule).__name__}."
             )
-
-        if mean_field is not None and getattr(mean_field, "mo_coeff", None) is not None:
-            mo_coeff = np.asarray(mean_field.mo_coeff)
-            if mo_coeff.ndim != 2:
-                raise NotImplementedError(
-                    "Only restricted (closed-shell) mean-fields are "
-                    f"supported; got mo_coeff with {mo_coeff.ndim} dimensions."
-                )
-        self._mean_field = mean_field
+        self._mol, self._mean_field = split_pyscf_input(molecule)
 
         # Validate the caller's orbital choices against this molecule here
         # rather than in ``initial_state``, so an out-of-range index fails at
@@ -919,11 +896,9 @@ class LASSQD(ProgramEnsemble):
                 LUMO lies below its HOMO. Frontier selection assumes ascending
                 orbital energies, so the active space would be wrong.
         """
-        # optional ``chem`` extra
-        from pyscf import scf
 
         mean_field = self._mean_field
-        if mean_field is None or getattr(mean_field, "mo_coeff", None) is None:
+        if mean_field is None or mean_field.mo_coeff is None:
             mean_field = scf.RHF(self._mol).run(verbose=0)
             if not mean_field.converged:
                 raise RuntimeError(
@@ -1021,24 +996,25 @@ class LASSQD(ProgramEnsemble):
             h_alpha, h_beta, g_frag = fragment_effective_integrals(
                 integrals, state.fragments, index
             )
+            fragment_problem = MolecularProblem(
+                h_alpha,
+                g_frag,
+                n_alpha=fragment.spec.n_alpha,
+                n_beta=fragment.spec.n_beta,
+                one_body_beta=h_beta,
+            )
             prog_id = f"fragment_{index}"
             self._programs[prog_id] = self._build_fragment_program(
-                fragment,
-                h_alpha,
-                h_beta,
-                g_frag,
-                int(fragment_seeds[index]),
+                fragment, fragment_problem, int(fragment_seeds[index])
             )
 
     def _build_fragment_program(
         self,
         fragment: FragmentState,
-        h_alpha: np.ndarray,
-        h_beta: np.ndarray,
-        g_frag: np.ndarray,
+        problem: MolecularProblem,
         seed: int,
     ) -> _FragmentVQE | LinearMethodFragmentProgram:
-        """Build one fragment preparation program from its effective integrals.
+        """Build one fragment preparation program from its embedded problem.
 
         In VQE mode, a fresh fragment (``fragment.params is None``) is seeded from its
         own CCSD amplitudes via :func:`_ccsd_seed_params`; a fragment
@@ -1054,9 +1030,7 @@ class LASSQD(ProgramEnsemble):
         """
         if self._preparation_mode is LASSQDPreparationMode.LINEAR_METHOD:
             return LinearMethodFragmentProgram(
-                h_alpha,
-                h_beta,
-                g_frag,
+                problem,
                 fragment.spec,
                 backend=self.backend,
                 sampling_backend=self.sampling_backend,
@@ -1064,22 +1038,20 @@ class LASSQD(ProgramEnsemble):
                 **self._extra_kwargs,
             )
 
-        hamiltonian = _spo_from_integrals(
-            h_alpha, g_frag, constant=0.0, one_body_beta=h_beta
-        )
-        n_electrons = fragment.spec.n_alpha + fragment.spec.n_beta
+        h_alpha, h_beta = problem.one_body, problem.one_body_beta
+        n_electrons = problem.n_electrons
 
         if fragment.params is not None:
             seed_params = fragment.params
         else:
-            n_qubits = 2 * fragment.spec.n_orbitals
+            n_qubits = 2 * problem.n_orbitals
             n_layers = self._extra_kwargs.get("n_layers", 1)
             ansatz_kwargs = self._extra_kwargs.get("ansatz_kwargs", {})
             n_params = n_layers * self._ansatz.n_params_per_layer(
                 n_qubits,
                 n_electrons=n_electrons,
-                n_alpha=fragment.spec.n_alpha,
-                n_beta=fragment.spec.n_beta,
+                n_alpha=problem.n_alpha,
+                n_beta=problem.n_beta,
                 **ansatz_kwargs,
             )
             spin_asymmetry = float(np.abs(h_alpha - h_beta).max())
@@ -1096,7 +1068,7 @@ class LASSQD(ProgramEnsemble):
                 )
             seed_params = _ccsd_seed_params(
                 0.5 * (h_alpha + h_beta),
-                g_frag,
+                problem.two_body,
                 fragment.spec,
                 n_params,
                 self._ansatz,
@@ -1105,14 +1077,14 @@ class LASSQD(ProgramEnsemble):
             if seed_params is not None:
                 gain = _seed_energy_gain(
                     seed_params,
-                    hamiltonian,
+                    problem.hamiltonian,
                     self._ansatz,
                     n_qubits,
                     n_layers,
                     {
                         "n_electrons": n_electrons,
-                        "n_alpha": fragment.spec.n_alpha,
-                        "n_beta": fragment.spec.n_beta,
+                        "n_alpha": problem.n_alpha,
+                        "n_beta": problem.n_beta,
                         **ansatz_kwargs,
                     },
                 )
@@ -1129,10 +1101,7 @@ class LASSQD(ProgramEnsemble):
                     seed_params = None
 
         return _FragmentVQE(
-            hamiltonian=hamiltonian,
-            n_electrons=n_electrons,
-            n_alpha=fragment.spec.n_alpha,
-            n_beta=fragment.spec.n_beta,
+            problem,
             ansatz=self._ansatz,
             optimizer=copy.deepcopy(self._optimizer),
             max_iterations=self._max_iterations,

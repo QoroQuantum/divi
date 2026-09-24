@@ -19,6 +19,7 @@ from qiskit.circuit.library import RYGate, RZGate
 from divi.qprog import VQE
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import SPSAOptimizer
+from divi.qprog.problems import MolecularProblem
 
 pytest.importorskip("pyscf", reason="H2 reference needs the chem extra")
 
@@ -43,7 +44,7 @@ def _run_vqe(backend, molecule, optimizer, ansatz, n_layers, seed, max_iteration
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         vqe = VQE(
-            molecule=molecule,
+            MolecularProblem.from_molecule(molecule),
             ansatz=ansatz,
             n_layers=n_layers,
             optimizer=optimizer,

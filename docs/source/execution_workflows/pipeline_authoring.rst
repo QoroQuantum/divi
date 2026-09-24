@@ -33,7 +33,7 @@ constructors also forward these options to
 
 Example::
 
-    vqe = VQE(molecule=mol, ..., shot_distribution="weighted", grouping_strategy="qwc")
+    vqe = VQE(problem, ..., shot_distribution="weighted", grouping_strategy="qwc")
 
 
 Feeding Parameter Values to a Standalone Pipeline

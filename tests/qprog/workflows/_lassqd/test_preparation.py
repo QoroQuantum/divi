@@ -13,6 +13,7 @@ from qiskit.quantum_info import Statevector
 
 ffsim = pytest.importorskip("ffsim")
 
+from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows._lassqd import _preparation as preparation
 from divi.qprog.workflows._lassqd._preparation import (
     LinearMethodFragmentProgram,
@@ -25,6 +26,37 @@ from divi.qprog.workflows._lassqd._preparation import (
     rotate_rdms_to_fragment_basis,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec
+
+_PREPARATION = "divi.qprog.workflows._lassqd._preparation"
+
+
+def _patch_linear_method(mocker, optimum):
+    """Stub the linear method to return ``optimum(x0)`` as its parameters."""
+    return mocker.patch(
+        "ffsim.optimize.minimize_linear_method",
+        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=optimum(x0)),
+    )
+
+
+def _patch_mean_field_and_ccsd(mocker, mo_coeff, t1, t2):
+    """Stub the fragment ROHF and CCSD solves with fixed results."""
+    mocker.patch(
+        f"{_PREPARATION}._fragment_rohf", return_value=mocker.Mock(mo_coeff=mo_coeff)
+    )
+    mocker.patch(
+        f"{_PREPARATION}._fragment_ccsd", return_value=mocker.Mock(t1=t1, t2=t2)
+    )
+
+
+def _one_pair_amplitudes(mixed_double=0.0):
+    """CCSD amplitudes for one occupied and one virtual orbital per spin."""
+    t1 = (np.zeros((1, 1)), np.zeros((1, 1)))
+    t2 = (
+        np.zeros((1, 1, 1, 1)),
+        np.full((1, 1, 1, 1), mixed_double),
+        np.zeros((1, 1, 1, 1)),
+    )
+    return t1, t2
 
 
 def test_paper_lucj_interaction_pairs_match_the_reference_topology():
@@ -72,10 +104,7 @@ def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
     two_body = np.zeros((2, 2, 2, 2))
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    minimize = mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=x0),
-    )
+    minimize = _patch_linear_method(mocker, lambda x0: x0)
     from_amplitudes = mocker.spy(ffsim.UCJOpSpinUnbalanced, "from_t_amplitudes")
 
     result = prepare_lucj_fragment(h_alpha, h_beta, two_body, spec)
@@ -115,18 +144,8 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
         t1=t1,
         n_reps=1,
     ).to_parameters(interaction_pairs=pairs)
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation._fragment_rohf",
-        return_value=mocker.Mock(mo_coeff=np.eye(4)),
-    )
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation._fragment_ccsd",
-        return_value=mocker.Mock(t1=t1, t2=t2),
-    )
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=x0),
-    )
+    _patch_mean_field_and_ccsd(mocker, np.eye(4), t1, t2)
+    _patch_linear_method(mocker, lambda x0: x0)
 
     result = prepare_lucj_fragment(
         np.zeros((4, 4)),
@@ -140,25 +159,8 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
 
 def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     rotation = np.array([[0.0, -1.0], [1.0, 0.0]])
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation._fragment_rohf",
-        return_value=mocker.Mock(mo_coeff=rotation),
-    )
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation._fragment_ccsd",
-        return_value=mocker.Mock(
-            t1=(np.zeros((1, 1)), np.zeros((1, 1))),
-            t2=(
-                np.zeros((1, 1, 1, 1)),
-                np.zeros((1, 1, 1, 1)),
-                np.zeros((1, 1, 1, 1)),
-            ),
-        ),
-    )
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=x0),
-    )
+    _patch_mean_field_and_ccsd(mocker, rotation, *_one_pair_amplitudes())
+    _patch_linear_method(mocker, lambda x0: x0)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
     result = prepare_lucj_fragment(
@@ -245,21 +247,7 @@ def test_beta_majority_ccsd_amplitudes_are_relabelled_to_physical_spin_channels(
 
 def test_non_finite_ccsd_amplitudes_fail_before_factorization(mocker):
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation._fragment_rohf",
-        return_value=mocker.Mock(mo_coeff=np.eye(2)),
-    )
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation._fragment_ccsd",
-        return_value=mocker.Mock(
-            t1=(np.zeros((1, 1)), np.zeros((1, 1))),
-            t2=(
-                np.zeros((1, 1, 1, 1)),
-                np.full((1, 1, 1, 1), np.nan),
-                np.zeros((1, 1, 1, 1)),
-            ),
-        ),
-    )
+    _patch_mean_field_and_ccsd(mocker, np.eye(2), *_one_pair_amplitudes(np.nan))
 
     with pytest.raises(RuntimeError, match=r"fragment \(3, 4\).*non-finite CCSD"):
         prepare_lucj_fragment(
@@ -272,12 +260,7 @@ def test_non_finite_ccsd_amplitudes_fail_before_factorization(mocker):
 
 def test_non_finite_linear_method_result_fails_before_circuit_construction(mocker):
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
-    mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(
-            x=np.full_like(x0, np.nan)
-        ),
-    )
+    _patch_linear_method(mocker, lambda x0: np.full_like(x0, np.nan))
 
     with pytest.raises(
         RuntimeError, match=r"fragment \(0, 1\).*non-finite linear-method"
@@ -305,6 +288,16 @@ def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
     assert result is coupled_cluster
 
 
+def _two_orbital_program(backend, **kwargs):
+    problem = MolecularProblem(np.eye(2), np.zeros((2, 2, 2, 2)), n_alpha=1, n_beta=1)
+    return LinearMethodFragmentProgram(
+        problem,
+        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+        backend=backend,
+        **kwargs,
+    )
+
+
 def test_linear_method_program_prepares_classically_then_samples_once(
     dummy_simulator, mocker, tmp_path
 ):
@@ -323,19 +316,10 @@ def test_linear_method_program_prepares_classically_then_samples_once(
         orbital_rotation=np.eye(2),
     )
     prepare = mocker.patch(
-        "divi.qprog.workflows._lassqd._preparation.prepare_lucj_fragment",
-        return_value=preparation,
+        f"{_PREPARATION}.prepare_lucj_fragment", return_value=preparation
     )
     submit = mocker.spy(dummy_simulator, "submit_circuits")
-    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
-    program = LinearMethodFragmentProgram(
-        np.eye(2),
-        np.eye(2),
-        np.zeros((2, 2, 2, 2)),
-        spec,
-        backend=dummy_simulator,
-        seed=7,
-    )
+    program = _two_orbital_program(dummy_simulator, seed=7)
 
     returned = program.run()
 
@@ -352,14 +336,7 @@ def test_linear_method_program_prepares_classically_then_samples_once(
     np.testing.assert_allclose(program.orbital_rotation, preparation.orbital_rotation)
 
     checkpoint = program._make_checkpoint(tmp_path)
-    restored = LinearMethodFragmentProgram(
-        np.eye(2),
-        np.eye(2),
-        np.zeros((2, 2, 2, 2)),
-        spec,
-        backend=dummy_simulator,
-        seed=7,
-    )
+    restored = _two_orbital_program(dummy_simulator, seed=7)
     prepare.reset_mock()
     submit.reset_mock()
 
@@ -375,14 +352,7 @@ def test_linear_method_program_prepares_classically_then_samples_once(
     np.testing.assert_allclose(restored.two_body, program.two_body)
     np.testing.assert_allclose(restored.orbital_rotation, program.orbital_rotation)
 
-    mismatched = LinearMethodFragmentProgram(
-        np.eye(2),
-        np.eye(2),
-        np.zeros((2, 2, 2, 2)),
-        spec,
-        backend=dummy_simulator,
-        seed=7,
-    )
+    mismatched = _two_orbital_program(dummy_simulator, seed=7)
     mismatched_checkpoint = checkpoint.model_copy(update={"state_sha256": "0" * 64})
 
     with pytest.raises(ValueError, match="digest"):
@@ -411,13 +381,7 @@ def test_completed_linear_method_state_requires_every_array(
     np.savez(state_path, **arrays)
     with state_path.open("rb") as handle:
         state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
-    program = LinearMethodFragmentProgram(
-        np.eye(2),
-        np.eye(2),
-        np.zeros((2, 2, 2, 2)),
-        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-        backend=dummy_simulator,
-    )
+    program = _two_orbital_program(dummy_simulator)
 
     with pytest.raises(ValueError, match="missing or extra arrays"):
         checkpoint = preparation._LinearMethodCheckpoint(

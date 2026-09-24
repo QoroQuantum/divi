@@ -7,7 +7,7 @@ binary-polynomial normalisation + evaluation, and QUBO/HUBO-to-Ising
 conversion.
 """
 
-from ._chem import molecular_hamiltonian_from_pyscf, qubit_operator_to_spo
+from ._chem import qubit_operator_to_spo
 from ._ising import (
     BinaryToIsingConverter,
     IsingEncoding,
@@ -24,7 +24,7 @@ from ._mixers import (
     x_mixer,
     xy_mixer,
 )
-from ._molecular import molecular_hamiltonian
+from ._molecular import molecular_hamiltonian, molecular_hamiltonian_from_pyscf
 from ._polynomial import (
     compile_problem,
     hubo_to_binary_polynomial,

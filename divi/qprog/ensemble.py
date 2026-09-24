@@ -427,13 +427,11 @@ def _resolve_sampling_params(
     resolved: dict[Any, npt.NDArray[np.float64]] = {}
     fallbacks: list[Any] = []
     for prog_id, program in programs.items():
+        assert isinstance(program, VariationalQuantumAlgorithm)
         if params_per_program is not None and prog_id in params_per_program:
             arr = np.asarray(params_per_program[prog_id], dtype=np.float64)
         else:
-            arr = np.asarray(
-                getattr(program, "_best_params", np.array([], dtype=np.float64)),
-                dtype=np.float64,
-            )
+            arr = np.asarray(program._best_params, dtype=np.float64)
             if params_per_program is not None:
                 fallbacks.append(prog_id)
 
@@ -444,16 +442,13 @@ def _resolve_sampling_params(
                 f"run() on the ensemble first."
             )
 
-        n_layers = getattr(program, "n_layers", None)
-        n_params_per_layer = getattr(program, "n_params_per_layer", None)
-        if n_layers is not None and n_params_per_layer is not None:
-            expected = n_layers * n_params_per_layer
-            if arr.shape[-1] != expected:
-                raise ValueError(
-                    f"Program {prog_id!r}: params last-axis size "
-                    f"({arr.shape[-1]}) does not match "
-                    f"n_layers * n_params_per_layer ({expected})."
-                )
+        expected = program.n_layers * program.n_params_per_layer
+        if arr.shape[-1] != expected:
+            raise ValueError(
+                f"Program {prog_id!r}: params last-axis size "
+                f"({arr.shape[-1]}) does not match "
+                f"n_layers * n_params_per_layer ({expected})."
+            )
 
         resolved[prog_id] = arr
 
@@ -864,8 +859,7 @@ class ProgramEnsemble(ABC):
         Returns:
             Future: A Future object representing the program's execution.
         """
-        if hasattr(program, "_set_cancellation_event"):
-            program._set_cancellation_event(self._cancellation_event)
+        program._set_cancellation_event(self._cancellation_event)
 
         coordinator = self._coordinator
         program_key = program._progress_key

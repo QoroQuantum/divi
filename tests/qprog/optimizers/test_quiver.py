@@ -19,7 +19,7 @@ from divi.qprog import QAOA, VQE, EarlyStopping, QUIVEROptimizer
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.early_stopping import StopReason
 from divi.qprog.optimizers._spsa import _cost_fn_supports_variance, _spsa_gradient
-from divi.qprog.problems import MaxCutProblem
+from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
 from tests.qprog.optimizers._helpers import sphere_cost_fn_batch_aware as _sphere
 
 
@@ -311,7 +311,9 @@ def _shot_based_vqe(optimizer, *, early_stopping=None):
     """A VQE on a shot-based simulator, where the cost closure can expose a
     measurement-variance estimate and honour a per-evaluation shot budget."""
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=QiskitSimulator(shots=4000, force_sampling=True),
@@ -384,7 +386,9 @@ def test_cost_variance_is_nan_on_native_expval_backend(default_optimizer):
     """On a native-expval backend no counts are produced, so the variance is nan
     and QUIVER falls back to fixed-M (V-from-spread only)."""
     vqe = VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=QiskitSimulator(shots=4000),  # analytic expval, no force_sampling
@@ -754,7 +758,9 @@ def _analytic_vqe(optimizer):
     """A VQE on an analytic backend — its cost pipeline promotes to the
     backend-native expval path (uses ham_ops, ignores shots)."""
     return VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=QiskitSimulator(shots=4000),

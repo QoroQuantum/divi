@@ -24,6 +24,7 @@ from qiskit_aer import AerSimulator
 from qiskit_aer.library import SaveExpectationValue
 from qiskit_aer.noise import NoiseModel
 
+from divi._optional import import_optional
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 from .._base import CircuitRunner, ExecutionResult
@@ -51,8 +52,11 @@ def _load_fake_backends() -> dict[int, list]:
     """Lazy load and return the FAKE_BACKENDS dictionary."""
     global _FAKE_BACKENDS_CACHE
     if _FAKE_BACKENDS_CACHE is None:
-        # Import only when actually needed
-        import qiskit_ibm_runtime.fake_provider as fk_prov
+        fk_prov = import_optional(
+            "qiskit_ibm_runtime.fake_provider",
+            extra="aer",
+            capability="QiskitSimulator fake backends",
+        )
 
         _FAKE_BACKENDS_CACHE = {
             5: [

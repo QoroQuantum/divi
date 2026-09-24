@@ -1079,7 +1079,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         correct, but the adapted ``M`` may be off. Disable ``adapt_M`` or drop
         the shot distribution to silence this.
         """
-        if self.adapt_M and getattr(program, "_shot_distribution", None) is not None:
+        if self.adapt_M and program._shot_distribution is not None:
             warnings.warn(
                 f"{type(self).__name__}: adapt_M=True with a configured "
                 "shot_distribution — the per-direction shot-budget adaptation "

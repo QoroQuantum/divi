@@ -36,7 +36,12 @@ from divi.qprog._metrics import (
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import QNGOptimizer
-from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
+from divi.qprog.problems import (
+    BinaryOptimizationProblem,
+    HamiltonianProblem,
+    MaxCutProblem,
+    MolecularProblem,
+)
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 from tests.qprog.optimizers._helpers import bowl_jac, bowl_metric
 
@@ -234,7 +239,7 @@ def toy_vqe(default_test_simulator, default_optimizer):
     """A small 2-qubit VQE with a generic RY-RZ ansatz (no chemistry inputs)."""
     hamiltonian = SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
     return VQE(
-        hamiltonian=hamiltonian,
+        HamiltonianProblem(hamiltonian),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=default_test_simulator,
@@ -248,7 +253,9 @@ def test_pullback_metric_assembly(dummy_simulator, default_optimizer, monkeypatc
     sampling backend (one qwc run) and injects per-term expectations by patching
     the measurement seam, so only the assembly math is under test."""
     vqe = VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=dummy_simulator,  # supports_expval=False -> single qwc run
@@ -307,7 +314,7 @@ def test_metric_pipeline_terms_sum_to_energy(toy_vqe):
 def test_fubini_study_metric_smoke(default_test_simulator, default_optimizer):
     """The FS metric runs end-to-end and is a symmetric PSD matrix."""
     vqe = VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)]),
+        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=2,
         backend=default_test_simulator,
@@ -491,7 +498,9 @@ def test_metric_pipelines_are_cacheable(dummy_simulator, default_optimizer):
     stable cache keys and ``_build_preprocessor_pipeline`` reuses one pipeline
     object across iterations (its forward cache survives)."""
     vqe = VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=dummy_simulator,
@@ -533,7 +542,7 @@ def test_term_expectations_rejects_term_count_mismatch(
     """A branch whose measured term count disagrees with its coefficient count
     fails loudly rather than mis-assembling the metric."""
     vqe = VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5)]),
+        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5)])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
         backend=dummy_simulator,
@@ -707,7 +716,7 @@ def test_qng_vqe_h2_converges(qp, default_test_simulator):
     )
 
     vqe = VQE(
-        molecule=molecule,
+        MolecularProblem.from_molecule(molecule),
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=QNGOptimizer(step_size=0.2),

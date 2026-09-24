@@ -248,12 +248,8 @@ class ParameterBindingStage(BundleStage):
         super().__init__(name=type(self).__name__)
 
     def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
-        # ``consumes_dag_bodies`` is declared on BundleStage with default
-        # True, so non-bundle stages (none exist after index 0 by pipeline
-        # contract) or older third-party stages without the attribute
-        # default to True — the safe assumption.
         self._fast_path = not any(
-            getattr(s, "consumes_dag_bodies", True) for s in after
+            not isinstance(s, BundleStage) or s.consumes_dag_bodies for s in after
         )
 
         if any(

@@ -20,7 +20,7 @@ from divi.qprog.algorithms import (
     ZerosState,
 )
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
-from divi.qprog.problems import MaxCutProblem
+from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
@@ -46,15 +46,15 @@ def make_time_evolution(two_z_hamiltonian, default_test_simulator):
 
 @pytest.fixture
 def make_vqe(two_z_hamiltonian, default_test_simulator, default_optimizer):
-    def _make(**overrides):
+    def _make(n_electrons=None, **overrides):
         return VQE(
+            HamiltonianProblem(two_z_hamiltonian, n_electrons=n_electrons),
             **{
-                "hamiltonian": two_z_hamiltonian,
                 "ansatz": QAOAAnsatz(),
                 "optimizer": default_optimizer,
                 "backend": default_test_simulator,
                 **overrides,
-            }
+            },
         )
 
     return _make

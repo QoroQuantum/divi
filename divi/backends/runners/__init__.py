@@ -4,6 +4,10 @@
 
 """The concrete :class:`~divi.backends.CircuitRunner` implementations."""
 
+from typing import Any
+
+from divi._optional import import_optional
+
 from .._job_status import JobStatus
 from ._maestro import MaestroConfig, MaestroSimulator
 from ._qoro import JobType, QoroService
@@ -18,16 +22,20 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """Resolve :class:`QiskitSimulator` on first access."""
     if name == "QiskitSimulator":
-        try:
-            from ._qiskit import QiskitSimulator
-        except ImportError as exc:
-            raise ImportError(
-                "QiskitSimulator requires the 'aer' extra; install it with "
-                "`pip install qoro-divi[aer]`. Divi's default simulator, "
-                "MaestroSimulator, is included in the core install."
-            ) from exc
+        import_optional(
+            "qiskit_aer",
+            extra="aer",
+            capability="QiskitSimulator",
+            hint=(
+                "Divi's default simulator, MaestroSimulator, is included in the "
+                "core install."
+            ),
+        )
+        from ._qiskit import QiskitSimulator
+
+        globals()[name] = QiskitSimulator
         return QiskitSimulator
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

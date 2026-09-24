@@ -40,6 +40,7 @@ from divi.pipeline.stages._measurement_stage import (
 )
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import SPSAOptimizer
+from divi.qprog.problems import MolecularProblem
 from tests.pipeline._helpers import (
     DummySpecStage,
     ExpvalBackendSpy,
@@ -715,7 +716,6 @@ class TestMeasureAllQubits:
         whether the idle qubit reads 0 (restricted) or a random value
         (full-register)."""
         meta = _idle_qubit_meta()
-        stage = MeasurementStage(grouping_strategy="wires")
         batch = {
             (("spec", "circ"),): meta.set_measurement_groups(
                 _compute_measurement_groups(meta.observable, "wires", meta.n_qubits)[0]
@@ -941,7 +941,7 @@ class TestMeasurementStageShotDistributionBackendExpval:
             coordinates=np.array([(0.0, 0.0, -0.6614), (0.0, 0.0, 0.6614)]),
         )
         vqe = VQE(
-            molecule=molecule,
+            MolecularProblem.from_molecule(molecule),
             ansatz=HartreeFockAnsatz(),
             n_layers=1,
             backend=default_test_simulator,

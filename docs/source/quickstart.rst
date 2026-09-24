@@ -38,19 +38,21 @@ Molecule inputs come from the ``chem`` extra. Install it first:
    from pyscf import gto
    from divi.qprog import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroSimulator
 
-   # Step 1: Define your molecule
+   # Step 1: Define your molecule and wrap it in a problem
    h2_molecule = gto.M(
       atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr"
    )
+   h2_problem = MolecularProblem.from_molecule(h2_molecule)
 
    # Step 2: Choose your optimizer
    optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
 
    # Step 3: Set up your quantum program
    vqe = VQE(
-      molecule=h2_molecule,
+      h2_problem,
       ansatz=HartreeFockAnsatz(),
       n_layers=2,  # Circuit depth
       optimizer=optimizer,
@@ -87,7 +89,7 @@ Divi offers specialised algorithms for different problem types:
       from divi.qprog.optimizers import MonteCarloOptimizer
 
       vqe = VQE(
-          molecule=h2_molecule,
+          h2_problem,
           ansatz=UCCSDAnsatz(),  # More sophisticated than Hartree-Fock
           n_layers=2,
           optimizer=MonteCarloOptimizer(),
@@ -216,7 +218,7 @@ Rebuilding the H₂ VQE from the top of this page:
    from divi.pipeline import format_dry_run
 
    preview_vqe = VQE(
-       molecule=h2_molecule,
+       h2_problem,
        ansatz=HartreeFockAnsatz(),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),

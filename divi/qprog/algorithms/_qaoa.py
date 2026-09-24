@@ -105,7 +105,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         trotterization_strategy: The trotterization strategy. Defaults to ExactTrotterization.
         max_iterations: Maximum number of optimisation iterations. Defaults to 10.
         n_layers: Number of QAOA layers. Defaults to 1.
-        max_shift_evaluations_per_parameter: Safety limit for generalized
+        max_shift_evaluations_per_parameter: Safety limit for generalised
             parameter-shift evaluations per parameter. Set to ``None`` to opt out.
         **kwargs: Additional keyword arguments passed to
             :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`, including ``optimizer``
@@ -138,7 +138,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             max_iterations: Maximum number of optimisation iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
-            max_shift_evaluations_per_parameter: Safety limit for generalized
+            max_shift_evaluations_per_parameter: Safety limit for generalised
                 parameter-shift evaluations per parameter. Set to ``None`` to
                 permit arbitrarily large rules.
             **kwargs: Passed to :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`,
@@ -175,7 +175,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         # surface domain-level labels (e.g. graph node names) via
         # ``wire_labels``, otherwise we fall back to dense qubit indices.
         self._circuit_wires = tuple(
-            getattr(problem, "wire_labels", None) or _spo_wires(self.cost_hamiltonian)
+            problem.wire_labels or _spo_wires(self.cost_hamiltonian)
         )
         self.n_qubits = len(self._circuit_wires)
 

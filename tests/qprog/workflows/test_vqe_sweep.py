@@ -13,6 +13,7 @@ from scipy.spatial.distance import pdist, squareform
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.workflows import (
     MoleculeTransformer,
     VQEHyperparameterSweep,
@@ -377,10 +378,10 @@ def vqe_sweep_max_iterations():
 
 
 @pytest.fixture
-def h2_hamiltonian(h2_molecule, qp):
-    """Fixture for an H2 molecular Hamiltonian."""
+def h2_problem(h2_molecule, qp):
+    """Fixture for a problem wrapping an H2 molecular Hamiltonian."""
     hamiltonian, _ = qp.qchem.molecular_hamiltonian(h2_molecule)
-    return hamiltonian
+    return HamiltonianProblem(hamiltonian)
 
 
 def _assert_common_program_settings(program, max_iterations):
@@ -408,7 +409,7 @@ def vqe_sweep(
     return VQEHyperparameterSweep(
         ansatze=vqe_sweep_ansatze,
         molecule_transformer=transformer,
-        hamiltonians=None,
+        problems=None,
         optimizer=vqe_sweep_optimizer,
         max_iterations=vqe_sweep_max_iterations,
         backend=default_test_simulator,
@@ -416,20 +417,20 @@ def vqe_sweep(
 
 
 @pytest.fixture
-def vqe_sweep_hamiltonian(
+def vqe_sweep_problems(
     default_test_simulator,
-    h2_hamiltonian,
+    h2_problem,
     vqe_sweep_ansatze,
     vqe_sweep_optimizer,
     vqe_sweep_max_iterations,
 ):
-    """Fixture to create a VQEHyperparameterSweep instance with hamiltonians."""
-    hamiltonians = [h2_hamiltonian]
+    """Fixture to create a VQEHyperparameterSweep instance with problems."""
+    problems = [h2_problem]
 
     return VQEHyperparameterSweep(
         ansatze=vqe_sweep_ansatze,
         molecule_transformer=None,
-        hamiltonians=hamiltonians,
+        problems=problems,
         optimizer=vqe_sweep_optimizer,
         max_iterations=vqe_sweep_max_iterations,
         backend=default_test_simulator,
@@ -437,17 +438,19 @@ def vqe_sweep_hamiltonian(
 
 
 class TestVQEHyperparameterSweep:
+    """A test class to group all tests for the VQEHyperparameterSweep."""
+
     def test_child_checkpoints_use_distinct_derived_directories(
-        self, vqe_sweep_hamiltonian, tmp_path
+        self, vqe_sweep_problems, tmp_path
     ):
-        vqe_sweep_hamiltonian.create_programs()
-        vqe_sweep_hamiltonian._round_index = 1
+        vqe_sweep_problems.create_programs()
+        vqe_sweep_problems._round_index = 1
         original = CheckpointConfig(checkpoint_dir=tmp_path, checkpoint_interval=2)
 
-        session = vqe_sweep_hamiltonian._prepare_checkpoint_session(None, original)
+        session = vqe_sweep_problems._prepare_checkpoint_session(None, original)
         configs = session.iterative_config_by_program
 
-        assert set(configs) == set(vqe_sweep_hamiltonian.programs.values())
+        assert set(configs) == set(vqe_sweep_problems.programs.values())
         paths = [config.checkpoint_dir for config in configs.values()]
         assert len(set(paths)) == len(paths)
         assert {path.name for path in paths} == {
@@ -457,20 +460,18 @@ class TestVQEHyperparameterSweep:
         assert all(config.checkpoint_interval == 2 for config in configs.values())
         assert original.checkpoint_dir == tmp_path
 
-    """A test class to group all tests for the VQEHyperparameterSweep."""
-
     def test_sampling_backend_is_owned_by_ensemble(
         self,
         default_test_simulator,
         sampling_test_simulator,
-        h2_hamiltonian,
+        h2_problem,
         vqe_sweep_ansatze,
         vqe_sweep_optimizer,
         vqe_sweep_max_iterations,
     ):
         sweep = VQEHyperparameterSweep(
             ansatze=vqe_sweep_ansatze,
-            hamiltonians=[h2_hamiltonian],
+            problems=[h2_problem],
             optimizer=vqe_sweep_optimizer,
             max_iterations=vqe_sweep_max_iterations,
             backend=default_test_simulator,
@@ -511,7 +512,7 @@ class TestVQEHyperparameterSweep:
 
         for program in vqe_sweep.programs.values():
             _assert_common_program_settings(program, vqe_sweep_max_iterations)
-            assert program.molecule.symbols == ["H", "H"]
+            assert program.n_qubits == 4
 
     def test_sweep_over_a_pyscf_transformer_builds_real_programs(
         self,
@@ -542,51 +543,50 @@ class TestVQEHyperparameterSweep:
         for modifier in bond_modifiers:
             program = sweep.programs[(HartreeFockAnsatz().name, modifier)]
             assert program.n_qubits == 4
-            assert program.n_electrons == 2
             assert isinstance(program.cost_hamiltonian, SparsePauliOp)
 
-    def test_correct_number_of_programs_created_hamiltonian(
-        self, mocker, vqe_sweep_hamiltonian, vqe_sweep_max_iterations
+    def test_correct_number_of_programs_created_problems(
+        self, mocker, vqe_sweep_problems, vqe_sweep_max_iterations
     ):
-        """Test that the correct number of VQE programs are created with hamiltonians."""
+        """Test that the correct number of VQE programs are created with problems."""
         mocker.patch("divi.qprog.VQE")
-        hamiltonians = vqe_sweep_hamiltonian.hamiltonians
-        ansatze = vqe_sweep_hamiltonian.ansatze
+        problems = vqe_sweep_problems.problems
+        ansatze = vqe_sweep_problems.ansatze
 
-        vqe_sweep_hamiltonian.create_programs()
+        vqe_sweep_problems.create_programs()
 
-        # Expected count is the cartesian product of ansatze and hamiltonians (2 * 1 = 2)
-        expected_count = len(ansatze) * len(hamiltonians)
-        assert len(vqe_sweep_hamiltonian.programs) == expected_count
+        # Expected count is the cartesian product of ansatze and problems (2 * 1 = 2)
+        expected_count = len(ansatze) * len(problems)
+        assert len(vqe_sweep_problems.programs) == expected_count
 
         # Verify that all expected program keys exist
-        # Program keys are tuples of (ansatz.name, hamiltonian_index)
+        # Program keys are tuples of (ansatz.name, problem_index)
         assert all(
-            (ansatz.name, h_id) in vqe_sweep_hamiltonian.programs
-            for ansatz, h_id in product(ansatze, range(len(hamiltonians)))
+            (ansatz.name, p_id) in vqe_sweep_problems.programs
+            for ansatz, p_id in product(ansatze, range(len(problems)))
         )
 
-        for program in vqe_sweep_hamiltonian.programs.values():
+        for program in vqe_sweep_problems.programs.values():
             _assert_common_program_settings(program, vqe_sweep_max_iterations)
             assert program.cost_hamiltonian is not None
 
-    def test_hamiltonian_dict_keys_use_ids(
+    def test_problem_dict_keys_use_ids(
         self,
         mocker,
         default_test_simulator,
-        h2_hamiltonian,
+        h2_problem,
         vqe_sweep_ansatze,
         vqe_sweep_optimizer,
         vqe_sweep_max_iterations,
     ):
-        """Test that dict hamiltonian inputs use the dict keys as program IDs."""
+        """Test that dict problem inputs use the dict keys as program IDs."""
         mocker.patch("divi.qprog.VQE")
-        hamiltonians = {"h0": h2_hamiltonian}
+        problems = {"h0": h2_problem}
 
         vqe_sweep = VQEHyperparameterSweep(
             ansatze=vqe_sweep_ansatze,
             molecule_transformer=None,
-            hamiltonians=hamiltonians,
+            problems=problems,
             optimizer=vqe_sweep_optimizer,
             max_iterations=vqe_sweep_max_iterations,
             backend=default_test_simulator,
@@ -594,11 +594,11 @@ class TestVQEHyperparameterSweep:
 
         vqe_sweep.create_programs()
 
-        expected_count = len(vqe_sweep_ansatze) * len(hamiltonians)
+        expected_count = len(vqe_sweep_ansatze) * len(problems)
         assert len(vqe_sweep.programs) == expected_count
         assert all(
-            (ansatz.name, h_id) in vqe_sweep.programs
-            for ansatz, h_id in product(vqe_sweep_ansatze, hamiltonians.keys())
+            (ansatz.name, p_id) in vqe_sweep.programs
+            for ansatz, p_id in product(vqe_sweep_ansatze, problems.keys())
         )
 
     def test_hamiltonian_constant_only_raises(
@@ -612,7 +612,7 @@ class TestVQEHyperparameterSweep:
         vqe_sweep = VQEHyperparameterSweep(
             ansatze=[HartreeFockAnsatz()],
             molecule_transformer=None,
-            hamiltonians=[qp.Identity(0)],
+            problems=[HamiltonianProblem(qp.Identity(0))],
             optimizer=vqe_sweep_optimizer,
             max_iterations=vqe_sweep_max_iterations,
             backend=default_test_simulator,
@@ -623,7 +623,7 @@ class TestVQEHyperparameterSweep:
         ):
             vqe_sweep.create_programs()
 
-    def test_molecule_transformer_and_hamiltonians_rejected(
+    def test_molecule_transformer_and_problems_rejected(
         self,
         qp,
         default_test_simulator,
@@ -631,7 +631,7 @@ class TestVQEHyperparameterSweep:
         vqe_sweep_optimizer,
         vqe_sweep_max_iterations,
     ):
-        """Test that providing both molecule_transformer and hamiltonians raises."""
+        """Test that providing both molecule_transformer and problems raises."""
         transformer = MoleculeTransformer(
             base_molecule=h2_molecule,
             bond_modifiers=[1.0],
@@ -641,7 +641,7 @@ class TestVQEHyperparameterSweep:
             VQEHyperparameterSweep(
                 ansatze=[HartreeFockAnsatz()],
                 molecule_transformer=transformer,
-                hamiltonians=[qp.PauliZ(0)],
+                problems=[HamiltonianProblem(qp.PauliZ(0))],
                 optimizer=vqe_sweep_optimizer,
                 max_iterations=vqe_sweep_max_iterations,
                 backend=default_test_simulator,

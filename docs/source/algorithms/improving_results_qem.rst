@@ -60,6 +60,7 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    from divi.circuits.zne import ZNE, RichardsonExtrapolator
    from divi.qprog import VQE
    from divi.qprog.optimizers import MonteCarloOptimizer
+   from divi.qprog.problems import MolecularProblem
    from divi.backends import QiskitSimulator
    from pyscf import gto
 
@@ -79,7 +80,7 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    )
 
    vqe = VQE(
-       molecule=h2_molecule,
+       MolecularProblem.from_molecule(h2_molecule),
        qem_protocol=zne_protocol,
        optimizer=MonteCarloOptimizer(),
        backend=QiskitSimulator(qiskit_backend="auto"),

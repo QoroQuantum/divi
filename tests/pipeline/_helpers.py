@@ -36,6 +36,7 @@ from divi.pipeline.abc import (
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.problems import HamiltonianProblem
 
 
 class FakeBackend(CircuitRunner):
@@ -216,8 +217,7 @@ N_ELECTRONS = 2
 def h2_vqe(backend, optimizer, **kwargs):
     """A HartreeFock VQE — the boilerplate the dry-run tests share."""
     return VQE(
-        hamiltonian=FOUR_QUBIT_HAMILTONIAN,
-        n_electrons=N_ELECTRONS,
+        HamiltonianProblem(FOUR_QUBIT_HAMILTONIAN, n_electrons=N_ELECTRONS),
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=backend,
@@ -230,8 +230,7 @@ def metric_compatible_vqe(backend, optimizer, n_layers: int = 1):
     """A VQE whose GenericLayerAnsatz is compatible with all three metric
     estimators (expval cost, invertible, FS-supported RY/RZ gates)."""
     return VQE(
-        hamiltonian=FOUR_QUBIT_HAMILTONIAN,
-        n_electrons=N_ELECTRONS,
+        HamiltonianProblem(FOUR_QUBIT_HAMILTONIAN, n_electrons=N_ELECTRONS),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=n_layers,
         backend=backend,

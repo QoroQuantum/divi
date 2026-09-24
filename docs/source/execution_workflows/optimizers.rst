@@ -33,12 +33,12 @@ usually matter more than the algorithm name.
    * - ROSALIN or gCANS
      - Shot-limited, expectation-valued VQAs with exact parameter-shift rules
      - Adaptive samples for every gradient component
-     - Sensitive to learning rate and minimum shots; generalized QAOA rules can
+     - Sensitive to learning rate and minimum shots; generalised QAOA rules can
        require many evaluations.
    * - L-BFGS-B or QNG
      - Smooth objectives with an exact program gradient
      - Parameter-shift and, for QNG, metric evaluations
-     - QAOA may require a high-order generalized shift rule.
+     - QAOA may require a high-order generalised shift rule.
    * - Grid search
      - One or two parameters, especially shallow QAOA
      - Exponential in parameter count
@@ -109,7 +109,7 @@ Use L-BFGS-B when:
 
    :class:`~divi.qprog.algorithms.QAOA` generally has no exact *two-term*
    parameter-shift rule because a shared layer angle drives many Hamiltonian
-   terms. For exact trotterization, Divi derives a generalized rule from the
+   terms. For exact trotterization, Divi derives a generalised rule from the
    Hamiltonian frequencies [#wierichs2022]_. The rule may require many circuit
    evaluations, especially for weighted objectives, so QAOA applies
    ``max_shift_evaluations_per_parameter`` as a safety limit. Stochastic or
@@ -198,13 +198,24 @@ pseudo-inverse with cutoff ``rcond``.
 **Usage** is the same as any optimizer — pass an instance via the
 ``optimizer=`` argument and call ``run()``:
 
+.. invisible-code-block: python
+
+   from pyscf import gto
+   from divi.backends import MaestroSimulator
+   from divi.qprog.problems import MolecularProblem
+
+   backend = MaestroSimulator(shots=1000)
+   problem = MolecularProblem.from_molecule(
+       gto.M(atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr")
+   )
+
 .. code-block:: python
 
    from divi.qprog import VQE
    from divi.qprog.optimizers import QNGOptimizer
 
    vqe = VQE(
-       molecule=molecule,
+       problem,
        backend=backend,
        optimizer=QNGOptimizer(step_size=0.1, regularization=1e-3),
        max_iterations=10,
@@ -421,12 +432,12 @@ Use it with an expectation-valued VQA configured with
 ``shot_distribution="weighted_random"`` on a sampling backend.
 
 iCANS allocates shots independently by coordinate and retains the original
-``smax`` cap. gCANS instead maximizes expected improvement per total gradient
+``smax`` cap. gCANS instead maximises expected improvement per total gradient
 shot and does not use that cap. Neither rule is universally better: validate
 ``learning_rate`` and ``min_shots`` against the target circuit and noise model.
 Weighted random operator sampling is most useful for Hamiltonians with several
 measurement groups. A diagonal QAOA cost often has only one group, leaving no
-operator-selection advantage; generalized parameter shifts can then make SPSA
+operator-selection advantage; generalised parameter shifts can then make SPSA
 substantially cheaper.
 
 Grid Search
@@ -473,7 +484,7 @@ A warning is issued if ``max_iterations > 1`` is supplied.
 Program-Specific Constraints
 ----------------------------
 
-- :class:`~divi.qprog.algorithms.QAOA` can derive an exact generalized
+- :class:`~divi.qprog.algorithms.QAOA` can derive an exact generalised
   parameter-shift rule under exact trotterization, subject to its evaluation
   safety limit. For large rules, prefer SPSA, a gradient-free method, or a
   low-dimensional grid search.
@@ -500,7 +511,7 @@ Pass an ``EarlyStopping`` instance to any variational algorithm:
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
    vqe = VQE(
-       molecule=molecule,
+       problem,
        backend=backend,
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
        max_iterations=200,

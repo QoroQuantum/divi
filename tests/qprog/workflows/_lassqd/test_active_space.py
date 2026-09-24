@@ -240,12 +240,10 @@ def test_merge_clusters_returns_disjoint_complete_clusters():
     assert len(covered) == len(set(covered))
 
 
-def test_auto_fragment_specs_on_h4_finds_two_fragments():
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
+def test_auto_fragment_specs_on_h4_finds_two_fragments(h4_chain_mean_field):
     specs, localized, active_positions = auto_fragment_specs(
-        mol,
-        np.asarray(mean_field.mo_coeff),
+        h4_chain_mean_field.mol,
+        np.asarray(h4_chain_mean_field.mo_coeff),
         n_occupied=2,
         rng=np.random.default_rng(0),
         n_active_orbitals=4,
@@ -345,13 +343,13 @@ def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
     assert len(partitions) == 1
 
 
-def test_auto_fragment_specs_active_integrals_include_frozen_core():
+def test_auto_fragment_specs_active_integrals_include_frozen_core(h4_chain_mean_field):
     """With an occupied orbital left out of the active space, the one-body
     integrals feeding the coupling graph must carry its mean-field
     potential, matching a CASCI effective core Hamiltonian built the same
     way."""
-    mol = h4_chain()
-    mean_field = scf.RHF(mol).run(verbose=0)
+    mean_field = h4_chain_mean_field
+    mol = mean_field.mol
     mo_coeff = np.asarray(mean_field.mo_coeff)
 
     # n_occupied=2 but only 1 active occupied orbital selected: orbital 0

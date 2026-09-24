@@ -15,6 +15,7 @@ from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import RosalinOptimizer
 from divi.qprog.optimizers._rosalin import _gcans_shots, _icans_shots_and_gains
+from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 
 
@@ -499,7 +500,9 @@ def test_rosalin_runs_through_weighted_random_vqe(sampling_test_simulator, alloc
         allocation=allocation,
     )
     vqe = VQE(
-        hamiltonian=SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)]),
+        HamiltonianProblem(
+            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+        ),
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         n_layers=1,
         backend=sampling_test_simulator,
@@ -598,10 +601,12 @@ def test_rosalin_vqe_checkpoint_loads_and_resumes(
     sampling_test_simulator,
     tmp_path,
 ):
-    hamiltonian = SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+    problem = HamiltonianProblem(
+        SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
+    )
     ansatz = GenericLayerAnsatz([RYGate, RZGate])
     vqe = VQE(
-        hamiltonian=hamiltonian,
+        problem,
         ansatz=ansatz,
         n_layers=1,
         backend=sampling_test_simulator,
@@ -626,7 +631,7 @@ def test_rosalin_vqe_checkpoint_loads_and_resumes(
     resumed = VQE.load_state(
         tmp_path,
         backend=sampling_test_simulator,
-        hamiltonian=hamiltonian,
+        problem=problem,
         ansatz=ansatz,
         n_layers=1,
     )

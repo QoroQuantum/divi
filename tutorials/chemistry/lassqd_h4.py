@@ -50,6 +50,7 @@ from divi.qprog import (
     ReportingLevel,
     SQDConfig,
 )
+from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend
 
 
@@ -64,6 +65,9 @@ def main() -> None:
     mean_field = scf.RHF(h4).run(verbose=0)
     casci_energy = mcscf.CASCI(mean_field, 4, 4).kernel()[0]
     correlation = casci_energy - mean_field.e_tot
+    # Reuse the already-converged mean field rather than the bare Mole, so
+    # LASSQD does not run RHF a second time.
+    problem = MolecularProblem.from_molecule(mean_field)
 
     settings = dict(
         sqd=SQDConfig(n_batches=6, batch_size=32, n_recovery_iterations=3),
@@ -89,7 +93,7 @@ def main() -> None:
     print(f"CASCI: {casci_energy:.6f} Ha  (correlation {correlation:+.6f} Ha)\n")
 
     for label, fragmentation in layouts.items():
-        ensemble = LASSQD(h4, fragmentation=fragmentation, **settings)
+        ensemble = LASSQD(problem, fragmentation=fragmentation, **settings)
         start = time.time()
         ensemble.run(max_rounds=5)
         elapsed = time.time() - start

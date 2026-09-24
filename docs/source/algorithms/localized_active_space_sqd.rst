@@ -23,10 +23,14 @@ smaller pieces. Read
 :ref:`lassqd-accuracy-characteristics` below before treating its output as
 a chemistry-grade energy.
 
-LASSQD requires the ``chem`` extra: ``pip install qoro-divi[chem]``. It
-accepts a PySCF ``gto.Mole`` or restricted (closed-shell) mean-field object
-— not a PennyLane ``qchem.Molecule`` — runs (or reuses) the RHF calculation,
-and only supports closed-shell molecules.
+LASSQD requires the ``chem`` extra: ``pip install qoro-divi[chem]``. Build its
+input with :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`, passed
+a PySCF ``gto.Mole`` or restricted (closed-shell) mean-field object; LASSQD
+runs (or reuses) the RHF calculation from that input. Because each macro-cycle
+re-optimises the molecular orbitals in the atomic-orbital basis, LASSQD rejects
+a :class:`~divi.qprog.problems.MolecularProblem` built from a PennyLane
+``qchem.Molecule`` or from bare integrals — both carry no atomic-orbital basis
+to re-optimise into. Only closed-shell (RHF) molecules are supported.
 
 Because :class:`~divi.qprog.workflows.LASSQD` subclasses
 :class:`~divi.qprog.ensemble.ProgramEnsemble`, its multi-round execution
@@ -47,11 +51,12 @@ calculation on the same active space:
    from pyscf import gto
    from divi.backends import MaestroSimulator
    from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec, SQDConfig
+   from divi.qprog.problems import MolecularProblem
 
    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
 
    ensemble = LASSQD(
-       mol,
+       MolecularProblem.from_molecule(mol),
        fragmentation=FragmentationConfig(
            active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
        ),

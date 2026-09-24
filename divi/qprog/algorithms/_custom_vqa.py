@@ -15,7 +15,7 @@ from qiskit import QuantumCircuit
 from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi._optional import optional_module
+from divi._optional import module_if_imported
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._mixers import single_pauli_label
 
@@ -202,7 +202,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             is_qnode = False
             is_quantum_script = False
         else:
-            qp = optional_module("pennylane")
+            qp = module_if_imported("pennylane")
             is_qnode = qp is not None and isinstance(qscript, qp.QNode)
             is_quantum_script = qp is not None and isinstance(
                 qscript, qp.tape.QuantumScript

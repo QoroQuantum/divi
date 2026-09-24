@@ -2,7 +2,11 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Problem classes for QAOA-compatible quantum optimisation."""
+"""Problem classes for quantum optimisation and ground-state estimation."""
+
+from typing import Any
+
+from divi._optional import import_optional
 
 from ._base import QAOAProblem
 from ._binary import BinaryOptimizationProblem
@@ -15,6 +19,7 @@ from ._graphs import (
     MinVertexCoverProblem,
     draw_graph_solution_nodes,
 )
+from ._hamiltonian import HamiltonianProblem, MolecularProblem
 from ._matching import (
     MaxWeightMatchingProblem,
     check_matching_matrix,
@@ -39,7 +44,9 @@ __all__ = [
     "BinaryOptimizationProblem",
     "CVRPProblem",
     "CommunityDecomposer",
+    "MolecularProblem",
     "GraphPartitioningConfig",
+    "HamiltonianProblem",
     "MaxCliqueProblem",
     "MaxCutProblem",
     "MaxIndependentSetProblem",
@@ -63,15 +70,14 @@ __all__ = [
 ]
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     """Resolve :class:`CommunityDecomposer` on first access."""
     if name == "CommunityDecomposer":
-        try:
-            from ._community_decomposer import CommunityDecomposer
-        except ImportError as exc:
-            raise ImportError(
-                "CommunityDecomposer requires the 'qubo-decompose' extra; "
-                "install it with `pip install qoro-divi[qubo-decompose]`."
-            ) from exc
+        import_optional(
+            "hybrid", extra="qubo-decompose", capability="CommunityDecomposer"
+        )
+        from ._community_decomposer import CommunityDecomposer
+
+        globals()[name] = CommunityDecomposer
         return CommunityDecomposer
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

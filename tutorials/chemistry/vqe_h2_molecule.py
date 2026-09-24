@@ -24,12 +24,14 @@ import pennylane as qp
 from divi.pipeline import format_dry_run
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend
 
 if __name__ == "__main__":
     mol = qp.qchem.Molecule(
         symbols=["H", "H"], coordinates=np.array([(0, 0, 0), (0, 0, 0.5)])
     )
+    problem = MolecularProblem.from_molecule(mol)
 
     # ------------------------------------------------------------------ #
     # Part 1 — Basic VQE run with a dry-run preview.
@@ -38,7 +40,7 @@ if __name__ == "__main__":
     print("-" * 40)
 
     vqe_problem = VQE(
-        molecule=mol,
+        problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
@@ -66,7 +68,7 @@ if __name__ == "__main__":
     backend = get_backend(shots=500, force_sampling=True)
 
     vqe_input = dict(
-        molecule=mol,
+        problem=problem,
         n_layers=1,
         ansatz=HartreeFockAnsatz(),
         optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),

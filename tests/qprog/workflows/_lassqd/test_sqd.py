@@ -11,7 +11,7 @@ import pytest
 
 pytest.importorskip("pyscf")
 
-from pyscf import ao2mo, fci, scf
+from pyscf import fci, scf
 
 import divi.qprog.workflows._lassqd._sqd as sqd_module
 from divi.qprog.workflows._lassqd._sqd import (
@@ -36,17 +36,13 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     dense_fci_energy,
     h2_molecule,
     h4_chain,
+    mo_integrals,
     uniform_full_space_probs,
 )
 
 
 def _integrals_from_mol(mol):
-    mean_field = scf.RHF(mol).run(verbose=0)
-    mo_coeff = np.asarray(mean_field.mo_coeff)
-    n_orb = mo_coeff.shape[1]
-    one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
-    two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orb)
-    return one_body, two_body, n_orb, float(mol.energy_nuc())
+    return mo_integrals(scf.RHF(mol).run(verbose=0))
 
 
 def _h2_integrals():
@@ -1324,68 +1320,42 @@ def test_symmetrize_spin_is_inactive_on_a_polarized_fragment():
     assert SQDSolver(3, 2, 2, symmetrize_spin=True).symmetrize_spin is True
 
 
-def test_recovery_stops_once_energy_and_occupancy_settle(monkeypatch):
-    """Zero two-body terms and a saturating batch make iteration one reproduce
-    iteration zero, so both criteria are met and the rest are skipped."""
+def _count_settled_diagonalizations(mocker, **solver_kwargs):
+    """Diagonalizations in a two-orbital solve whose iterations all reproduce the
+    first: zero two-body terms and one saturating batch per iteration."""
     n_orb = 2
-    one_body = np.diag([-1.0, -0.5])
-    two_body = np.zeros((n_orb,) * 4)
-    probs = uniform_full_space_probs(n_orb, 1, 1)
-
-    diagonalizations = []
-    real = sqd_module.projected_matrices
-
-    def spy(dets, *args, **kwargs):
-        diagonalizations.append(len(dets))
-        return real(dets, *args, **kwargs)
-
-    monkeypatch.setattr(sqd_module, "projected_matrices", spy)
-
+    spy = mocker.spy(sqd_module, "projected_matrices")
     SQDSolver(
         n_orb,
         1,
         1,
         n_batches=1,
         batch_size=16,
-        n_iterations=8,
         lambda_penalty=0.0,
         recovery=False,
-        energy_tol=1e-8,
-        occupancies_tol=1e-5,
         rng=np.random.default_rng(0),
-    ).solve(probs, one_body, two_body)
+        **solver_kwargs,
+    ).solve(
+        uniform_full_space_probs(n_orb, 1, 1),
+        np.diag([-1.0, -0.5]),
+        np.zeros((n_orb,) * 4),
+    )
+    return spy.call_count
+
+
+def test_recovery_stops_once_energy_and_occupancy_settle(mocker):
+    """Both criteria are met at iteration one, so the rest are skipped."""
+    count = _count_settled_diagonalizations(
+        mocker, n_iterations=8, energy_tol=1e-8, occupancies_tol=1e-5
+    )
 
     # Iterations 0 and 1 to establish that nothing moved, then the break.
-    assert len(diagonalizations) == 2
+    assert count == 2
 
 
-def test_recovery_runs_every_iteration_at_the_default_tolerances():
+def test_recovery_runs_every_iteration_at_the_default_tolerances(mocker):
     """The default tolerances are zero, so no iteration can qualify to stop."""
-    n_orb = 2
-    one_body = np.diag([-1.0, -0.5])
-    two_body = np.zeros((n_orb,) * 4)
-    probs = uniform_full_space_probs(n_orb, 1, 1)
-
-    counted = []
-
-    class _CountingSolver(SQDSolver):
-        def _diagonalize(self, *args, **kwargs):
-            counted.append(1)
-            return super()._diagonalize(*args, **kwargs)
-
-    _CountingSolver(
-        n_orb,
-        1,
-        1,
-        n_batches=1,
-        batch_size=16,
-        n_iterations=5,
-        lambda_penalty=0.0,
-        recovery=False,
-        rng=np.random.default_rng(0),
-    ).solve(probs, one_body, two_body)
-
-    assert len(counted) == 5
+    assert _count_settled_diagonalizations(mocker, n_iterations=5) == 5
     assert SQDSolver(2, 1, 1).energy_tol == 0.0
     assert SQDSolver(2, 1, 1).occupancies_tol == 0.0
 
@@ -1504,26 +1474,6 @@ def _rdms_from(result, n_orb):
     return fast
 
 
-def test_spatial_rdm_trace_equals_electron_count():
-    one_body, two_body, n_orb, constant = _h2_integrals()
-    solver = SQDSolver(
-        n_orb,
-        1,
-        1,
-        n_batches=4,
-        batch_size=256,
-        n_iterations=1,
-        lambda_penalty=0.0,
-        rng=np.random.default_rng(0),
-    )
-    result = solver.solve(
-        uniform_full_space_probs(n_orb, 1, 1), one_body, two_body, constant=constant
-    )
-    rdm1, _, _, _ = _rdms_from(result, n_orb)
-
-    assert np.trace(rdm1) == pytest.approx(2.0, abs=1e-12)
-
-
 def test_spatial_rdm1_matches_pyscf_fci():
     one_body, two_body, n_orb, constant = _h2_integrals()
     solver = SQDSolver(
@@ -1544,6 +1494,7 @@ def test_spatial_rdm1_matches_pyscf_fci():
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (1, 1))
     expected = fci.direct_spin1.make_rdm1(civec, n_orb, (1, 1))
 
+    assert np.trace(rdm1) == pytest.approx(2.0, abs=1e-12)
     np.testing.assert_allclose(rdm1, expected, atol=1e-9)
 
 
