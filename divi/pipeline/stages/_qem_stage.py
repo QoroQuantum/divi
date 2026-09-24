@@ -82,7 +82,7 @@ class QEMStage(BundleStage):
             warnings.warn(
                 "QuEPP with sampling='exhaustive' enumerates all Pauli "
                 "paths and scales poorly with truncation_order and circuit "
-                "depth. Consider sampling='montecarlo' unless you "
+                "depth. Consider the default sampling='auto' unless you "
                 "specifically need deterministic enumeration. "
                 "To suppress this warning, pass "
                 "suppress_performance_warnings=True to CircuitPipeline, or "

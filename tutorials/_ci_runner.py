@@ -276,6 +276,7 @@ def run_tutorial(
     # dir and get cleaned up with ``shutil.rmtree``.
     env = os.environ.copy()
     env["MPLBACKEND"] = "Agg"
+    env["PYTHONWARNINGS"] = "ignore:FigureCanvasAgg is non-interactive:UserWarning"
 
     proc = subprocess.Popen(
         [sys.executable, str(file_path)],

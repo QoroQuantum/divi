@@ -291,8 +291,10 @@ data and trainable parameter counts separately.
 
    Preview with the actual backend. ``strategy: _backend_expval`` means the
    backend evaluates the observable directly; ``strategy: qwc`` means sampling
-   circuits were grouped. ``QiskitSimulator(force_sampling=True)`` selects the
-   latter path, while :class:`~divi.backends.MaestroSimulator` uses expval mode.
+   circuits were grouped. ``force_sampling=True`` on
+   :class:`~divi.backends.MaestroSimulator` or
+   :class:`~divi.backends.QiskitSimulator` selects the latter path; both use
+   expval mode by default.
 
 ``dry_run()`` is print-free — it returns a ``dict[str, DryRunReport]`` keyed by
 pipeline name for programmatic use, so you can assert on pipeline structure in a
@@ -468,7 +470,7 @@ work per parameter set.  When using
 :class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalize rotation
 angles, which may produce more Pauli paths. ``QuEPP(sampling="exhaustive")``
 binds parameters first — fewer paths per circuit, but more total mitigation work
-across parameter sets. ``QuEPP(sampling="montecarlo")`` keeps the cheaper
+across parameter sets. The default ``QuEPP(sampling="auto")`` keeps the cheaper
 symbolic ordering.
 
 
@@ -519,8 +521,9 @@ zero, which is generally biased. A :class:`UserWarning` reports the omitted
 fraction of the Hamiltonian L1 norm in that case.
 
 Allocation requires ``supports_expval=False``; ``grouping_strategy`` alone does
-not force sampling. Use ``QiskitSimulator(force_sampling=True)`` or
-``JobConfig(force_sampling=True)`` with QoroService. Expval-capable backends
+not force sampling. Use ``MaestroSimulator(force_sampling=True)``,
+``QiskitSimulator(force_sampling=True)``, or ``JobConfig(force_sampling=True)``
+with QoroService. Expval-capable backends
 ignore ``shot_distribution`` and warn because they create no measurement groups.
 
 

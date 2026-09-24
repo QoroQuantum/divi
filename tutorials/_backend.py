@@ -72,9 +72,8 @@ def get_backend(
     Args:
         shots: Number of measurement shots (used by both backends).
         track_depth: If True, record circuit depth for each submitted batch.
-        force_sampling: If True, disable expval mode on ``QiskitSimulator``
-            and ``QoroService``, forcing shot-based sampling instead.
-            Ignored for ``MaestroSimulator``.
+        force_sampling: If True, disable expval mode on every backend,
+            forcing shot-based sampling instead.
         **kwargs: Extra keyword arguments forwarded to ``QiskitSimulator``
             (e.g. ``n_processes``, ``qiskit_backend``).
             These are silently ignored when ``--cloud-maestro`` or
@@ -101,7 +100,9 @@ def get_backend(
         return service
 
     if cli.mode == "local-maestro":
-        return MaestroSimulator(shots=shots, track_depth=track_depth)
+        return MaestroSimulator(
+            shots=shots, track_depth=track_depth, force_sampling=force_sampling
+        )
 
     return QiskitSimulator(
         shots=shots, track_depth=track_depth, force_sampling=force_sampling, **kwargs

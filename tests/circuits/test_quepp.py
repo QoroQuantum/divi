@@ -1201,20 +1201,26 @@ def test_hybrid_normalization():
     assert ctx["n_rotations"] == 1
 
 
+def _single_rx_prep(angle) -> _PreprocResult:
+    """Preprocessed ``RX(angle)`` measured as ``<Z0>``, symbolic iff ``angle`` is."""
+    qc = QuantumCircuit(1)
+    qc.rx(angle, 0)
+    rotations = _extract_rotation_gates(qc)
+    return _PreprocResult(
+        working=qc,
+        n_qubits=1,
+        rotations=rotations,
+        tableaus=_build_clifford_tableaus(qc, rotations),
+        obs_terms=_obs_to_stim_terms(_Z0, 1),
+        symbolic=isinstance(angle, Parameter),
+    )
+
+
 def test_symbolic_fallback_warnings_carry_their_own_category():
     """Callers that expect symbolic angles need to silence exactly these — matching
     on message text stops suppressing, silently, the moment the wording changes."""
-    qc = QuantumCircuit(1)
-    qc.rx(Parameter("theta"), 0)
     proto = QuEPP(sampling="montecarlo", coefficient_threshold=0.1, n_twirls=0)
-    prep = _PreprocResult(
-        working=qc,
-        n_qubits=1,
-        rotations=_extract_rotation_gates(qc),
-        tableaus=_build_clifford_tableaus(qc, _extract_rotation_gates(qc)),
-        obs_terms=_obs_to_stim_terms(SparsePauliOp("Z"), 1),
-        symbolic=True,
-    )
+    prep = _single_rx_prep(Parameter("theta"))
     with pytest.warns(SymbolicAngleWarning) as record:
         proto._select_paths(prep)
     assert len(record) == 2
@@ -1226,11 +1232,36 @@ def test_symbolic_fallback_warnings_carry_their_own_category():
 
 
 class TestBindBeforeMitigation:
-    def test_monte_carlo_sampling_keeps_symbolic_weights(self):
-        assert QuEPP().requires_bound_params is False
+    @pytest.mark.parametrize("sampling", ["auto", "montecarlo"])
+    def test_sampling_modes_keep_symbolic_weights(self, sampling):
+        assert QuEPP(sampling=sampling).requires_bound_params is False
 
     def test_exhaustive_sampling_binds_before_mitigation(self):
         assert QuEPP(sampling="exhaustive").requires_bound_params is True
+
+
+class TestAutoSampling:
+    """The default enumerates symbolic circuits silently and samples concrete ones."""
+
+    def test_enumerates_a_symbolic_circuit_without_warning(self):
+        prep = _single_rx_prep(Parameter("theta"))
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", SymbolicAngleWarning)
+            paths = QuEPP(n_twirls=0)._select_paths(prep)
+
+        expected = QuEPP(sampling="exhaustive", n_twirls=0)._select_paths(prep)
+        assert [p.branches for p in paths] == [p.branches for p in expected]
+
+    def test_samples_a_concrete_circuit(self):
+        prep = _single_rx_prep(0.4)
+
+        paths = QuEPP(n_twirls=0)._select_paths(prep, rng=np.random.default_rng(7))
+
+        expected = QuEPP(sampling="montecarlo", n_twirls=0)._select_paths(
+            prep, rng=np.random.default_rng(7)
+        )
+        assert [p.branches for p in paths] == [p.branches for p in expected]
 
 
 class TestQuEPPPipelineIntegration:

@@ -129,27 +129,27 @@ residual. Select it with ``qem_protocol=QuEPP(truncation_order=2)``.
 
 - ``truncation_order`` *(int, default 2)* — Maximum CPT expansion order *K*.
   Higher *K* includes more Pauli paths (cost grows combinatorially with the
-  number of non-Clifford gates).  It governs path enumeration for
-  ``sampling="exhaustive"`` **and** for the montecarlo fallback on symbolic
-  circuits (see ``sampling``).
+  number of non-Clifford gates).  It governs every enumerated path set: always
+  with ``sampling="exhaustive"``, and on symbolic circuits otherwise (see
+  ``sampling``).
 - ``coefficient_threshold`` *(float, optional)* — Prune paths whose absolute
-  weight falls below this threshold during DFS enumeration (``sampling="exhaustive"``
-  only; disabled on symbolic circuits, whose angle magnitudes are unknown).
+  weight falls below this threshold during enumeration (disabled on symbolic
+  circuits, whose angle magnitudes are unknown).
   The weight is the path's trigonometric product, independent of the
   observable's coefficients, so the threshold means the same thing whatever
   scale the Hamiltonian is written in.
-- ``sampling`` — ``"exhaustive"`` enumerates paths up to ``truncation_order``
-  (deterministic; cost grows with order and circuit size).  ``"montecarlo"``
-  *(default)* draws ``n_samples`` random paths, **but only on concrete
-  (parameter-bound) circuits**.  Variational programs (VQE/QAOA) present a
-  *symbolic* circuit at mitigation time — error mitigation runs before parameter
-  binding — so ``montecarlo`` warns and falls back to exhaustive enumeration
-  governed by ``truncation_order``; ``n_samples`` has no effect in that case.
-  A :class:`~divi.qprog.algorithms.TimeEvolution` at a fixed ``time`` has
-  concrete angles, so montecarlo stays live there and the knobs swap roles:
-  ``n_samples`` sets the cost and ``truncation_order`` does not enter.
-- ``n_samples`` *(int, default 200)* — Monte Carlo path budget, used only on the
-  concrete-circuit montecarlo path (see ``sampling``).
+- ``sampling`` — ``"auto"`` *(default)* picks per circuit. Variational programs
+  (VQE/QAOA) present a *symbolic* circuit at mitigation time — error mitigation
+  runs before parameter binding — so ``auto`` enumerates paths up to
+  ``truncation_order`` once and reuses them for every parameter set, and
+  ``n_samples`` has no effect. A :class:`~divi.qprog.algorithms.TimeEvolution`
+  at a fixed ``time`` has concrete angles, so ``auto`` draws ``n_samples``
+  random paths there and the knobs swap roles: ``n_samples`` sets the cost and
+  ``truncation_order`` does not enter. ``"montecarlo"`` insists on sampling and
+  warns when a symbolic circuit forces enumeration; ``"exhaustive"`` always
+  enumerates, binding parameters before mitigation so it sees concrete angles.
+- ``n_samples`` *(int, default 200)* — Monte Carlo path budget, used only when
+  a concrete circuit is sampled (see ``sampling``).
 - ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
 - ``n_twirls`` *(int, default 10)* — Pauli twirl count; ``0`` disables twirling.
 
@@ -266,9 +266,9 @@ non-Clifford rotations is comparable to K.  The paper validates QuEPP on
 If you see this warning:
 
 - **Reduce truncation_order** to ``K=1`` to cut the number of enumerated
-  branches.  (``sampling="montecarlo"`` does *not* help here: on the symbolic
-  circuits variational programs produce it falls back to exhaustive enumeration
-  anyway — see ``sampling`` above.)
+  branches.  (Monte Carlo sampling does *not* help here: the symbolic circuits
+  variational programs produce are always enumerated — see ``sampling``
+  above.)
 - If the problem already requires more non-Clifford rotations, the warning may
   disappear; do not deepen a circuit solely to satisfy QuEPP.
 - **Use ZNE instead** for shallow circuits where QuEPP is unreliable.

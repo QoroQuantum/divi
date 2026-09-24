@@ -1037,21 +1037,23 @@ class QuEPP(QEMProtocol):
     Args:
         truncation_order: Maximum number of sine branches in the CPT
             expansion (K_T).  Higher values reduce bias at the cost of
-            more auxiliary circuits.  Used by ``sampling="exhaustive"`` and by
-            the montecarlo fallback on symbolic circuits (see ``sampling``).
+            more auxiliary circuits.  Governs every enumerated path set: always
+            with ``sampling="exhaustive"``, and on symbolic circuits otherwise
+            (see ``sampling``).
         coefficient_threshold: Prune paths whose absolute weight falls
-            below this value during DFS enumeration.  Only used with
-            ``sampling="exhaustive"`` (disabled on symbolic circuits, whose
-            angle magnitudes are unknown).
-        sampling: Path selection strategy.  ``"exhaustive"`` enumerates paths up
-            to ``truncation_order``.  ``"montecarlo"`` (default) draws
-            ``n_samples`` random paths, but **only on concrete (parameter-bound)
-            circuits**; on a symbolic circuit — which is what variational
-            programs present at mitigation time, before parameter binding — it
-            warns and falls back to exhaustive enumeration, so ``n_samples`` has
-            no effect there.
+            below this value during DFS enumeration (disabled on symbolic
+            circuits, whose angle magnitudes are unknown).
+        sampling: Path selection strategy.  ``"auto"`` (default) draws
+            ``n_samples`` random paths on a concrete (parameter-bound) circuit
+            and enumerates paths up to ``truncation_order`` on a symbolic one —
+            which is what variational programs present at mitigation time,
+            before parameter binding, so the symbolic circuit is expanded once
+            for every parameter set.  ``"montecarlo"`` always samples, warning
+            and falling back to enumeration on a symbolic circuit.
+            ``"exhaustive"`` always enumerates, binding parameters before
+            mitigation so it can see concrete angles.
         n_samples: Number of Monte Carlo path samples (default 200); applies only
-            to the concrete-circuit montecarlo path.
+            when a concrete circuit is sampled.
         seed: RNG seed for Monte Carlo reproducibility.
         n_twirls: Number of Pauli twirling samples.  When non-zero, the
             pipeline builder appends a ``PauliTwirlStage``.  Default ``10``.
@@ -1061,18 +1063,19 @@ class QuEPP(QEMProtocol):
         self,
         truncation_order: int = 2,
         coefficient_threshold: float | None = None,
-        sampling: Literal["montecarlo", "exhaustive"] = "montecarlo",
+        sampling: Literal["auto", "montecarlo", "exhaustive"] = "auto",
         n_samples: int = 200,
         seed: int | None = None,
         n_twirls: int = 10,
     ) -> None:
         if truncation_order < 0:
             raise ValueError("truncation_order must be non-negative.")
-        if sampling not in ("exhaustive", "montecarlo"):
+        if sampling not in ("auto", "exhaustive", "montecarlo"):
             raise ValueError(
-                f"sampling must be 'exhaustive' or 'montecarlo', got {sampling!r}"
+                "sampling must be 'auto', 'exhaustive' or 'montecarlo', "
+                f"got {sampling!r}"
             )
-        if sampling == "montecarlo" and (n_samples is None or n_samples < 1):
+        if sampling != "exhaustive" and (n_samples is None or n_samples < 1):
             raise ValueError(
                 "n_samples must be a positive integer for montecarlo sampling."
             )
@@ -1246,7 +1249,7 @@ class QuEPP(QEMProtocol):
 
         # A throwaway stream, so previewing leaves self._rng where a run found it.
         preview_rng = np.random.default_rng(0)
-        sampled_paths = self._sampling == "montecarlo" and not symbolic
+        sampled_paths = self._sampling != "exhaustive" and not symbolic
 
         unique_branches: set[tuple[int, ...]] = set()
         n_paths_per_obs: list[int] = []
@@ -1259,8 +1262,7 @@ class QuEPP(QEMProtocol):
                 obs_terms=_obs_to_stim_terms(obs, n_qubits),
                 symbolic=symbolic,
             )
-            # Symbolic angles make _select_paths warn about falling back to
-            # exhaustive enumeration; a run binds them first, so keep it quiet.
+            # The run itself reports any symbolic fallback; keep the preview quiet.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SymbolicAngleWarning)
                 paths = self._select_paths(prep, rng=preview_rng)
@@ -1367,7 +1369,7 @@ class QuEPP(QEMProtocol):
             )
             coeff_threshold = 0.0
 
-        if self._sampling == "montecarlo" and not symbolic:
+        if self._sampling != "exhaustive" and not symbolic:
             return _sample_paths_montecarlo(
                 prep.rotations,
                 prep.tableaus,
