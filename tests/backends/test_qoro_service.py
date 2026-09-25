@@ -73,12 +73,22 @@ _LIVE_MAESTRO_CONFIG = MaestroConfig(
 )
 _CONFIG_GETTERS = (QoroService.get_maestro_config, QoroService.get_device_config)
 _QPU_JOB_CONFIG = JobConfig(qpu_system=QPUSystem(name="hw", supports_expval=False))
+_VENDOR_BLUEPRINTS = {
+    "ibm": {"label": "IBM", "credentials": {}, "device": {"TRANSPILE_LEVEL": {}}},
+    "iqm": {"label": "IQM", "credentials": {}, "device": {"USE_MITIGATION": {}}},
+}
 
 
 def _init_payload(mock_make_request) -> dict:
     """The JSON body of the ``job/init/`` call a submission made."""
     _, called_kwargs = mock_make_request.call_args_list[0]
     return called_kwargs.get("json", {})
+
+
+def _mock_vendor_blueprints(mocker, service):
+    mocker.patch.object(
+        service, "fetch_vendor_blueprints", return_value=_VENDOR_BLUEPRINTS
+    )
 
 
 def _mock_config_endpoint(mocker, service, response_data):
@@ -1087,20 +1097,40 @@ class TestQoroServiceMock:
         assert "device_config" not in payload
 
     def test_qpu_submission_sends_its_device_config_and_skips_the_default(
-        self, submit_circuits_mock
+        self, mocker, submit_circuits_mock
     ):
         """A service-wide Maestro default must not leak into hardware jobs."""
         qoro_service_mock, mock_make_request = submit_circuits_mock
+        _mock_vendor_blueprints(mocker, qoro_service_mock)
         qoro_service_mock.maestro_config = MaestroConfig(max_bond_dimension=64)
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
-            device_config=DeviceConfig(optimization_level=2),
+            device_config=DeviceConfig(transpile_level=2, use_mitigation=True),
             override_job_config=_QPU_JOB_CONFIG,
         )
 
         payload = _init_payload(mock_make_request)
-        assert payload["device_config"] == {"optimization_level": 2}
+        assert payload["device_config"] == {
+            "TRANSPILE_LEVEL": 2,
+            "USE_MITIGATION": True,
+        }
         assert "maestro_config" not in payload
+
+    def test_a_device_option_no_vendor_accepts_is_rejected(
+        self, mocker, submit_circuits_mock
+    ):
+        """The service would store the misspelt key and no worker would read it."""
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        _mock_vendor_blueprints(mocker, qoro_service_mock)
+
+        with pytest.raises(ValueError, match=r"\['TRANSPILATION_LEVEL'\]"):
+            qoro_service_mock.submit_circuits(
+                {"c1": "qasm"},
+                device_config=DeviceConfig(transpilation_level=2),
+                override_job_config=_QPU_JOB_CONFIG,
+            )
+
+        mock_make_request.assert_not_called()
 
     def test_submission_without_configs_sends_neither(self, submit_circuits_mock):
         qoro_service_mock, mock_make_request = submit_circuits_mock
@@ -2278,7 +2308,10 @@ class TestQoroServiceMock:
                     max_bond_dimension=512, simulation_type="MatrixProductState"
                 ),
             ),
-            (QoroService.get_device_config, DeviceConfig(optimization_level=2)),
+            (
+                QoroService.get_device_config,
+                DeviceConfig(transpile_level=2, use_twirling=True),
+            ),
         ],
         ids=["maestro", "device"],
     )
@@ -2293,7 +2326,7 @@ class TestQoroServiceMock:
                     max_bond_dimension=512, simulation_type="MatrixProductState"
                 )
             ),
-            "device_config": {"optimization_level": 2},
+            "device_config": {"TRANSPILE_LEVEL": 2, "USE_TWIRLING": "true"},
         }
         mock_make_request = _mock_config_endpoint(mocker, service, response_data)
 

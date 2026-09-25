@@ -65,11 +65,11 @@ def test_service_names_and_enum_codes():
         )
     )
 
-    assert payload["bond_dimension"] == 32
+    assert payload["max_bond_dimension"] == 32
     assert payload["truncation_threshold"] == 1e-8
     assert payload["simulator_type"] == maestro.SimulatorType.Gpu.value
     assert payload["simulation_type"] == maestro.SimulationType.PathIntegral.value
-    assert {"max_bond_dimension", "singular_value_threshold"}.isdisjoint(payload)
+    assert "singular_value_threshold" not in payload
 
 
 def test_defaults_are_sent_and_unset_fields_are_not():
@@ -115,7 +115,7 @@ def test_an_unknown_enum_code_is_rejected():
 def test_unknown_keys_are_dropped_with_a_warning():
     with pytest.warns(UserWarning, match=r"\['noisy_device'\]"):
         config = maestro_config_from_payload(
-            {"bond_dimension": 64, "noisy_device": "ibm_torino"}
+            {"max_bond_dimension": 64, "noisy_device": "ibm_torino"}
         )
 
     assert config == MaestroConfig(max_bond_dimension=64)

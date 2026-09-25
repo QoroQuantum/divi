@@ -15,7 +15,6 @@ import numpy as np
 from ._maestro import MaestroConfig
 
 _SERVICE_FIELD_NAMES = {
-    "max_bond_dimension": "bond_dimension",
     "singular_value_threshold": "truncation_threshold",
 }
 _FIELD_NAMES_BY_SERVICE_NAME = {
@@ -85,8 +84,7 @@ def maestro_config_to_payload(config: MaestroConfig) -> dict:
     """Serialise ``config`` to the Qoro Service's ``maestro_config`` object.
 
     Every field that is not ``None`` is sent, defaults included, so a cloud run
-    sees the values a local one would. ``max_bond_dimension`` and
-    ``singular_value_threshold`` travel as ``bond_dimension`` and
+    sees the values a local one would. ``singular_value_threshold`` travels as
     ``truncation_threshold``, the enum names as maestro's integer codes, and
     the noise model as the list of ``set_*`` calls that built it.
 

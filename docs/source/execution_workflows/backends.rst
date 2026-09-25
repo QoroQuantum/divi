@@ -435,8 +435,9 @@ A vendor whose configuration shape Qoro does not yet describe reports empty
 Hardware Options for One Job
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-:class:`~divi.backends.DeviceConfig` carries a job's hardware options, such as
-the transpiler's optimisation level or layout and routing methods. Pass it to
+:class:`~divi.backends.DeviceConfig` carries a job's execution options for QPU
+hardware. The options are the vendors' own device keys, the ones listed under
+``device`` in the blueprints above, written in any case. Pass it to
 ``submit_circuits`` for a job on a QPU target:
 
 .. code-block:: python
@@ -445,12 +446,16 @@ the transpiler's optimisation level or layout and routing methods. Pass it to
 
    result = service.submit_circuits(
        circuits,
-       device_config=DeviceConfig(optimization_level=1, routing_method="sabre"),
+       device_config=DeviceConfig(transpile_level=3, use_mitigation=True),
        override_job_config=JobConfig(qpu_system="my_qpu"),
    )
 
-Options you leave unset are not sent, and the service rejects options it does
-not recognise. :meth:`~divi.backends.QoroService.get_device_config` reads them
+A QPU system can include hardware from more than one vendor. The options apply
+to every QPU in the system, and each QPU reads only its own vendor's keys.
+``submit_circuits`` rejects a key that no vendor accepts, and options you leave
+out keep the QPU's own settings. The QPU system decides which device runs the
+job, so the device-selection keys (``IBM_DEVICE`` and ``IQM_DEVICE_URL``) are
+rejected. :meth:`~divi.backends.QoroService.get_device_config` reads the options
 back.
 
 .. _Backend Selection Guide:

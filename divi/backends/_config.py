@@ -2,53 +2,79 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    StrictFloat,
-    StrictInt,
-    StrictStr,
-    model_validator,
-)
+from collections.abc import Mapping
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ._systems import QPUSystem, SimulatorCluster
 
+_TOGGLES_BY_WIRE_VALUE = {"true": True, "false": False}
+
+# The job's QPU system picks the device, so a job may not redirect it.
+_DEVICE_SELECTION_KEYS = frozenset({"IBM_DEVICE", "IQM_DEVICE_URL"})
+
 
 class DeviceConfig(BaseModel):
-    """Per-job hardware options for a Qoro Service job on a QPU.
+    """Per-job execution options for a Qoro Service job on a QPU.
 
-    Pass one to :meth:`~divi.backends.QoroService.submit_circuits`; the service
-    rejects options it does not recognise. Unset (``None``) options are not
-    sent.
+    Options are the QPU vendors' own device keys, the ones
+    :meth:`~divi.backends.QoroService.fetch_vendor_blueprints` lists, given as
+    keyword arguments in any case::
+
+        DeviceConfig(transpile_level=3, use_mitigation=True)
+
+    Toggles take ``True`` or ``False``. The options apply to every QPU in the
+    target system, and each QPU reads only its own vendor's keys. Options left
+    out, or set to ``None``, keep the QPU's own settings.
+    :meth:`~divi.backends.QoroService.submit_circuits` rejects a key no vendor
+    accepts.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="allow")
 
-    optimization_level: StrictInt | None = None
-    """Transpiler optimisation level."""
+    @model_validator(mode="before")
+    @classmethod
+    def _lowercase_keys(cls, data: Any) -> Any:
+        if isinstance(data, Mapping):
+            return {str(key).lower(): value for key, value in data.items()}
+        return data
 
-    resilience_level: StrictInt | None = None
-    """Error-resilience level."""
+    @model_validator(mode="after")
+    def _reject_device_selection(self):
+        selected = sorted(self.to_payload().keys() & _DEVICE_SELECTION_KEYS)
+        if selected:
+            raise ValueError(
+                f"{selected} would choose the device, which the job's QPU system "
+                "already does."
+            )
+        return self
 
-    max_execution_time: StrictInt | None = None
-    """Upper bound on the job's execution time, in seconds."""
-
-    transpilation_seed: StrictInt | None = None
-    """Seed for the transpiler's stochastic passes."""
-
-    layout_method: StrictStr | None = Field(default=None, max_length=64)
-    """Transpiler layout method, e.g. ``"sabre"``."""
-
-    routing_method: StrictStr | None = Field(default=None, max_length=64)
-    """Transpiler routing method, e.g. ``"sabre"``."""
-
-    approximation_degree: StrictInt | StrictFloat | None = None
-    """Transpiler approximation degree."""
-
-    def to_payload(self) -> dict:
+    def to_payload(self) -> dict[str, Any]:
         """Serialise to the ``device_config`` object, dropping unset options."""
-        return self.model_dump(exclude_none=True)
+        return {
+            name.upper(): value
+            for name, value in (self.model_extra or {}).items()
+            if value is not None
+        }
+
+    @classmethod
+    def from_payload(cls, data: Mapping[str, Any]) -> "DeviceConfig":
+        """Rebuild a :class:`DeviceConfig` from the Qoro Service's ``device_config``.
+
+        The inverse of :meth:`to_payload`: the service stores keys uppercase and
+        toggles as ``"true"`` / ``"false"``.
+        """
+        return cls.model_validate(
+            {
+                key: (
+                    _TOGGLES_BY_WIRE_VALUE.get(value, value)
+                    if isinstance(value, str)
+                    else value
+                )
+                for key, value in data.items()
+            }
+        )
 
 
 class JobConfig(BaseModel):

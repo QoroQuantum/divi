@@ -234,56 +234,34 @@ class TestJobConfig:
 class TestDeviceConfig:
     """Per-job hardware options and their wire format."""
 
+    def test_options_travel_under_the_service_keys(self):
+        config = DeviceConfig(transpile_level=3, use_mitigation=True)
+        assert config.to_payload() == {"TRANSPILE_LEVEL": 3, "USE_MITIGATION": True}
+
     def test_unset_options_are_omitted(self):
-        assert DeviceConfig().to_payload() == {}
+        assert DeviceConfig(use_twirling=None).to_payload() == {}
 
-    def test_every_option_reaches_the_payload_together(self):
-        """Guards against a serialisation regression that only drops some fields."""
-        options = {
-            "optimization_level": 1,
-            "resilience_level": 2,
-            "max_execution_time": 300,
-            "transpilation_seed": 7,
-            "layout_method": "dense",
-            "routing_method": "sabre",
-            "approximation_degree": 0.9,
+    def test_key_case_does_not_matter(self):
+        assert DeviceConfig(TRANSPILE_LEVEL=3) == DeviceConfig(transpile_level=3)
+
+    def test_the_stored_form_rebuilds_the_config(self):
+        """The service stores toggles as the strings its workers compare against."""
+        stored = {
+            "TRANSPILE_LEVEL": 1,
+            "USE_TWIRLING": "true",
+            "USE_MITIGATION": "false",
         }
-        assert DeviceConfig(**options).to_payload() == options
+        assert DeviceConfig.from_payload(stored) == DeviceConfig(
+            transpile_level=1, use_twirling=True, use_mitigation=False
+        )
 
-    def test_a_misspelled_option_is_rejected(self):
-        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-            DeviceConfig(optimisation_level=1)
-
-    @pytest.mark.parametrize(
-        "field",
-        [
-            "optimization_level",
-            "resilience_level",
-            "max_execution_time",
-            "transpilation_seed",
-        ],
-    )
-    @pytest.mark.parametrize("value", [True, "3", 1.0])
-    def test_integer_options_reject_coercible_values(self, field, value):
-        """The service rejects a JSON ``true`` or ``"3"`` as an integer, so fail here."""
-        with pytest.raises(ValidationError):
-            DeviceConfig(**{field: value})
-
-    @pytest.mark.parametrize("value", [True, "0.9"])
-    def test_approximation_degree_rejects_coercible_values(self, value):
-        with pytest.raises(ValidationError):
-            DeviceConfig(approximation_degree=value)
-
-    @pytest.mark.parametrize("value", [1, 0.9])
-    def test_approximation_degree_takes_an_int_or_a_float(self, value):
-        assert DeviceConfig(approximation_degree=value).approximation_degree == value
-
-    def test_method_names_are_capped_at_64_characters(self):
-        with pytest.raises(ValidationError, match="at most 64 characters"):
-            DeviceConfig(layout_method="x" * 65)
+    @pytest.mark.parametrize("key", ["ibm_device", "IQM_DEVICE_URL"])
+    def test_device_selection_is_rejected(self, key):
+        with pytest.raises(ValidationError, match="would choose the device"):
+            DeviceConfig(**{key: "some-device"})
 
     def test_frozen(self):
         """Mutating a constructed config should raise an error."""
-        config = DeviceConfig(optimization_level=1)
+        config = DeviceConfig(transpile_level=1)
         with pytest.raises(ValidationError):
-            config.optimization_level = 2
+            config.transpile_level = 2

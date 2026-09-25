@@ -13,6 +13,7 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from enum import Enum
+from functools import cached_property
 from http import HTTPStatus
 from threading import Event
 from typing import Any, TypeVar
@@ -498,6 +499,24 @@ class QoroService(CircuitRunner):
             for vendor, blueprint in response.json().items()
         }
 
+    @cached_property
+    def _device_option_keys(self) -> frozenset[str]:
+        """Every device key some vendor accepts, fetched on first use."""
+        return frozenset(
+            key
+            for blueprint in self.fetch_vendor_blueprints().values()
+            for key in blueprint["device"]
+        )
+
+    def _check_device_options(self, device_config: DeviceConfig) -> None:
+        """Reject keys no vendor accepts; the service would store them unread."""
+        unknown = sorted(device_config.to_payload().keys() - self._device_option_keys)
+        if unknown:
+            raise ValueError(
+                f"No QPU vendor accepts the device options {unknown}. "
+                "fetch_vendor_blueprints() lists the options each vendor takes."
+            )
+
     def get_credit_balance(self) -> dict:
         """
         Get the current credit balance for the authenticated user.
@@ -731,7 +750,8 @@ class QoroService(CircuitRunner):
                 the service-level default is used (if any); a QPU submission
                 ignores that default.
             device_config (DeviceConfig | None, optional):
-                Hardware options for this submission on a QPU target.
+                Hardware options for this submission on a QPU target, checked
+                against :meth:`fetch_vendor_blueprints`.
             override_job_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
@@ -745,9 +765,10 @@ class QoroService(CircuitRunner):
                 arguments are ignored.
 
         Raises:
-            ValueError: If any circuit is not valid QASM, or a config is aimed
-                at the other kind of target: ``override_maestro_config`` on a
-                QPU job, or ``device_config`` on a simulator job.
+            ValueError: If any circuit is not valid QASM, a config is aimed
+                at the other kind of target (``override_maestro_config`` on a
+                QPU job, or ``device_config`` on a simulator job), or
+                ``device_config`` sets an option no QPU vendor accepts.
             requests.exceptions.HTTPError: If any API request fails.
 
         Returns:
@@ -781,6 +802,8 @@ class QoroService(CircuitRunner):
         maestro_config = self._maestro_config_for_target(
             job_config, override_maestro_config, device_config
         )
+        if device_config is not None:
+            self._check_device_options(device_config)
         call_plan = (
             self._bound_call_plan(payloads, shot_groups)
             if is_bound(payloads)
@@ -1101,7 +1124,7 @@ class QoroService(CircuitRunner):
                 - 404: No such job.
         """
         data = self._get_execution_config(execution_result).get("device_config")
-        return None if data is None else DeviceConfig(**data)
+        return None if data is None else DeviceConfig.from_payload(data)
 
     def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult:
         """
