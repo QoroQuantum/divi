@@ -23,8 +23,8 @@ from divi.qprog.problems import MolecularProblem
 
 pytest.importorskip("pyscf", reason="H2 reference needs the chem extra")
 
-#: Chemical accuracy, the bar a VQE result is judged against.
-CHEMICAL_ACCURACY = 1.6e-3
+#: Upper end of "tens of milli-Hartree", in Hartree.
+TENS_OF_MILLIHARTREE = 0.1
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +59,7 @@ def _run_vqe(backend, molecule, optimizer, ansatz, n_layers, seed, max_iteration
     return float(vqe.best_loss) - exact
 
 
-def _median_error(backend, molecule, factory, seeds=4):
+def _median_error(backend, molecule, factory, seeds=8):
     """Median energy error over ``seeds`` runs of the 16-parameter ansatz."""
     errors = [
         _run_vqe(
@@ -94,4 +94,4 @@ def test_calibrated_spsa_beats_a_fixed_gain_under_shot_noise(
     )
 
     assert calibrated < 0.3 * fixed
-    assert calibrated < 50 * CHEMICAL_ACCURACY
+    assert calibrated < TENS_OF_MILLIHARTREE

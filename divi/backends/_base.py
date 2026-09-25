@@ -60,7 +60,8 @@ class ExecutionResult:
 
     results: list[dict] | None = None
     """Results for synchronous backends, as a list of dicts each containing
-    ``"label"`` (str) and ``"results"`` (dict) keys."""
+    ``"label"`` (str) and ``"results"`` (dict) keys, plus an optional
+    ``"metadata"`` dict of whatever else the backend reported for the circuit."""
 
     job_id: str | None = None
     """Job identifier for asynchronous backends."""

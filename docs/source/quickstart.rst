@@ -276,7 +276,7 @@ Backend Options
 
 **Local development**
    Use :class:`~divi.backends.MaestroSimulator` (shown in all examples above)
-   for fast iteration, testing, and Pauli-channel noise. Use
+   for fast iteration, testing, and hand-written noise models. Use
    :class:`~divi.backends.QiskitSimulator` when you need Qiskit-native or
    device-calibrated noise models — it requires the ``aer`` extra
    (:ref:`optional-extras`).

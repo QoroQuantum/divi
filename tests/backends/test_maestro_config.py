@@ -43,10 +43,10 @@ def upstream_config_fields() -> set[str]:
 class TestDefaults:
     """Documented defaults on a bare ``MaestroConfig()``."""
 
-    def test_noise_fields_default_none_and_42(self):
+    def test_noise_fields_default_none(self):
         config = MaestroConfig()
         assert config.noise_model is None
-        assert config.noise_seed == 42
+        assert config.noise_seed is None
         assert config.noise_realizations is None
 
     def test_all_fields_have_documented_defaults(self):
@@ -78,9 +78,9 @@ class TestExplicitConstruction:
         assert config.noise_seed == 7
         assert config.noise_realizations == 4
 
-    def test_carries_noise_model_object_through(self, mocker):
+    def test_carries_noise_model_object_through(self):
         """A ``noise_model`` is held by reference, not copied or wrapped."""
-        nm = mocker.MagicMock(name="NoiseModel")
+        nm = maestro.NoiseModel()
         config = MaestroConfig(noise_model=nm)
         assert config.noise_model is nm
 
@@ -109,10 +109,10 @@ class TestExplicitConstruction:
         b = MaestroConfig(**a.model_dump())
         assert a == b
 
-    def test_round_trip_via_copy_preserves_noise_model_identity(self, mocker):
+    def test_round_trip_via_copy_preserves_noise_model_identity(self):
         """``model_copy`` rebuilds a config without recursing into
-        ``noise_model``, so the mock object survives by reference."""
-        nm = mocker.MagicMock(name="NoiseModel")
+        ``noise_model``, so the object survives by reference."""
+        nm = maestro.NoiseModel()
         a = MaestroConfig(noise_model=nm, noise_seed=7)
         b = a.model_copy()
         assert b.noise_model is nm
@@ -431,9 +431,21 @@ class TestBackendKnobValidation:
         with pytest.raises(ValueError, match="gpu_device must be a non-negative"):
             MaestroConfig(gpu_device=-1)
 
-    def test_negative_seed_rejected(self):
-        with pytest.raises(ValueError, match="seed must be a non-negative"):
-            MaestroConfig(seed=-1)
+    @pytest.mark.parametrize("field", ["seed", "noise_seed"])
+    @pytest.mark.parametrize("value", [-1, 2**32])
+    def test_seed_outside_uint32_rejected(self, field, value):
+        """Maestro takes an unsigned 32-bit seed."""
+        with pytest.raises(ValueError, match=rf"{field} must be an integer in"):
+            MaestroConfig(**{field: value})
+
+    @pytest.mark.parametrize("realizations", [0, -1])
+    def test_non_positive_noise_realizations_rejected(self, realizations):
+        with pytest.raises(ValueError, match="noise_realizations must be None"):
+            MaestroConfig(noise_realizations=realizations)
+
+    def test_non_maestro_noise_model_rejected(self, mocker):
+        with pytest.raises(ValueError, match="must be a maestro.NoiseModel"):
+            MaestroConfig(noise_model=mocker.MagicMock(name="NoiseModel"))
 
     def test_unprefixed_distributed_option_rejected(self):
         """Maestro raises at execution time; divi fails at construction instead."""
@@ -461,8 +473,8 @@ class TestSimulatorPassThrough:
         sim = MaestroSimulator(config=config)
         assert sim.config is config
 
-    def test_set_seed_replaces_only_the_seed(self, mocker):
-        nm = mocker.MagicMock(name="NoiseModel")
+    def test_set_seed_replaces_only_the_seed(self):
+        nm = maestro.NoiseModel()
         sim = MaestroSimulator(
             config=MaestroConfig(seed=1, noise_seed=13, noise_model=nm)
         )
@@ -473,7 +485,7 @@ class TestSimulatorPassThrough:
 
     def test_set_seed_rejects_negative(self):
         sim = MaestroSimulator()
-        with pytest.raises(ValueError, match="seed must be a non-negative"):
+        with pytest.raises(ValueError, match="seed must be an integer in"):
             sim.set_seed(-1)
 
     def test_loose_noise_kwarg_rejected_on_simulator(self):

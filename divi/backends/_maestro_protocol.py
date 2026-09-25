@@ -21,15 +21,13 @@ MPS_AUTO_BOND_DIMENSION = 64
 MPS_QUBIT_THRESHOLD = 22
 
 _QREG_RE = re.compile(r"qreg\s+q\[(\d+)\]")
+_ID_GATE_RE = re.compile(r"\bid\s+(q\[\d+\])\s*;")
 
 
-def strip_id_gates(qasm: str) -> str:
-    """Remove ``id`` (identity) gates from QASM.
-
-    Maestro's QASM parser does not recognise the ``id`` gate. Since identity
-    gates are no-ops, stripping them is safe.
-    """
-    return re.sub(r"id\s+q\[\d+\]\s*;\n?", "", qasm)
+def id_gates_as_noise_sites(qasm: str) -> str:
+    """Rewrite ``id`` gates as ``u3(0,0,0)``, which Maestro's noise injection
+    treats as a gate; it adds no noise after ``id`` itself."""
+    return _ID_GATE_RE.sub(r"u3(0,0,0) \1;", qasm)
 
 
 def qasm_n_qubits(qasm: str, label: str) -> int:
