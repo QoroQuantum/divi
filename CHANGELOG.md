@@ -7,6 +7,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0](https://github.com/QoroQuantum/divi/compare/v0.14.0...v0.15.0) (2026-09-25)
+
+
+### ✨ Added
+
+* **backends:** add DeviceConfig for per-job device settings ([9c43e8e](https://github.com/QoroQuantum/divi/commit/9c43e8e04fac3c2c3a0514c9671d9fe6b90fc078))
+* **backends:** expose maestro 0.3.1's simulator knobs ([1a31047](https://github.com/QoroQuantum/divi/commit/1a31047fb5993951be142c165afb9037d59428da))
+* **optimizers:** add gCANS allocation and route structured Maestro noise through full simulation ([fdb399b](https://github.com/QoroQuantum/divi/commit/fdb399bc5f133ddd9676a5e8cd50188478766a12))
+* **qprog:** add HamiltonianProblem and MolecularProblem as VQE and LASSQD inputs ([610f3ae](https://github.com/QoroQuantum/divi/commit/610f3aea6e5ea2af5bc5169b95b14b760ebf34ec))
+* **qprog:** add shot-adaptive ROSALIN optimization ([fa66343](https://github.com/QoroQuantum/divi/commit/fa66343d8202fbe91a0349105da64b9ca5de3a25))
+* **qprog:** add spin-moment extraction to solution sampling ([58b7a50](https://github.com/QoroQuantum/divi/commit/58b7a506c93450ac612f9446b2046b68a6395681))
+
+
+### 🐛 Fixed
+
+* **aggregation:** refine beam search selection ([6423502](https://github.com/QoroQuantum/divi/commit/6423502694d17c755dda4eaa41fd9c94d98d8cb7))
+* **backends:** align QoroService configs with usher's execution_config endpoint ([6002e63](https://github.com/QoroQuantum/divi/commit/6002e632a89658c9008d5abdbcc76dbc1e9afc31))
+* **backends:** run Maestro noise through full_noise_* with per-circuit seeds ([677f7d5](https://github.com/QoroQuantum/divi/commit/677f7d5cbd46263ace8ce279d7d2d67d9f5a80a3))
+* **optimizers:** improve robustness under noisy evaluations ([8977575](https://github.com/QoroQuantum/divi/commit/8977575450105e40ca51b59a88afc2fe02858325))
+* **qasm:** validate parametric templates by placeholder name ([4f23b25](https://github.com/QoroQuantum/divi/commit/4f23b25b7869c321b51470575378b8f4e3ca8742))
+* **qem:** default QuEPP to auto sampling and let tutorials sample on Maestro ([d9357f8](https://github.com/QoroQuantum/divi/commit/d9357f8e0527979f41baf2ae427cb51c7af9d4e9))
+* **qprog:** merge edgeless clusters when partitioning graphs ([a3d62a3](https://github.com/QoroQuantum/divi/commit/a3d62a34b20e60203c50007ad4a2fc81ae1ed54b))
+
+
+### 🔄 Changed
+
+* **ai:** cache chunk embeddings between index builds ([33b516b](https://github.com/QoroQuantum/divi/commit/33b516bf21186569dc3faf4452901865350b612e))
+* **lassqd:** avoid pyscf's direct-SCF buffer in core-potential build ([5b5955b](https://github.com/QoroQuantum/divi/commit/5b5955b7ed9b3db76710a57d5c452f1d6b35a312))
+* optimize core algorithm hot paths ([b573744](https://github.com/QoroQuantum/divi/commit/b573744a98f84017460ef9e531abd92902bf6941))
+* **qprog:** collect capability mixins into divi.qprog.mixins ([53c2462](https://github.com/QoroQuantum/divi/commit/53c246250c75d6f2fd82a95cca414f647694d1c7))
+
+
+### 🔧 Internal
+
+* **deps:** bump maestro to 0.3.3 ([60e95c7](https://github.com/QoroQuantum/divi/commit/60e95c7d0dd2d791e276495edffb44c70bcc8133))
+* **nightly:** allow manual hotfix pre-releases between nightlies ([baf0d3a](https://github.com/QoroQuantum/divi/commit/baf0d3a3c377bbb2a6bf9db685df328b8f6b2e71))
+* skip release-please branches and bump actions/cache ([62f5d2c](https://github.com/QoroQuantum/divi/commit/62f5d2cf72841f3cf242de2446a79f9213a6b69f))
+
+
+### 📝 Documentation
+
+* **backends:** correct QoroService circuit packing description ([98a93c5](https://github.com/QoroQuantum/divi/commit/98a93c5427314cd34b57fbfbe1ce70c2bf5a281c))
+* trim redundancy from the README [skip ci] ([3322be8](https://github.com/QoroQuantum/divi/commit/3322be8ee51c1f6c5dfde598cbb5ccc42ef90e40))
+
 ## [0.14.0](https://github.com/QoroQuantum/divi/compare/v0.13.0...v0.14.0) (2026-09-02)
 
 ### ✨ Added
