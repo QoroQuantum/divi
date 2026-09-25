@@ -49,10 +49,11 @@ jobs:
         run: |
           BASE_VERSION=$(uv version --short)
           # Bump minor so nightly sorts AFTER the current stable release on PyPI
-          # e.g. 0.9.0 -> 0.10.0.dev20260328 (which is > 0.9.0 and > 0.9.x per PEP 440)
+          # e.g. 0.9.0 -> 0.10.0.dev202603280000 (which is > 0.9.0 and > 0.9.x per PEP 440).
+          # The time lets a manual run publish alongside that day's scheduled one.
           IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE_VERSION"
           NEXT_MINOR="$MAJOR.$((MINOR + 1)).0"
-          NIGHTLY_VERSION="${NEXT_MINOR}.dev$(date -u +%Y%m%d)"
+          NIGHTLY_VERSION="${NEXT_MINOR}.dev$(date -u +%Y%m%d%H%M)"
           uv version "$NIGHTLY_VERSION" --no-sync
           echo "NIGHTLY_VERSION=$NIGHTLY_VERSION" >> "$GITHUB_ENV"
 
