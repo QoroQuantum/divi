@@ -42,7 +42,7 @@ from divi.qasm import (
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import _auto_cancellation_scope
-from .._config import ExecutionConfig, JobConfig
+from .._config import DeviceConfig, JobConfig
 from .._job_status import (
     InsufficientCreditsError,
     JobCancelledError,
@@ -69,6 +69,8 @@ from .._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
+from ._maestro import MaestroConfig
+from ._maestro_payload import maestro_config_from_payload, maestro_config_to_payload
 
 API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
@@ -107,6 +109,19 @@ def _raise_with_details(resp: requests.Response):
             body = text[:500] + ("..." if len(text) > 500 else "")
     msg = f"{resp.status_code} {resp.reason}: {body}"
     raise requests.HTTPError(msg, response=resp)
+
+
+def _config_body(
+    maestro_config: MaestroConfig | None, device_config: DeviceConfig | None
+) -> dict[str, dict]:
+    """The ``maestro_config`` / ``device_config`` keys of a request body; a
+    ``DeviceConfig`` with no options set is left out."""
+    body: dict[str, dict] = {}
+    if maestro_config is not None:
+        body["maestro_config"] = maestro_config_to_payload(maestro_config)
+    if device_config is not None and (device := device_config.to_payload()):
+        body["device_config"] = device
+    return body
 
 
 def _by_config_key(specs: Iterable[Mapping]) -> dict[str, dict[str, Any]]:
@@ -215,7 +230,7 @@ class QoroService(CircuitRunner):
         self,
         auth_token: str | None = None,
         job_config: JobConfig | None = None,
-        execution_config: ExecutionConfig | None = None,
+        maestro_config: MaestroConfig | None = None,
         polling_interval: float = 3.0,
         max_retries: int | None = None,
         track_depth: bool = False,
@@ -233,11 +248,12 @@ class QoroService(CircuitRunner):
                 job_config has neither ``simulator_cluster`` nor ``qpu_system``,
                 it defaults to the ``qoro_maestro`` simulator cluster with a
                 warning.
-            execution_config (ExecutionConfig | None, optional):
-                Default execution configuration for submitted jobs. When
-                provided, every call to :meth:`submit_circuits` will use
-                this config unless an explicit ``execution_config`` argument
-                overrides it.
+            maestro_config (MaestroConfig | None, optional):
+                Default Maestro settings for submitted jobs, the same
+                :class:`~divi.backends.MaestroConfig` a local
+                :class:`~divi.backends.MaestroSimulator` takes. Every call to
+                :meth:`submit_circuits` uses it, merged under any
+                ``override_maestro_config``.
             polling_interval (float, optional):
                 The interval in seconds for polling job status. Defaults to 3.0.
             max_retries (int | None, optional):
@@ -277,7 +293,7 @@ class QoroService(CircuitRunner):
 
         self.job_config = job_config
 
-        self.execution_config = execution_config
+        self.maestro_config = maestro_config
 
         shots = (
             self.job_config.shots
@@ -309,13 +325,13 @@ class QoroService(CircuitRunner):
         self._job_config = self._resolve_and_validate_target(value)
 
     @property
-    def execution_config(self) -> ExecutionConfig | None:
-        """The service's default execution configuration."""
-        return self._execution_config
+    def maestro_config(self) -> MaestroConfig | None:
+        """The service's default Maestro settings."""
+        return self._maestro_config
 
-    @execution_config.setter
-    def execution_config(self, value: ExecutionConfig | None) -> None:
-        self._execution_config = value
+    @maestro_config.setter
+    def maestro_config(self, value: MaestroConfig | None) -> None:
+        self._maestro_config = value
 
     @property
     def is_async(self) -> bool:
@@ -460,8 +476,7 @@ class QoroService(CircuitRunner):
 
         Describes shape only: no stored values are returned, and never a
         credential. Each QPU carries its own stored values, set on the Qoro
-        dashboard; the ``device`` settings listed here may also be overridden
-        for a single job with :class:`~divi.backends.DeviceConfig`.
+        dashboard.
 
         Returns:
             Blueprints keyed by vendor name (e.g. ``"ibm"``, ``"iqm"``), each
@@ -576,15 +591,41 @@ class QoroService(CircuitRunner):
             return self.job_config
         return self._resolve_and_validate_target(self.job_config.override(override))
 
-    def _resolve_execution_config(
-        self, override: ExecutionConfig | None
-    ) -> ExecutionConfig | None:
+    def _maestro_config_for_target(
+        self,
+        job_config: JobConfig,
+        override: MaestroConfig | None,
+        device_config: DeviceConfig | None,
+    ) -> MaestroConfig | None:
+        """The Maestro settings a job on ``job_config``'s target takes.
+
+        A QPU job takes none, so the service-level default is skipped for one;
+        a config aimed at the other kind of target raises.
+        """
+        if isinstance(job_config.qpu_system, QPUSystem):
+            if override is not None:
+                raise ValueError(
+                    "override_maestro_config applies to simulator targets; this "
+                    f"job targets QPU system '{job_config.qpu_system.name}'. Pass "
+                    "device_config for hardware options instead."
+                )
+            return None
+        if device_config is not None:
+            raise ValueError(
+                "device_config applies to QPU targets; this job targets a "
+                "simulator cluster. Pass override_maestro_config instead."
+            )
+        return self._resolve_maestro_config(override)
+
+    def _resolve_maestro_config(
+        self, override: MaestroConfig | None
+    ) -> MaestroConfig | None:
         """Layer service defaults under an optional per-call override."""
         if override is None:
-            return self.execution_config
-        if self.execution_config is None:
+            return self.maestro_config
+        if self.maestro_config is None:
             return override
-        return self.execution_config.override(override)
+        return self.maestro_config.override(override)
 
     @staticmethod
     def _validate_ham_group(group: str) -> None:
@@ -622,7 +663,8 @@ class QoroService(CircuitRunner):
         circuit_ham_map: list[list[int]] | None = None,
         shot_groups: list[list[int]] | None = None,
         job_type: JobType | None = None,
-        override_execution_config: ExecutionConfig | None = None,
+        override_maestro_config: MaestroConfig | None = None,
+        device_config: DeviceConfig | None = None,
         override_job_config: JobConfig | None = None,
         cancellation_event: Event | None = None,
         **kwargs,
@@ -681,12 +723,15 @@ class QoroService(CircuitRunner):
             job_type (JobType | None, optional):
                 Type of job to execute (EXECUTE or EXPECTATION).
                 If not provided, defaults to EXECUTE.
-            override_execution_config (ExecutionConfig | None, optional):
-                Execution configuration override for this submission. When
-                provided, its non-None fields override the service-level
-                ``execution_config`` set in the constructor. When omitted, the
-                service-level default is used (if any). The merged config is
-                sent inline to ``job/init`` as ``execution_configuration``.
+            override_maestro_config (MaestroConfig | None, optional):
+                Maestro settings for this submission on a simulator target. Its
+                non-default fields override the service-level ``maestro_config``
+                set in the constructor (see
+                :meth:`~divi.backends.MaestroConfig.override`). When omitted,
+                the service-level default is used (if any); a QPU submission
+                ignores that default.
+            device_config (DeviceConfig | None, optional):
+                Hardware options for this submission on a QPU target.
             override_job_config (JobConfig | None, optional):
                 Configuration object to override the service's default settings.
                 If not provided, default values are used.
@@ -700,7 +745,9 @@ class QoroService(CircuitRunner):
                 arguments are ignored.
 
         Raises:
-            ValueError: If any circuit is not valid QASM.
+            ValueError: If any circuit is not valid QASM, or a config is aimed
+                at the other kind of target: ``override_maestro_config`` on a
+                QPU job, or ``device_config`` on a simulator job.
             requests.exceptions.HTTPError: If any API request fails.
 
         Returns:
@@ -731,6 +778,9 @@ class QoroService(CircuitRunner):
                 )
 
         job_config = self._resolve_job_config(override_job_config)
+        maestro_config = self._maestro_config_for_target(
+            job_config, override_maestro_config, device_config
+        )
         call_plan = (
             self._bound_call_plan(payloads, shot_groups)
             if is_bound(payloads)
@@ -742,7 +792,8 @@ class QoroService(CircuitRunner):
         return self._dispatch_job(
             call_plan,
             job_config=job_config,
-            execution_config=self._resolve_execution_config(override_execution_config),
+            maestro_config=maestro_config,
+            device_config=device_config,
             job_type=self._job_type_for(job_type, ham_ops),
             ham_ops=ham_ops,
             circuit_ham_map=circuit_ham_map,
@@ -908,7 +959,8 @@ class QoroService(CircuitRunner):
         call_plan: list[dict[str, Any]],
         *,
         job_config: JobConfig,
-        execution_config: ExecutionConfig | None,
+        maestro_config: MaestroConfig | None,
+        device_config: DeviceConfig | None,
         job_type: JobType,
         ham_ops: str | None,
         circuit_ham_map: list[list[int]] | None,
@@ -927,8 +979,7 @@ class QoroService(CircuitRunner):
             init_payload["simulator_cluster"] = job_config.simulator_cluster.name
         elif isinstance(job_config.qpu_system, QPUSystem):
             init_payload["qpu_system_name"] = job_config.qpu_system.name
-        if execution_config is not None:
-            init_payload["execution_configuration"] = execution_config.to_payload()
+        init_payload |= _config_body(maestro_config, device_config)
 
         init_response = self._make_request(
             "post", "job/init/", json=init_payload, timeout=100
@@ -1003,68 +1054,54 @@ class QoroService(CircuitRunner):
             timeout=50,
         )
 
-    def set_execution_config(
-        self,
-        execution_result: ExecutionResult,
-        config: ExecutionConfig,
-    ) -> dict:
-        """Set or overwrite the execution configuration for a job.
-
-        The job must be in ``PENDING`` status. Re-calling this method
-        overwrites any previously set configuration.
-
-        Args:
-            execution_result: An ExecutionResult instance whose ``job_id``
-                identifies the target job.
-            config: The execution configuration to attach.
-
-        Returns:
-            dict: The API response containing ``status``, ``job_id`` and
-                ``execution_configuration``.
-
-        Raises:
-            ValueError: If the ExecutionResult does not have a job_id.
-            requests.exceptions.HTTPError:
-                - 400: Validation errors (unknown settings keys, wrong types,
-                  payload too large).
-                - 403: ``bond_dimension`` exceeds the user's tier cap.
-                - 409: Job is not in ``PENDING`` status.
-        """
+    def _get_execution_config(self, execution_result: ExecutionResult) -> dict:
         job_id = self._extract_job_id(execution_result)
         response = self._make_request(
-            "post",
-            f"job/{job_id}/execution_config/",
-            json=config.to_payload(),
-            timeout=50,
+            "get", f"job/{job_id}/execution_config/", timeout=50
         )
         return response.json()
 
-    def get_execution_config(
-        self,
-        execution_result: ExecutionResult,
-    ) -> ExecutionConfig:
-        """Retrieve the execution configuration for an existing job.
+    def get_maestro_config(
+        self, execution_result: ExecutionResult
+    ) -> MaestroConfig | None:
+        """Retrieve a job's Maestro settings.
 
         Args:
             execution_result: An ExecutionResult instance whose ``job_id``
                 identifies the target job.
 
         Returns:
-            ExecutionConfig: The execution configuration attached to the job.
+            MaestroConfig | None: The job's Maestro settings, or ``None`` when
+                it has none set.
 
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
             requests.exceptions.HTTPError:
-                - 404: No execution configuration exists for this job.
+                - 404: No such job.
         """
-        job_id = self._extract_job_id(execution_result)
-        response = self._make_request(
-            "get",
-            f"job/{job_id}/execution_config/",
-            timeout=50,
-        )
-        data = response.json()
-        return ExecutionConfig.from_response(data["execution_configuration"])
+        data = self._get_execution_config(execution_result).get("maestro_config")
+        return None if data is None else maestro_config_from_payload(data)
+
+    def get_device_config(
+        self, execution_result: ExecutionResult
+    ) -> DeviceConfig | None:
+        """Retrieve a job's hardware options.
+
+        Args:
+            execution_result: An ExecutionResult instance whose ``job_id``
+                identifies the target job.
+
+        Returns:
+            DeviceConfig | None: The job's hardware options, or ``None`` when
+                it has none set.
+
+        Raises:
+            ValueError: If the ExecutionResult does not have a job_id.
+            requests.exceptions.HTTPError:
+                - 404: No such job.
+        """
+        data = self._get_execution_config(execution_result).get("device_config")
+        return None if data is None else DeviceConfig(**data)
 
     def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult:
         """

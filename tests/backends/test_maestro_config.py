@@ -438,6 +438,11 @@ class TestBackendKnobValidation:
         with pytest.raises(ValueError, match=rf"{field} must be an integer in"):
             MaestroConfig(**{field: value})
 
+    @pytest.mark.parametrize("field", ["simulator_type", "simulation_type"])
+    def test_unknown_enum_name_rejected(self, field):
+        with pytest.raises(ValueError, match=rf"{field} must be one of"):
+            MaestroConfig(**{field: "Nope"})
+
     @pytest.mark.parametrize("realizations", [0, -1])
     def test_non_positive_noise_realizations_rejected(self, realizations):
         with pytest.raises(ValueError, match="noise_realizations must be None"):

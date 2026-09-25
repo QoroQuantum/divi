@@ -10,13 +10,7 @@ from ._base import (
     ExecutionResult,
     normalise_circuit_batch,
 )
-from ._config import (
-    DeviceConfig,
-    ExecutionConfig,
-    JobConfig,
-    SimulationMethod,
-    Simulator,
-)
+from ._config import DeviceConfig, JobConfig
 from ._job_status import (
     InsufficientCreditsError,
     JobCancelledError,
@@ -39,7 +33,6 @@ __all__ = [
     "CircuitBatch",
     "CircuitRunner",
     "DeviceConfig",
-    "ExecutionConfig",
     "ExecutionResult",
     "InsufficientCreditsError",
     "JobConfig",
@@ -55,8 +48,6 @@ __all__ = [
     "QiskitSimulator",
     "QoroService",
     "QoroJobError",
-    "SimulationMethod",
-    "Simulator",
     "SimulatorCluster",
     "convert_counts_to_probs",
     "create_backend_from_properties",

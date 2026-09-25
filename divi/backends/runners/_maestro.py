@@ -13,7 +13,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 from typing import Any
 
-# pyrefly: ignore[missing-import]  # ``maestro`` ships as a compiled wheel
 import maestro
 from pydantic import BaseModel, ConfigDict, SkipValidation, model_validator
 
@@ -131,6 +130,9 @@ class MaestroConfig(BaseModel):
     corresponding maestro enum members, e.g. ``"QCSim"``, ``"Gpu"``,
     ``"Statevector"``, ``"MatrixProductState"``.  ``None`` means "use maestro's
     default".
+
+    The same config drives cloud Maestro runs on
+    :class:`~divi.backends.QoroService`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
@@ -327,6 +329,16 @@ class MaestroConfig(BaseModel):
                 f"gpu_device must be a non-negative integer. Got {self.gpu_device}."
             )
 
+        for name, enum in (
+            ("simulator_type", maestro.SimulatorType),
+            ("simulation_type", maestro.SimulationType),
+        ):
+            value = getattr(self, name)
+            if value is not None and value not in enum.__members__:
+                raise ValueError(
+                    f"{name} must be one of {sorted(enum.__members__)}. Got {value!r}."
+                )
+
         for name in ("seed", "noise_seed"):
             value = getattr(self, name)
             if value is not None and not 0 <= value < _SEED_LIMIT:
@@ -373,9 +385,7 @@ class MaestroConfig(BaseModel):
         """Return a new config overriding fields with non-default values from ``other``.
 
         "Non-default" here means a field whose value differs from the class
-        default. :meth:`~divi.backends.ExecutionConfig.override` instead takes
-        every field that is not ``None``; the two differ for any field whose
-        default is something other than ``None``.
+        default, so an override cannot reset a field to its default.
         """
         merged = dict(self)
 
@@ -552,10 +562,8 @@ class MaestroSimulator(CircuitRunner):
     estimates observables natively.
 
     All maestro-level configuration — including noise — is carried in a
-    :class:`MaestroConfig` object rather than as loose keyword arguments,
-    matching the
-    :class:`~divi.backends.ExecutionConfig` / :class:`~divi.backends.QoroService`
-    pattern.
+    :class:`MaestroConfig` object rather than as loose keyword arguments; the
+    same object configures cloud runs on :class:`~divi.backends.QoroService`.
 
     .. note::
 

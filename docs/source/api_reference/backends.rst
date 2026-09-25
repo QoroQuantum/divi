@@ -19,7 +19,6 @@ interface for handling both synchronous and asynchronous backend responses.
    :no-inherited-members:
    :include-all-objects:
    :skip: DeviceConfig
-   :skip: ExecutionConfig
    :skip: JobConfig
    :skip: MaestroConfig
    :skip: QPU
@@ -30,9 +29,6 @@ Configuration and Targets
 -------------------------
 
 .. autopydantic_model:: divi.backends.JobConfig
-   :members:
-
-.. autopydantic_model:: divi.backends.ExecutionConfig
    :members:
 
 .. autopydantic_model:: divi.backends.DeviceConfig

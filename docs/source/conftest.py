@@ -32,10 +32,10 @@ from sybil.region import Lexeme
 
 from divi.backends import (
     CircuitRunner,
-    ExecutionConfig,
     ExecutionResult,
     JobConfig,
     JobStatus,
+    MaestroConfig,
     MaestroSimulator,
     SimulatorCluster,
 )
@@ -134,7 +134,7 @@ class DocStubQoroService(CircuitRunner):
         self,
         auth_token=None,
         job_config=None,
-        execution_config=None,
+        maestro_config=None,
         polling_interval=3.0,
         max_retries=5000,
         track_depth=False,
@@ -146,7 +146,7 @@ class DocStubQoroService(CircuitRunner):
             )
         super().__init__(shots=jc.shots, track_depth=track_depth)
         self._job_config = jc
-        self._execution_config = execution_config
+        self._maestro_config = maestro_config
         self._pending_circuits: dict[str, str] | None = None
         self._last_ham_ops: str | None = None
 
@@ -159,12 +159,12 @@ class DocStubQoroService(CircuitRunner):
         self._job_config = value
 
     @property
-    def execution_config(self) -> ExecutionConfig | None:
-        return self._execution_config
+    def maestro_config(self) -> MaestroConfig | None:
+        return self._maestro_config
 
-    @execution_config.setter
-    def execution_config(self, value: ExecutionConfig | None) -> None:
-        self._execution_config = value
+    @maestro_config.setter
+    def maestro_config(self, value: MaestroConfig | None) -> None:
+        self._maestro_config = value
 
     @property
     def supports_expval(self) -> bool:
@@ -180,7 +180,8 @@ class DocStubQoroService(CircuitRunner):
         ham_ops=None,
         circuit_ham_map=None,
         job_type=None,
-        override_execution_config=None,
+        override_maestro_config=None,
+        device_config=None,
         override_job_config=None,
         **kwargs,
     ) -> ExecutionResult:
@@ -211,11 +212,11 @@ class DocStubQoroService(CircuitRunner):
 
         return _R()
 
-    def get_execution_config(self, execution_result):
-        return ExecutionConfig(bond_dimension=512)
+    def get_maestro_config(self, execution_result):
+        return MaestroConfig(max_bond_dimension=512)
 
-    def set_execution_config(self, execution_result, config):
-        return {"status": "ok", "job_id": execution_result.job_id}
+    def get_device_config(self, execution_result):
+        return None
 
     def fetch_vendor_blueprints(self):
         return {

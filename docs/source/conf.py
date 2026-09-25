@@ -75,6 +75,9 @@ autodoc_default_options = {"member-order": "bysource", "exclude-members": "__wea
 # (which showed only ``model_config``). Render fields with their docstrings and
 # defaults, but suppress the JSON schema / config / validator noise so the page
 # reads like the rest of the API reference.
+# autodoc_pydantic subclasses the class-based documenters; without them its model
+# pages document fields but silently drop every method.
+autodoc_use_legacy_class_based = True
 autodoc_pydantic_model_show_json = False
 autodoc_pydantic_model_show_config_summary = False
 autodoc_pydantic_model_show_validator_summary = False
@@ -151,7 +154,7 @@ intersphinx_mapping = {
     "networkx": ("https://networkx.org/documentation/stable/", None),
     "sympy": ("https://docs.sympy.org/latest/", None),
     "rich": ("https://rich.readthedocs.io/en/latest/", None),
-    "pydantic": ("https://docs.pydantic.dev/latest/", None),
+    "pydantic": ("https://pydantic.dev/docs/validation/latest/", None),
     "requests": ("https://requests.readthedocs.io/en/latest/", None),
     "sklearn": ("https://scikit-learn.org/stable/", None),
     "rustworkx": ("https://www.rustworkx.org/", None),

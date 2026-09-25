@@ -330,73 +330,60 @@ You can also update the service's default configuration after construction:
 
 .. code-block:: python
 
-   from divi.backends import ExecutionConfig, JobConfig
+   from divi.backends import JobConfig, MaestroConfig
 
    # Update the service's default job configuration
    service.job_config = JobConfig(shots=2000, simulator_cluster="qoro_maestro")
 
-   # Update the service's default execution configuration
-   service.execution_config = ExecutionConfig(bond_dimension=512)
+   # Update the service's default Maestro settings
+   service.maestro_config = MaestroConfig(max_bond_dimension=512)
 
 The ``job_config`` setter automatically resolves string target names and
 defaults to the ``qoro_maestro`` simulator cluster when neither
 ``simulator_cluster`` nor ``qpu_system`` is set, just like the constructor does.
 
-Execution Configuration
-^^^^^^^^^^^^^^^^^^^^^^^
+Maestro Configuration
+^^^^^^^^^^^^^^^^^^^^^
 
-Control the simulator backend, simulation method, bond dimension, and runtime
-metadata for your jobs using :class:`~divi.backends.ExecutionConfig`. Like :class:`~divi.backends.JobConfig`,
-you can configure it in two ways:
+Cloud Maestro runs take the same :class:`~divi.backends.MaestroConfig` as a
+local :class:`~divi.backends.MaestroSimulator`, noise model included, so a
+config moves between the two unchanged. Like :class:`~divi.backends.JobConfig`,
+you can set it in two ways:
 
-1.  **Default Configuration**: Set a default :class:`~divi.backends.ExecutionConfig` when you initialise the service. This configuration will apply to all jobs unless you override it.
-2.  **Per-submission Override**: Pass an ``execution_config`` to ``submit_circuits`` to override the default for a single job. Non-None fields in the override take precedence.
+1.  **Default Configuration**: Pass ``maestro_config`` when you initialise the service. It applies to every job unless you override it.
+2.  **Per-submission Override**: Pass ``override_maestro_config`` to ``submit_circuits``. Its fields that differ from the class defaults take precedence (see :meth:`~divi.backends.MaestroConfig.override`).
 
 .. code-block:: python
 
-   from divi.backends import (
-       QoroService, ExecutionConfig, Simulator, SimulationMethod
-   )
+   from divi.backends import MaestroConfig, QoroService
 
-   # 1. Set a service-level default execution configuration
-   default_exec = ExecutionConfig(
-       bond_dimension=256,
-       simulator=Simulator.QCSim,
-       simulation_method=SimulationMethod.MatrixProductState,
+   # 1. Set a service-level default
+   default_maestro = MaestroConfig(
+       simulator_type="QCSim",
+       simulation_type="MatrixProductState",
+       max_bond_dimension=256,
    )
-   service = QoroService(execution_config=default_exec)
+   service = QoroService(maestro_config=default_maestro)
 
-   # All submissions use the default execution config
+   # All submissions use the default
    result = service.submit_circuits(circuits)
 
    # 2. Override specific fields for a single submission
-   override = ExecutionConfig(bond_dimension=512)
-   result = service.submit_circuits(circuits, override_execution_config=override)
-   # Uses bond_dimension=512 from the override, but keeps simulator and
-   # simulation_method from the default.
+   override = MaestroConfig(max_bond_dimension=512)
+   result = service.submit_circuits(circuits, override_maestro_config=override)
+   # Uses max_bond_dimension=512 from the override, but keeps the simulator
+   # and simulation type from the default.
 
    # Retrieve the configuration to verify
-   retrieved = service.get_execution_config(result)
-   print(retrieved.bond_dimension)  # 512
+   print(service.get_maestro_config(result).max_bond_dimension)  # 512
 
-All ``ExecutionConfig`` fields are optional; only the fields you provide are
-sent to the service. You can update the configuration later with
-``set_execution_config`` as long as the job is still ``PENDING``; each call
-replaces the previous execution configuration for that job.
+A job runs on a simulator or on hardware, never both, so it takes a
+:class:`~divi.backends.MaestroConfig` or a :class:`~divi.backends.DeviceConfig`
+but not the other: passing one aimed at the other kind of target raises
+``ValueError``. A service-level ``maestro_config`` default is left out of QPU
+submissions.
 
-.. note::
-
-   Execution configuration can only be set on jobs in **PENDING** status. Attempting to set it on a running or completed job will raise a ``409 Conflict`` error.
-
-.. warning::
-
-   The ``bond_dimension`` field is subject to tier-based caps. Free-tier users are limited to a maximum of 32. Exceeding the cap returns a ``403 Forbidden`` error.
-
-To override the target QPU's own device settings for a single job, use
-:attr:`~divi.backends.ExecutionConfig.device_config` — see
-:ref:`device-settings-per-job` below. For a runtime setting Divi does not model
-at all, :attr:`~divi.backends.ExecutionConfig.extra_kwargs` is passed to the
-service unchanged.
+For hardware options on a QPU target, see :ref:`device-settings-per-job` below.
 
 Inspecting Vendor Configuration Blueprints
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -435,45 +422,6 @@ A vendor whose configuration shape Qoro does not yet describe reports empty
 
    print(blueprints["braket"]["device"])   # {}
 
-.. _device-settings-per-job:
-
-Overriding Device Settings for One Job
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Every ``device`` setting a blueprint lists can be overridden for a single job
-with :class:`~divi.backends.DeviceConfig`. Settings you name apply to that run
-only; anything you leave out keeps the value stored on the target QPU.
-
-.. code-block:: python
-
-   from divi.backends import DeviceConfig, ExecutionConfig
-
-   config = ExecutionConfig(
-       device_config=DeviceConfig(transpile_level=0, use_twirling=True),
-   )
-
-Write settings in Python spelling and let Divi translate them — the example
-above reaches the service as ``{"TRANSPILE_LEVEL": 0, "USE_TWIRLING": "true"}``,
-where the toggle is the exact string the vendor workers compare against.
-
-Either spelling is accepted, so a key copied straight from a blueprint works
-without rewriting it:
-
-.. code-block:: python
-
-   DeviceConfig(TRANSPILE_LEVEL=0) == DeviceConfig(transpile_level=0)
-
-Which settings a QPU honours depends on its vendor. A setting its vendor does
-not recognise is ignored rather than rejected, so an IQM-only value on an IBM
-target simply has no effect.
-
-For a setting newer than your installed version of Divi, pass it through
-``extra`` in the service's own spelling:
-
-.. code-block:: python
-
-   DeviceConfig(transpile_level=1, extra={"SOME_NEW_KNOB": "value"})
-
 .. note::
 
    A blueprint reports what a vendor *accepts*, not what your target is
@@ -481,6 +429,29 @@ For a setting newer than your installed version of Divi, pass it through
    system listing say which vendor a given system routes to, so pair this with
    :meth:`~divi.backends.QoroService.fetch_qpu_systems` for orientation rather
    than treating it as a description of a specific run.
+
+.. _device-settings-per-job:
+
+Hardware Options for One Job
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~divi.backends.DeviceConfig` carries a job's hardware options, such as
+the transpiler's optimisation level or layout and routing methods. Pass it to
+``submit_circuits`` for a job on a QPU target:
+
+.. code-block:: python
+
+   from divi.backends import DeviceConfig, JobConfig
+
+   result = service.submit_circuits(
+       circuits,
+       device_config=DeviceConfig(optimization_level=1, routing_method="sabre"),
+       override_job_config=JobConfig(qpu_system="my_qpu"),
+   )
+
+Options you leave unset are not sent, and the service rejects options it does
+not recognise. :meth:`~divi.backends.QoroService.get_device_config` reads them
+back.
 
 .. _Backend Selection Guide:
 
@@ -556,6 +527,6 @@ Next Steps
 ----------
 
 * `tutorials/backends/qasm_thru_service.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backends/qasm_thru_service.py>`_ and `tutorials/backends/backend_properties_conversion.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/backends/backend_properties_conversion.py>`_ — Qoro submission and backend-from-metadata workflows
-* :doc:`../api_reference/backends` — full ``CircuitRunner``, ``JobConfig``, and ``ExecutionConfig`` reference
+* :doc:`../api_reference/backends` — full ``CircuitRunner``, ``JobConfig``, ``MaestroConfig``, and ``DeviceConfig`` reference
 * :doc:`pipelines` — how programs drive backends through the pipeline
 * :doc:`../algorithms/improving_results_qem` — error mitigation on noisy hardware

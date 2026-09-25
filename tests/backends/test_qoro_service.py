@@ -12,13 +12,14 @@ from dataclasses import replace
 from http import HTTPStatus
 from threading import Event, Thread
 
+import maestro
 import pytest
 import requests
 from qiskit.circuit import Parameter
 
 import divi.backends.runners._qoro as _qoro_service
 from divi.backends import (
-    ExecutionConfig,
+    DeviceConfig,
     ExecutionResult,
     InsufficientCreditsError,
     JobCancelledError,
@@ -27,10 +28,9 @@ from divi.backends import (
     JobStatus,
     JobTimedOutError,
     JobType,
+    MaestroConfig,
     QoroService,
     QPUSystem,
-    SimulationMethod,
-    Simulator,
     SimulatorCluster,
 )
 from divi.backends._systems import (
@@ -43,6 +43,7 @@ from divi.backends._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
+from divi.backends.runners._maestro_payload import maestro_config_to_payload
 from divi.backends.runners._qoro import (
     MaxRetriesReachedError,
     _raise_with_details,
@@ -64,6 +65,30 @@ from tests.backends._helpers import (
     make_mock_status_response,
     make_qasm_payload,
 )
+
+_LIVE_MAESTRO_CONFIG = MaestroConfig(
+    max_bond_dimension=16,
+    simulator_type="QCSim",
+    simulation_type="MatrixProductState",
+)
+_CONFIG_GETTERS = (QoroService.get_maestro_config, QoroService.get_device_config)
+_QPU_JOB_CONFIG = JobConfig(qpu_system=QPUSystem(name="hw", supports_expval=False))
+
+
+def _init_payload(mock_make_request) -> dict:
+    """The JSON body of the ``job/init/`` call a submission made."""
+    _, called_kwargs = mock_make_request.call_args_list[0]
+    return called_kwargs.get("json", {})
+
+
+def _mock_config_endpoint(mocker, service, response_data):
+    return mocker.patch.object(
+        service,
+        "_make_request",
+        return_value=mocker.MagicMock(
+            status_code=HTTPStatus.OK, json=lambda: response_data
+        ),
+    )
 
 
 class TestQoroJobStatusAPI:
@@ -1050,54 +1075,72 @@ class TestQoroServiceMock:
         assert payload.get("tag") == "my_custom_tag"
         assert payload.get("job_type") == JobType.EXECUTE.value
 
-    def test_submit_circuits_with_inline_execution_config(self, submit_circuits_mock):
-        """Test submitting circuits with inline execution configuration on init."""
+    def test_simulator_submission_sends_its_maestro_config(self, submit_circuits_mock):
         qoro_service_mock, mock_make_request = submit_circuits_mock
+        maestro_config = MaestroConfig(max_bond_dimension=64)
         qoro_service_mock.submit_circuits(
-            {"c1": "qasm"},
-            override_execution_config=ExecutionConfig(
-                bond_dimension=64,
-                simulation_method=SimulationMethod.MatrixProductState,
-                simulator=Simulator.QCSim,
-                extra_kwargs={"optimization_level": 2},
-            ),
+            {"c1": "qasm"}, override_maestro_config=maestro_config
         )
 
-        _, called_kwargs = mock_make_request.call_args_list[0]
-        payload = called_kwargs.get("json", {})
-        assert payload.get("execution_configuration") == {
-            "bond_dimension": 64,
-            "simulation_type": int(SimulationMethod.MatrixProductState),
-            "simulator_type": int(Simulator.QCSim),
-            "api_meta": {"optimization_level": 2},
-        }
+        payload = _init_payload(mock_make_request)
+        assert payload["maestro_config"] == maestro_config_to_payload(maestro_config)
+        assert "device_config" not in payload
 
-    def test_submit_circuits_with_empty_inline_execution_config(
+    def test_qpu_submission_sends_its_device_config_and_skips_the_default(
         self, submit_circuits_mock
     ):
-        """Test sending an empty inline execution configuration payload."""
+        """A service-wide Maestro default must not leak into hardware jobs."""
         qoro_service_mock, mock_make_request = submit_circuits_mock
+        qoro_service_mock.maestro_config = MaestroConfig(max_bond_dimension=64)
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
-            override_execution_config=ExecutionConfig(),
+            device_config=DeviceConfig(optimization_level=2),
+            override_job_config=_QPU_JOB_CONFIG,
         )
 
-        _, called_kwargs = mock_make_request.call_args_list[0]
-        payload = called_kwargs.get("json", {})
-        assert payload.get("execution_configuration") == {}
+        payload = _init_payload(mock_make_request)
+        assert payload["device_config"] == {"optimization_level": 2}
+        assert "maestro_config" not in payload
 
-    def test_constructor_stores_execution_config(self, qoro_service_factory):
-        """Test that the constructor stores the execution_config attribute."""
-        exec_config = ExecutionConfig(bond_dimension=64)
-        service = qoro_service_factory(execution_config=exec_config)
-        assert service.execution_config is exec_config
+    def test_submission_without_configs_sends_neither(self, submit_circuits_mock):
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        qoro_service_mock.submit_circuits({"c1": "qasm"})
 
-    def test_constructor_execution_config_defaults_to_none(self, qoro_service_factory):
-        """Test that execution_config defaults to None when not provided."""
-        service = qoro_service_factory()
-        assert service.execution_config is None
+        payload = _init_payload(mock_make_request)
+        assert "maestro_config" not in payload
+        assert "device_config" not in payload
 
-    # --- Tests for job_config / execution_config setters ---
+    @pytest.mark.parametrize(
+        "submit_kwargs, match",
+        [
+            (
+                {
+                    "override_maestro_config": MaestroConfig(),
+                    "override_job_config": _QPU_JOB_CONFIG,
+                },
+                "applies to simulator targets",
+            ),
+            ({"device_config": DeviceConfig()}, "applies to QPU targets"),
+        ],
+        ids=["maestro-on-qpu", "device-on-simulator"],
+    )
+    def test_a_config_for_the_other_target_is_rejected(
+        self, submit_circuits_mock, submit_kwargs, match
+    ):
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        with pytest.raises(ValueError, match=match):
+            qoro_service_mock.submit_circuits({"c1": "qasm"}, **submit_kwargs)
+        mock_make_request.assert_not_called()
+
+    def test_constructor_stores_maestro_config(self, qoro_service_factory):
+        maestro_config = MaestroConfig(max_bond_dimension=64)
+        service = qoro_service_factory(maestro_config=maestro_config)
+        assert service.maestro_config is maestro_config
+
+    def test_constructor_maestro_config_defaults_to_none(self, qoro_service_factory):
+        assert qoro_service_factory().maestro_config is None
+
+    # --- Tests for job_config / maestro_config setters ---
 
     def test_set_job_config_after_init_with_qpu_system(self, qoro_service_factory):
         """Reassigning job_config with a QPUSystem updates supports_expval."""
@@ -1205,93 +1248,63 @@ class TestQoroServiceMock:
             assert "Defaulting to" in str(w[0].message)
         assert isinstance(service.job_config.simulator_cluster, SimulatorCluster)
 
-    def test_set_execution_config_after_init(self, qoro_service_factory):
-        """Reassigning execution_config stores the new value."""
+    def test_set_maestro_config_after_init(self, qoro_service_factory):
         service = qoro_service_factory()
-        new_exec = ExecutionConfig(bond_dimension=256)
-        service.execution_config = new_exec
-        assert service.execution_config is new_exec
+        maestro_config = MaestroConfig(max_bond_dimension=256)
+        service.maestro_config = maestro_config
+        assert service.maestro_config is maestro_config
 
-    def test_set_execution_config_to_none(self, qoro_service_factory):
-        """Clearing execution_config by setting to None."""
-        exec_config = ExecutionConfig(bond_dimension=64)
-        service = qoro_service_factory(execution_config=exec_config)
-        assert service.execution_config is exec_config
-        service.execution_config = None
-        assert service.execution_config is None
+    def test_set_maestro_config_to_none(self, qoro_service_factory):
+        service = qoro_service_factory(maestro_config=MaestroConfig())
+        service.maestro_config = None
+        assert service.maestro_config is None
 
-    def test_submit_uses_default_execution_config(self, mocker, qoro_service_factory):
-        """Service-level execution_config should flow to the init payload."""
+    def _submit_on(self, mocker, service, **submit_kwargs) -> dict:
+        """Submit one circuit against a mocked API; return the init payload."""
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
-
-        default_exec = ExecutionConfig(
-            bond_dimension=128,
-            simulator=Simulator.QCSim,
-        )
-        service = qoro_service_factory(execution_config=default_exec)
-
-        mock_init_resp = mocker.MagicMock()
-        mock_init_resp.status_code = HTTPStatus.CREATED
+        mock_init_resp = mocker.MagicMock(status_code=HTTPStatus.CREATED)
         mock_init_resp.json.return_value = {"job_id": "test_id"}
-        mock_add_resp = mocker.MagicMock()
-        mock_add_resp.status_code = HTTPStatus.OK
-
         mock_req = mocker.patch.object(
-            service, "_make_request", side_effect=[mock_init_resp, mock_add_resp]
+            service,
+            "_make_request",
+            side_effect=[mock_init_resp, mocker.MagicMock(status_code=HTTPStatus.OK)],
         )
+        service.submit_circuits({"c1": "qasm"}, **submit_kwargs)
+        return _init_payload(mock_req)
 
-        service.submit_circuits({"c1": "qasm"})
+    def test_submit_uses_default_maestro_config(self, mocker, qoro_service_factory):
+        default = MaestroConfig(max_bond_dimension=128, simulator_type="QCSim")
+        service = qoro_service_factory(maestro_config=default)
 
-        _, called_kwargs = mock_req.call_args_list[0]
-        payload = called_kwargs.get("json", {})
-        assert payload["execution_configuration"] == default_exec.to_payload()
+        payload = self._submit_on(mocker, service)
+        assert payload["maestro_config"] == maestro_config_to_payload(default)
 
-    def test_submit_explicit_overrides_default_execution_config(
+    def test_submit_override_merges_over_the_default(
         self, mocker, qoro_service_factory
     ):
-        """Explicit execution_config's non-None fields should override the default."""
-        mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+        """The override's non-default fields win; the rest come from the default."""
+        default = MaestroConfig(max_bond_dimension=128, simulator_type="QiskitAer")
+        service = qoro_service_factory(maestro_config=default)
 
-        default_exec = ExecutionConfig(
-            bond_dimension=128,
-            simulator=Simulator.QiskitAer,
+        payload = self._submit_on(
+            mocker,
+            service,
+            override_maestro_config=MaestroConfig(max_bond_dimension=256),
         )
-        service = qoro_service_factory(execution_config=default_exec)
-
-        mock_init_resp = mocker.MagicMock()
-        mock_init_resp.status_code = HTTPStatus.CREATED
-        mock_init_resp.json.return_value = {"job_id": "test_id"}
-        mock_add_resp = mocker.MagicMock()
-        mock_add_resp.status_code = HTTPStatus.OK
-
-        mock_req = mocker.patch.object(
-            service, "_make_request", side_effect=[mock_init_resp, mock_add_resp]
+        assert payload["maestro_config"] == maestro_config_to_payload(
+            MaestroConfig(max_bond_dimension=256, simulator_type="QiskitAer")
         )
 
-        override_exec = ExecutionConfig(bond_dimension=256)
-        service.submit_circuits({"c1": "qasm"}, override_execution_config=override_exec)
-
-        _, called_kwargs = mock_req.call_args_list[0]
-        payload = called_kwargs.get("json", {})
-        # bond_dimension overridden, simulator preserved from default
-        expected = ExecutionConfig(
-            bond_dimension=256, simulator=Simulator.QiskitAer
-        ).to_payload()
-        assert payload["execution_configuration"] == expected
-
-    def test_submit_explicit_execution_config_without_default(
-        self, submit_circuits_mock
-    ):
-        """Explicit execution_config should work when no service default is set."""
+    def test_submit_override_without_default(self, submit_circuits_mock):
         service, mock_req = submit_circuits_mock
-        assert service.execution_config is None
+        assert service.maestro_config is None
 
-        exec_config = ExecutionConfig(bond_dimension=64)
-        service.submit_circuits({"c1": "qasm"}, override_execution_config=exec_config)
+        maestro_config = MaestroConfig(max_bond_dimension=64)
+        service.submit_circuits({"c1": "qasm"}, override_maestro_config=maestro_config)
 
-        _, called_kwargs = mock_req.call_args_list[0]
-        payload = called_kwargs.get("json", {})
-        assert payload["execution_configuration"] == {"bond_dimension": 64}
+        assert _init_payload(mock_req)["maestro_config"] == maestro_config_to_payload(
+            maestro_config
+        )
 
     def test_submit_circuits_with_packing_override(self, submit_circuits_mock):
         """Test submitting circuits with circuit packing override."""
@@ -2254,159 +2267,73 @@ class TestQoroServiceMock:
         with pytest.raises(requests.exceptions.HTTPError, match="409 Conflict"):
             qoro_service_mock.cancel_job(make_execution_result("job_1"))
 
-    # --- Tests for execution config ---
+    # --- Tests for the job's Maestro and device configs ---
 
-    def test_set_execution_config_success(self, mocker, qoro_service_factory):
-        """Test setting execution config on a PENDING job."""
-        service = qoro_service_factory()
-        response_data = {
-            "status": "ok",
-            "job_id": "job_1",
-            "execution_configuration": {
-                "bond_dimension": 512,
-                "truncation_threshold": 1e-8,
-                "simulator_type": 1,
-                "simulation_type": 1,
-                "api_meta": {"optimization_level": 2},
-            },
-        }
-        mock_response = mocker.MagicMock(
-            status_code=HTTPStatus.OK, json=lambda: response_data
-        )
-        mock_make_request = mocker.patch.object(
-            service, "_make_request", return_value=mock_response
-        )
-
-        config = ExecutionConfig(
-            bond_dimension=512,
-            truncation_threshold=1e-8,
-            simulator=Simulator.QCSim,
-            simulation_method=SimulationMethod.MatrixProductState,
-            extra_kwargs={"optimization_level": 2},
-        )
-        result = service.set_execution_config(make_execution_result("job_1"), config)
-
-        mock_make_request.assert_called_once_with(
-            "post",
-            "job/job_1/execution_config/",
-            json={
-                "bond_dimension": 512,
-                "truncation_threshold": 1e-8,
-                "simulator_type": 1,
-                "simulation_type": 1,
-                "api_meta": {"optimization_level": 2},
-            },
-            timeout=50,
-        )
-        assert result == response_data
-        assert result["status"] == "ok"
-        assert result["execution_configuration"]["bond_dimension"] == 512
-
-    def test_set_execution_config_conflict(self, mocker, qoro_service_factory):
-        """Test 409 Conflict when job is not PENDING."""
-        service = qoro_service_factory()
-        mock_response = mocker.MagicMock()
-        mock_response.status_code = 409
-        mock_response.reason = "Conflict"
-        mock_response.json.return_value = {"error": "Job is not in PENDING status"}
-
-        mock_error = requests.exceptions.HTTPError("409 Conflict")
-        mock_error.response = mock_response
-
-        mocker.patch.object(service, "_make_request", side_effect=mock_error)
-
-        config = ExecutionConfig(bond_dimension=64)
-        with pytest.raises(requests.exceptions.HTTPError, match="409 Conflict"):
-            service.set_execution_config(make_execution_result("job_1"), config)
-
-    def test_set_execution_config_validation_error(self, mocker, qoro_service_factory):
-        """Test 400 Bad Request for settings keys the service does not accept."""
-        service = qoro_service_factory()
-        mock_response = mocker.MagicMock()
-        mock_response.status_code = 400
-        mock_response.reason = "Bad Request"
-        mock_response.json.return_value = {
-            "error": "Unknown api_meta key: 'invalid_key'"
-        }
-
-        mock_error = requests.exceptions.HTTPError("400 Bad Request")
-        mock_error.response = mock_response
-
-        mocker.patch.object(service, "_make_request", side_effect=mock_error)
-
-        config = ExecutionConfig(extra_kwargs={"invalid_key": 42})
-        with pytest.raises(requests.exceptions.HTTPError, match="400 Bad Request"):
-            service.set_execution_config(make_execution_result("job_1"), config)
-
-    def test_set_execution_config_forbidden(self, mocker, qoro_service_factory):
-        """Test 403 Forbidden when bond_dimension exceeds tier cap."""
-        service = qoro_service_factory()
-        mock_response = mocker.MagicMock()
-        mock_response.status_code = 403
-        mock_response.reason = "Forbidden"
-        mock_response.json.return_value = {
-            "error": "Free tier limits bond dimension to 32. "
-            "Upgrade your plan to use higher values."
-        }
-
-        mock_error = requests.exceptions.HTTPError("403 Forbidden")
-        mock_error.response = mock_response
-
-        mocker.patch.object(service, "_make_request", side_effect=mock_error)
-
-        config = ExecutionConfig(bond_dimension=256)
-        with pytest.raises(requests.exceptions.HTTPError, match="403 Forbidden"):
-            service.set_execution_config(make_execution_result("job_1"), config)
-
-    def test_get_execution_config_success(self, mocker, qoro_service_factory):
-        """Test retrieving execution config successfully."""
+    @pytest.mark.parametrize(
+        "getter, expected",
+        [
+            (
+                QoroService.get_maestro_config,
+                MaestroConfig(
+                    max_bond_dimension=512, simulation_type="MatrixProductState"
+                ),
+            ),
+            (QoroService.get_device_config, DeviceConfig(optimization_level=2)),
+        ],
+        ids=["maestro", "device"],
+    )
+    def test_getter_rebuilds_its_config(
+        self, mocker, qoro_service_factory, getter, expected
+    ):
         service = qoro_service_factory()
         response_data = {
             "job_id": "job_1",
-            "execution_configuration": {
-                "bond_dimension": 512,
-                "truncation_threshold": 1e-8,
-                "simulator_type": 1,
-                "simulation_type": 1,
-                "api_meta": {"optimization_level": 2},
-            },
+            "maestro_config": maestro_config_to_payload(
+                MaestroConfig(
+                    max_bond_dimension=512, simulation_type="MatrixProductState"
+                )
+            ),
+            "device_config": {"optimization_level": 2},
         }
-        mock_response = mocker.MagicMock(
-            status_code=HTTPStatus.OK, json=lambda: response_data
-        )
-        mock_make_request = mocker.patch.object(
-            service, "_make_request", return_value=mock_response
-        )
+        mock_make_request = _mock_config_endpoint(mocker, service, response_data)
 
-        config = service.get_execution_config(make_execution_result("job_1"))
+        result = getter(service, make_execution_result("job_1"))
 
         mock_make_request.assert_called_once_with(
             "get", "job/job_1/execution_config/", timeout=50
         )
-        assert isinstance(config, ExecutionConfig)
-        assert config.bond_dimension == 512
-        assert config.truncation_threshold == 1e-8
-        assert config.simulator == Simulator.QCSim
-        assert config.simulation_method == SimulationMethod.MatrixProductState
-        assert config.extra_kwargs == {"optimization_level": 2}
+        assert result == expected
 
-    def test_get_execution_config_not_found(self, mocker, qoro_service_factory):
-        """Test 404 when no execution config exists for the job."""
+    def test_an_empty_stored_device_config_is_rebuilt(
+        self, mocker, qoro_service_factory
+    ):
         service = qoro_service_factory()
-        mock_response = mocker.MagicMock()
-        mock_response.status_code = 404
-        mock_response.reason = "Not Found"
-        mock_response.json.return_value = {
-            "detail": "No execution configuration exists for this job."
-        }
+        _mock_config_endpoint(
+            mocker, service, {"maestro_config": None, "device_config": {}}
+        )
 
-        mock_error = requests.exceptions.HTTPError("404 Not Found")
-        mock_error.response = mock_response
+        assert service.get_device_config(make_execution_result("j")) == DeviceConfig()
 
-        mocker.patch.object(service, "_make_request", side_effect=mock_error)
+    @pytest.mark.parametrize("getter", _CONFIG_GETTERS, ids=["maestro", "device"])
+    def test_getter_of_an_unconfigured_job(self, mocker, qoro_service_factory, getter):
+        service = qoro_service_factory()
+        _mock_config_endpoint(
+            mocker,
+            service,
+            {"job_id": "j", "maestro_config": None, "device_config": None},
+        )
+
+        assert getter(service, make_execution_result("j")) is None
+
+    @pytest.mark.parametrize("getter", _CONFIG_GETTERS, ids=["maestro", "device"])
+    def test_getter_errors_propagate(self, mocker, qoro_service_factory, getter):
+        service = qoro_service_factory()
+        error = requests.exceptions.HTTPError("404 Not Found")
+        error.response = mocker.MagicMock(status_code=404, reason="Not Found")
+        mocker.patch.object(service, "_make_request", side_effect=error)
 
         with pytest.raises(requests.exceptions.HTTPError, match="404 Not Found"):
-            service.get_execution_config(make_execution_result("job_1"))
+            getter(service, make_execution_result("job_1"))
 
     # --- Tests for credit endpoints ---
 
@@ -2789,14 +2716,9 @@ class TestQoroServiceWithApiKey:
         qasm_lines.extend(f"measure q[{i}] -> c[{i}];" for i in range(n_qubits))
         qasm = "\n".join(qasm_lines) + "\n"
 
-        config = ExecutionConfig(
-            simulator=Simulator.QCSim,
-            simulation_method=SimulationMethod.MatrixProductState,
-            bond_dimension=16,
-        )
         result = qoro_service.submit_circuits(
             {"wide_register_circuit": qasm},
-            override_execution_config=config,
+            override_maestro_config=_LIVE_MAESTRO_CONFIG,
         )
 
         status = qoro_service.poll_job_status(result, loop_until_complete=True)
@@ -2868,66 +2790,27 @@ class TestQoroServiceWithApiKey:
             # Endianness-agnostic: measured q0,q2 = 1, unmeasured c1 = 0.
             assert key.count("1") == 2 and key.count("0") == 1
 
-    def test_set_and_get_execution_config(self, qoro_service, circuits):
-        """Tests setting and retrieving execution config on a PENDING job."""
-        single_circuit = {"circuit_1": circuits["circuit_0"]}
-        result = qoro_service.submit_circuits(single_circuit)
-
-        config = ExecutionConfig(
-            bond_dimension=16,
-            simulator=Simulator.QCSim,
-            simulation_method=SimulationMethod.MatrixProductState,
-            extra_kwargs={"optimization_level": 1},
-        )
-        try:
-            response = qoro_service.set_execution_config(result, config)
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == HTTPStatus.CONFLICT:
-                pytest.skip("Job left PENDING before execution config could be set.")
-            raise
-        assert response["status"] == "ok"
-        assert response["job_id"] == result.job_id
-        assert response["execution_configuration"]["bond_dimension"] == 16
-
-        # Retrieve and verify round-trip
-        retrieved = qoro_service.get_execution_config(result)
-        assert isinstance(retrieved, ExecutionConfig)
-        assert retrieved.bond_dimension == 16
-        assert retrieved.simulator == Simulator.QCSim
-        assert retrieved.simulation_method == SimulationMethod.MatrixProductState
-        assert retrieved.extra_kwargs == {"optimization_level": 1}
-
-    def test_set_and_get_noise_config(self, qoro_service, circuits):
-        """Noise fields (noisy_device, noise_realizations) round-trip."""
-        single_circuit = {"circuit_1": circuits["circuit_0"]}
-        result = qoro_service.submit_circuits(single_circuit)
-
-        config = ExecutionConfig(noisy_device="ibm_fake_fez", noise_realizations=4)
-        qoro_service.set_execution_config(result, config)
-
-        retrieved = qoro_service.get_execution_config(result)
-        assert retrieved.noisy_device == "ibm_fake_fez"
-        assert retrieved.noise_realizations == 4
-
-    def test_submit_with_inline_execution_config(self, qoro_service, circuits):
-        """Tests attaching execution config directly in submit_circuits."""
-        single_circuit = {"circuit_1": circuits["circuit_0"]}
-        config = ExecutionConfig(
-            bond_dimension=16,
-            simulator=Simulator.QCSim,
-            simulation_method=SimulationMethod.MatrixProductState,
-            extra_kwargs={"optimization_level": 1},
-        )
+    def test_noise_model_round_trips_through_the_service(self, qoro_service, circuits):
+        """The service stores a noise model's calls exactly as sent."""
+        noise_model = maestro.NoiseModel()
+        noise_model.set_all_depolarizing(2, 0.02)
+        noise_model.set_multi_correlated_ou(1, [(15.0, 0.5), (3.0, 2.0)], 1e-7)
+        sent = MaestroConfig(noise_model=noise_model)
         result = qoro_service.submit_circuits(
-            single_circuit, override_execution_config=config
+            {"circuit_1": circuits["circuit_0"]}, override_maestro_config=sent
         )
 
-        retrieved = qoro_service.get_execution_config(result)
-        assert isinstance(retrieved, ExecutionConfig)
-        assert retrieved.bond_dimension == 16
-        assert retrieved.simulator == Simulator.QCSim
-        assert retrieved.simulation_method == SimulationMethod.MatrixProductState
-        assert retrieved.extra_kwargs == {"optimization_level": 1}
+        stored = qoro_service.get_maestro_config(result)
+        assert maestro_config_to_payload(stored) == maestro_config_to_payload(sent)
+
+    def test_submit_with_maestro_config(self, qoro_service, circuits):
+        single_circuit = {"circuit_1": circuits["circuit_0"]}
+        result = qoro_service.submit_circuits(
+            single_circuit, override_maestro_config=_LIVE_MAESTRO_CONFIG
+        )
+
+        assert qoro_service.get_maestro_config(result) == _LIVE_MAESTRO_CONFIG
+        assert qoro_service.get_device_config(result) is None
 
     def test_parametric_submission_returns_job_id(self, qoro_service):
         """Templated submission round-trips through the real API and returns
@@ -2955,23 +2838,6 @@ class TestQoroServiceWithApiKey:
         result_labels = {r["label"] for r in raw.results}
         expected_labels = {label for label, _ in entry.parameter_sets}
         assert result_labels == expected_labels
-
-    def test_set_execution_config_non_pending_job(self, qoro_service, circuits):
-        """Tests that setting execution config on a non-PENDING job returns 409."""
-        single_circuit = {"circuit_1": circuits["circuit_0"]}
-        result = qoro_service.submit_circuits(single_circuit)
-
-        # Wait for job to complete
-        status = qoro_service.poll_job_status(result, loop_until_complete=True)
-        assert status == JobStatus.COMPLETED
-
-        config = ExecutionConfig(bond_dimension=16)
-        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
-            qoro_service.set_execution_config(result, config)
-
-        assert (
-            exc_info.value.response.status_code == HTTPStatus.CONFLICT
-        ), "Setting config on completed job should return 409 Conflict"
 
     def test_get_credit_balance(self, qoro_service):
         """Tests fetching credit balance from the live service."""

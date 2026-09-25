@@ -116,6 +116,7 @@ testing = [
     "sybil>=9.0",
 ]
 docs = [
+    "qoro-divi[all]",
     "sphinx>=9.0.0",
     "furo>=2024.8",
     "sphinx-autodoc-typehints>=3.0,<4.0",

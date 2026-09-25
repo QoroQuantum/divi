@@ -1040,10 +1040,10 @@ class TestPerCircuitSeeds:
     """Seeds are derived per circuit from its label, never shared."""
 
     @staticmethod
-    def _seeds_by_label(fake, entry_point):
+    def _noise_seeds_by_qasm(entry_point):
+        """``{qasm: seed}`` from calls to a fake noisy entry point."""
         return {
-            call.args[0][1]: call.kwargs["seed"]
-            for call in getattr(fake, entry_point).call_args_list
+            call.args[0][1]: call.kwargs["seed"] for call in entry_point.call_args_list
         }
 
     def test_noise_seed_differs_per_circuit_and_ignores_batch_position(self, mocker):
@@ -1052,10 +1052,10 @@ class TestPerCircuitSeeds:
         x_qasm = _BELL_QASM.replace("h q[0]", "x q[0]")
 
         sim.submit_circuits({"a": _BELL_QASM, "b": x_qasm})
-        first = self._seeds_by_label(fake, "full_noise_execute")
+        first = self._noise_seeds_by_qasm(fake.full_noise_execute)
         fake.full_noise_execute.reset_mock()
         sim.submit_circuits({"b": x_qasm})
-        second = self._seeds_by_label(fake, "full_noise_execute")
+        second = self._noise_seeds_by_qasm(fake.full_noise_execute)
 
         assert first[_BELL_QASM] != first[x_qasm]
         assert second[x_qasm] == first[x_qasm]

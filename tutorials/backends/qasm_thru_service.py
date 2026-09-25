@@ -2,14 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from divi.backends import (
-    ExecutionConfig,
-    JobConfig,
-    JobType,
-    QoroService,
-    SimulationMethod,
-    Simulator,
-)
+from divi.backends import JobConfig, JobType, MaestroConfig, QoroService
 
 if __name__ == "__main__":
     # Example 1: Initialize the service with default configuration.
@@ -83,40 +76,37 @@ if __name__ == "__main__":
     )
     print(f"Updated job_config shots: {service_with_config.job_config.shots}")
 
-    service_with_config.execution_config = ExecutionConfig(bond_dimension=16)
-    print(f"Updated execution_config: {service_with_config.execution_config}")
+    service_with_config.maestro_config = MaestroConfig(max_bond_dimension=16)
+    print(f"Updated maestro_config: {service_with_config.maestro_config}")
 
-    # Example 6: Service-level default execution configuration.
+    # Example 6: Service-level default Maestro settings.
     print("\n" + "=" * 60)
-    print("=== Example 3: Service-level default execution configuration ===")
+    print("=== Example 3: Service-level default Maestro settings ===")
     print("=" * 60)
 
-    default_exec_config = ExecutionConfig(
-        bond_dimension=16,
-        simulator=Simulator.QCSim,
-        simulation_method=SimulationMethod.MatrixProductState,
+    default_maestro_config = MaestroConfig(
+        max_bond_dimension=16,
+        simulator_type="QCSim",
+        simulation_type="MatrixProductState",
     )
-    service_with_exec = QoroService(execution_config=default_exec_config)
+    service_with_maestro = QoroService(maestro_config=default_maestro_config)
 
-    # All submissions will use the default execution config.
-    exec_result = service_with_exec.submit_circuits({"circuit_0": circuit})
+    # All submissions will use the default Maestro settings.
+    exec_result = service_with_maestro.submit_circuits({"circuit_0": circuit})
 
-    # Per-submission overrides are still possible; non-None fields win.
-    override_exec = ExecutionConfig(
-        bond_dimension=32, extra_kwargs={"optimization_level": 2}
-    )
-    exec_result = service_with_exec.submit_circuits(
+    # Per-submission overrides are still possible; non-default fields win.
+    override_maestro = MaestroConfig(max_bond_dimension=32)
+    exec_result = service_with_maestro.submit_circuits(
         {"circuit_0": circuit},
-        override_execution_config=override_exec,
+        override_maestro_config=override_maestro,
     )
     print(f"Job submitted with ID: {exec_result.job_id}")
 
     # Retrieve the config to confirm the round-trip.
-    retrieved_config = service.get_execution_config(exec_result)
-    print(f"Retrieved bond_dimension: {retrieved_config.bond_dimension}")
-    print(f"Retrieved simulator: {retrieved_config.simulator}")
-    print(f"Retrieved simulation_method: {retrieved_config.simulation_method}")
-    print(f"Retrieved extra_kwargs: {retrieved_config.extra_kwargs}")
+    retrieved_config = service.get_maestro_config(exec_result)
+    print(f"Retrieved max_bond_dimension: {retrieved_config.max_bond_dimension}")
+    print(f"Retrieved simulator_type: {retrieved_config.simulator_type}")
+    print(f"Retrieved simulation_type: {retrieved_config.simulation_type}")
 
     # Complete the job and clean up.
     service.poll_job_status(exec_result, loop_until_complete=True)
