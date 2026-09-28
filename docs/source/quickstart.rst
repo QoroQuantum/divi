@@ -303,7 +303,7 @@ Backend Options
       service = QoroService()  # Uses QORO_API_KEY from .env file
       result = service.submit_circuits(
           {"my_circuit": qasm},
-          override_job_config=JobConfig(simulator_cluster="qoro_maestro"),
+          job_config=JobConfig(simulator_cluster="qoro_maestro"),
       )
       service.poll_job_status(result, loop_until_complete=True)
       completed = service.get_job_results(result)

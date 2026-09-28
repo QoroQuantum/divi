@@ -52,7 +52,7 @@ def _quepp_backend(*, force_sampling: bool = False, **config_kwargs):
     return MaestroSimulator(
         shots=200000,
         force_sampling=force_sampling,
-        config=MaestroConfig(seed=42, **config_kwargs),
+        maestro_config=MaestroConfig(seed=42, **config_kwargs),
     )
 
 

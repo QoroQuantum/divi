@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
-import logging
 import os
+import re
 import warnings
 import weakref
 import zlib
@@ -21,18 +21,9 @@ from divi.exceptions import ExecutionCancelledError
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
-from .._maestro_protocol import (
-    MPS_AUTO_BOND_DIMENSION,
-    MPS_QUBIT_THRESHOLD,
-    counts_to_little_endian,
-    expvals_from_result,
-    id_gates_as_noise_sites,
-    qasm_n_qubits,
-)
+from .._config import describe_unknown, reject_unknown_reset
 from .._pauli_serde import ham_ops_terms_for_circuit
 from .._shot_allocation import per_circuit_or_none
-
-logger = logging.getLogger(__name__)
 
 
 def _run_with_cancellation(
@@ -68,9 +59,11 @@ def _run_with_cancellation(
     return out
 
 
-def _circuit_seed(seed: int | None, label: str) -> int | None:
-    """Per-circuit seed keyed on the label, independent of batch position."""
-    return None if seed is None else zlib.crc32(label.encode(), seed)
+def _circuit_seed(seed: int | None, label: str, qasm: str) -> int | None:
+    """Per-circuit seed keyed on the label and QASM."""
+    if seed is None:
+        return None
+    return zlib.crc32(qasm.encode(), zlib.crc32(label.encode(), seed))
 
 
 def _result_entry(
@@ -81,13 +74,18 @@ def _result_entry(
     return {"label": label, "results": results, "metadata": metadata}
 
 
-_SEED_LIMIT = 2**32
+_ID_GATE_RE = re.compile(r"\bid\s+(q\[\d+\])\s*;")
+
+
+def id_gates_as_noise_sites(qasm: str) -> str:
+    """Rewrite ``id`` gates as ``u3(0,0,0)``, which Maestro's noise injection
+    treats as a gate; it adds no noise after ``id`` itself."""
+    return _ID_GATE_RE.sub(r"u3(0,0,0) \1;", qasm)
+
 
 # Simulator/simulation pairs on which Maestro applies noise as exact channels.
 _EXACT_CHANNEL_BACKENDS = frozenset(
     {
-        (None, "DensityMatrix"),
-        (None, "MatrixProductOperator"),
         ("QCSim", "DensityMatrix"),
         ("QCSim", "MatrixProductOperator"),
         ("Gpu", "DensityMatrix"),
@@ -96,183 +94,40 @@ _EXACT_CHANNEL_BACKENDS = frozenset(
     }
 )
 
-TRUNCATION_MODES = ("relative_max", "discarded_weight")
-KRAUS_COMPLETENESS_CHECKS = ("ignore", "warn", "strict")
-
-# Maestro applies at most one SVD solver per backend, so two flags set in the
-# same group would silently make the winner depend on maestro's ordering.
-GPU_SVD_FLAG_GROUPS = tuple(
-    tuple(
-        f"{prefix}_use_{solver}" for solver in ("gesvd", "gesvdj", "gesvdp", "gesvdr")
-    )
-    for prefix in ("mps", "mpo", "tensor_network")
-)
-
-# Forwarded only when True — maestro's own defaults are False.
-BOOLEAN_FLAG_FIELDS = (
-    "mpo_restore_trace_after_truncation",
-    "mpo_hermitize_after_truncation",
-    *(name for group in GPU_SVD_FLAG_GROUPS for name in group),
-)
+_SIMULATOR_OPTIONS = frozenset(maestro.SimulatorConfig._fields)
+# Per-run settings a maestro user may look for on the config.
+_RUN_OPTIONS = frozenset({"shots", "force_sampling"})
+_ENUMS = {
+    "simulator_type": maestro.SimulatorType,
+    "simulation_type": maestro.SimulationType,
+}
 
 
 class MaestroConfig(BaseModel):
-    """Configuration object for :class:`MaestroSimulator`.
+    """Configuration object for :class:`MaestroSimulator` and cloud Maestro runs.
 
-    Each field maps directly to an identically-named field on
-    ``maestro.SimulatorConfig``; see the `maestro Python bindings guide
+    Simulator options are ``maestro.SimulatorConfig``'s own, given as keyword
+    arguments with its names, defaults and validation; see the `maestro Python
+    bindings guide
     <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_
-    for the underlying semantics of each knob.  :attr:`mps_qubit_threshold`
-    is Divi-specific and drives automatic Statevector → MatrixProductState
-    selection.
+    for what each one does::
 
-    ``simulator_type`` and ``simulation_type`` accept the string names of the
-    corresponding maestro enum members, e.g. ``"QCSim"``, ``"Gpu"``,
-    ``"Statevector"``, ``"MatrixProductState"``.  ``None`` means "use maestro's
-    default".
+        MaestroConfig(simulation_type="MatrixProductState", max_bond_dimension=32)
 
-    The same config drives cloud Maestro runs on
-    :class:`~divi.backends.QoroService`.
+    The simulation ``seed`` is one of these options too, e.g.
+    ``MaestroConfig(seed=42)``. ``simulator_type`` and ``simulation_type``
+    accept the maestro enum members or their names. Options left unset use
+    maestro's defaults, on :class:`MaestroSimulator` and
+    :class:`~divi.backends.QoroService` alike, and read back as those defaults.
+    :meth:`from_simulator_config` builds a config from an existing
+    ``maestro.SimulatorConfig``.
+
+    Raises:
+        ValueError: If an option name is unknown, or maestro rejects an
+            option's value.
     """
 
-    model_config = ConfigDict(frozen=True, extra="forbid", arbitrary_types_allowed=True)
-
-    simulator_type: str | None = None
-    """Maestro simulator type, e.g. ``"QCSim"`` or ``"Gpu"``.  ``None`` uses
-    maestro's default (``"QCSim"``)."""
-
-    simulation_type: str | None = None
-    """Simulation method, e.g. ``"Statevector"`` or ``"MatrixProductState"``.
-    ``None`` enables automatic selection based on qubit count."""
-
-    max_bond_dimension: int | None = None
-    """Maximum bond dimension for MPS simulation.  ``None`` uses maestro's
-    default, except when auto-MPS is triggered (in which case 64 is used)."""
-
-    singular_value_threshold: float | None = None
-    """SVD truncation threshold for MPS simulation.  ``None`` uses maestro's
-    default."""
-
-    use_double_precision: bool = False
-    """Use double-precision floating point.  Applies to the GPU MPS and
-    tensor-network simulators; CPU simulation is already double precision."""
-
-    precision: bool | None = None
-    """Precision for Qiskit Aer — ``True`` selects double, ``False`` single, and
-    ``None`` uses maestro's default.  Separate from
-    :attr:`use_double_precision`, which covers the GPU simulators."""
-
-    disable_optimized_swapping: bool = False
-    """Disable MPS swap-cost optimisation."""
-
-    lookahead_depth: int = -1
-    """Lookahead depth for the MPS swap optimizer.  ``-1`` is maestro's default."""
-
-    mps_measure_no_collapse: bool = True
-    """If ``True``, use the non-collapsing MPS measurement algorithm; if
-    ``False``, use the collapsing one."""
-
-    pp_coefficient_threshold: float | None = None
-    """Pauli-propagation coefficient truncation threshold.  Inert unless a trim
-    or deduplication cadence is set."""
-
-    pp_pauli_weight_threshold: int | None = None
-    """Pauli-propagation maximum Pauli weight retained.  Ignored when at or
-    above the qubit count, and inert unless a cadence is set."""
-
-    pp_steps_between_trims: int | None = None
-    """Gates between Pauli-propagation truncation passes, which drop each string
-    independently.  Cheaper but markedly less accurate than
-    :attr:`pp_steps_between_deduplications` at the same threshold."""
-
-    pp_steps_between_deduplications: int | None = None
-    """Gates between deduplication passes, which merge identical Pauli strings
-    before applying the thresholds.  Preferred cadence when accuracy matters,
-    and it takes precedence on gates where both cadences are due."""
-
-    path_integral_threshold: float | None = None
-    """Trim threshold for PathIntegral simulation.  ``None`` uses maestro's
-    default (no trimming)."""
-
-    truncation_mode: str | None = None
-    """SVD truncation convention for MPS and MPO simulation — ``"relative_max"``
-    (keep singular values above ``singular_value_threshold`` times the largest)
-    or ``"discarded_weight"`` (discard the smallest until their cumulative
-    squared weight reaches the threshold).  ``None`` uses maestro's default,
-    ``"discarded_weight"``.  Only QCSim and the GPU backend support
-    ``"relative_max"``; Qiskit Aer raises if it is requested."""
-
-    seed: int | None = None
-    """Seed for maestro's simulation.  Each circuit gets its own seed derived
-    from this one and its label.  ``None`` seeds from system entropy."""
-
-    gpu_device: int | None = None
-    """CUDA-visible device ordinal for the ``"Gpu"`` simulator type.  ``None``
-    uses maestro's default device."""
-
-    distributed_options: dict[str, str] | None = None
-    """Settings for the ``"DistributedGpu"`` and ``"DistributedMpiGpu"``
-    simulator types, applied before the state is allocated.  Keys start with
-    ``distributed_`` or ``mpi_`` and values are strings, e.g.
-    ``{"distributed_devices": "0,1"}``; an MPI communicator is passed as
-    ``{"mpi_communicator": str(comm.py2f())}``.  ``None`` uses maestro's
-    defaults."""
-
-    mpo_kraus_completeness_check: str | None = None
-    """How the MPO simulator reacts to Kraus operators that do not sum to the
-    identity — ``"ignore"``, ``"warn"`` or ``"strict"`` (raise).  ``None`` uses
-    maestro's default."""
-
-    mpo_restore_trace_after_truncation: bool = False
-    """Rescale the MPO to unit trace after each truncation pass."""
-
-    mpo_hermitize_after_truncation: bool = False
-    """Make the MPO Hermitian again after each truncation pass."""
-
-    mps_use_gesvd: bool = False
-    """Select the ``gesvd`` GPU SVD solver for MPS truncation."""
-
-    mps_use_gesvdj: bool = False
-    """Select the Jacobi ``gesvdj`` GPU SVD solver for MPS truncation."""
-
-    mps_use_gesvdp: bool = False
-    """Select the polar ``gesvdp`` GPU SVD solver for MPS truncation."""
-
-    mps_use_gesvdr: bool = False
-    """Select the randomised ``gesvdr`` GPU SVD solver for MPS truncation."""
-
-    mpo_use_gesvd: bool = False
-    """Select the ``gesvd`` GPU SVD solver for MPO truncation."""
-
-    mpo_use_gesvdj: bool = False
-    """Select the Jacobi ``gesvdj`` GPU SVD solver for MPO truncation."""
-
-    mpo_use_gesvdp: bool = False
-    """Select the polar ``gesvdp`` GPU SVD solver for MPO truncation."""
-
-    mpo_use_gesvdr: bool = False
-    """Select the randomised ``gesvdr`` GPU SVD solver for MPO truncation."""
-
-    tensor_network_use_gesvd: bool = False
-    """Select the ``gesvd`` GPU SVD solver for tensor-network truncation."""
-
-    tensor_network_use_gesvdj: bool = False
-    """Select the Jacobi ``gesvdj`` GPU SVD solver for tensor-network
-    truncation."""
-
-    tensor_network_use_gesvdp: bool = False
-    """Select the polar ``gesvdp`` GPU SVD solver for tensor-network
-    truncation."""
-
-    tensor_network_use_gesvdr: bool = False
-    """Select the randomised ``gesvdr`` GPU SVD solver for tensor-network
-    truncation."""
-
-    mps_qubit_threshold: int = MPS_QUBIT_THRESHOLD
-    """Qubit count above which automatic MPS selection kicks in.  Only active
-    when :attr:`simulation_type` is ``None``; has no effect when
-    ``simulation_type`` is set explicitly.  Divi-specific; not forwarded to
-    ``maestro.SimulatorConfig``."""
+    model_config = ConfigDict(frozen=True, extra="allow", arbitrary_types_allowed=True)
 
     noise_model: SkipValidation["maestro.NoiseModel | None"] = None
     """Maestro ``NoiseModel`` to simulate with.  When set, circuits run through
@@ -280,148 +135,130 @@ class MaestroConfig(BaseModel):
     (expectation values); ``None`` runs them noiseless."""
 
     noise_seed: int | None = None
-    """Seed passed to Maestro's noisy entry points, derived per circuit like
-    :attr:`seed`.  ``None`` leaves the noise seeded by :attr:`seed`."""
+    """Seed for the injected noise, derived per circuit from its label and QASM.
+    ``None`` leaves maestro to seed the noise from the simulator ``seed``."""
 
     noise_realizations: int | None = None
     """``noise_realizations`` passed to Maestro's noisy entry points.  ``None``
     uses one on backends where every channel of the model is exact, and
     Maestro's default otherwise."""
 
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_options(cls, data: Any) -> Any:
+        """Reject unknown option names and resolve enum names to members."""
+        if not isinstance(data, Mapping):
+            return data
+        if unknown := describe_unknown(
+            data, _SIMULATOR_OPTIONS | cls.model_fields.keys()
+        ):
+            run_options = sorted(data.keys() & _RUN_OPTIONS)
+            hint = (
+                f" {run_options} are set on MaestroSimulator or JobConfig, not here."
+                if run_options
+                else ""
+            )
+            raise ValueError(
+                f"MaestroConfig got unknown options {unknown}.{hint} Simulator "
+                f"options are maestro.SimulatorConfig's: {sorted(_SIMULATOR_OPTIONS)}."
+            )
+        data = dict(data)
+        for name, enum in _ENUMS.items():
+            value = data.get(name)
+            if isinstance(value, str):
+                if value not in enum.__members__:
+                    raise ValueError(
+                        f"{name} must be one of {sorted(enum.__members__)}. "
+                        f"Got {value!r}."
+                    )
+                data[name] = enum.__members__[value]
+        return data
+
     @model_validator(mode="after")
-    def _validate_knobs(self):
-        """Validate the Pauli-propagation knobs and warn about no-op combinations."""
-        if (
-            self.pp_coefficient_threshold is not None
-            and self.pp_coefficient_threshold < 0
-        ):
-            raise ValueError(
-                "pp_coefficient_threshold must be non-negative. "
-                f"Got {self.pp_coefficient_threshold}."
-            )
-
-        if (
-            self.pp_pauli_weight_threshold is not None
-            and self.pp_pauli_weight_threshold < 0
-        ):
-            raise ValueError(
-                "pp_pauli_weight_threshold must be non-negative. "
-                f"Got {self.pp_pauli_weight_threshold}."
-            )
-
-        for name in ("pp_steps_between_trims", "pp_steps_between_deduplications"):
-            cadence = getattr(self, name)
-            # Maestro takes these modulo a gate index, so 0 divides by zero and
-            # aborts the process with SIGFPE rather than raising.
-            if cadence is not None and cadence < 1:
-                raise ValueError(f"{name} must be a positive integer. Got {cadence}.")
-
-        for name, allowed in (
-            ("truncation_mode", TRUNCATION_MODES),
-            ("mpo_kraus_completeness_check", KRAUS_COMPLETENESS_CHECKS),
-        ):
-            value = getattr(self, name)
-            if value is not None and value not in allowed:
-                raise ValueError(f"{name} must be one of {allowed}. Got {value!r}.")
-
-        if self.gpu_device is not None and self.gpu_device < 0:
-            raise ValueError(
-                f"gpu_device must be a non-negative integer. Got {self.gpu_device}."
-            )
-
-        for name, enum in (
-            ("simulator_type", maestro.SimulatorType),
-            ("simulation_type", maestro.SimulationType),
-        ):
-            value = getattr(self, name)
-            if value is not None and value not in enum.__members__:
-                raise ValueError(
-                    f"{name} must be one of {sorted(enum.__members__)}. Got {value!r}."
-                )
-
-        for name in ("seed", "noise_seed"):
-            value = getattr(self, name)
-            if value is not None and not 0 <= value < _SEED_LIMIT:
-                raise ValueError(
-                    f"{name} must be an integer in [0, 2**32). Got {value}."
-                )
-
-        if self.noise_realizations is not None and self.noise_realizations < 1:
-            raise ValueError(
-                "noise_realizations must be None or a positive integer. "
-                f"Got {self.noise_realizations}."
-            )
-
-        if self.noise_model is not None and not isinstance(
-            self.noise_model, maestro.NoiseModel
-        ):
-            raise ValueError(
-                "noise_model must be a maestro.NoiseModel. "
-                f"Got {type(self.noise_model).__name__}."
-            )
-
-        if self.distributed_options is not None:
-            invalid = sorted(
-                key
-                for key in self.distributed_options
-                if not key.startswith(("distributed_", "mpi_"))
-            )
-            if invalid:
-                raise ValueError(
-                    "distributed_options keys must start with 'distributed_' or "
-                    f"'mpi_'. Got {invalid}."
-                )
-
-        for group in GPU_SVD_FLAG_GROUPS:
-            enabled = [name for name in group if getattr(self, name)]
-            if len(enabled) > 1:
-                raise ValueError(
-                    f"At most one of {group} may be set. Got {tuple(enabled)}."
-                )
-
+    def _validate_with_maestro(self):
+        """Have maestro validate the options when the config is built."""
+        self._simulator_config()
         return self
 
-    def override(self, other: "MaestroConfig") -> "MaestroConfig":
-        """Return a new config overriding fields with non-default values from ``other``.
+    @classmethod
+    def from_simulator_config(
+        cls, simulator_config: "maestro.SimulatorConfig", **fields: Any
+    ) -> "MaestroConfig":
+        """Build a config holding the options ``simulator_config`` changes
+        from maestro's defaults.
 
-        "Non-default" here means a field whose value differs from the class
-        default, so an override cannot reset a field to its default.
+        Args:
+            simulator_config: The ``maestro.SimulatorConfig`` to copy options
+                from.
+            **fields: Further ``MaestroConfig`` arguments, such as
+                ``noise_model``; options given here take precedence.
         """
-        merged = dict(self)
+        defaults = maestro.SimulatorConfig()
+        options = {
+            name: value
+            for name in _SIMULATOR_OPTIONS
+            if (value := getattr(simulator_config, name)) != getattr(defaults, name)
+        }
+        return cls(**options | fields)
 
-        for name, spec in MaestroConfig.model_fields.items():
-            other_value = getattr(other, name)
-            # Relies on != with the default sentinel.  Safe for scalar fields and
-            # for noise_model because None is the default — any non-None object
-            # evaluates != None as True.  If two non-None NoiseModel instances ever
-            # need to be distinguished by value equality this logic would need
-            # an identity check (``is not``) instead.
-            if other_value != spec.default:
-                merged[name] = other_value
+    def __getattr__(self, name: str) -> Any:
+        """Read an option this config leaves unset as maestro's default."""
+        try:
+            # pyrefly: ignore[missing-attribute]
+            return super().__getattr__(name)
+        except AttributeError:
+            if name in _SIMULATOR_OPTIONS:
+                return getattr(self._simulator_config(), name)
+            raise
 
-        return MaestroConfig(**merged)
+    def _simulator_options(self) -> dict[str, Any]:
+        """Every simulator option this config sets, by maestro field name."""
+        return dict(self.model_extra or {})
 
-    def _resolve_simulation_type(self, n_qubits: int) -> str | None:
-        """Choose simulation type based on qubit count when not explicitly set."""
-        if self.simulation_type is not None:
-            return self.simulation_type
-        if n_qubits > self.mps_qubit_threshold:
-            logger.info(
-                "Circuit has %d qubits (> %d threshold), using MPS simulation.",
-                n_qubits,
-                self.mps_qubit_threshold,
-            )
-            return "MatrixProductState"
-        return None
+    def _simulator_config(self) -> "maestro.SimulatorConfig":
+        """A fresh ``maestro.SimulatorConfig`` holding this config's options."""
+        options = self._simulator_options()
+        try:
+            return maestro.SimulatorConfig(**options)
+        except TypeError as exc:
+            raise ValueError(
+                f"maestro.SimulatorConfig rejected the options {options}: {exc}"
+            ) from exc
 
-    def _uses_exact_channels(self, n_qubits: int) -> bool:
-        """Whether Maestro applies noise as exact channels for ``n_qubits`` circuits."""
-        return (
-            self.simulator_type,
-            self._resolve_simulation_type(n_qubits),
-        ) in _EXACT_CHANNEL_BACKENDS
+    def _set_fields(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.model_fields_set}
 
-    def _noise_realization_kwargs(self, n_qubits: int) -> dict[str, int]:
+    def override(self, **fields: Any) -> "MaestroConfig":
+        """Return a copy with ``fields`` set, e.g.
+        ``config.override(max_bond_dimension=32)``."""
+        return MaestroConfig(**self._set_fields() | fields)
+
+    def reset(self, *names: str) -> "MaestroConfig":
+        """Return a copy with ``names`` back at their defaults, e.g.
+        ``config.reset("max_bond_dimension")``; ``reset("noise_model")``
+        turns noise off."""
+        reject_unknown_reset(names, _SIMULATOR_OPTIONS | type(self).model_fields.keys())
+        return MaestroConfig(
+            **{k: v for k, v in self._set_fields().items() if k not in names}
+        )
+
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> "MaestroConfig":
+        """Copy, validating ``update`` as :meth:`override` does."""
+        copied = super().model_copy(deep=deep)
+        return copied.override(**update) if update else copied
+
+    def __dir__(self) -> list[str]:
+        return sorted(set(super().__dir__()) | _SIMULATOR_OPTIONS)
+
+    def _uses_exact_channels(self) -> bool:
+        """Whether Maestro applies noise as exact channels on this config's backend."""
+        config = self._simulator_config()
+        backend = (config.simulator_type.name, config.simulation_type.name)
+        return backend in _EXACT_CHANNEL_BACKENDS
+
+    def _noise_realization_kwargs(self) -> dict[str, int]:
         """``noise_realizations`` for Maestro's noisy entry points.
 
         Unset, one realisation is used where every channel of the model is
@@ -432,117 +269,23 @@ class MaestroConfig(BaseModel):
             return {"noise_realizations": self.noise_realizations}
         noise_model = self.noise_model
         stochastic = noise_model.has_coherent() or noise_model.has_correlated()
-        if self._uses_exact_channels(n_qubits) and not stochastic:
+        if self._uses_exact_channels() and not stochastic:
             return {"noise_realizations": 1}
         return {}
 
-    def _to_maestro_config(self, n_qubits: int) -> "maestro.SimulatorConfig":
-        """Build a ``maestro.SimulatorConfig`` for a batch of ``n_qubits`` circuits.
 
-        Internal — the per-submission ``n_qubits`` drives auto-MPS selection.
-        """
-        kwargs: dict = {}
-
-        if self.simulator_type is not None:
-            kwargs["simulator_type"] = maestro.SimulatorType[self.simulator_type]
-
-        resolved_sim_type = self._resolve_simulation_type(n_qubits)
-        auto_mps = (
-            self.simulation_type is None and resolved_sim_type == "MatrixProductState"
-        )
-        if resolved_sim_type is not None:
-            kwargs["simulation_type"] = maestro.SimulationType[resolved_sim_type]
-
-        if self.max_bond_dimension is not None:
-            kwargs["max_bond_dimension"] = self.max_bond_dimension
-        elif auto_mps:
-            kwargs["max_bond_dimension"] = MPS_AUTO_BOND_DIMENSION
-
-        for name in (
-            "singular_value_threshold",
-            "truncation_mode",
-            "seed",
-            "gpu_device",
-            "distributed_options",
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                kwargs[name] = value
-
-        if self.use_double_precision:
-            kwargs["use_double_precision"] = True
-
-        if self.disable_optimized_swapping:
-            kwargs["disable_optimized_swapping"] = True
-
-        if self.lookahead_depth != -1:
-            kwargs["lookahead_depth"] = self.lookahead_depth
-
-        if not self.mps_measure_no_collapse:
-            kwargs["mps_measure_no_collapse"] = False
-
-        config = maestro.SimulatorConfig(**kwargs)
-
-        # Maestro binds these as writable properties only; its constructor
-        # does not accept them.
-        property_settings = {
-            "precision": self.precision,
-            "pp_coefficient_threshold": self.pp_coefficient_threshold,
-            "pp_pauli_weight_threshold": self.pp_pauli_weight_threshold,
-            "pp_steps_between_trims": self.pp_steps_between_trims,
-            "pp_steps_between_deduplications": self.pp_steps_between_deduplications,
-            "path_integral_threshold": self.path_integral_threshold,
-            "mpo_kraus_completeness_check": self.mpo_kraus_completeness_check,
-        }
-        for name, value in property_settings.items():
-            if value is not None:
-                setattr(config, name, value)
-
-        for name in BOOLEAN_FLAG_FIELDS:
-            if getattr(self, name):
-                setattr(config, name, True)
-
-        # Warned here, not in __post_init__: a config is also an override delta,
-        # where a threshold and its cadence can arrive from opposite sides.
-        thresholds_set = (
-            self.pp_coefficient_threshold is not None
-            or self.pp_pauli_weight_threshold is not None
-        )
-        cadence_set = (
-            self.pp_steps_between_trims is not None
-            or self.pp_steps_between_deduplications is not None
-        )
-
-        if thresholds_set and not cadence_set:
-            warnings.warn(
-                "pp_coefficient_threshold and pp_pauli_weight_threshold are only "
-                "consulted during a truncation pass, so they have no effect unless "
-                "pp_steps_between_deduplications or pp_steps_between_trims is set.",
-                stacklevel=3,
-            )
-
-        if (thresholds_set or cadence_set) and resolved_sim_type not in (
-            None,
-            "PauliPropagator",
-        ):
-            warnings.warn(
-                "The pp_* options only apply to PauliPropagator simulations; they "
-                f"will be ignored with simulation_type={resolved_sim_type!r}.",
-                stacklevel=3,
-            )
-
-        if (
-            self.pp_pauli_weight_threshold is not None
-            and self.pp_pauli_weight_threshold >= n_qubits
-        ):
-            warnings.warn(
-                f"pp_pauli_weight_threshold={self.pp_pauli_weight_threshold} is at or "
-                f"above the circuit's {n_qubits} qubits, which disables weight "
-                "filtering.",
-                stacklevel=3,
-            )
-
-        return config
+def require_maestro_config(value: Any, name: str) -> None:
+    """Raise unless ``value`` is a :class:`MaestroConfig`."""
+    if isinstance(value, MaestroConfig):
+        return
+    hint = (
+        "; convert it with MaestroConfig.from_simulator_config(...)"
+        if isinstance(value, maestro.SimulatorConfig)
+        else ""
+    )
+    raise TypeError(
+        f"{name} must be a MaestroConfig, got {type(value).__name__}{hint}."
+    )
 
 
 def _shutdown_executor(executor: ThreadPoolExecutor) -> None:
@@ -573,9 +316,11 @@ class MaestroSimulator(CircuitRunner):
 
     Args:
         shots: Number of measurement shots. Defaults to 5000.
-        config: :class:`MaestroConfig` controlling simulator backend, simulation
-            method, bond dimension, noise model, and related knobs.  Defaults
-            to ``MaestroConfig()``.
+        maestro_config: :class:`MaestroConfig` controlling simulator backend,
+            simulation method, bond dimension, noise model, and related
+            options.  Defaults to ``MaestroConfig()``, maestro's defaults
+            throughout.  Configs are frozen; change one by assigning a copy,
+            e.g. ``sim.maestro_config = sim.maestro_config.override(seed=7)``.
         track_depth: Record circuit depth per submission. Defaults to False.
         force_sampling: If True, route observable measurements through
             shot-based sampling instead of maestro's native estimation, e.g.
@@ -585,12 +330,14 @@ class MaestroSimulator(CircuitRunner):
     def __init__(
         self,
         shots: int = 5000,
-        config: MaestroConfig | None = None,
+        maestro_config: MaestroConfig | None = None,
         track_depth: bool = False,
         force_sampling: bool = False,
     ):
         super().__init__(shots=shots, track_depth=track_depth)
-        self.config: MaestroConfig = config if config is not None else MaestroConfig()
+        self.maestro_config = (
+            maestro_config if maestro_config is not None else MaestroConfig()
+        )
         self._force_sampling = force_sampling
 
         # Per-instance circuit fan-out pool, lazy-initialised on first
@@ -605,6 +352,16 @@ class MaestroSimulator(CircuitRunner):
         self._executor_finalizer: weakref.finalize | None = None
 
     @property
+    def maestro_config(self) -> MaestroConfig:
+        """The Maestro settings every submission runs with."""
+        return self._maestro_config
+
+    @maestro_config.setter
+    def maestro_config(self, value: MaestroConfig) -> None:
+        require_maestro_config(value, "maestro_config")
+        self._maestro_config = value
+
+    @property
     def supports_expval(self) -> bool:
         """Maestro supports native observable estimation unless sampling is forced."""
         return not self._force_sampling
@@ -617,14 +374,14 @@ class MaestroSimulator(CircuitRunner):
     def set_seed(self, seed: int) -> None:
         """Seed maestro's simulation RNG.
 
-        Rebinds ``config`` with :attr:`MaestroConfig.seed` set, so the seed
+        Rebinds ``maestro_config`` with its ``seed`` option set, so the seed
         reaches every subsequent submission; a seed already on the config is
-        overwritten.  Assigning a new ``config`` afterwards discards it.
+        overwritten.  Assigning a new ``maestro_config`` afterwards discards it.
 
         Args:
             seed: Non-negative seed value.
         """
-        self.config = MaestroConfig.model_validate(dict(self.config) | {"seed": seed})
+        self.maestro_config = self.maestro_config.override(seed=seed)
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the per-instance circuit fan-out pool, creating it lazily.
@@ -702,15 +459,14 @@ class MaestroSimulator(CircuitRunner):
             cancellation_event: When set, aborts further dispatch and raises
                 :class:`~divi.exceptions.ExecutionCancelledError`. Workers
                 already in maestro's native call are not interrupted.
-            **kwargs: Ignored — accepted so callers using the generic
-                :class:`~divi.backends.CircuitRunner` interface can forward
-                unrelated options without breaking.
+            **kwargs: Rejected with ``TypeError``.
 
         Returns:
             ExecutionResult containing either counts (sampling) or expectation
             values, with maestro's other outputs for each circuit under
             ``"metadata"``.
         """
+        self._reject_unknown_options(kwargs)
         raise_if_cancelled(
             cancellation_event,
             "Maestro batch cancelled before any circuit was dispatched",
@@ -723,13 +479,7 @@ class MaestroSimulator(CircuitRunner):
 
         self._record_qasm_depths(qasm_strings)
 
-        # Determine max qubit count for automatic simulation type selection.
-        max_qubits = max(
-            qasm_n_qubits(qasm, label)
-            for label, qasm in zip(circuit_labels, qasm_strings)
-        )
-
-        config = self.config
+        config = self.maestro_config
         noise_model = config.noise_model
         noise_kwargs: dict[str, int] = {}
         if noise_model is not None:
@@ -740,9 +490,9 @@ class MaestroSimulator(CircuitRunner):
                     "force_sampling=True to include them.",
                     stacklevel=2,
                 )
-            noise_kwargs = config._noise_realization_kwargs(max_qubits)
+            noise_kwargs = config._noise_realization_kwargs()
 
-        base_config = config._to_maestro_config(n_qubits=max_qubits)
+        base_config = config._simulator_config()
         per_circuit_shots = (
             per_circuit_or_none(shot_groups, len(circuit_labels))
             if ham_ops is None
@@ -752,17 +502,17 @@ class MaestroSimulator(CircuitRunner):
         def _run(item):
             i, label, qasm = item
             sim_config = base_config
-            if config.seed is not None:
+            if base_config.seed is not None:
                 sim_config = copy.copy(base_config)
-                sim_config.seed = _circuit_seed(config.seed, label)
+                sim_config.seed = _circuit_seed(base_config.seed, label, qasm)
 
             circuit, noisy_kwargs = None, noise_kwargs
             if noise_model is not None:
                 # The noisy entry points take a parsed circuit, not QASM.
                 circuit = maestro.QasmToCirc().parse_and_translate(qasm)
-                noise_seed = _circuit_seed(config.noise_seed, label)
+                noise_seed = _circuit_seed(config.noise_seed, label, qasm)
                 if noise_seed is not None:
-                    noisy_kwargs = noise_kwargs | {"seed": noise_seed}
+                    noisy_kwargs = noise_kwargs | {"noise_seed": noise_seed}
 
             if ham_ops is None:
                 shots = (
@@ -779,7 +529,8 @@ class MaestroSimulator(CircuitRunner):
                         **noisy_kwargs,
                     )
                 )
-                counts = counts_to_little_endian(raw["counts"])
+                # Maestro puts q[0] leftmost; Qiskit (little-endian) puts it rightmost.
+                counts = {bits[::-1]: n for bits, n in raw["counts"].items()}
                 return _result_entry(label, counts, raw, "counts")
 
             terms = ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
@@ -797,7 +548,7 @@ class MaestroSimulator(CircuitRunner):
                     **noisy_kwargs,
                 )
             )
-            expvals = expvals_from_result(raw, terms)
+            expvals = dict(zip(terms, raw["expectation_values"]))
             return _result_entry(label, expvals, raw, "expectation_values")
 
         items = [

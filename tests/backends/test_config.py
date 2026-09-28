@@ -8,11 +8,10 @@ import pytest
 from pydantic import ValidationError
 
 from divi.backends import DeviceConfig, JobConfig, QPUSystem, SimulatorCluster
-from divi.backends._systems import update_qpu_systems_cache
 
 
 class TestJobConfig:
-    """JobConfig field validation and ``override()`` behaviour."""
+    """JobConfig field validation, ``override()`` and ``reset()``."""
 
     @pytest.mark.parametrize(
         "input_value, expected_stored_value",
@@ -60,6 +59,9 @@ class TestJobConfig:
                 qpu_system=QPUSystem(name="qpu"),
             )
 
+    def test_shots_default_to_1000(self):
+        assert JobConfig(qpu_system="qpu").shots == 1000
+
     def test_shots_validation(self):
         config = JobConfig(shots=100)
         assert config.shots == 100
@@ -80,155 +82,61 @@ class TestJobConfig:
         with pytest.raises(ValidationError, match="valid boolean"):
             JobConfig(use_circuit_packing=1)
 
-    def test_override_basic(self):
-        base = JobConfig(shots=1000, tag="base", use_circuit_packing=False)
-        override = JobConfig(shots=500, tag="override")
+    def test_override_sets_only_the_given_fields(self):
+        base = JobConfig(shots=1000, tag="base", force_sampling=True)
+        result = base.override(shots=500)
+        assert result == JobConfig(shots=500, tag="base", force_sampling=True)
 
-        result = base.override(override)
-        assert result.shots == 500
-        assert result.tag == "override"
-        assert result.use_circuit_packing is False
-
-    def test_override_none_values_ignored(self):
-        base = JobConfig(
-            shots=1000, tag="base", qpu_system=QPUSystem(name="qoro_maestro")
-        )
-        override = JobConfig(shots=None, tag="override", qpu_system=None)
-
-        result = base.override(override)
-        assert result.shots == 1000
-        assert result.tag == "override"
-        assert result.qpu_system == QPUSystem(name="qoro_maestro")
-
-    def test_override_immutability(self):
+    def test_override_returns_a_new_config(self):
         base = JobConfig(shots=1000)
-        override = JobConfig(shots=500)
-
-        result = base.override(override)
-
+        result = base.override(shots=500)
         assert base.shots == 1000
-        assert result.shots == 500
         assert result is not base
-        assert result is not override
 
-    def test_override_all_fields(self):
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            qpu_system=QPUSystem(name="system1"),
-            use_circuit_packing=False,
-        )
+    @pytest.mark.parametrize(
+        "base, fields, cleared",
+        [
+            (
+                JobConfig(simulator_cluster="sim"),
+                {"qpu_system": "qpu"},
+                "simulator_cluster",
+            ),
+            (JobConfig(qpu_system="qpu"), {"simulator_cluster": "sim"}, "qpu_system"),
+        ],
+        ids=["to_qpu", "to_simulator"],
+    )
+    def test_override_setting_one_target_clears_the_other(self, base, fields, cleared):
+        assert getattr(base.override(**fields), cleared) is None
 
-        update_qpu_systems_cache([QPUSystem(name="system2")])
-
-        override = JobConfig(
-            shots=2000,
-            tag="override",
-            qpu_system="system2",
-            use_circuit_packing=True,
-        )
-
-        result = base.override(override)
-        assert result.shots == 2000
-        assert result.tag == "override"
-        assert result.qpu_system == "system2"
-        assert result.use_circuit_packing is True
-
-    def test_override_with_qpu_system_object(self):
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            qpu_system=QPUSystem(name="system1", supports_expval=True),
-        )
-
-        override_qpu = QPUSystem(name="system2", supports_expval=False)
-        override = JobConfig(qpu_system=override_qpu, tag="base")
-
-        result = base.override(override)
-        assert result.shots == 1000
-        assert result.tag == "base"
-        assert result.qpu_system == override_qpu
-        assert result.qpu_system.name == "system2"
-
-    def test_override_with_empty_config(self):
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            qpu_system=QPUSystem(name="qoro_maestro"),
-            use_circuit_packing=True,
-        )
-
-        empty_override = JobConfig(
-            shots=None,
-            tag=None,
-            qpu_system=None,
-            use_circuit_packing=None,
-        )
-
-        result = base.override(empty_override)
-
-        assert result.shots == 1000
-        assert result.tag == "base"
-        assert result.qpu_system == QPUSystem(name="qoro_maestro")
-        assert result.use_circuit_packing is True
-
-    def test_override_boolean_false(self):
-        base = JobConfig(
-            shots=1000,
-            use_circuit_packing=True,
-        )
-
-        override = JobConfig(use_circuit_packing=False)
-
-        result = base.override(override)
-        assert result.shots == 1000
-        assert result.use_circuit_packing is False
-
-    def test_override_chained(self):
-        base = JobConfig(
-            shots=1000,
-            tag="base",
-            use_circuit_packing=False,
-        )
-
-        override1 = JobConfig(shots=500, tag="override1")
-        override2 = JobConfig(shots=250, tag=None, use_circuit_packing=True)
-
-        result = base.override(override1).override(override2)
-
-        assert result.shots == 250
-        assert result.tag == "override1"
-        assert result.use_circuit_packing is True
-
-    def test_override_preserves_base_when_override_has_none(self):
-        base = JobConfig(tag="custom_tag", shots=1000, use_circuit_packing=True)
-
-        override = JobConfig(shots=500, tag=None, use_circuit_packing=None)
-
-        result = base.override(override)
-        assert result.shots == 500
-        assert result.tag == "custom_tag"
-        assert result.use_circuit_packing is True
-
-        override_with_values = JobConfig(
-            shots=300, tag="new_tag", use_circuit_packing=False
-        )
-        result_overridden = base.override(override_with_values)
-        assert result_overridden.shots == 300
-        assert result_overridden.tag == "new_tag"
-        assert result_overridden.use_circuit_packing is False
-
-    def test_override_validation_after_override(self):
-        base = JobConfig(shots=1000)
-
+    def test_override_validates_like_the_constructor(self):
         with pytest.raises(ValidationError, match="greater than 0"):
-            base.override(JobConfig(shots=-1))
+            JobConfig().override(shots=0)
+        with pytest.raises(ValidationError, match="did you mean 'shots'"):
+            JobConfig().override(shot=10)
 
+    def test_model_copy_validates_like_override(self):
         with pytest.raises(ValidationError, match="greater than 0"):
-            base.override(JobConfig(shots=0))
+            JobConfig().model_copy(update={"shots": 0})
 
-        result = base.override(JobConfig(shots=500))
-        assert result.shots == 500
+    @pytest.mark.parametrize(
+        "field, kept",
+        [("simulator_cluster", "qpu_system"), ("qpu_system", "simulator_cluster")],
+    )
+    def test_override_with_a_none_target_keeps_the_other(self, field, kept):
+        base = JobConfig(**{kept: "target"})
+        assert getattr(base.override(**{field: None}), kept) == "target"
+
+    def test_reset_restores_the_defaults(self):
+        base = JobConfig(shots=1000, tag="base", force_sampling=True)
+        assert base.reset("tag", "force_sampling") == JobConfig(shots=1000)
+
+    def test_reset_rejects_unknown_fields(self):
+        with pytest.raises(ValueError, match="did you mean 'shots'"):
+            JobConfig().reset("shot")
+
+    def test_an_empty_reset_is_rejected(self):
+        with pytest.raises(ValueError, match="at least one field"):
+            JobConfig().reset()
 
 
 class TestDeviceConfig:
@@ -259,6 +167,20 @@ class TestDeviceConfig:
     def test_device_selection_is_rejected(self, key):
         with pytest.raises(ValidationError, match="would choose the device"):
             DeviceConfig(**{key: "some-device"})
+
+    def test_override_sets_options_in_any_case(self):
+        config = DeviceConfig(transpile_level=1, use_mitigation=True)
+        assert config.override(TRANSPILE_LEVEL=3) == DeviceConfig(
+            transpile_level=3, use_mitigation=True
+        )
+
+    def test_reset_drops_options(self):
+        config = DeviceConfig(transpile_level=1, use_mitigation=True)
+        assert config.reset("USE_MITIGATION") == DeviceConfig(transpile_level=1)
+
+    def test_reset_rejects_options_that_are_not_set(self):
+        with pytest.raises(ValueError, match="did you mean 'transpile_level'"):
+            DeviceConfig(transpile_level=1).reset("transpile_levl")
 
     def test_frozen(self):
         """Mutating a constructed config should raise an error."""

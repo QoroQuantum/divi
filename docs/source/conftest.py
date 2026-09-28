@@ -180,9 +180,9 @@ class DocStubQoroService(CircuitRunner):
         ham_ops=None,
         circuit_ham_map=None,
         job_type=None,
-        override_maestro_config=None,
+        maestro_config=None,
         device_config=None,
-        override_job_config=None,
+        job_config=None,
         **kwargs,
     ) -> ExecutionResult:
         self._pending_circuits = bound_circuits(payloads)

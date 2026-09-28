@@ -469,11 +469,12 @@ class QiskitSimulator(CircuitRunner):
                 Sampling-mode only — ignored when ``ham_ops`` is provided.
             cancellation_event: When set before this call, aborts dispatch.
                 Aer's ``.run().result()`` cannot be interrupted mid-batch.
-            **kwargs: Additional parameters (unused, accepted for interface compatibility).
+            **kwargs: Rejected with ``TypeError``.
 
         Returns:
             ExecutionResult containing either counts (sampling) or expectation values.
         """
+        self._reject_unknown_options(kwargs)
         raise_if_cancelled(cancellation_event, "Qiskit batch cancelled before dispatch")
         self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 

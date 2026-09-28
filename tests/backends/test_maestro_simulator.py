@@ -43,7 +43,7 @@ def _bell_counts(seed, *, noise_model=None, shots=400):
     """Sample the Bell circuit on real maestro under ``seed``."""
     sim = MaestroSimulator(
         shots=shots,
-        config=MaestroConfig(seed=seed, noise_model=noise_model),
+        maestro_config=MaestroConfig(seed=seed, noise_model=noise_model),
     )
     return sim.submit_circuits({"c0": _BELL_QASM}).results[0]["results"]
 
@@ -94,10 +94,10 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
     return maestro
 
 
-def _make_simulator(mocker, fake_maestro, *, config=None, **kwargs):
+def _make_simulator(mocker, fake_maestro, **kwargs):
     """Instantiate MaestroSimulator with a pre-injected fake maestro module."""
     mocker.patch("divi.backends.runners._maestro.maestro", fake_maestro)
-    return MaestroSimulator(config=config, **kwargs)
+    return MaestroSimulator(**kwargs)
 
 
 def _make_noisy_sim(
@@ -110,7 +110,7 @@ def _make_noisy_sim(
     """
     nm = noise_model if noise_model is not None else _depolarizing_model()
     cfg = MaestroConfig(noise_model=nm, **config_kwargs)
-    sim_kwargs: dict = {"config": cfg}
+    sim_kwargs: dict = {"maestro_config": cfg}
     if shots is not None:
         sim_kwargs["shots"] = shots
     return _make_simulator(mocker, fake_maestro, **sim_kwargs), nm
@@ -148,21 +148,21 @@ class TestProperties:
         assert sim.shots == 1024
 
     def test_default_config(self, mocker):
-        """No ``config=`` argument → backend uses a default MaestroConfig."""
+        """No ``maestro_config=`` argument → backend uses a default MaestroConfig."""
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.config == MaestroConfig()
+        assert sim.maestro_config == MaestroConfig()
 
     def test_custom_config_stored(self, mocker):
-        """The ``config`` attribute carries the user-provided MaestroConfig."""
+        """The ``maestro_config`` attribute carries the user-provided MaestroConfig."""
         cfg = MaestroConfig(
             simulator_type="QCSim",
             simulation_type="MatrixProductState",
             max_bond_dimension=64,
             singular_value_threshold=1e-8,
-            use_double_precision=True,
+            precision="double",
         )
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker), config=cfg)
-        assert sim.config is cfg
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker), maestro_config=cfg)
+        assert sim.maestro_config is cfg
 
 
 # Minimal QASM templates for qubit-count tests (no real gates needed).
@@ -176,113 +176,33 @@ _QASM_LARGE = (
 )
 
 
-class TestMpsThreshold:
-    """Automatic simulation type selection based on qubit count."""
+class TestMaestroOwnsDefaults:
+    """Options reach maestro exactly as set, whatever the circuit width."""
 
-    def test_default_threshold(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.config.mps_qubit_threshold == 22
-
-    def test_custom_threshold(self, mocker):
-        cfg = MaestroConfig(mps_qubit_threshold=10)
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker), config=cfg)
-        assert sim.config.mps_qubit_threshold == 10
-
-    def test_below_threshold_no_simulation_type(self, mocker):
-        """Circuits below the threshold should not set simulation_type."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
-
-        sim.submit_circuits({"c0": _QASM_SMALL})
-
-        kwargs = _sim_config_call(fake)
-        assert "simulation_type" not in kwargs
-
-    def test_above_threshold_selects_mps(self, mocker):
-        """Circuits above the threshold should auto-select MPS."""
+    def test_bare_config_passes_no_options(self, mocker):
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits({"c0": _QASM_LARGE})
 
-        kwargs = _sim_config_call(fake)
-        assert kwargs["simulation_type"] == "MatrixProductState"
+        assert _sim_config_call(fake) == {}
 
-    def test_explicit_simulation_type_overrides_threshold(self, mocker):
-        """An explicit simulation_type should not be overridden by the threshold."""
+    def test_set_options_pass_unchanged_on_a_wide_circuit(self, mocker):
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(
-            mocker, fake, config=MaestroConfig(simulation_type="Statevector")
+            mocker,
+            fake,
+            maestro_config=MaestroConfig(
+                simulation_type="Statevector", max_bond_dimension=128
+            ),
         )
 
         sim.submit_circuits({"c0": _QASM_LARGE})
 
-        kwargs = _sim_config_call(fake)
-        assert kwargs["simulation_type"] == "Statevector"
-
-    def test_threshold_applies_to_expval_mode(self, mocker):
-        """MPS threshold also applies in expectation value mode."""
-        fake = _make_fake_maestro(mocker, expvals=[0.5])
-        sim = _make_simulator(mocker, fake)
-
-        sim.submit_circuits({"c0": _QASM_LARGE}, ham_ops="Z" + "I" * 24)
-
-        kwargs = _sim_config_call(fake)
-        assert kwargs["simulation_type"] == "MatrixProductState"
-
-    def test_custom_threshold_respected(self, mocker):
-        """A custom threshold of 5 should trigger MPS for a 10-qubit circuit."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake, config=MaestroConfig(mps_qubit_threshold=5))
-
-        sim.submit_circuits({"c0": _QASM_SMALL})
-
-        kwargs = _sim_config_call(fake)
-        assert kwargs["simulation_type"] == "MatrixProductState"
-
-    def test_at_threshold_no_mps(self, mocker):
-        """Circuits exactly at the threshold should NOT trigger MPS (> not >=)."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(
-            mocker, fake, config=MaestroConfig(mps_qubit_threshold=10)
-        )
-
-        sim.submit_circuits({"c0": _QASM_SMALL})
-
-        kwargs = _sim_config_call(fake)
-        assert "simulation_type" not in kwargs
-
-    def test_auto_mps_sets_default_bond_dimension(self, mocker):
-        """Auto-MPS should set bond dimension to 64 when not explicitly configured."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
-
-        sim.submit_circuits({"c0": _QASM_LARGE})
-
-        kwargs = _sim_config_call(fake)
-        assert kwargs["max_bond_dimension"] == 64
-
-    def test_explicit_bond_dimension_not_overridden(self, mocker):
-        """User-specified bond dimension should not be overridden by auto-MPS."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(
-            mocker, fake, config=MaestroConfig(max_bond_dimension=128)
-        )
-
-        sim.submit_circuits({"c0": _QASM_LARGE})
-
-        kwargs = _sim_config_call(fake)
-        assert kwargs["max_bond_dimension"] == 128
-
-    def test_no_auto_bond_dimension_below_threshold(self, mocker):
-        """Below threshold, bond dimension should not be set unless explicit."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
-
-        sim.submit_circuits({"c0": _QASM_SMALL})
-
-        kwargs = _sim_config_call(fake)
-        assert "max_bond_dimension" not in kwargs
+        assert _sim_config_call(fake) == {
+            "simulation_type": maestro.SimulationType.Statevector,
+            "max_bond_dimension": 128,
+        }
 
 
 class TestSamplingSubmission:
@@ -331,63 +251,26 @@ class TestSamplingSubmission:
         sim = _make_simulator(
             mocker,
             fake,
-            config=MaestroConfig(
+            maestro_config=MaestroConfig(
                 simulator_type="QCSim",
                 simulation_type="MatrixProductState",
                 max_bond_dimension=32,
                 singular_value_threshold=1e-6,
-                use_double_precision=True,
+                precision="double",
+                mps_sampling="apply_measure",
             ),
         )
 
         sim.submit_circuits({"c0": QASM_DEPTH_2})
 
-        kwargs = _sim_config_call(fake)
-        assert kwargs["simulator_type"] == "QCSim"
-        assert kwargs["simulation_type"] == "MatrixProductState"
-        assert kwargs["max_bond_dimension"] == 32
-        assert kwargs["singular_value_threshold"] == 1e-6
-        assert kwargs["use_double_precision"] is True
-
-    def test_extra_knobs_passed_when_non_default(self, mocker):
-        """New maestro knobs are forwarded when set to non-default values."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(
-            mocker,
-            fake,
-            config=MaestroConfig(
-                disable_optimized_swapping=True,
-                lookahead_depth=4,
-                mps_measure_no_collapse=False,
-            ),
-        )
-
-        sim.submit_circuits({"c0": QASM_DEPTH_2})
-
-        kwargs = _sim_config_call(fake)
-        assert kwargs["disable_optimized_swapping"] is True
-        assert kwargs["lookahead_depth"] == 4
-        assert kwargs["mps_measure_no_collapse"] is False
-
-    def test_none_config_not_passed(self, mocker):
-        """None-valued config options are not passed to SimulatorConfig."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
-
-        sim.submit_circuits({"c0": QASM_DEPTH_2})
-
-        kwargs = _sim_config_call(fake)
-        assert "simulator_type" not in kwargs
-        assert "simulation_type" not in kwargs
-        assert "max_bond_dimension" not in kwargs
-        assert "singular_value_threshold" not in kwargs
-        assert "use_double_precision" not in kwargs
-        assert "disable_optimized_swapping" not in kwargs
-        assert "lookahead_depth" not in kwargs
-        assert "mps_measure_no_collapse" not in kwargs
-        assert "truncation_mode" not in kwargs
-        assert "seed" not in kwargs
-        assert "gpu_device" not in kwargs
+        assert _sim_config_call(fake) == {
+            "simulator_type": maestro.SimulatorType.QCSim,
+            "simulation_type": maestro.SimulationType.MatrixProductState,
+            "max_bond_dimension": 32,
+            "singular_value_threshold": 1e-6,
+            "precision": "double",
+            "mps_sampling": "apply_measure",
+        }
 
 
 class TestParallelExecution:
@@ -769,7 +652,7 @@ class TestExpvalSubmission:
         sim = _make_simulator(
             mocker,
             fake,
-            config=MaestroConfig(
+            maestro_config=MaestroConfig(
                 simulator_type="QCSim",
                 simulation_type="MatrixProductState",
                 max_bond_dimension=32,
@@ -779,8 +662,8 @@ class TestExpvalSubmission:
         sim.submit_circuits({"c0": QASM_DEPTH_2}, ham_ops="ZI")
 
         kwargs = _sim_config_call(fake)
-        assert kwargs["simulator_type"] == "QCSim"
-        assert kwargs["simulation_type"] == "MatrixProductState"
+        assert kwargs["simulator_type"] == maestro.SimulatorType.QCSim
+        assert kwargs["simulation_type"] == maestro.SimulationType.MatrixProductState
         assert kwargs["max_bond_dimension"] == 32
         # config is forwarded to simple_estimate
         assert "config" in fake.simple_estimate.call_args[1]
@@ -846,37 +729,18 @@ class TestMaestroConfigNoiseDefaults:
 
     def test_default_noise_fields(self, mocker):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.config.noise_model is None
-        assert sim.config.noise_seed is None
-        assert sim.config.noise_realizations is None
+        assert sim.maestro_config.noise_model is None
+        assert sim.maestro_config.noise_seed is None
+        assert sim.maestro_config.noise_realizations is None
 
     def test_noise_fields_stored(self, mocker):
         """noise_model / noise_seed / noise_realizations land on MaestroConfig."""
         sim, nm = _make_noisy_sim(
             mocker, _make_fake_maestro(mocker), noise_seed=7, noise_realizations=4
         )
-        assert sim.config.noise_model is nm
-        assert sim.config.noise_seed == 7
-        assert sim.config.noise_realizations == 4
-
-    def test_override_carries_noise_model(self):
-        """``MaestroConfig.override`` propagates a noise_model from ``other``."""
-        nm = _depolarizing_model()
-        base = MaestroConfig(simulation_type="Statevector")
-        merged = base.override(MaestroConfig(noise_model=nm, noise_realizations=3))
-        assert merged.noise_model is nm
-        assert merged.noise_realizations == 3
-        # Base's other fields survive.
-        assert merged.simulation_type == "Statevector"
-
-    def test_override_preserves_base_realizations_when_other_uses_default(self):
-        """override() must not clobber base's noise_realizations when other's is
-        still at the default ``None``."""
-        nm = _depolarizing_model()
-        base = MaestroConfig(noise_realizations=5)
-        merged = base.override(MaestroConfig(noise_model=nm))
-        assert merged.noise_model is nm
-        assert merged.noise_realizations == 5  # base value, not other's None default
+        assert sim.maestro_config.noise_model is nm
+        assert sim.maestro_config.noise_seed == 7
+        assert sim.maestro_config.noise_realizations == 4
 
 
 class TestNoisySamplingSubmission:
@@ -913,7 +777,7 @@ class TestNoisySamplingSubmission:
         sim.submit_circuits({"c0": _BELL_QASM})
 
         kwargs = fake.full_noise_execute.call_args.kwargs
-        assert {"seed", "noise_realizations"}.isdisjoint(kwargs)
+        assert {"noise_seed", "noise_realizations"}.isdisjoint(kwargs)
 
     def test_forwards_explicit_noise_seed_and_realizations(self, mocker):
         fake = _make_fake_maestro(mocker)
@@ -922,7 +786,7 @@ class TestNoisySamplingSubmission:
         sim.submit_circuits({"c0": _BELL_QASM})
 
         call = fake.full_noise_execute.call_args
-        assert call.kwargs["seed"] == _circuit_seed(11, "c0")
+        assert call.kwargs["noise_seed"] == _circuit_seed(11, "c0", _BELL_QASM)
         assert call.kwargs["noise_realizations"] == 8
 
     def test_id_gates_become_noise_sites(self, mocker):
@@ -985,7 +849,7 @@ class TestNoisyExpvalSubmission:
         assert call.args == (("maestro_circuit", _BELL_QASM),)
         assert call.kwargs["noise_model"] is nm
         assert call.kwargs["observables"] == "ZI;IZ"
-        assert {"seed", "noise_realizations"}.isdisjoint(call.kwargs)
+        assert {"noise_seed", "noise_realizations"}.isdisjoint(call.kwargs)
         assert "config" in call.kwargs
 
     def test_forwards_explicit_realizations(self, mocker):
@@ -1037,13 +901,14 @@ class TestNoisyExpvalSubmission:
 
 
 class TestPerCircuitSeeds:
-    """Seeds are derived per circuit from its label, never shared."""
+    """Seeds are derived per circuit from its label and QASM, never shared."""
 
     @staticmethod
     def _noise_seeds_by_qasm(entry_point):
         """``{qasm: seed}`` from calls to a fake noisy entry point."""
         return {
-            call.args[0][1]: call.kwargs["seed"] for call in entry_point.call_args_list
+            call.args[0][1]: call.kwargs["noise_seed"]
+            for call in entry_point.call_args_list
         }
 
     def test_noise_seed_differs_per_circuit_and_ignores_batch_position(self, mocker):
@@ -1063,14 +928,34 @@ class TestPerCircuitSeeds:
     def test_simulation_seed_is_derived_per_circuit(self, mocker):
         """Identical circuits in one batch get independent measurement streams."""
         fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake, config=MaestroConfig(seed=5))
+        sim = _make_simulator(mocker, fake, maestro_config=MaestroConfig(seed=5))
 
         sim.submit_circuits({"a": _BELL_QASM, "b": _BELL_QASM})
 
         seeds = {
             call.kwargs["config"].seed for call in fake.simple_execute.call_args_list
         }
-        assert seeds == {_circuit_seed(5, "a"), _circuit_seed(5, "b")}
+        assert seeds == {
+            _circuit_seed(5, "a", _BELL_QASM),
+            _circuit_seed(5, "b", _BELL_QASM),
+        }
+
+    def test_new_parameters_under_the_same_label_draw_a_new_stream(self, mocker):
+        """Optimiser iterations resubmit one label with new angles."""
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, seed=5, noise_seed=10)
+        calls = fake.full_noise_execute.call_args_list
+
+        for angle in ("0.1", "0.2", "0.1"):
+            sim.submit_circuits(
+                {"a": _BELL_QASM.replace("h q[0]", f"ry({angle}) q[0]")}
+            )
+
+        seeds = [
+            (call.kwargs["config"].seed, call.kwargs["noise_seed"]) for call in calls
+        ]
+        assert seeds[0] != seeds[1]
+        assert seeds[0] == seeds[2]
 
 
 class TestNoiseBackendFit:
@@ -1081,7 +966,9 @@ class TestNoiseBackendFit:
     )
     def test_exact_backends_default_to_one_realization(self, mocker, simulation_type):
         fake = _make_fake_maestro(mocker)
-        sim, _ = _make_noisy_sim(mocker, fake, simulation_type=simulation_type)
+        sim, _ = _make_noisy_sim(
+            mocker, fake, simulator_type="QCSim", simulation_type=simulation_type
+        )
 
         sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
 
@@ -1092,7 +979,11 @@ class TestNoiseBackendFit:
         noise_model.set_all_coherent_depolarizing(2, 0.01)
         fake = _make_fake_maestro(mocker)
         sim, _ = _make_noisy_sim(
-            mocker, fake, noise_model=noise_model, simulation_type="DensityMatrix"
+            mocker,
+            fake,
+            noise_model=noise_model,
+            simulator_type="QCSim",
+            simulation_type="DensityMatrix",
         )
 
         sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
@@ -1185,73 +1076,51 @@ class TestShotGroupsSampling:
 
 
 class TestMaestroIntegration:
-    def test_knob_parity_with_maestro_simulator_config(self):
-        """MaestroConfig must cover every knob on maestro.SimulatorConfig.
+    def test_every_option_reaches_maestro(self):
+        """A config setting options of every kind runs on real maestro.
 
-        Compares field names by introspecting ``maestro.SimulatorConfig``'s
-        data descriptors against ``MaestroConfig``'s model fields.  Any
-        drift — maestro adds, removes, or renames a knob — fails here and
-        forces a deliberate decision about whether to expose it.
-        """
-        maestro_fields = {
-            name for name in dir(maestro.SimulatorConfig) if not name.startswith("_")
-        }
-        _divi_only = {
-            # Divi-side auto-MPS logic, not a maestro knob.
-            "mps_qubit_threshold",
-            # Consumed by the noisy entry points; maestro keeps noise out of
-            # SimulatorConfig itself.
-            "noise_model",
-            "noise_seed",
-            "noise_realizations",
-        }
-        # Guard against the exclusion set silently over-excluding a field that
-        # was removed from MaestroConfig.
-        assert _divi_only <= set(MaestroConfig.model_fields), (
-            f"Exclusion set names fields no longer in MaestroConfig: "
-            f"{_divi_only - set(MaestroConfig.model_fields)}"
-        )
-        divi_fields = set(MaestroConfig.model_fields) - _divi_only
-        assert maestro_fields == divi_fields, (
-            "MaestroConfig is out of sync with maestro.SimulatorConfig.\n"
-            f"  Missing in MaestroConfig: {sorted(maestro_fields - divi_fields)}\n"
-            f"  Extra in MaestroConfig:   {sorted(divi_fields - maestro_fields)}"
-        )
-
-    def test_every_knob_round_trips_to_maestro(self):
-        """Every MaestroConfig field survives the hand-off to real maestro.
-
-        Sets every knob to a non-default value and runs a small circuit.  If
-        maestro renames or removes one of the kwargs we forward, the nanobind
-        dispatcher raises ``TypeError`` here — catching the class of break
-        that slipped past us on the previous maestro release.
-
-        ``gpu_device`` is the one exclusion: it selects a CUDA device, so
-        setting it makes the run depend on the host having one.
+        ``gpu_device`` is left out: it selects a CUDA device, so setting it
+        makes the run depend on the host having one.
         """
         cfg = MaestroConfig(
             simulator_type="QCSim",
             simulation_type="MatrixProductState",
             max_bond_dimension=16,
             singular_value_threshold=1e-7,
-            use_double_precision=True,
+            precision="double",
             disable_optimized_swapping=True,
             lookahead_depth=2,
-            mps_measure_no_collapse=False,
+            mps_sampling="apply_measure",
             truncation_mode="relative_max",
             seed=99,
             mpo_kraus_completeness_check="warn",
             mpo_restore_trace_after_truncation=True,
             mpo_hermitize_after_truncation=True,
-            mps_use_gesvdj=True,
-            mpo_use_gesvdp=True,
-            tensor_network_use_gesvdr=True,
+            mps_svd_solver="gesvdj",
+            mpo_svd_solver="gesvdp",
+            tensor_network_svd_solver="gesvdr",
         )
-        sim = MaestroSimulator(shots=100, config=cfg)
+        sim = MaestroSimulator(shots=100, maestro_config=cfg)
 
         result = sim.submit_circuits({"c0": _BELL_QASM})
 
         assert sum(result.results[0]["results"].values()) == 100
+
+    def test_config_from_a_simulator_config_runs_as_given(self):
+        simulator_config = maestro.SimulatorConfig(
+            simulation_type=maestro.SimulationType.MatrixProductState,
+            max_bond_dimension=8,
+            seed=7,
+        )
+        sim = MaestroSimulator(
+            shots=100,
+            maestro_config=MaestroConfig.from_simulator_config(simulator_config),
+        )
+
+        entry = sim.submit_circuits({"c0": _BELL_QASM}).results[0]
+
+        assert set(entry["results"]) <= {"00", "11"}
+        assert sum(entry["results"].values()) == 100
 
     def test_seed_pins_and_varies_the_sampling_stream(self):
         """The same seed repeats a stream; different seeds produce different ones."""
@@ -1291,7 +1160,7 @@ class TestMaestroIntegration:
         noise_model.set_bit_flip(0, 0.5)
         sim = MaestroSimulator(
             shots=400,
-            config=MaestroConfig(
+            maestro_config=MaestroConfig(
                 seed=3, noise_model=noise_model, noise_realizations=50
             ),
         )
@@ -1323,12 +1192,12 @@ class TestMaestroIntegration:
             simulation_type=simulation_type,
             noise_model=noise_model,
         )
-        sim = MaestroSimulator(config=config)
+        sim = MaestroSimulator(maestro_config=config)
 
         def run():
             return sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZZ")
 
-        if config._uses_exact_channels(n_qubits=2):
+        if config._uses_exact_channels():
             run()
         else:
             with pytest.raises(ValueError, match="density-matrix or MPO"):
@@ -1345,7 +1214,7 @@ class TestMaestroIntegration:
 
     def test_noisy_estimate_reports_ideal_values_as_metadata(self):
         sim = MaestroSimulator(
-            config=MaestroConfig(seed=4, noise_model=_depolarizing_model())
+            maestro_config=MaestroConfig(seed=4, noise_model=_depolarizing_model())
         )
 
         entry = sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZZ").results[0]

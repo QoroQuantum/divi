@@ -5,10 +5,10 @@
 """The contracts every backend implements, and the result type they return."""
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from threading import Event
-from typing import Protocol, Self, runtime_checkable
+from typing import Any, Protocol, Self, runtime_checkable
 
 import numpy as np
 import requests
@@ -192,6 +192,14 @@ class CircuitRunner(ABC):
                 For asynchronous backends, contains a job_id that can be used to
                 fetch results later.
         """
+
+    def _reject_unknown_options(self, kwargs: Mapping[str, Any]) -> None:
+        """Raise on keyword arguments this backend does not take."""
+        if kwargs:
+            raise TypeError(
+                f"{type(self).__name__}.submit_circuits() got unexpected keyword "
+                f"arguments {sorted(kwargs)}."
+            )
 
     @staticmethod
     def _reject_shot_groups_with_ham_ops(ham_ops, shot_groups) -> None:

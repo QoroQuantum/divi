@@ -54,6 +54,7 @@ All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return 
    - ``label`` (str): The circuit label from your input dictionary, or the
      positional index when circuits were passed as a sequence
    - ``results`` (dict): The execution results (bitstring counts for sampling mode, or expectation values for expectation mode)
+   - ``metadata`` (dict, :class:`~divi.backends.MaestroSimulator` only): Maestro's other outputs for the circuit, e.g. ``ideal_expectation_values`` under noise
 
    Example:
 
@@ -116,32 +117,44 @@ Divi ships three :class:`~divi.backends.CircuitRunner` implementations:
 MaestroSimulator
 -----------------
 
-:class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``) and automatically selects between Statevector and MatrixProductState methods based on circuit width.
+:class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``).
 
 .. _configuring-maestrosimulator:
 
 Configuring MaestroSimulator
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Options live in :class:`~divi.backends.MaestroConfig` and map directly to the
+Simulator options are ``maestro.SimulatorConfig``'s own — same names, defaults
+and validation, documented in the
 `maestro Python bindings <https://qoroquantum.github.io/maestro/d7/d01/python_guide.html#py_config>`_.
-Without a config, Maestro uses Statevector below ``mps_qubit_threshold``
-(default 22 qubits) and MPS above it.
+:class:`~divi.backends.MaestroConfig` takes them as keyword arguments. Options
+left unset use maestro's defaults, so a bare ``MaestroSimulator()`` runs a
+statevector simulation.
 
 .. code-block:: python
 
+   import maestro
    from divi.backends import MaestroSimulator, MaestroConfig
 
-   # Default — auto-selects Statevector or MPS based on circuit size
+   # Maestro's defaults
    backend = MaestroSimulator()
 
-   # Explicit MPS for large circuits
+   # MPS for a wide circuit
    backend = MaestroSimulator(
        shots=5000,
-       config=MaestroConfig(
+       maestro_config=MaestroConfig(
            simulation_type="MatrixProductState",
            max_bond_dimension=64,
        ),
+   )
+
+   # From an existing maestro.SimulatorConfig
+   simulator_config = maestro.SimulatorConfig(
+       simulation_type=maestro.SimulationType.MatrixProductState,
+       max_bond_dimension=64,
+   )
+   backend = MaestroSimulator(
+       maestro_config=MaestroConfig.from_simulator_config(simulator_config)
    )
 
 
@@ -178,7 +191,7 @@ points; see their reference entries for what happens when they are unset.
 
    backend = MaestroSimulator(
        shots=5000,
-       config=MaestroConfig(
+       maestro_config=MaestroConfig(
            noise_model=noise_model,
            noise_realizations=20,
            noise_seed=42,
@@ -258,7 +271,7 @@ QoroService
 QoroService participates in two complementary batching mechanisms:
 
 1. **QPU-side circuit packing** (:attr:`~divi.backends.JobConfig.use_circuit_packing`,
-   enabled by default) — packs circuits together onto the target QPU. This
+   off by default) — packs circuits together onto the target QPU. This
    does not change how many cloud jobs are submitted; it can reduce the
    number of QPU jobs scheduled.
 2. **Ensemble-level merging** (:class:`~divi.qprog.ensemble.BatchConfig` on
@@ -301,30 +314,24 @@ Submitting and Monitoring Jobs
 Configuring Jobs with JobConfig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :class:`~divi.backends.QoroService` uses a :class:`~divi.backends.JobConfig` object to manage settings for job submissions. You can configure it in two ways:
-
-1.  **Default Configuration**: Set a default :class:`~divi.backends.JobConfig` when you initialise the service. This configuration will apply to all jobs unless you override it.
-2.  **Override Configuration**: For a specific job, you can provide an ``override_job_config`` to the ``submit_circuits`` method.
+The :class:`~divi.backends.QoroService` uses a :class:`~divi.backends.JobConfig` object to manage settings for job submissions. Set a default when you initialise the service, and pass ``job_config`` to ``submit_circuits`` to run one job with a different config. Configs are frozen; :meth:`~divi.backends.JobConfig.override` and :meth:`~divi.backends.JobConfig.reset` return changed copies.
 
 .. code-block:: python
 
    from divi.backends import QoroService, JobConfig
 
-   # 1. Set a custom default configuration for the service
-   default_config = JobConfig(
-       shots=500,
-       simulator_cluster="qoro_maestro",
-       use_circuit_packing=True,
-       tag="default_run"
+   service = QoroService(
+       job_config=JobConfig(
+           shots=500,
+           simulator_cluster="qoro_maestro",
+           use_circuit_packing=True,
+           tag="default_run",
+       )
    )
-   service = QoroService(job_config=default_config)
 
-   # 2. Override the default configuration for a single job
-   override = JobConfig(shots=2000, tag="high_shot_run")
-   execution_result = service.submit_circuits(circuits, override_job_config=override)
-
-   # This job will run with 2000 shots and the tag 'high_shot_run',
-   # but will still use 'qoro_maestro' and circuit packing from the default config.
+   # One job with 2000 shots and its own tag, otherwise as the default
+   high_shots = service.job_config.override(shots=2000, tag="high_shot_run")
+   execution_result = service.submit_circuits(circuits, job_config=high_shots)
 
 You can also update the service's default configuration after construction:
 
@@ -346,35 +353,30 @@ Maestro Configuration
 ^^^^^^^^^^^^^^^^^^^^^
 
 Cloud Maestro runs take the same :class:`~divi.backends.MaestroConfig` as a
-local :class:`~divi.backends.MaestroSimulator`, noise model included, so a
-config moves between the two unchanged. Like :class:`~divi.backends.JobConfig`,
-you can set it in two ways:
-
-1.  **Default Configuration**: Pass ``maestro_config`` when you initialise the service. It applies to every job unless you override it.
-2.  **Per-submission Override**: Pass ``override_maestro_config`` to ``submit_circuits``. Its fields that differ from the class defaults take precedence (see :meth:`~divi.backends.MaestroConfig.override`).
+local :class:`~divi.backends.MaestroSimulator`, noise model included. As with
+:class:`~divi.backends.JobConfig`, set a default on the service and pass
+``maestro_config`` to ``submit_circuits`` to run one job with a different
+config.
 
 .. code-block:: python
 
    from divi.backends import MaestroConfig, QoroService
 
-   # 1. Set a service-level default
-   default_maestro = MaestroConfig(
-       simulator_type="QCSim",
-       simulation_type="MatrixProductState",
-       max_bond_dimension=256,
+   service = QoroService(
+       maestro_config=MaestroConfig(
+           simulator_type="QCSim",
+           simulation_type="MatrixProductState",
+           max_bond_dimension=256,
+       )
    )
-   service = QoroService(maestro_config=default_maestro)
 
    # All submissions use the default
    result = service.submit_circuits(circuits)
 
-   # 2. Override specific fields for a single submission
-   override = MaestroConfig(max_bond_dimension=512)
-   result = service.submit_circuits(circuits, override_maestro_config=override)
-   # Uses max_bond_dimension=512 from the override, but keeps the simulator
-   # and simulation type from the default.
+   # One job with a larger bond dimension, otherwise as the default
+   wider = service.maestro_config.override(max_bond_dimension=512)
+   result = service.submit_circuits(circuits, maestro_config=wider)
 
-   # Retrieve the configuration to verify
    print(service.get_maestro_config(result).max_bond_dimension)  # 512
 
 A job runs on a simulator or on hardware, never both, so it takes a
@@ -447,16 +449,17 @@ hardware. The options are the vendors' own device keys, the ones listed under
    result = service.submit_circuits(
        circuits,
        device_config=DeviceConfig(transpile_level=3, use_mitigation=True),
-       override_job_config=JobConfig(qpu_system="my_qpu"),
+       job_config=JobConfig(qpu_system="my_qpu"),
    )
 
 A QPU system can include hardware from more than one vendor. The options apply
 to every QPU in the system, and each QPU reads only its own vendor's keys.
-``submit_circuits`` rejects a key that no vendor accepts, and options you leave
+``submit_circuits`` rejects a key or value that no vendor accepts, and options you leave
 out keep the QPU's own settings. The QPU system decides which device runs the
 job, so the device-selection keys (``IBM_DEVICE`` and ``IQM_DEVICE_URL``) are
 rejected. :meth:`~divi.backends.QoroService.get_device_config` reads the options
-back.
+back. As with the other configs, ``QoroService(device_config=...)`` sets a
+default for every QPU job, and a per-call ``device_config`` replaces it.
 
 .. _Backend Selection Guide:
 
@@ -520,12 +523,12 @@ All backends accept ``track_depth=True`` on construction to record per-batch dep
 Operational notes
 -----------------
 
-* **MaestroSimulator and many qubits**: See :ref:`Configuring MaestroSimulator <configuring-maestrosimulator>` above for the auto-MPS threshold and the :class:`~divi.backends.MaestroConfig` fields that control it (``mps_qubit_threshold``, ``simulation_type``, ``max_bond_dimension``).  Note that switching to MPS changes memory and runtime scaling — it is not a generic "make it faster" switch.
+* **MaestroSimulator and many qubits**: Maestro's default method is statevector, whose memory doubles with every qubit.  For wide circuits set ``simulation_type="MatrixProductState"`` and a ``max_bond_dimension`` (see :ref:`Configuring MaestroSimulator <configuring-maestrosimulator>` above).  Note that switching to MPS changes memory and runtime scaling — it is not a generic "make it faster" switch.
 * **QiskitSimulator**: ``n_processes`` and ``shots`` trade throughput, memory, and statistical noise; there is no single knob—balance them for your machine and accuracy needs.
 
 .. _operational-notes-shot-reproducibility:
 
-* **Shot reproducibility**: :attr:`~divi.backends.MaestroConfig.seed` makes MaestroSimulator runs, noisy or not, repeat exactly; :meth:`~divi.backends.MaestroSimulator.set_seed` sets it on an existing simulator.  Each circuit gets its own seed derived from its label, so circuits in a batch draw independently.  Left unset, runs draw from system entropy.
+* **Shot reproducibility**: The ``seed`` option makes MaestroSimulator runs, noisy or not, repeat exactly; :meth:`~divi.backends.MaestroSimulator.set_seed` sets it on an existing simulator.  Each circuit's seed is derived from its label and QASM, so circuits in a batch and across iterations draw independently. Because the QASM text is part of the seed, a change to how it is written, such as a program's ``precision``, gives different draws.  Left unset, runs draw from system entropy.
 * **QoroService latency**: Client-side wait time is dominated by how you poll; tune ``polling_interval`` and ``max_retries`` on :class:`~divi.backends.QoroService`. For fast inner loops, use a local simulator; cloud queue time is outside the client library.
 
 Next Steps

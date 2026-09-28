@@ -12,18 +12,9 @@ from typing import Any
 import maestro
 import numpy as np
 
-from ._maestro import MaestroConfig
+from ._maestro import _ENUMS, _SIMULATOR_OPTIONS, MaestroConfig
 
-_SERVICE_FIELD_NAMES = {
-    "singular_value_threshold": "truncation_threshold",
-}
-_FIELD_NAMES_BY_SERVICE_NAME = {
-    service: field for field, service in _SERVICE_FIELD_NAMES.items()
-}
-_ENUMS = {
-    "simulator_type": maestro.SimulatorType,
-    "simulation_type": maestro.SimulationType,
-}
+_PAYLOAD_KEYS = _SIMULATOR_OPTIONS | {"noise_model", "noise_seed", "noise_realizations"}
 
 
 def _to_json(value: Any) -> Any:
@@ -43,30 +34,19 @@ def _from_json(obj: dict) -> Any:
 
 
 def _noise_model_to_payload(noise_model: Any) -> list[dict]:
-    """The model's recorded ``set_*`` calls, checked to rebuild the same model."""
+    """The model's recorded ``set_*`` calls, checked to replay."""
     calls = [
         {"method": method, "args": list(args), "kwargs": dict(kwargs)}
         for method, args, kwargs in noise_model._call_log
     ]
     calls = json.loads(json.dumps(calls, default=_to_json))
     try:
-        rebuilt = _noise_model_from_payload(calls)
+        _noise_model_from_payload(calls)
     except Exception as exc:
         raise ValueError(
             "noise_model's recorded calls do not replay, so it cannot be sent to "
             f"the Qoro Service: {exc}"
         ) from exc
-    lost = [
-        name
-        for name in dir(noise_model)
-        if name.startswith("has_")
-        and getattr(noise_model, name)() != getattr(rebuilt, name)()
-    ]
-    if lost:
-        raise ValueError(
-            "noise_model was changed by calls that are not recorded (only set_* "
-            f"methods are), so the Qoro Service would not see them; differs in {lost}."
-        )
     return calls
 
 
@@ -83,30 +63,36 @@ def _noise_model_from_payload(calls: Sequence[Mapping[str, Any]]) -> Any:
 def maestro_config_to_payload(config: MaestroConfig) -> dict:
     """Serialise ``config`` to the Qoro Service's ``maestro_config`` object.
 
-    Every field that is not ``None`` is sent, defaults included, so a cloud run
-    sees the values a local one would. ``singular_value_threshold`` travels as
-    ``truncation_threshold``, the enum names as maestro's integer codes, and
-    the noise model as the list of ``set_*`` calls that built it.
+    The simulator options ``config`` sets travel under maestro's own names,
+    with the enums as maestro's integer codes; the noise model travels as the
+    list of ``set_*`` calls that built it, with ``noise_realizations`` resolved
+    to the value a local run would use.
 
     Raises:
         ValueError: If the noise model cannot be rebuilt from its recorded
             calls.
     """
-    payload = config.model_dump(exclude_none=True, exclude={"noise_model"})
-    for name, enum in _ENUMS.items():
-        if name in payload:
-            payload[name] = enum[payload[name]].value
+    payload = {
+        name: value.value if name in _ENUMS else value
+        for name, value in config._simulator_options().items()
+        if value is not None
+    }
+    if config.noise_seed is not None:
+        payload["noise_seed"] = config.noise_seed
     if config.noise_model is not None:
         payload["noise_model"] = _noise_model_to_payload(config.noise_model)
-    return {_SERVICE_FIELD_NAMES.get(key, key): value for key, value in payload.items()}
+        payload |= config._noise_realization_kwargs()
+    elif config.noise_realizations is not None:
+        payload["noise_realizations"] = config.noise_realizations
+    return payload
 
 
 def maestro_config_from_payload(data: Mapping[str, Any]) -> MaestroConfig:
     """Rebuild a :class:`MaestroConfig` from the Qoro Service's ``maestro_config``.
 
     The inverse of :func:`maestro_config_to_payload`; the noise model is rebuilt
-    by replaying its recorded ``set_*`` calls. Keys that are not
-    :class:`MaestroConfig` fields are dropped with a warning.
+    by replaying its recorded ``set_*`` calls. Keys that are neither simulator
+    options nor noise fields are dropped with a warning.
 
     Raises:
         ValueError: If an enum code is not one of maestro's, or a recorded
@@ -115,15 +101,14 @@ def maestro_config_from_payload(data: Mapping[str, Any]) -> MaestroConfig:
     fields: dict[str, Any] = {}
     unknown: list[str] = []
     for key, value in data.items():
-        name = _FIELD_NAMES_BY_SERVICE_NAME.get(key, key)
-        if name not in MaestroConfig.model_fields:
+        if key not in _PAYLOAD_KEYS:
             unknown.append(key)
             continue
-        if name in _ENUMS:
-            value = _ENUMS[name](value).name
-        elif name == "noise_model":
+        if key in _ENUMS:
+            value = _ENUMS[key](value)
+        elif key == "noise_model":
             value = _noise_model_from_payload(value)
-        fields[name] = value
+        fields[key] = value
     if unknown:
         warnings.warn(
             "Ignoring stored maestro_config keys this version of divi does not "

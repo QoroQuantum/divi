@@ -193,6 +193,12 @@ def verify_cancellation_before_dispatch(runner: CircuitRunner) -> None:
         runner.submit_circuits({"c1": QASM_MINIMAL}, cancellation_event=event)
 
 
+def verify_rejects_unknown_options(runner: CircuitRunner) -> None:
+    """An option the backend does not take raises instead of being dropped."""
+    with pytest.raises(TypeError, match=r"unexpected keyword arguments \['shots'\]"):
+        runner.submit_circuits({"c1": QASM_MINIMAL}, shots=7)
+
+
 DEPTH_CONTRACTS_DISABLED, DEPTH_CONTRACTS_ENABLED = depth_contracts(qasm_payloads)
 
 DEPTH_CONTRACTS_ENABLED += [
@@ -204,10 +210,15 @@ SYNC_CANCELLATION_CONTRACTS = [
     verify_cancellation_before_dispatch,
 ]
 
+SIGNATURE_CONTRACTS = [
+    verify_rejects_unknown_options,
+]
+
 SYNC_RUNNER_CONTRACT_CASES = flatten_contract_cases(
     (DEPTH_CONTRACTS_DISABLED, "contract_runner_disabled"),
     (DEPTH_CONTRACTS_ENABLED, "contract_runner_enabled"),
     (SYNC_CANCELLATION_CONTRACTS, "contract_runner_default"),
+    (SIGNATURE_CONTRACTS, "contract_runner_disabled"),
 )
 
 # Async backends (e.g. QoroService) intentionally omit
@@ -218,6 +229,7 @@ SYNC_RUNNER_CONTRACT_CASES = flatten_contract_cases(
 ASYNC_RUNNER_CONTRACT_CASES = flatten_contract_cases(
     (DEPTH_CONTRACTS_DISABLED, "contract_runner_disabled"),
     (DEPTH_CONTRACTS_ENABLED, "contract_runner_enabled"),
+    (SIGNATURE_CONTRACTS, "contract_runner_disabled"),
 )
 
 

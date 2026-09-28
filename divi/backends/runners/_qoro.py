@@ -70,7 +70,7 @@ from .._systems import (
     update_qpu_systems_cache,
     update_simulator_clusters_cache,
 )
-from ._maestro import MaestroConfig
+from ._maestro import MaestroConfig, require_maestro_config
 from ._maestro_payload import maestro_config_from_payload, maestro_config_to_payload
 
 API_URL = "https://app.qoroquantum.net/api"
@@ -130,6 +130,27 @@ def _by_config_key(specs: Iterable[Mapping]) -> dict[str, dict[str, Any]]:
     return {
         spec["name"]: {k: v for k, v in spec.items() if k != "name"} for spec in specs
     }
+
+
+def _require_device_config(value: Any) -> None:
+    if not isinstance(value, DeviceConfig):
+        raise TypeError(
+            f"device_config must be a DeviceConfig, got {type(value).__name__}."
+        )
+
+
+def _accepts(spec: Mapping[str, Any], value: Any) -> bool:
+    """Whether ``value`` fits a blueprint field spec's ``kind``."""
+    kind = spec.get("kind")
+    if kind == "toggle":
+        return isinstance(value, bool)
+    if kind == "number":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if kind == "choice":
+        return value in spec.get("choices", ())
+    if kind == "text":
+        return isinstance(value, str)
+    return True
 
 
 def _is_recoverable_characterization_error(exc: Exception) -> bool:
@@ -207,10 +228,7 @@ class MaxRetriesReachedError(Exception):
 
 
 _DEFAULT_SIMULATOR_CLUSTER = SimulatorCluster(name="qoro_maestro")
-_DEFAULT_SHOTS = 1000
-
 _DEFAULT_JOB_CONFIG = JobConfig(
-    shots=_DEFAULT_SHOTS,
     simulator_cluster=_DEFAULT_SIMULATOR_CLUSTER,
     use_circuit_packing=False,
 )
@@ -232,6 +250,7 @@ class QoroService(CircuitRunner):
         auth_token: str | None = None,
         job_config: JobConfig | None = None,
         maestro_config: MaestroConfig | None = None,
+        device_config: DeviceConfig | None = None,
         polling_interval: float = 3.0,
         max_retries: int | None = None,
         track_depth: bool = False,
@@ -253,8 +272,11 @@ class QoroService(CircuitRunner):
                 Default Maestro settings for submitted jobs, the same
                 :class:`~divi.backends.MaestroConfig` a local
                 :class:`~divi.backends.MaestroSimulator` takes. Every call to
-                :meth:`submit_circuits` uses it, merged under any
-                ``override_maestro_config``.
+                :meth:`submit_circuits` on a simulator target uses it unless
+                given its own ``maestro_config``.
+            device_config (DeviceConfig | None, optional):
+                Default hardware options for jobs on a QPU target, used unless
+                :meth:`submit_circuits` is given its own ``device_config``.
             polling_interval (float, optional):
                 The interval in seconds for polling job status. Defaults to 3.0.
             max_retries (int | None, optional):
@@ -295,26 +317,32 @@ class QoroService(CircuitRunner):
         self.job_config = job_config
 
         self.maestro_config = maestro_config
+        self.device_config = device_config
 
-        shots = (
-            self.job_config.shots
-            if self.job_config.shots is not None
-            else _DEFAULT_SHOTS
-        )
-        super().__init__(shots=shots, track_depth=track_depth)
+        super().__init__(shots=self.job_config.shots, track_depth=track_depth)
 
     @property
     def supports_expval(self) -> bool:
         """
         Whether the backend supports expectation value measurements.
         """
-        target = self.job_config.simulator_cluster or self.job_config.qpu_system
+        target = self._resolved_target(self.job_config)
+        return target.supports_expval and not self.job_config.force_sampling
+
+    @staticmethod
+    def _resolved_target(job_config: JobConfig) -> SimulatorCluster | QPUSystem:
+        target = job_config.simulator_cluster or job_config.qpu_system
         if not isinstance(target, (SimulatorCluster, QPUSystem)):
             raise RuntimeError(
                 "JobConfig target is unresolved; this should have been resolved "
                 "by _resolve_and_validate_target before reaching here."
             )
-        return target.supports_expval and not self.job_config.force_sampling
+        return target
+
+    @property
+    def shots(self) -> int:
+        """Shots per circuit, from the service's ``job_config``."""
+        return self.job_config.shots
 
     @property
     def job_config(self) -> JobConfig:
@@ -323,6 +351,10 @@ class QoroService(CircuitRunner):
 
     @job_config.setter
     def job_config(self, value: JobConfig) -> None:
+        if not isinstance(value, JobConfig):
+            raise TypeError(
+                f"job_config must be a JobConfig, got {type(value).__name__}."
+            )
         self._job_config = self._resolve_and_validate_target(value)
 
     @property
@@ -332,7 +364,20 @@ class QoroService(CircuitRunner):
 
     @maestro_config.setter
     def maestro_config(self, value: MaestroConfig | None) -> None:
+        if value is not None:
+            require_maestro_config(value, "maestro_config")
         self._maestro_config = value
+
+    @property
+    def device_config(self) -> DeviceConfig | None:
+        """The service's default hardware options for QPU jobs."""
+        return self._device_config
+
+    @device_config.setter
+    def device_config(self, value: DeviceConfig | None) -> None:
+        if value is not None:
+            _require_device_config(value)
+        self._device_config = value
 
     @property
     def is_async(self) -> bool:
@@ -500,21 +545,35 @@ class QoroService(CircuitRunner):
         }
 
     @cached_property
-    def _device_option_keys(self) -> frozenset[str]:
-        """Every device key some vendor accepts, fetched on first use."""
-        return frozenset(
-            key
-            for blueprint in self.fetch_vendor_blueprints().values()
-            for key in blueprint["device"]
-        )
+    def _device_option_specs(self) -> dict[str, list[Mapping[str, Any]]]:
+        """Each device key's specs across the vendors that accept it, fetched
+        on first use."""
+        specs: dict[str, list[Mapping[str, Any]]] = {}
+        for blueprint in self.fetch_vendor_blueprints().values():
+            for key, spec in blueprint["device"].items():
+                specs.setdefault(key, []).append(spec)
+        return specs
 
     def _check_device_options(self, device_config: DeviceConfig) -> None:
-        """Reject keys no vendor accepts; the service would store them unread."""
-        unknown = sorted(device_config.to_payload().keys() - self._device_option_keys)
+        """Reject keys or values no vendor accepts; the service would store
+        them unread."""
+        options = device_config.to_payload()
+        specs = self._device_option_specs
+        unknown = sorted(options.keys() - specs.keys())
         if unknown:
             raise ValueError(
                 f"No QPU vendor accepts the device options {unknown}. "
                 "fetch_vendor_blueprints() lists the options each vendor takes."
+            )
+        rejected = {
+            key: value
+            for key, value in options.items()
+            if not any(_accepts(spec, value) for spec in specs[key])
+        }
+        if rejected:
+            raise ValueError(
+                f"No QPU vendor accepts the device option values {rejected}. "
+                "fetch_vendor_blueprints() lists each option's kind and choices."
             )
 
     def get_credit_balance(self) -> dict:
@@ -604,47 +663,50 @@ class QoroService(CircuitRunner):
         )
         return [dict(chunk) for chunk in chunks]
 
-    def _resolve_job_config(self, override: JobConfig | None) -> JobConfig:
-        """Layer service defaults under an optional per-call override."""
-        if not override:
-            return self.job_config
-        return self._resolve_and_validate_target(self.job_config.override(override))
+    def _require_expval(self, job_config: JobConfig) -> None:
+        """Raise if ``job_config`` cannot run an expectation-value job."""
+        target = self._resolved_target(job_config)
+        if job_config.force_sampling:
+            reason = "its job_config sets force_sampling=True"
+        elif not target.supports_expval:
+            reason = f"'{target.name}' does not estimate expectation values"
+        else:
+            return
+        raise ValueError(f"ham_ops cannot be used on this job: {reason}.")
 
-    def _maestro_config_for_target(
+    def _configs_for_target(
         self,
         job_config: JobConfig,
-        override: MaestroConfig | None,
+        maestro_config: MaestroConfig | None,
         device_config: DeviceConfig | None,
-    ) -> MaestroConfig | None:
-        """The Maestro settings a job on ``job_config``'s target takes.
+    ) -> tuple[MaestroConfig | None, DeviceConfig | None]:
+        """The ``(maestro_config, device_config)`` a job on ``job_config``'s
+        target takes.
 
-        A QPU job takes none, so the service-level default is skipped for one;
-        a config aimed at the other kind of target raises.
+        A simulator job takes only Maestro settings and a QPU job only device
+        options, so the other kind's service-level default is skipped; a
+        per-call config aimed at the other kind of target raises.
         """
         if isinstance(job_config.qpu_system, QPUSystem):
-            if override is not None:
+            if maestro_config is not None:
                 raise ValueError(
-                    "override_maestro_config applies to simulator targets; this "
-                    f"job targets QPU system '{job_config.qpu_system.name}'. Pass "
+                    "maestro_config applies to simulator targets; this job "
+                    f"targets QPU system '{job_config.qpu_system.name}'. Pass "
                     "device_config for hardware options instead."
                 )
-            return None
+            if device_config is None:
+                return None, self.device_config
+            _require_device_config(device_config)
+            return None, device_config
         if device_config is not None:
             raise ValueError(
                 "device_config applies to QPU targets; this job targets a "
-                "simulator cluster. Pass override_maestro_config instead."
+                "simulator cluster. Pass maestro_config instead."
             )
-        return self._resolve_maestro_config(override)
-
-    def _resolve_maestro_config(
-        self, override: MaestroConfig | None
-    ) -> MaestroConfig | None:
-        """Layer service defaults under an optional per-call override."""
-        if override is None:
-            return self.maestro_config
-        if self.maestro_config is None:
-            return override
-        return self.maestro_config.override(override)
+        if maestro_config is None:
+            return self.maestro_config, None
+        require_maestro_config(maestro_config, "maestro_config")
+        return maestro_config, None
 
     @staticmethod
     def _validate_ham_group(group: str) -> None:
@@ -682,9 +744,9 @@ class QoroService(CircuitRunner):
         circuit_ham_map: list[list[int]] | None = None,
         shot_groups: list[list[int]] | None = None,
         job_type: JobType | None = None,
-        override_maestro_config: MaestroConfig | None = None,
+        maestro_config: MaestroConfig | None = None,
         device_config: DeviceConfig | None = None,
-        override_job_config: JobConfig | None = None,
+        job_config: JobConfig | None = None,
         cancellation_event: Event | None = None,
         **kwargs,
     ) -> ExecutionResult:
@@ -742,39 +804,40 @@ class QoroService(CircuitRunner):
             job_type (JobType | None, optional):
                 Type of job to execute (EXECUTE or EXPECTATION).
                 If not provided, defaults to EXECUTE.
-            override_maestro_config (MaestroConfig | None, optional):
-                Maestro settings for this submission on a simulator target. Its
-                non-default fields override the service-level ``maestro_config``
-                set in the constructor (see
-                :meth:`~divi.backends.MaestroConfig.override`). When omitted,
-                the service-level default is used (if any); a QPU submission
-                ignores that default.
+            maestro_config (MaestroConfig | None, optional):
+                Maestro settings for this submission on a simulator target,
+                used in place of the service's ``maestro_config``, e.g.
+                ``service.maestro_config.override(max_bond_dimension=32)``.
+                When omitted, the service's is used; a QPU submission skips it.
             device_config (DeviceConfig | None, optional):
-                Hardware options for this submission on a QPU target, checked
-                against :meth:`fetch_vendor_blueprints`.
-            override_job_config (JobConfig | None, optional):
-                Configuration object to override the service's default settings.
-                If not provided, default values are used.
+                Hardware options for this submission on a QPU target, used in
+                place of the service's ``device_config`` and checked against
+                :meth:`fetch_vendor_blueprints`. When omitted, the service's is
+                used; a simulator submission skips it.
+            job_config (JobConfig | None, optional):
+                Job settings for this submission, used in place of the
+                service's ``job_config``, e.g.
+                ``service.job_config.override(shots=2000)``.
             cancellation_event (Event | None, optional):
                 Accepted for :class:`~divi.backends.CircuitRunner` interface
                 parity; submission itself is unaffected. Pass the same Event
                 to :meth:`poll_job_status` to interrupt the polling loop.
-            **kwargs:
-                Accepted to match the ``CircuitRunner.submit_circuits``
-                signature but not used by this backend. Any extra keyword
-                arguments are ignored.
+            **kwargs: Rejected with ``TypeError``.
 
         Raises:
-            ValueError: If any circuit is not valid QASM, a config is aimed
-                at the other kind of target (``override_maestro_config`` on a
+            ValueError: If any circuit is not valid QASM, ``ham_ops`` is given
+                for a job whose target or ``force_sampling`` rules out
+                expectation values, a config is aimed
+                at the other kind of target (``maestro_config`` on a
                 QPU job, or ``device_config`` on a simulator job), or
-                ``device_config`` sets an option no QPU vendor accepts.
+                ``device_config`` sets an option or value no QPU vendor accepts.
             requests.exceptions.HTTPError: If any API request fails.
 
         Returns:
             ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
                 to poll for results using backend.poll_job_status() and get_job_results().
         """
+        self._reject_unknown_options(kwargs)
         payloads = as_payloads(payloads)
         if not payloads:
             raise ValueError("submit_circuits requires at least one payload.")
@@ -798,9 +861,15 @@ class QoroService(CircuitRunner):
                     f"number of ham_ops groups ({len(ham_groups)})."
                 )
 
-        job_config = self._resolve_job_config(override_job_config)
-        maestro_config = self._maestro_config_for_target(
-            job_config, override_maestro_config, device_config
+        job_config = (
+            self.job_config
+            if job_config is None
+            else self._resolve_and_validate_target(job_config)
+        )
+        if ham_ops is not None:
+            self._require_expval(job_config)
+        maestro_config, device_config = self._configs_for_target(
+            job_config, maestro_config, device_config
         )
         if device_config is not None:
             self._check_device_options(device_config)

@@ -50,12 +50,12 @@ def _over_the_wire(config: MaestroConfig) -> MaestroConfig:
 
 def _bell_counts(noise_model) -> dict:
     sim = MaestroSimulator(
-        shots=400, config=MaestroConfig(seed=11, noise_model=noise_model)
+        shots=400, maestro_config=MaestroConfig(seed=11, noise_model=noise_model)
     )
     return sim.submit_circuits({"c0": _BELL_QASM}).results[0]["results"]
 
 
-def test_service_names_and_enum_codes():
+def test_maestro_names_and_enum_codes():
     payload = maestro_config_to_payload(
         MaestroConfig(
             simulator_type="Gpu",
@@ -65,20 +65,16 @@ def test_service_names_and_enum_codes():
         )
     )
 
-    assert payload["max_bond_dimension"] == 32
-    assert payload["truncation_threshold"] == 1e-8
-    assert payload["simulator_type"] == maestro.SimulatorType.Gpu.value
-    assert payload["simulation_type"] == maestro.SimulationType.PathIntegral.value
-    assert "singular_value_threshold" not in payload
+    assert payload == {
+        "simulator_type": maestro.SimulatorType.Gpu.value,
+        "simulation_type": maestro.SimulationType.PathIntegral.value,
+        "max_bond_dimension": 32,
+        "singular_value_threshold": 1e-8,
+    }
 
 
-def test_defaults_are_sent_and_unset_fields_are_not():
-    """A cloud run must see the defaults a local one uses."""
-    payload = maestro_config_to_payload(MaestroConfig())
-
-    assert payload["lookahead_depth"] == -1
-    assert payload["mps_qubit_threshold"] == MaestroConfig().mps_qubit_threshold
-    assert {"simulator_type", "noise_model", "seed", "noise_seed"}.isdisjoint(payload)
+def test_only_set_options_are_sent():
+    assert maestro_config_to_payload(MaestroConfig()) == {}
 
 
 def test_round_trip():
@@ -88,9 +84,35 @@ def test_round_trip():
         max_bond_dimension=64,
         seed=3,
         distributed_options={"distributed_devices": "0,1"},
-        mps_use_gesvdj=True,
+        mps_svd_solver="gesvdj",
     )
     assert _over_the_wire(config) == config
+
+
+def test_a_config_from_a_simulator_config_round_trips():
+    config = MaestroConfig.from_simulator_config(
+        maestro.SimulatorConfig(
+            simulation_type=maestro.SimulationType.MatrixProductState,
+            max_bond_dimension=8,
+        ),
+        noise_seed=4,
+    )
+    assert _over_the_wire(config) == config
+
+
+@pytest.mark.parametrize(
+    "simulation_type, realizations", [("DensityMatrix", 1), ("Statevector", None)]
+)
+def test_noise_realizations_are_resolved_as_a_local_run_would(
+    simulation_type, realizations
+):
+    noise_model = maestro.NoiseModel()
+    noise_model.set_all_depolarizing(2, 0.02)
+    payload = maestro_config_to_payload(
+        MaestroConfig(simulation_type=simulation_type, noise_model=noise_model)
+    )
+
+    assert payload.get("noise_realizations") == realizations
 
 
 def test_noise_model_round_trip():
@@ -119,15 +141,6 @@ def test_unknown_keys_are_dropped_with_a_warning():
         )
 
     assert config == MaestroConfig(max_bond_dimension=64)
-
-
-def test_unrecorded_noise_changes_are_refused():
-    """``add_*`` methods bypass the call log, so the service would miss them."""
-    noise_model = maestro.NoiseModel()
-    noise_model.add_correlated_ou_band(0, 15.0, 0.5, 1e-7)
-
-    with pytest.raises(ValueError, match="not recorded"):
-        maestro_config_to_payload(MaestroConfig(noise_model=noise_model))
 
 
 def test_a_failed_setter_is_refused():

@@ -2,7 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from collections.abc import Mapping
+import difflib
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -13,6 +14,31 @@ _TOGGLES_BY_WIRE_VALUE = {"true": True, "false": False}
 
 # The job's QPU system picks the device, so a job may not redirect it.
 _DEVICE_SELECTION_KEYS = frozenset({"IBM_DEVICE", "IQM_DEVICE_URL"})
+
+
+def _lowercased(options: Mapping[Any, Any]) -> dict[str, Any]:
+    return {str(key).lower(): value for key, value in options.items()}
+
+
+def describe_unknown(names: Iterable[str], known: Iterable[str]) -> str:
+    """The ``names`` not in ``known``, each with its closest match; empty if none."""
+    known = sorted(known)
+    return ", ".join(
+        (
+            f"{name!r} (did you mean {match[0]!r}?)"
+            if (match := difflib.get_close_matches(name, known, n=1))
+            else repr(name)
+        )
+        for name in sorted(set(names) - set(known))
+    )
+
+
+def reject_unknown_reset(names: Sequence[str], known: Iterable[str]) -> None:
+    """Raise unless ``names`` is a non-empty list of fields ``reset`` can restore."""
+    if not names:
+        raise ValueError("reset() needs at least one field name.")
+    if unknown := describe_unknown(names, known):
+        raise ValueError(f"Cannot reset unknown fields {unknown}.")
 
 
 class DeviceConfig(BaseModel):
@@ -26,7 +52,8 @@ class DeviceConfig(BaseModel):
 
     Toggles take ``True`` or ``False``. The options apply to every QPU in the
     target system, and each QPU reads only its own vendor's keys. Options left
-    out, or set to ``None``, keep the QPU's own settings.
+    out, or set to ``None``, keep the QPU's own settings. Configs are frozen;
+    :meth:`override` and :meth:`reset` return changed copies.
     :meth:`~divi.backends.QoroService.submit_circuits` rejects a key no vendor
     accepts.
     """
@@ -37,7 +64,7 @@ class DeviceConfig(BaseModel):
     @classmethod
     def _lowercase_keys(cls, data: Any) -> Any:
         if isinstance(data, Mapping):
-            return {str(key).lower(): value for key, value in data.items()}
+            return _lowercased(data)
         return data
 
     @model_validator(mode="after")
@@ -49,6 +76,28 @@ class DeviceConfig(BaseModel):
                 "already does."
             )
         return self
+
+    def override(self, **options: Any) -> "DeviceConfig":
+        """Return a copy with ``options`` set, e.g.
+        ``config.override(transpile_level=3)``."""
+        return DeviceConfig(**(self.model_extra or {}) | _lowercased(options))
+
+    def reset(self, *names: str) -> "DeviceConfig":
+        """Return a copy without the options ``names``, so the QPU's own
+        settings apply to them."""
+        names = tuple(name.lower() for name in names)
+        options = self.model_extra or {}
+        reject_unknown_reset(names, options)
+        return DeviceConfig(
+            **{name: value for name, value in options.items() if name not in names}
+        )
+
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> "DeviceConfig":
+        """Copy, validating ``update`` as :meth:`override` does."""
+        copied = super().model_copy(deep=deep)
+        return copied.override(**update) if update else copied
 
     def to_payload(self) -> dict[str, Any]:
         """Serialise to the ``device_config`` object, dropping unset options."""
@@ -87,7 +136,7 @@ class JobConfig(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    shots: int | None = Field(default=None, gt=0)
+    shots: int = Field(default=1000, gt=0)
     """Number of shots for the job."""
 
     simulator_cluster: SimulatorCluster | str | None = None
@@ -100,43 +149,44 @@ class JobConfig(BaseModel):
     """Whether to use circuit packing optimisation."""
 
     tag: str | None = "default"
-    """Tag to associate with the job for identification. ``None`` in an
-    override means "keep the base tag"."""
+    """Tag to associate with the job for identification."""
 
     force_sampling: bool = Field(default=False, strict=True)
     """Whether to force sampling instead of expectation value measurements."""
 
-    def override(self, other: "JobConfig") -> "JobConfig":
-        """Creates a new config by overriding attributes with non-None values.
+    def override(self, **fields: Any) -> "JobConfig":
+        """Return a copy with ``fields`` set.
 
-        This method ensures immutability by always returning a new `JobConfig` object
-        and leaving the original instance unmodified.
-
-        If the override sets ``simulator_cluster``, any existing ``qpu_system``
-        is cleared (and vice versa), so the mutual-exclusivity constraint is
-        preserved.
-
-        Args:
-            other: Another JobConfig instance to take values from. Only non-None
-                   attributes from this instance will be used for the override.
-
-        Returns:
-            A new JobConfig instance with the merged configurations.
+        Setting one target clears the other, e.g.
+        ``config.override(qpu_system="ibm_torino")`` drops ``simulator_cluster``.
         """
-        current_attrs = dict(self)
+        current = dict(self)
+        if fields.get("simulator_cluster") is not None:
+            current["qpu_system"] = None
+        if fields.get("qpu_system") is not None:
+            current["simulator_cluster"] = None
+        return JobConfig(**current | fields)
 
-        for name in type(other).model_fields:
-            other_value = getattr(other, name)
-            if other_value is not None:
-                current_attrs[name] = other_value
+    def reset(self, *names: str) -> "JobConfig":
+        """Return a copy with the fields ``names`` back at their defaults."""
+        reject_unknown_reset(names, type(self).model_fields)
+        return JobConfig(**{name: value for name, value in self if name not in names})
 
-        # Ensure mutual exclusivity: if override sets one target, clear the other
-        if other.simulator_cluster is not None:
-            current_attrs["qpu_system"] = None
-        elif other.qpu_system is not None:
-            current_attrs["simulator_cluster"] = None
+    def model_copy(
+        self, *, update: Mapping[str, Any] | None = None, deep: bool = False
+    ) -> "JobConfig":
+        """Copy, validating ``update`` as :meth:`override` does."""
+        copied = super().model_copy(deep=deep)
+        return copied.override(**update) if update else copied
 
-        return JobConfig(**current_attrs)
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown_fields(cls, data: Any) -> Any:
+        if isinstance(data, Mapping) and (
+            unknown := describe_unknown(data, cls.model_fields)
+        ):
+            raise ValueError(f"JobConfig got unknown fields {unknown}.")
+        return data
 
     @model_validator(mode="after")
     def _check_single_target(self):

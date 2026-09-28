@@ -209,7 +209,7 @@ class TestQoroServiceMock:
     def test_submit_circuits_with_override_job_config_qpu_system_object(
         self, mocker, qoro_service_factory
     ):
-        """Test submitting circuits with an override_job_config that has a QPUSystem object."""
+        """Test submitting circuits with a job_config that has a QPUSystem object."""
         qoro_service_mock = qoro_service_factory()
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
@@ -227,9 +227,7 @@ class TestQoroServiceMock:
         # Override with QPUSystem object directly
         override_qpu = QPUSystem(name="override_qpu_system")
         override_conf = JobConfig(qpu_system=override_qpu)
-        qoro_service_mock.submit_circuits(
-            {"c1": "qasm"}, override_job_config=override_conf
-        )
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, job_config=override_conf)
 
         # Assert the correct qpu_system_name was sent in the init payload
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
@@ -1076,7 +1074,7 @@ class TestQoroServiceMock:
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
             job_type=JobType.EXECUTE,
-            override_job_config=JobConfig(tag="my_custom_tag"),
+            job_config=qoro_service_mock.job_config.override(tag="my_custom_tag"),
         )
 
         # The parameters should be in the first (init) call
@@ -1088,9 +1086,7 @@ class TestQoroServiceMock:
     def test_simulator_submission_sends_its_maestro_config(self, submit_circuits_mock):
         qoro_service_mock, mock_make_request = submit_circuits_mock
         maestro_config = MaestroConfig(max_bond_dimension=64)
-        qoro_service_mock.submit_circuits(
-            {"c1": "qasm"}, override_maestro_config=maestro_config
-        )
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, maestro_config=maestro_config)
 
         payload = _init_payload(mock_make_request)
         assert payload["maestro_config"] == maestro_config_to_payload(maestro_config)
@@ -1106,7 +1102,7 @@ class TestQoroServiceMock:
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
             device_config=DeviceConfig(transpile_level=2, use_mitigation=True),
-            override_job_config=_QPU_JOB_CONFIG,
+            job_config=_QPU_JOB_CONFIG,
         )
 
         payload = _init_payload(mock_make_request)
@@ -1115,6 +1111,43 @@ class TestQoroServiceMock:
             "USE_MITIGATION": True,
         }
         assert "maestro_config" not in payload
+
+    def test_the_service_device_config_applies_to_qpu_jobs_only(
+        self, mocker, submit_circuits_mock
+    ):
+        service, mock_request = submit_circuits_mock
+        _mock_vendor_blueprints(mocker, service)
+        service.device_config = DeviceConfig(transpile_level=2)
+
+        service.submit_circuits({"c1": "qasm"}, job_config=_QPU_JOB_CONFIG)
+        assert _init_payload(mock_request)["device_config"] == {"TRANSPILE_LEVEL": 2}
+
+    def test_the_service_device_config_is_skipped_for_simulator_jobs(
+        self, submit_circuits_mock
+    ):
+        service, mock_request = submit_circuits_mock
+        service.device_config = DeviceConfig(transpile_level=2)
+
+        service.submit_circuits({"c1": "qasm"})
+        assert "device_config" not in _init_payload(mock_request)
+
+    def test_a_per_call_device_config_replaces_the_default(
+        self, mocker, submit_circuits_mock
+    ):
+        service, mock_request = submit_circuits_mock
+        _mock_vendor_blueprints(mocker, service)
+        service.device_config = DeviceConfig(transpile_level=2)
+
+        service.submit_circuits(
+            {"c1": "qasm"},
+            device_config=DeviceConfig(use_mitigation=True),
+            job_config=_QPU_JOB_CONFIG,
+        )
+        assert _init_payload(mock_request)["device_config"] == {"USE_MITIGATION": True}
+
+    def test_a_non_device_config_default_is_refused(self, qoro_service_factory):
+        with pytest.raises(TypeError, match="must be a DeviceConfig"):
+            qoro_service_factory(device_config={"transpile_level": 2})
 
     def test_a_device_option_no_vendor_accepts_is_rejected(
         self, mocker, submit_circuits_mock
@@ -1127,9 +1160,39 @@ class TestQoroServiceMock:
             qoro_service_mock.submit_circuits(
                 {"c1": "qasm"},
                 device_config=DeviceConfig(transpilation_level=2),
-                override_job_config=_QPU_JOB_CONFIG,
+                job_config=_QPU_JOB_CONFIG,
             )
 
+        mock_make_request.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "device_config",
+        [DeviceConfig(transpile_level="high"), DeviceConfig(use_twirling="yes")],
+        ids=["number", "toggle"],
+    )
+    def test_a_device_value_no_vendor_accepts_is_rejected(
+        self, mocker, submit_circuits_mock, device_config
+    ):
+        qoro_service_mock, mock_make_request = submit_circuits_mock
+        mocker.patch.object(
+            qoro_service_mock,
+            "fetch_vendor_blueprints",
+            return_value={
+                "ibm": {
+                    "label": "IBM",
+                    "credentials": {},
+                    "device": {
+                        "TRANSPILE_LEVEL": {"kind": "number"},
+                        "USE_TWIRLING": {"kind": "toggle"},
+                    },
+                }
+            },
+        )
+
+        with pytest.raises(ValueError, match="option values"):
+            qoro_service_mock.submit_circuits(
+                {"c1": "qasm"}, device_config=device_config, job_config=_QPU_JOB_CONFIG
+            )
         mock_make_request.assert_not_called()
 
     def test_submission_without_configs_sends_neither(self, submit_circuits_mock):
@@ -1145,8 +1208,8 @@ class TestQoroServiceMock:
         [
             (
                 {
-                    "override_maestro_config": MaestroConfig(),
-                    "override_job_config": _QPU_JOB_CONFIG,
+                    "maestro_config": MaestroConfig(),
+                    "job_config": _QPU_JOB_CONFIG,
                 },
                 "applies to simulator targets",
             ),
@@ -1289,6 +1352,51 @@ class TestQoroServiceMock:
         service.maestro_config = None
         assert service.maestro_config is None
 
+    def test_shots_follow_the_job_config(self, qoro_service_factory):
+        service = qoro_service_factory()
+        service.job_config = service.job_config.override(shots=2000)
+        assert service.shots == 2000
+
+    def test_a_non_job_config_is_refused(self, qoro_service_factory):
+        service = qoro_service_factory()
+        with pytest.raises(TypeError, match="must be a JobConfig"):
+            service.job_config = None
+
+    @pytest.mark.parametrize(
+        "job_config, match",
+        [
+            (
+                JobConfig(
+                    simulator_cluster=SimulatorCluster(
+                        name="qoro_maestro", supports_expval=True
+                    ),
+                    force_sampling=True,
+                ),
+                "force_sampling=True",
+            ),
+            (_QPU_JOB_CONFIG, "'hw' does not estimate expectation values"),
+        ],
+        ids=["force-sampling", "sampling-only-target"],
+    )
+    def test_ham_ops_on_a_job_that_cannot_estimate_is_refused(
+        self, submit_circuits_mock, job_config, match
+    ):
+        service, mock_request = submit_circuits_mock
+        with pytest.raises(ValueError, match=match):
+            service.submit_circuits({"c1": "qasm"}, ham_ops="Z", job_config=job_config)
+        mock_request.assert_not_called()
+
+    def test_a_simulator_config_default_is_refused(self, qoro_service_factory):
+        with pytest.raises(TypeError, match="from_simulator_config"):
+            qoro_service_factory(maestro_config=maestro.SimulatorConfig())
+
+    def test_a_simulator_config_override_is_refused(self, submit_circuits_mock):
+        service, _ = submit_circuits_mock
+        with pytest.raises(TypeError, match="from_simulator_config"):
+            service.submit_circuits(
+                {"c1": "qasm"}, maestro_config=maestro.SimulatorConfig()
+            )
+
     def _submit_on(self, mocker, service, **submit_kwargs) -> dict:
         """Submit one circuit against a mocked API; return the init payload."""
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
@@ -1309,28 +1417,22 @@ class TestQoroServiceMock:
         payload = self._submit_on(mocker, service)
         assert payload["maestro_config"] == maestro_config_to_payload(default)
 
-    def test_submit_override_merges_over_the_default(
+    def test_a_per_call_maestro_config_replaces_the_default(
         self, mocker, qoro_service_factory
     ):
-        """The override's non-default fields win; the rest come from the default."""
         default = MaestroConfig(max_bond_dimension=128, simulator_type="QiskitAer")
         service = qoro_service_factory(maestro_config=default)
+        per_call = MaestroConfig(max_bond_dimension=256)
 
-        payload = self._submit_on(
-            mocker,
-            service,
-            override_maestro_config=MaestroConfig(max_bond_dimension=256),
-        )
-        assert payload["maestro_config"] == maestro_config_to_payload(
-            MaestroConfig(max_bond_dimension=256, simulator_type="QiskitAer")
-        )
+        payload = self._submit_on(mocker, service, maestro_config=per_call)
+        assert payload["maestro_config"] == maestro_config_to_payload(per_call)
 
     def test_submit_override_without_default(self, submit_circuits_mock):
         service, mock_req = submit_circuits_mock
         assert service.maestro_config is None
 
         maestro_config = MaestroConfig(max_bond_dimension=64)
-        service.submit_circuits({"c1": "qasm"}, override_maestro_config=maestro_config)
+        service.submit_circuits({"c1": "qasm"}, maestro_config=maestro_config)
 
         assert _init_payload(mock_req)["maestro_config"] == maestro_config_to_payload(
             maestro_config
@@ -1342,7 +1444,7 @@ class TestQoroServiceMock:
         circuits = {"circuit_1": "mock_qasm"}
         qoro_service_mock.submit_circuits(
             circuits,
-            override_job_config=JobConfig(use_circuit_packing=True),
+            job_config=qoro_service_mock.job_config.override(use_circuit_packing=True),
         )
         _, called_kwargs = mock_make_request.call_args_list[0]
         assert called_kwargs.get("json", {}).get("use_packing") is True
@@ -1350,7 +1452,7 @@ class TestQoroServiceMock:
     def test_submit_circuits_with_job_config_override(
         self, mocker, qoro_service_factory
     ):
-        """Verify that override_job_config merges with service config and is used consistently."""
+        """A per-call job_config's shots reach the add_circuits payload."""
         # Create a service with default config
         service_with_default = qoro_service_factory(
             auth_token="test_token", max_retries=3, polling_interval=0.01
@@ -1369,7 +1471,7 @@ class TestQoroServiceMock:
         # Override shots in submit_circuits
         service_with_default.submit_circuits(
             {"circuit_1": "mock_qasm"},
-            override_job_config=JobConfig(shots=2000),
+            job_config=service_with_default.job_config.override(shots=2000),
         )
 
         # Verify init payload is minimal (no shots/ham_ops)
@@ -1384,7 +1486,7 @@ class TestQoroServiceMock:
     def test_submit_circuits_with_override_job_config_string_qpu(
         self, mocker, qoro_service_factory
     ):
-        """Test submitting circuits with an override_job_config that has a string qpu_system."""
+        """Test submitting circuits with a job_config that has a string qpu_system."""
         qoro_service_mock = qoro_service_factory()
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
@@ -1406,9 +1508,7 @@ class TestQoroServiceMock:
         )
 
         override_conf = JobConfig(qpu_system="string_qpu_name")
-        qoro_service_mock.submit_circuits(
-            {"c1": "qasm"}, override_job_config=override_conf
-        )
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, job_config=override_conf)
 
         # Assert that resolution happened
         mock_get_qpu.assert_called_once_with("string_qpu_name")
@@ -1421,7 +1521,7 @@ class TestQoroServiceMock:
     def test_submit_circuits_with_override_job_config_string_simulator_cluster(
         self, mocker, qoro_service_factory
     ):
-        """Test submitting circuits with an override_job_config that has a string simulator_cluster."""
+        """Test submitting circuits with a job_config that has a string simulator_cluster."""
         qoro_service_mock = qoro_service_factory()
         mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
 
@@ -1442,9 +1542,7 @@ class TestQoroServiceMock:
         )
 
         override_conf = JobConfig(simulator_cluster="string_cluster_name")
-        qoro_service_mock.submit_circuits(
-            {"c1": "qasm"}, override_job_config=override_conf
-        )
+        qoro_service_mock.submit_circuits({"c1": "qasm"}, job_config=override_conf)
 
         mock_get_cluster.assert_called_once_with("string_cluster_name")
 
@@ -2751,7 +2849,7 @@ class TestQoroServiceWithApiKey:
 
         result = qoro_service.submit_circuits(
             {"wide_register_circuit": qasm},
-            override_maestro_config=_LIVE_MAESTRO_CONFIG,
+            maestro_config=_LIVE_MAESTRO_CONFIG,
         )
 
         status = qoro_service.poll_job_status(result, loop_until_complete=True)
@@ -2830,7 +2928,7 @@ class TestQoroServiceWithApiKey:
         noise_model.set_multi_correlated_ou(1, [(15.0, 0.5), (3.0, 2.0)], 1e-7)
         sent = MaestroConfig(noise_model=noise_model)
         result = qoro_service.submit_circuits(
-            {"circuit_1": circuits["circuit_0"]}, override_maestro_config=sent
+            {"circuit_1": circuits["circuit_0"]}, maestro_config=sent
         )
 
         stored = qoro_service.get_maestro_config(result)
@@ -2839,7 +2937,7 @@ class TestQoroServiceWithApiKey:
     def test_submit_with_maestro_config(self, qoro_service, circuits):
         single_circuit = {"circuit_1": circuits["circuit_0"]}
         result = qoro_service.submit_circuits(
-            single_circuit, override_maestro_config=_LIVE_MAESTRO_CONFIG
+            single_circuit, maestro_config=_LIVE_MAESTRO_CONFIG
         )
 
         assert qoro_service.get_maestro_config(result) == _LIVE_MAESTRO_CONFIG
