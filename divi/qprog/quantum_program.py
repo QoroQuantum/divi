@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from abc import ABC, abstractmethod
-from collections.abc import Hashable, Iterator, Sequence
+from collections.abc import Generator, Hashable, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
@@ -150,7 +150,8 @@ class QuantumProgram(ABC):
 
         Args:
             backend (CircuitRunner): Quantum circuit execution backend.
-            seed (int | None): Random seed for reproducible results. Defaults to None.
+            seed (int | None): Seed for the program's random draws, such as
+                initial parameters. Defaults to None.
             precision (int): Decimal places for numeric parameter values in
                 QASM emission.  Higher values produce longer QASM strings;
                 lower values shrink them at the cost of parameter resolution.
@@ -204,7 +205,7 @@ class QuantumProgram(ABC):
     @contextmanager
     def _bind_progress_emitter(
         self, progress_emitter: ProgressEmitter
-    ) -> Iterator[None]:
+    ) -> Generator[None]:
         """Temporarily route this program's events to ``progress_emitter``."""
         previous = self._progress_emitter
         self._progress_emitter = progress_emitter
@@ -214,7 +215,9 @@ class QuantumProgram(ABC):
             self._progress_emitter = previous
 
     @contextmanager
-    def _ensure_progress_session(self, label: str, total: int | None) -> Iterator[None]:
+    def _ensure_progress_session(
+        self, label: str, total: int | None
+    ) -> Generator[None]:
         """Give an unbound standalone operation a direct progress session."""
         if _environment_disables_progress():
             with self._bind_progress_emitter(discard_progress_event):

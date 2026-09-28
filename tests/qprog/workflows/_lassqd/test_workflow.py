@@ -2045,9 +2045,7 @@ def test_two_fragment_h4_lands_on_the_product_state_energy(
     assert ensemble.energy <= h4_chain_mean_field.e_tot + 1e-5
 
 
-def test_workflow_checkpoint_state_round_trips_npz(
-    exact_sampler_lassqd, tmp_path, mocker
-):
+def test_workflow_checkpoint_state_round_trips_npz(exact_sampler_lassqd, tmp_path):
     exact_sampler_lassqd, state = exact_sampler_lassqd
     fragment = state.fragments[0]
     state = LASSQDState(
@@ -2093,7 +2091,6 @@ def test_workflow_checkpoint_state_round_trips_npz(
     exact_sampler_lassqd._rng.random()
     exact_sampler_lassqd._energy_history.clear()
     exact_sampler_lassqd._solvers.clear()
-    seed_spy = mocker.spy(exact_sampler_lassqd.backend, "set_seed")
 
     restored = exact_sampler_lassqd._load_workflow_checkpoint_state(
         payload, tmp_path, "output_state"
@@ -2109,7 +2106,6 @@ def test_workflow_checkpoint_state_round_trips_npz(
     assert exact_sampler_lassqd.round_reports[0].subspace_sizes == (2,)
     assert exact_sampler_lassqd._rng.bit_generator.state == expected_rng_state
     np.testing.assert_array_equal(exact_sampler_lassqd._solvers[0].occupancy, 0.375)
-    seed_spy.assert_called_once_with(exact_sampler_lassqd._seed)
 
 
 def test_workflow_checkpoint_rejects_a_different_explicit_fragment_layout(

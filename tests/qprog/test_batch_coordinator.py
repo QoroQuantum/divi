@@ -28,6 +28,7 @@ from divi.qprog._batch_coordinator import (
     _FlushGroup,
     _PendingEntry,
     _ProxyBackend,
+    _route_batch_circuits,
 )
 from divi.reporting._events import (
     EventKind,
@@ -178,6 +179,18 @@ class _TerminalErrorAsyncBackend(_FakeAsyncBackend):
 def _make_entry(circuits: dict[str, str], kwargs: dict | None = None) -> _PendingEntry:
     """Create a _PendingEntry with a fresh Future."""
     return _PendingEntry(circuits, kwargs or {}, Future())
+
+
+def test_routed_labels_do_not_depend_on_merge_order():
+    """Backends seed circuits per label, so the label must not encode position."""
+    first = {"a": _make_entry({"c": "qa"}), "b": _make_entry({"c": "qb"})}
+    second = {"b": first["b"], "a": first["a"]}
+
+    _, routes_first = _route_batch_circuits(first)
+    _, routes_second = _route_batch_circuits(second)
+
+    assert routes_first == routes_second
+    assert len(routes_first) == 2
 
 
 class TestPendingEntry:
@@ -637,6 +650,25 @@ class TestFlushWithSyncBackend:
         # Backend should have been called exactly once (merged).
         assert len(backend.submitted) == 1
         assert len(backend.submitted[0]) == 3
+
+    def test_result_metadata_reaches_the_program(self, mocker):
+        backend = FakeSyncBackend()
+        mocker.patch.object(
+            backend,
+            "submit_circuits",
+            lambda payloads, **kw: ExecutionResult(
+                results=[
+                    {"label": label, "results": {}, "metadata": {"depth": 3}}
+                    for label in payloads
+                ]
+            ),
+        )
+        coord = _BatchCoordinator(backend)
+        coord.register_program("p1")
+
+        results, _ = coord.submit("p1", {"c1": "q"})
+
+        assert results == [{"label": "c1", "results": {}, "metadata": {"depth": 3}}]
 
     def test_base_exception_in_flush_fails_futures(self, mocker):
         backend = FakeSyncBackend()
@@ -1321,13 +1353,15 @@ class TestTotalRuntime:
         """Sub-batch 0 succeeds, sub-batch 1 raises → coordinator keeps the
         credit from sub-batch 0."""
         backend = FakeSyncBackend()
+        submitted_labels: list[str] = []
+
         # Force the async branch so _submit_sub_batch's runtime
         # accumulation runs (sync branch always reports runtime=0).
-        mocker.patch.object(
-            backend,
-            "submit_circuits",
-            lambda payloads, **kw: ExecutionResult(results=None, job_id="fake"),
-        )
+        def fake_submit(payloads, **kw):
+            submitted_labels.extend(payloads)
+            return ExecutionResult(results=None, job_id="fake")
+
+        mocker.patch.object(backend, "submit_circuits", fake_submit)
         coord = _BatchCoordinator(backend)
 
         batch = {
@@ -1344,7 +1378,7 @@ class TestTotalRuntime:
         ):
             poll_calls["n"] += 1
             if poll_calls["n"] == 1:
-                return [{"label": "0", "results": {}}], 7.5
+                return [{"label": submitted_labels[0], "results": {}}], 7.5
             raise RuntimeError("second sub-batch fails")
 
         mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", fake_poll)

@@ -180,13 +180,21 @@ _Batch = dict[Hashable, _PendingEntry]
 def _route_batch_circuits(
     batch: _Batch,
 ) -> tuple[_Batch, dict[str, tuple[Hashable, str]]]:
-    """Replace circuit labels with opaque tokens and retain their routes."""
+    """Prefix circuit labels with their program key and retain their routes.
+
+    Tokens depend only on the program and circuit, never on merge order, so
+    backends that seed per label draw the same stream on every run.
+    """
     routed_batch: _Batch = {}
     circuit_routes: dict[str, tuple[Hashable, str]] = {}
     for program_key, entry in batch.items():
         routed_circuits = {}
         for original_label, qasm in entry.circuits.items():
-            token = str(len(circuit_routes))
+            token = f"{program_key!r}/{original_label}"
+            if token in circuit_routes:
+                raise ValueError(
+                    f"Two circuits in one batch share the label {token!r}."
+                )
             routed_circuits[token] = qasm
             circuit_routes[token] = (program_key, original_label)
         routed_batch[program_key] = _PendingEntry(
@@ -724,7 +732,7 @@ class _BatchCoordinator:
                         f"Backend returned unknown circuit label {backend_label!r}."
                     ) from exc
                 program_results.setdefault(program_key, []).append(
-                    {"label": original_label, "results": item["results"]}
+                    item | {"label": original_label}
                 )
 
             if runtime:

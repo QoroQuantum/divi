@@ -702,11 +702,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
             but is not a stationary point, and reports as not converged.
         energy_tol: Macro-cycle stops once consecutive rounds' total energies
             differ by less than this (Hartree).
-        seed: Seed for fragmentation, localisation, and SQD subsampling, also
-            passed to the backend. Reproducibility is limited by the backend:
-            :class:`~divi.backends.QiskitSimulator` seeds exactly, while
-            :class:`~divi.backends.MaestroSimulator` cannot, so identical runs
-            are not guaranteed to agree bit for bit there.
+        seed: Seed for fragmentation, localisation, and SQD subsampling.
         **kwargs: ``backend`` (required), ``sampling_backend``, and
             ``reporting_level`` are consumed here. Other keywords are
             forwarded to each fragment program. Shared
@@ -1148,10 +1144,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._solvers.clear()
         self._energy_history.clear()
         self._round_reports.clear()
-        if self._seed is not None and self.backend is not None:
-            # No-op on backends that cannot seed their sampler, so a run stays
-            # reproducible only as far as the backend allows.
-            self.backend.set_seed(self._seed)
 
     def _save_workflow_checkpoint_state(
         self, state: Any, round_dir: Path, stem: str
@@ -1418,8 +1410,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._energy_history = energy_history
         self._round_reports = reports
         self._state = state
-        if self._seed is not None and self.backend is not None:
-            self.backend.set_seed(self._seed)
         return state
 
     def _solver_for(self, index: int, spec: FragmentSpec) -> SQDSolver:
@@ -1566,7 +1556,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     "backend shot count or n_recovery_iterations."
                 ) from exc
 
-            subspace_size = int(result.amplitudes.size)
+            subspace_size = result.amplitudes.size
             subspace_sizes.append(subspace_size)
             if subspace_size == 1:
                 warn(

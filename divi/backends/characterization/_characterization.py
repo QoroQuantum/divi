@@ -178,7 +178,7 @@ def _payload_from_eigh(
     return {
         "_format": "factored_v1",
         "n": int(n),
-        "k": int(eigvals.size),
+        "k": eigvals.size,
         "F": F.tobytes().hex(),
         "signs": signs.tolist(),
         "diag": residual_c.tobytes().hex(),
