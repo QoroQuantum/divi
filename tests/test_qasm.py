@@ -4,7 +4,12 @@
 
 import pytest
 
-from divi.qasm import is_valid_qasm, validate_qasm, validate_qasm_count_qubits
+from divi.qasm import (
+    count_qubits,
+    is_valid_qasm,
+    validate_qasm,
+    validate_qasm_count_qubits,
+)
 
 VALID_QASM = {
     "argvalues": [
@@ -358,6 +363,28 @@ def test_validate_qasm_valid(qasm):
     qubit_count = validate_qasm_count_qubits(qasm)
     assert isinstance(qubit_count, int)
     assert qubit_count > 0
+    assert count_qubits(qasm) == qubit_count
+
+
+@pytest.mark.parametrize(
+    "qasm, expected",
+    [
+        ("OPENQASM 2.0;\nqreg a[2];\nqreg b [ 3 ];\ncreg c[5];\n", 5),
+        ("OPENQASM 2.0;\nqubit[4] q;\nqubit anc;\n", 5),
+        ("OPENQASM 2.0;\n// qreg ghost[9];\n/* qreg ghost2[9]; */\nqreg q[1];\n", 1),
+        ("OPENQASM 2.0;\nqreg qubit[5];\nx qubit[2]; h qubit[3];\n", 5),
+        ("OPENQASM 2.0;qreg a[2];qreg b[3];", 5),
+    ],
+    ids=[
+        "qregs-and-cregs",
+        "qubit-decls",
+        "commented-out",
+        "register-named-qubit",
+        "one-line",
+    ],
+)
+def test_count_qubits_reads_declarations(qasm, expected):
+    assert count_qubits(qasm) == expected
 
 
 @pytest.mark.parametrize("qasm", **INVALID_QASM)

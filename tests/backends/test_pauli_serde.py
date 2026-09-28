@@ -11,6 +11,7 @@ from divi.backends._pauli_serde import (
     compress_ham_ops,
     encode_ham_ops,
     ham_ops_terms_for_circuit,
+    pad_ham_ops,
 )
 
 
@@ -43,6 +44,33 @@ class TestHamOpsTermsForCircuit:
             ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map)
             == expected
         )
+
+
+class TestPadHamOps:
+    """Tests for padding terms shorter than their circuits."""
+
+    def test_full_length_terms_are_unchanged(self, recwarn):
+        assert pad_ham_ops("ZZI;IXX", None, [3, 3]) == "ZZI;IXX"
+        assert not recwarn.list
+
+    def test_short_terms_act_on_first_qubits(self):
+        with pytest.warns(UserWarning, match="'ZZ' -> 'ZZIII'"):
+            assert pad_ham_ops("ZZ;XX", None, [5]) == "ZZIII;XXIII"
+
+    def test_each_group_is_padded_to_its_own_circuits_in_one_warning(self):
+        with pytest.warns(UserWarning, match="'Z' -> 'ZI'") as record:
+            padded = pad_ham_ops("Z|X", [[0, 1], [1, 2]], [2, 3])
+        assert padded == "ZI|XII"
+        assert len(record) == 1
+
+    def test_short_group_on_circuits_of_different_widths_raises(self):
+        with pytest.raises(ValueError, match=r"widths \[3, 5\]"):
+            pad_ham_ops("ZZ", None, [3, 5])
+
+    def test_circuit_outside_every_range_is_measured_on_every_group(self):
+        """The 3-qubit circuit outside both ranges widens both 2-qubit groups."""
+        with pytest.raises(ValueError, match=r"widths \[2, 3\]"):
+            pad_ham_ops("ZZ|XX", [[0, 1], [1, 2]], [2, 2, 3])
 
 
 class TestCompressedObservables:

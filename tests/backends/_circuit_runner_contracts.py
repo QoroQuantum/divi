@@ -49,6 +49,12 @@ QASM_DEPTH_3 = (
     "h q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
 )
 
+# |10⟩: <ZI> = -1, <IZ> = +1
+QASM_X_ON_FIRST_QUBIT = (
+    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
+    "x q[0];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
+)
+
 _QASM_BY_DEPTH = {2: QASM_DEPTH_2, 3: QASM_DEPTH_3}
 
 

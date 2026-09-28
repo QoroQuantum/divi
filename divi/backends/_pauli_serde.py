@@ -14,6 +14,19 @@ which ``|``-group a given circuit was measured for.  Not an operator encoding
 
 import base64
 import gzip
+import warnings
+
+
+def _group_index(
+    circuit_index: int, circuit_ham_map: list[list[int]] | None
+) -> int | None:
+    """Index of the ``|``-group covering *circuit_index*, or None when all apply."""
+    if circuit_ham_map is None:
+        return None
+    for group_index, (start, end) in enumerate(circuit_ham_map):
+        if start <= circuit_index < end:
+            return group_index
+    return None
 
 
 def ham_ops_group_for_circuit(
@@ -27,15 +40,53 @@ def ham_ops_group_for_circuit(
     outside the per-group ranges (overlap circuits, for instance): they are
     evaluated against every observable rather than none.
     """
-    if circuit_ham_map is None:
-        return ham_ops
+    group_index = _group_index(circuit_index, circuit_ham_map)
+    return ham_ops if group_index is None else ham_ops.split("|")[group_index]
 
+
+def pad_ham_ops(
+    ham_ops: str,
+    circuit_ham_map: list[list[int]] | None,
+    n_qubits: list[int],
+) -> str:
+    """Pad terms shorter than their circuits onto the circuits' first qubits.
+
+    ``ZZ`` measured on a 5-qubit circuit becomes ``ZZIII``, and results are
+    keyed by the padded term. ``n_qubits`` holds each circuit's width, in
+    submission order. Warns when anything is padded.
+
+    Raises:
+        ValueError: If short terms are measured on circuits of different widths.
+    """
     groups = ham_ops.split("|")
-    for group_index, (start, end) in enumerate(circuit_ham_map):
-        if start <= circuit_index < end:
-            return groups[group_index]
+    widths = [set() for _ in groups]
+    for i, n in enumerate(n_qubits):
+        g = _group_index(i, circuit_ham_map)
+        for group_widths in widths if g is None else [widths[g]]:
+            group_widths.add(n)
 
-    return ham_ops
+    padded, example = [], None
+    for group, group_widths in zip(groups, widths):
+        terms = group.split(";")
+        if group_widths and min(map(len, terms)) < max(group_widths):
+            if len(group_widths) > 1:
+                raise ValueError(
+                    f"Observables {terms} are too short for circuits of widths "
+                    f"{sorted(group_widths)}."
+                )
+            (width,) = group_widths
+            short = next(t for t in terms if len(t) < width)
+            example = example or (short, short.ljust(width, "I"))
+            terms = [t.ljust(width, "I") for t in terms]
+        padded.append(";".join(terms))
+
+    if example:
+        warnings.warn(
+            "Observables shorter than their circuit are padded onto its first "
+            f"qubits, e.g. {example[0]!r} -> {example[1]!r}.",
+            stacklevel=3,
+        )
+    return "|".join(padded)
 
 
 def ham_ops_terms_for_circuit(

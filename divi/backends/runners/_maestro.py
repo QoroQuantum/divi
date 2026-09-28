@@ -18,11 +18,12 @@ from pydantic import BaseModel, ConfigDict, SkipValidation, model_validator
 
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
+from divi.qasm import count_qubits
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
 from .._config import describe_unknown, reject_unknown_reset
-from .._pauli_serde import ham_ops_terms_for_circuit
+from .._pauli_serde import ham_ops_terms_for_circuit, pad_ham_ops
 from .._shot_allocation import per_circuit_or_none
 
 
@@ -449,7 +450,8 @@ class MaestroSimulator(CircuitRunner):
             payloads: Bound QASM payloads, one resolved circuit per parameter-set
                 row — or a collection of already-resolved circuits.
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
-                e.g. ``"ZI;IZ;XX"``. If None, runs in sampling mode.
+                e.g. ``"ZI;IZ;XX"``. If None, runs in sampling mode. Terms shorter
+                than a circuit are padded onto its first qubits, with a warning.
             circuit_ham_map: Maps circuit index ranges to observable groups for
                 heterogeneous batches. Each inner list contains circuit indices
                 belonging to that observable group.
@@ -476,6 +478,10 @@ class MaestroSimulator(CircuitRunner):
         circuits = bound_circuits(payloads)
         circuit_labels = list(circuits.keys())
         qasm_strings = list(circuits.values())
+        if ham_ops is not None:
+            ham_ops = pad_ham_ops(
+                ham_ops, circuit_ham_map, [count_qubits(q) for q in qasm_strings]
+            )
 
         self._record_qasm_depths(qasm_strings)
 

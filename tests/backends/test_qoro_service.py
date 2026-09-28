@@ -33,6 +33,7 @@ from divi.backends import (
     QPUSystem,
     SimulatorCluster,
 )
+from divi.backends._pauli_serde import compress_ham_ops
 from divi.backends._systems import (
     get_available_qpu_systems,
     get_available_simulator_clusters,
@@ -54,6 +55,7 @@ from divi.exceptions import ExecutionCancelledError
 from divi.qasm import validate_qasm
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
+    QASM_X_ON_FIRST_QUBIT,
     AsyncRunnerContractsBase,
 )
 from tests.backends._helpers import (
@@ -64,6 +66,22 @@ from tests.backends._helpers import (
     make_mock_init_response,
     make_mock_status_response,
     make_qasm_payload,
+)
+
+_PARAMETRIC_2Q_PAYLOAD = CircuitPayload(
+    circuit=QASM_X_ON_FIRST_QUBIT.replace("x q[0]", "ry(theta_0) q[0]"),
+    parameters=(Parameter("theta_0"),),
+    parameter_sets=(("set0", (0.1,)), ("set1", (0.2,))),
+)
+_TWO_ROW_2Q_PAYLOAD = CircuitPayload(
+    circuit=QASM_X_ON_FIRST_QUBIT,
+    parameters=(),
+    parameter_sets=(("r0", ()), ("r1", ())),
+)
+_ONE_ROW_3Q_PAYLOAD = CircuitPayload(
+    circuit='OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[3];\ncreg c[3];\nmeasure q -> c;\n',
+    parameters=(),
+    parameter_sets=(("r2", ()),),
 )
 
 _LIVE_MAESTRO_CONFIG = MaestroConfig(
@@ -1569,6 +1587,42 @@ class TestQoroServiceMock:
         _, add_kwargs = mock_make_request.call_args_list[1]
         assert add_kwargs.get("json", {}).get("observables").startswith("@gzs")
         assert "shots" not in add_kwargs.get("json", {})
+
+    @pytest.mark.parametrize(
+        "payloads, ham_ops, circuit_ham_map, expected",
+        [
+            ({"c1": QASM_X_ON_FIRST_QUBIT}, "Z", None, "ZI"),
+            ([_PARAMETRIC_2Q_PAYLOAD], "Z", None, "ZI"),
+            (
+                [_TWO_ROW_2Q_PAYLOAD, _ONE_ROW_3Q_PAYLOAD],
+                "Z|X",
+                [[0, 2], [2, 3]],
+                "ZI|XII",
+            ),
+        ],
+        ids=["bound", "parametric", "payload-rows-of-different-widths"],
+    )
+    def test_short_observables_are_padded_before_sending(
+        self, mocker, qoro_service_factory, payloads, ham_ops, circuit_ham_map, expected
+    ):
+        """A term shorter than its circuit is sent padded on the trailing qubits."""
+        service = qoro_service_factory()
+        mock_make_request = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker),
+                make_mock_add_response(mocker),
+            ],
+        )
+
+        with pytest.warns(UserWarning, match="padded onto"):
+            service.submit_circuits(
+                payloads, ham_ops=ham_ops, circuit_ham_map=circuit_ham_map
+            )
+
+        add_payload = mock_make_request.call_args_list[1].kwargs["json"]
+        assert add_payload["observables"] == compress_ham_ops(expected)
 
     @pytest.mark.parametrize(
         "ham_ops, error_msg",

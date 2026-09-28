@@ -739,6 +739,20 @@ def validate_qasm_count_qubits(src: str) -> int:
     return sum(parser.qregs.values())
 
 
+_QUBIT_DECL_RE = re.compile(
+    r"(?:^|;)\s*(?:qreg\s+[A-Za-z_]\w*\s*\[\s*(\d+)\s*\]|qubit\b\s*(?:\[\s*(\d+)\s*\])?)",
+    re.MULTILINE,
+)
+
+
+def count_qubits(src: str) -> int:
+    """Total qubits declared by the program's registers, read without validating it."""
+    return sum(
+        int(qreg_size or qubit_size or 1)
+        for qreg_size, qubit_size in _QUBIT_DECL_RE.findall(_strip_comments(src))
+    )
+
+
 def is_valid_qasm(src: str, parameters: Collection[str] = ()) -> bool:
     """Check if QASM is valid, returning True/False without raising exceptions.
 

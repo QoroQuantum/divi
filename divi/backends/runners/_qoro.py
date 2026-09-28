@@ -37,6 +37,7 @@ from divi.exceptions import (
 )
 from divi.qasm import (
     _format_validation_error_with_context,
+    count_qubits,
     is_valid_qasm,
     validate_qasm,
 )
@@ -52,7 +53,7 @@ from .._job_status import (
     JobTimedOutError,
     QoroJobError,
 )
-from .._pauli_serde import compress_ham_ops
+from .._pauli_serde import compress_ham_ops, pad_ham_ops
 from .._results_processing import _decode_histogram_b64
 from .._shot_allocation import (
     from_wire,
@@ -789,6 +790,8 @@ class QoroService(CircuitRunner):
                 Multiple groups can be pipe-delimited (e.g. "XYZ;XXZ|ZI;IZ") when
                 ``circuit_ham_map`` is provided to assign each group to a slice of
                 circuits. If None, no Hamiltonian operators will be measured.
+                Terms shorter than a circuit are padded onto its first qubits,
+                with a warning.
             circuit_ham_map (list[list[int]] | None, optional):
                 Maps each ``|``-delimited group in ``ham_ops`` to a ``[start, end)``
                 slice of the ordered circuit list.  Must have the same length as
@@ -860,6 +863,10 @@ class QoroService(CircuitRunner):
                     f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
                     f"number of ham_ops groups ({len(ham_groups)})."
                 )
+            widths: list[int] = []
+            for payload in payloads:
+                widths += [count_qubits(payload.circuit)] * len(payload.parameter_sets)
+            ham_ops = pad_ham_ops(ham_ops, circuit_ham_map, widths)
 
         job_config = (
             self.job_config

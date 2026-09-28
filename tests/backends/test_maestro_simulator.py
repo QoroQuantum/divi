@@ -17,6 +17,7 @@ from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
     QASM_DEPTH_2,
     QASM_DEPTH_3,
+    QASM_X_ON_FIRST_QUBIT,
     SyncRunnerContractsBase,
 )
 
@@ -1237,3 +1238,11 @@ class TestMaestroIntegration:
         result = sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
 
         assert set(result.results[0]["results"]) == {"ZI", "IZ"}
+
+    def test_short_observables_act_on_first_qubits(self, default_test_simulator):
+        with pytest.warns(UserWarning, match="'Z' -> 'ZI'"):
+            result = default_test_simulator.submit_circuits(
+                {"c0": QASM_X_ON_FIRST_QUBIT}, ham_ops="Z"
+            )
+
+        assert result.results[0]["results"] == {"ZI": pytest.approx(-1.0)}

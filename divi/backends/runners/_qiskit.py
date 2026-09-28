@@ -29,7 +29,7 @@ from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
-from .._pauli_serde import ham_ops_terms_for_circuit
+from .._pauli_serde import ham_ops_terms_for_circuit, pad_ham_ops
 from .._shot_allocation import (
     ShotRange,
     bucket_by_shots,
@@ -460,6 +460,8 @@ class QiskitSimulator(CircuitRunner):
             ham_ops: Semicolon-separated Pauli string for expectation value estimation,
                 e.g. ``"ZI;IZ;XX"``. Multiple groups can be pipe-delimited when
                 ``circuit_ham_map`` is provided. If None, runs in sampling mode.
+                Terms shorter than a circuit are padded onto its first qubits,
+                with a warning.
             circuit_ham_map: Each entry is ``[start, end)`` mapping a ``|``-group in
                 ``ham_ops`` to a contiguous slice of circuits.
             shot_groups: Per-circuit shot allocation as ``[start, end, shots]``
@@ -495,6 +497,9 @@ class QiskitSimulator(CircuitRunner):
 
         # Expectation value mode
         if ham_ops is not None:
+            ham_ops = pad_ham_ops(
+                ham_ops, circuit_ham_map, [qc.num_qubits for qc in qiskit_circuits]
+            )
             results = self._execute_expval(
                 circuit_labels, qiskit_circuits, ham_ops, circuit_ham_map
             )

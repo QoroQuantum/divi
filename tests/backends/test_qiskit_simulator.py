@@ -23,6 +23,7 @@ from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
     QASM_DEPTH_2,
     QASM_DEPTH_3,
+    QASM_X_ON_FIRST_QUBIT,
     SyncRunnerContractsBase,
 )
 
@@ -482,6 +483,12 @@ class TestExpvalSubmission:
         expvals = result.results[0]["results"]
         assert expvals["ZZ"] == pytest.approx(1.0, abs=1e-10)
         assert expvals["ZI"] == pytest.approx(0.0, abs=1e-10)
+
+    def test_short_observables_act_on_first_qubits(self):
+        sim = QiskitSimulator(shots=5000)
+        with pytest.warns(UserWarning, match="'Z' -> 'ZI'"):
+            result = sim.submit_circuits({"c0": QASM_X_ON_FIRST_QUBIT}, ham_ops="Z")
+        assert result.results[0]["results"] == {"ZI": pytest.approx(-1.0)}
 
     def test_sampling_not_affected(self, mocker):
         """Sampling path unchanged when ham_ops=None."""
