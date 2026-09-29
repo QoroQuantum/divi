@@ -22,7 +22,8 @@ weight-only parametric DAG.
 """
 
 import functools
-from collections.abc import Callable
+import hashlib
+from collections.abc import Callable, Hashable
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -235,6 +236,14 @@ class DataBindingStage(BundleStage):
         left as placeholders). Used by the template path."""
         formatted = tuple(_format_bound_param(float(v), precision) for v in sample)
         return render_template(template, formatted)
+
+    def cache_key_extras(self, env: PipelineEnv) -> tuple[Hashable, ...]:
+        """Key the forward-pass cache on the feature batch's contents, so a batch
+        assigned (or edited in place) between runs is re-expanded."""
+        if env.feature_batch is None:
+            return ()
+        features = np.ascontiguousarray(env.feature_batch, dtype=np.float64)
+        return (features.shape, hashlib.blake2b(features.tobytes()).hexdigest())
 
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv

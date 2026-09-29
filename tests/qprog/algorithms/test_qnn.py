@@ -469,6 +469,34 @@ def test_supervised_loss_matches_manual_mse(
 
 
 @pytest.mark.e2e
+def test_reassigned_feature_batch_reaches_the_cost(make_qnn, default_test_simulator):
+    """A feature batch assigned after the cost pipeline ran is re-expanded, not
+    served from the pipeline's cache."""
+    new_features = np.array([[0.9, 0.1], [0.2, 0.8], [0.4, 0.4], [0.7, 0.3]])
+    labels = [1.0, 0.0, 1.0, 0.0]
+    weights = np.array([[0.5, 1.0, 1.5, 2.0]])
+
+    def cost(program):
+        default_test_simulator.set_seed(1997)
+        return program._evaluate_cost_param_sets(weights)[0]
+
+    fresh = make_qnn(
+        backend=default_test_simulator,
+        n_layers=1,
+        seed=1997,
+        feature_batch=new_features,
+        labels=labels,
+    )
+    program = make_qnn(
+        backend=default_test_simulator, n_layers=1, seed=1997, labels=labels
+    )
+    cost(program)
+    program.feature_batch = new_features
+
+    np.testing.assert_allclose(cost(program), cost(fresh), rtol=1e-9)
+
+
+@pytest.mark.e2e
 class TestE2E:
     def test_optimization_loop_runs(self, make_qnn, default_test_simulator):
         default_test_simulator.set_seed(1997)
