@@ -195,16 +195,16 @@ class DataBindingMixin(_MixinBase):
             )
         return arr, resolve_sample_loss(loss_fn)
 
-    def _validate_before_preview(self) -> None:
-        """Re-validate the data axis before previewing it.
+    def _validate_state(self) -> None:
+        """Re-validate the data axis before previewing or training on it.
 
         ``feature_batch`` and ``labels`` are public attributes, so a batch swapped
         in after construction (a train/validation split) can leave the program in a
-        state its constructor would have rejected. Left unchecked, the preview is
+        state its constructor would have rejected. Left unchecked, a preview is
         not merely incomplete but wrong: dropping the batch removes the data axis
         and under-reports by its whole size.
         """
-        super()._validate_before_preview()
+        super()._validate_state()
         data_symbols = self._data_symbols
         batch = self.feature_batch
         if batch is None:

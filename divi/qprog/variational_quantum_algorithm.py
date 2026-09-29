@@ -926,9 +926,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     def _bindable_parameter_count(self) -> int:
         return self.n_params
 
-    def _validate_before_preview(self) -> None:
-        """Reject counts a run would reject, so the preview fails where it is cheap."""
-        super()._validate_before_preview()
+    def _validate_state(self) -> None:
+        """Reject counts a run cannot use."""
+        super()._validate_state()
         if self.n_layers < 1:
             raise ValueError(
                 f"n_layers must be >= 1, got {self.n_layers}; a circuit with no "
@@ -936,8 +936,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
         if self.max_iterations < 1:
             raise ValueError(
-                f"max_iterations must be >= 1, got {self.max_iterations}; run() "
-                "would warn and return without optimising anything."
+                f"max_iterations must be >= 1, got {self.max_iterations}; the "
+                "program would never optimise."
             )
 
     def _dry_run_env(
@@ -1184,6 +1184,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 UserWarning,
             )
             return self
+        self._validate_state()
 
         def cost_fn(
             params, *, shots=None, estimator_samples=None, return_variance=False

@@ -216,6 +216,17 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="labels has 4 entries"):
             program.dry_run()
 
+    def test_run_rejects_a_batch_that_no_longer_matches_the_labels(
+        self, make_qnn, mocker
+    ):
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
+        submit = mocker.spy(program.backend, "submit_circuits")
+        program.feature_batch = np.asarray(program.feature_batch)[:2]
+
+        with pytest.raises(ValueError, match="labels has 4 entries"):
+            program.run()
+        submit.assert_not_called()
+
     @pytest.mark.parametrize(
         "bad_batch, match",
         [

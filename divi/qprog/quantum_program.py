@@ -447,7 +447,7 @@ class QuantumProgram(ABC):
             >>> reports = program.dry_run()
             >>> format_dry_run(reports)  # pretty-print to stdout
         """
-        self._validate_before_preview()
+        self._validate_state()
         reports: dict[str, DryRunReport] = {}
         preprocessors = self._preprocessors()
         if not preprocessors:
@@ -489,12 +489,11 @@ class QuantumProgram(ABC):
             )
         return reports
 
-    def _validate_before_preview(self) -> None:
-        """Re-check state a preview should catch. Default checks nothing.
+    def _validate_state(self) -> None:
+        """Re-check state before a preview or a run. Default checks nothing.
 
-        Constructor validation can be outrun by later assignment, and catching a
-        mismatch here is the whole point: the run that follows would fail after
-        submitting circuits.
+        Constructor validation can be outrun by later assignment; a mismatch
+        caught here fails before any circuit is submitted.
         """
 
     def _dry_run_env(
