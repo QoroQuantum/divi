@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from functools import partial
 from multiprocessing import Pool, current_process
 from threading import Event
-from typing import Any, Literal
+from typing import Literal
 from warnings import warn
 
 from qiskit import QuantumCircuit, transpile
@@ -288,52 +288,6 @@ class QiskitSimulator(CircuitRunner):
             else AerSimulator(noise_model=self.noise_model)
         )
 
-    def _execute_circuits_deterministically(
-        self,
-        circuit_labels: list[str],
-        transpiled_circuits: list[QuantumCircuit],
-        resolved_backend: BackendV2 | None,
-        per_circuit_shots: list[int] | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        Execute circuits individually for debugging purposes.
-
-        This method ensures deterministic results by running each circuit with its own
-        simulator instance and the same seed. Used internally for debugging non-deterministic
-        behaviour in batch execution.
-
-        Args:
-            circuit_labels: List of circuit labels
-            transpiled_circuits: List of transpiled QuantumCircuit objects
-            resolved_backend: Resolved backend for simulator creation
-            per_circuit_shots: Optional per-circuit shot counts (e.g. from
-                ``shot_groups``). When ``None``, every circuit uses
-                ``self.shots``.
-
-        Returns:
-            List of result dictionaries
-        """
-        results = []
-        for i, (label, transpiled_circuit) in enumerate(
-            zip(circuit_labels, transpiled_circuits)
-        ):
-            # Create a new simulator instance for each circuit with the same seed
-            circuit_simulator = self._create_simulator(resolved_backend)
-
-            if self.simulation_seed is not None:
-                circuit_simulator.set_options(seed_simulator=self.simulation_seed + i)
-
-            # Run the single circuit
-            shots = (
-                per_circuit_shots[i] if per_circuit_shots is not None else self.shots
-            )
-            job = circuit_simulator.run(transpiled_circuit, shots=shots)
-            circuit_result = job.result()
-            counts = circuit_result.get_counts(0)
-            results.append({"label": label, "results": dict(counts)})
-
-        return results
-
     def _configure_simulator_parallelism(
         self, aer_simulator: AerSimulator, num_circuits: int
     ):
@@ -394,54 +348,6 @@ class QiskitSimulator(CircuitRunner):
             )
         return qc
 
-    def _execute_expval(
-        self,
-        circuit_labels: list[str],
-        qiskit_circuits: list[QuantumCircuit],
-        ham_ops: str,
-        circuit_ham_map: list[list[int]] | None,
-    ) -> list[dict]:
-        """Execute circuits in expectation-value mode.
-
-        Uses Qiskit Aer's ``save_expectation_value`` to compute exact expectation
-        values at the statevector level.
-
-        Returns:
-            List of ``{"label": str, "results": {pauli: float}}`` dicts.
-        """
-        prepared = []
-        per_circuit_ops: list[list[str]] = []
-        for i, qc in enumerate(qiskit_circuits):
-            ops = ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
-            per_circuit_ops.append(ops)
-            prepared.append(self._prepare_expval_circuit(qc, ops))
-
-        # Resolve backend + create simulator (same as sampling path)
-        if self.qiskit_backend == "auto":
-            max_qubits_circ = max(prepared, key=lambda x: x.num_qubits)
-            resolved_backend = self._resolve_backend(max_qubits_circ)
-        else:
-            resolved_backend = self._resolve_backend()
-
-        aer_simulator = self._create_simulator(resolved_backend)
-        self._configure_simulator_parallelism(aer_simulator, len(prepared))
-
-        transpiled = transpile(
-            prepared,
-            aer_simulator,
-            num_processes=self.n_processes,
-            optimization_level=self.optimization_level,
-        )
-
-        job = aer_simulator.run(transpiled)
-        batch_result = job.result()
-
-        results = []
-        for i, label in enumerate(circuit_labels):
-            expvals = {op: float(batch_result.data(i)[op]) for op in per_circuit_ops[i]}
-            results.append({"label": label, "results": expvals})
-        return results
-
     def submit_circuits(
         self,
         payloads: Sequence[CircuitPayload] | CircuitBatch,
@@ -466,9 +372,9 @@ class QiskitSimulator(CircuitRunner):
                 ``ham_ops`` to a contiguous slice of circuits.
             shot_groups: Per-circuit shot allocation as ``[start, end, shots]``
                 triples covering the iteration order of ``circuits``. When
-                provided, overrides ``self.shots`` for each contiguous range
-                and triggers one ``aer_simulator.run`` call per range.
-                Sampling-mode only — ignored when ``ham_ops`` is provided.
+                provided, overrides ``self.shots`` for each range; circuits
+                sharing a shot count run in one Aer call. Sampling mode only;
+                passing it with ``ham_ops`` raises ``ValueError``.
             cancellation_event: When set before this call, aborts dispatch.
                 Aer's ``.run().result()`` cannot be interrupted mid-batch.
             **kwargs: Rejected with ``TypeError``.
@@ -481,126 +387,105 @@ class QiskitSimulator(CircuitRunner):
         self._reject_shot_groups_with_ham_ops(ham_ops, shot_groups)
 
         circuits = bound_circuits(payloads)
-
+        n_circuits = len(circuits)
         logger.debug(
-            f"Simulating {len(circuits)} circuits with {self.n_processes} processes"
+            f"Simulating {n_circuits} circuits with {self.n_processes} processes"
         )
 
-        # 1. Parse Circuits
-        circuit_labels = list(circuits.keys())
+        labels = list(circuits.keys())
         qiskit_circuits = [
             QuantumCircuit.from_qasm_str(qasm) for qasm in circuits.values()
         ]
-
         if self.track_depth:
             self._depth_history.append([qc.depth() for qc in qiskit_circuits])
 
-        # Expectation value mode
+        per_circuit_ops: list[list[str]] = []
         if ham_ops is not None:
             ham_ops = pad_ham_ops(
                 ham_ops, circuit_ham_map, [qc.num_qubits for qc in qiskit_circuits]
             )
-            results = self._execute_expval(
-                circuit_labels, qiskit_circuits, ham_ops, circuit_ham_map
-            )
-            return ExecutionResult(results=results)
+            per_circuit_ops = [
+                ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
+                for i in range(n_circuits)
+            ]
+            qiskit_circuits = [
+                self._prepare_expval_circuit(qc, circuit_ops)
+                for qc, circuit_ops in zip(qiskit_circuits, per_circuit_ops)
+            ]
 
-        # 2. Resolve Backend
-        if self.qiskit_backend == "auto":
-            max_qubits_circ = max(qiskit_circuits, key=lambda x: x.num_qubits)
-            resolved_backend = self._resolve_backend(max_qubits_circ)
-        else:
-            resolved_backend = self._resolve_backend()
-
-        # 3. Configure Simulator
-        aer_simulator = self._create_simulator(resolved_backend)
-        self._configure_simulator_parallelism(aer_simulator, len(qiskit_circuits))
-
-        # 4. Transpile
-        transpiled_circuits = transpile(
+        resolved_backend = self._resolve_backend(
+            max(qiskit_circuits, key=lambda qc: qc.num_qubits)
+        )
+        simulator = self._create_simulator(resolved_backend)
+        self._configure_simulator_parallelism(simulator, n_circuits)
+        transpiled = transpile(
             qiskit_circuits,
-            aer_simulator,
+            simulator,
             num_processes=self.n_processes,
             optimization_level=self.optimization_level,
         )
 
-        # 5. Execute
-        shot_ranges: list[ShotRange] | None = None
-        if shot_groups is not None:
-            shot_ranges = from_wire(shot_groups)
-            validate(shot_ranges, len(transpiled_circuits))
+        if ham_ops is not None:
+            result = simulator.run(transpiled).result()
+            return ExecutionResult(
+                results=[
+                    {
+                        "label": label,
+                        "results": {
+                            op: float(result.data(i)[op]) for op in circuit_ops
+                        },
+                    }
+                    for i, (label, circuit_ops) in enumerate(
+                        zip(labels, per_circuit_ops)
+                    )
+                ],
+                run_time=result.time_taken,
+            )
 
+        shot_ranges = (
+            [ShotRange(0, n_circuits, self.shots)]
+            if shot_groups is None
+            else from_wire(shot_groups)
+        )
+        validate(shot_ranges, n_circuits)
+        # Aer applies one shot count per run, so each distinct count is one run;
+        # deterministic mode runs every circuit alone on its own seeded simulator.
         if self._deterministic_execution:
-            per_circuit_shots = (
-                per_circuit(shot_ranges, len(transpiled_circuits))
-                if shot_ranges is not None
-                else None
-            )
-            results = self._execute_circuits_deterministically(
-                circuit_labels,
-                transpiled_circuits,
-                resolved_backend,
-                per_circuit_shots=per_circuit_shots,
-            )
-            return ExecutionResult(results=results)
+            per_circuit_shots = per_circuit(shot_ranges, n_circuits)
+            runs = [([i], shots) for i, shots in enumerate(per_circuit_shots)]
+        else:
+            runs = [(idx, shots) for shots, idx in bucket_by_shots(shot_ranges).items()]
 
-        if shot_ranges is not None:
-            results = self._execute_with_shot_groups(
-                circuit_labels, transpiled_circuits, aer_simulator, shot_ranges
-            )
-            return ExecutionResult(results=results)
+        counts: list[dict[str, int]] = [{}] * n_circuits
+        run_time = 0.0
+        for indices, shots in runs:
+            if self._deterministic_execution:
+                simulator = self._create_simulator(resolved_backend)
+                if self.simulation_seed is not None:
+                    seed = self.simulation_seed + indices[0]
+                    simulator.set_options(seed_simulator=seed)
+            batch = [transpiled[i] for i in indices]
+            result = simulator.run(batch, shots=shots).result()
+            run_time += result.time_taken
+            parallel_experiments = result.metadata.get("parallel_experiments", 1)
+            if parallel_experiments > 1 and self.simulation_seed is not None:
+                logger.warning(
+                    f"Parallel execution detected (parallel_experiments="
+                    f"{parallel_experiments}, omp_nested="
+                    f"{result.metadata.get('omp_nested', False)}). Results may not "
+                    "be deterministic across different grouping strategies. "
+                    "Consider enabling deterministic mode for deterministic results."
+                )
+            for offset, i in enumerate(indices):
+                counts[i] = dict(result.get_counts(offset))
 
-        job = aer_simulator.run(transpiled_circuits, shots=self.shots)
-        batch_result = job.result()
-
-        # Check for non-determinism warnings
-        metadata = batch_result.metadata
-        if (
-            parallel_experiments := metadata.get("parallel_experiments", 1)
-        ) > 1 and self.simulation_seed is not None:
-            omp_nested = metadata.get("omp_nested", False)
-            logger.warning(
-                f"Parallel execution detected (parallel_experiments={parallel_experiments}, "
-                f"omp_nested={omp_nested}). Results may not be deterministic across different "
-                "grouping strategies. Consider enabling deterministic mode for "
-                "deterministic results."
-            )
-
-        # 6. Format Results
-        results = [
-            {"label": label, "results": dict(batch_result.get_counts(i))}
-            for i, label in enumerate(circuit_labels)
-        ]
-        return ExecutionResult(results=results)
-
-    def _execute_with_shot_groups(
-        self,
-        circuit_labels: list[str],
-        transpiled_circuits: list,
-        aer_simulator: AerSimulator,
-        shot_ranges: list[ShotRange],
-    ) -> list[dict[str, Any]]:
-        """Execute one ``aer_simulator.run`` per distinct shot count.
-
-        Aer's ``run(shots=...)`` applies a single shot count to all circuits in
-        the call, so distinct shot levels require distinct calls. Ranges that
-        share the same shot count — even if non-contiguous — are batched into
-        one ``run`` to preserve Aer's internal parallelism. Results are
-        re-ordered back to the original circuit positions.
-        """
-        n_total = len(transpiled_circuits)
-        results: list[dict[str, Any] | None] = [None] * n_total
-
-        for shots, indices in bucket_by_shots(shot_ranges).items():
-            sub_circuits = [transpiled_circuits[i] for i in indices]
-            job = aer_simulator.run(sub_circuits, shots=shots)
-            batch_result = job.result()
-            for offset, idx in enumerate(indices):
-                results[idx] = {
-                    "label": circuit_labels[idx],
-                    "results": dict(batch_result.get_counts(offset)),
-                }
-        return results  # type: ignore[return-value]
+        return ExecutionResult(
+            results=[
+                {"label": label, "results": circuit_counts}
+                for label, circuit_counts in zip(labels, counts)
+            ],
+            run_time=run_time,
+        )
 
     @staticmethod
     def estimate_run_time_single_circuit(

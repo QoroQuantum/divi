@@ -9,7 +9,7 @@ from qiskit import QuantumCircuit, qasm2
 
 pytest.importorskip("qiskit_aer")
 
-from qiskit_aer import AerSimulator
+from qiskit_aer import AerJob, AerSimulator
 from qiskit_aer.noise import NoiseModel
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
@@ -175,6 +175,18 @@ class TestQiskitSimulatorProperties:
         assert spy.call_args.kwargs["optimization_level"] == level
 
 
+def _mock_aer_result(mocker, counts, metadata=None):
+    """A mock Aer ``Result``; a list of ``counts`` is served one per circuit."""
+    result = mocker.Mock()
+    if isinstance(counts, list):
+        result.get_counts.side_effect = counts
+    else:
+        result.get_counts.return_value = counts
+    result.metadata = metadata or {"parallel_experiments": 1, "omp_nested": False}
+    result.time_taken = 0.01
+    return result
+
+
 class TestQiskitSimulatorSubmitCircuits:
     """Tests for QiskitSimulator.submit_circuits method."""
 
@@ -194,17 +206,9 @@ class TestQiskitSimulatorSubmitCircuits:
     ):
         """Helper to set up mock AerSimulator."""
         mock_aer = mocker.Mock()
-        mock_result = mocker.Mock()
-        if counts is None:
-            counts = {"0": 50, "1": 50}
-        if isinstance(counts, list):
-            mock_result.get_counts.side_effect = counts
-        else:
-            mock_result.get_counts.return_value = counts
-        if metadata is None:
-            metadata = {"parallel_experiments": 1, "omp_nested": False}
-        mock_result.metadata = metadata
-        mock_aer.run.return_value.result.return_value = mock_result
+        mock_aer.run.return_value.result.return_value = _mock_aer_result(
+            mocker, {"0": 50, "1": 50} if counts is None else counts, metadata
+        )
 
         if use_from_backend:
             return (
@@ -333,6 +337,21 @@ class TestQiskitSimulatorSubmitCircuits:
         assert "parallel" in warning_msg
         assert "not be deterministic" in warning_msg
 
+    def test_shot_group_runs_warn_about_parallel_nondeterminism(self, mocker):
+        simulator = QiskitSimulator(shots=100, simulation_seed=42)
+        qasm = self._create_qasm_circuit()
+        self._setup_mock_aer_simulator(
+            mocker, metadata={"parallel_experiments": 2, "omp_nested": False}
+        )
+        self._setup_mock_transpile(mocker, num_circuits=2)
+        mock_logger = mocker.patch("divi.backends.runners._qiskit.logger")
+
+        simulator.submit_circuits(
+            {"c0": qasm, "c1": qasm}, shot_groups=[[0, 1, 50], [1, 2, 80]]
+        )
+
+        assert mock_logger.warning.call_count == 2
+
     def test_submit_circuits_deterministic_with_backend(self, mocker):
         """Test deterministic execution with backend (line 147)."""
         backend = FakeQuitoV2()
@@ -356,9 +375,8 @@ class TestQiskitSimulatorSubmitCircuits:
         assert result.results is not None
         assert len(result.results) == 1
         assert result.results[0]["label"] == "test_circuit"
-        # Verify deterministic execution path was used (from_backend called in _execute_circuits_deterministically)
-        # It's called once per circuit in deterministic mode
-        assert mock_from_backend.call_count >= 1
+        # One simulator to transpile against, plus a fresh one per circuit.
+        assert mock_from_backend.call_count == 2
 
     def test_submit_circuits_deterministic_without_backend(self, mocker):
         """Test deterministic execution without backend (noise_model path)."""
@@ -386,10 +404,9 @@ class TestQiskitSimulatorSubmitCircuits:
 def _setup_qiskit_contract_mocks(mocker):
     """Mock AerSimulator/transpile for shared CircuitRunner contract tests."""
     mock_aer = mocker.Mock()
-    mock_result = mocker.Mock()
-    mock_result.get_counts.return_value = {"0": 50, "1": 50}
-    mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
-    mock_aer.run.return_value.result.return_value = mock_result
+    mock_aer.run.return_value.result.return_value = _mock_aer_result(
+        mocker, {"0": 50, "1": 50}
+    )
     mocker.patch(
         "divi.backends.runners._qiskit.AerSimulator",
         return_value=mock_aer,
@@ -495,10 +512,9 @@ class TestExpvalSubmission:
         sim = QiskitSimulator(shots=100)
 
         mock_aer = mocker.Mock()
-        mock_result = mocker.Mock()
-        mock_result.get_counts.return_value = {"00": 50, "11": 50}
-        mock_result.metadata = {"parallel_experiments": 1, "omp_nested": False}
-        mock_aer.run.return_value.result.return_value = mock_result
+        mock_aer.run.return_value.result.return_value = _mock_aer_result(
+            mocker, {"00": 50, "11": 50}
+        )
         mocker.patch(
             "divi.backends.runners._qiskit.AerSimulator",
             return_value=mock_aer,
@@ -730,6 +746,29 @@ _IDENTITY_QASM = (
     "creg c[1];\n"
     "measure q[0] -> c[0];\n"
 )
+
+
+@pytest.mark.parametrize(
+    "sim_kwargs, submit_kwargs",
+    [
+        ({}, {}),
+        ({}, {"ham_ops": "Z"}),
+        ({}, {"shot_groups": [[0, 1, 50], [1, 2, 80]]}),
+        ({"_deterministic_execution": True}, {}),
+    ],
+    ids=["sampling", "expval", "shot_groups", "deterministic"],
+)
+def test_submission_reports_aers_time_taken(mocker, sim_kwargs, submit_kwargs):
+    # Compare with Aer's own figure; a coarse clock (e.g. on Windows) can
+    # report 0.0 for circuits this small.
+    spy = mocker.spy(AerJob, "result")
+    sim = QiskitSimulator(shots=100, **sim_kwargs)
+    circuits = {"c0": _IDENTITY_QASM, "c1": _IDENTITY_QASM}
+
+    run_time = sim.submit_circuits(circuits, **submit_kwargs).run_time
+
+    assert spy.spy_return_list
+    assert run_time == sum(result.time_taken for result in spy.spy_return_list)
 
 
 def test_both_provided_raises_value_error():

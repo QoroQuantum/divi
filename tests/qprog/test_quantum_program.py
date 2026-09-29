@@ -48,7 +48,6 @@ class TerminalPollingBackend:
         self,
         execution_result,
         loop_until_complete=False,
-        on_complete=None,
         verbose=True,
         progress_callback=None,
         cancellation_event=None,
@@ -56,8 +55,6 @@ class TerminalPollingBackend:
         del loop_until_complete, verbose, cancellation_event
         if progress_callback is not None:
             progress_callback(1, JobStatus.RUNNING.value)
-        if on_complete is not None:
-            on_complete({"run_time": 2.5, "status": self.status.value})
         raise self.error_type(execution_result.job_id)
 
     def get_job_results(self, execution_result):

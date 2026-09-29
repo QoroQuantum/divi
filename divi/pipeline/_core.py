@@ -136,21 +136,9 @@ def _wait_for_async_result(backend, execution_result, env):
                 )
             )
 
-    # Runtime tracking via env.artifacts
-    def _track_runtime(response):
-        if isinstance(response, dict):
-            env.artifacts["run_time"] = env.artifacts.get("run_time", 0.0) + float(
-                response.get("run_time", 0)
-            )
-        elif isinstance(response, list):
-            env.artifacts["run_time"] = env.artifacts.get("run_time", 0.0) + sum(
-                float(r.json()["run_time"]) for r in response
-            )
-
     status = backend.poll_job_status(
         execution_result,
         loop_until_complete=True,
-        on_complete=_track_runtime,
         verbose=progress_callback is None,
         progress_callback=progress_callback,
         cancellation_event=env.cancellation_event,
@@ -359,6 +347,7 @@ def _default_execute_fn(
 
     if result.results is None:
         raise RuntimeError("Backend returned no results")
+    env.artifacts["run_time"] = env.artifacts.get("run_time", 0.0) + result.run_time
 
     raw_by_label = {r["label"]: r["results"] for r in result.results}
 

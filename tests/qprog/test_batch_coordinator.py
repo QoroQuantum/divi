@@ -6,6 +6,7 @@
 
 import time
 from concurrent.futures import Future
+from dataclasses import replace
 from threading import Barrier, Event, Lock, Thread
 
 import pytest
@@ -109,15 +110,12 @@ class _FakeAsyncBackend(FakeSyncBackend):
         self,
         execution_result,
         loop_until_complete=False,
-        on_complete=None,
         verbose=True,
         progress_callback=None,
         cancellation_event=None,
     ):
         if progress_callback is not None:
             progress_callback(1, "RUNNING")
-        if on_complete is not None:
-            on_complete({"run_time": 2.5})
         return JobStatus.COMPLETED
 
     def get_job_results(self, execution_result) -> ExecutionResult:
@@ -125,7 +123,8 @@ class _FakeAsyncBackend(FakeSyncBackend):
             results=[
                 {"label": label, "results": {"00": 100}}
                 for label in self._submitted_circuits
-            ]
+            ],
+            run_time=2.5,
         )
 
     def cancel_job(self, execution_result):
@@ -139,15 +138,12 @@ class _UnknownStatusAsyncBackend(_FakeAsyncBackend):
         self,
         execution_result,
         loop_until_complete=False,
-        on_complete=None,
         verbose=True,
         progress_callback=None,
         cancellation_event=None,
     ):
         if progress_callback is not None:
             progress_callback(2, "BACKEND_SPECIFIC_WAIT")
-        if on_complete is not None:
-            on_complete({"run_time": 2.5})
         return JobStatus.COMPLETED
 
 
@@ -163,7 +159,6 @@ class _TerminalErrorAsyncBackend(_FakeAsyncBackend):
         self,
         execution_result,
         loop_until_complete=False,
-        on_complete=None,
         verbose=True,
         progress_callback=None,
         cancellation_event=None,
@@ -171,9 +166,21 @@ class _TerminalErrorAsyncBackend(_FakeAsyncBackend):
         del loop_until_complete, verbose, cancellation_event
         if progress_callback is not None:
             progress_callback(1, JobStatus.RUNNING.value)
-        if on_complete is not None:
-            on_complete({"run_time": 2.5, "status": self.status.value})
         raise self.error_type(execution_result.job_id)
+
+
+def _report_run_times(mocker, backend, outcomes):
+    """Make each submission report the next run time, or raise the next error."""
+    submit = backend.submit_circuits
+    outcomes = iter(outcomes)
+
+    def timed_submit(payloads, **kwargs):
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return replace(submit(payloads, **kwargs), run_time=outcome)
+
+    mocker.patch.object(backend, "submit_circuits", side_effect=timed_submit)
 
 
 def _make_entry(circuits: dict[str, str], kwargs: dict | None = None) -> _PendingEntry:
@@ -1096,15 +1103,15 @@ class TestBatchProgress:
         backend.submit_circuits({"c1": "qasm"})
         coord = _BatchCoordinator(backend, progress_emitter=emitted.append)
 
-        results, runtime = coord._poll_and_get_results(
+        completed = coord._poll_and_get_results(
             ExecutionResult(results=None, job_id="job-123"),
             batch_progress_key="registered-batch",
         )
 
         event = emitted[-1]
         assert isinstance(backend, AsyncJobBackend)
-        assert results[0]["label"] == "c1"
-        assert runtime == 2.5
+        assert completed.results[0]["label"] == "c1"
+        assert completed.run_time == 2.5
         assert event.kind is EventKind.POLLING
         assert event.progress_key == "registered-batch"
         assert event.job_status is JobStatus.RUNNING
@@ -1116,13 +1123,13 @@ class TestBatchProgress:
         backend.submit_circuits({"c1": "qasm"})
         coord = _BatchCoordinator(backend, progress_emitter=emitted.append)
 
-        results, runtime = coord._poll_and_get_results(
+        completed = coord._poll_and_get_results(
             ExecutionResult(results=None, job_id="job-123"),
             batch_progress_key="registered-batch",
         )
 
-        assert results[0]["label"] == "c1"
-        assert runtime == 2.5
+        assert completed.results[0]["label"] == "c1"
+        assert completed.run_time == 2.5
         assert emitted == [
             ProgressEvent.show(
                 "registered-batch",
@@ -1339,49 +1346,33 @@ class TestCancellation:
 
 
 class TestTotalRuntime:
-    def test_runtime_zero_for_sync_backend(self):
-        """Sync backends report no runtime (no polling)."""
+    def test_runtime_zero_for_a_backend_reporting_none(self):
+        coord = _BatchCoordinator(FakeSyncBackend())
+        coord.register_program("p1")
+        coord.submit("p1", {"c1": "q"})
+
+        assert coord.total_runtime == 0.0
+
+    def test_sync_backend_run_time_is_credited(self, mocker):
         backend = FakeSyncBackend()
+        _report_run_times(mocker, backend, [1.5])
         coord = _BatchCoordinator(backend)
         coord.register_program("p1")
         coord.submit("p1", {"c1": "q"})
 
-        # Sync backend → no runtime tracking.
-        assert coord.total_runtime == 0.0
+        assert coord.total_runtime == 1.5
 
     def test_partial_subbatch_failure_preserves_credit(self, mocker):
         """Sub-batch 0 succeeds, sub-batch 1 raises → coordinator keeps the
         credit from sub-batch 0."""
         backend = FakeSyncBackend()
-        submitted_labels: list[str] = []
-
-        # Force the async branch so _submit_sub_batch's runtime
-        # accumulation runs (sync branch always reports runtime=0).
-        def fake_submit(payloads, **kw):
-            submitted_labels.extend(payloads)
-            return ExecutionResult(results=None, job_id="fake")
-
-        mocker.patch.object(backend, "submit_circuits", fake_submit)
+        _report_run_times(mocker, backend, [7.5, RuntimeError("second fails")])
         coord = _BatchCoordinator(backend)
 
         batch = {
             "p_with_ham": _make_entry({"c1": "q"}, {"ham_ops": "Z"}),
             "p_no_ham": _make_entry({"c2": "q"}, {}),
         }
-
-        poll_calls = {"n": 0}
-
-        def fake_poll(
-            self,
-            execution_result,
-            batch_progress_key,
-        ):
-            poll_calls["n"] += 1
-            if poll_calls["n"] == 1:
-                return [{"label": submitted_labels[0], "results": {}}], 7.5
-            raise RuntimeError("second sub-batch fails")
-
-        mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", fake_poll)
 
         flush_group = _FlushGroup(
             futures={k: e.future for k, e in batch.items()}, color="green"
@@ -1400,11 +1391,7 @@ class TestTotalRuntime:
         read races the credit and can drop the flush's runtime.
         """
         backend = FakeSyncBackend()
-        mocker.patch.object(
-            backend,
-            "submit_circuits",
-            lambda payloads, **kw: ExecutionResult(results=None, job_id="fake"),
-        )
+        _report_run_times(mocker, backend, [6.0])
         coord = _BatchCoordinator(backend)
 
         runtime_seen_at_resolution = []
@@ -1418,15 +1405,6 @@ class TestTotalRuntime:
             "p1": _PendingEntry({"c1": "q"}, {}, _RecordingFuture()),
             "p2": _PendingEntry({"c2": "q"}, {}, _RecordingFuture()),
         }
-
-        def fake_poll(
-            self,
-            execution_result,
-            batch_progress_key,
-        ):
-            return [], 6.0
-
-        mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", fake_poll)
 
         flush_group = _FlushGroup(
             futures={k: e.future for k, e in batch.items()}, color="green"

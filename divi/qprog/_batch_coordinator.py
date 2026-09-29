@@ -704,19 +704,18 @@ class _BatchCoordinator:
             if self._cancelled.is_set():
                 raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
-            # --- Collect results (sync or async) ---
-            runtime = 0.0
             if execution_result.job_id is not None:
-                results_list, runtime = self._poll_and_get_results(
+                execution_result = self._poll_and_get_results(
                     execution_result,
                     batch_progress_key,
                 )
                 final_job_status = JobStatus.COMPLETED
             else:
                 final_job_status = None
-                results_list = execution_result.results
-                if results_list is None:
-                    raise ValueError("ExecutionResult has neither results nor job_id.")
+            runtime = execution_result.run_time
+            results_list = execution_result.results
+            if results_list is None:
+                raise ValueError("ExecutionResult has neither results nor job_id.")
 
             # Parse and account for the complete backend response before
             # declaring the batch successful. Future resolution stays after
@@ -791,8 +790,8 @@ class _BatchCoordinator:
         self,
         execution_result: ExecutionResult,
         batch_progress_key: Hashable,
-    ) -> tuple[list[dict], float]:
-        """Poll an async job to completion and return (results, runtime)."""
+    ) -> ExecutionResult:
+        """Poll an async job to completion and return its fetched results."""
         if not isinstance(self._real_backend, AsyncJobBackend):
             raise RuntimeError(
                 f"Backend {type(self._real_backend).__name__} returned an "
@@ -804,15 +803,6 @@ class _BatchCoordinator:
         job_id = execution_result.job_id
         if job_id is None:
             raise ValueError("Async batch polling requires a job_id.")
-
-        runtime = 0.0
-
-        def _on_complete(response):
-            nonlocal runtime
-            if isinstance(response, dict):
-                runtime = float(response.get("run_time", 0))
-            elif isinstance(response, list):
-                runtime = sum(float(r.json()["run_time"]) for r in response)
 
         def _progress_callback(n_polls, job_status):
             self._progress_emitter(
@@ -831,7 +821,6 @@ class _BatchCoordinator:
         status = backend.poll_job_status(
             execution_result,
             loop_until_complete=True,
-            on_complete=_on_complete,
             verbose=False,
             progress_callback=_progress_callback,
             cancellation_event=self._cancelled,
@@ -849,7 +838,7 @@ class _BatchCoordinator:
                 f"Merged batch job {execution_result.job_id} completed but "
                 "returned no results."
             )
-        return completed.results, runtime
+        return completed
 
     # ------------------------------------------------------------------
     # Cancellation & shutdown

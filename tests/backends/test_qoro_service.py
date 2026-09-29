@@ -109,6 +109,18 @@ def _mock_vendor_blueprints(mocker, service):
     )
 
 
+def _serve_job_results(mocker, service, pages, run_time=0.0):
+    """Serve ``pages`` from ``resultsV2`` and ``run_time`` from ``status``."""
+    pages = iter(pages)
+    status = {"status": "COMPLETED", "run_time": run_time}
+
+    def respond(_method, endpoint, **_kwargs):
+        body = status if endpoint.endswith("/status/") else next(pages)
+        return mocker.MagicMock(status_code=HTTPStatus.OK, json=lambda: body)
+
+    return mocker.patch.object(service, "_make_request", side_effect=respond)
+
+
 def _mock_config_endpoint(mocker, service, response_data):
     return mocker.patch.object(
         service,
@@ -638,14 +650,10 @@ class TestQoroServiceMock:
             make_mock_status_response(mocker, JobStatus.COMPLETED),
         ]
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
-        on_complete_callback = mocker.MagicMock()
         status = service.poll_job_status(
-            make_execution_result(),
-            loop_until_complete=True,
-            on_complete=on_complete_callback,
+            make_execution_result(), loop_until_complete=True
         )
         assert status == JobStatus.COMPLETED
-        on_complete_callback.assert_called_once()
 
         # Test 3: Loop until failed
         mock_responses = [
@@ -653,14 +661,8 @@ class TestQoroServiceMock:
             make_mock_status_response(mocker, JobStatus.FAILED),
         ]
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
-        on_complete_callback = mocker.MagicMock()
         with pytest.raises(JobFailedError):
-            service.poll_job_status(
-                make_execution_result(),
-                loop_until_complete=True,
-                on_complete=on_complete_callback,
-            )
-        on_complete_callback.assert_called_once()
+            service.poll_job_status(make_execution_result(), loop_until_complete=True)
 
         # Test 4: Max retries reached
         mock_responses = [make_mock_status_response(mocker, JobStatus.RUNNING)] * 4
@@ -690,68 +692,8 @@ class TestQoroServiceMock:
             make_mock_status_response(mocker, JobStatus.CANCELLED),
         ]
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
-        on_complete_callback = mocker.MagicMock()
         with pytest.raises(JobCancelledError):
-            service.poll_job_status(
-                make_execution_result(),
-                loop_until_complete=True,
-                on_complete=on_complete_callback,
-            )
-        on_complete_callback.assert_called_once()
-
-    def test_on_complete_receives_decoded_payload(self, mocker, qoro_service_factory):
-        """Consumers read ``run_time`` off a dict, so the payload must be decoded.
-
-        Passing the raw ``Response`` silently skipped every consumer branch and
-        left ``total_run_time`` at zero.
-        """
-        service = qoro_service_factory(
-            auth_token="test_token", max_retries=3, polling_interval=0.01
-        )
-        terminal = mocker.MagicMock()
-        terminal.json.return_value = {"status": "COMPLETED", "run_time": 2.5}
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[
-                make_mock_status_response(mocker, JobStatus.RUNNING),
-                terminal,
-            ],
-        )
-        on_complete = mocker.MagicMock()
-
-        service.poll_job_status(
-            make_execution_result(),
-            loop_until_complete=True,
-            on_complete=on_complete,
-        )
-
-        on_complete.assert_called_once_with({"status": "COMPLETED", "run_time": 2.5})
-
-    def test_run_time_reaches_pipeline_artifacts(self, mocker, qoro_service_factory):
-        """End to end: the backend's payload lands in ``artifacts['run_time']``."""
-        service = qoro_service_factory(
-            auth_token="test_token", max_retries=3, polling_interval=0.01
-        )
-        terminal = mocker.MagicMock()
-        terminal.json.return_value = {"status": "COMPLETED", "run_time": 4.0}
-        mocker.patch.object(service, "_make_request", return_value=terminal)
-
-        artifacts: dict = {}
-
-        def track_runtime(response):
-            if isinstance(response, dict):
-                artifacts["run_time"] = artifacts.get("run_time", 0.0) + float(
-                    response.get("run_time", 0)
-                )
-
-        service.poll_job_status(
-            make_execution_result(),
-            loop_until_complete=True,
-            on_complete=track_runtime,
-        )
-
-        assert artifacts["run_time"] == 4.0
+            service.poll_job_status(make_execution_result(), loop_until_complete=True)
 
     def test_default_max_retries_is_unlimited(self):
         """The constructor default polls indefinitely (``max_retries=None``)."""
@@ -2270,16 +2212,16 @@ class TestQoroServiceMock:
                 {"label": "c1", "results": {"b": 2}},
             ],
         }
-        mock_request = mocker.patch.object(
-            service,
-            "_make_request",
-            return_value=mocker.MagicMock(status_code=200, json=lambda: page),
-        )
+        mock_request = _serve_job_results(mocker, service, [page], run_time=4.5)
 
         result = service.get_job_results(make_execution_result("job_1"))
 
-        mock_request.assert_called_once()
+        assert [c.args[1] for c in mock_request.call_args_list] == [
+            "job/job_1/resultsV2/?limit=100&offset=0",
+            "job/job_1/status/",
+        ]
         assert len(result.results) == 2
+        assert result.run_time == 4.5
 
     def test_get_job_results_decodes_qh2_histogram(self, mocker, qoro_service_factory):
         """The service decodes a real wide histogram from the cloud envelope."""
@@ -2300,11 +2242,7 @@ class TestQoroServiceMock:
                 }
             ],
         }
-        mocker.patch.object(
-            service,
-            "_make_request",
-            return_value=mocker.MagicMock(status_code=200, json=lambda: page),
-        )
+        _serve_job_results(mocker, service, [page])
 
         result = service.get_job_results(make_execution_result("job_1"))
 
@@ -2333,19 +2271,11 @@ class TestQoroServiceMock:
         }
         page2 = {"count": 160, "next": None, "results": page2_results}
 
-        responses = iter(
-            [
-                mocker.MagicMock(status_code=200, json=lambda p=p: p)
-                for p in [page1, page2]
-            ]
-        )
-        mock_request = mocker.patch.object(
-            service, "_make_request", side_effect=lambda *a, **kw: next(responses)
-        )
+        mock_request = _serve_job_results(mocker, service, [page1, page2])
 
         result = service.get_job_results(make_execution_result("job_1"))
 
-        assert mock_request.call_count == 2
+        assert mock_request.call_count == 3
         assert len(result.results) == 160
         # Verify offset incremented correctly
         first_call_endpoint = mock_request.call_args_list[0][0][1]

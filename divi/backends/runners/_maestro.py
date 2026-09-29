@@ -320,7 +320,7 @@ class MaestroSimulator(CircuitRunner):
         maestro_config: :class:`MaestroConfig` controlling simulator backend,
             simulation method, bond dimension, noise model, and related
             options.  Defaults to ``MaestroConfig()``, maestro's defaults
-            throughout.  Configs are frozen; change one by assigning a copy,
+            throughout.  Configurations are frozen; change one by assigning a copy,
             e.g. ``sim.maestro_config = sim.maestro_config.override(seed=7)``.
         track_depth: Record circuit depth per submission. Defaults to False.
         force_sampling: If True, route observable measurements through
@@ -564,4 +564,7 @@ class MaestroSimulator(CircuitRunner):
         results = _run_with_cancellation(
             self._get_executor(), _run, items, cancellation_event
         )
-        return ExecutionResult(results=results)
+        return ExecutionResult(
+            results=results,
+            run_time=sum(entry["metadata"]["time_taken"] for entry in results),
+        )

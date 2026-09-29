@@ -69,6 +69,12 @@ class ExecutionResult:
     backend_jobs: int = 1
     """Number of physical backend submissions represented by this result."""
 
+    run_time: float = 0.0
+    """Seconds the backend reports spending on execution, summed over the
+    circuits or jobs it times separately. ``0.0`` for a backend that reports
+    none, and for an asynchronous job until
+    :meth:`~divi.backends.AsyncJobBackend.get_job_results` fetches it."""
+
     def is_async(self) -> bool:
         """Check if this result represents an async job.
 
@@ -78,7 +84,7 @@ class ExecutionResult:
         """
         return self.job_id is not None and self.results is None
 
-    def with_results(self, results: list[dict]) -> Self:
+    def with_results(self, results: list[dict], run_time: float = 0.0) -> Self:
         """Create a new ExecutionResult with results populated.
 
         This method creates a new instance with results set, effectively converting
@@ -86,12 +92,13 @@ class ExecutionResult:
 
         Args:
             results: The job results to populate.
+            run_time: Execution time in seconds the backend reported for the job.
 
         Returns:
             ExecutionResult: A new ExecutionResult instance with results populated
                 and job_id preserved.
         """
-        return replace(self, results=results)
+        return replace(self, results=results, run_time=run_time)
 
 
 class CircuitRunner(ABC):
@@ -298,7 +305,6 @@ class AsyncJobBackend(Protocol):
         self,
         execution_result: ExecutionResult,
         loop_until_complete: bool = False,
-        on_complete: Callable[[dict], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
@@ -309,9 +315,6 @@ class AsyncJobBackend(Protocol):
             execution_result: Handle returned by :meth:`submit_circuits`.
             loop_until_complete: When ``False``, return the current status.
                 When ``True``, poll until completion or terminal failure.
-            on_complete: Invoked with the decoded final status payload when a
-                terminal status is reached. Backends that report no timing
-                metadata may skip the call.
             verbose: When ``True``, log per-poll status. Disable when
                 rendering progress via ``progress_callback`` so user-facing
                 output isn't doubled.
@@ -335,7 +338,8 @@ class AsyncJobBackend(Protocol):
         ...
 
     def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult:
-        """Fetch results for a completed job and return them populated.
+        """Fetch results for a completed job and return them populated, with
+        the job's reported ``run_time``.
 
         Must only be called after :meth:`poll_job_status` reports a
         ``COMPLETED`` :class:`~divi.backends.JobStatus`.

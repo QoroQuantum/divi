@@ -1210,7 +1210,8 @@ class QoroService(CircuitRunner):
             execution_result: An ExecutionResult instance with a job_id to fetch results for.
 
         Returns:
-            ExecutionResult: A new ExecutionResult instance with results populated.
+            ExecutionResult: A new ExecutionResult instance with results and the
+                job's ``run_time`` populated.
 
         Raises:
             ValueError: If the ExecutionResult does not have a job_id.
@@ -1249,14 +1250,15 @@ class QoroService(CircuitRunner):
                 break
             offset += limit
 
-        # Return a new ExecutionResult with results populated
-        return execution_result.with_results(all_results)
+        status = self._make_request("get", f"job/{job_id}/status/", timeout=200)
+        return execution_result.with_results(
+            all_results, run_time=float(status.json().get("run_time", 0))
+        )
 
     def poll_job_status(
         self,
         execution_result: ExecutionResult,
         loop_until_complete: bool = False,
-        on_complete: Callable[[dict], None] | None = None,
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
@@ -1271,10 +1273,6 @@ class QoroService(CircuitRunner):
             execution_result: An ExecutionResult instance with a job_id to check.
             loop_until_complete: Return after one request when ``False``. When
                 ``True``, wait for ``COMPLETED`` or raise for terminal failure.
-            on_complete (Callable, optional): A function called with the decoded
-                final status payload when the job reaches a terminal state.
-                Consumers read ``run_time`` from it to accumulate
-                :attr:`~divi.qprog.QuantumProgram.total_run_time`.
             verbose (bool, optional): If True, prints polling status to the logger.
             progress_callback (Callable, optional): A function for updating progress bars.
                 Takes `(retry_count, status)`.
@@ -1353,20 +1351,15 @@ class QoroService(CircuitRunner):
                     response = self._make_request(
                         "get", f"job/{job_id}/status/", timeout=200
                     )
-                    payload = response.json()
-                    status = JobStatus(payload["status"])
+                    status = JobStatus(response.json()["status"])
 
                     if status is JobStatus.COMPLETED:
-                        if on_complete:
-                            on_complete(payload)
                         return status
                     if cancellation_event is not None and cancellation_event.is_set():
                         raise ExecutionCancelledError(
                             f"Polling cancelled for job {job_id}."
                         )
                     if error_type := terminal_errors.get(status):
-                        if on_complete:
-                            on_complete(payload)
                         raise error_type(job_id)
 
                     update_fn(retry_count, status.value)

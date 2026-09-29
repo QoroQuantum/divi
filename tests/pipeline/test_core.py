@@ -7,6 +7,7 @@
 import signal
 import threading
 import warnings
+from dataclasses import replace
 from inspect import signature
 from threading import Event
 
@@ -108,12 +109,11 @@ class ProtocolAsyncBackendWithoutMaxRetries:
         self,
         execution_result,
         loop_until_complete=False,
-        on_complete=None,
         verbose=True,
         progress_callback=None,
         cancellation_event=None,
     ):
-        del execution_result, loop_until_complete, on_complete, verbose
+        del execution_result, loop_until_complete, verbose
         del cancellation_event
         if progress_callback is not None:
             progress_callback(3, JobStatus.RUNNING.value)
@@ -979,7 +979,6 @@ class TestWaitForAsyncResult:
             execution_result,
             *,
             loop_until_complete,
-            on_complete,
             verbose,
             progress_callback,
             cancellation_event=None,
@@ -1016,7 +1015,6 @@ class TestWaitForAsyncResult:
             execution_result,
             *,
             loop_until_complete,
-            on_complete,
             verbose,
             progress_callback,
             cancellation_event=None,
@@ -1133,36 +1131,6 @@ class TestWaitForAsyncResult:
         assert result is expected
         mock_backend.get_job_results.assert_called_once_with(execution_result)
 
-    def test_runtime_tracking_dict_response(self, mocker):
-        """on_complete callback accumulates run_time from a dict response."""
-        mock_backend = mocker.Mock()
-        mock_backend.max_retries = 100
-        mock_backend.get_job_results.return_value = ExecutionResult(
-            results=[], job_id="job_rt"
-        )
-
-        # Capture the on_complete callback, then invoke it with a dict response
-        def fake_poll(
-            er,
-            *,
-            loop_until_complete,
-            on_complete,
-            verbose,
-            progress_callback,
-            cancellation_event=None,
-        ):
-            on_complete({"run_time": 3.5})
-            return JobStatus.COMPLETED
-
-        mock_backend.poll_job_status.side_effect = fake_poll
-
-        env = PipelineEnv(backend=mock_backend)
-        execution_result = ExecutionResult(job_id="job_rt")
-
-        _wait_for_async_result(mock_backend, execution_result, env)
-
-        assert env.artifacts["run_time"] == 3.5
-
     def test_cancellation_event_is_forwarded_to_backend(self, mocker):
         """The env's cancellation_event must reach backend.poll_job_status
         so the polling loop can exit promptly when the user signals cancel."""
@@ -1181,39 +1149,46 @@ class TestWaitForAsyncResult:
         _, kwargs = mock_backend.poll_job_status.call_args
         assert kwargs["cancellation_event"] is event
 
-    def test_runtime_tracking_list_response(self, mocker):
-        """on_complete callback accumulates run_time from a list of responses."""
-        mock_backend = mocker.Mock()
-        mock_backend.max_retries = 100
-        mock_backend.get_job_results.return_value = ExecutionResult(
-            results=[], job_id="job_rt2"
-        )
 
-        resp1 = mocker.Mock()
-        resp1.json.return_value = {"run_time": 1.5}
-        resp2 = mocker.Mock()
-        resp2.json.return_value = {"run_time": 2.0}
+class _TimedBackend(FakeBackend):
+    """A dispatching FakeBackend whose results report 3.5 s of run time."""
 
-        def fake_poll(
-            er,
-            *,
-            loop_until_complete,
-            on_complete,
-            verbose,
-            progress_callback,
-            cancellation_event=None,
-        ):
-            on_complete([resp1, resp2])
-            return JobStatus.COMPLETED
+    def __init__(self):
+        super().__init__(strict=False)
 
-        mock_backend.poll_job_status.side_effect = fake_poll
+    def submit_circuits(self, payloads, **kwargs):
+        return replace(super().submit_circuits(payloads, **kwargs), run_time=3.5)
 
-        env = PipelineEnv(backend=mock_backend)
-        execution_result = ExecutionResult(job_id="job_rt2")
 
-        _wait_for_async_result(mock_backend, execution_result, env)
+class _TimedAsyncBackend(_TimedBackend):
+    """``_TimedBackend`` behind a job id, reporting the time with its results."""
 
-        assert env.artifacts["run_time"] == 3.5
+    def submit_circuits(self, payloads, **kwargs):
+        self._completed = super().submit_circuits(payloads, **kwargs)
+        return ExecutionResult(job_id="job_timed")
+
+    def poll_job_status(self, execution_result, **kwargs):
+        return JobStatus.COMPLETED
+
+    def get_job_results(self, execution_result):
+        return self._completed
+
+
+@pytest.mark.parametrize(
+    "backend_type", [_TimedBackend, _TimedAsyncBackend], ids=["sync", "async"]
+)
+def test_execute_accumulates_the_reported_run_time(backend_type):
+    backend = backend_type()
+    param_sets = [[0.1, 0.2]]
+    trace = run_binding_pipeline(
+        _parametric_meta_one_body(), backend=backend, param_sets=param_sets
+    )
+    env = PipelineEnv(backend=backend, param_sets=param_sets)
+    env.artifacts["run_time"] = 1.0
+
+    _default_execute_fn(trace, env)
+
+    assert env.artifacts["run_time"] == 4.5
 
 
 def _noop_handler(signum, frame):

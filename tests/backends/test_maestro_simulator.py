@@ -49,6 +49,26 @@ def _bell_counts(seed, *, noise_model=None, shots=400):
     return sim.submit_circuits({"c0": _BELL_QASM}).results[0]["results"]
 
 
+def test_submission_reports_maestros_simulation_time(default_test_simulator):
+    result = default_test_simulator.submit_circuits(
+        {"c0": _BELL_QASM, "c1": _BELL_QASM}
+    )
+
+    times = [entry["metadata"]["time_taken"] for entry in result.results]
+    assert result.run_time == pytest.approx(sum(times))
+    assert result.run_time > 0
+
+
+def _sampled(counts):
+    """A ``simple_execute`` return value, as maestro shapes it."""
+    return {"counts": counts, "time_taken": 0.01}
+
+
+def _estimated(expvals):
+    """A ``simple_estimate`` return value, as maestro shapes it."""
+    return {"expectation_values": expvals, "time_taken": 0.01}
+
+
 def _make_fake_maestro(mocker, counts=None, expvals=None):
     """Return a mock ``maestro`` module with ``simple_execute`` and circuit API."""
     maestro = mocker.MagicMock()
@@ -77,14 +97,13 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
     # Sampling
     if counts is None:
         counts = {"00": 2500, "11": 2500}
-    maestro.simple_execute.return_value = {"counts": counts}
-    maestro.full_noise_execute.return_value = {"counts": counts}
+    maestro.simple_execute.return_value = _sampled(counts)
+    maestro.full_noise_execute.return_value = _sampled(counts)
 
-    # Expval — maestro returns {"expectation_values": [...], ...}
     if expvals is None:
         expvals = [0.5, -0.3]
-    maestro.simple_estimate.return_value = {"expectation_values": expvals}
-    maestro.full_noise_estimate.return_value = {"expectation_values": expvals}
+    maestro.simple_estimate.return_value = _estimated(expvals)
+    maestro.full_noise_estimate.return_value = _estimated(expvals)
 
     # ``QasmToCirc().parse_and_translate(qasm) -> "MaestroCircuit"`` —
     # tag the parser so we can assert it was used (instead of the raw qasm).
@@ -373,7 +392,7 @@ class TestParallelExecution:
         # ``time.sleep`` race for "is the worker mid-task yet?"
         worker_started = Event()
         drain_release = Event()
-        fast_response = {"counts": {"00": 1}}
+        fast_response = _sampled({"00": 1})
 
         def _slow_run(*_args, **_kwargs):
             worker_started.set()
@@ -442,9 +461,9 @@ class TestParallelExecution:
             qasms[1]: {"00": 0, "11": 100},
             qasms[2]: {"01": 50, "10": 50},
         }
-        fake.simple_execute.side_effect = lambda qasm, **_: {
-            "counts": per_qasm_counts[qasm]
-        }
+        fake.simple_execute.side_effect = lambda qasm, **_: _sampled(
+            per_qasm_counts[qasm]
+        )
         sim = _make_simulator(mocker, fake)
 
         result = sim.submit_circuits({"c0": qasms[0], "c1": qasms[1], "c2": qasms[2]})
@@ -466,9 +485,9 @@ class TestParallelExecution:
             QASM_DEPTH_2.replace("h q[0]", "x q[0]"),
         ]
         per_qasm_expval = {qasms[0]: 0.1, qasms[1]: 0.2, qasms[2]: 0.3}
-        fake.simple_estimate.side_effect = lambda qasm, **_: {
-            "expectation_values": [per_qasm_expval[qasm]]
-        }
+        fake.simple_estimate.side_effect = lambda qasm, **_: _estimated(
+            [per_qasm_expval[qasm]]
+        )
         sim = _make_simulator(mocker, fake)
 
         result = sim.submit_circuits(
@@ -613,10 +632,7 @@ class TestExpvalSubmission:
         """Maestro ignores terminal measurement on the estimate path, so
         circuits reach it unchanged."""
         fake = _make_fake_maestro(mocker)
-        fake.simple_estimate.side_effect = [
-            {"expectation_values": [0.5]},
-            {"expectation_values": [0.8]},
-        ]
+        fake.simple_estimate.side_effect = [_estimated([0.5]), _estimated([0.8])]
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits({"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3}, ham_ops="ZI")
@@ -682,10 +698,7 @@ class TestExpvalSubmission:
     def test_circuit_ham_map_routing(self, mocker):
         """circuit_ham_map routes correct observables to each circuit."""
         fake = _make_fake_maestro(mocker)
-        fake.simple_estimate.side_effect = [
-            {"expectation_values": [0.5]},
-            {"expectation_values": [0.8]},
-        ]
+        fake.simple_estimate.side_effect = [_estimated([0.5]), _estimated([0.8])]
         sim = _make_simulator(mocker, fake)
 
         result = sim.submit_circuits(
@@ -709,8 +722,8 @@ class TestExpvalSubmission:
         and drop both real observables without raising."""
         fake = _make_fake_maestro(mocker)
         fake.simple_estimate.side_effect = [
-            {"expectation_values": [0.5]},
-            {"expectation_values": [0.5, -0.3]},
+            _estimated([0.5]),
+            _estimated([0.5, -0.3]),
         ]
         sim = _make_simulator(mocker, fake)
 
