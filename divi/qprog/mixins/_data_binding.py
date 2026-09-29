@@ -19,7 +19,7 @@ a defaulted lookup.
 """
 
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -88,6 +88,7 @@ class DataBindingMixin(_MixinBase):
     labels: npt.NDArray[np.float64] | None = None
     _sample_loss_fn: Callable[[float, float], float] | None = None
     _loss_reduction_fn: Callable[[np.ndarray], float]
+    _fit_bias: bool = False
 
     @property
     def sample_loss(self) -> Callable[[float, float], float] | None:
@@ -98,6 +99,62 @@ class DataBindingMixin(_MixinBase):
         ``loss_fn`` when ``labels`` are supplied.
         """
         return self._sample_loss_fn
+
+    @property
+    def fit_bias(self) -> bool:
+        """Whether predictions carry a fitted bias (see :attr:`fitted_bias`)."""
+        return self._fit_bias
+
+    @property
+    def fitted_bias(self) -> float:
+        """The bias ``mean(labels - (⟨H⟩ + loss_constant))`` over the training
+        batch at ``best_params``.
+
+        ``run()`` fits it when it finishes. A program restored from an
+        iteration checkpoint, which does not store it, fits it on first read:
+        one scoring pass over the ``feature_batch`` and ``labels`` it holds at
+        that moment.
+
+        Raises:
+            RuntimeError: If the program was not constructed with
+                ``fit_bias=True``, or has no trained weights yet.
+        """
+        if not self._fit_bias:
+            raise RuntimeError("fitted_bias requires constructing with fit_bias=True.")
+        if "fitted_bias" not in self._results:
+            if not len(self._best_params):
+                raise RuntimeError(
+                    "The fitted bias needs trained weights; call run() first."
+                )
+            self._results["fitted_bias"] = self._fit_bias_at_best_params()
+        return self._results["fitted_bias"]
+
+    def _fit_bias_at_best_params(self) -> float:
+        scores = self._scores(cast(npt.NDArray[np.float64], self.feature_batch), None)
+        return float(np.mean(self.labels - scores))
+
+    def _finalize(self, perform_final_computation: bool) -> None:
+        super()._finalize(perform_final_computation)
+        # Fits the bias even when the final computation is skipped.
+        if self._fit_bias and len(self._best_params):
+            self._results["fitted_bias"] = self._fit_bias_at_best_params()
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        state = {**super()._save_subclass_state(), "fit_bias": self._fit_bias}
+        if "fitted_bias" in self._results:
+            state["fitted_bias"] = self._results["fitted_bias"]
+        return state
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        super()._load_subclass_state(state)
+        if state["fit_bias"] != self._fit_bias:
+            raise ValueError(
+                f"The checkpoint was trained with fit_bias={state['fit_bias']}, but "
+                f"this program was constructed with fit_bias={self._fit_bias}; "
+                "pass the same fit_bias to load_state()."
+            )
+        if "fitted_bias" in state:
+            self._results["fitted_bias"] = state["fitted_bias"]
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -135,6 +192,7 @@ class DataBindingMixin(_MixinBase):
             loss_reduction=self._loss_reduction_fn,
             loss_constant=self.loss_constant,
             sample_loss=self._sample_loss_fn,
+            fit_bias=self._fit_bias,
         )
 
     def _assemble_pipeline(
@@ -246,6 +304,11 @@ class DataBindingMixin(_MixinBase):
                 f"{batch.shape[0]} samples; the run would fail after submitting "
                 "every circuit."
             )
+        if self._fit_bias and n_labels < 2:
+            raise ValueError(
+                f"fit_bias requires at least 2 samples, but {n_labels} is now "
+                "assigned."
+            )
 
     @staticmethod
     def _validate_feature_batch(
@@ -305,7 +368,10 @@ class DataBindingMixin(_MixinBase):
         matches the full observable. By default the sign of that score is the
         class label: ``+1`` for a non-negative score, ``-1`` otherwise. Pass
         ``return_scores=True`` to get the continuous scores instead (e.g. for a
-        custom decision threshold or a regression-style output).
+        custom decision threshold or a regression-style output). The sign rule
+        suits ``-1``/``+1`` labels only; for ``0``/``1`` labels the scores are
+        mostly non-negative, so the sign is almost always ``+1``. Pass
+        ``return_scores=True`` and threshold at ``0.5`` instead.
 
         This works for any observable (the expectation is measured directly,
         with no computational-basis decoding), and shares the measurement
@@ -317,7 +383,10 @@ class DataBindingMixin(_MixinBase):
             params: Trained weights of shape ``(n_layers * n_params_per_layer,)``.
                 Defaults to ``self.best_params``.
             return_scores: When ``True``, return the continuous per-sample score
-                ``⟨H⟩ + loss_constant`` instead of the sign-thresholded label.
+                ``⟨H⟩ + loss_constant`` (plus :attr:`fitted_bias` when
+                :attr:`fit_bias` is set) instead of the sign-thresholded label.
+                The bias is always the one fitted at ``best_params``, even
+                when ``params`` is given.
 
         Returns:
             numpy.ndarray: Shape ``(n_samples,)`` — class labels in
@@ -325,10 +394,21 @@ class DataBindingMixin(_MixinBase):
                 ``return_scores`` is ``True``.
 
         Raises:
-            RuntimeError: If the program has no data axis, or if ``params`` is
-                ``None`` and the program has not been trained yet.
+            RuntimeError: If the program has no data axis, or if it has not
+                been trained yet and either ``params`` is ``None`` or
+                :attr:`fit_bias` is set.
             ValueError: On a feature-column or weight-length mismatch.
         """
+        bias = self.fitted_bias if self._fit_bias else 0.0
+        scores = self._scores(features, params) + bias
+        if return_scores:
+            return scores
+        return np.where(scores >= 0.0, 1.0, -1.0)
+
+    def _scores(
+        self, features: npt.ArrayLike, params: npt.NDArray[np.float64] | None
+    ) -> np.ndarray:
+        """Per-row ``⟨H⟩ + loss_constant``, without any fitted bias."""
         if not self._data_symbols:
             raise RuntimeError(
                 "predict() requires a data axis, but this program was created "
@@ -361,14 +441,10 @@ class DataBindingMixin(_MixinBase):
                 f"{n_weights} weight parameters."
             )
 
-        # Each sample becomes one param-set row in the full (data + weights)
-        # space — no DataBindingStage, no reduction. Columns follow the spec's
-        # parameter order: data symbols first, then weights.
+        # Each sample binds as one (data + weights) param-set row, data first —
+        # no DataBindingStage, no reduction.
         joined = np.hstack([feature_arr, np.tile(weights, (feature_arr.shape[0], 1))])
-        scores = self._measure_observable_for(joined) + self.loss_constant
-        if return_scores:
-            return scores
-        return np.where(scores >= 0.0, 1.0, -1.0)
+        return self._measure_observable_for(joined) + self.loss_constant
 
     def _measure_observable_for(
         self, param_sets: npt.NDArray[np.float64]

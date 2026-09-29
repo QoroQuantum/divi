@@ -16,8 +16,14 @@ from divi.qprog import (
     GenericLayerAnsatz,
     ZZFeatureMap,
 )
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.mixins import DataBindingMixin
-from divi.qprog.optimizers import QNSPSAOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import (
+    MonteCarloOptimizer,
+    QNSPSAOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+)
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
@@ -311,6 +317,56 @@ class TestConstructionValidation:
         with pytest.warns(UserWarning, match="loss_fn"):
             make_qnn(loss_fn=lambda pred, label: abs(pred - label))
 
+    def test_fit_bias_requires_labels(self, make_qnn):
+        with pytest.raises(ValueError, match="fit_bias requires labels"):
+            make_qnn(fit_bias=True)
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"loss_fn": lambda pred, label: abs(pred - label)},
+            {"loss_reduction": lambda arr: float(np.max(arr))},
+        ],
+        ids=["custom-loss", "custom-reduction"],
+    )
+    def test_fit_bias_requires_squared_error_mean_or_sum(self, make_qnn, overrides):
+        # The fitted bias mean(labels - prediction) is only the exact optimum for
+        # squared error under a mean or sum reduction.
+        with pytest.raises(ValueError, match="fit_bias requires loss_fn"):
+            make_qnn(labels=[0.0, 1.0, 0.0, 1.0], fit_bias=True, **overrides)
+
+    def test_fit_bias_silences_out_of_range_label_warning(self, make_qnn, recwarn):
+        # A fitted bias shifts the readout range, so {0, 2} labels are reachable.
+        make_qnn(observable=None, labels=[0.0, 2.0, 0.0, 2.0], fit_bias=True)
+        assert not [w for w in recwarn if "reads out in" in str(w.message)]
+
+    def test_fit_bias_warns_for_labels_wider_than_the_readout(self, make_qnn):
+        # A bias shifts the [-1, 1] readout but cannot widen it.
+        with pytest.warns(UserWarning, match=r"span more than the readout"):
+            make_qnn(observable=None, labels=[0.0, 3.0, 0.0, 3.0], fit_bias=True)
+
+    def test_fit_bias_is_visible_in_the_report(self, make_qnn):
+        report = make_qnn(labels=[0.0, 1.0, 0.0, 1.0], fit_bias=True).dry_run()["cost"]
+        data_stage = next(s for s in report.stages if s.name == "DataBindingStage")
+        assert data_stage.metadata["fit_bias"] is True
+
+    def test_fit_bias_requires_two_samples(self, make_qnn):
+        # With one sample the bias absorbs the whole error, so the loss is 0.
+        with pytest.raises(ValueError, match="at least 2 samples"):
+            make_qnn(feature_batch=[[0.1, 0.2]], labels=[1.0], fit_bias=True)
+
+    def test_fitted_bias_without_fit_bias_raises(self, make_qnn):
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
+        with pytest.raises(RuntimeError, match="requires constructing with fit_bias"):
+            program.fitted_bias
+
+    def test_fitted_bias_before_run_raises(self, make_qnn):
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0], fit_bias=True)
+        with pytest.raises(RuntimeError, match=r"call run\(\) first"):
+            program.fitted_bias
+        with pytest.raises(RuntimeError, match=r"call run\(\) first"):
+            program.predict(program.feature_batch, params=np.zeros(4))
+
 
 class TestDryRun:
     def test_does_not_emit_progress(self, make_qnn):
@@ -505,6 +561,136 @@ def test_reassigned_feature_batch_reaches_the_cost(make_qnn, default_test_simula
     program.feature_batch = new_features
 
     np.testing.assert_allclose(cost(program), cost(fresh), rtol=1e-9)
+
+
+@pytest.mark.e2e
+class TestFitBias:
+    WEIGHTS = np.array([0.5, 1.0, 1.5, 2.0])
+    LABELS = np.array([1.0, 0.0, 1.0, 0.0])
+
+    def _unbiased_scores(self, make_qnn, simulator, params):
+        simulator.set_seed(1997)
+        plain = make_qnn(backend=simulator, n_layers=1, seed=1997)
+        return plain.predict(plain.feature_batch, params=params, return_scores=True)
+
+    def _make_biased_qnn(self, make_qnn, simulator, **overrides):
+        simulator.set_seed(1997)
+        return make_qnn(
+            **{
+                "backend": simulator,
+                "n_layers": 1,
+                "optimizer": MonteCarloOptimizer(population_size=4, n_best_sets=2),
+                "max_iterations": 2,
+                "seed": 1997,
+                "labels": self.LABELS,
+                "fit_bias": True,
+                **overrides,
+            }
+        )
+
+    def _checkpointed_biased_qnn(self, make_qnn, simulator, checkpoint_dir):
+        program = self._make_biased_qnn(make_qnn, simulator)
+        program.run(
+            perform_final_computation=False,
+            checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir),
+        )
+        return program
+
+    def _assert_bias_fits_the_readout(self, program, make_qnn, simulator):
+        readout = self._unbiased_scores(make_qnn, simulator, program.best_params)
+        np.testing.assert_allclose(
+            program.fitted_bias, np.mean(self.LABELS - readout), atol=0.05
+        )
+
+    def test_cost_is_mse_at_the_fitted_bias(self, make_qnn, default_test_simulator):
+        """The loss equals the MSE after shifting by ``mean(labels - readout)``,
+        i.e. the variance of the residuals."""
+        readout = self._unbiased_scores(make_qnn, default_test_simulator, self.WEIGHTS)
+        labels = np.array([0.3, -0.2, 0.5, -0.6])
+
+        program = self._make_biased_qnn(make_qnn, default_test_simulator, labels=labels)
+        loss = program._evaluate_cost_param_sets(self.WEIGHTS[None, :])[0]
+
+        np.testing.assert_allclose(loss, float(np.var(readout - labels)), rtol=1e-9)
+
+    def test_run_stores_the_bias_at_best_params(self, make_qnn, default_test_simulator):
+        program = self._make_biased_qnn(make_qnn, default_test_simulator)
+        program.run(perform_final_computation=False)
+
+        self._assert_bias_fits_the_readout(program, make_qnn, default_test_simulator)
+
+    def test_labels_assigned_after_run_do_not_move_the_bias(
+        self, make_qnn, default_test_simulator
+    ):
+        program = self._make_biased_qnn(make_qnn, default_test_simulator)
+        program.run(perform_final_computation=False)
+        bias = program.fitted_bias
+        scores = program.predict(program.feature_batch, return_scores=True)
+
+        program.labels = self.LABELS + 5.0
+
+        assert program.fitted_bias == bias
+        np.testing.assert_allclose(
+            program.predict(program.feature_batch, return_scores=True),
+            scores,
+            atol=0.1,
+        )
+
+    def test_fitted_bias_survives_a_checkpoint(
+        self, make_qnn, default_test_simulator, tmp_path
+    ):
+        program = self._checkpointed_biased_qnn(
+            make_qnn, default_test_simulator, tmp_path
+        )
+
+        restored = self._make_biased_qnn(make_qnn, default_test_simulator)
+        restored._restore_state(tmp_path)
+
+        assert restored.fitted_bias == program.fitted_bias
+
+    def test_load_rejects_a_mismatched_fit_bias(
+        self, make_qnn, default_test_simulator, tmp_path
+    ):
+        self._checkpointed_biased_qnn(make_qnn, default_test_simulator, tmp_path)
+        unbiased = self._make_biased_qnn(
+            make_qnn, default_test_simulator, fit_bias=False
+        )
+
+        with pytest.raises(ValueError, match="trained with fit_bias=True"):
+            unbiased._restore_state(tmp_path)
+
+    def test_bias_missing_after_restore_is_fitted_on_read(
+        self, make_qnn, default_test_simulator, tmp_path
+    ):
+        """An iteration checkpoint holds no bias; reading it fits the bias at the
+        restored best_params."""
+        program = self._checkpointed_biased_qnn(
+            make_qnn, default_test_simulator, tmp_path
+        )
+        restored = self._make_biased_qnn(make_qnn, default_test_simulator)
+        restored._restore_state(tmp_path, subdirectory="checkpoint_002")
+
+        np.testing.assert_allclose(restored.fitted_bias, program.fitted_bias, atol=0.05)
+
+    def test_sum_reduction_with_final_computation_fits_the_bias(
+        self, make_qnn, default_test_simulator
+    ):
+        program = self._make_biased_qnn(
+            make_qnn, default_test_simulator, loss_reduction="sum"
+        )
+        program.run()
+
+        self._assert_bias_fits_the_readout(program, make_qnn, default_test_simulator)
+
+    def test_bias_is_not_an_optimizer_parameter(self, make_qnn, default_test_simulator):
+        program = self._make_biased_qnn(make_qnn, default_test_simulator)
+        program.run(perform_final_computation=False)
+
+        n_weights = program.n_layers * program.ansatz.n_params_per_layer(
+            program.n_qubits
+        )
+        assert program.best_params.shape == (n_weights,)
+        assert math.isfinite(program.fitted_bias)
 
 
 @pytest.mark.e2e

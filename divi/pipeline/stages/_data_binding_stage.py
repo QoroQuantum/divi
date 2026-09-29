@@ -147,6 +147,8 @@ class DataBindingStage(BundleStage):
         loss_reduction: Aggregation across per-sample results.
         loss_constant: Constant added before reduction.
         sample_loss: Optional supervised loss applied per prediction and label.
+        fit_bias: Shift predictions by ``mean(labels - predictions)`` before
+            ``sample_loss``.
     """
 
     @property
@@ -163,6 +165,7 @@ class DataBindingStage(BundleStage):
         loss_reduction: Callable[[npt.NDArray[np.float64]], float],
         loss_constant: float = 0.0,
         sample_loss: Callable[[float, float], float] | None = None,
+        fit_bias: bool = False,
     ) -> None:
         super().__init__(name=DATA_AXIS)
         self.data_params = tuple(data_params)
@@ -170,6 +173,7 @@ class DataBindingStage(BundleStage):
         self.loss_reduction = loss_reduction
         self.loss_constant = float(loss_constant)
         self.sample_loss = sample_loss
+        self.fit_bias = fit_bias
 
         # Defaults to template fast path; flipped by ``validate`` when a
         # DAG-walking stage (QEM/PauliTwirl) sits between us and PB.
@@ -403,9 +407,11 @@ class DataBindingStage(BundleStage):
 
         Returns ``predictions`` unchanged in the unsupervised case
         (``labels is None``); otherwise applies ``sample_loss`` element-wise
-        against the aligned labels.
+        against the aligned labels (after the ``fit_bias`` shift).
         """
         if labels is None:
+            if self.fit_bias:
+                raise ValueError("fit_bias requires env.labels to be set.")
             return predictions
         if self.sample_loss is None:
             raise ValueError(
@@ -416,6 +422,8 @@ class DataBindingStage(BundleStage):
                 f"got {predictions.shape[0]} per-sample predictions but "
                 f"{labels.shape[0]} labels."
             )
+        if self.fit_bias:
+            predictions = predictions + float(np.mean(labels - predictions))
         sample_loss = self.sample_loss
         return np.asarray(
             [
@@ -445,5 +453,6 @@ class DataBindingStage(BundleStage):
                 if self.sample_loss is not None
                 else {}
             ),
+            "fit_bias": self.fit_bias,
             "path": "template" if self._use_template_path else "eager",
         }

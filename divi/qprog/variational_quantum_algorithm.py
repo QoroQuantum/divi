@@ -1170,8 +1170,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 combined with a checkpoint-resumed optimizer state.
             perform_final_computation (bool): Whether to run the final
                 computation after optimisation: for solution-sampling programs,
-                sampling at ``best_params``. Set this to False in
-                warm-starting or pre-training routines. Defaults to True.
+                sampling at ``best_params``. Results computed from the training
+                batch alone, such as a QNN's ``fitted_bias``, are derived
+                either way. Set this to False in warm-starting or pre-training
+                routines. Defaults to True.
             checkpoint_config (CheckpointConfig | None): Checkpoint
                 configuration. None reuses the one this program last ran
                 with, or was loaded from; without either, nothing is

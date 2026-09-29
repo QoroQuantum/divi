@@ -139,7 +139,8 @@ parity observable (``Z ⊗ Z ⊗ … ⊗ Z``) that range is ``[-1, 1]``.  When t
 a regressor, scale your continuous targets into this range. Targets outside it
 are unattainable, forcing predictions toward the boundary and potentially
 slowing or preventing convergence. For a
-custom observable, inspect its eigenvalue range and scale accordingly.
+custom observable, inspect its eigenvalue range and scale accordingly, or shift
+the readout with a `Fitted Bias`_.
 
 **Low-dimensional inputs.** The built-in feature maps
 (:class:`~divi.qprog.algorithms.AngleEmbedding` and
@@ -239,6 +240,73 @@ the supervised path; keep the default parity observable or pass a single
 ``SparsePauliOp``.  The same ``labels`` / ``loss_fn`` pair is available on
 :class:`~divi.qprog.algorithms.CustomVQA`'s data-binding path
 (:doc:`../execution_workflows/framework_integration`) when you bring your own circuit.
+
+Fitted Bias
+-----------
+
+Pass ``fit_bias=True`` to add a classical bias ``b`` to every prediction, so
+each sample predicts ``⟨H⟩ + b``, where ``⟨H⟩`` is the observable's expectation
+including any constant term. This is the ``+ bias`` term of a classic
+variational classifier, and it lets the readout reach labels outside the
+observable's range, e.g. ``0`` / ``1`` labels with a ``[-1, 1]`` observable.
+
+``b`` is **not** an optimizer parameter. For squared error it has a closed
+form: every cost evaluation uses ``mean(labels - ⟨H⟩)`` over the batch, the
+optimal ``b`` for the current weights. Training the weights this way reaches
+the same minimum as training ``b`` alongside them, and
+``best_params`` still holds only the weights. ``fit_bias`` therefore requires
+``labels`` for at least two samples, ``loss_fn="squared_error"``, and
+``loss_reduction="mean"`` or ``"sum"``; any other combination raises
+``ValueError``. With a single sample the bias would absorb the whole error and
+the loss would always be zero.
+
+.. code-block:: python
+
+   import numpy as np
+   from qiskit.circuit.library import CXGate, RYGate, RZGate
+   from qiskit.quantum_info import SparsePauliOp
+
+   from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.backends import MaestroSimulator
+
+   X_train = np.array([[0.1, 0.2], [0.3, 0.5], [2.0, 2.1], [2.3, 2.4]])
+   y_train = np.array([0.0, 0.0, 1.0, 1.0])  # outside ⟨Z⟩'s reach without a bias
+
+   biased = QNN(
+       n_qubits=2,
+       feature_map=AngleEmbedding(rotation="Y"),
+       ansatz=GenericLayerAnsatz(
+           gate_sequence=[RYGate, RZGate],
+           entangler=CXGate,
+           entangling_layout="linear",
+       ),
+       feature_batch=X_train,
+       labels=y_train,
+       observable=SparsePauliOp.from_list([("ZI", 1.0)]),
+       fit_bias=True,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=5,
+       backend=MaestroSimulator(),
+       seed=1997,
+   )
+   biased.run(perform_final_computation=False)
+
+   b = biased.fitted_bias                                # bias at best_params
+   scores = biased.predict(X_train, return_scores=True)  # ⟨H⟩ + b per row
+   classes = (scores >= 0.5).astype(float)               # threshold between 0 and 1
+
+``predict``'s default output is the sign of the score, which suits ``-1`` /
+``+1`` labels. For other label encodings, take ``return_scores=True`` and apply
+your own threshold, as above.
+
+:attr:`~divi.qprog.DataBindingMixin.fitted_bias` holds ``b`` at ``best_params``.
+``run()`` fits it when it finishes by scoring the training batch once, and
+checkpoints carry it; a program restored without it fits it on first read.
+``predict`` adds the stored value to every row, including when you pass other
+``params``. Assigning new ``feature_batch`` or ``labels`` afterwards, e.g. to
+score a validation split, leaves it unchanged. Reading ``fitted_bias`` or
+calling ``predict`` before training raises ``RuntimeError``.
 
 When to use QNN vs CustomVQA
 ----------------------------

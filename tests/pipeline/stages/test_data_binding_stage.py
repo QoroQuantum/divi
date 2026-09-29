@@ -370,6 +370,46 @@ def test_reduce_rejects_label_count_mismatch(composed):
         stage.reduce(results, env=_env(labels=[1.0, 0.0]), token=None)
 
 
+def test_fit_bias_shifts_each_param_set_by_its_own_optimal_bias(composed):
+    """``fit_bias`` shifts each param set's predictions by ``mean(labels - preds)``
+    before the squared error, so the loss is the variance of the residuals and a
+    constant offset between param sets is absorbed entirely."""
+    qc, data_params, weight_params = composed
+    stage = DataBindingStage(
+        data_params=data_params,
+        loss_reduction=_mean,
+        sample_loss=resolve_sample_loss("squared_error"),
+        fit_bias=True,
+    )
+    results = {
+        ((DATA_AXIS, 0), ("param_set", 0)): [1.0],
+        ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
+        ((DATA_AXIS, 2), ("param_set", 0)): [3.0],
+        # param set 1 predicts param set 0 + 1 everywhere.
+        ((DATA_AXIS, 0), ("param_set", 1)): [2.0],
+        ((DATA_AXIS, 1), ("param_set", 1)): [3.0],
+        ((DATA_AXIS, 2), ("param_set", 1)): [4.0],
+    }
+    reduced = stage.reduce(results, env=_env(labels=[1.0, 0.0, 0.0]), token=None)
+    # residuals preds - labels = [0, 2, 3] (set 0) and [1, 3, 4] (set 1); both
+    # have variance 14/9, which is the MSE at the fitted bias.
+    assert reduced[(("param_set", 0),)] == [pytest.approx(14.0 / 9.0)]
+    assert reduced[(("param_set", 1),)] == [pytest.approx(14.0 / 9.0)]
+
+
+def test_reduce_rejects_fit_bias_without_labels(composed):
+    qc, data_params, weight_params = composed
+    stage = DataBindingStage(
+        data_params=data_params, loss_reduction=_mean, fit_bias=True
+    )
+    results = {
+        ((DATA_AXIS, 0), ("param_set", 0)): [1.0],
+        ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
+    }
+    with pytest.raises(ValueError, match="fit_bias requires env.labels"):
+        stage.reduce(results, env=_env(), token=None)
+
+
 def test_reduce_rejects_labels_without_sample_loss(composed):
     """env labels with no configured sample_loss is a misconfiguration."""
     qc, data_params, weight_params = composed
@@ -443,6 +483,7 @@ def test_introspect_reports_sample_count_and_path(composed):
         "n_data_params": 2,
         "supervised": False,
         "loss_reduction": "mean",
+        "fit_bias": False,
         "path": "template",
     }
     stage._use_template_path = False

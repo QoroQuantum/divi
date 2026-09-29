@@ -92,6 +92,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         labels: npt.ArrayLike | None = None,
         loss_fn: SampleLossFn = "squared_error",
         loss_reduction: LossReductionFn = "mean",
+        fit_bias: bool = False,
         max_iterations: int = 10,
         **kwargs,
     ) -> None:
@@ -128,6 +129,12 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
                 when unsupervised, or per-sample losses when ``labels`` is set)
                 into the scalar the optimizer sees. ``"mean"`` (default),
                 ``"sum"``, or a callable ``np.ndarray (n_samples,) -> float``.
+            fit_bias: Predict ``⟨H⟩ + b`` (``⟨H⟩`` including the observable's
+                constant term), with ``b`` set in closed form to its
+                squared-error optimum rather than optimised, and exposed as
+                ``fitted_bias``. Requires ``labels``
+                for at least 2 samples, ``loss_fn="squared_error"`` and a
+                ``"mean"`` or ``"sum"`` reduction. Defaults to ``False``.
             max_iterations: Maximum number of optimisation iterations.
             **kwargs: Forwarded to
                 :class:`~divi.qprog.VariationalQuantumAlgorithm`
@@ -136,8 +143,8 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         Raises:
             TypeError: If ``feature_map`` or ``ansatz`` are not the expected
                 base types, or if ``observable`` is not a ``SparsePauliOp``.
-            ValueError: On shape mismatches, non-positive layer counts, or
-                degenerate Hamiltonians.
+            ValueError: On shape mismatches, non-positive layer counts,
+                degenerate Hamiltonians, or an unsupported ``fit_bias`` setup.
         """
         super().__init__(**kwargs)
 
@@ -181,10 +188,35 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         if labels is None and loss_fn != "squared_error":
             warn(_LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
 
+        if fit_bias:
+            if self.labels is None:
+                raise ValueError("fit_bias requires labels.")
+            if self.labels.shape[0] < 2:
+                raise ValueError(
+                    "fit_bias requires at least 2 samples; with one, the bias "
+                    "absorbs the whole error and the loss is always 0."
+                )
+            if loss_fn != "squared_error" or loss_reduction not in ("mean", "sum"):
+                raise ValueError(
+                    "fit_bias requires loss_fn='squared_error' and "
+                    "loss_reduction='mean' or 'sum'."
+                )
+        self._fit_bias = fit_bias
+
         if self.labels is not None and default_observable:
-            # The default parity observable reads out in [-1, 1]; labels outside
-            # that band can never be matched, so squared error floors above zero.
-            if np.any(np.abs(self.labels) > 1.0):
+            # The default parity observable reads out in [-1, 1]; a fitted bias
+            # shifts that band but cannot widen it.
+            if fit_bias and np.ptp(self.labels) > 2.0:
+                warn(
+                    "labels span more than the readout range of the default parity "
+                    "observable ([-1, 1], width 2); a fitted bias shifts that range "
+                    "but cannot widen it, so the supervised loss cannot reach zero. "
+                    "Rescale your labels or pass an observable whose range matches "
+                    "them.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            elif not fit_bias and np.any(np.abs(self.labels) > 1.0):
                 warn(
                     "labels fall outside [-1, 1] but the default parity observable "
                     "reads out in [-1, 1]; the supervised loss cannot reach zero. "
