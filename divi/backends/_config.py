@@ -52,7 +52,7 @@ class DeviceConfig(BaseModel):
 
     Toggles take ``True`` or ``False``. The options apply to every QPU in the
     target system, and each QPU reads only its own vendor's keys. Options left
-    out, or set to ``None``, keep the QPU's own settings. Configs are frozen;
+    out, or set to ``None``, keep the QPU's own settings. Configurations are frozen;
     :meth:`override` and :meth:`reset` return changed copies.
     :meth:`~divi.backends.QoroService.submit_circuits` rejects a key no vendor
     accepts.

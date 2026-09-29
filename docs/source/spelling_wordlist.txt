@@ -15,6 +15,7 @@ antiferromagnetically
 arg
 args
 arity
+Arrasmith
 artifacts
 arXiv
 async
@@ -44,9 +45,11 @@ checkpointed
 checkpointing
 Cherrat
 Cholesky
+Cincio
 cma
 CMake
 coeff
+Coles
 colorbar
 combinatorial
 combinatorially
@@ -115,6 +118,7 @@ Gacon
 gCANS
 Gemma
 Goldfarb
+Gu
 Hadamard
 Hadamards
 Hadfield
@@ -144,6 +148,7 @@ invertible
 ising
 iterable
 iteratively
+Izaac
 jac
 Jacobian
 Jacobians
@@ -155,11 +160,13 @@ Kashefi
 kernighan
 Killoran
 Kraus
+Kübler
 kwarg
 kwargs
 lexicographically
 lifecycle
 lin
+Lipschitz
 LLM
 Lookahead
 Louvain
@@ -298,6 +305,7 @@ Sdg
 semidefinite
 Shanno
 shorthands
+Somma
 Spall
 spo
 Springer
@@ -364,6 +372,7 @@ vrp
 walkthroughs
 whitespace
 Whitlock
+Wierichs
 Woerner
 WState
 Xcode

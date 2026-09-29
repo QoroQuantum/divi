@@ -314,7 +314,7 @@ Submitting and Monitoring Jobs
 Configuring Jobs with JobConfig
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-The :class:`~divi.backends.QoroService` uses a :class:`~divi.backends.JobConfig` object to manage settings for job submissions. Set a default when you initialise the service, and pass ``job_config`` to ``submit_circuits`` to run one job with a different config. Configs are frozen; :meth:`~divi.backends.JobConfig.override` and :meth:`~divi.backends.JobConfig.reset` return changed copies.
+The :class:`~divi.backends.QoroService` uses a :class:`~divi.backends.JobConfig` object to manage settings for job submissions. Set a default when you initialise the service, and pass ``job_config`` to ``submit_circuits`` to run one job with a different config. Configurations are frozen; :meth:`~divi.backends.JobConfig.override` and :meth:`~divi.backends.JobConfig.reset` return changed copies.
 
 .. code-block:: python
 
@@ -458,7 +458,7 @@ to every QPU in the system, and each QPU reads only its own vendor's keys.
 out keep the QPU's own settings. The QPU system decides which device runs the
 job, so the device-selection keys (``IBM_DEVICE`` and ``IQM_DEVICE_URL``) are
 rejected. :meth:`~divi.backends.QoroService.get_device_config` reads the options
-back. As with the other configs, ``QoroService(device_config=...)`` sets a
+back. As with the other configurations, ``QoroService(device_config=...)`` sets a
 default for every QPU job, and a per-call ``device_config`` replaces it.
 
 .. _Backend Selection Guide:
