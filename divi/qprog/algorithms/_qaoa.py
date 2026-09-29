@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import pickle
 from fractions import Fraction
 from math import gcd, lcm
 from typing import Any, Literal, Self
@@ -267,9 +266,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             "max_shift_evaluations_per_parameter": (
                 self.max_shift_evaluations_per_parameter
             ),
-            "trotterization_strategy": pickle.dumps(
-                self.trotterization_strategy, protocol=pickle.HIGHEST_PROTOCOL
-            ).hex(),
         }
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
@@ -299,9 +295,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.max_shift_evaluations_per_parameter = state.get(
             "max_shift_evaluations_per_parameter",
             self.max_shift_evaluations_per_parameter,
-        )
-        self.trotterization_strategy = pickle.loads(
-            bytes.fromhex(state["trotterization_strategy"])
         )
 
     @property

@@ -437,6 +437,26 @@ class TestQAOAQDriftMultiSample:
         assert qaoa.best_loss < float("inf")
 
 
+def test_loaded_state_keeps_the_constructed_trotterization_strategy(
+    dummy_simulator, default_optimizer
+):
+    def make_qaoa(strategy):
+        return QAOA(
+            MaxCutProblem(nx.bull_graph()),
+            trotterization_strategy=strategy,
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
+        )
+
+    source = make_qaoa(ExactTrotterization(keep_top_n=3))
+    strategy = ExactTrotterization(keep_top_n=2)
+    target = make_qaoa(strategy)
+
+    target._load_subclass_state(source._save_subclass_state())
+
+    assert target.trotterization_strategy is strategy
+
+
 class TestFinalComputationDecode:
     """Test that sample_solution handles arbitrary decode returns."""
 
