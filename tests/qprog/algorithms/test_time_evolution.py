@@ -537,7 +537,7 @@ class TestTimeEvolutionCompletedCheckpointing:
             observable=observable,
             backend=dummy_simulator,
         )
-        source._results = results
+        source._results["evolved_state_measurement"] = results
         checkpoint = source._make_checkpoint(tmp_path)
 
         target = TimeEvolution(

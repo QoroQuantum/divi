@@ -1262,26 +1262,25 @@ class TestBatchProgress:
         assert finish.progress_key == register.progress_key
         assert finish.terminal_status is TerminalStatus.CANCELLED
 
-    def test_success_follows_parsing_and_accounting_but_precedes_future_release(self):
+    def test_success_follows_parsing_but_precedes_future_release(self):
         entry = _make_entry({"c1": "qasm"})
         flush_group = _FlushGroup({"p1": entry.future}, "cyan")
-        observations: list[tuple[float, bool]] = []
-        coord: _BatchCoordinator
+        future_done_at_success: list[bool] = []
 
         def _record(event: ProgressEvent) -> None:
             if (
                 event.kind is EventKind.FINISH
                 and event.terminal_status is TerminalStatus.SUCCESS
             ):
-                observations.append((coord.total_runtime, entry.future.done()))
+                future_done_at_success.append(entry.future.done())
 
         coord = _BatchCoordinator(_FakeAsyncBackend(), progress_emitter=_record)
 
-        runtime = coord._submit_sub_batch({"p1": entry}, flush_group)
+        coord._submit_sub_batch({"p1": entry}, flush_group)
 
-        assert runtime == 2.5
-        assert observations == [(2.5, False)]
-        assert entry.future.done()
+        assert future_done_at_success == [False]
+        _, run_time = entry.future.result(timeout=0)
+        assert run_time == 2.5
 
 
 class TestCancellation:
@@ -1345,80 +1344,28 @@ class TestCancellation:
         assert "p1" in error_holder
 
 
-class TestTotalRuntime:
-    def test_runtime_zero_for_a_backend_reporting_none(self):
-        coord = _BatchCoordinator(FakeSyncBackend())
-        coord.register_program("p1")
-        coord.submit("p1", {"c1": "q"})
+def test_partial_subbatch_failure_keeps_the_successful_share(mocker):
+    """Sub-batch 0 succeeds and sub-batch 1 raises: sub-batch 0's program still
+    receives its run time, and only sub-batch 1's program fails."""
+    backend = FakeSyncBackend()
+    _report_run_times(mocker, backend, [7.5, RuntimeError("second fails")])
+    coord = _BatchCoordinator(backend)
+    batch = {
+        "p_with_ham": _make_entry({"c1": "q"}, {"ham_ops": "Z"}),
+        "p_no_ham": _make_entry({"c2": "q"}, {}),
+    }
+    flush_group = _FlushGroup(
+        futures={k: e.future for k, e in batch.items()}, color="green"
+    )
+    with coord._in_flight_lock:
+        coord._in_flight.append(flush_group)
 
-        assert coord.total_runtime == 0.0
+    coord._do_flush(batch, flush_group)
 
-    def test_sync_backend_run_time_is_credited(self, mocker):
-        backend = FakeSyncBackend()
-        _report_run_times(mocker, backend, [1.5])
-        coord = _BatchCoordinator(backend)
-        coord.register_program("p1")
-        coord.submit("p1", {"c1": "q"})
-
-        assert coord.total_runtime == 1.5
-
-    def test_partial_subbatch_failure_preserves_credit(self, mocker):
-        """Sub-batch 0 succeeds, sub-batch 1 raises → coordinator keeps the
-        credit from sub-batch 0."""
-        backend = FakeSyncBackend()
-        _report_run_times(mocker, backend, [7.5, RuntimeError("second fails")])
-        coord = _BatchCoordinator(backend)
-
-        batch = {
-            "p_with_ham": _make_entry({"c1": "q"}, {"ham_ops": "Z"}),
-            "p_no_ham": _make_entry({"c2": "q"}, {}),
-        }
-
-        flush_group = _FlushGroup(
-            futures={k: e.future for k, e in batch.items()}, color="green"
-        )
-        with coord._in_flight_lock:
-            coord._in_flight.append(flush_group)
-
-        coord._do_flush(batch, flush_group)
-
-        assert coord.total_runtime == 7.5
-
-    def test_runtime_credited_before_futures_resolved(self, mocker):
-        """The flush runs on a daemon thread, and resolving a program's future
-        unblocks it — which lets the ensemble's join() read ``total_runtime``.
-        So the credit must land *before* the futures resolve; otherwise that
-        read races the credit and can drop the flush's runtime.
-        """
-        backend = FakeSyncBackend()
-        _report_run_times(mocker, backend, [6.0])
-        coord = _BatchCoordinator(backend)
-
-        runtime_seen_at_resolution = []
-
-        class _RecordingFuture(Future):
-            def set_result(self, result):
-                runtime_seen_at_resolution.append(coord.total_runtime)
-                super().set_result(result)
-
-        batch = {
-            "p1": _PendingEntry({"c1": "q"}, {}, _RecordingFuture()),
-            "p2": _PendingEntry({"c2": "q"}, {}, _RecordingFuture()),
-        }
-
-        flush_group = _FlushGroup(
-            futures={k: e.future for k, e in batch.items()}, color="green"
-        )
-        with coord._in_flight_lock:
-            coord._in_flight.append(flush_group)
-
-        coord._do_flush(batch, flush_group)
-
-        # Both futures observed the full runtime already credited when they
-        # resolved — never 0.0 (which is what a resolve-then-credit order
-        # would record).
-        assert runtime_seen_at_resolution == [6.0, 6.0]
-        assert coord.total_runtime == 6.0
+    _, run_time = batch["p_with_ham"].future.result(timeout=0)
+    assert run_time == 7.5
+    with pytest.raises(RuntimeError, match="second fails"):
+        batch["p_no_ham"].future.result(timeout=0)
 
 
 class TestProxyBackend:
@@ -1443,9 +1390,11 @@ class TestProxyBackend:
         assert real.resolves_parameters is True
         assert proxy.resolves_parameters is False
 
-    def test_proxy_integrates_with_coordinator_barrier(self):
-        """Two proxies submit through the coordinator and results are correct."""
+    def test_proxy_integrates_with_coordinator_barrier(self, mocker):
+        """Two proxies submit through the coordinator and each gets its own
+        results and an even share of the merged job's run time."""
         backend = FakeSyncBackend()
+        _report_run_times(mocker, backend, [6.0])
         coord = _BatchCoordinator(backend)
         coord.register_program("p1")
         coord.register_program("p2")
@@ -1472,6 +1421,7 @@ class TestProxyBackend:
         assert results["p1"].results[0]["label"] == "c_p1"
         assert len(results["p2"].results) == 1
         assert results["p2"].results[0]["label"] == "c_p2"
+        assert results["p1"].run_time == results["p2"].run_time == 3.0
 
         # Single merged backend call.
         assert len(backend.submitted) == 1

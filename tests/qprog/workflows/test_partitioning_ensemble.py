@@ -209,6 +209,7 @@ class TestPartitioningProgramEnsemble:
 
         prog = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
         prog.has_results.return_value = False
+        prog._results = {}
         ensemble._programs["A"] = prog
 
         with pytest.raises(RuntimeError, match="Some/All programs have no results"):

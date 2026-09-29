@@ -11,7 +11,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from divi.qprog.quantum_program import QuantumProgram
 
 __all__ = [
     "CheckpointConfig",
@@ -28,6 +31,7 @@ __all__ = [
 
 # Constants for checkpoint file and directory naming
 PROGRAM_STATE_FILE = "program_state.json"
+PROGRAM_COMPLETION_FILE = "program_completion.json"
 OPTIMIZER_STATE_FILE = "optimizer_state.json"
 SUBDIR_PREFIX = "checkpoint_"
 
@@ -252,6 +256,29 @@ def _atomic_write(path: Path, content: str) -> None:
         if temp_file.exists():
             temp_file.unlink()
         raise OSError(f"Failed to write checkpoint file {path}: {e}") from e
+
+
+def _write_program_completion(
+    program: "QuantumProgram", directory: Path | str | None
+) -> None:
+    """Write ``program``'s state as the directory's completion file.
+
+    The completion file holds the program as the last ``run()`` or
+    ``sample_solution()`` left it, including what it computed at the end (e.g.
+    the final sample); the iteration checkpoints
+    beside it keep the optimizer state. No-op without a directory, or for a
+    program that cannot produce a completed checkpoint.
+    """
+    if directory is None:
+        return
+    directory = Path(directory)
+    checkpoint = program._make_checkpoint(directory)
+    if checkpoint is None:
+        return
+    _atomic_write(
+        _ensure_checkpoint_dir(directory) / PROGRAM_COMPLETION_FILE,
+        checkpoint.model_dump_json(indent=2),
+    )
 
 
 def _validate_checkpoint_json(

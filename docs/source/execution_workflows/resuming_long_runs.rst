@@ -101,6 +101,10 @@ To save checkpoints less frequently, set the ``checkpoint_interval`` parameter:
 
 .. invisible-code-block: python
 
+   import shutil
+
+   # A fresh run refuses a directory that already holds checkpoints.
+   shutil.rmtree(checkpoint_dir)
    vqe = VQE(problem, ansatz=HartreeFockAnsatz(), n_layers=2,
              max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
@@ -134,6 +138,8 @@ Or with a checkpoint interval:
 
 .. invisible-code-block: python
 
+   # Both examples can start within the same second, i.e. in the same directory.
+   shutil.rmtree(config.checkpoint_dir)
    vqe = VQE(problem, ansatz=HartreeFockAnsatz(), n_layers=2,
              max_iterations=10, optimizer=MonteCarloOptimizer(), backend=MaestroSimulator())
 
@@ -209,7 +215,7 @@ defines the workflow and problem configuration:
 
 Completed rounds resume from their output state. Interrupted rounds resume from
 their saved input state and reconstruct the entire program manifest before any
-child state is applied. Children whose terminal results were saved are reused
+child state is applied. Children with a ``program_completion.json`` are reused
 without rerunning; otherwise eligible variational children continue from their
 optimizer checkpoints, and unsupported or damaged children restart within that
 round. See :ref:`ensemble-checkpointing` for the eligibility rules, custom
@@ -342,9 +348,15 @@ Each checkpoint is stored in a subdirectory with the following structure:
    ├── checkpoint_002/
    │   ├── program_state.json
    │   └── optimizer_state.json
-   └── ...
+   ├── ...
+   └── program_completion.json   # Results of the finished run
 
-:class:`~divi.qprog.algorithms.IterativeQAOA` optimises at one depth after another and restarts its iteration count at each one, so it nests that layout one level deeper — ``depth_01/checkpoint_001``, ``depth_02/checkpoint_001``, and so on. Depths therefore never overwrite one another, and ``load_state()`` on the top-level directory resolves to the deepest depth that has a complete checkpoint. Resuming continues the depth schedule from there rather than restarting at depth 1.
+``checkpoint_NNN`` holds resume state. ``program_completion.json`` holds the
+program as the last ``run()`` or ``sample_solution()`` left it, including what
+it computed at the end (e.g. the final sample); ``load_state()`` restores it in place of the latest iteration's
+state, keeping that iteration's optimizer state.
+
+:class:`~divi.qprog.algorithms.IterativeQAOA` nests the iterations per depth (``depth_01/checkpoint_001``, …) with one ``program_completion.json`` at the top. Loading a finished run gives back what ``run()`` ended with: ``best_params`` and ``solution`` from the best depth, and every depth's results in ``depth_history``. An interrupted run resumes from its deepest complete checkpoint.
 
 .. _ensemble-checkpoint-layout:
 
@@ -361,7 +373,7 @@ An ensemble checkpoint is organised by workflow round:
    │   ├── round_completion.json  # Completed output and accounting
    │   ├── program_000/
    │   │   ├── checkpoint_.../       # Iterative VQA state
-   │   │   └── program_completion.json # Terminal child state
+   │   │   └── program_completion.json # Finished child state
    │   └── program_001/
    │       └── ...
    └── round_002/
@@ -382,10 +394,9 @@ reproducible decomposer. Divi's seeded
 ``hybrid`` decomposers are rejected because they cannot guarantee that a
 reconstructed program slot represents the same subproblem.
 
-Each child writes ``program_completion.json`` only after its terminal result is
-available. That marker is preferred over iterative optimizer checkpoints, so a
-completed child is not rerun even when its optimizer itself cannot checkpoint.
-If terminal state is missing or invalid, Divi falls back to the latest complete
+Each child directory has the standalone layout. ``program_completion.json`` is
+preferred over iterative checkpoints, so a completed child is not rerun.
+If that file is missing or invalid, Divi falls back to the latest complete
 iterative checkpoint and then to a fresh child. ``round_completion.json`` is
 written only after the round's state reduction succeeds, so its presence marks
 a completed round. Workflows with state may place explicitly referenced

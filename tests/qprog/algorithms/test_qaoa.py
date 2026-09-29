@@ -457,6 +457,27 @@ def test_loaded_state_keeps_the_constructed_trotterization_strategy(
     assert target.trotterization_strategy is strategy
 
 
+def test_loaded_solution_is_decoded_by_the_constructed_problem(
+    dummy_simulator, default_optimizer
+):
+    """A checkpoint restored onto a relabelled graph reports the new labels."""
+    graph = nx.bull_graph()
+
+    def make_qaoa(g):
+        return QAOA(
+            MaxCutProblem(g), backend=dummy_simulator, optimizer=default_optimizer
+        )
+
+    source = make_qaoa(graph)
+    source._results["solution_bitstring"] = "10100"
+    target = make_qaoa(nx.relabel_nodes(graph, {node: f"n{node}" for node in graph}))
+
+    target._load_subclass_state(source._save_subclass_state())
+
+    assert target.solution == target._decode_solution_fn("10100")
+    assert target.solution != source._decode_solution_fn("10100")
+
+
 class TestFinalComputationDecode:
     """Test that sample_solution handles arbitrary decode returns."""
 
@@ -529,7 +550,9 @@ class TestFinalComputationDecode:
             max_iterations=1,
             optimizer=default_optimizer,
         )
-        with pytest.raises(RuntimeError, match="Call .run\\(\\) first"):
+        with pytest.raises(
+            RuntimeError, match=r"not available yet.*sample_solution\(\)"
+        ):
             _ = qaoa.solution_bitstring
 
 

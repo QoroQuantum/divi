@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
-from pydantic import Field
 from qiskit.circuit import Parameter, QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
@@ -40,7 +39,7 @@ from divi.reporting._events import ProgressEvent, TerminalStatus
 
 
 class _TimeEvolutionCheckpoint(ProgramCheckpoint):
-    results: dict[str, float] | float | list[float] = Field(validation_alias="_results")
+    results: dict[str, float] | float | list[float]
 
 
 class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
@@ -55,7 +54,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         self,
         checkpoint_dir: Path,
     ) -> _TimeEvolutionCheckpoint:
-        if self._results is None:
+        if not self.has_results():
             raise RuntimeError("TimeEvolution has no completed results to checkpoint.")
         return _TimeEvolutionCheckpoint._from_program(self)
 
@@ -63,7 +62,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         checkpoint = _TimeEvolutionCheckpoint.model_validate_json(checkpoint_json)
         if checkpoint.program_type != type(self).__name__:
             raise ValueError("Checkpoint is for a different program type.")
-        self._results = checkpoint.results
+        self._results["evolved_state_measurement"] = checkpoint.results
         return True
 
     def __init__(
@@ -160,10 +159,8 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         self._template_meta = _template_meta
         self._template_param = _template_param
 
-        self._results: dict[str, float] | float | list[float] | None = None
-
     def has_results(self) -> bool:
-        return self._results is not None
+        return "evolved_state_measurement" in self._results
 
     @property
     def results(self) -> dict[str, float] | float | list[float]:
@@ -180,11 +177,11 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         Raises:
             RuntimeError: If ``.run()`` has not yet been called.
         """
-        if self._results is None:
+        if not self.has_results():
             raise RuntimeError(
                 "TimeEvolution.results is not available. Call .run() first."
             )
-        return self._results
+        return self._results["evolved_state_measurement"]
 
     def probabilities(self) -> dict[str, float]:
         """Return probability-mode results.
@@ -345,12 +342,12 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
                 )
             (raw,) = result.values()
             if self.observable is None:
-                self._results = raw
+                self._results["evolved_state_measurement"] = raw
             elif isinstance(self.observable, tuple):
-                self._results = [float(v) for v in raw]
+                self._results["evolved_state_measurement"] = [float(v) for v in raw]
             else:
                 (single,) = raw
-                self._results = float(single)
+                self._results["evolved_state_measurement"] = float(single)
 
             self._progress_emitter(ProgressEvent.advance(self._progress_key))
             self._progress_emitter(

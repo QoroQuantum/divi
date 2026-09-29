@@ -180,7 +180,10 @@ when only the trained parameters matter.
    ``current_iteration``).
 
    Call ``program.sample_solution(program.best_params)`` to skip training and
-   perform only the final measurement. Pass ``sampling_backend`` to the
+   perform only the final measurement. It is also how to sample a program that
+   has used up ``max_iterations``, e.g. one trained with
+   ``perform_final_computation=False``: ``run()`` on such a program only warns,
+   so it never spends circuits unasked. Pass ``sampling_backend`` to the
    constructor to run that final measurement on a different backend than
    training used; see :ref:`ensemble-sample-solution` for the full precedence
    rules and the ensemble-level equivalent — one call to re-sample every

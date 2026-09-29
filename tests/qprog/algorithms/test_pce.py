@@ -99,8 +99,8 @@ def _read_solution(pce):
 
 
 def _set_probs(pce, probs_dict, *, key="0_NoMitigation:0_ham:0_0"):
-    """Set ``_best_probs`` and ``_losses_history`` on a PCE for get_top_solutions tests."""
-    pce._best_probs = {key: probs_dict}
+    """Set the ``best_probs`` result and ``_losses_history`` for get_top_solutions tests."""
+    pce._results["best_probs"] = {key: probs_dict}
     pce._losses_history = [{0: -1.0}]
 
 
@@ -512,7 +512,7 @@ def test_pce_custom_decode_parities_fn_perform_final_computation(
     pce = make_pce(problem=qubo_identity, decode_parities_fn=fixed_decoder)
 
     pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
-    pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
+    pce._results["best_probs"] = {"0_NoMitigation:0_0": {"01": 1.0}}
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce.sample_solution()
@@ -554,7 +554,7 @@ def test_pce_perform_final_computation_sets_solution(mocker, make_pce, qubo_iden
     pce = make_pce(problem=qubo_identity)
 
     pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
-    pce._best_probs = {"0_NoMitigation:0_0": {"01": 1.0}}
+    pce._results["best_probs"] = {"0_NoMitigation:0_0": {"01": 1.0}}
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce.sample_solution()
@@ -565,22 +565,21 @@ def test_pce_perform_final_computation_sets_solution(mocker, make_pce, qubo_iden
 def test_pce_solution_requires_run(make_pce, qubo_identity):
     pce = make_pce(problem=qubo_identity)
 
-    with pytest.raises(RuntimeError, match="Run the VQE optimization first."):
+    with pytest.raises(RuntimeError, match=r"not available yet.*sample_solution\(\)"):
         _ = pce.solution
 
 
 def test_pce_perform_final_computation_none_eigenstate(mocker, make_pce, qubo_identity):
-    """When _eigenstate is None, _final_vector is set to None."""
+    """Without a measured distribution there is no eigenstate, so no solution."""
     pce = make_pce(problem=qubo_identity)
-    # Stub the measurement step so _best_probs stays empty; VQE then leaves
-    # _eigenstate unset, and PCE's sample_solution must handle that path.
     pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce.sample_solution()
 
-    assert pce._eigenstate is None
-    assert pce._final_vector is None
+    assert pce.eigenstate is None
+    with pytest.raises(RuntimeError, match="not available yet"):
+        pce.solution
 
 
 # ---------------------------------------------------------------------------
@@ -693,13 +692,10 @@ def test_pce_get_top_solutions_validation_errors(make_pce):
 def test_pce_get_top_solutions_no_probs_raises(make_pce):
     """get_top_solutions raises when no probability distribution available."""
     pce = make_pce(problem=np.eye(2))
-    pce._best_probs = {}
+    pce._results["best_probs"] = {}
     pce._losses_history = []
 
-    with pytest.raises(
-        RuntimeError,
-        match="No probability distribution available",
-    ):
+    with pytest.raises(RuntimeError, match="No sampled distribution yet"):
         pce.get_top_solutions(n=2)
 
 
@@ -817,6 +813,7 @@ def test_pce_qubo_e2e_checkpointing_resume(
     )
     assert pce2.current_iteration == first_run_iteration
     assert len(pce2.losses_history) == first_run_losses_count
+    np.testing.assert_array_equal(_read_solution(pce2), _read_solution(pce1))
 
     pce2.max_iterations = 4
     pce2.run(checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir))

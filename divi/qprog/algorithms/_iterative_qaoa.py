@@ -17,7 +17,6 @@ Three interpolation strategies are provided:
 - **CHEBYSHEV**: Chebyshev polynomial basis representation
 """
 
-import json
 from collections.abc import Callable
 from dataclasses import replace
 from enum import Enum
@@ -30,18 +29,18 @@ import numpy.typing as npt
 from qiskit.circuit import ParameterVector
 
 from divi.qprog.checkpointing import (
-    PROGRAM_STATE_FILE,
+    PROGRAM_COMPLETION_FILE,
     CheckpointConfig,
     CheckpointNotFoundError,
-    _atomic_write,
     _find_latest_checkpoint_subdir,
+    _write_program_completion,
 )
-from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
+from divi.qprog.quantum_program import reject_unclaimed_run_kwargs
+from divi.reporting._events import ProgressEvent, TerminalStatus
 
 from ._qaoa import QAOA
 
 DEPTH_SUBDIR_PREFIX = "depth_"
-TERMINAL_STATE_FILE = "iterative_terminal.json"
 
 
 def _extract_depth_from_subdir(path: Path) -> int | None:
@@ -258,10 +257,6 @@ class IterativeQAOA(QAOA):
 
     _supports_fixed_param_scans = False
 
-    # Set by _load_subclass_state so run() continues the depth schedule instead
-    # of restarting it; cleared once that run consumes it.
-    _resumed_from_checkpoint: bool = False
-
     def __init__(
         self,
         problem,
@@ -294,6 +289,15 @@ class IterativeQAOA(QAOA):
         """Total expected iterations across all depths (for progress display)."""
         return sum(self._get_max_iters(d) for d in range(1, self._max_depth + 1))
 
+    @property
+    def _completed_iterations(self) -> int:
+        """Iterations already run across all depths (for progress display)."""
+        done = sum(entry["n_iterations"] for entry in self._depth_history)
+        # A depth checkpointed mid-way has run part of its budget.
+        if self.n_layers == len(self._depth_history) + 1:
+            done += self.current_iteration
+        return done
+
     def _get_max_iters(self, depth: int) -> int:
         if callable(self._max_iterations_per_depth):
             return self._max_iterations_per_depth(depth)
@@ -313,7 +317,7 @@ class IterativeQAOA(QAOA):
         self._cost_circuit = None
 
     def _save_subclass_state(self) -> dict[str, Any]:
-        """Save QAOA state plus the depth schedule's own progress."""
+        """Save QAOA state plus the depths run so far."""
         state = super()._save_subclass_state()
         state.update(
             {
@@ -328,12 +332,11 @@ class IterativeQAOA(QAOA):
         return state
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
-        """Restore the depth schedule and rebuild the ansatz at the saved depth."""
+        """Restore the depths run so far and rebuild the ansatz at the saved depth."""
         super()._load_subclass_state(state)
 
-        missing_keys = [
-            key for key in ("depth", "best_depth", "depth_history") if key not in state
-        ]
+        required_keys = ("depth", "best_depth", "depth_history")
+        missing_keys = [key for key in required_keys if key not in state]
         if missing_keys:
             raise KeyError(
                 f"Corrupted checkpoint: missing required state keys: {missing_keys}"
@@ -348,7 +351,6 @@ class IterativeQAOA(QAOA):
             for entry in state["depth_history"]
         ]
         self._rebuild_for_depth(state["depth"])
-        self._resumed_from_checkpoint = True
 
     @classmethod
     def _resolve_checkpoint_path(
@@ -361,23 +363,11 @@ class IterativeQAOA(QAOA):
         ``run()`` writes each depth under its own ``depth_NN`` subdirectory, so
         a directory holding those is resolved to the deepest one carrying a
         complete checkpoint before the usual per-iteration resolution runs.
+        Loading a finished run then applies its top-level completion file,
+        which restores the best depth.
         """
         main_dir = Path(checkpoint_dir)
         if subdirectory is None and main_dir.is_dir():
-            terminal_file = main_dir / TERMINAL_STATE_FILE
-            if terminal_file.is_file():
-                try:
-                    terminal = json.loads(terminal_file.read_text())
-                    terminal_depth = terminal["depth"]
-                    if not isinstance(terminal_depth, int):
-                        raise ValueError
-                    terminal_dir = (
-                        main_dir / f"{DEPTH_SUBDIR_PREFIX}{terminal_depth:02d}"
-                    )
-                    _find_latest_checkpoint_subdir(terminal_dir)
-                    main_dir = terminal_dir
-                except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
-                    pass
             depth_dirs = sorted(
                 (
                     d
@@ -388,8 +378,6 @@ class IterativeQAOA(QAOA):
                 reverse=True,
             )
             for depth_dir in depth_dirs:
-                if main_dir != Path(checkpoint_dir):
-                    break
                 try:
                     _find_latest_checkpoint_subdir(depth_dir)
                 except CheckpointNotFoundError:
@@ -399,60 +387,18 @@ class IterativeQAOA(QAOA):
 
         return super()._resolve_checkpoint_path(main_dir, subdirectory)
 
-    def _write_terminal_checkpoint(self, checkpoint_config: CheckpointConfig) -> None:
-        """Make the sampled best-depth state the root checkpoint target."""
-        if checkpoint_config.checkpoint_dir is None:
-            return
-        root = Path(checkpoint_config.checkpoint_dir)
-        depth_dir = root / f"{DEPTH_SUBDIR_PREFIX}{self._best_depth:02d}"
-        checkpoint_path = _find_latest_checkpoint_subdir(depth_dir)
-        _, stored = type(self)._load_checkpoint_state(depth_dir)
-        current = self._make_checkpoint(checkpoint_path)
-        terminal_state = stored.model_copy(
-            update={
-                "best_loss": current.best_loss,
-                "best_probs": current.best_probs,
-                "best_params": current.best_params,
-                "final_params": current.final_params,
-                "total_circuit_count": current.total_circuit_count,
-                "total_run_time": current.total_run_time,
-                "rng_state": current.rng_state,
-                "subclass_state": current.subclass_state,
-            }
-        )
-        _atomic_write(
-            checkpoint_path / PROGRAM_STATE_FILE,
-            terminal_state.model_dump_json(indent=2),
-        )
-        _atomic_write(
-            root / TERMINAL_STATE_FILE,
-            json.dumps({"depth": self._best_depth}, indent=2),
-        )
-
     @staticmethod
     def _depth_checkpoint_config(
-        checkpoint_config: CheckpointConfig | None, depth: int
-    ) -> CheckpointConfig | None:
+        checkpoint_config: CheckpointConfig, depth: int
+    ) -> CheckpointConfig:
         """Point ``checkpoint_config`` at this depth's own subdirectory."""
-        if checkpoint_config is None or checkpoint_config.checkpoint_dir is None:
+        if checkpoint_config.checkpoint_dir is None:
             return checkpoint_config
         return replace(
             checkpoint_config,
             checkpoint_dir=Path(checkpoint_config.checkpoint_dir)
             / f"{DEPTH_SUBDIR_PREFIX}{depth:02d}",
         )
-
-    def _reset_optimization_state(self) -> None:
-        """Reset VQA optimisation tracking state for a fresh run."""
-        self._losses_history = []
-        self._param_history = []
-        self._best_params = np.array([], dtype=np.float64)
-        self._best_loss = float("inf")
-        self._best_probs = {}
-        self.current_iteration = 0
-        self.optimize_result = None
-        self._stop_reason = None
-        self.optimizer.reset()
 
     def run(
         self,
@@ -461,12 +407,38 @@ class IterativeQAOA(QAOA):
         checkpoint_config=None,
         **kwargs,
     ):
-        """Run the depth schedule within one standalone progress operation."""
+        """Run the iterative QAOA procedure across increasing depths.
+
+        At each depth from 1 to ``max_depth``, the algorithm optimises the
+        QAOA parameters, then interpolates the best parameters to warm-start
+        the next depth. After all depths are explored, the instance is
+        restored to the depth that achieved the best overall loss. A program
+        that has run all its depths, or converged, warns and returns without
+        training or finalising; build a new program to run them again.
+
+        Args:
+            initial_params: Ignored — each depth computes its own warm-start
+                via interpolation of the previous depth's best parameters.
+                Passing a non-None value emits a ``UserWarning``.
+            perform_final_computation: Whether to sample the best depth's
+                parameters once the last depth finishes. Defaults to True.
+            checkpoint_config: Each depth is checkpointed under its own
+                ``depth_NN`` subdirectory of ``checkpoint_dir``, so depths do
+                not overwrite one another and
+                :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.load_state`
+                can resume at the depth where the run stopped.
+            **kwargs: ``max_iterations`` overrides every depth's iteration
+                budget (the ``max_iterations`` attribute is reset per depth);
+                any other keyword raises ``TypeError``.
+
+        Returns:
+            IterativeQAOA: Returns ``self`` for method chaining.
+        """
         with self._ensure_progress_session(
             label="Iterative QAOA",
             total=self._expected_total_iterations,
         ):
-            result = self._run_depth_schedule(
+            result = self._run_depths(
                 initial_params=initial_params,
                 perform_final_computation=perform_final_computation,
                 checkpoint_config=checkpoint_config,
@@ -481,36 +453,14 @@ class IterativeQAOA(QAOA):
             )
             return result
 
-    def _run_depth_schedule(
+    def _run_depths(
         self,
         initial_params=None,
         perform_final_computation=True,
         checkpoint_config=None,
         **kwargs,
     ):
-        """Run the iterative QAOA procedure across increasing depths.
-
-        At each depth from 1 to ``max_depth``, the algorithm optimises the
-        QAOA parameters, then interpolates the best parameters to warm-start
-        the next depth. After all depths are explored, the instance is
-        restored to the depth that achieved the best overall loss.
-
-        Args:
-            initial_params: Ignored — each depth computes its own warm-start
-                via interpolation of the previous depth's best parameters.
-                Passing a non-None value emits a ``UserWarning``.
-            perform_final_computation: Whether to run the final measurement
-                at the best depth to extract the solution. Defaults to True.
-            checkpoint_config: Each depth is checkpointed under its own
-                ``depth_NN`` subdirectory of ``checkpoint_dir``, so depths do
-                not overwrite one another and
-                :meth:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm.load_state`
-                can resume the schedule where it stopped.
-            **kwargs: Additional keyword arguments passed to the parent ``run()``.
-
-        Returns:
-            IterativeQAOA: Returns ``self`` for method chaining.
-        """
+        """The body of :meth:`run`, inside its progress session."""
         if initial_params is not None:
             warn(
                 "IterativeQAOA ignores `initial_params` — each depth computes its "
@@ -520,30 +470,48 @@ class IterativeQAOA(QAOA):
                 stacklevel=2,
             )
 
-        if (
-            checkpoint_config is not None
-            and checkpoint_config.checkpoint_dir is not None
-        ):
-            (Path(checkpoint_config.checkpoint_dir) / TERMINAL_STATE_FILE).unlink(
-                missing_ok=True
-            )
+        if checkpoint_config is not None:
+            self._checkpoint_config = checkpoint_config
+        checkpoint_config = self._checkpoint_config or CheckpointConfig()
+        max_iterations = kwargs.pop("max_iterations", None)
+        reject_unclaimed_run_kwargs(self, kwargs)
 
-        resuming = self._resumed_from_checkpoint
-        self._resumed_from_checkpoint = False
-
-        # Mutated in place, never rebound: mid-depth checkpoints read
-        # self._depth_history and must see the depths already completed.
-        if resuming:
-            start_depth = len(self._depth_history) + 1
-            prev_best_params = (
-                self._depth_history[-1]["best_params"].copy()
-                if self._depth_history
-                else None
+        if self._training_finished:
+            ended = (
+                f"converged at depth {self._depth_history[-1]['depth']}"
+                if self._converged
+                else f"already run all its depths (1 to max_depth={self._max_depth})"
             )
-        else:
-            self._depth_history.clear()
-            start_depth = 1
-            prev_best_params = None
+            warn(
+                f"This IterativeQAOA has {ended}, so run() neither trains nor "
+                "finalises. To sample the best depth's parameters, call "
+                "sample_solution().",
+                UserWarning,
+                stacklevel=3,
+            )
+            return self
+
+        # Depths already in the history are done; a restored or interrupted
+        # run continues after them. Mid-depth checkpoints read the history.
+        start_depth = len(self._depth_history) + 1
+        resumes_mid_depth = self.n_layers == start_depth and self.current_iteration > 0
+        if checkpoint_config.checkpoint_dir is not None:
+            # Refused before this run supersedes the top-level completion file.
+            self._reject_used_checkpoint_dir(
+                self._depth_checkpoint_config(
+                    checkpoint_config, start_depth
+                ).checkpoint_dir,
+                self.current_iteration if resumes_mid_depth else 0,
+            )
+            completion = (
+                Path(checkpoint_config.checkpoint_dir) / PROGRAM_COMPLETION_FILE
+            )
+            completion.unlink(missing_ok=True)
+        prev_best_params = (
+            self._depth_history[-1]["best_params"].copy()
+            if self._depth_history
+            else None
+        )
 
         for depth in range(start_depth, self._max_depth + 1):
             self._progress_emitter(
@@ -555,15 +523,7 @@ class IterativeQAOA(QAOA):
 
             # A checkpoint taken mid-depth already carries that depth's ansatz,
             # parameters and optimizer state; continue it rather than restart it.
-            if (
-                resuming
-                and depth == start_depth
-                and self.n_layers == depth
-                and self.current_iteration > 0
-            ):
-                depth_exhausted = self.current_iteration >= self._get_max_iters(depth)
-            else:
-                depth_exhausted = False
+            if not (depth == start_depth and resumes_mid_depth):
                 self._rebuild_for_depth(depth)
                 self._reset_optimization_state()
 
@@ -578,29 +538,15 @@ class IterativeQAOA(QAOA):
                         interpolated, (self.optimizer.n_param_sets, 1)
                     )
 
-            self.max_iterations = self._get_max_iters(depth)
+            self.max_iterations = (
+                self._get_max_iters(depth) if max_iterations is None else max_iterations
+            )
 
-            if not depth_exhausted:
-                outer_emitter = self._progress_emitter
-
-                def emit_depth_event(event):
-                    if (
-                        event.kind is EventKind.FINISH
-                        and event.progress_key == self._progress_key
-                        and event.terminal_status is TerminalStatus.SUCCESS
-                    ):
-                        return
-                    outer_emitter(event)
-
-                with self._bind_progress_emitter(emit_depth_event):
-                    super().run(
-                        initial_params=depth_initial_params,
-                        perform_final_computation=False,
-                        checkpoint_config=self._depth_checkpoint_config(
-                            checkpoint_config, depth
-                        ),
-                        **kwargs,
-                    )
+            if self.current_iteration < self.max_iterations:
+                self._optimize(
+                    depth_initial_params,
+                    self._depth_checkpoint_config(checkpoint_config, depth),
+                )
 
             self._depth_history.append(
                 {
@@ -612,12 +558,7 @@ class IterativeQAOA(QAOA):
             )
             prev_best_params = self._best_params.copy()
 
-            if (
-                self._convergence_threshold is not None
-                and depth > 1
-                and abs(self._depth_history[-2]["best_loss"] - self._best_loss)
-                < self._convergence_threshold
-            ):
+            if self._converged:
                 break
 
         best_entry = min(self._depth_history, key=lambda d: d["best_loss"])
@@ -629,12 +570,30 @@ class IterativeQAOA(QAOA):
         self._final_params = self._best_params.copy()
         self._best_loss = best_entry["best_loss"]
 
-        if perform_final_computation:
-            self.sample_solution(**kwargs)
-            if checkpoint_config is not None:
-                self._write_terminal_checkpoint(checkpoint_config)
+        self._finalize(perform_final_computation)
+        _write_program_completion(self, checkpoint_config.checkpoint_dir)
 
         return self
+
+    @property
+    def _converged(self) -> bool:
+        """Whether the last two depths improved the loss by less than the
+        convergence threshold."""
+        history = self._depth_history
+        return (
+            self._convergence_threshold is not None
+            and len(history) > 1
+            and abs(history[-2]["best_loss"] - history[-1]["best_loss"])
+            < self._convergence_threshold
+        )
+
+    @property
+    def _training_finished(self) -> bool:
+        # Per-depth iteration limits do not end the run; only the last depth
+        # or convergence does.
+        return bool(self._depth_history) and (
+            self._depth_history[-1]["depth"] == self._max_depth or self._converged
+        )
 
     @property
     def best_depth(self) -> int:

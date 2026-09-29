@@ -22,7 +22,6 @@ from .checkpointing import (
 ROUND_PREFIX = "round_"
 ROUND_START_FILE = "round_start.json"
 ROUND_COMPLETION_FILE = "round_completion.json"
-PROGRAM_COMPLETION_FILE = "program_completion.json"
 _ROUND_PATTERN = re.compile(r"^round_(\d+)$")
 
 

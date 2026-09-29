@@ -5,11 +5,12 @@
 import atexit
 import logging
 import os
+import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Container, Hashable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from threading import Event
@@ -29,7 +30,6 @@ from divi.qprog._batch_coordinator import (
     _ProxyBackend,
 )
 from divi.qprog._ensemble_checkpoint import (
-    PROGRAM_COMPLETION_FILE,
     ROUND_COMPLETION_FILE,
     ROUND_START_FILE,
     ProgramRoundRecord,
@@ -41,10 +41,13 @@ from divi.qprog._ensemble_checkpoint import (
 )
 from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.checkpointing import (
+    PROGRAM_COMPLETION_FILE,
     CheckpointConfig,
+    CheckpointCorruptedError,
     CheckpointNotFoundError,
     _atomic_write,
     _ensure_checkpoint_dir,
+    _write_program_completion,
 )
 from divi.qprog.mixins import SolutionSamplingMixin
 from divi.qprog.quantum_program import QuantumProgram
@@ -78,18 +81,42 @@ def _qualified_type(value: Any) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+def _restore_completion(program: QuantumProgram, path: Path) -> ProgramCheckpoint:
+    """Restore ``program`` from the completion file in ``path``.
+
+    Raises:
+        ValueError: If the file was written by another program type, or the
+            program cannot restore from it.
+    """
+    checkpoint_json = (path / PROGRAM_COMPLETION_FILE).read_text()
+    metadata = ProgramCheckpoint.model_validate_json(checkpoint_json, extra="ignore")
+    if metadata.program_type != type(program).__name__:
+        raise ValueError(
+            f"The completion file in {path} was written by a "
+            f"{metadata.program_type}, not a {type(program).__name__}."
+        )
+    if not program._restore_checkpoint(checkpoint_json, path):
+        raise ValueError(
+            f"{type(program).__name__} cannot restore from a completion file."
+        )
+    return metadata
+
+
 @dataclass
 class _RoundCheckpointSession:
     checkpoint_path_by_program: dict[QuantumProgram, Path]
     iterative_config_by_program: dict[QuantumProgram, CheckpointConfig]
-    restored_programs: set[QuantumProgram]
+    # Restored from their program_completion.json; nothing left to run.
+    completed_programs: set[QuantumProgram] = field(default_factory=set)
+    # Restored at their iteration limit; only ``_finalize`` is left to run.
+    unfinalised_programs: set[QuantumProgram] = field(default_factory=set)
     recovered_circuit_count: int = 0
     recovered_run_time: float = 0.0
 
     @classmethod
     def inactive(cls) -> Self:
         """Session for a round that is not being checkpointed."""
-        return cls({}, {}, set())
+        return cls({}, {})
 
     @classmethod
     def prepare(
@@ -140,7 +167,6 @@ class _RoundCheckpointSession:
                 for program in programs
                 if cls._supports_iterative(program)
             },
-            restored_programs=set(),
         )
         if restoring_children:
             session._recover(programs, recovery_state_by_program)
@@ -193,20 +219,12 @@ class _RoundCheckpointSession:
             path = self.checkpoint_path_by_program[program]
 
             restored = False
-            marker_path = path / PROGRAM_COMPLETION_FILE
-            if marker_path.is_file():
+            if (path / PROGRAM_COMPLETION_FILE).is_file():
                 try:
-                    checkpoint_json = marker_path.read_text()
-                    metadata = ProgramCheckpoint.model_validate_json(
-                        checkpoint_json, extra="ignore"
-                    )
-                    if metadata.program_type != type(program).__name__:
-                        raise ValueError("Completed child checkpoint type changed.")
+                    metadata = _restore_completion(program, path)
                     recovered_circuits, recovered_runtime = self._recovered_accounting(
                         recovery_state, metadata
                     )
-                    if not program._restore_checkpoint(checkpoint_json, path):
-                        raise ValueError("Child does not support checkpoint restore.")
                 except Exception:
                     logger.warning(
                         "Could not restore completed ensemble child in slot %d; "
@@ -215,20 +233,23 @@ class _RoundCheckpointSession:
                         exc_info=True,
                     )
                 else:
-                    self.restored_programs.add(program)
+                    self.completed_programs.add(program)
                     circuits += recovered_circuits
                     runtime += recovered_runtime
                     restored = True
 
-            if restored or program not in self.iterative_config_by_program:
+            if (
+                restored
+                or not isinstance(program, VariationalQuantumAlgorithm)
+                or program not in self.iterative_config_by_program
+            ):
                 continue
             try:
-                vqa = cast(VariationalQuantumAlgorithm, program)
-                checkpoint_path, checkpoint = type(vqa)._load_checkpoint_state(path)
+                checkpoint_path, checkpoint = type(program)._load_checkpoint_state(path)
                 recovered_circuits, recovered_runtime = self._recovered_accounting(
                     recovery_state, checkpoint
                 )
-                vqa._restore_loaded_checkpoint(checkpoint_path, checkpoint)
+                program._restore_loaded_checkpoint(checkpoint_path, checkpoint)
             except Exception:
                 logger.warning(
                     "Could not restore iterative ensemble child in slot %d; "
@@ -236,9 +257,14 @@ class _RoundCheckpointSession:
                     slot,
                     exc_info=True,
                 )
+                # The restarted child writes fresh checkpoints here.
+                shutil.rmtree(path)
+                path.mkdir(parents=True)
             else:
                 circuits += recovered_circuits
                 runtime += recovered_runtime
+                if program._training_finished:
+                    self.unfinalised_programs.add(program)
 
         self.recovered_circuit_count = circuits
         self.recovered_run_time = runtime
@@ -258,34 +284,8 @@ class _RoundCheckpointSession:
     def child_config(self, program: QuantumProgram) -> CheckpointConfig | None:
         return self.iterative_config_by_program.get(program)
 
-    def was_restored(self, program: QuantumProgram) -> bool:
-        return program in self.restored_programs
-
     def commit_completed(self, program: QuantumProgram) -> None:
-        path = self.checkpoint_path_by_program.get(program)
-        if path is None:
-            return
-        checkpoint = program._make_checkpoint(path)
-        if checkpoint is None:
-            return
-        _atomic_write(
-            path / PROGRAM_COMPLETION_FILE,
-            checkpoint.model_dump_json(indent=2),
-        )
-
-    def execute(
-        self,
-        program: QuantumProgram,
-        operation: Callable[[QuantumProgram], Any],
-        *,
-        commit_completion: bool,
-    ) -> Any:
-        if self.was_restored(program):
-            return program
-        result = operation(program)
-        if commit_completion:
-            self.commit_completed(program)
-        return result
+        _write_program_completion(program, self.checkpoint_path_by_program.get(program))
 
 
 class ReportingLevel(str, Enum):
@@ -973,14 +973,22 @@ class ProgramEnsemble(ABC):
         if self._sampling_backend is None:
 
             def task_fn(program: QuantumProgram):
+                if program in session.completed_programs:
+                    return program
                 child_config = session.child_config(program)
-
-                def operation(child: QuantumProgram):
-                    if child_config is None:
-                        return child.run()
-                    return child.run(checkpoint_config=child_config)
-
-                return session.execute(program, operation, commit_completion=True)
+                if (
+                    isinstance(program, VariationalQuantumAlgorithm)
+                    and program in session.unfinalised_programs
+                ):
+                    program._finalize(True)
+                    result = program
+                elif child_config is None:
+                    result = program.run()
+                else:
+                    # The child writes its own completion file into child_config.
+                    return program.run(checkpoint_config=child_config)
+                session.commit_completed(program)
+                return result
 
             return self._dispatch(
                 task_fn=task_fn,
@@ -991,18 +999,15 @@ class ProgramEnsemble(ABC):
         _validate_sampling_programs(self._programs, action="sampling_backend workflow")
 
         def _train_without_sampling(program: QuantumProgram):
-            child_config = session.child_config(program)
-
-            def operation(child: QuantumProgram):
-                vqa = cast(VariationalQuantumAlgorithm, child)
-                if child_config is None:
-                    return vqa.run(perform_final_computation=False)
-                return vqa.run(
-                    perform_final_computation=False,
-                    checkpoint_config=child_config,
-                )
-
-            return session.execute(program, operation, commit_completion=False)
+            if (
+                program in session.completed_programs
+                or program in session.unfinalised_programs
+            ):
+                return program
+            return program.run(
+                perform_final_computation=False,
+                checkpoint_config=session.child_config(program),
+            )
 
         self._dispatch(
             task_fn=_train_without_sampling, blocking=True, batch_config=batch_config
@@ -1017,7 +1022,7 @@ class ProgramEnsemble(ABC):
             backend=self._sampling_backend,
             blocking=blocking,
             batch_config=batch_config,
-            restored_programs=session.restored_programs,
+            completed_programs=session.completed_programs,
             on_sampled=session.commit_completed,
         )
 
@@ -1140,7 +1145,6 @@ class ProgramEnsemble(ABC):
                     batch_config=batch_config,
                     _checkpoint_session=checkpoint_session,
                 )
-                self._programs_pending = False
                 if self._round_cancelled:
                     # Ctrl-C during the round: don't reduce partial results
                     # into the state, and don't start another round.
@@ -1228,19 +1232,10 @@ class ProgramEnsemble(ABC):
             )
             ensemble_state_payload = interrupted_checkpoint.ensemble_state
         else:
-            if round_input_snapshot is None:
-                checkpoint_dir = checkpoint_config.checkpoint_dir
-                if checkpoint_dir is None:
-                    raise ValueError("A checkpoint directory is required.")
-                root = _ensure_checkpoint_dir(checkpoint_dir)
-                round_path = _round_dir(root, self._round_index)
-                # The workflow-state artifact is written here, before prepare().
-                round_path.mkdir(parents=True, exist_ok=True)
-                ensemble_state_payload = self._save_workflow_checkpoint_state(
-                    state, round_path, "input_state"
-                )
-            else:
-                round_path, ensemble_state_payload = round_input_snapshot
+            round_path, ensemble_state_payload = (
+                round_input_snapshot
+                or self._save_round_input_state(state, checkpoint_config)
+            )
 
         child_recovery_states = self._child_recovery_states()
         return _RoundCheckpointSession.prepare(
@@ -1343,7 +1338,12 @@ class ProgramEnsemble(ABC):
         checkpoint_dir: Path | str,
         subdirectory: str | None = None,
     ) -> Self:
-        """Restore the latest ensemble checkpoint onto this instance."""
+        """Restore the latest ensemble checkpoint onto this instance.
+
+        An interrupted round resumes on the next :meth:`run`. A completed
+        checkpoint also rebuilds that round's programs from their completion
+        files, so :meth:`aggregate_results` works without running again.
+        """
         if self._executor is not None:
             raise RuntimeError("Cannot restore an ensemble while it is running.")
         if self._programs:
@@ -1396,6 +1396,8 @@ class ProgramEnsemble(ABC):
         state = self._load_workflow_checkpoint_state(
             checkpoint.ensemble_state, round_path, stem
         )
+        if checkpoint.kind == "round_completion":
+            self._rebuild_completed_round(round_path)
 
         self._workflow_state = state
         self._round_history = history
@@ -1409,6 +1411,42 @@ class ProgramEnsemble(ABC):
         self._restored_checkpoint_root = Path(checkpoint_dir)
         self._resumed_from_checkpoint = True
         return self
+
+    def _rebuild_completed_round(self, round_path: Path) -> None:
+        """Rebuild a finished round's programs from their completion files, so
+        its results can still be aggregated.
+
+        Raises:
+            CheckpointCorruptedError: If a checkpointing program's completion
+                file is missing or cannot be restored; no programs are kept.
+        """
+        round_start = RoundCheckpoint.model_validate_json(
+            (round_path / ROUND_START_FILE).read_text()
+        )
+        self.create_programs(
+            self._load_workflow_checkpoint_state(
+                round_start.ensemble_state, round_path, "input_state"
+            )
+        )
+        try:
+            for slot, program in enumerate(self._programs.values()):
+                # Programs without checkpoint support never write one.
+                if type(program)._make_checkpoint is QuantumProgram._make_checkpoint:
+                    continue
+                slot_path = _program_checkpoint_path(round_path, slot)
+                try:
+                    _restore_completion(program, slot_path)
+                except (OSError, ValueError) as exc:
+                    raise CheckpointCorruptedError(
+                        f"Program {slot} of the completed round cannot be "
+                        f"restored: {exc}",
+                        file_path=slot_path / PROGRAM_COMPLETION_FILE,
+                    ) from exc
+        except BaseException:
+            self._programs.clear()
+            raise
+        finally:
+            self._programs_pending = False
 
     def _round_record(
         self,
@@ -1556,13 +1594,14 @@ class ProgramEnsemble(ABC):
         backend: CircuitRunner | None,
         blocking: bool,
         batch_config: BatchConfig,
-        restored_programs: Container[QuantumProgram] = frozenset(),
+        completed_programs: Container[QuantumProgram] = frozenset(),
         on_sampled: Callable[[QuantumProgram], None] | None = None,
     ) -> Self:
         program_to_id = {program: pid for pid, program in self._programs.items()}
 
         def _sample_solution_task(program: VariationalQuantumAlgorithm):
-            if program in restored_programs:
+            # A completion file written before sampling holds no samples.
+            if program in completed_programs and "best_probs" in program._results:
                 return program
             result = cast(SolutionSamplingMixin, program).sample_solution(
                 resolved[program_to_id[program]], backend=program.backend
@@ -1658,25 +1697,12 @@ class ProgramEnsemble(ABC):
         """
         if not self.futures:
             warn(
-                "check_all_done called with no active futures — run() has "
-                "not been invoked (or the ensemble has been reset).",
+                "check_all_done called with no dispatch in flight; start one "
+                "with run_one_round(blocking=False) first.",
                 UserWarning,
                 stacklevel=2,
             )
         return all(future.done() for future in self.futures)
-
-    def _collect_completed_results(self, completed_futures: list):
-        """Collect completed program instances from futures.
-
-        Args:
-            completed_futures: List to append program instances to.
-        """
-        for future in self.futures:
-            if future.done() and not future.cancelled():
-                try:
-                    completed_futures.append(future.result())
-                except Exception:
-                    pass  # Skip failed futures
 
     def _install_coordinator(
         self,
@@ -1772,10 +1798,10 @@ class ProgramEnsemble(ABC):
                 self._preparation_registered = True
 
             for map_key, program in self._programs.items():
-                total = getattr(
-                    program,
-                    "_expected_total_iterations",
-                    getattr(self, "max_iterations", 1),
+                total, done = (
+                    (program._expected_total_iterations, program._completed_iterations)
+                    if isinstance(program, VariationalQuantumAlgorithm)
+                    else (1, 0)
                 )
                 progress_emitter(
                     ProgressEvent.register(
@@ -1786,6 +1812,11 @@ class ProgramEnsemble(ABC):
                         visible=self.reporting_level is ReportingLevel.FULL,
                     )
                 )
+                # A restored program resumes its bar where it stopped.
+                if done:
+                    progress_emitter(
+                        ProgressEvent.advance(program._progress_key, amount=done)
+                    )
         except BaseException:
             self._teardown_progress_session()
             raise
@@ -1836,8 +1867,6 @@ class ProgramEnsemble(ABC):
         """
         if final:
             logger.info(message)
-            return
-        if self.reporting_level is ReportingLevel.OFF:
             return
         if not self._workflow_registered:
             return
@@ -1971,7 +2000,7 @@ class ProgramEnsemble(ABC):
         3. We wait for all still-running futures and mark them in the
            progress bar.
 
-        Without the coordinator the legacy path applies: we try
+        Without the coordinator (``BatchMode.OFF``), we try
         ``future.cancel()`` for pending tasks and ``cancel_unfinished_job()``
         for running ones.
         """
@@ -2012,6 +2041,8 @@ class ProgramEnsemble(ABC):
             if self._progress_session is not None
             else None
         )
+        # One panel per distinct cause: a shared backend error fails every child.
+        causes: dict[tuple[type, str], tuple[BaseException, list]] = {}
         for program, exc in failures:
             map_key = next(
                 (
@@ -2021,7 +2052,16 @@ class ProgramEnsemble(ABC):
                 ),
                 None,
             )
-            label = f" (Program {map_key})" if map_key is not None else ""
+            _, keys = causes.setdefault((type(exc), str(exc)), (exc, []))
+            if map_key is not None:
+                keys.append(map_key)
+        for exc, keys in causes.values():
+            if not keys:
+                label = ""
+            elif len(keys) == 1:
+                label = f" (Program {keys[0]})"
+            else:
+                label = f" (Programs {', '.join(map(str, keys))})"
             render_failure(exc, label=label, console=console)
 
     def _handle_failure(self, failed_future: Future | None) -> None:
@@ -2076,12 +2116,11 @@ class ProgramEnsemble(ABC):
         if self._executor is None:
             return
 
-        completed_futures = []
         try:
             # The as_completed iterator will yield futures as they finish.
             # If a task fails, future.result() will raise the exception immediately.
             for future in as_completed(self.futures):
-                completed_futures.append(future.result())
+                future.result()
                 program = self._future_to_program.get(future)
                 if program is not None:
                     self._emit_progress_message(
@@ -2101,12 +2140,6 @@ class ProgramEnsemble(ABC):
                 )
             self._handle_cancellation()
             self._finish_workflow_progress(TerminalStatus.CANCELLED)
-
-            # Re-collect all completed results from scratch to avoid duplicates
-            # from the as_completed loop above.
-            completed_futures.clear()
-            self._collect_completed_results(completed_futures)
-
             return False
 
         except Exception as e:
@@ -2133,11 +2166,6 @@ class ProgramEnsemble(ABC):
             self._handle_failure(failed_future)
             self._finish_workflow_progress(TerminalStatus.FAILED)
 
-            # Re-collect all completed results from scratch to avoid duplicates
-            # from the as_completed loop above.
-            completed_futures.clear()
-            self._collect_completed_results(completed_futures)
-
             n_total = len(self._programs)
             raise RuntimeError(
                 f"Ensemble execution failed: {n_already_done}/{n_total} programs "
@@ -2145,27 +2173,6 @@ class ProgramEnsemble(ABC):
             ) from e
 
         finally:
-            # Aggregate results from completed program instances.
-            # run() returns self, so completed_futures contains programs.
-            if completed_futures:
-                baseline = self._dispatch_count_baseline
-                self._total_circuit_count += sum(
-                    p._total_circuit_count - baseline.get(p, (0, 0.0))[0]
-                    for p in completed_futures
-                )
-                # For async backends the individual programs don't track runtime
-                # (the proxy returns sync results). Use the coordinator's total
-                # which is captured from the real backend's poll responses.
-                if (
-                    self._coordinator is not None
-                    and self._coordinator.total_runtime > 0
-                ):
-                    self._total_run_time += self._coordinator.total_runtime
-                else:
-                    self._total_run_time += sum(
-                        p._total_run_time - baseline.get(p, (0, 0.0))[1]
-                        for p in completed_futures
-                    )
             self.futures.clear()
 
             # A second KeyboardInterrupt lands most often in the executor
@@ -2184,6 +2191,18 @@ class ProgramEnsemble(ABC):
                     executor, self._executor = self._executor, None
                     executor.shutdown(wait=True)
             finally:
+                # With the workers stopped, count every dispatched program's
+                # work, including programs that failed after running circuits.
+                baseline = self._dispatch_count_baseline
+                self._total_circuit_count += sum(
+                    program._total_circuit_count - circuits
+                    for program, (circuits, _) in baseline.items()
+                )
+                self._total_run_time += sum(
+                    program._total_run_time - run_time
+                    for program, (_, run_time) in baseline.items()
+                )
+                self._dispatch_count_baseline = {}
                 self._restore_program_backends()
                 self._teardown_progress_session()
 
@@ -2202,7 +2221,7 @@ class ProgramEnsemble(ABC):
             self.join()
 
         for program in self._programs.values():
-            if not program.has_results() and not getattr(program, "_best_probs", None):
+            if not program.has_results() and not program._results:
                 raise RuntimeError(
                     "Some/All programs have no results. "
                     "Did you call run() or sample_solution()?"
@@ -2217,7 +2236,7 @@ class ProgramEnsemble(ABC):
         implementation performs validation checks:
         - Ensures programs have been created
         - Waits for any running programs to complete (calls join() if needed)
-        - Verifies that all programs have completed execution (non-empty losses_history)
+        - Verifies that every program has results, sampled or trained
 
         Subclasses should call super().aggregate_results() first, then implement
         their own aggregation logic to combine results from all programs. The
@@ -2228,8 +2247,8 @@ class ProgramEnsemble(ABC):
             The aggregated result, format depends on the subclass implementation.
 
         Raises:
-            RuntimeError: If no programs exist, or if programs haven't completed
-                execution (empty losses_history).
+            RuntimeError: If no programs exist, or if a program has no
+                results yet.
         """
         self._check_ready_for_aggregation()
 

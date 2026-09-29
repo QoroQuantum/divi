@@ -11,6 +11,7 @@ dispatches lives in ``test_ensemble_workflow.py``.
 """
 
 import copy
+import json
 import os
 import pickle
 import re
@@ -25,15 +26,20 @@ import pytest
 import divi.qprog.ensemble as ensemble_module
 from divi.backends import AsyncJobBackend, ExecutionResult
 from divi.exceptions import ExecutionCancelledError
+from divi.qprog import QAOA
 from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
-from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.checkpointing import (
+    PROGRAM_COMPLETION_FILE,
+    CheckpointConfig,
+    CheckpointCorruptedError,
+)
 from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
     ProgramEnsemble,
     ReportingLevel,
 )
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from divi.reporting._events import (
@@ -159,6 +165,16 @@ def program_ensemble(dummy_simulator):
         batch.reset()
     except Exception:
         pass  # Don't break test teardown due to a race condition
+
+
+def _assert_counts_every_dispatched_program(ensemble):
+    """The ensemble's totals are its programs' own counters, each counted once,
+    whether their futures succeeded, failed or were interrupted."""
+    programs = ensemble.programs.values()
+    assert ensemble.total_circuit_count == sum(p.total_circuit_count for p in programs)
+    assert ensemble.total_run_time == pytest.approx(
+        sum(p.total_run_time for p in programs)
+    )
 
 
 class TestProgramEnsemble:
@@ -420,9 +436,7 @@ class TestProgramEnsemble:
 
         mock_shutdown.assert_called_once_with(wait=True)
         assert program_ensemble._executor is None
-        # The successful future's results should still be collected in the finally block
-        assert program_ensemble.total_circuit_count == 5
-        assert program_ensemble.total_run_time == 5.0
+        _assert_counts_every_dispatched_program(program_ensemble)
 
     def test_aggregate_results_calls_join_and_aggregates(self, program_ensemble):
         """
@@ -766,6 +780,27 @@ class TestProgramEnsemble:
         assert TerminalStatus.FAILED in statuses
         assert TerminalStatus.CANCELLED not in statuses
 
+    def test_shared_failure_is_reported_once(self, program_ensemble, mocker):
+        """A backend error that fails every child prints one panel naming them
+        all, not one panel per child."""
+        program_ensemble.create_programs()
+        program_ensemble._start_progress_session(batching_enabled=False)
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
+
+        shared = RuntimeError("backend down")
+        futures = {}
+        for key in ("prog1", "prog2"):
+            future = Future()
+            future.set_exception(shared)
+            futures[future] = program_ensemble.programs[key]
+        program_ensemble.futures = list(futures)
+        program_ensemble._future_to_program = futures
+
+        program_ensemble._report_failed_programs()
+
+        render_failure.assert_called_once()
+        assert render_failure.call_args.kwargs["label"] == " (Programs prog1, prog2)"
+
     def test_failed_future_panel_printed_during_cancellation(
         self, program_ensemble, mocker
     ):
@@ -1011,9 +1046,7 @@ class TestProgramEnsemble:
             program_ensemble.join()
 
         mock_cancel.assert_called_once()
-        # Verify that the running program's results were still collected
-        assert program_ensemble.total_circuit_count == 3
-        assert program_ensemble.total_run_time == 1.0
+        _assert_counts_every_dispatched_program(program_ensemble)
 
     def test_stop_remaining_programs_called_on_failure(self, program_ensemble, mocker):
         """_stop_remaining_programs should be called from the failure path."""
@@ -1130,9 +1163,7 @@ class TestProgramEnsemble:
 
         program_ensemble.join()
 
-        # Both futures completed (10 + 7 = 17), each counted exactly once
-        assert program_ensemble.total_circuit_count == 17
-        assert program_ensemble.total_run_time == 8.0
+        _assert_counts_every_dispatched_program(program_ensemble)
 
     def test_join_exception_no_double_count(self, program_ensemble, mocker):
         """All completed futures are counted exactly once after a task exception."""
@@ -1171,9 +1202,7 @@ class TestProgramEnsemble:
         with pytest.raises(RuntimeError, match="Ensemble execution failed"):
             program_ensemble.join()
 
-        # f1 (10) and f2 (7) both completed, each counted exactly once
-        assert program_ensemble.total_circuit_count == 17
-        assert program_ensemble.total_run_time == 8.0
+        _assert_counts_every_dispatched_program(program_ensemble)
 
     def test_run_rejects_duplicate_program_instances(self, program_ensemble):
         """run() raises when the same program instance is assigned to multiple keys."""
@@ -1872,7 +1901,7 @@ class TestExecutorSizing:
         assert soft_cap_warnings == []
 
 
-def _small_partitioning_ensemble(backend, **kwargs):
+def _small_partitioning_ensemble(backend, *, materialise=True, **kwargs):
     """Build a real PartitioningProgramEnsemble with two QAOA partitions."""
     graph = nx.path_graph(4)
     problem = MaxCutProblem(
@@ -1881,16 +1910,26 @@ def _small_partitioning_ensemble(backend, **kwargs):
             minimum_n_clusters=2, partitioning_algorithm="spectral"
         ),
     )
+    kwargs.setdefault("optimizer", ScipyOptimizer(method=ScipyMethod.NELDER_MEAD))
     ensemble = PartitioningProgramEnsemble(
         problem=problem,
         n_layers=1,
-        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
         max_iterations=2,
         backend=backend,
         **kwargs,
     )
-    ensemble.create_programs()
+    if materialise:
+        ensemble.create_programs()
     return ensemble
+
+
+def _checkpointing_partitioning_ensemble(backend, **kwargs):
+    """A small ensemble whose children checkpoint their own iterations."""
+    return _small_partitioning_ensemble(
+        backend,
+        optimizer=MonteCarloOptimizer(population_size=4, n_best_sets=2),
+        **kwargs,
+    )
 
 
 @pytest.fixture
@@ -1968,13 +2007,16 @@ class TestEnsembleSampleSolution:
         """Ensemble routing calls an overridden hook with the swapped backend."""
         ensemble = small_partitioning_ensemble
         _seed_best_params(ensemble)
+
+        def measure(program):
+            def record(_param_sets, *, backend=None):
+                program._results["best_probs"] = {0: {"00": 1.0}}
+
+            return record
+
         hooks = [
             mocker.patch.object(
-                program,
-                "_run_solution_measurement_for",
-                side_effect=lambda _param_sets, *, backend=None, program=program: setattr(
-                    program, "_best_probs", {0: {"00": 1.0}}
-                ),
+                program, "_run_solution_measurement_for", side_effect=measure(program)
             )
             for program in ensemble.programs.values()
         ]
@@ -2040,11 +2082,197 @@ class TestEnsembleSampleSolution:
 
             assert primary_submit.call_count > 0
             sampling_submit.assert_called_once()
-            assert all(program._best_probs for program in ensemble.programs.values())
+            assert all(
+                program._results["best_probs"] for program in ensemble.programs.values()
+            )
             markers = list(
                 (tmp_path / "round_001").glob("program_*/program_completion.json")
             )
             assert len(markers) == len(ensemble.programs)
+        finally:
+            ensemble.reset()
+
+    def _fail_sampling_after_training(
+        self, backend, make_dummy_simulator, mocker, checkpoint_dir
+    ):
+        failing_backend = make_dummy_simulator(100, seed=7)
+        mocker.patch.object(
+            failing_backend, "submit_circuits", side_effect=RuntimeError("down")
+        )
+        failed = _checkpointing_partitioning_ensemble(
+            backend, sampling_backend=failing_backend
+        )
+        try:
+            with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+                failed.run(
+                    checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir)
+                )
+        finally:
+            failed.reset()
+
+    def _restore_run_and_count_samples(
+        self, backend, make_dummy_simulator, mocker, checkpoint_dir
+    ):
+        """Restore and run; return how often the sampling backend was used."""
+        sampling_backend = make_dummy_simulator(100, seed=7)
+        sampling_submit = mocker.spy(sampling_backend, "submit_circuits")
+        restored = _checkpointing_partitioning_ensemble(
+            backend, sampling_backend=sampling_backend, materialise=False
+        )
+        restored.restore_state(checkpoint_dir)
+        try:
+            restored.run()
+            assert all(p._results["best_probs"] for p in restored.programs.values())
+        finally:
+            restored.reset()
+        return sampling_submit.call_count
+
+    def test_sampling_backend_samples_children_restored_from_unsampled_completion(
+        self, dummy_simulator, make_dummy_simulator, mocker, tmp_path
+    ):
+        """Children whose training run wrote its completion file restore without
+        retraining, and the sampling that failed runs for them."""
+        self._fail_sampling_after_training(
+            dummy_simulator, make_dummy_simulator, mocker, tmp_path
+        )
+        primary_submit = mocker.spy(dummy_simulator, "submit_circuits")
+
+        assert (
+            self._restore_run_and_count_samples(
+                dummy_simulator, make_dummy_simulator, mocker, tmp_path
+            )
+            == 1
+        )
+        primary_submit.assert_not_called()
+
+    def test_sampled_restored_children_are_not_resampled(
+        self, dummy_simulator, make_dummy_simulator, mocker, tmp_path
+    ):
+        self._fail_sampling_after_training(
+            dummy_simulator, make_dummy_simulator, mocker, tmp_path
+        )
+        self._restore_run_and_count_samples(
+            dummy_simulator, make_dummy_simulator, mocker, tmp_path
+        )
+
+        assert (
+            self._restore_run_and_count_samples(
+                dummy_simulator, make_dummy_simulator, mocker, tmp_path
+            )
+            == 0
+        )
+
+    def test_plain_dispatch_finalises_children_restored_at_iteration_limit(
+        self, dummy_simulator, tmp_path, monkeypatch, mocker
+    ):
+        """A child whose last iteration was checkpointed before its final
+        sampling failed restores at its iteration limit and is sampled, not
+        retrained, in the plain dispatch path."""
+
+        def fail_sampling(self, *args, **kwargs):
+            raise RuntimeError("sampler down")
+
+        monkeypatch.setattr(QAOA, "sample_solution", fail_sampling)
+        failed = _checkpointing_partitioning_ensemble(dummy_simulator)
+        try:
+            with pytest.raises(RuntimeError, match="Ensemble execution failed"):
+                failed.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+        finally:
+            failed.reset()
+        monkeypatch.undo()
+
+        restored = _checkpointing_partitioning_ensemble(
+            dummy_simulator, materialise=False
+        ).restore_state(tmp_path)
+        optimizers = [
+            mocker.spy(program.optimizer, "optimize")
+            for program in restored.programs.values()
+        ]
+        try:
+            restored.run()
+
+            assert all(p._results["best_probs"] for p in restored.programs.values())
+            assert all(spy.call_count == 0 for spy in optimizers)
+        finally:
+            restored.reset()
+
+    def test_completed_checkpoint_restores_aggregatable_programs(
+        self, dummy_simulator, tmp_path
+    ):
+        finished = _checkpointing_partitioning_ensemble(dummy_simulator)
+        try:
+            finished.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+            expected = finished.aggregate_results()
+        finally:
+            finished.reset()
+
+        restored = _checkpointing_partitioning_ensemble(
+            dummy_simulator, materialise=False
+        ).restore_state(tmp_path)
+        try:
+            assert restored.aggregate_results() == expected
+        finally:
+            restored.reset()
+
+    @pytest.mark.parametrize(
+        "damage, cause",
+        [
+            (
+                lambda path: path.write_text(
+                    json.dumps({**json.loads(path.read_text()), "program_type": "VQE"})
+                ),
+                "written by a VQE, not a QAOA",
+            ),
+            (lambda path: path.write_text(path.read_text()[:20]), "Invalid JSON"),
+            (lambda path: path.unlink(), "No such file"),
+        ],
+        ids=["other-type", "truncated", "missing"],
+    )
+    def test_completed_checkpoint_with_a_damaged_child_restores_nothing(
+        self, dummy_simulator, tmp_path, damage, cause
+    ):
+        finished = _checkpointing_partitioning_ensemble(dummy_simulator)
+        try:
+            finished.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+        finally:
+            finished.reset()
+        damage(tmp_path / "round_001" / "program_000" / PROGRAM_COMPLETION_FILE)
+        restoring = _checkpointing_partitioning_ensemble(
+            dummy_simulator, materialise=False
+        )
+
+        with pytest.raises(CheckpointCorruptedError, match=f"(?s)Program 0.*{cause}"):
+            restoring.restore_state(tmp_path)
+        assert restoring.programs == {}
+        assert not restoring.round_history
+
+    @pytest.mark.parametrize(
+        "make_optimizer, ensemble_writes",
+        [
+            (lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD), True),
+            (lambda: MonteCarloOptimizer(population_size=4, n_best_sets=2), False),
+        ],
+        ids=["ensemble-writes", "child-writes"],
+    )
+    def test_each_completion_file_has_one_writer(
+        self, dummy_simulator, tmp_path, mocker, make_optimizer, ensemble_writes
+    ):
+        """Children that checkpoint their own iterations write it themselves;
+        the ensemble writes it for the rest."""
+        ensemble_writer = mocker.spy(ensemble_module, "_write_program_completion")
+        ensemble = _small_partitioning_ensemble(
+            dummy_simulator, optimizer=make_optimizer()
+        )
+        try:
+            ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+            markers = list(
+                (tmp_path / "round_001").glob("program_*/program_completion.json")
+            )
+            assert len(markers) == len(ensemble.programs)
+            assert ensemble_writer.call_count == (
+                len(ensemble.programs) if ensemble_writes else 0
+            )
         finally:
             ensemble.reset()
 
@@ -2065,7 +2293,9 @@ class TestEnsembleSampleSolution:
 
             assert primary_submit.call_count > 0
             sampling_submit.assert_called_once()
-            assert all(program._best_probs for program in ensemble.programs.values())
+            assert all(
+                program._results["best_probs"] for program in ensemble.programs.values()
+            )
         finally:
             ensemble.reset()
 
@@ -2144,7 +2374,7 @@ class TestEnsembleSampleSolution:
             params_per_program=params_per_program, blocking=True
         )
         for program in small_partitioning_ensemble.programs.values():
-            assert program._best_probs
+            assert program._results["best_probs"]
         assert small_partitioning_ensemble.total_circuit_count > 0
 
     def test_none_path_uses_existing_best_params(self, small_partitioning_ensemble):
@@ -2152,7 +2382,7 @@ class TestEnsembleSampleSolution:
         _seed_best_params(small_partitioning_ensemble)
         small_partitioning_ensemble.sample_solution(blocking=True)
         for program in small_partitioning_ensemble.programs.values():
-            assert program._best_probs
+            assert program._results["best_probs"]
 
     def test_partial_dict_warns_about_fallbacks(self, small_partitioning_ensemble):
         """Permissive subset emits a UserWarning naming the fallback program IDs."""
@@ -2204,7 +2434,7 @@ class TestEnsembleSampleSolution:
         small_partitioning_ensemble.run()
         circuits_after_run = small_partitioning_ensemble.total_circuit_count
         for program in small_partitioning_ensemble.programs.values():
-            program._best_probs = {}
+            program._results["best_probs"] = {}
 
         small_partitioning_ensemble.sample_solution(blocking=True)
 
@@ -2213,7 +2443,7 @@ class TestEnsembleSampleSolution:
         )
         assert circuits_delta >= len(small_partitioning_ensemble.programs)
         for program in small_partitioning_ensemble.programs.values():
-            assert program._best_probs
+            assert program._results["best_probs"]
 
     def test_aggregate_results_after_sample_solution_only(
         self, small_partitioning_ensemble
@@ -2264,7 +2494,7 @@ class TestEnsembleRedispatchLifecycle:
         )
 
         for program in ensemble.programs.values():
-            assert program._best_probs
+            assert program._results["best_probs"]
 
 
 class TestEnsembleCountAccounting:

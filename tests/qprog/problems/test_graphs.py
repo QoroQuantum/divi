@@ -462,7 +462,7 @@ class TestGraphInput:
 
         # Simulate post-run state: trained params + measurement results
         qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
-        qaoa_problem._best_probs = {
+        qaoa_problem._results["best_probs"] = {
             "0_NoMitigation:0_0": {"11001": 0.1444, "00101": 0.0526}
         }
 
@@ -472,7 +472,6 @@ class TestGraphInput:
         qaoa_problem.sample_solution()
 
         # Should extract bitstring "11001"
-        assert qaoa_problem._decoded_solution == [0, 1, 4]
         assert qaoa_problem.solution == [0, 1, 4]
 
     @pytest.mark.e2e
@@ -612,12 +611,12 @@ class TestGraphInput:
         # Mock best_probs with bitstrings of correct length (4 bits for 4 nodes)
         n_nodes = G.number_of_nodes()
         mock_probs = {"0_0": {f"{i:0{n_nodes}b}": 0.25 for i in range(4)}}
+
+        def measure(_param_sets, *, backend=None):
+            qaoa_problem._results["best_probs"] = mock_probs
+
         mocker.patch.object(
-            qaoa_problem,
-            "_run_solution_measurement_for",
-            side_effect=lambda _param_sets, *, backend=None: setattr(
-                qaoa_problem, "_best_probs", mock_probs
-            ),
+            qaoa_problem, "_run_solution_measurement_for", side_effect=measure
         )
 
         qaoa_problem.run()
@@ -644,7 +643,9 @@ class TestGraphInput:
         )
 
         qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
-        qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"101": 0.6, "010": 0.4}}
+        qaoa_problem._results["best_probs"] = {
+            "0_NoMitigation:0_0": {"101": 0.6, "010": 0.4}
+        }
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
         qaoa_problem.sample_solution()
@@ -690,7 +691,9 @@ class TestGraphInput:
         assert all(wire in G.nodes() for wire in qaoa_problem._circuit_wires)
 
         qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
-        qaoa_problem._best_probs = {"0_NoMitigation:0_0": {"1010": 0.5, "0101": 0.5}}
+        qaoa_problem._results["best_probs"] = {
+            "0_NoMitigation:0_0": {"1010": 0.5, "0101": 0.5}
+        }
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
         qaoa_problem.sample_solution()
@@ -758,7 +761,7 @@ def _seed_second_partition_all_ones(ensemble):
     for i, key in enumerate(prog_keys):
         n_qubits = ensemble.programs[key].n_qubits
         bit = "1" if i == 1 else "0"
-        ensemble.programs[key]._best_probs = {"tag": {bit * n_qubits: 1.0}}
+        ensemble.programs[key]._results["best_probs"] = {"tag": {bit * n_qubits: 1.0}}
         ensemble.programs[key]._losses_history = [{"dummy_loss": 0.0}]
     return set(ensemble._problem._reverse_index_maps[prog_keys[1]].values())
 

@@ -328,20 +328,18 @@ class ExactSamplerVQE(QuantumProgram):
         super().__init__(backend=backend)
         self._hamiltonian = hamiltonian
         self._spec = spec
-        self._best_probs: dict[int, dict[str, float]] = {}
         self._best_params = best_params
-        self._has_results = False
 
     @property
     def best_probs(self) -> dict[int, dict[str, float]]:
-        return self._best_probs
+        return self._results.get("best_probs", {})
 
     @property
     def best_params(self) -> np.ndarray:
         return self._best_params
 
     def has_results(self) -> bool:
-        return self._has_results
+        return bool(self._results)
 
     def run(self, **kwargs) -> Self:
         """Diagonalize the fragment's qubit Hamiltonian and sample its ground state.
@@ -382,8 +380,7 @@ class ExactSamplerVQE(QuantumProgram):
                 continue
             probs[bits] = prob
 
-        self._best_probs = {0: probs}
-        self._has_results = True
+        self._results["best_probs"] = {0: probs}
         return self
 
 

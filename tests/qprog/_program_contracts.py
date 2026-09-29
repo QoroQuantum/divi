@@ -156,6 +156,7 @@ def verify_basic_program_ensemble_behaviour(obj: ProgramEnsemble, mocker) -> Non
 
     mock_program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
     mock_program.has_results.return_value = False
+    mock_program._results = {}
 
     obj.programs = {"dummy": mock_program}
 

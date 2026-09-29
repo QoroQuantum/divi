@@ -560,7 +560,9 @@ class TestQUBOInput:
 
         best_bitstring = "1" * qaoa_problem.n_qubits
         qaoa_problem._best_params = np.zeros(qaoa_problem.n_layers * 2)
-        qaoa_problem._best_probs = {"0_NoMitigation:0_0": {best_bitstring: 1.0}}
+        qaoa_problem._results["best_probs"] = {
+            "0_NoMitigation:0_0": {best_bitstring: 1.0}
+        }
         mocker.patch.object(qaoa_problem, "_run_solution_measurement_for")
 
         qaoa_problem.sample_solution()
@@ -916,6 +918,7 @@ class TestQUBOPartitioningEnsemble:
         mock_program_empty_losses = mocker.MagicMock(spec=QAOA)
         mock_program_empty_losses.best_probs = {}
         mock_program_empty_losses.has_results.return_value = False
+        mock_program_empty_losses._results = {}
         qubo_ensemble_qaoa.programs = {("A", 2): mock_program_empty_losses}
 
         with pytest.raises(RuntimeError, match="Some/All programs have no results"):

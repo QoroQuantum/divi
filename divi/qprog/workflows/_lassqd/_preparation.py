@@ -90,7 +90,6 @@ class LinearMethodFragmentProgram(QuantumProgram):
         self._sampling_backend = sampling_backend
         self._preparation: LUCJPreparation | None = None
         self._terminal_result: _LinearMethodResult | None = None
-        self._best_probs: dict[int, dict[str, float]] = {}
 
     def run(self, **kwargs) -> Self:
         """Optimize the fragment classically, then sample its final circuit."""
@@ -116,7 +115,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
                 backend=self._sampling_backend,
             ),
         )
-        self._best_probs = {
+        self._results["best_probs"] = {
             index: _average_probabilities(probabilities)
             for index, probabilities in result.items()
         }
@@ -124,7 +123,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
 
     def has_results(self) -> bool:
         """Return whether final sampling probabilities are available."""
-        return bool(self._best_probs)
+        return bool(self._results.get("best_probs"))
 
     @property
     def best_params(self) -> np.ndarray:
@@ -133,8 +132,8 @@ class LinearMethodFragmentProgram(QuantumProgram):
 
     @property
     def best_probs(self) -> dict[int, dict[str, float]]:
-        """Normalized final-sampling probabilities."""
-        return self._best_probs.copy()
+        """Normalised final-sampling probabilities."""
+        return self._results.get("best_probs", {}).copy()
 
     @property
     def h_alpha(self) -> np.ndarray:
@@ -192,7 +191,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
                 "total_run_time": self.total_run_time,
                 "state_file": artifact,
                 "state_sha256": state_sha256,
-                "best_probs": self._best_probs,
+                "best_probs": self._results.get("best_probs", {}),
             }
         )
 
@@ -239,7 +238,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
 
         result = _LinearMethodResult(**arrays)
         self._terminal_result = result
-        self._best_probs = checkpoint.best_probs
+        self._results["best_probs"] = checkpoint.best_probs
         return True
 
     def _spec_stage(self):

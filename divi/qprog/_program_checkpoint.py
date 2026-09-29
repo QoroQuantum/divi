@@ -130,11 +130,6 @@ class VQACheckpoint(ProgramCheckpoint):
         default_factory=list, validation_alias="_param_history"
     )
     best_loss: float = Field(validation_alias="_best_loss")
-    # Only solution-sampling programs (SolutionSamplingMixin) carry _best_probs;
-    # it maps a parameter-set index to that set's {bitstring: probability} dict.
-    best_probs: dict[int, dict[str, float]] = Field(
-        default_factory=dict, validation_alias="_best_probs"
-    )
     seed: int | None = Field(validation_alias="_seed")
     stop_reason: str | None = Field(
         default=None, validation_alias="_serialized_stop_reason"
@@ -253,6 +248,8 @@ class VQACheckpoint(ProgramCheckpoint):
 
         program._rng.bit_generator.state = self.rng_state
 
+        # Owners refill their results from the subclass state.
+        program._results = {}
         program._load_subclass_state(self.subclass_state.data)
 
         if len(program._best_params) not in (0, program.n_params):

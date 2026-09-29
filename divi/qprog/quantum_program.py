@@ -39,6 +39,7 @@ from divi.pipeline.stages import (
     QEMStage,
 )
 from divi.qprog._program_checkpoint import ProgramCheckpoint
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.reporting._events import (
     ProgressEmitter,
     ProgressEvent,
@@ -184,6 +185,11 @@ class QuantumProgram(ABC):
         self._last_cost_variance = None
         self._cancellation_event = None
         self._evaluation_counter = 0
+        # Results derived from the program's parameters: one entry per result
+        # (e.g. "best_probs"), each written by one class; empty until computed.
+        self._results: dict[str, Any] = {}
+        # Where the program last checkpointed; later runs and samples write there.
+        self._checkpoint_config: CheckpointConfig | None = None
 
         # Pipelines memoized per preprocessor ``cache_key`` so each one's
         # forward-pass cache persists across optimizer iterations. Preprocessors

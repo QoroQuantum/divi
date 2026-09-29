@@ -649,13 +649,12 @@ class TestEnsembleCheckpointing:
             iterative_config_by_program={
                 program: CheckpointConfig(checkpoint_dir=tmp_path)
             },
-            restored_programs=set(),
         )
 
         session._recover([program], {program: child_state})
 
         program._restore_loaded_checkpoint.assert_not_called()
-        assert not session.was_restored(program)
+        assert program not in session.completed_programs
 
     def test_completed_child_checkpoint_failure_fails_round(
         self, dummy_simulator, tmp_path, mocker

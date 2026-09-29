@@ -106,11 +106,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
         self.n_layers = n_layers
-        self.results = {}
         self.max_iterations = max_iterations
         self.current_iteration = 0
-
-        self._eigenstate = None
 
         self._problem = problem
         cost_spo = problem.hamiltonian
@@ -182,7 +179,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             npt.NDArray[np.int32] | None: The array of bits of the lowest energy eigenstate,
                 or None if not computed.
         """
-        return self._eigenstate
+        return self._results.get("eigenstate")
 
     def _cost_meta_from_ansatz(
         self, prefix: QuantumCircuit | None = None, /, **ansatz_kwargs
@@ -255,12 +252,14 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
             super().sample_solution(self._resolve_sample_params(params), **kwargs)
 
-            if self._best_probs:
-                best_measurement_probs = next(iter(self._best_probs.values()))
+            if best_probs := self._results.get("best_probs"):
+                best_measurement_probs = next(iter(best_probs.values()))
                 eigenstate_bitstring = max(
                     best_measurement_probs, key=best_measurement_probs.__getitem__
                 )
-                self._eigenstate = np.fromiter(eigenstate_bitstring, dtype=np.int32)
+                self._results["eigenstate"] = np.fromiter(
+                    eigenstate_bitstring, dtype=np.int32
+                )
 
             self._progress_emitter(
                 ProgressEvent.show(
@@ -271,28 +270,13 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save VQE-specific runtime state."""
-        return {
-            "eigenstate": (
-                self._eigenstate.tolist() if self._eigenstate is not None else None
-            ),
-        }
+        state = super()._save_subclass_state()
+        if "eigenstate" in self._results:
+            state["eigenstate"] = self._results["eigenstate"].tolist()
+        return state
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
-        """Load VQE-specific state.
-
-        Raises:
-            KeyError: If any required state key is missing (indicates checkpoint corruption).
-        """
-        required_keys = ["eigenstate"]
-        missing_keys = [key for key in required_keys if key not in state]
-        if missing_keys:
-            raise KeyError(
-                f"Corrupted checkpoint: missing required state keys: {missing_keys}"
-            )
-
-        # eigenstate can be None (if not computed yet), but the key must exist
-        eigenstate_list = state["eigenstate"]
-        if eigenstate_list is not None:
-            self._eigenstate = np.array(eigenstate_list, dtype=np.int32)
-        else:
-            self._eigenstate = None
+        """Load VQE-specific state."""
+        super()._load_subclass_state(state)
+        if "eigenstate" in state:
+            self._results["eigenstate"] = np.array(state["eigenstate"], dtype=np.int32)

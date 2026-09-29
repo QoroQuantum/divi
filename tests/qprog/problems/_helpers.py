@@ -93,7 +93,7 @@ def seed_zero_one_best_probs(ensemble, zeros_prob, ones_prob=None):
         probs = {"0" * n_qubits: zeros_prob}
         if ones_prob is not None:
             probs["1" * n_qubits] = ones_prob
-        program._best_probs = {"tag": probs}
+        program._results["best_probs"] = {"tag": probs}
         program._losses_history = [{"dummy_loss": 0.0}]
 
 

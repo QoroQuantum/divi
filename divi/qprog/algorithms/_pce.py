@@ -6,7 +6,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import replace
 from functools import cached_property
-from typing import Literal, Self
+from typing import Literal
 from warnings import warn
 
 import numpy as np
@@ -22,6 +22,7 @@ from divi.pipeline.stages import PCECostStage
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 from divi.qprog.mixins import SolutionEntry
+from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
 from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
 
 
@@ -255,7 +256,6 @@ class PCE(VQE):
         self.alpha = alpha
         self.encoding_type = encoding_type
         self._use_soft_objective = self.alpha < 5.0
-        self._final_vector: npt.NDArray[np.integer] | None = None
         self._decode_parities_fn = decode_parities_fn or _decode_parities
         self._compiled_problem = compile_problem(self.problem)
 
@@ -344,25 +344,6 @@ class PCE(VQE):
         """
         return self._cost_meta_from_ansatz()
 
-    def sample_solution(
-        self,
-        params: npt.NDArray[np.float64] | None = None,
-        **kwargs,
-    ) -> Self:
-        """Compute the final eigenstate and decode it into a PCE vector."""
-        super().sample_solution(self._resolve_sample_params(params), **kwargs)
-
-        if self._eigenstate is None:
-            self._final_vector = None
-            return self
-
-        best_bitstring = "".join(str(x) for x in self._eigenstate)
-        parities = self._decode_parities_fn(
-            [best_bitstring], self._variable_masks_u64
-        ).flatten()
-        self._final_vector = 1 - parities
-        return self
-
     def get_top_solutions(
         self,
         n: int = 10,
@@ -419,16 +400,7 @@ class PCE(VQE):
         if n == 0:
             return []
 
-        if not self._best_probs:
-            raise RuntimeError(
-                "No probability distribution available. The final computation step "
-                "must be performed to compute the probability distribution. "
-                "Call run(perform_final_computation=True) to execute optimization "
-                "and compute the distribution."
-            )
-
-        # _best_probs is keyed by parameter-set tag: {tag: {bitstring: prob}}.
-        probs_dict = next(iter(self._best_probs.values()))
+        probs_dict = self._single_distribution()
 
         filtered = [(bs, prob) for bs, prob in probs_dict.items() if prob >= min_prob]
 
@@ -503,10 +475,11 @@ class PCE(VQE):
             names to binary values.
 
         Raises:
-            RuntimeError: If ``run()`` has not been called yet.
+            RuntimeError: If no eigenstate has been sampled yet.
         """
-        if self._final_vector is None:
-            raise RuntimeError("Run the VQE optimization first.")
+        eigenstate = self._results.get("eigenstate")
+        if eigenstate is None:
+            raise RuntimeError(f"PCE.solution is not available yet. {_SAMPLE_HINT}")
 
         warn(
             "PCE.solution returns the decoded assignment of the most-probable "
@@ -517,4 +490,7 @@ class PCE(VQE):
             stacklevel=2,
         )
 
-        return self._decode_assignment(self._final_vector)
+        parities = self._decode_parities_fn(
+            ["".join(str(x) for x in eigenstate)], self._variable_masks_u64
+        ).flatten()
+        return self._decode_assignment(1 - parities)

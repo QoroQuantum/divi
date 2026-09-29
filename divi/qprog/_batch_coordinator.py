@@ -300,9 +300,6 @@ class _BatchCoordinator:
         # ``_in_flight_lock``.
         self._flush_threads: list[Thread] = []
 
-        # Cumulative runtime tracked from async backend responses.
-        self._total_runtime = 0.0
-
         # Color cycling for flush group indicators.
         self._color_index = 0
         self._batch_sequence = 0
@@ -624,11 +621,6 @@ class _BatchCoordinator:
         ``ham_ops``) so that each backend call receives a uniform set of
         kwargs.  Within a sub-batch, programs with different ``ham_ops``
         values are merged using ``circuit_ham_map``.
-
-        Per-sub-batch runtime is accumulated into ``_total_runtime`` inside
-        :meth:`_submit_sub_batch` so that a partial-success scenario (one
-        sub-batch succeeds, a later one fails) preserves the credit for the
-        successful sub-batch.
         """
         sub_flush_groups: list[_FlushGroup] = []
         try:
@@ -677,12 +669,11 @@ class _BatchCoordinator:
                     if fg in self._in_flight:
                         self._in_flight.remove(fg)
 
-    def _submit_sub_batch(self, sub_batch: _Batch, flush_group: _FlushGroup) -> float:
+    def _submit_sub_batch(self, sub_batch: _Batch, flush_group: _FlushGroup) -> None:
         """Merge, submit, poll, demux, and resolve a single compatible sub-batch.
 
-        Returns the runtime reported by the backend.  Successful sub-batches
-        increment ``_total_runtime`` immediately so that a later sub-batch
-        failing within the same flush does not erase this credit.
+        Each program's future resolves with its results and an even share of
+        the backend's reported run time.
         """
         routed_batch, circuit_routes = _route_batch_circuits(sub_batch)
         merged_circuits, submit_kwargs = self._merge_circuits_and_kwargs(routed_batch)
@@ -734,10 +725,6 @@ class _BatchCoordinator:
                     item | {"label": original_label}
                 )
 
-            if runtime:
-                with self._lock:
-                    self._total_runtime += runtime
-
             per_program_runtime = runtime / n_programs if n_programs > 0 else 0.0
         except ExecutionCancelledError as exc:
             self._progress_emitter(
@@ -779,8 +766,6 @@ class _BatchCoordinator:
                 entry.future.set_result(
                     (program_results.get(prog_key, []), per_program_runtime)
                 )
-
-        return runtime
 
     # ------------------------------------------------------------------
     # Async backend helpers
@@ -909,11 +894,6 @@ class _BatchCoordinator:
         for thread in threads:
             thread.join(timeout=5)
 
-    @property
-    def total_runtime(self) -> float:
-        """Cumulative backend runtime across all flushed jobs."""
-        return self._total_runtime
-
 
 class _ProxyBackend(CircuitRunner):
     """Transparent backend proxy that routes submissions through a coordinator.
@@ -965,7 +945,7 @@ class _ProxyBackend(CircuitRunner):
         self, payloads: Sequence[CircuitPayload] | CircuitBatch, **kwargs
     ) -> ExecutionResult:
         """Submit bound circuits to the coordinator and return sync results."""
-        results, _runtime = self._coordinator.submit(
+        results, run_time = self._coordinator.submit(
             self._program_key, bound_circuits(payloads), **kwargs
         )
-        return ExecutionResult(results=results)
+        return ExecutionResult(results=results, run_time=run_time)

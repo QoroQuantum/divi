@@ -7,7 +7,7 @@
 Sampling a solution — running a circuit, measuring it as a probability
 distribution over bitstrings, then ranking/decoding those bitstrings — is not
 tied to the variational parameter model. This mixin owns that capability's own
-state (the measured ``_best_probs`` distribution and the ``_decode_solution_fn``
+state (the measured ``"best_probs"`` result and the ``_decode_solution_fn``
 decode hook) and leans only on the shared :meth:`~divi.qprog.QuantumProgram.evaluate`
 entry point, to which it hands a :func:`~divi.pipeline.sample_preprocessor`.
 
@@ -37,6 +37,7 @@ import numpy.typing as npt
 
 from divi.backends import CircuitRunner
 from divi.pipeline import CircuitPreprocessor, sample_preprocessor
+from divi.qprog.checkpointing import _write_program_completion
 
 if TYPE_CHECKING:
     # Type-check the mixin as if mixed into its host, so ``super()`` calls and the
@@ -47,6 +48,11 @@ if TYPE_CHECKING:
     _SamplingMixinBase = VariationalQuantumAlgorithm
 else:
     _SamplingMixinBase = object
+
+_SAMPLE_HINT = (
+    "Call sample_solution() to sample the trained parameters, or run() to train "
+    "and sample."
+)
 
 
 class SolutionEntry(NamedTuple):
@@ -79,7 +85,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
     do not have these members — calling them raises ``AttributeError`` rather than
     silently returning nothing.
 
-    The mixin owns its result state (``_best_probs``) and decode hook
+    The mixin owns its ``"best_probs"`` result and decode hook
     (``_decode_solution_fn``); the host supplies ``_initial_spec`` and
     ``_resolve_sample_params`` (see the module docstring for the full contract).
     """
@@ -105,9 +111,26 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 host program).
         """
         super().__init__(*args, **kwargs)
-        self._best_probs: dict[int, dict[str, float]] = {}
         self._decode_solution_fn = decode_solution_fn or (lambda bitstring: bitstring)
         self._sampling_backend = sampling_backend
+
+    def _finalize(self, perform_final_computation: bool) -> None:
+        super()._finalize(perform_final_computation)
+        if perform_final_computation:
+            self.sample_solution()
+
+    def _save_subclass_state(self) -> dict[str, Any]:
+        state = super()._save_subclass_state()
+        if "best_probs" in self._results:
+            state["best_probs"] = self._results["best_probs"]
+        return state
+
+    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+        super()._load_subclass_state(state)
+        if "best_probs" in state:
+            self._results["best_probs"] = {
+                int(index): probs for index, probs in state["best_probs"].items()
+            }
 
     def _preprocessors(self) -> tuple[CircuitPreprocessor, ...]:
         """Expose the sample routine for introspection alongside the host's."""
@@ -137,19 +160,16 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             dict[int, dict[str, float]]: Dictionary mapping each parameter-set
                 index to a bitstring probability dictionary. Bitstrings are binary
                 strings (e.g., "0101"), values are probabilities in range
-                [0.0, 1.0]. Returns an empty dict if final computation has not
-                been performed.
-
-        Raises:
-            RuntimeError: If attempting to access probabilities before running
-                the algorithm with final computation enabled.
+                [0.0, 1.0]. Empty, with a ``UserWarning``, until something has
+                been sampled.
 
         Note:
-            To populate this distribution, you must run the algorithm with
-            `perform_final_computation=True` (the default):
+            ``run()`` samples when it finishes (``perform_final_computation=True``,
+            the default); :meth:`sample_solution` samples trained parameters
+            without training:
 
-            >>> program.run(perform_final_computation=True)
-            >>> probs = program.best_probs
+            >>> program.run(perform_final_computation=False)
+            >>> probs = program.sample_solution().best_probs
 
         Example:
             >>> program.run()
@@ -163,15 +183,14 @@ class SolutionSamplingMixin(_SamplingMixinBase):
               1010: 31.20%
             ...
         """
-        if not self._best_probs:
+        best_probs = self._results.get("best_probs", {})
+        if not best_probs:
             warn(
-                "best_probs is empty. Either optimisation has not been run yet, "
-                "or final computation was not performed. Call run() to execute "
-                "the optimisation.",
+                f"best_probs is empty: nothing has been sampled yet. {_SAMPLE_HINT}",
                 UserWarning,
                 stacklevel=2,
             )
-        return self._best_probs.copy()
+        return best_probs.copy()
 
     def _single_distribution(self) -> dict[str, float]:
         """The distribution of the first sampled parameter set.
@@ -186,22 +205,18 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         Raises:
             RuntimeError: If no distribution has been measured yet.
         """
-        if not self._best_probs:
-            raise RuntimeError(
-                "No probability distribution available. The final computation step "
-                "must be performed to compute the probability distribution. "
-                "Call run(perform_final_computation=True) to execute optimisation "
-                "and compute the distribution."
-            )
-        if len(self._best_probs) > 1:
+        best_probs = self._results.get("best_probs")
+        if not best_probs:
+            raise RuntimeError(f"No sampled distribution yet. {_SAMPLE_HINT}")
+        if len(best_probs) > 1:
             warn(
-                f"{len(self._best_probs)} parameter sets were sampled; "
+                f"{len(best_probs)} parameter sets were sampled; "
                 "only the first (lowest-index) set is used. "
                 "Access best_probs for the per-set distributions.",
                 UserWarning,
                 stacklevel=3,
             )
-        return next(iter(self._best_probs.values()))
+        return next(iter(best_probs.values()))
 
     def get_correlations(self) -> npt.NDArray[np.float64]:
         r"""Get the two-point spin correlations of the sampled state.
@@ -382,10 +397,10 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         jobs that ``run()`` would otherwise dispatch during optimisation.
 
         When called with explicit ``params``, this method does NOT mutate the
-        host's optimizer state. Only the measurement-side attributes are updated:
-        ``_best_probs``, ``_total_circuit_count``, ``_total_run_time``, and
-        subclass-specific solution fields (e.g. ``solution_bitstring`` for QAOA,
-        ``_eigenstate`` for VQE).
+        host's optimizer state. Only the measurement-side state is updated: the
+        results (:attr:`best_probs` and subclass solution fields such as
+        ``solution_bitstring`` for QAOA or ``eigenstate`` for VQE),
+        ``_total_circuit_count`` and ``_total_run_time``.
 
         Args:
             params: Parameter set to evaluate. Must be a numeric array; pass
@@ -402,8 +417,9 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         Note:
             Subclasses override this method to add their algorithm-specific
             decoding step. They should call ``super().sample_solution(params)``
-            to perform the measurement-pipeline dispatch, then read from
-            ``self._best_probs`` to extract algorithm-specific solution state.
+            to perform the measurement-pipeline dispatch, then read
+            ``self._results["best_probs"]`` to extract algorithm-specific
+            solution state.
         """
         if params is None:
             # Defer the fallback to the host's resolution hook (VQA maps None to
@@ -424,6 +440,8 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         self._run_solution_measurement_for(
             np.atleast_2d(params_arr), backend=selected_backend
         )
+        if self._checkpoint_config is not None:
+            _write_program_completion(self, self._checkpoint_config.checkpoint_dir)
         return self
 
     def _run_solution_measurement_for(
@@ -441,7 +459,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
                 backend=backend,
             ),
         )
-        self._best_probs = {
+        self._results["best_probs"] = {
             idx: _average_probabilities(value) for idx, value in result.items()
         }
 

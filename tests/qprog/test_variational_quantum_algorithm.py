@@ -20,7 +20,11 @@ from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPreprocessor, CostEstimate
 from divi.qprog._program_checkpoint import VQACheckpoint
-from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
+from divi.qprog.checkpointing import (
+    PROGRAM_COMPLETION_FILE,
+    CheckpointConfig,
+    list_checkpoints,
+)
 from divi.qprog.early_stopping import EarlyStopping, StopReason
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.optimizers import (
@@ -81,7 +85,7 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
     def _run_solution_measurement_for(self, param_sets, *, backend=None):
         # This double's circuit measures an expectation value, not a sampling
         # distribution, so the real PROBS pipeline would yield malformed
-        # ``_best_probs``. Sampling-distribution behavior is exercised by the
+        # ``best_probs``. Sampling-distribution behaviour is exercised by the
         # concrete VQE/QAOA suites; here it is inert.
         return
 
@@ -97,10 +101,14 @@ class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save SampleVQAProgram-specific state."""
-        return {"checkpointed_value": self.checkpointed_value}
+        return {
+            **super()._save_subclass_state(),
+            "checkpointed_value": self.checkpointed_value,
+        }
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Load SampleVQAProgram-specific state."""
+        super()._load_subclass_state(state)
         self.checkpointed_value = state.get("checkpointed_value")
 
 
@@ -108,7 +116,7 @@ class _BaseSampler(QuantumProgram):
     """Minimal non-VQA host."""
 
     def has_results(self) -> bool:
-        return bool(self._best_probs)
+        return bool(self._results)
 
     def run(self):
         return self
@@ -147,14 +155,14 @@ def test_solution_sampling_mixin_works_on_non_vqa_host(dummy_simulator):
     host = _NonVQASampler(backend=dummy_simulator)
 
     # State owned by the mixin's __init__, not inherited from any VQA.
-    assert host._best_probs == {}
+    assert host._results == {}
     assert host._decode_solution_fn("0101") == "0101"
     assert "sample" in [protocol.name for protocol in host._preprocessors()]
 
     # No trainable parameters: one empty parameter set.
     host.sample_solution(params=np.empty((1, 0), dtype=np.float64))
 
-    assert host._best_probs  # populated by the real PROBS sample pipeline
+    assert host._results["best_probs"]  # populated by the real PROBS sample pipeline
     top = host.get_top_solutions(n=2)
     assert top and isinstance(top[0], SolutionEntry)
 
@@ -343,6 +351,13 @@ class TestProgram:
             program._optimizer_rng.bit_generator.state
             != program._rng.bit_generator.state
         )
+
+    def test_progress_reports_the_budget_and_the_iterations_done(self, mocker):
+        program = self._create_sample_program(mocker)
+        program.max_iterations, program.current_iteration = 5, 3
+
+        assert program._expected_total_iterations == 5
+        assert program._completed_iterations == 3
 
     def test_evaluate_cost_param_sets_uses_initial_spec_seed(self, mocker):
         """Cost evaluation seeds from the ``_initial_spec`` hook, threads the param sets,
@@ -597,7 +612,7 @@ class BaseVariationalQuantumAlgorithmTest:
         """Helper to create a program with a synthetic probability distribution."""
         program = self._create_program_with_mock_optimizer(mocker, **kwargs)
         # Wrap in the production shape: {param_set_index: {bitstring: prob}}
-        program._best_probs = {0: probs_dict}
+        program._results["best_probs"] = {0: probs_dict}
         # Mark as having run optimization to avoid warnings
         program._losses_history = [{0: -1.0}]
         return program
@@ -880,7 +895,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         program.max_iterations = 2
         program.current_iteration = 2
 
-        with pytest.warns(UserWarning, match="nothing left to do"):
+        with pytest.warns(UserWarning, match="call sample_solution"):
             program.run(perform_final_computation=False)
 
         spy.assert_not_called()
@@ -1085,14 +1100,14 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         result = program.best_probs
         # best_probs returns a shallow copy of the nested structure
         # Modifying the outer dict keys doesn't affect original
-        original_keys = list(program._best_probs.keys())
+        original_keys = list(program._results["best_probs"].keys())
         result["new_tag"] = {"11": 1.0}  # Add new key to returned dict
 
         # Original keys should be unchanged
-        assert list(program._best_probs.keys()) == original_keys
+        assert list(program._results["best_probs"].keys()) == original_keys
         # But modifying nested dicts will affect original (shallow copy)
         # So we test that the outer dict is copied, not the inner dicts
-        assert "new_tag" not in program._best_probs
+        assert "new_tag" not in program._results["best_probs"]
 
 
 class TestCheckpointing:
@@ -1203,18 +1218,17 @@ class TestCheckpointing:
         ).exists()
 
     def test_save_state_serializes_populated_best_probs(self, sample_program, mocker):
-        # Regression: _best_probs is dict[int, dict[str, float]] (a param-set
-        # index to its bitstring distribution), so VQACheckpoint.best_probs must
-        # accept nested dicts rather than a flat dict[str, float].
+        # Regression: best_probs is dict[int, dict[str, float]] (a param-set
+        # index to its bitstring distribution), nested rather than flat.
         sample_program.optimizer.optimize = mocker.Mock(
             side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
         )
         sample_program.run(max_iterations=1)
-        sample_program._best_probs = {0: {"01": 0.5, "10": 0.5}}
+        sample_program._results["best_probs"] = {0: {"01": 0.5, "10": 0.5}}
 
         state = VQACheckpoint.from_program(sample_program, kind="iteration")
 
-        assert state.best_probs == {0: {"01": 0.5, "10": 0.5}}
+        assert state.subclass_state.data["best_probs"] == {0: {"01": 0.5, "10": 0.5}}
 
     def test_save_state_auto_generates_directory(
         self, sample_program, tmp_path, mocker
@@ -1374,7 +1388,7 @@ class TestCheckpointing:
             )
         )
         sample_program.run(max_iterations=3)
-        sample_program._best_probs = {0: {"0101": 1.0}}
+        sample_program._results["best_probs"] = {0: {"0101": 1.0}}
         state = VQACheckpoint.from_program(sample_program, kind="iteration")
 
         fresh = SampleVQAProgram(
@@ -1388,7 +1402,7 @@ class TestCheckpointing:
         assert fresh.current_iteration == 3
         assert fresh._best_loss == 0.123
         assert fresh._total_circuit_count == sample_program._total_circuit_count
-        assert fresh._best_probs == {0: {"0101": 1.0}}
+        assert fresh._results["best_probs"] == {0: {"0101": 1.0}}
         # params restored as numpy, not lists; _param_history blocks are ndarrays.
         np.testing.assert_allclose(fresh._best_params, [0.1, 0.2, 0.3, 0.4])
         assert isinstance(fresh._best_params, np.ndarray)
@@ -1426,7 +1440,7 @@ class TestCheckpointing:
         program._best_loss = 0.25
         program._best_params = np.array([0.4, 0.3, 0.2, 0.1])
         program._final_params = np.array([0.4, 0.3, 0.2, 0.1])
-        program._best_probs = {0: {"01": 0.75, "10": 0.25}}
+        program._results["best_probs"] = {0: {"01": 0.75, "10": 0.25}}
         program._stop_reason = StopReason.PATIENCE_EXCEEDED
         program._total_circuit_count = 12
         program._total_run_time = 1.5
@@ -1449,7 +1463,7 @@ class TestCheckpointing:
         assert fresh.max_iterations == 4
         assert fresh._losses_history == program._losses_history
         assert fresh._best_loss == 0.25
-        assert fresh._best_probs == program._best_probs
+        assert fresh._results["best_probs"] == program._results["best_probs"]
         assert fresh._stop_reason is StopReason.PATIENCE_EXCEEDED
         assert fresh._total_circuit_count == 12
         assert fresh._total_run_time == 1.5
@@ -1750,6 +1764,16 @@ class TestCheckpointing:
             side_effect=self._create_mock_optimize(program, n_iterations=1)
         )
 
+    def _raise_after_one_iteration(self, program, mocker, error):
+        """Make the optimizer raise ``error`` after running iteration 1."""
+        one_iteration = self._create_mock_optimize(program, n_iterations=1)
+
+        def optimize_then_raise(**kwargs):
+            one_iteration(**kwargs)
+            raise error
+
+        program.optimizer.optimize = mocker.Mock(side_effect=optimize_then_raise)
+
     def test_cancelled_run_checkpoints_its_last_iteration(
         self, sample_program, tmp_path, mocker
     ):
@@ -1767,14 +1791,17 @@ class TestCheckpointing:
 
         assert (tmp_path / "checkpoint_001" / "program_state.json").exists()
 
-    def test_cancellation_survives_a_failing_final_checkpoint(
-        self, sample_program, tmp_path, mocker
+    @pytest.mark.parametrize(
+        "error", [ExecutionCancelledError, RuntimeError], ids=["cancel", "error"]
+    )
+    def test_abort_survives_a_failing_last_iteration_checkpoint(
+        self, sample_program, tmp_path, mocker, error
     ):
-        """A failed checkpoint write is logged, not raised over the cancellation."""
-        self._cancel_after_one_iteration(sample_program, mocker)
+        """A failed checkpoint write is logged, not raised over the abort."""
+        self._raise_after_one_iteration(sample_program, mocker, error("abort"))
         sample_program.save_state = mocker.Mock(side_effect=OSError("disk full"))
 
-        with pytest.raises(ExecutionCancelledError, match="Cancelled by user"):
+        with pytest.raises(error):
             sample_program.run(
                 checkpoint_config=CheckpointConfig(
                     checkpoint_dir=tmp_path, checkpoint_interval=5
@@ -1783,7 +1810,225 @@ class TestCheckpointing:
 
         sample_program.save_state.assert_called_once()
 
-    def test_final_checkpoint_not_duplicated_on_interval_boundary(
+    def test_rejected_run_keeps_the_finished_results(
+        self, sample_program, tmp_path, mocker
+    ):
+        """A run() that fails validation has changed nothing, so it must not
+        drop the results or the completion file."""
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+        sample_program.max_iterations = 5
+        sample_program.optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)
+
+        with pytest.raises(ValueError, match="does not support checkpointing"):
+            sample_program.run(
+                checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+            )
+
+        assert sample_program._results["best_probs"] == {0: {"01": 1.0}}
+        assert (tmp_path / PROGRAM_COMPLETION_FILE).is_file()
+
+    def test_later_sample_lands_in_the_completion_file(
+        self, sample_program, tmp_path, mocker
+    ):
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+            perform_final_computation=False,
+        )
+
+        def measure(param_sets, *, backend=None):
+            sample_program._results["best_probs"] = {0: {"01": 1.0}}
+
+        mocker.patch.object(
+            sample_program, "_run_solution_measurement_for", side_effect=measure
+        )
+        sample_program.sample_solution()
+
+        completion = json.loads((tmp_path / PROGRAM_COMPLETION_FILE).read_text())
+        assert completion["subclass_state"]["data"]["best_probs"] == {"0": {"01": 1.0}}
+
+    def test_later_run_keeps_checkpointing_into_the_same_directory(
+        self, sample_program, tmp_path, mocker
+    ):
+        for _ in range(2):
+            sample_program.optimizer.optimize = mocker.Mock(
+                side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+            )
+            sample_program.run(
+                checkpoint_config=(
+                    CheckpointConfig(checkpoint_dir=tmp_path)
+                    if sample_program.current_iteration == 0
+                    else None
+                ),
+                perform_final_computation=False,
+            )
+
+        assert (tmp_path / "checkpoint_002" / "program_state.json").is_file()
+
+    def test_fresh_run_rejects_a_used_directory(
+        self, sample_program, tmp_path, mocker, mock_backend, default_optimizer
+    ):
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        fresh.max_iterations = 10
+
+        with pytest.raises(ValueError, match="already holds checkpoints"):
+            fresh.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+    def test_resume_from_an_earlier_iteration_rejects_the_later_checkpoints(
+        self, sample_program, tmp_path, mocker, mock_backend
+    ):
+        """A program loaded from a named iteration keeps checkpointing into the
+        directory, so it refuses to write beside the original run's later
+        checkpoints instead of mixing the two runs."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=3)
+        )
+        sample_program.run(
+            max_iterations=3,
+            checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+            perform_final_computation=False,
+        )
+        loaded = SampleVQAProgram.load_state(
+            tmp_path,
+            backend=mock_backend,
+            subdirectory="checkpoint_001",
+            circ_count=0,
+            run_time=0.0,
+        )
+        loaded.max_iterations = 5
+
+        with pytest.raises(
+            ValueError, match=r"after iteration 1 \(iterations \[2, 3\]\)"
+        ):
+            loaded.run(perform_final_computation=False)
+
+    def test_newer_checkpoint_supersedes_the_completion(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Saving a later iteration removes the older finished results, so a
+        load cannot roll the program back to them."""
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+        sample_program.current_iteration += 1
+
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert not (tmp_path / PROGRAM_COMPLETION_FILE).exists()
+
+    def test_loading_a_specific_iteration_skips_the_completion(
+        self, sample_program, tmp_path, mocker, mock_backend, default_optimizer
+    ):
+        """Only the latest state carries the finished results; restoring an
+        iteration by name clears whatever results the program held."""
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+        target = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+        target._results = {"best_probs": {0: {"11": 1.0}}}
+
+        target._restore_state(tmp_path, subdirectory="checkpoint_001")
+        assert target._results == {}
+
+        target._restore_state(tmp_path)
+        assert target._results["best_probs"] == {0: {"01": 1.0}}
+
+    @pytest.mark.parametrize(
+        "abort",
+        [ExecutionCancelledError("stop"), RuntimeError("backend down")],
+        ids=["cancel", "error"],
+    )
+    def test_aborted_run_final_params_are_the_last_iterate(
+        self, sample_program, mocker, abort
+    ):
+        """The second, worse iterate is where the optimiser stopped."""
+
+        def optimize_then_abort(**kwargs):
+            self._setup_optimizer_state(sample_program, iteration=2)
+            for x, loss in ((np.zeros((1, 4)), 0.1), (np.ones((1, 4)), 0.9)):
+                kwargs["callback_fn"](OptimizeResult(x=x, fun=np.array([loss])))
+            raise abort
+
+        sample_program.optimizer.optimize = mocker.Mock(side_effect=optimize_then_abort)
+
+        with pytest.raises(type(abort)):
+            sample_program.run()
+
+        np.testing.assert_array_equal(sample_program.best_params, np.zeros(4))
+        np.testing.assert_array_equal(sample_program.final_params, np.ones(4))
+
+    def test_failed_finalisation_keeps_the_last_iteration_and_run_stays_idle(
+        self, sample_program, tmp_path, mocker
+    ):
+        """The last iteration is saved before finalising, and a run() with no
+        iterations left samples nothing; sample_solution() is the way back."""
+        sample_program.max_iterations = 1
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.sample_solution = mocker.Mock(
+            side_effect=RuntimeError("sampler down")
+        )
+        config = CheckpointConfig(checkpoint_dir=tmp_path, checkpoint_interval=5)
+
+        with pytest.raises(RuntimeError, match="sampler down"):
+            sample_program.run(checkpoint_config=config)
+        assert (tmp_path / "checkpoint_001" / "program_state.json").is_file()
+        assert not (tmp_path / PROGRAM_COMPLETION_FILE).exists()
+
+        sample_program.sample_solution = mocker.Mock(return_value=sample_program)
+        with pytest.warns(UserWarning, match="call sample_solution"):
+            sample_program.run(checkpoint_config=config)
+
+        sample_program.sample_solution.assert_not_called()
+
+    def test_continued_run_does_not_checkpoint_previous_results(
+        self, sample_program, tmp_path, mocker
+    ):
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+
+        sample_program.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=tmp_path, checkpoint_interval=1
+            ),
+            perform_final_computation=False,
+        )
+
+        state = json.loads(
+            (tmp_path / "checkpoint_002" / "program_state.json").read_text()
+        )
+        assert "best_probs" not in state["subclass_state"]["data"]
+
+    def test_failed_run_checkpoints_its_last_iteration(
+        self, sample_program, tmp_path, mocker
+    ):
+        """An unexpected error mid-run persists the work done before it."""
+        self._raise_after_one_iteration(
+            sample_program, mocker, RuntimeError("backend down")
+        )
+
+        with pytest.raises(RuntimeError, match="backend down"):
+            sample_program.run(
+                checkpoint_config=CheckpointConfig(
+                    checkpoint_dir=tmp_path, checkpoint_interval=5
+                )
+            )
+
+        assert (tmp_path / "checkpoint_001" / "program_state.json").exists()
+
+    def test_last_iteration_checkpoint_not_duplicated_on_interval_boundary(
         self, sample_program, tmp_path, mocker
     ):
         """A run ending on an interval boundary is not checkpointed twice."""
@@ -1801,30 +2046,52 @@ class TestCheckpointing:
 
         assert sample_program.save_state.call_count == 1
 
-    def test_terminal_checkpoint_includes_final_sample(
-        self, sample_program, tmp_path, mocker
-    ):
-        """The terminal save overwrites an interval save with sampled results."""
-        sample_program.optimizer.optimize = mocker.Mock(
-            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+    def _run_with_final_sample(self, program, checkpoint_dir, mocker):
+        program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(program, n_iterations=1)
         )
 
         def sample_solution(**kwargs):
-            sample_program._best_probs = {0: {"01": 1.0}}
-            return sample_program
+            program._results["best_probs"] = {0: {"01": 1.0}}
+            return program
 
-        sample_program.sample_solution = mocker.Mock(side_effect=sample_solution)
-
-        sample_program.run(
+        program.sample_solution = mocker.Mock(side_effect=sample_solution)
+        program.run(
             checkpoint_config=CheckpointConfig(
-                checkpoint_dir=tmp_path, checkpoint_interval=1
+                checkpoint_dir=checkpoint_dir, checkpoint_interval=1
             )
         )
 
-        state = json.loads(
+    def test_final_sample_lands_in_the_completion_file(
+        self, sample_program, tmp_path, mocker
+    ):
+        """Results go to the completion file; iteration checkpoints stay resume
+        state and are not rewritten."""
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+
+        completion = json.loads((tmp_path / PROGRAM_COMPLETION_FILE).read_text())
+        iteration = json.loads(
             (tmp_path / "checkpoint_001" / "program_state.json").read_text()
         )
-        assert state["best_probs"] == {"0": {"01": 1.0}}
+        assert completion["kind"] == "program_completion"
+        assert completion["subclass_state"]["data"]["best_probs"] == {"0": {"01": 1.0}}
+        assert "best_probs" not in iteration["subclass_state"]["data"]
+
+    def test_new_run_discards_the_previous_completion(
+        self, sample_program, tmp_path, mocker
+    ):
+        """An interrupted rerun must not leave the old results to be loaded over
+        its newer iterations."""
+        self._run_with_final_sample(sample_program, tmp_path, mocker)
+        sample_program.max_iterations = 5
+        self._cancel_after_one_iteration(sample_program, mocker)
+
+        with pytest.raises(ExecutionCancelledError):
+            sample_program.run(
+                checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+            )
+
+        assert not (tmp_path / PROGRAM_COMPLETION_FILE).exists()
 
     def test_multiple_checkpoints_and_load_latest(
         self, sample_program, tmp_path, mocker
@@ -2035,11 +2302,10 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
     def test_get_top_solutions_raises_when_no_probs(self, mocker):
         """Test that get_top_solutions raises RuntimeError when distribution is empty."""
         program = self._create_program_with_mock_optimizer(mocker)
-        program._best_probs = {}
+        program._results["best_probs"] = {}
 
         with pytest.raises(
-            RuntimeError,
-            match="No probability distribution available.*perform_final_computation=True",
+            RuntimeError, match=r"No sampled distribution yet.*sample_solution\(\)"
         ):
             program.get_top_solutions(n=5)
 
@@ -2077,7 +2343,7 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
     ):
         """With several sampled sets, ranking uses the first and warns."""
         program = self._setup_program_with_probs(mocker, {"00": 0.6, "11": 0.4})
-        program._best_probs = {
+        program._results["best_probs"] = {
             0: {"00": 0.6, "11": 0.4},
             1: {"01": 0.9, "10": 0.1},
         }
@@ -2351,11 +2617,10 @@ class TestSpinMomentsAPI(BaseVariationalQuantumAlgorithmTest):
     def test_raises_when_no_probs(self, mocker, method):
         """Both moments require a sampled distribution."""
         program = self._create_program_with_mock_optimizer(mocker)
-        program._best_probs = {}
+        program._results["best_probs"] = {}
 
         with pytest.raises(
-            RuntimeError,
-            match="No probability distribution available.*perform_final_computation=True",
+            RuntimeError, match=r"No sampled distribution yet.*sample_solution\(\)"
         ):
             getattr(program, method)()
 
@@ -2363,7 +2628,7 @@ class TestSpinMomentsAPI(BaseVariationalQuantumAlgorithmTest):
     def test_warns_and_uses_first_of_multiple_param_sets(self, mocker, method):
         """With several sampled sets, the first is used and a warning is emitted."""
         program = self._setup_program_with_probs(mocker, {"00": 1.0})
-        program._best_probs = {0: {"00": 1.0}, 1: {"11": 1.0}}
+        program._results["best_probs"] = {0: {"00": 1.0}, 1: {"11": 1.0}}
 
         with pytest.warns(UserWarning, match="only the first"):
             result = getattr(program, method)()
@@ -2560,6 +2825,63 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
 
         assert program.current_iteration == 5
         assert program.stop_reason is None
+
+    def _early_stopping_flat_loss_program(self, mocker, patience):
+        """A program whose flat losses trip ``patience`` long before its limit."""
+        program = self._create_program_with_mock_optimizer(
+            mocker,
+            seed=42,
+            early_stopping=EarlyStopping(patience=patience, min_delta=0.0),
+        )
+        program.max_iterations = 100
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: -0.5}
+        )
+        self._setup_optimizer_with_flat_losses(program, mocker, n_iterations=100)
+        return program
+
+    def test_early_stopped_final_params_are_the_last_iterate(self, mocker):
+        program = self._early_stopping_flat_loss_program(mocker, patience=3)
+
+        program.run(perform_final_computation=False)
+
+        # Flat losses keep iterate 0 as the best; patience stops at iterate 3.
+        assert np.all(program.best_params == 0.0)
+        assert np.all(program.final_params == 3.0)
+
+    def test_early_stopped_program_runs_nothing_more(self, mocker):
+        program = self._early_stopping_flat_loss_program(mocker, patience=1)
+        program.run(perform_final_computation=False)
+        iterations = program.current_iteration
+
+        with pytest.warns(UserWarning, match="stopped early"):
+            program.run(perform_final_computation=False)
+
+        assert program.current_iteration == iterations
+
+    def test_population_early_stop_keeps_final_params_one_dimensional(self, mocker):
+        """A population's last iterate reduces to its best member, so the
+        program can still be checkpointed."""
+        program = self._create_program_with_mock_optimizer(
+            mocker,
+            seed=42,
+            early_stopping=EarlyStopping(patience=1, min_delta=0.0),
+            optimizer=self._create_mock_optimizer(mocker, n_param_sets=2),
+        )
+        program.max_iterations = 100
+        n = program.n_params
+
+        def optimize(cost_fn, initial_params, callback_fn, **kwargs):
+            for i in range(100):
+                x = np.stack([np.full(n, float(i)), np.full(n, i + 10.0)])
+                callback_fn(OptimizeResult(x=x, fun=np.array([1.0, 0.5])))
+
+        program.optimizer.optimize.side_effect = optimize
+
+        program.run(perform_final_computation=False)
+
+        np.testing.assert_array_equal(program.final_params, np.full(n, 11.0))
+        VQACheckpoint.from_program(program, kind="program_completion")
 
     def test_final_computation_still_runs_after_early_stop(self, mocker):
         """Verify sample_solution is called after early stopping."""

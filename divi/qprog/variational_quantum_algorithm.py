@@ -38,12 +38,15 @@ from divi.qprog._program_checkpoint import (
     VQACheckpoint,
 )
 from divi.qprog.checkpointing import (
+    PROGRAM_COMPLETION_FILE,
     PROGRAM_STATE_FILE,
     CheckpointConfig,
     _atomic_write,
     _ensure_checkpoint_dir,
     _get_checkpoint_subdir_path,
     _load_and_validate_pydantic_model,
+    _write_program_completion,
+    list_checkpoints,
     resolve_checkpoint_path,
 )
 from divi.qprog.early_stopping import EarlyStopping, StopReason
@@ -66,7 +69,7 @@ from divi.viz import ProgramViz
 
 logger = logging.getLogger(__name__)
 
-_RUN_INSTRUCTION = "Call run() to execute the optimization."
+_RUN_INSTRUCTION = "Call run() to execute the optimisation."
 
 # Every optimizer whose ``supports_checkpointing`` is True must appear here, or
 # its checkpoints would be written but never loadable.
@@ -476,7 +479,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     @property
     def final_params(self) -> npt.NDArray[np.float64]:
-        """Get a copy of the final optimised parameters.
+        """Get a copy of the parameters where the optimiser stopped.
+
+        For a population optimiser, the best member of the last iterate. They
+        can differ from :attr:`best_params`, e.g. after early stopping or
+        cancellation. :class:`~divi.qprog.algorithms.IterativeQAOA` sets them to
+        the best depth's ``best_params``.
 
         Returns:
             npt.NDArray[np.float64]: Copy of the final parameters. Modifications to this array
@@ -633,20 +641,17 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             state (dict[str, Any]): Dictionary of subclass-specific state.
         """
 
-    def _get_optimizer_config(self) -> OptimizerConfig:
-        """Extract optimizer configuration for checkpoint reconstruction.
-
-        Returns:
-            OptimizerConfig: Configuration object for the current optimizer.
-
-        Raises:
-            NotImplementedError: If the optimizer does not support state saving.
-        """
-        config_dict = self.optimizer.get_config()
-        return OptimizerConfig(
-            type=config_dict.pop("type"),
-            config=config_dict,
-        )
+    def _reset_optimization_state(self) -> None:
+        """Reset optimisation tracking state for a fresh run."""
+        self._losses_history = []
+        self._param_history = []
+        self._best_params = np.array([], dtype=np.float64)
+        self._final_params = np.array([], dtype=np.float64)
+        self._best_loss = float("inf")
+        self.current_iteration = 0
+        self.optimize_result = None
+        self._stop_reason = None
+        self.optimizer.reset()
 
     def save_state(self, checkpoint_config: CheckpointConfig) -> Path:
         """Save the program state to a checkpoint directory."""
@@ -670,6 +675,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         state_file = checkpoint_path / PROGRAM_STATE_FILE
         _atomic_write(state_file, state.model_dump_json(indent=2))
+        # A newer iteration supersedes the finished run's results.
+        (main_dir / PROGRAM_COMPLETION_FILE).unlink(missing_ok=True)
 
         return checkpoint_path
 
@@ -729,15 +736,32 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         checkpoint_path, state = type(self)._load_checkpoint_state(
             checkpoint_dir, subdirectory
         )
-        return self._restore_loaded_checkpoint(checkpoint_path, state)
+        self._restore_loaded_checkpoint(checkpoint_path, state)
+        self._continue_in(checkpoint_dir, subdirectory)
+        return self
+
+    def _continue_in(
+        self, checkpoint_dir: Path | str, subdirectory: str | None
+    ) -> None:
+        """Keep checkpointing into ``checkpoint_dir`` and, when the latest
+        checkpoint was restored, apply the completion file over it.
+
+        The completion file holds the program as ``run()`` left it, including
+        what :meth:`_finalize` computed; the latest iteration checkpoint keeps
+        supplying the optimizer state needed to continue training. A named
+        ``subdirectory`` is an earlier state, so the completion does not apply.
+        """
+        self._checkpoint_config = CheckpointConfig(checkpoint_dir=Path(checkpoint_dir))
+        completion = Path(checkpoint_dir) / PROGRAM_COMPLETION_FILE
+        if subdirectory is None and completion.is_file():
+            self._restore_checkpoint(completion.read_text(), Path(checkpoint_dir))
 
     def _restore_loaded_checkpoint(
         self, checkpoint_path: Path, state: VQACheckpoint
-    ) -> Self:
+    ) -> None:
         """Apply an already loaded checkpoint to this program."""
         optimizer = self._load_checkpoint_optimizer(checkpoint_path, state)
         self._apply_checkpoint_state(state, optimizer=optimizer)
-        return self
 
     def _apply_checkpoint_state(
         self,
@@ -773,9 +797,21 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         subdirectory: str | None = None,
         **kwargs,
     ) -> Self:
-        """Load program state from a checkpoint directory.
+        """Load a program from a checkpoint directory.
+
+        Restores the latest iteration checkpoint (or ``subdirectory``) and, for
+        the latest, the ``program_completion.json`` of a finished run on top of
+        it. The loaded program keeps checkpointing into ``checkpoint_dir``
+        when ``run()`` or ``sample_solution()`` is called without a config.
 
         Args:
+            checkpoint_dir: The directory the run checkpointed into.
+            backend: Backend for the loaded program.
+            subdirectory: A specific iteration checkpoint (e.g.
+                ``"checkpoint_002"``) to load instead of the latest; the
+                completion file is not applied. ``run()`` then refuses to
+                continue while later checkpoints of the original run remain
+                in ``checkpoint_dir``.
             **kwargs: The remaining constructor arguments of the checkpointed
                 run (problem, ansatz, ``n_layers``, ...). ``optimizer`` and
                 ``seed`` come from the checkpoint and must not be passed.
@@ -798,6 +834,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         optimizer = cls._load_checkpoint_optimizer(checkpoint_path, state)
         program = cls(backend=backend, optimizer=optimizer, seed=state.seed, **kwargs)
         state.restore(program)
+        program._continue_in(checkpoint_dir, subdirectory)
         return program
 
     def get_expected_param_shape(self) -> tuple[int, int]:
@@ -1131,26 +1168,145 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 sets for a fresh optimisation run. Must have shape
                 ``(n_param_sets, n_layers * n_params_per_layer)``. Cannot be
                 combined with a checkpoint-resumed optimizer state.
-            perform_final_computation (bool): Whether to perform final computation after optimisation completes.
-                Typically, this step involves sampling with the best found parameters to extract
-                solution probability distributions. Set this to False in warm-starting or pre-training
-                routines where the final sampling step is not needed. Defaults to True.
-            checkpoint_config (CheckpointConfig | None): Checkpoint configuration.
-                If None, no checkpointing is performed.
+            perform_final_computation (bool): Whether to run the final
+                computation after optimisation: for solution-sampling programs,
+                sampling at ``best_params``. Set this to False in
+                warm-starting or pre-training routines. Defaults to True.
+            checkpoint_config (CheckpointConfig | None): Checkpoint
+                configuration. None reuses the one this program last ran
+                with, or was loaded from; without either, nothing is
+                checkpointed. Pass ``CheckpointConfig()`` to stop
+                checkpointing.
             **kwargs: Additional keyword arguments for subclasses.
 
         Returns:
             VariationalQuantumAlgorithm: Returns ``self`` for method chaining.
-        """
-        # Initialise checkpointing
-        if checkpoint_config is None:
-            checkpoint_config = CheckpointConfig()
 
+        Note:
+            A program whose training has finished (no iterations left, or
+            stopped early) warns and returns without training or finalising.
+            ``optimize_result.device_shots_used``,
+            ``circuits_used`` and ``backend_jobs_used`` count the optimisation
+            only; the final computation is included in ``total_device_shots``,
+            ``total_circuit_count`` and ``total_backend_jobs``.
+        """
+        self.max_iterations = kwargs.pop("max_iterations", self.max_iterations)
+        reject_unclaimed_run_kwargs(self, kwargs)
+        if checkpoint_config is not None:
+            self._checkpoint_config = checkpoint_config
+        checkpoint_config = self._checkpoint_config or CheckpointConfig()
+
+        # ``max_iterations`` is a total: a resumed run spends only what is left,
+        # and a program at the limit spends nothing.
+        if self._training_finished:
+            if self._stop_reason is None:
+                message = (
+                    f"This program has already run {self.current_iteration} of "
+                    f"max_iterations={self.max_iterations} iterations, so run() "
+                    "neither trains nor finalises. Raise max_iterations to "
+                    "continue training."
+                )
+            else:
+                message = (
+                    f"This program stopped early ({self._stop_reason.value}), so "
+                    "run() neither trains nor finalises."
+                )
+            if isinstance(self, SolutionSamplingMixin):
+                message += " To sample the trained parameters, call sample_solution()."
+            warn(message, UserWarning, stacklevel=3)
+            return self
+
+        self._optimize(initial_params, checkpoint_config)
+        self._finalize(perform_final_computation)
+        _write_program_completion(self, checkpoint_config.checkpoint_dir)
+
+        self._progress_emitter(
+            ProgressEvent.finish(
+                self._progress_key,
+                TerminalStatus.SUCCESS,
+                detail="Finished successfully!",
+            )
+        )
+
+        return self
+
+    @property
+    def _training_finished(self) -> bool:
+        """Whether ``run()`` has no optimisation left to do: the iteration limit
+        is reached or early stopping ended training."""
+        return (
+            self.current_iteration >= self.max_iterations
+            or self._stop_reason is not None
+        )
+
+    @staticmethod
+    def _reject_used_checkpoint_dir(
+        checkpoint_dir: Path | str | None, iteration: int
+    ) -> None:
+        """Refuse a directory holding checkpoints past ``iteration``: another
+        run's, or the later ones of the run this program was loaded from."""
+        if checkpoint_dir is None or not Path(checkpoint_dir).is_dir():
+            return
+        later = [
+            info.iteration
+            for info in list_checkpoints(Path(checkpoint_dir))
+            if info.iteration > iteration
+        ]
+        if later and iteration == 0:
+            raise ValueError(
+                f"{checkpoint_dir} already holds checkpoints of "
+                "another run. Load it with load_state() to continue that run, or "
+                "use a fresh directory."
+            )
+        if later:
+            raise ValueError(
+                f"{checkpoint_dir} holds checkpoints after iteration {iteration} "
+                f"(iterations {later}) from the run this program was loaded "
+                "from. Delete them to continue from here, or use another "
+                "directory."
+            )
+
+    @property
+    def _expected_total_iterations(self) -> int:
+        """The iteration budget, for progress display."""
+        return self.max_iterations
+
+    @property
+    def _completed_iterations(self) -> int:
+        """Iterations already run, for progress display."""
+        return min(self.current_iteration, self.max_iterations)
+
+    def _finalize(self, perform_final_computation: bool) -> None:
+        """Derive results from the settled ``best_params``.
+
+        Called once optimisation has settled ``best_params``: by ``run()``, or
+        by an ensemble finishing a child restored at its iteration limit.
+        Overrides chain through ``super()`` and store what they derive in
+        ``self._results``, which optimising clears.
+
+        Args:
+            perform_final_computation: Whether to run the costly extra
+                measurement (solution sampling); cheaper derived results are
+                computed either way.
+        """
+
+    def _optimize(
+        self,
+        initial_params: npt.NDArray[np.float64] | None,
+        checkpoint_config: CheckpointConfig,
+    ) -> None:
+        """Run the remaining iterations and settle ``best_params`` / ``final_params``.
+
+        Every exit path leaves the last iteration checkpointed. Optimizers
+        receive the remaining count, so none of them needs to know about
+        resumption.
+        """
         if checkpoint_config.checkpoint_dir:
             logger.info(
                 f"Using checkpoint directory: {checkpoint_config.checkpoint_dir}"
             )
 
+        self._validate_state()
         self.optimizer.validate_program(self)
 
         if (
@@ -1163,28 +1319,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 "checkpoint directory or use a checkpointing-capable optimizer "
                 "(e.g. MonteCarloOptimizer, PymooOptimizer, GridSearchOptimizer)."
             )
+        checkpoint_dir = checkpoint_config.checkpoint_dir
+        self._reject_used_checkpoint_dir(checkpoint_dir, self.current_iteration)
 
-        # Extract max_iterations from kwargs if present (for compatibility with subclasses)
-        max_iterations = kwargs.pop("max_iterations", self.max_iterations)
-        if max_iterations != self.max_iterations:
-            self.max_iterations = max_iterations
-
-        reject_unclaimed_run_kwargs(self, kwargs)
-
-        # ``max_iterations`` is a total, not a per-call count: a resumed run (from a
-        # checkpoint, or after raising the limit) spends only what is left, and a
-        # program already at the limit spends nothing. Optimizers receive the
-        # remaining count, so none of them needs to know about resumption.
         iterations_remaining = self.max_iterations - self.current_iteration
-        if iterations_remaining <= 0:
-            warn(
-                f"This program has already run {self.current_iteration} of "
-                f"max_iterations={self.max_iterations} iterations, so run() has "
-                "nothing left to do. Raise max_iterations to continue.",
-                UserWarning,
-            )
-            return self
-        self._validate_state()
+        last_checkpointed_iteration: int | None = None
+
+        def checkpoint_last_iteration():
+            if (
+                checkpoint_dir is not None
+                and self.current_iteration > 0
+                and self.current_iteration != last_checkpointed_iteration
+            ):
+                self.save_state(checkpoint_config)
 
         def cost_fn(
             params, *, shots=None, estimator_samples=None, return_variance=False
@@ -1202,7 +1349,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 shots=shots,
                 estimator_samples=estimator_samples,
                 collect_variance=return_variance,
-                **kwargs,
             )
             losses = np.asarray(list(values_map.values()), dtype=np.float64)
             losses = losses if params.ndim > 1 else losses.item()
@@ -1228,16 +1374,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         jac_fn = extra_evaluators.get("jac")
 
         last_grad_norm: float | None = None
-        last_checkpointed_iteration: int | None = None
-
-        def _flush_final_checkpoint(*, force: bool = False):
-            """Checkpoint the last iteration if the interval did not already."""
-            if (
-                checkpoint_config.checkpoint_dir is not None
-                and self.current_iteration > 0
-                and (force or self.current_iteration != last_checkpointed_iteration)
-            ):
-                self.save_state(checkpoint_config)
 
         def grad_fn(params):
             nonlocal last_grad_norm
@@ -1252,14 +1388,14 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             if jac_fn is not None:
                 grads = jac_fn(params)
             else:
-                grads = self._evaluate_gradient_at(params, **kwargs)
+                grads = self._evaluate_gradient_at(params)
 
             last_grad_norm = float(np.linalg.norm(grads))
 
             return grads
 
         def _iteration_counter(intermediate_result: OptimizeResult):
-            nonlocal last_checkpointed_iteration, last_grad_norm
+            nonlocal last_grad_norm, last_checkpointed_iteration
 
             callback_jac = intermediate_result.get("jac")
             if callback_jac is not None:
@@ -1276,14 +1412,15 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 )
             )
 
-            self._param_history.append(
-                np.atleast_2d(
-                    np.asarray(intermediate_result.x, dtype=np.float64)
-                ).copy()
-            )
+            iterate = np.atleast_2d(
+                np.asarray(intermediate_result.x, dtype=np.float64)
+            ).copy()
+            self._param_history.append(iterate)
 
             fun = np.asarray(intermediate_result.fun, dtype=np.float64).ravel()
             best_idx = _argmin_finite(fun)
+            # Where the optimiser is now; a success result overrides it at the end.
+            self._final_params = iterate[0 if best_idx is None else best_idx].copy()
             if best_idx is None:
                 current_loss = float("nan")
             else:
@@ -1345,6 +1482,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self._progress_emitter(ProgressEvent.show(self._progress_key, "Finished Setup"))
 
         resolved_initial_params = self._resolve_initial_param_sets(initial_params)
+        # Drop results derived from the previous best_params.
+        self._results = {}
 
         optimize_kwargs: dict[str, Any] = dict(
             cost_fn=cost_fn,
@@ -1367,62 +1506,68 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             self.total_circuit_count,
             self.total_backend_jobs,
         )
-        with self._install_cancellation_handler():
-            try:
-                self.optimize_result = self.optimizer.optimize(**optimize_kwargs)
-            except StopIteration:
-                reason = self._stop_reason.value if self._stop_reason else "Stopped"
-                self.optimize_result = OptimizeResult(
-                    x=np.atleast_2d(self._best_params),
-                    fun=np.atleast_1d(self._best_loss),
-                    nit=self.current_iteration,
-                    success=False,
-                    message=f"Early stopping: {reason}",
-                )
-            except ExecutionCancelledError as exc:
-                # ``KeyboardInterrupt`` is deliberately NOT caught here:
-                # the second Ctrl+C re-raises ``KeyboardInterrupt`` from
-                # the signal handler as the documented hard-abort path,
-                # and intercepting it would defeat that.
-                message = "Cancelled by user"
-                self.optimize_result = OptimizeResult(
-                    x=np.atleast_2d(self._best_params),
-                    fun=np.atleast_1d(self._best_loss),
-                    nit=self.current_iteration,
-                    success=False,
-                    message=message,
-                )
-                # The pipeline already best-effort-cancelled the in-flight
-                # job when it raised; no redundant call needed here.
-                self._progress_emitter(
-                    ProgressEvent.finish(
-                        self._progress_key,
-                        TerminalStatus.CANCELLED,
-                        detail=message,
-                    )
-                )
+        try:
+            with self._install_cancellation_handler():
                 try:
-                    _flush_final_checkpoint()
-                except Exception:
-                    logger.warning(
-                        "Failed to write a final checkpoint after cancellation.",
-                        exc_info=True,
+                    self.optimize_result = self.optimizer.optimize(**optimize_kwargs)
+                except StopIteration:
+                    reason = self._stop_reason.value if self._stop_reason else "Stopped"
+                    self.optimize_result = OptimizeResult(
+                        x=np.atleast_2d(self._best_params),
+                        fun=np.atleast_1d(self._best_loss),
+                        nit=self.current_iteration,
+                        success=False,
+                        message=f"Early stopping: {reason}",
                     )
-                raise ExecutionCancelledError(message) from exc
-            else:
-                self.optimize_result.success = True
-                self.optimize_result.message = "Optimisation converged."
+                except ExecutionCancelledError as exc:
+                    # ``KeyboardInterrupt`` is deliberately NOT caught here:
+                    # the second Ctrl+C re-raises ``KeyboardInterrupt`` from
+                    # the signal handler as the documented hard-abort path,
+                    # and intercepting it would defeat that.
+                    message = "Cancelled by user"
+                    self.optimize_result = OptimizeResult(
+                        x=np.atleast_2d(self._best_params),
+                        fun=np.atleast_1d(self._best_loss),
+                        nit=self.current_iteration,
+                        success=False,
+                        message=message,
+                    )
+                    # The pipeline already best-effort-cancelled the in-flight
+                    # job when it raised; no redundant call needed here.
+                    self._progress_emitter(
+                        ProgressEvent.finish(
+                            self._progress_key,
+                            TerminalStatus.CANCELLED,
+                            detail=message,
+                        )
+                    )
+                    raise ExecutionCancelledError(message) from exc
+                else:
+                    self.optimize_result.success = True
+                    self.optimize_result.message = "Optimisation converged."
 
-                # Set _best_params from final result (source of truth); a
-                # non-finite loss never wins (falls back to the iteration-tracked
-                # best when every final loss is non-finite).
-                x = np.atleast_2d(self.optimize_result.x)
-                best_idx = _argmin_finite(self.optimize_result.fun)
-                if best_idx is not None:
-                    self._best_params = x[best_idx].copy()
-                    self._best_loss = float(
-                        np.asarray(self.optimize_result.fun).ravel()[best_idx]
+                    # Set _best_params from final result (source of truth); a
+                    # non-finite loss never wins (falls back to the
+                    # iteration-tracked best when every final loss is non-finite).
+                    x = np.atleast_2d(self.optimize_result.x)
+                    best_idx = _argmin_finite(self.optimize_result.fun)
+                    if best_idx is not None:
+                        self._best_params = x[best_idx].copy()
+                        self._best_loss = float(
+                            np.asarray(self.optimize_result.fun).ravel()[best_idx]
+                        )
+                    self._final_params = np.atleast_1d(
+                        np.asarray(self.optimize_result.x).squeeze()
                     )
+        except Exception:
+            try:
+                checkpoint_last_iteration()
+            except Exception:
+                logger.warning(
+                    "Failed to checkpoint the last iteration of an aborted run.",
+                    exc_info=True,
+                )
+            raise
 
         self.optimize_result.device_shots_used = (
             self.total_device_shots - resource_start[0]
@@ -1433,23 +1578,4 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         self.optimize_result.backend_jobs_used = (
             self.total_backend_jobs - resource_start[2]
         )
-
-        # Canonical 1-D best parameters (the optimizer result contract); the
-        # early-stop/cancel branches above carry a 2-D (1, n) best, so squeeze.
-        self._final_params = np.atleast_1d(np.asarray(self.optimize_result.x).squeeze())
-
-        if perform_final_computation and isinstance(self, SolutionSamplingMixin):
-            self.sample_solution(**kwargs)
-            _flush_final_checkpoint(force=True)
-        else:
-            _flush_final_checkpoint()
-
-        self._progress_emitter(
-            ProgressEvent.finish(
-                self._progress_key,
-                TerminalStatus.SUCCESS,
-                detail="Finished successfully!",
-            )
-        )
-
-        return self
+        checkpoint_last_iteration()

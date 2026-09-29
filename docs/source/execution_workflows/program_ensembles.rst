@@ -488,7 +488,7 @@ ensemble configuration and restored state. An ensemble whose program generation
 uses nondeterministic choices must save those choices in its workflow state and
 reuse them while reconstructing the interrupted round.
 
-For each child, Divi first restores a validated terminal result. If none is
+For each child, Divi first restores a validated ``program_completion.json``. If none is
 available, an eligible
 :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
 continues from its latest complete optimizer checkpoint. Missing, damaged, or

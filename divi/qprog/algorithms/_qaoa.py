@@ -29,14 +29,13 @@ from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog._program_checkpoint import _to_jsonable
 from divi.qprog.algorithms import InitialState
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
+from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent
 
 logger = logging.getLogger(__name__)
 
-# Sentinel distinguishing 'run() not yet called' from a decoded solution of ``None``.
-_UNSET: Any = object()
 _MAX_PARAMETER_SHIFT_EVALUATIONS = 256
 
 
@@ -193,8 +192,6 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.max_iterations = max_iterations
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
-        self._decoded_solution: Any = _UNSET
-        self._solution_bitstring: Any = _UNSET
         # Circuit parameters — Qiskit ParameterVector, no sympy.
         betas = ParameterVector("β", self.n_layers)
         gammas = ParameterVector("γ", self.n_layers)
@@ -254,19 +251,17 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
-        decoded = None if self._decoded_solution is _UNSET else self._decoded_solution
-        bitstring = (
-            None if self._solution_bitstring is _UNSET else self._solution_bitstring
-        )
-        return {
+        state = {
+            **super()._save_subclass_state(),
             "problem_metadata": _to_jsonable(self.problem_metadata),
-            "decoded_solution": _to_jsonable(decoded),
-            "solution_bitstring": bitstring,
             "loss_constant": self.loss_constant,
             "max_shift_evaluations_per_parameter": (
                 self.max_shift_evaluations_per_parameter
             ),
         }
+        if "solution_bitstring" in self._results:
+            state["solution_bitstring"] = self._results["solution_bitstring"]
+        return state
 
     def _load_subclass_state(self, state: dict[str, Any]) -> None:
         """Load QAOA-specific state.
@@ -274,11 +269,8 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         Raises:
             KeyError: If any required state key is missing (indicates checkpoint corruption).
         """
-        required_keys = [
-            "problem_metadata",
-            "decoded_solution",
-            "loss_constant",
-        ]
+        super()._load_subclass_state(state)
+        required_keys = ["problem_metadata", "loss_constant"]
         missing_keys = [key for key in required_keys if key not in state]
         if missing_keys:
             raise KeyError(
@@ -286,11 +278,11 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             )
 
         self.problem_metadata = state["problem_metadata"]
-        self._decoded_solution = state["decoded_solution"]
-        loaded_bitstring = state.get("solution_bitstring")
-        self._solution_bitstring = (
-            _UNSET if loaded_bitstring is None else loaded_bitstring
-        )
+        if "solution_bitstring" in state:
+            bitstring = state["solution_bitstring"]
+            self._results["solution_bitstring"] = bitstring
+            # Decoded by this program's problem, whose labels may differ.
+            self._results["decoded_solution"] = self._decode_solution_fn(bitstring)
         self.loss_constant = state["loss_constant"]
         self.max_shift_evaluations_per_parameter = state.get(
             "max_shift_evaluations_per_parameter",
@@ -305,11 +297,11 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         is a legitimate decoded value after ``.run()``.
 
         Raises:
-            RuntimeError: If ``.run()`` has not yet been called.
+            RuntimeError: If no solution has been sampled yet.
         """
-        if self._decoded_solution is _UNSET:
-            raise RuntimeError("QAOA.solution is not available. Call .run() first.")
-        return self._decoded_solution
+        if "decoded_solution" not in self._results:
+            raise RuntimeError(f"QAOA.solution is not available yet. {_SAMPLE_HINT}")
+        return self._results["decoded_solution"]
 
     @property
     def solution_bitstring(self) -> str:
@@ -319,13 +311,13 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         regardless of how the problem's decode function shapes :attr:`solution`.
 
         Raises:
-            RuntimeError: If ``.run()`` has not yet been called.
+            RuntimeError: If no solution has been sampled yet.
         """
-        if self._solution_bitstring is _UNSET:
+        if "solution_bitstring" not in self._results:
             raise RuntimeError(
-                "QAOA.solution_bitstring is not available. Call .run() first."
+                f"QAOA.solution_bitstring is not available yet. {_SAMPLE_HINT}"
             )
-        return self._solution_bitstring
+        return self._results["solution_bitstring"]
 
     def _build_qaoa_qiskit_circuit(self, cost_spo: SparsePauliOp) -> QuantumCircuit:
         """Build the QAOA ansatz directly as a qiskit ``QuantumCircuit``.
@@ -380,10 +372,10 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
             super().sample_solution(self._resolve_sample_params(params), **kwargs)
 
-            best_probs = next(iter(self._best_probs.values()))
+            best_probs = next(iter(self._results["best_probs"].values()))
             best_bitstring = max(best_probs, key=best_probs.__getitem__)
-            self._solution_bitstring = best_bitstring
-            self._decoded_solution = self._decode_solution_fn(best_bitstring)
+            self._results["solution_bitstring"] = best_bitstring
+            self._results["decoded_solution"] = self._decode_solution_fn(best_bitstring)
 
             self._progress_emitter(
                 ProgressEvent.show(self._progress_key, "🏁 Computed Final Solution! 🏁")
@@ -431,7 +423,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             )
 
         # Retrieve every measured bitstring so we can filter/repair
-        n_measured = len(next(iter(self._best_probs.values())))
+        n_measured = len(self._single_distribution())
         all_solutions = super().get_top_solutions(
             n=n_measured, min_prob=min_prob, include_decoded=include_decoded
         )

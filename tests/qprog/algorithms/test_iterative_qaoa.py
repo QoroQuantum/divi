@@ -22,7 +22,11 @@ from divi.qprog.algorithms._iterative_qaoa import (
     _interp,
     interpolate_qaoa_params,
 )
-from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
+from divi.qprog.checkpointing import (
+    PROGRAM_COMPLETION_FILE,
+    CheckpointConfig,
+    list_checkpoints,
+)
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
@@ -143,7 +147,7 @@ class TestInterpolateQaoaParams:
 
 
 class TestIterativeQAOA:
-    def test_run_uses_one_direct_session_for_the_full_depth_schedule(
+    def test_run_uses_one_direct_session_for_all_depths(
         self, default_test_simulator, mocker
     ):
         iterative = IterativeQAOA(
@@ -225,24 +229,35 @@ class TestIterativeQAOA:
         submitted = sum(len(call.args[0]) for call in spy.call_args_list)
         assert iterative.total_circuit_count == submitted
 
-    def test_total_circuit_count_accumulates_across_runs(
-        self, default_test_simulator, mocker
+    @pytest.mark.parametrize(
+        "max_depth, convergence_threshold",
+        [(2, None), (10, 1e10)],
+        ids=["last-depth", "converged"],
+    )
+    def test_run_after_the_last_depth_does_nothing(
+        self, default_test_simulator, max_depth, convergence_threshold
     ):
-        graph = make_bull_graph()
+        """A second run() once every depth ran, or the run converged, warns and
+        spends no circuits."""
         iterative = IterativeQAOA(
-            MaxCutProblem(graph),
-            max_depth=2,
+            MaxCutProblem(make_bull_graph()),
+            max_depth=max_depth,
             max_iterations_per_depth=2,
+            convergence_threshold=convergence_threshold,
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         )
-        spy = mocker.spy(default_test_simulator, "submit_circuits")
-
         iterative.run()
-        iterative.run()
+        circuits, history = iterative.total_circuit_count, iterative.depth_history
 
-        submitted = sum(len(call.args[0]) for call in spy.call_args_list)
-        assert iterative.total_circuit_count == submitted
+        with pytest.warns(UserWarning, match="neither trains nor finalises"):
+            iterative.run()
+
+        assert iterative.total_circuit_count == circuits
+        assert iterative.depth_history == history
+        assert iterative._completed_iterations == sum(
+            entry["n_iterations"] for entry in history
+        )
 
     def test_best_depth_matches_lowest_loss(self, default_test_simulator):
         graph = make_bull_graph()
@@ -382,31 +397,39 @@ class TestIterativeQAOA:
             ProgressEvent.show(iterative._progress_key, "Depth 3/3"),
         ]
 
-    def test_depth_run_forwards_success_finish_for_another_target(
-        self, default_test_simulator, mocker
-    ):
+    def test_run_max_iterations_overrides_every_depth(self, default_test_simulator):
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=2,
+            max_iterations_per_depth=3,
+            backend=default_test_simulator,
+            optimizer=MonteCarloOptimizer(population_size=4, n_best_sets=2),
+        )
+
+        iterative.run(max_iterations=1, perform_final_computation=False)
+
+        assert [entry["n_iterations"] for entry in iterative.depth_history] == [1, 1]
+
+    def test_run_rejects_unknown_keywords(self, default_test_simulator):
         iterative = IterativeQAOA(
             MaxCutProblem(make_bull_graph()),
             max_depth=1,
+            backend=default_test_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        )
+
+        with pytest.raises(TypeError, match="unexpected keyword argument"):
+            iterative.run(dry_run=True)
+
+    def test_progress_row_finishes_once_after_all_depths(self, default_test_simulator):
+        """Depths do not finish the row; the whole run does, once."""
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            max_depth=2,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=1,
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-        )
-        other_finish = ProgressEvent.finish("other-target", TerminalStatus.SUCCESS)
-
-        def run_one_depth(program, **kwargs):
-            program._progress_emitter(other_finish)
-            program._best_loss = 0.0
-            program._best_params = np.zeros(program.n_params)
-            program.current_iteration = 1
-            return program
-
-        mocker.patch(
-            "divi.qprog.variational_quantum_algorithm."
-            "VariationalQuantumAlgorithm.run",
-            autospec=True,
-            side_effect=run_one_depth,
         )
         emitted = []
 
@@ -414,10 +437,11 @@ class TestIterativeQAOA:
             iterative.run(perform_final_computation=False)
 
         assert [
-            event
+            event.terminal_status
             for event in emitted
-            if event.kind is EventKind.FINISH and event.progress_key == "other-target"
-        ] == [other_finish]
+            if event.kind is EventKind.FINISH
+            and event.progress_key == iterative._progress_key
+        ] == [TerminalStatus.SUCCESS]
 
     def test_n_layers_matches_best_depth(self, default_test_simulator):
         """After run, instance n_layers should match best_depth."""
@@ -438,7 +462,14 @@ class TestIterativeQAOACheckpointing:
     MAX_DEPTH = 3
     ITERS_PER_DEPTH = 2
 
-    def _run_with_checkpoints(self, backend, checkpoint_dir):
+    def _run_without_completion(self, backend, checkpoint_dir):
+        """A finished run's checkpoints without its completion file: what a
+        crash between the last depth and the completion write leaves."""
+        program = self._run_unsampled(backend, checkpoint_dir)
+        (checkpoint_dir / PROGRAM_COMPLETION_FILE).unlink()
+        return program
+
+    def _run_unsampled(self, backend, checkpoint_dir):
         program = IterativeQAOA(
             MaxCutProblem(make_bull_graph()),
             max_depth=self.MAX_DEPTH,
@@ -466,7 +497,7 @@ class TestIterativeQAOACheckpointing:
         self, default_test_simulator, tmp_path
     ):
         """Depths write to separate subdirectories instead of overwriting."""
-        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        self._run_without_completion(default_test_simulator, tmp_path)
 
         for depth in range(1, self.MAX_DEPTH + 1):
             depth_dir = tmp_path / f"depth_{depth:02d}"
@@ -475,7 +506,7 @@ class TestIterativeQAOACheckpointing:
 
     def test_load_resolves_deepest_checkpoint(self, default_test_simulator, tmp_path):
         """load_state picks the deepest depth and rebuilds its ansatz."""
-        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        self._run_without_completion(default_test_simulator, tmp_path)
 
         loaded = self._load(default_test_simulator, tmp_path)
 
@@ -488,7 +519,7 @@ class TestIterativeQAOACheckpointing:
     def test_restore_existing_instance_resolves_deepest_checkpoint(
         self, default_test_simulator, tmp_path
     ):
-        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        self._run_without_completion(default_test_simulator, tmp_path)
         target = IterativeQAOA(
             MaxCutProblem(make_bull_graph()),
             max_depth=self.MAX_DEPTH,
@@ -502,7 +533,31 @@ class TestIterativeQAOACheckpointing:
         assert target.n_layers == self.MAX_DEPTH
         assert target.current_iteration == self.ITERS_PER_DEPTH
 
-    def test_terminal_checkpoint_restores_sampled_best_depth(
+    def test_restored_finished_run_does_nothing(
+        self, default_test_simulator, tmp_path, mocker
+    ):
+        self._run_unsampled(default_test_simulator, tmp_path)
+        loaded = self._load(default_test_simulator, tmp_path)
+        sample = mocker.spy(loaded, "sample_solution")
+
+        with pytest.warns(UserWarning, match="call sample_solution"):
+            loaded.run()
+
+        sample.assert_not_called()
+
+    def test_unsampled_finished_run_restores_best_depth(
+        self, default_test_simulator, tmp_path
+    ):
+        program = self._run_unsampled(default_test_simulator, tmp_path)
+        # Otherwise the deepest-depth fallback would pass on its own.
+        assert program.best_depth != self.MAX_DEPTH
+
+        loaded = self._load(default_test_simulator, tmp_path)
+
+        assert loaded.n_layers == program.best_depth
+        np.testing.assert_allclose(loaded.best_params, program.best_params)
+
+    def test_sampled_finished_run_restores_best_depth(
         self, default_test_simulator, tmp_path
     ):
         program = IterativeQAOA(
@@ -531,11 +586,11 @@ class TestIterativeQAOACheckpointing:
                 loaded_entry["best_params"], original_entry["best_params"]
             )
 
-    def test_resume_continues_the_depth_schedule(
+    def test_resume_continues_after_the_completed_depths(
         self, default_test_simulator, tmp_path
     ):
         """A resumed run finishes the remaining depths without restarting at 1."""
-        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        self._run_without_completion(default_test_simulator, tmp_path)
         shutil.rmtree(tmp_path / f"depth_{self.MAX_DEPTH:02d}")
 
         loaded = self._load(default_test_simulator, tmp_path)
@@ -552,7 +607,7 @@ class TestIterativeQAOACheckpointing:
         self, default_test_simulator, tmp_path
     ):
         """A depth interrupted with budget left is continued, not restarted."""
-        self._run_with_checkpoints(default_test_simulator, tmp_path)
+        self._run_without_completion(default_test_simulator, tmp_path)
         deepest = tmp_path / f"depth_{self.MAX_DEPTH:02d}"
         for info in list_checkpoints(deepest):
             if info.iteration > 1:
@@ -562,6 +617,12 @@ class TestIterativeQAOACheckpointing:
         assert loaded.n_layers == self.MAX_DEPTH
         assert loaded.current_iteration == 1
         assert loaded.best_params.size == loaded.n_params
+        assert (
+            loaded._expected_total_iterations == self.MAX_DEPTH * self.ITERS_PER_DEPTH
+        )
+        assert loaded._completed_iterations == (
+            (self.MAX_DEPTH - 1) * self.ITERS_PER_DEPTH + 1
+        )
 
         loaded.run(perform_final_computation=False)
 
@@ -570,17 +631,25 @@ class TestIterativeQAOACheckpointing:
         assert deepest_entry["n_iterations"] == self.ITERS_PER_DEPTH
         assert deepest_entry["best_params"].size == 2 * self.MAX_DEPTH
 
-    def test_second_run_does_not_accumulate_depth_history(
-        self, default_test_simulator, tmp_path
-    ):
-        """A repeated run replaces the depth history instead of appending to it."""
-        program = self._run_with_checkpoints(default_test_simulator, tmp_path)
+    def test_load_rejects_a_different_problem(self, default_test_simulator, tmp_path):
+        self._run_unsampled(default_test_simulator, tmp_path)
 
-        program.run(perform_final_computation=False)
+        with pytest.raises(ValueError, match="different cost Hamiltonian"):
+            IterativeQAOA.load_state(
+                tmp_path,
+                backend=default_test_simulator,
+                problem=MaxCutProblem(nx.cycle_graph(5)),
+                max_depth=self.MAX_DEPTH,
+                max_iterations_per_depth=self.ITERS_PER_DEPTH,
+            )
 
-        assert [entry["depth"] for entry in program.depth_history] == list(
-            range(1, self.MAX_DEPTH + 1)
-        )
+    def test_fresh_run_rejects_a_used_directory(self, default_test_simulator, tmp_path):
+        """The refused run leaves the finished run's completion file in place."""
+        self._run_unsampled(default_test_simulator, tmp_path)
+
+        with pytest.raises(ValueError, match="already holds checkpoints"):
+            self._run_unsampled(default_test_simulator, tmp_path)
+        assert (tmp_path / PROGRAM_COMPLETION_FILE).is_file()
 
 
 @pytest.mark.e2e
