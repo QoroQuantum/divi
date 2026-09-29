@@ -9,7 +9,6 @@ the algorithm class itself (which holds the program instance and can coordinate
 the optimizer).
 """
 
-import pickle
 from collections.abc import Collection
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Self
@@ -154,8 +153,12 @@ class VQACheckpoint(ProgramCheckpoint):
     )
 
     # Complex State (mapped to adapter properties on the program)
-    rng_state_bytes: bytes | None = Field(
-        default=None, validation_alias="_serialized_rng_state"
+    rng_state: dict[str, Any] = Field(validation_alias="_serialized_rng_state")
+    cost_hamiltonian_fingerprint: str = Field(
+        validation_alias="_serialized_cost_hamiltonian_fingerprint"
+    )
+    ansatz_type: str | None = Field(
+        default=None, validation_alias="_serialized_ansatz_type"
     )
     subclass_state: SubclassState = Field(validation_alias="_serialized_subclass_state")
     optimizer_config: OptimizerConfig | None = Field(
@@ -186,15 +189,6 @@ class VQACheckpoint(ProgramCheckpoint):
             values={"kind": kind},
         )
 
-    @field_serializer("rng_state_bytes")
-    def serialize_bytes(self, v: bytes | None, _info):
-        return v.hex() if v is not None else None
-
-    @field_validator("rng_state_bytes", mode="before")
-    @classmethod
-    def validate_bytes(cls, v):
-        return bytes.fromhex(v) if isinstance(v, str) else v
-
     @field_validator("param_history", mode="before")
     @classmethod
     def normalize_param_history(cls, v):
@@ -210,7 +204,28 @@ class VQACheckpoint(ProgramCheckpoint):
         return v
 
     def restore(self, program: "VariationalQuantumAlgorithm") -> None:
-        """Apply this state object back to a program instance."""
+        """Apply this state object back to a program instance.
+
+        Raises:
+            ValueError: If the program's cost Hamiltonian, ansatz or parameter
+                count differs from the checkpoint's, i.e. it was constructed
+                with other arguments than the checkpointed run.
+        """
+        if (
+            self.cost_hamiltonian_fingerprint
+            != program._serialized_cost_hamiltonian_fingerprint
+        ):
+            raise ValueError(
+                "The checkpoint was written for a different cost Hamiltonian; "
+                "construct the program with the same problem and observable "
+                "as the checkpointed run."
+            )
+        if self.ansatz_type != program._serialized_ansatz_type:
+            raise ValueError(
+                f"The checkpoint was written with ansatz {self.ansatz_type}, but "
+                f"this program uses {program._serialized_ansatz_type}; construct "
+                "it with the same ansatz as the checkpointed run."
+            )
         # 1. Bulk restore standard attributes
         for name, field in self.__class__.model_fields.items():
             alias = field.validation_alias
@@ -236,7 +251,13 @@ class VQACheckpoint(ProgramCheckpoint):
             StopReason(self.stop_reason) if self.stop_reason is not None else None
         )
 
-        if self.rng_state_bytes:
-            program._rng.bit_generator.state = pickle.loads(self.rng_state_bytes)
+        program._rng.bit_generator.state = self.rng_state
 
         program._load_subclass_state(self.subclass_state.data)
+
+        if len(program._best_params) not in (0, program.n_params):
+            raise ValueError(
+                f"The checkpoint holds {len(program._best_params)} parameters but "
+                f"this program has {program.n_params}; construct it with the "
+                "same ansatz and n_layers as the checkpointed run."
+            )

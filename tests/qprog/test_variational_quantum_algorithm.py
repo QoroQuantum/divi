@@ -1548,11 +1548,100 @@ class TestCheckpointing:
                     "grouping_strategy": None,
                     "optimizer_config": {"type": "ScipyOptimizer", "config": {}},
                     "subclass_state": {"data": {}},
+                    "rng_state": {},
+                    "cost_hamiltonian_fingerprint": "",
                 }
             )
         )
 
         with pytest.raises(ValueError, match="Checkpoints can be loaded for"):
+            SampleVQAProgram.load_state(
+                tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+            )
+
+    def _save_one_iteration(self, program, checkpoint_dir, mocker):
+        program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(program, n_iterations=1)
+        )
+        program.run(max_iterations=1, perform_final_computation=False)
+        program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+
+    def test_load_restores_the_rng(
+        self, sample_program, tmp_path, mocker, mock_backend
+    ):
+        self._save_one_iteration(sample_program, tmp_path, mocker)
+
+        loaded = SampleVQAProgram.load_state(
+            tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+        )
+
+        assert loaded._rng.random() == sample_program._rng.random()
+
+    def test_load_rejects_arguments_the_checkpoint_restores(
+        self, sample_program, tmp_path, mocker, mock_backend, default_optimizer
+    ):
+        self._save_one_iteration(sample_program, tmp_path, mocker)
+
+        with pytest.raises(TypeError, match="restores optimizer"):
+            SampleVQAProgram.load_state(
+                tmp_path,
+                backend=mock_backend,
+                optimizer=default_optimizer,
+                circ_count=0,
+                run_time=0.0,
+            )
+
+    @pytest.mark.parametrize(
+        "attribute, value, match",
+        [
+            (
+                "_serialized_cost_hamiltonian_fingerprint",
+                "another",
+                "different cost Hamiltonian",
+            ),
+            ("_serialized_ansatz_type", "OtherAnsatz", "written with ansatz None"),
+        ],
+        ids=["cost-hamiltonian", "ansatz"],
+    )
+    def test_load_rejects_a_differently_constructed_program(
+        self, sample_program, tmp_path, mocker, mock_backend, attribute, value, match
+    ):
+        self._save_one_iteration(sample_program, tmp_path, mocker)
+        mocker.patch.object(
+            SampleVQAProgram,
+            attribute,
+            new_callable=mocker.PropertyMock,
+            return_value=value,
+        )
+
+        with pytest.raises(ValueError, match=match):
+            SampleVQAProgram.load_state(
+                tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+            )
+
+    def test_fingerprint_ignores_numerical_noise_in_the_coefficients(
+        self, sample_program
+    ):
+        fingerprint = sample_program._serialized_cost_hamiltonian_fingerprint
+        hamiltonian = sample_program.cost_hamiltonian
+        sample_program.cost_hamiltonian = SparsePauliOp(
+            hamiltonian.paulis, hamiltonian.coeffs + 1e-9
+        )
+
+        assert sample_program._serialized_cost_hamiltonian_fingerprint == fingerprint
+
+    def test_load_rejects_a_different_parameter_count(
+        self, sample_program, tmp_path, mocker, mock_backend
+    ):
+        self._save_one_iteration(sample_program, tmp_path, mocker)
+        mocker.patch.object(
+            SampleVQAProgram,
+            "n_params",
+            new_callable=mocker.PropertyMock,
+            return_value=9,
+        )
+
+        with pytest.raises(ValueError, match="holds 4 parameters but this program"):
             SampleVQAProgram.load_state(
                 tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
             )

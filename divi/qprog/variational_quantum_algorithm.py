@@ -3,10 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import copy
+import hashlib
 import logging
-import pickle
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import cached_property, wraps
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Self, TypeAlias, cast
@@ -550,8 +550,25 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return type(self).__name__
 
     @property
-    def _serialized_rng_state(self) -> bytes:
-        return pickle.dumps(self._rng.bit_generator.state)
+    def _serialized_rng_state(self) -> Mapping[str, Any]:
+        return self._rng.bit_generator.state
+
+    @property
+    def _serialized_ansatz_type(self) -> str | None:
+        """The ansatz class name, for programs built from an ansatz."""
+        return None
+
+    @property
+    def _serialized_cost_hamiltonian_fingerprint(self) -> str:
+        hamiltonian = self.cost_hamiltonian.simplify()
+        terms = sorted(
+            zip(
+                hamiltonian.paulis.to_labels(),
+                np.round(hamiltonian.coeffs, 6).tolist(),
+            ),
+            key=lambda term: term[0],
+        )
+        return hashlib.sha256(repr(terms).encode()).hexdigest()
 
     @property
     def _serialized_optimizer_config(self) -> OptimizerConfig:
@@ -756,7 +773,25 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         subdirectory: str | None = None,
         **kwargs,
     ) -> Self:
-        """Load program state from a checkpoint directory."""
+        """Load program state from a checkpoint directory.
+
+        Args:
+            **kwargs: The remaining constructor arguments of the checkpointed
+                run (problem, ansatz, ``n_layers``, ...). ``optimizer`` and
+                ``seed`` come from the checkpoint and must not be passed.
+
+        Raises:
+            TypeError: If ``optimizer`` or ``seed`` is passed.
+            ValueError: If the constructor arguments describe a different
+                cost Hamiltonian, ansatz or parameter count than the
+                checkpoint.
+        """
+        restored = sorted({"optimizer", "seed"} & kwargs.keys())
+        if restored:
+            raise TypeError(
+                f"load_state() restores {', '.join(restored)} from the checkpoint; "
+                "do not pass it."
+            )
         checkpoint_path, state = cls._load_checkpoint_state(
             checkpoint_dir, subdirectory
         )

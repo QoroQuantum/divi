@@ -160,6 +160,10 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             **self._ansatz_kwargs,
         )
 
+    @property
+    def _serialized_ansatz_type(self) -> str | None:
+        return type(self.ansatz).__name__
+
     def _parameter_frequencies(self):
         """The ansatz's per-layer frequencies, repeated across layers."""
         per_layer = self.ansatz.parameter_frequencies(

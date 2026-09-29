@@ -241,6 +241,10 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
         per_layer = self.ansatz.parameter_frequencies(self.n_qubits)
         return None if per_layer is None else list(per_layer) * self.n_layers
 
+    @property
+    def _serialized_ansatz_type(self) -> str | None:
+        return type(self.ansatz).__name__
+
     # ------------------------------------------------------------------ #
     # Plumbing
     # ------------------------------------------------------------------ #

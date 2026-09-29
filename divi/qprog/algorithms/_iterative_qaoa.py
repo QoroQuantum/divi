@@ -416,7 +416,7 @@ class IterativeQAOA(QAOA):
                 "final_params": current.final_params,
                 "total_circuit_count": current.total_circuit_count,
                 "total_run_time": current.total_run_time,
-                "rng_state_bytes": current.rng_state_bytes,
+                "rng_state": current.rng_state,
                 "subclass_state": current.subclass_state,
             }
         )
