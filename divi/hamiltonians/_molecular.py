@@ -85,6 +85,17 @@ def split_pyscf_input(
     return mol, mean_field
 
 
+def pyscf_mole_at(mol: _PySCFMole, coordinates: np.ndarray) -> _PySCFMole:
+    """A copy of ``mol`` at ``coordinates`` (Bohr), keeping ``mol``'s unit."""
+    from pyscf.data.nist import BOHR
+    from pyscf.gto.mole import is_au
+
+    to_unit = 1.0 if is_au(mol.unit) else BOHR
+    return mol.set_geom_(
+        np.asarray(coordinates) * to_unit, unit=mol.unit, inplace=False
+    )
+
+
 def _pyscf_integrals(
     mol: _PySCFMole, mean_field: _PySCFMeanField | None
 ) -> tuple[np.ndarray, np.ndarray, float]:

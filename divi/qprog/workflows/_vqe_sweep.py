@@ -18,6 +18,7 @@ from divi.hamiltonians._molecular import (
     is_pennylane_molecule,
     is_pyscf_mean_field,
     is_pyscf_mole,
+    pyscf_mole_at,
 )
 from divi.qprog import VQE, Ansatz, ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
@@ -45,7 +46,7 @@ def _atom_count(molecule) -> int:
 def _with_geometry(molecule, coordinates: npt.NDArray):
     """``molecule`` moved to ``coordinates`` (Bohr), leaving the original alone."""
     if is_pyscf_mole(molecule):
-        return molecule.set_geom_(np.asarray(coordinates), unit="Bohr", inplace=False)
+        return pyscf_mole_at(molecule, coordinates)
     variant = copy.copy(molecule)
     variant.coordinates = coordinates
     return variant

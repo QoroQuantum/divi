@@ -312,6 +312,19 @@ class TestMoleculeTransformerGeneration:
         # The base must survive untouched — set_geom_ defaults to in-place.
         assert np.isclose(np.linalg.norm(pyscf_h2_molecule.atom_coords()[1]), 1.4)
 
+    def test_angstrom_pyscf_molecule_keeps_its_unit(self, gto, recwarn):
+        """Variants of an Angstrom molecule stay in Angstrom, without a PySCF warning."""
+        base = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", unit="Angstrom")
+
+        variant = MoleculeTransformer(
+            base_molecule=base, bond_modifiers=[1.5]
+        ).generate()[1.5]
+
+        assert variant.unit == "Angstrom"
+        bond = np.linalg.norm(variant.atom_coords()[1] - variant.atom_coords()[0])
+        assert np.isclose(bond, 1.5 * np.linalg.norm(base.atom_coords()[1]))
+        assert not recwarn.list
+
     def test_pyscf_mean_field_is_reduced_to_its_molecule(
         self, gto, scf, pyscf_h2_molecule
     ):
