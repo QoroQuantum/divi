@@ -151,17 +151,27 @@ class _RoundCheckpointSession:
         persisted_checkpoint: RoundCheckpoint,
         child_recovery_states: list[ProgramRoundRecord],
     ) -> None:
-        def key(entry: ProgramRoundRecord) -> tuple[Any, ...]:
-            return entry.program_id, entry.program_type
-
         persisted_states = persisted_checkpoint.round_start_data()
-        if len(persisted_states) != len(child_recovery_states) or any(
-            key(saved) != key(fresh)
-            for saved, fresh in zip(persisted_states, child_recovery_states)
-        ):
+        if len(persisted_states) != len(child_recovery_states):
             raise ValueError(
-                "Child recovery states do not match reconstructed programs."
+                f"The round checkpoint holds {len(persisted_states)} programs but "
+                f"the ensemble rebuilt {len(child_recovery_states)}; the "
+                "ensemble's inputs differ from the checkpointed run."
             )
+        for slot, (saved, fresh) in enumerate(
+            zip(persisted_states, child_recovery_states)
+        ):
+            saved_key = (saved.program_id, saved.program_type)
+            fresh_key = (fresh.program_id, fresh.program_type)
+            if saved_key != fresh_key:
+                raise ValueError(
+                    f"Program slot {slot} was checkpointed with "
+                    f"program_id={saved.program_id!r}, "
+                    f"program_type={saved.program_type!r} but rebuilt with "
+                    f"program_id={fresh.program_id!r}, "
+                    f"program_type={fresh.program_type!r}; the ensemble's inputs "
+                    "differ from the checkpointed run."
+                )
 
     @staticmethod
     def _supports_iterative(program: QuantumProgram) -> bool:

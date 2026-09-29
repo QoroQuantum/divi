@@ -348,6 +348,28 @@ class TestLifecycleHookContract:
         assert ensemble.workflow_state is None
 
 
+def _prepare_round(
+    program, checkpoint_dir, interrupted_checkpoint=None, program_id="first"
+):
+    return ensemble_module._RoundCheckpointSession.prepare(
+        checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir),
+        round_path=checkpoint_dir / "round_001",
+        ensemble_type="tests.TerminalTestEnsemble",
+        round_index=1,
+        ensemble_state={"value": 0},
+        programs=[program],
+        child_recovery_states=[
+            ProgramRoundRecord(
+                program_id=_encode_program_id(program_id),
+                program_type="tests.TerminalTestProgram",
+                circuit_count_at_round_start=0,
+                run_time_at_round_start=0.0,
+            )
+        ],
+        interrupted_checkpoint=interrupted_checkpoint,
+    )
+
+
 class TestEnsembleCheckpointing:
     def test_interrupted_round_reuses_its_child_directory(
         self, dummy_simulator, tmp_path
@@ -357,30 +379,11 @@ class TestEnsembleCheckpointing:
         )
         round_path = tmp_path / "round_001"
 
-        def prepare(interrupted_checkpoint=None):
-            return ensemble_module._RoundCheckpointSession.prepare(
-                checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
-                round_path=round_path,
-                ensemble_type="tests.TerminalTestEnsemble",
-                round_index=1,
-                ensemble_state={"value": 0},
-                programs=[program],
-                child_recovery_states=[
-                    ProgramRoundRecord(
-                        program_id=_encode_program_id("first"),
-                        program_type="tests.TerminalTestProgram",
-                        circuit_count_at_round_start=0,
-                        run_time_at_round_start=0.0,
-                    )
-                ],
-                interrupted_checkpoint=interrupted_checkpoint,
-            )
-
-        first = prepare()
+        first = _prepare_round(program, tmp_path)
         active = RoundCheckpoint.model_validate_json(
             (round_path / "round_start.json").read_text()
         )
-        second = prepare(active)
+        second = _prepare_round(program, tmp_path, active)
 
         assert first.checkpoint_path_by_program[program] == round_path / "program_000"
         assert second.checkpoint_path_by_program[program] == round_path / "program_000"
@@ -390,6 +393,20 @@ class TestEnsembleCheckpointing:
             )
             == active
         )
+
+    def test_interrupted_round_names_the_mismatched_program(
+        self, dummy_simulator, tmp_path
+    ):
+        program = _TerminalTestProgram(
+            0, [0], Event(), fail=False, backend=dummy_simulator
+        )
+        _prepare_round(program, tmp_path)
+        active = RoundCheckpoint.model_validate_json(
+            (tmp_path / "round_001" / "round_start.json").read_text()
+        )
+
+        with pytest.raises(ValueError, match="Program slot 0 .* program_id="):
+            _prepare_round(program, tmp_path, active, program_id="second")
 
     def test_fresh_run_rejects_a_checkpoint_root_from_an_older_run(
         self, lifecycle_ensemble, tmp_path
