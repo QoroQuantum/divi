@@ -28,7 +28,7 @@ from divi.qprog.problems import QAOAProblem
 def create_tsp_qubo(
     cost_matrix: npt.NDArray[np.floating],
     start_city: int = 0,
-    constraint_penalty: float = 4.0,
+    penalty_weight: float = 4.0,
     objective_weight: float = 1.0,
     reduced: bool = True,
 ) -> npt.NDArray[np.floating]:
@@ -48,7 +48,7 @@ def create_tsp_qubo(
     Args:
         cost_matrix: Symmetric (n × n) distance/cost matrix.
         start_city: Index of the fixed start/end city. Defaults to 0.
-        constraint_penalty: Penalty strength for constraint violations.
+        penalty_weight: Penalty strength for constraint violations.
         objective_weight: Weight for the objective function.
         reduced: If ``True`` (default), omit row penalties — the correct
             choice when using CE-QAOA (W-state + XY mixer) since row
@@ -85,14 +85,14 @@ def create_tsp_qubo(
         Q = np.zeros((m * m, m * m))
     else:
         # Row penalties: A * sum_t (1 - sum_i x_{i,t})^2
-        Q = constraint_penalty * np.kron(J_m - I_m, I_m)
+        Q = penalty_weight * np.kron(J_m - I_m, I_m)
 
     # --- Column penalties: A * sum_i (1 - sum_t x_{i,t})^2 ---
-    Q += constraint_penalty * np.kron(I_m, J_m - I_m)
+    Q += penalty_weight * np.kron(I_m, J_m - I_m)
 
     # Linear term: each variable appears in column penalty (and row if not reduced)
     n_penalties = 1 if reduced else 2
-    np.fill_diagonal(Q, np.diag(Q) - n_penalties * constraint_penalty)
+    np.fill_diagonal(Q, np.diag(Q) - n_penalties * penalty_weight)
 
     # --- Objective: consecutive timeslot costs ---
     W_reduced = cost_matrix[np.ix_(cities, cities)]
@@ -248,9 +248,9 @@ def create_cvrp_qubo(
     capacity: float,
     n_vehicles: int,
     depot: int = 0,
-    constraint_penalty: float = 4.0,
+    penalty_weight: float = 4.0,
     objective_weight: float = 1.0,
-    capacity_penalty: float = 4.0,
+    capacity_penalty_weight: float = 4.0,
 ) -> npt.NDArray[np.floating]:
     """Generate a QUBO for CVRP with a fixed depot.
 
@@ -261,9 +261,9 @@ def create_cvrp_qubo(
     - Each vehicle visits at most one customer per time step.
 
     Constraints in the phase operator (penalties):
-    - **Column one-hot** (constraint_penalty): each customer visited exactly once
+    - **Column one-hot** (penalty_weight): each customer visited exactly once
       across all vehicles.
-    - **Capacity** (capacity_penalty): each vehicle route does not exceed capacity.
+    - **Capacity** (capacity_penalty_weight): each vehicle route does not exceed capacity.
     - **Objective** (objective_weight): minimise total travel distance.
 
     Variable ordering: ``x_{v,i,t}`` → qubit ``v * K * T + t * K + i``
@@ -278,9 +278,9 @@ def create_cvrp_qubo(
         capacity: Vehicle capacity.
         n_vehicles: Number of vehicles.
         depot: Index of the depot node. Defaults to 0.
-        constraint_penalty: Penalty for customer-visit constraints.
+        penalty_weight: Penalty for customer-visit constraints.
         objective_weight: Weight for the objective function.
-        capacity_penalty: Penalty for capacity constraint violations.
+        capacity_penalty_weight: Penalty for capacity constraint violations.
 
     Returns:
         Upper-triangular QUBO matrix compatible with ``QUBOProblemTypes``.
@@ -322,11 +322,11 @@ def create_cvrp_qubo(
     #   same-customer coupling = I_K, all (v,t) pairs = J_V ⊗ J_T
     #   off-diagonal part: (J_V ⊗ J_T - I_{VT}) ⊗ I_K  (exclude self-pairs)
     visit_offdiag = np.kron(np.kron(J_V, J_T) - np.eye(V * T), I_K)
-    Q += constraint_penalty * visit_offdiag
+    Q += penalty_weight * visit_offdiag
 
     # Linear: -A per variable (from -2*x + x^2 = -x per constraint)
     # Each variable participates in exactly one customer constraint
-    np.fill_diagonal(Q, np.diag(Q) - constraint_penalty)
+    np.fill_diagonal(Q, np.diag(Q) - penalty_weight)
 
     # --- Capacity constraints ---
     # For each vehicle v: (sum_{i,t} d_i * x_{v,i,t} - C)^2
@@ -342,14 +342,16 @@ def create_cvrp_qubo(
     # Per-vehicle capacity quadratic: (J_T ⊗ dd) for each vehicle
     # Across vehicles: block-diagonal (I_V)
     cap_quad_per_vehicle = np.kron(J_T, dd)  # (KT × KT)
-    Q += capacity_penalty * np.kron(I_V, cap_quad_per_vehicle)
+    Q += capacity_penalty_weight * np.kron(I_V, cap_quad_per_vehicle)
 
     # Capacity linear: -2C * d_i per variable (+ d_i^2 from diagonal of quad)
     # The d_i^2 is already in the diagonal of cap_quad.
     # We need: -2C * d_i additionally on the diagonal.
     # d_i for each qubit: tile d across all (V, T) slots
     d_per_qubit = np.tile(d, V * T)
-    np.fill_diagonal(Q, np.diag(Q) - 2.0 * capacity_penalty * capacity * d_per_qubit)
+    np.fill_diagonal(
+        Q, np.diag(Q) - 2.0 * capacity_penalty_weight * capacity * d_per_qubit
+    )
 
     # --- Objective: travel cost ---
     W = cost_matrix[np.ix_(customers, customers)]  # K×K reduced cost matrix
@@ -671,9 +673,9 @@ def create_cvrp_hubo_binary(
     capacity: float,
     n_vehicles: int,
     depot: int = 0,
-    constraint_penalty: float = 4.0,
+    penalty_weight: float = 4.0,
     objective_weight: float = 1.0,
-    capacity_penalty: float = 4.0,
+    capacity_penalty_weight: float = 4.0,
     max_steps: int | None = None,
 ) -> tuple[dict[tuple[int, ...], float], BinaryBlockConfig]:
     """Generate a HUBO (Higher-Order Binary Optimisation) for CVRP with binary encoding.
@@ -700,9 +702,9 @@ def create_cvrp_hubo_binary(
         capacity: Vehicle capacity.
         n_vehicles: Number of vehicles.
         depot: Depot node index.
-        constraint_penalty: Customer-visit constraint penalty.
+        penalty_weight: Customer-visit constraint penalty.
         objective_weight: Objective weight.
-        capacity_penalty: Capacity penalty.
+        capacity_penalty_weight: Capacity penalty.
         max_steps: Max route steps per vehicle (default: n_customers).
 
     Returns:
@@ -790,7 +792,7 @@ def create_cvrp_hubo_binary(
             for vars_set, coeff in ind.items():
                 _add(
                     tuple(sorted(vars_set)),
-                    -2.0 * constraint_penalty * coeff,
+                    -2.0 * penalty_weight * coeff,
                 )
 
         # sum_s sum_{s'} I(s==j) * I(s'==j)  (quadratic part)
@@ -798,7 +800,7 @@ def create_cvrp_hubo_binary(
         # Since I^2 = I (indicator is 0 or 1), the diagonal is just sum_s I(s==j)
         for ind in slot_indicators:
             for vars_set, coeff in ind.items():
-                _add(tuple(sorted(vars_set)), constraint_penalty * coeff)
+                _add(tuple(sorted(vars_set)), penalty_weight * coeff)
 
         # Cross terms: 2 * sum_{s<s'} I(s==j) * I(s'==j)
         for i in range(len(slot_indicators)):
@@ -808,7 +810,7 @@ def create_cvrp_hubo_binary(
                         combined = vars_i | vars_j
                         _add(
                             tuple(sorted(combined)),
-                            2.0 * constraint_penalty * coeff_i * coeff_j,
+                            2.0 * penalty_weight * coeff_i * coeff_j,
                         )
 
     # --- Objective: travel distance ---
@@ -867,7 +869,7 @@ def create_cvrp_hubo_binary(
 
     # --- Capacity constraints ---
     # For each vehicle v: (sum_{t,j} demand_j * I(slot(v,t)==j) - C)^2
-    # Simplified: capacity_penalty * (sum - C)^2
+    # Simplified: capacity_penalty_weight * (sum - C)^2
     # We only add the quadratic expansion terms (linear + cross)
     for v in range(n_vehicles):
         # Collect all demand-weighted indicator terms for this vehicle
@@ -887,7 +889,7 @@ def create_cvrp_hubo_binary(
             for vars_set, coeff in ind.items():
                 _add(
                     tuple(sorted(vars_set)),
-                    capacity_penalty * d * (-2.0 * capacity) * coeff,
+                    capacity_penalty_weight * d * (-2.0 * capacity) * coeff,
                 )
 
         # (sum demand_j * I(slot==j))^2
@@ -897,7 +899,7 @@ def create_cvrp_hubo_binary(
             for vars_set, coeff in ind_i.items():
                 _add(
                     tuple(sorted(vars_set)),
-                    capacity_penalty * d_i * d_i * coeff,
+                    capacity_penalty_weight * d_i * d_i * coeff,
                 )
             # Cross terms
             for j_idx in range(i + 1, len(demand_terms)):
@@ -907,7 +909,12 @@ def create_cvrp_hubo_binary(
                         combined = vars_i | vars_j
                         _add(
                             tuple(sorted(combined)),
-                            2.0 * capacity_penalty * d_i * d_j * coeff_i * coeff_j,
+                            2.0
+                            * capacity_penalty_weight
+                            * d_i
+                            * d_j
+                            * coeff_i
+                            * coeff_j,
                         )
 
     return hubo, config
@@ -916,7 +923,7 @@ def create_cvrp_hubo_binary(
 def create_tsp_hubo_binary(
     cost_matrix: npt.NDArray[np.floating],
     start_city: int = 0,
-    constraint_penalty: float = 4.0,
+    penalty_weight: float = 4.0,
     objective_weight: float = 1.0,
 ) -> tuple[dict[tuple[int, ...], float], BinaryBlockConfig]:
     """Generate a binary-encoded HUBO for TSP.
@@ -933,7 +940,7 @@ def create_tsp_hubo_binary(
     Args:
         cost_matrix: Symmetric distance matrix, shape ``(n, n)``.
         start_city: Index of the fixed start/end city.
-        constraint_penalty: Customer-visit + slot-validity penalty strength.
+        penalty_weight: Customer-visit + slot-validity penalty strength.
         objective_weight: Tour-length weight.
 
     Returns:
@@ -949,14 +956,14 @@ def create_tsp_hubo_binary(
         capacity=1.0,  # any value; demands=0 makes capacity terms vacuous.
         n_vehicles=1,
         depot=start_city,
-        constraint_penalty=constraint_penalty,
+        penalty_weight=penalty_weight,
         objective_weight=objective_weight,
-        capacity_penalty=0.0,
+        capacity_penalty_weight=0.0,
         max_steps=n_cust,
     )
 
     # Slot-validity penalty: for each slot s and each value v in
-    # ``(n_cust + 1, ..., 2^B - 1)``, add ``constraint_penalty * I(s == v)``
+    # ``(n_cust + 1, ..., 2^B - 1)``, add ``penalty_weight * I(s == v)``
     # to the HUBO. Skips when 2^B == n_cust + 1 (no out-of-range values).
     B = config.bits_per_slot
     invalid_values = range(n_cust + 1, 1 << B)
@@ -982,7 +989,7 @@ def create_tsp_hubo_binary(
                     if abs(coeff) < 1e-15:
                         continue
                     key = tuple(sorted(vars_set))
-                    hubo[key] = hubo.get(key, 0.0) + constraint_penalty * coeff
+                    hubo[key] = hubo.get(key, 0.0) + penalty_weight * coeff
 
     return hubo, config
 
@@ -1477,14 +1484,14 @@ class _RoutingProblemBase(QAOAProblem):
         block_size: int,
         n_blocks: int,
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
-        use_xy_mixer: bool = True,
+        use_constrained_mixer: bool = True,
     ) -> None:
         """Shared Ising conversion + mixer setup."""
         self._block_size = block_size
         self._n_blocks = n_blocks
         self._ising = qubo_to_ising(qubo, hamiltonian_builder=hamiltonian_builder)
 
-        if use_xy_mixer:
+        if use_constrained_mixer:
             graph = build_block_xy_mixer_graph(
                 block_size, n_blocks, range(self._ising.n_qubits)
             )
@@ -1524,7 +1531,7 @@ class TSPProblem(_RoutingProblemBase):
         cost_matrix: Symmetric distance/cost matrix of shape ``(n, n)``.
         start_city: Index of the fixed start city. Defaults to 0.
         encoding: ``"one_hot"`` or ``"binary"``. Defaults to ``"one_hot"``.
-        constraint_penalty: Constraint penalty strength. Defaults to 4.0.
+        penalty_weight: Constraint penalty strength. Defaults to 4.0.
         objective_weight: Objective weight. Defaults to 1.0.
     """
 
@@ -1534,7 +1541,7 @@ class TSPProblem(_RoutingProblemBase):
         *,
         start_city: int = 0,
         encoding: Literal["one_hot", "binary"] = "one_hot",
-        constraint_penalty: float = 4.0,
+        penalty_weight: float = 4.0,
         objective_weight: float = 1.0,
     ):
         self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
@@ -1548,7 +1555,7 @@ class TSPProblem(_RoutingProblemBase):
             hubo, self._binary_config = create_tsp_hubo_binary(
                 self._cost_matrix,
                 start_city=start_city,
-                constraint_penalty=constraint_penalty,
+                penalty_weight=penalty_weight,
                 objective_weight=objective_weight,
             )
             self._init_ising(
@@ -1556,11 +1563,11 @@ class TSPProblem(_RoutingProblemBase):
                 block_size=self._binary_config.bits_per_slot,
                 n_blocks=self._binary_config.n_slots,
                 hamiltonian_builder="native",
-                use_xy_mixer=False,
+                use_constrained_mixer=False,
             )
         else:
             qubo = create_tsp_qubo(
-                self._cost_matrix, start_city, constraint_penalty, objective_weight
+                self._cost_matrix, start_city, penalty_weight, objective_weight
             )
             self._init_ising(qubo, block_size=m, n_blocks=m)
 
@@ -1642,9 +1649,9 @@ class CVRPProblem(_RoutingProblemBase):
         n_vehicles: Number of vehicles.
         depot: Index of the depot node. Defaults to 0.
         encoding: ``"one_hot"`` or ``"binary"``. Defaults to ``"one_hot"``.
-        constraint_penalty: Constraint penalty strength. Defaults to 4.0.
+        penalty_weight: Constraint penalty strength. Defaults to 4.0.
         objective_weight: Objective weight. Defaults to 1.0.
-        capacity_penalty: Capacity penalty strength. Defaults to 4.0.
+        capacity_penalty_weight: Capacity penalty strength. Defaults to 4.0.
         max_steps: Maximum route length per vehicle (``"binary"`` encoding
             only). ``None`` (default) uses ``n_customers``. Qubit count and
             HUBO term count both scale with ``n_vehicles * max_steps``;
@@ -1661,9 +1668,9 @@ class CVRPProblem(_RoutingProblemBase):
         n_vehicles: int,
         depot: int = 0,
         encoding: Literal["one_hot", "binary"] = "one_hot",
-        constraint_penalty: float = 4.0,
+        penalty_weight: float = 4.0,
         objective_weight: float = 1.0,
-        capacity_penalty: float = 4.0,
+        capacity_penalty_weight: float = 4.0,
         max_steps: int | None = None,
     ):
         self._cost_matrix = np.asarray(cost_matrix, dtype=np.float64)
@@ -1684,9 +1691,9 @@ class CVRPProblem(_RoutingProblemBase):
                 capacity=capacity,
                 n_vehicles=n_vehicles,
                 depot=depot,
-                constraint_penalty=constraint_penalty,
+                penalty_weight=penalty_weight,
                 objective_weight=objective_weight,
-                capacity_penalty=capacity_penalty,
+                capacity_penalty_weight=capacity_penalty_weight,
                 max_steps=max_steps,
             )
             self._init_ising(
@@ -1694,7 +1701,7 @@ class CVRPProblem(_RoutingProblemBase):
                 block_size=self._binary_config.bits_per_slot,
                 n_blocks=self._binary_config.n_slots,
                 hamiltonian_builder="native",
-                use_xy_mixer=False,
+                use_constrained_mixer=False,
             )
         else:
             if max_steps is not None:
@@ -1705,9 +1712,9 @@ class CVRPProblem(_RoutingProblemBase):
                 capacity=capacity,
                 n_vehicles=n_vehicles,
                 depot=depot,
-                constraint_penalty=constraint_penalty,
+                penalty_weight=penalty_weight,
                 objective_weight=objective_weight,
-                capacity_penalty=capacity_penalty,
+                capacity_penalty_weight=capacity_penalty_weight,
             )
             bs, nb = cvrp_block_structure(n_cust, n_vehicles)
             self._init_ising(qubo, block_size=bs, n_blocks=nb)

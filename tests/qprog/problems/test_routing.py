@@ -683,7 +683,7 @@ class TestTSPProblemBinary:
             capacity=1.0,
             n_vehicles=1,
             depot=0,
-            capacity_penalty=0.0,
+            capacity_penalty_weight=0.0,
             max_steps=5,
         )
         diff = {
@@ -722,7 +722,7 @@ class TestTSPProblemBinary:
             capacity=1.0,
             n_vehicles=1,
             depot=0,
-            capacity_penalty=0.0,
+            capacity_penalty_weight=0.0,
             max_steps=3,
         )
         assert hubo_tsp == hubo_cvrp

@@ -686,7 +686,15 @@ def test_pce_get_top_solutions_validation_errors(make_pce):
     with pytest.raises(ValueError, match="min_prob must be in range"):
         pce.get_top_solutions(n=2, min_prob=-0.1)
 
-    assert pce.get_top_solutions(n=0) == []
+
+@pytest.mark.parametrize("sort_by", ["prob", "energy"])
+def test_pce_get_top_solutions_n_zero_returns_all(make_pce, sort_by):
+    """n=0 returns every solution that passes min_prob, like QAOA."""
+    pce = make_pce(problem=np.eye(2))
+    _set_probs(pce, {"00": 0.5, "01": 0.3, "10": 0.15, "11": 0.05})
+
+    assert len(pce.get_top_solutions(n=0, sort_by=sort_by)) == 4
+    assert len(pce.get_top_solutions(n=0, min_prob=0.2, sort_by=sort_by)) == 2
 
 
 def test_pce_get_top_solutions_no_probs_raises(make_pce):

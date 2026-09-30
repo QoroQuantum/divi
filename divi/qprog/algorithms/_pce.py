@@ -360,8 +360,8 @@ class PCE(VQE):
         decoded QUBO solutions (N variables).
 
         Args:
-            n (int): Maximum number of solutions to return. Must be non-negative.
-                If n is 0 or negative, returns an empty list. If n exceeds the
+            n (int): Maximum number of solutions to return. Must be non-negative;
+                ``0`` returns every available solution. If n exceeds the
                 number of available solutions (after filtering), returns all
                 available solutions. Defaults to 10.
             min_prob (float): Minimum probability threshold for including solutions.
@@ -381,8 +381,7 @@ class PCE(VQE):
                 ``sort_by``, with decoded bitstring for deterministic tie-breaking.
                 The `bitstring` field contains the decoded QUBO solution as a
                 binary string (e.g., "01011" for 5 variables), not the encoded
-                qubit state. Returns an empty list if no probability distribution
-                is available or n <= 0.
+                qubit state.
 
         Raises:
             RuntimeError: If probability distribution is not available because
@@ -397,8 +396,7 @@ class PCE(VQE):
         if sort_by not in ("prob", "energy"):
             raise ValueError(f"sort_by must be 'prob' or 'energy', got '{sort_by}'")
 
-        if n == 0:
-            return []
+        limit = n or None
 
         probs_dict = self._single_distribution()
 
@@ -446,7 +444,7 @@ class PCE(VQE):
         else:
             result.sort(key=lambda e: (-e.prob, e.bitstring))
 
-        return result[:n]
+        return result[:limit]
 
     def _decode_assignment(
         self, vector: npt.NDArray[np.integer]

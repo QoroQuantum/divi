@@ -65,7 +65,7 @@ exactly once and returning to the start.
    print(qaoa.solution)  # decoded city sequence, returning to start_city
 
 The ``start_city`` is fixed and excluded from the encoding, reducing the
-problem from *n²* to *(n−1)²* qubits.  Penalty strengths ``constraint_penalty``
+problem from *n²* to *(n−1)²* qubits.  Penalty strengths ``penalty_weight``
 (constraints) and ``objective_weight`` (objective) can be tuned.
 
 Capacitated Vehicle Routing (CVRP)

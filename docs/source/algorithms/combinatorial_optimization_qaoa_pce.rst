@@ -91,8 +91,10 @@ Built-in options include :class:`~divi.qprog.algorithms.ZerosState`,
 :class:`~divi.qprog.algorithms.WState`\ ``(block_size, n_blocks)`` (one-hot encodings).
 When ``initial_state`` is omitted, graph problems use a problem-specific default and
 QUBO/HUBO problems default to :class:`~divi.qprog.algorithms.SuperpositionState`.
-Using :class:`~divi.qprog.algorithms.WState` selects the XY mixer automatically so the
-state stays in the one-hot subspace.
+
+QAOA always uses the problem's ``mixer_hamiltonian``, whatever the initial
+state. A :class:`~divi.qprog.algorithms.WState` keeps its one-hot subspace only
+if that mixer conserves it, e.g. an :func:`~divi.hamiltonians.xy_mixer`.
 
 **Initial parameters:** Pass ``initial_params`` to ``run()`` to warm-start from
 known parameters or continue from another run. See
@@ -159,7 +161,9 @@ Built-in graph problems include:
    * - Problem class
      - Description
    * - :class:`~divi.qprog.problems.MaxCutProblem`\ ``(graph)``
-     - Divides a graph into two subsets to maximise the sum of edge weights between them.
+     - Divides a graph into two subsets to maximise the number of edges between them.
+       Edge weights are ignored; use
+       :class:`~divi.qprog.problems.BinaryOptimizationProblem` for weighted MaxCut.
    * - :class:`~divi.qprog.problems.MaxCliqueProblem`\ ``(graph)``
      - Finds the largest complete subgraph where every node is connected to every other.
    * - :class:`~divi.qprog.problems.MaxIndependentSetProblem`\ ``(graph)``
@@ -170,6 +174,14 @@ Built-in graph problems include:
      - Identifies a cycle with the maximum total edge weight in a weighted graph.
    * - :class:`~divi.qprog.problems.MaxWeightMatchingProblem`\ ``(graph)``
      - Finds a set of edges with maximum total weight where no two edges share a node.
+
+``MaxCliqueProblem``, ``MaxIndependentSetProblem``, ``MinVertexCoverProblem`` and
+``MaxWeightCycleProblem`` take ``use_constrained_mixer`` (default ``True``),
+which selects the problem's constrained mixer and initial state. ``False`` uses
+the X mixer with penalty terms instead. ``MaxCutProblem`` ignores the flag.
+
+The first three also implement ``is_feasible`` and ``compute_energy``, so
+``get_top_solutions(feasibility="filter")`` returns only feasible node sets.
 
 Example: Finding the max-clique of a graph:
 
@@ -187,7 +199,7 @@ Example: Finding the max-clique of a graph:
    G = nx.bull_graph()
 
    qaoa_problem = QAOA(
-       MaxCliqueProblem(G, is_constrained=True),
+       MaxCliqueProblem(G, use_constrained_mixer=True),
        n_layers=2,
        optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
        max_iterations=10,
@@ -246,7 +258,7 @@ NumPy Array-based Input
    qaoa_problem.run()
 
    print(f"Solution: {qaoa_problem.solution}")
-   print(f"Energy: {qaoa_problem.best_loss}")
+   print(f"Best loss: {qaoa_problem.best_loss}")
 
    # Get top-N solutions by probability
    top_solutions = qaoa_problem.get_top_solutions(n=5)
@@ -433,7 +445,7 @@ For small graphs, use directly with QAOA:
    G = nx.Graph()
    G.add_weighted_edges_from([(0, 1, 5.0), (1, 2, 1.0), (2, 3, 5.0)])
 
-   problem = MaxWeightMatchingProblem(G, penalty_scale=10.0)
+   problem = MaxWeightMatchingProblem(G, penalty_weight=10.0)
    qaoa = QAOA(
        problem,
        n_layers=2,
@@ -452,7 +464,7 @@ For large graphs, enable edge-based partitioning with ``max_edges_per_partition`
 
    problem = MaxWeightMatchingProblem(
        G,
-       penalty_scale=10.0,
+       penalty_weight=10.0,
        max_edges_per_partition=15,
        partition_algorithm="kernighan_lin",
    )
@@ -629,7 +641,7 @@ with a graph problem configured for partitioning via
    # Aggregate results from all partitions
    quantum_solution, energy = ensemble.aggregate_results()
 
-   print(f"MaxCut value: {energy}")
+   print(f"Cut edges: {-energy}")
    print(f"Total circuits executed: {ensemble.total_circuit_count}")
 
 QUBO Partitioning (QAOA or PCE)

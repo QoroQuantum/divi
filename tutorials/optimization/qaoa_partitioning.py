@@ -325,7 +325,7 @@ if __name__ == "__main__":
 
     matching_problem = MaxWeightMatchingProblem(
         G_match,
-        penalty_scale=10.0,
+        penalty_weight=10.0,
         max_edges_per_partition=10,
         partition_algorithm="kernighan_lin",
         seed=42,

@@ -7,7 +7,7 @@
 Two short examples that share a common pattern — instantiate a problem class,
 hand it to ``QAOA``, run, compare against a classical baseline.
 
-1. Maximum clique with a constrained mixer (``is_constrained=True``).
+1. Maximum clique with a constrained mixer (``use_constrained_mixer=True``).
 2. Maximum-weight matching with the default penalty-based formulation.
 
 For partitioning a single large graph problem across multiple QAOA programs,
@@ -41,7 +41,7 @@ if __name__ == "__main__":
     G_clique = nx.bull_graph()
 
     qaoa_clique = QAOA(
-        MaxCliqueProblem(G_clique, is_constrained=True),
+        MaxCliqueProblem(G_clique, use_constrained_mixer=True),
         n_layers=2,
         optimizer=PymooOptimizer(method=PymooMethod.CMAES, population_size=10),
         max_iterations=5,
@@ -71,7 +71,7 @@ if __name__ == "__main__":
     )
 
     qaoa_match = QAOA(
-        MaxWeightMatchingProblem(G_match, penalty_scale=10.0),
+        MaxWeightMatchingProblem(G_match, penalty_weight=10.0),
         n_layers=2,
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=20,

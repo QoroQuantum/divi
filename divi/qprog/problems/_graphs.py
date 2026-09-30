@@ -4,6 +4,7 @@
 
 """Graph problem classes for QAOA."""
 
+import itertools
 from collections.abc import Callable, Hashable
 from functools import cached_property
 from typing import Any
@@ -24,6 +25,7 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.problems import GraphPartitioningConfig, QAOAProblem
 from divi.qprog.problems._graph_hamiltonians import (
+    _to_nx_graph,
     max_clique_hamiltonians,
     max_independent_set_hamiltonians,
     max_weight_cycle_hamiltonians,
@@ -38,26 +40,33 @@ class _GraphProblemBase(QAOAProblem):
 
     Subclasses set ``_resolver`` (a function returning ``(cost_spo, mixer_spo)``
     or ``(cost_spo, mixer_spo, metadata)``) and the two ``_*_state_cls`` class
-    attributes, then call ``super().__init__``.
+    attributes. Problems without a constrained mixer set
+    ``_supports_constrained_mixer = False`` and ignore ``use_constrained_mixer``.
     """
 
     _resolver: staticmethod
     _constrained_state_cls: type[InitialState]
     _unconstrained_state_cls: type[InitialState]
+    _supports_constrained_mixer = True
 
     def __init__(
         self,
         graph: GraphProblemTypes,
         *,
-        is_constrained: bool = True,
+        use_constrained_mixer: bool = True,
         config: GraphPartitioningConfig | None = None,
     ):
-        self._graph = graph
-        self._is_constrained = is_constrained
-
-        cost_spo, self._mixer_hamiltonian, *self._metadata = self._resolve(
-            graph, is_constrained
+        use_constrained_mixer = (
+            use_constrained_mixer and self._supports_constrained_mixer
         )
+        self._graph = graph
+        self._use_constrained_mixer = use_constrained_mixer
+
+        if self._supports_constrained_mixer:
+            resolved = self._resolver(graph, constrained=use_constrained_mixer)
+        else:
+            resolved = self._resolver(graph)
+        cost_spo, self._mixer_hamiltonian, *self._metadata = resolved
 
         cleaned, ham_constant = _clean_hamiltonian_spo(cost_spo, raise_on_constant=True)
 
@@ -66,19 +75,11 @@ class _GraphProblemBase(QAOAProblem):
         self._wire_labels = self._compute_wire_labels(graph)
         self._initial_state = (
             self._constrained_state_cls
-            if is_constrained
+            if use_constrained_mixer
             else self._unconstrained_state_cls
         )()
         self._config = config
         self._reverse_index_maps = {}
-
-    @classmethod
-    def _resolve(cls, graph, is_constrained):
-        """Build cost/mixer SPOs for this problem type."""
-        try:
-            return cls._resolver(graph, constrained=is_constrained)
-        except TypeError:
-            return cls._resolver(graph)
 
     @staticmethod
     def _compute_wire_labels(graph: GraphProblemTypes) -> tuple:
@@ -94,10 +95,10 @@ class _GraphProblemBase(QAOAProblem):
     def graph(self) -> GraphProblemTypes:
         """The underlying graph.
 
-        Treat as read-only: the cost Hamiltonian is fixed at construction, and
-        ``evaluate_global_solution`` caches the Pauli term list on first call.
-        Mutating this graph (adding nodes/edges, changing weights) regenerates
-        neither, so scores would go stale. Build a new problem instead.
+        Treat as read-only: the cost Hamiltonian, the Pauli terms cached by
+        ``evaluate_global_solution`` and the adjacency cached by
+        ``is_feasible`` are built from it once. Build a new problem instead of
+        mutating it.
         """
         return self._graph
 
@@ -177,7 +178,7 @@ class _GraphProblemBase(QAOAProblem):
             # has already relabeled each subgraph to ``0..M-1``.
             self._reverse_index_maps[prog_id] = dict(enumerate(cluster_ids))
             sub_problems[prog_id] = type(self)(
-                subgraph, is_constrained=self._is_constrained
+                subgraph, use_constrained_mixer=self._use_constrained_mixer
             )
 
         return sub_problems
@@ -204,6 +205,11 @@ class _GraphProblemBase(QAOAProblem):
             extended[global_idx] = 1
 
         return extended
+
+    @cached_property
+    def _nx_graph(self) -> nx.Graph:
+        """The graph as an undirected ``networkx`` graph keyed by node value."""
+        return _to_nx_graph(self._graph)
 
     @cached_property
     def _diagonal_terms(self) -> list[tuple[float, tuple[int, ...]]]:
@@ -253,11 +259,12 @@ class MaxCutProblem(_GraphProblemBase):
 
     Args:
         graph: NetworkX or RustworkX graph.
+        use_constrained_mixer: Ignored; MaxCut has no constrained mixer.
     """
 
     _resolver = staticmethod(maxcut_hamiltonians)  # type: ignore[assignment, bad-override]
-    _constrained_state_cls = SuperpositionState
     _unconstrained_state_cls = SuperpositionState
+    _supports_constrained_mixer = False
 
 
 class MaxCliqueProblem(_GraphProblemBase):
@@ -265,12 +272,25 @@ class MaxCliqueProblem(_GraphProblemBase):
 
     Args:
         graph: NetworkX or RustworkX graph.
-        is_constrained: Use constrained mixer. Defaults to True.
+        use_constrained_mixer: Use the constrained mixer and a feasible
+            initial state. Defaults to ``True``.
     """
 
     _resolver = staticmethod(max_clique_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = ZerosState
     _unconstrained_state_cls = SuperpositionState
+
+    def is_feasible(self, bitstring: str) -> bool:
+        """Whether every pair of selected nodes is joined by an edge."""
+        graph = self._nx_graph
+        return all(
+            graph.has_edge(u, v)
+            for u, v in itertools.combinations(self.decode_fn(bitstring), 2)
+        )
+
+    def compute_energy(self, bitstring: str) -> float:
+        """Negated number of selected nodes, so larger cliques score lower."""
+        return -float(len(self.decode_fn(bitstring)))
 
 
 class MaxIndependentSetProblem(_GraphProblemBase):
@@ -278,12 +298,24 @@ class MaxIndependentSetProblem(_GraphProblemBase):
 
     Args:
         graph: NetworkX or RustworkX graph.
-        is_constrained: Use constrained mixer. Defaults to True.
+        use_constrained_mixer: Use the constrained mixer and a feasible
+            initial state. Defaults to ``True``.
     """
 
     _resolver = staticmethod(max_independent_set_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = ZerosState
     _unconstrained_state_cls = SuperpositionState
+
+    def is_feasible(self, bitstring: str) -> bool:
+        """Whether no two selected nodes are joined by an edge."""
+        selected = set(self.decode_fn(bitstring))
+        return not any(
+            u in selected and v in selected for u, v in self._nx_graph.edges()
+        )
+
+    def compute_energy(self, bitstring: str) -> float:
+        """Negated number of selected nodes, so larger sets score lower."""
+        return -float(len(self.decode_fn(bitstring)))
 
 
 class MinVertexCoverProblem(_GraphProblemBase):
@@ -291,12 +323,22 @@ class MinVertexCoverProblem(_GraphProblemBase):
 
     Args:
         graph: NetworkX or RustworkX graph.
-        is_constrained: Use constrained mixer. Defaults to True.
+        use_constrained_mixer: Use the constrained mixer and a feasible
+            initial state. Defaults to ``True``.
     """
 
     _resolver = staticmethod(min_vertex_cover_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = OnesState
     _unconstrained_state_cls = SuperpositionState
+
+    def is_feasible(self, bitstring: str) -> bool:
+        """Whether every edge has at least one selected endpoint."""
+        selected = set(self.decode_fn(bitstring))
+        return all(u in selected or v in selected for u, v in self._nx_graph.edges())
+
+    def compute_energy(self, bitstring: str) -> float:
+        """Number of selected nodes, so smaller covers score lower."""
+        return float(len(self.decode_fn(bitstring)))
 
 
 class MaxWeightCycleProblem(_GraphProblemBase):
@@ -304,7 +346,8 @@ class MaxWeightCycleProblem(_GraphProblemBase):
 
     Args:
         graph: NetworkX DiGraph or RustworkX PyDiGraph with weighted edges.
-        is_constrained: Use cycle-mixer (preserves valid cycles). Defaults to True.
+        use_constrained_mixer: Use the cycle mixer, which preserves valid cycles.
+            Defaults to ``True``.
     """
 
     _resolver = staticmethod(max_weight_cycle_hamiltonians)  # type: ignore[assignment, bad-override]

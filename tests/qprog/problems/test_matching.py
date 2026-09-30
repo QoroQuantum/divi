@@ -80,7 +80,7 @@ class TestConstructMatchingQubo:
         for u, v in list(e2q):
             e2q[(v, u)] = e2q[(u, v)]
 
-        qubo = _construct_matching_qubo(triangle_graph, e2q, penalty_scale=1.0)
+        qubo = _construct_matching_qubo(triangle_graph, e2q, penalty_weight=1.0)
 
         # Diagonal should be -weight for each edge
         for (u, v), idx in e2q.items():
@@ -96,10 +96,10 @@ class TestConstructMatchingQubo:
             e2q[(v, u)] = e2q[(u, v)]
 
         total_w = sum(d["weight"] for _, _, d in triangle_graph.edges(data=True))
-        penalty_scale = 2.0
-        qubo = _construct_matching_qubo(triangle_graph, e2q, penalty_scale)
+        penalty_weight = 2.0
+        qubo = _construct_matching_qubo(triangle_graph, e2q, penalty_weight)
 
-        expected_penalty = penalty_scale * total_w
+        expected_penalty = penalty_weight * total_w
         # Every off-diagonal pair that shares a node should have half the
         # penalty per entry (symmetric matrix; effective penalty = sum of both)
         for i in range(3):
@@ -116,7 +116,7 @@ class TestConstructMatchingQubo:
         for u, v in list(e2q):
             e2q[(v, u)] = e2q[(u, v)]
 
-        qubo = _construct_matching_qubo(G, e2q, penalty_scale=10.0)
+        qubo = _construct_matching_qubo(G, e2q, penalty_weight=10.0)
 
         # Off-diagonal should be 0 — edges share no node
         assert qubo[0, 1] == pytest.approx(0.0)
@@ -527,7 +527,7 @@ class TestMaxWeightMatchingProblemE2E:
         G = nx.Graph()
         G.add_weighted_edges_from([(0, 1, 5.0), (1, 2, 1.0), (2, 3, 5.0)])
 
-        problem = MaxWeightMatchingProblem(G, penalty_scale=10.0)
+        problem = MaxWeightMatchingProblem(G, penalty_weight=10.0)
         default_test_simulator.set_seed(42)
         qaoa = QAOA(
             problem,
@@ -566,7 +566,7 @@ class TestMaxWeightMatchingProblemE2E:
 
         problem = MaxWeightMatchingProblem(
             G,
-            penalty_scale=10.0,
+            penalty_weight=10.0,
             max_edges_per_partition=8,
             partition_algorithm="kernighan_lin",
             seed=42,

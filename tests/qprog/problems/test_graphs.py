@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import warnings
 
 import networkx as nx
@@ -173,6 +174,161 @@ class TestEvaluateSolution:
         partial_cut = problem.evaluate_global_solution([1, 1, 0, 0])
         perfect_cut = problem.evaluate_global_solution([1, 0, 1, 0])
         assert no_cut > partial_cut > perfect_cut
+
+
+def _string_label_graph():
+    graph = nx.Graph()
+    graph.add_nodes_from(["d", "a", "c", "b"])
+    graph.add_edges_from([("d", "a"), ("a", "c"), ("c", "b"), ("d", "c")])
+    return graph
+
+
+def _rustworkx_graph():
+    graph = rx.PyGraph()
+    graph.add_nodes_from(["x", "y", "z", "w", "v"])
+    graph.add_edges_from([(0, 1, 1.0), (1, 2, 1.0), (2, 0, 1.0), (2, 3, 1.0)])
+    return graph
+
+
+_FEASIBILITY_GRAPHS = [
+    nx.path_graph(4),
+    nx.cycle_graph(5),
+    nx.bull_graph(),
+    nx.complete_graph(4),
+    nx.star_graph(5),
+    _string_label_graph(),
+    _rustworkx_graph(),
+]
+
+
+def _is_independent(graph, nodes):
+    return graph.subgraph(nodes).number_of_edges() == 0
+
+
+def _is_vertex_cover(graph, nodes):
+    return graph.subgraph(set(graph.nodes()) - set(nodes)).number_of_edges() == 0
+
+
+def _is_clique(graph, nodes):
+    k = len(nodes)
+    return graph.subgraph(nodes).number_of_edges() == k * (k - 1) // 2
+
+
+def _nx_view(graph):
+    if isinstance(graph, rx.PyGraph):
+        labels = graph.nodes()
+        view = nx.Graph()
+        view.add_nodes_from(labels)
+        view.add_edges_from((labels[u], labels[v]) for u, v in graph.edge_list())
+        return view
+    return graph
+
+
+def _all_bitstrings(n):
+    return ("".join(bits) for bits in itertools.product("01", repeat=n))
+
+
+# (problem class, direct feasibility check, sign of energy per selected node)
+_FEASIBILITY_CASES = [
+    (MaxIndependentSetProblem, _is_independent, -1.0),
+    (MinVertexCoverProblem, _is_vertex_cover, 1.0),
+    (MaxCliqueProblem, _is_clique, -1.0),
+]
+
+
+@pytest.mark.parametrize("problem_cls,is_valid,sign", _FEASIBILITY_CASES)
+@pytest.mark.parametrize("graph", _FEASIBILITY_GRAPHS)
+def test_feasibility_and_energy_match_direct_definition(
+    problem_cls, is_valid, sign, graph
+):
+    """Brute force over every bitstring: feasibility and energy follow the
+    textbook definitions, with bit ``i`` selecting ``wire_labels[i]``."""
+    problem = problem_cls(graph)
+    reference = _nx_view(graph)
+    labels = problem.wire_labels
+    assert labels == tuple(reference.nodes())
+
+    for bitstring in _all_bitstrings(len(labels)):
+        selected = [label for label, bit in zip(labels, bitstring) if bit == "1"]
+        assert problem.is_feasible(bitstring) == is_valid(reference, selected)
+        assert problem.compute_energy(bitstring) == sign * len(selected)
+
+
+@pytest.mark.parametrize("problem_cls,is_valid,sign", _FEASIBILITY_CASES)
+def test_compute_energy_orders_feasible_solutions_like_cost_hamiltonian(
+    problem_cls, is_valid, sign
+):
+    """On feasible bitstrings the constrained cost Hamiltonian is an increasing
+    affine function of ``compute_energy``, so both rank solutions identically."""
+    graph = nx.bull_graph()
+    problem = problem_cls(graph)
+    n = graph.number_of_nodes()
+
+    for bitstring in _all_bitstrings(n):
+        if not problem.is_feasible(bitstring):
+            continue
+        cost = problem.evaluate_global_solution([int(bit) for bit in bitstring])
+        assert cost == pytest.approx(2 * problem.compute_energy(bitstring) - sign * n)
+
+
+def test_qaoa_filter_returns_only_independent_sets(
+    default_test_simulator, default_optimizer
+):
+    """With the unconstrained mixer QAOA samples infeasible sets; filtering keeps
+    only independent sets, ranked by size."""
+    graph = nx.cycle_graph(5)
+    problem = MaxIndependentSetProblem(graph, use_constrained_mixer=False)
+    qaoa = QAOA(
+        problem,
+        n_layers=1,
+        optimizer=default_optimizer,
+        max_iterations=2,
+        backend=default_test_simulator,
+        seed=1997,
+    )
+    qaoa.run()
+
+    measured = qaoa.get_top_solutions(n=0)
+    assert any(not problem.is_feasible(sol.bitstring) for sol in measured)
+
+    solutions = qaoa.get_top_solutions(n=0, feasibility="filter", include_decoded=True)
+
+    assert solutions
+    for sol in solutions:
+        assert _is_independent(graph, sol.decoded)
+        assert sol.energy == -len(sol.decoded)
+    energies = [sol.energy for sol in solutions]
+    assert energies == sorted(energies)
+
+
+@pytest.mark.parametrize("use_constrained_mixer", [True, False])
+def test_maxcut_ignores_use_constrained_mixer(use_constrained_mixer):
+    problem = MaxCutProblem(
+        nx.cycle_graph(4), use_constrained_mixer=use_constrained_mixer
+    )
+
+    assert (
+        problem.mixer_hamiltonian == MaxCutProblem(nx.cycle_graph(4)).mixer_hamiltonian
+    )
+    assert isinstance(problem.recommended_initial_state, SuperpositionState)
+
+
+@pytest.mark.parametrize(
+    "problem_cls",
+    [MaxIndependentSetProblem, MinVertexCoverProblem, MaxCliqueProblem],
+)
+def test_constrained_mixer_defaults_to_true_where_supported(problem_cls):
+    graph = nx.bull_graph()
+    default = problem_cls(graph)
+    constrained = problem_cls(graph, use_constrained_mixer=True)
+    unconstrained = problem_cls(graph, use_constrained_mixer=False)
+
+    assert default.mixer_hamiltonian == constrained.mixer_hamiltonian
+    assert default.mixer_hamiltonian != unconstrained.mixer_hamiltonian
+    assert type(default.recommended_initial_state) is type(
+        constrained.recommended_initial_state
+    )
+    assert isinstance(unconstrained.recommended_initial_state, SuperpositionState)
 
 
 class TestExtendSolutionGraph:
@@ -387,7 +543,7 @@ class TestGraphInput:
         G = make_bull_graph()
 
         qaoa_problem = QAOA(
-            MaxCliqueProblem(G, is_constrained=True),
+            MaxCliqueProblem(G, use_constrained_mixer=True),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=10,
@@ -408,7 +564,7 @@ class TestGraphInput:
     def test_graph_unsuppported_initial_state(self, dummy_simulator):
         with pytest.raises(TypeError):
             QAOA(
-                MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+                MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
                 initial_state="Bell",
                 backend=dummy_simulator,
             )
@@ -425,7 +581,7 @@ class TestGraphInput:
 
     def test_graph_initial_state_recommended(self, dummy_simulator, default_optimizer):
         qaoa_problem = QAOA(
-            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
             backend=dummy_simulator,
             optimizer=default_optimizer,
         )
@@ -436,7 +592,7 @@ class TestGraphInput:
         self, dummy_simulator, default_optimizer
     ):
         qaoa_problem = QAOA(
-            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
             initial_state=SuperpositionState(),
             backend=dummy_simulator,
             optimizer=default_optimizer,
@@ -453,7 +609,7 @@ class TestGraphInput:
     ):
         G = make_bull_graph()
         qaoa_problem = QAOA(
-            MaxCliqueProblem(G, is_constrained=True),
+            MaxCliqueProblem(G, use_constrained_mixer=True),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -483,7 +639,7 @@ class TestGraphInput:
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            MaxCliqueProblem(G, is_constrained=True),
+            MaxCliqueProblem(G, use_constrained_mixer=True),
             n_layers=1,
             optimizer=gradient_free_optimizer,
             max_iterations=10,
@@ -514,7 +670,7 @@ class TestGraphInput:
         checkpoint_dir = tmp_path / "checkpoint_test"
         default_test_simulator.set_seed(1997)
 
-        max_clique_problem = MaxCliqueProblem(G, is_constrained=True)
+        max_clique_problem = MaxCliqueProblem(G, use_constrained_mixer=True)
 
         # First run: iterations 1-3
         qaoa_problem1 = QAOA(

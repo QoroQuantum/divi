@@ -23,7 +23,7 @@ from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
 def _construct_matching_qubo(
     graph: nx.Graph,
     edge_to_qubit: dict[tuple, int],
-    penalty_scale: float = 10.0,
+    penalty_weight: float = 10.0,
 ) -> np.ndarray:
     """Build a QUBO matrix encoding the maximum-weight matching problem.
 
@@ -34,8 +34,8 @@ def _construct_matching_qubo(
     Args:
         graph: Weighted graph.
         edge_to_qubit: Mapping from ``(u, v)`` edge tuples to qubit indices.
-        penalty_scale: Multiplier for the penalty strength.  The actual
-            penalty is ``penalty_scale * sum(all_edge_weights)``.
+        penalty_weight: Multiplier for the penalty strength.  The actual
+            penalty is ``penalty_weight * sum(all_edge_weights)``.
 
     Returns:
         Symmetric QUBO matrix of shape ``(n_edges, n_edges)``.
@@ -44,7 +44,7 @@ def _construct_matching_qubo(
     qubo = np.zeros((n, n), dtype=float)
 
     total_weight = sum(d.get("weight", 1.0) for _, _, d in graph.edges(data=True))
-    penalty = penalty_scale * total_weight
+    penalty = penalty_weight * total_weight
 
     # Linear terms: -w_e on the diagonal
     for (u, v), idx in edge_to_qubit.items():
@@ -303,7 +303,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
 
     Args:
         graph: Weighted undirected graph.
-        penalty_scale: Strength of matching constraint penalties in the
+        penalty_weight: Strength of matching constraint penalties in the
             QUBO formulation.  Higher values enforce constraints more
             strictly.
         max_edges_per_partition: Maximum edges per partition.  Setting
@@ -328,7 +328,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         for u, v in G.edges():
             G[u][v]["weight"] = 1.0
 
-        problem = MaxWeightMatchingProblem(G, penalty_scale=10.0)
+        problem = MaxWeightMatchingProblem(G, penalty_weight=10.0)
         qaoa = QAOA(problem, n_layers=2,
                      optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
                      max_iterations=20,
@@ -339,7 +339,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
     def __init__(
         self,
         graph: nx.Graph,
-        penalty_scale: float = 10.0,
+        penalty_weight: float = 10.0,
         *,
         max_edges_per_partition: int | None = None,
         partition_algorithm: Literal["kernighan_lin", "spectral"] = "kernighan_lin",
@@ -347,7 +347,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         seed: int | None = 0,
     ):
         self._graph = graph
-        self._penalty_scale = penalty_scale
+        self._penalty_weight = penalty_weight
         self._max_edges_per_partition = max_edges_per_partition
         self._partition_algorithm = partition_algorithm
         self._use_classical_cleanup = use_classical_cleanup
@@ -362,7 +362,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
 
         # Build full-graph QUBO and delegate Hamiltonian to BinaryOptimizationProblem
         qubo_matrix = _construct_matching_qubo(
-            graph, self._edge_to_qubit, penalty_scale
+            graph, self._edge_to_qubit, penalty_weight
         )
         self._bop = BinaryOptimizationProblem(qubo_matrix)
 
@@ -452,7 +452,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
             ]
 
             # Build per-partition QUBO
-            qubo = _construct_matching_qubo(subgraph, local_e2q, self._penalty_scale)
+            qubo = _construct_matching_qubo(subgraph, local_e2q, self._penalty_weight)
             sub_problems[prog_id] = BinaryOptimizationProblem(qubo)
 
         return sub_problems

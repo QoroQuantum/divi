@@ -48,7 +48,7 @@ class TestGeneralQAOA:
         by dedicated end-to-end tests.
         """
         qaoa_problem = QAOA(
-            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
             n_layers=1,
             optimizer=gradient_free_optimizer,
             max_iterations=1,
@@ -70,7 +70,7 @@ class TestGeneralQAOA:
     ):
         """QAOA prepares its state by trotterizing the cost Hamiltonian."""
         qaoa_problem = QAOA(
-            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
             n_layers=1,
             optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
             max_iterations=1,
@@ -88,7 +88,7 @@ class TestGeneralQAOA:
         extraction) are verified by dedicated end-to-end tests.
         """
         qaoa_problem = QAOA(
-            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
             n_layers=1,
             optimizer=optimizer,
             max_iterations=1,
@@ -109,7 +109,7 @@ class TestGeneralQAOA:
         self, gradient_free_optimizer, dummy_simulator
     ):
         qaoa_problem = QAOA(
-            MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+            MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
             n_layers=1,
             optimizer=gradient_free_optimizer,
             max_iterations=1,
@@ -900,7 +900,7 @@ class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
     def make_program(self, dummy_simulator, default_optimizer):
         def _make(**kwargs):
             return QAOA(
-                MaxCliqueProblem(nx.bull_graph(), is_constrained=True),
+                MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
                 backend=dummy_simulator,
                 optimizer=default_optimizer,
                 **kwargs,
