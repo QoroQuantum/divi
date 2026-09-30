@@ -247,6 +247,10 @@ class _GraphProblemBase(QAOAProblem):
 class MaxCutProblem(_GraphProblemBase):
     """MaxCut problem on a graph.
 
+    The cut is unweighted: every edge counts once, and edge ``weight``
+    attributes are ignored. For weighted MaxCut, pass the QUBO to
+    :class:`~divi.qprog.problems.BinaryOptimizationProblem`.
+
     Args:
         graph: NetworkX or RustworkX graph.
     """

@@ -48,7 +48,8 @@ consistent interface.
 **Key Properties:**
 
 - ``total_circuit_count`` - Total circuits executed so far
-- ``total_run_time`` - Cumulative execution time in seconds
+- ``total_run_time`` - Cumulative execution time in seconds, as reported by
+  the backend (not wall-clock time)
 
 The :class:`~divi.qprog.VariationalQuantumAlgorithm` Class
 ----------------------------------------------------------------------------------------

@@ -273,7 +273,8 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
    from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
    from divi.backends import MaestroSimulator
 
-   mol = gto.M(atom="H 0 0 0; H 0 0 0.5", basis="sto-3g", unit="Bohr")
+   # H2 near its equilibrium bond length of about 1.4 Bohr
+   mol = gto.M(atom="H 0 0 0; H 0 0 1.4", basis="sto-3g", unit="Bohr")
    # Create molecule transformer for bond length variations
    transformer = MoleculeTransformer(
        base_molecule=mol,

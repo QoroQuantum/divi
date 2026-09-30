@@ -189,7 +189,8 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
 
         Returns:
             npt.NDArray[np.int32] | None: The array of bits of the lowest energy eigenstate,
-                or None if not computed.
+                or None if not computed. Entry ``i`` is qubit ``i``, so for
+                H2 the Hartree-Fock state reads ``[1, 1, 0, 0]``.
         """
         return self._results.get("eigenstate")
 

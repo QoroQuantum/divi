@@ -554,7 +554,11 @@ exception:
 ``total_circuit_count`` and ``total_run_time`` remain lifetime totals across
 every round and every run; the per-round deltas live in ``round_history``.
 Starting a new ``run()`` resets the workflow state and round history but keeps
-those lifetime totals.
+those lifetime totals. With ``BatchMode.MERGED``, programs share each backend
+call, so each program's ``total_run_time`` gets an even share of the call's
+reported run time. Circuits from a separate ``sample_solution()`` call count
+towards the lifetime totals but belong to no round, so they appear in no
+``RoundRecord``.
 
 When a round fails — materialising its programs, executing them, or reducing
 them — ``run()`` records the failed round and then *raises*, so ``FAILED`` is
