@@ -282,14 +282,52 @@ class TestIterativeQAOA:
             max_depth=10,
             strategy=InterpolationStrategy.INTERP,
             max_iterations_per_depth=3,
-            convergence_threshold=1e10,  # very large → always converges
+            convergence_threshold=1e10,  # any improvement converges
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         )
         iterative.run()
 
-        # Should stop at depth 2 (first time convergence can be checked)
-        assert len(iterative.depth_history) == 2
+        # Stops at the first depth that improves on the one before it.
+        losses = [entry["best_loss"] for entry in iterative.depth_history]
+        first_improvement = next(
+            depth
+            for depth in range(1, len(losses))
+            if losses[depth] <= losses[depth - 1]
+        )
+        assert len(losses) == first_improvement + 1 < 10
+
+    @pytest.mark.parametrize(
+        "losses, converged",
+        [((-1.0, -1.1), True), ((-1.0, -0.9), False), ((-1.0, -3.0), False)],
+        ids=["small-gain", "worse", "large-gain"],
+    )
+    def test_converges_only_on_a_small_improvement(
+        self, dummy_simulator, losses, converged
+    ):
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            convergence_threshold=0.5,
+            backend=dummy_simulator,
+            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        )
+        iterative._depth_history = [{"best_loss": loss} for loss in losses]
+
+        assert iterative._converged is converged
+
+    @pytest.mark.parametrize(
+        "argument, replacement",
+        [("n_layers", "max_depth"), ("max_iterations", "max_iterations_per_depth")],
+    )
+    def test_rejects_the_fixed_depth_arguments(
+        self, dummy_simulator, argument, replacement
+    ):
+        with pytest.raises(TypeError, match=f"{argument}.*{replacement}"):
+            IterativeQAOA(
+                MaxCutProblem(make_bull_graph()),
+                backend=dummy_simulator,
+                **{argument: 2},
+            )
 
     def test_max_iterations_per_depth_callable(self, default_test_simulator):
         graph = make_bull_graph()
@@ -484,10 +522,11 @@ class TestIterativeQAOACheckpointing:
         )
         return program
 
-    def _load(self, backend, checkpoint_dir):
+    def _load(self, backend, checkpoint_dir, subdirectory=None):
         return IterativeQAOA.load_state(
             checkpoint_dir,
             backend=backend,
+            subdirectory=subdirectory,
             problem=MaxCutProblem(make_bull_graph()),
             max_depth=self.MAX_DEPTH,
             max_iterations_per_depth=self.ITERS_PER_DEPTH,
@@ -515,6 +554,18 @@ class TestIterativeQAOACheckpointing:
         # The deepest checkpoint is written mid-depth, so the completed depths
         # are the ones before it.
         assert [entry["depth"] for entry in loaded.depth_history] == [1, 2]
+
+    def test_load_a_given_iteration_names_its_depth(
+        self, default_test_simulator, tmp_path
+    ):
+        self._run_without_completion(default_test_simulator, tmp_path)
+
+        loaded = self._load(
+            default_test_simulator, tmp_path, subdirectory="depth_02/checkpoint_001"
+        )
+
+        assert loaded.n_layers == 2
+        assert loaded.current_iteration == 1
 
     def test_restore_existing_instance_resolves_deepest_checkpoint(
         self, default_test_simulator, tmp_path

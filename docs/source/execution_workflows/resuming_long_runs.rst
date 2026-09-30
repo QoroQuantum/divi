@@ -130,7 +130,7 @@ You can automatically generate a timestamped checkpoint directory:
 
 .. code-block:: python
 
-   # Creates a directory like "checkpoint_20250115_143022"
+   # Creates a directory like "checkpoint_20250115_143022_123456"
    config = CheckpointConfig.with_timestamped_dir()
    vqe.run(checkpoint_config=config)
 
@@ -356,7 +356,7 @@ program as the last ``run()`` or ``sample_solution()`` left it, including what
 it computed at the end (e.g. the final sample); ``load_state()`` restores it in place of the latest iteration's
 state, keeping that iteration's optimizer state.
 
-:class:`~divi.qprog.algorithms.IterativeQAOA` nests the iterations per depth (``depth_01/checkpoint_001``, …) with one ``program_completion.json`` at the top. Loading a finished run gives back what ``run()`` ended with: ``best_params`` and ``solution`` from the best depth, and every depth's results in ``depth_history``. An interrupted run resumes from its deepest complete checkpoint.
+:class:`~divi.qprog.algorithms.IterativeQAOA` nests the iterations per depth (``depth_01/checkpoint_001``, …) with one ``program_completion.json`` at the top. Loading a finished run gives back what ``run()`` ended with: ``best_params`` and ``solution`` from the best depth, and every depth's results in ``depth_history``. An interrupted run resumes from its deepest complete checkpoint. To load a specific iteration instead, pass its depth folder with it: ``subdirectory="depth_02/checkpoint_003"``.
 
 .. _ensemble-checkpoint-layout:
 

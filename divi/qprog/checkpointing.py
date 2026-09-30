@@ -382,13 +382,25 @@ class CheckpointConfig:
     Attributes:
         checkpoint_dir: Directory path for saving checkpoints.
             - If None: No checkpointing.
-            - If Path: Uses that directory.
-        checkpoint_interval: Save checkpoint every N iterations.
+            - If a path (``Path`` or ``str``): Uses that directory.
+        checkpoint_interval: Save checkpoint every N iterations (N ≥ 1).
             If None, saves every iteration (if checkpoint_dir is set).
+
+    Raises:
+        ValueError: If ``checkpoint_interval`` is below 1.
     """
 
     checkpoint_dir: Path | None = None
     checkpoint_interval: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.checkpoint_dir is not None:
+            object.__setattr__(self, "checkpoint_dir", Path(self.checkpoint_dir))
+        if self.checkpoint_interval is not None and self.checkpoint_interval < 1:
+            raise ValueError(
+                "checkpoint_interval must be positive; "
+                f"got {self.checkpoint_interval}."
+            )
 
     @classmethod
     def with_timestamped_dir(cls, checkpoint_interval: int | None = None) -> Self:
@@ -401,7 +413,7 @@ class CheckpointConfig:
         Returns:
             CheckpointConfig: A new CheckpointConfig with auto-generated directory.
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         generated_dir = Path(f"checkpoint_{timestamp}")
         return cls(
             checkpoint_dir=generated_dir, checkpoint_interval=checkpoint_interval

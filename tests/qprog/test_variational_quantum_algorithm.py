@@ -1591,18 +1591,19 @@ class TestCheckpointing:
 
         assert loaded._rng.random() == sample_program._rng.random()
 
+    @pytest.mark.parametrize("argument", ["optimizer", "max_iterations"])
     def test_load_rejects_arguments_the_checkpoint_restores(
-        self, sample_program, tmp_path, mocker, mock_backend, default_optimizer
+        self, sample_program, tmp_path, mocker, mock_backend, argument
     ):
         self._save_one_iteration(sample_program, tmp_path, mocker)
 
-        with pytest.raises(TypeError, match="restores optimizer"):
+        with pytest.raises(TypeError, match=f"restores {argument}"):
             SampleVQAProgram.load_state(
                 tmp_path,
                 backend=mock_backend,
-                optimizer=default_optimizer,
                 circ_count=0,
                 run_time=0.0,
+                **{argument: mocker.sentinel.value},
             )
 
     @pytest.mark.parametrize(

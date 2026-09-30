@@ -813,16 +813,19 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 continue while later checkpoints of the original run remain
                 in ``checkpoint_dir``.
             **kwargs: The remaining constructor arguments of the checkpointed
-                run (problem, ansatz, ``n_layers``, ...). ``optimizer`` and
-                ``seed`` come from the checkpoint and must not be passed.
+                run (problem, ansatz, ``n_layers``, ...). ``optimizer``,
+                ``seed`` and ``max_iterations`` come from the checkpoint and
+                must not be passed; to extend the budget, set
+                ``max_iterations`` on the loaded program.
 
         Raises:
-            TypeError: If ``optimizer`` or ``seed`` is passed.
+            TypeError: If ``optimizer``, ``seed`` or ``max_iterations`` is
+                passed.
             ValueError: If the constructor arguments describe a different
                 cost Hamiltonian, ansatz or parameter count than the
                 checkpoint.
         """
-        restored = sorted({"optimizer", "seed"} & kwargs.keys())
+        restored = sorted({"optimizer", "seed", "max_iterations"} & kwargs.keys())
         if restored:
             raise TypeError(
                 f"load_state() restores {', '.join(restored)} from the checkpoint; "

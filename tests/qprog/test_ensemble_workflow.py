@@ -903,6 +903,8 @@ class TestRoundFailureHandling:
         assert failed.run_time == 0.0
         assert failed.error is not None
         assert "RuntimeError" in failed.error
+        # The program's own exception, not only the ensemble's wrapper.
+        assert "program boom" in failed.error
 
     def test_update_state_failure_is_recorded_as_a_failed_round(self, dummy_simulator):
         """A reducer bug fails the round even though its circuits ran."""

@@ -211,6 +211,24 @@ class TestCheckpointConfig:
         assert config_with_interval.checkpoint_dir is not None
         assert config_with_interval.checkpoint_interval == 5
 
+    def test_timestamped_dir_resolves_below_a_second(self, mocker):
+        mocker.patch.object(checkpointing_module, "datetime").now.return_value = (
+            datetime(2026, 9, 30, 12, 0, 0, 123456)
+        )
+
+        config = CheckpointConfig.with_timestamped_dir()
+
+        assert config.checkpoint_dir == Path("checkpoint_20260930_120000_123456")
+
+    def test_checkpoint_dir_string_becomes_a_path(self, tmp_path):
+        config = CheckpointConfig(checkpoint_dir=str(tmp_path))
+        assert config.checkpoint_dir == tmp_path
+
+    @pytest.mark.parametrize("interval", [0, -1])
+    def test_non_positive_interval_is_rejected(self, tmp_path, interval):
+        with pytest.raises(ValueError, match="checkpoint_interval must be positive"):
+            CheckpointConfig(checkpoint_dir=tmp_path, checkpoint_interval=interval)
+
     @pytest.mark.parametrize(
         "checkpoint_dir, checkpoint_interval, cases",
         [

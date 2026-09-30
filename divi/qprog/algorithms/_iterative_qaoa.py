@@ -226,6 +226,10 @@ class IterativeQAOA(QAOA):
     achieved the best loss. All standard QAOA properties (``solution``,
     ``best_params``, ``best_loss``, ``get_top_solutions``) work as usual.
 
+    Checkpoints are written per depth, so the ``subdirectory`` passed to
+    ``load_state()`` names the depth as well, e.g.
+    ``"depth_02/checkpoint_003"``.
+
     Example::
 
         iterative = IterativeQAOA(
@@ -249,8 +253,9 @@ class IterativeQAOA(QAOA):
         max_iterations_per_depth: Maximum optimisation iterations per depth.
             Can be an integer (same for all depths) or a callable
             ``(depth) -> int`` for adaptive budgets. Defaults to 10.
-        convergence_threshold: If set, stop iterating when the absolute
-            improvement in loss between consecutive depths is below this value.
+        convergence_threshold: If set, stop iterating when a depth improves
+            the loss over the previous depth by less than this value. A depth
+            that makes the loss worse does not stop the run.
         **kwargs: All remaining QAOA keyword arguments (``backend``,
             ``optimizer``, ``initial_state``, etc.).
     """
@@ -268,6 +273,15 @@ class IterativeQAOA(QAOA):
         convergence_threshold: float | None = None,
         **kwargs,
     ):
+        for fixed, replacement in (
+            ("n_layers", "max_depth"),
+            ("max_iterations", "max_iterations_per_depth"),
+        ):
+            if fixed in kwargs:
+                raise TypeError(
+                    f"IterativeQAOA sets {fixed} for each depth; "
+                    f"pass {replacement} instead."
+                )
         self._max_depth = max_depth
         self._strategy = strategy
         self._n_basis_terms = n_basis_terms
@@ -577,13 +591,14 @@ class IterativeQAOA(QAOA):
 
     @property
     def _converged(self) -> bool:
-        """Whether the last two depths improved the loss by less than the
+        """Whether the last depth improved the loss, by less than the
         convergence threshold."""
         history = self._depth_history
         return (
             self._convergence_threshold is not None
             and len(history) > 1
-            and abs(history[-2]["best_loss"] - history[-1]["best_loss"])
+            and 0
+            <= history[-2]["best_loss"] - history[-1]["best_loss"]
             < self._convergence_threshold
         )
 

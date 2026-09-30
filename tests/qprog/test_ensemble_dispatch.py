@@ -167,6 +167,17 @@ def program_ensemble(dummy_simulator):
         pass  # Don't break test teardown due to a race condition
 
 
+def _fail_programs(ensemble, exc):
+    """Install one future per program, each finished with ``exc``."""
+    futures = {}
+    for program in ensemble.programs.values():
+        future = Future()
+        future.set_exception(exc)
+        futures[future] = program
+    ensemble.futures = list(futures)
+    ensemble._future_to_program = futures
+
+
 def _assert_counts_every_dispatched_program(ensemble):
     """The ensemble's totals are its programs' own counters, each counted once,
     whether their futures succeeded, failed or were interrupted."""
@@ -708,10 +719,7 @@ class TestProgramEnsemble:
         }
         mocker.patch("divi.qprog.ensemble.as_completed", return_value=[future2])
 
-        with pytest.warns(
-            UserWarning, match="Cannot cancel job: no current execution result"
-        ):
-            program_ensemble._handle_cancellation()
+        program_ensemble._handle_cancellation()
 
         program_ensemble._cancellation_event.set.assert_called_once()
 
@@ -786,20 +794,24 @@ class TestProgramEnsemble:
         program_ensemble.create_programs()
         program_ensemble._start_progress_session(batching_enabled=False)
         render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
-
-        shared = RuntimeError("backend down")
-        futures = {}
-        for key in ("prog1", "prog2"):
-            future = Future()
-            future.set_exception(shared)
-            futures[future] = program_ensemble.programs[key]
-        program_ensemble.futures = list(futures)
-        program_ensemble._future_to_program = futures
+        _fail_programs(program_ensemble, RuntimeError("backend down"))
 
         program_ensemble._report_failed_programs()
 
         render_failure.assert_called_once()
         assert render_failure.call_args.kwargs["label"] == " (Programs prog1, prog2)"
+
+    def test_off_prints_no_failure_panels(self, dummy_simulator, mocker):
+        ensemble = SampleProgramEnsemble(
+            backend=dummy_simulator, reporting_level=ReportingLevel.OFF
+        )
+        ensemble.create_programs()
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
+        _fail_programs(ensemble, RuntimeError("backend down"))
+
+        ensemble._report_failed_programs()
+
+        render_failure.assert_not_called()
 
     def test_failed_future_panel_printed_during_cancellation(
         self, program_ensemble, mocker
@@ -875,10 +887,7 @@ class TestProgramEnsemble:
         }
         mocker.patch("divi.qprog.ensemble.as_completed", return_value=[future])
 
-        with pytest.warns(
-            UserWarning, match="Cannot cancel job: no current execution result"
-        ):
-            program_ensemble._handle_cancellation()
+        program_ensemble._handle_cancellation()
 
         finishing_calls = [
             call
@@ -887,10 +896,10 @@ class TestProgramEnsemble:
         ]
         assert len(finishing_calls) > 0
 
-    def test_handle_cancellation_calls_cancel_unfinished_job(
+    def test_handle_cancellation_skips_job_cancel_on_a_local_backend(
         self, program_ensemble, mocker
     ):
-        """Test that _handle_cancellation calls cancel_unfinished_job for unstoppable futures."""
+        """A running program on a local backend has no job to cancel."""
         program_ensemble.create_programs()
         program_ensemble._cancellation_event = mocker.MagicMock()
 
@@ -901,15 +910,13 @@ class TestProgramEnsemble:
         program = program_ensemble.programs["prog1"]
         program_ensemble._future_to_program = {future: program}
 
-        # Mock cancel_unfinished_job - this prevents the warning since the actual method isn't called
         mock_cancel = mocker.patch.object(program, "cancel_unfinished_job")
         # Mock as_completed to return the future so Phase 3 doesn't hang
         mocker.patch("divi.qprog.ensemble.as_completed", return_value=[future])
 
         program_ensemble._handle_cancellation()
 
-        # Verify cancel_unfinished_job was called
-        mock_cancel.assert_called_once()
+        mock_cancel.assert_not_called()
 
     def test_handle_cancellation_delegates_to_backend_cancel_job(
         self, program_ensemble, mocker
@@ -1006,8 +1013,12 @@ class TestProgramEnsemble:
             call.args[0] == progs[0]._progress_key for call in failed_calls
         ), "the failed program's row was not emitted with final_status=Failed"
 
-    def test_handle_failure_non_batched_cancels_jobs(self, program_ensemble, mocker):
-        """Without coordinator, failure should call cancel_unfinished_job on running programs."""
+    @pytest.mark.parametrize("async_backend", [True, False], ids=["async", "local"])
+    def test_handle_failure_non_batched_cancels_jobs(
+        self, program_ensemble, mocker, async_backend
+    ):
+        """Without coordinator, failure cancels the backend jobs of running
+        programs; a local backend has no job to cancel."""
         program_ensemble.create_programs()
         program_ensemble.run_one_round(blocking=False)
         program_ensemble._coordinator = None
@@ -1030,6 +1041,8 @@ class TestProgramEnsemble:
         }
 
         mock_cancel = mocker.patch.object(prog2, "cancel_unfinished_job")
+        if async_backend:
+            prog2.backend = mocker.Mock(spec=AsyncJobBackend)
 
         # Resolve f_running so _collect_completed_results can pick it up
         # once done() starts returning True.
@@ -1045,7 +1058,7 @@ class TestProgramEnsemble:
         with pytest.raises(RuntimeError, match="Ensemble execution failed"):
             program_ensemble.join()
 
-        mock_cancel.assert_called_once()
+        assert mock_cancel.call_count == int(async_backend)
         _assert_counts_every_dispatched_program(program_ensemble)
 
     def test_stop_remaining_programs_called_on_failure(self, program_ensemble, mocker):

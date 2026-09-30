@@ -20,7 +20,7 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 
-from divi.backends import CircuitRunner
+from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import EnsembleReports
 from divi.qprog._batch_coordinator import (
@@ -316,8 +316,9 @@ class RoundRecord:
     """Immutable accounting summary for one ensemble round.
 
     ``circuit_count`` and ``run_time`` are per-round deltas, not cumulative
-    totals. ``error`` carries the formatted exception for failed rounds and
-    is ``None`` otherwise.
+    totals. ``error`` carries the formatted exception for failed rounds,
+    followed by the exception that caused it when there is one, and is
+    ``None`` otherwise.
     """
 
     #: Round number, counting from 1.
@@ -1185,12 +1186,15 @@ class ProgramEnsemble(ABC):
             except Exception as exc:
                 self._stop_reason = WorkflowStatus.FAILED
                 self._programs_pending = False
+                error = f"{type(exc).__name__}: {exc}"
+                if (cause := exc.__cause__) is not None:
+                    error += f" Caused by {type(cause).__name__}: {cause}"
                 self._record_round(
                     program_count,
                     circuits_before,
                     runtime_before,
                     status=WorkflowStatus.FAILED,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=error,
                 )
                 raise
             finally:
@@ -1960,10 +1964,11 @@ class ProgramEnsemble(ABC):
             if cancel_result:
                 successfully_cancelled.append(program)
             else:
-                # Already running — cancel the backend job directly only
-                # when there is no coordinator (the coordinator already
-                # cancelled real backend jobs above; the proxy has no job_id).
-                if self._coordinator is None:
+                # Already running: without a coordinator, cancel the program's
+                # own backend job; a local backend runs none.
+                if self._coordinator is None and isinstance(
+                    program.backend, AsyncJobBackend
+                ):
                     program.cancel_unfinished_job()
                 unstoppable_futures.append(future)
                 self._emit_progress_message(
@@ -2019,8 +2024,11 @@ class ProgramEnsemble(ABC):
         Called from the cancellation path so users still see what crashed
         — otherwise the failure detail disappears into the progress row.
         Failures that happened before the cancel was requested still get
-        the same panel treatment the no-cancel failure path produces.
+        the same panel treatment the no-cancel failure path produces. Nothing
+        is printed under ``ReportingLevel.OFF``; the failure still raises.
         """
+        if self.reporting_level is ReportingLevel.OFF:
+            return
         failures: list[tuple[QuantumProgram, BaseException]] = []
         for future, program in self._future_to_program.items():
             if not future.done() or future.cancelled():

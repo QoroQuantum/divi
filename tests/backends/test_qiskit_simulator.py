@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from qiskit import QuantumCircuit, qasm2
@@ -173,6 +174,31 @@ class TestQiskitSimulatorProperties:
         simulator.submit_circuits({"c0": qasm2.dumps(qc)})
 
         assert spy.call_args.kwargs["optimization_level"] == level
+
+    @pytest.mark.parametrize(
+        "in_worker_thread, expected", [(False, 4), (True, 1)], ids=["main", "worker"]
+    )
+    def test_transpile_forks_only_from_the_main_thread(
+        self, mocker, in_worker_thread, expected
+    ):
+        """Forking transpile workers from a multithreaded process can deadlock."""
+        spy = mocker.patch(
+            "divi.backends.runners._qiskit.transpile",
+            side_effect=lambda circuits, *a, **kw: circuits,
+        )
+        simulator = QiskitSimulator(n_processes=4, shots=10)
+        qc = QuantumCircuit(1)
+        qc.h(0)
+        qc.measure_all()
+        circuits = {"c0": qasm2.dumps(qc)}
+
+        if in_worker_thread:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(simulator.submit_circuits, circuits).result()
+        else:
+            simulator.submit_circuits(circuits)
+
+        assert spy.call_args.kwargs["num_processes"] == expected
 
 
 def _mock_aer_result(mocker, counts, metadata=None):

@@ -165,7 +165,8 @@ class QiskitSimulator(CircuitRunner):
             n_processes (int | None, optional): Number of parallel processes to use for transpilation and
                 simulation. If None, defaults to all-but-one core (<= 16 cores) or 3/4 of cores
                 capped at 16 (> 16 cores); 2 when not running on the main thread/process.
-                Controls both transpilation parallelism and execution parallelism. The execution
+                Controls both transpilation parallelism and execution parallelism;
+                ``transpile`` runs serially for circuits submitted off the main thread. The execution
                 parallelism mode (circuit or shot) is automatically selected based on workload
                 characteristics.
             shots (int, optional): Number of shots to perform. Defaults to 5000.
@@ -418,10 +419,13 @@ class QiskitSimulator(CircuitRunner):
         )
         simulator = self._create_simulator(resolved_backend)
         self._configure_simulator_parallelism(simulator, n_circuits)
+        # Qiskit parallelises transpile by forking, which can deadlock when
+        # other threads (e.g. ensemble workers) run concurrently.
+        on_main_thread = threading.current_thread() is threading.main_thread()
         transpiled = transpile(
             qiskit_circuits,
             simulator,
-            num_processes=self.n_processes,
+            num_processes=self.n_processes if on_main_thread else 1,
             optimization_level=self.optimization_level,
         )
 
