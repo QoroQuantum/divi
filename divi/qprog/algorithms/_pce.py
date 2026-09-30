@@ -6,7 +6,7 @@ import itertools
 from collections.abc import Callable
 from dataclasses import replace
 from functools import cached_property
-from typing import Literal
+from typing import Any, Literal
 from warnings import warn
 
 import numpy as np
@@ -251,13 +251,14 @@ class PCE(VQE):
                 f"PCE requires a BinaryOptimizationProblem, got {type(problem).__name__}. "
                 "Wrap your QUBO/HUBO: PCE(BinaryOptimizationProblem(qubo))."
             )
-        self.problem: BinaryPolynomialProblem = problem.canonical_problem
-        self.n_vars = self.problem.n_vars
+        self.problem = problem
+        self._polynomial: BinaryPolynomialProblem = problem.canonical_problem
+        self.n_vars = self._polynomial.n_vars
         self.alpha = alpha
         self.encoding_type = encoding_type
         self._use_soft_objective = self.alpha < 5.0
         self._decode_parities_fn = decode_parities_fn or _decode_parities
-        self._compiled_problem = compile_problem(self.problem)
+        self._compiled_problem = compile_problem(self._polynomial)
 
         if kwargs.get("qem_protocol") is not None:
             raise ValueError("PCE does not currently support qem_protocol.")
@@ -307,7 +308,7 @@ class PCE(VQE):
             cost_preprocessor(),
             result_format=ResultFormat.COUNTS,
             terminal_stage=PCECostStage(
-                problem=self.problem,
+                problem=self._polynomial,
                 alpha=self.alpha,
                 use_soft_objective=self._use_soft_objective,
                 decode_parities_fn=self._decode_parities_fn,
@@ -351,6 +352,7 @@ class PCE(VQE):
         min_prob: float = 0.0,
         include_decoded: bool = False,
         sort_by: Literal["prob", "energy"] = "prob",
+        feasibility: Literal["ignore", "filter", "repair"] = "ignore",
     ) -> list[SolutionEntry]:
         """Get the top-N solutions with decoded QUBO variable assignments.
 
@@ -373,8 +375,14 @@ class PCE(VQE):
                 Defaults to False.
             sort_by: Sort order for the returned solutions.
                 ``"prob"`` (default): descending by probability.
-                ``"energy"``: ascending by objective energy. When set, the
-                ``energy`` field of each ``SolutionEntry`` is populated.
+                ``"energy"``: ascending by the penalised QUBO energy, which
+                also fills each ``SolutionEntry``'s ``energy``.
+            feasibility: ``"ignore"`` (default), ``"filter"`` or ``"repair"``,
+                as in :meth:`QAOA.get_top_solutions
+                <divi.qprog.algorithms.QAOA.get_top_solutions>`. ``"filter"``
+                and ``"repair"`` rank by the problem's ``compute_energy``
+                whatever ``sort_by`` is, and need the ``"native"`` Hamiltonian
+                builder.
 
         Returns:
             list[SolutionEntry]: List of solution entries sorted according to
@@ -395,6 +403,16 @@ class PCE(VQE):
             raise ValueError(f"min_prob must be in range [0.0, 1.0], got {min_prob}")
         if sort_by not in ("prob", "energy"):
             raise ValueError(f"sort_by must be 'prob' or 'energy', got '{sort_by}'")
+        if feasibility not in ("ignore", "filter", "repair"):
+            raise ValueError(
+                "feasibility must be 'ignore', 'filter' or 'repair', "
+                f"got '{feasibility}'"
+            )
+        if feasibility != "ignore" and self.problem.hamiltonian_builder != "native":
+            raise ValueError(
+                "feasibility='filter' and 'repair' need a problem built with "
+                "hamiltonian_builder='native'."
+            )
 
         limit = n or None
 
@@ -409,6 +427,17 @@ class PCE(VQE):
         # decoded_parities shape: (n_vars, n_states), transpose to (n_states, n_vars)
         decoded_qubo_solutions = (1 - decoded_parities).T
 
+        if feasibility != "ignore":
+            decoded_bitstrings = (
+                "".join(str(int(x)) for x in solution)
+                for solution in decoded_qubo_solutions
+            )
+            return self.problem._rank_feasible(
+                zip(decoded_bitstrings, (prob for _, prob in filtered)),
+                feasibility,
+                self.problem.decode_fn if include_decoded else None,
+            )[:limit]
+
         compute_energy = sort_by == "energy"
         result = []
         for (encoded_bitstring, prob), decoded_solution in zip(
@@ -419,7 +448,7 @@ class PCE(VQE):
                 float(
                     _evaluate_binary_polynomial(
                         decoded_solution.astype(float),
-                        self.problem,
+                        self._polynomial,
                         _compiled=self._compiled_problem,
                     )
                 )
@@ -446,12 +475,16 @@ class PCE(VQE):
 
         return result[:limit]
 
-    def _decode_assignment(
-        self, vector: npt.NDArray[np.integer]
-    ) -> npt.NDArray[np.integer] | dict:
-        """Return the assignment keyed by variable name when the variable order
-        isn't the default ``0..n_vars-1``; otherwise the raw array."""
-        vo = self.problem.variable_order
+    def _decode_assignment(self, vector: npt.NDArray[np.integer]) -> Any:
+        """Decode a canonical-order assignment through the problem's ``decode_fn``.
+
+        Falls back to the raw assignment, keyed by variable name when the
+        variable order isn't ``0..n_vars-1``, when the problem's Hamiltonian
+        adds auxiliary qubits.
+        """
+        if self.problem.hamiltonian_builder == "native":
+            return self.problem.decode_fn("".join(str(int(x)) for x in vector))
+        vo = self._polynomial.variable_order
         if vo != tuple(range(self.n_vars)):
             return dict(zip(vo, vector))
         return vector
@@ -465,7 +498,8 @@ class PCE(VQE):
             This returns the assignment corresponding to the **highest-probability**
             encoded bitstring, which may not be the lowest-energy solution.
             For energy-ranked solutions, use
-            :meth:`get_top_solutions(sort_by="energy") <get_top_solutions>` instead.
+            :meth:`get_top_solutions(sort_by="energy") <get_top_solutions>` instead,
+            or ``feasibility="repair"`` when the problem has constraints.
 
         Returns:
             For QUBO problems, a binary 0/1 NumPy array. For HUBO problems
@@ -484,7 +518,8 @@ class PCE(VQE):
             "encoded bitstring. Because PCE operates in a compressed qubit space "
             "(O(log2(N)) qubits for N variables), the most-probable encoded state "
             "does not necessarily decode to the lowest-energy QUBO solution. "
-            "Use get_top_solutions(sort_by='energy') for energy-ranked results.",
+            "Use get_top_solutions(sort_by='energy') for energy-ranked results, "
+            "or feasibility='repair' when the problem has constraints.",
             stacklevel=2,
         )
 

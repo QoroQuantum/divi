@@ -398,8 +398,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             include_decoded: Include decoded representations. Defaults to False.
             feasibility: How to handle infeasible solutions:
 
-                - ``"ignore"`` (default): return all solutions, ranked by
-                  probability.
+                - ``"ignore"`` (default): return every measured bitstring,
+                  slack qubits included, ranked by probability, with
+                  ``energy`` left as ``None``.
                 - ``"filter"``: drop infeasible solutions, rank by objective
                   energy.  This implements the **PHQC** (Polynomial-time
                   Hybrid Quantum-Classical) post-processing from
@@ -410,10 +411,21 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                   lowest-energy feasible solution is returned.
                 - ``"repair"``: repair infeasible solutions via the Problem's
                   ``repair_infeasible_bitstring`` method, rank by energy.
+                  Repairs that stay infeasible are dropped.
+
+                In ``"filter"`` and ``"repair"``, samples of the same solution
+                (ignoring slack) are merged into one entry with their
+                probabilities summed, and ``energy`` is the objective without
+                penalties.
 
         Returns:
             List of :class:`~divi.qprog.SolutionEntry`.
         """
+        if feasibility not in ("ignore", "filter", "repair"):
+            raise ValueError(
+                "feasibility must be 'ignore', 'filter' or 'repair', "
+                f"got '{feasibility}'"
+            )
         fetch_n = n if n > 0 else 2**self.n_qubits
 
         # No feasibility handling — just return by probability
@@ -428,25 +440,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             n=n_measured, min_prob=min_prob, include_decoded=include_decoded
         )
 
-        # Walk each solution: keep feasible ones, repair or skip infeasible
-        p = self.problem
-        result: list[SolutionEntry] = []
-        for sol in all_solutions:
-            bs = sol.bitstring
-
-            if p.is_feasible(bs):
-                energy = p.compute_energy(bs)
-                decoded = self._decode_solution_fn(bs) if include_decoded else None
-            elif feasibility == "repair":
-                bs, repaired_decoded, energy = p.repair_infeasible_bitstring(bs)
-                decoded = repaired_decoded if include_decoded else None
-            else:  # "filter" — drop infeasible
-                continue
-
-            result.append(SolutionEntry(bs, sol.prob, decoded, energy))
-
-        # Rank by energy (lower is better), break ties by higher probability
-        result.sort(
-            key=lambda s: (s.energy if s.energy is not None else float("inf"), -s.prob)
+        result = self.problem._rank_feasible(
+            ((sol.bitstring, sol.prob) for sol in all_solutions),
+            feasibility,
+            self._decode_solution_fn if include_decoded else None,
         )
         return result[:fetch_n]

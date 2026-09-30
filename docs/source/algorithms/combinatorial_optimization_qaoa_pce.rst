@@ -304,6 +304,62 @@ instead of an array. Evaluate it directly with ``bqm.energy(qaoa.solution)``.
    print(f"Solution: {qaoa.solution}")
    print(f"BQM energy: {bqm.energy(qaoa.solution)}")
 
+.. _linear-constraints:
+
+Linear Constraints
+^^^^^^^^^^^^^^^^^^
+
+Pass :class:`~divi.qprog.problems.LinearConstraint` objects through
+``constraints=`` to add constraints :math:`\sum_i a_i x_i \;(=, \le, \ge)\; b`.
+Each becomes the squared penalty :math:`(\sum_i a_i x_i \pm s - b)^2` in the
+constraint's own units (missing the bound by :math:`v` costs :math:`v^2`,
+measured from the bound rounded inwards to the coefficients' common step), scaled by
+``penalty_weight`` and kept apart from the objective for characterisation.
+Problems are minimised; negate an objective to maximise it.
+
+* Equality constraints add no qubits. Inequalities add up to eight slack qubits
+  :math:`s`, enough for the largest gap to the bound; ``decode_fn`` drops
+  them. With integer variable labels they follow the decision variables. A
+  constraint that always holds adds nothing.
+* Integers, decimals up to six places and simple fractions are encoded
+  exactly when every value is at most :math:`2^{20}` of their common step.
+  Other values, or slack that would need more than eight bits, are
+  rounded and a :class:`UserWarning` says so; round data such as ESG scores or
+  returns to a coarse grid first to keep the encoding exact and small.
+* :class:`ValueError` is raised for a bound outside the left-hand side's range,
+  an equality bound off the coefficients' common step, rounding that would
+  leave a constraint that always holds, or a variable not in the problem.
+  Other equality constraints that no assignment meets are not detected.
+  Constraints cannot be combined with a ``decomposer``.
+* Choose ``penalty_weight`` so one unit of violation outweighs the objective's
+  spread across solutions; see :ref:`penalty-tuning`.
+* :meth:`~divi.qprog.problems.BinaryOptimizationProblem.is_feasible` checks the
+  original constraints and
+  :meth:`~divi.qprog.problems.BinaryOptimizationProblem.compute_energy` returns
+  the objective without penalties, so ``get_top_solutions(feasibility="filter")``
+  on QAOA or PCE returns feasible samples ranked by objective, merging samples
+  that differ only in slack. A plain
+  :class:`~divi.qprog.problems.BinaryOptimizationProblem` has no repair, so
+  ``"repair"`` behaves like ``"filter"``.
+
+.. code-block:: python
+
+   import numpy as np
+
+   from divi.qprog.problems import BinaryOptimizationProblem, LinearConstraint
+
+   objective = np.diag([-1.0, -2.0, -3.0])
+   problem = BinaryOptimizationProblem(
+       objective,
+       constraints=[
+           LinearConstraint([1, 1, 1], "==", 2),     # exactly two variables set
+           LinearConstraint([3, 1, 2], "<=", 4),     # a weighted cap
+       ],
+       penalty_weight=5.0,
+   )
+   print(problem.cost_hamiltonian.num_qubits)       # 3 decision + 3 slack (range 0-4) = 6
+   print(problem.is_feasible("011" + "000"))        # True: 1 + 2 <= 4
+
 Pauli Correlation Encoding (PCE)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 

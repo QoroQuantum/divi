@@ -10,6 +10,7 @@ from divi._optional import import_optional
 
 from ._base import QAOAProblem
 from ._binary import BinaryOptimizationProblem
+from ._constraints import LinearConstraint
 from ._graph_partitioning_utils import GraphPartitioningConfig, draw_partitions
 from ._graphs import (
     MaxCliqueProblem,
@@ -47,6 +48,7 @@ __all__ = [
     "MolecularProblem",
     "GraphPartitioningConfig",
     "HamiltonianProblem",
+    "LinearConstraint",
     "MaxCliqueProblem",
     "MaxCutProblem",
     "MaxIndependentSetProblem",

@@ -372,7 +372,8 @@ def _attach_penalty_tuning_components(
     penalty_canonical = problem.penalty_canonical_problem
     if penalty_canonical is None:
         raise ValueError(
-            "penalty_tuning=True requires BinaryOptimizationProblem(..., penalty=...)."
+            "penalty_tuning=True requires BinaryOptimizationProblem(..., penalty=...) "
+            "or BinaryOptimizationProblem(..., constraints=...)."
         )
 
     options = dict(wire_options or {})
@@ -1334,8 +1335,10 @@ class CharacterizationOptions(BaseModel):
     penalty_tuning: StrictBool | None = None
     """Request penalty-lambda tuning.
 
-    Requires ``BinaryOptimizationProblem(..., penalty=...)`` in the
-    :func:`characterize_and_validate` call, and must be set to ``True`` to
+    Requires a penalty component in the problem passed to
+    :func:`characterize_and_validate`, from
+    ``BinaryOptimizationProblem(..., penalty=...)`` or
+    ``BinaryOptimizationProblem(..., constraints=...)``, and must be set to ``True`` to
     have any effect: the cost/penalty split is only transmitted when you ask
     for tuning, so leaving this at ``None`` means no penalty tuning runs.
     """

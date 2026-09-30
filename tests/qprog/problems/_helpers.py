@@ -4,6 +4,8 @@
 
 """Shared problem constants and helpers for QAOA/PCE e2e-style tests."""
 
+import itertools
+
 import dimod
 import networkx as nx
 import numpy as np
@@ -120,6 +122,53 @@ def exact_hubo_minima(hubo: dict[tuple[int, ...], float], n_vars: int):
             best_assignments.append(assignment)
 
     return best_energy, best_assignments
+
+
+def polynomial_value(terms: dict[tuple, float], assignment: dict) -> float:
+    """Evaluate HUBO ``terms`` on a ``{variable: bit}`` assignment."""
+    return sum(
+        coeff * np.prod([assignment[v] for v in key]) for key, coeff in terms.items()
+    )
+
+
+def n_slack(problem, n_decision: int) -> int:
+    """Number of qubits beyond the first ``n_decision`` decision qubits."""
+    return problem.cost_hamiltonian.num_qubits - n_decision
+
+
+def iter_assignments(problem):
+    """Yield ``(bitstring, assignment)`` for every basis state of ``problem``."""
+    variables = problem.canonical_problem.variable_order
+    for bits in itertools.product((0, 1), repeat=len(variables)):
+        yield "".join(map(str, bits)), dict(zip(variables, bits))
+
+
+def assert_penalty_zero_iff_feasible(
+    problem, n_decision: int, *, require_feasible: bool = True
+) -> None:
+    """Every feasible decision setting admits zero penalty; every other costs more.
+
+    The first ``n_decision`` bitstring positions are the decision qubits; the
+    penalty of each decision setting is its minimum over the remaining slack.
+    """
+    variables = problem.canonical_problem.variable_order
+    samples = np.array(list(itertools.product((0, 1), repeat=len(variables))))
+    column = {v: i for i, v in enumerate(variables)}
+    terms = problem.penalty_canonical_problem.terms
+    penalty = np.zeros(len(samples))
+    for key, coeff in terms.items():
+        penalty += coeff * samples[:, [column[v] for v in key]].prod(axis=1)
+    zero = 1e-13 * max(map(abs, terms.values()), default=1.0)
+    heads = samples[:, :n_decision] @ (1 << np.arange(n_decision)[::-1])
+    best = np.full(2**n_decision, np.inf)
+    np.minimum.at(best, heads, penalty)
+    decisions = [format(h, f"0{n_decision}b") for h in range(2**n_decision)]
+    tail = "0" * (len(variables) - n_decision)
+    feasible = [problem.is_feasible(d + tail) for d in decisions]
+    assert any(feasible) or not require_feasible
+    for decision, value, ok in zip(decisions, best, feasible):
+        assert (abs(value) <= zero) == ok, decision
+        assert value >= -zero
 
 
 def make_bull_graph() -> nx.Graph:

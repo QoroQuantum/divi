@@ -328,8 +328,10 @@ Penalty Tuning and Constraints
 ------------------------------
 
 Constraint descriptors are diagnostic metadata. They do **not** encode a
-constraint into the QUBO. Build the penalty terms yourself and supply cost-only
-and penalty-only components:
+constraint into the QUBO. Supply cost-only and penalty-only components, either
+by passing :class:`~divi.qprog.problems.LinearConstraint`\ s through
+``constraints=`` (see :ref:`linear-constraints`) or by building the penalty
+terms yourself:
 
 .. skip: next
 

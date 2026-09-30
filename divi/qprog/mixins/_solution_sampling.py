@@ -62,11 +62,10 @@ class SolutionEntry(NamedTuple):
         bitstring: Binary string representing a computational basis state.
         prob: Measured probability in range [0.0, 1.0].
         decoded: Optional problem-specific decoded representation. Defaults to None.
-        energy: Optional objective energy for this solution. ``None`` from the
-            default probability-ranked path; populated only by feasibility-aware
-            retrieval, e.g. :meth:`~divi.qprog.algorithms.QAOA.get_top_solutions`
-            with ``feasibility="filter"`` or ``"repair"`` (which scores each
-            bitstring via the problem's ``compute_energy``). Defaults to None.
+        energy: Optional energy for this solution: the problem's
+            ``compute_energy`` with ``feasibility="filter"`` or ``"repair"``,
+            the penalised QUBO energy with PCE's ``sort_by="energy"``, and
+            ``None`` otherwise. Defaults to None.
     """
 
     bitstring: str

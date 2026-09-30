@@ -9,6 +9,7 @@ and provides compiled evaluators used by both ``divi.qprog.algorithms._pce``
 and the ``PCECostStage`` pipeline stage.
 """
 
+import numbers
 from collections.abc import Hashable
 from typing import Any
 
@@ -80,11 +81,11 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix:
 def _default_variable_order(variables: set[Hashable]) -> tuple[Hashable, ...]:
     """Build deterministic variable order for mixed, potentially incomparable labels.
 
-    Sorts integers numerically (0, 1, 2, ..., 10, 11) rather than
-    lexicographically ("0", "1", "10", "11", ..., "2").  Non-integer
-    labels fall back to ``repr``-based ordering.
+    Sorts integers, including NumPy integers, numerically (0, 1, 2, ..., 10,
+    11) rather than lexicographically ("0", "1", "10", "11", ..., "2").
+    Non-integer labels fall back to ``repr``-based ordering.
     """
-    int_vars = [v for v in variables if isinstance(v, int)]
+    int_vars = [v for v in variables if isinstance(v, numbers.Integral)]
     if len(int_vars) == len(variables):
         return tuple(sorted(int_vars))
     return tuple(sorted(variables, key=repr))

@@ -132,7 +132,7 @@ def test_pce_hubo_basic_initialization(make_pce):
     pce = make_pce(problem=hubo, n_layers=1)
 
     assert pce.n_vars == 3
-    assert pce.problem.constant == pytest.approx(0.25)
+    assert pce.problem.canonical_problem.constant == pytest.approx(0.25)
     verify_cost_circuit(pce)
 
 
@@ -361,7 +361,9 @@ def test_pce_hubo_quadratized_objective_helpers(make_pce):
     )
     parities = _decode_parities(state_strings, pce._variable_masks_u64)
 
-    energy = _compute_soft_energy(parities, probs, pce.alpha, pce.problem)
+    energy = _compute_soft_energy(
+        parities, probs, pce.alpha, pce.problem.canonical_problem
+    )
 
     x0, x1, x2 = (0.5 * (1.0 + np.tanh(z)) for z in (0.0, -0.2, 0.4))
     expected = -1.0 * x0**2 + 0.25 * x1**2 + 1.5 * x0 * x1 * x2
@@ -388,7 +390,7 @@ def test_pce_soft_energy_computation(make_pce):
     probs = counts / counts.sum()
     parities = _decode_parities(states, pce._variable_masks_u64)
 
-    result = _compute_soft_energy(parities, probs, 1.0, pce.problem)
+    result = _compute_soft_energy(parities, probs, 1.0, pce.problem.canonical_problem)
 
     expected = 3.0 * (np.e / (np.e + 1)) ** 2
     assert result == pytest.approx(expected)
@@ -414,7 +416,7 @@ def test_pce_hard_cvar_energy_computation(make_pce):
     parities = _decode_parities(states, pce._variable_masks_u64)
 
     result = _compute_hard_cvar_energy(
-        parities, counts_arr, 10.0, pce.problem, alpha_cvar=0.5
+        parities, counts_arr, 10.0, pce.problem.canonical_problem, alpha_cvar=0.5
     )
 
     assert result == pytest.approx(0.2)
@@ -438,7 +440,9 @@ def test_pce_custom_decode_parities_fn_soft_energy(make_pce):
     state_strings, probs = _histogram_to_probs({"00": 30, "01": 10, "10": 20, "11": 40})
 
     parities = all_zeros_decoder(state_strings, pce._variable_masks_u64)
-    result = _compute_soft_energy(parities, probs, pce.alpha, pce.problem)
+    result = _compute_soft_energy(
+        parities, probs, pce.alpha, pce.problem.canonical_problem
+    )
 
     # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
     z = np.array([1.0, 1.0])
@@ -467,7 +471,11 @@ def test_pce_custom_decode_parities_fn_hard_cvar(make_pce):
 
     parities = all_ones_decoder(state_strings, pce._variable_masks_u64)
     result = _compute_hard_cvar_energy(
-        parities, counts_arr, total_shots, pce.problem, alpha_cvar=0.25
+        parities,
+        counts_arr,
+        total_shots,
+        pce.problem.canonical_problem,
+        alpha_cvar=0.25,
     )
 
     # All parities 1 -> x_vals = 0 for all vars/states -> energies all 0 -> CVaR = 0
@@ -487,10 +495,10 @@ def test_pce_decode_parities_fn_none_uses_default(make_pce):
     )
 
     result_default = _compute_soft_energy(
-        parities_default, probs, 1.0, pce_default.problem
+        parities_default, probs, 1.0, pce_default.problem.canonical_problem
     )
     result_none = _compute_soft_energy(
-        parities_none, probs, 1.0, pce_explicit_none.problem
+        parities_none, probs, 1.0, pce_explicit_none.problem.canonical_problem
     )
 
     assert result_default == pytest.approx(result_none)
@@ -653,7 +661,10 @@ def test_pce_get_top_solutions_decoded_keys_by_variable_name(make_pce):
     assert isinstance(sol.decoded, dict)
     assert set(sol.decoded) == {"w", "x", "y"}
     assert sol.decoded == {
-        name: int(bit) for name, bit in zip(pce.problem.variable_order, sol.bitstring)
+        name: int(bit)
+        for name, bit in zip(
+            pce.problem.canonical_problem.variable_order, sol.bitstring
+        )
     }
 
 
@@ -1167,7 +1178,9 @@ class TestGetTopSolutionsSortBy:
         energies = []
         for sol in solutions:
             x = np.array([int(c) for c in sol.bitstring], dtype=float)
-            energy = _evaluate_binary_polynomial(x, pce_with_probs.problem)
+            energy = _evaluate_binary_polynomial(
+                x, pce_with_probs.problem.canonical_problem
+            )
             energies.append(energy)
         assert energies == pytest.approx([0.0, 1.0, 2.0, 3.0])
 

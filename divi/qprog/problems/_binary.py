@@ -5,7 +5,7 @@
 """Binary optimisation (QUBO / HUBO) problem class for QAOA."""
 
 import math
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -25,6 +25,7 @@ from divi.hamiltonians import (
     x_mixer,
 )
 from divi.qprog.problems import QAOAProblem
+from divi.qprog.problems._constraints import LinearConstraint, _encode_constraints
 from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
 
 if TYPE_CHECKING:
@@ -88,6 +89,13 @@ def _sanitize_problem_input(qubo):
         )
 
     raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
+
+
+def _declared_variables(problem, canonical) -> set[Hashable]:
+    """Variables a QUBO/HUBO input declares, including ones with zero coefficients."""
+    if isinstance(problem, dimod.BinaryQuadraticModel):
+        return set(problem.variables)
+    return set(canonical.variable_order)
 
 
 def _combine_polynomial_terms(cost_canonical, penalty_canonical, penalty_weight: float):
@@ -155,14 +163,23 @@ class BinaryOptimizationProblem(QAOAProblem):
     :class:`~divi.qprog.problems.CommunityDecomposer` as the ``decomposer``.
     Without a decomposer, the decomposition-related methods raise ``RuntimeError``.
 
+    ``constraints`` (:class:`~divi.qprog.problems.LinearConstraint`) join the
+    penalty component. Slack qubits follow the decision variables when those
+    have integer labels.
+    :attr:`decode_fn` drops the slack, :meth:`is_feasible` checks the
+    constraints and :meth:`compute_energy` returns the objective alone.
+    Constraints cannot be combined with a ``decomposer``.
+
     Args:
         problem: Objective/cost QUBO matrix, BQM, HUBO dict, or BinaryPolynomial.
+        constraints: Optional linear constraints over the problem's variables.
         penalty: Optional penalty-only QUBO/HUBO component. When provided, the
             QAOA problem is the penalised objective
             ``problem + penalty_weight * penalty`` while the objective/penalty
             split remains available for characterisation.
-        penalty_weight: Multiplier applied to ``penalty`` when building the
-            penalised QUBO/HUBO. Defaults to ``1.0``.
+        penalty_weight: Multiplier applied to ``penalty`` and to the encoded
+            ``constraints`` when building the penalised QUBO/HUBO. Defaults to
+            ``1.0``.
         hamiltonian_builder: ``"native"`` (default) or ``"quadratized"``.
         quadratization_strength: Penalty strength for the quadratized
             builder. ``None`` (default) auto-picks
@@ -185,6 +202,8 @@ class BinaryOptimizationProblem(QAOAProblem):
     Raises:
         ImportError: If ``decomposer`` is given but the ``qubo-decompose``
             extra is not installed.
+        ValueError: If a constraint is infeasible, its slack range cannot be
+            encoded, or ``constraints`` is combined with a ``decomposer``.
 
     Examples:
         >>> import numpy as np
@@ -198,6 +217,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         self,
         problem: QUBOProblemTypes | HUBOProblemTypes,
         *,
+        constraints: Sequence[LinearConstraint] | None = None,
         penalty: QUBOProblemTypes | HUBOProblemTypes | None = None,
         penalty_weight: float = 1.0,
         hamiltonian_builder: Literal["native", "quadratized"] = "native",
@@ -206,17 +226,41 @@ class BinaryOptimizationProblem(QAOAProblem):
         composer: "hybrid.traits.SubsamplesComposer | None" = None,
         local_search: bool = False,
     ):
+        if constraints and decomposer is not None:
+            raise ValueError(
+                "constraints cannot be combined with a decomposer: partitioning "
+                "would split each constraint's penalty across sub-problems."
+            )
         hybrid = _hybrid() if decomposer is not None else None
         if hamiltonian_builder not in ("native", "quadratized"):
             raise ValueError(
                 "hamiltonian_builder must be either 'native' or 'quadratized'."
             )
         penalty_weight = float(penalty_weight)
-        if not math.isfinite(penalty_weight):
-            raise ValueError("penalty_weight must be finite.")
+        if not math.isfinite(penalty_weight) or penalty_weight <= 0:
+            raise ValueError("penalty_weight must be finite and positive.")
+        constraints = tuple(constraints or ())
+        for constraint in constraints:
+            if not isinstance(constraint, LinearConstraint):
+                raise TypeError(
+                    "constraints must be LinearConstraint objects, got "
+                    f"{type(constraint).__name__}."
+                )
 
         self._objective_problem = problem
         self._objective_canonical_problem = normalize_binary_polynomial_problem(problem)
+        self._constraints = constraints
+        self._slack_variables: tuple[Hashable, ...] = ()
+        if constraints:
+            variables = _declared_variables(problem, self._objective_canonical_problem)
+            penalty_terms: dict[tuple, float] = {}
+            if penalty is not None:
+                penalty_canonical = normalize_binary_polynomial_problem(penalty)
+                variables |= _declared_variables(penalty, penalty_canonical)
+                penalty_terms = penalty_canonical.terms
+            self._slack_variables, penalty = _encode_constraints(
+                constraints, variables, penalty_terms
+            )
         self._penalty_problem = penalty
         self._penalty_canonical_problem = (
             normalize_binary_polynomial_problem(penalty)
@@ -233,9 +277,17 @@ class BinaryOptimizationProblem(QAOAProblem):
                 self._penalty_canonical_problem,
                 penalty_weight,
             )
+            # A constrained variable keeps its qubit even if its terms cancel.
+            for constraint in constraints:
+                for var in constraint.coefficients:
+                    self._raw_problem.setdefault((var,), 0.0)
             self._canonical_problem = normalize_binary_polynomial_problem(
                 self._raw_problem
             )
+        slack = set(self._slack_variables)
+        self._decision_vars = tuple(
+            v for v in self._canonical_problem.variable_order if v not in slack
+        )
         self._hamiltonian_builder: Literal["native", "quadratized"] = (
             hamiltonian_builder
         )
@@ -265,6 +317,49 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._variable_maps = {}
         self._trivial_program_ids = set()
         self._bqm_subproblem_states = {}
+
+    @property
+    def hamiltonian_builder(self) -> Literal["native", "quadratized"]:
+        """Ising-conversion strategy passed at construction."""
+        return self._hamiltonian_builder
+
+    @property
+    def constraints(self) -> tuple[LinearConstraint, ...]:
+        """The linear constraints passed at construction, keyed by the problem's variables."""
+        return self._constraints
+
+    def _assignment(self, bitstring: str) -> dict[Hashable, int]:
+        """Values of every canonical variable (decision and slack) in ``bitstring``."""
+        if len(bitstring) != self._ising.n_qubits:
+            raise ValueError(
+                f"Expected a bitstring of {self._ising.n_qubits} bits, one per "
+                f"qubit including slack, got {len(bitstring)}."
+            )
+        values = self._ising.encoding.decode_fn(bitstring)
+        return dict(zip(self._canonical_problem.variable_order, values.tolist()))
+
+    def _solution_key(self, bitstring: str) -> Hashable:
+        """The decision-variable values, ignoring slack and quadratization ancillas."""
+        assignment = self._assignment(bitstring)
+        return tuple(assignment[v] for v in self._decision_vars)
+
+    def is_feasible(self, bitstring: str) -> bool:
+        """Whether ``bitstring`` satisfies every constraint, before rounding.
+
+        Always ``True`` when the problem has no ``constraints``.
+        """
+        if not self._constraints:
+            return True
+        assignment = self._assignment(bitstring)
+        return all(c.is_satisfied(assignment) for c in self._constraints)
+
+    def compute_energy(self, bitstring: str) -> float:
+        """Objective value of ``bitstring``, excluding penalties and constraints."""
+        assignment = self._assignment(bitstring)
+        return math.fsum(
+            coeff * math.prod(assignment[v] for v in term)
+            for term, coeff in self._objective_canonical_problem.terms.items()
+        )
 
     @property
     def _ising(self) -> IsingResult:
@@ -302,20 +397,21 @@ class BinaryOptimizationProblem(QAOAProblem):
         non-integer keys), the result is a ``dict`` mapping the original
         variable names to their bit values. For integer-indexed
         problems, returns the encoding's raw bitstring projection.
+        Constraint slack variables are omitted in both cases.
         """
         base_decode = self._ising.encoding.decode_fn
-        vo = self._canonical_problem.variable_order
+        labels = self._decision_vars
+        decode = base_decode
+        if self._slack_variables:
+            idx = self._canonical_problem.variable_to_idx
+            positions = np.array([idx[v] for v in labels], dtype=int)
 
-        if vo != tuple(range(self._canonical_problem.n_vars)):
+            def decode(bitstring: str) -> np.ndarray:
+                return base_decode(bitstring)[positions]
 
-            def _decode_with_names(bitstring: str) -> dict | None:
-                decoded = base_decode(bitstring)
-                if decoded is None:
-                    return None
-                return dict(zip(vo, decoded))
-
-            return _decode_with_names
-        return base_decode
+        if labels == tuple(range(len(labels))):
+            return decode
+        return lambda bitstring: dict(zip(labels, decode(bitstring)))
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -339,12 +435,12 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     @property
     def penalty_problem(self):
-        """The penalty-only component, if one was provided."""
+        """The penalty-only component, including encoded ``constraints``, if any."""
         return self._penalty_problem
 
     @property
     def penalty_canonical_problem(self):
-        """The normalised penalty-only component, if one was provided."""
+        """The normalised penalty-only component, including encoded ``constraints``, if any."""
         return self._penalty_canonical_problem
 
     @property

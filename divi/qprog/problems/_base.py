@@ -7,14 +7,15 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable
-from typing import Any
+from collections.abc import Callable, Hashable, Iterable
+from typing import Any, Literal
 
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import x_mixer
 from divi.hamiltonians._term_ops import _require_qiskit_num_qubits
 from divi.qprog.algorithms import InitialState, SuperpositionState
+from divi.qprog.mixins import SolutionEntry
 
 
 class QAOAProblem(ABC):
@@ -101,6 +102,49 @@ class QAOAProblem(ABC):
         The default implementation returns the bitstring unchanged.
         """
         return bitstring, None, None
+
+    def _solution_key(self, bitstring: str) -> Hashable:
+        """Identifies ``bitstring``'s solution, ignoring auxiliary bits such as slack.
+
+        Defaults to ``bitstring`` itself.
+        """
+        return bitstring
+
+    def _rank_feasible(
+        self,
+        solutions: Iterable[tuple[str, float]],
+        feasibility: Literal["filter", "repair"],
+        decode: Callable[[str], Any] | None,
+    ) -> list[SolutionEntry]:
+        """Feasible ``(bitstring, prob)`` samples ranked by energy, then probability.
+
+        Infeasible bitstrings are dropped (``"filter"``) or repaired
+        (``"repair"``), and repairs that stay infeasible are dropped. Samples of
+        the same solution are merged, summing their probabilities.
+        """
+        merged: dict[Hashable, SolutionEntry] = {}
+        for bitstring, prob in solutions:
+            if self.is_feasible(bitstring):
+                energy = self.compute_energy(bitstring)
+                decoded = decode(bitstring) if decode else None
+            elif feasibility == "repair":
+                bitstring, repaired, energy = self.repair_infeasible_bitstring(
+                    bitstring
+                )
+                if not self.is_feasible(bitstring):
+                    continue
+                decoded = repaired if decode else None
+            else:
+                continue
+            key = self._solution_key(bitstring)
+            if key in merged:
+                merged[key] = merged[key]._replace(prob=merged[key].prob + prob)
+            else:
+                merged[key] = SolutionEntry(bitstring, prob, decoded, energy)
+        return sorted(
+            merged.values(),
+            key=lambda s: (s.energy if s.energy is not None else float("inf"), -s.prob),
+        )
 
     def compute_energy(self, bitstring: str) -> float | None:
         """Evaluate the objective energy for a bitstring.
