@@ -8,6 +8,7 @@ import itertools
 import json
 import logging
 import os
+import platform
 import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -15,6 +16,7 @@ from contextlib import nullcontext
 from enum import Enum
 from functools import cached_property
 from http import HTTPStatus
+from importlib import metadata
 from threading import Event
 from typing import Any, TypeVar
 
@@ -78,6 +80,20 @@ API_URL = "https://app.qoroquantum.net/api"
 _MAX_PAYLOAD_SIZE_MB = 0.95
 
 T = TypeVar("T")
+
+
+def _build_user_agent() -> str:
+    try:
+        version = metadata.version("qoro-divi")
+    except metadata.PackageNotFoundError:
+        version = "unknown"
+    return (
+        f"divi/{version} (python={platform.python_version()}) "
+        f"{requests.utils.default_user_agent()}"
+    )
+
+
+USER_AGENT = _build_user_agent()
 
 session = requests.Session()
 retry_configuration = Retry(
@@ -450,7 +466,7 @@ class QoroService(CircuitRunner):
         """
         url = f"{API_URL}/{endpoint}"
 
-        headers = {"Authorization": self.auth_token}
+        headers = {"Authorization": self.auth_token, "User-Agent": USER_AGENT}
 
         if method.upper() in ["POST", "PUT", "PATCH"]:
             headers["Content-Type"] = "application/json"

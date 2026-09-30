@@ -5,6 +5,7 @@
 import base64
 import gzip
 import inspect
+import re
 import time
 import warnings
 from contextlib import contextmanager
@@ -288,7 +289,17 @@ class TestQoroServiceMock:
         mock_request.assert_called_once_with(
             "get",
             "https://app.qoroquantum.net/api/test",
-            headers={"Authorization": "Bearer test_token"},
+            headers={
+                "Authorization": "Bearer test_token",
+                "User-Agent": _qoro_service.USER_AGENT,
+            },
+        )
+
+    def test_user_agent_identifies_divi_python_and_requests(self):
+        """User-Agent names divi, its version, Python and python-requests."""
+        assert re.fullmatch(
+            r"divi/\S+ \(python=\d+\.\d+\.\d+\) python-requests/\S+",
+            _qoro_service.USER_AGENT,
         )
 
     def test_make_request_post_adds_content_type(self, mocker, qoro_service_factory):
@@ -308,6 +319,7 @@ class TestQoroServiceMock:
             "https://app.qoroquantum.net/api/test",
             headers={
                 "Authorization": "Bearer test_token",
+                "User-Agent": _qoro_service.USER_AGENT,
                 "Content-Type": "application/json",
             },
             json={"data": "test"},
@@ -330,6 +342,7 @@ class TestQoroServiceMock:
             "https://app.qoroquantum.net/api/test",
             headers={
                 "Authorization": "Bearer test_token",
+                "User-Agent": _qoro_service.USER_AGENT,
                 "Custom": "Header",
             },
         )
