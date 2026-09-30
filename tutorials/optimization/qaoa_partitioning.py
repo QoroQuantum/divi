@@ -45,6 +45,7 @@ from divi.qprog.problems import (
     GraphPartitioningConfig,
     MaxCutProblem,
     MaxWeightMatchingProblem,
+    QUBOPartitioningConfig,
     is_valid_matching,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
@@ -285,7 +286,9 @@ if __name__ == "__main__":
     #  - PCE uses the D-Wave hybrid ``EnergyImpactDecomposer``.
     qaoa_problem = BinaryOptimizationProblem(
         bqm,
-        decomposer=CommunityDecomposer(max_cluster_size=5),
+        decomposer=CommunityDecomposer(
+            QUBOPartitioningConfig(max_n_variables_per_cluster=5)
+        ),
         composer=hybrid.SplatComposer(),
         local_search=True,
     )

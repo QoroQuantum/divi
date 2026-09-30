@@ -14,18 +14,25 @@ import math
 import operator
 import warnings
 from collections.abc import Callable, Hashable, Mapping, Sequence
+from functools import cached_property
 from typing import Any, Literal
 
 import numpy as np
 import numpy.typing as npt
+import scipy.sparse as sps
 from qiskit.quantum_info import SparsePauliOp
+from scipy.optimize import LinearConstraint as ScipyLinearConstraint
+from scipy.optimize import minimize
 
 from divi.hamiltonians import xy_mixer
 from divi.hamiltonians._mixers import single_pauli_label
 from divi.qprog.algorithms import DickeState, InitialState, SuperpositionState
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
+from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._binary import BinaryOptimizationProblem
 from divi.qprog.problems._constraints import _TOL, LinearConstraint
+from divi.qprog.problems._partitioning_config import QUBOPartitioningConfig
+from divi.qprog.problems._qubo_partitioning_utils import partition_by_method
 
 _MAX_DOUBLE_TRANSFERS = 2_000_000
 _EPS = 1e-12
@@ -50,7 +57,15 @@ class _PortfolioBase(BinaryOptimizationProblem):
         risk_tolerance: float,
         constraints: Sequence[LinearConstraint],
         penalty_weight: float,
+        config: QUBOPartitioningConfig | None,
     ):
+        if config is not None and not isinstance(config, QUBOPartitioningConfig):
+            raise TypeError(
+                f"config must be a QUBOPartitioningConfig, got {type(config).__name__}."
+            )
+        self._config = config
+        self._clusters: dict[Hashable, tuple[np.ndarray, int]] = {}
+        self._fixed_units: dict[int, int] = {}
         mu = np.asarray(expected_returns, dtype=float)
         sigma = np.asarray(covariance, dtype=float)
         if mu.ndim != 1 or mu.size == 0:
@@ -297,31 +312,45 @@ class _PortfolioBase(BinaryOptimizationProblem):
         if not self._weight_constraints:
             return units
         for _ in range(4 * self.n_assets * self._cap + 16):
-            lhs = self._weight_matrix @ units / self._total
-            current = float(self._violation(lhs))
+            current = float(self._violation(self._weight_matrix @ units / self._total))
             if current <= _EPS:
                 break
-            moved = self._best_transfers(units, lhs, current, 1)
-            if moved is None:
-                moved = self._best_transfers(units, lhs, current, 2)
+            moved = next(
+                (
+                    best[0]
+                    for n_moves in (1, 2)
+                    if (best := self._best_transfers(units, n_moves))
+                    and best[1] < current - _EPS
+                ),
+                None,
+            )
             if moved is None:
                 break
             units = moved
         return units
 
-    def _best_transfers(
-        self, units: np.ndarray, lhs: np.ndarray, current: float, n_moves: int
-    ) -> np.ndarray | None:
-        """``units`` after the ``n_moves`` one-unit transfers that most reduce the violation."""
-        give = np.flatnonzero(units > 0)
-        take = np.flatnonzero(units < self._cap)
-        src, dst = (m.ravel() for m in np.meshgrid(give, take, indexing="ij"))
-        keep = src != dst
-        src, dst = src[keep], dst[keep]
-        delta = (
-            self._weight_matrix[:, dst] - self._weight_matrix[:, src]
-        ) / self._total
+    def _improve_by_transfers(self, units: np.ndarray) -> np.ndarray:
+        """Best feasible one-unit transfer, repeated while the objective falls."""
+        current = float(self._objective(units))
+        while (best := self._best_transfers(units, 1)) is not None:
+            moved, violation, objective = best
+            if violation > _EPS or objective >= current - _EPS * max(1.0, abs(current)):
+                break
+            units, current = moved, objective
+        return units
 
+    def _best_transfers(
+        self, units: np.ndarray, n_moves: int
+    ) -> tuple[np.ndarray, float, float] | None:
+        """``(units, violation, objective)`` after the best ``n_moves`` one-unit transfers.
+
+        Best means least total violation, then lowest objective. ``None`` when
+        there is no such transfer.
+        """
+        eye = np.eye(len(units), dtype=int)
+        src, dst = np.nonzero(
+            (units > 0)[:, None] & (units < self._cap)[None, :] & (eye == 0)
+        )
         if n_moves == 1:
             combos = np.arange(len(src))[:, None]
         else:
@@ -334,14 +363,158 @@ class _PortfolioBase(BinaryOptimizationProblem):
         if not len(combos):
             return None
 
+        delta = (
+            self._weight_matrix[:, dst] - self._weight_matrix[:, src]
+        ) / self._total
+        lhs = self._weight_matrix @ units / self._total
         violations = self._violation(lhs[:, None] + delta[:, combos].sum(axis=2))
-        best = float(violations.min())
-        if best >= current - _EPS:
-            return None
-        ties = combos[violations <= best + _EPS]
-        eye = np.eye(len(units), dtype=int)
+        least = float(violations.min())
+        ties = combos[violations <= least + _EPS]
         candidates = units + (eye[dst[ties]] - eye[src[ties]]).sum(axis=1)
-        return candidates[np.argmin(self._objective(candidates))]
+        objectives = self._objective(candidates)
+        best = int(np.argmin(objectives))
+        return candidates[best], least, float(objectives[best])
+
+    def _cluster_problem(self, assets: np.ndarray, share: int) -> "_PortfolioBase":
+        """Sub-problem over ``assets`` whose objective is their term of the global one."""
+        raise NotImplementedError
+
+    def decompose(self) -> dict[Hashable, QAOAProblem]:
+        """One sub-problem per asset cluster, each holding a share of the budget.
+
+        Shares follow the continuous relaxation, or cluster size if it fails or
+        leaves nothing to solve. Extra constraints are enforced after combining.
+
+        Raises:
+            ValueError: If no partitioning config was provided at construction,
+                or no cluster has more than one possible holding.
+        """
+        config = self._config
+        if config is None:
+            raise ValueError(
+                "Cannot decompose: no partitioning config was provided at construction."
+            )
+        clusters = partition_by_method(sps.csr_matrix(self._sigma), config)
+        # Group uncorrelated assets, within the size limit and above the floor.
+        singles = [c for c in clusters if len(c) == 1]
+        if len(singles) > 1:
+            multi = [c for c in clusters if len(c) > 1]
+            flat = np.concatenate(singles)
+            n_groups = math.ceil(len(flat) / (config.max_cluster_size or len(flat)))
+            n_groups = max(n_groups, (config.minimum_n_clusters or 0) - len(multi))
+            clusters = multi + np.array_split(flat, min(n_groups, len(flat)))
+        for relaxed in (True, False):
+            shares = self._cluster_shares(clusters, relaxed=relaxed)
+            self._clusters, self._fixed_units = {}, {}
+            sub_problems: dict[Hashable, QAOAProblem] = {}
+            for i, (assets, share) in enumerate(zip(clusters, shares.tolist())):
+                if len(assets) == 1 or share in (0, len(assets) * self._cap):
+                    self._fixed_units.update(
+                        dict.fromkeys(assets.tolist(), share // len(assets))
+                    )
+                    continue
+                prog_id = (f"P{i}", len(assets))
+                self._clusters[prog_id] = (assets, share)
+                sub_problems[prog_id] = self._cluster_problem(assets, share)
+            if sub_problems:
+                return sub_problems
+        raise ValueError(
+            "Every asset cluster has a single possible holding, leaving nothing "
+            "to solve; solve the problem without partitioning."
+        )
+
+    def _cluster_shares(
+        self, clusters: list[np.ndarray], *, relaxed: bool
+    ) -> np.ndarray:
+        """Budget per cluster by largest remainder, from the relaxation or by size."""
+        n, total, cap = self.n_assets, self._total, self._cap
+        sigma, mu, tau = self._sigma, self._mu, self._risk_tolerance
+        weights = caps = np.array([len(c) * cap for c in clusters])
+        if relaxed:
+            cons = self._weight_constraints
+            a = np.vstack([np.ones(n), self._weight_matrix])
+            lb = np.r_[1.0, [-np.inf if c.sense == "<=" else c.bound for c in cons]]
+            ub = np.r_[1.0, [np.inf if c.sense == ">=" else c.bound for c in cons]]
+            # SLSQP's tolerance is absolute: scale the objective to order one.
+            scale = max(np.abs(sigma).max(), tau * np.abs(mu).max(), _EPS)
+            relaxation = minimize(
+                lambda w: (w @ sigma @ w - tau * mu @ w) / scale,
+                np.full(n, 1 / n),
+                jac=lambda w: (2 * sigma @ w - tau * mu) / scale,
+                bounds=[(0.0, cap / total)] * n,
+                constraints=[
+                    ScipyLinearConstraint(a[m], lb[m], ub[m])
+                    for m in (lb == ub, lb != ub)
+                    if m.any()
+                ],
+                method="SLSQP",
+            )
+            x = np.clip(relaxation.x, 0.0, None)
+            if relaxation.success and np.isfinite(x).all() and x.sum() > 0:
+                weights = np.array([x[c].sum() for c in clusters])
+        quota = np.minimum(total * weights / weights.sum(), caps)
+        shares = np.floor(quota).astype(int)
+        while (short := total - shares.sum()) > 0:
+            room = np.flatnonzero(shares < caps)
+            shares[room[np.argsort((shares - quota)[room], kind="stable")[:short]]] += 1
+        return shares
+
+    def _has_reproducible_decomposition(self) -> bool:
+        return True
+
+    def initial_solution_size(self) -> int:
+        return self.n_assets
+
+    def _global_bitstring(self, solution: Sequence[int]) -> str:
+        """Bitstring of a units-per-asset solution, with fixed assets and slack set."""
+        units = np.array(solution)
+        units[list(self._fixed_units)] = list(self._fixed_units.values())
+        return self._complete_bitstring(dict(enumerate(self._unit_bits(units))))
+
+    @cached_property
+    def _penalised_qubo(self) -> tuple[np.ndarray, float]:
+        """Upper-triangular matrix and constant of the (quadratic) penalised QUBO."""
+        idx = self._canonical_problem.variable_to_idx
+        q, offset = np.zeros((len(idx), len(idx))), 0.0
+        for term, coeff in self._canonical_problem.terms.items():
+            if term:
+                q[idx[term[0]], idx[term[-1]]] += coeff
+            else:
+                offset += coeff
+        return q, offset
+
+    def evaluate_global_solution(self, solution: list[int]) -> float:
+        """Penalised QUBO energy, with the slack that minimises it."""
+        q, offset = self._penalised_qubo
+        x = np.fromiter(map(int, self._global_bitstring(solution)), dtype=float)
+        return float(x @ q @ x + offset)
+
+    def postprocess_candidates(
+        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+    ) -> list[tuple[Any, float]]:
+        """Distinct feasible ``(decoded, objective)`` pairs, best first.
+
+        Infeasible candidates are repaired, or dropped when ``strict`` is set or
+        the repair fails, then improved by feasible one-unit transfers.
+        """
+        results: dict[str, tuple[Any, float]] = {}
+        for _, solution in candidates:
+            bitstring = self._global_bitstring(solution)
+            if not self.is_feasible(bitstring):
+                if strict:
+                    continue
+                bitstring, _, energy = self.repair_infeasible_bitstring(bitstring)
+                if energy is None:
+                    continue
+            units = self._improve_by_transfers(self._units(bitstring))
+            bitstring = self._complete_bitstring(
+                dict(enumerate(self._unit_bits(units)))
+            )
+            results[bitstring] = (
+                self.decode_fn(bitstring),
+                self.compute_energy(bitstring),
+            )
+        return sorted(results.values(), key=lambda entry: entry[1])
 
 
 class PortfolioSelectionProblem(_PortfolioBase):
@@ -392,6 +565,11 @@ class PortfolioSelectionProblem(_PortfolioBase):
             scores' common step). Choose it so that one unit of violation
             outweighs the spread of the objective across portfolios.
         use_constrained_mixer: Use the ring XY mixer and Dicke initial state.
+        config: Enables partitioned solving with
+            :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`; each
+            asset cluster holds a share of the :math:`K` names. Its variables
+            are assets, so ``max_n_variables_per_cluster`` limits the assets
+            per cluster.
 
     Examples:
         >>> import numpy as np
@@ -415,6 +593,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
         constraints: Sequence[LinearConstraint] = (),
         penalty_weight: float = 1.0,
         use_constrained_mixer: bool = False,
+        config: QUBOPartitioningConfig | None = None,
     ):
         k = operator.index(n_holdings)
         n = np.size(expected_returns)
@@ -432,7 +611,31 @@ class PortfolioSelectionProblem(_PortfolioBase):
             risk_tolerance=risk_tolerance,
             constraints=constraints,
             penalty_weight=penalty_weight,
+            config=config,
         )
+
+    def _cluster_problem(
+        self, assets: np.ndarray, share: int
+    ) -> "PortfolioSelectionProblem":
+        ratio = share / self._total
+        return PortfolioSelectionProblem(
+            self._mu[assets],
+            self._sigma[np.ix_(assets, assets)] * ratio**2,
+            share,
+            risk_tolerance=self._risk_tolerance * ratio,
+            penalty_weight=self._penalty_weight,
+            use_constrained_mixer=self._use_constrained_mixer,
+        )
+
+    def extend_solution(
+        self, current_solution: list[int], prog_id: Hashable, candidate_decoded: Any
+    ) -> list[int]:
+        """Hold the cluster's chosen assets, one unit each."""
+        assets, _ = self._clusters[prog_id]
+        extended = np.array(current_solution)
+        extended[assets] = 0
+        extended[assets[list(candidate_decoded)]] = 1
+        return extended.tolist()
 
     @property
     def n_holdings(self) -> int:
@@ -523,6 +726,11 @@ class PortfolioAllocationProblem(_PortfolioBase):
             i.e. :math:`L` times its weight form (one missing step of budget
             costs 1). Choose it so that one unit of violation outweighs the
             spread of the objective across portfolios.
+        config: Enables partitioned solving with
+            :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`; each
+            asset cluster holds a share of the :math:`L` units. Its variables
+            are assets, so ``max_n_variables_per_cluster`` limits the assets
+            (not qubits) per cluster. Requires ``encoding="domain_wall"``.
 
     Examples:
         >>> import numpy as np
@@ -542,10 +750,13 @@ class PortfolioAllocationProblem(_PortfolioBase):
         risk_tolerance: float = 0.0,
         constraints: Sequence[LinearConstraint] = (),
         penalty_weight: float = 1.0,
+        config: QUBOPartitioningConfig | None = None,
     ):
         steps = operator.index(n_steps)
         if steps < 1:
             raise ValueError(f"n_steps must be ≥ 1, got {steps}.")
+        if config is not None and encoding == "log":
+            raise ValueError("Partitioning requires encoding='domain_wall'.")
         if encoding == "log":
             if steps != 2 ** steps.bit_length() - 1:
                 raise ValueError(
@@ -571,7 +782,30 @@ class PortfolioAllocationProblem(_PortfolioBase):
             risk_tolerance=risk_tolerance,
             constraints=constraints,
             penalty_weight=penalty_weight,
+            config=config,
         )
+
+    def _cluster_problem(
+        self, assets: np.ndarray, share: int
+    ) -> "PortfolioAllocationProblem":
+        ratio = share / self._total
+        return PortfolioAllocationProblem(
+            self._mu[assets],
+            self._sigma[np.ix_(assets, assets)] * ratio**2,
+            n_steps=share,
+            encoding="domain_wall",
+            risk_tolerance=self._risk_tolerance * ratio,
+            penalty_weight=self._penalty_weight,
+        )
+
+    def extend_solution(
+        self, current_solution: list[int], prog_id: Hashable, candidate_decoded: Any
+    ) -> list[int]:
+        """Write the cluster's weights as units of the global solution."""
+        assets, share = self._clusters[prog_id]
+        extended = np.array(current_solution)
+        extended[assets] = np.rint(np.asarray(candidate_decoded) * share)
+        return extended.tolist()
 
     @property
     def n_steps(self) -> int:

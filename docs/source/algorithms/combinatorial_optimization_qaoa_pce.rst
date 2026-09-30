@@ -591,6 +591,56 @@ problem.
    print(f"Holdings: {best.decoded}, objective: {best.energy:.5f}")
    print(problem.metrics(best.bitstring))
 
+Partitioned Portfolios
+^^^^^^^^^^^^^^^^^^^^^^
+
+With a :class:`~divi.qprog.problems.QUBOPartitioningConfig` as ``config``,
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` clusters the assets by
+covariance and solves each cluster as its own portfolio problem. The budget
+(:math:`K` names or :math:`L` units) is split across clusters by their weight in
+the problem's continuous relaxation. Covariance between clusters, and any extra
+constraints, count only when the clusters' solutions are combined;
+:meth:`~divi.qprog.workflows.PartitioningProgramEnsemble.aggregate_results`
+repairs the combined portfolio, improves it by one-unit transfers between
+assets, and returns ``(decoded, objective)``.
+:class:`~divi.qprog.problems.PortfolioAllocationProblem` needs
+``encoding="domain_wall"`` for partitioning. The config's variables are assets:
+``max_n_variables_per_cluster`` counts assets, not qubits.
+
+.. code-block:: python
+
+   import numpy as np
+
+   from divi.backends import MaestroSimulator
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import PortfolioSelectionProblem, QUBOPartitioningConfig
+   from divi.qprog.workflows import PartitioningProgramEnsemble
+
+   rng = np.random.default_rng(0)
+   mu = rng.uniform(0.05, 0.15, 8)
+   # Two sectors of four correlated assets each.
+   block = np.full((4, 4), 0.01) + np.eye(4) * 0.03
+   sigma = np.kron(np.eye(2), block)
+
+   problem = PortfolioSelectionProblem(
+       mu,
+       sigma,
+       n_holdings=4,
+       risk_tolerance=0.5,
+       use_constrained_mixer=True,
+       config=QUBOPartitioningConfig(max_n_variables_per_cluster=4),
+   )
+   ensemble = PartitioningProgramEnsemble(
+       problem=problem,
+       n_layers=1,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=5,
+       backend=MaestroSimulator(),
+   )
+   ensemble.run()
+   holdings, objective = ensemble.aggregate_results()
+   print(f"Holdings: {holdings}, objective: {objective:.5f}")
+
 Matching Problems
 -----------------
 
@@ -917,17 +967,19 @@ energy is lost at partition boundaries. This helps most on problems with communi
 structure; ``EnergyImpactDecomposer`` remains a fine default for featureless (dense,
 unstructured) QUBOs.
 
-Key parameters:
+It is configured with a :class:`~divi.qprog.problems.QUBOPartitioningConfig`:
 
-- ``max_cluster_size`` — the maximum number of variables in any partition (the
-  per-partition qubit budget), analogous to ``EnergyImpactDecomposer(size=...)``.
-- ``min_clusters`` — a floor on the number of partitions produced. At least one of
-  ``max_cluster_size`` / ``min_clusters`` must be given.
+- ``max_n_variables_per_cluster`` — the maximum number of variables in any
+  partition (the per-partition qubit budget), analogous to
+  ``EnergyImpactDecomposer(size=...)``.
+- ``minimum_n_clusters`` — a floor on the number of partitions produced. At least
+  one of ``max_n_variables_per_cluster`` / ``minimum_n_clusters`` must be given.
 - ``method`` — ``"modularity"`` (default: Louvain community detection, the
   strongest general-purpose choice across structured, dense, and constrained
   QUBOs) or ``"spectral"`` (signed multi-view spectral clustering, which respects
   coupling signs; best on sparse-geometric instances). With the ``local_search``
   polish the two reach comparable quality.
+- ``seed`` — seed for the clustering step.
 
 ``local_search=True`` is a :class:`~divi.qprog.problems.BinaryOptimizationProblem`
 option (not part of the decomposer): it adds a greedy single-bit-flip polish of each
@@ -936,11 +988,13 @@ aggregated solution and improves results with **any** decomposer, including
 
 .. code-block:: python
 
-   from divi.qprog.problems import CommunityDecomposer
+   from divi.qprog.problems import CommunityDecomposer, QUBOPartitioningConfig
 
    problem = BinaryOptimizationProblem(
        large_bqm,
-       decomposer=CommunityDecomposer(max_cluster_size=5),  # method="modularity"
+       decomposer=CommunityDecomposer(
+           QUBOPartitioningConfig(max_n_variables_per_cluster=5)  # method="modularity"
+       ),
        composer=hybrid.SplatComposer(),
        local_search=True,
    )

@@ -4,20 +4,26 @@
 
 import itertools
 import math
+from functools import partial
 
 import numpy as np
 import pytest
 from qiskit.quantum_info import SparsePauliOp
+from scipy.linalg import block_diag
 
 from divi.qprog import PCE, QAOA
 from divi.qprog.algorithms import DickeState, SuperpositionState
-from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
+    GraphPartitioningConfig,
     LinearConstraint,
     PortfolioAllocationProblem,
     PortfolioSelectionProblem,
+    QUBOPartitioningConfig,
 )
+from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog.problems._helpers import (
     assert_penalty_zero_iff_feasible,
     n_slack,
@@ -352,3 +358,472 @@ class TestPortfolioAllocation:
         assert [s.energy for s in repaired] == sorted(s.energy for s in repaired)
         raw = pce.get_top_solutions(n=1, include_decoded=True)[0]
         np.testing.assert_allclose(raw.decoded, problem.decode_fn(raw.bitstring))
+
+
+# ---------------------------------------------------------------------------
+# Partitioned solving
+# ---------------------------------------------------------------------------
+
+
+def _partitioned(cls, sizes, **kwargs):
+    """Block-diagonal covariance, so each block of ``sizes`` is one cluster."""
+    return cls(
+        np.linspace(0.05, 0.15, sum(sizes)),
+        block_diag(*(_covariance(s, 11 + i) for i, s in enumerate(sizes))),
+        risk_tolerance=TAU,
+        config=QUBOPartitioningConfig(max_n_variables_per_cluster=max(sizes)),
+        **kwargs,
+    )
+
+
+_partitioned_selection = partial(_partitioned, PortfolioSelectionProblem)
+_partitioned_allocation = partial(
+    _partitioned, PortfolioAllocationProblem, encoding="domain_wall"
+)
+
+
+def _selection_objectives(problem):
+    """Objective of every portfolio that holds ``n_holdings`` of the assets."""
+    n = problem.n_assets
+    return {
+        held: float(problem._objective(np.isin(np.arange(n), held).astype(int)))
+        for held in itertools.combinations(range(n), problem.n_holdings)
+    }
+
+
+def _partitioned_ensemble(problem, backend, max_iterations=5):
+    return PartitioningProgramEnsemble(
+        problem=problem,
+        n_layers=1,
+        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+        max_iterations=max_iterations,
+        backend=backend,
+    )
+
+
+@pytest.fixture
+def pin_shares(mocker):
+    """Pin each cluster's share of the budget by the cluster's size."""
+
+    def pin(problem, shares_by_size):
+        mocker.patch.object(
+            problem,
+            "_cluster_shares",
+            side_effect=lambda clusters, relaxed: np.array(
+                [shares_by_size[len(c)] for c in clusters]
+            ),
+        )
+        return problem
+
+    return pin
+
+
+class TestPortfolioPartitioning:
+    @pytest.mark.parametrize(
+        "make, shares",
+        [
+            pytest.param(
+                lambda: _partitioned_selection([4, 3], n_holdings=3),
+                {4: 2, 3: 1},
+                id="selection",
+            ),
+            pytest.param(
+                lambda: _partitioned_allocation([2, 3], n_steps=5),
+                {2: 2, 3: 3},
+                id="allocation",
+            ),
+        ],
+    )
+    def test_cluster_objectives_add_up_to_the_global_objective(
+        self, make, shares, pin_shares
+    ):
+        problem = make()
+        subs = pin_shares(problem, shares).decompose()
+        assert len(subs) == 2
+
+        rng = np.random.default_rng(0)
+        units = np.zeros(problem.n_assets, dtype=int)
+        sub_total = 0.0
+        for prog_id, sub in subs.items():
+            assets, share = problem._clusters[prog_id]
+            # A random holding of the cluster's share, respecting each asset's cap.
+            cluster_units = np.zeros(len(assets), dtype=int)
+            for _ in range(share):
+                cluster_units[rng.choice(np.flatnonzero(cluster_units < sub._cap))] += 1
+            units[assets] = cluster_units
+            sub_total += float(sub._objective(cluster_units))
+
+        assert sub_total == pytest.approx(float(problem._objective(units)))
+
+    @pytest.mark.parametrize(
+        "make",
+        [
+            pytest.param(
+                lambda: _partitioned_selection([4, 3, 2], n_holdings=4), id="selection"
+            ),
+            pytest.param(
+                lambda: _partitioned_allocation([2, 3], n_steps=5), id="allocation"
+            ),
+            pytest.param(
+                lambda: _partitioned_selection(
+                    [4, 4, 4],
+                    n_holdings=6,
+                    constraints=[LinearConstraint(np.arange(12.0), ">=", 6)],
+                ),
+                id="constrained",
+            ),
+        ],
+    )
+    def test_shares_add_up_to_the_budget_and_fit_their_clusters(self, make):
+        problem = make()
+        subs = problem.decompose()
+        shares = [s for _, s in problem._clusters.values()]
+        assert sum(shares) + sum(problem._fixed_units.values()) == problem._total
+        for pid, sub in subs.items():
+            assets, share = problem._clusters[pid]
+            assert 0 < share < len(assets) * problem._cap
+            assert sub._total == share
+
+    def test_shares_follow_the_relaxation(self):
+        # Two identical blocks; the second has twice the returns, so the
+        # relaxation puts both names there.
+        mu = np.r_[np.full(4, 0.05), np.full(4, 0.10)]
+        block = np.full((4, 4), 0.01) + np.eye(4) * 0.03
+        problem = PortfolioSelectionProblem(
+            mu,
+            block_diag(block, block),
+            2,
+            risk_tolerance=TAU,
+            config=QUBOPartitioningConfig(max_n_variables_per_cluster=4),
+        )
+        problem.decompose()
+        assert [(a.tolist(), s) for a, s in problem._clusters.values()] == [
+            ([4, 5, 6, 7], 2)
+        ]
+        assert problem._fixed_units == dict.fromkeys(range(4), 0)
+
+    @pytest.mark.parametrize(
+        "constraint, shares",
+        [
+            # Unconstrained, all four names go to the high-return block.
+            pytest.param(None, {0: 0, 5: 4}, id="none"),
+            pytest.param(
+                LinearConstraint({i: 1.0 for i in range(5)}, ">=", 0.5),
+                {0: 2, 5: 2},
+                id=">=",
+            ),
+            pytest.param(
+                LinearConstraint({i: 1.0 for i in range(5, 10)}, "<=", 0.5),
+                {0: 2, 5: 2},
+                id="<=",
+            ),
+            pytest.param(
+                LinearConstraint({i: 1.0 for i in range(5)}, "==", 0.25),
+                {0: 1, 5: 3},
+                id="==",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("scale", [1.0, 1 / 252])  # annual and daily data
+    def test_shares_follow_the_constrained_relaxation(self, constraint, shares, scale):
+        mu = np.r_[np.full(5, 0.05), np.full(5, 0.10)] * scale
+        block = (np.full((5, 5), 0.01) + np.eye(5) * 0.03) * scale
+        problem = PortfolioSelectionProblem(
+            mu,
+            block_diag(block, block),
+            4,
+            risk_tolerance=TAU,
+            constraints=[constraint] if constraint else [],
+            config=QUBOPartitioningConfig(max_n_variables_per_cluster=5),
+        )
+        problem.decompose()
+        by_block = {int(a[0]): s for a, s in problem._clusters.values()}
+        by_block.update({a: u for a, u in problem._fixed_units.items() if a in (0, 5)})
+        assert by_block == shares
+
+    def test_shares_fall_back_to_cluster_sizes_without_a_relaxation(self, mocker):
+        mocker.patch(
+            "divi.qprog.problems._portfolio.minimize",
+            return_value=mocker.Mock(success=False),
+        )
+        # Quotas 1.78, 1.33, 0.89 by size: floors 1, 1, 0 and the leftover
+        # names go to the largest remainders.
+        problem = _partitioned_selection([4, 3, 2], n_holdings=4)
+        problem.decompose()
+        assert {len(a): s for a, s in problem._clusters.values()} == {4: 2, 3: 1, 2: 1}
+
+    def test_decompose_is_reproducible(self):
+        problem = _partitioned_selection([4, 3, 2], n_holdings=4)
+        problem.decompose()
+        first = {pid: (a.tolist(), s) for pid, (a, s) in problem._clusters.items()}
+        problem.decompose()
+        assert {
+            pid: (a.tolist(), s) for pid, (a, s) in problem._clusters.items()
+        } == first
+
+    def test_sub_problems_inherit_mixer_and_penalty_weight(self, pin_shares):
+        problem = _partitioned_selection(
+            [4, 3], n_holdings=3, use_constrained_mixer=True, penalty_weight=2.5
+        )
+        for sub in pin_shares(problem, {4: 2, 3: 1}).decompose().values():
+            assert sub.use_constrained_mixer
+            assert sub._penalty_weight == 2.5
+            assert not sub.constraints
+
+    @pytest.mark.parametrize(
+        "make, shares, fixed",
+        [
+            pytest.param(
+                lambda: _partitioned_selection([4, 1], n_holdings=2),
+                {4: 2, 1: 0},
+                {4: 0},
+                id="no-share",
+            ),
+            pytest.param(
+                lambda: _partitioned_selection([4, 2], n_holdings=4),
+                {4: 2, 2: 2},
+                {4: 1, 5: 1},
+                id="every-asset-held",
+            ),
+            pytest.param(
+                lambda: _partitioned_allocation([3, 1], n_steps=4),
+                {3: 3, 1: 1},
+                {3: 1},
+                id="single-asset",
+            ),
+        ],
+    )
+    def test_clusters_with_one_possible_holding_get_no_program(
+        self, make, shares, fixed, pin_shares
+    ):
+        problem = make()
+        assert len(pin_shares(problem, shares).decompose()) == 1
+        assert problem._fixed_units == fixed
+
+    def test_shares_fall_back_to_cluster_sizes_when_the_relaxation_leaves_nothing(
+        self, mocker
+    ):
+        problem = _partitioned_selection([4, 3], n_holdings=3)
+        spy = mocker.spy(problem, "_cluster_shares")
+        subs = problem.decompose()
+        assert [c.kwargs["relaxed"] for c in spy.call_args_list] == [True, False]
+        # The relaxation fills the 3-asset block and empties the 4-asset one.
+        assert sorted(spy.spy_return_list[0].tolist()) == [0, 3]
+        assert {len(a): s for a, s in problem._clusters.values()} == {4: 2, 3: 1}
+        assert len(subs) == 2
+
+    def test_decompose_raises_when_no_cluster_is_left_to_solve(self, mocker):
+        problem = _partitioned_selection([2, 2], n_holdings=4)
+        spy = mocker.spy(problem, "_cluster_shares")
+        with pytest.raises(ValueError, match="without partitioning"):
+            problem.decompose()
+        assert [c.kwargs["relaxed"] for c in spy.call_args_list] == [True, False]
+
+    @pytest.mark.parametrize(
+        "limits, program_sizes, n_fixed",
+        [
+            ({"max_n_variables_per_cluster": 4}, [4], 0),
+            ({"max_n_variables_per_cluster": 2}, [2, 2], 0),
+            # The floor of 3 clusters splits the four assets 2 + 1 + 1.
+            ({"max_n_variables_per_cluster": 4, "minimum_n_clusters": 3}, [2], 2),
+        ],
+    )
+    def test_uncorrelated_assets_are_grouped_within_the_limits(
+        self, limits, program_sizes, n_fixed
+    ):
+        problem = PortfolioSelectionProblem(
+            MU, np.diag(np.diag(SIGMA)), 2, config=QUBOPartitioningConfig(**limits)
+        )
+        problem.decompose()
+        assert sorted(len(a) for a, _ in problem._clusters.values()) == program_sizes
+        assert len(problem._fixed_units) == n_fixed
+
+    @pytest.mark.parametrize(
+        "make, shares, decoded, expected_units",
+        [
+            pytest.param(
+                lambda: _partitioned_selection([2, 3, 1], n_holdings=3),
+                {2: 1, 3: 2, 1: 0},
+                [1],
+                [0, 1],
+                id="selection",
+            ),
+            pytest.param(
+                lambda: _partitioned_allocation([2, 3, 1], n_steps=6),
+                {2: 2, 3: 3, 1: 1},
+                [0.0, 1.0],
+                [0, 2],
+                id="allocation",
+            ),
+        ],
+    )
+    def test_extend_solution_writes_only_its_cluster(
+        self, make, shares, decoded, expected_units, pin_shares
+    ):
+        problem = make()
+        pin_shares(problem, shares).decompose()
+        # The 2-asset block is assets 0 and 1.
+        (prog_id,) = [pid for pid, (a, _) in problem._clusters.items() if len(a) == 2]
+        extended = problem.extend_solution([7] * problem.n_assets, prog_id, decoded)
+        assert extended == [*expected_units, 7, 7, 7, 7]
+
+    @pytest.mark.parametrize(
+        "constraint, satisfied, violated",
+        [
+            pytest.param(
+                LinearConstraint([90, 90, 40, 40, 90, 40, 40], ">=", 70),
+                [1, 1, 0, 0, 1, 0, 0],
+                [0, 0, 1, 1, 0, 1, 0],
+                id=">=",
+            ),
+            pytest.param(
+                LinearConstraint({0: 1, 1: 1}, "<=", 1 / 3),
+                [1, 0, 1, 1, 0, 0, 0],
+                [1, 1, 1, 0, 0, 0, 0],
+                id="<=",
+            ),
+            pytest.param(
+                LinearConstraint({0: 1, 4: 1}, "==", 2 / 3),
+                [1, 0, 1, 0, 1, 0, 0],
+                [1, 0, 1, 1, 0, 0, 0],
+                id="==",
+            ),
+        ],
+    )
+    def test_evaluate_penalises_only_violated_constraints(
+        self, constraint, satisfied, violated, pin_shares
+    ):
+        problem = _partitioned_selection([4, 3], n_holdings=3, constraints=[constraint])
+        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        objective = float(problem._objective(np.array(satisfied)))
+        assert problem.evaluate_global_solution(satisfied) == pytest.approx(
+            objective, abs=1e-9
+        )
+        objective = float(problem._objective(np.array(violated)))
+        assert problem.evaluate_global_solution(violated) >= objective + 1 - 1e-9
+
+    def test_evaluate_penalises_a_wrong_budget(self, pin_shares):
+        problem = _partitioned_selection([4, 3], n_holdings=3)
+        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        x = [1, 1, 1, 1, 0, 0, 0]
+        assert problem.evaluate_global_solution(x) == pytest.approx(
+            float(problem._objective(np.array(x))) + 1.0
+        )
+
+    def test_evaluate_and_postprocess_use_the_fixed_assets(self, pin_shares):
+        problem = _partitioned_selection([4, 3], n_holdings=2)
+        pin_shares(problem, {4: 2, 3: 0}).decompose()
+        clean, junk = [1, 1, 0, 0, 0, 0, 0], [1, 1, 0, 0, 1, 1, 1]
+        assert problem.evaluate_global_solution(junk) == pytest.approx(
+            problem.evaluate_global_solution(clean)
+        )
+        assert problem.postprocess_candidates(
+            [(0.0, junk)]
+        ) == problem.postprocess_candidates([(0.0, clean)])
+
+    def test_postprocess_never_worsens_a_candidate(self, pin_shares):
+        problem = _partitioned_selection([4, 3], n_holdings=3)
+        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        for held, objective in _selection_objectives(problem).items():
+            x = np.isin(np.arange(7), held).astype(int).tolist()
+            ((_, energy),) = problem.postprocess_candidates([(0.0, x)])
+            assert energy <= objective + 1e-12
+
+    def test_postprocess_merges_candidates_that_improve_to_the_same_portfolio(
+        self, pin_shares
+    ):
+        problem = _partitioned_selection([4, 3], n_holdings=3)
+        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        optimum = min(_selection_objectives(problem).values())
+        candidates = [
+            (0.0, [1, 1, 0, 0, 1, 0, 0]),
+            (0.0, [0, 0, 1, 1, 0, 0, 1]),
+        ]
+        ((_, energy),) = problem.postprocess_candidates(candidates)
+        assert energy == pytest.approx(optimum)
+
+    def test_postprocess_repairs_and_improves_within_the_constraints(self, pin_shares):
+        esg = np.array([90.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0])
+        problem = _partitioned_selection(
+            [4, 3], n_holdings=3, constraints=[LinearConstraint(esg, ">=", 70)]
+        )
+        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        ((decoded, energy),) = problem.postprocess_candidates(
+            [(0.0, [0, 0, 1, 1, 0, 1, 0])]
+        )
+        objective = _selection_objectives(problem)
+        feasible = {h: o for h, o in objective.items() if esg[list(h)].mean() >= 70}
+        # Without the constraint the polish would end somewhere infeasible.
+        assert min(objective, key=objective.get) not in feasible
+        assert tuple(decoded) in feasible
+        assert energy == pytest.approx(min(feasible.values()))
+
+    def test_postprocess_strict_drops_infeasible_candidates(self, pin_shares):
+        esg = np.array([90.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0])
+        problem = _partitioned_selection(
+            [4, 3], n_holdings=3, constraints=[LinearConstraint(esg, ">=", 70)]
+        )
+        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        assert (
+            problem.postprocess_candidates([(0.0, [0, 0, 1, 1, 0, 1, 0])], strict=True)
+            == []
+        )
+
+    def test_decompose_without_config_raises(self):
+        with pytest.raises(ValueError, match="no partitioning config"):
+            _make_selection().decompose()
+
+    def test_rejects_a_graph_config(self):
+        with pytest.raises(TypeError, match="QUBOPartitioningConfig"):
+            _make_selection(config=GraphPartitioningConfig(max_n_nodes_per_cluster=2))
+
+    def test_log_encoded_allocation_rejects_partitioning(self):
+        with pytest.raises(ValueError, match="domain_wall"):
+            _make_allocation(
+                config=QUBOPartitioningConfig(max_n_variables_per_cluster=2)
+            )
+
+    def test_partitioned_selection_beats_its_cluster_budgets(
+        self, default_test_simulator
+    ):
+        default_test_simulator.set_seed(1997)
+        problem = _partitioned_selection(
+            [4, 4], n_holdings=4, use_constrained_mixer=True
+        )
+        ensemble = _partitioned_ensemble(problem, default_test_simulator)
+        ensemble.run()
+
+        holdings, energy = ensemble.aggregate_results()
+
+        best_for_budgets = min(
+            objective
+            for held, objective in _selection_objectives(problem).items()
+            if all(np.isin(a, held).sum() == s for a, s in problem._clusters.values())
+        )
+        assert len(holdings) == 4
+        assert energy <= best_for_budgets + 1e-12
+
+    def test_partitioned_allocation_returns_a_fully_invested_portfolio(
+        self, default_test_simulator
+    ):
+        default_test_simulator.set_seed(1997)
+        problem = _partitioned_allocation([2, 2], n_steps=3)
+        ensemble = _partitioned_ensemble(problem, default_test_simulator)
+        ensemble.run()
+
+        weights, energy = ensemble.aggregate_results()
+
+        units = weights * 3
+        np.testing.assert_allclose(units, np.rint(units))
+        assert units.sum() == pytest.approx(3)
+        assert energy == pytest.approx(float(problem._objective(np.rint(units))))
+
+    def test_partitioned_run_supports_checkpointing(
+        self, dummy_simulator, tmp_path, pin_shares
+    ):
+        problem = pin_shares(_partitioned_selection([4, 3], n_holdings=3), {4: 2, 3: 1})
+        ensemble = _partitioned_ensemble(problem, dummy_simulator, max_iterations=1)
+
+        ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert (tmp_path / "round_001" / "round_completion.json").is_file()

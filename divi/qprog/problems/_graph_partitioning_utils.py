@@ -5,7 +5,6 @@
 import heapq
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import Literal, cast
 from warnings import warn
 
@@ -19,73 +18,11 @@ from sklearn.cluster import SpectralClustering
 
 from divi._optional import optional_module
 from divi.qprog import GraphProblemTypes
+from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
 
 # TODO: Make this dynamic through an interaction with usher
 # once a proper endpoint is exposed
 _MAXIMUM_AVAILABLE_QUBITS = 30
-
-
-@dataclass(frozen=True, eq=True)
-class GraphPartitioningConfig:
-    """Configuration for graph partitioning algorithms.
-
-    This class defines the parameters and constraints for partitioning large graphs
-    into smaller subgraphs for quantum algorithm execution. It supports multiple
-    partitioning algorithms and allows specification of size constraints.
-
-    Attributes:
-        max_n_nodes_per_cluster: Maximum number of nodes allowed in each cluster.
-            If None, no upper limit is enforced. Must be a positive integer.
-        minimum_n_clusters: Minimum number of clusters to create. If None, no
-            lower limit is enforced. Must be a positive integer.
-        partitioning_algorithm: Algorithm to use for partitioning. Options are:
-            - "spectral": Spectral partitioning using Fiedler vector (default)
-            - "metis": METIS graph partitioning library
-            - "kernighan_lin": Kernighan-Lin algorithm
-
-    Note:
-        At least one of `max_n_nodes_per_cluster` or `minimum_n_clusters` must be
-        specified. Both constraints cannot be None.
-
-    Examples:
-        >>> # Partition into clusters of at most 10 nodes
-        >>> config = GraphPartitioningConfig(max_n_nodes_per_cluster=10)
-
-        >>> # Create at least 5 clusters using METIS
-        >>> config = GraphPartitioningConfig(
-        ...     minimum_n_clusters=5,
-        ...     partitioning_algorithm="metis"
-        ... )
-
-        >>> # Both constraints: clusters of max 8 nodes, min 3 clusters
-        >>> config = GraphPartitioningConfig(
-        ...     max_n_nodes_per_cluster=8,
-        ...     minimum_n_clusters=3
-        ... )
-    """
-
-    max_n_nodes_per_cluster: int | None = None
-    minimum_n_clusters: int | None = None
-    partitioning_algorithm: Literal["spectral", "metis", "kernighan_lin"] = "spectral"
-
-    def __post_init__(self):
-        if self.max_n_nodes_per_cluster is None and self.minimum_n_clusters is None:
-            raise ValueError("At least one constraint must be specified.")
-
-        if self.minimum_n_clusters is not None and self.minimum_n_clusters < 1:
-            raise ValueError("'minimum_n_clusters' must be a positive integer.")
-
-        if (
-            self.max_n_nodes_per_cluster is not None
-            and self.max_n_nodes_per_cluster < 1
-        ):
-            raise ValueError("'max_n_nodes_per_cluster' must be a positive number.")
-
-        if self.partitioning_algorithm not in ("spectral", "metis", "kernighan_lin"):
-            raise ValueError(
-                f"Unsupported partitioning algorithm: {self.partitioning_algorithm}. "
-                "Use 'spectral' or 'metis'."
-            )
 
 
 def _spectral_inputs(

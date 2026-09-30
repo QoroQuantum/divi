@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Structure-aware QUBO partitioning via signed multi-view spectral clustering.
+"""Structure-aware QUBO partitioning by community detection or spectral clustering.
 
 Operates directly on the sparse *signed interaction matrix* ``Sigma`` of a QUBO
 (``Sigma[i, j]`` = quadratic coefficient of variables ``i, j``), so no graph
@@ -20,7 +20,8 @@ the sign/frustration structure of the couplings.
 These routines back :class:`~divi.qprog.problems.CommunityDecomposer`, a drop-in
 ``hybrid`` decomposer for
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` (used exactly like
-D-Wave's ``EnergyImpactDecomposer``).
+D-Wave's ``EnergyImpactDecomposer``), and the asset clustering of the portfolio
+problems.
 """
 
 from typing import cast
@@ -33,7 +34,12 @@ from scipy.sparse.csgraph import connected_components, laplacian
 from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
 from sklearn.cluster import KMeans
 
-from divi.qprog.problems._graph_partitioning_utils import GraphPartitioningConfig
+from divi.qprog.problems._partitioning_config import (
+    GraphPartitioningConfig,
+    QUBOPartitioningConfig,
+)
+
+_Config = GraphPartitioningConfig | QUBOPartitioningConfig
 
 _DENSE_EIGH_MAX = 800
 
@@ -211,13 +217,13 @@ def _ensure_min_clusters(
 
 
 def _partition(
-    sigma: sps.csr_matrix, config: GraphPartitioningConfig, seed: int, labeler
+    sigma: sps.csr_matrix, config: _Config, seed: int, labeler
 ) -> list[np.ndarray]:
     """Partition a QUBO's interaction matrix into variable-index clusters.
 
     Connected components are separated first (a zero-cost exact reduction), then
     each component is clustered with ``labeler`` to honour ``config``'s
-    ``max_n_nodes_per_cluster`` budget and ``minimum_n_clusters`` floor.
+    ``max_cluster_size`` budget and ``minimum_n_clusters`` floor.
     """
     if (
         config.minimum_n_clusters is not None
@@ -230,11 +236,9 @@ def _partition(
     clusters: list[np.ndarray] = []
     for c in range(n_comp):
         idx = np.where(comp_labels == c)[0]
-        if config.max_n_nodes_per_cluster is not None:
+        if config.max_cluster_size is not None:
             clusters.extend(
-                _split_to_budget(
-                    sigma, idx, config.max_n_nodes_per_cluster, seed, labeler
-                )
+                _split_to_budget(sigma, idx, config.max_cluster_size, seed, labeler)
             )
         else:
             clusters.append(idx)
@@ -247,13 +251,13 @@ def _partition(
 
 
 def signed_multiview_partition(
-    sigma: sps.csr_matrix, config: GraphPartitioningConfig, *, seed: int = 0
+    sigma: sps.csr_matrix, config: _Config, *, seed: int = 0
 ) -> list[np.ndarray]:
     """Partition via signed multi-view spectral clustering (arXiv 2502.16212).
 
     Args:
         sigma: Symmetric sparse interaction matrix over variables ``0..n-1``.
-        config: Size/cluster-count constraints (``partitioning_algorithm`` ignored).
+        config: Cluster-size limit and cluster-count floor.
         seed: Seed for the k-means step.
 
     Returns:
@@ -262,8 +266,17 @@ def signed_multiview_partition(
     return _partition(sigma, config, seed, _multiview_labels)
 
 
+def partition_by_method(
+    sigma: sps.csr_matrix, config: QUBOPartitioningConfig
+) -> list[np.ndarray]:
+    """Partition with ``config.method`` and ``config.seed``."""
+    if config.method == "spectral":
+        return signed_multiview_partition(sigma, config, seed=config.seed)
+    return louvain_partition(sigma, config, seed=config.seed)
+
+
 def louvain_partition(
-    sigma: sps.csr_matrix, config: GraphPartitioningConfig, *, seed: int = 0
+    sigma: sps.csr_matrix, config: _Config, *, seed: int = 0
 ) -> list[np.ndarray]:
     """Partition via Louvain modularity community detection on the interaction graph.
 

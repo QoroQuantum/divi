@@ -27,7 +27,12 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.problems import BinaryOptimizationProblem, CommunityDecomposer
+from divi.qprog.problems import (
+    BinaryOptimizationProblem,
+    CommunityDecomposer,
+    GraphPartitioningConfig,
+    QUBOPartitioningConfig,
+)
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog._program_contracts import verify_cost_circuit
@@ -1081,20 +1086,28 @@ class TestQUBOPartitioningEnsemble:
         assert energy == pytest.approx(-1.5)
 
 
+def _community_decomposer(**config):
+    return CommunityDecomposer(QUBOPartitioningConfig(**config))
+
+
 class TestCommunityDecomposer:
     """CommunityDecomposer (structure-aware) + local-search polish."""
 
     def _community_problem(self, source, **kwargs):
         return BinaryOptimizationProblem(
             source,
-            decomposer=CommunityDecomposer(max_cluster_size=2),
+            decomposer=_community_decomposer(max_n_variables_per_cluster=2),
             composer=hybrid.SplatComposer(),
             **kwargs,
         )
 
-    def test_decomposer_requires_a_size_constraint(self):
-        with pytest.raises(ValueError, match="max_cluster_size.*min_clusters"):
-            CommunityDecomposer()
+    def test_decomposer_rejects_other_configs(self):
+        with pytest.raises(TypeError, match="QUBOPartitioningConfig"):
+            CommunityDecomposer(GraphPartitioningConfig(max_n_nodes_per_cluster=2))
+
+    def test_repr_shows_config(self):
+        config = QUBOPartitioningConfig(max_n_variables_per_cluster=2, seed=3)
+        assert repr(config) in repr(CommunityDecomposer(config))
 
     def test_community_decompose_populates_variable_maps(self):
         problem = self._community_problem(make_known_qubo_bqm())
@@ -1112,7 +1125,7 @@ class TestCommunityDecomposer:
         with pytest.raises(ValueError, match="quadratic"):
             BinaryOptimizationProblem(
                 HUBO_CUBIC,
-                decomposer=CommunityDecomposer(max_cluster_size=2),
+                decomposer=_community_decomposer(max_n_variables_per_cluster=2),
             )
 
     def test_greedy_bit_flip_reaches_local_minimum(self):
@@ -1173,7 +1186,7 @@ class TestCommunityDecomposer:
     def test_decompose_min_clusters_exceeding_n_raises(self):
         problem = BinaryOptimizationProblem(
             make_known_qubo_bqm(),
-            decomposer=CommunityDecomposer(min_clusters=99),
+            decomposer=_community_decomposer(minimum_n_clusters=99),
             composer=hybrid.SplatComposer(),
         )
         with pytest.raises(ValueError, match="larger than the number of variables"):
@@ -1182,7 +1195,7 @@ class TestCommunityDecomposer:
     def test_next_rolls_clusters_then_raises_end_of_stream(self):
         # KNOWN_QUBO has two disconnected 2-variable components → two clusters,
         # then the decomposer signals EndOfStream (the Unwind contract).
-        decomposer = CommunityDecomposer(max_cluster_size=2)
+        decomposer = _community_decomposer(max_n_variables_per_cluster=2)
         state = hybrid.State.from_problem(make_known_qubo_bqm())
 
         seen = 0
@@ -1209,7 +1222,9 @@ class TestCommunityDecomposer:
 
         problem = BinaryOptimizationProblem(
             q,
-            decomposer=CommunityDecomposer(max_cluster_size=4, method="spectral"),
+            decomposer=_community_decomposer(
+                max_n_variables_per_cluster=4, method="spectral"
+            ),
             composer=hybrid.SplatComposer(),
         )
         sub_problems = problem.decompose()
@@ -1232,7 +1247,7 @@ class TestCommunityDecomposer:
         )
         problem = BinaryOptimizationProblem(
             bqm,
-            decomposer=CommunityDecomposer(max_cluster_size=2),
+            decomposer=_community_decomposer(max_n_variables_per_cluster=2),
             composer=hybrid.SplatComposer(),
         )
 
@@ -1246,10 +1261,6 @@ class TestCommunityDecomposer:
         with pytest.raises(ValueError, match="local_search requires a decomposer"):
             BinaryOptimizationProblem(make_known_qubo_bqm(), local_search=True)
 
-    def test_invalid_method_raises(self):
-        with pytest.raises(ValueError, match="spectral.*modularity"):
-            CommunityDecomposer(max_cluster_size=2, method="bogus")
-
     def test_modularity_method_decomposes_single_component(self):
         block_a, block_b = [0, 2, 4, 6], [1, 3, 5, 7]
         q = np.zeros((8, 8))
@@ -1261,7 +1272,9 @@ class TestCommunityDecomposer:
 
         problem = BinaryOptimizationProblem(
             q,
-            decomposer=CommunityDecomposer(max_cluster_size=4, method="modularity"),
+            decomposer=_community_decomposer(
+                max_n_variables_per_cluster=4, method="modularity"
+            ),
             composer=hybrid.SplatComposer(),
         )
         sub_problems = problem.decompose()
@@ -1274,7 +1287,7 @@ class TestCommunityDecomposer:
 
     def test_next_passes_through_single_variable_problem(self):
         bqm = dimod.BinaryQuadraticModel({0: -1.0}, {}, 0.0, dimod.Vartype.BINARY)
-        decomposer = CommunityDecomposer(max_cluster_size=2)
+        decomposer = _community_decomposer(max_n_variables_per_cluster=2)
 
         out = decomposer.next(hybrid.State.from_problem(bqm), silent_rewind=False)
 

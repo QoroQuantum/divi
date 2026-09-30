@@ -36,13 +36,13 @@ detail on its own page — this section gives a quick overview and links.
    program per time point and collects expectation values into a trajectory.
    See :doc:`../algorithms/hamiltonian_time_evolution` for full details.
 
-**Problem Decomposition (Graph / QUBO / Matching)**
+**Problem Decomposition (Graph / QUBO / Matching / Portfolio)**
    :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` decomposes a
    large :class:`~divi.qprog.problems.QAOAProblem` into sub-problems, solves
    each partition with QAOA (or PCE / IterativeQAOA), and stitches the
    per-partition results into a global solution using a configurable
-   aggregation strategy (see `Aggregation Strategies`_).  Graph, QUBO, and
-   matching partitioning are all covered in
+   aggregation strategy (see `Aggregation Strategies`_).  Graph, QUBO,
+   matching and portfolio partitioning are all covered in
    :doc:`../algorithms/combinatorial_optimization_qaoa_pce`.
 
 **Localised Active-Space SQD**

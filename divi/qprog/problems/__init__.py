@@ -11,7 +11,7 @@ from divi._optional import import_optional
 from ._base import QAOAProblem
 from ._binary import BinaryOptimizationProblem
 from ._constraints import LinearConstraint
-from ._graph_partitioning_utils import GraphPartitioningConfig, draw_partitions
+from ._graph_partitioning_utils import draw_partitions
 from ._graphs import (
     MaxCliqueProblem,
     MaxCutProblem,
@@ -21,6 +21,7 @@ from ._graphs import (
     draw_graph_solution_nodes,
 )
 from ._hamiltonian import HamiltonianProblem, MolecularProblem
+from ._partitioning_config import GraphPartitioningConfig, QUBOPartitioningConfig
 from ._portfolio import PortfolioAllocationProblem, PortfolioSelectionProblem
 from ._matching import (
     MaxWeightMatchingProblem,
@@ -59,6 +60,7 @@ __all__ = [
     "PortfolioAllocationProblem",
     "PortfolioSelectionProblem",
     "QAOAProblem",
+    "QUBOPartitioningConfig",
     "RoutingInstance",
     "TSPProblem",
     "binary_block_config",

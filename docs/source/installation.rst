@@ -67,7 +67,7 @@ Optional Extras
        Divi's :class:`~divi.qprog.problems.CommunityDecomposer`.
      - ~145 MB
      - Plain QUBO and HUBO problems — cost Hamiltonian, mixer, and
-       solving without partitioning.
+       solving without partitioning — and partitioned portfolio problems.
    * - ``chem``
      - Molecule inputs via PySCF, OpenFermion Hamiltonians,
        :class:`~divi.qprog.algorithms.UCCSDAnsatz`, and

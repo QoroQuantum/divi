@@ -390,7 +390,8 @@ their workflow state.
 Checkpointed :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` runs
 with :class:`~divi.qprog.problems.BinaryOptimizationProblem` require a
 reproducible decomposer. Divi's seeded
-:class:`~divi.qprog.problems.CommunityDecomposer` is supported; arbitrary
+:class:`~divi.qprog.problems.CommunityDecomposer` is supported, as are
+partitioned portfolio problems; arbitrary
 ``hybrid`` decomposers are rejected because they cannot guarantee that a
 reconstructed program slot represents the same subproblem.
 

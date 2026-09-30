@@ -24,7 +24,7 @@ Workflows
 Concrete workflow classes build on :class:`~divi.qprog.ensemble.ProgramEnsemble`.
 :class:`~divi.qprog.workflows.VQEHyperparameterSweep` orchestrates parameterised VQE
 runs over a grid of inputs; :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
-decomposes a large graph problem into solvable sub-problems;
+decomposes a large graph, QUBO or portfolio problem into solvable sub-problems;
 :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs a sequence of time-evolution
 steps to build a trajectory; :class:`~divi.qprog.workflows.LASSQD` partitions a
 molecule's active space into fragments and prepares each fragment for SQD,
@@ -57,7 +57,9 @@ groups of partitions independently and merges them pairwise.
 Partitioning Configuration
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:class:`~divi.qprog.problems.GraphPartitioningConfig` parameterises how
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` splits a graph; it lives in
-``divi.qprog.problems`` and is documented on the
+:class:`~divi.qprog.problems.GraphPartitioningConfig` and
+:class:`~divi.qprog.problems.QUBOPartitioningConfig` parameterise how
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` splits graph problems
+and QUBO or portfolio problems respectively; they live in ``divi.qprog.problems``
+and are documented on the
 :doc:`qprog/problems` reference page.

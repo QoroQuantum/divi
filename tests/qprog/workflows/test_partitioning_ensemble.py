@@ -15,6 +15,7 @@ from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCutProblem,
     MaxWeightMatchingProblem,
+    QUBOPartitioningConfig,
     is_valid_matching,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
@@ -144,7 +145,10 @@ class TestPartitioningProgramEnsemble:
         )
         qubo = np.ones((4, 4)) - np.eye(4)
         problem = BinaryOptimizationProblem(
-            qubo, decomposer=decomposers.CommunityDecomposer(max_cluster_size=2)
+            qubo,
+            decomposer=decomposers.CommunityDecomposer(
+                QUBOPartitioningConfig(max_n_variables_per_cluster=2)
+            ),
         )
         ensemble = _make_ensemble(problem, dummy_simulator)
 

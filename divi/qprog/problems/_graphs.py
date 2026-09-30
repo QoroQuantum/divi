@@ -23,7 +23,7 @@ from divi.qprog.algorithms import (
     SuperpositionState,
     ZerosState,
 )
-from divi.qprog.problems import GraphPartitioningConfig, QAOAProblem
+from divi.qprog.problems import QAOAProblem
 from divi.qprog.problems._graph_hamiltonians import (
     _to_nx_graph,
     max_clique_hamiltonians,
@@ -33,6 +33,7 @@ from divi.qprog.problems._graph_hamiltonians import (
     min_vertex_cover_hamiltonians,
 )
 from divi.qprog.problems._graph_partitioning_utils import _node_partition_graph
+from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
 
 
 class _GraphProblemBase(QAOAProblem):
