@@ -172,6 +172,13 @@ therefore needs either an explicit non-chemistry ansatz, such as
 Initial Parameters
 ^^^^^^^^^^^^^^^^^^
 
+Without ``initial_params``,
+:class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
+:class:`~divi.qprog.algorithms.UCCSDAnsatz` start with every excitation
+amplitude at zero, which prepares exactly the Hartree-Fock state, so the energy
+starts at the Hartree-Fock energy. Every other ansatz starts from random
+parameters.
+
 Pass ``initial_params`` to ``run()`` to warm-start from known parameters or
 continue a geometry sweep or interrupted optimisation. See
 :ref:`variational-run-controls`.

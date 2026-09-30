@@ -143,6 +143,45 @@ def test_vqe_basic_initialization_with_hamiltonian(
     verify_cost_circuit(vqe_problem)
 
 
+@pytest.mark.parametrize(
+    "ansatz, starts_at_reference",
+    [
+        (HartreeFockAnsatz(), True),
+        pytest.param(
+            UCCSDAnsatz(),
+            True,
+            marks=pytest.mark.skipif(
+                importlib.util.find_spec("qiskit_nature") is None,
+                reason="requires the 'chem' extra",
+            ),
+        ),
+        (QCCAnsatz(), False),
+        (GenericLayerAnsatz([RYGate, RZGate]), False),
+    ],
+    ids=["HartreeFock", "UCCSD", "QCC", "Generic-RYRZ"],
+)
+def test_excitation_ansatze_start_at_the_hartree_fock_point(
+    dummy_simulator,
+    four_qubit_hamiltonian,
+    default_optimizer,
+    ansatz,
+    starts_at_reference,
+):
+    """All-zero excitation amplitudes prepare the Hartree-Fock reference."""
+    vqe = VQE(
+        HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
+        ansatz=ansatz,
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+        seed=1997,
+    )
+
+    params = vqe._initialize_param_sets()
+
+    assert params.shape == vqe.get_expected_param_shape()
+    assert bool(np.all(params == 0.0)) is starts_at_reference
+
+
 def test_vqe_clean_hamiltonian_logic(
     four_qubit_hamiltonian, dummy_simulator, default_optimizer
 ):
@@ -322,7 +361,8 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_prob
 
     vqe_problem.run()
 
-    assert len(vqe_problem.losses_history) == 5
+    # Starting at the Hartree-Fock point, a gradient optimizer can converge early.
+    assert 1 <= len(vqe_problem.losses_history) <= 5
 
     assert isinstance(vqe_problem.best_loss, float)
     assert isinstance(vqe_problem.best_params, np.ndarray)

@@ -171,6 +171,18 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         )
         return None if per_layer is None else list(per_layer) * self.n_layers
 
+    def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
+        """Start excitation ansätze at the Hartree–Fock reference.
+
+        All-zero amplitudes make every excitation gate the identity, so
+        :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
+        :class:`~divi.qprog.algorithms.UCCSDAnsatz` start from exactly the
+        Hartree–Fock state. Other ansätze start at random.
+        """
+        if isinstance(self.ansatz, (HartreeFockAnsatz, UCCSDAnsatz)):
+            return np.zeros((self.optimizer.n_param_sets, self.n_params))
+        return super()._initialize_param_sets()
+
     @property
     def eigenstate(self) -> npt.NDArray[np.int32] | None:
         """Get the computed eigenstate as a NumPy array.
