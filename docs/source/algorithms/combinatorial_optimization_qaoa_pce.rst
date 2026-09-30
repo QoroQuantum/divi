@@ -87,14 +87,20 @@ are ``initial_state`` and ``n_layers``.
 Pass an :class:`~divi.qprog.algorithms.InitialState` subclass for ``initial_state``.
 Built-in options include :class:`~divi.qprog.algorithms.ZerosState`,
 :class:`~divi.qprog.algorithms.OnesState`, :class:`~divi.qprog.algorithms.SuperpositionState`,
-:class:`~divi.qprog.algorithms.CustomPerQubitState`\ ``("01+-")``, and
-:class:`~divi.qprog.algorithms.WState`\ ``(block_size, n_blocks)`` (one-hot encodings).
-When ``initial_state`` is omitted, graph problems use a problem-specific default and
-QUBO/HUBO problems default to :class:`~divi.qprog.algorithms.SuperpositionState`.
+:class:`~divi.qprog.algorithms.CustomPerQubitState`\ ``("01+-")``,
+:class:`~divi.qprog.algorithms.WState`\ ``(block_size, n_blocks)`` (one-hot encodings), and
+:class:`~divi.qprog.algorithms.DickeState`\ ``(hamming_weight, n_qubits=None)``
+(a uniform superposition over bitstrings with exactly ``hamming_weight`` ones).
+When ``initial_state`` is omitted, QAOA uses the problem's
+``recommended_initial_state``: a problem-specific default for graph problems and
+for portfolio selection with ``use_constrained_mixer=True``,
+:class:`~divi.qprog.algorithms.SuperpositionState` for other QUBO/HUBO problems.
 
 QAOA always uses the problem's ``mixer_hamiltonian``, whatever the initial
-state. A :class:`~divi.qprog.algorithms.WState` keeps its one-hot subspace only
-if that mixer conserves it, e.g. an :func:`~divi.hamiltonians.xy_mixer`.
+state. A :class:`~divi.qprog.algorithms.WState` or
+:class:`~divi.qprog.algorithms.DickeState` keeps its one-hot or fixed-weight
+subspace only if that mixer conserves it, e.g. an
+:func:`~divi.hamiltonians.xy_mixer`.
 
 **Initial parameters:** Pass ``initial_params`` to ``run()`` to warm-start from
 known parameters or continue from another run. See
@@ -481,6 +487,110 @@ Example
    ``dict[variable_name, int]``.  For QUBO matrices (integer-indexed),
    ``.solution`` remains a NumPy array for backwards compatibility.
 
+Portfolio Optimisation
+----------------------
+
+Two :class:`~divi.qprog.problems.BinaryOptimizationProblem` subclasses build
+long-only, fully invested mean-variance portfolios from expected returns
+:math:`\mu` and a covariance matrix :math:`\Sigma`, both in the same period
+(typically annualised). ``risk_tolerance`` is the weight :math:`\tau` on
+expected return; ``0`` minimises variance alone. It corresponds to
+PyPortfolioOpt's ``risk_aversion = 2/τ`` and, for Qiskit Finance's
+``PortfolioOptimization`` over :math:`K` assets or :math:`L` units, to
+``risk_factor = 1/(Kτ)`` or ``1/(Lτ)``.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Class
+     - Decision
+   * - :class:`~divi.qprog.problems.PortfolioSelectionProblem`
+     - Which :math:`K` assets to hold at equal weight :math:`1/K`
+       (cardinality-constrained). One qubit per asset. Minimises
+       :math:`x^\top\Sigma x/K^2 - \tau\mu^\top x/K` with
+       :math:`\sum_i x_i = K`.
+   * - :class:`~divi.qprog.problems.PortfolioAllocationProblem`
+     - How much of each asset to hold, as multiples of :math:`1/L` with
+       :math:`L` = ``n_steps``. Minimises :math:`w^\top\Sigma w - \tau\mu^\top w`
+       with :math:`\sum_i w_i = 1`. ``encoding="log"`` uses
+       :math:`\log_2(L+1)` qubits per asset and needs :math:`L = 2^b - 1`;
+       ``encoding="domain_wall"`` takes any grid at :math:`L` qubits per
+       asset (5% steps on three assets need 60 qubits).
+
+Extra requirements are :class:`~divi.qprog.problems.LinearConstraint`\ s on
+the weights, keyed by asset index: ``LinearConstraint(esg, ">=", 65)`` sets a
+weighted-mean ESG floor of 65, and
+``LinearConstraint({i: 1 for i in tech}, "<=", 0.4)`` caps a sector at 40%.
+In :class:`~divi.qprog.problems.PortfolioSelectionProblem`, at most :math:`m`
+names from a group is ``LinearConstraint({i: 1 for i in group}, "<=", m / K)``.
+Each inequality adds slack qubits (see :ref:`linear-constraints`).
+
+``get_top_solutions(feasibility="repair")`` on QAOA or PCE returns only feasible
+portfolios, ranked by the objective without penalties, and an empty list when
+no sample can be repaired (for example, constraints that cannot hold together);
+``.solution`` is the most probable sample, feasible or not.
+``metrics(bitstring)`` gives the expected return, volatility and Sharpe ratio
+of a feasible bitstring.
+
+Repair is classical: it adds or removes single units until the budget holds,
+then makes greedy one-unit transfers between assets until every constraint
+holds. Samples that repair to the same portfolio are merged, summing their
+probabilities. ``feasibility="filter"`` keeps only samples that were feasible
+as measured, and may return an empty list.
+
+With ``use_constrained_mixer=True``,
+:class:`~divi.qprog.problems.PortfolioSelectionProblem` gives QAOA a ring XY
+mixer on the asset qubits, which conserves their Hamming weight, and a
+:class:`~divi.qprog.algorithms.DickeState` of weight :math:`K` on them as the
+recommended initial state; leave ``initial_state`` unset to use it. Slack
+qubits keep an X mixer, and other constraints are enforced only by their
+penalties. The cardinality penalty stays in the
+QUBO and is zero on every :math:`K`-asset state, so PCE can take the same
+problem.
+
+.. code-block:: python
+
+   import numpy as np
+
+   from divi.backends import MaestroSimulator
+   from divi.qprog import QAOA
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import LinearConstraint, PortfolioSelectionProblem
+
+   mu = np.array([0.10, 0.12, 0.08, 0.15, 0.09])
+   sigma = np.array(
+       [
+           [0.040, 0.006, 0.004, 0.010, 0.002],
+           [0.006, 0.050, 0.005, 0.012, 0.003],
+           [0.004, 0.005, 0.030, 0.006, 0.004],
+           [0.010, 0.012, 0.006, 0.090, 0.005],
+           [0.002, 0.003, 0.004, 0.005, 0.035],
+       ]
+   )
+   esg = np.array([70.0, 55.0, 80.0, 60.0, 75.0])
+
+   problem = PortfolioSelectionProblem(
+       mu,
+       sigma,
+       n_holdings=2,
+       risk_tolerance=0.5,
+       constraints=[LinearConstraint(esg, ">=", 65)],   # mean ESG >= 65
+       use_constrained_mixer=True,
+   )
+   qaoa = QAOA(
+       problem,
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+       max_iterations=10,
+       backend=MaestroSimulator(),
+   )
+   qaoa.run()
+
+   best = qaoa.get_top_solutions(n=1, include_decoded=True, feasibility="repair")[0]
+   print(f"Holdings: {best.decoded}, objective: {best.energy:.5f}")
+   print(problem.metrics(best.bitstring))
+
 Matching Problems
 -----------------
 
@@ -855,7 +965,7 @@ Quantum hardware is limited in the number of qubits and circuit depth. For large
 Next Steps
 ----------
 
-- `tutorials/optimization/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/optimization>`_ — QAOA/PCE/partitioning examples: ``qubo_qaoa_vs_pce.py``, ``qaoa_graph_problems.py``, ``qaoa_partitioning.py``, ``qaoa_hubo.py``, ``qaoa_qdrift.py``, ``iterative_qaoa.py``; routing in `tutorials/routing/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/routing>`_ (``ce_qaoa_routing.py``)
+- `tutorials/optimization/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/optimization>`_ — QAOA/PCE/partitioning examples: ``qubo_qaoa_vs_pce.py``, ``qaoa_graph_problems.py``, ``qaoa_partitioning.py``, ``qaoa_hubo.py``, ``qaoa_qdrift.py``, ``iterative_qaoa.py``, ``qaoa_portfolio.py``; routing in `tutorials/routing/ <https://github.com/QoroQuantum/divi/tree/main/tutorials/routing>`_ (``ce_qaoa_routing.py``)
 - :doc:`routing` — TSP and CVRP with constraint-preserving encodings
 - :doc:`../execution_workflows/optimizers` — optimizer selection and tuning
 - :doc:`../execution_workflows/backends` — simulators and services

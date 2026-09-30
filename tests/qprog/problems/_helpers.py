@@ -131,6 +131,13 @@ def polynomial_value(terms: dict[tuple, float], assignment: dict) -> float:
     )
 
 
+def penalty_at(problem, bitstring: str) -> float:
+    """Penalty of ``problem`` at a full bitstring over its canonical variables."""
+    variables = problem.canonical_problem.variable_order
+    assignment = dict(zip(variables, map(int, bitstring)))
+    return polynomial_value(problem.penalty_canonical_problem.terms, assignment)
+
+
 def n_slack(problem, n_decision: int) -> int:
     """Number of qubits beyond the first ``n_decision`` decision qubits."""
     return problem.cost_hamiltonian.num_qubits - n_decision

@@ -4,15 +4,20 @@
 
 """Tests for the shared initial-state utility and its integration into algorithms."""
 
+from math import comb
+
 import networkx as nx
+import numpy as np
 import pytest
 import scipy.linalg
 from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import xy_mixer
 from divi.qprog import QAOA, VQE, TimeEvolution
 from divi.qprog.algorithms import (
     CustomPerQubitState,
+    DickeState,
     OnesState,
     QAOAAnsatz,
     SuperpositionState,
@@ -121,6 +126,48 @@ class TestWState:
     def test_wrong_wire_count_raises(self):
         with pytest.raises(ValueError, match="Expected"):
             WState(3, 2).build([0, 1, 2])
+
+
+class TestDickeState:
+    @pytest.mark.parametrize(
+        "n, k", [(n, k) for n in range(1, 6) for k in range(n + 1)]
+    )
+    def test_prepares_the_dicke_state(self, n, k):
+        state = Statevector(DickeState(k).build(range(n))).data
+        dicke = np.array([bin(i).count("1") == k for i in range(2**n)], dtype=float)
+        dicke /= np.sqrt(comb(n, k))
+        assert abs(np.vdot(dicke, state)) ** 2 == pytest.approx(1.0, abs=1e-10)
+
+    def test_uses_only_qasm_emittable_gates(self):
+        qc = DickeState(3).build(range(6))
+        assert set(gate_names(qc)) <= set(_QISKIT_TO_QASM2)
+
+    def test_trailing_wires_get_superposition(self):
+        probs = Statevector(DickeState(1, n_qubits=2).build(range(3))).probabilities()
+        # Weight 1 on qubits 0-1, qubit 2 uniform.
+        expected = {0b001: 0.25, 0b010: 0.25, 0b101: 0.25, 0b110: 0.25}
+        for idx, p in enumerate(probs):
+            assert p == pytest.approx(expected.get(idx, 0.0), abs=1e-10)
+
+    def test_ring_xy_mixer_preserves_weight(self):
+        n, k = 5, 2
+        mixer = xy_mixer(nx.cycle_graph(n))
+        U = Operator(scipy.linalg.expm(-1j * 0.7 * mixer.to_matrix()))
+        probs = Statevector(DickeState(k).build(range(n))).evolve(U).probabilities()
+        in_weight_k = sum(p for i, p in enumerate(probs) if i.bit_count() == k)
+        assert in_weight_k == pytest.approx(1.0)
+
+    @pytest.mark.parametrize(
+        "kwargs, n_wires, match",
+        [
+            ({"hamming_weight": -1}, 1, "hamming_weight must be"),
+            ({"hamming_weight": 3}, 2, "exceeds n_qubits"),
+            ({"hamming_weight": 1, "n_qubits": 4}, 3, "exceeds the wire count"),
+        ],
+    )
+    def test_invalid_arguments_raise(self, kwargs, n_wires, match):
+        with pytest.raises(ValueError, match=match):
+            DickeState(**kwargs).build(range(n_wires))
 
 
 class TestBlockXYMixer:

@@ -21,6 +21,7 @@ from ._graphs import (
     draw_graph_solution_nodes,
 )
 from ._hamiltonian import HamiltonianProblem, MolecularProblem
+from ._portfolio import PortfolioAllocationProblem, PortfolioSelectionProblem
 from ._matching import (
     MaxWeightMatchingProblem,
     check_matching_matrix,
@@ -55,6 +56,8 @@ __all__ = [
     "MaxWeightCycleProblem",
     "MaxWeightMatchingProblem",
     "MinVertexCoverProblem",
+    "PortfolioAllocationProblem",
+    "PortfolioSelectionProblem",
     "QAOAProblem",
     "RoutingInstance",
     "TSPProblem",

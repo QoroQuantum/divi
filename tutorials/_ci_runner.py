@@ -133,6 +133,13 @@ TUTORIALS: dict[str, dict] = {
             ("max_iterations=10", "max_iterations=3"),
         ],
     },
+    "optimization/qaoa_portfolio.py": {
+        "patches": [
+            ("max_iterations=15", "max_iterations=3"),
+            ("max_iterations=10", "max_iterations=3"),
+            ("n_layers=2", "n_layers=1"),
+        ],
+    },
     "optimization/qaoa_hubo.py": {
         "timeout_seconds": 180,
         "patches": [

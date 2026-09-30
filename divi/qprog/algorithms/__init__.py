@@ -17,6 +17,7 @@ from ._custom_vqa import CustomVQA
 from ._feature_maps import AngleEmbedding, FeatureMap, ZZFeatureMap
 from ._initial_state import (
     CustomPerQubitState,
+    DickeState,
     InitialState,
     OnesState,
     SuperpositionState,
@@ -35,6 +36,7 @@ __all__ = [
     "Ansatz",
     "CustomPerQubitState",
     "CustomVQA",
+    "DickeState",
     "FeatureMap",
     "GenericLayerAnsatz",
     "HartreeFockAnsatz",

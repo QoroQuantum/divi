@@ -478,6 +478,23 @@ def test_loaded_solution_is_decoded_by_the_constructed_problem(
     assert target.solution != source._decode_solution_fn("10100")
 
 
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [({"feasibility": "bogus"}, "feasibility"), ({"n": -1}, "non-negative")],
+)
+def test_get_top_solutions_rejects_bad_arguments(
+    kwargs, match, dummy_simulator, default_optimizer
+):
+    qaoa = QAOA(
+        BinaryOptimizationProblem(QUBO_MATRIX),
+        n_layers=1,
+        optimizer=default_optimizer,
+        backend=dummy_simulator,
+    )
+    with pytest.raises(ValueError, match=match):
+        qaoa.get_top_solutions(**kwargs)
+
+
 class TestFinalComputationDecode:
     """Test that sample_solution handles arbitrary decode returns."""
 

@@ -24,6 +24,7 @@ auth
 ax
 backend
 backends
+Bärtschi
 bitstring
 bitstrings
 booleans
@@ -78,6 +79,7 @@ diagonalisation
 diagonalised
 diagonalises
 diagonalising
+Dicke
 dicts
 diiron
 dir
@@ -86,6 +88,7 @@ docstring
 docstrings
 durations
 dwave
+Eidenbenz
 eigenphases
 Eigensolver
 eigenspace

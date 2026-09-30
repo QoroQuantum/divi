@@ -14,6 +14,7 @@ from tests.qprog.problems._helpers import (
     assert_penalty_zero_iff_feasible,
     iter_assignments,
     n_slack,
+    penalty_at,
     polynomial_value,
 )
 
@@ -210,8 +211,8 @@ _NAMED = dimod.BinaryQuadraticModel(
 @pytest.mark.parametrize(
     "problem, constraint, kwargs, match",
     [
-        (OBJECTIVE, LinearConstraint([1, 1, 1], ">=", 4), {}, "only reaches"),
-        (OBJECTIVE, LinearConstraint([1, 1, 1], "==", 4), {}, "only reaches"),
+        (OBJECTIVE, LinearConstraint([1, 1, 1], ">=", 4), {}, "ranges over"),
+        (OBJECTIVE, LinearConstraint([1, 1, 1], "==", 4), {}, "ranges over"),
         (OBJECTIVE, LinearConstraint([2, 4, 6], "==", 5), {}, "multiple of 2"),
         (
             OBJECTIVE,
@@ -318,3 +319,29 @@ def test_constraints_add_to_user_penalty():
             polynomial_value(alone.penalty_canonical_problem.terms, assignment)
             + 5.0 * assignment[0]
         )
+
+
+@pytest.mark.parametrize(
+    "problem, constraint, decision, decoded",
+    [
+        (
+            OBJECTIVE,
+            LinearConstraint([2, -1, 3], ">=", 2),
+            {0: 1, 1: 1, 2: 1},
+            [1, 1, 1],
+        ),
+        (
+            dimod.BinaryQuadraticModel({"a": -1.0, "b": -1.0}, {}, 0.0, "BINARY"),
+            LinearConstraint({"a": 1, "b": 1}, "<=", 1),
+            {"a": 1, "b": 0},
+            {"a": 1, "b": 0},
+        ),
+    ],
+    ids=["integer-labels", "named-labels"],
+)
+def test_completed_bitstring_zeroes_the_penalty(problem, constraint, decision, decoded):
+    problem = BinaryOptimizationProblem(problem, constraints=[constraint])
+    bitstring = problem._complete_bitstring(decision)
+    assert penalty_at(problem, bitstring) == pytest.approx(0.0, abs=1e-9)
+    assert problem.is_feasible(bitstring)
+    np.testing.assert_equal(problem.decode_fn(bitstring), decoded)

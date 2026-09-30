@@ -51,6 +51,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 - **`qaoa_graph_problems.py`** — QAOA on max clique and max-weight matching
 - **`qaoa_qdrift.py`** — QAOA with QDrift randomized Trotterization
 - **`iterative_qaoa.py`** — Iterative QAOA with parameter interpolation vs standard QAOA
+- **`qaoa_portfolio.py`** — Mean-variance portfolios: pick K assets under an ESG floor with XY-mixer QAOA, and choose weights on a grid with PCE, both checked against exhaustive search
 
 ### `routing/`
 

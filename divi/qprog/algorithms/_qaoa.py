@@ -407,8 +407,8 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                   `arXiv:2511.14296 <https://arxiv.org/abs/2511.14296>`_
                   (Algorithm 4): every sampled bitstring is checked for
                   feasibility and scored by ``compute_energy`` (the true
-                  objective, not the penalty Hamiltonian), then the
-                  lowest-energy feasible solution is returned.
+                  objective, not the penalty Hamiltonian), and the feasible
+                  ones are returned from lowest energy up.
                 - ``"repair"``: repair infeasible solutions via the Problem's
                   ``repair_infeasible_bitstring`` method, rank by energy.
                   Repairs that stay infeasible are dropped.
@@ -421,12 +421,14 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         Returns:
             List of :class:`~divi.qprog.SolutionEntry`.
         """
+        if n < 0:
+            raise ValueError(f"n must be non-negative, got {n}")
         if feasibility not in ("ignore", "filter", "repair"):
             raise ValueError(
                 "feasibility must be 'ignore', 'filter' or 'repair', "
                 f"got '{feasibility}'"
             )
-        fetch_n = n if n > 0 else 2**self.n_qubits
+        fetch_n = n or 2**self.n_qubits
 
         # No feasibility handling — just return by probability
         if feasibility == "ignore":

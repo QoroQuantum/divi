@@ -5,7 +5,7 @@
 """Binary optimisation (QUBO / HUBO) problem class for QAOA."""
 
 import math
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -25,7 +25,11 @@ from divi.hamiltonians import (
     x_mixer,
 )
 from divi.qprog.problems import QAOAProblem
-from divi.qprog.problems._constraints import LinearConstraint, _encode_constraints
+from divi.qprog.problems._constraints import (
+    LinearConstraint,
+    _encode_constraints,
+    _Slack,
+)
 from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
 
 if TYPE_CHECKING:
@@ -250,7 +254,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._objective_problem = problem
         self._objective_canonical_problem = normalize_binary_polynomial_problem(problem)
         self._constraints = constraints
-        self._slack_variables: tuple[Hashable, ...] = ()
+        self._slacks: tuple[_Slack, ...] = ()
         if constraints:
             variables = _declared_variables(problem, self._objective_canonical_problem)
             penalty_terms: dict[tuple, float] = {}
@@ -258,9 +262,12 @@ class BinaryOptimizationProblem(QAOAProblem):
                 penalty_canonical = normalize_binary_polynomial_problem(penalty)
                 variables |= _declared_variables(penalty, penalty_canonical)
                 penalty_terms = penalty_canonical.terms
-            self._slack_variables, penalty = _encode_constraints(
-                constraints, variables, penalty_terms
+            self._slacks, penalty = _encode_constraints(
+                constraints, variables, penalty_terms, self._activity_bounds
             )
+        self._slack_variables = tuple(
+            label for slack in self._slacks for label, _ in slack.terms
+        )
         self._penalty_problem = penalty
         self._penalty_canonical_problem = (
             normalize_binary_polynomial_problem(penalty)
@@ -318,6 +325,18 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._trivial_program_ids = set()
         self._bqm_subproblem_states = {}
 
+    def _activity_bounds(
+        self, coefficients: Mapping[Hashable, float]
+    ) -> tuple[float, float]:
+        """Minimum and maximum of ``Σ aᵢxᵢ`` over the assignments the problem allows.
+
+        Sizes constraint slack. Defaults to every binary assignment.
+        """
+        values = list(coefficients.values())
+        lo = math.fsum(v for v in values if v < 0)
+        hi = math.fsum(v for v in values if v > 0)
+        return lo, hi
+
     @property
     def hamiltonian_builder(self) -> Literal["native", "quadratized"]:
         """Ising-conversion strategy passed at construction."""
@@ -337,6 +356,21 @@ class BinaryOptimizationProblem(QAOAProblem):
             )
         values = self._ising.encoding.decode_fn(bitstring)
         return dict(zip(self._canonical_problem.variable_order, values.tolist()))
+
+    def _complete_bitstring(self, decision: Mapping[Hashable, int]) -> str:
+        """Bitstring for a decision assignment, with the slack that zeroes its penalty."""
+        values: dict[Hashable, int] = {v: int(decision[v]) for v in self._decision_vars}
+        for slack in self._slacks:
+            values.update(slack.bits(values))
+        idx = self._canonical_problem.variable_to_idx
+        if self._ising.n_qubits != len(idx):
+            raise NotImplementedError(
+                "Completing a bitstring requires the native Hamiltonian builder."
+            )
+        bits = ["0"] * len(idx)
+        for var, value in values.items():
+            bits[idx[var]] = str(value)
+        return "".join(bits)
 
     def _solution_key(self, bitstring: str) -> Hashable:
         """The decision-variable values, ignoring slack and quadratization ancillas."""

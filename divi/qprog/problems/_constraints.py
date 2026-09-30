@@ -8,7 +8,8 @@ import math
 import numbers
 import warnings
 from collections import defaultdict
-from collections.abc import Hashable, Mapping, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from fractions import Fraction
 from types import MappingProxyType
 from typing import Literal, get_args
@@ -134,6 +135,27 @@ class LinearConstraint:
         )
 
 
+@dataclass(frozen=True)
+class _Slack:
+    """An inequality's slack bits and the integer data that determines them."""
+
+    terms: tuple[tuple[Hashable, int], ...]
+    """``(label, coefficient)`` pairs: powers of two, then one top-up."""
+    scaled_coefficients: dict[Hashable, int]
+    target: int
+
+    def bits(self, decision: Mapping[Hashable, int]) -> dict[Hashable, int]:
+        """Slack bits that minimise the penalty for a decision assignment."""
+        lhs = sum(c * decision[v] for v, c in self.scaled_coefficients.items())
+        *powers, (top_label, top) = self.terms
+        value = min(max(self.target - lhs, 0), top + 2 ** len(powers) - 1)
+        use_top = value >= top
+        rest = value - top if use_top else value
+        bits = {label: (rest >> j) & 1 for j, (label, _) in enumerate(powers)}
+        bits[top_label] = int(use_top)
+        return bits
+
+
 def _rational(
     constraint: LinearConstraint, tol: float
 ) -> tuple[dict[Hashable, Fraction], Fraction, Fraction, bool]:
@@ -188,44 +210,36 @@ def _scale(
     return scaled, round(bound / step)
 
 
-def _bitwise_reach(coefficients: Mapping[Hashable, float]) -> tuple[float, float]:
-    """Range of :math:`\\sum_i a_i x_i` over unrestricted binary ``x``."""
-    values = list(coefficients.values())
-    return (
-        math.fsum(v for v in values if v < 0),
-        math.fsum(v for v in values if v > 0),
-    )
-
-
 def _encode_constraint(
     constraint: LinearConstraint,
-) -> tuple[dimod.BinaryQuadraticModel, list[Hashable]]:
+    activity_bounds: Callable[[Mapping[Hashable, float]], tuple[float, float]],
+) -> tuple[dimod.BinaryQuadraticModel, _Slack | None]:
     r"""Encode ``constraint`` as :math:`(\sum a_i x_i \pm \sum_j 2^j s_j - b)^2`.
 
-    The slack is sized for the range of the left-hand side over every binary
-    assignment.
+    The slack is sized for the activity bounds of the left-hand side, as
+    ``activity_bounds`` gives them for a coefficient mapping.
 
     Returns:
         The penalty in the constraint's own units, where a violation of ``v``
-        costs ``v**2``, and its slack variables as dimod labels them, least
-        significant first. The penalty includes its constant, so it is zero
-        exactly when the rounded constraint holds and the slack takes its
-        matching value.
+        costs ``v**2``, and its slack as dimod labels it, or ``None`` when it
+        needs none. The penalty includes its constant, so it is zero exactly
+        when the rounded constraint holds and the slack takes its matching
+        value.
 
     Raises:
         ValueError: If no assignment the problem allows can satisfy the
             rounded constraint, or the slack range cannot fit in eight bits.
     """
     sense, b = constraint.sense, constraint.bound
-    lo, hi = _bitwise_reach(constraint.coefficients)
+    lo, hi = activity_bounds(constraint.coefficients)
     tol = _TOL * constraint._magnitude
     if (sense != "<=" and hi < b - tol) or (sense != ">=" and lo > b + tol):
         raise ValueError(
-            f"{constraint!r} is infeasible: its left-hand side only reaches "
+            f"{constraint!r} is infeasible: its left-hand side ranges over "
             f"[{lo:.6g}, {hi:.6g}]."
         )
     if (sense == "<=" and hi <= b + tol) or (sense == ">=" and lo >= b - tol):
-        return dimod.BinaryQuadraticModel(dimod.BINARY), []
+        return dimod.BinaryQuadraticModel(dimod.BINARY), None
 
     coefficients, bound_value, step, exact = _rational(constraint, tol)
     scaled, bound = _scale(coefficients, bound_value, sense, step, tol)
@@ -236,7 +250,7 @@ def _encode_constraint(
         step *= math.ceil(largest / _MAX_INTEGER)
         scaled, bound = _scale(coefficients, bound_value, sense, step, tol)
         exact = False
-    lo_s, hi_s = map(round, _bitwise_reach(scaled))
+    lo_s, hi_s = map(round, activity_bounds(scaled))
     slack_range = 0
     if sense == "==":
         divisor = math.gcd(*scaled.values())
@@ -256,7 +270,7 @@ def _encode_constraint(
             scaled, bound = _scale(
                 coefficients, bound_value, sense, step * multiple, tol
             )
-            lo_s, hi_s = map(round, _bitwise_reach(scaled))
+            lo_s, hi_s = map(round, activity_bounds(scaled))
         step *= multiple
         exact = exact and multiple == 1
     r = float(step)
@@ -290,22 +304,24 @@ def _encode_constraint(
     linear = [(v, c) for v, c in scaled.items() if c]
     if slack_range == 0:
         bqm.add_linear_equality_constraint(linear, r * r, -bound)
-        return bqm, []
+        return bqm, None
     # dimod names its slack f"slack_{label}_{j}"; keep clear of user labels.
     label = "divi"
     while any(isinstance(v, str) and v.startswith(f"slack_{label}_") for v in scaled):
         label += "_"
     lb, ub = (bound, hi_s) if sense == ">=" else (lo_s, bound)
     slack = bqm.add_linear_inequality_constraint(linear, r * r, label, lb=lb, ub=ub)
-    return bqm, [s for s, _ in slack]
+    terms = tuple((s, int(c)) for s, c in slack)
+    return bqm, _Slack(terms, scaled, ub)
 
 
 def _encode_constraints(
     constraints: Sequence[LinearConstraint],
     variables: set[Hashable],
     penalty_terms: Mapping[tuple, float],
-) -> tuple[tuple[Hashable, ...], dict[tuple, float]]:
-    """Slack variables of ``constraints``, and ``penalty_terms`` plus their penalties.
+    activity_bounds: Callable[[Mapping[Hashable, float]], tuple[float, float]],
+) -> tuple[tuple[_Slack, ...], dict[tuple, float]]:
+    """Slack of each inequality in ``constraints``, and ``penalty_terms`` plus their penalties.
 
     Slack variables continue the problem's integer labels after the largest
     one, or are labelled ``("slack", i, j)`` when the problem uses other
@@ -323,22 +339,26 @@ def _encode_constraints(
     integer_labels = len(int_labels) == len(variables)
     next_int = max(int_labels, default=-1) + 1
     total = dimod.BinaryQuadraticModel(dimod.BINARY)
-    slack_variables: list[Hashable] = []
+    slacks: list[_Slack] = []
     for index, constraint in enumerate(constraints):
-        bqm, raw = _encode_constraint(constraint)
-        if integer_labels:
-            labels: list[Hashable] = list(range(next_int, next_int + len(raw)))
-            next_int += len(raw)
-        else:
-            labels = [("slack", index, j) for j in range(len(raw))]
-            if variables.intersection(labels):
-                raise ValueError(
-                    "Variable labels of the form ('slack', i, j) are "
-                    "reserved for constraint slack."
-                )
-        bqm.relabel_variables(dict(zip(raw, labels)))
+        bqm, slack = _encode_constraint(constraint, activity_bounds)
+        if slack is not None:
+            width = len(slack.terms)
+            if integer_labels:
+                labels: list[Hashable] = list(range(next_int, next_int + width))
+                next_int += width
+            else:
+                labels = [("slack", index, j) for j in range(width)]
+                if variables.intersection(labels):
+                    raise ValueError(
+                        "Variable labels of the form ('slack', i, j) are "
+                        "reserved for constraint slack."
+                    )
+            mapping = dict(zip((s for s, _ in slack.terms), labels))
+            bqm.relabel_variables(mapping)
+            relabelled = tuple((mapping[s], c) for s, c in slack.terms)
+            slacks.append(replace(slack, terms=relabelled))
         total.update(bqm)
-        slack_variables.extend(labels)
 
     terms: defaultdict[tuple, float] = defaultdict(float, penalty_terms)
     for v, b in total.linear.items():
@@ -349,4 +369,4 @@ def _encode_constraints(
             terms[(u, v)] += b
     if total.offset:
         terms[()] += total.offset
-    return tuple(slack_variables), dict(terms)
+    return tuple(slacks), dict(terms)

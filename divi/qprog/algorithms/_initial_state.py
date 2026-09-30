@@ -187,6 +187,75 @@ class WState(InitialState):
             qc.cx(qubits[k + 1], qubits[k])
 
 
+class DickeState(InitialState):
+    r"""Dicke state: uniform superposition over bitstrings of fixed Hamming weight.
+
+    Prepares :math:`|D^n_k\rangle` deterministically with the construction of
+    Bärtschi and Eidenbenz (`arXiv:1904.07358 <https://arxiv.org/abs/1904.07358>`_),
+    using :math:`O(nk)` gates. An XY mixer conserves Hamming weight, so QAOA
+    started from this state stays in the weight-:math:`k` subspace of those
+    wires.
+
+    Args:
+        hamming_weight: Number of ones :math:`k` in every basis state.
+        n_qubits: Number of leading wires that carry the Dicke state. Any
+            remaining wires are put in equal superposition, the starting state
+            QAOA uses for wires driven by an X mixer. Defaults to all wires.
+
+    Raises:
+        ValueError: If ``hamming_weight`` is negative, or at build time if it
+            exceeds ``n_qubits`` or ``n_qubits`` exceeds the wire count.
+    """
+
+    def __init__(self, hamming_weight: int, n_qubits: int | None = None):
+        if hamming_weight < 0:
+            raise ValueError(f"hamming_weight must be ≥ 0, got {hamming_weight}.")
+        if n_qubits is not None and n_qubits < 1:
+            raise ValueError(f"n_qubits must be ≥ 1, got {n_qubits}.")
+        self.hamming_weight = hamming_weight
+        self.n_qubits = n_qubits
+
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        n_wires = len(wires)
+        n = n_wires if self.n_qubits is None else self.n_qubits
+        k = self.hamming_weight
+        if n > n_wires:
+            raise ValueError(f"n_qubits ({n}) exceeds the wire count ({n_wires}).")
+        if k > n:
+            raise ValueError(f"hamming_weight ({k}) exceeds n_qubits ({n}).")
+
+        qc = QuantumCircuit(n_wires)
+        for q in range(n - k, n):
+            qc.x(q)
+        if 0 < k < n:
+            for m in range(n, k, -1):
+                self._split_and_cyclic_shift(qc, m, k)
+            for m in range(k, 1, -1):
+                self._split_and_cyclic_shift(qc, m, m - 1)
+        for q in range(n, n_wires):
+            qc.h(q)
+        return qc
+
+    @staticmethod
+    def _split_and_cyclic_shift(qc: QuantumCircuit, m: int, length: int) -> None:
+        """SCS_{m,length} on qubits ``m-length-1 … m-1``."""
+        theta = 2 * np.arccos(np.sqrt(1 / m))
+        qc.cx(m - 2, m - 1)
+        qc.cry(theta, m - 1, m - 2)
+        qc.cx(m - 2, m - 1)
+        for i in range(2, length + 1):
+            a, b, t = m - i - 1, m - i, m - 1
+            theta = 2 * np.arccos(np.sqrt(i / m))
+            qc.cx(a, t)
+            # Doubly-controlled RY on ``a`` (controls ``t``, ``b``) from CRY and CX.
+            qc.cry(theta / 2, b, a)
+            qc.cx(t, b)
+            qc.cry(-theta / 2, b, a)
+            qc.cx(t, b)
+            qc.cry(theta / 2, t, a)
+            qc.cx(a, t)
+
+
 # ---------------------------------------------------------------------------
 # Block-XY mixer graph (for use with ``xy_mixer``)
 # ---------------------------------------------------------------------------
@@ -196,7 +265,7 @@ def build_block_xy_mixer_graph(
     block_size: int,
     n_blocks: int,
     wires: Sequence[int],
-    connectivity: Literal["complete", "path"] = "complete",
+    connectivity: Literal["complete", "path", "ring"] = "complete",
 ) -> nx.Graph:
     """Build the connectivity graph for a block-XY mixer.
 
@@ -220,6 +289,12 @@ def build_block_xy_mixer_graph(
               within each block.  Uses O(n) terms instead of O(n²),
               which may be preferable on hardware with limited
               connectivity, at the cost of a weaker spectral gap.
+            * ``"ring"`` — the path closed into a cycle (a path for blocks of
+              two qubits). Uses O(n) terms, like ``"path"``, while connecting
+              the ends of each block. Every connectivity conserves Hamming
+              weight within each block; ``"complete"`` has every Dicke state
+              (:class:`DickeState`) as an eigenstate, ``"path"`` and ``"ring"``
+              in general do not.
 
     Returns:
         ``networkx.Graph`` for :func:`~divi.hamiltonians.xy_mixer`.
@@ -239,6 +314,8 @@ def build_block_xy_mixer_graph(
         block_wires = wires[start : start + block_size]
         if connectivity == "complete":
             g.update(nx.complete_graph(block_wires))
+        elif connectivity == "ring" and len(block_wires) > 2:
+            g.update(nx.cycle_graph(block_wires))
         else:
             g.update(nx.path_graph(block_wires))
     return g
