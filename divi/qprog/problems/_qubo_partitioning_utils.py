@@ -97,8 +97,6 @@ def _view_features(W: sps.csr_matrix, k: int) -> np.ndarray | None:
 def _multiview_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
     """Signed multi-view spectral clustering into ``k`` groups (arXiv 2502.16212)."""
     n = sigma.shape[0]
-    if k <= 1:
-        return np.zeros(n, dtype=int)
     if k >= n:
         return np.arange(n)
 
@@ -134,9 +132,6 @@ def _louvain_labels(sigma: sps.csr_matrix, k: int, seed: int) -> np.ndarray:
     number-partitioning) can still fragment.
     """
     n = sigma.shape[0]
-    if n <= 1:
-        return np.zeros(n, dtype=int)
-
     s = sigma.tocoo()
     g = Graph()
     g.add_nodes_from(range(n))
@@ -175,15 +170,14 @@ def _split_to_budget(
         k = int(np.ceil(len(cur) / budget))
         labels = labeler(cast(sps.csr_matrix, sigma[np.ix_(cur, cur)]), k, seed)
         groups = [cur[labels == lbl] for lbl in np.unique(labels)]
-        groups = [g for g in groups if len(g) > 0]
 
-        # Degenerate (single group) or no-progress (a group as large as the
-        # input) → balanced hard split, which strictly shrinks and respects the
-        # budget. Iterative worklist avoids any recursion-depth limit. (A tighter
-        # anti-"singleton-peeling" guard was tried and reverted: forcing balance on
-        # near-degenerate/rank-1 single-sign blocks measurably worsened unpolished
-        # number-partitioning results, and local_search erases the difference.)
-        if len(groups) < 2 or max(len(g) for g in groups) == len(cur):
+        # Degenerate (single group, i.e. no progress) → balanced hard split, which
+        # strictly shrinks and respects the budget. Iterative worklist avoids any
+        # recursion-depth limit. (A tighter anti-"singleton-peeling" guard was
+        # tried and reverted: forcing balance on near-degenerate/rank-1
+        # single-sign blocks measurably worsened unpolished number-partitioning
+        # results, and local_search erases the difference.)
+        if len(groups) < 2:
             step = int(np.ceil(len(cur) / k))
             groups = [cur[i : i + step] for i in range(0, len(cur), step)]
 
@@ -208,7 +202,6 @@ def _ensure_min_clusters(
         idx = clusters.pop(i)
         labels = labeler(cast(sps.csr_matrix, sigma[np.ix_(idx, idx)]), 2, seed)
         groups = [idx[labels == lbl] for lbl in np.unique(labels)]
-        groups = [g for g in groups if len(g) > 0]
         if len(groups) < 2:
             mid = len(idx) // 2
             groups = [idx[:mid], idx[mid:]]

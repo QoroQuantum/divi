@@ -30,7 +30,7 @@ from divi.qprog.algorithms import DickeState, InitialState, SuperpositionState
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._binary import BinaryOptimizationProblem
-from divi.qprog.problems._constraints import _TOL, LinearConstraint
+from divi.qprog.problems._constraints import LinearConstraint, _UnreachableBoundError
 from divi.qprog.problems._partitioning_config import QUBOPartitioningConfig
 from divi.qprog.problems._qubo_partitioning_utils import partition_by_method
 
@@ -114,25 +114,24 @@ class _PortfolioBase(BinaryOptimizationProblem):
         self._violation_scale = np.where(spread > _EPS, spread, 1.0)
 
         cost, budget, on_qubits, walls = self._formulate()
-        for constraint, on_bits in zip(self._weight_constraints, on_qubits):
-            lo, hi = (
-                v / self._total for v in self._activity_bounds(on_bits.coefficients)
+        try:
+            super().__init__(
+                cost,
+                constraints=[budget, *on_qubits],
+                penalty=walls,
+                penalty_weight=penalty_weight,
             )
-            b, tol = constraint.bound, _TOL * constraint._magnitude
-            if (constraint.sense != "<=" and hi < b - tol) or (
-                constraint.sense != ">=" and lo > b + tol
-            ):
-                raise ValueError(
-                    f"{constraint!r} is infeasible: over the portfolios this "
-                    f"problem allows, its left-hand side ranges over "
-                    f"[{lo + 0.0:.6g}, {hi + 0.0:.6g}]."
-                )
-        super().__init__(
-            cost,
-            constraints=[budget, *on_qubits],
-            penalty=walls,
-            penalty_weight=penalty_weight,
-        )
+        except _UnreachableBoundError as err:
+            index = next(
+                (i for i, c in enumerate(on_qubits) if c is err.constraint), None
+            )
+            if index is None:
+                raise
+            raise ValueError(
+                f"{self._weight_constraints[index]!r} is infeasible: over the "
+                f"fully invested portfolios this problem allows, its weighted sum "
+                f"ranges over [{err.lo / total + 0.0:.6g}, {err.hi / total + 0.0:.6g}]."
+            ) from err
 
     def _formulate(
         self,

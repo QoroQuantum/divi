@@ -284,10 +284,14 @@ class BinaryOptimizationProblem(QAOAProblem):
                 self._penalty_canonical_problem,
                 penalty_weight,
             )
-            # A constrained variable keeps its qubit even if its terms cancel.
-            for constraint in constraints:
-                for var in constraint.coefficients:
-                    self._raw_problem.setdefault((var,), 0.0)
+            # A declared variable keeps its qubit even if its terms cancel.
+            declared = (
+                *self._objective_canonical_problem.variable_order,
+                *self._penalty_canonical_problem.variable_order,
+                *(var for constraint in constraints for var in constraint.coefficients),
+            )
+            for var in declared:
+                self._raw_problem.setdefault((var,), 0.0)
             self._canonical_problem = normalize_binary_polynomial_problem(
                 self._raw_problem
             )
@@ -322,7 +326,6 @@ class BinaryOptimizationProblem(QAOAProblem):
             self._bqm = None
 
         self._variable_maps = {}
-        self._trivial_program_ids = set()
         self._bqm_subproblem_states = {}
 
     def _activity_bounds(
@@ -496,7 +499,8 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         Each non-trivial partition becomes its own
         :class:`BinaryOptimizationProblem` keyed by ``(name, size)``. Partitions
-        with no interactions are tracked internally and skipped during composition.
+        with no interactions get no sub-problem; composition keeps the
+        candidate's values for their variables.
 
         Raises:
             ValueError: If no decomposer was provided at construction.
@@ -508,7 +512,6 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         self._bqm_subproblem_states = {}
         self._variable_maps = {}
-        self._trivial_program_ids = set()
 
         init_state = _hybrid().State.from_problem(self._bqm)
         _bqm_partitions = self._partitioning.run(init_state).result()
@@ -530,7 +533,6 @@ class BinaryOptimizationProblem(QAOAProblem):
             ]
 
             if partition.subproblem.num_interactions == 0:
-                self._trivial_program_ids.add(prog_id)
                 continue
 
             sub_problems[prog_id] = BinaryOptimizationProblem(
@@ -620,14 +622,9 @@ class BinaryOptimizationProblem(QAOAProblem):
         """Run a single solution through the hybrid composer pipeline."""
         states_copy = {}
         for prog_id, bqm_subproblem_state in self._bqm_subproblem_states.items():
-            if prog_id in self._trivial_program_ids:
-                var_to_val = {v: 0 for v in bqm_subproblem_state.subproblem.variables}
-            else:
-                variables = list(bqm_subproblem_state.subproblem.variables)
-                global_indices = self._variable_maps[prog_id]
-                var_to_val = {
-                    v: solution[gi] for v, gi in zip(variables, global_indices)
-                }
+            variables = list(bqm_subproblem_state.subproblem.variables)
+            global_indices = self._variable_maps[prog_id]
+            var_to_val = {v: solution[gi] for v, gi in zip(variables, global_indices)}
 
             sample_set = dimod.SampleSet.from_samples(
                 dimod.as_samples(var_to_val), "BINARY", 0

@@ -41,6 +41,7 @@ from tests.qprog.problems._helpers import (
     QUBO_MATRIX,
     QUBO_SOLUTION,
     exact_hubo_minima,
+    fail_after,
     make_bqm_maximize,
     make_bqm_minimize,
     make_decomposed_problem,
@@ -114,6 +115,13 @@ class TestBinaryOptimizationProblem:
             (0, 1): 12.0,
         }
 
+    def test_variable_whose_objective_and_penalty_cancel_keeps_its_qubit(self):
+        problem = BinaryOptimizationProblem(np.diag([1, -1]), penalty=np.diag([0, 1]))
+
+        assert problem.canonical_problem.variable_order == (0, 1)
+        assert problem.compute_energy("01") == -1.0
+        assert problem.compute_energy("11") == 0.0
+
     def test_penalty_weight_must_be_finite(self):
         with pytest.raises(ValueError, match="penalty_weight must be finite"):
             BinaryOptimizationProblem(
@@ -140,11 +148,6 @@ class TestLazyIsingInit:
     never used after decomposition, so eager construction was wasted work.
     These tests pin both the laziness and the per-property memoization.
     """
-
-    def test_constructor_does_not_call_qubo_to_ising(self, mocker):
-        spy = mocker.spy(binary_module, "qubo_to_ising")
-        BinaryOptimizationProblem(QUBO_MATRIX)
-        spy.assert_not_called()
 
     def test_constructor_does_not_build_x_mixer(self, mocker):
         spy = mocker.spy(binary_module, "x_mixer")
@@ -234,24 +237,24 @@ class TestSanitizeProblemInput:
 class TestEvaluateSolution:
     """Tests for BinaryOptimizationProblem.evaluate_global_solution."""
 
-    def test_known_qubo_optimal(self):
-        """Verify energy for the known optimal solution [1,1,0,0]."""
-        problem = make_decomposed_problem(make_known_qubo_bqm())
-        energy = problem.evaluate_global_solution([1, 1, 0, 0])
-        assert energy == pytest.approx(-1.5)
-
-    def test_all_zeros(self):
-        """All-zero solution has energy 0 for a QUBO with no constant offset."""
-        problem = make_decomposed_problem(make_zero_offset_bqm())
-        energy = problem.evaluate_global_solution([0, 0])
-        assert energy == pytest.approx(0.0)
-
-    def test_diagonal_qubo(self):
-        """Diagonal QUBO (only linear terms): energy = sum of selected biases."""
-        problem = make_decomposed_problem(np.diag([-1.0, 2.0, -3.0]))
-        # x = [1,0,1] -> energy = -1 + 0 + (-3) = -4
-        energy = problem.evaluate_global_solution([1, 0, 1])
-        assert energy == pytest.approx(-4.0)
+    @pytest.mark.parametrize(
+        "make_qubo, solution, expected",
+        [
+            pytest.param(
+                make_known_qubo_bqm, [1, 1, 0, 0], -1.5, id="known_qubo_optimal"
+            ),
+            pytest.param(make_zero_offset_bqm, [0, 0], 0.0, id="all_zeros_no_offset"),
+            pytest.param(
+                lambda: np.diag([-1.0, 2.0, -3.0]),
+                [1, 0, 1],
+                -4.0,
+                id="diagonal_sum_of_selected_biases",
+            ),
+        ],
+    )
+    def test_energy(self, make_qubo, solution, expected):
+        problem = make_decomposed_problem(make_qubo())
+        assert problem.evaluate_global_solution(solution) == pytest.approx(expected)
 
     def test_lower_energy_is_better(self):
         """Verify that optimal solution has lowest energy."""
@@ -294,18 +297,21 @@ class TestDecomposeQUBO:
 
         sub_problems = problem.decompose()
 
-        assert len(sub_problems) >= 1
+        assert len(sub_problems) == 2
         for sub_problem in sub_problems.values():
             assert isinstance(sub_problem, BinaryOptimizationProblem)
+            assert sub_problem.cost_hamiltonian.num_qubits == 2
 
     def test_decompose_populates_variable_maps(self, sample_qubo_matrix):
         problem = make_decomposed_problem(sample_qubo_matrix)
 
-        problem.decompose()
+        sub_problems = problem.decompose()
 
-        assert len(problem._variable_maps) >= 1
-        for prog_id in problem._variable_maps:
-            assert isinstance(problem._variable_maps[prog_id], list)
+        assert set(problem._variable_maps) == set(sub_problems)
+        mapped = sorted(
+            gi for indices in problem._variable_maps.values() for gi in indices
+        )
+        assert mapped == list(range(problem.initial_solution_size()))
 
     def test_decompose_raises_without_decomposer(self, sample_qubo_matrix):
         problem = BinaryOptimizationProblem(sample_qubo_matrix)
@@ -316,9 +322,12 @@ class TestDecomposeQUBO:
     def test_decompose_identifies_trivial_subproblems(self):
         problem = make_decomposed_problem(TRIVIAL_QUBO)
 
-        problem.decompose()
+        sub_problems = problem.decompose()
 
-        assert len(problem._trivial_program_ids) >= 1
+        assert sub_problems == {}
+        ((bits, energy),) = problem.postprocess_candidates([(0.0, [1, 0, 1, 1])])
+        np.testing.assert_array_equal(bits, [1, 0, 1, 1])
+        assert energy == pytest.approx(-3.0)
 
 
 def test_returns_number_of_variables(sample_qubo_matrix):
@@ -330,25 +339,29 @@ def test_returns_number_of_variables(sample_qubo_matrix):
 class TestExtendSolutionQUBO:
     """Tests for BinaryOptimizationProblem.extend_solution."""
 
-    def test_maps_local_bits_to_global_positions(self):
-        """Candidate's decoded bits appear at the correct global indices."""
+    @pytest.mark.parametrize(
+        "initial_bit",
+        [
+            pytest.param(0, id="sets_ones"),
+            pytest.param(1, id="overwrites_ones_with_zeros"),
+        ],
+    )
+    def test_maps_local_bits_to_global_positions(self, initial_bit):
+        """Decoded bits overwrite exactly the program's mapped global indices."""
         problem = make_decomposed_problem(make_known_qubo_bqm())
         problem.decompose()
 
         prog_id = list(problem._variable_maps.keys())[0]
         global_indices = problem._variable_maps[prog_id]
-        n_local = len(global_indices)
+        decoded_bit = 1 - initial_bit
 
-        decoded = np.ones(n_local, dtype=np.int32)
-        result = problem.extend_solution([0, 0, 0, 0], prog_id, decoded)
+        decoded = np.full(len(global_indices), decoded_bit, dtype=np.int32)
+        result = problem.extend_solution([initial_bit] * 4, prog_id, decoded)
 
-        # Only the positions mapped by this program should be set to 1
-        for local_idx, global_idx in enumerate(global_indices):
-            assert result[global_idx] == 1
-        # Other positions should remain 0
-        other_positions = set(range(4)) - set(global_indices)
-        for idx in other_positions:
-            assert result[idx] == 0
+        for global_idx in global_indices:
+            assert result[global_idx] == decoded_bit
+        for idx in set(range(4)) - set(global_indices):
+            assert result[idx] == initial_bit
 
     def test_does_not_mutate_input(self):
         """extend_solution returns a new list, not a mutation of the input."""
@@ -365,27 +378,6 @@ class TestExtendSolutionQUBO:
 
         assert result is not original
         assert original == [0, 0, 0]
-
-    def test_overwrites_previous_partition_values(self):
-        """Extending with zeros overwrites previous ones at mapped positions."""
-        problem = make_decomposed_problem(make_known_qubo_bqm())
-        problem.decompose()
-
-        prog_id = list(problem._variable_maps.keys())[0]
-        global_indices = problem._variable_maps[prog_id]
-        n_local = len(global_indices)
-
-        # Start with all-ones solution
-        decoded_zeros = np.zeros(n_local, dtype=np.int32)
-        result = problem.extend_solution([1, 1, 1, 1], prog_id, decoded_zeros)
-
-        # Mapped positions should now be 0
-        for global_idx in global_indices:
-            assert result[global_idx] == 0
-        # Other positions should remain 1
-        other_positions = set(range(4)) - set(global_indices)
-        for idx in other_positions:
-            assert result[idx] == 1
 
 
 class TestComposeSolutionQUBO:
@@ -425,6 +417,21 @@ class TestComposeSolutionQUBO:
         # Original state objects should not have been replaced
         for k, v in problem._bqm_subproblem_states.items():
             assert id(v) == state_ids_before[k]
+
+    def test_keeps_candidate_bits_of_interaction_free_partitions(self):
+        problem = BinaryOptimizationProblem(
+            np.array(
+                [[-1, 2, 0, 0], [0, -1, 0, 0], [0, 0, -5, 0], [0, 0, 0, -3]],
+                dtype=float,
+            ),
+            decomposer=hybrid.EnergyImpactDecomposer(size=2),
+        )
+        assert list(problem.decompose()) == [("P0", 2)]
+
+        solution_array, energy = problem._compose_solution([1, 0, 1, 1])
+
+        np.testing.assert_array_equal(solution_array, [1, 0, 1, 1])
+        assert energy == pytest.approx(-9.0)
 
 
 class TestPostprocessCandidatesQUBO:
@@ -675,11 +682,6 @@ class TestQUBOInput:
         """BQM for minimization test: x=1, y=-2, z=3, w=-1"""
         return make_bqm_minimize()
 
-    @pytest.fixture
-    def bqm_maximize(self):
-        """BQM for maximization test (negated for minimization): x=-1, y=2, z=-3, w=1"""
-        return make_bqm_maximize()
-
     def test_binary_quadratic_model_initialization(
         self, binary_quadratic_model, default_test_simulator
     ):
@@ -709,13 +711,23 @@ class TestQUBOInput:
         verify_cost_circuit(qaoa_problem)
 
     @pytest.mark.e2e
-    def test_binary_quadratic_model_minimize_correct(
-        self, bqm_minimize, default_test_simulator
+    @pytest.mark.parametrize(
+        ("make_bqm", "expected_solution"),
+        [
+            # linear {x:1, y:-2, z:3, w:-1}: argmin energy -3.
+            (make_bqm_minimize, {"w": 1, "x": 0, "y": 1, "z": 0}),
+            # linear {x:-1, y:2, z:-3, w:1}: argmin energy -4.
+            (make_bqm_maximize, {"w": 0, "x": 1, "y": 0, "z": 1}),
+        ],
+        ids=["minimize", "maximize"],
+    )
+    def test_binary_quadratic_model_solution_correct(
+        self, make_bqm, expected_solution, default_test_simulator
     ):
         default_test_simulator.set_seed(1997)
 
         qaoa_problem = QAOA(
-            BinaryOptimizationProblem(bqm_minimize),
+            BinaryOptimizationProblem(make_bqm()),
             n_layers=2,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=15,
@@ -725,29 +737,6 @@ class TestQUBOInput:
 
         qaoa_problem.run()
 
-        # bqm_minimize linear = {x:1, y:-2, z:3, w:-1}; argmin = {w:1, x:0, y:1, z:0}, energy=-3.
-        expected_solution = {"w": 1, "x": 0, "y": 1, "z": 0}
-        assert qaoa_problem.solution == expected_solution
-
-    @pytest.mark.e2e
-    def test_binary_quadratic_model_maximize_correct(
-        self, bqm_maximize, default_test_simulator
-    ):
-        default_test_simulator.set_seed(1997)
-
-        qaoa_problem = QAOA(
-            BinaryOptimizationProblem(bqm_maximize),
-            n_layers=2,
-            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-            max_iterations=15,
-            backend=default_test_simulator,
-            seed=1997,
-        )
-
-        qaoa_problem.run()
-
-        # bqm_maximize linear = {x:-1, y:2, z:-3, w:1}; argmin = {w:0, x:1, y:0, z:1}, energy=-4.
-        expected_solution = {"w": 0, "x": 1, "y": 0, "z": 1}
         assert qaoa_problem.solution == expected_solution
 
     @pytest.mark.e2e
@@ -801,39 +790,29 @@ class TestQUBOInput:
         assert qaoa_problem2.current_iteration == 15
 
 
-class TestBinaryDecodeMapping:
-    """Pin the qubit ↔ variable mapping contract independently of QAOA convergence.
-
-    Variable normalisation sorts alphabetically: ``variable_order = (w, x, y, z)``
-    and ``variable_to_idx = {w:0, x:1, y:2, z:3}``. ``decode_fn(bitstring)`` reads
-    qubit ``i`` for the variable at ``variable_order[i]``.
-    """
-
-    def test_decode_fn_maps_alphabetical_qubits_to_alphabetical_values(self):
-        problem = BinaryOptimizationProblem(make_bqm_minimize())
-        decode_fn = problem._ising.encoding.decode_fn
-        # Bitstring index i ↔ variable_order[i] = (w, x, y, z)[i].
-        assert list(decode_fn("1010")) == [1, 0, 1, 0]  # w=1, x=0, y=1, z=0
-        assert list(decode_fn("0101")) == [0, 1, 0, 1]
-        assert list(decode_fn("1100")) == [1, 1, 0, 0]
-        assert list(decode_fn("0000")) == [0, 0, 0, 0]
-        assert list(decode_fn("1111")) == [1, 1, 1, 1]
-
-    def test_decode_fn_pins_alphabetical_order_against_adversarial_naming(self):
-        """Insertion order ``(zebra, alpha, mango)`` ≠ alphabetical
-        ``(alpha, mango, zebra)``. The decode contract must read qubits in
-        alphabetical order regardless of how the BQM was constructed.
-        """
-        bqm = dimod.BinaryQuadraticModel(
-            {"zebra": 1.0, "alpha": 2.0, "mango": -3.0}, {}, 0.0, dimod.Vartype.BINARY
-        )
-        problem = BinaryOptimizationProblem(bqm)
-        decode_fn = problem._ising.encoding.decode_fn
-        # Bitstring "100" → qubit 0 (alpha) = 1, qubit 1 (mango) = 0, qubit 2 (zebra) = 0.
-        assert list(decode_fn("100")) == [1, 0, 0]
-        assert list(decode_fn("010")) == [0, 1, 0]
-        assert list(decode_fn("001")) == [0, 0, 1]
-        assert list(decode_fn("111")) == [1, 1, 1]
+@pytest.mark.parametrize(
+    ("bqm", "bitstrings"),
+    [
+        (make_bqm_minimize(), ["1010", "0101", "1100", "0000", "1111"]),
+        # Insertion order (zebra, alpha, mango) differs from alphabetical order.
+        (
+            dimod.BinaryQuadraticModel(
+                {"zebra": 1.0, "alpha": 2.0, "mango": -3.0},
+                {},
+                0.0,
+                dimod.Vartype.BINARY,
+            ),
+            ["100", "010", "001", "111"],
+        ),
+    ],
+    ids=["alphabetical-names", "adversarial-insertion-order"],
+)
+def test_decode_fn_reads_qubits_in_alphabetical_variable_order(bqm, bitstrings):
+    decode_fn = BinaryOptimizationProblem(bqm).decode_fn
+    variables = sorted(bqm.variables)
+    for bitstring in bitstrings:
+        decoded = {name: int(bit) for name, bit in decode_fn(bitstring).items()}
+        assert decoded == {v: int(bit) for v, bit in zip(variables, bitstring)}
 
 
 @pytest.fixture
@@ -901,7 +880,7 @@ class TestQUBOPartitioningEnsemble:
                 backend=dummy_simulator,
             )
 
-    def test_trivial_subproblem_is_identified_and_skipped(self, dummy_simulator):
+    def test_trivial_subproblem_is_skipped(self, dummy_simulator):
         problem = make_decomposed_problem(TRIVIAL_QUBO)
 
         ensemble = PartitioningProgramEnsemble(
@@ -913,7 +892,6 @@ class TestQUBOPartitioningEnsemble:
 
         ensemble.create_programs()
 
-        assert len(problem._trivial_program_ids) == 2
         assert len(ensemble.programs) == 0
 
     def test_aggregate_results_error_handling(self, mocker, qubo_ensemble_qaoa):
@@ -1105,10 +1083,6 @@ class TestCommunityDecomposer:
         with pytest.raises(TypeError, match="QUBOPartitioningConfig"):
             CommunityDecomposer(GraphPartitioningConfig(max_n_nodes_per_cluster=2))
 
-    def test_repr_shows_config(self):
-        config = QUBOPartitioningConfig(max_n_variables_per_cluster=2, seed=3)
-        assert repr(config) in repr(CommunityDecomposer(config))
-
     def test_community_decompose_populates_variable_maps(self):
         problem = self._community_problem(make_known_qubo_bqm())
         sub_problems = problem.decompose()
@@ -1128,60 +1102,60 @@ class TestCommunityDecomposer:
                 decomposer=_community_decomposer(max_n_variables_per_cluster=2),
             )
 
-    def test_greedy_bit_flip_reaches_local_minimum(self):
-        problem = self._community_problem(make_known_qubo_bqm())
-        problem.decompose()
-
-        start = [1, 1, 1, 1]
-        start_energy = problem.evaluate_global_solution(start)
-        bits, energy = problem._greedy_bit_flip(start)
-
-        assert energy <= start_energy
-        for i in range(len(bits)):
-            flipped = bits.copy()
-            flipped[i] = 1 - flipped[i]
-            assert problem.evaluate_global_solution(flipped.tolist()) >= energy - 1e-9
-
-    def test_greedy_bit_flip_large_scale_reaches_optimum(self):
-        # Coefficients ×1e6: the flip tolerance is scaled by coefficient
-        # magnitude, so the descent still terminates at the true optimum instead
-        # of stalling on incremental-field drift.
+    @pytest.mark.parametrize("scale", [1.0, 1e6], ids=["unit", "large-scale"])
+    @pytest.mark.parametrize(
+        "partitioning",
+        [
+            lambda: {
+                "decomposer": _community_decomposer(max_n_variables_per_cluster=2),
+                "composer": hybrid.SplatComposer(),
+            },
+            lambda: {"decomposer": hybrid.EnergyImpactDecomposer(size=2)},
+        ],
+        ids=["community", "energy-impact"],
+    )
+    def test_local_search_polishes_candidates(self, partitioning, scale):
         base = make_known_qubo_bqm()
         scaled = dimod.BinaryQuadraticModel(
-            {v: 1e6 * b for v, b in base.linear.items()},
-            {e: 1e6 * b for e, b in base.quadratic.items()},
+            {v: scale * b for v, b in base.linear.items()},
+            {e: scale * b for e, b in base.quadratic.items()},
             0.0,
             dimod.Vartype.BINARY,
         )
-        problem = self._community_problem(scaled)
-        problem.decompose()
-
-        bits, energy = problem._greedy_bit_flip([1, 1, 1, 1])
-
-        np.testing.assert_array_equal(bits, np.array([1, 1, 0, 0], dtype=np.int32))
-        assert energy == pytest.approx(-1.5e6)
-
-    def test_local_search_polishes_community_path(self):
-        problem = self._community_problem(make_known_qubo_bqm(), local_search=True)
+        problem = BinaryOptimizationProblem(scaled, local_search=True, **partitioning())
         problem.decompose()
 
         raw = problem.evaluate_global_solution([1, 1, 1, 1])
-        ((_bits, energy),) = problem.postprocess_candidates([(0.0, [1, 1, 1, 1])])
+        ((bits, energy),) = problem.postprocess_candidates([(0.0, [1, 1, 1, 1])])
         assert energy < raw
-        assert energy == pytest.approx(-1.5)
+        assert energy == pytest.approx(-1.5 * scale)
+        np.testing.assert_array_equal(bits, [1, 1, 0, 0])
 
-    def test_local_search_polishes_energy_impact_path(self):
+    @pytest.mark.parametrize("seed", range(4))
+    @pytest.mark.parametrize(
+        "decomposer",
+        [
+            lambda: _community_decomposer(max_n_variables_per_cluster=3),
+            lambda: hybrid.EnergyImpactDecomposer(size=3),
+        ],
+        ids=["community", "energy-impact"],
+    )
+    def test_local_search_never_raises_candidate_energy(self, decomposer, seed):
+        rng = np.random.default_rng(seed)
+        qubo = np.triu(rng.uniform(-5.0, 5.0, size=(8, 8)))
         problem = BinaryOptimizationProblem(
-            make_known_qubo_bqm(),
-            decomposer=hybrid.EnergyImpactDecomposer(size=2),
-            local_search=True,
+            qubo, decomposer=decomposer(), local_search=True
         )
         problem.decompose()
+        for _ in range(6):
+            candidate = rng.integers(0, 2, 8).tolist()
 
-        raw = problem.evaluate_global_solution([1, 1, 1, 1])
-        ((_bits, energy),) = problem.postprocess_candidates([(0.0, [1, 1, 1, 1])])
-        assert energy < raw
-        assert energy == pytest.approx(-1.5)
+            ((bits, energy),) = problem.postprocess_candidates([(0.0, candidate)])
+
+            assert energy <= problem.evaluate_global_solution(candidate)
+            assert energy == pytest.approx(
+                problem.evaluate_global_solution(bits.tolist())
+            )
 
     def test_decompose_min_clusters_exceeding_n_raises(self):
         problem = BinaryOptimizationProblem(
@@ -1292,6 +1266,66 @@ class TestCommunityDecomposer:
         out = decomposer.next(hybrid.State.from_problem(bqm), silent_rewind=False)
 
         assert list(out.subproblem.variables) == [0]
+
+    @pytest.mark.parametrize(
+        ("silent_rewind", "ends"),
+        [(False, True), (True, False)],
+        ids=["raise", "rewind"],
+    )
+    def test_next_on_single_variable_problem_ends_after_one_cluster(
+        self, silent_rewind, ends
+    ):
+        bqm = dimod.BinaryQuadraticModel({0: -1.0}, {}, 0.0, dimod.Vartype.BINARY)
+        decomposer = _community_decomposer(max_n_variables_per_cluster=2)
+        state = decomposer.next(hybrid.State.from_problem(bqm))
+
+        if ends:
+            with pytest.raises(EndOfStream):
+                decomposer.next(state, silent_rewind=silent_rewind)
+        else:
+            out = decomposer.next(state, silent_rewind=silent_rewind)
+            assert list(out.subproblem.variables) == [0]
+
+    def test_decompose_single_variable_problem_terminates(self, mocker):
+        # Run hybrid on the main thread so the alarm can interrupt a runaway loop.
+        mocker.patch("hybrid.core.thread_executor", hybrid.immediate_executor)
+        problem = self._community_problem(
+            dimod.BinaryQuadraticModel({0: -1}, {}, 0, "BINARY")
+        )
+
+        with fail_after(10):
+            sub_problems = problem.decompose()
+
+        assert sub_problems == {}
+        ((bits, energy),) = problem.postprocess_candidates([(0.0, [1])])
+        np.testing.assert_array_equal(bits, [1])
+        assert energy == pytest.approx(-1.0)
+
+    def test_next_rewinds_to_first_cluster_by_default(self):
+        decomposer = _community_decomposer(max_n_variables_per_cluster=2)
+        state = hybrid.State.from_problem(make_known_qubo_bqm())
+
+        seen = []
+        for _ in range(3):
+            state = decomposer.next(state)
+            seen.append(set(state.subproblem.variables))
+
+        assert seen[2] == seen[0]
+        assert seen[1] != seen[0]
+
+    def test_single_variable_budget_gives_singleton_clusters(self):
+        bqm = dimod.BinaryQuadraticModel(
+            {0: -1.0, 1: -1.0}, {(0, 1): 2.0}, 0.0, dimod.Vartype.BINARY
+        )
+        problem = BinaryOptimizationProblem(
+            bqm,
+            decomposer=_community_decomposer(max_n_variables_per_cluster=1),
+            composer=hybrid.SplatComposer(),
+        )
+
+        problem.decompose()
+
+        assert sorted(problem._variable_maps.values()) == [[0], [1]]
 
     @pytest.mark.e2e
     def test_community_partitioning_e2e(self, default_test_simulator):

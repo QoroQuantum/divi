@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import re
 import sys
 import warnings
 from collections.abc import Sequence
@@ -13,30 +14,36 @@ except ImportError:
 
 PYMETIS_AVAILABLE = pymetis is not None
 
+import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 import pytest
 import rustworkx as rx
+from matplotlib.colors import to_rgba
 
 _skip_no_pymetis = pytest.mark.skipif(
     sys.platform == "win32" and not PYMETIS_AVAILABLE,
     reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
 )
 
+from divi.qprog import GraphProblemTypes
 from divi.qprog.problems import (
     GraphPartitioningConfig,
     MaxCutProblem,
     _graph_partitioning_utils,
     draw_partitions,
 )
+from divi.qprog.problems._graph_hamiltonians import _node_ids
 from divi.qprog.problems._graph_partitioning_utils import (
     _apply_split_with_relabel,
     _bisect_with_predicate,
+    _canonical_edges,
     _merge_edgeless_clusters,
     _node_partition_graph,
-    _pygraph_to_nx,
     _relabeled_subgraph_with_ids,
     _split_graph,
 )
+from tests._helpers import exact_match
 
 
 def _make_pygraph_cycle(n: int) -> rx.PyGraph:
@@ -78,6 +85,46 @@ GRAPH_FACTORIES = [
         id="rx",
     ),
 ]
+
+
+def _sorted_id_groups(clusters) -> list[list]:
+    return sorted(sorted(ids) for _sub, ids in clusters)
+
+
+def _assert_balanced_cycle_arcs(cycle: nx.Graph, clusters, arc_size: int):
+    """Clusters partition ``cycle`` into connected arcs of ``arc_size`` nodes, cutting
+    one edge per arc."""
+    id_groups = [list(ids) for _sub, ids in clusters]
+    assert sorted(i for ids in id_groups for i in ids) == list(cycle.nodes)
+    assert [len(ids) for ids in id_groups] == [arc_size] * len(id_groups)
+    assert all(nx.is_connected(cycle.subgraph(ids)) for ids in id_groups)
+    internal = sum(cycle.subgraph(ids).number_of_edges() for ids in id_groups)
+    assert cycle.number_of_edges() - internal == len(id_groups)
+
+
+def _split_nodes_at(graph, cut: int):
+    """Split ``graph`` into its first ``cut`` nodes and the rest, relabeled ``0..M-1``."""
+    nodes = list(graph.nodes)
+    halves = (nodes[:cut], nodes[cut:])
+    return tuple(
+        (
+            nx.relabel_nodes(
+                graph.subgraph(part).copy(), {n: i for i, n in enumerate(part)}
+            ),
+            part,
+        )
+        for part in halves
+    )
+
+
+def _split_halves(graph, _config):
+    return _split_nodes_at(graph, len(graph) // 2)
+
+
+def _patch_split_graph(mocker, side_effect):
+    return mocker.patch(
+        f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=side_effect
+    )
 
 
 def _node_set(graph) -> set:
@@ -132,66 +179,48 @@ def _raise_qubit_ceiling(mocker):
 
 
 class TestGraphPartitioningConfig:
-    def test_valid_max_nodes_only(self):
-        config = GraphPartitioningConfig(max_n_nodes_per_cluster=10)
-        assert config.max_n_nodes_per_cluster == 10
-        assert config.minimum_n_clusters is None
-
-    def test_valid_min_clusters_only(self):
-        config = GraphPartitioningConfig(minimum_n_clusters=2)
-        assert config.minimum_n_clusters == 2
-        assert config.max_n_nodes_per_cluster is None
-
-    def test_valid_both_constraints(self):
-        config = GraphPartitioningConfig(
-            max_n_nodes_per_cluster=5,
-            minimum_n_clusters=3,
-            partitioning_algorithm="metis",
-        )
-        assert config.max_n_nodes_per_cluster == 5
-        assert config.minimum_n_clusters == 3
-        assert config.partitioning_algorithm == "metis"
-
-    def test_default_algorithm(self):
-        # Introspect the default value from the dataclass field
-        field_info = GraphPartitioningConfig.__dataclass_fields__[
-            "partitioning_algorithm"
-        ]
-        default_value = field_info.default
-
-        config = GraphPartitioningConfig(max_n_nodes_per_cluster=1)
-        assert config.partitioning_algorithm == default_value
-
     def test_invalid_no_constraints(self):
         with pytest.raises(
             ValueError, match="At least one constraint must be specified."
         ):
             GraphPartitioningConfig()
 
-    def test_invalid_min_clusters_zero(self):
-        with pytest.raises(
-            ValueError, match="'minimum_n_clusters' must be a positive integer."
-        ):
-            GraphPartitioningConfig(minimum_n_clusters=0)
-
-    def test_invalid_max_nodes_zero(self):
-        with pytest.raises(
-            ValueError, match="'max_n_nodes_per_cluster' must be a positive number."
-        ):
-            GraphPartitioningConfig(max_n_nodes_per_cluster=0)
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            (
+                {"minimum_n_clusters": 0},
+                "'minimum_n_clusters' must be a positive integer.",
+            ),
+            (
+                {"minimum_n_clusters": -5},
+                "'minimum_n_clusters' must be a positive integer.",
+            ),
+            (
+                {"max_n_nodes_per_cluster": 0},
+                "'max_n_nodes_per_cluster' must be a positive number.",
+            ),
+            (
+                {"max_n_nodes_per_cluster": -1},
+                "'max_n_nodes_per_cluster' must be a positive number.",
+            ),
+        ],
+        ids=[
+            "min-clusters-zero",
+            "min-clusters-negative",
+            "max-nodes-zero",
+            "max-nodes-negative",
+        ],
+    )
+    def test_invalid_non_positive_constraint(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            GraphPartitioningConfig(**kwargs)
 
     def test_invalid_algorithm(self):
         with pytest.raises(ValueError, match="Unsupported partitioning algorithm:.*"):
             GraphPartitioningConfig(
                 max_n_nodes_per_cluster=3, partitioning_algorithm="louvain"
             )
-
-    def test_negative_values(self):
-        with pytest.raises(ValueError):
-            GraphPartitioningConfig(minimum_n_clusters=-5)
-
-        with pytest.raises(ValueError):
-            GraphPartitioningConfig(max_n_nodes_per_cluster=-1)
 
     def test_valid_algorithm_variants(self):
         for algo in ["spectral", "metis", "kernighan_lin"]:
@@ -231,10 +260,58 @@ class TestGraphPartitioningConfig:
             mock_part_graph.assert_called_once()
 
     def test_apply_split_with_relabel_invalid_algorithm_raises(self):
-        with pytest.raises(RuntimeError, match="Relabeling only needed"):
+        with pytest.raises(
+            RuntimeError,
+            match=exact_match("Relabeling only needed for `spectral` and `metis`."),
+        ):
             _apply_split_with_relabel(
                 nx.path_graph(4), algorithm="kernighan_lin", n_clusters=2
             )
+
+    @pytest.mark.parametrize(
+        "pymetis_present",
+        [
+            pytest.param(
+                True,
+                marks=pytest.mark.skipif(not PYMETIS_AVAILABLE, reason="needs pymetis"),
+                id="present",
+            ),
+            pytest.param(False, id="absent"),
+        ],
+    )
+    def test_metis_windows_guard(self, pymetis_present, mocker):
+        mocker.patch.object(_graph_partitioning_utils.sys, "platform", "win32")
+        probe = mocker.patch.object(
+            _graph_partitioning_utils,
+            "optional_module",
+            return_value=object() if pymetis_present else None,
+        )
+        G = nx.path_graph(6)
+
+        if pymetis_present:
+            mocker.patch("pymetis.part_graph", return_value=(None, [0, 0, 0, 1, 1, 1]))
+            clusters = _apply_split_with_relabel(G, algorithm="metis", n_clusters=2)
+            _assert_partitions_correct(G, clusters, expected_n_clusters=2)
+        else:
+            with pytest.raises(
+                ImportError,
+                match=exact_match(
+                    "The 'metis' partitioning algorithm needs pymetis, which is not "
+                    "installed on Windows by default; install it via conda: "
+                    "conda install -c conda-forge pymetis. Otherwise use 'spectral' "
+                    "or 'kernighan_lin' instead."
+                ),
+            ):
+                _apply_split_with_relabel(G, algorithm="metis", n_clusters=2)
+
+        probe.assert_called_once_with("pymetis")
+
+    def test_spectral_split_of_cycle_is_contiguous_arcs(self):
+        cycle = nx.cycle_graph(12)
+
+        clusters = _apply_split_with_relabel(cycle, "spectral", 3)
+
+        _assert_balanced_cycle_arcs(cycle, clusters, arc_size=4)
 
     def test_apply_split_with_relabel_drops_empty_clusters_with_warning(self, mocker):
         G = nx.cycle_graph(6)
@@ -244,7 +321,14 @@ class TestGraphPartitioningConfig:
         # All 6 nodes assigned to cluster 0; cluster 1 is empty.
         mock_cls.return_value.fit_predict.return_value = [0, 0, 0, 0, 0, 0]
 
-        with pytest.warns(UserWarning, match="empty clusters were dropped"):
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "_apply_split_with_relabel: 'spectral' requested 2 clusters but "
+                "produced 1 non-empty cluster(s); empty clusters were dropped from "
+                "the result."
+            ),
+        ):
             result = _apply_split_with_relabel(G, algorithm="spectral", n_clusters=2)
 
         assert len(result) == 1
@@ -253,30 +337,26 @@ class TestGraphPartitioningConfig:
         assert set(ids) == set(G.nodes())
 
     @pytest.mark.parametrize("algorithm", ["metis", "spectral"])
-    def test_split_graph(self, algorithm, mocker):
-        """_split_graph routes to _apply_split_with_relabel with the correct args.
-
-        Note: this is a delegation test. _split_graph is a thin router; the
-        real partitioning logic is tested in test_apply_split_with_relabel_*.
-        """
+    @pytest.mark.parametrize(
+        ("constraint", "expected_n_clusters"),
+        [
+            pytest.param({"minimum_n_clusters": 3}, 3, id="minimum"),
+            pytest.param({"max_n_nodes_per_cluster": 4}, 2, id="bisection-default"),
+        ],
+    )
+    def test_split_graph(self, algorithm, constraint, expected_n_clusters, mocker):
+        """_split_graph routes to _apply_split_with_relabel with the correct args."""
         G = nx.path_graph(9)
-        config = GraphPartitioningConfig(
-            minimum_n_clusters=3, partitioning_algorithm=algorithm
-        )
+        config = GraphPartitioningConfig(**constraint, partitioning_algorithm=algorithm)
 
         mock_split = mocker.patch(
             f"{_apply_split_with_relabel.__module__}.{_apply_split_with_relabel.__name__}"
         )
-        mock_split.return_value = (
-            (G.subgraph([0, 1, 2]).copy(), [0, 1, 2]),
-            (G.subgraph([3, 4, 5]).copy(), [3, 4, 5]),
-            (G.subgraph([6, 7, 8]).copy(), [6, 7, 8]),
-        )
 
         result = _split_graph(G, config)
 
-        assert len(result) == 3
-        mock_split.assert_called_once_with(G, algorithm, 3)
+        assert result is mock_split.return_value
+        mock_split.assert_called_once_with(G, algorithm, expected_n_clusters)
 
     def test_split_graph_kernighan_lin(self, mocker):
         G = nx.path_graph(6)
@@ -290,7 +370,10 @@ class TestGraphPartitioningConfig:
         assert isinstance(result, Sequence)
         assert len(result) == 2
         assert set(result[0][1]) | set(result[1][1]) == set(G.nodes)
-        split.assert_called_once_with(G, seed=0)
+        split.assert_called_once()
+        (kl_graph,), kwargs = split.call_args
+        assert kwargs == {"seed": 0}
+        assert nx.utils.graphs_equal(kl_graph, G)
 
     def test_split_graph_kernighan_lin_returns_copies(self):
         """Subgraphs returned by _split_graph are independent copies, not views."""
@@ -307,7 +390,7 @@ class TestGraphPartitioningConfig:
         assert G.number_of_nodes() == original_node_count
 
     def test_split_graph_kernighan_lin_preserves_pygraph_type(self):
-        """KL round-trips PyGraph input through nx and back to PyGraph."""
+        """KL on PyGraph input returns rustworkx subgraphs."""
         G = _make_pygraph_path(8)
         config = GraphPartitioningConfig(
             minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
@@ -395,113 +478,117 @@ class TestGraphPartitioningConfig:
         assert len(result) == 1
         _assert_partitions_correct(G, [(result[0][2], result[0][3])], 1)
 
-    def test_single_split_predicate(self, mocker):
-        G = nx.path_graph(4)
-        initial = [(-G.number_of_nodes(), 0, G, list(G.nodes()))]
-
-        split_called = False
-
-        def predicate(subgraph, others):
-            # Split only the initial graph, not the new ones
-            nonlocal split_called
-
-            if not split_called:
-                split_called = True
-                return True
-            return False
-
-        # We'll mock _split_graph to split G into two halves with cluster IDs.
-        # Each child subgraph is relabeled to 0..M-1 (the partitioner contract).
-        def fake_split(graph, config):
-            sub_lower = nx.relabel_nodes(graph.subgraph([0, 1]).copy(), {0: 0, 1: 1})
-            sub_upper = nx.relabel_nodes(graph.subgraph([2, 3]).copy(), {2: 0, 3: 1})
-            return ((sub_lower, [0, 1]), (sub_upper, [2, 3]))
-
-        mocker.patch(
-            f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=fake_split
-        )
-
-        result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
-
-        # After one split, we expect 2 subgraphs
-        assert len(result) == 2
-        _assert_partitions_correct(G, [(r[2], r[3]) for r in result], 2)
-
     def test_multiple_splits_until_predicate_false(self, mocker):
         G = nx.path_graph(8)
         initial = [(-G.number_of_nodes(), 0, G, list(G.nodes()))]
 
-        # We'll split any graph with more than 2 nodes into halves
         def predicate(subgraph, others):
             return subgraph.number_of_nodes() > 2
 
-        def fake_split(graph, config):
-            nodes = list(graph.nodes)
-            half = len(nodes) // 2
-            cluster_1, cluster_2 = nodes[:half], nodes[half:]
-            # Each child subgraph is relabeled to 0..M-1; the cluster lists
-            # carry the parent-frame labels for local nodes.
-            sub1 = nx.relabel_nodes(
-                graph.subgraph(cluster_1).copy(),
-                {n: i for i, n in enumerate(cluster_1)},
-            )
-            sub2 = nx.relabel_nodes(
-                graph.subgraph(cluster_2).copy(),
-                {n: i for i, n in enumerate(cluster_2)},
-            )
-            return ((sub1, cluster_1), (sub2, cluster_2))
-
-        mocker.patch(
-            f"{_split_graph.__module__}.{_split_graph.__name__}", side_effect=fake_split
-        )
+        _patch_split_graph(mocker, _split_halves)
 
         result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
 
-        # Now all subgraphs must have <= 2 nodes
         for _, _, sg, _ in result:
             assert sg.number_of_nodes() <= 2
 
         _assert_partitions_correct(G, [(r[2], r[3]) for r in result], 4)
 
-    def test_node_partition_raises_if_min_clusters_too_high(self):
-        G = nx.path_graph(5)
-        config = GraphPartitioningConfig(minimum_n_clusters=6)
+    def test_predicate_context_holds_processed_and_pending_entries(self, mocker):
+        G = nx.path_graph(6)
+        initial = [(-6, 0, G, list(G.nodes()))]
+        _patch_split_graph(
+            mocker,
+            lambda graph, _config: _split_nodes_at(
+                graph, 2 if len(graph) > 2 else len(graph) // 2
+            ),
+        )
 
-        with pytest.raises(ValueError, match="Number of requested clusters"):
+        result = _bisect_with_predicate(
+            initial, lambda _, others: len(others) < 2, partitioning_config=None
+        )
+
+        assert sorted(len(r[2]) for r in result) == [2, 2, 2]
+        _assert_partitions_correct(G, [(r[2], r[3]) for r in result], 3)
+
+    def test_bisect_with_no_partitions_returns_empty(self):
+        assert _bisect_with_predicate([], lambda _, __: True, None) == []
+
+    def test_child_counters_do_not_collide_with_initial_entries(self, mocker):
+        big, small = nx.path_graph(4), nx.path_graph(2)
+        initial = [(-4, 0, big, [0, 1, 2, 3]), (-2, 1, small, [4, 5])]
+        _patch_split_graph(mocker, _split_halves)
+
+        result = _bisect_with_predicate(
+            initial, lambda graph, _: len(graph) == 4, partitioning_config=None
+        )
+
+        assert sorted(sorted(r[3]) for r in result) == [[0, 1], [2, 3], [4, 5]]
+
+    @pytest.mark.parametrize("minimum_n_clusters", [5, 6])
+    def test_node_partition_raises_if_min_clusters_too_high(self, minimum_n_clusters):
+        G = nx.path_graph(5)
+        config = GraphPartitioningConfig(minimum_n_clusters=minimum_n_clusters)
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Number of requested clusters must be smaller than the size of "
+                "the graph, since every cluster needs at least one edge."
+            ),
+        ):
             _node_partition_graph(G, config)
 
+    def test_node_partition_of_pygraph_uses_node_indices(self):
+        g: rx.PyGraph = rx.PyGraph()
+        g.add_nodes_from(list("abcdef"))
+        for i in range(6):
+            g.add_edge(i, (i + 1) % 6, None)
+        config = GraphPartitioningConfig(
+            minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+        )
+
+        clusters = _node_partition_graph(g, config)
+
+        _assert_balanced_cycle_arcs(nx.cycle_graph(6), clusters, arc_size=3)
+
+    def test_kernighan_lin_max_nodes_bisects_path_once(self):
+        config = GraphPartitioningConfig(
+            max_n_nodes_per_cluster=4, partitioning_algorithm="kernighan_lin"
+        )
+
+        clusters = _node_partition_graph(nx.path_graph(8), config)
+
+        assert _sorted_id_groups(clusters) == [[0, 1, 2, 3], [4, 5, 6, 7]]
+
+    def test_cluster_at_qubit_ceiling_does_not_warn(self, mocker):
+        mocker.patch.object(_graph_partitioning_utils, "_MAXIMUM_AVAILABLE_QUBITS", 4)
+        config = GraphPartitioningConfig(minimum_n_clusters=1)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            clusters = _node_partition_graph(nx.path_graph(4), config)
+
+        assert len(clusters) == 1
+
     def test_partition_warns_for_oversized_clusters(self, mocker):
-        # Mock the maximum available qubits to a smaller number for the test
         mocker.patch.object(_graph_partitioning_utils, "_MAXIMUM_AVAILABLE_QUBITS", 20)
 
         graph = nx.complete_graph(40)
-        config = GraphPartitioningConfig(minimum_n_clusters=1)  # No splitting
+        config = GraphPartitioningConfig(minimum_n_clusters=1)
 
-        with pytest.warns(UserWarning, match="At least one cluster has more nodes"):
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "At least one cluster has more nodes than what can be executed on "
+                "the available backends: 20 qubits."
+            ),
+        ):
             partitions = _node_partition_graph(graph, config)
 
-        # Even with the warning, the result should be a single partition
         assert len(partitions) == 1
         assert partitions[0][0].number_of_nodes() == 40
         _assert_partitions_correct(graph, partitions)
-
-    def test_min_clusters_enforced(self, mocker):
-        graph = nx.cycle_graph(6)
-        # Mocked bisection output: each subgraph already relabeled to 0..M-1
-        # per the partitioner contract; cluster_ids carry parent-frame labels.
-        mock_bisect = mocker.patch(
-            f"{_bisect_with_predicate.__module__}.{_bisect_with_predicate.__name__}",
-            return_value=[
-                (0, 0, nx.Graph([(0, 1), (1, 2)]), [0, 1, 2]),
-                (0, 1, nx.Graph([(0, 1), (1, 2)]), [3, 4, 5]),
-            ],
-        )
-
-        config = GraphPartitioningConfig(minimum_n_clusters=2)
-        result = _node_partition_graph(graph, config)
-
-        _assert_partitions_correct(graph, result, expected_n_clusters=2)
-        assert mock_bisect.call_count >= 1
 
     def test_min_clusters_undershot_by_edgeless_merge_warns(self, mocker):
         graph = nx.cycle_graph(6)
@@ -679,7 +766,14 @@ def test_merge_edgeless_raises_when_no_cluster_has_room():
     clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
     config = GraphPartitioningConfig(max_n_nodes_per_cluster=2)
 
-    with pytest.raises(ValueError, match="no cluster has room"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Cannot merge edgeless cluster [4]: no cluster has room under "
+            "'max_n_nodes_per_cluster'=2. The graph is too dense to split this "
+            "small — raise 'max_n_nodes_per_cluster' or lower 'minimum_n_clusters'."
+        ),
+    ):
         _merge_edgeless_clusters(graph, clusters, config)
 
 
@@ -702,7 +796,25 @@ def test_merge_edgeless_warns_when_dropping_below_min_clusters():
     clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
     config = GraphPartitioningConfig(minimum_n_clusters=3)
 
-    with pytest.warns(UserWarning, match="below the requested 'minimum_n_clusters'"):
+    with pytest.warns(
+        UserWarning,
+        match=exact_match(
+            "Merging edgeless clusters left 2 cluster(s), below the requested "
+            "'minimum_n_clusters'=3."
+        ),
+    ):
+        merged = _merge_edgeless_clusters(graph, clusters, config)
+
+    assert len(merged) == 2
+
+
+def test_merge_edgeless_reaching_min_clusters_does_not_warn():
+    graph = nx.Graph([(0, 1), (2, 3), (4, 0)])
+    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
+    config = GraphPartitioningConfig(minimum_n_clusters=2)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
         merged = _merge_edgeless_clusters(graph, clusters, config)
 
     assert len(merged) == 2
@@ -714,7 +826,14 @@ def test_merge_edgeless_raises_when_every_cluster_is_edgeless():
     clusters = _clusters_from_ids(graph, [[0], [1], [2]])
     config = GraphPartitioningConfig(minimum_n_clusters=1)
 
-    with pytest.raises(ValueError, match="every cluster is edgeless"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Cannot repair the partition: every cluster is edgeless, so there is "
+            "no cluster with internal edges to merge into. The graph has too few "
+            "edges for the requested partitioning."
+        ),
+    ):
         _merge_edgeless_clusters(graph, clusters, config)
 
 
@@ -761,68 +880,64 @@ def test_decompose_survives_dense_graphs(seed):
         assert len(problem._reverse_index_maps[prog_id]) == len(sub.graph)
 
 
-class TestPyGraphToNxConversion:
-    def test_dict_payloads_pass_through(self):
-        g: rx.PyGraph = rx.PyGraph()
-        a, b, c = g.add_node("a"), g.add_node("b"), g.add_node("c")
-        g.add_edge(a, b, {"weight": 1.5, "label": "ab"})
-        g.add_edge(b, c, {"weight": 2.5})
+def _one_edge_graphs(*payloads) -> tuple[rx.PyGraph, nx.Graph]:
+    """Two-node rx graph with one edge per payload, and its nx twin."""
+    rx_graph: rx.PyGraph = rx.PyGraph()
+    rx_graph.add_nodes_from(["a", "b"])
+    nx_graph = nx.Graph()
+    nx_graph.add_nodes_from([0, 1])
+    for payload in payloads:
+        rx_graph.add_edge(1, 0, payload)
+        if isinstance(payload, dict):
+            nx_graph.add_edges_from([(1, 0, payload)])
+        elif payload is not None:
+            nx_graph.add_edge(1, 0, weight=payload)
+        else:
+            nx_graph.add_edge(1, 0)
+    return rx_graph, nx_graph
 
-        nx_g = _pygraph_to_nx(g)
 
-        assert nx_g.number_of_nodes() == 3
-        assert nx_g[a][b]["weight"] == 1.5
-        assert nx_g[a][b]["label"] == "ab"
-        assert nx_g[b][c]["weight"] == 2.5
+@pytest.mark.parametrize(
+    "payloads, expected_weight",
+    [
+        pytest.param(({"weight": 1.5, "label": "ab"},), 1.5, id="dict"),
+        pytest.param(({"label": "ab"},), None, id="dict-without-weight"),
+        pytest.param(({"u_of_edge": "x", "weight": 2.0},), 2.0, id="reserved-key"),
+        pytest.param((3.14,), 3.14, id="float"),
+        pytest.param((5,), 5.0, id="int"),
+        pytest.param((np.int64(4),), 4.0, id="numpy-int"),
+        pytest.param((None,), None, id="none"),
+        pytest.param((1.0, 2.5), 2.5, id="parallel-last-wins"),
+    ],
+)
+@pytest.mark.parametrize("backend", ["rx", "nx"])
+def test_canonical_edges_read_weights_alike_for_both_backends(
+    backend, payloads, expected_weight
+):
+    graph = dict(zip(("rx", "nx"), _one_edge_graphs(*payloads)))[backend]
 
-    @pytest.mark.parametrize(
-        "payload, expected_weight",
-        [
-            pytest.param(3.14, 3.14, id="float"),
-            pytest.param(5, 5.0, id="int"),
-        ],
-    )
-    def test_numeric_payloads_become_weight_attribute(self, payload, expected_weight):
-        g: rx.PyGraph = rx.PyGraph()
-        a, b = g.add_node("a"), g.add_node("b")
-        g.add_edge(a, b, payload)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ids, edges = _canonical_edges(graph)
 
-        nx_g = _pygraph_to_nx(g)
+    assert ids == [0, 1]
+    assert edges == [(0, 1, expected_weight)]
 
-        assert nx_g[a][b]["weight"] == pytest.approx(expected_weight)
 
-    def test_none_payload_unweighted(self):
-        g: rx.PyGraph = rx.PyGraph()
-        a, b = g.add_node("a"), g.add_node("b")
-        g.add_edge(a, b, None)
+@pytest.mark.parametrize("backend", ["rx", "nx"])
+def test_canonical_edges_warn_on_non_numeric_weight(backend):
+    graph = dict(zip(("rx", "nx"), _one_edge_graphs(("custom", "tuple"))))[backend]
 
-        nx_g = _pygraph_to_nx(g)
+    with pytest.warns(
+        UserWarning,
+        match=exact_match(
+            "Edge weights of type(s) ['tuple'] are not real numbers; graph "
+            "partitioning treats those edges as unweighted."
+        ),
+    ):
+        _ids, edges = _canonical_edges(graph)
 
-        assert nx_g.has_edge(a, b)
-        assert "weight" not in nx_g[a][b]
-
-    def test_opaque_payload_warns_and_drops(self):
-        g: rx.PyGraph = rx.PyGraph()
-        a, b = g.add_node("a"), g.add_node("b")
-        g.add_edge(a, b, ("custom", "tuple"))
-
-        with pytest.warns(UserWarning, match="dropped non-dict, non-numeric"):
-            nx_g = _pygraph_to_nx(g)
-
-        assert nx_g.has_edge(a, b)
-        assert "weight" not in nx_g[a][b]
-
-    def test_no_kwarg_collision_with_reserved_keys(self):
-        """nx.Graph.add_edge has reserved kwarg names like ``u_of_edge``;
-        ``add_edges_from`` must not collide with them."""
-        g: rx.PyGraph = rx.PyGraph()
-        a, b = g.add_node("a"), g.add_node("b")
-        g.add_edge(a, b, {"u_of_edge": "stored", "v_of_edge": "stored"})
-
-        nx_g = _pygraph_to_nx(g)
-
-        assert nx_g[a][b]["u_of_edge"] == "stored"
-        assert nx_g[a][b]["v_of_edge"] == "stored"
+    assert edges == [(0, 1, None)]
 
 
 def test_composes_non_contiguous_cluster_ids_across_two_depths(mocker):
@@ -907,11 +1022,272 @@ def test_composes_non_contiguous_cluster_ids_across_two_depths(mocker):
     assert sorted(even_upper_leaf) == [2, 4, 6, 10, 14]
 
 
-class TestDrawPartitions:
-    def test_draw_partitions_calls_plt_show(self, mocker):
-        mock_show = mocker.patch("matplotlib.pyplot.show")
-        mocker.patch("networkx.draw")
+def _weighted_gnp_edges(seed: int, n_nodes: int) -> list[tuple[int, int, float]]:
+    return [
+        (u, v, float(u + v))
+        for u, v in rx.undirected_gnp_random_graph(n_nodes, 0.5, seed=seed).edge_list()
+    ]
 
+
+def _rx_generator_graph(seed: int) -> rx.PyGraph:
+    return rx.undirected_gnp_random_graph(10, 0.5, seed=seed)
+
+
+def _nx_edge_order_graph(seed: int) -> nx.Graph:
+    graph = nx.Graph()
+    graph.add_weighted_edges_from(_weighted_gnp_edges(seed, 10))
+    graph.add_nodes_from(range(10))
+    return graph
+
+
+def _nx_string_graph(seed: int) -> nx.Graph:
+    return nx.relabel_nodes(_nx_edge_order_graph(seed), lambda node: f"n{node}")
+
+
+def _rx_removed_node_graph(seed: int) -> rx.PyGraph:
+    graph: rx.PyGraph = rx.PyGraph()
+    graph.add_nodes_from(range(11))
+    graph.add_edges_from(_weighted_gnp_edges(seed, 11))
+    graph.remove_node(4)
+    return graph
+
+
+def _edges_with_data(graph) -> list[tuple]:
+    if isinstance(graph, rx.PyGraph):
+        return list(graph.weighted_edge_list())
+    return list(graph.edges(data=True))
+
+
+def _assert_clusters_map_to_original_edges(graph, clusters):
+    """Cluster ids cover every node once and each subgraph is the induced subgraph."""
+    all_ids = [node for _sub, ids in clusters for node in ids]
+    assert sorted(map(str, all_ids)) == sorted(map(str, _node_set(graph)))
+    assert len(all_ids) == len(set(all_ids))
+    for sub, ids in clusters:
+        mapped = {frozenset((ids[u], ids[v])) for u, v, _data in _edges_with_data(sub)}
+        induced = {
+            frozenset((u, v))
+            for u, v, _data in _edges_with_data(graph)
+            if u in ids and v in ids
+        }
+        assert mapped == induced
+        if isinstance(graph, nx.Graph):
+            for u, v, data in _edges_with_data(sub):
+                assert data == graph.edges[ids[u], ids[v]]
+
+
+_GRAPH_KINDS = {
+    "rx-generator": _rx_generator_graph,
+    "nx-edge-order": _nx_edge_order_graph,
+    "nx-string-labels": _nx_string_graph,
+    "rx-removed-node": _rx_removed_node_graph,
+}
+_SEEDS = (2, 5, 11, 22, 26, 38)
+_ALGORITHMS = [
+    "spectral",
+    pytest.param("metis", marks=_skip_no_pymetis),
+    "kernighan_lin",
+]
+# A cap of 4 splits every kind and seed under every algorithm; rx-generator-38 at
+# a cap of 3 drives the edgeless-cluster merge under spectral.
+_GRAPH_CASES = [
+    pytest.param(make_graph, seed, 4, id=f"{kind}-{seed}")
+    for kind, make_graph in _GRAPH_KINDS.items()
+    for seed in _SEEDS
+] + [pytest.param(_rx_generator_graph, 38, 3, id="rx-generator-38-cap3")]
+
+
+@pytest.mark.usefixtures("_raise_qubit_ceiling")
+@pytest.mark.parametrize(("make_graph", "seed", "cap"), _GRAPH_CASES)
+@pytest.mark.parametrize("algorithm", _ALGORITHMS)
+def test_partition_subgraph_edges_map_to_original_edges(
+    algorithm, make_graph, seed, cap
+):
+    graph = make_graph(seed)
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=cap, partitioning_algorithm=algorithm
+    )
+
+    clusters = _node_partition_graph(graph, config)
+
+    _assert_clusters_map_to_original_edges(graph, clusters)
+
+
+def _twin(graph) -> tuple[GraphProblemTypes, list]:
+    """The same graph in the other library, and the twin's node ids by position.
+
+    A rustworkx graph becomes a networkx graph labelled by its node indices; a
+    networkx graph becomes a rustworkx graph with one node per label, in
+    iteration order. Edge weights carry over, and ``None`` stays unweighted.
+    """
+    if isinstance(graph, rx.PyGraph):
+        twin = nx.Graph()
+        twin.add_nodes_from(graph.node_indexes())
+        for u, v, weight in graph.weighted_edge_list():
+            twin.add_edge(u, v, **({} if weight is None else {"weight": weight}))
+        return twin, list(twin.nodes())
+    labels = list(graph.nodes())
+    position = {label: i for i, label in enumerate(labels)}
+    rx_twin: rx.PyGraph = rx.PyGraph()
+    rx_twin.add_nodes_from(labels)
+    rx_twin.add_edges_from(
+        [(position[u], position[v], w) for u, v, w in graph.edges(data="weight")]
+    )
+    return rx_twin, list(rx_twin.node_indexes())
+
+
+def _partition_outcome(graph, config, node_ids) -> list[list] | str:
+    """Cluster ids in ``graph``'s positional frame, or the raised error message."""
+    position = {node: i for i, node in enumerate(node_ids)}
+    try:
+        clusters = _node_partition_graph(graph, config)
+    except ValueError as exc:
+        # The message names the offending nodes by their own library's ids.
+        return re.sub(r"\[.*?\]", "[...]", str(exc))
+    return [[position[node] for node in ids] for _sub, ids in clusters]
+
+
+@pytest.mark.usefixtures("_raise_qubit_ceiling")
+@pytest.mark.parametrize("cap", [3, 4])
+@pytest.mark.parametrize("seed", _SEEDS)
+@pytest.mark.parametrize(
+    "make_graph", list(_GRAPH_KINDS.values()), ids=list(_GRAPH_KINDS)
+)
+@pytest.mark.parametrize("algorithm", _ALGORITHMS)
+def test_partition_matches_other_library_twin(algorithm, make_graph, seed, cap):
+    """The same graph partitions identically, or fails identically, in both libraries."""
+    graph = make_graph(seed)
+    twin, twin_ids = _twin(graph)
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=cap, partitioning_algorithm=algorithm
+    )
+
+    assert _partition_outcome(graph, config, _node_ids(graph)) == _partition_outcome(
+        twin, config, twin_ids
+    )
+
+
+def _weighted_twin_pair(seed: int, *, weighted: bool, shuffled: bool):
+    graph = rx.undirected_gnp_random_graph(12, 0.45, seed=seed)
+    if weighted:
+        for index, (u, v) in zip(graph.edge_indices(), graph.edge_list()):
+            graph.update_edge_by_index(index, float(1 + (u * 7 + v * 3) % 5))
+    graph.remove_node(4)
+    twin, _ids = _twin(graph)
+    if shuffled:
+        reordered = nx.Graph()
+        reordered.add_nodes_from(twin.nodes())
+        reordered.add_edges_from(reversed(list(twin.edges(data=True))))
+        twin = reordered
+    return graph, twin
+
+
+@pytest.mark.usefixtures("_raise_qubit_ceiling")
+@pytest.mark.parametrize(
+    "shuffled", [False, True], ids=["same-order", "reversed-edges"]
+)
+@pytest.mark.parametrize("weighted", [False, True], ids=["unweighted", "weighted"])
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("algorithm", _ALGORITHMS)
+def test_rx_and_nx_twins_give_identical_partitions(algorithm, seed, weighted, shuffled):
+    """Same ids per cluster, whatever order the networkx edges were inserted in."""
+    graph, twin = _weighted_twin_pair(seed, weighted=weighted, shuffled=shuffled)
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=5, partitioning_algorithm=algorithm
+    )
+
+    rx_clusters = [ids for _sub, ids in _node_partition_graph(graph, config)]
+    nx_clusters = [ids for _sub, ids in _node_partition_graph(twin, config)]
+
+    assert rx_clusters == nx_clusters
+
+
+@pytest.mark.parametrize("make_graph", [_make_pygraph_path, nx.path_graph])
+def test_kernighan_lin_split_ids_follow_local_indices(make_graph, mocker):
+    graph = make_graph(6)
+    mocker.patch.object(
+        nx.algorithms.community,
+        "kernighan_lin_bisection",
+        return_value=([2, 0, 1], [5, 3, 4]),
+    )
+    config = GraphPartitioningConfig(
+        minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
+    )
+
+    clusters = _split_graph(graph, config)
+
+    _assert_clusters_map_to_original_edges(graph, clusters)
+
+
+@pytest.mark.parametrize(
+    "cluster",
+    [pytest.param([5, 1, 4], id="unsorted"), pytest.param([1, 4, 5], id="sorted")],
+)
+def test_relabeled_pygraph_subgraph_ids_follow_local_indices(cluster):
+    graph: rx.PyGraph = rx.PyGraph()
+    graph.add_nodes_from(list("abcdef"))
+    graph.add_edges_from([(0, 1, 1.0), (4, 5, 2.0), (1, 4, 3.0)])
+
+    sub, ids = _relabeled_subgraph_with_ids(graph, cluster)
+
+    assert [graph[node] for node in ids] == sub.nodes()
+    _assert_clusters_map_to_original_edges(
+        graph.subgraph(sorted(cluster)), [(sub, list(range(len(cluster))))]
+    )
+
+
+@pytest.mark.usefixtures("_raise_qubit_ceiling")
+def test_decompose_string_labelled_graph_extends_by_label():
+    labels = "abcdef"
+    graph = nx.relabel_nodes(nx.cycle_graph(6), dict(enumerate(labels)))
+    problem = MaxCutProblem(
+        graph, config=GraphPartitioningConfig(max_n_nodes_per_cluster=3)
+    )
+
+    sub_problems = problem.decompose()
+
+    solution = [0] * problem.initial_solution_size()
+    for prog_id, sub in sub_problems.items():
+        reverse = problem._reverse_index_maps[prog_id]
+        assert all(graph.has_edge(reverse[u], reverse[v]) for u, v in sub.graph.edges())
+        solution = problem.extend_solution(solution, prog_id, [0])
+    selected = {problem._reverse_index_maps[prog_id][0] for prog_id in sub_problems}
+    assert solution == [int(label in selected) for label in labels]
+
+
+def test_spectral_decomposition_is_reproducible():
+    config = GraphPartitioningConfig(
+        max_n_nodes_per_cluster=6, partitioning_algorithm="spectral"
+    )
+
+    maps = []
+    for _ in range(2):
+        problem = MaxCutProblem(nx.cycle_graph(12), config=config)
+        problem.decompose()
+        maps.append(problem._reverse_index_maps)
+
+    assert maps[0] == maps[1]
+
+
+_THREE_PARTITIONS = {
+    ("A", 2): {0: 0, 1: 1},
+    ("B", 2): {0: 2, 1: 3},
+    ("C", 2): {0: 4, 1: 5},
+}
+
+
+class TestDrawPartitions:
+    @pytest.fixture
+    def mock_show(self, mocker):
+        show = mocker.patch("matplotlib.pyplot.show")
+        yield show
+        plt.close("all")
+
+    @pytest.fixture
+    def draw_spy(self, mocker):
+        return mocker.spy(nx, "draw")
+
+    def test_draw_partitions_calls_plt_show(self, mock_show, draw_spy):
         graph = nx.cycle_graph(6)
         reverse_index_maps = {
             ("A", 3): {0: 0, 1: 1, 2: 2},
@@ -921,9 +1297,92 @@ class TestDrawPartitions:
         draw_partitions(graph, reverse_index_maps)
 
         mock_show.assert_called_once()
+        draw_spy.assert_called_once()
+
+    def test_each_partition_gets_a_distinct_colour(self, mock_show, draw_spy):
+        draw_partitions(nx.cycle_graph(6), _THREE_PARTITIONS)
+
+        node_colors = draw_spy.call_args.kwargs["node_color"]
+        assert len({tuple(c) for c in node_colors}) == 3
+        for first, second in ((0, 1), (2, 3), (4, 5)):
+            np.testing.assert_array_equal(node_colors[first], node_colors[second])
+
+    def test_node_labels_are_drawn(self, mock_show, draw_spy):
+        draw_partitions(nx.cycle_graph(6), _THREE_PARTITIONS)
+
+        assert sorted(t.get_text() for t in plt.gca().texts) == list("012345")
+
+    def test_explicit_positions_are_used(self, mock_show, draw_spy):
+        graph = nx.cycle_graph(6)
+        pos = {node: (float(node), 0.0) for node in graph}
+
+        draw_partitions(graph, _THREE_PARTITIONS, pos=pos)
+
+        assert draw_spy.call_args.args[1] is pos
+
+    def test_default_layout_is_seeded_spring_layout(self, mock_show, draw_spy):
+        graph = nx.cycle_graph(6)
+        expected = nx.spring_layout(graph, seed=42)
+
+        draw_partitions(graph, _THREE_PARTITIONS)
+
+        pos = draw_spy.call_args.args[1]
+        assert pos.keys() == expected.keys()
+        for node, xy in expected.items():
+            np.testing.assert_allclose(pos[node], xy)
+
+    def test_figure_has_title_legend_and_no_axis(self, mock_show, draw_spy):
+        draw_partitions(nx.cycle_graph(6), _THREE_PARTITIONS)
+
+        ax = plt.gca()
+        assert ax.get_title() == "Graph Partitions Visualization"
+        assert not ax.axison
+        legend = ax.get_legend()
+        assert [t.get_text() for t in legend.get_texts()] == [
+            "Partition A",
+            "Partition B",
+            "Partition C",
+        ]
+        node_colors = draw_spy.call_args.kwargs["node_color"]
+        for handle, node in zip(legend.legend_handles, (0, 2, 4)):
+            np.testing.assert_array_equal(
+                handle.get_markerfacecolor(), node_colors[node]
+            )
+
+    def test_unassigned_nodes_get_their_own_colour_and_legend_entry(
+        self, mock_show, draw_spy
+    ):
+        draw_partitions(nx.cycle_graph(7), _THREE_PARTITIONS)
+
+        node_colors = draw_spy.call_args.kwargs["node_color"]
+        assert node_colors[6] == to_rgba("dimgray")
+        assert all(tuple(c) != node_colors[6] for c in node_colors[:6])
+        legend = plt.gca().get_legend()
+        assert legend.get_texts()[-1].get_text() == "Unassigned"
+        assert legend.legend_handles[-1].get_markerfacecolor() == node_colors[6]
+
+    def test_rx_graph_is_drawn_by_node_index(self, mock_show, draw_spy):
+        graph = rx.generators.cycle_graph(6)
+        for index in graph.node_indexes():
+            graph[index] = f"payload{index}"
+
+        draw_partitions(graph, _THREE_PARTITIONS)
+        rx_colours = draw_spy.call_args.kwargs["node_color"]
+        rx_labels = sorted(t.get_text() for t in plt.gca().texts)
+        draw_partitions(nx.cycle_graph(6), _THREE_PARTITIONS)
+
+        assert rx_labels == list("012345")
+        np.testing.assert_array_equal(
+            rx_colours, draw_spy.call_args.kwargs["node_color"]
+        )
 
     def test_draw_partitions_raises_if_no_maps(self):
         graph = nx.cycle_graph(6)
 
-        with pytest.raises(RuntimeError, match="no partitions to draw"):
+        with pytest.raises(
+            RuntimeError,
+            match=exact_match(
+                "There are no partitions to draw. Did you call decompose()?"
+            ),
+        ):
             draw_partitions(graph, {})

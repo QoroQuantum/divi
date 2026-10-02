@@ -31,6 +31,7 @@ dependencies = [
     "scikit-learn>=1.7,<2.0",
     # Graph operations and partitioning
     "networkx>=3.5,<4.0",
+    "rustworkx>=0.18",
     "pymetis>=2025.1.1,<2026.0.0; sys_platform != 'win32'",
     "qoro-maestro==0.3.4",
     # Optimization algorithms

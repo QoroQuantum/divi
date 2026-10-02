@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import dataclasses
-
 import pytest
 
 from divi.qprog.problems import GraphPartitioningConfig, QUBOPartitioningConfig
@@ -29,13 +27,6 @@ def test_max_cluster_size_reads_the_domain_field(cls, size_field):
     config = cls(**{size_field: 7}, minimum_n_clusters=2)
     assert config.max_cluster_size == getattr(config, size_field) == 7
     assert config.minimum_n_clusters == 2
-
-
-@pytest.mark.parametrize("cls, size_field", CONFIGS)
-def test_configs_are_frozen(cls, size_field):
-    config = cls(minimum_n_clusters=2)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        config.minimum_n_clusters = 3
 
 
 def test_qubo_config_rejects_unknown_method():

@@ -164,20 +164,6 @@ def test_from_molecule_solves_once_on_first_access(pyscf_h2, mocker):
     integrals.assert_called_once()
 
 
-@pytest.mark.parametrize("frontend", ["pyscf_h2", "pennylane_h2"])
-def test_from_molecule_integrals_reproduce_the_molecular_hamiltonian(frontend, request):
-    """Both frontends' integrals Jordan-Wigner back to the Hamiltonian that
-    frontend builds itself, which pins PennyLane's two-body index order."""
-    pytest.importorskip("openfermion")
-    molecule = request.getfixturevalue(frontend)
-    problem = MolecularProblem.from_molecule(molecule)
-
-    _assert_same_operator(
-        _jordan_wigner_of_stored_integrals(problem), problem.hamiltonian
-    )
-    _assert_same_operator(problem.hamiltonian, molecular_hamiltonian(molecule)[0])
-
-
 def test_from_molecule_hamiltonian_shares_the_orbitals_of_its_integrals():
     """N2's degenerate pi orbitals come out in an arbitrary basis on every RHF
     solve, so a Hamiltonian from a second solve would not match the integrals."""
@@ -193,6 +179,8 @@ def test_from_molecule_hamiltonian_shares_the_orbitals_of_its_integrals():
 
 
 def test_from_molecule_accepts_differentiable_pennylane_coordinates(qp, pennylane_h2):
+    """The integrals Jordan-Wigner back to the Hamiltonian PennyLane builds
+    itself, which pins PennyLane's two-body index order."""
     pytest.importorskip("openfermion")
     coordinates = qp.numpy.array(pennylane_h2.coordinates, requires_grad=True)
     problem = MolecularProblem.from_molecule(qp.qchem.Molecule(["H", "H"], coordinates))
@@ -203,6 +191,7 @@ def test_from_molecule_accepts_differentiable_pennylane_coordinates(qp, pennylan
 
 
 def test_from_molecule_accepts_a_pyscf_mean_field(pyscf_h2):
+    pytest.importorskip("openfermion")
     scf = pytest.importorskip("pyscf.scf")
     mean_field = scf.RHF(pyscf_h2).run(verbose=0)
 
@@ -210,6 +199,11 @@ def test_from_molecule_accepts_a_pyscf_mean_field(pyscf_h2):
 
     assert problem.molecule is mean_field
     assert problem.n_electrons == 2
+    np.testing.assert_allclose(
+        np.linalg.eigvalsh(problem.hamiltonian.to_matrix()),
+        np.linalg.eigvalsh(molecular_hamiltonian(pyscf_h2)[0].to_matrix()),
+        atol=1e-10,
+    )
 
 
 @pytest.mark.parametrize("method", ["UHF", "GHF"])

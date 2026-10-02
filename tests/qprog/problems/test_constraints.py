@@ -12,6 +12,7 @@ import pytest
 from divi.qprog.problems import BinaryOptimizationProblem, LinearConstraint
 from tests.qprog.problems._helpers import (
     assert_penalty_zero_iff_feasible,
+    fail_after,
     iter_assignments,
     n_slack,
     penalty_at,
@@ -88,6 +89,15 @@ class TestLinearConstraint:
         constraint = LinearConstraint(coefficients, sense, bound)
         assert constraint.is_satisfied(dict(enumerate(assignment))) is expected
 
+    @pytest.mark.parametrize(
+        "sense, bound", [("<=", 1 - 1e-13), (">=", 1 + 1e-13), ("==", 1 + 1e-13)]
+    )
+    def test_zero_tolerance_rejects_what_the_default_accepts(self, sense, bound):
+        constraint = LinearConstraint([1, 1], sense, bound)
+        assignment = {0: 1, 1: 0}
+        assert constraint.is_satisfied(assignment)
+        assert not constraint.is_satisfied(assignment, tol=0)
+
 
 @pytest.mark.parametrize(
     "coefficients, sense, bound, n_slack",
@@ -114,6 +124,8 @@ class TestLinearConstraint:
         ([0.1, 0.2], "<=", 0.3, 0),  # always holds; float sum overshoots 0.3
         ([-1, 0], ">=", 0, 0),  # a single negative coefficient
         ([-3, 0, 0], "<=", -1, 0),
+        ([2**20, 1], "==", 2**20, 0),  # largest integer that stays exact
+        ([1, 1e-6], "==", 1, 0),  # largest denominator that stays exact
     ],
 )
 def test_exact_data_is_encoded_exactly(coefficients, sense, bound, n_slack, recwarn):
@@ -170,6 +182,80 @@ def test_penalty_is_the_squared_violation_in_the_constraints_units(
     ) == pytest.approx(missing**2)
 
 
+def _least_penalty(problem, n_decision: int) -> dict[str, float]:
+    """Penalty of each decision setting, minimised over the slack."""
+    terms = problem.penalty_canonical_problem.terms
+    least: dict[str, float] = {}
+    for bitstring, assignment in iter_assignments(problem):
+        head = bitstring[:n_decision]
+        value = polynomial_value(terms, assignment)
+        least[head] = min(least.get(head, np.inf), value)
+    return least
+
+
+@pytest.mark.parametrize(
+    "sense, bound, decision, violation",
+    [("<=", 0.5, "001", 0.25), ("<=", 0.5, "111", 1.0), (">=", 1.0, "100", 0.75)],
+)
+def test_inequality_penalty_is_the_squared_violation_in_the_constraints_units(
+    sense, bound, decision, violation
+):
+    problem = _constrained(LinearConstraint([0.25, 0.5, 0.75], sense, bound))
+    assert _least_penalty(problem, 3)[decision] == pytest.approx(violation**2)
+
+
+def test_coarsened_slack_still_penalises_exactly_the_violations():
+    # A slack range of 300 does not fit 8 bits, so the step doubles and x0's
+    # coefficient rounds to zero; x0 never decides feasibility here.
+    with pytest.warns(UserWarning, match="rounded to steps of 2"):
+        problem = BinaryOptimizationProblem(
+            -np.eye(2), constraints=[LinearConstraint([1, 600], "<=", 300)]
+        )
+    assert n_slack(problem, 2) == 8
+    assert_penalty_zero_iff_feasible(problem, n_decision=2)
+
+
+def test_two_inequalities_on_integer_labels_get_their_own_slack():
+    problem = _constrained(
+        LinearConstraint([1, 1, 1], "<=", 1), LinearConstraint([1, 2, 0], ">=", 1)
+    )
+    first, second = ([label for label, _ in slack.terms] for slack in problem._slacks)
+    assert first == [3]
+    assert second == [4, 5]
+    assert problem.canonical_problem.variable_order == tuple(range(6))
+    assert_penalty_zero_iff_feasible(problem, n_decision=3)
+
+
+@pytest.mark.parametrize(
+    "constraints",
+    [
+        [LinearConstraint([1, 1, 1], "<=", 1)],
+        [LinearConstraint([2, -1, 3], ">=", 2)],
+        [LinearConstraint([1, 1, 1], "<=", 2), LinearConstraint([1, 2, 0], ">=", 1)],
+    ],
+    ids=["leq", "geq", "two"],
+)
+def test_completion_zeroes_the_penalty_for_every_feasible_decision(constraints):
+    problem = _constrained(*constraints)
+    for bits in itertools.product((0, 1), repeat=3):
+        decision = dict(enumerate(bits))
+        if all(c.is_satisfied(decision) for c in constraints):
+            bitstring = problem._complete_bitstring(decision)
+            assert penalty_at(problem, bitstring) == pytest.approx(0.0, abs=1e-9)
+            assert problem.is_feasible(bitstring)
+
+
+@pytest.mark.parametrize("name", ["slack____0", "slack_divi__0"])
+def test_user_labels_shaped_like_slack_names_are_kept(name):
+    bqm = dimod.BinaryQuadraticModel({"a": -1.0, name: -1.0}, {}, 0.0, "BINARY")
+    with fail_after(10):
+        problem = BinaryOptimizationProblem(
+            bqm, constraints=[LinearConstraint({"a": 1, name: 1}, "<=", 1)]
+        )
+    assert {"a", name} < set(problem.canonical_problem.variable_order)
+    assert_penalty_zero_iff_feasible(problem, n_decision=2)
+
+
 _FLOATS = [0.15763401497257323, 0.08892135493055972, 0.06583280005864131]
 
 
@@ -184,6 +270,8 @@ _FLOATS = [0.15763401497257323, 0.08892135493055972, 0.06583280005864131]
         ([1 + 2.7e-12] * 3, "==", 3, "rounded to steps"),
         ({0: 1e5, 1: 1e-7, 2: 1e-7}, "==", 1e5, "rounded to steps"),
         ([1e8, 1e8, 2e8 + 1, 1], "==", 2e8 + 1, "rounded to steps"),
+        ([2**20 + 1, 1], "==", 2**20 + 1, "rounded to steps"),
+        ([1, 1 / 1000003], "==", 1, "rounded to steps"),
     ],
     ids=[
         "irrational",
@@ -193,6 +281,8 @@ _FLOATS = [0.15763401497257323, 0.08892135493055972, 0.06583280005864131]
         "off-by-noise",
         "tiny-coefficients",
         "beyond-float-precision",
+        "past-integer-limit",
+        "past-denominator-limit",
     ],
 )
 def test_inexact_encodings_warn(coefficients, sense, bound, match):
@@ -229,6 +319,7 @@ _NAMED = dimod.BinaryQuadraticModel(
         # Rounded to fit 8 slack bits, it would always hold.
         (-np.eye(4), LinearConstraint([100, 100, 56, 1], "<=", 256), {}, "always hold"),
         (_NAMED, LinearConstraint({"a": 1, "b": 1}, "<=", 1), {}, "reserved"),
+        (OBJECTIVE, LinearConstraint({0: 1, 5: 1}, "<=", 1), {}, "not in the problem"),
     ],
     ids=[
         "unreachable-geq",
@@ -238,6 +329,7 @@ _NAMED = dimod.BinaryQuadraticModel(
         "slack-bits",
         "rounded-trivial",
         "reserved-label",
+        "unknown-variable",
     ],
 )
 def test_invalid_problems_raise(problem, constraint, kwargs, match):
@@ -307,8 +399,12 @@ def test_constrained_problem_survives_pickling():
     assert not restored.is_feasible("110" + slack)
 
 
-def test_constraints_add_to_user_penalty():
-    user_penalty = np.diag([5.0, 0.0, 0.0])
+@pytest.mark.parametrize(
+    "user_penalty, offset, scale",
+    [(np.diag([5.0, 0.0, 0.0]), 0.0, 5.0), ({(): 3.0, (0,): 1.0}, 3.0, 1.0)],
+    ids=["matrix", "with-offset"],
+)
+def test_constraints_add_to_user_penalty(user_penalty, offset, scale):
     constraint = LinearConstraint([1, 1, 1], "==", 1)
     combined = _constrained(constraint, penalty=user_penalty)
     alone = _constrained(constraint)
@@ -317,7 +413,8 @@ def test_constraints_add_to_user_penalty():
             combined.penalty_canonical_problem.terms, assignment
         ) == pytest.approx(
             polynomial_value(alone.penalty_canonical_problem.terms, assignment)
-            + 5.0 * assignment[0]
+            + offset
+            + scale * assignment[0]
         )
 
 

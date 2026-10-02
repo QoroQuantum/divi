@@ -16,6 +16,7 @@ import pytest
 import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.qprog.problems import MaxWeightCycleProblem
 from divi.qprog.problems._graph_hamiltonians import (
     cycle_mixer_spo,
     edges_to_wires,
@@ -191,9 +192,22 @@ def _four_node_partial_digraph() -> nx.DiGraph:
     return g
 
 
+def _early_sink_digraph() -> nx.DiGraph:
+    """Node 1 is a sink that iterates before the others, and is a dead-end
+    intermediate for edge ``(0, 2)``, whose only detour runs through node 3."""
+    g = nx.DiGraph()
+    g.add_nodes_from([0, 1, 2, 3])
+    g.add_weighted_edges_from(
+        [(0, 1, 1.3), (0, 2, 1.0), (2, 0, 0.7), (0, 3, 1.4)]
+        + [(3, 0, 0.9), (2, 3, 1.6), (3, 2, 0.5)]
+    )
+    return g
+
+
 _DIGRAPHS = [
     ("3-tournament", _three_node_tournament),
     ("4-partial", _four_node_partial_digraph),
+    ("early-sink", _early_sink_digraph),
 ]
 _DIGRAPH_IDS = [name for name, _ in _DIGRAPHS]
 
@@ -253,6 +267,39 @@ def test_cycle_mixer_swaps_an_edge_for_its_two_hop_detour(name, factory):
                     add_transition(expected, state, detour)
 
     assert_transitions(cycle_mixer_spo(g), expected)
+
+
+def test_cycle_mixer_without_two_hop_detours_is_zero_on_every_edge_wire():
+    mixer = cycle_mixer_spo(nx.DiGraph([(0, 1), (1, 2)]))
+
+    assert mixer.num_qubits == 2
+    np.testing.assert_array_equal(mixer.coeffs, 0.0)
+
+
+@pytest.mark.parametrize(
+    "builder",
+    [
+        loss_hamiltonian_spo,
+        cycle_mixer_spo,
+        out_flow_constraint_spo,
+        net_flow_constraint_spo,
+    ],
+)
+def test_edgeless_digraph_gives_zero_operator(builder):
+    spo = builder(nx.DiGraph())
+
+    assert spo.num_qubits == 0
+    np.testing.assert_array_equal(spo.coeffs, 0.0)
+
+
+def test_single_edge_loss_and_net_flow():
+    graph = nx.DiGraph()
+    graph.add_edge(0, 1, weight=2.0)
+
+    assert _spo_equal(loss_hamiltonian_spo(graph), SparsePauliOp(["Z"], [np.log(2.0)]))
+    assert _spo_equal(
+        net_flow_constraint_spo(graph), SparsePauliOp(["I", "Z"], [4.0, -4.0])
+    )
 
 
 @pytest.mark.parametrize("name,factory", _DIGRAPHS, ids=_DIGRAPH_IDS)
@@ -353,6 +400,22 @@ def test_rustworkx_pydigraph_matches_nx_for_max_weight_cycle():
             rx_mixer, nx_mixer
         ), f"mixer SPO mismatch constrained={constrained}"
         assert rx_map == nx_map, f"wire→edge map mismatch constrained={constrained}"
+
+
+@pytest.mark.parametrize("constrained", [True, False])
+def test_max_weight_cycle_problem_reads_rustworkx_dict_payload_weights(constrained):
+    nx_graph = _three_node_tournament()
+    rx_graph = rx.PyDiGraph()
+    rx_graph.add_nodes_from(list(nx_graph.nodes()))
+    rx_graph.add_edges_from(
+        [(u, v, {"weight": w}) for u, v, w in nx_graph.edges(data="weight")]
+    )
+
+    nx_problem = MaxWeightCycleProblem(nx_graph, use_constrained_mixer=constrained)
+    rx_problem = MaxWeightCycleProblem(rx_graph, use_constrained_mixer=constrained)
+
+    assert _spo_equal(rx_problem.cost_hamiltonian, nx_problem.cost_hamiltonian)
+    assert rx_problem.loss_constant == pytest.approx(nx_problem.loss_constant)
 
 
 @pytest.mark.parametrize("constrained", [True, False])

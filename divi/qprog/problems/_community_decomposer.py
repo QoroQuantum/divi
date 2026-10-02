@@ -78,6 +78,11 @@ class CommunityDecomposer(traits.ProblemDecomposer, traits.SISO, Runnable):
         bqm = state.problem
 
         if bqm.num_variables <= 1:
+            # One trivial cluster per pass, so ``Unwind`` sees its end.
+            if bqm == self._rolling_bqm and not silent_rewind:
+                self._rolling_bqm = None
+                raise EndOfStream
+            self._rolling_bqm = bqm
             return state.updated(subproblem=bqm)
 
         # Content equality, not identity: hybrid.State.updated() deep-copies

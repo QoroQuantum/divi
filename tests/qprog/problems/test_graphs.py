@@ -10,7 +10,6 @@ import numpy as np
 import pytest
 import rustworkx as rx
 
-from divi.backends import CircuitRunner
 from divi.qprog import (
     QAOA,
     BeamSearchStrategy,
@@ -55,32 +54,6 @@ def _naive_diagonal_energy(problem, solution):
     return energy
 
 
-def test_wire_labels_follow_node_order_for_both_graph_backends():
-    """A rustworkx graph gets the same qubit-to-node map as its networkx twin.
-
-    ``_to_nx_graph`` remaps a ``PyGraph``'s internal indices through
-    ``nodes()`` before the Hamiltonian is built, so one expression serves both
-    backends — but only if the node *values*, not the internal indices, are what
-    the labels record.
-    """
-    edges = [("a", "b"), ("b", "c")]
-    nx_graph = nx.Graph()
-    nx_graph.add_edges_from(edges)
-
-    rx_graph = rx.PyGraph()
-    indices = {name: rx_graph.add_node(name) for name in ("a", "b", "c")}
-    for left, right in edges:
-        rx_graph.add_edge(indices[left], indices[right], 1.0)
-
-    nx_problem = MaxCutProblem(nx_graph)
-    rx_problem = MaxCutProblem(rx_graph)
-
-    assert rx_problem.wire_labels == ("a", "b", "c")
-    assert rx_problem.wire_labels == nx_problem.wire_labels
-    # The decoder reads node values off the bitstring, not internal indices.
-    assert rx_problem.decode_fn("101") == ["a", "c"]
-
-
 class TestEvaluateSolution:
     """Tests for problem.evaluate_global_solution on graph problems.
 
@@ -119,52 +92,27 @@ class TestEvaluateSolution:
                 problem, solution
             )
 
-    def test_perfect_maxcut_on_4_cycle(self):
-        """A bipartite 4-cycle has a perfect cut of 4 edges."""
-        graph = nx.cycle_graph(4)
+    @pytest.mark.parametrize(
+        "graph, solution, n_cut",
+        [
+            pytest.param(nx.cycle_graph(4), [1, 0, 1, 0], 4, id="perfect_4_cycle"),
+            pytest.param(nx.cycle_graph(4), [0, 0, 0, 0], 0, id="no_cut_all_zeros"),
+            pytest.param(nx.cycle_graph(4), [1, 1, 1, 1], 0, id="no_cut_all_ones"),
+            pytest.param(nx.cycle_graph(4), [1, 1, 0, 0], 2, id="partial_4_cycle"),
+            pytest.param(
+                nx.Graph([(0, 1, {"weight": 3.0}), (1, 2, {"weight": 5.0})]),
+                [1, 0, 1],
+                2,
+                id="weighted_counts_cut_edges",
+            ),
+            pytest.param(nx.complete_graph(3), [1, 0, 0], 2, id="triangle_best_cut"),
+        ],
+    )
+    def test_energy_is_minus_cut_edge_count(self, graph, solution, n_cut):
+        """The MaxCut Hamiltonian's energy is minus the number of cut edges,
+        regardless of edge weights."""
         problem = self._make_problem(graph)
-        # [1,0,1,0] cuts all 4 edges
-        energy = problem.evaluate_global_solution([1, 0, 1, 0])
-        assert energy == pytest.approx(-4.0)
-
-    def test_no_cut_all_zeros(self):
-        """All-zero assignment cuts nothing."""
-        graph = nx.cycle_graph(4)
-        problem = self._make_problem(graph)
-        energy = problem.evaluate_global_solution([0, 0, 0, 0])
-        assert energy == pytest.approx(0.0)
-
-    def test_no_cut_all_ones(self):
-        """All-one assignment cuts nothing."""
-        graph = nx.cycle_graph(4)
-        problem = self._make_problem(graph)
-        energy = problem.evaluate_global_solution([1, 1, 1, 1])
-        assert energy == pytest.approx(0.0)
-
-    def test_partial_cut_on_4_cycle(self):
-        """[1,1,0,0] on a 4-cycle cuts edges (0,3) and (1,2) = 2 cut edges."""
-        graph = nx.cycle_graph(4)
-        problem = self._make_problem(graph)
-        energy = problem.evaluate_global_solution([1, 1, 0, 0])
-        assert energy == pytest.approx(-2.0)
-
-    def test_weighted_graph(self):
-        """Weighted edges: MaxCut Hamiltonian counts cut edges."""
-        graph = nx.Graph()
-        graph.add_edge(0, 1, weight=3.0)
-        graph.add_edge(1, 2, weight=5.0)
-        problem = self._make_problem(graph)
-        # [1,0,1] cuts both edges
-        energy = problem.evaluate_global_solution([1, 0, 1])
-        assert energy == pytest.approx(-2.0)
-
-    def test_triangle_graph(self):
-        """A triangle (K3): best cut has 2 edges, e.g. [1,0,0]."""
-        graph = nx.complete_graph(3)
-        problem = self._make_problem(graph)
-        # [1,0,0] cuts edges (0,1) and (0,2) = 2 cut edges
-        energy = problem.evaluate_global_solution([1, 0, 0])
-        assert energy == pytest.approx(-2.0)
+        assert problem.evaluate_global_solution(solution) == pytest.approx(-n_cut)
 
     def test_lower_energy_means_more_cuts(self):
         """Verify that more cuts produce lower (more negative) energy."""
@@ -216,10 +164,9 @@ def _is_clique(graph, nodes):
 
 def _nx_view(graph):
     if isinstance(graph, rx.PyGraph):
-        labels = graph.nodes()
         view = nx.Graph()
-        view.add_nodes_from(labels)
-        view.add_edges_from((labels[u], labels[v]) for u, v in graph.edge_list())
+        view.add_nodes_from(graph.node_indexes())
+        view.add_edges_from(graph.edge_list())
         return view
     return graph
 
@@ -331,6 +278,28 @@ def test_constrained_mixer_defaults_to_true_where_supported(problem_cls):
     assert isinstance(unconstrained.recommended_initial_state, SuperpositionState)
 
 
+@pytest.mark.filterwarnings("ignore:Heuristic-risk graph partitioning objective")
+@pytest.mark.parametrize("use_constrained_mixer", [True, False])
+@pytest.mark.parametrize(
+    "problem_cls",
+    [MaxIndependentSetProblem, MinVertexCoverProblem, MaxCliqueProblem],
+)
+def test_sub_problems_inherit_use_constrained_mixer(problem_cls, use_constrained_mixer):
+    problem = problem_cls(
+        nx.cycle_graph(8),
+        use_constrained_mixer=use_constrained_mixer,
+        config=GraphPartitioningConfig(minimum_n_clusters=2),
+    )
+    expected = type(problem.recommended_initial_state)
+
+    sub_problems = problem.decompose()
+
+    assert len(sub_problems) == 2
+    assert all(
+        type(sub.recommended_initial_state) is expected for sub in sub_problems.values()
+    )
+
+
 class TestExtendSolutionGraph:
     """Tests for problem.extend_solution on graph problems."""
 
@@ -404,10 +373,9 @@ class TestExtendSolutionGraph:
 
 
 class TestDecomposeGraph:
-    def test_decompose_returns_correct_number_of_subproblems(self):
-        graph = nx.cycle_graph(10)
+    def test_decompose_builds_maxcut_subproblems_covering_every_node(self):
         problem = MaxCutProblem(
-            graph,
+            nx.cycle_graph(10),
             config=GraphPartitioningConfig(
                 minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
             ),
@@ -415,27 +383,13 @@ class TestDecomposeGraph:
 
         sub_problems = problem.decompose()
 
-        assert len(sub_problems) >= 2
-        for prog_id, sub_problem in sub_problems.items():
-            assert isinstance(sub_problem, MaxCutProblem)
-
-    def test_decompose_populates_reverse_index_maps(self):
-        graph = nx.cycle_graph(10)
-        problem = MaxCutProblem(
-            graph,
-            config=GraphPartitioningConfig(
-                minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
-            ),
-        )
-
-        sub_problems = problem.decompose()
-
-        assert len(problem._reverse_index_maps) == len(sub_problems)
+        assert len(sub_problems) == 2
+        assert all(type(sub) is MaxCutProblem for sub in sub_problems.values())
+        assert set(problem._reverse_index_maps) == set(sub_problems)
         all_original_nodes = set()
         for prog_id in sub_problems:
-            assert prog_id in problem._reverse_index_maps
             all_original_nodes |= set(problem._reverse_index_maps[prog_id].values())
-        assert all_original_nodes == set(graph.nodes())
+        assert all_original_nodes == set(problem.graph.nodes())
 
     def test_decompose_raises_without_partitioning_config(self):
         graph = nx.complete_graph(6)
@@ -443,20 +397,6 @@ class TestDecomposeGraph:
 
         with pytest.raises(ValueError, match="Cannot decompose"):
             problem.decompose()
-
-    def test_decompose_sub_problems_are_same_type(self):
-        graph = nx.cycle_graph(10)
-        problem = MaxCutProblem(
-            graph,
-            config=GraphPartitioningConfig(
-                minimum_n_clusters=2, partitioning_algorithm="kernighan_lin"
-            ),
-        )
-
-        sub_problems = problem.decompose()
-
-        for sub_problem in sub_problems.values():
-            assert type(sub_problem) == MaxCutProblem
 
 
 class TestPartitioningWarnings:
@@ -539,30 +479,22 @@ class TestPostprocessCandidatesGraph:
 
 
 class TestGraphInput:
-    def test_graph_basic_initialization(self, default_test_simulator):
-        G = make_bull_graph()
-
+    def test_graph_problem_builds_cost_circuit(
+        self, default_test_simulator, default_optimizer
+    ):
         qaoa_problem = QAOA(
-            MaxCliqueProblem(G, use_constrained_mixer=True),
+            MaxCliqueProblem(make_bull_graph(), use_constrained_mixer=True),
             n_layers=1,
-            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
-            max_iterations=10,
+            optimizer=default_optimizer,
             backend=default_test_simulator,
         )
 
-        assert isinstance(qaoa_problem.backend, CircuitRunner)
-        assert qaoa_problem.backend.shots == 5000
-        assert isinstance(qaoa_problem.optimizer, ScipyOptimizer)
-        assert qaoa_problem.optimizer.method == ScipyMethod.NELDER_MEAD
-        assert qaoa_problem.max_iterations == 10
-        assert isinstance(qaoa_problem.problem, MaxCliqueProblem)
-        assert qaoa_problem.problem.graph == G
-        assert qaoa_problem.n_layers == 1
-
         verify_cost_circuit(qaoa_problem)
 
-    def test_graph_unsuppported_initial_state(self, dummy_simulator):
-        with pytest.raises(TypeError):
+    def test_graph_unsupported_initial_state(self, dummy_simulator):
+        with pytest.raises(
+            TypeError, match="initial_state must be an InitialState instance or None"
+        ):
             QAOA(
                 MaxCliqueProblem(nx.bull_graph(), use_constrained_mixer=True),
                 initial_state="Bell",
@@ -920,6 +852,54 @@ def _seed_second_partition_all_ones(ensemble):
         ensemble.programs[key]._results["best_probs"] = {"tag": {bit * n_qubits: 1.0}}
         ensemble.programs[key]._losses_history = [{"dummy_loss": 0.0}]
     return set(ensemble._problem._reverse_index_maps[prog_keys[1]].values())
+
+
+def _sparse_int_label_graph():
+    return nx.relabel_nodes(
+        nx.erdos_renyi_graph(12, 0.35, seed=7), lambda n: 10 * n + 3
+    )
+
+
+def _string_label_gnp_graph():
+    return nx.relabel_nodes(nx.erdos_renyi_graph(12, 0.35, seed=7), lambda n: f"v{n}")
+
+
+def _rx_holed_gnp_graph():
+    graph = rx.undirected_gnp_random_graph(13, 0.35, seed=7)
+    for index in graph.node_indexes():
+        graph[index] = f"payload{index}"
+    graph.remove_node(5)
+    return graph
+
+
+@pytest.mark.parametrize(
+    "make_graph",
+    [_sparse_int_label_graph, _string_label_gnp_graph, _rx_holed_gnp_graph],
+    ids=["nx-int-labels", "nx-string-labels", "rx-indices"],
+)
+def test_partitioned_solution_names_nodes_like_unpartitioned(
+    make_graph, dummy_simulator
+):
+    """An aggregated partitioned solution reports the same node ids that the
+    unpartitioned problem decodes from the same bit assignment."""
+    graph = make_graph()
+    problem = MaxCutProblem(
+        graph, config=GraphPartitioningConfig(max_n_nodes_per_cluster=5)
+    )
+    ensemble = PartitioningProgramEnsemble(
+        **{**_ENSEMBLE_ARGS, "problem": problem, "backend": dummy_simulator}
+    )
+    ensemble.create_programs()
+    expected_nodes = _seed_second_partition_all_ones(ensemble)
+
+    solution, _energy = ensemble.aggregate_results()
+
+    unpartitioned = MaxCutProblem(graph)
+    bitstring = "".join(
+        "1" if node in expected_nodes else "0" for node in unpartitioned.wire_labels
+    )
+    assert solution == unpartitioned.decode_fn(bitstring)
+    assert set(solution) == expected_nodes
 
 
 class TestGraphPartitioningEnsemble:

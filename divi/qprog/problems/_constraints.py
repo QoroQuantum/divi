@@ -210,6 +210,21 @@ def _scale(
     return scaled, round(bound / step)
 
 
+class _UnreachableBoundError(ValueError):
+    """No allowed assignment brings ``constraint``'s left-hand side to its bound.
+
+    ``lo`` and ``hi`` are the extremes of the left-hand side over those
+    assignments.
+    """
+
+    def __init__(self, constraint: LinearConstraint, lo: float, hi: float):
+        self.constraint, self.lo, self.hi = constraint, lo, hi
+        super().__init__(
+            f"{constraint!r} is infeasible: over the assignments the problem "
+            f"allows, its left-hand side ranges over [{lo + 0.0:.6g}, {hi + 0.0:.6g}]."
+        )
+
+
 def _encode_constraint(
     constraint: LinearConstraint,
     activity_bounds: Callable[[Mapping[Hashable, float]], tuple[float, float]],
@@ -234,10 +249,7 @@ def _encode_constraint(
     lo, hi = activity_bounds(constraint.coefficients)
     tol = _TOL * constraint._magnitude
     if (sense != "<=" and hi < b - tol) or (sense != ">=" and lo > b + tol):
-        raise ValueError(
-            f"{constraint!r} is infeasible: its left-hand side ranges over "
-            f"[{lo:.6g}, {hi:.6g}]."
-        )
+        raise _UnreachableBoundError(constraint, lo, hi)
     if (sense == "<=" and hi <= b + tol) or (sense == ">=" and lo >= b - tol):
         return dimod.BinaryQuadraticModel(dimod.BINARY), None
 
@@ -266,7 +278,7 @@ def _encode_constraint(
             slack_range = hi_s - bound if sense == ">=" else bound - lo_s
             if slack_range <= _SLACK_MAX:
                 break
-            multiple = max(multiple + 1, math.ceil(multiple * slack_range / _SLACK_MAX))
+            multiple = math.ceil(multiple * slack_range / _SLACK_MAX)
             scaled, bound = _scale(
                 coefficients, bound_value, sense, step * multiple, tol
             )

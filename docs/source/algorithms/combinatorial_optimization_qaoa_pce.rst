@@ -189,6 +189,11 @@ the X mixer with penalty terms instead. ``MaxCutProblem`` ignores the flag.
 The first three also implement ``is_feasible`` and ``compute_energy``, so
 ``get_top_solutions(feasibility="filter")`` returns only feasible node sets.
 
+Each problem takes a ``networkx`` or ``rustworkx`` graph. A ``rustworkx`` node is
+identified by its node index: qubit ``i`` is the ``i``-th index in ascending
+order, and wire labels and solutions report indices, not node payloads. Read a
+node's payload with ``graph[index]``.
+
 Example: Finding the max-clique of a graph:
 
 .. dashboard-example: max-clique
@@ -700,7 +705,7 @@ For large graphs, enable edge-based partitioning with ``max_edges_per_partition`
 The partitioned workflow splits the graph by edges using Kernighan-Lin or spectral
 bisection, solves each partition independently, stitches results via beam search,
 and optionally fills unmatched residual nodes using classical
-:func:`~networkx.algorithms.matching.max_weight_matching`.
+:func:`~rustworkx.max_weight_matching`.
 
 Iterative QAOA
 --------------
@@ -723,9 +728,18 @@ Three interpolation strategies are available via :class:`~divi.qprog.algorithms.
    * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.INTERP`
      - Linear interpolation (Zhou et al.).  Simple and robust.
    * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.FOURIER`
-     - DCT-II Fourier basis.  Fits a smooth frequency representation.
+     - Fourier parameterisation of Zhou et al. (`arXiv:1812.01041
+       <https://arxiv.org/abs/1812.01041>`_, Eq. 8): sine modes for
+       :math:`\gamma`, cosine modes for :math:`\beta`.  The fitted mode
+       amplitudes carry over to depth :math:`p+1`.
    * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.CHEBYSHEV`
-     - Chebyshev polynomial basis at Chebyshev nodes.
+     - Shifted Chebyshev polynomials :math:`T_j(2t-1)` on the layer grid
+       :math:`t_i = i/p` (`arXiv:2504.01694
+       <https://arxiv.org/abs/2504.01694>`_, Eq. 7), evaluated on the finer
+       grid :math:`i/(p+1)`.
+
+FOURIER and CHEBYSHEV fit at most ``n_basis_terms`` coefficients per angle
+sequence (default :math:`\min(p, 5)`) by least squares.
 
 Example:
 
@@ -859,6 +873,14 @@ with a graph problem configured for partitioning via
 
    print(f"Cut edges: {-energy}")
    print(f"Total circuits executed: {ensemble.total_circuit_count}")
+
+``aggregate_results`` and ``get_top_solutions`` name nodes the same way a
+problem built without ``config`` does: ``networkx`` node labels, or
+``rustworkx`` node indices. A ``rustworkx`` graph and the ``networkx`` graph labelled by its node
+indices are partitioned identically by every algorithm, and both read edge
+weights the same way: the ``"weight"`` attribute in ``networkx``, and a numeric
+payload or the ``"weight"`` entry of a dict payload in ``rustworkx``.
+``MaxWeightCycleProblem`` cannot be partitioned, since its variables are edges.
 
 QUBO Partitioning (QAOA or PCE)
 -------------------------------

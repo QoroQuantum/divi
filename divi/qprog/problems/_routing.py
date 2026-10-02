@@ -67,9 +67,7 @@ def create_tsp_qubo(
     Raises:
         ValueError: If cost_matrix is not square or start_city is out of range.
     """
-    n = cost_matrix.shape[0]
-    if cost_matrix.shape != (n, n):
-        raise ValueError(f"cost_matrix must be square, got shape {cost_matrix.shape}.")
+    n = _check_routing_inputs(cost_matrix)
     if not (0 <= start_city < n):
         raise ValueError(f"start_city {start_city} out of range [0, {n}).")
 
@@ -242,6 +240,22 @@ def repair_tsp_solution(
 # --- CVRP utilities (one-hot) ---
 
 
+def _check_routing_inputs(
+    cost_matrix: npt.NDArray[np.floating],
+    demands: npt.NDArray[np.floating] | None = None,
+) -> int:
+    """Return the node count after checking the cost-matrix shape and demand length."""
+    n_nodes = cost_matrix.shape[0]
+    if cost_matrix.shape != (n_nodes, n_nodes):
+        raise ValueError(f"cost_matrix must be square, got shape {cost_matrix.shape}.")
+    if demands is not None and len(demands) != n_nodes:
+        raise ValueError(
+            f"demands length ({len(demands)}) must match "
+            f"cost_matrix size ({n_nodes})."
+        )
+    return n_nodes
+
+
 def create_cvrp_qubo(
     cost_matrix: npt.NDArray[np.floating],
     demands: npt.NDArray[np.floating],
@@ -288,14 +302,7 @@ def create_cvrp_qubo(
     Raises:
         ValueError: If inputs are inconsistent.
     """
-    n_nodes = cost_matrix.shape[0]
-    if cost_matrix.shape != (n_nodes, n_nodes):
-        raise ValueError(f"cost_matrix must be square, got shape {cost_matrix.shape}.")
-    if len(demands) != n_nodes:
-        raise ValueError(
-            f"demands length ({len(demands)}) must match "
-            f"cost_matrix size ({n_nodes})."
-        )
+    n_nodes = _check_routing_inputs(cost_matrix, demands)
 
     customers = [c for c in range(n_nodes) if c != depot]
     K = len(customers)  # n_customers
@@ -547,13 +554,7 @@ def repair_cvrp_solution(
 
     # Build repaired assignment
     repaired = np.zeros((n_vehicles, max_steps, n_customers), dtype=int)
-    slot_to_customer = {}
-    for slot, cust in zip(row_ind, col_ind):
-        if slot < n_vehicles * max_steps and cust < n_customers:
-            v = slot // max_steps
-            t = slot % max_steps
-            repaired[v, t, cust] = 1
-            slot_to_customer[(v, t)] = cust
+    repaired.reshape(n_vehicles * max_steps, n_customers)[row_ind, col_ind] = 1
 
     customer_demands = np.asarray(demands)[customers]
     vehicle_loads = np.einsum("vtc,c->v", repaired, customer_demands)
@@ -710,8 +711,11 @@ def create_cvrp_hubo_binary(
     Returns:
         Tuple of (hubo_dict, config) where hubo_dict maps tuples of
         variable indices to coefficients.
+
+    Raises:
+        ValueError: If inputs are inconsistent.
     """
-    n_nodes = cost_matrix.shape[0]
+    n_nodes = _check_routing_inputs(cost_matrix, demands)
     customers = [c for c in range(n_nodes) if c != depot]
     n_cust = len(customers)
 
@@ -947,8 +951,11 @@ def create_tsp_hubo_binary(
         Tuple of (hubo_dict, config) — same shape as
         :func:`create_cvrp_hubo_binary` but with ``n_vehicles=1`` and
         ``max_steps=n_customers``.
+
+    Raises:
+        ValueError: If cost_matrix is not square.
     """
-    n_nodes = cost_matrix.shape[0]
+    n_nodes = _check_routing_inputs(cost_matrix)
     n_cust = n_nodes - 1
     hubo, config = create_cvrp_hubo_binary(
         cost_matrix=cost_matrix,
@@ -964,32 +971,28 @@ def create_tsp_hubo_binary(
 
     # Slot-validity penalty: for each slot s and each value v in
     # ``(n_cust + 1, ..., 2^B - 1)``, add ``penalty_weight * I(s == v)``
-    # to the HUBO. Skips when 2^B == n_cust + 1 (no out-of-range values).
+    # to the HUBO. Empty when 2^B == n_cust + 1 (no out-of-range values).
     B = config.bits_per_slot
-    invalid_values = range(n_cust + 1, 1 << B)
-    if invalid_values:
-        for slot in range(config.n_slots):
-            slot_bits = list(range(slot * B, slot * B + B))
-            for v in invalid_values:
-                # Indicator polynomial I(slot == v) expanded over bits.
-                terms: dict[frozenset[int], float] = {frozenset(): 1.0}
-                for b in range(B):
-                    bit_set = (v >> b) & 1
-                    new_terms: dict[frozenset[int], float] = {}
-                    for vars_set, coeff in terms.items():
-                        if bit_set:
-                            key = vars_set | {slot_bits[b]}
-                            new_terms[key] = new_terms.get(key, 0.0) + coeff
-                        else:
-                            new_terms[vars_set] = new_terms.get(vars_set, 0.0) + coeff
-                            key = vars_set | {slot_bits[b]}
-                            new_terms[key] = new_terms.get(key, 0.0) - coeff
-                    terms = new_terms
+    for slot in range(config.n_slots):
+        slot_bits = list(range(slot * B, slot * B + B))
+        for v in range(n_cust + 1, 1 << B):
+            # Indicator polynomial I(slot == v) expanded over bits.
+            terms: dict[frozenset[int], float] = {frozenset(): 1.0}
+            for b in range(B):
+                bit_set = (v >> b) & 1
+                new_terms: dict[frozenset[int], float] = {}
                 for vars_set, coeff in terms.items():
-                    if abs(coeff) < 1e-15:
-                        continue
-                    key = tuple(sorted(vars_set))
-                    hubo[key] = hubo.get(key, 0.0) + penalty_weight * coeff
+                    if bit_set:
+                        key = vars_set | {slot_bits[b]}
+                        new_terms[key] = new_terms.get(key, 0.0) + coeff
+                    else:
+                        new_terms[vars_set] = new_terms.get(vars_set, 0.0) + coeff
+                        key = vars_set | {slot_bits[b]}
+                        new_terms[key] = new_terms.get(key, 0.0) - coeff
+                terms = new_terms
+            for vars_set, coeff in terms.items():
+                key = tuple(sorted(vars_set))
+                hubo[key] = hubo.get(key, 0.0) + penalty_weight * coeff
 
     return hubo, config
 

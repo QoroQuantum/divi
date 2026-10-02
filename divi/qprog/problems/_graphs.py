@@ -25,15 +25,24 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.problems._graph_hamiltonians import (
-    _to_nx_graph,
+    _node_ids,
+    _qubit_edges,
     max_clique_hamiltonians,
     max_independent_set_hamiltonians,
     max_weight_cycle_hamiltonians,
     maxcut_hamiltonians,
     min_vertex_cover_hamiltonians,
 )
-from divi.qprog.problems._graph_partitioning_utils import _node_partition_graph
+from divi.qprog.problems._graph_partitioning_utils import (
+    _drawable,
+    _node_partition_graph,
+)
 from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
+
+
+def _selected_wires(bitstring: str, n_wires: int) -> list[int]:
+    """Positions set to ``1`` in ``bitstring``, ignoring bits past the last wire."""
+    return [idx for idx, bit in enumerate(bitstring) if bit == "1" and idx < n_wires]
 
 
 class _GraphProblemBase(QAOAProblem):
@@ -49,6 +58,7 @@ class _GraphProblemBase(QAOAProblem):
     _constrained_state_cls: type[InitialState]
     _unconstrained_state_cls: type[InitialState]
     _supports_constrained_mixer = True
+    _supports_partitioning = True
 
     def __init__(
         self,
@@ -57,6 +67,12 @@ class _GraphProblemBase(QAOAProblem):
         use_constrained_mixer: bool = True,
         config: GraphPartitioningConfig | None = None,
     ):
+        if config is not None and not self._supports_partitioning:
+            raise ValueError(
+                f"{type(self).__name__} does not support graph partitioning: its "
+                "variables are edges, while partitioning splits the graph by "
+                "node. Build it without 'config'."
+            )
         use_constrained_mixer = (
             use_constrained_mixer and self._supports_constrained_mixer
         )
@@ -73,7 +89,7 @@ class _GraphProblemBase(QAOAProblem):
 
         self._cost_hamiltonian = cleaned
         self._loss_constant = ham_constant
-        self._wire_labels = self._compute_wire_labels(graph)
+        self._wire_labels = self._compute_wire_labels()
         self._initial_state = (
             self._constrained_state_cls
             if use_constrained_mixer
@@ -82,15 +98,10 @@ class _GraphProblemBase(QAOAProblem):
         self._config = config
         self._reverse_index_maps = {}
 
-    @staticmethod
-    def _compute_wire_labels(graph: GraphProblemTypes) -> tuple:
-        """Map qubit positions back to original node values in node-iteration order.
-
-        One expression covers both graph types: ``_to_nx_graph`` remaps a
-        rustworkx ``PyGraph``'s internal indices through ``nodes()`` before the
-        SPO builders see it, so its qubit order is that same sequence.
-        """
-        return tuple(graph.nodes())
+    def _compute_wire_labels(self) -> tuple:
+        """Node of each qubit: networkx node labels in iteration order, or
+        rustworkx node indices in ascending order."""
+        return tuple(_node_ids(self._graph))
 
     @property
     def graph(self) -> GraphProblemTypes:
@@ -128,13 +139,12 @@ class _GraphProblemBase(QAOAProblem):
         wires = self._wire_labels
 
         def _decode(bitstring: str) -> list:
-            return [
-                wires[idx]
-                for idx, bit in enumerate(bitstring)
-                if bit == "1" and idx < len(wires)
-            ]
+            return [wires[idx] for idx in _selected_wires(bitstring, len(wires))]
 
         return _decode
+
+    def _selected_qubits(self, bitstring: str) -> list[int]:
+        return _selected_wires(bitstring, len(self._wire_labels))
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -146,21 +156,12 @@ class _GraphProblemBase(QAOAProblem):
                 "Cannot decompose: no config was provided at construction."
             )
 
-        # Warn if this problem type has known partitioning risks
-        tier = _PARTITIONING_COMPATIBILITY_TIERS.get(type(self))
-        if tier is not None:
-            risk_level, rationale = tier
-            prefix = "High-risk" if risk_level == "high-risk" else "Heuristic-risk"
-            detail = (
-                "Aggregation is heuristic and may miss globally valid/high-quality "
-                f"solutions because {rationale}"
-                if risk_level == "high-risk"
-                else "Results may be sensitive to partition boundaries because "
-                f"{rationale}"
-            )
+        rationale = _PARTITIONING_RISKS.get(type(self))
+        if rationale is not None:
             warn(
-                f"{prefix} graph partitioning objective: "
-                f"{type(self).__name__}. {detail}",
+                f"Heuristic-risk graph partitioning objective: "
+                f"{type(self).__name__}. Results may be sensitive to partition "
+                f"boundaries because {rationale}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -195,22 +196,25 @@ class _GraphProblemBase(QAOAProblem):
     ) -> list[int]:
         extended = list(current_solution)
         reverse_map = self._reverse_index_maps[prog_id]
+        position = self._node_positions
 
-        # Reset all positions belonging to this partition to 0
-        for global_idx in reverse_map.values():
-            extended[global_idx] = 0
+        for global_node in reverse_map.values():
+            extended[position[global_node]] = 0
 
-        # Set positions for nodes in the candidate's decoded solution to 1
         for local_node in candidate_decoded:
-            global_idx = reverse_map[local_node]
-            extended[global_idx] = 1
+            extended[position[reverse_map[local_node]]] = 1
 
         return extended
 
     @cached_property
-    def _nx_graph(self) -> nx.Graph:
-        """The graph as an undirected ``networkx`` graph keyed by node value."""
-        return _to_nx_graph(self._graph)
+    def _node_positions(self) -> dict:
+        """Global solution position of each node id used by the partitioner."""
+        return {node: i for i, node in enumerate(_node_ids(self._graph))}
+
+    @cached_property
+    def _qubit_edges(self) -> list[tuple[int, int]]:
+        """The graph's edges as pairs of qubit positions."""
+        return _qubit_edges(self._graph)[1]
 
     @cached_property
     def _diagonal_terms(self) -> list[tuple[float, tuple[int, ...]]]:
@@ -248,7 +252,11 @@ class _GraphProblemBase(QAOAProblem):
     def postprocess_candidates(
         self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[list[int], float]]:
-        return [(list(np.where(solution)[0]), score) for score, solution in candidates]
+        nodes = self._wire_labels
+        return [
+            ([nodes[i] for i in np.flatnonzero(solution)], score)
+            for score, solution in candidates
+        ]
 
 
 class MaxCutProblem(_GraphProblemBase):
@@ -259,7 +267,8 @@ class MaxCutProblem(_GraphProblemBase):
     :class:`~divi.qprog.problems.BinaryOptimizationProblem`.
 
     Args:
-        graph: NetworkX or RustworkX graph.
+        graph: NetworkX or RustworkX graph. RustworkX nodes are identified by
+            node index, not payload, in wire labels and decoded solutions.
         use_constrained_mixer: Ignored; MaxCut has no constrained mixer.
     """
 
@@ -272,7 +281,8 @@ class MaxCliqueProblem(_GraphProblemBase):
     """Max clique problem on a graph.
 
     Args:
-        graph: NetworkX or RustworkX graph.
+        graph: NetworkX or RustworkX graph. RustworkX nodes are identified by
+            node index, not payload, in wire labels and decoded solutions.
         use_constrained_mixer: Use the constrained mixer and a feasible
             initial state. Defaults to ``True``.
     """
@@ -283,11 +293,16 @@ class MaxCliqueProblem(_GraphProblemBase):
 
     def is_feasible(self, bitstring: str) -> bool:
         """Whether every pair of selected nodes is joined by an edge."""
-        graph = self._nx_graph
+        adjacent = self._adjacent_pairs
         return all(
-            graph.has_edge(u, v)
-            for u, v in itertools.combinations(self.decode_fn(bitstring), 2)
+            pair in adjacent
+            for pair in itertools.combinations(self._selected_qubits(bitstring), 2)
         )
+
+    @cached_property
+    def _adjacent_pairs(self) -> frozenset[tuple[int, int]]:
+        """Qubit pairs ``(i, j)`` with ``i < j`` joined by an edge."""
+        return frozenset((min(u, v), max(u, v)) for u, v in self._qubit_edges)
 
     def compute_energy(self, bitstring: str) -> float:
         """Negated number of selected nodes, so larger cliques score lower."""
@@ -298,7 +313,8 @@ class MaxIndependentSetProblem(_GraphProblemBase):
     """Max independent set problem on a graph.
 
     Args:
-        graph: NetworkX or RustworkX graph.
+        graph: NetworkX or RustworkX graph. RustworkX nodes are identified by
+            node index, not payload, in wire labels and decoded solutions.
         use_constrained_mixer: Use the constrained mixer and a feasible
             initial state. Defaults to ``True``.
     """
@@ -309,10 +325,8 @@ class MaxIndependentSetProblem(_GraphProblemBase):
 
     def is_feasible(self, bitstring: str) -> bool:
         """Whether no two selected nodes are joined by an edge."""
-        selected = set(self.decode_fn(bitstring))
-        return not any(
-            u in selected and v in selected for u, v in self._nx_graph.edges()
-        )
+        selected = set(self._selected_qubits(bitstring))
+        return not any(u in selected and v in selected for u, v in self._qubit_edges)
 
     def compute_energy(self, bitstring: str) -> float:
         """Negated number of selected nodes, so larger sets score lower."""
@@ -323,7 +337,8 @@ class MinVertexCoverProblem(_GraphProblemBase):
     """Min vertex cover problem on a graph.
 
     Args:
-        graph: NetworkX or RustworkX graph.
+        graph: NetworkX or RustworkX graph. RustworkX nodes are identified by
+            node index, not payload, in wire labels and decoded solutions.
         use_constrained_mixer: Use the constrained mixer and a feasible
             initial state. Defaults to ``True``.
     """
@@ -334,8 +349,8 @@ class MinVertexCoverProblem(_GraphProblemBase):
 
     def is_feasible(self, bitstring: str) -> bool:
         """Whether every edge has at least one selected endpoint."""
-        selected = set(self.decode_fn(bitstring))
-        return all(u in selected or v in selected for u, v in self._nx_graph.edges())
+        selected = set(self._selected_qubits(bitstring))
+        return all(u in selected or v in selected for u, v in self._qubit_edges)
 
     def compute_energy(self, bitstring: str) -> float:
         """Number of selected nodes, so smaller covers score lower."""
@@ -346,7 +361,10 @@ class MaxWeightCycleProblem(_GraphProblemBase):
     """Max weight cycle problem on a directed graph.
 
     Args:
-        graph: NetworkX DiGraph or RustworkX PyDiGraph with weighted edges.
+        graph: NetworkX DiGraph or RustworkX PyDiGraph with weighted edges. A
+            RustworkX edge's weight is its numeric payload or the ``"weight"``
+            entry of its dict payload, and ``metadata`` names edges by node
+            index.
         use_constrained_mixer: Use the cycle mixer, which preserves valid cycles.
             Defaults to ``True``.
     """
@@ -354,47 +372,35 @@ class MaxWeightCycleProblem(_GraphProblemBase):
     _resolver = staticmethod(max_weight_cycle_hamiltonians)  # type: ignore[assignment, bad-override]
     _constrained_state_cls = SuperpositionState
     _unconstrained_state_cls = SuperpositionState
+    _supports_partitioning = False
 
-    @staticmethod
-    def _compute_wire_labels(graph: GraphProblemTypes) -> tuple:
-        # Cycle problems use edge variables; wires are 0-indexed by edge count.
-        if hasattr(graph, "number_of_edges"):
-            return tuple(range(graph.number_of_edges()))
-        return tuple(range(len(graph.edge_list())))  # type: ignore[attr-defined]
+    def _compute_wire_labels(self) -> tuple:
+        """Edge-variable wires ``0..W-1``, one per edge of ``metadata``."""
+        return tuple(range(len(self.metadata)))
 
 
 # Partitioning is most robust for cut-style objectives (e.g. MaxCut).
 # Structure-dependent objectives may lose cross-partition constraints.
-_PARTITIONING_COMPATIBILITY_TIERS = {
-    MaxWeightCycleProblem: (
-        "high-risk",
-        "partitioning can break cycles across cluster boundaries.",
-    ),
-    MaxCliqueProblem: (
-        "heuristic-risk",
-        "partitioning can hide cross-partition adjacency needed for global cliques.",
-    ),
-    MaxIndependentSetProblem: (
-        "heuristic-risk",
-        "partitioning can hide cross-partition conflicts between selected vertices.",
-    ),
-    MinVertexCoverProblem: (
-        "heuristic-risk",
-        "partitioning can hide cross-partition edges that must be covered globally.",
-    ),
+_PARTITIONING_RISKS = {
+    MaxCliqueProblem: "partitioning can hide cross-partition adjacency needed for global cliques.",
+    MaxIndependentSetProblem: "partitioning can hide cross-partition conflicts between selected vertices.",
+    MinVertexCoverProblem: "partitioning can hide cross-partition edges that must be covered globally.",
 }
 
 
-def draw_graph_solution_nodes(main_graph: nx.Graph, partition_nodes):
+def draw_graph_solution_nodes(main_graph: GraphProblemTypes, partition_nodes):
     """Visualise a graph with solution nodes highlighted.
 
     Draws the graph with nodes coloured to distinguish solution nodes (red) from
     other nodes (light blue).
 
     Args:
-        main_graph (nx.Graph): NetworkX graph to visualise.
-        partition_nodes: Collection of node indices that are part of the solution.
+        main_graph: NetworkX or RustworkX graph to visualise. RustworkX nodes
+            are drawn and labelled by node index.
+        partition_nodes: Collection of the solution's nodes, as reported by the
+            problem's solutions.
     """
+    main_graph = _drawable(main_graph)
     node_colors = [
         "red" if node in partition_nodes else "lightblue" for node in main_graph.nodes()
     ]

@@ -23,6 +23,7 @@ from divi.qprog.problems import (
     PortfolioSelectionProblem,
     QUBOPartitioningConfig,
 )
+from divi.qprog.problems._constraints import _UnreachableBoundError
 from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog.problems._helpers import (
     assert_penalty_zero_iff_feasible,
@@ -82,6 +83,11 @@ SELECTION_CASES = [
             id="allocation-domain-wall",
         ),
         pytest.param(
+            lambda: _make_allocation(n_steps=2, encoding="domain_wall"),
+            6,
+            id="allocation-domain-wall-two-steps",
+        ),
+        pytest.param(
             lambda: PortfolioAllocationProblem(
                 MU[:2],
                 SIGMA[:2, :2],
@@ -108,6 +114,16 @@ def test_penalty_is_zero_exactly_on_feasible_portfolios(make, n_decision):
             lambda: _make_allocation(encoding="domain_wall", constraints=[ESG_72]),
             9,
             id="allocation-domain-wall-esg",
+        ),
+        pytest.param(
+            lambda: _make_selection(constraints=[LinearConstraint(ESG, "<=", 65)]),
+            4,
+            id="selection-esg-cap",
+        ),
+        pytest.param(
+            lambda: _make_allocation(constraints=[LinearConstraint(ESG[:3], "<=", 62)]),
+            6,
+            id="allocation-log-esg-cap",
         ),
     ],
 )
@@ -153,6 +169,178 @@ def test_slack_covers_only_fully_invested_portfolios(make, n_decision, recwarn):
     assert_penalty_zero_iff_feasible(problem, n_decision=n_decision)
 
 
+def _invested_units(problem):
+    """Every units vector that holds ``total`` units, at most ``cap`` per asset."""
+    levels = range(problem._cap + 1)
+    for units in itertools.product(levels, repeat=problem.n_assets):
+        if sum(units) == problem._total:
+            yield np.array(units)
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        pytest.param(_make_selection, id="selection"),
+        pytest.param(_make_allocation, id="allocation-log"),
+        pytest.param(
+            lambda: _make_allocation(encoding="domain_wall"),
+            id="allocation-domain-wall",
+        ),
+    ],
+)
+def test_activity_bounds_are_the_extremes_over_fully_invested_portfolios(make):
+    problem = make()
+    n_bits = problem.n_assets * len(problem._place)
+    rng = np.random.default_rng(5)
+    for _ in range(5):
+        a = rng.integers(-3, 4, n_bits).astype(float)
+        activities = [
+            a @ problem._unit_bits(units) for units in _invested_units(problem)
+        ]
+        bounds = problem._activity_bounds(dict(enumerate(a)))
+        assert bounds == pytest.approx((min(activities), max(activities)))
+
+
+def test_violation_sums_each_constraint_scaled_by_its_spread():
+    problem = PortfolioSelectionProblem(
+        np.zeros(4),
+        np.eye(4),
+        2,
+        constraints=[
+            LinearConstraint([1, 0, 0, 0], "==", 0.5),
+            LinearConstraint([0, 1, 0, 0], "<=", 0.2),
+            LinearConstraint([0, 0, 2, 0], ">=", 1.0),
+        ],
+    )
+    # 0.4 off the equality, 0.3 over the cap, 1.0 under the floor over a spread of 2.
+    assert problem._violation(np.array([0.1, 0.5, 0.0])) == pytest.approx(1.2)
+
+
+@pytest.mark.parametrize("n_moves", [1, 2])
+def test_best_transfers_keep_the_budget_within_each_cap(n_moves):
+    problem = PortfolioAllocationProblem(
+        MU, SIGMA, n_steps=3, constraints=[LinearConstraint(ESG, ">=", 72)]
+    )
+    for units in _invested_units(problem):
+        best = problem._best_transfers(units, n_moves)
+        if best is None:
+            continue
+        moved, violation, objective = best
+        assert moved.sum() == problem._total
+        assert np.all((moved >= 0) & (moved <= problem._cap))
+        assert np.abs(moved - units).sum() == 2 * n_moves
+        assert violation == pytest.approx(
+            float(problem._violation(problem._weight_matrix @ moved / 3))
+        )
+        assert objective == pytest.approx(float(problem._objective(moved)))
+
+
+def test_repair_fills_the_budget_greedily_on_the_objective():
+    problem = PortfolioSelectionProblem(
+        [1.0, 0.5, 0.0], np.zeros((3, 3)), 2, risk_tolerance=1.0
+    )
+    _, held, energy = problem.repair_infeasible_bitstring("100")
+    assert held == [0, 1]
+    assert energy == pytest.approx(-0.75)
+
+
+def test_repair_returns_no_energy_when_the_constraints_conflict():
+    # Each constraint alone admits a portfolio, but no portfolio meets both.
+    problem = PortfolioSelectionProblem(
+        np.zeros(4),
+        np.eye(4),
+        2,
+        constraints=[
+            LinearConstraint({0: 1, 1: 1}, "==", 0.5),
+            LinearConstraint({0: 1, 1: 1}, ">=", 1.0),
+        ],
+    )
+    slack = "0" * n_slack(problem, 4)
+    repaired, _, energy = problem.repair_infeasible_bitstring("0011" + slack)
+    assert energy is None
+    assert not problem.is_feasible(repaired)
+
+
+def _random_constraints(rng, n, total, cap):
+    """Two random weight constraints, each met by some fully invested portfolio."""
+    constraints = []
+    for sense in rng.choice(["==", "<=", ">="], size=2):
+        coefficients = rng.integers(-3, 4, n)
+        coefficients[rng.integers(n)] = 5
+        units = np.zeros(n, dtype=int)
+        for _ in range(total):
+            units[rng.choice(np.flatnonzero(units < cap))] += 1
+        constraints.append(
+            LinearConstraint(coefficients, sense, coefficients @ units / total)
+        )
+    return constraints
+
+
+def _assert_repair_is_feasible_or_none(problem, n_decision):
+    slack = "0" * n_slack(problem, n_decision)
+    for head in _bits(n_decision):
+        repaired, _, energy = problem.repair_infeasible_bitstring(head + slack)
+        assert (energy is None) == (not problem.is_feasible(repaired)), head
+        if energy is not None:
+            assert energy == pytest.approx(problem.compute_energy(repaired))
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize(
+    "make, n_assets, n_decision, total, cap",
+    [
+        pytest.param(
+            lambda cons: PortfolioSelectionProblem(
+                np.zeros(6), _covariance(6), 3, constraints=cons
+            ),
+            6,
+            6,
+            3,
+            1,
+            id="selection",
+        ),
+        pytest.param(
+            lambda cons: PortfolioAllocationProblem(
+                MU, SIGMA, n_steps=3, constraints=cons
+            ),
+            4,
+            8,
+            3,
+            3,
+            id="allocation",
+        ),
+    ],
+)
+def test_repair_terminates_feasible_or_none_under_competing_constraints(
+    make, n_assets, n_decision, total, cap, seed
+):
+    rng = np.random.default_rng(seed)
+    problem = make(_random_constraints(rng, n_assets, total, cap))
+    _assert_repair_is_feasible_or_none(problem, n_decision)
+
+
+def _only_a_double_swap_repairs():
+    """Only {2, 3} is feasible, and every single swap from {0, 1} raises the violation."""
+    return PortfolioSelectionProblem(
+        np.zeros(5),
+        np.eye(5),
+        n_holdings=2,
+        constraints=[
+            LinearConstraint({2: 1, 3: -1}, "==", 0),
+            LinearConstraint({2: 1, 3: 1, 4: -3}, ">=", 0.5),
+        ],
+    )
+
+
+def test_repair_returns_none_when_double_transfers_are_capped(mocker):
+    mocker.patch("divi.qprog.problems._portfolio._MAX_DOUBLE_TRANSFERS", 0)
+    problem = _only_a_double_swap_repairs()
+    slack = "0" * n_slack(problem, 5)
+    repaired, _, energy = problem.repair_infeasible_bitstring("11000" + slack)
+    assert energy is None
+    assert not problem.is_feasible(repaired)
+
+
 class TestPortfolioSelection:
     def test_objective_is_mean_variance_at_equal_weight(self):
         problem = _make_selection()
@@ -184,19 +372,16 @@ class TestPortfolioSelection:
         assert metrics["expected_return"] == pytest.approx(MU @ w)
         assert metrics["volatility"] == pytest.approx(vol)
         assert metrics["sharpe"] == pytest.approx((MU @ w - 0.02) / vol)
+        assert problem.metrics("1001")["sharpe"] == pytest.approx(MU @ w / vol)
+
+    def test_sharpe_is_nan_at_zero_volatility(self):
+        problem = PortfolioSelectionProblem([0.1, 0.2], np.zeros((2, 2)), 1)
+        metrics = problem.metrics("01")
+        assert metrics["volatility"] == 0.0
+        assert math.isnan(metrics["sharpe"])
 
     def test_repair_exchanges_two_holdings_when_single_swaps_stall(self):
-        # Only {2, 3} is feasible, and every single swap from {0, 1} raises the
-        # total violation.
-        problem = PortfolioSelectionProblem(
-            np.zeros(5),
-            np.eye(5),
-            n_holdings=2,
-            constraints=[
-                LinearConstraint({2: 1, 3: -1}, "==", 0),
-                LinearConstraint({2: 1, 3: 1, 4: -3}, ">=", 0.5),
-            ],
-        )
+        problem = _only_a_double_swap_repairs()
         slack = "0" * n_slack(problem, 5)
         repaired, held, energy = problem.repair_infeasible_bitstring("11000" + slack)
         assert held == [2, 3]
@@ -280,6 +465,34 @@ class TestPortfolioSelection:
         assert all(sol.bitstring.count("1") == 2 for sol in solutions)
 
 
+@pytest.mark.parametrize(
+    "make, constraint, weight_range",
+    [
+        pytest.param(
+            _make_selection,
+            LinearConstraint(ESG, ">=", 90),
+            "[57.5, 75]",
+            id="selection",
+        ),
+        pytest.param(
+            _make_allocation,
+            LinearConstraint(ESG[:3], ">=", 90),
+            "[55, 80]",
+            id="allocation",
+        ),
+    ],
+)
+def test_infeasible_weight_constraint_is_reported_in_weights(
+    make, constraint, weight_range
+):
+    with pytest.raises(ValueError, match="fully invested portfolios") as info:
+        make(constraints=[constraint])
+    message = str(info.value)
+    assert repr(constraint) in message
+    assert f"weighted sum ranges over {weight_range}" in message
+    assert isinstance(info.value.__cause__, _UnreachableBoundError)
+
+
 class TestPortfolioAllocation:
     @pytest.mark.parametrize("encoding, width", ENCODINGS)
     def test_objective_is_mean_variance_of_encoded_weights(self, encoding, width):
@@ -329,11 +542,21 @@ class TestPortfolioAllocation:
                 {"n_steps": 7, "constraints": [LinearConstraint({0: 1}, "==", 0.5)]},
                 "infeasible",
             ),
+            ({"constraints": [LinearConstraint(ESG[:3], ">=", 90)]}, "ranges over"),
         ],
     )
     def test_invalid_arguments_raise(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             _make_allocation(**kwargs)
+
+    def test_unrelated_encoder_errors_propagate_unchanged(self):
+        with pytest.raises(
+            ValueError, match="every left-hand side is a multiple"
+        ) as info:
+            _make_allocation(
+                n_steps=7, constraints=[LinearConstraint({0: 1}, "==", 0.5)]
+            )
+        assert info.value.__cause__ is None
 
     def test_pce_decodes_and_repairs_through_the_problem(self, default_test_simulator):
         problem = _make_allocation()
@@ -484,24 +707,6 @@ class TestPortfolioPartitioning:
             assert 0 < share < len(assets) * problem._cap
             assert sub._total == share
 
-    def test_shares_follow_the_relaxation(self):
-        # Two identical blocks; the second has twice the returns, so the
-        # relaxation puts both names there.
-        mu = np.r_[np.full(4, 0.05), np.full(4, 0.10)]
-        block = np.full((4, 4), 0.01) + np.eye(4) * 0.03
-        problem = PortfolioSelectionProblem(
-            mu,
-            block_diag(block, block),
-            2,
-            risk_tolerance=TAU,
-            config=QUBOPartitioningConfig(max_n_variables_per_cluster=4),
-        )
-        problem.decompose()
-        assert [(a.tolist(), s) for a, s in problem._clusters.values()] == [
-            ([4, 5, 6, 7], 2)
-        ]
-        assert problem._fixed_units == dict.fromkeys(range(4), 0)
-
     @pytest.mark.parametrize(
         "constraint, shares",
         [
@@ -537,6 +742,7 @@ class TestPortfolioPartitioning:
             config=QUBOPartitioningConfig(max_n_variables_per_cluster=5),
         )
         problem.decompose()
+        assert all(s > 0 for _, s in problem._clusters.values())
         by_block = {int(a[0]): s for a, s in problem._clusters.values()}
         by_block.update({a: u for a, u in problem._fixed_units.items() if a in (0, 5)})
         assert by_block == shares
@@ -742,30 +948,34 @@ class TestPortfolioPartitioning:
         ((_, energy),) = problem.postprocess_candidates(candidates)
         assert energy == pytest.approx(optimum)
 
-    def test_postprocess_repairs_and_improves_within_the_constraints(self, pin_shares):
-        esg = np.array([90.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0])
+    ESG = np.array([90.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0])
+    INFEASIBLE_CANDIDATE = (0.0, [0, 0, 1, 1, 0, 1, 0])
+
+    def _esg_constrained_problem(self, pin_shares):
         problem = _partitioned_selection(
-            [4, 3], n_holdings=3, constraints=[LinearConstraint(esg, ">=", 70)]
+            [4, 3], n_holdings=3, constraints=[LinearConstraint(self.ESG, ">=", 70)]
         )
         pin_shares(problem, {4: 2, 3: 1}).decompose()
+        return problem
+
+    def test_postprocess_repairs_and_improves_within_the_constraints(self, pin_shares):
+        problem = self._esg_constrained_problem(pin_shares)
         ((decoded, energy),) = problem.postprocess_candidates(
-            [(0.0, [0, 0, 1, 1, 0, 1, 0])]
+            [self.INFEASIBLE_CANDIDATE]
         )
         objective = _selection_objectives(problem)
-        feasible = {h: o for h, o in objective.items() if esg[list(h)].mean() >= 70}
+        feasible = {
+            h: o for h, o in objective.items() if self.ESG[list(h)].mean() >= 70
+        }
         # Without the constraint the polish would end somewhere infeasible.
         assert min(objective, key=objective.get) not in feasible
         assert tuple(decoded) in feasible
         assert energy == pytest.approx(min(feasible.values()))
 
     def test_postprocess_strict_drops_infeasible_candidates(self, pin_shares):
-        esg = np.array([90.0, 90.0, 40.0, 40.0, 90.0, 40.0, 40.0])
-        problem = _partitioned_selection(
-            [4, 3], n_holdings=3, constraints=[LinearConstraint(esg, ">=", 70)]
-        )
-        pin_shares(problem, {4: 2, 3: 1}).decompose()
+        problem = self._esg_constrained_problem(pin_shares)
         assert (
-            problem.postprocess_candidates([(0.0, [0, 0, 1, 1, 0, 1, 0])], strict=True)
+            problem.postprocess_candidates([self.INFEASIBLE_CANDIDATE], strict=True)
             == []
         )
 

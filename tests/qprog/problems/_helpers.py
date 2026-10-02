@@ -4,14 +4,28 @@
 
 """Shared problem constants and helpers for QAOA/PCE e2e-style tests."""
 
+import contextlib
 import itertools
+import signal
 
 import dimod
 import networkx as nx
 import numpy as np
 import pytest
+import rustworkx as rx
 
 from divi.qprog.problems import BinaryOptimizationProblem
+
+
+def nx_twin(graph: rx.PyGraph | rx.PyDiGraph) -> nx.Graph:
+    """networkx graph labelled by ``graph``'s node indices, with the same edges."""
+    twin = nx.DiGraph() if isinstance(graph, rx.PyDiGraph) else nx.Graph()
+    twin.add_nodes_from(graph.node_indexes())
+    for left, right, payload in graph.weighted_edge_list():
+        attrs = payload if isinstance(payload, dict) else {"weight": payload}
+        twin.add_edge(left, right, **{k: v for k, v in attrs.items() if v is not None})
+    return twin
+
 
 QUBO_MATRIX = np.array(
     [
@@ -72,6 +86,24 @@ ZERO_OFFSET_QUBO = {(0, 0): -0.5, (1, 1): 1, (0, 1): -2}
 def make_zero_offset_bqm() -> dimod.BinaryQuadraticModel:
     """BQM for :data:`ZERO_OFFSET_QUBO` (all-zeros has energy 0)."""
     return dimod.BinaryQuadraticModel.from_qubo(ZERO_OFFSET_QUBO)
+
+
+@contextlib.contextmanager
+def fail_after(seconds: int):
+    """Fail the enclosing test instead of hanging if its body runs too long."""
+    if not hasattr(signal, "SIGALRM"):
+        pytest.skip("SIGALRM is unavailable on this platform")
+
+    def _expire(_signum, _frame):
+        pytest.fail(f"timed out after {seconds} s")
+
+    previous = signal.signal(signal.SIGALRM, _expire)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def make_decomposed_problem(source, *, decomposer_size: int = 2):
