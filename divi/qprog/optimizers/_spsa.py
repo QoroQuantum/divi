@@ -926,6 +926,14 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         exact_loss: bool = False,
         calibration_steps: int = 25,
     ):
+        # Checked here, before the base class sees them as ``c`` / ``resamplings``.
+        if epsilon <= 0:
+            raise ValueError(f"epsilon must be positive, got {epsilon}.")
+        if not (1 <= V_min <= V_init) or (V_max is not None and V_init > V_max):
+            raise ValueError(
+                "Require 1 <= V_min <= V_init <= V_max when V_max is set, got "
+                f"V_min={V_min}, V_init={V_init}, V_max={V_max}."
+            )
         super().__init__(
             learning_rate=learning_rate,
             c=epsilon,
@@ -938,11 +946,6 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
             exact_loss=exact_loss,
             calibration_steps=calibration_steps,
         )
-        if not (1 <= V_min <= V_init) or (V_max is not None and V_init > V_max):
-            raise ValueError(
-                "Require 1 <= V_min <= V_init <= V_max when V_max is set, got "
-                f"V_min={V_min}, V_init={V_init}, V_max={V_max}."
-            )
         if M_min < 1 or (M_init is not None and M_init < M_min):
             raise ValueError(
                 "Require 1 <= M_min and, when set, M_min <= M_init, got "
@@ -1223,9 +1226,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                 ):
                     derivative_scale = 0.5 if shift is not None else 1.0 / (2.0 * eps_k)
                     measurement_variances.append(
-                        cast(int, M_k)
-                        * derivative_scale**2
-                        * float(np.sum(variances[:2]))
+                        M_k * derivative_scale**2 * float(np.sum(variances[:2]))
                     )
 
             ghat = np.mean(ghats, axis=0)
@@ -1323,9 +1324,7 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
                     and measurement_variance_ema is not None
                     and np.isfinite(M_star)
                 ):
-                    M_k = self._rate_limited_integer(
-                        M_star, cast(int, M_k), self.M_min, M_max
-                    )
+                    M_k = self._rate_limited_integer(M_star, M_k, self.M_min, M_max)
 
         best_x, best_fun = self._fold_final_iterate(
             cost_only, theta, current_loss, best_x, best_fun

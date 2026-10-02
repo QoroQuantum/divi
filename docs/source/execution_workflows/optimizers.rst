@@ -177,8 +177,9 @@ curvatures, at the cost of metric evaluations.
 Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
 
 - :class:`~divi.qprog.optimizers.PullbackMetricEstimator` *(default)* shares
-  the Hamiltonian-gradient measurement pass. It supports expectation-valued
-  VQE and CustomVQA, but not PCE or supervised data-bound losses.
+  the Hamiltonian-gradient measurement pass and is unchanged by rescaling the
+  Hamiltonian. It supports expectation-valued VQE and CustomVQA, but not PCE
+  or supervised data-bound losses.
 
 - :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` is
   observable-independent and supports PCE with Pauli-rotation ansatze. It
@@ -192,8 +193,8 @@ pseudo-inverse with cutoff ``rcond``.
    Under ``"tikhonov"``, :math:`\lambda` must be large relative to the metric's
    own scale, not merely positive: the step along a flat direction grows as
    :math:`1/\lambda`, so ``1e-12`` gives a finite but enormous update. Keep
-   ``scale_regularization=True`` (the default), or set ``max_step_norm``. An
-   under-damped step is reported once per run.
+   ``scale_regularization=True`` (the default), or set ``max_step_norm``. A
+   step larger than :math:`\pi/4` in any parameter is reported once per run.
 
 **Usage** is the same as any optimizer — pass an instance via the
 ``optimizer=`` argument and call ``run()``:

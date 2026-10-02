@@ -192,7 +192,7 @@ class Optimizer(ABC):
     def _resolve_max_iterations(self, kwargs: dict[str, Any]) -> int:
         """Pop ``max_iterations`` (default 50); reject values < 1.
 
-        For step-based optimizers with no resume: zero steps run the loop never,
+        For step-based optimisers with no resume: zero steps run the loop never,
         which would otherwise return a successful result with an infinite loss.
         """
         max_iterations = kwargs.pop("max_iterations", None)
@@ -201,6 +201,6 @@ class Optimizer(ABC):
         if max_iterations < 1:
             raise ValueError(
                 f"max_iterations must be >= 1, got {max_iterations}; "
-                "the optimization loop performs no evaluation with zero steps."
+                "the optimisation loop performs no evaluation with zero steps."
             )
         return max_iterations

@@ -19,9 +19,8 @@ from divi.qprog._metrics import (
 from divi.qprog.optimizers._base import Optimizer
 from divi.qprog.optimizers._linalg import _regularized_solve
 
-#: Scale-weighted gradient amplification above which a step is reported as
-#: under-damped rather than merely preconditioned.
-_AMPLIFICATION_WARN_FACTOR = 1e6
+#: Per-parameter update above which a step is reported as overshooting.
+_OVERSHOOT_WARN_STEP = np.pi / 4
 
 
 class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
@@ -55,7 +54,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
             ``"tikhonov"`` so the damped system is positive-definite, and large
             relative to the metric's own scale: the step along a null direction
             grows as :math:`1/\\lambda`, so ``1e-12`` yields a finite but
-            enormous update. Warned about once per run.
+            enormous update.
         scale_regularization: When ``True``, scale :math:`\\lambda` by
             ``max(1, mean(diag(G)))`` so the damping tracks the metric's
             magnitude instead of being fixed in absolute terms.
@@ -77,9 +76,8 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
         Because the pullback metric is only PSD (and singular whenever the
         parameter count exceeds the number of Hamiltonian terms), the
         preconditioned step can grow large along weakly-curved directions when
-        ``regularization`` is small relative to the metric scale. If the
-        optimizer oscillates (visible in the loss history), raise
-        ``regularization``, lower ``step_size``, or set ``max_step_norm``. A
+        ``regularization`` is small relative to the metric scale. A step larger
+        than :math:`\\pi/4` in any parameter is reported once per run. A
         non-finite update raises ``FloatingPointError``.
     """
 
@@ -176,40 +174,20 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
                 delta = delta * (self.max_step_norm / update_norm)
         return delta
 
-    def _warn_if_underdamped(
-        self,
-        grad: npt.NDArray[np.float64],
-        metric: npt.NDArray[np.float64],
-        delta: npt.NDArray[np.float64],
-        already_warned: bool,
+    def _warn_if_overshooting(
+        self, update: npt.NDArray[np.float64], already_warned: bool
     ) -> bool:
-        """Warn once when the step is dominated by the metric's near-null space.
-
-        A :math:`\\lambda` far below the metric's own scale still yields a finite
-        update, so :meth:`_natural_gradient` lets it through; the step simply
-        grows as :math:`1/\\lambda`. The amplification is weighted by the metric's
-        scale so a well-conditioned metric of small magnitude does not trip it.
-        Silent when ``max_step_norm`` already bounds the step.
-        """
-        if already_warned or self.max_step_norm is not None:
-            return already_warned
-        # A diverging run overflows these to inf, which compares correctly here.
-        with np.errstate(over="ignore"):
-            grad_norm = float(np.linalg.norm(grad))
-            delta_norm = float(np.linalg.norm(delta))
-            scale = float(np.mean(np.abs(np.diag(metric))))
-            amplification = scale * delta_norm / grad_norm if grad_norm else 0.0
-        if amplification <= _AMPLIFICATION_WARN_FACTOR:
-            return already_warned
-        effective_lambda = self.regularization * (
-            max(1.0, scale) if self.scale_regularization else 1.0
-        )
+        """Warn once when an update moves any parameter by more than
+        :math:`\\pi/4`."""
+        if already_warned:
+            return True
+        largest = float(np.max(np.abs(update)))
+        if largest <= _OVERSHOOT_WARN_STEP:
+            return False
         warnings.warn(
-            f"{type(self).__name__}: the damped solve amplified the gradient by "
-            f"{amplification:.3e} relative to the metric's own scale; the damping "
-            f"actually applied (lambda={effective_lambda:.3e}) is small against "
-            "that scale, so the step is dominated by the metric's near-null "
-            "space. Raise `regularization` or set `max_step_norm`.",
+            f"{type(self).__name__}: a step moved a parameter by {largest:.3g} rad "
+            "(more than pi/4), so the update is likely overshooting. Lower "
+            "`step_size`, raise `regularization`, or set `max_step_norm`.",
             stacklevel=3,
         )
         return True
@@ -255,7 +233,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
 
         best_x = theta.copy()
         best_fun = np.inf
-        underdamped_warned = False
+        overshoot_warned = False
 
         for it in range(max_iterations):
             fun = float(np.asarray(cost_fn(theta)).reshape(-1)[0])
@@ -279,20 +257,24 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
                     )
                 )
 
-            delta = self._natural_gradient(grad, metric)
-            underdamped_warned = self._warn_if_underdamped(
-                grad, metric, delta, underdamped_warned
-            )
-            theta = theta - self.step_size * delta
+            update = self.step_size * self._natural_gradient(grad, metric)
+            overshoot_warned = self._warn_if_overshooting(update, overshoot_warned)
+            theta = theta - update
 
+        finite = bool(np.isfinite(best_fun))
         return OptimizeResult(
             # 1-D best iterate, consistent with every other optimizer (the callback
             # x is 2-D as the iteration contract requires; the final result is not).
             x=best_x,
             fun=np.atleast_1d(best_fun),
             nit=max_iterations,
-            success=True,
-            message="Optimisation terminated: reached max_iterations.",
+            success=finite,
+            message=(
+                "Optimisation terminated: reached max_iterations."
+                if finite
+                else "Optimisation failed: no finite cost value was observed in "
+                f"{max_iterations} iterations."
+            ),
         )
 
     def get_config(self) -> dict[str, Any]:

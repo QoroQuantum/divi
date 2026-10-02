@@ -83,10 +83,8 @@ class PymooOptimizer(Optimizer):
         Returns:
             int: Population size for the optimisation algorithm.
         """
-        if self.method.value == "DE":
-            return self.population_size
-        elif self.method.value == "CMAES":
-            # CMAES uses 'popsize' in options dict
+        if self.method == PymooMethod.CMAES:
+            # CMA-ES accepts a ``popsize`` override.
             return self.algorithm_kwargs.get("popsize", self.population_size)
         return self.population_size
 
@@ -121,7 +119,7 @@ class PymooOptimizer(Optimizer):
             for k, v in self.algorithm_kwargs.items()
             if k not in ["sigma0", "sigma", "popsize"]
         }
-        cma_kwargs["popsize"] = self.population_size
+        cma_kwargs["popsize"] = self.n_param_sets
         cma_kwargs["seed"] = rng.integers(0, 2**32)
         cma_kwargs.setdefault("verbose", -9)
 
@@ -292,6 +290,11 @@ class PymooOptimizer(Optimizer):
             if initial_params is None:
                 raise ValueError(
                     "initial_params is required for a fresh PymooOptimizer run."
+                )
+            if max_iterations < 1:
+                raise ValueError(
+                    "A fresh PymooOptimizer run needs max_iterations >= 1, got "
+                    f"{max_iterations}."
                 )
             rng = kwargs.pop("rng", np.random.default_rng())
             self._curr_algorithm_obj = self._initialize_optimizer(initial_params, rng)

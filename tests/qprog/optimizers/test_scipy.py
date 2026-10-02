@@ -11,8 +11,15 @@ from divi.qprog.optimizers import (
     ScipyMethod,
     ScipyOptimizer,
 )
+from tests._helpers import exact_match
 from tests.qprog.optimizers._helpers import (
     sphere_cost_fn_single,
+)
+
+_SCIPY_STATE = (
+    "Scipy's optimisation methods do not provide access to internal optimizer "
+    "state during minimisation. Please use MonteCarloOptimizer or PymooOptimizer "
+    "for checkpointing support."
 )
 
 
@@ -36,43 +43,49 @@ class TestScipyOptimizer:
         self.n_params = 4
         self.rng = np.random.default_rng(42)
 
-    def test_reset_is_noop_for_scipy(self):
-        """Test that reset() is a no-op for ScipyOptimizer (no state to clear)."""
-        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        initial_params = self.rng.random((1, self.n_params)) * 2 * np.pi
-
-        # Run optimization
-        optimizer.optimize(sphere_cost_fn_single, initial_params, max_iterations=3)
-
-        # Reset should not raise an error and should allow reusing
-        optimizer.reset()
-        result = optimizer.optimize(
-            sphere_cost_fn_single, initial_params, max_iterations=3
-        )
-        assert isinstance(result, OptimizeResult)
-        assert result.x.shape == (self.n_params,)
-
-    def test_save_state_raises_not_implemented(self, tmp_path):
-        """ScipyOptimizer.save_state is not supported."""
-        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        with pytest.raises(
-            NotImplementedError, match="ScipyOptimizer does not support"
-        ):
-            optimizer.save_state(str(tmp_path / "checkpoint"))
-
-    def test_load_state_raises_not_implemented(self):
-        """ScipyOptimizer.load_state is not supported."""
-        with pytest.raises(
-            NotImplementedError, match="ScipyOptimizer does not support"
-        ):
-            ScipyOptimizer.load_state("/nonexistent/checkpoint")
+    @pytest.mark.parametrize(
+        ("call", "message"),
+        [
+            (
+                lambda tmp_path: ScipyOptimizer(ScipyMethod.L_BFGS_B).save_state(
+                    tmp_path / "checkpoint"
+                ),
+                f"ScipyOptimizer does not support state saving. {_SCIPY_STATE}",
+            ),
+            (
+                lambda tmp_path: ScipyOptimizer.load_state(tmp_path / "checkpoint"),
+                f"ScipyOptimizer does not support state loading. {_SCIPY_STATE}",
+            ),
+            (
+                lambda tmp_path: ScipyOptimizer(ScipyMethod.L_BFGS_B).get_config(),
+                "ScipyOptimizer does not support checkpointing. Please use "
+                "MonteCarloOptimizer or PymooOptimizer for checkpointing support.",
+            ),
+        ],
+        ids=["save_state", "load_state", "get_config"],
+    )
+    def test_checkpointing_entry_points_raise_not_implemented(
+        self, call, message, tmp_path
+    ):
+        with pytest.raises(NotImplementedError, match=exact_match(message)):
+            call(tmp_path)
 
     def test_optimize_without_initial_params_raises(self):
         """ScipyOptimizer cannot resume, so initial_params is always required."""
         optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
 
-        with pytest.raises(ValueError, match="ScipyOptimizer requires initial_params"):
+        with pytest.raises(
+            ValueError, match=exact_match("ScipyOptimizer requires initial_params.")
+        ):
             optimizer.optimize(sphere_cost_fn_single, max_iterations=3)
+
+    def test_optimize_without_max_iterations_runs_to_convergence(self):
+        result = ScipyOptimizer(method=ScipyMethod.NELDER_MEAD).optimize(
+            sphere_cost_fn_single, np.array([0.5, -0.5])
+        )
+
+        assert result.success
+        np.testing.assert_allclose(result.x, [0.0, 0.0], atol=1e-3)
 
     @pytest.mark.parametrize(
         ("method", "expects_jac"),

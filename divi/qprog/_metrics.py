@@ -16,7 +16,7 @@ which metric is in play.
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -56,14 +56,11 @@ def _run_metric_by_branch(
     param_sets: npt.NDArray[np.float64],
 ) -> dict[tuple, dict[int, npt.NDArray[np.float64]]]:
     """Run a metric preprocessor and keep selected source branches separate."""
-    result = cast(
-        dict[tuple, Any],
-        program.evaluate(
-            np.atleast_2d(param_sets),
-            preprocessor,
-            preserve_keys=True,
-            axes_to_preserve=_METRIC_BRANCH_AXES,
-        ),
+    result = program.evaluate(
+        np.atleast_2d(param_sets),
+        preprocessor,
+        preserve_keys=True,
+        axes_to_preserve=_METRIC_BRANCH_AXES,
     )
     return group_by_branch_and_param_set(
         result,
@@ -124,9 +121,8 @@ def _run_overlap(
     zeros: str,
 ) -> dict[int, float]:
     """Run an overlap preprocessor and return averaged all-zero probabilities."""
-    result = cast(
-        dict[tuple, Any],
-        program.evaluate(np.atleast_2d(param_sets), preprocessor, preserve_keys=True),
+    result = program.evaluate(
+        np.atleast_2d(param_sets), preprocessor, preserve_keys=True
     )
     averaged = average_by_param_set(
         result,
@@ -240,11 +236,13 @@ class _MetricOptimizerMixin:
 class PullbackMetricEstimator(MetricEstimator):
     r"""Hamiltonian-aware pullback metric.
 
-    Builds ``G_ij = sum_r a_r^2 (d_i <P_r>)(d_j <P_r>)`` from the per-Pauli-term
-    expectation gradients of the loss observable ``H = sum_r a_r P_r``. The
-    energy gradient ``J @ a`` and the metric share the same parameter-shift
-    evaluation, so both are returned from one pass. Measurement-only and PSD by
-    construction (rank at most the number of Hamiltonian terms).
+    Builds ``G_ij = sum_r w_r (d_i <P_r>)(d_j <P_r>)``, with
+    ``w_r = a_r^2 / sum_s a_s^2``, from the per-Pauli-term expectation gradients
+    of the loss observable ``H = sum_r a_r P_r`` (identity terms excluded), so
+    rescaling ``H`` leaves ``G`` unchanged. The energy gradient ``J @ a`` and the
+    metric share the same parameter-shift evaluation, so both are returned from
+    one pass. Measurement-only and PSD by construction (rank at most the number
+    of Hamiltonian terms).
 
     Requires the program's loss to be the expectation value of its cost
     Hamiltonian (VQE/QAOA, plain or unsupervised-data-bound CustomVQA).
@@ -307,7 +305,9 @@ class PullbackMetricEstimator(MetricEstimator):
                 for exp_vals, coeffs in branch_payloads.values():
                     jacobian = weights @ exp_vals  # (m, v): d_i <P_r>
                     gradients.append(jacobian @ coeffs)
-                    metrics.append((jacobian * coeffs**2) @ jacobian.T)
+                    norm = np.sum(coeffs**2)
+                    term_weights = coeffs**2 / norm if norm > 0 else coeffs**2
+                    metrics.append((jacobian * term_weights) @ jacobian.T)
                 grad = np.mean(gradients, axis=0)
                 metric = np.mean(metrics, axis=0)
                 cache["key"] = key
@@ -345,11 +345,6 @@ def _split_into_terms(
             "non-identity Pauli term."
         )
     return tuple(terms), np.asarray(coeffs, dtype=np.float64)
-
-
-def _zero_observable(n_qubits: int) -> SparsePauliOp:
-    """All-zeros observable for blocks/terms with no non-identity contribution."""
-    return SparsePauliOp("I" * n_qubits, coeffs=np.asarray([0.0]))
 
 
 def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
@@ -413,14 +408,11 @@ _GATE_GENERATORS = {
     "rx": "X",
     "ry": "Y",
     "rz": "Z",
-    "rxx": "XX",
-    "ryy": "YY",
-    "rzz": "ZZ",
 }
 
 _FS_UNSUPPORTED_GATE = (
     "The Fubini–Study metric supports only single-parameter Pauli-rotation gates "
-    "(rx/ry/rz/rxx/ryy/rzz) with a bare parameter as the angle; this ansatz uses "
+    "(rx/ry/rz) with a bare parameter as the angle; this ansatz uses "
     "{gate!r}{detail}. Use the pullback metric (PullbackMetricEstimator) or a "
     "non-metric optimizer."
 )
@@ -524,9 +516,7 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
             ) from exc
         _reject_data_bound(program, "stochastic-fidelity")
 
-    def _build_overlap_preprocessor(
-        self, program: "VariationalQuantumAlgorithm"
-    ) -> CircuitPreprocessor:
+    def _build_overlap_preprocessor(self) -> CircuitPreprocessor:
         """Build the overlap routine shared by :meth:`bind` and
         :meth:`preprocessors`. Overlap circuits are built lazily and cached by
         ansatz structure, so this does no circuit work until the routine runs.
@@ -551,11 +541,11 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
         # Validate eagerly so an incompatible ansatz raises ContractViolation
         # before the lazy closure runs.
         self.check_compatible(program)
-        return (self._build_overlap_preprocessor(program),)
+        return (self._build_overlap_preprocessor(),)
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
         # No re-validation: the optimizer's validate_program already ran it.
-        preprocessor = self._build_overlap_preprocessor(program)
+        preprocessor = self._build_overlap_preprocessor()
         zeros = "0" * program.cost_circuit.n_qubits
 
         def fidelity_fn(
@@ -600,11 +590,10 @@ class _PrefixOpsView(Sequence[tuple]):
                 self.operations[position]
                 for position in range(*index.indices(self.stop))
             )
-        if index < 0:
-            index += self.stop
-        if index < 0 or index >= self.stop:
+        position = index + self.stop if index < 0 else index
+        if not 0 <= position < self.stop:
             raise IndexError(index)
-        return self.operations[index]
+        return self.operations[position]
 
 
 def _fs_blocks(
@@ -631,10 +620,10 @@ def _fs_blocks(
     cur_prefix_end = 0
 
     def close() -> None:
-        nonlocal cur, cur_wires, cur_prefix_end
+        nonlocal cur, cur_wires
         if cur:
             block_boundaries.append((cur_prefix_end, cur))
-        cur, cur_wires, cur_prefix_end = [], set(), 0
+        cur, cur_wires = [], set()
 
     # Walk in original circuit insertion order: ``dag.op_nodes()`` yields nodes in
     # insertion order, whereas ``topological_op_nodes()`` ASAP-reschedules and would
@@ -774,7 +763,7 @@ def _measure_prefix_paulis(
         )
         branch_data[branch_key] = (indices, generators)
         vec = np.asarray(values_by_param[0], dtype=np.float64).reshape(-1)
-        if labels and vec.shape[0] != len(labels):
+        if vec.shape[0] != len(labels):
             raise ContractViolation(
                 "Fubini-Study per-label measurement count does not match the "
                 "branch's label count."
@@ -865,15 +854,10 @@ def _fs_prefix_labels_preprocessor(
         prefix, prefix_params, _, _, labels = _fs_block_prefix(
             meta, block_id, reference_prefix_param_names
         )
-        observable = (
-            tuple(SparsePauliOp(label) for label in labels)
-            if labels
-            else (_zero_observable(prefix.num_qubits),)
-        )
         return MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(prefix)),),
             parameters=prefix_params,
-            observable=observable,
+            observable=tuple(SparsePauliOp(label) for label in labels),
             _was_multi_obs=True,
         )
 

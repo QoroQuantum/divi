@@ -16,20 +16,20 @@ import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
-from qiskit.circuit.library import RYGate, RZGate
 from qiskit.converters import circuit_to_dag
-from qiskit.quantum_info import SparsePauliOp
 from scipy.linalg import hilbert
 
 from divi.circuits import MetaCircuit
-from divi.qprog import VQE, CustomVQA, FubiniStudyMetricEstimator
+from divi.qprog import CustomVQA, FubiniStudyMetricEstimator
 from divi.qprog._metrics import PullbackMetricEstimator, _fs_blocks
-from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import QNGOptimizer, QNSPSAOptimizer
 from divi.qprog.optimizers._linalg import _matrix_abs_psd, _regularized_solve
 from divi.qprog.optimizers._spsa import _fidelity_metric_sample, _spsa_gain_c
-from divi.qprog.problems import HamiltonianProblem
-from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
+from tests._helpers import exact_match
+from tests.qprog.optimizers._helpers import (
+    inject_term_expectations,
+    set_unit_shift_rule,
+)
 
 
 def _solve(metric, grad, *, solver="tikhonov", regularization=0.0, scaled=False):
@@ -48,7 +48,7 @@ _SINGULAR_METRIC = np.outer([1.0, 0.0], [1.0, 0.0])
 
 
 def _run_qng_with(optimizer, metric, grad, max_iterations=3):
-    """Drive ``optimize`` with a fixed metric and gradient, so the under-damping
+    """Drive ``optimize`` with a fixed metric and gradient, so the overshoot
     guard sees exactly the pair under test rather than a moving iterate."""
     return optimizer.optimize(
         cost_fn=lambda x: float(np.sum(np.asarray(x) ** 2)),
@@ -59,8 +59,8 @@ def _run_qng_with(optimizer, metric, grad, max_iterations=3):
     )
 
 
-def _underdamped_warnings(records):
-    return [w for w in records if "relative to the metric" in str(w.message)]
+def _overshoot_warnings(records):
+    return [w for w in records if "more than pi/4" in str(w.message)]
 
 
 def _psd_margin(metric: np.ndarray) -> float:
@@ -70,35 +70,14 @@ def _psd_margin(metric: np.ndarray) -> float:
 
 
 def _bind_pullback(vqe, jacobian, coeffs, monkeypatch):
-    """Bind the pullback estimator to injected per-term expectations.
-
-    Replaces the measurement seam with ``jacobian``'s parameter-shift pairs, so
-    only the assembly arithmetic is exercised.
-    """
+    """Bind the pullback estimator to ``jacobian``'s parameter-shift pairs, so
+    only the assembly arithmetic is exercised."""
     shifted = np.empty((2 * jacobian.shape[0], jacobian.shape[1]))
     shifted[0::2] = jacobian
     shifted[1::2] = -jacobian
-    vqe._grad_shift_rule = _compute_parameter_shift_rule([(1.0, 1)] * jacobian.shape[0])
-    monkeypatch.setattr(
-        "divi.qprog._metrics._term_expectations",
-        lambda _program, _param_sets: {(("circuit", 0),): (shifted, coeffs)},
-    )
+    set_unit_shift_rule(vqe)
+    inject_term_expectations(monkeypatch, lambda _param_sets: (shifted, coeffs))
     return PullbackMetricEstimator().bind(vqe)
-
-
-@pytest.fixture
-def injectable_vqe(dummy_simulator, default_optimizer):
-    """A 2-qubit VQE whose metric measurement seam is meant to be monkeypatched."""
-    return VQE(
-        HamiltonianProblem(
-            SparsePauliOp.from_list([("ZI", 0.5), ("IZ", -0.3), ("XX", 0.2)])
-        ),
-        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
-        n_layers=1,
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
-        seed=1997,
-    )
 
 
 def _product_ry_fidelity(_theta, perturbations):
@@ -240,6 +219,7 @@ def test_qng_step_on_singular_metric_is_unbounded_without_max_step_norm():
     assert np.linalg.norm(clipped.step_size * clipped_delta) == pytest.approx(1.0)
 
 
+@pytest.mark.filterwarnings("ignore:.*more than pi/4:UserWarning")
 def test_qng_reports_a_non_finite_gradient_actionably():
     """Divergence must surface as the documented :class:`FloatingPointError`,
     naming the optimizer and the remedies, not as a bare error from scipy's solve
@@ -265,7 +245,12 @@ def test_qng_reports_a_non_finite_gradient_actionably():
             grad[1:] += 200.0 * diff
         return grad
 
-    with pytest.raises(FloatingPointError, match="non-finite gradient or metric"):
+    message = (
+        "QNGOptimizer received a non-finite gradient or metric. The iterate has "
+        "diverged, or the cost function returned a non-finite value. Lower "
+        "`step_size`, raise `regularization`, or set `max_step_norm`."
+    )
+    with pytest.raises(FloatingPointError, match=exact_match(message)):
         optimizer.optimize(
             rosenbrock,
             np.full(4, 0.5),
@@ -275,69 +260,41 @@ def test_qng_reports_a_non_finite_gradient_actionably():
         )
 
 
-def test_qng_warns_once_when_regularization_is_too_small_for_the_metric():
-    """A positive but tiny damping passes construction and the finiteness check,
-    so the run reports the amplification itself — once, not once per step."""
+@pytest.mark.parametrize(
+    "metric",
+    [_SINGULAR_METRIC, 1e-2 * np.eye(2)],
+    ids=["under-damped-singular", "small-against-the-gradient"],
+)
+def test_qng_warns_once_on_an_oversized_step(metric):
+    """A tiny damping on a singular metric, or a well-conditioned metric small
+    against the gradient (the H2 overshoot), passes the finiteness check, so the
+    run reports the oversized step itself — once, not once per step."""
     optimizer = QNGOptimizer(
         step_size=1.0, regularization=1e-12, scale_regularization=False
     )
-    with pytest.warns(UserWarning, match="dominated by the metric's near-null") as rec:
-        _run_qng_with(optimizer, _SINGULAR_METRIC, np.ones(2))
+    with pytest.warns(UserWarning, match="more than pi/4") as rec:
+        _run_qng_with(optimizer, metric, np.ones(2))
 
     assert len(rec) == 1
 
 
-def test_qng_underdamped_warning_is_silent_when_the_step_is_bounded(recwarn):
-    """``max_step_norm`` already bounds the step, so the warning would be noise."""
-    optimizer = QNGOptimizer(
-        step_size=1.0,
-        regularization=1e-12,
-        scale_regularization=False,
-        max_step_norm=1.0,
-    )
-    _run_qng_with(optimizer, _SINGULAR_METRIC, np.ones(2))
+@pytest.mark.parametrize(
+    "settings, metric",
+    [
+        (
+            {"step_size": 1.0, "regularization": 1e-12, "max_step_norm": 0.5},
+            _SINGULAR_METRIC,
+        ),
+        ({"step_size": 0.5, "regularization": 1e-9}, np.diag([3.0, 1.0])),
+        ({"step_size": 0.5, "regularization": 1e-9}, 1e8 * np.eye(2)),
+    ],
+    ids=["clipped-by-max_step_norm", "well-conditioned", "large-metric"],
+)
+def test_qng_bounded_steps_do_not_warn(recwarn, settings, metric):
+    optimizer = QNGOptimizer(scale_regularization=False, **settings)
+    _run_qng_with(optimizer, metric, np.ones(2))
 
-    assert _underdamped_warnings(recwarn) == []
-
-
-def test_qng_well_conditioned_metric_does_not_warn(recwarn):
-    """An ordinary preconditioner is not flagged."""
-    optimizer = QNGOptimizer(
-        step_size=0.5, regularization=1e-9, scale_regularization=False
-    )
-    _run_qng_with(optimizer, np.diag([3.0, 1.0]), np.ones(2))
-
-    assert _underdamped_warnings(recwarn) == []
-
-
-@pytest.mark.parametrize("scale", [1e-8, 1.0, 1e8])
-def test_qng_underdamped_warning_is_scale_free(recwarn, scale):
-    """A perfectly conditioned metric is not flagged at any magnitude, though its
-    unweighted ``||delta|| / ||grad||`` is ``1 / scale``."""
-    optimizer = QNGOptimizer(
-        step_size=1.0, regularization=1e-12, scale_regularization=False
-    )
-    _run_qng_with(optimizer, scale * np.eye(2), np.ones(2))
-
-    assert _underdamped_warnings(recwarn) == []
-
-
-def test_qng_warns_on_a_stiff_metric_whose_step_is_null_space_dominated():
-    """The mirror case: large eigenvalues keep ``||delta|| / ||grad||`` below one,
-    so the unweighted ratio stays silent while the step is still dominated by the
-    metric's flattest direction."""
-    optimizer = QNGOptimizer(
-        step_size=1.0, regularization=1e-12, scale_regularization=False
-    )
-    stiff = np.diag([1.0, 1e2, 1e5, 1e8])
-    grad = np.ones(4)
-
-    with pytest.warns(UserWarning, match="relative to the metric"):
-        _run_qng_with(optimizer, stiff, grad)
-
-    # The unweighted ratio is well below the 1e6 threshold that used to gate this.
-    delta = optimizer._natural_gradient(grad, stiff)
-    assert np.linalg.norm(delta) / np.linalg.norm(grad) < 1.0
+    assert _overshoot_warnings(recwarn) == []
 
 
 # --- Pullback metric: coefficient dynamic range ----------------------------- #
@@ -366,9 +323,9 @@ def test_pullback_metric_is_psd_relative_to_its_own_scale(
 def test_pullback_metric_condition_number_squares_the_coefficient_range(
     injectable_vqe, monkeypatch
 ):
-    """``G = (J * c^2) J^T`` squares the coefficient dynamic range before the solve
-    ever runs: widening the coefficients by two decades costs four decades of
-    condition number. This is why ``scale_regularization`` exists."""
+    """``G = (J * c^2) J^T / ||c||^2`` squares the coefficient dynamic range:
+    widening the coefficients by two decades costs four decades of condition
+    number."""
     n_params = injectable_vqe.n_layers * injectable_vqe.n_params_per_layer
     n_terms = 4
     jacobian = np.random.default_rng(1).standard_normal((n_params, n_terms))
@@ -385,26 +342,20 @@ def test_pullback_metric_condition_number_squares_the_coefficient_range(
     assert 1e3 < growth < 1e5
 
 
-def test_pullback_metric_scaled_regularization_tracks_the_metric_magnitude(
-    injectable_vqe, monkeypatch
+@pytest.mark.parametrize("scale", [1e-3, 1e3])
+def test_pullback_metric_is_unchanged_by_rescaling_the_hamiltonian(
+    injectable_vqe, monkeypatch, scale
 ):
-    """With a wide coefficient range the fixed damping is negligible against the
-    metric scale, while the scaled damping stays proportionate — a far smaller
-    step along the metric's null space."""
     n_params = injectable_vqe.n_layers * injectable_vqe.n_params_per_layer
-    n_terms = 2  # fewer terms than parameters -> guaranteed rank deficiency
-    jacobian = np.random.default_rng(2).standard_normal((n_params, n_terms))
-    coeffs = np.array([1e-4, 1e4])
+    jacobian = np.random.default_rng(2).standard_normal((n_params, 3))
+    coeffs = np.array([0.5, -0.3, 0.2])
 
-    metric = _bind_pullback(injectable_vqe, jacobian, coeffs, monkeypatch)["metric_fn"](
-        np.zeros(n_params)
-    )
-    grad = np.ones(n_params)
+    def metric_for(c):
+        return _bind_pullback(injectable_vqe, jacobian, c, monkeypatch)["metric_fn"](
+            np.zeros(n_params)
+        )
 
-    fixed = _solve(metric, grad, regularization=1e-3, scaled=False)
-    scaled = _solve(metric, grad, regularization=1e-3, scaled=True)
-
-    assert np.linalg.norm(scaled) < np.linalg.norm(fixed)
+    np.testing.assert_allclose(metric_for(scale * coeffs), metric_for(coeffs))
 
 
 # --- Fubini-Study metric on a degenerate ansatz ----------------------------- #
@@ -449,7 +400,7 @@ def test_fubini_study_metric_for_a_shared_parameter_sums_both_generators(
     metric = FubiniStudyMetricEstimator().bind(program)["metric_fn"](np.array([0.3]))
 
     assert metric.shape == (1, 1)
-    assert metric[0, 0] == pytest.approx(0.5, abs=1e-2)
+    assert metric[0, 0] == pytest.approx(0.5, abs=1e-10)
 
 
 def test_fubini_study_metric_accumulates_a_parameter_across_blocks(
@@ -474,7 +425,7 @@ def test_fubini_study_metric_accumulates_a_parameter_across_blocks(
     metric = FubiniStudyMetricEstimator().bind(program)["metric_fn"](np.array([0.7]))
 
     assert metric.shape == (1, 1)
-    assert metric[0, 0] == pytest.approx(0.5, abs=1e-2)
+    assert metric[0, 0] == pytest.approx(0.5, abs=1e-10)
 
 
 # --- Stochastic Fubini-Study sampler (QN-SPSA) ------------------------------ #
@@ -534,31 +485,6 @@ def test_fidelity_metric_sample_noise_is_amplified_as_the_perturbation_shrinks(s
     assert error_at(1e-3) > 10 * error_at(1e-2)
     # Deep in the noise-dominated regime the law is the bare 1/c_k^2 amplification.
     assert 30.0 < error_at(1e-4) / error_at(1e-3) < 300.0
-
-
-def test_qnspsa_running_metric_drops_non_finite_samples_without_miscounting():
-    """A failed overlap evaluation must leave the running average unbiased.
-
-    ``g_bar`` is the arithmetic mean of the identity seed and every folded
-    sample, so a dropped sample must not advance the sample count — incrementing
-    while skipping the fold would shrink every earlier contribution.
-    """
-    n_params = 3
-    rng = np.random.default_rng(5)
-    samples = [rng.standard_normal((n_params, n_params)) for _ in range(10)]
-    dropped = {2, 5, 7}
-
-    g_bar = np.eye(n_params)
-    metric_samples = 1
-    for index, raw in enumerate(samples):
-        value = np.full_like(raw, np.nan) if index in dropped else raw
-        if np.all(np.isfinite(value)):
-            g_bar = (metric_samples * g_bar + value) / (metric_samples + 1.0)
-            metric_samples += 1
-
-    kept = [np.eye(n_params)] + [s for i, s in enumerate(samples) if i not in dropped]
-    assert metric_samples == len(kept)
-    np.testing.assert_allclose(g_bar, np.mean(kept, axis=0), atol=1e-12)
 
 
 def test_qnspsa_fidelity_path_survives_a_failed_overlap_evaluation():

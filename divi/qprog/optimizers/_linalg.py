@@ -18,7 +18,7 @@ def _regularized_solve(
     scale_regularization: bool,
     rcond: float,
 ) -> npt.NDArray[np.float64]:
-    """Solve ``metric @ delta = grad`` with PSD-aware regularization.
+    """Solve ``metric @ delta = grad`` with PSD-aware regularisation.
 
     Symmetrizes ``metric`` defensively against round-off. ``"tikhonov"`` solves
     ``(G + λI) delta = grad`` via a Cholesky-based symmetric solve (``λ`` scaled
@@ -40,7 +40,7 @@ def _regularized_solve(
         return _solve_linear_system(damped, grad, assume_a="pos")
     except np.linalg.LinAlgError as exc:
         raise np.linalg.LinAlgError(
-            "Regularized natural-gradient solve failed: the damped metric "
+            "Regularised natural-gradient solve failed: the damped metric "
             "(G + λI) is not positive-definite. λ must exceed the most negative "
             "eigenvalue of G, which a rank-deficient metric leaves at zero and a "
             "shot-noisy one can push below it. Raise `regularization` or use "

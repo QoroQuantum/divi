@@ -8,6 +8,7 @@ import warnings
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from inspect import Parameter, signature
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import numpy as np
@@ -181,10 +182,28 @@ def verify_gradient_callback_shapes(
         **optimize_kwargs,
     )
 
-    assert captured
+    assert len(captured) == 4
     for params, loss in captured:
         assert params.shape == (1, 3)
         assert loss.shape == (1,)
+
+
+def verify_gradient_callback_stop_iteration_propagates(
+    optimizer: Optimizer, optimize_kwargs: Mapping[str, Any]
+) -> None:
+    def stop_at_second_step(result: OptimizeResult) -> None:
+        if result.nit == 2:
+            raise StopIteration
+
+    with pytest.raises(StopIteration):
+        optimizer.optimize(
+            sphere_cost_fn_batch_aware,
+            initial_params=np.full(3, 0.5),
+            callback_fn=stop_at_second_step,
+            max_iterations=10,
+            rng=np.random.default_rng(0),
+            **optimize_kwargs,
+        )
 
 
 def verify_gradient_final_result_shape(
@@ -231,6 +250,11 @@ def verify_no_checkpointing(
     assert optimizer.supports_checkpointing is False
     with pytest.raises(NotImplementedError):
         optimizer.get_config()
+    with TemporaryDirectory() as checkpoint_dir:
+        with pytest.raises(NotImplementedError):
+            optimizer.save_state(checkpoint_dir)
+        with pytest.raises(NotImplementedError):
+            type(optimizer).load_state(checkpoint_dir)
 
 
 def _median_descent_ratio(
@@ -299,6 +323,7 @@ OPTIMIZER_CONTRACTS = (
 
 GRADIENT_OPTIMIZER_CONTRACTS = (
     verify_gradient_callback_shapes,
+    verify_gradient_callback_stop_iteration_propagates,
     verify_gradient_final_result_shape,
     verify_gradient_reset_allows_reuse,
     verify_no_checkpointing,

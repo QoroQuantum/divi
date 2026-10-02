@@ -16,7 +16,7 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.circuits.quepp import QuEPP
+from divi.circuits.quepp import QuEPP, SymbolicAngleWarning
 from divi.pipeline import (
     CircuitPipeline,
     CircuitPreprocessor,
@@ -524,7 +524,7 @@ class TestQuantumProgramDryRun:
         vqe = metric_compatible_vqe(default_test_simulator, default_optimizer)
         est = StochasticFidelityMetricEstimator()
         (preview_pp,) = est.preprocessors(vqe)
-        run_pp = est._build_overlap_preprocessor(vqe)
+        run_pp = est._build_overlap_preprocessor()
         assert preview_pp.name == run_pp.name == METRIC_ROUTINE
         assert preview_pp.cache_key == run_pp.cache_key == METRIC_ROUTINE
         assert preview_pp.result_format == run_pp.result_format
@@ -683,24 +683,23 @@ def test_recurring_and_one_time_routines_are_labeled_apart(
     assert cadences["sample"] is PipelineCadence.ONCE
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
 def test_quepp_montecarlo_dry_run_suppresses_fallback_warning(dummy_pipeline_env):
     """A dry preview always sees symbolic angles, so montecarlo QuEPP would warn
     it is falling back to exhaustive enumeration. That is execution-path noise
     for a nothing-executes preview and must stay silent."""
-    meta = parametric_twirlable_meta()
     dummy_pipeline_env.param_sets = np.asarray([[0.1, 0.2]])
-    with warnings.catch_warnings(record=True) as record:
-        warnings.simplefilter("always")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", SymbolicAngleWarning)
         dry_run_stages(
             [
-                DummySpecStage(meta=meta),
+                DummySpecStage(meta=parametric_twirlable_meta()),
                 QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0, n_samples=4)),
                 MeasurementStage(),
             ],
             dummy_pipeline_env,
             suppress_performance_warnings=True,
         )
-    assert not any("Monte Carlo sampling" in str(w.message) for w in record)
 
 
 class _IncompleteMetricEstimator(MetricEstimator):
@@ -719,7 +718,7 @@ def test_metric_estimator_must_declare_its_routines():
     """The abstract contract that prevents silent omission: a new metric estimator
     cannot be instantiated without declaring the routines it measures through, so
     they cannot be left out of what a program reports."""
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError, match="Can't instantiate abstract class"):
         _IncompleteMetricEstimator()
 
 

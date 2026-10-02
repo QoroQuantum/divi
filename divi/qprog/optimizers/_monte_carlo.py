@@ -32,7 +32,8 @@ class MonteCarloState(BaseModel):
     # Population arrays are always 2D: (population_size, n_params)
     population: list[list[float]]
     evaluated_population: list[list[float]]
-    losses: list[float]
+    # JSON has no NaN, so a failed evaluation's loss is stored as null.
+    losses: list[float | None]
     # RNG state is a dict/tuple complex structure, simplified storage as dict or bytes
     # Stored as base64 encoded string for JSON compatibility
     rng_state_b64: str
@@ -329,7 +330,7 @@ class MonteCarloOptimizer(Optimizer):
             or self._curr_iteration is None
         ):
             raise RuntimeError(
-                "Cannot save checkpoint: optimization has not been run. "
+                "Cannot save checkpoint: optimisation has not been run. "
                 "At least one iteration must complete before saving optimizer state."
             )
 
@@ -401,7 +402,9 @@ class MonteCarloOptimizer(Optimizer):
         optimizer._curr_evaluated_population = (
             np.array(state.evaluated_population) if state.evaluated_population else None
         )
-        optimizer._curr_losses = np.array(state.losses) if state.losses else None
+        optimizer._curr_losses = (
+            np.array(state.losses, dtype=np.float64) if state.losses else None
+        )
         optimizer._curr_iteration = (
             state.curr_iteration if state.curr_iteration != -1 else None
         )

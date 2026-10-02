@@ -7,7 +7,7 @@ from collections.abc import Generator, Hashable, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
-from typing import Any, Self
+from typing import Any, Literal, Self, overload
 from warnings import warn
 
 import numpy as np
@@ -639,6 +639,62 @@ class QuantumProgram(ABC):
 
         return pipeline
 
+    @overload
+    def evaluate(
+        self,
+        params: "np.ndarray",
+        preprocessor: CircuitPreprocessor,
+        *,
+        backend: CircuitRunner | None = None,
+        shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
+        return_variance: Literal[False] = False,
+        preserve_keys: Literal[False] = False,
+        axes_to_preserve: tuple[str, ...] = (),
+    ) -> dict[int, Any]: ...
+
+    @overload
+    def evaluate(
+        self,
+        params: "np.ndarray",
+        preprocessor: CircuitPreprocessor,
+        *,
+        backend: CircuitRunner | None = None,
+        shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
+        return_variance: Literal[True],
+        preserve_keys: Literal[False] = False,
+        axes_to_preserve: tuple[str, ...] = (),
+    ) -> tuple[dict[int, Any], dict[int, float]]: ...
+
+    @overload
+    def evaluate(
+        self,
+        params: "np.ndarray",
+        preprocessor: CircuitPreprocessor,
+        *,
+        backend: CircuitRunner | None = None,
+        shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
+        return_variance: Literal[False] = False,
+        preserve_keys: Literal[True],
+        axes_to_preserve: tuple[str, ...] = (),
+    ) -> PipelineResult: ...
+
+    @overload
+    def evaluate(
+        self,
+        params: "np.ndarray",
+        preprocessor: CircuitPreprocessor,
+        *,
+        backend: CircuitRunner | None = None,
+        shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
+        return_variance: bool = False,
+        preserve_keys: bool = False,
+        axes_to_preserve: tuple[str, ...] = (),
+    ) -> dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, float]]: ...
+
     def evaluate(
         self,
         params: "np.ndarray",
@@ -747,15 +803,13 @@ class QuantumProgram(ABC):
         sample_plan = _EstimatorSamplePlan.from_value(
             estimator_samples, len(param_sets)
         )
-        evaluated = self.evaluate(
+        values, variances = self.evaluate(
             param_sets,
             preprocessor,
             backend=backend,
             estimator_samples=sample_plan.by_param_set,
             return_variance=True,
         )
-        assert isinstance(evaluated, tuple)
-        values, variances = evaluated
         return {
             param_idx: CostEstimate(
                 mean=float(np.asarray(value).squeeze()),

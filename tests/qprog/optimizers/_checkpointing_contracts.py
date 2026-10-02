@@ -4,6 +4,7 @@
 
 """Shared behavioral checks for optimizer checkpointing."""
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -11,8 +12,13 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
-from divi.qprog.checkpointing import CheckpointNotFoundError
+from divi.qprog.checkpointing import (
+    OPTIMIZER_STATE_FILE,
+    CheckpointCorruptedError,
+    CheckpointNotFoundError,
+)
 from divi.qprog.optimizers import Optimizer
+from tests._helpers import exact_match
 
 
 def verify_save_creates_checkpoint_file(
@@ -36,6 +42,23 @@ def verify_load_state_raises_file_not_found(
     checkpoint_dir = str(tmp_path / "nonexistent_checkpoint")
     with pytest.raises(CheckpointNotFoundError, match="Checkpoint file not found"):
         load_state(checkpoint_dir)
+
+
+def verify_load_state_rejects_corrupted_state(
+    load_state: Callable[[str], Optimizer],
+    tmp_path: Path,
+    state: dict,
+    message_prefix: str,
+) -> None:
+    """``load_state`` on a state file holding ``state`` raises
+    :class:`CheckpointCorruptedError` with ``message_prefix`` followed by the
+    file's path."""
+    state_file = tmp_path / OPTIMIZER_STATE_FILE
+    state_file.write_text(json.dumps(state))
+    with pytest.raises(
+        CheckpointCorruptedError, match=exact_match(f"{message_prefix}{state_file}")
+    ):
+        load_state(str(tmp_path))
 
 
 def verify_save_creates_directory_if_needed(

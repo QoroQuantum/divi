@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shot-adaptive ROSALIN optimization."""
+"""Shot-adaptive ROSALIN optimisation."""
 
 import json
 from collections.abc import Callable
@@ -376,10 +376,16 @@ class RosalinOptimizer(Optimizer):
                 )
 
             fun = float(values[0])
-            gradient = weights @ values[1:]
-            single_shot_variance = np.square(weights) @ (
-                evaluation_samples * variances[1:]
+            # Mask before summing so one bad evaluation only invalidates the
+            # coordinates whose shift rule uses it.
+            evaluations, eval_variances = values[1:], variances[1:]
+            uses = weights != 0
+            gradient = weights @ np.where(np.isfinite(evaluations), evaluations, 0.0)
+            gradient[uses @ ~np.isfinite(evaluations)] = np.nan
+            single_shot_variance = np.square(weights) @ np.where(
+                np.isfinite(eval_variances), evaluation_samples * eval_variances, 0.0
             )
+            single_shot_variance[uses @ ~np.isfinite(eval_variances)] = np.nan
             finite_gradient = np.where(np.isfinite(gradient), gradient, 0.0)
             finite_variance = np.where(
                 np.isfinite(single_shot_variance),
@@ -490,7 +496,7 @@ class RosalinOptimizer(Optimizer):
             or self._last_x is None
         ):
             raise RuntimeError(
-                "Cannot save checkpoint: ROSALIN optimization has not been run."
+                "Cannot save checkpoint: ROSALIN optimisation has not been run."
             )
 
         checkpoint_path = Path(checkpoint_dir)
