@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import math
 import shutil
 
 import networkx as nx
@@ -16,8 +17,10 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
+from divi.qprog.algorithms import _iterative_qaoa
 from divi.qprog.algorithms._iterative_qaoa import (
     _chebyshev,
+    _extract_depth_from_subdir,
     _fourier,
     _interp,
     interpolate_qaoa_params,
@@ -33,7 +36,34 @@ from divi.qprog.problems import (
     MaxCutProblem,
 )
 from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
+from tests._helpers import exact_match
+from tests.qprog._program_contracts import verify_load_state_rejects_missing_state_key
 from tests.qprog.problems._helpers import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
+
+
+def _bull_iterative(backend, **kwargs):
+    return IterativeQAOA(
+        MaxCutProblem(make_bull_graph()),
+        backend=backend,
+        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize(
+    "make_entry",
+    [
+        lambda root: (root / "depth_09").touch(),
+        lambda root: (root / "depth_final").mkdir(),
+        lambda root: (root / "abcdef12").mkdir(),
+    ],
+    ids=["file", "non-numeric-suffix", "no-prefix"],
+)
+def test_extract_depth_ignores_entries_that_are_not_depth_dirs(tmp_path, make_entry):
+    make_entry(tmp_path)
+    (entry,) = tmp_path.iterdir()
+
+    assert _extract_depth_from_subdir(entry) is None
 
 
 class TestInterp:
@@ -42,79 +72,125 @@ class TestInterp:
         result = _interp(u)
         assert len(result) == 4
 
-    def test_p1_to_p2(self):
-        """Depth 1 → 2: u = [a] → [a, a] (boundary blending)."""
-        u = np.array([0.5])
-        result = _interp(u)
-        assert len(result) == 2
-        # j=0: (0/1)*0 + (1/1)*u[0] = 0.5
-        # j=1: (1/1)*u[0] + (0/1)*0 = 0.5
-        np.testing.assert_allclose(result, [0.5, 0.5])
+    @pytest.mark.parametrize(
+        "u, expected",
+        [
+            pytest.param([0.5], [0.5, 0.5], id="p1_to_p2_boundary_blending"),
+            pytest.param([1.0, 2.0], [1.0, 1.5, 2.0], id="p2_hand_computed"),
+            pytest.param([0.0] * 5, [0.0] * 6, id="zero_params_stay_zero"),
+        ],
+    )
+    def test_known_values(self, u, expected):
+        """INTERP: result[j] = (j/p)·u[j-1] + ((p-j)/p)·u[j], with u[-1] = u[p] = 0."""
+        result = _interp(np.array(u))
+        assert len(result) == len(expected)
+        np.testing.assert_allclose(result, expected)
 
-    def test_known_values(self):
-        """Verify INTERP formula with hand-computed values."""
-        u = np.array([1.0, 2.0])  # p=2
-        result = _interp(u)
-        # j=0: (0/2)*0 + (2/2)*1.0 = 1.0
-        # j=1: (1/2)*1.0 + (1/2)*2.0 = 1.5
-        # j=2: (2/2)*2.0 + (0/2)*0 = 2.0
-        np.testing.assert_allclose(result, [1.0, 1.5, 2.0])
 
-    def test_zero_params_stay_zero(self):
-        u = np.zeros(5)
-        result = _interp(u)
-        np.testing.assert_allclose(result, np.zeros(6))
+def _zhou_angles(coeffs, p, trig):
+    """Zhou et al. Eq. (8): sum_k c_k trig[(k - 1/2)(i - 1/2) pi / p], i = 1..p."""
+    return np.array(
+        [
+            sum(
+                c * trig((k - 0.5) * (i - 0.5) * math.pi / p)
+                for k, c in enumerate(coeffs, start=1)
+            )
+            for i in range(1, p + 1)
+        ]
+    )
+
+
+_CHEBYSHEV_T = [
+    lambda x: 1.0,
+    lambda x: x,
+    lambda x: 2 * x**2 - 1,
+    lambda x: 4 * x**3 - 3 * x,
+    lambda x: 8 * x**4 - 8 * x**2 + 1,
+]
+
+
+def _shifted_chebyshev_angles(coeffs, p):
+    """arXiv:2504.01694 Eq. (7): sum_j c_j T_{j-1}(2 i/p - 1), i = 1..p."""
+    return np.array(
+        [
+            sum(c * _CHEBYSHEV_T[j](2 * i / p - 1) for j, c in enumerate(coeffs))
+            for i in range(1, p + 1)
+        ]
+    )
+
+
+def _least_squares_refit(u, q, angles):
+    """Least-squares fit ``u`` in the q-term ``angles`` basis, evaluated at p+1."""
+    p = len(u)
+    basis = np.column_stack([angles(unit, p) for unit in np.eye(q)])
+    coeffs, *_ = np.linalg.lstsq(basis, u, rcond=None)
+    return angles(coeffs, p + 1)
+
+
+def _interleave(betas, gammas):
+    params = np.empty(2 * len(betas))
+    params[0::2], params[1::2] = betas, gammas
+    return params
+
+
+_FOURIER_BASES = pytest.mark.parametrize("trig", [np.sin, np.cos], ids=["sin", "cos"])
 
 
 class TestFourier:
-    def test_output_length(self):
-        u = np.array([1.0, 2.0, 3.0])
-        result = _fourier(u)
-        assert len(result) == 4
+    @_FOURIER_BASES
+    def test_p1_rescales_the_single_mode(self, trig):
+        result = _fourier(np.array([0.7]), trig)
 
-    def test_round_trip_identity(self):
-        """With k=p DCT-II basis terms, fitting and reconstructing is exact."""
-        rng = np.random.default_rng(42)
-        for p in [2, 3, 5]:
-            u = rng.uniform(-1, 1, p)
-            j_grid = np.arange(p, dtype=np.float64)
-            l_terms = np.arange(p, dtype=np.float64)
-            basis = np.cos(np.outer(np.pi * (2 * j_grid + 1) / (2 * p), l_terms))
-            coeffs, *_ = np.linalg.lstsq(basis, u, rcond=None)
-            reconstructed = basis @ coeffs
-            np.testing.assert_allclose(reconstructed, u, atol=1e-10)
+        scale = 0.7 / trig(math.pi / 4)
+        np.testing.assert_allclose(
+            result, [scale * trig(math.pi / 8), scale * trig(3 * math.pi / 8)]
+        )
 
-    def test_p1_to_p2(self):
-        u = np.array([1.0])
-        result = _fourier(u, n_basis_terms=1)
-        assert len(result) == 2
+    @_FOURIER_BASES
+    @pytest.mark.parametrize(
+        "coeffs", [[0.4, -0.1], [0.3, 0.05, -0.02, 0.01]], ids=["p2", "p4"]
+    )
+    def test_full_basis_keeps_coefficients_and_appends_zero(self, trig, coeffs):
+        p = len(coeffs)
+
+        result = _fourier(_zhou_angles(coeffs, p, trig), trig)
+
+        np.testing.assert_allclose(result, _zhou_angles(coeffs + [0.0], p + 1, trig))
+
+    @_FOURIER_BASES
+    def test_p6_caps_at_five_terms(self, trig):
+        u = np.arange(1.0, 7.0) ** 2
+
+        result = _fourier(u, trig)
+
+        expected = _least_squares_refit(
+            u, 5, lambda coeffs, p: _zhou_angles(coeffs, p, trig)
+        )
+        np.testing.assert_allclose(result, expected)
 
 
 class TestChebyshev:
-    def test_output_length(self):
-        u = np.array([1.0, 2.0, 3.0])
+    def test_p1_keeps_the_constant(self):
+        np.testing.assert_allclose(_chebyshev(np.array([0.7])), [0.7, 0.7])
+
+    @pytest.mark.parametrize(
+        "coeffs", [[0.4, -0.1], [0.3, 0.05, -0.02, 0.01]], ids=["p2", "p4"]
+    )
+    def test_full_basis_evaluates_the_same_polynomial_on_the_finer_grid(self, coeffs):
+        p = len(coeffs)
+
+        result = _chebyshev(_shifted_chebyshev_angles(coeffs, p))
+
+        np.testing.assert_allclose(result, _shifted_chebyshev_angles(coeffs, p + 1))
+
+    def test_p6_caps_at_five_terms(self):
+        u = np.sqrt(np.arange(1.0, 7.0))
+
         result = _chebyshev(u)
-        assert len(result) == 4
 
-    def test_round_trip_identity(self):
-        """With k=p basis terms, fitting and reconstructing is exact."""
-        rng = np.random.default_rng(42)
-        for p in [2, 3, 5]:
-            u = rng.uniform(-1, 1, p)
-            # Build basis at depth p with k=p terms (exact fit)
-            j_grid = np.arange(p, dtype=np.float64)
-            x_p = np.cos(np.pi * (j_grid + 0.5) / p)
-            basis = np.empty((p, p), dtype=np.float64)
-            for l in range(p):
-                basis[:, l] = np.cos(l * np.arccos(x_p))
-            coeffs, *_ = np.linalg.lstsq(basis, u, rcond=None)
-            reconstructed = basis @ coeffs
-            np.testing.assert_allclose(reconstructed, u, atol=1e-10)
-
-    def test_p1_to_p2(self):
-        u = np.array([1.0])
-        result = _chebyshev(u, n_basis_terms=1)
-        assert len(result) == 2
+        np.testing.assert_allclose(
+            result, _least_squares_refit(u, 5, _shifted_chebyshev_angles)
+        )
 
 
 class TestInterpolateQaoaParams:
@@ -138,6 +214,57 @@ class TestInterpolateQaoaParams:
         result_gammas = result[1::2]
         np.testing.assert_allclose(result_betas, _interp(betas))
         np.testing.assert_allclose(result_gammas, _interp(gammas))
+
+    def test_fourier_uses_cosine_for_betas_and_sine_for_gammas(self):
+        beta_coeffs, gamma_coeffs = [0.3, -0.05], [0.4, 0.1]
+
+        result = interpolate_qaoa_params(
+            _interleave(
+                _zhou_angles(beta_coeffs, 2, np.cos),
+                _zhou_angles(gamma_coeffs, 2, np.sin),
+            ),
+            2,
+            InterpolationStrategy.FOURIER,
+        )
+
+        np.testing.assert_allclose(result[0::2], _zhou_angles(beta_coeffs, 3, np.cos))
+        np.testing.assert_allclose(result[1::2], _zhou_angles(gamma_coeffs, 3, np.sin))
+
+    def test_one_basis_term_fourier_projects_onto_the_lowest_mode(self):
+        betas, gammas = np.array([1.0, 2.0, 4.0]), np.array([10.0, 20.0, 40.0])
+
+        result = interpolate_qaoa_params(
+            _interleave(betas, gammas),
+            3,
+            InterpolationStrategy.FOURIER,
+            n_basis_terms=1,
+        )
+
+        np.testing.assert_allclose(
+            result[0::2],
+            _least_squares_refit(betas, 1, lambda c, p: _zhou_angles(c, p, np.cos)),
+        )
+        np.testing.assert_allclose(
+            result[1::2],
+            _least_squares_refit(gammas, 1, lambda c, p: _zhou_angles(c, p, np.sin)),
+        )
+
+    def test_one_basis_term_chebyshev_flattens_both_sequences_to_their_mean(self):
+        params = _interleave(np.array([1.0, 2.0, 4.0]), np.array([10.0, 20.0, 40.0]))
+
+        result = interpolate_qaoa_params(
+            params, 3, InterpolationStrategy.CHEBYSHEV, n_basis_terms=1
+        )
+
+        np.testing.assert_allclose(result, [7 / 3, 70 / 3] * 4)
+
+    def test_fourier_and_chebyshev_differ(self):
+        params = np.array([0.1, 0.2, 0.3, 0.5, 0.2, 0.9])
+
+        fourier = interpolate_qaoa_params(params, 3, InterpolationStrategy.FOURIER)
+        chebyshev = interpolate_qaoa_params(params, 3, InterpolationStrategy.CHEBYSHEV)
+
+        assert np.max(np.abs(fourier - chebyshev)) > 1e-2
 
     @pytest.mark.parametrize("strategy", list(InterpolationStrategy))
     def test_all_strategies_produce_correct_length(self, strategy):
@@ -249,8 +376,20 @@ class TestIterativeQAOA:
         )
         iterative.run()
         circuits, history = iterative.total_circuit_count, iterative.depth_history
+        ended = (
+            f"converged at depth {history[-1]['depth']}"
+            if convergence_threshold is not None
+            else f"already run all its depths (1 to max_depth={max_depth})"
+        )
 
-        with pytest.warns(UserWarning, match="neither trains nor finalises"):
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                f"This IterativeQAOA has {ended}, so run() neither trains nor "
+                "finalises. To sample the best depth's parameters, call "
+                "sample_solution()."
+            ),
+        ):
             iterative.run()
 
         assert iterative.total_circuit_count == circuits
@@ -286,7 +425,7 @@ class TestIterativeQAOA:
             backend=default_test_simulator,
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         )
-        iterative.run()
+        assert iterative.run() is iterative
 
         # Stops at the first depth that improves on the one before it.
         losses = [entry["best_loss"] for entry in iterative.depth_history]
@@ -296,6 +435,11 @@ class TestIterativeQAOA:
             if losses[depth] <= losses[depth - 1]
         )
         assert len(losses) == first_improvement + 1 < 10
+        # A converged run still restores and samples its best depth.
+        assert iterative.n_layers == iterative.best_depth
+        assert iterative.solution is not None
+        np.testing.assert_array_equal(iterative.final_params, iterative.best_params)
+        assert len(iterative.cost_circuit.parameters) == 2 * iterative.best_depth
 
     @pytest.mark.parametrize(
         "losses, converged",
@@ -322,12 +466,94 @@ class TestIterativeQAOA:
     def test_rejects_the_fixed_depth_arguments(
         self, dummy_simulator, argument, replacement
     ):
-        with pytest.raises(TypeError, match=f"{argument}.*{replacement}"):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                f"IterativeQAOA sets {argument} for each depth; "
+                f"pass {replacement} instead."
+            ),
+        ):
             IterativeQAOA(
                 MaxCutProblem(make_bull_graph()),
                 backend=dummy_simulator,
                 **{argument: 2},
             )
+
+    def test_defaults(self, dummy_simulator):
+        iterative = _bull_iterative(dummy_simulator)
+
+        assert iterative.max_iterations == 10
+        assert iterative.n_layers == 1
+        assert iterative.best_depth == 1
+
+    def test_default_budget_trains_five_depths_of_ten_iterations(self, dummy_simulator):
+        iterative = IterativeQAOA(
+            MaxCutProblem(make_bull_graph()),
+            backend=dummy_simulator,
+            optimizer=MonteCarloOptimizer(population_size=2, n_best_sets=1),
+        )
+
+        iterative.run(perform_final_computation=False)
+
+        assert [
+            (entry["depth"], entry["n_iterations"]) for entry in iterative.depth_history
+        ] == [(depth, 10) for depth in range(1, 6)]
+
+    @pytest.mark.parametrize(
+        "budget, expected", [(3, 3), (lambda depth: 10 * depth, 10)]
+    )
+    def test_construction_uses_the_first_depth_budget(
+        self, dummy_simulator, budget, expected
+    ):
+        iterative = _bull_iterative(dummy_simulator, max_iterations_per_depth=budget)
+
+        assert iterative.max_iterations == expected
+
+    def test_initial_params_are_ignored_with_a_warning(self, default_test_simulator):
+        iterative = _bull_iterative(
+            default_test_simulator, max_depth=1, max_iterations_per_depth=1
+        )
+
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "IterativeQAOA ignores `initial_params` — each depth computes its "
+                "own warm-start via interpolation of the previous depth's best "
+                "parameters. Use QAOA directly if you want to seed the first run."
+            ),
+        ):
+            iterative.run(initial_params=np.zeros(2), perform_final_computation=False)
+
+    def test_skipping_the_final_computation_leaves_no_solution(
+        self, default_test_simulator
+    ):
+        iterative = _bull_iterative(
+            default_test_simulator, max_depth=1, max_iterations_per_depth=1
+        )
+
+        iterative.run(perform_final_computation=False)
+
+        with pytest.raises(RuntimeError, match="not available yet"):
+            _ = iterative.solution
+
+    def test_n_basis_terms_reach_the_interpolation(
+        self, default_test_simulator, mocker
+    ):
+        interpolate = mocker.spy(_iterative_qaoa, "interpolate_qaoa_params")
+        iterative = _bull_iterative(
+            default_test_simulator,
+            max_depth=3,
+            max_iterations_per_depth=1,
+            strategy=InterpolationStrategy.FOURIER,
+            n_basis_terms=1,
+        )
+
+        iterative.run(perform_final_computation=False)
+
+        assert [call.args[1:] for call in interpolate.call_args_list] == [
+            (1, InterpolationStrategy.FOURIER, 1),
+            (2, InterpolationStrategy.FOURIER, 1),
+        ]
 
     def test_max_iterations_per_depth_callable(self, default_test_simulator):
         graph = make_bull_graph()
@@ -456,7 +682,14 @@ class TestIterativeQAOA:
             optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         )
 
-        with pytest.raises(TypeError, match="unexpected keyword argument"):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "IterativeQAOA.run() got unexpected keyword argument(s): dry_run. "
+                "To preview without executing anything, call the separate method "
+                "instead: program.dry_run()."
+            ),
+        ):
             iterative.run(dry_run=True)
 
     def test_progress_row_finishes_once_after_all_depths(self, default_test_simulator):
@@ -522,14 +755,53 @@ class TestIterativeQAOACheckpointing:
         )
         return program
 
-    def _load(self, backend, checkpoint_dir, subdirectory=None):
+    def _load(self, backend, checkpoint_dir, subdirectory=None, max_depth=MAX_DEPTH):
         return IterativeQAOA.load_state(
             checkpoint_dir,
             backend=backend,
             subdirectory=subdirectory,
             problem=MaxCutProblem(make_bull_graph()),
-            max_depth=self.MAX_DEPTH,
+            max_depth=max_depth,
             max_iterations_per_depth=self.ITERS_PER_DEPTH,
+        )
+
+    def test_load_skips_a_deeper_depth_without_checkpoints(
+        self, default_test_simulator, tmp_path
+    ):
+        self._run_without_completion(default_test_simulator, tmp_path)
+        (tmp_path / "depth_09").mkdir()
+
+        loaded = self._load(default_test_simulator, tmp_path)
+
+        assert loaded.n_layers == self.MAX_DEPTH
+
+    def test_a_finished_run_extends_to_a_larger_max_depth(
+        self, default_test_simulator, tmp_path, mocker
+    ):
+        """The new depth warm-starts from the deepest completed one."""
+        self._run_unsampled(default_test_simulator, tmp_path)
+        loaded = self._load(
+            default_test_simulator, tmp_path, max_depth=self.MAX_DEPTH + 1
+        )
+        deepest_params = loaded.depth_history[-1]["best_params"]
+        interpolate = mocker.spy(_iterative_qaoa, "interpolate_qaoa_params")
+
+        loaded.run(perform_final_computation=False)
+
+        history = loaded.depth_history
+        assert [entry["depth"] for entry in history] == [1, 2, 3, 4]
+        assert history[-1]["best_params"].size == 2 * (self.MAX_DEPTH + 1)
+        (call,) = interpolate.call_args_list
+        np.testing.assert_array_equal(call.args[0], deepest_params)
+        assert call.args[1] == self.MAX_DEPTH
+
+    def test_load_rejects_a_state_missing_depth_keys(
+        self, default_test_simulator, tmp_path
+    ):
+        self._run_without_completion(default_test_simulator, tmp_path)
+
+        verify_load_state_rejects_missing_state_key(
+            tmp_path, "depth", lambda: self._load(default_test_simulator, tmp_path)
         )
 
     def test_each_depth_keeps_its_own_checkpoints(
@@ -606,6 +878,7 @@ class TestIterativeQAOACheckpointing:
         loaded = self._load(default_test_simulator, tmp_path)
 
         assert loaded.n_layers == program.best_depth
+        assert loaded.best_depth == program.best_depth
         np.testing.assert_allclose(loaded.best_params, program.best_params)
 
     def test_sampled_finished_run_restores_best_depth(

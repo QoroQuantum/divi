@@ -8,9 +8,7 @@ import warnings
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
-pytest.importorskip("qiskit_aer")
-
-from divi.backends import ExecutionResult, MaestroSimulator, QiskitSimulator
+from divi.backends import ExecutionResult, MaestroConfig
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import QuEPP
@@ -20,6 +18,7 @@ from divi.pipeline import PipelineCadence
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
 from divi.reporting._events import ProgressEvent, TerminalStatus
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import ObservableMeasuringContractsBase
 
 
@@ -49,8 +48,8 @@ _H_X0_PLUS_X1 = _op([("X", [0], 1.0), ("X", [1], 1.0)], 2)
 _H_HEIS_XX = _op([("XX", [0, 1], 1.0), ("YY", [0, 1], 1.0)], 2)
 _H_HEIS_XXX = _op([("XX", [0, 1], 1.0), ("YY", [0, 1], 1.0), ("ZZ", [0, 1], 1.0)], 2)
 
-# Tolerance for probability checks (5000 shots: ~0.02 std for p=0.5)
-_PROB_TOL = 0.05
+# Sampled probabilities at 5000 shots: σ ≈ 0.0061 at p = 0.25, so about 5σ.
+_PROB_TOL = 0.03
 
 # Tolerance for QDrift expval comparisons (sampling noise + shot noise)
 _QDRIFT_EXPVAL_TOL = 0.15
@@ -74,15 +73,13 @@ def two_qubit_hamiltonian():
 
 
 class TestTimeEvolutionInitialization:
-    def test_initialization_valid(self, two_qubit_hamiltonian, default_test_simulator):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            time=1.0,
-            backend=default_test_simulator,
-        )
-        assert te.time == 1.0
+    def test_initialization_defaults(self, two_qubit_hamiltonian, dummy_simulator):
+        te = TimeEvolution(hamiltonian=two_qubit_hamiltonian, backend=dummy_simulator)
+
+        assert (te.time, te.n_steps, te.order) == (1.0, 1, 1)
         assert te.n_qubits == 2
         assert isinstance(te.initial_state, ZerosState)
+        assert isinstance(te.trotterization_strategy, ExactTrotterization)
         assert te.observable is None
 
     def test_initialization_requires_backend(self, two_qubit_hamiltonian):
@@ -90,7 +87,9 @@ class TestTimeEvolutionInitialization:
             TimeEvolution(hamiltonian=two_qubit_hamiltonian, backend=None)
 
     def test_initialization_constant_hamiltonian_fails(self, default_test_simulator):
-        with pytest.raises(ValueError, match="only constant terms"):
+        with pytest.raises(
+            ValueError, match=exact_match("Hamiltonian contains only constant terms.")
+        ):
             TimeEvolution(
                 hamiltonian=SparsePauliOp("I"),
                 backend=default_test_simulator,
@@ -99,21 +98,50 @@ class TestTimeEvolutionInitialization:
     def test_initialization_invalid_initial_state(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
-        with pytest.raises(TypeError):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "initial_state must be an InitialState instance, got str"
+            ),
+        ):
             TimeEvolution(
                 hamiltonian=two_qubit_hamiltonian,
                 initial_state="Invalid",
                 backend=default_test_simulator,
             )
 
-    def test_default_trotterization_strategy(
-        self, two_qubit_hamiltonian, default_test_simulator
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            ({"n_steps": 0}, "n_steps must be a positive integer, got 0."),
+            ({"order": 0}, "order must be 1 or an even integer >= 2, got 0."),
+            ({"order": 3}, "order must be 1 or an even integer >= 2, got 3."),
+        ],
+        ids=["zero-steps", "zero-order", "odd-order"],
+    )
+    def test_initialization_rejects_bad_trotter_settings(
+        self, two_qubit_hamiltonian, dummy_simulator, kwargs, message
     ):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            backend=default_test_simulator,
-        )
-        assert isinstance(te.trotterization_strategy, ExactTrotterization)
+        with pytest.raises(ValueError, match=exact_match(message)):
+            TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian, backend=dummy_simulator, **kwargs
+            )
+
+    def test_template_requires_its_parameter(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "_template_meta and _template_param must be provided together; "
+                "got _template_param=None."
+            ),
+        ):
+            TimeEvolution(
+                hamiltonian=two_qubit_hamiltonian,
+                backend=dummy_simulator,
+                _template_meta=object(),
+            )
 
 
 class TestTimeEvolutionGenerateCircuits:
@@ -138,8 +166,7 @@ class TestTimeEvolutionGenerateCircuits:
         )
         env = te._build_pipeline_env()
         trace = _evolution_pipeline(te).run_forward_pass(te._hamiltonian, env)
-        # ExactTrotterization: 1 Hamiltonian sample → 1 circuit
-        assert len(trace.final_batch) >= 1
+        assert len(trace.final_batch) == 1
 
     def test_pipeline_qdrift_multiple_circuits(
         self, two_qubit_hamiltonian, default_test_simulator
@@ -217,8 +244,38 @@ class TestTimeEvolutionRun:
         assert te.total_run_time >= 0
         probs = te.results
         assert isinstance(probs, dict)
-        total = sum(probs.values())
-        assert abs(total - 1.0) < 0.1  # Approximate due to shots
+        assert sum(probs.values()) == pytest.approx(1.0, abs=1e-9)
+        assert te.probabilities() is probs
+
+    def test_probabilities_rejects_expectation_value_mode(
+        self, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            observable=_Z0_2Q,
+            backend=default_test_simulator,
+        )
+        te.run()
+
+        with pytest.raises(
+            RuntimeError,
+            match=exact_match(
+                "TimeEvolution was run in expectation-value mode; use "
+                ".expval() instead of .probabilities()."
+            ),
+        ):
+            te.probabilities()
+
+    def test_run_rejects_unknown_keywords(self, two_qubit_hamiltonian, dummy_simulator):
+        te = TimeEvolution(hamiltonian=two_qubit_hamiltonian, backend=dummy_simulator)
+
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "TimeEvolution.run() got unexpected keyword argument(s): bogus."
+            ),
+        ):
+            te.run(bogus=1)
 
     def test_run_initial_state_superposition(
         self, two_qubit_hamiltonian, default_test_simulator
@@ -230,12 +287,14 @@ class TestTimeEvolutionRun:
             backend=default_test_simulator,
         )
         te.run()
-        assert te.total_circuit_count >= 1
-        assert te.results is not None
+        assert te.total_circuit_count == 1
+        for bitstring in ("00", "01", "10", "11"):
+            assert te.results.get(bitstring, 0.0) == pytest.approx(0.25, abs=_PROB_TOL)
 
     def test_run_initial_state_ones(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
+        """|11⟩ is an eigenstate of the Z-diagonal Hamiltonian, so it stays put."""
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
@@ -243,10 +302,12 @@ class TestTimeEvolutionRun:
             backend=default_test_simulator,
         )
         te.run()
-        assert te.total_circuit_count >= 1
+        assert te.total_circuit_count == 1
+        assert te.results == pytest.approx({"11": 1.0}, abs=1e-9)
 
     def test_single_term_hamiltonian_fallback(self, default_test_simulator):
-        """ExactTrotterization with keep_top_n=1 yields single-term; use evolve not TrotterProduct."""
+        """ExactTrotterization with keep_top_n=1 keeps only 0.5·X, so |0⟩ rotates
+        to P(1) = sin²(0.5·t); keeping the 0.3·Y term too would give ≈0.082."""
         h = _op([("X", [0], 0.5), ("Y", [0], 0.3)], 1)
         te = TimeEvolution(
             hamiltonian=h,
@@ -255,14 +316,17 @@ class TestTimeEvolutionRun:
             backend=default_test_simulator,
         )
         te.run()
-        assert te.total_circuit_count >= 1
-        assert te.results is not None
+        assert te.total_circuit_count == 1
+        assert te.results.get("1", 0.0) == pytest.approx(
+            math.sin(0.5 * 0.5) ** 2, abs=0.015
+        )
 
 
 class TestTimeEvolutionObservable:
     def test_run_with_observable_shot_backend(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
+        """|00⟩ is an eigenstate of the Z-diagonal Hamiltonian, so ⟨Z₀⟩ stays 1."""
         te = TimeEvolution(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
@@ -271,8 +335,21 @@ class TestTimeEvolutionObservable:
         )
         te.run()
         assert te.total_circuit_count >= 1
-        assert te.results is not None
-        assert -1.1 <= te.results <= 1.1
+        assert te.results == pytest.approx(1.0, abs=1e-9)
+
+    def test_pennylane_observable_is_lifted_onto_the_register(
+        self, qp, two_qubit_hamiltonian, default_test_simulator
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            time=0.5,
+            observable=qp.Z(0),
+            backend=default_test_simulator,
+        )
+
+        te.run()
+
+        assert te.results == pytest.approx(1.0, abs=1e-9)
 
     def test_run_with_observable_expval_backend_multi_term(
         self, two_qubit_hamiltonian, dummy_expval_backend, mocker
@@ -323,10 +400,8 @@ class TestTimeEvolutionMultiObservable:
         )
         te.run()
         assert isinstance(te.results, list)
-        assert len(te.results) == 2
-        for v in te.results:
-            assert isinstance(v, float)
-            assert -1.1 <= v <= 1.1
+        assert all(isinstance(v, float) for v in te.results)
+        assert te.results == pytest.approx([1.0, 1.0], abs=1e-9)
 
     def test_single_observable_returns_float(
         self, two_qubit_hamiltonian, default_test_simulator
@@ -341,24 +416,12 @@ class TestTimeEvolutionMultiObservable:
         te.run()
         assert isinstance(te.results, float)
 
-    def test_none_observable_returns_probs_dict(
-        self, two_qubit_hamiltonian, default_test_simulator
-    ):
-        """No observable → probs dict (unchanged contract)."""
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            time=0.5,
-            backend=default_test_simulator,
-        )
-        te.run()
-        assert isinstance(te.results, dict)
-
     def test_multi_observable_matches_per_observable_runs(
         self, two_qubit_hamiltonian, default_test_simulator
     ):
         """For commuting observables on a noiseless backend, the multi
-        run produces (within shot noise) the same per-observable values
-        as one TimeEvolution per observable."""
+        run produces the same per-observable values as one TimeEvolution
+        per observable."""
         common = dict(
             hamiltonian=two_qubit_hamiltonian,
             time=0.5,
@@ -379,10 +442,8 @@ class TestTimeEvolutionMultiObservable:
         )
         te_solo_1.run()
 
-        # Loose tolerance: shot noise + any small numerical drift from QWC
-        # grouping vs single-observable measurement.
-        assert te_multi.results[0] == pytest.approx(te_solo_0.results, abs=0.1)
-        assert te_multi.results[1] == pytest.approx(te_solo_1.results, abs=0.1)
+        assert te_multi.results[0] == pytest.approx(te_solo_0.results, abs=1e-9)
+        assert te_multi.results[1] == pytest.approx(te_solo_1.results, abs=1e-9)
 
 
 class TestTimeEvolutionExpvalAccessor:
@@ -428,7 +489,13 @@ class TestTimeEvolutionExpvalAccessor:
             backend=default_test_simulator,
         )
         te.run()
-        with pytest.raises(RuntimeError, match="probability mode"):
+        with pytest.raises(
+            RuntimeError,
+            match=exact_match(
+                "TimeEvolution was run in probability mode; use "
+                ".probabilities() instead of .expval()."
+            ),
+        ):
             te.expval()
 
     def test_expval_returns_list_via_expval_native_backend(
@@ -464,7 +531,7 @@ class TestTimeEvolutionExpvalAccessor:
             observable=_Z0_2Q,
             backend=default_test_simulator,
         )
-        with pytest.raises(RuntimeError):
+        with pytest.raises(RuntimeError, match=r"Call \.run\(\) first"):
             te.expval()
 
 
@@ -486,18 +553,6 @@ class TestTimeEvolutionSingleItemListPreserved:
         assert isinstance(te.results, list)
         assert len(te.results) == 1
         assert isinstance(te.results[0], float)
-
-    def test_bare_observable_returns_scalar(
-        self, two_qubit_hamiltonian, default_test_simulator
-    ):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            time=0.5,
-            observable=_Z0_2Q,
-            backend=default_test_simulator,
-        )
-        te.run()
-        assert isinstance(te.results, float)
 
     def test_single_item_tuple_returns_length_one_list(
         self, two_qubit_hamiltonian, default_test_simulator
@@ -560,31 +615,14 @@ class TestTimeEvolutionCompletedCheckpointing:
             backend=dummy_simulator,
         )
 
-        with pytest.raises(RuntimeError, match="no completed results"):
+        with pytest.raises(
+            RuntimeError,
+            match=exact_match("TimeEvolution has no completed results to checkpoint."),
+        ):
             program._make_checkpoint(tmp_path)
 
 
 class TestTimeEvolutionQDrift:
-    def test_qdrift_multi_sample_averages_probs(
-        self, two_qubit_hamiltonian, default_test_simulator
-    ):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            trotterization_strategy=QDrift(
-                sampling_budget=2,
-                seed=42,
-                n_hamiltonians_per_iteration=3,
-            ),
-            time=0.5,
-            backend=default_test_simulator,
-        )
-        te.run()
-        assert te.total_circuit_count >= 3
-        assert te.results is not None
-        probs = te.results
-        total = sum(probs.values())
-        assert abs(total - 1.0) < 0.2
-
     def test_expval_shot_backend_qdrift_aggregation(self, default_test_simulator):
         """QDrift with observable on shot backend averages expvals across samples."""
         te = TimeEvolution(
@@ -601,7 +639,9 @@ class TestTimeEvolutionQDrift:
         assert te.total_circuit_count == 2
         assert te.results is not None
 
-    def test_multi_sample_qdrift_expval_vs_sampling(self, default_test_simulator):
+    def test_multi_sample_qdrift_expval_vs_sampling(
+        self, default_test_simulator, make_maestro_simulator
+    ):
         """Multi-sample QDrift: expval backend and sampling backend agree."""
         hamiltonian = _op([("ZZ", [0, 1], -1.0), ("X", [0], -1.0), ("X", [1], -1.0)], 2)
         qdrift_kwargs = dict(
@@ -627,8 +667,8 @@ class TestTimeEvolutionQDrift:
         te_sampling = TimeEvolution(
             **common,
             trotterization_strategy=QDrift(**qdrift_kwargs),
-            backend=QiskitSimulator(
-                shots=5000, force_sampling=True, _deterministic_execution=True
+            backend=make_maestro_simulator(
+                force_sampling=True, maestro_config=MaestroConfig(seed=42)
             ),
         )
         te_sampling.run()
@@ -648,10 +688,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results
-        assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
-        for key in ("00", "01", "10"):
-            assert probs.get(key, 0.0) <= _PROB_TOL
+        assert te.results == pytest.approx({"11": 1.0}, abs=1e-9)
 
     def test_h_x_plus_z_full_rotation(self, default_test_simulator):
         """H=X+Z (1-qubit, non-commuting): |0⟩ at t=π/√2 → |0⟩ (full Bloch rotation)."""
@@ -662,37 +699,32 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results
-        assert probs.get("0", 0.0) >= 1.0 - _PROB_TOL
-        assert probs.get("1", 0.0) <= _PROB_TOL
+        # The 10-step Trotter error leaves P(1) = 8.7e-5, about 0.4 counts in
+        # 5000 shots; 2e-3 is ten counts.
+        assert te.results.get("1", 0.0) <= 2e-3
+        assert sum(te.results.values()) == pytest.approx(1.0, abs=1e-12)
 
-    def test_heisenberg_xx_superposition_uniform(self, default_test_simulator):
-        """Heisenberg XX (X₀X₁+Y₀Y₁, non-commuting): |++⟩ stays uniform, P(·)=0.25."""
+    @pytest.mark.parametrize(
+        "hamiltonian",
+        [
+            pytest.param(_H_HEIS_XX, id="xx"),
+            pytest.param(_H_HEIS_XXX, id="xxx"),
+        ],
+    )
+    def test_heisenberg_superposition_uniform(
+        self, default_test_simulator, hamiltonian
+    ):
+        """Heisenberg XX (X₀X₁+Y₀Y₁, non-commuting) and XXX (+Z₀Z₁): |++⟩ stays
+        uniform, P(·)=0.25."""
         te = TimeEvolution(
-            hamiltonian=_H_HEIS_XX,
+            hamiltonian=hamiltonian,
             time=math.pi / 4,
             initial_state=SuperpositionState(),
             backend=default_test_simulator,
         )
         te.run()
         probs = te.results
-        total = sum(probs.values())
-        assert abs(total - 1.0) <= _PROB_TOL
-        for key in ("00", "01", "10", "11"):
-            assert 0.25 - _PROB_TOL <= probs.get(key, 0.0) <= 0.25 + _PROB_TOL
-
-    def test_heisenberg_xxx_superposition_uniform(self, default_test_simulator):
-        """Heisenberg XXX (X₀X₁+Y₀Y₁+Z₀Z₁): |++⟩ stays uniform, P(·)=0.25."""
-        te = TimeEvolution(
-            hamiltonian=_H_HEIS_XXX,
-            time=math.pi / 4,
-            initial_state=SuperpositionState(),
-            backend=default_test_simulator,
-        )
-        te.run()
-        probs = te.results
-        total = sum(probs.values())
-        assert abs(total - 1.0) <= _PROB_TOL
+        assert sum(probs.values()) == pytest.approx(1.0, abs=1e-12)
         for key in ("00", "01", "10", "11"):
             assert 0.25 - _PROB_TOL <= probs.get(key, 0.0) <= 0.25 + _PROB_TOL
 
@@ -705,10 +737,7 @@ class TestTimeEvolutionE2E:
             backend=default_test_simulator,
         )
         te.run()
-        probs = te.results
-        assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
-        for key in ("00", "01", "10"):
-            assert probs.get(key, 0.0) <= _PROB_TOL
+        assert te.results == pytest.approx({"11": 1.0}, abs=1e-9)
 
     def test_qdrift_commuting_stays_eigenstate(self, default_test_simulator):
         """QDrift H=Z₀+Z₁: |00⟩ is eigenstate, multi-sample average P(00)=1."""
@@ -724,8 +753,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 3
-        probs = te.results
-        assert probs.get("00", 0.0) >= 1.0 - _PROB_TOL
+        assert te.results == pytest.approx({"00": 1.0}, abs=1e-9)
 
     def test_qdrift_keep_top_n_evolves_correctly(self, default_test_simulator):
         """QDrift with keep_top_n=1: H=X₀+X₁, |00⟩ at t=π/2 → P(11)=1."""
@@ -742,8 +770,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 3
-        probs = te.results
-        assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
+        assert te.results == pytest.approx({"11": 1.0}, abs=1e-9)
 
     def test_qdrift_heisenberg_xx_superposition_uniform(self, default_test_simulator):
         """QDrift Heisenberg XX (product operators): |++⟩ stays uniform, P(·)=0.25."""
@@ -761,8 +788,7 @@ class TestTimeEvolutionE2E:
         te.run()
         assert te.total_circuit_count >= 5
         probs = te.results
-        total = sum(probs.values())
-        assert abs(total - 1.0) <= _PROB_TOL
+        assert sum(probs.values()) == pytest.approx(1.0, abs=1e-12)
         for key in ("00", "01", "10", "11"):
             assert 0.25 - _PROB_TOL <= probs.get(key, 0.0) <= 0.25 + _PROB_TOL
 
@@ -781,8 +807,7 @@ class TestTimeEvolutionE2E:
         )
         te.run()
         assert te.total_circuit_count >= 5
-        probs = te.results
-        assert probs.get("11", 0.0) >= 1.0 - _PROB_TOL
+        assert te.results == pytest.approx({"11": 1.0}, abs=1e-9)
 
     def test_qdrift_tfim_non_commuting_expval(self, default_test_simulator):
         """QDrift TFIM 4q (non-commuting ZZ+X): Campbell's protocol matches exact."""
@@ -850,7 +875,7 @@ class TestTimeEvolutionE2E:
 
         assert abs(te_exact.results - te_qdrift.results) < _QDRIFT_EXPVAL_TOL
 
-    def test_qdrift_reduces_circuit_op_count(self):
+    def test_qdrift_reduces_circuit_op_count(self, make_maestro_simulator):
         """QDrift with sampling_budget < n_terms produces shallower circuits than exact."""
 
         # 6-term, 3-qubit Heisenberg chain
@@ -864,7 +889,7 @@ class TestTimeEvolutionE2E:
         )
 
         # Exact: evolves with all 6 terms across 4 Trotter steps
-        backend_exact = MaestroSimulator(shots=1000, track_depth=True)
+        backend_exact = make_maestro_simulator(shots=1000, track_depth=True)
         te_exact = TimeEvolution(
             hamiltonian=hamiltonian,
             time=0.5,
@@ -876,7 +901,7 @@ class TestTimeEvolutionE2E:
         exact_depth = backend_exact.average_depth()
 
         # QDrift: samples only 2 of the 6 terms
-        backend_qdrift = MaestroSimulator(shots=1000, track_depth=True)
+        backend_qdrift = make_maestro_simulator(shots=1000, track_depth=True)
         te_qdrift = TimeEvolution(
             hamiltonian=hamiltonian,
             time=0.5,
@@ -897,80 +922,60 @@ class TestTimeEvolutionE2E:
 class TestTimeEvolutionQEM:
     """Tests for QEM integration in TimeEvolution."""
 
-    def test_no_qem_protocol_unchanged(self, default_test_simulator):
-        """Without qem_protocol, TimeEvolution pipeline has no QEM stages."""
-        te = TimeEvolution(
-            hamiltonian=_H_X_PLUS_Z,
-            observable=_Z0_1Q,
-            backend=default_test_simulator,
-        )
-        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
-        assert "QEMStage" not in stage_names
-        assert "PauliTwirlStage" not in stage_names
-
-    def test_quepp_adds_qem_stage(self, default_test_simulator):
-        """QuEPP with n_twirls=0 adds QEMStage only."""
-        te = TimeEvolution(
-            hamiltonian=_H_X_PLUS_Z,
-            observable=_Z0_1Q,
-            backend=default_test_simulator,
-            qem_protocol=QuEPP(truncation_order=1, n_twirls=0),
-        )
-        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
-        assert "QEMStage" in stage_names
-        assert "PauliTwirlStage" not in stage_names
-
-    def test_quepp_adds_twirl_stage(self, default_test_simulator):
-        """QuEPP with n_twirls>0 adds both QEMStage and PauliTwirlStage."""
-        te = TimeEvolution(
-            hamiltonian=_H_X_PLUS_Z,
-            observable=_Z0_1Q,
-            backend=default_test_simulator,
-            qem_protocol=QuEPP(truncation_order=1, n_twirls=5),
-        )
-        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
-        assert "QEMStage" in stage_names
-        assert "PauliTwirlStage" in stage_names
-
-    def test_zne_adds_qem_stage(self, default_test_simulator):
-        """ZNE protocol adds QEMStage without PauliTwirlStage."""
-        scale_factors = [1.0, 3.0, 5.0]
-        te = TimeEvolution(
-            hamiltonian=_H_X_PLUS_Z,
-            observable=_Z0_1Q,
-            backend=default_test_simulator,
-            qem_protocol=ZNE(
-                scale_factors=scale_factors,
-                extrapolator=RichardsonExtrapolator(),
+    @pytest.mark.parametrize(
+        "observable, qem_protocol, has_qem, has_twirl",
+        [
+            pytest.param(_Z0_1Q, None, False, False, id="no_qem_protocol"),
+            pytest.param(
+                _Z0_1Q,
+                QuEPP(truncation_order=1, n_twirls=0),
+                True,
+                False,
+                id="quepp_without_twirls",
             ),
-        )
-        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
-        assert "QEMStage" in stage_names
-        assert "PauliTwirlStage" not in stage_names
-
-    def test_zne_excluded_in_sampling_mode(self, default_test_simulator):
-        """With no observable the pipeline samples probabilities; ZNE (expval-only)
-        must not ride it."""
-        te = TimeEvolution(
-            hamiltonian=_H_X_PLUS_Z,
-            observable=None,
-            backend=default_test_simulator,
-            qem_protocol=ZNE(scale_factors=[1.0, 3.0]),
-        )
-        stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
-        assert "QEMStage" not in stage_names
-
-    def test_non_variational_pipeline_has_no_param_binding(
-        self, default_test_simulator
+            pytest.param(
+                _Z0_1Q,
+                QuEPP(truncation_order=1, n_twirls=5),
+                True,
+                True,
+                id="quepp_with_twirls",
+            ),
+            pytest.param(
+                _Z0_1Q,
+                ZNE(
+                    scale_factors=[1.0, 3.0, 5.0],
+                    extrapolator=RichardsonExtrapolator(),
+                ),
+                True,
+                False,
+                id="zne",
+            ),
+            pytest.param(
+                None,
+                ZNE(scale_factors=[1.0, 3.0]),
+                False,
+                False,
+                id="zne_excluded_in_sampling_mode",
+            ),
+        ],
+    )
+    def test_pipeline_stages(
+        self, default_test_simulator, observable, qem_protocol, has_qem, has_twirl
     ):
-        """A plain (non-templated) TimeEvolution binds no parameters: the base
-        assembler default is off for non-variational programs."""
+        """QuEPP adds QEMStage, plus PauliTwirlStage when n_twirls>0; ZNE adds
+        QEMStage alone, and not at all with no observable (sampling mode, which
+        ZNE cannot ride). A plain (non-templated) TimeEvolution binds no
+        parameters: the base assembler default is off for non-variational
+        programs."""
         te = TimeEvolution(
             hamiltonian=_H_X_PLUS_Z,
-            observable=_Z0_1Q,
+            observable=observable,
             backend=default_test_simulator,
+            qem_protocol=qem_protocol,
         )
         stage_names = [type(s).__name__ for s in _evolution_pipeline(te).stages]
+        assert ("QEMStage" in stage_names) is has_qem
+        assert ("PauliTwirlStage" in stage_names) is has_twirl
         assert "ParameterBindingStage" not in stage_names
 
     def test_quepp_run_produces_mitigated_result(self, default_test_simulator):
@@ -1133,25 +1138,21 @@ class TestTimeEvolutionPrecision:
     """``precision`` is read from :class:`~divi.qprog.QuantumProgram` and
     propagated into the produced ``MetaCircuit``."""
 
-    def test_precision_defaults_to_module_default(
-        self, two_qubit_hamiltonian, default_test_simulator
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            pytest.param({}, DEFAULT_PRECISION, id="module_default"),
+            pytest.param({"precision": 4}, 4, id="explicit"),
+        ],
+    )
+    def test_precision_stored(
+        self, two_qubit_hamiltonian, default_test_simulator, kwargs, expected
     ):
         te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian, backend=default_test_simulator
+            hamiltonian=two_qubit_hamiltonian, backend=default_test_simulator, **kwargs
         )
-        assert te._precision == DEFAULT_PRECISION
-        assert te.precision == DEFAULT_PRECISION
-
-    def test_explicit_precision_stored(
-        self, two_qubit_hamiltonian, default_test_simulator
-    ):
-        te = TimeEvolution(
-            hamiltonian=two_qubit_hamiltonian,
-            backend=default_test_simulator,
-            precision=4,
-        )
-        assert te._precision == 4
-        assert te.precision == 4
+        assert te._precision == expected
+        assert te.precision == expected
 
     def test_precision_propagates_to_meta_circuit(
         self, two_qubit_hamiltonian, default_test_simulator

@@ -2,31 +2,36 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import importlib.util
 import re
+import warnings
 
 import numpy as np
 import pytest
 from qiskit.circuit.library import RYGate, RZGate
+from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.qprog import VQE
+from divi.qprog import VQE, EarlyStopping
 from divi.qprog.algorithms import (
     GenericLayerAnsatz,
     HartreeFockAnsatz,
     LUCJAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
+    SuperpositionState,
     UCCSDAnsatz,
+    ZerosState,
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 from divi.reporting._events import EventKind, TerminalStatus
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
     verify_cost_circuit,
 )
+from tests.qprog.algorithms._helpers import needs_qiskit_nature
 
 
 @pytest.fixture
@@ -54,13 +59,7 @@ def four_qubit_hamiltonian():
 ANSAETZE_TO_TEST = {
     "argvalues": [
         HartreeFockAnsatz(),
-        pytest.param(
-            UCCSDAnsatz(),
-            marks=pytest.mark.skipif(
-                importlib.util.find_spec("qiskit_nature") is None,
-                reason="requires the 'chem' extra",
-            ),
-        ),
+        pytest.param(UCCSDAnsatz(), marks=needs_qiskit_nature),
         QCCAnsatz(),
         GenericLayerAnsatz([RYGate, RZGate]),
         QAOAAnsatz(),
@@ -103,41 +102,29 @@ def test_vqe_initialization_with_qubit_operator_hamiltonian(
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
 
 
-def test_vqe_basic_initialization_with_molecule(
-    default_test_simulator, h2_problem, default_optimizer
-):
-    """Test VQE initialization with a problem built from a molecule."""
-    vqe_problem = VQE(
-        h2_problem,
-        ansatz=HartreeFockAnsatz(),
-        n_layers=1,  # n_layers is passed to VQE again
-        backend=default_test_simulator,
-        optimizer=default_optimizer,
+@pytest.fixture(params=["from_molecule", "from_hamiltonian"])
+def four_qubit_problem(request):
+    if request.param == "from_molecule":
+        return request.getfixturevalue("h2_problem")
+    return HamiltonianProblem(
+        request.getfixturevalue("four_qubit_hamiltonian"), n_electrons=2
     )
 
-    assert vqe_problem.backend.shots == 5000
-    assert vqe_problem.n_layers == 1  # Assert on VQE instance
-    assert vqe_problem.n_qubits == 4
 
-    assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
-    verify_cost_circuit(vqe_problem)
-
-
-def test_vqe_basic_initialization_with_hamiltonian(
-    default_test_simulator, four_qubit_hamiltonian, default_optimizer
+def test_vqe_basic_initialization(
+    default_test_simulator, four_qubit_problem, default_optimizer
 ):
-    """Test VQE initialization with a problem wrapping a Hamiltonian."""
     vqe_problem = VQE(
-        HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
+        four_qubit_problem,
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         backend=default_test_simulator,
         optimizer=default_optimizer,
     )
 
-    assert vqe_problem.backend.shots == 5000
     assert vqe_problem.n_layers == 1
     assert vqe_problem.n_qubits == 4
+    assert vqe_problem.max_iterations == 10
 
     assert isinstance(vqe_problem.cost_hamiltonian, SparsePauliOp)
     verify_cost_circuit(vqe_problem)
@@ -147,14 +134,7 @@ def test_vqe_basic_initialization_with_hamiltonian(
     "ansatz, starts_at_reference",
     [
         (HartreeFockAnsatz(), True),
-        pytest.param(
-            UCCSDAnsatz(),
-            True,
-            marks=pytest.mark.skipif(
-                importlib.util.find_spec("qiskit_nature") is None,
-                reason="requires the 'chem' extra",
-            ),
-        ),
+        pytest.param(UCCSDAnsatz(), True, marks=needs_qiskit_nature),
         (QCCAnsatz(), False),
         (GenericLayerAnsatz([RYGate, RZGate]), False),
     ],
@@ -224,7 +204,14 @@ def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimi
 
 def test_vqe_fail_with_bare_hamiltonian(dummy_simulator, default_optimizer):
     """VQE raises TypeError when given an operator instead of a HamiltonianProblem."""
-    with pytest.raises(TypeError, match="problem must be a HamiltonianProblem"):
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "problem must be a HamiltonianProblem; got SparsePauliOp. Wrap a bare "
+            "operator in HamiltonianProblem, or a molecule in "
+            "MolecularProblem.from_molecule."
+        ),
+    ):
         VQE(
             SparsePauliOp("Z"),
             ansatz=HartreeFockAnsatz(),
@@ -242,38 +229,117 @@ def test_vqe_single_term_hamiltonian_succeeds(dummy_simulator, default_optimizer
         backend=dummy_simulator,
         optimizer=default_optimizer,
     )
-    assert vqe_problem.cost_hamiltonian is not None
+    assert vqe_problem.cost_hamiltonian.equiv(SparsePauliOp("Z", 0.5))
     assert vqe_problem.n_qubits == 1
 
 
-class TestSampleSolutionProgress:
-    @staticmethod
-    def _make_vqe(backend, optimizer):
-        return VQE(
-            HamiltonianProblem(SparsePauliOp("Z"), n_electrons=1),
-            ansatz=GenericLayerAnsatz([RYGate, RZGate]),
-            n_layers=1,
-            backend=backend,
-            optimizer=optimizer,
+def test_standalone_sampling_uses_one_direct_progress_session(
+    default_test_simulator, default_optimizer, recording_direct_sessions
+):
+    vqe = VQE(
+        HamiltonianProblem(SparsePauliOp("Z"), n_electrons=1),
+        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+        n_layers=1,
+        backend=default_test_simulator,
+        optimizer=default_optimizer,
+    )
+
+    vqe.sample_solution(np.array([0.1, 0.2]))
+
+    assert len(recording_direct_sessions) == 1
+    session = recording_direct_sessions[0]
+    terminal_events = [
+        event for event in session.emitted if event.kind is EventKind.FINISH
+    ]
+    assert len(terminal_events) == 1
+    assert terminal_events[0].terminal_status is TerminalStatus.SUCCESS
+    assert session.state.get(vqe._progress_key).terminal_status is (
+        TerminalStatus.SUCCESS
+    )
+
+
+def _two_qubit_ry_vqe(backend, optimizer, **kwargs):
+    """``Z0 + Z1`` under one ``RY`` layer: two parameters, no electrons needed."""
+    return VQE(
+        HamiltonianProblem(SparsePauliOp(["ZI", "IZ"])),
+        ansatz=GenericLayerAnsatz([RYGate]),
+        backend=backend,
+        optimizer=optimizer,
+        **kwargs,
+    )
+
+
+def test_initial_state_is_prepended_to_the_cost_circuit(
+    dummy_simulator, default_optimizer
+):
+    vqe = _two_qubit_ry_vqe(
+        dummy_simulator, default_optimizer, initial_state=SuperpositionState()
+    )
+
+    circuit = dag_to_circuit(vqe.cost_circuit.circuit_bodies[0][1])
+
+    assert circuit.count_ops()["h"] == 2
+
+
+def test_chemistry_ansatz_on_the_zeros_state_does_not_warn(
+    four_qubit_hamiltonian, dummy_simulator, default_optimizer
+):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        VQE(
+            HamiltonianProblem(four_qubit_hamiltonian, n_electrons=2),
+            ansatz=HartreeFockAnsatz(),
+            initial_state=ZerosState(),
+            backend=dummy_simulator,
+            optimizer=default_optimizer,
         )
 
-    def test_standalone_sampling_uses_one_direct_progress_session(
-        self, default_test_simulator, default_optimizer, recording_direct_sessions
-    ):
-        vqe = self._make_vqe(default_test_simulator, default_optimizer)
 
-        vqe.sample_solution(np.array([0.1, 0.2]))
+def test_sample_solution_uses_the_backend_override(
+    dummy_simulator, default_optimizer, make_dummy_simulator, mocker
+):
+    vqe = _two_qubit_ry_vqe(dummy_simulator, default_optimizer)
+    override = make_dummy_simulator(100)
+    override_submit = mocker.spy(override, "submit_circuits")
 
-        assert len(recording_direct_sessions) == 1
-        session = recording_direct_sessions[0]
-        terminal_events = [
-            event for event in session.emitted if event.kind is EventKind.FINISH
-        ]
-        assert len(terminal_events) == 1
-        assert terminal_events[0].terminal_status is TerminalStatus.SUCCESS
-        assert session.state.get(vqe._progress_key).terminal_status is (
-            TerminalStatus.SUCCESS
-        )
+    vqe.sample_solution(np.array([0.1, 0.2]), backend=override)
+
+    override_submit.assert_called_once()
+
+
+def test_loaded_eigenstate_is_int32(dummy_simulator, default_optimizer, tmp_path):
+    source = _two_qubit_ry_vqe(dummy_simulator, default_optimizer)
+    source.run(
+        max_iterations=1, checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+    )
+
+    loaded = VQE.load_state(
+        tmp_path,
+        backend=dummy_simulator,
+        problem=HamiltonianProblem(SparsePauliOp(["ZI", "IZ"])),
+        ansatz=GenericLayerAnsatz([RYGate]),
+    )
+
+    assert loaded.eigenstate.dtype == np.int32
+    np.testing.assert_array_equal(loaded.eigenstate, source.eigenstate)
+
+
+@needs_qiskit_nature
+def test_parameter_frequencies_honour_the_spin_counts(
+    dummy_simulator, default_optimizer
+):
+    """One alpha electron in two spatial orbitals leaves a single excitation;
+    the closed-shell split of one electron would be rejected."""
+    vqe = VQE(
+        HamiltonianProblem(
+            SparsePauliOp(["ZIII", "IZII", "IIZI", "IIIZ"]), n_alpha=1, n_beta=0
+        ),
+        ansatz=UCCSDAnsatz(),
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+
+    assert vqe._parameter_frequencies() == [(1.0, 2)]
 
 
 @pytest.mark.parametrize("ansatz_obj", **ANSAETZE_TO_TEST)
@@ -343,6 +409,14 @@ def test_vqe_lucj_ansatz_runs_to_completion(
     assert np.isfinite(vqe_problem.best_loss)
 
 
+_H2_FCI_ENERGY = -1.1361891625218803
+
+
+def _assert_h2_ground_energy(energy):
+    """Variational, and within 1e-4 Ha of the exact ground energy."""
+    assert _H2_FCI_ENERGY - 1e-9 <= energy <= _H2_FCI_ENERGY + 1e-4
+
+
 @pytest.mark.e2e
 def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_problem):
     """Test that VQE finds the correct ground state for the H2 molecule."""
@@ -354,15 +428,15 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_prob
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
         optimizer=optimizer,
-        max_iterations=5,
+        max_iterations=120,
+        early_stopping=EarlyStopping(patience=20, min_delta=1e-6),
         backend=default_test_simulator,
         seed=1997,
     )
 
     vqe_problem.run()
 
-    # Starting at the Hartree-Fock point, a gradient optimizer can converge early.
-    assert 1 <= len(vqe_problem.losses_history) <= 5
+    assert 1 <= len(vqe_problem.losses_history) <= 120
 
     assert isinstance(vqe_problem.best_loss, float)
     assert isinstance(vqe_problem.best_params, np.ndarray)
@@ -370,10 +444,7 @@ def test_vqe_h2_molecule_e2e_solution(optimizer, default_test_simulator, h2_prob
         vqe_problem.n_layers * vqe_problem.n_params_per_layer,
     )
 
-    # The ground state of H2 in this configuration is |1100>
-    # This corresponds to occupying the two lowest energy orbitals.
-    expected_best_loss = -1.1398024781381293
-    assert vqe_problem.best_loss == pytest.approx(expected_best_loss, abs=0.5)
+    _assert_h2_ground_energy(vqe_problem.best_loss)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem.eigenstate, expected_eigenstate)
 
@@ -432,7 +503,7 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
     assert vqe_problem2.current_iteration == 4
     assert (checkpoint_dir / "checkpoint_004").exists()
 
-    # Third run: resume and run iteration 5
+    # Third run: resume and run to convergence
     vqe_problem3 = VQE.load_state(
         checkpoint_dir,
         backend=default_test_simulator,
@@ -441,21 +512,19 @@ def test_vqe_h2_molecule_e2e_checkpointing_resume(
         n_layers=1,
     )
     assert vqe_problem3.current_iteration == 4
-    vqe_problem3.max_iterations = 5
+    vqe_problem3.max_iterations = 60
     vqe_problem3.run()
-    assert vqe_problem3.current_iteration == 5
+    assert vqe_problem3.current_iteration == 60
 
     # Verify final results are correct
-    assert len(vqe_problem3.losses_history) == 5
+    assert len(vqe_problem3.losses_history) == 60
     assert isinstance(vqe_problem3.best_loss, float)
     assert isinstance(vqe_problem3.best_params, np.ndarray)
     assert vqe_problem3.best_params.shape == (
         vqe_problem3.n_layers * vqe_problem3.n_params_per_layer,
     )
 
-    # The ground state of H2 in this configuration is |1100>
-    expected_best_loss = -1.1398024781381293
-    assert vqe_problem3.best_loss == pytest.approx(expected_best_loss, abs=0.5)
+    _assert_h2_ground_energy(vqe_problem3.best_loss)
     expected_eigenstate = np.array([1, 1, 0, 0])
     np.testing.assert_array_equal(vqe_problem3.eigenstate, expected_eigenstate)
 

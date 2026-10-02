@@ -11,6 +11,10 @@ to pipeline fan-out (regression guard), but does not prove numerical or
 algorithmic correctness.
 """
 
+import json
+from collections.abc import Callable
+from pathlib import Path
+
 import pytest
 
 from divi.circuits import MetaCircuit
@@ -24,6 +28,30 @@ from divi.qprog import (
     VariationalQuantumAlgorithm,
 )
 from divi.qprog.mixins import SolutionSamplingMixin
+from tests._helpers import exact_match
+
+
+def edit_checkpointed_subclass_state(
+    checkpoint_dir: Path, edit: Callable[[dict], None]
+) -> None:
+    """Apply ``edit`` to the subclass state of every checkpoint file under
+    ``checkpoint_dir``, as a hand-edited or older checkpoint would hold it."""
+    for state_file in Path(checkpoint_dir).rglob("*.json"):
+        state = json.loads(state_file.read_text())
+        if "subclass_state" not in state:
+            continue
+        edit(state["subclass_state"]["data"])
+        state_file.write_text(json.dumps(state))
+
+
+def verify_load_state_rejects_missing_state_key(
+    checkpoint_dir: Path, key: str, load: Callable[[], object]
+) -> None:
+    """``load()`` refuses a checkpoint whose subclass state lacks ``key``."""
+    edit_checkpointed_subclass_state(checkpoint_dir, lambda data: data.pop(key))
+    message = f"\"Corrupted checkpoint: missing required state keys: ['{key}']\""
+    with pytest.raises(KeyError, match=exact_match(message)):
+        load()
 
 
 def verify_cost_circuit(obj: QuantumProgram) -> None:
@@ -100,10 +128,13 @@ def verify_correct_circuit_count(obj: QuantumProgram):
 
 def verify_precision_kwarg_threads_through(make_program) -> None:
     """``precision=`` reaches ``QuantumProgram._precision`` regardless of
-    the subclass's own ``__init__`` shape."""
+    the subclass's own ``__init__`` shape, and a variational program's cost
+    circuit renders at it."""
     program = make_program(precision=4)
     assert program.precision == 4
     assert program._precision == 4
+    if isinstance(program, VariationalQuantumAlgorithm):
+        assert program.cost_circuit.precision == 4
 
 
 def verify_grouping_strategy_kwarg_threads_through(make_program) -> None:

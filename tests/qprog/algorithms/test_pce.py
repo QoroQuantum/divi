@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import dimod
 import numpy as np
 import pytest
@@ -27,13 +29,16 @@ from divi.qprog.algorithms._pce import (
     _mask_to_int,
     _masks_to_ham_ops,
     _pack_masks,
+    _setup_poly_encoding,
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
 )
+from tests.qprog.algorithms._helpers import seed_best_probs
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
     PCE_QUBO_MATRIX,
@@ -99,9 +104,8 @@ def _read_solution(pce):
 
 
 def _set_probs(pce, probs_dict, *, key="0_NoMitigation:0_ham:0_0"):
-    """Set the ``best_probs`` result and ``_losses_history`` for get_top_solutions tests."""
-    pce._results["best_probs"] = {key: probs_dict}
-    pce._losses_history = [{0: -1.0}]
+    """Seed ``pce`` under the result key its own pipeline produces."""
+    seed_best_probs(pce, probs_dict, key)
 
 
 # ---------------------------------------------------------------------------
@@ -163,17 +167,6 @@ def test_pce_measure_all_qubits_defaults_to_false(make_pce):
     assert pce._pce_cost_preprocessor.terminal_stage._measure_all is False
 
 
-def test_pce_custom_decoder_forces_full_measurement(make_pce):
-    """A custom decoder may read bits outside the mask union, so the mask-based
-    restriction must not apply — the cost stage keeps the full register."""
-
-    def custom_decoder(state_strings, variable_masks_u64):
-        return np.zeros((len(variable_masks_u64), len(state_strings)), dtype=np.uint8)
-
-    pce = make_pce(decode_parities_fn=custom_decoder)
-    assert pce._pce_cost_preprocessor.terminal_stage._measure_all is True
-
-
 def test_pce_custom_decoder_overrides_explicit_restrict_request(make_pce):
     """The mask-union restriction is only sound for the built-in decoder, so a
     custom decoder forces full measurement even if ``measure_all_qubits=False``
@@ -186,14 +179,58 @@ def test_pce_custom_decoder_overrides_explicit_restrict_request(make_pce):
     assert pce._pce_cost_preprocessor.terminal_stage._measure_all is True
 
 
+_EXTRA_QUBITS_WARNING = exact_match(
+    "n_qubits exceeds the minimum required; extra qubits increase circuit "
+    "size and can add noise without representing more variables."
+)
+
+
 def test_pce_n_qubits_validation_and_warning(make_pce):
     qubo = np.zeros((3, 3))
 
-    with pytest.raises(ValueError, match=r"n_qubits must be >= ceil\(log2\(N \+ 1\)\)"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
+            "Got n_qubits=1, minimum=2."
+        ),
+    ):
         make_pce(problem=qubo, n_qubits=1)
 
-    with pytest.warns(UserWarning, match="n_qubits exceeds the minimum required"):
-        make_pce(problem=qubo, n_qubits=3)
+    with pytest.warns(UserWarning, match=_EXTRA_QUBITS_WARNING):
+        pce = make_pce(problem=qubo, n_qubits=3)
+    assert pce.n_qubits == 3
+
+
+@pytest.mark.parametrize(
+    "n_vars, encoding_type, n_qubits",
+    [(3, "dense", 2), (6, "poly", 3)],
+    ids=["dense", "poly"],
+)
+def test_pce_accepts_the_minimum_n_qubits_silently(
+    make_pce, n_vars, encoding_type, n_qubits
+):
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        pce = make_pce(
+            problem=np.zeros((n_vars, n_vars)),
+            n_qubits=n_qubits,
+            encoding_type=encoding_type,
+        )
+
+    assert pce.n_qubits == n_qubits
+
+
+@pytest.mark.parametrize(
+    "n_vars, expected_masks",
+    [(5, [1, 2, 4, 3, 5]), (6, [1, 2, 4, 3, 5, 6])],
+    ids=["stops-at-n-vars", "reaches-the-last-pair"],
+)
+def test_poly_encoding_masks(n_vars, expected_masks):
+    n_qubits, masks = _setup_poly_encoding(n_vars, None)
+
+    assert n_qubits == 3
+    assert masks.tolist() == expected_masks
 
 
 def test_pce_default_ansatz_is_hardware_efficient_and_entangling(
@@ -265,27 +302,59 @@ def test_pce_invalid_encoding_type(make_pce):
 
 def test_pce_rejects_non_binary_problem():
     """PCE only accepts a BinaryOptimizationProblem; a raw QUBO raises clearly."""
-    with pytest.raises(TypeError, match="requires a BinaryOptimizationProblem"):
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "PCE requires a BinaryOptimizationProblem, got ndarray. "
+            "Wrap your QUBO/HUBO: PCE(BinaryOptimizationProblem(qubo))."
+        ),
+    ):
         PCE(np.array([[1.0, 0.0], [0.0, 1.0]]))
 
 
-def test_pce_hard_cvar_expval_backend_raises(
-    basic_ansatz, dummy_expval_backend, default_optimizer
-):
-    """PCE with alpha >= 5 (hard CVaR) raises when backend supports expectation values."""
-    pce = PCE(
+def _two_variable_pce(alpha, basic_ansatz, backend, optimizer):
+    return PCE(
         problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=basic_ansatz,
-        optimizer=default_optimizer,
-        backend=dummy_expval_backend,
-        alpha=6.0,
+        optimizer=optimizer,
+        backend=backend,
+        alpha=alpha,
+        max_iterations=1,
     )
 
+
+@pytest.mark.parametrize("alpha", [5.0, 6.0])
+def test_pce_hard_cvar_expval_backend_raises(
+    alpha, basic_ansatz, default_test_simulator, default_optimizer
+):
+    pce = _two_variable_pce(
+        alpha, basic_ansatz, default_test_simulator, default_optimizer
+    )
     with pytest.raises(
         ValueError,
-        match="hard CVaR mode.*cannot use expectation-value backends",
+        match=exact_match(
+            "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
+            "cannot use expectation-value backends. Use a sampling backend: "
+            "MaestroSimulator(force_sampling=True), "
+            "QiskitSimulator(force_sampling=True), or QoroService with "
+            "JobConfig(force_sampling=True)."
+        ),
     ):
         pce.run()
+
+
+@pytest.mark.parametrize(
+    "alpha,force_sampling",
+    [(4.9, False), (6.0, True)],
+    ids=["soft-objective", "hard-cvar-forced-sampling"],
+)
+def test_pce_runs_when_the_backend_suits_the_objective(
+    alpha, force_sampling, basic_ansatz, make_maestro_simulator, default_optimizer
+):
+    backend = make_maestro_simulator(force_sampling=force_sampling)
+    pce = _two_variable_pce(alpha, basic_ansatz, backend, default_optimizer)
+    pce.run()
+    assert len(pce.losses_history) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -396,30 +465,38 @@ def test_pce_soft_energy_computation(make_pce):
     assert result == pytest.approx(expected)
 
 
-def test_pce_hard_cvar_energy_computation(make_pce):
+@pytest.mark.parametrize(
+    "histogram, expected",
+    [
+        pytest.param({"11": 4, "10": 2, "01": 3, "00": 1}, 0.2, id="zero-energy-head"),
+        pytest.param({"10": 2, "01": 3, "00": 5}, 1.6, id="nonzero-tail"),
+    ],
+)
+def test_pce_hard_cvar_energy_computation(make_pce, histogram, expected):
     """_compute_hard_cvar_energy returns correct CVaR for a mixed histogram.
 
-    qubo = diag([1, 2]), alpha_cvar = 0.5, histogram (10 shots):
-      "11" (x=[0,0]) → energy=0, count=4
-      "10" (x=[1,0]) → energy=1, count=2
-      "01" (x=[0,1]) → energy=2, count=3
-      "00" (x=[1,1]) → energy=3, count=1
+    qubo = diag([1, 2]), alpha_cvar = 0.5, 10 shots; "11" → x=[0,0] (energy 0),
+    "10" → x=[1,0] (1), "01" → x=[0,1] (2), "00" → x=[1,1] (3).
 
-    CVaR(0.5) takes the best ceil(0.5*10)=5 shots:
-      4 shots at energy 0  +  1 shot at energy 1  =  1
-      CVaR = 1/5 = 0.2
+    CVaR(0.5) averages the best ceil(0.5*10)=5 shots:
+      zero-energy-head: 4 shots at 0 + 1 shot at 1 → 1/5 = 0.2
+      nonzero-tail: 2 shots at 1 + 3 shots at 2 → 8/5 = 1.6
     """
     pce = make_pce(problem=np.diag([1.0, 2.0]), alpha=6.0)
 
-    states = ["11", "10", "01", "00"]
-    counts_arr = np.array([4, 2, 3, 1], dtype=float)
+    states = list(histogram)
+    counts_arr = np.array(list(histogram.values()), dtype=float)
     parities = _decode_parities(states, pce._variable_masks_u64)
 
     result = _compute_hard_cvar_energy(
-        parities, counts_arr, 10.0, pce.problem.canonical_problem, alpha_cvar=0.5
+        parities,
+        counts_arr,
+        counts_arr.sum(),
+        pce.problem.canonical_problem,
+        alpha_cvar=0.5,
     )
 
-    assert result == pytest.approx(0.2)
+    assert result == pytest.approx(expected)
 
 
 # ---------------------------------------------------------------------------
@@ -708,6 +785,115 @@ def test_pce_get_top_solutions_n_zero_returns_all(make_pce, sort_by):
     assert len(pce.get_top_solutions(n=0, min_prob=0.2, sort_by=sort_by)) == 2
 
 
+def test_pce_get_top_solutions_defaults_to_ten(make_pce):
+    pce = make_pce(problem=np.eye(9))  # 4 qubits, 16 encoded states
+    _set_probs(pce, {format(i, "04b"): (i + 1) / 136 for i in range(16)})
+
+    assert len(pce.get_top_solutions()) == 10
+
+
+def test_pce_get_top_solutions_min_prob_one_can_select_nothing(make_pce):
+    pce = make_pce(problem=np.eye(2))
+    _set_probs(pce, {"00": 0.5, "01": 0.3, "10": 0.2})
+
+    assert pce.get_top_solutions(min_prob=1.0) == []
+
+
+def test_pce_filter_ranks_by_energy_without_decoding(make_pce):
+    """Encoded 00/01/10 decode to x = 11/01/10 with energies 2/1/1."""
+    pce = make_pce(problem=np.eye(2))
+    _set_probs(pce, {"00": 0.5, "01": 0.3, "10": 0.2})
+
+    solutions = pce.get_top_solutions(feasibility="filter")
+
+    assert [(s.bitstring, s.decoded) for s in solutions] == [
+        ("01", None),
+        ("10", None),
+        ("11", None),
+    ]
+
+
+class _OneHotProblem(BinaryOptimizationProblem):
+    """Feasible only with exactly one variable set; repairs to ``100``."""
+
+    def is_feasible(self, bitstring):
+        return bitstring.count("1") == 1
+
+    def repair_infeasible_bitstring(self, bitstring):
+        return "100", "repaired", 0.0
+
+
+def test_pce_repair_folds_infeasible_samples_into_the_repair(make_pce):
+    """Encoded 00/01/10 decode to x = 111/010/101; the two infeasible ones
+    repair to 100 and merge."""
+    pce = make_pce(problem=_OneHotProblem(np.eye(3)))
+    _set_probs(pce, {"00": 0.5, "01": 0.3, "10": 0.2})
+
+    solutions = pce.get_top_solutions(feasibility="repair")
+
+    assert [(s.bitstring, pytest.approx(s.prob)) for s in solutions] == [
+        ("100", 0.7),
+        ("010", 0.3),
+    ]
+
+
+@pytest.fixture
+def quadratized_pce(make_pce):
+    """A cubic HUBO on named variables, quadratized so it gains auxiliary qubits."""
+    problem = BinaryOptimizationProblem(
+        {("a",): -1.0, ("a", "b", "c"): 1.5, ("b",): 0.5},
+        hamiltonian_builder="quadratized",
+    )
+    pce = make_pce(problem=problem)
+    _set_probs(pce, {"00": 0.6, "01": 0.4})
+    return pce
+
+
+def test_pce_quadratized_problem_decodes_by_variable_name(quadratized_pce):
+    solutions = quadratized_pce.get_top_solutions(include_decoded=True)
+
+    assert [(s.bitstring, s.decoded) for s in solutions] == [
+        ("111", {"a": 1, "b": 1, "c": 1}),
+        ("010", {"a": 0, "b": 1, "c": 0}),
+    ]
+
+
+def test_pce_quadratized_problem_rejects_feasibility_ranking(quadratized_pce):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "feasibility='filter' and 'repair' need a problem built with "
+            "hamiltonian_builder='native'."
+        ),
+    ):
+        quadratized_pce.get_top_solutions(feasibility="filter")
+
+
+def test_pce_quadratized_integer_problem_decodes_to_an_array(make_pce):
+    pce = make_pce(
+        problem=BinaryOptimizationProblem(
+            {(0,): -1.0, (0, 1, 2): 1.5}, hamiltonian_builder="quadratized"
+        )
+    )
+    _set_probs(pce, {"00": 0.6, "01": 0.4})
+
+    solutions = pce.get_top_solutions(include_decoded=True)
+
+    assert all(isinstance(s.decoded, np.ndarray) for s in solutions)
+
+
+def test_pce_cost_evaluation_forwards_its_budget_keywords(make_pce):
+    pce = make_pce()
+
+    with pytest.raises(
+        ValueError,
+        match=exact_match("shots and estimator_samples are mutually exclusive."),
+    ):
+        pce._evaluate_cost_param_sets(
+            np.zeros((1, pce.n_params)), shots=5, estimator_samples=3
+        )
+
+
 def test_pce_get_top_solutions_no_probs_raises(make_pce):
     """get_top_solutions raises when no probability distribution available."""
     pce = make_pce(problem=np.eye(2))
@@ -985,24 +1171,18 @@ class TestAggregateParamGroup:
 class TestMasksToHamOps:
     """Tests for _masks_to_ham_ops covering L126-140."""
 
-    def test_single_qubit_masks(self):
-        """Masks [1, 2] with 2 qubits → ZI and IZ."""
-        masks = np.array([1, 2], dtype=np.uint64)
-        result = _masks_to_ham_ops(masks, n_qubits=2)
-        assert result == "ZI;IZ"
-
-    def test_two_qubit_mask(self):
-        """Mask 3 (bits 0 and 1) with 2 qubits → ZZ."""
-        masks = np.array([3], dtype=np.uint64)
-        result = _masks_to_ham_ops(masks, n_qubits=2)
-        assert result == "ZZ"
-
-    def test_three_qubit_poly_masks(self):
-        """Poly encoding masks [1, 2, 3] with 2 qubits."""
-        masks = np.array([1, 2, 3], dtype=np.uint64)
-        result = _masks_to_ham_ops(masks, n_qubits=2)
-        # mask 1 = bit 0 → ZI, mask 2 = bit 1 → IZ, mask 3 = bits 0,1 → ZZ
-        assert result == "ZI;IZ;ZZ"
+    @pytest.mark.parametrize(
+        "masks, expected",
+        [
+            pytest.param([1, 2], "ZI;IZ", id="single_qubit_masks"),
+            pytest.param([3], "ZZ", id="two_qubit_mask"),
+            pytest.param([1, 2, 3], "ZI;IZ;ZZ", id="poly_masks"),
+        ],
+    )
+    def test_masks_on_two_qubits(self, masks, expected):
+        """Bit ``i`` of a mask places Z on qubit ``i`` (leftmost character)."""
+        result = _masks_to_ham_ops(np.array(masks, dtype=np.uint64), n_qubits=2)
+        assert result == expected
 
     def test_identity_mask(self):
         """Mask 0 → all Identity."""
@@ -1060,6 +1240,7 @@ class TestWideRegisterMasks:
 
         parities = _decode_parities(states, packed)
 
+        assert parities.dtype == np.uint8
         expected = np.array(
             [
                 [bin((m & _bits_to_int(sb))).count("1") % 2 for sb in sbits]
@@ -1092,6 +1273,14 @@ class TestWideRegisterMasks:
         states = [good, good[:-1], good + "0"]
         with pytest.raises(ValueError, match="got one of width"):
             _decode_parities(states, packed)
+
+    def test_decode_parities_fills_a_single_limb(self):
+        """A 64-bit state exactly fills one limb; its top bit is qubit 63."""
+        packed = _pack_masks([1 << 63], n_qubits=64)
+
+        parities = _decode_parities(["1" + "0" * 63], packed)
+
+        assert parities.tolist() == [[1]]
 
     def test_decode_parities_rejects_states_wider_than_the_masks(self):
         """States wider than the masks' limbs cannot be decoded against them."""

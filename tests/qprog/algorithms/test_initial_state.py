@@ -26,6 +26,7 @@ from divi.qprog.algorithms import (
 )
 from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
+from tests._helpers import exact_match
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
@@ -119,9 +120,33 @@ class TestCustomPerQubitState:
 
 
 class TestWState:
-    def test_invalid_block_size_raises(self):
-        with pytest.raises(ValueError):
-            WState(0, 1)
+    @pytest.mark.parametrize(
+        "block_size, n_blocks, message",
+        [
+            (0, 1, "block_size must be ≥ 1, got 0."),
+            (1, 0, "n_blocks must be ≥ 1, got 0."),
+        ],
+    )
+    def test_invalid_shape_raises(self, block_size, n_blocks, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            WState(block_size, n_blocks)
+
+    @pytest.mark.parametrize("block_size, n_blocks", [(1, 2), (2, 2), (3, 1), (4, 1)])
+    def test_prepares_a_product_of_w_states(self, block_size, n_blocks):
+        """Uniform positive amplitude on every basis state with exactly one
+        excitation per block, and nothing elsewhere."""
+        n = block_size * n_blocks
+        mask = (1 << block_size) - 1
+        one_hot = [
+            all(
+                ((index >> (b * block_size)) & mask).bit_count() == 1
+                for b in range(n_blocks)
+            )
+            for index in range(2**n)
+        ]
+        expected = np.array(one_hot, dtype=float) / np.sqrt(block_size) ** n_blocks
+        state = Statevector(WState(block_size, n_blocks).build(range(n))).data
+        np.testing.assert_allclose(state, expected, atol=1e-12)
 
     def test_wrong_wire_count_raises(self):
         with pytest.raises(ValueError, match="Expected"):
@@ -129,11 +154,13 @@ class TestWState:
 
 
 class TestDickeState:
+    @pytest.mark.parametrize("explicit_width", [False, True])
     @pytest.mark.parametrize(
         "n, k", [(n, k) for n in range(1, 6) for k in range(n + 1)]
     )
-    def test_prepares_the_dicke_state(self, n, k):
-        state = Statevector(DickeState(k).build(range(n))).data
+    def test_prepares_the_dicke_state(self, n, k, explicit_width):
+        width = n if explicit_width else None
+        state = Statevector(DickeState(k, n_qubits=width).build(range(n))).data
         dicke = np.array([bin(i).count("1") == k for i in range(2**n)], dtype=float)
         dicke /= np.sqrt(comb(n, k))
         assert abs(np.vdot(dicke, state)) ** 2 == pytest.approx(1.0, abs=1e-10)
@@ -160,33 +187,37 @@ class TestDickeState:
     @pytest.mark.parametrize(
         "kwargs, n_wires, match",
         [
-            ({"hamming_weight": -1}, 1, "hamming_weight must be"),
-            ({"hamming_weight": 3}, 2, "exceeds n_qubits"),
-            ({"hamming_weight": 1, "n_qubits": 4}, 3, "exceeds the wire count"),
+            ({"hamming_weight": -1}, 1, "hamming_weight must be ≥ 0, got -1."),
+            ({"hamming_weight": 0, "n_qubits": 0}, 1, "n_qubits must be ≥ 1, got 0."),
+            ({"hamming_weight": 3}, 2, "hamming_weight (3) exceeds n_qubits (2)."),
+            (
+                {"hamming_weight": 1, "n_qubits": 4},
+                3,
+                "n_qubits (4) exceeds the wire count (3).",
+            ),
         ],
     )
     def test_invalid_arguments_raise(self, kwargs, n_wires, match):
-        with pytest.raises(ValueError, match=match):
+        with pytest.raises(ValueError, match=exact_match(match)):
             DickeState(**kwargs).build(range(n_wires))
 
 
 class TestBlockXYMixer:
-    def test_graph_structure(self):
-        g = build_block_xy_mixer_graph(3, 2, range(6))
-        # All-to-all within each block (complete graph per block)
-        assert set(g.edges()) == {
-            (0, 1),
-            (0, 2),
-            (1, 2),  # block 0
-            (3, 4),
-            (3, 5),
-            (4, 5),  # block 1
-        }
-
-    def test_graph_structure_path(self):
-        g = build_block_xy_mixer_graph(3, 2, range(6), connectivity="path")
-        # Nearest-neighbour within each block (path graph per block)
-        assert set(g.edges()) == {(0, 1), (1, 2), (3, 4), (4, 5)}
+    @pytest.mark.parametrize(
+        "block_size, n_blocks, connectivity, expected",
+        [
+            (3, 2, "complete", {(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)}),
+            (3, 2, "path", {(0, 1), (1, 2), (3, 4), (4, 5)}),
+            (3, 2, "ring", {(0, 1), (0, 2), (1, 2), (3, 4), (3, 5), (4, 5)}),
+            (4, 1, "ring", {(0, 1), (1, 2), (2, 3), (0, 3)}),
+            (2, 2, "ring", {(0, 1), (2, 3)}),
+        ],
+    )
+    def test_graph_structure(self, block_size, n_blocks, connectivity, expected):
+        g = build_block_xy_mixer_graph(
+            block_size, n_blocks, range(block_size * n_blocks), connectivity
+        )
+        assert {tuple(sorted(edge)) for edge in g.edges()} == expected
 
     def test_wrong_wire_count_raises(self):
         with pytest.raises(ValueError, match="Expected 6 wires"):
@@ -238,11 +269,7 @@ class TestTimeEvolutionCustomInitialState:
         te = make_time_evolution(time=0.1, initial_state=CustomPerQubitState("+-"))
         te.run()
         for bitstring in ("00", "01", "10", "11"):
-            assert te.results.get(bitstring, 0.0) == pytest.approx(0.25, abs=0.05)
-
-    def test_invalid_custom_string_raises(self, make_time_evolution):
-        with pytest.raises(TypeError):
-            make_time_evolution(initial_state="xy")
+            assert te.results.get(bitstring, 0.0) == pytest.approx(0.25, abs=0.025)
 
 
 def test_qaoa_accepts_custom_string_initial_state(

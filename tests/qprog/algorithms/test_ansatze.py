@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import warnings
 
 import numpy as np
 import pytest
@@ -13,8 +14,11 @@ from qiskit.circuit.library import (
     CZGate,
     HGate,
     RXGate,
+    RXXGate,
     RYGate,
+    RYYGate,
     RZGate,
+    RZZGate,
     SwapGate,
     UGate,
 )
@@ -37,21 +41,23 @@ from divi.qprog.algorithms._ansatze import (
     _emit_givens_rotation,
     _emit_rotation_block,
     _emit_single_excitation,
+    _emit_two_qubit_pauli_rot,
     _hf_occupation,
     _resolve_spin_counts,
     _rotation_one_particle,
     _rotation_schedule,
     _spin_conserving_excitations,
     _uccsd_excitations,
+    lucj_jastrow_pairs,
     n_rotation_params,
     rotation_angles,
 )
 from divi.qprog.problems import HamiltonianProblem
-from tests.qprog.algorithms._helpers import gate_names, gate_qubits
-
-_needs_qiskit_nature = pytest.mark.skipif(
-    importlib.util.find_spec("qiskit_nature") is None,
-    reason="requires the 'chem' extra",
+from tests._helpers import exact_match
+from tests.qprog.algorithms._helpers import (
+    gate_names,
+    gate_qubits,
+    needs_qiskit_nature,
 )
 
 _needs_openfermion = pytest.mark.skipif(
@@ -62,6 +68,31 @@ _needs_openfermion = pytest.mark.skipif(
 
 def _build_circuit(ansatz, params, n_qubits, n_layers, **kwargs) -> QuantumCircuit:
     return ansatz.build(params, n_qubits, n_layers, **kwargs)
+
+
+def _instructions(qc: QuantumCircuit) -> list[tuple]:
+    """``(name, qubits, params)`` for every instruction, in circuit order."""
+    return [
+        (instr.operation.name, tuple(wires), tuple(instr.operation.params))
+        for instr, wires in zip(qc.data, gate_qubits(qc))
+    ]
+
+
+def _missing_electrons_message(ansatz_name: str) -> str:
+    return (
+        f"{ansatz_name} requires n_electrons: it builds excitations from a "
+        "reference state, which needs the electron count. Set n_electrons "
+        "on the program's HamiltonianProblem (MolecularProblem supplies it "
+        "automatically)."
+    )
+
+
+def _closed_shell_message(n_electrons, n_alpha, n_beta) -> str:
+    return exact_match(
+        "HartreeFockAnsatz prepares a closed-shell reference, so it cannot "
+        f"honour n_electrons={n_electrons}, n_alpha={n_alpha}, n_beta={n_beta}. "
+        "Use UCCSDAnsatz or LUCJAnsatz for a spin-polarised reference."
+    )
 
 
 def _occupied_from_label(label: str) -> set[int]:
@@ -100,38 +131,97 @@ class TestGenericLayerAnsatz:
         except (ValueError, TypeError):
             pytest.fail("GenericLayerAnsatz initialization failed with valid inputs.")
 
-    def test_initialization_rejects_string_gate(self):
-        with pytest.raises(TypeError, match="must be a Qiskit Gate subclass"):
-            GenericLayerAnsatz(gate_sequence=[RXGate, "rx"])
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            (
+                {"gate_sequence": [RXGate, "rx"]},
+                "gate_sequence entries must be a Qiskit Gate subclass "
+                "(e.g. RYGate, RZGate), got 'rx'.",
+            ),
+            (
+                {"gate_sequence": [RXGate], "entangler": "cx"},
+                "entangler must be a Qiskit Gate subclass (e.g. CXGate, CZGate), "
+                "got 'cx'.",
+            ),
+            (
+                {"gate_sequence": [RXGate(0.0)]},
+                "gate_sequence entries must be a Qiskit Gate subclass "
+                f"(e.g. RYGate, RZGate), got {RXGate(0.0)!r}.",
+            ),
+        ],
+        ids=["gate-sequence", "entangler", "gate-instance"],
+    )
+    def test_initialization_rejects_non_gate_class(self, kwargs, message):
+        with pytest.raises(TypeError, match=exact_match(message)):
+            GenericLayerAnsatz(**kwargs)
 
-    def test_initialization_rejects_gate_instance(self):
-        with pytest.raises(TypeError, match="must be a Qiskit Gate subclass"):
-            GenericLayerAnsatz(gate_sequence=[RXGate(0.0)])
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            (
+                {"gate_sequence": [CXGate]},
+                "gate_sequence entries must be a 1-qubit gate; CXGate acts on 2 qubits.",
+            ),
+            (
+                {"gate_sequence": [RXGate], "entangler": RYGate},
+                "entangler must be a 2-qubit gate; RYGate acts on 1 qubits.",
+            ),
+            (
+                {"gate_sequence": [RXGate], "entangler": CRXGate},
+                "entangler must take 0 parameters; CRXGate takes 1.",
+            ),
+        ],
+        ids=["multi-qubit-gate", "single-qubit-entangler", "parameterised-entangler"],
+    )
+    def test_initialization_rejects_gate_of_wrong_shape(self, kwargs, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            GenericLayerAnsatz(**kwargs)
 
-    def test_initialization_rejects_multi_qubit_in_gate_sequence(self):
-        with pytest.raises(ValueError, match="must be a 1-qubit gate"):
-            GenericLayerAnsatz(gate_sequence=[CXGate])
-
-    def test_initialization_rejects_single_qubit_entangler(self):
-        with pytest.raises(ValueError, match="must be a 2-qubit gate"):
-            GenericLayerAnsatz(gate_sequence=[RXGate], entangler=RYGate)
-
-    def test_initialization_rejects_parameterized_entangler(self):
-        with pytest.raises(ValueError, match="must take 0 parameters"):
-            GenericLayerAnsatz(gate_sequence=[RXGate], entangler=CRXGate)
-
-    def test_initialization_invalid_layout_string(self):
-        with pytest.raises(ValueError, match="Unknown entangling_layout:"):
+    def test_unknown_layout_name_lists_every_layout(self):
+        message = (
+            "Unknown entangling_layout: 'invalid_layout'. Must be 'linear', "
+            "'brick', 'circular', 'all-to-all', or a Sequence of (int, int) tuples."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
             GenericLayerAnsatz(
                 gate_sequence=[RXGate],
                 entangler=CXGate,
                 entangling_layout="invalid_layout",
             )
 
+    @pytest.mark.parametrize(
+        "layout",
+        [[(0.5, 1)], [(0, "1")], [(0, 1, 2)], [[0, 1]]],
+        ids=["float", "string", "triple", "list-pair"],
+    )
+    def test_initialization_rejects_malformed_custom_layout(self, layout):
+        message = (
+            "entangling_layout must be 'linear', 'brick', 'circular', "
+            "'all-to-all', or a Sequence of tuples of integers."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
+            GenericLayerAnsatz(
+                gate_sequence=[RXGate], entangler=CXGate, entangling_layout=layout
+            )
+
     def test_initialization_warns_on_layout_without_entangler(self):
-        with pytest.warns(UserWarning, match="`entangler` is None"):
+        message = "`entangling_layout` provided but `entangler` is None."
+        with pytest.warns(UserWarning, match=exact_match(message)):
             GenericLayerAnsatz(
                 gate_sequence=[RXGate], entangler=None, entangling_layout="linear"
+            )
+
+    @pytest.mark.parametrize(
+        "entangler, layout", [(CXGate, "linear"), (CXGate, None), (None, None)]
+    )
+    def test_initialization_without_orphan_layout_does_not_warn(
+        self, entangler, layout
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            GenericLayerAnsatz(
+                gate_sequence=[RXGate], entangler=entangler, entangling_layout=layout
             )
 
     @pytest.mark.parametrize(
@@ -146,11 +236,6 @@ class TestGenericLayerAnsatz:
     def test_n_params_per_layer(self, gate_sequence, n_qubits, expected_params):
         ansatz = GenericLayerAnsatz(gate_sequence=gate_sequence)
         assert ansatz.n_params_per_layer(n_qubits) == expected_params
-
-    def test_n_params_per_layer_rejects_parameter_free_ansatz(self):
-        ansatz = GenericLayerAnsatz(gate_sequence=[HGate])
-        with pytest.raises(ValueError, match="must define at least one trainable"):
-            ansatz.n_params_per_layer(n_qubits=2)
 
     def test_build_no_entangler(self):
         n_qubits, n_layers = 2, 2
@@ -194,6 +279,54 @@ class TestGenericLayerAnsatz:
         )
         assert gate_names(qc) == ["rx", "rx", "rx", "swap", "swap"]
 
+    @pytest.mark.parametrize(
+        "layout, n_qubits, expected_pairs",
+        [
+            ("linear", 3, [[0, 1], [1, 2]]),
+            ("brick", 4, [[0, 1], [2, 3], [1, 2]]),
+            ("circular", 2, [[0, 1]]),
+            ("circular", 3, [[0, 1], [1, 2], [2, 0]]),
+            ("circular", 4, [[0, 1], [1, 2], [2, 3], [3, 0]]),
+            ("all-to-all", 3, [[0, 1], [0, 2], [1, 2]]),
+            ([(0, 2), (1, 3)], 4, [[0, 2], [1, 3]]),
+        ],
+    )
+    def test_build_places_entanglers_by_layout(self, layout, n_qubits, expected_pairs):
+        ansatz = GenericLayerAnsatz(
+            gate_sequence=[RXGate], entangler=CXGate, entangling_layout=layout
+        )
+        qc = _build_circuit(ansatz, list(ParameterVector("p", n_qubits)), n_qubits, 1)
+        assert gate_qubits(qc)[n_qubits:] == expected_pairs
+
+    def test_build_feeds_each_gate_its_own_parameter_slice(self):
+        params = ParameterVector("p", 5)
+        ansatz = GenericLayerAnsatz(gate_sequence=[RXGate, UGate, RZGate])
+        qc = _build_circuit(ansatz, list(params), 1, 1)
+        assert [list(instr.operation.params) for instr in qc.data] == [
+            [params[0]],
+            list(params[1:4]),
+            [params[4]],
+        ]
+
+
+@pytest.mark.parametrize(
+    "ansatz, n_qubits, kwargs",
+    [
+        (GenericLayerAnsatz(gate_sequence=[HGate]), 2, {}),
+        (QAOAAnsatz(), 0, {}),
+        (QCCAnsatz(), 0, {}),
+        (LUCJAnsatz(), 2, {"opposite_spin_pairs": []}),
+    ],
+    ids=["generic-layer", "qaoa", "qcc", "lucj"],
+)
+def test_parameter_free_ansatz_is_rejected_by_name(ansatz, n_qubits, kwargs):
+    message = (
+        f"{ansatz.name} must define at least one trainable parameter. "
+        "Parameter-free circuits are not supported."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
+        ansatz.n_params_per_layer(n_qubits, **kwargs)
+
 
 # --- Test QAOAAnsatz ---
 class TestQAOAAnsatz:
@@ -207,24 +340,6 @@ class TestQAOAAnsatz:
         """Per-layer param count: 1 / 3 / 2n for n=1 / 2 / >=3."""
         assert QAOAAnsatz().n_params_per_layer(n_qubits=n_qubits) == expected
 
-    def test_build_structure(self):
-        """Each layer = Hadamards + ZZ ring (CX-RZ-CX) + RY field; trailing Hadamards."""
-        n_qubits, n_layers = 4, 3
-        ansatz = QAOAAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(n_qubits)
-        params = ParameterVector("p", n_params)
-
-        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-        names = gate_names(qc)
-
-        # (n_layers + 1) Hadamard layers of size n_qubits.
-        assert names.count("h") == (n_layers + 1) * n_qubits
-        # Ring of n_qubits ZZ rotations per layer, each decomposed to CX-RZ-CX.
-        assert names.count("cx") == 2 * n_layers * n_qubits
-        assert names.count("rz") == n_layers * n_qubits
-        # One local-field RY per qubit per layer.
-        assert names.count("ry") == n_layers * n_qubits
-
     def test_build_n_qubits_one(self):
         """n=1 special case: only local-field rotations between Hadamards."""
         ansatz = QAOAAnsatz()
@@ -237,18 +352,33 @@ class TestQAOAAnsatz:
         # No two-qubit interaction emitted for the single-qubit case.
         assert "cx" not in names
 
-    def test_build_n_qubits_two(self):
-        """n=2 special case: one ZZ rotation (no wrap) and two RYs per layer."""
-        ansatz = QAOAAnsatz()
-        n_qubits, n_layers = 2, 2
-        params = ParameterVector("p", n_layers * ansatz.n_params_per_layer(n_qubits))
-        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers)
-        names = gate_names(qc)
-        assert names.count("h") == (n_layers + 1) * n_qubits
-        # One ZZ rotation per layer → CX-RZ-CX.
-        assert names.count("cx") == 2 * n_layers
-        assert names.count("rz") == n_layers
-        assert names.count("ry") == n_layers * n_qubits
+    @pytest.mark.parametrize("n_layers", [1, 2])
+    @pytest.mark.parametrize("n_qubits", [2, 4])
+    def test_build_places_each_weight_on_its_gate(self, n_qubits, n_layers):
+        """Each layer opens with Hadamards, then its ZZ weights, one per coupled
+        pair (a single pair below three qubits, a closed ring from three), then
+        one local field per qubit; Hadamards close the circuit."""
+        per_layer = QAOAAnsatz.n_params_per_layer(n_qubits)
+        params = ParameterVector("p", n_layers * per_layer)
+        ring = (
+            [(0, 1)]
+            if n_qubits == 2
+            else [(q, (q + 1) % n_qubits) for q in range(n_qubits)]
+        )
+        reference = QuantumCircuit(n_qubits)
+        for layer in range(n_layers):
+            weights = params[layer * per_layer : (layer + 1) * per_layer]
+            reference.h(range(n_qubits))
+            for weight, (control, target) in zip(weights, ring):
+                reference.cx(control, target)
+                reference.rz(weight, target)
+                reference.cx(control, target)
+            for q in range(n_qubits):
+                reference.ry(weights[len(ring) + q], q)
+        reference.h(range(n_qubits))
+
+        qc = _build_circuit(QAOAAnsatz(), list(params), n_qubits, n_layers)
+        assert _instructions(qc) == _instructions(reference)
 
     def test_custom_local_field(self):
         """``local_field=RXGate`` swaps RY for RX in the field layer."""
@@ -280,18 +410,39 @@ def test_chemistry_ansatz_names_a_missing_electron_count(ansatz, call):
     """A chemistry ansatz builds excitations from a reference state, so it cannot do
     anything without ``n_electrons``. The boundary names both the missing setting
     and the ansatz that needs it."""
-    with pytest.raises(ValueError, match="requires n_electrons"):
+    message = _missing_electrons_message(ansatz.name)
+    with pytest.raises(ValueError, match=exact_match(message)):
         call(ansatz)
 
 
-def test_qcc_ansatz_names_a_missing_electron_count():
-    """QCC derives its parameter count from the register alone, so only ``build``
-    needs the electron count."""
-    with pytest.raises(ValueError, match="requires n_electrons"):
-        QCCAnsatz().build([0.1] * 6, 4, 1)
+@pytest.mark.parametrize("ansatz", [QCCAnsatz(), LUCJAnsatz()], ids=type)
+def test_build_only_ansatz_names_a_missing_electron_count(ansatz):
+    """These derive their parameter count from the register alone, so only
+    ``build`` needs the electron count."""
+    message = _missing_electrons_message(ansatz.name)
+    with pytest.raises(ValueError, match=exact_match(message)):
+        ansatz.build([0.1] * 13, 4, 1)
 
 
-@_needs_qiskit_nature
+@pytest.mark.parametrize(
+    "ansatz, call",
+    [
+        (UCCSDAnsatz(), lambda a: a.n_params_per_layer(4, n_electrons=3)),
+        (UCCSDAnsatz(), lambda a: a.build([0.1] * 3, 4, 1, n_electrons=3)),
+        (LUCJAnsatz(), lambda a: a.build([0.1] * 8, 4, 1, n_electrons=3)),
+    ],
+    ids=["uccsd-n_params_per_layer", "uccsd-build", "lucj-build"],
+)
+def test_spin_resolution_errors_name_the_ansatz(ansatz, call):
+    message = (
+        f"{ansatz.name} cannot split 3 electrons into equal alpha/beta counts. "
+        "Pass n_alpha and n_beta explicitly for a spin-imbalanced reference."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
+        call(ansatz)
+
+
+@needs_qiskit_nature
 class TestUCCSDAnsatz:
     """Tests for the UCCSDAnsatz class."""
 
@@ -430,8 +581,15 @@ def _embed(matrix: np.ndarray, wires: tuple[int, ...], n_qubits: int) -> np.ndar
 
 
 def test_hf_occupation_fills_the_lowest_spin_orbitals():
+    assert _hf_occupation(1, 4) == (1, 0, 0, 0)
     assert _hf_occupation(2, 6) == (1, 1, 0, 0, 0, 0)
     assert _hf_occupation(4, 6) == (1, 1, 1, 1, 0, 0)
+
+
+def test_two_qubit_pauli_rotation_rejects_other_words():
+    message = "Unsupported two-qubit Pauli 'XY'; expected XX/YY/ZZ."
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _emit_two_qubit_pauli_rot(QuantumCircuit(2), "XY", 0.37, 0, 1)
 
 
 @pytest.mark.parametrize(
@@ -540,14 +698,18 @@ class TestHartreeFockAnsatz:
         """Its reference is closed-shell, so an uneven split or odd total must
         not be ignored."""
         call(n_alpha=1, n_beta=1)
-        with pytest.raises(ValueError, match="closed-shell"):
+        with pytest.raises(ValueError, match=_closed_shell_message(2, 2, 0)):
             call(n_alpha=2, n_beta=0)
-        with pytest.raises(ValueError, match="closed-shell"):
+        with pytest.raises(ValueError, match=_closed_shell_message(3, None, None)):
             call(n_electrons=3)
 
     def test_build_rejects_a_fully_occupied_reference(self):
         """An excitation ansatz needs at least one unoccupied spin-orbital."""
-        with pytest.raises(ValueError, match="virtual spin-orbital"):
+        message = (
+            "An excitation ansatz requires at least one virtual spin-orbital; "
+            "got n_electrons == n_qubits == 4."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
             HartreeFockAnsatz().build([], n_qubits=4, n_layers=1, n_electrons=4)
 
     @pytest.mark.parametrize("n_qubits, n_layers", [(4, 1), (6, 1), (4, 2)])
@@ -642,6 +804,23 @@ class TestQCCAnsatz:
     def test_build_accepts_a_fully_occupied_reference(self):
         qc = QCCAnsatz().build([0.0] * 13, n_qubits=4, n_layers=1, n_electrons=4)
         assert gate_names(qc)[:4] == ["x"] * 4
+
+    def test_build_matches_a_hand_built_reference(self):
+        """Three qubits, so the second pair is distinguishable from a reversed
+        or wrapped one, and distinct angles pin each entangler's parameter."""
+        n_qubits = 3
+        params = np.linspace(0.1, 0.9, QCCAnsatz.n_params_per_layer(n_qubits))
+        reference = QuantumCircuit(n_qubits)
+        reference.x(0)
+        for q in range(n_qubits):
+            reference.ry(params[q], q)
+        entangler_params = iter(params[n_qubits:])
+        for q in range(n_qubits - 1):
+            for gate_cls in (RXXGate, RYYGate, RZZGate):
+                reference.append(gate_cls(next(entangler_params)), [q, q + 1])
+
+        qc = QCCAnsatz().build(params, n_qubits, 1, n_electrons=1)
+        assert Operator(qc).equiv(Operator(reference))
 
     def test_build_multi_layer(self):
         n_electrons, n_qubits, n_layers = 2, 4, 2
@@ -808,6 +987,39 @@ def test_declared_frequencies_give_exact_gradients(
     np.testing.assert_allclose(analytic, numerical, atol=1e-6)
 
 
+_LUCJ_SANDWICHED_TWO_ORBITALS = [(0.5, 4), (1.0, 4)] * 2 + [(1.0, 1)] * 4
+
+
+@pytest.mark.parametrize(
+    "ansatz, kwargs, expected",
+    [
+        pytest.param(
+            UCCSDAnsatz(),
+            {"n_electrons": 2},
+            [(1.0, 2)] * 3,
+            marks=needs_qiskit_nature,
+        ),
+        (HartreeFockAnsatz(), {"n_electrons": 2}, [(0.5, 2)] * 3),
+        (LUCJAnsatz(), {}, _LUCJ_SANDWICHED_TWO_ORBITALS),
+        (
+            LUCJAnsatz(),
+            {"trailing_rotation": True},
+            _LUCJ_SANDWICHED_TWO_ORBITALS + ([(0.5, 2), (1.0, 2)] + [(1.0, 1)] * 2) * 2,
+        ),
+        (
+            LUCJAnsatz(),
+            {"shared_spin_params": True, "trailing_rotation": True},
+            [(0.5, 8), (1.0, 8), (1.0, 1), (1.0, 1), (1.0, 2)]
+            + [(0.5, 4), (1.0, 4), (1.0, 2), (1.0, 2)],
+        ),
+    ],
+    ids=["uccsd", "hartree-fock", "lucj", "lucj-trailing", "lucj-shared-trailing"],
+)
+def test_declared_frequencies_are_exact(ansatz, kwargs, expected):
+    """Each parameter declares exactly its frequencies, with no superset."""
+    assert ansatz.parameter_frequencies(4, **kwargs) == expected
+
+
 def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
     default_test_simulator, default_optimizer
 ):
@@ -858,16 +1070,61 @@ def test_resolve_spin_counts_accepts(n_qubits, n_electrons, n_alpha, n_beta, exp
 @pytest.mark.parametrize(
     "n_qubits,n_electrons,n_alpha,n_beta,message",
     [
-        (5, 2, None, None, "even qubit count"),
-        (8, 4, 2, None, "together"),
-        (8, 4, None, 2, "together"),
-        (8, 3, None, None, "cannot split"),
-        (8, 4, 3, 2, "not n_electrons"),
-        (4, 4, 3, 1, "outside the range"),
+        (
+            5,
+            2,
+            None,
+            None,
+            "Ansatz needs an even qubit count (two spin-orbitals per spatial "
+            "orbital); got n_qubits=5.",
+        ),
+        (
+            8,
+            4,
+            2,
+            None,
+            "Ansatz needs n_alpha and n_beta together; got n_alpha=2, n_beta=None.",
+        ),
+        (
+            8,
+            4,
+            None,
+            2,
+            "Ansatz needs n_alpha and n_beta together; got n_alpha=None, n_beta=2.",
+        ),
+        (
+            8,
+            3,
+            None,
+            None,
+            "Ansatz cannot split 3 electrons into equal alpha/beta counts. Pass "
+            "n_alpha and n_beta explicitly for a spin-imbalanced reference.",
+        ),
+        (
+            8,
+            4,
+            3,
+            2,
+            "Ansatz got n_alpha=3 and n_beta=2, which sum to 5, not n_electrons=4.",
+        ),
+        (
+            4,
+            4,
+            3,
+            1,
+            "Ansatz got n_alpha=3, outside the range [0, 2] set by 4 qubits.",
+        ),
+        (
+            4,
+            4,
+            1,
+            3,
+            "Ansatz got n_beta=3, outside the range [0, 2] set by 4 qubits.",
+        ),
     ],
 )
 def test_resolve_spin_counts_rejects(n_qubits, n_electrons, n_alpha, n_beta, message):
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=exact_match(message)):
         _resolve_spin_counts(n_qubits, n_electrons, n_alpha, n_beta, "Ansatz")
 
 
@@ -972,24 +1229,94 @@ def test_rotation_angles_reproduce_a_target_orbital_rotation(n_orb):
         )
 
 
-def test_rotation_angles_handles_a_single_orbital():
-    """One orbital has no rotation to make, so the parameter vector is empty."""
-    angles = rotation_angles(np.eye(1))
+@pytest.mark.parametrize("target", [np.eye(1), np.array([[1j]])], ids=["one", "phase"])
+def test_rotation_angles_handles_a_single_orbital(target):
+    """One orbital has no rotation to make, only a global phase, so the
+    parameter vector is empty."""
+    angles = rotation_angles(target)
     assert angles is not None
     assert len(angles) == 0
+
+
+def _near_identity_rotation(n_orb: int, seed: int) -> np.ndarray:
+    generator = np.random.default_rng(seed).normal(size=(n_orb, n_orb)) * 1e-3
+    return expm(generator - generator.T)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        -np.eye(2),
+        _near_identity_rotation(3, seed=0),
+        _near_identity_rotation(4, seed=1),
+    ],
+    ids=["minus-identity", "near-identity", "near-identity-random-start"],
+)
+def test_rotation_angles_realise_targets_beside_the_identity(target):
+    """``-I`` and near-identity targets are realised, and the fit is
+    reproducible."""
+    n_orb = target.shape[0]
+    angles = rotation_angles(target)
+    assert angles is not None
+    np.testing.assert_allclose(_rotation_one_particle(angles, n_orb), target, atol=1e-6)
+    np.testing.assert_array_equal(rotation_angles(target), angles)
+
+
+def test_rotation_angles_honour_a_truncated_depth():
+    """A shallower network takes fewer parameters, and the fit must solve
+    against that network rather than the full one."""
+    n_orb, depth = 3, 1
+    seeded = np.random.default_rng(4).uniform(
+        -1, 1, n_rotation_params(n_orb, orbital_phases=True, depth=depth)
+    )
+    target = _rotation_one_particle(seeded, n_orb, depth)
+
+    angles = rotation_angles(target, depth=depth)
+
+    assert angles is not None
+    assert len(angles) == len(seeded)
+    np.testing.assert_allclose(
+        _rotation_one_particle(angles, n_orb, depth), target, atol=1e-6
+    )
 
 
 # --- Test LUCJAnsatz ---
 class TestLUCJAnsatz:
     """LUCJ must conserve particle number and Sz for SQD sampling to work."""
 
-    def test_requires_even_qubit_count(self):
-        with pytest.raises(ValueError, match="even"):
-            LUCJAnsatz().build(np.zeros(6), n_qubits=5, n_layers=1, n_electrons=2)
-
-    def test_requires_n_electrons(self):
-        with pytest.raises(ValueError, match="n_electrons"):
-            LUCJAnsatz().build(np.zeros(6), n_qubits=4, n_layers=1)
+    @pytest.mark.parametrize(
+        "call, message",
+        [
+            (
+                lambda: LUCJAnsatz().build(
+                    np.zeros(6), n_qubits=5, n_layers=1, n_electrons=2
+                ),
+                "LUCJAnsatz needs an even qubit count (two spin-orbitals per "
+                "spatial orbital); got n_qubits=5.",
+            ),
+            (
+                lambda: LUCJAnsatz.n_params_per_layer(5),
+                "LUCJAnsatz needs an even qubit count (two spin-orbitals per "
+                "spatial orbital); got 5.",
+            ),
+            (
+                lambda: LUCJAnsatz().build(
+                    np.zeros(8), n_qubits=4, n_layers=1, n_electrons=6
+                ),
+                "n_electrons (6) cannot exceed n_qubits (4).",
+            ),
+            (
+                lambda: LUCJAnsatz().build(
+                    np.zeros(3), n_qubits=4, n_layers=1, n_electrons=2
+                ),
+                "LUCJAnsatz expected 8 parameters (1 layers x 8 per layer); got 3.",
+            ),
+        ],
+        ids=["build-odd-qubits", "count-odd-qubits", "too-many-electrons", "too-few"],
+    )
+    def test_rejects_an_unbuildable_request(self, call, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            call()
 
     @pytest.mark.parametrize("n_qubits", [2, 4, 6, 8])
     def test_param_count_matches_built_circuit(self, n_qubits):
@@ -1208,14 +1535,42 @@ class TestLUCJAnsatz:
     @pytest.mark.parametrize(
         "pairs,message",
         [
-            ({"same_spin_pairs": [(0, 3)]}, "outside the 3 orbitals"),
-            ({"opposite_spin_pairs": [(0, -1)]}, "outside the 3 orbitals"),
-            ({"same_spin_pairs": [(1, 1)]}, "repeats an orbital"),
+            (
+                {"same_spin_pairs": [(0, 3)]},
+                "Same-spin pair (0, 3) is outside the 3 orbitals.",
+            ),
+            (
+                {"same_spin_pairs": [(3, 0)]},
+                "Same-spin pair (3, 0) is outside the 3 orbitals.",
+            ),
+            (
+                {"opposite_spin_pairs": [(0, -1)]},
+                "Opposite-spin pair (0, -1) is outside the 3 orbitals.",
+            ),
+            (
+                {"same_spin_pairs": [(1, 1)]},
+                "Same-spin pair (1, 1) repeats an orbital, which is a one-body "
+                "term rather than a Coulomb interaction.",
+            ),
         ],
     )
     def test_jastrow_pairs_are_validated(self, pairs, message):
-        with pytest.raises(ValueError, match=message):
+        with pytest.raises(ValueError, match=exact_match(message)):
             LUCJAnsatz.n_params_per_layer(6, **pairs)
+
+    @pytest.mark.parametrize(
+        "same, opposite, expected",
+        [
+            (None, None, ([(0, 1), (1, 2)], [(0, 0), (1, 1), (2, 2)])),
+            ([(1, 0)], [(0, 0), (2, 0)], ([(1, 0)], [(0, 0), (2, 0)])),
+        ],
+        ids=["local-default", "explicit"],
+    )
+    def test_jastrow_pairs_resolve(self, same, opposite, expected):
+        """The default is same-spin neighbours plus on-site opposite-spin pairs;
+        explicit pairs pass through, orbital ``0`` and on-site opposite-spin
+        pairs included."""
+        assert lucj_jastrow_pairs(3, same, opposite) == expected
 
     @pytest.mark.parametrize("n_alpha,n_beta", [(2, 2), (2, 0), (3, 1)])
     def test_reference_honours_the_requested_spin_counts(self, n_alpha, n_beta):

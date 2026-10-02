@@ -8,7 +8,16 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import ParameterVector
 from qiskit.quantum_info import Statevector
 
-from divi.qprog.algorithms import AngleEmbedding, FeatureMap, ZZFeatureMap
+from divi.qprog.algorithms import AngleEmbedding, ZZFeatureMap
+from tests._helpers import exact_match
+from tests.qprog.algorithms._helpers import gate_names, gate_qubits
+
+
+@pytest.mark.parametrize("feature_map", [AngleEmbedding(), ZZFeatureMap()], ids=type)
+def test_build_rejects_a_feature_vector_of_the_wrong_length(feature_map):
+    message = f"{feature_map.name} expects one feature per qubit (2), got 3."
+    with pytest.raises(ValueError, match=exact_match(message)):
+        feature_map.build(np.zeros(3), n_qubits=2)
 
 
 class TestAngleEmbedding:
@@ -55,13 +64,21 @@ class TestZZFeatureMap:
         [
             ("linear", 4, [(0, 1), (1, 2), (2, 3)]),
             ("circular", 4, [(0, 1), (1, 2), (2, 3), (3, 0)]),
+            ("circular", 3, [(0, 1), (1, 2), (2, 0)]),
             ("circular", 2, [(0, 1)]),
             ("all-to-all", 3, [(0, 1), (0, 2), (1, 2)]),
         ],
     )
-    def test_pair_iter(self, layout, n_qubits, expected_pairs):
+    def test_build_entangles_the_layout_pairs(self, layout, n_qubits, expected_pairs):
+        """Each pair's ZZ term is a CX-RZ-CX ladder, so every other CX opens one."""
         fm = ZZFeatureMap(entangling_layout=layout)
-        assert fm._pair_iter(n_qubits) == expected_pairs
+        qc = fm.build(np.array(ParameterVector("x", n_qubits), dtype=object), n_qubits)
+        cx_pairs = [
+            tuple(wires)
+            for name, wires in zip(gate_names(qc), gate_qubits(qc))
+            if name == "cx"
+        ]
+        assert cx_pairs[::2] == expected_pairs
 
     def test_build_produces_expected_gate_counts(self):
         n_qubits = 3
@@ -78,16 +95,23 @@ class TestZZFeatureMap:
         assert op_counts["rz"] == n_qubits + n_pairs
         assert op_counts["cx"] == 2 * n_pairs
 
-    def test_rejects_single_qubit(self):
-        with pytest.raises(ValueError, match="requires at least 2 qubits"):
-            ZZFeatureMap().build(
+    @pytest.mark.parametrize(
+        "call",
+        [
+            lambda fm: fm.build(
                 np.array(ParameterVector("x", 1), dtype=object), n_qubits=1
-            )
-
-    def test_n_params_rejects_single_qubit(self):
-        # n_params guards independently of build (it's the contract entry point).
-        with pytest.raises(ValueError, match="requires at least 2 qubits"):
-            ZZFeatureMap().n_params(1)
+            ),
+            lambda fm: fm.n_params(1),
+        ],
+        ids=["build", "n_params"],
+    )
+    def test_rejects_single_qubit(self, call):
+        message = (
+            "ZZFeatureMap requires at least 2 qubits for the ZZ entangling layer; "
+            "got n_qubits=1. Use AngleEmbedding for single-qubit encoding."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
+            call(ZZFeatureMap())
 
     def test_encoded_angles_match_reference(self):
         # The bound circuit must apply RZ(2*x_i) and RZZ(2*(pi-x_i)(pi-x_j)),
@@ -111,8 +135,3 @@ class TestZZFeatureMap:
         assert Statevector.from_instruction(bound).equiv(
             Statevector.from_instruction(ref)
         )
-
-
-def test_feature_map_abc_cannot_be_instantiated():
-    with pytest.raises(TypeError):
-        FeatureMap()  # type: ignore[abstract]

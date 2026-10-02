@@ -331,9 +331,9 @@ class PCE(VQE):
             raise ValueError(
                 "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
                 "cannot use expectation-value backends. Use a sampling backend: "
+                "MaestroSimulator(force_sampling=True), "
                 "QiskitSimulator(force_sampling=True), or QoroService with "
-                "JobConfig(force_sampling=True). MaestroSimulator is expval-only and "
-                "cannot be forced to sample."
+                "JobConfig(force_sampling=True)."
             )
         return super()._evaluate_cost_param_sets(param_sets, **kwargs)
 

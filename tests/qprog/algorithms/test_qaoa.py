@@ -23,18 +23,29 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import IterativeQAOA, SuperpositionState
 from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
+from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,
     MaxCutProblem,
+    MinVertexCoverProblem,
     QAOAProblem,
 )
 from divi.reporting._events import EventKind, TerminalStatus
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
+    edit_checkpointed_subclass_state,
     verify_correct_circuit_count,
+    verify_load_state_rejects_missing_state_key,
 )
+from tests.qprog.algorithms._helpers import seed_best_probs
 from tests.qprog.problems._helpers import QUBO_MATRIX, make_bull_graph
+
+_INCOMMENSURATE_MESSAGE = exact_match(
+    "QAOA parameter-shift gradients require commensurate Hamiltonian "
+    "coefficients. Use a gradient-free optimizer or SPSA for this problem."
+)
 
 
 class TestGeneralQAOA:
@@ -141,24 +152,88 @@ class TestGeneralQAOA:
         assert shifts.shape == (40, 4)
         assert weights.shape == (4, 40)
 
-    def test_hamiltonian_frequency_family_accepts_commensurate_weights(self):
-        hamiltonian = SparsePauliOp(["ZI", "IZ"], coeffs=[0.25, 0.5])
-
-        assert _hamiltonian_parameter_frequency(hamiltonian) == (0.5, 3)
-
-    def test_hamiltonian_frequency_family_rejects_incommensurate_weights(self):
-        hamiltonian = SparsePauliOp(["ZI", "IZ"], coeffs=[0.5, np.sqrt(2)])
-
-        with pytest.raises(NotImplementedError, match="commensurate"):
+    @pytest.mark.parametrize(
+        "hamiltonian",
+        [
+            SparsePauliOp(["ZI", "IZ"], coeffs=[0.5, np.sqrt(2)]),
+            SparsePauliOp("Z", 0.5 / 10001),
+        ],
+        ids=["irrational-ratio", "denominator-past-the-limit"],
+    )
+    def test_hamiltonian_frequency_family_rejects_incommensurate_weights(
+        self, hamiltonian
+    ):
+        with pytest.raises(NotImplementedError, match=_INCOMMENSURATE_MESSAGE):
             _hamiltonian_parameter_frequency(hamiltonian)
 
-    def test_hamiltonian_frequency_family_reports_large_shift_rule(self):
-        hamiltonian = SparsePauliOp(
-            ["ZI", "IZ", "ZZ"],
-            coeffs=[0.37, 0.42, 0.58],
+    @pytest.mark.parametrize(
+        "hamiltonian, expected",
+        [
+            (SparsePauliOp(["Z", "I"], coeffs=[1.0, 0.3]), (2.0, 1)),
+            (SparsePauliOp("Z"), (2.0, 1)),
+            (SparsePauliOp("I"), (1.0, 1)),
+            (SparsePauliOp("Z", 5e-13), (1.0, 1)),
+            (SparsePauliOp(["ZI", "IZ"], coeffs=[0.25, 0.5]), (0.5, 3)),
+            (
+                SparsePauliOp(["ZI", "IZ", "ZZ"], coeffs=[0.37, 0.42, 0.58]),
+                (0.02, 137),
+            ),
+        ],
+        ids=[
+            "identity-ignored",
+            "single-term",
+            "identity-only",
+            "below-threshold",
+            "commensurate-weights",
+            "large-shift-rule",
+        ],
+    )
+    def test_hamiltonian_frequency_family(self, hamiltonian, expected):
+        assert _hamiltonian_parameter_frequency(hamiltonian) == expected
+
+    def test_qdrift_has_no_parameter_shift_rule(
+        self, gradient_free_optimizer, dummy_simulator
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(3)),
+            trotterization_strategy=QDrift(sampling_budget=2, seed=42),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
         )
 
-        assert _hamiltonian_parameter_frequency(hamiltonian) == (0.02, 137)
+        with pytest.raises(
+            NotImplementedError,
+            match=exact_match(
+                "QAOA has no parameter-shift gradient for stochastic or approximate "
+                "trotterization. Use a gradient-free optimizer or SPSA."
+            ),
+        ):
+            qaoa._parameter_frequencies()
+
+    def test_shift_limit_admits_its_own_value(
+        self, gradient_free_optimizer, dummy_simulator
+    ):
+        """The path graph needs 4 cost and 6 mixer evaluations per parameter."""
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(3)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+            max_shift_evaluations_per_parameter=6,
+        )
+
+        assert [2 * order for _, order in qaoa._parameter_frequencies()] == [4, 6]
+
+    def test_qaoa_accepts_a_shift_limit_of_one(
+        self, gradient_free_optimizer, dummy_simulator
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(2)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+            max_shift_evaluations_per_parameter=1,
+        )
+
+        assert qaoa.max_shift_evaluations_per_parameter == 1
 
     @pytest.mark.parametrize("limit", [0, -1, True, 1.5])
     def test_qaoa_rejects_invalid_shift_evaluation_limit(
@@ -192,7 +267,13 @@ class TestGeneralQAOA:
 
         with pytest.raises(
             NotImplementedError,
-            match="full 2-parameter gradient requires 280 evaluations",
+            match=exact_match(
+                "QAOA parameter-shift gradients require 274 cost and 6 mixer "
+                "circuit evaluations per parameter; the full 2-parameter gradient "
+                "requires 280 evaluations, and the per-parameter limit is 256. "
+                "Increase max_shift_evaluations_per_parameter, set it to None to "
+                "opt out, or use a gradient-free optimizer or SPSA for this problem."
+            ),
         ):
             qaoa._parameter_frequencies()
 
@@ -210,7 +291,10 @@ class TestGeneralQAOA:
             max_iterations=1,
             backend=dummy_simulator,
         )
+
         qaoa.run()
+
+        assert qaoa.current_iteration == 1
 
 
 class TestQAOAQDriftMultiSample:
@@ -476,6 +560,196 @@ def test_loaded_solution_is_decoded_by_the_constructed_problem(
 
     assert target.solution == target._decode_solution_fn("10100")
     assert target.solution != source._decode_solution_fn("10100")
+    assert target.solution_bitstring == "10100"
+
+
+def _path_qaoa(dummy_simulator, default_optimizer, **kwargs):
+    return QAOA(
+        MaxCutProblem(nx.path_graph(3)),
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+        **kwargs,
+    )
+
+
+def _checkpointed_path_qaoa(backend, optimizer, checkpoint_dir, **kwargs):
+    """Run a path-graph QAOA for one iteration, checkpointing into ``checkpoint_dir``."""
+    qaoa = _path_qaoa(backend, optimizer, **kwargs)
+    qaoa.run(
+        max_iterations=1,
+        perform_final_computation=False,
+        checkpoint_config=CheckpointConfig(checkpoint_dir=checkpoint_dir),
+    )
+    return qaoa
+
+
+@pytest.mark.parametrize(
+    "drop_limit, expected_limit",
+    [(False, 7), (True, 9)],
+    ids=["saved-limit", "legacy-checkpoint-keeps-constructor-limit"],
+)
+def test_loaded_state_restores_metadata_and_shift_limit(
+    dummy_simulator, default_optimizer, tmp_path, drop_limit, expected_limit
+):
+    _checkpointed_path_qaoa(
+        dummy_simulator,
+        default_optimizer,
+        tmp_path,
+        max_shift_evaluations_per_parameter=7,
+    )
+    if drop_limit:
+        edit_checkpointed_subclass_state(
+            tmp_path, lambda data: data.pop("max_shift_evaluations_per_parameter")
+        )
+
+    target = QAOA.load_state(
+        tmp_path,
+        backend=dummy_simulator,
+        problem=MaxCutProblem(nx.path_graph(3)),
+        max_shift_evaluations_per_parameter=9,
+    )
+
+    assert target.problem_metadata == {}
+    assert target.max_shift_evaluations_per_parameter == expected_limit
+
+
+def test_checkpoint_restores_numpy_problem_metadata_as_plain_python(
+    dummy_simulator, default_optimizer, tmp_path
+):
+    source = _path_qaoa(dummy_simulator, default_optimizer)
+    source.problem_metadata = {
+        "weights": np.array([1.5, 2.0]),
+        "nested": {"size": np.int64(3)},
+        "pairs": [(0, np.float64(0.5))],
+    }
+    source.run(
+        max_iterations=1,
+        perform_final_computation=False,
+        checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+    )
+
+    target = QAOA.load_state(
+        tmp_path, backend=dummy_simulator, problem=MaxCutProblem(nx.path_graph(3))
+    )
+
+    assert target.problem_metadata == {
+        "weights": [1.5, 2.0],
+        "nested": {"size": 3},
+        "pairs": [[0, 0.5]],
+    }
+
+
+def test_load_rejects_a_state_missing_required_keys(
+    dummy_simulator, default_optimizer, tmp_path
+):
+    _checkpointed_path_qaoa(dummy_simulator, default_optimizer, tmp_path)
+
+    verify_load_state_rejects_missing_state_key(
+        tmp_path,
+        "loss_constant",
+        lambda: QAOA.load_state(
+            tmp_path, backend=dummy_simulator, problem=MaxCutProblem(nx.path_graph(3))
+        ),
+    )
+
+
+def test_qaoa_defaults(dummy_simulator, default_optimizer):
+    qaoa = QAOA(
+        _make_problem(
+            cost=SparsePauliOp(["ZI", "IZ"]), mixer=SparsePauliOp(["XI", "IX"])
+        ),
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+
+    assert qaoa.max_iterations == 10
+    assert qaoa.problem_metadata == {}
+
+
+def test_qaoa_rejects_a_non_initial_state(dummy_simulator, default_optimizer):
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "initial_state must be an InitialState instance or None, got str"
+        ),
+    ):
+        _path_qaoa(dummy_simulator, default_optimizer, initial_state="zeros")
+
+
+def test_cost_pipeline_circuits_render_at_the_program_precision(
+    dummy_simulator, default_optimizer
+):
+    qaoa = _path_qaoa(dummy_simulator, default_optimizer, precision=4)
+
+    forward = qaoa._build_preprocessor_pipeline(
+        qaoa.cost_preprocessor()
+    ).run_forward_pass(qaoa.cost_hamiltonian, qaoa._build_pipeline_env())
+
+    assert {meta.precision for meta in forward.initial_batch.values()} == {4}
+
+
+class _RepairToFullCover(MinVertexCoverProblem):
+    """Repairs every infeasible cover to the all-selected one."""
+
+    def repair_infeasible_bitstring(self, bitstring):
+        return "1" * len(bitstring), "repaired", float(len(bitstring))
+
+
+@pytest.fixture
+def ramp_qaoa(dummy_simulator, default_optimizer):
+    """Min vertex cover on a 4-node path, sampled with ``P(i) ∝ i + 1``.
+
+    The covers of the path ``0-1-2-3`` are 1010, 0110, 0101, 1110, 1101, 1011,
+    0111 and 1111; every other bitstring leaves an edge uncovered.
+    """
+    qaoa = QAOA(
+        _RepairToFullCover(nx.path_graph(4)),
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
+    seed_best_probs(qaoa, {format(i, "04b"): (i + 1) / 136 for i in range(16)}, "0")
+    return qaoa
+
+
+def test_get_top_solutions_defaults_to_ten_undecoded(ramp_qaoa):
+    solutions = ramp_qaoa.get_top_solutions()
+
+    assert len(solutions) == 10
+    assert all(solution.decoded is None for solution in solutions)
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected",
+    [
+        (
+            {"min_prob": 10 / 136},
+            ["1111", "1110", "1101", "1100", "1011", "1010", "1001"],
+        ),
+        (
+            {"n": 0, "feasibility": "filter"},
+            ["1010", "0110", "0101", "1110", "1101", "1011", "0111", "1111"],
+        ),
+        (
+            {"n": 0, "feasibility": "filter", "min_prob": 10 / 136},
+            ["1010", "1110", "1101", "1011", "1111"],
+        ),
+    ],
+    ids=["ignore-min-prob", "filter-all", "filter-min-prob"],
+)
+def test_get_top_solutions_selection(ramp_qaoa, kwargs, expected):
+    solutions = ramp_qaoa.get_top_solutions(**kwargs)
+
+    assert [solution.bitstring for solution in solutions] == expected
+    assert all(solution.decoded is None for solution in solutions)
+
+
+def test_get_top_solutions_repair_merges_into_the_repaired_cover(ramp_qaoa):
+    """The eight infeasible samples (total weight 47/136) fold into 1111."""
+    solutions = ramp_qaoa.get_top_solutions(n=0, feasibility="repair")
+
+    full_cover = next(s for s in solutions if s.bitstring == "1111")
+    assert full_cover.prob == pytest.approx((16 + 47) / 136)
+    assert len(solutions) == 8
 
 
 @pytest.mark.parametrize(
@@ -685,7 +959,8 @@ class TestSampleSolution:
 
         qaoa.run()
 
-        assert qaoa.current_iteration > 0
+        assert qaoa.current_iteration == 1
+        assert len(qaoa.losses_history) == 1
         assert qaoa.optimize_result is not None
         assert qaoa.solution is not None
 
@@ -722,28 +997,31 @@ def _make_problem(cost: SparsePauliOp, mixer: SparsePauliOp, wire_labels=None):
 
 
 class TestWireSpaceInvariant:
-    def test_mixer_wider_than_cost_raises(self, dummy_simulator, default_optimizer):
-        prob = _make_problem(
-            cost=SparsePauliOp.from_list([("IZZ", 1.0), ("ZZI", 1.0)]),
-            mixer=SparsePauliOp.from_list(
-                [("IIIX", 1.0), ("IIXI", 1.0), ("IXII", 1.0), ("XIII", 1.0)]
+    @pytest.mark.parametrize(
+        "cost_terms, mixer_terms, match",
+        [
+            pytest.param(
+                ["IZZ", "ZZI"],
+                ["IIIX", "IIXI", "IXII", "XIII"],
+                r"wire_labels has 3 entries.*mixer_hamiltonian\.num_qubits is 4",
+                id="mixer_wider_than_cost",
             ),
-        )
-        with pytest.raises(
-            ValueError,
-            match=r"wire_labels has 3 entries.*mixer_hamiltonian\.num_qubits is 4",
-        ):
-            QAOA(prob, backend=dummy_simulator, optimizer=default_optimizer)
-
-    def test_cost_wider_than_mixer_raises(self, dummy_simulator, default_optimizer):
+            pytest.param(
+                ["IIZZ", "ZZII"],
+                ["IIX", "IXI", "XII"],
+                r"wire_labels has 4 entries.*mixer_hamiltonian\.num_qubits is 3",
+                id="cost_wider_than_mixer",
+            ),
+        ],
+    )
+    def test_width_mismatch_raises(
+        self, dummy_simulator, default_optimizer, cost_terms, mixer_terms, match
+    ):
         prob = _make_problem(
-            cost=SparsePauliOp.from_list([("IIZZ", 1.0), ("ZZII", 1.0)]),
-            mixer=SparsePauliOp.from_list([("IIX", 1.0), ("IXI", 1.0), ("XII", 1.0)]),
+            cost=SparsePauliOp.from_list([(t, 1.0) for t in cost_terms]),
+            mixer=SparsePauliOp.from_list([(t, 1.0) for t in mixer_terms]),
         )
-        with pytest.raises(
-            ValueError,
-            match=r"wire_labels has 4 entries.*mixer_hamiltonian\.num_qubits is 3",
-        ):
+        with pytest.raises(ValueError, match=match):
             QAOA(prob, backend=dummy_simulator, optimizer=default_optimizer)
 
     def test_wire_labels_misaligned_with_hamiltonians_raises(

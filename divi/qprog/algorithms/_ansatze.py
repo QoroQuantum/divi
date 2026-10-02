@@ -193,7 +193,8 @@ class GenericLayerAnsatz(Ansatz):
                 (e.g., ``RYGate``, ``RZGate``).
             entangler: Two-qubit Qiskit ``Gate`` subclass (e.g., ``CXGate``,
                 ``CZGate``). If None, no entanglement is applied.
-            entangling_layout (str): Layout for entangling layer ("linear", "all-to-all", etc.).
+            entangling_layout (str): Layout for entangling layer ("linear", "brick",
+                "circular", "all-to-all", or a sequence of qubit pairs).
         """
         for cls in gate_sequence:
             _validate_gate_cls(
@@ -228,8 +229,10 @@ class GenericLayerAnsatz(Ansatz):
                     (i, i + 1) for r in range(2) for i in range(r, n_qubits - 1, 2)
                 ]
             case "circular":
+                # On 2 qubits the wrap pair (1, 0) would repeat (0, 1).
                 self._layout_fn = lambda n_qubits: zip(
-                    range(n_qubits), [(i + 1) % n_qubits for i in range(n_qubits)]
+                    range(n_qubits if n_qubits > 2 else n_qubits - 1),
+                    [(i + 1) % n_qubits for i in range(n_qubits)],
                 )
             case "all-to-all":
                 self._layout_fn = lambda n_qubits: (
@@ -244,14 +247,14 @@ class GenericLayerAnsatz(Ansatz):
                     for ent in custom_layout
                 ):
                     raise ValueError(
-                        "entangling_layout must be 'linear', 'circular', "
+                        "entangling_layout must be 'linear', 'brick', 'circular', "
                         "'all-to-all', or a Sequence of tuples of integers."
                     )
                 self._layout_fn = lambda _: list(custom_layout)
             case _:
                 raise ValueError(
                     f"Unknown entangling_layout: {entangling_layout!r}. "
-                    "Must be 'linear', 'circular', 'all-to-all', or "
+                    "Must be 'linear', 'brick', 'circular', 'all-to-all', or "
                     "a Sequence of (int, int) tuples."
                 )
 

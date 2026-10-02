@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -18,6 +19,7 @@ from divi.qprog import (
 )
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.mixins import DataBindingMixin
+from divi.qprog.mixins._data_binding import _LOSS_FN_IGNORED_MSG
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     QNSPSAOptimizer,
@@ -25,10 +27,18 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
 )
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
 )
+
+
+class _DoubleFrequencyAnsatz(GenericLayerAnsatz):
+    """Declares frequency ``{1, 2}`` for each of its per-layer parameters."""
+
+    def parameter_frequencies(self, n_qubits, **kwargs):
+        return [(1.0, 2)] * self.n_params_per_layer(n_qubits)
 
 
 @pytest.fixture
@@ -104,7 +114,41 @@ class TestInitialization:
         program = make_qnn(observable=None)
         labels = [str(p) for p in program.cost_hamiltonian.paulis]
         assert labels == ["ZZ"]
+        assert program.cost_hamiltonian.coeffs.real.tolist() == [1.0]
         assert program.loss_constant == 0.0
+
+    def test_defaults(self, make_qnn, simple_feature_map, simple_ansatz):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            program = make_qnn()
+
+        assert program.max_iterations == 10
+        assert program.feature_map is simple_feature_map
+        assert program.ansatz is simple_ansatz
+
+    def test_single_qubit_circuit_is_accepted(self, make_qnn):
+        program = make_qnn(
+            n_qubits=1,
+            ansatz=GenericLayerAnsatz(gate_sequence=[RYGate]),
+            observable=None,
+            feature_batch=np.array([[0.1], [0.2]]),
+        )
+
+        assert program.n_qubits == 1
+
+    @pytest.mark.parametrize(
+        "n_layers, expected",
+        [(1, [(1.0, 2)] * 2), (2, [(1.0, 2)] * 4)],
+    )
+    def test_parameter_frequencies_repeat_the_ansatz_per_layer(
+        self, make_qnn, n_layers, expected
+    ):
+        program = make_qnn(ansatz=_DoubleFrequencyAnsatz([RYGate]), n_layers=n_layers)
+
+        assert program._parameter_frequencies() == expected
+
+    def test_default_parameter_frequencies_are_undeclared(self, make_qnn):
+        assert make_qnn(n_layers=2)._parameter_frequencies() is None
 
     def test_loss_constant_extracted_from_observable(self, make_qnn):
         """Identity terms in the observable land on ``loss_constant``."""
@@ -161,12 +205,37 @@ class TestConstructionValidation:
         assert callable(program._loss_reduction_fn)
 
     def test_loss_fn_without_labels_warns_at_caller(self, make_qnn):
-        # loss_fn is ignored without labels; the warning must be attributed to
-        # the user's constructor call, not to a frame inside divi.
-        with pytest.warns(UserWarning, match="loss_fn is ignored") as record:
+        """The ignored-``loss_fn`` warning points at the caller's constructor call."""
+        with pytest.warns(
+            UserWarning, match=exact_match(_LOSS_FN_IGNORED_MSG)
+        ) as record:
             make_qnn(loss_fn=lambda pred, label: (pred - label) ** 2)
-        ignored = [w for w in record if "loss_fn is ignored" in str(w.message)]
+        ignored = [w for w in record if str(w.message) == _LOSS_FN_IGNORED_MSG]
         assert ignored and ignored[0].filename == __file__
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"labels": [1.0, -1.0, 1.0, -1.0], "loss_fn": lambda p, l: abs(p - l)},
+            {"observable": None, "labels": [1.0, -1.0, 1.0, -1.0]},
+            {"observable": None, "labels": [1.0, -1.0, 1.0, -1.0], "fit_bias": True},
+            {
+                "feature_batch": [[0.1, 0.2], [0.3, 0.4]],
+                "labels": [0.5, -0.5],
+                "fit_bias": True,
+            },
+        ],
+        ids=[
+            "custom-loss-with-labels",
+            "labels-at-the-readout-edges",
+            "fitted-labels-spanning-the-readout",
+            "fit-bias-on-two-samples",
+        ],
+    )
+    def test_construction_stays_silent(self, make_qnn, kwargs):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            make_qnn(**kwargs)
 
     def test_feature_batch_wrong_columns(self, make_qnn):
         bad_batch = np.array([[0.1, 0.2, 0.3]])  # 3 columns but only 2 data params
@@ -287,6 +356,7 @@ class TestConstructionValidation:
 
         assert flag(supervised) is True
         assert flag(unsupervised) is False
+        assert supervised.objective_fingerprint != unsupervised.objective_fingerprint
 
     def test_no_metric_estimator_is_recommended_for_a_supervised_batch(self, make_qnn):
         """Each metric used to redirect to another that rejects the same program,
@@ -307,15 +377,24 @@ class TestConstructionValidation:
                 loss_fn="huber",  # type: ignore[arg-type]
             )
 
-    def test_out_of_range_labels_warn_for_default_observable(self, make_qnn):
-        # Default parity observable reads out in [-1, 1]; {0, 2} labels can't be
-        # matched, so squared error floors above zero — warn the user.
-        with pytest.warns(UserWarning, match=r"reads out in \[-1, 1\]"):
-            make_qnn(observable=None, labels=[0.0, 2.0, 0.0, 2.0])
-
-    def test_loss_fn_without_labels_warns(self, make_qnn):
-        with pytest.warns(UserWarning, match="loss_fn"):
-            make_qnn(loss_fn=lambda pred, label: abs(pred - label))
+    @pytest.mark.parametrize(
+        "labels",
+        [[0.0, 2.0, 0.0, 2.0], [2.0, -2.0, 2.0, -2.0]],
+        ids=["width-2", "width-4"],
+    )
+    def test_out_of_range_labels_warn_for_default_observable(self, make_qnn, labels):
+        # Default parity observable reads out in [-1, 1]; labels outside it can't
+        # be matched, so squared error floors above zero — warn the user.
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "labels fall outside [-1, 1] but the default parity observable "
+                "reads out in [-1, 1]; the supervised loss cannot reach zero. "
+                "Encode labels in [-1, 1] (e.g. -1/+1) or pass an observable "
+                "whose range matches your labels."
+            ),
+        ):
+            make_qnn(observable=None, labels=labels)
 
     def test_fit_bias_requires_labels(self, make_qnn):
         with pytest.raises(ValueError, match="fit_bias requires labels"):
@@ -342,17 +421,27 @@ class TestConstructionValidation:
 
     def test_fit_bias_warns_for_labels_wider_than_the_readout(self, make_qnn):
         # A bias shifts the [-1, 1] readout but cannot widen it.
-        with pytest.warns(UserWarning, match=r"span more than the readout"):
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "labels span more than the readout range of the default parity "
+                "observable ([-1, 1], width 2); a fitted bias shifts that range "
+                "but cannot widen it, so the supervised loss cannot reach zero. "
+                "Rescale your labels or pass an observable whose range matches "
+                "them."
+            ),
+        ):
             make_qnn(observable=None, labels=[0.0, 3.0, 0.0, 3.0], fit_bias=True)
-
-    def test_fit_bias_is_visible_in_the_report(self, make_qnn):
-        report = make_qnn(labels=[0.0, 1.0, 0.0, 1.0], fit_bias=True).dry_run()["cost"]
-        data_stage = next(s for s in report.stages if s.name == "DataBindingStage")
-        assert data_stage.metadata["fit_bias"] is True
 
     def test_fit_bias_requires_two_samples(self, make_qnn):
         # With one sample the bias absorbs the whole error, so the loss is 0.
-        with pytest.raises(ValueError, match="at least 2 samples"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "fit_bias requires at least 2 samples; with one, the bias "
+                "absorbs the whole error and the loss is always 0."
+            ),
+        ):
             make_qnn(feature_batch=[[0.1, 0.2]], labels=[1.0], fit_bias=True)
 
     def test_fitted_bias_without_fit_bias_raises(self, make_qnn):
@@ -422,7 +511,7 @@ def test_batch_loss_matches_per_sample_mean(
     make_qnn, feature_batch_2x2, default_test_simulator
 ):
     """End-to-end integration check: the batched cost equals the mean of
-    per-sample costs, modulo shot noise from independent simulator runs.
+    per-sample costs.
 
     The DataBindingStage reduce invariant is asserted directly in
     ``tests/pipeline/stages/test_data_binding_stage.py``; this is the
@@ -445,11 +534,8 @@ def test_batch_loss_matches_per_sample_mean(
         )
         per_sample_losses.append(single._evaluate_cost_param_sets(weights)[0])
 
-    # Tolerance reflects shot noise from independent simulator submissions:
-    # each per-sample call samples ``shots`` fresh outcomes, so the per-sample
-    # mean drifts from the batched mean by ~1/sqrt(shots) per sample.
     np.testing.assert_allclose(
-        batched_loss, float(np.mean(per_sample_losses)), atol=0.05
+        batched_loss, float(np.mean(per_sample_losses)), atol=1e-9
     )
 
 
@@ -501,7 +587,7 @@ def test_supervised_loss_matches_manual_mse(
     make_qnn, feature_batch_2x2, default_test_simulator
 ):
     """A supervised QNN's batched loss equals the MSE of per-sample predictions
-    against the labels, modulo shot noise.
+    against the labels.
 
     Mirrors ``test_batch_loss_matches_per_sample_mean`` but with labels: the
     per-sample unsupervised prediction is the readout, and the supervised loss
@@ -532,7 +618,7 @@ def test_supervised_loss_matches_manual_mse(
         predictions.append(single._evaluate_cost_param_sets(weights)[0])
 
     expected = float(np.mean((np.array(predictions) - labels) ** 2))
-    np.testing.assert_allclose(supervised_loss, expected, atol=0.05)
+    np.testing.assert_allclose(supervised_loss, expected, atol=1e-9)
 
 
 @pytest.mark.e2e
@@ -599,7 +685,7 @@ class TestFitBias:
     def _assert_bias_fits_the_readout(self, program, make_qnn, simulator):
         readout = self._unbiased_scores(make_qnn, simulator, program.best_params)
         np.testing.assert_allclose(
-            program.fitted_bias, np.mean(self.LABELS - readout), atol=0.05
+            program.fitted_bias, np.mean(self.LABELS - readout), atol=1e-9
         )
 
     def test_cost_is_mse_at_the_fitted_bias(self, make_qnn, default_test_simulator):
@@ -614,9 +700,14 @@ class TestFitBias:
         np.testing.assert_allclose(loss, float(np.var(readout - labels)), rtol=1e-9)
 
     def test_run_stores_the_bias_at_best_params(self, make_qnn, default_test_simulator):
+        """The bias is fitted in closed form, not appended to the optimised weights."""
         program = self._make_biased_qnn(make_qnn, default_test_simulator)
         program.run(perform_final_computation=False)
 
+        n_weights = program.n_layers * program.ansatz.n_params_per_layer(
+            program.n_qubits
+        )
+        assert program.best_params.shape == (n_weights,)
         self._assert_bias_fits_the_readout(program, make_qnn, default_test_simulator)
 
     def test_labels_assigned_after_run_do_not_move_the_bias(
@@ -633,7 +724,7 @@ class TestFitBias:
         np.testing.assert_allclose(
             program.predict(program.feature_batch, return_scores=True),
             scores,
-            atol=0.1,
+            atol=1e-9,
         )
 
     def test_fitted_bias_survives_a_checkpoint(
@@ -670,7 +761,7 @@ class TestFitBias:
         restored = self._make_biased_qnn(make_qnn, default_test_simulator)
         restored._restore_state(tmp_path, subdirectory="checkpoint_002")
 
-        np.testing.assert_allclose(restored.fitted_bias, program.fitted_bias, atol=0.05)
+        np.testing.assert_allclose(restored.fitted_bias, program.fitted_bias, atol=1e-9)
 
     def test_sum_reduction_with_final_computation_fits_the_bias(
         self, make_qnn, default_test_simulator
@@ -681,16 +772,6 @@ class TestFitBias:
         program.run()
 
         self._assert_bias_fits_the_readout(program, make_qnn, default_test_simulator)
-
-    def test_bias_is_not_an_optimizer_parameter(self, make_qnn, default_test_simulator):
-        program = self._make_biased_qnn(make_qnn, default_test_simulator)
-        program.run(perform_final_computation=False)
-
-        n_weights = program.n_layers * program.ansatz.n_params_per_layer(
-            program.n_qubits
-        )
-        assert program.best_params.shape == (n_weights,)
-        assert math.isfinite(program.fitted_bias)
 
 
 @pytest.mark.e2e

@@ -13,8 +13,8 @@ a target depth or convergence criterion is met.
 Three interpolation strategies are provided:
 
 - **INTERP**: Linear interpolation (Zhou et al.)
-- **FOURIER**: Fourier basis representation
-- **CHEBYSHEV**: Chebyshev polynomial basis representation
+- **FOURIER**: Sine (gamma) and cosine (beta) basis of Zhou et al.
+- **CHEBYSHEV**: Shifted Chebyshev polynomial basis on the layer grid i/p
 """
 
 from collections.abc import Callable
@@ -63,10 +63,10 @@ class InterpolationStrategy(Enum):
     """Linear interpolation (Zhou et al.)."""
 
     FOURIER = "fourier"
-    """Fourier basis representation."""
+    """Sine (gamma) and cosine (beta) basis of Zhou et al."""
 
     CHEBYSHEV = "chebyshev"
-    """Chebyshev polynomial basis representation."""
+    """Shifted Chebyshev polynomial basis on the layer grid i/p."""
 
 
 def _interp(u: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -87,81 +87,76 @@ def _interp(u: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     return result
 
 
-def _fourier(
-    u: npt.NDArray[np.float64], n_basis_terms: int | None = None
+def _refit_at_next_depth(
+    u: npt.NDArray[np.float64],
+    basis: Callable[[int, int], npt.NDArray[np.float64]],
+    n_basis_terms: int | None,
 ) -> npt.NDArray[np.float64]:
-    """Fourier (DCT-II) basis interpolation from depth p to p+1.
+    """Least-squares fit ``u`` in ``basis(p, q)``, then evaluate ``basis(p + 1, q)``."""
+    p = len(u)
+    q = min(p, n_basis_terms) if n_basis_terms is not None else min(p, 5)
+    coeffs, *_ = np.linalg.lstsq(basis(p, q), u, rcond=None)
+    return np.asarray(basis(p + 1, q) @ coeffs, dtype=np.float64)
 
-    Represents the p angles as k cosine coefficients using the DCT-II basis,
-    then evaluates at p+1 grid points:
 
-        u_j = sum_{l=0}^{k-1} a_l * cos(pi * l * (2j + 1) / (2p))
+def _fourier(
+    u: npt.NDArray[np.float64],
+    trig: Callable[[npt.NDArray[np.float64]], npt.NDArray[np.float64]],
+    n_basis_terms: int | None = None,
+) -> npt.NDArray[np.float64]:
+    """Fourier-basis interpolation from depth p to p+1 (Zhou et al.).
 
-    The DCT-II basis is orthogonal and well-conditioned for all p >= k.
+    Uses the FOURIER parameterisation of Zhou et al., PRX 10, 021067 (2020),
+    Eq. (8), `arXiv:1812.01041 <https://arxiv.org/abs/1812.01041>`_, for
+    layers i = 1, ..., p:
+
+        gamma_i = sum_{k=1}^{q} u_k sin[(k - 1/2)(i - 1/2) pi / p]
+        beta_i  = sum_{k=1}^{q} v_k cos[(k - 1/2)(i - 1/2) pi / p]
+
+    The q coefficients are fitted to ``u`` by least squares at depth p and
+    evaluated with p+1 in place of p. With q = p this matches Zhou et al.'s
+    rule of keeping the coefficients and appending a zero one.
 
     Args:
         u: Parameter sequence of length p.
-        n_basis_terms: Number of basis terms. Defaults to min(p, 5).
+        trig: ``np.sin`` for gamma angles, ``np.cos`` for beta angles.
+        n_basis_terms: Number of basis terms q. Defaults to min(p, 5).
     """
-    p = len(u)
-    k = min(p, n_basis_terms) if n_basis_terms is not None else min(p, 5)
 
-    # Build the DCT-II basis matrix at depth p: shape (p, k)
-    j_grid = np.arange(p, dtype=np.float64)
-    l_terms = np.arange(k, dtype=np.float64)
-    basis_p = np.cos(np.outer(np.pi * (2 * j_grid + 1) / (2 * p), l_terms))
+    def basis(p: int, q: int) -> npt.NDArray[np.float64]:
+        layers = np.arange(1, p + 1) - 0.5
+        modes = np.arange(1, q + 1) - 0.5
+        return trig(np.outer(layers, modes) * np.pi / p)
 
-    # Fit coefficients via least squares
-    coeffs, *_ = np.linalg.lstsq(basis_p, u, rcond=None)
-
-    # Evaluate at p+1 grid points
-    p_new = p + 1
-    j_grid_new = np.arange(p_new, dtype=np.float64)
-    basis_new = np.cos(np.outer(np.pi * (2 * j_grid_new + 1) / (2 * p_new), l_terms))
-
-    return basis_new @ coeffs
+    return _refit_at_next_depth(u, basis, n_basis_terms)
 
 
 def _chebyshev(
     u: npt.NDArray[np.float64], n_basis_terms: int | None = None
 ) -> npt.NDArray[np.float64]:
-    """Chebyshev polynomial basis interpolation from depth p to p+1.
+    """Chebyshev-basis interpolation from depth p to p+1.
 
-    Represents the p angles via k Chebyshev coefficients at Chebyshev nodes,
-    then evaluates at p+1 nodes:
+    Uses the basis expansion of `arXiv:2504.01694
+    <https://arxiv.org/abs/2504.01694>`_, Eq. (7), on the layer grid
+    t_i = i/p, i = 1, ..., p, with shifted Chebyshev polynomials as f_j:
 
-        u_j = sum_{l=0}^{k-1} c_l * T_l(x_j)
-        x_j = cos(pi * (j + 0.5) / p)
+        u_i = sum_{j=1}^{q} c_j T_{j-1}(2 i/p - 1)
+
+    The q coefficients solve A c = u with A_ij = T_{j-1}(2 i/p - 1), by least
+    squares when q < p, and are evaluated on the grid i/(p+1), i = 1, ..., p+1.
 
     Args:
         u: Parameter sequence of length p.
-        n_basis_terms: Number of Chebyshev terms. Defaults to min(p, 5).
+        n_basis_terms: Number of Chebyshev terms q. Defaults to min(p, 5).
     """
-    p = len(u)
-    k = min(p, n_basis_terms) if n_basis_terms is not None else min(p, 5)
 
-    # Chebyshev nodes at depth p
-    j_grid = np.arange(p, dtype=np.float64)
-    x_p = np.cos(np.pi * (j_grid + 0.5) / p)
+    def basis(p: int, q: int) -> npt.NDArray[np.float64]:
+        t = np.arange(1, p + 1) / p
+        return np.asarray(
+            np.polynomial.chebyshev.chebvander(2 * t - 1, q - 1), dtype=np.float64
+        )
 
-    # Build Chebyshev basis matrix at depth p: shape (p, k)
-    basis_p = np.empty((p, k), dtype=np.float64)
-    for l in range(k):
-        basis_p[:, l] = np.cos(l * np.arccos(x_p))
-
-    # Fit coefficients via least squares
-    coeffs, *_ = np.linalg.lstsq(basis_p, u, rcond=None)
-
-    # Chebyshev nodes at depth p+1
-    p_new = p + 1
-    j_grid_new = np.arange(p_new, dtype=np.float64)
-    x_new = np.cos(np.pi * (j_grid_new + 0.5) / p_new)
-
-    basis_new = np.empty((p_new, k), dtype=np.float64)
-    for l in range(k):
-        basis_new[:, l] = np.cos(l * np.arccos(x_new))
-
-    return (basis_new @ coeffs).astype(np.float64, copy=False)
+    return _refit_at_next_depth(u, basis, n_basis_terms)
 
 
 def interpolate_qaoa_params(
@@ -174,7 +169,8 @@ def interpolate_qaoa_params(
 
     Deinterleaves the flat parameter array into beta and gamma sequences,
     applies the chosen interpolation strategy independently to each, then
-    reinterleaves into the flat layout expected by QAOA.
+    reinterleaves into the flat layout expected by QAOA. FOURIER expands
+    gammas in the sine basis and betas in the cosine basis.
 
     Args:
         params: Flat 1D parameter array of length ``2 * current_depth``
@@ -190,13 +186,12 @@ def interpolate_qaoa_params(
     betas = params[0::2]
     gammas = params[1::2]
 
-    interp_fn: Callable[..., npt.NDArray[np.float64]]
     if strategy == InterpolationStrategy.INTERP:
         new_betas = _interp(betas)
         new_gammas = _interp(gammas)
     elif strategy == InterpolationStrategy.FOURIER:
-        new_betas = _fourier(betas, n_basis_terms)
-        new_gammas = _fourier(gammas, n_basis_terms)
+        new_betas = _fourier(betas, np.cos, n_basis_terms)
+        new_gammas = _fourier(gammas, np.sin, n_basis_terms)
     elif strategy == InterpolationStrategy.CHEBYSHEV:
         new_betas = _chebyshev(betas, n_basis_terms)
         new_gammas = _chebyshev(gammas, n_basis_terms)

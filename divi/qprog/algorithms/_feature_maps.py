@@ -38,6 +38,16 @@ _ROTATION_EMITTERS: dict[str, _RotationEmitter] = {
 }
 
 
+def _one_feature_per_qubit(feature_map: str, features, n_qubits: int) -> np.ndarray:
+    feature_arr = np.asarray(features, dtype=object)
+    if feature_arr.size != n_qubits:
+        raise ValueError(
+            f"{feature_map} expects one feature per qubit ({n_qubits}), "
+            f"got {feature_arr.size}."
+        )
+    return feature_arr.reshape(n_qubits)
+
+
 class FeatureMap(ABC):
     """Abstract base class for QNN feature maps (classical → quantum encoders)."""
 
@@ -93,7 +103,7 @@ class AngleEmbedding(FeatureMap):
         return n_qubits
 
     def build(self, features, n_qubits: int, **kwargs) -> QuantumCircuit:
-        feature_arr = np.asarray(features, dtype=object).reshape(n_qubits)
+        feature_arr = _one_feature_per_qubit(self.name, features, n_qubits)
         qc = QuantumCircuit(n_qubits)
         for q in range(n_qubits):
             self._emit(qc, feature_arr[q], q)
@@ -153,7 +163,7 @@ class ZZFeatureMap(FeatureMap):
 
     def build(self, features, n_qubits: int, **kwargs) -> QuantumCircuit:
         self._require_min_qubits(n_qubits)
-        feature_arr = np.asarray(features, dtype=object).reshape(n_qubits)
+        feature_arr = _one_feature_per_qubit(self.name, features, n_qubits)
         pairs = self._pair_iter(n_qubits)
 
         qc = QuantumCircuit(n_qubits)
