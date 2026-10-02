@@ -13,7 +13,7 @@ from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import DEFAULT_PRECISION
+from divi.circuits._core import DEFAULT_PRECISION
 
 # QASM2 gate name per Qiskit instruction name, for the body emitter.  Matches
 # the old OPENQASM_GATES values.  Any instruction outside this map is an

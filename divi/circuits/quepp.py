@@ -54,8 +54,8 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits._types import ResultFormat
 from divi.circuits.qem import OBSERVABLE_OVERRIDE, QEMContext, QEMProtocol
-from divi.pipeline.abc import ResultFormat
 
 __all__ = ["QuEPP", "SymbolicAngleWarning"]
 

@@ -31,9 +31,9 @@ from divi.pipeline import (
     Stage,
 )
 from divi.pipeline.stages import ParameterBindingStage, TrotterSpecStage
-from divi.qprog import ObservableMeasuringMixin
 from divi.qprog._program_checkpoint import ProgramCheckpoint
-from divi.qprog.algorithms import InitialState, ZerosState
+from divi.qprog.initial_states import InitialState, ZerosState
+from divi.qprog.mixins import ObservableMeasuringMixin
 from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
 from divi.reporting._events import ProgressEvent, TerminalStatus
 
@@ -89,7 +89,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             time: Evolution time t (e^(-iHt)).
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: Initial state preparation. Pass an :class:`~divi.qprog.algorithms.InitialState`
+            initial_state: Initial state preparation. Pass an :class:`~divi.qprog.initial_states.InitialState`
                 instance (e.g. ``ZerosState()``, ``SuperpositionState()``).
                 Defaults to ``ZerosState()`` if None.
             observable: One of:

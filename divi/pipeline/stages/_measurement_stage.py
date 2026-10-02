@@ -12,10 +12,10 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import measurement_qasms_from_groups
 from divi.circuits._conversions import _sparse_pauli_op_to_ham_string
-from divi.pipeline import GroupingStrategy, ShotDistStrategy
 from divi.pipeline._grouping import (
     BACKEND_EXPVAL,
     BACKEND_EXPVAL_GROUPS,
+    GroupingStrategy,
     _compute_measurement_groups,
 )
 from divi.pipeline._postprocessing import (
@@ -29,6 +29,7 @@ from divi.pipeline._result_keys_operations import (
     strip_axis_from_label,
 )
 from divi.pipeline._shot_distribution import (
+    ShotDistStrategy,
     _compute_group_l1_norms,
     _compute_shot_distribution,
 )

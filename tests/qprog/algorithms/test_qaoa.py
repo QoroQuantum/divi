@@ -21,9 +21,10 @@ from divi.qprog import (
     ScipyMethod,
     ScipyOptimizer,
 )
-from divi.qprog.algorithms import IterativeQAOA, SuperpositionState
+from divi.qprog.algorithms import IterativeQAOA
 from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.initial_states import SuperpositionState
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,

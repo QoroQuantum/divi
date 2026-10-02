@@ -24,7 +24,7 @@ from divi.hamiltonians import (
     qubo_to_ising,
     x_mixer,
 )
-from divi.qprog.problems import QAOAProblem
+from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._constraints import (
     LinearConstraint,
     _encode_constraints,

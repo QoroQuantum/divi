@@ -14,7 +14,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import x_mixer
 from divi.hamiltonians._term_ops import _require_qiskit_num_qubits
-from divi.qprog.algorithms import InitialState, SuperpositionState
+from divi.qprog.initial_states import InitialState, SuperpositionState
 from divi.qprog.mixins import SolutionEntry
 
 
@@ -61,7 +61,7 @@ class QAOAProblem(ABC):
     def recommended_initial_state(self) -> InitialState:
         """Recommended initial quantum state for this problem.
 
-        Defaults to :class:`~divi.qprog.algorithms.SuperpositionState` (ground state of the
+        Defaults to :class:`~divi.qprog.initial_states.SuperpositionState` (ground state of the
         standard X mixer).
         """
         return SuperpositionState()

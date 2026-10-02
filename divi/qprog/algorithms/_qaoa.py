@@ -27,7 +27,7 @@ from divi.hamiltonians._term_ops import (
 from divi.pipeline import Stage
 from divi.pipeline.stages import TrotterSpecStage
 from divi.qprog._program_checkpoint import _to_jsonable
-from divi.qprog.algorithms import InitialState
+from divi.qprog.initial_states import InitialState
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
 from divi.qprog.problems import QAOAProblem

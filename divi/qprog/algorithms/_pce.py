@@ -19,8 +19,9 @@ from divi.hamiltonians import BinaryPolynomialProblem, compile_problem
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
 from divi.pipeline.stages import PCECostStage
-from divi.qprog.algorithms import VQE, GenericLayerAnsatz
+from divi.qprog.algorithms._ansatze import GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
+from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.mixins import SolutionEntry
 from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
 from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem

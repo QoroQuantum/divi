@@ -31,24 +31,26 @@ from .algorithms import (
     VQE,
     AngleEmbedding,
     Ansatz,
-    CustomPerQubitState,
     CustomVQA,
     FeatureMap,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
-    InitialState,
     InterpolationStrategy,
     IterativeQAOA,
     LUCJAnsatz,
-    OnesState,
     QAOAAnsatz,
     QCCAnsatz,
-    SuperpositionState,
     TimeEvolution,
     UCCSDAnsatz,
+    ZZFeatureMap,
+)
+from .initial_states import (
+    CustomPerQubitState,
+    InitialState,
+    OnesState,
+    SuperpositionState,
     WState,
     ZerosState,
-    ZZFeatureMap,
 )
 from .early_stopping import EarlyStopping
 from .ensemble import (

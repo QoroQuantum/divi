@@ -5,7 +5,6 @@
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from threading import Event
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar, runtime_checkable
 
@@ -14,6 +13,7 @@ import numpy.typing as npt
 
 from divi.backends import CircuitRunner
 from divi.circuits import AxisLabel, MetaCircuit
+from divi.circuits._types import ResultFormat
 from divi.reporting._events import ProgressEmitter
 
 __all__ = [
@@ -158,23 +158,6 @@ class PipelineResult(dict):
 InT = TypeVar("InT")  # Generic input type consumed by Stage.expand.
 
 OutT = TypeVar("OutT")  # Generic output type produced by Stage.expand.
-
-
-class ResultFormat(Enum):
-    """Canonical format that raw backend results should be converted into.
-
-    Set by a measurement stage during ``expand``; read by ``pipeline.run()``
-    to apply the correct conversion between execute and reduce.
-    """
-
-    COUNTS = "counts"
-    """Raw shot counts — no conversion. Used by PCE (nonlinear reduce)."""
-
-    PROBS = "probs"
-    """Probability distributions (``{bitstring: probability}``)."""
-
-    EXPVALS = "expvals"
-    """Expectation values (``{observable_key: float}`` mapping per branch key)."""
 
 
 @dataclass(frozen=True)

@@ -15,8 +15,9 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
 from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy, to_spo
-from divi.qprog.algorithms import InitialState, TimeEvolution
+from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
+from divi.qprog.initial_states import InitialState
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 Deep-copied per program for thread safety.
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
-            initial_state: Initial state preparation (:class:`~divi.qprog.algorithms.InitialState` instance).
+            initial_state: Initial state preparation (:class:`~divi.qprog.initial_states.InitialState` instance).
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure probabilities; else the expectation
                 value of one observable, or of each observable in a sequence.

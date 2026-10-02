@@ -19,7 +19,8 @@ import rustworkx as rx
 import scipy.sparse as sps
 import scipy.sparse.linalg as spla
 
-from divi.qprog.problems import BinaryOptimizationProblem, QAOAProblem
+from divi.qprog.problems._base import QAOAProblem
+from divi.qprog.problems._binary import BinaryOptimizationProblem
 from divi.qprog.problems._graph_hamiltonians import _edge_weight, _wire_edges
 
 _Edge = tuple[int, int]

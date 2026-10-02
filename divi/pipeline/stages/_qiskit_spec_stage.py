@@ -12,7 +12,7 @@ from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
 from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageOutput
-from divi.pipeline.stages import CircuitSpecStage
+from divi.pipeline.stages._circuit_spec_stage import CircuitSpecStage
 
 
 class QiskitSpecStage(CircuitSpecStage):

@@ -84,21 +84,21 @@ Single-Instance QAOA
 QAOA takes a :class:`~divi.qprog.problems.QAOAProblem`; its main circuit knobs
 are ``initial_state`` and ``n_layers``.
 
-Pass an :class:`~divi.qprog.algorithms.InitialState` subclass for ``initial_state``.
-Built-in options include :class:`~divi.qprog.algorithms.ZerosState`,
-:class:`~divi.qprog.algorithms.OnesState`, :class:`~divi.qprog.algorithms.SuperpositionState`,
-:class:`~divi.qprog.algorithms.CustomPerQubitState`\ ``("01+-")``,
-:class:`~divi.qprog.algorithms.WState`\ ``(block_size, n_blocks)`` (one-hot encodings), and
-:class:`~divi.qprog.algorithms.DickeState`\ ``(hamming_weight, n_qubits=None)``
+Pass an :class:`~divi.qprog.initial_states.InitialState` subclass for ``initial_state``.
+Built-in options include :class:`~divi.qprog.initial_states.ZerosState`,
+:class:`~divi.qprog.initial_states.OnesState`, :class:`~divi.qprog.initial_states.SuperpositionState`,
+:class:`~divi.qprog.initial_states.CustomPerQubitState`\ ``("01+-")``,
+:class:`~divi.qprog.initial_states.WState`\ ``(block_size, n_blocks)`` (one-hot encodings), and
+:class:`~divi.qprog.initial_states.DickeState`\ ``(hamming_weight, n_qubits=None)``
 (a uniform superposition over bitstrings with exactly ``hamming_weight`` ones).
 When ``initial_state`` is omitted, QAOA uses the problem's
 ``recommended_initial_state``: a problem-specific default for graph problems and
 for portfolio selection with ``use_constrained_mixer=True``,
-:class:`~divi.qprog.algorithms.SuperpositionState` for other QUBO/HUBO problems.
+:class:`~divi.qprog.initial_states.SuperpositionState` for other QUBO/HUBO problems.
 
 QAOA always uses the problem's ``mixer_hamiltonian``, whatever the initial
-state. A :class:`~divi.qprog.algorithms.WState` or
-:class:`~divi.qprog.algorithms.DickeState` keeps its one-hot or fixed-weight
+state. A :class:`~divi.qprog.initial_states.WState` or
+:class:`~divi.qprog.initial_states.DickeState` keeps its one-hot or fixed-weight
 subspace only if that mixer conserves it, e.g. an
 :func:`~divi.hamiltonians.xy_mixer`.
 
@@ -547,7 +547,7 @@ as measured, and may return an empty list.
 With ``use_constrained_mixer=True``,
 :class:`~divi.qprog.problems.PortfolioSelectionProblem` gives QAOA a ring XY
 mixer on the asset qubits, which conserves their Hamming weight, and a
-:class:`~divi.qprog.algorithms.DickeState` of weight :math:`K` on them as the
+:class:`~divi.qprog.initial_states.DickeState` of weight :math:`K` on them as the
 recommended initial state; leave ``initial_state`` unset to use it. Slack
 qubits keep an X mixer, and other constraints are enforced only by their
 penalties. The cardinality penalty stays in the

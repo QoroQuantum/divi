@@ -19,15 +19,14 @@ from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
 )
-from divi.qprog.algorithms import (
+from divi.qprog.algorithms._ansatze import (
     Ansatz,
     HartreeFockAnsatz,
-    InitialState,
     LUCJAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
-    ZerosState,
 )
+from divi.qprog.initial_states import InitialState, ZerosState
 from divi.qprog.mixins import SolutionSamplingMixin
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
@@ -79,7 +78,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             ansatz (Ansatz | None): The ansatz to use for the VQE problem.
                 Defaults to HartreeFockAnsatz.
             initial_state (InitialState | None): Initial state preparation.
-                Pass an :class:`~divi.qprog.algorithms.InitialState` instance (e.g. ``ZerosState()``,
+                Pass an :class:`~divi.qprog.initial_states.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
             max_iterations (int): Maximum number of optimisation iterations. Defaults to 10.
             ansatz_kwargs (dict | None): Ansatz-specific options, forwarded to

@@ -16,9 +16,10 @@ from divi.circuits.quepp import QuEPP
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.pipeline import DiviPerformanceWarning
 from divi.qprog import ReportingLevel, TimeEvolutionTrajectory
-from divi.qprog.algorithms import SuperpositionState, TimeEvolution
+from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import BatchConfig, BatchMode
+from divi.qprog.initial_states import SuperpositionState
 from divi.qprog.workflows import _time_evolution_trajectory as workflow
 
 _PROB_TOL = 0.05

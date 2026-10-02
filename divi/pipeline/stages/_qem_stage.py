@@ -29,7 +29,7 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.stages import PauliTwirlStage
+from divi.pipeline.stages._pauli_twirl_stage import PauliTwirlStage
 
 QEM_AXIS = "qem"
 

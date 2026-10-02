@@ -25,8 +25,8 @@ from divi.pipeline.abc import (
     StageOutput,
     StageToken,
 )
-from divi.pipeline.stages import QEMStage
 from divi.pipeline.stages._qasm_cache import _qasm_body_cached, _template_cached
+from divi.pipeline.stages._qem_stage import QEMStage
 
 
 def _validate_param_sets(env: PipelineEnv, *, assert_finite: bool = True) -> np.ndarray:

@@ -16,14 +16,14 @@ import numpy as np
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
-from divi.qprog import GraphProblemTypes
-from divi.qprog.algorithms import (
+from divi.qprog._types import GraphProblemTypes
+from divi.qprog.initial_states import (
     InitialState,
     OnesState,
     SuperpositionState,
     ZerosState,
 )
-from divi.qprog.problems import QAOAProblem
+from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._graph_hamiltonians import (
     _node_ids,
     _qubit_edges,

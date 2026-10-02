@@ -26,8 +26,12 @@ from scipy.optimize import minimize
 
 from divi.hamiltonians import xy_mixer
 from divi.hamiltonians._mixers import single_pauli_label
-from divi.qprog.algorithms import DickeState, InitialState, SuperpositionState
-from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
+from divi.qprog.initial_states import (
+    DickeState,
+    InitialState,
+    SuperpositionState,
+    build_block_xy_mixer_graph,
+)
 from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._binary import BinaryOptimizationProblem
 from divi.qprog.problems._constraints import LinearConstraint, _UnreachableBoundError
@@ -540,7 +544,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
     :class:`~divi.qprog.algorithms.PCE` can take the problem. With
     ``use_constrained_mixer=True``, QAOA uses a ring XY mixer on the asset
     qubits, which conserves their Hamming weight, and starts from a
-    :class:`~divi.qprog.algorithms.DickeState` of weight :math:`K` on them.
+    :class:`~divi.qprog.initial_states.DickeState` of weight :math:`K` on them.
     Slack qubits from inequality constraints keep an X mixer.
 
     Args:

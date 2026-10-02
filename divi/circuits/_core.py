@@ -6,18 +6,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
 
 import numpy as np
 from qiskit.circuit import Parameter
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import PauliList, SparsePauliOp
 
-from divi.circuits import QASMTag
+from divi.circuits._types import QASMTag, ResultFormat
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
-
-if TYPE_CHECKING:
-    from divi.pipeline.abc import ResultFormat
 
 
 def flatten_observable_tuple(

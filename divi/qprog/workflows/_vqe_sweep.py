@@ -20,7 +20,8 @@ from divi.hamiltonians._molecular import (
     is_pyscf_mole,
     pyscf_mole_at,
 )
-from divi.qprog import VQE, Ansatz, ProgramEnsemble, ReportingLevel
+from divi.qprog.algorithms import VQE, Ansatz
+from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 

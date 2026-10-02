@@ -12,8 +12,8 @@ from qiskit.quantum_info import SparsePauliOp
 from scipy.linalg import block_diag
 
 from divi.qprog import PCE, QAOA
-from divi.qprog.algorithms import DickeState, SuperpositionState
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.initial_states import DickeState, SuperpositionState
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,

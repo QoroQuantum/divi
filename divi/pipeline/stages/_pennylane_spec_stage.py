@@ -18,7 +18,7 @@ from divi.circuits._pennylane import (
     qscript_to_meta,
 )
 from divi.pipeline.abc import MetaCircuitBatch, PipelineEnv, StageOutput
-from divi.pipeline.stages import CircuitSpecStage
+from divi.pipeline.stages._circuit_spec_stage import CircuitSpecStage
 
 #: Input types accepted by :class:`PennyLaneSpecStage`.
 PennyLaneInput = qp.tape.QuantumScript | QNode

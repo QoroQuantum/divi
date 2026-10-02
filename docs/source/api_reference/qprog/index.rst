@@ -13,6 +13,7 @@ interface for all quantum algorithms.
 
    core
    algorithms
+   initial_states
    problems
    optimizers
    early_stopping

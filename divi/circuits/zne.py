@@ -18,8 +18,8 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler.basepasses import TransformationPass
 
+from divi.circuits._types import ResultFormat
 from divi.circuits.qem import QEMContext, QEMProtocol
-from divi.pipeline.abc import ResultFormat
 
 __all__ = [
     "ZNE",

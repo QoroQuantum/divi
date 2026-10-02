@@ -9,7 +9,7 @@ from typing import Any
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.pipeline.abc import ResultFormat
+from divi.circuits._types import ResultFormat
 
 __all__ = [
     "OBSERVABLE_OVERRIDE",

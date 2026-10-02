@@ -187,7 +187,7 @@ Initial State
 ^^^^^^^^^^^^^
 
 By default VQE prepares the ``|0...0>`` reference (``ZerosState()``).  Pass a
-different :class:`~divi.qprog.algorithms.InitialState` via the ``initial_state``
+different :class:`~divi.qprog.initial_states.InitialState` via the ``initial_state``
 constructor argument — e.g. ``ZerosState()``, ``OnesState()``,
 ``SuperpositionState()``, ``WState()``, or ``CustomPerQubitState(...)``.  The
 chemistry ansätze (Hartree-Fock, UCCSD, QCC) embed their own reference-state

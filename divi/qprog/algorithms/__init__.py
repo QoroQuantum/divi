@@ -15,15 +15,6 @@ from ._ansatze import (
 )
 from ._custom_vqa import CustomVQA
 from ._feature_maps import AngleEmbedding, FeatureMap, ZZFeatureMap
-from ._initial_state import (
-    CustomPerQubitState,
-    DickeState,
-    InitialState,
-    OnesState,
-    SuperpositionState,
-    WState,
-    ZerosState,
-)
 from ._vqe import VQE
 from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
 from ._pce import PCE
@@ -34,27 +25,20 @@ from ._time_evolution import TimeEvolution
 __all__ = [
     "AngleEmbedding",
     "Ansatz",
-    "CustomPerQubitState",
     "CustomVQA",
-    "DickeState",
     "FeatureMap",
     "GenericLayerAnsatz",
     "HartreeFockAnsatz",
-    "InitialState",
     "InterpolationStrategy",
     "IterativeQAOA",
     "LUCJAnsatz",
-    "OnesState",
     "PCE",
     "QAOA",
     "QAOAAnsatz",
     "QCCAnsatz",
     "QNN",
-    "SuperpositionState",
     "TimeEvolution",
     "UCCSDAnsatz",
     "VQE",
-    "WState",
-    "ZerosState",
     "ZZFeatureMap",
 ]

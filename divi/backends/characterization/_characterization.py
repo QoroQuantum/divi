@@ -9,7 +9,7 @@ import logging
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 import numpy as np
 import requests
@@ -31,10 +31,12 @@ from divi.exceptions import (
     CharacterizationFailedError,
     ExecutionCancelledError,
 )
-from divi.qprog.problems import BinaryOptimizationProblem
 
 from .._job_status import InsufficientCreditsError, JobTimedOutError
 from ..runners._qoro import QoroService
+
+if TYPE_CHECKING:
+    from divi.qprog.problems import BinaryOptimizationProblem
 
 logger = logging.getLogger(__name__)
 

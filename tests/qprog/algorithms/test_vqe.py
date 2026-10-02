@@ -18,11 +18,10 @@ from divi.qprog.algorithms import (
     LUCJAnsatz,
     QAOAAnsatz,
     QCCAnsatz,
-    SuperpositionState,
     UCCSDAnsatz,
-    ZerosState,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.initial_states import SuperpositionState, ZerosState
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 from divi.reporting._events import EventKind, TerminalStatus
 from tests._helpers import exact_match

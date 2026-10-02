@@ -4,9 +4,9 @@
 
 """Initial-state preparation and block-mixer utilities.
 
-Provides an :class:`~divi.qprog.algorithms.InitialState` base class and concrete implementations
-consumed by QAOA, VQE, TimeEvolution, and any future algorithm that
-prepends an initial-state layer to its circuit.
+Provides an :class:`InitialState` base class and concrete implementations
+consumed by QAOA, VQE and TimeEvolution, and recommended by problems through
+``recommended_initial_state``.
 
 Class-based API (preferred)::
 
@@ -22,6 +22,16 @@ from typing import Literal, Sequence
 import networkx as nx
 import numpy as np
 from qiskit.circuit import QuantumCircuit
+
+__all__ = [
+    "CustomPerQubitState",
+    "DickeState",
+    "InitialState",
+    "OnesState",
+    "SuperpositionState",
+    "WState",
+    "ZerosState",
+]
 
 # ---------------------------------------------------------------------------
 # Abstract base class

@@ -20,6 +20,7 @@ from divi.qprog.problems import HamiltonianProblem
 
 @pytest.fixture(autouse=True)
 def _close_figures():
+    plt.close("all")
     yield
     plt.close("all")
 

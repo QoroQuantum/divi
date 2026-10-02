@@ -18,7 +18,7 @@ from matplotlib.colors import to_rgba
 from sklearn.cluster import SpectralClustering
 
 from divi._optional import optional_module
-from divi.qprog import GraphProblemTypes
+from divi.qprog._types import GraphProblemTypes
 from divi.qprog.problems._graph_hamiltonians import _edge_weight, _wire_edges
 from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
 

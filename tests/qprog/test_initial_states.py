@@ -15,16 +15,16 @@ from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import xy_mixer
 from divi.qprog import QAOA, VQE, TimeEvolution
-from divi.qprog.algorithms import (
+from divi.qprog.algorithms import QAOAAnsatz
+from divi.qprog.initial_states import (
     CustomPerQubitState,
     DickeState,
     OnesState,
-    QAOAAnsatz,
     SuperpositionState,
     WState,
     ZerosState,
+    build_block_xy_mixer_graph,
 )
-from divi.qprog.algorithms._initial_state import build_block_xy_mixer_graph
 from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
 from tests._helpers import exact_match
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
