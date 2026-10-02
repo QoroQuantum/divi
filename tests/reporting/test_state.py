@@ -7,8 +7,14 @@
 import pytest
 
 from divi.backends._job_status import JobStatus
-from divi.reporting._events import ProgressEvent, ProgressScope, TerminalStatus
+from divi.reporting._events import (
+    EventKind,
+    ProgressEvent,
+    ProgressScope,
+    TerminalStatus,
+)
 from divi.reporting._state import ProgressState
+from tests._helpers import exact_match
 
 
 def registered_program_state(
@@ -20,21 +26,28 @@ def registered_program_state(
     return state
 
 
-def registered_batch_with_programs() -> ProgressState:
-    """Create state with two programs assigned to one active batch."""
+BATCH_REGISTRATION = ProgressEvent.register(
+    "batch",
+    ProgressScope.BATCH,
+    "Batch",
+    None,
+    batch_color="cyan",
+    program_keys=("p1", "p2"),
+)
+
+
+def registered_programs() -> ProgressState:
+    """Create state with two active programs and no batch."""
     state = ProgressState()
     for target in ("p1", "p2"):
         state.apply(ProgressEvent.register(target, ProgressScope.PROGRAM, target, 2))
-    state.apply(
-        ProgressEvent.register(
-            "batch",
-            ProgressScope.BATCH,
-            "Batch",
-            None,
-            batch_color="cyan",
-            program_keys=("p1", "p2"),
-        )
-    )
+    return state
+
+
+def registered_batch_with_programs() -> ProgressState:
+    """Create state with two programs assigned to one active batch."""
+    state = registered_programs()
+    state.apply(BATCH_REGISTRATION)
     return state
 
 
@@ -76,6 +89,15 @@ def test_active_program_events_update_their_rendered_fields(event, expected):
     target = state.get("p")
     for name, value in expected.items():
         assert getattr(target, name) == value
+
+
+def test_successive_advances_accumulate():
+    state = registered_program_state()
+
+    state.apply(ProgressEvent.advance("p", amount=1))
+    state.apply(ProgressEvent.advance("p", amount=2))
+
+    assert state.get("p").completed == 3
 
 
 def test_active_registration_is_idempotent():
@@ -137,6 +159,36 @@ def test_events_for_unknown_targets_raise_key_error(event):
     state = ProgressState()
 
     with pytest.raises(KeyError, match="missing"):
+        state.apply(event)
+
+
+@pytest.mark.parametrize(
+    ("event", "message"),
+    [
+        (
+            ProgressEvent(kind=EventKind.REGISTER, progress_key="p", label="Program"),
+            "register event requires scope",
+        ),
+        (
+            ProgressEvent(
+                kind=EventKind.REGISTER, progress_key="p", scope=ProgressScope.PROGRAM
+            ),
+            "register event requires label",
+        ),
+        (
+            ProgressEvent(kind=EventKind.ADVANCE, progress_key="p"),
+            "advance event requires amount",
+        ),
+        (
+            ProgressEvent(kind=EventKind.FINISH, progress_key="p"),
+            "finish event requires terminal_status",
+        ),
+    ],
+)
+def test_hand_built_events_missing_a_required_field_raise_value_error(event, message):
+    state = registered_program_state()
+
+    with pytest.raises(ValueError, match=exact_match(message)):
         state.apply(event)
 
 
@@ -208,6 +260,7 @@ def test_finish_preserves_loss_and_detail_but_clears_polling():
     )
 
     target = state.get("p")
+    assert target.completed == 1
     assert target.loss == -1.25
     assert target.terminal_status is TerminalStatus.FAILED
     assert target.job_status is JobStatus.TIMED_OUT
@@ -263,6 +316,10 @@ def test_preparation_and_workflow_scopes_use_standard_transitions(scope):
     assert target.completed == 1
     assert target.message == "running"
     assert target.scope is scope
+
+
+def test_batch_registration_affects_the_batch_and_its_member_programs():
+    assert registered_programs().apply(BATCH_REGISTRATION) == {"batch", "p1", "p2"}
 
 
 def test_batch_registration_assigns_its_colour_to_member_programs():

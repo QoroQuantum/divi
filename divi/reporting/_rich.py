@@ -68,7 +68,7 @@ class BatchIndicatorColumn(ProgressColumn):
     """Render a coloured square for programs associated with a batch."""
 
     def render(self, task: Task) -> RenderableType:
-        color = task.fields.get("batch_color", "")
+        color = task.fields["batch_color"]
         if color:
             return Text("■ ", style=color)
         return Text("  ")
@@ -163,7 +163,7 @@ def _render_polling_text(target: _TargetState) -> str:
 
 
 def _short_job_id(service_job_id: str) -> str:
-    return service_job_id.split("-", maxsplit=1)[0]
+    return service_job_id.partition("-")[0]
 
 
 def _add_target(progress: Progress, target: _TargetState) -> TaskID:
@@ -186,7 +186,7 @@ def _update_target(progress: Progress, task_id: TaskID, target: _TargetState) ->
     )
 
 
-def _make_progress(console: Console) -> Progress:
+def _make_progress() -> Progress:
     return Progress(
         BatchIndicatorColumn(),
         TextColumn("[bold blue]{task.fields[label]}"),
@@ -195,8 +195,6 @@ def _make_progress(console: Console) -> Progress:
         _ProgressBearingColumn(TimeElapsedColumn()),
         ConditionalSpinnerColumn(),
         PhaseStatusColumn(),
-        console=console,
-        auto_refresh=False,
     )
 
 
@@ -232,7 +230,7 @@ def make_ensemble_view(
     console: Console, is_jupyter: bool
 ) -> tuple[RenderFn, CloseViewFn]:
     """Create a single-writer live view for queued ensemble state changes."""
-    progress = _make_progress(console)
+    progress = _make_progress()
     live = Live(
         progress,
         console=console,

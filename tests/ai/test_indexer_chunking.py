@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from divi.ai._indexer import (
     _chunk_markdown,
     _chunk_rst,
@@ -11,52 +13,52 @@ from divi.ai._indexer import (
 )
 
 
-class TestStripEmbedPrefix:
-    """``_strip_embed_prefix`` keeps the discriminating identifier (qualified
-    symbol name or section title) and drops only the structural label
-    (``[Source:`` / ``[Class:`` / brackets / ``§`` separator). For Source
-    chunks with a section, the file path is dropped because its leading
-    path components identify a documentation category rather than its topic;
-    only the section title discriminates."""
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("[Source: foo.py § Bar]\ncontent here", "Bar\ncontent here"),
+        ("[Source: foo.py]\ncontent here", "foo.py\ncontent here"),
+        ("[Module: divi.core]\nmodule docs", "divi.core\nmodule docs"),
+        (
+            "[Function: divi.core.foo]\ndef foo(): pass",
+            "divi.core.foo\ndef foo(): pass",
+        ),
+        ("[Class: divi.core.Bar]\nclass Bar: pass", "divi.core.Bar\nclass Bar: pass"),
+        ("plain text content", "plain text content"),
+        ("", ""),
+        ("[Source: foo.py]", "foo.py"),
+    ],
+    ids=[
+        "source_with_section_keeps_title",
+        "source_without_section_keeps_path",
+        "module_keeps_name",
+        "function_keeps_name",
+        "class_keeps_name",
+        "no_prefix_unchanged",
+        "empty",
+        "prefix_only_keeps_identifier",
+    ],
+)
+def test_strip_embed_prefix(text, expected):
+    """Keeps the discriminating identifier and drops the structural label; a
+    Source chunk with a section keeps only the section title."""
+    assert _strip_embed_prefix(text) == expected
 
-    def test_source_with_section_keeps_section_title(self):
-        text = "[Source: foo.py § Bar]\ncontent here"
-        assert _strip_embed_prefix(text) == "Bar\ncontent here"
 
-    def test_source_without_section_keeps_path(self):
-        text = "[Source: foo.py]\ncontent here"
-        assert _strip_embed_prefix(text) == "foo.py\ncontent here"
-
-    def test_module_keeps_qualified_name(self):
-        text = "[Module: divi.core]\nmodule docs"
-        assert _strip_embed_prefix(text) == "divi.core\nmodule docs"
-
-    def test_function_keeps_qualified_name(self):
-        text = "[Function: divi.core.foo]\ndef foo(): pass"
-        assert _strip_embed_prefix(text) == "divi.core.foo\ndef foo(): pass"
-
-    def test_class_keeps_qualified_name(self):
-        text = "[Class: divi.core.Bar]\nclass Bar: pass"
-        assert _strip_embed_prefix(text) == "divi.core.Bar\nclass Bar: pass"
-
-    def test_no_prefix_unchanged(self):
-        text = "plain text content"
-        assert _strip_embed_prefix(text) == "plain text content"
-
-    def test_empty_string(self):
-        assert _strip_embed_prefix("") == ""
-
-    def test_prefix_only_keeps_identifier(self):
-        """When the chunk is *just* the prefix line (no body), the kept
-        identifier is returned standalone — empty was the old behavior."""
-        text = "[Source: foo.py]"
-        assert _strip_embed_prefix(text) == "foo.py"
+def _section_titles(chunks):
+    """The ``§ <title>`` of each chunk's ``[Source: …]`` prefix."""
+    return [c.text.split("§ ", 1)[1].split("]", 1)[0] for c in chunks]
 
 
 class TestChunkMarkdown:
     def test_splits_by_headers(self, sample_markdown_source):
         chunks = _chunk_markdown(sample_markdown_source, "docs/test.md")
-        assert len(chunks) >= 2
+        assert _section_titles(chunks) == [
+            "Main Title",
+            "Getting Started",
+            "Subsection",
+            "API Reference",
+        ]
 
     def test_skips_navigation_sections(self, sample_markdown_source):
         chunks = _chunk_markdown(sample_markdown_source, "docs/test.md")
@@ -87,7 +89,11 @@ class TestChunkMarkdown:
 class TestChunkRst:
     def test_parses_sections(self, sample_rst_source):
         chunks = _chunk_rst(sample_rst_source, "docs/test.rst")
-        assert len(chunks) >= 2
+        assert _section_titles(chunks) == [
+            "Main Title",
+            "Getting Started",
+            "Advanced Usage",
+        ]
 
     def test_skips_see_also(self, sample_rst_source):
         chunks = _chunk_rst(sample_rst_source, "docs/test.rst")
@@ -98,7 +104,9 @@ class TestChunkRst:
         """RST without section titles falls back to single chunk."""
         plain = "Just a paragraph with enough content to pass the minimum " * 3
         chunks = _chunk_rst(plain, "plain.rst")
-        assert len(chunks) >= 1
+        assert len(chunks) == 1
+        assert chunks[0].text.startswith("[Source: plain.rst")
+        assert plain.strip() in chunks[0].text
 
     def test_preserves_source_prefix(self, sample_rst_source):
         chunks = _chunk_rst(sample_rst_source, "docs/test.rst")

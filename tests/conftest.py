@@ -192,19 +192,29 @@ def dummy_sampling_pipeline_env(make_dummy_simulator):
 
 
 @pytest.fixture
-def default_test_simulator():
-    return MaestroSimulator(shots=5000)
+def make_maestro_simulator():
+    """Build a ``MaestroSimulator`` on the test defaults, with per-test overrides."""
+
+    def _make(**kwargs):
+        return MaestroSimulator(**{"shots": 5000, **kwargs})
+
+    return _make
 
 
 @pytest.fixture
-def sampling_test_simulator():
+def default_test_simulator(make_maestro_simulator):
+    return make_maestro_simulator()
+
+
+@pytest.fixture
+def sampling_test_simulator(make_maestro_simulator):
     """A real backend that samples rather than evaluating observables analytically.
 
     Needed by tests about observable grouping or per-group shot allocation: on an
     expval-capable backend the measurement stage promotes to the analytic path,
     which submits one circuit and allocates no per-group shots.
     """
-    return MaestroSimulator(shots=1200, force_sampling=True)
+    return make_maestro_simulator(shots=1200, force_sampling=True)
 
 
 @pytest.fixture

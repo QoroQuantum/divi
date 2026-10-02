@@ -4,6 +4,10 @@
 
 """Shared program stubs for ``ProgramEnsemble`` tests."""
 
+from io import StringIO
+
+from rich.console import Console
+
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import ProgressEvent
 from divi.reporting._session import ProgressSession
@@ -14,7 +18,12 @@ class RecordingProgressSession(ProgressSession):
     """Real direct session that also records its typed input events."""
 
     def __init__(self, state: ProgressState) -> None:
-        super().__init__(state, lambda _state, _affected: None, lambda: None)
+        super().__init__(
+            state,
+            lambda _state, _affected: None,
+            lambda: None,
+            console=Console(file=StringIO()),
+        )
         self.emitted: list[ProgressEvent] = []
 
     def emit(self, event: ProgressEvent) -> None:

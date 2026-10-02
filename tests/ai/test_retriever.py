@@ -5,6 +5,7 @@
 import bm25s
 import faiss
 import numpy as np
+import pytest
 
 from divi.ai._retriever import (
     RetrievedChunk,
@@ -121,37 +122,23 @@ class TestRetrieve:
         )
         return embedder
 
-    def test_returns_only_chunks_above_rerank_gate(self, mocker):
+    @pytest.mark.parametrize(
+        "rerank_scores, kept",
+        [
+            ([2.5, 1.0, -1.5, -2.5, -5.0], [2.5, 1.0, -1.5]),
+            ([1.0, -2.0, -2.001], [1.0, -2.0]),
+            ([-3.0, -5.0, -10.0], []),
+        ],
+        ids=["drops_below_gate", "gate_is_inclusive", "all_below_gate"],
+    )
+    def test_rerank_gate(self, mocker, rerank_scores, kept):
         """Chunks with rerank score below the gate (-2.0) are dropped."""
-        chunks = self._make_chunks(5)
+        chunks = self._make_chunks(len(rerank_scores))
         embedder = self._make_query_embedder(mocker)
-        # Rerank scores: first 3 above gate (-2.0), last 2 below
-        stack = self._stack(chunks, embedder, [2.5, 1.0, -1.5, -2.5, -5.0], mocker)
+        stack = self._stack(chunks, embedder, rerank_scores, mocker)
 
-        results = retrieve("mod body", stack, top_k=5)
-        assert all(r.score >= -2.0 for r in results)
-        assert len(results) == 3
-
-    def test_gate_boundary_is_inclusive(self, mocker):
-        """A chunk scoring exactly the gate value (-2.0) must survive (>=)."""
-        chunks = self._make_chunks(3)
-        embedder = self._make_query_embedder(mocker)
-        # One chunk at the exact boundary; another just above; one well below.
-        stack = self._stack(chunks, embedder, [1.0, -2.0, -2.001], mocker)
-
-        results = retrieve("mod body", stack, top_k=3)
-        scores = sorted(r.score for r in results)
-        assert -2.0 in scores  # the boundary chunk is admitted
-        assert all(s >= -2.0 for s in scores)
-        assert len(results) == 2
-
-    def test_empty_when_all_below_gate(self, mocker):
-        chunks = self._make_chunks(3)
-        embedder = self._make_query_embedder(mocker)
-        # All rerank scores below the -2.0 gate
-        stack = self._stack(chunks, embedder, [-3.0, -5.0, -10.0], mocker)
-
-        assert retrieve("mod body", stack, top_k=5) == []
+        results = retrieve("mod body", stack, top_k=len(rerank_scores))
+        assert [r.score for r in results] == kept
 
     def test_bails_on_out_of_corpus_identifier(self, mocker):
         """Query with a CamelCase identifier absent from corpus → empty.
@@ -198,30 +185,23 @@ class TestRetrieve:
         stack = self._stack(chunks, embedder, [1.0, 0.5, 5.0, 2.0], mocker)
 
         results = retrieve("mod body", stack, top_k=4)
-        for i in range(len(results) - 1):
-            assert results[i].score >= results[i + 1].score
+        assert [r.score for r in results] == [5.0, 2.0, 1.0, 0.5]
         assert isinstance(results[0], RetrievedChunk)
 
 
-class TestSearchStackReranker:
+def test_reranker_lazy_load_constructs_once_and_caches(mocker):
     """The reranker is lazy-loaded on first access via ``cached_property``."""
-
-    def test_lazy_load_constructs_once_and_caches(self, mocker):
-        # Patch the class at its real import site (inside the cached_property
-        # body). The patch is set up *before* the cached_property accesses it.
-        mock_cls = mocker.patch("fastembed.rerank.cross_encoder.TextCrossEncoder")
-        stack = SearchStack(
-            index=mocker.MagicMock(),
-            chunks=[],
-            embedder=mocker.MagicMock(),
-            bm25=mocker.MagicMock(),
-        )
-        # First access — triggers construction.
-        r1 = stack.reranker
-        # Second access — returns the cached instance, does not re-construct.
-        r2 = stack.reranker
-        assert r1 is r2
-        mock_cls.assert_called_once_with(model_name="Xenova/ms-marco-MiniLM-L-6-v2")
+    mock_cls = mocker.patch("fastembed.rerank.cross_encoder.TextCrossEncoder")
+    stack = SearchStack(
+        index=mocker.MagicMock(),
+        chunks=[],
+        embedder=mocker.MagicMock(),
+        bm25=mocker.MagicMock(),
+    )
+    r1 = stack.reranker
+    r2 = stack.reranker
+    assert r1 is r2
+    mock_cls.assert_called_once_with(model_name="Xenova/ms-marco-MiniLM-L-6-v2")
 
 
 class TestEnrichChunks:

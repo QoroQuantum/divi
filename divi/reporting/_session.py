@@ -48,12 +48,12 @@ class ProgressSession:
         render: RenderFn,
         close_view: CloseViewFn | None,
         *,
-        console: Console | None = None,
+        console: Console,
         event_queue: Queue[ProgressEvent] | None = None,
         done_event: Event | None = None,
     ) -> None:
         self.state = state
-        self._console = console if console is not None else Console()
+        self._console = console
         self._queue = event_queue
         self._done_event = done_event
         self._render = render
@@ -121,6 +121,7 @@ class ProgressSession:
         )
         listener = Thread(
             target=session._listen,
+            args=(event_queue, done_event),
             name="divi-progress-listener",
             daemon=True,
         )
@@ -200,12 +201,10 @@ class ProgressSession:
                 include_traceback=False,
             )
 
-    def _listen(self) -> None:
-        if self._queue is None or self._done_event is None:
-            return
-        while not self._done_event.is_set() or self._queue.unfinished_tasks > 0:
+    def _listen(self, event_queue: Queue[ProgressEvent], done_event: Event) -> None:
+        while not done_event.is_set() or event_queue.unfinished_tasks > 0:
             try:
-                event = self._queue.get(timeout=0.1)
+                event = event_queue.get(timeout=0.1)
             except Empty:
                 continue
             try:
@@ -213,7 +212,7 @@ class ProgressSession:
             except Exception as exc:
                 self._record_failure(exc)
             finally:
-                self._queue.task_done()
+                event_queue.task_done()
 
     def _process(self, event: ProgressEvent) -> None:
         try:

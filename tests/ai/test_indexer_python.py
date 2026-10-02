@@ -4,6 +4,8 @@
 
 import textwrap
 
+import pytest
+
 from divi.ai._indexer import (
     _extract_import_block,
     _extract_python_units,
@@ -55,21 +57,19 @@ class TestExtractPythonUnits:
         assert any("__init__" in n for n in func_names)
         assert any("compute" in n for n in func_names)
 
-    def test_skips_undocumented_functions(self, sample_python_source):
-        """Undocumented functions should not get their own [Function:] chunk."""
+    @pytest.mark.parametrize(
+        "name, present",
+        [
+            pytest.param("undocumented", False, id="skips_undocumented"),
+            pytest.param("_private", False, id="skips_private"),
+            pytest.param("top_level_func", True, id="extracts_top_level_func"),
+        ],
+    )
+    def test_function_chunk_presence(self, sample_python_source, name, present):
+        """Only documented public functions get their own [Function:] chunk."""
         chunks = _extract_python_units(sample_python_source, "divi/sample.py")
         func_chunks = [c for c in chunks if c.text.startswith("[Function:")]
-        assert not any("undocumented" in c.text for c in func_chunks)
-
-    def test_skips_private_methods(self, sample_python_source):
-        chunks = _extract_python_units(sample_python_source, "divi/sample.py")
-        func_chunks = [c for c in chunks if c.text.startswith("[Function:")]
-        assert not any("_private" in c.text for c in func_chunks)
-
-    def test_top_level_func_extracted(self, sample_python_source):
-        chunks = _extract_python_units(sample_python_source, "divi/sample.py")
-        func_chunks = [c for c in chunks if c.text.startswith("[Function:")]
-        assert any("top_level_func" in c.text for c in func_chunks)
+        assert any(name in c.text for c in func_chunks) is present
 
     def test_async_function_prefix(self, sample_python_source):
         chunks = _extract_python_units(sample_python_source, "divi/sample.py")
@@ -124,12 +124,6 @@ class TestGetSignature:
         text = self._extract_sig(src)
         assert "(a, b, c)" in text
 
-    def test_with_annotations(self):
-        src = 'def foo(x: int, y: str) -> bool:\n    """Doc."""\n    pass'
-        text = self._extract_sig(src)
-        assert "x: int" in text
-        assert "y: str" in text
-
     def test_varargs(self):
         src = 'def foo(*args, **kwargs):\n    """Doc."""\n    pass'
         text = self._extract_sig(src)
@@ -142,31 +136,12 @@ class TestGetSignature:
         assert "(*, key: int)" in text
 
 
-class TestAnnotationStr:
-    """Test annotation rendering via _extract_python_units."""
-
-    def _extract_annotation(self, annotation_str):
-        """Helper: render an annotation by extracting from a function."""
-        src = f'def foo(x: {annotation_str}):\n    """Doc."""\n    pass'
-        chunks = _extract_python_units(src, "test.py")
-        func_chunks = [c for c in chunks if "[Function:" in c.text]
-        return func_chunks[0].text
-
-    def test_simple_name(self):
-        text = self._extract_annotation("int")
-        assert "x: int" in text
-
-    def test_attribute(self):
-        text = self._extract_annotation("np.ndarray")
-        assert "x: np.ndarray" in text
-
-    def test_subscript(self):
-        text = self._extract_annotation("list[int]")
-        assert "x: list[int]" in text
-
-    def test_union(self):
-        text = self._extract_annotation("int | str")
-        assert "x: int | str" in text
+@pytest.mark.parametrize("annotation", ["int", "np.ndarray", "list[int]", "int | str"])
+def test_annotation_rendering(annotation):
+    src = f'def foo(x: {annotation}):\n    """Doc."""\n    pass'
+    chunks = _extract_python_units(src, "test.py")
+    func_chunks = [c for c in chunks if "[Function:" in c.text]
+    assert f"x: {annotation}" in func_chunks[0].text
 
 
 class TestExtractImportBlock:

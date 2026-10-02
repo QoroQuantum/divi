@@ -37,7 +37,7 @@ class TestDetectRamGb:
         )
         result = detect_ram_gb()
         assert isinstance(result, float)
-        assert result == pytest.approx(16.0, abs=0.01)
+        assert result == 16.0
 
     def test_returns_none_on_failure(self, mocker):
         mocker.patch(

@@ -10,33 +10,80 @@ import subprocess
 import sys
 
 import pytest
+from rich.console import Console
 from rich.logging import RichHandler
 
+import divi.reporting as reporting
+from divi.backends._job_status import JobStatus
 from divi.reporting import _logging as logging_module
 from divi.reporting import disable_logging, enable_logging
-from divi.reporting._events import ProgressEvent, ProgressScope
+from divi.reporting._events import ProgressEvent, ProgressScope, TerminalStatus
 from divi.reporting._state import ProgressState
 
 LIBRARY_LOGGER_NAME = "divi"
 
 
-def test_reporting_public_surface_is_logging_only():
-    import divi.reporting as reporting
+def logged_messages(caplog) -> list[str]:
+    """Return the formatted messages of every captured record."""
+    return [record.getMessage() for record in caplog.records]
 
+
+def test_reporting_public_surface_is_logging_only():
     assert reporting.__all__ == ["disable_logging", "enable_logging"]
     assert not hasattr(reporting, "ProgressReporter")
     assert not hasattr(reporting, "queue_listener")
 
 
-def test_progress_state_renderer_logs_affected_targets(caplog):
+@pytest.mark.parametrize(
+    ("scope", "label", "total", "expected"),
+    [
+        (ProgressScope.PROGRAM, "Program", 1, "Program: 0/1"),
+        (ProgressScope.WORKFLOW, "Workflow", None, "Workflow"),
+    ],
+)
+def test_progress_state_renderer_logs_affected_targets(
+    caplog, scope, label, total, expected
+):
     state = ProgressState()
-    affected = state.apply(
-        ProgressEvent.register("p", ProgressScope.PROGRAM, "Program", 1)
-    )
+    affected = state.apply(ProgressEvent.register("p", scope, label, total))
     with caplog.at_level(logging.INFO, logger=LIBRARY_LOGGER_NAME):
         logging_module.log_progress_state(state, affected)
 
-    assert [record.getMessage() for record in caplog.records] == ["Program: 0/1"]
+    assert logged_messages(caplog) == [expected]
+
+
+def polling_event(limit: int | None) -> ProgressEvent:
+    """Create a running-job polling event at attempt three."""
+    return ProgressEvent.polling(
+        "p", job_id="abc-def", status=JobStatus.RUNNING, attempt=3, limit=limit
+    )
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        (ProgressEvent.register("p", ProgressScope.PROGRAM, "Program", 3), ["Program"]),
+        (ProgressEvent.advance("p", amount=2), ["Progress advanced by 2"]),
+        (
+            ProgressEvent.advance("p", loss=-0.5),
+            ["Progress advanced by 1 (loss=-0.500000)"],
+        ),
+        (ProgressEvent.show("p", "Preparing"), ["Preparing"]),
+        (ProgressEvent.show("p", ""), []),
+        (polling_event(None), ["Job abc-def is RUNNING. Polling attempt 3 / ∞"]),
+        (polling_event(5), ["Job abc-def is RUNNING. Polling attempt 3 / 5"]),
+        (ProgressEvent.finish("p", TerminalStatus.SUCCESS), ["Success"]),
+        (
+            ProgressEvent.finish("p", TerminalStatus.FAILED, detail="boom"),
+            ["Failed (boom)"],
+        ),
+    ],
+)
+def test_log_progress_event_logs_one_line_per_event(caplog, event, expected):
+    with caplog.at_level(logging.INFO, logger=LIBRARY_LOGGER_NAME):
+        logging_module.log_progress_event(event)
+
+    assert logged_messages(caplog) == expected
 
 
 @pytest.fixture
@@ -139,6 +186,30 @@ def test_disable_logging_removes_only_divis_managed_handler(library_logger):
 
     assert library_logger.handlers == [application_handler]
     assert library_logger.level == logging.ERROR
+
+
+def render_through_managed_handler(message: str) -> str:
+    """Log ``message`` at INFO through Divi's handler and return the printed text."""
+    enable_logging()
+    handler = logging_module._managed_handler
+    assert handler is not None
+    output = io.StringIO()
+    handler.console = Console(file=output, width=200, color_system=None)
+    logging.getLogger("divi.probe").info("%s", message)
+    return output.getvalue()
+
+
+def test_managed_handler_prints_bracketed_text_verbatim(library_logger):
+    message = "Program: 1/3 [next phase] [loss: -0.123457] [Job abc is RUNNING]"
+
+    assert message in render_through_managed_handler(message)
+
+
+def test_managed_handler_prints_the_level_once(library_logger):
+    rendered = render_through_managed_handler("Preparing")
+
+    assert "divi.probe - Preparing" in rendered
+    assert rendered.count("INFO") == 1
 
 
 def test_divi_handler_formatting_does_not_mutate_records_for_other_handlers(

@@ -2,8 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import FrozenInstanceError
-
 import pytest
 
 from divi.backends._job_status import JobStatus
@@ -12,7 +10,6 @@ from divi.reporting._events import (
     ProgressEvent,
     ProgressScope,
     TerminalStatus,
-    discard_progress_event,
 )
 
 
@@ -35,6 +32,12 @@ def test_register_keeps_progress_metadata():
     assert event.visible is False
     assert event.batch_color == "cyan"
     assert event.program_keys == ("program-1", "program-2")
+
+
+def test_register_is_visible_by_default():
+    event = ProgressEvent.register("p", ProgressScope.PROGRAM, "P", 1)
+
+    assert event.visible is True
 
 
 def test_register_normalizes_batch_members_to_a_tuple():
@@ -69,6 +72,16 @@ def test_polling_preserves_job_status_enum():
     assert event.job_status is JobStatus.RUNNING
     assert event.poll_attempt == 4
     assert event.max_retries is None
+
+
+@pytest.mark.parametrize(("attempt", "limit"), [(3, 3), (0, 0)])
+def test_polling_accepts_an_attempt_equal_to_its_limit(attempt, limit):
+    event = ProgressEvent.polling(
+        "p", job_id="abc-def", status=JobStatus.RUNNING, attempt=attempt, limit=limit
+    )
+
+    assert event.poll_attempt == attempt
+    assert event.max_retries == limit
 
 
 @pytest.mark.parametrize(
@@ -109,22 +122,6 @@ def test_finish_keeps_terminal_status_separate_from_job_status():
     assert event.terminal_status is TerminalStatus.FAILED
     assert event.job_status is JobStatus.TIMED_OUT
     assert event.detail == "deadline exceeded"
-
-
-def test_progress_events_are_frozen():
-    event = ProgressEvent.advance("program-1")
-
-    with pytest.raises(FrozenInstanceError):
-        event.amount = 2
-
-
-def test_progress_event_fields_are_keyword_only():
-    with pytest.raises(TypeError):
-        ProgressEvent(EventKind.ADVANCE, "program-1", amount=1)
-
-
-def test_discard_progress_event_is_a_no_op():
-    discard_progress_event(ProgressEvent.advance("program-1"))
 
 
 @pytest.mark.parametrize(

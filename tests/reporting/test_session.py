@@ -51,52 +51,79 @@ def make_queued() -> ProgressSession:
     return ProgressSession.queued(ProgressState(), console=non_interactive_console())
 
 
-class StuckListenerThread:
-    """Thread double that records shutdown without executing its target."""
+class ListenerThreadDouble:
+    """Thread double that records start and join without executing its target."""
 
-    instance: "StuckListenerThread | None" = None
+    instance: "ListenerThreadDouble | None" = None
+    alive_at_start = True
+    alive_after_join = True
 
-    def __init__(self, *, target, name: str, daemon: bool) -> None:
+    def __init__(self, *, target, args, name: str, daemon: bool) -> None:
         self.target = target
+        self.args = args
         self.name = name
         self.daemon = daemon
         self.join_timeout: float | None = None
         self.started = False
-        StuckListenerThread.instance = self
+        self.alive = self.alive_at_start
+        type(self).instance = self
 
     def start(self) -> None:
         self.started = True
 
     def join(self, timeout: float | None = None) -> None:
         self.join_timeout = timeout
-
-    def is_alive(self) -> bool:
-        return True
-
-
-class DrainThenJoinListener:
-    """Listener double that records the budget granted after queue drain."""
-
-    instance: "DrainThenJoinListener | None" = None
-
-    def __init__(self, *, target, name: str, daemon: bool) -> None:
-        self.target = target
-        self.name = name
-        self.daemon = daemon
-        self.join_timeout: float | None = None
-        self.started = False
-        self.alive = True
-        DrainThenJoinListener.instance = self
-
-    def start(self) -> None:
-        self.started = True
-
-    def join(self, timeout: float | None = None) -> None:
-        self.join_timeout = timeout
-        self.alive = False
+        self.alive = self.alive_after_join
 
     def is_alive(self) -> bool:
         return self.alive
+
+
+class StuckListenerThread(ListenerThreadDouble):
+    """Listener double that never terminates."""
+
+
+class DrainThenJoinListener(ListenerThreadDouble):
+    """Listener double that terminates when joined."""
+
+    alive_after_join = False
+
+
+class DeadListenerThread(DrainThenJoinListener):
+    """Listener double that has already terminated."""
+
+    alive_at_start = False
+
+
+def blocking_renderer() -> tuple[Callable[..., None], Event, Event]:
+    """Return a renderer that blocks until released, and its (started, release)."""
+    render_started = Event()
+    release_render = Event()
+
+    def render(state, affected) -> None:
+        del state, affected
+        render_started.set()
+        release_render.wait(timeout=2.0)
+
+    return render, render_started, release_render
+
+
+def close_in_thread(session: ProgressSession) -> tuple[Thread, Event, list]:
+    """Close ``session`` on a daemon thread; return it, its finish flag and errors."""
+    close_finished = Event()
+    close_failures: list[BaseException] = []
+
+    def close_session() -> None:
+        try:
+            session.close()
+        except BaseException as exc:
+            close_failures.append(exc)
+        finally:
+            close_finished.set()
+
+    closer = Thread(target=close_session, daemon=True)
+    closer.start()
+    return closer, close_finished, close_failures
 
 
 class DrainCompletionEvent:
@@ -219,6 +246,7 @@ def test_close_can_retry_after_interrupted_listener_shutdown(monkeypatch):
         ProgressState(),
         lambda state, affected: None,
         lambda: view_closed.append(True),
+        console=non_interactive_console(),
     )
     monkeypatch.setattr(session, "_shutdown_listener", interrupt_once)
 
@@ -283,13 +311,13 @@ def test_terminal_and_jupyter_sessions_select_the_corresponding_rich_views(
 
 
 @pytest.mark.parametrize("session_factory", [make_direct, make_queued])
-@pytest.mark.parametrize("debug_enabled", [False, True])
+@pytest.mark.parametrize(
+    ("level", "include_traceback"), [(logging.INFO, False), (logging.DEBUG, True)]
+)
 def test_processing_failure_uses_debug_level_to_select_traceback(
-    session_factory: SessionFactory, debug_enabled, mocker
+    session_factory: SessionFactory, level, include_traceback, caplog, mocker
 ):
-    mocker.patch.object(
-        session_module.logger, "isEnabledFor", return_value=debug_enabled
-    )
+    caplog.set_level(level, logger="divi")
     diagnose = mocker.patch.object(session_module, "diagnose_reporting_failure")
 
     with session_factory() as session:
@@ -297,7 +325,7 @@ def test_processing_failure_uses_debug_level_to_select_traceback(
 
     diagnosed_exception = diagnose.call_args.args[0]
     assert isinstance(diagnosed_exception, KeyError)
-    assert diagnose.call_args.kwargs == {"include_traceback": debug_enabled}
+    assert diagnose.call_args.kwargs == {"include_traceback": include_traceback}
 
 
 @pytest.mark.parametrize("debug_enabled", [False, True])
@@ -309,12 +337,48 @@ def test_diagnostic_includes_traceback_only_under_debug(debug_enabled, capsys):
 
     stderr = capsys.readouterr().err
     assert stderr.count("Progress reporting failed: renderer unavailable") == 1
-    assert ("Traceback (most recent call last)" in stderr) is debug_enabled
+    traceback_start = stderr.find("Traceback (most recent call last)")
+    assert (traceback_start >= 0) is debug_enabled
+    if debug_enabled:
+        assert "RuntimeError: renderer unavailable" in stderr[traceback_start:]
+
+
+@pytest.mark.parametrize("value", ["TRUE", " yes ", "On"])
+def test_environment_flag_disables_progress_case_and_space_insensitively(
+    monkeypatch, value
+):
+    monkeypatch.setenv("DIVI_DISABLE_PROGRESS", value)
+
+    assert session_module._environment_disables_progress() is True
+
+
+@pytest.mark.parametrize(
+    ("factory", "console"),
+    [
+        (ProgressSession.direct, non_interactive_console()),
+        (ProgressSession.queued, non_interactive_console()),
+    ],
+    ids=["direct", "queued"],
+)
+def test_session_exposes_the_console_it_was_given(factory, console):
+    with factory(ProgressState(), console=console) as session:
+        assert session.console is console
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [ProgressSession.direct, ProgressSession.queued],
+    ids=["direct", "queued"],
+)
+def test_session_creates_a_console_when_none_is_given(factory):
+    with factory(ProgressState()) as session:
+        assert isinstance(session.console, Console)
 
 
 def test_queued_close_uses_bounded_join_and_diagnoses_a_stuck_listener(
-    monkeypatch, mocker
+    monkeypatch, mocker, caplog
 ):
+    caplog.set_level(logging.DEBUG, logger="divi")
     StuckListenerThread.instance = None
     monkeypatch.setattr(session_module, "Thread", StuckListenerThread)
     diagnose = mocker.patch.object(session_module, "diagnose_reporting_failure")
@@ -331,6 +395,44 @@ def test_queued_close_uses_bounded_join_and_diagnoses_a_stuck_listener(
     diagnosed_exception = diagnose.call_args.args[0]
     assert isinstance(diagnosed_exception, RuntimeError)
     assert "did not terminate" in str(diagnosed_exception)
+    assert diagnose.call_args.kwargs == {"include_traceback": False}
+
+
+def test_queued_close_diagnoses_a_listener_that_died_with_pending_events(
+    monkeypatch, mocker, caplog
+):
+    caplog.set_level(logging.DEBUG, logger="divi")
+    monkeypatch.setattr(session_module, "Thread", DeadListenerThread)
+    diagnose = mocker.patch.object(session_module, "diagnose_reporting_failure")
+
+    session = make_queued()
+    session.emit(ProgressEvent.register("p", ProgressScope.PROGRAM, "P", 1))
+    session.close()
+
+    diagnose.assert_called_once()
+    diagnosed_exception = diagnose.call_args.args[0]
+    assert isinstance(diagnosed_exception, RuntimeError)
+    assert str(diagnosed_exception) == (
+        "Progress listener terminated before acknowledging all events"
+    )
+    assert diagnose.call_args.kwargs == {"include_traceback": False}
+
+
+def test_close_diagnoses_a_failing_view_closer(mocker):
+    failure = RuntimeError("view teardown failed")
+    close_view = mocker.Mock(side_effect=failure)
+    diagnose = mocker.patch.object(session_module, "diagnose_reporting_failure")
+    session = ProgressSession(
+        ProgressState(),
+        lambda state, affected: None,
+        close_view,
+        console=non_interactive_console(),
+    )
+
+    session.close()
+
+    diagnose.assert_called_once()
+    assert diagnose.call_args.args[0] is failure
 
 
 def test_queued_close_grants_join_a_fresh_budget_after_near_complete_drain(
@@ -358,24 +460,7 @@ def test_queued_close_grants_join_a_fresh_budget_after_near_complete_drain(
 
 
 def test_queued_close_is_bounded_when_render_blocks_after_dequeue(monkeypatch, mocker):
-    render_started = Event()
-    release_render = Event()
-    close_finished = Event()
-    close_failures: list[BaseException] = []
-
-    def render(state, affected) -> None:
-        del state, affected
-        render_started.set()
-        release_render.wait(timeout=2.0)
-
-    def close_session() -> None:
-        try:
-            session.close()
-        except BaseException as exc:
-            close_failures.append(exc)
-        finally:
-            close_finished.set()
-
+    render, render_started, release_render = blocking_renderer()
     monkeypatch.setattr(session_module, "log_progress_state", render)
     monkeypatch.setattr(session_module, "_LISTENER_DRAIN_TIMEOUT", 0.05)
     monkeypatch.setattr(session_module, "_LISTENER_JOIN_TIMEOUT", 0.05)
@@ -384,8 +469,7 @@ def test_queued_close_is_bounded_when_render_blocks_after_dequeue(monkeypatch, m
     session.emit(ProgressEvent.register("p", ProgressScope.PROGRAM, "P", 1))
     assert render_started.wait(timeout=1.0)
 
-    closer = Thread(target=close_session, daemon=True)
-    closer.start()
+    closer, close_finished, close_failures = close_in_thread(session)
     try:
         assert close_finished.wait(timeout=0.5)
     finally:
@@ -400,21 +484,36 @@ def test_queued_close_is_bounded_when_render_blocks_after_dequeue(monkeypatch, m
     assert "did not terminate" in str(diagnosed_exception)
 
 
+def test_queued_listener_drains_every_event_queued_before_shutdown_signal(
+    monkeypatch,
+):
+    event_queue: Queue[ProgressEvent] = Queue()
+    render, render_started, release_render = blocking_renderer()
+    monkeypatch.setattr(session_module, "Queue", lambda: event_queue)
+    monkeypatch.setattr(session_module, "log_progress_state", render)
+    monkeypatch.setattr(session_module, "_LISTENER_DRAIN_TIMEOUT", 0.05)
+    session = make_queued()
+    session.emit(ProgressEvent.register("p", ProgressScope.PROGRAM, "P", 2))
+    session.emit(ProgressEvent.advance("p"))
+    assert render_started.wait(timeout=1.0)
+
+    closer, close_finished, close_failures = close_in_thread(session)
+    done_event = session._done_event
+    assert done_event is not None
+    assert done_event.wait(timeout=1.0)
+    release_render.set()
+    closer.join(timeout=2.0)
+
+    assert close_finished.is_set()
+    assert close_failures == []
+    assert event_queue.unfinished_tasks == 0
+    assert session.state.get("p").completed == 1
+
+
 def test_queued_close_linearizes_with_an_emit_blocked_before_queue_acceptance(
     monkeypatch,
 ):
     event_queue = BlockingAdvanceQueue()
-    close_finished = Event()
-    close_failures: list[BaseException] = []
-
-    def close_session() -> None:
-        try:
-            session.close()
-        except BaseException as exc:
-            close_failures.append(exc)
-        finally:
-            close_finished.set()
-
     monkeypatch.setattr(session_module, "Queue", lambda: event_queue)
     session = make_queued()
     session.emit(ProgressEvent.register("p", ProgressScope.PROGRAM, "P", 1))
@@ -428,8 +527,7 @@ def test_queued_close_linearizes_with_an_emit_blocked_before_queue_acceptance(
     )
     emitter.start()
     assert event_queue.put_started.wait(timeout=1.0)
-    closer = Thread(target=close_session, daemon=True)
-    closer.start()
+    closer, close_finished, close_failures = close_in_thread(session)
     close_finished.wait(timeout=0.5)
     event_queue.release_put.set()
     emitter.join(timeout=1.0)

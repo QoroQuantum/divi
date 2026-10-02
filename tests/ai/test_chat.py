@@ -18,44 +18,40 @@ from divi.ai._chat import (
 from divi.ai._retriever import RetrievedChunk
 
 
-class TestStripScopePreamble:
-    def test_strips_scope_in(self):
-        assert (
-            strip_scope_preamble("SCOPE: IN\n\nHere is the answer.")
-            == "Here is the answer."
-        )
-
-    def test_strips_bold_scope_redirect(self):
-        assert strip_scope_preamble("**SCOPE: REDIRECT**\n\nUse QAOA.") == "Use QAOA."
-
-    def test_strips_scope_out(self):
-        assert (
-            strip_scope_preamble(
-                "SCOPE: OUT\nI can only help with the Divi quantum computing library."
-            )
-            == "I can only help with the Divi quantum computing library."
-        )
-
-    def test_strips_wrong_tool_variants(self):
-        for variant in (
-            "SCOPE: WRONG-TOOL",
-            "SCOPE: WRONG TOOL",
-            "**SCOPE: WRONG-TOOL**",
-        ):
-            assert (
-                strip_scope_preamble(f"{variant}\n\nUse QAOA instead.")
-                == "Use QAOA instead."
-            )
-
-    def test_passes_through_when_no_preamble(self):
-        text = "To configure ZNE, use the ZNE class."
-        assert strip_scope_preamble(text) == text
-
-    def test_ignores_mid_response_scope(self):
-        """A SCOPE: marker that isn't anchored to the start of the response
-        must NOT be stripped — only the leading preamble line is removed."""
-        text = "Here is the answer.\n\nSCOPE: IN was the original classification."
-        assert strip_scope_preamble(text) == text
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("SCOPE: IN\n\nHere is the answer.", "Here is the answer."),
+        ("**SCOPE: REDIRECT**\n\nUse QAOA.", "Use QAOA."),
+        (
+            "SCOPE: OUT\nI can only help with the Divi quantum computing library.",
+            "I can only help with the Divi quantum computing library.",
+        ),
+        ("SCOPE: WRONG-TOOL\n\nUse QAOA instead.", "Use QAOA instead."),
+        ("SCOPE: WRONG TOOL\n\nUse QAOA instead.", "Use QAOA instead."),
+        ("**SCOPE: WRONG-TOOL**\n\nUse QAOA instead.", "Use QAOA instead."),
+        (
+            "To configure ZNE, use the ZNE class.",
+            "To configure ZNE, use the ZNE class.",
+        ),
+        (
+            "Here is the answer.\n\nSCOPE: IN was the original classification.",
+            "Here is the answer.\n\nSCOPE: IN was the original classification.",
+        ),
+    ],
+    ids=[
+        "scope_in",
+        "bold_redirect",
+        "scope_out",
+        "wrong_tool_hyphen",
+        "wrong_tool_space",
+        "wrong_tool_bold",
+        "no_preamble",
+        "mid_response_scope_kept",
+    ],
+)
+def test_strip_scope_preamble(text, expected):
+    assert strip_scope_preamble(text) == expected
 
 
 class TestHardwareRedirect:
@@ -78,14 +74,9 @@ class TestHardwareRedirect:
             == HARDWARE_REDIRECT_MESSAGE
         )
 
-    def test_no_match_returns_none(self):
-        assert get_hardware_redirect_response("How do I run VQE?") is None
-
-    def test_empty_query_returns_none(self):
-        assert get_hardware_redirect_response("") is None
-
-    def test_whitespace_only_returns_none(self):
-        assert get_hardware_redirect_response("   ") is None
+    @pytest.mark.parametrize("query", ["How do I run VQE?", "", "   "])
+    def test_no_match_returns_none(self, query):
+        assert get_hardware_redirect_response(query) is None
 
 
 class TestIsOverviewQuery:
@@ -119,79 +110,27 @@ class TestIsOverviewQuery:
         assert _is_overview_query(query) is False
 
 
-class TestFilterChunksForOverview:
-    def test_keeps_algorithm_guide_chunks(self):
-        chunks = [
-            RetrievedChunk(
-                text="guide content",
-                source_file="/repo/docs/algorithms/vqe.rst",
-                start_line=1,
-                end_line=10,
-                score=0.8,
-                dense_score=0.8,
-            ),
-        ]
-        assert len(_filter_chunks_for_overview(chunks)) == 1
-
-    def test_drops_api_reference(self):
-        chunks = [
-            RetrievedChunk(
-                text="api ref",
-                source_file="/repo/docs/api_reference/qprog.rst",
-                start_line=1,
-                end_line=10,
-                score=0.8,
-                dense_score=0.8,
-            ),
-        ]
-        assert len(_filter_chunks_for_overview(chunks)) == 0
-
-    def test_drops_py_files(self):
-        chunks = [
-            RetrievedChunk(
-                text="python source",
-                source_file="/repo/divi/qprog/vqe.py",
-                start_line=1,
-                end_line=10,
-                score=0.8,
-                dense_score=0.8,
-            ),
-        ]
-        assert len(_filter_chunks_for_overview(chunks)) == 0
-
-    def test_keeps_other_doc_directories(self):
-        chunks = [
-            RetrievedChunk(
-                text="tools content",
-                source_file="/repo/docs/source/tools/divi_ai.rst",
-                start_line=1,
-                end_line=10,
-                score=0.8,
-                dense_score=0.8,
-            ),
-            RetrievedChunk(
-                text="development guide",
-                source_file="/repo/docs/source/development/contributing.rst",
-                start_line=1,
-                end_line=10,
-                score=0.7,
-                dense_score=0.7,
-            ),
-        ]
-        assert len(_filter_chunks_for_overview(chunks)) == 2
-
-    def test_keeps_tutorial_chunks(self):
-        chunks = [
-            RetrievedChunk(
-                text="tutorial content",
-                source_file="/repo/tutorials/vqe.rst",
-                start_line=1,
-                end_line=10,
-                score=0.8,
-                dense_score=0.8,
-            ),
-        ]
-        assert len(_filter_chunks_for_overview(chunks)) == 1
+@pytest.mark.parametrize(
+    "source_file, kept",
+    [
+        ("/repo/docs/algorithms/vqe.rst", True),
+        ("/repo/docs/api_reference/qprog.rst", False),
+        ("/repo/divi/qprog/vqe.py", False),
+        ("/repo/docs/source/tools/divi_ai.rst", True),
+        ("/repo/docs/source/development/contributing.rst", True),
+        ("/repo/tutorials/vqe.rst", True),
+    ],
+)
+def test_filter_chunks_for_overview(source_file, kept):
+    chunk = RetrievedChunk(
+        text="content",
+        source_file=source_file,
+        start_line=1,
+        end_line=10,
+        score=0.8,
+        dense_score=0.8,
+    )
+    assert _filter_chunks_for_overview([chunk]) == ([chunk] if kept else [])
 
 
 class TestFormatContext:
@@ -248,20 +187,9 @@ class TestTrimHistory:
             {"role": "user", "content": "c" * 200},
             {"role": "assistant", "content": "d" * 200},
         ]
-        result = _trim_history(history, mock_llm)
-        assert len(result) % 2 == 0
-
-    def test_respects_explicit_max_tokens(self, mock_llm):
-        history = [
-            {"role": "user", "content": "old_" + "x" * 1000},
-            {"role": "assistant", "content": "old_" + "y" * 1000},
-            {"role": "user", "content": "new_short"},
-            {"role": "assistant", "content": "new_short"},
-        ]
-        # Small budget → should drop the large old pair, keep the short new pair
-        result = _trim_history(history, mock_llm, max_tokens=20)
-        assert len(result) == 2
-        assert result[-1] == history[-1]
+        # 50 tokens each: the budget fits the newest pair plus half the older one.
+        result = _trim_history(history, mock_llm, max_tokens=150)
+        assert result == history[2:]
 
 
 class TestBuildPrompt:

@@ -17,7 +17,7 @@ from ._state import ProgressState
 
 logger = logging.getLogger("divi")
 _managed_handler: RichHandler | None = None
-_previous_logger_level: int | None = None
+_previous_logger_level: int = logging.NOTSET
 
 
 def enable_logging(level: int = logging.INFO) -> None:
@@ -28,13 +28,10 @@ def enable_logging(level: int = logging.INFO) -> None:
         _previous_logger_level = logger.level
         _managed_handler = RichHandler(
             rich_tracebacks=True,
-            show_time=True,
             show_path=False,
-            markup=True,
+            markup=False,
         )
-        _managed_handler.setFormatter(
-            logging.Formatter("%(name)s - %(levelname)s - %(message)s")
-        )
+        _managed_handler.setFormatter(logging.Formatter("%(name)s - %(message)s"))
         logger.addHandler(_managed_handler)
     logger.setLevel(level)
     _managed_handler.setLevel(level)
@@ -42,16 +39,14 @@ def enable_logging(level: int = logging.INFO) -> None:
 
 def disable_logging() -> None:
     """Remove Divi's handler and restore the preceding logger level."""
-    global _managed_handler, _previous_logger_level
+    global _managed_handler
 
     if _managed_handler is None:
         return
     logger.removeHandler(_managed_handler)
     _managed_handler.close()
     _managed_handler = None
-    if _previous_logger_level is not None:
-        logger.setLevel(_previous_logger_level)
-        _previous_logger_level = None
+    logger.setLevel(_previous_logger_level)
 
 
 def log_progress_event(event: ProgressEvent) -> None:
@@ -69,7 +64,7 @@ def log_progress_event(event: ProgressEvent) -> None:
         return
 
     if event.kind is EventKind.SHOW:
-        if event.message is not None:
+        if event.message:
             logger.info("%s", event.message)
         return
 
@@ -94,7 +89,7 @@ def diagnose_reporting_failure(exc: Exception, *, include_traceback: bool) -> No
     message = f"Progress reporting failed: {exc}"
     print(message, file=sys.stderr, flush=True)
     if include_traceback:
-        traceback.print_exception(type(exc), exc, exc.__traceback__, file=sys.stderr)
+        traceback.print_exception(exc, file=sys.stderr)
 
 
 def log_progress_state(state: ProgressState, affected: set[Hashable]) -> None:

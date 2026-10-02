@@ -7,7 +7,6 @@
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import cast
 
 from divi.backends._job_status import JobStatus
 
@@ -72,17 +71,19 @@ class ProgressState:
             return self._show(event, target_state)
         if event.kind is EventKind.POLLING:
             return self._polling(event, target_state)
-        if event.kind is EventKind.FINISH:
-            return self._finish(event, target_state)
-        raise ValueError(f"unsupported progress event kind: {event.kind!r}")
+        return self._finish(event, target_state)
 
     def _stored(self, progress_key: Hashable) -> _TargetState:
         """Return the mutable record owned exclusively by this reducer."""
         return self._targets[progress_key]
 
     def _register(self, event: ProgressEvent) -> set[Hashable]:
-        scope = cast(ProgressScope, event.scope)
-        label = cast(str, event.label)
+        scope = event.scope
+        if scope is None:
+            raise ValueError("register event requires scope")
+        label = event.label
+        if label is None:
+            raise ValueError("register event requires label")
 
         existing = self._targets.get(event.progress_key)
         if existing is not None and existing.terminal_status is None:
@@ -90,10 +91,11 @@ class ProgressState:
                 raise ValueError("an active target cannot change scope")
             return set()
 
-        members: list[_TargetState] = []
-        if scope is ProgressScope.BATCH:
-            members = [self._stored(key) for key in event.program_keys]
-
+        members = (
+            {key: self._stored(key) for key in event.program_keys}
+            if scope is ProgressScope.BATCH
+            else {}
+        )
         target_state = _TargetState(
             scope=scope,
             label=label,
@@ -103,16 +105,17 @@ class ProgressState:
             program_keys=event.program_keys,
         )
         self._targets[event.progress_key] = target_state
-        affected = {event.progress_key}
-        for program_key, member in zip(event.program_keys, members, strict=True):
+        for member in members.values():
             member.batch_color = event.batch_color
-            affected.add(program_key)
-        return affected
+        return {event.progress_key, *members}
 
     def _advance(
         self, event: ProgressEvent, target_state: _TargetState
     ) -> set[Hashable]:
-        target_state.completed += cast(int, event.amount)
+        amount = event.amount
+        if amount is None:
+            raise ValueError("advance event requires amount")
+        target_state.completed += amount
         if event.loss is not None:
             target_state.loss = event.loss
         return {event.progress_key}
@@ -157,10 +160,11 @@ class ProgressState:
     def _finish(
         self, event: ProgressEvent, target_state: _TargetState
     ) -> set[Hashable]:
-        terminal_status = cast(TerminalStatus, event.terminal_status)
+        terminal_status = event.terminal_status
+        if terminal_status is None:
+            raise ValueError("finish event requires terminal_status")
 
         self._clear_polling(target_state)
-        target_state.message = None
         target_state.job_status = event.job_status
         target_state.terminal_status = terminal_status
         target_state.detail = event.detail
