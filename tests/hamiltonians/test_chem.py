@@ -10,6 +10,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import qubit_operator_to_spo, to_spo
 from divi.qprog.algorithms import TimeEvolution
+from tests._helpers import exact_match
 
 openfermion = pytest.importorskip("openfermion")
 QubitOperator = openfermion.QubitOperator
@@ -44,17 +45,27 @@ def test_qubit_operator_to_spo_matches_openfermion_spectrum():
     )
 
 
-def test_qubit_operator_to_spo_infers_width():
-    assert qubit_operator_to_spo(QubitOperator("Z3", 1.0)).num_qubits == 4
+@pytest.mark.parametrize(
+    "of_term, coeff, qiskit_label",
+    [("Z3", 1.0, "ZIII"), ("", 0.7, "I"), ("Z0", 1.0, "Z")],
+    ids=["highest_qubit_three", "identity_only", "qubit_zero_only"],
+)
+def test_qubit_operator_to_spo_infers_width(of_term, coeff, qiskit_label):
+    spo = qubit_operator_to_spo(QubitOperator(of_term, coeff))
+    assert spo.num_qubits == len(qiskit_label)
+    assert spo.equiv(SparsePauliOp(qiskit_label, coeff))
 
 
 def test_qubit_operator_to_spo_rejects_narrow_width():
-    with pytest.raises(ValueError, match="smaller than"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("n_qubits (2) is smaller than the operator's support (4)."),
+    ):
         qubit_operator_to_spo(QubitOperator("Z3", 1.0), 2)
 
 
 def test_qubit_operator_to_spo_rejects_empty():
-    with pytest.raises(ValueError, match="no terms"):
+    with pytest.raises(ValueError, match=exact_match("QubitOperator has no terms.")):
         qubit_operator_to_spo(QubitOperator())
 
 

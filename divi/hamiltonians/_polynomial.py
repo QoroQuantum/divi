@@ -108,10 +108,6 @@ def _normalize_hubo_term_key(term: Any) -> HUBOTerm:
             f"Invalid HUBO term {term_tuple}: duplicate variables in a monomial are not allowed."
         )
 
-    for variable in term_tuple:
-        if not isinstance(variable, Hashable):
-            raise ValueError(f"HUBO variable must be hashable, got {type(variable)}")
-
     return term_tuple
 
 

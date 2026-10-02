@@ -231,6 +231,4 @@ def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
                     qubit_paulis.append((neighbour, op))
             terms.append((multi_pauli_label(n_qubits, qubit_paulis), coeff))
 
-    if not terms:
-        return SparsePauliOp.from_list([("I" * n_qubits, 0.0)])
     return SparsePauliOp.from_list(terms)

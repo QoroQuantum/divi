@@ -4,6 +4,9 @@
 
 """Tests for term-manipulation primitives in divi.hamiltonians._term_ops."""
 
+import itertools
+import sys
+
 import numpy as np
 import pytest
 from qiskit.circuit import Parameter, QuantumCircuit
@@ -21,6 +24,21 @@ from divi.hamiltonians._term_ops import (
     generate_empty_spo,
     to_spo,
 )
+from tests._helpers import exact_match
+
+
+class QubitOperator:
+    """A non-OpenFermion type that only shares OpenFermion's class name."""
+
+    pauli_rep = None
+    wires = ()
+
+
+def _no_pauli_representation(observable) -> str:
+    return exact_match(
+        f"Observable {observable!r} has no Pauli representation; cannot "
+        "convert to SparsePauliOp."
+    )
 
 
 @pytest.fixture
@@ -45,7 +63,13 @@ class TestSpoConversion:
 
     def test_to_spo_rejects_non_hermitian_spo(self):
         """Direct SPO inputs cannot bypass observable validation."""
-        with pytest.raises(ValueError, match="Hermitian"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+                "must be real."
+            ),
+        ):
             to_spo(SparsePauliOp.from_list([("Y", 1.0j)]))
 
     def test_to_spo_dict_reads_leftmost_char_as_qubit_zero(self):
@@ -65,18 +89,37 @@ class TestSpoConversion:
         )
 
     @pytest.mark.parametrize(
-        ("bad_input", "match"),
+        ("bad_input", "message"),
         [
-            ({}, "empty dict"),
-            ({"ZZ": 1.0, "Z": 1.0}, "share a length"),
-            ({"ZA": 1.0}, r"\{I, X, Y, Z\}"),
-            ({"Z": 1.0j}, "must be real"),
+            (
+                {},
+                "to_spo: cannot build a SparsePauliOp from an empty dict — "
+                "qubit count is undefined.",
+            ),
+            (
+                {"ZZ": 1.0, "Z": 1.0},
+                "to_spo: all Pauli-string keys must share a length; got 2 and 1.",
+            ),
+            (
+                {"ZA": 1.0},
+                "to_spo: key 'ZA' contains characters outside {I, X, Y, Z}.",
+            ),
+            ({"Z": 1.0j}, "to_spo: coefficient for 'Z' must be real, got 1j."),
+            ({"": 1.0}, "to_spo: Pauli-string keys must be non-empty strings, got ''."),
+            ({1: 1.0}, "to_spo: Pauli-string keys must be non-empty strings, got 1."),
         ],
-        ids=["empty", "length_mismatch", "non_pauli_char", "complex_coeff"],
+        ids=[
+            "empty",
+            "length_mismatch",
+            "non_pauli_char",
+            "complex_coeff",
+            "empty_key",
+            "non_string_key",
+        ],
     )
-    def test_to_spo_from_dict_validation(self, bad_input, match):
+    def test_to_spo_from_dict_validation(self, bad_input, message):
         """Dict input rejects malformed keys and non-real coefficients."""
-        with pytest.raises(ValueError, match=match):
+        with pytest.raises(ValueError, match=exact_match(message)):
             to_spo(bad_input)
 
     def test_spo_wires_uses_range(self, simple_spo):
@@ -135,10 +178,16 @@ class TestCleanHamiltonianSpo:
         else:
             assert cleaned.simplify() == expected_remaining.simplify()
 
-    def test_raise_on_constant_rejects_constant_only(self):
+    @pytest.mark.parametrize(
+        "const_only",
+        [SparsePauliOp.from_list([("II", 2.5), ("II", 1.5)]), generate_empty_spo(2)],
+        ids=["identity_rows", "empty"],
+    )
+    def test_raise_on_constant_rejects_constant_only(self, const_only):
         """``raise_on_constant=True`` rejects an operator with no non-identity terms."""
-        const_only = SparsePauliOp.from_list([("II", 2.5), ("II", 1.5)])
-        with pytest.raises(ValueError, match="only constant terms"):
+        with pytest.raises(
+            ValueError, match=exact_match("Hamiltonian contains only constant terms.")
+        ):
             _clean_hamiltonian_spo(const_only, raise_on_constant=True)
 
     def test_raise_on_constant_passes_through_when_terms_remain(self):
@@ -190,6 +239,16 @@ class TestSortHamiltonianTermsSpo:
         """A single-row SPO is returned unchanged (identity short-circuit)."""
         spo = 7.0 * SparsePauliOp("Z")
         assert _sort_hamiltonian_terms_spo(spo) is spo
+
+    @pytest.mark.parametrize("order", ["absolute", "magnitude"])
+    def test_tied_coefficients_keep_input_order(self, order):
+        labels = ["".join(p) for p in itertools.product("IZ", repeat=6)][1:]
+        coeffs = [
+            1.0 if order == "absolute" else (-1.0) ** i for i in range(len(labels))
+        ]
+        spo = SparsePauliOp(labels, coeffs)
+        result = _sort_hamiltonian_terms_spo(spo, order=order)
+        assert result.paulis.to_labels() == labels
 
 
 def _build_numeric(
@@ -394,6 +453,13 @@ def test_to_spo_from_pennylane(qp, simple_spo):
     assert to_spo(observable).simplify() == simple_spo.simplify()
 
 
+def test_to_spo_does_not_treat_a_foreign_qubit_operator_as_openfermion(monkeypatch):
+    monkeypatch.delitem(sys.modules, "openfermion", raising=False)
+    operator = QubitOperator()
+    with pytest.raises(ValueError, match=_no_pauli_representation(operator)):
+        to_spo(operator)
+
+
 def test_spo_wires_pennylane_input_uses_operator_wires(qp):
     """A PennyLane operator's labels define its wire register."""
     assert _spo_wires(qp.PauliZ(2) @ qp.PauliX(5)) == (2, 5)
@@ -402,15 +468,32 @@ def test_spo_wires_pennylane_input_uses_operator_wires(qp):
 class TestPennyLaneObservableToSparsePauliOp:
     """Conversion of PennyLane observables into Qiskit SparsePauliOps."""
 
-    def test_single_pauli(self, qp):
-        wires = qp.wires.Wires([0, 1, 2])
-        op = _observable_to_sparse_pauli_op(qp.PauliZ(1), wires)
-        assert op == SparsePauliOp.from_list([("IZI", 1.0)])
-
-    def test_tensor_product(self, qp):
-        wires = qp.wires.Wires([0, 1])
-        op = _observable_to_sparse_pauli_op(qp.PauliZ(0) @ qp.PauliX(1), wires)
-        assert op == SparsePauliOp.from_list([("XZ", 1.0)])
+    @pytest.mark.parametrize(
+        "wires, make_op, expected",
+        [
+            pytest.param(
+                [0, 1, 2], lambda qp: qp.PauliZ(1), [("IZI", 1.0)], id="single_pauli"
+            ),
+            pytest.param(
+                [0, 1],
+                lambda qp: qp.PauliZ(0) @ qp.PauliX(1),
+                [("XZ", 1.0)],
+                id="tensor_product",
+            ),
+            pytest.param(
+                [0, 1], lambda qp: qp.Identity(0), [("II", 1.0)], id="identity"
+            ),
+            pytest.param(
+                ["a", "b", "c"],
+                lambda qp: qp.PauliZ("b"),
+                [("IZI", 1.0)],
+                id="non_sequential_wire_labels",
+            ),
+        ],
+    )
+    def test_single_term(self, qp, wires, make_op, expected):
+        actual = _observable_to_sparse_pauli_op(make_op(qp), qp.wires.Wires(wires))
+        assert actual == SparsePauliOp.from_list(expected)
 
     def test_hamiltonian_sum_of_terms(self, qp):
         wires = qp.wires.Wires([0, 1])
@@ -418,11 +501,6 @@ class TestPennyLaneObservableToSparsePauliOp:
         actual = _observable_to_sparse_pauli_op(observable, wires)
         expected = SparsePauliOp.from_list([("IZ", 0.5), ("XI", -0.3)])
         assert actual.simplify() == expected.simplify()
-
-    def test_identity(self, qp):
-        wires = qp.wires.Wires([0, 1])
-        actual = _observable_to_sparse_pauli_op(qp.Identity(0), wires)
-        assert actual == SparsePauliOp.from_list([("II", 1.0)])
 
     def test_sum_of_single_qubit_terms(self, qp):
         wires = qp.wires.Wires([0, 1, 2])
@@ -433,16 +511,23 @@ class TestPennyLaneObservableToSparsePauliOp:
         ).simplify()
         assert actual == expected
 
-    def test_non_sequential_wire_labels(self, qp):
-        wires = qp.wires.Wires(["a", "b", "c"])
-        actual = _observable_to_sparse_pauli_op(qp.PauliZ("b"), wires)
-        assert actual == SparsePauliOp.from_list([("IZI", 1.0)])
-
     def test_non_pauli_observable_raises(self, qp):
         wires = qp.wires.Wires([0])
         observable = qp.Hermitian(np.array([[1.0, 0.0], [0.0, -1.0]]), wires=0)
-        with pytest.raises(ValueError, match="no Pauli representation"):
+        with pytest.raises(ValueError, match=_no_pauli_representation(observable)):
             _observable_to_sparse_pauli_op(observable, wires)
+
+    def test_complex_coefficient_warns_and_keeps_real_part(self, qp):
+        wires = qp.wires.Wires([0])
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "Observable coefficient (1+0.5j) has non-negligible imaginary part "
+                "(5.00e-01); dropping it. This may indicate a non-Hermitian observable."
+            ),
+        ):
+            actual = _observable_to_sparse_pauli_op(qp.s_prod(1 + 0.5j, qp.Z(0)), wires)
+        assert actual == SparsePauliOp.from_list([("Z", 1.0)])
 
     def test_to_spo_threads_wires_kwarg(self, qp):
         wires = qp.wires.Wires([0, 1, 2])

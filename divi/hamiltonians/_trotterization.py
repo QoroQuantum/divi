@@ -49,24 +49,19 @@ class TrotterizationResult:
     ) -> QuantumCircuit:
         """Append this result's time-evolution gates to ``qc``.
 
-        A sampling result (``sampled_terms`` set) applies one evolution gate
-        per sampled term — preserving sampling-with-replacement multiplicities
-        — repeated ``n_steps`` times at ``time / n_steps`` per step. A
-        deterministic result synthesises ``exp(-i t H)`` from
-        ``effective_hamiltonian`` via
+        Every path approximates ``exp(-i t H)``. A sampling result
+        (``sampled_terms`` set) applies one evolution gate per sampled term —
+        preserving sampling-with-replacement multiplicities — repeated
+        ``n_steps`` times at ``time / n_steps`` per step. A deterministic result
+        synthesises ``effective_hamiltonian`` via
         :class:`~qiskit.circuit.library.PauliEvolutionGate`
         (:class:`~qiskit.synthesis.LieTrotter` for ``order == 1``, else
         :class:`~qiskit.synthesis.SuzukiTrotter`), then lowers the circuit to
-        ``basis_gates``.
-
-        Adjoint evolution is realised via negative time; single-term
-        Hamiltonians use positive time to preserve the ``exp(-i t H)`` sign
-        convention even when ``H`` carries its own coefficient sign. Returns the
-        resulting circuit (a new object when synthesis required transpilation,
-        otherwise ``qc``).
+        ``basis_gates``. Returns the resulting circuit (a new object when
+        synthesis required transpilation, otherwise ``qc``).
         """
         if self.sampled_terms is not None:
-            step_time = -time / n_steps
+            step_time = time / n_steps
             for _ in range(n_steps):
                 _spo_to_qiskit_basis_gates(qc, self.sampled_terms, step_time, qubits)
             return qc
@@ -79,7 +74,7 @@ class TrotterizationResult:
             )
             qc.append(
                 PauliEvolutionGate(
-                    self.effective_hamiltonian, time=-time, synthesis=synthesis
+                    self.effective_hamiltonian, time=time, synthesis=synthesis
                 ),
                 qubits,
             )
@@ -97,7 +92,6 @@ class TrotterizationResult:
                     f"emitter does not handle. Supported gates: {sorted(basis_gates)}."
                 ) from exc
 
-        # Single-term Hamiltonian — positive-time convention.
         _spo_to_qiskit_basis_gates(qc, self.effective_hamiltonian, time, qubits)
         return qc
 
@@ -191,6 +185,7 @@ class ExactTrotterization(TrotterizationStrategy):
         if self.keep_fraction is None and self.keep_top_n is None:
             return TrotterizationResult(hamiltonian.simplify())
 
+        _clean_hamiltonian_spo(hamiltonian, raise_on_constant=True)
         if _warn_truncation_no_op(
             self.keep_fraction, self.keep_top_n, hamiltonian.size
         ):
@@ -364,6 +359,7 @@ class QDrift(TrotterizationStrategy):
 
         keep_spo = None
         if triggered_exact_trotterization:
+            _clean_hamiltonian_spo(hamiltonian, raise_on_constant=True)
             all_kept = (
                 self.keep_fraction is not None and self.keep_fraction == 1.0
             ) or (self.keep_top_n is not None and self.keep_top_n >= hamiltonian.size)
@@ -381,26 +377,11 @@ class QDrift(TrotterizationStrategy):
             keep_spo = ExactTrotterization(
                 keep_fraction=self.keep_fraction, keep_top_n=self.keep_top_n
             )._truncate_spo(hamiltonian)
+            if self.sampling_budget is None:
+                return TrotterizationResult(keep_spo)
             to_sample_spo = (hamiltonian - keep_spo).simplify(atol=0)
         else:
             to_sample_spo = hamiltonian.simplify()
-
-        if self.sampling_budget is None:
-            effective = hamiltonian.simplify() if keep_spo is None else keep_spo
-            return TrotterizationResult(effective)
-
-        if to_sample_spo.size == 0:
-            warn(
-                "No terms to sample; returning the kept Hamiltonian.",
-                UserWarning,
-            )
-            if keep_spo is None:
-                return TrotterizationResult(
-                    generate_empty_spo(
-                        _require_qiskit_num_qubits(hamiltonian.num_qubits)
-                    )
-                )
-            return TrotterizationResult(keep_spo)
 
         absolute_coeffs = np.abs(to_sample_spo.coeffs)
         coeff_sum = absolute_coeffs.sum()
@@ -418,10 +399,6 @@ class QDrift(TrotterizationStrategy):
             return TrotterizationResult(keep_spo)
         if self.sampling_strategy == "weighted":
             probs = absolute_coeffs / coeff_sum
-            # Guard against ``probs.sum() == 1 + ε`` for very large term
-            # counts; ``np.random.choice`` rejects probabilities that
-            # don't sum to exactly 1.
-            probs /= probs.sum()
         else:
             probs = None
         return _QDriftSamplingPlan(

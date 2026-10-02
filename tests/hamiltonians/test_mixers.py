@@ -20,6 +20,7 @@ from divi.hamiltonians import (
     x_mixer,
     xy_mixer,
 )
+from tests._helpers import exact_match
 from tests.hamiltonians._helpers import (
     add_transition,
     assert_diagonal_scores,
@@ -57,14 +58,25 @@ def test_xy_mixer_swaps_the_endpoints_of_each_edge():
     assert_transitions(xy_mixer(graph), expected)
 
 
-def test_xy_mixer_preserves_trailing_isolated_qubits():
-    actual = xy_mixer(nx.Graph([(0, 1)]), n_qubits=4)
+@pytest.mark.parametrize(
+    "build, expected",
+    [
+        (
+            lambda graph: xy_mixer(graph, n_qubits=4),
+            SparsePauliOp.from_list([("IIXX", 0.5), ("IIYY", 0.5)]),
+        ),
+        (
+            lambda graph: edge_driver(graph, ["11"], n_qubits=4),
+            SparsePauliOp.from_list([("IIZZ", -0.25), ("IIIZ", 0.25), ("IIZI", 0.25)]),
+        ),
+    ],
+    ids=["xy_mixer", "edge_driver"],
+)
+def test_graph_builders_preserve_trailing_isolated_qubits(build, expected):
+    actual = build(nx.Graph([(0, 1)]))
 
     assert actual.num_qubits == 4
-    _assert_spo_equivalent(
-        actual,
-        SparsePauliOp.from_list([("IIXX", 0.5), ("IIYY", 0.5)]),
-    )
+    _assert_spo_equivalent(actual, expected)
 
 
 def _graph_with_string_isolated_node() -> nx.Graph:
@@ -82,7 +94,9 @@ def _graph_with_string_isolated_node() -> nx.Graph:
     ids=["string_edge", "string_isolated_node"],
 )
 def test_xy_mixer_requires_integer_nodes(graph_factory):
-    with pytest.raises(TypeError, match="integer"):
+    with pytest.raises(
+        TypeError, match=exact_match("xy_mixer requires integer qubit nodes.")
+    ):
         xy_mixer(graph_factory())
 
 
@@ -98,9 +112,19 @@ def test_bit_driver_rewards_qubits_sitting_at_b(b):
     )
 
 
-def test_bit_driver_rejects_invalid_b():
-    with pytest.raises(ValueError, match="b"):
-        bit_driver(n_qubits=3, b=2)
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: bit_driver(n_qubits=3, b=2),
+        lambda: bit_flip_mixer(nx.path_graph(3), b=2),
+    ],
+    ids=["bit_driver", "bit_flip_mixer"],
+)
+def test_bit_builders_reject_invalid_b(build):
+    with pytest.raises(
+        ValueError, match=exact_match("'b' must be either 0 or 1, got 2")
+    ):
+        build()
 
 
 @pytest.mark.parametrize(
@@ -127,13 +151,25 @@ def test_edge_driver_penalises_each_unrewarded_edge_by_one(reward):
 
 
 def test_edge_driver_rejects_unpaired_directed_bits():
-    with pytest.raises(ValueError, match="01"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "'reward' cannot contain either '10' or '01' alone; must contain "
+            "neither or both."
+        ),
+    ):
         edge_driver(nx.Graph([(0, 1)]), ["10"])
 
 
 def _isolated_nodes() -> nx.Graph:
     graph = nx.Graph()
     graph.add_nodes_from([0, 1, 2])  # degree 0 everywhere
+    return graph
+
+
+def _single_vertex() -> nx.Graph:
+    graph = nx.Graph()
+    graph.add_node(0)
     return graph
 
 
@@ -145,8 +181,9 @@ def _isolated_nodes() -> nx.Graph:
         lambda: nx.cycle_graph(5),
         lambda: nx.star_graph(5),  # degree-5 hub exercises 2^d expansion sign bugs
         _isolated_nodes,  # empty neighbourhood: the flip is unconditional
+        _single_vertex,
     ],
-    ids=["path4", "cycle5", "star5", "isolated"],
+    ids=["path4", "cycle5", "star5", "isolated", "single_vertex"],
 )
 def test_bit_flip_mixer_flips_a_vertex_only_when_its_neighbours_sit_at_b(
     graph_factory, b
@@ -160,30 +197,100 @@ def test_bit_flip_mixer_flips_a_vertex_only_when_its_neighbours_sit_at_b(
     )
 
 
-def test_bit_flip_mixer_rejects_invalid_b():
-    with pytest.raises(ValueError, match="b"):
-        bit_flip_mixer(nx.path_graph(3), b=2)
-
-
 def test_bit_flip_mixer_rejects_non_nx_graph():
-    with pytest.raises(TypeError, match="networkx"):
+    with pytest.raises(
+        TypeError, match=exact_match("bit_flip_mixer requires a networkx.Graph.")
+    ):
         bit_flip_mixer([(0, 1)], b=0)
 
 
-def test_x_mixer_zero_qubits_returns_zero_operator():
-    spo = x_mixer(0)
-    assert spo.num_qubits == 0
-    np.testing.assert_allclose(spo.coeffs, [0.0])
+@pytest.mark.parametrize(
+    "build, n_qubits",
+    [
+        (lambda: x_mixer(0), 0),
+        (lambda: bit_driver(0, b=1), 0),
+        (lambda: xy_mixer(nx.Graph()), 0),
+        (lambda: edge_driver(nx.Graph(), ["00"]), 0),
+        (lambda: bit_flip_mixer(nx.Graph(), b=0), 0),
+        (lambda: xy_mixer(_single_vertex()), 1),
+        (lambda: xy_mixer(_isolated_nodes()), 3),
+        (lambda: xy_mixer(nx.Graph(), n_qubits=2), 2),
+        (lambda: edge_driver(nx.Graph(), [], n_qubits=2), 2),
+    ],
+    ids=[
+        "x_mixer",
+        "bit_driver",
+        "xy_mixer",
+        "edge_driver",
+        "bit_flip_mixer",
+        "xy_mixer_single_vertex",
+        "xy_mixer_isolated_nodes",
+        "xy_mixer_explicit_width",
+        "edge_driver_explicit_width",
+    ],
+)
+def test_builders_without_terms_return_a_zero_operator(build, n_qubits):
+    spo = build()
+    assert spo.num_qubits == n_qubits
+    np.testing.assert_allclose(spo.coeffs, 0.0)
 
 
-def test_x_mixer_rejects_negative_qubits():
-    with pytest.raises(ValueError, match="non-negative"):
-        x_mixer(-1)
+@pytest.mark.parametrize(
+    "build",
+    [lambda: x_mixer(-1), lambda: bit_driver(-1, b=0)],
+    ids=["x_mixer", "bit_driver"],
+)
+def test_builders_reject_negative_qubits(build):
+    with pytest.raises(ValueError, match=exact_match("n_qubits must be non-negative.")):
+        build()
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        xy_mixer,
+        lambda edges: edge_driver(edges, ["00"]),
+    ],
+    ids=["xy_mixer", "edge_driver"],
+)
+def test_graph_builders_accept_an_edge_list(build):
+    edges = [(0, 1), (1, 2)]
+    _assert_spo_equivalent(build(edges), build(nx.Graph(edges)))
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda graph: xy_mixer(graph, n_qubits=2),
+        lambda graph: edge_driver(graph, ["00"], n_qubits=2),
+    ],
+    ids=["xy_mixer", "edge_driver"],
+)
+def test_graph_builders_reject_a_register_narrower_than_the_graph(build):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("n_qubits is smaller than the largest graph node."),
+    ):
+        build(nx.Graph([(0, 3)]))
+
+
+def test_edge_driver_rejects_invalid_reward_entries():
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Encountered invalid entry in 'reward', expected 2-bit bitstrings; "
+            "got ['2x']."
+        ),
+    ):
+        edge_driver(nx.Graph([(0, 1)]), ["2x"])
 
 
 def test_graph_builders_reject_negative_qubit_nodes():
     """``xy_mixer``, ``edge_driver``, and ``bit_flip_mixer`` share
     the ``_validate_int_nodes`` helper — exercise it via one representative
     entry point."""
-    with pytest.raises(ValueError, match="non-negative"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("bit_flip_mixer requires non-negative qubit nodes."),
+    ):
         bit_flip_mixer(nx.Graph([(0, -1)]), b=0)

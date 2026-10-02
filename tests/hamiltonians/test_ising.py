@@ -4,6 +4,7 @@
 
 """Tests for binary-to-Ising conversion (_ising.py)."""
 
+import warnings
 from collections import defaultdict
 from itertools import product as iterproduct
 
@@ -26,6 +27,16 @@ from divi.hamiltonians._ising import (
     _convert_qubo_matrix_to_ising_spo,
     _is_sanitized,
     _resolve_ising_converter,
+)
+from tests._helpers import exact_match
+
+_CONSTANT_ONLY = exact_match("Hamiltonian contains only constant terms.")
+_ASYMMETRIC_WARNING = exact_match(
+    "The QUBO matrix is neither symmetric nor upper triangular. "
+    "Symmetrising it for the Ising Hamiltonian creation."
+)
+_INVALID_BUILDER = exact_match(
+    "hamiltonian_builder must be either 'native' or 'quadratized'."
 )
 
 # H = Z_0 Z_1 - 0.5 Z_0 - 0.5 Z_1, in big-endian labels (qubit 0 rightmost).
@@ -75,52 +86,23 @@ def test_is_sanitized(matrix, expected):
 class TestQuboToIsingConversion:
     """Tests for ``_convert_qubo_matrix_to_ising_spo``."""
 
-    def test_symmetric_dense_qubo(self):
+    @pytest.mark.parametrize(
+        "qubo_matrix",
+        [
+            pytest.param(np.array([[-1.0, 2.0], [2.0, -1.0]]), id="symmetric"),
+            pytest.param(np.array([[-1.0, 4.0], [0.0, -1.0]]), id="upper_triangular"),
+        ],
+    )
+    def test_dense_qubo(self, qubo_matrix):
         """
         Q = [[-1, 2], [2, -1]] → E(x) = -x₀ + 4x₀x₁ - x₁
         Hand-derived Ising: H = Z₀Z₁ - 0.5·Z₀ - 0.5·Z₁, offset = 0.
+        Upper-triangular Q = [[-1, 4], [0, -1]] symmetrises to the same Ising.
         """
-        qubo_matrix = np.array([[-1.0, 2.0], [2.0, -1.0]])
         spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
-        expected = _SYMMETRIC_2Q_ISING
-
         assert np.isclose(constant, 0.0)
-        assert spo.simplify() == expected.simplify()
-
-    def test_upper_triangular_dense_qubo(self):
-        """Upper-triangular Q = [[-1, 4], [0, -1]] symmetrises to the same Ising."""
-        qubo_matrix = np.array([[-1.0, 4.0], [0.0, -1.0]])
-        spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
-
-        expected = _SYMMETRIC_2Q_ISING
-
-        assert np.isclose(constant, 0.0)
-        assert spo.simplify() == expected.simplify()
-
-    def test_non_sanitized_qubo_raises_warning(self):
-        """A non-sanitised QUBO triggers the symmetrisation warning."""
-        qubo_matrix = np.array([[-1.0, 3.0], [1.0, -1.0]])
-
-        with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
-            spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
-
-        # Symmetrised version is [[-1, 2], [2, -1]] → same Ising as the symmetric test.
-        expected = _SYMMETRIC_2Q_ISING
-
-        assert np.isclose(constant, 0.0)
-        assert spo.simplify() == expected.simplify()
-
-    def test_non_sanitized_sparse_qubo_raises_warning(self):
-        """Non-sanitised sparse QUBO triggers the symmetrisation warning."""
-        qubo_matrix = sps.csc_matrix([[-1.0, 3.0], [1.0, -1.0]])
-
-        with pytest.warns(UserWarning, match="neither symmetric nor upper triangular"):
-            spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
-
-        expected = _SYMMETRIC_2Q_ISING
-        assert np.isclose(constant, 0.0)
-        assert spo.simplify() == expected.simplify()
+        assert spo.simplify() == _SYMMETRIC_2Q_ISING.simplify()
 
     def test_diagonal_qubo(self):
         """Purely diagonal QUBO yields only single-Z terms."""
@@ -141,6 +123,12 @@ class TestQuboToIsingConversion:
 
         assert np.isclose(constant, 0.0)
         assert spo.simplify() == expected.simplify()
+
+    def test_zero_qubo_yields_empty_operator(self):
+        spo, constant = _convert_qubo_matrix_to_ising_spo(np.zeros((2, 2)))
+        assert spo.size == 0
+        assert spo.num_qubits == 2
+        assert constant == 0.0
 
     def test_3x3_qubo(self):
         """Larger 3x3 QUBO exercises pair-term summation."""
@@ -200,6 +188,7 @@ class TestQuboToIsingConversion:
                 ),
                 False,
             ),
+            (np.array([[3.0]]), False),
         ],
         ids=[
             "2x2_sym_dense",
@@ -211,6 +200,7 @@ class TestQuboToIsingConversion:
             "2x2_nonsanitized_dense",
             "2x2_nonsanitized_sparse",
             "5x5_sym_dense",
+            "1x1_single_entry",
         ],
     )
     def test_ising_energies_match_qubo(self, qubo_matrix, expect_warning):
@@ -228,12 +218,12 @@ class TestQuboToIsingConversion:
         Q_sym = (q_dense + q_dense.T) / 2
 
         if expect_warning:
-            with pytest.warns(
-                UserWarning, match="neither symmetric nor upper triangular"
-            ):
+            with pytest.warns(UserWarning, match=_ASYMMETRIC_WARNING):
                 spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
         else:
-            spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                spo, constant = _convert_qubo_matrix_to_ising_spo(qubo_matrix)
 
         for bits in iterproduct((0, 1), repeat=n):
             x = np.array(bits, dtype=float)
@@ -473,29 +463,112 @@ class TestBinaryToIsingConverters:
         assert 0 in single_z_coeffs
         assert 1 in single_z_coeffs
 
-
-class TestResolveIsingConverter:
-    """Tests for _resolve_ising_converter."""
+    @pytest.mark.parametrize(
+        "hubo",
+        [
+            {(0,): 0.0, (0, 1): 2.0, (1,): -1.0},
+            {(): 0.5, (0,): 1.0, (1,): 1.0, (0, 1): -3.0},
+        ],
+        ids=["zero_coefficient_first", "constant_first"],
+    )
+    def test_native_converter_handles_any_term_order(self, hubo):
+        problem = normalize_binary_polynomial_problem(hubo)
+        result = NativeIsingConverter().convert(problem)
+        for bits in iterproduct((0, 1), repeat=problem.n_vars):
+            assignment = dict(zip(problem.variable_order, bits))
+            assert self._eval_ising_energy(
+                result.operator, result.constant, assignment, problem.variable_to_idx
+            ) == pytest.approx(self._eval_polynomial_energy(problem, assignment))
 
     @pytest.mark.parametrize(
-        "builder, strength, expected_cls",
+        "converter, strategy",
         [
-            ("native", 10.0, NativeIsingConverter),
-            ("quadratized", 5.0, QuadratizedIsingConverter),
+            (NativeIsingConverter(), "native"),
+            (QuadratizedIsingConverter(), "quadratized"),
         ],
+        ids=["native", "quadratized"],
     )
-    def test_known_builder_returns_matching_converter(
-        self, builder, strength, expected_cls
-    ):
-        converter = _resolve_ising_converter(builder, quadratization_strength=strength)
-        assert isinstance(converter, expected_cls)
-        if expected_cls is QuadratizedIsingConverter:
-            assert converter.strength == strength
+    def test_constant_only_problem_encodes_its_constant(self, converter, strategy):
+        problem = normalize_binary_polynomial_problem({(): 2.5})
+        result = converter.convert(problem)
+        assert result.operator.size == 0
+        assert result.operator.num_qubits == 0
+        assert result.constant == 2.5
+        assert result.decode_fn("").size == 0
+        assert result.metadata["strategy"] == strategy
 
-    def test_invalid_builder_raises(self):
-        """An unrecognized builder string raises ValueError."""
-        with pytest.raises(ValueError, match="hamiltonian_builder must be either"):
-            _resolve_ising_converter("unknown", quadratization_strength=1.0)
+    def test_quadratized_converter_encodes_a_single_variable(self):
+        problem = normalize_binary_polynomial_problem({(0,): 2.0})
+        result = QuadratizedIsingConverter().convert(problem)
+        assert result.operator == SparsePauliOp.from_list([("Z", -1.0)])
+        assert result.constant == pytest.approx(1.0)
+
+    def test_quadratized_adaptive_strength_of_an_all_zero_problem(self):
+        problem = normalize_binary_polynomial_problem(np.zeros((2, 2)))
+        result = QuadratizedIsingConverter().convert(problem)
+        assert result.metadata["strength"] == 2.0
+
+    def test_quadratized_converter_does_not_warn(self):
+        problem = normalize_binary_polynomial_problem(
+            {("x0", "x1", "x2"): 1.0, ("x0",): -1.0},
+            variable_order=("x0", "x1", "x2"),
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            QuadratizedIsingConverter(strength=5.0).convert(problem)
+
+
+def _native_operator(hubo):
+    return NativeIsingConverter().convert(normalize_binary_polynomial_problem(hubo))
+
+
+def _label_coeffs(spo: SparsePauliOp) -> dict[str, float]:
+    return {
+        label: float(c.real) for label, c in zip(spo.paulis.to_labels(), spo.coeffs)
+    }
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: _native_operator({(0,): 1e-9, (1,): 1.0}).operator,
+        lambda: _convert_qubo_matrix_to_ising_spo(np.diag([1e-9, 1.0]))[0],
+    ],
+    ids=["native", "qubo_matrix"],
+)
+def test_small_but_real_weight_survives(build):
+    assert _label_coeffs(build())["IZ"] == pytest.approx(-5e-10)
+
+
+# The Z0 weights -a/2 and -b/4 cancel up to a rounding residue of ~3e-14.
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda: _native_operator(
+            {(0,): 300.3, (0, 1): -600.6000000000001, (1,): 1000.0}
+        ).operator,
+        lambda: _convert_qubo_matrix_to_ising_spo(
+            np.array([[300.3, -600.6000000000001], [0.0, 1000.0]])
+        )[0],
+    ],
+    ids=["native", "qubo_matrix"],
+)
+def test_cancellation_residue_is_pruned(build):
+    assert set(build().paulis.to_labels()) == {"ZZ", "ZI"}
+
+
+@pytest.mark.parametrize(
+    "builder, strength, expected_cls",
+    [
+        ("native", 10.0, NativeIsingConverter),
+        ("quadratized", 5.0, QuadratizedIsingConverter),
+    ],
+)
+def test_known_builder_returns_matching_converter(builder, strength, expected_cls):
+    converter = _resolve_ising_converter(builder, quadratization_strength=strength)
+    assert isinstance(converter, expected_cls)
+    if expected_cls is QuadratizedIsingConverter:
+        assert converter.strength == strength
 
 
 class TestQuboToIsing:
@@ -559,25 +632,31 @@ class TestQuboToIsing:
         result = qubo_to_ising(qubo)
         assert result.n_qubits == result.cost_hamiltonian.num_qubits
 
-    def test_constant_only_raises(self):
+    @pytest.mark.parametrize(
+        "qubo",
+        [{}, {(0,): 0.0}, np.zeros((2, 2))],
+        ids=["empty", "zero_coefficient", "zero_matrix"],
+    )
+    def test_constant_only_raises(self, qubo):
         """A QUBO that normalises to constant-only terms must raise."""
-        with pytest.raises((ValueError, Exception)):
-            qubo_to_ising({})
+        with pytest.raises(ValueError, match=_CONSTANT_ONLY):
+            qubo_to_ising(qubo)
 
     def test_invalid_hamiltonian_builder_raises(self):
         qubo = {(0,): -1.0}
-        with pytest.raises(ValueError, match="native.*quadratized"):
+        with pytest.raises(ValueError, match=_INVALID_BUILDER):
             qubo_to_ising(qubo, hamiltonian_builder="invalid")
 
 
 class TestQuboToSpo:
     """Tests for the qubo_to_spo convenience wrapper."""
 
-    def test_returns_sparse_pauli_op(self):
-        spo = qubo_to_spo({(0,): -1.0, (1,): -1.0, (0, 1): 2.0})
-        assert isinstance(spo, SparsePauliOp)
-
-    def test_z_basis_eigenvalues_equal_qubo_energies(self):
+    @pytest.mark.parametrize(
+        "qubo",
+        [{(0,): -1.0, (1,): -1.0, (0, 1): 2.0}, {(0,): 2.0}],
+        ids=["two_variables", "unit_loss_constant"],
+    )
+    def test_z_basis_eigenvalues_equal_qubo_energies(self, qubo):
         """SPO computational-basis eigenvalues match the QUBO objective.
 
         This is the contract that justifies returning a single SPO instead
@@ -585,7 +664,6 @@ class TestQuboToSpo:
         operator's expectation value on any bitstring equals the QUBO's
         energy on that bitstring.
         """
-        qubo = {(0,): -1.0, (1,): -1.0, (0, 1): 2.0}
         spo = qubo_to_spo(qubo)
         diag = np.real(np.diag(spo.to_matrix()))
         # Bitstring ordering: Qiskit uses qubit 0 rightmost, so diag[i]
@@ -640,4 +718,8 @@ class TestQuboToSpo:
         spo = qubo_to_spo(
             hubo, hamiltonian_builder="quadratized", quadratization_strength=5.0
         )
-        assert spo.num_qubits >= 3
+        ising = qubo_to_ising(
+            hubo, hamiltonian_builder="quadratized", quadratization_strength=5.0
+        )
+        identity = SparsePauliOp(["I" * ising.n_qubits], [ising.loss_constant])
+        assert spo.equiv(ising.cost_hamiltonian + identity)

@@ -27,10 +27,6 @@ from ._term_ops import (
 from ._types import BinaryPolynomialProblem
 
 
-def _wires_from_spo(spo: SparsePauliOp) -> tuple:
-    return tuple(range(_require_qiskit_num_qubits(spo.num_qubits)))
-
-
 def _make_decode(idx_map: dict, var_order: tuple) -> Callable[[str], np.ndarray]:
     """Build a decode function that pulls ``var_order`` bits from a bitstring
     via ``idx_map``. Empty ``var_order`` produces the empty-problem decoder."""
@@ -66,11 +62,6 @@ class IsingEncoding:
     decode_fn: Callable[[str], Any]
     metadata: dict[str, object] | None = None
 
-    @property
-    def wires(self) -> tuple:
-        """Canonical wire mapping aligned with the SPO (always ``range(num_qubits)``)."""
-        return _wires_from_spo(self.operator)
-
 
 class BinaryToIsingConverter(Protocol):
     """Protocol for pluggable binary-to-Ising converters."""
@@ -99,7 +90,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
                 operator=generate_empty_spo(0),
                 constant=problem.constant,
                 decode_fn=_empty_decode,
-                metadata={"strategy": "native", "term_count": 0},
+                metadata={"strategy": "native"},
             )
 
         # Collect signed contributions per Z-product subset in a list and
@@ -160,7 +151,7 @@ class NativeIsingConverter(BinaryToIsingConverter):
             operator=spo,
             constant=float(constant),
             decode_fn=_make_decode(problem.variable_to_idx, problem.variable_order),
-            metadata={"strategy": "native", "term_count": spo.size},
+            metadata={"strategy": "native"},
         )
 
 
@@ -233,7 +224,7 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
             qubo_matrix, warn_on_asymmetric=False
         )
         original_vars = set(problem.variable_order)
-        ancilla_variables = [var for var in variable_order if var not in original_vars]
+        ancilla_count = sum(var not in original_vars for var in variable_order)
 
         return IsingEncoding(
             operator=spo,
@@ -242,8 +233,7 @@ class QuadratizedIsingConverter(BinaryToIsingConverter):
             metadata={
                 "strategy": "quadratized",
                 "strength": strength,
-                "ancilla_count": len(ancilla_variables),
-                "ancilla_variables": ancilla_variables,
+                "ancilla_count": ancilla_count,
             },
         )
 
@@ -269,11 +259,6 @@ class IsingResult:
     loss_constant: float
     n_qubits: int
     encoding: IsingEncoding
-
-    @property
-    def wires(self) -> tuple:
-        """Canonical wire mapping aligned with the SPO."""
-        return _wires_from_spo(self.cost_hamiltonian)
 
 
 def qubo_to_spo(
@@ -360,13 +345,13 @@ def qubo_to_ising(
     )
     encoding = converter.convert(canonical)
 
-    cleaned_spo, ham_constant = _clean_hamiltonian_spo(encoding.operator)
+    cleaned_spo, _ = _clean_hamiltonian_spo(encoding.operator)
     if cleaned_spo.size == 0:
         raise ValueError("Hamiltonian contains only constant terms.")
 
     return IsingResult(
         cost_hamiltonian=cleaned_spo,
-        loss_constant=encoding.constant + ham_constant,
+        loss_constant=encoding.constant,
         n_qubits=_require_qiskit_num_qubits(encoding.operator.num_qubits),
         encoding=encoding,
     )

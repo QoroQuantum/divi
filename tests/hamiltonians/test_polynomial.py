@@ -31,6 +31,7 @@ from divi.hamiltonians._polynomial import (
     _evaluate_binary_polynomial,
 )
 from divi.pipeline.stages._pce_cost_stage import _compute_hard_cvar_energy
+from tests._helpers import exact_match
 
 
 def _make_problem(qubo_matrix):
@@ -41,6 +42,37 @@ def _make_problem(qubo_matrix):
 def _make_hubo_problem(hubo_dict):
     """Build a BinaryPolynomialProblem from a HUBO dict."""
     return normalize_binary_polynomial_problem(hubo_dict)
+
+
+_MIXED_ORDER_HUBO = {(): 0.5, (0,): 0.0, (1,): -1.0, (0, 1): 2.0}
+
+
+def _mixed_order_energy(x):
+    """Energy of ``_MIXED_ORDER_HUBO``, degree-1 terms evaluated as ``c * x**2``."""
+    return 0.5 - x[1] ** 2 + 2.0 * x[0] * x[1]
+
+
+@pytest.mark.parametrize("compiled", [False, True], ids=["python", "jit"])
+@pytest.mark.parametrize(
+    "x_vals",
+    [np.array([0.7, 0.4]), np.random.default_rng(3).random((2, 6))],
+    ids=["single", "batch"],
+)
+def test_evaluate_binary_polynomial_with_constant_and_zero_terms(compiled, x_vals):
+    problem = _make_hubo_problem(_MIXED_ORDER_HUBO)
+    result = _evaluate_binary_polynomial(
+        x_vals, problem, compile_problem(problem) if compiled else None
+    )
+    np.testing.assert_allclose(result, _mixed_order_energy(x_vals), rtol=1e-12)
+    assert np.shape(result) == np.shape(_mixed_order_energy(x_vals))
+
+
+def test_evaluate_constant_only_batch_has_one_energy_per_state():
+    result = _evaluate_binary_polynomial(
+        np.zeros((0, 4)), _make_hubo_problem({(): 3.0})
+    )
+    assert result.shape == (4,)
+    np.testing.assert_array_equal(result, 3.0)
 
 
 class TestQuboToMatrixBQM:
@@ -70,7 +102,12 @@ class TestQuboToMatrixBQM:
     def test_non_binary_bqm_raises(self):
         """A non-BINARY (SPIN) BQM should raise ValueError."""
         bqm = dimod.BinaryQuadraticModel({"a": 1.0}, {}, vartype=dimod.SPIN)
-        with pytest.raises(ValueError, match="vartype='BINARY'"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                f"BinaryQuadraticModel must have vartype='BINARY', got {dimod.SPIN}"
+            ),
+        ):
             qubo_to_matrix(bqm)
 
 
@@ -87,21 +124,26 @@ class TestQuboToMatrixSparse:
     def test_non_square_sparse_raises(self):
         """A non-square sparse matrix should raise ValueError."""
         sparse = sps.csr_matrix(np.ones((2, 3)))
-        with pytest.raises(ValueError, match="Must be a square matrix"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Invalid QUBO matrix. Got sparse matrix of shape (2, 3). "
+                "Must be a square matrix."
+            ),
+        ):
             qubo_to_matrix(sparse)
 
 
-class TestQuboToMatrixUnsupported:
-    """Cover the unsupported-type fallback."""
-
-    @pytest.mark.parametrize(
-        "bad_input",
-        ["not a matrix", 42],
-        ids=["str", "int"],
-    )
-    def test_unsupported_type_raises(self, bad_input):
-        with pytest.raises(ValueError, match="Unsupported QUBO type"):
-            qubo_to_matrix(bad_input)
+@pytest.mark.parametrize(
+    "bad_input",
+    ["not a matrix", 42],
+    ids=["str", "int"],
+)
+def test_qubo_to_matrix_unsupported_type_raises(bad_input):
+    with pytest.raises(
+        ValueError, match=exact_match(f"Unsupported QUBO type: {type(bad_input)}")
+    ):
+        qubo_to_matrix(bad_input)
 
 
 class TestHuboToBinaryPolynomial:
@@ -122,12 +164,48 @@ class TestHuboToBinaryPolynomial:
         assert polynomial[frozenset()] == pytest.approx(3.0)
 
     def test_hubo_dict_duplicate_variables_raises(self):
-        with pytest.raises(ValueError, match="duplicate variables"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Invalid HUBO term ('x0', 'x0'): duplicate variables in a monomial "
+                "are not allowed."
+            ),
+        ):
             hubo_to_binary_polynomial({("x0", "x0"): 1.0})
 
     def test_unsupported_hubo_type_raises(self):
-        with pytest.raises(ValueError, match="Unsupported HUBO type"):
+        with pytest.raises(
+            ValueError, match=exact_match("Unsupported HUBO type: <class 'int'>")
+        ):
             hubo_to_binary_polynomial(123)  # type: ignore[arg-type]
+
+    def test_frozenset_keys_normalise(self):
+        polynomial = hubo_to_binary_polynomial({frozenset({"a", "b"}): 1.5})
+        assert polynomial[frozenset({"a", "b"})] == pytest.approx(1.5)
+
+    def test_non_tuple_key_raises(self):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "HUBO term keys must be tuples (or frozensets from BinaryPolynomial "
+                "internals), got <class 'int'>"
+            ),
+        ):
+            hubo_to_binary_polynomial({3: 1.0})
+
+    def test_binary_polynomial_passes_through(self):
+        polynomial = dimod.BinaryPolynomial({("a", "b"): 1.0}, dimod.BINARY)
+        assert hubo_to_binary_polynomial(polynomial) is polynomial
+
+    def test_spin_polynomial_raises(self):
+        polynomial = dimod.BinaryPolynomial({("a", "b"): 1.0}, dimod.SPIN)
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                f"BinaryPolynomial must have vartype='BINARY', got {dimod.SPIN}"
+            ),
+        ):
+            hubo_to_binary_polynomial(polynomial)
 
 
 class TestQuboToBinaryPolynomial:
@@ -141,11 +219,12 @@ class TestQuboToBinaryPolynomial:
         assert polynomial[frozenset({0, 1})] == pytest.approx(2.0)
         assert polynomial[frozenset({1})] == pytest.approx(3.0)
 
-    def test_binary_quadratic_model_keeps_labels(self):
+    @pytest.mark.parametrize("offset", [1.25, 1.0], ids=["offset", "unit_offset"])
+    def test_binary_quadratic_model_keeps_labels(self, offset):
         bqm = dimod.BinaryQuadraticModel(
             {"a": 1.0, "b": -2.0},
             {("a", "b"): 0.75},
-            1.25,
+            offset,
             dimod.Vartype.BINARY,
         )
         polynomial = qubo_to_binary_polynomial(bqm)
@@ -153,7 +232,12 @@ class TestQuboToBinaryPolynomial:
         assert polynomial[frozenset({"a"})] == pytest.approx(1.0)
         assert polynomial[frozenset({"b"})] == pytest.approx(-2.0)
         assert polynomial[frozenset({"a", "b"})] == pytest.approx(0.75)
-        assert polynomial[frozenset()] == pytest.approx(1.25)
+        assert polynomial[frozenset()] == pytest.approx(offset)
+
+    def test_sparse_matrix_with_stored_zero_keeps_later_entries(self):
+        qubo = sps.coo_matrix(([0.0, 2.0], ([0, 0], [0, 1])), shape=(2, 2))
+        polynomial = qubo_to_binary_polynomial(qubo)
+        assert polynomial[frozenset({0, 1})] == pytest.approx(2.0)
 
 
 class TestNormalizeBinaryPolynomialProblem:
@@ -180,15 +264,25 @@ class TestNormalizeBinaryPolynomialProblem:
         # Sorted by repr for deterministic behavior across mixed types.
         assert normalized.variable_order == ("a", "b")
         assert normalized.variable_to_idx == {"a": 0, "b": 1}
+        assert normalized.constant == 0.0
 
     def test_variable_order_mismatch_raises(self):
         hubo = {("a",): 1.0, ("b",): 2.0}
-        with pytest.raises(ValueError, match="must contain exactly the variables"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "variable_order must contain exactly the variables present in the "
+                "problem."
+            ),
+        ):
             normalize_binary_polynomial_problem(hubo, variable_order=("a", "c"))
 
     def test_variable_order_duplicates_raise(self):
         hubo = {("a",): 1.0}
-        with pytest.raises(ValueError, match="must not contain duplicates"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match("variable_order must not contain duplicates."),
+        ):
             normalize_binary_polynomial_problem(hubo, variable_order=("a", "a"))
 
 
