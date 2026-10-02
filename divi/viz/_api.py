@@ -30,7 +30,15 @@ from collections.abc import Callable, Hashable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import wraps
-from typing import Concatenate, Literal, ParamSpec, Protocol, TypeAlias, TypeVar
+from typing import (
+    ClassVar,
+    Concatenate,
+    Literal,
+    ParamSpec,
+    Protocol,
+    TypeAlias,
+    TypeVar,
+)
 
 import numpy as np
 import numpy.typing as npt
@@ -64,6 +72,7 @@ _R = TypeVar("_R")
 
 
 class _SupportsVizScan(Protocol):
+    _supports_fixed_param_scans: ClassVar[bool]
     n_layers: int
     _best_params: npt.NDArray[np.float64]
     _progress_key: Hashable
@@ -160,6 +169,7 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
         "n_params_per_layer",
         "_best_params",
         "_progress_key",
+        "_supports_fixed_param_scans",
     )
     required_methods = (
         "_has_run_optimization",
@@ -172,7 +182,7 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
     ):
         raise TypeError("divi.viz currently supports VariationalQuantumAlgorithm only.")
 
-    if not getattr(program, "_supports_fixed_param_scans", True):
+    if not program._supports_fixed_param_scans:
         raise NotImplementedError(
             f"{type(program).__name__} varies its parameter space during optimisation "
             "and has no fixed parameter space for these scans; use a fixed-depth variant."
@@ -260,6 +270,18 @@ def _gram_schmidt_remove_component(
     return v - (float(np.dot(v, ref)) / ref_sq) * ref
 
 
+def _random_orthogonal_direction(
+    ref: npt.NDArray[np.float64], rng: np.random.Generator
+) -> npt.NDArray[np.float64]:
+    """Sample a random Gaussian direction with its component along *ref* removed."""
+    v = _gram_schmidt_remove_component(_random_gaussian_direction(ref.size, rng), ref)
+    if float(np.linalg.norm(v)) < 1e-15:  # practically impossible for >= 2 params
+        raise RuntimeError(
+            "Sampled a direction parallel to the reference; try a different rng seed."
+        )
+    return v
+
+
 def _resolve_2d_directions(
     direction_x: OptionalArray,
     direction_y: OptionalArray,
@@ -269,6 +291,9 @@ def _resolve_2d_directions(
     normalize_directions: bool,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Validate or generate orthogonal 2D scan directions."""
+    if n_params < 2:
+        raise ValueError(f"2D scans need at least 2 parameters, got {n_params}.")
+
     has_x = direction_x is not None
     has_y = direction_y is not None
 
@@ -296,17 +321,8 @@ def _resolve_2d_directions(
         nx = float(np.linalg.norm(dx))
         if nx == 0.0:
             raise ValueError("direction_x must be non-zero.")
-        dy_raw = _random_gaussian_direction(n_params, rng)
-        dy = _gram_schmidt_remove_component(dy_raw, dx)
+        dy = _random_orthogonal_direction(dx, rng)
         ny = float(np.linalg.norm(dy))
-        if ny < 1e-15:
-            return _resolve_2d_directions(
-                direction_x,
-                direction_y,
-                n_params=n_params,
-                rng=rng,
-                normalize_directions=normalize_directions,
-            )
         if normalize_directions:
             dx = dx / nx
             dy = dy / ny
@@ -321,17 +337,8 @@ def _resolve_2d_directions(
         ny = float(np.linalg.norm(dy))
         if ny == 0.0:
             raise ValueError("direction_y must be non-zero.")
-        dx_raw = _random_gaussian_direction(n_params, rng)
-        dx = _gram_schmidt_remove_component(dx_raw, dy)
+        dx = _random_orthogonal_direction(dy, rng)
         nx = float(np.linalg.norm(dx))
-        if nx < 1e-15:
-            return _resolve_2d_directions(
-                direction_x,
-                direction_y,
-                n_params=n_params,
-                rng=rng,
-                normalize_directions=normalize_directions,
-            )
         if normalize_directions:
             dx = dx / nx
             dy = dy / ny
@@ -340,17 +347,8 @@ def _resolve_2d_directions(
     else:
         dx = _random_gaussian_direction(n_params, rng)
         nx = float(np.linalg.norm(dx))
-        dy_raw = _random_gaussian_direction(n_params, rng)
-        dy = _gram_schmidt_remove_component(dy_raw, dx)
+        dy = _random_orthogonal_direction(dx, rng)
         ny = float(np.linalg.norm(dy))
-        if ny < 1e-15:
-            return _resolve_2d_directions(
-                direction_x,
-                direction_y,
-                n_params=n_params,
-                rng=rng,
-                normalize_directions=normalize_directions,
-            )
         if normalize_directions:
             dx = dx / nx
             dy = dy / ny
@@ -410,8 +408,8 @@ def _pca_scan_endpoints(
     offset: tuple[float, float],
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """Axis limits in PCA score space (orqviz ``PCAobject._get_endpoints_from_pca``)."""
-    c0 = scores[:, i0].astype(np.float64, copy=False)
-    c1 = scores[:, i1].astype(np.float64, copy=False)
+    c0 = scores[:, i0]
+    c1 = scores[:, i1]
     lo0, hi0 = float(np.min(c0)), float(np.max(c0))
     lo1, hi1 = float(np.min(c1)), float(np.max(c1))
     eps = 1e-12
@@ -439,7 +437,7 @@ def _param_sets_from_pca_grid(
     # Build a (n_y * n_x, n_comp) coefficient matrix and call inverse_transform once.
     xx, yy = np.meshgrid(x_offsets, y_offsets, indexing="xy")
     n_points = xx.size
-    coefs = np.zeros((n_points, n_comp), dtype=np.float64)
+    coefs = np.zeros((n_points, n_comp))
     coefs[:, i0] = xx.ravel()
     coefs[:, i1] = yy.ravel()
     return (pca.inverse_transform(coefs) + shift).astype(np.float64)
@@ -1025,18 +1023,18 @@ def compute_hessian(
         cross_coeff = 1.0 / (4.0 * eps * eps)
 
     n = n_params
-    eye_diag = diag_shift * np.eye(n, dtype=np.float64)
-    eye_cross = cross_shift * np.eye(n, dtype=np.float64)
+    eye_diag = diag_shift * np.eye(n)
+    eye_cross = cross_shift * np.eye(n)
 
     # Layout: [center, +e0, -e0, ..., +ei+ej, +ei-ej, -ei+ej, -ei-ej, ...]
-    diag_probes = np.empty((2 * n, n), dtype=np.float64)
+    diag_probes = np.empty((2 * n, n))
     for i in range(n):
         diag_probes[2 * i] = c + eye_diag[i]
         diag_probes[2 * i + 1] = c - eye_diag[i]
 
     ii, jj = np.triu_indices(n, k=1)
     n_pairs = len(ii)
-    cross_probes = np.empty((4 * n_pairs, n), dtype=np.float64)
+    cross_probes = np.empty((4 * n_pairs, n))
     for k, (i, j) in enumerate(zip(ii, jj)):
         cross_probes[4 * k] = c + eye_cross[i] + eye_cross[j]
         cross_probes[4 * k + 1] = c + eye_cross[i] - eye_cross[j]
@@ -1051,7 +1049,7 @@ def compute_hessian(
         )
 
     f0 = vals[0]
-    H = np.zeros((n, n), dtype=np.float64)
+    H = np.zeros((n, n))
 
     # Diagonal: H_ii = coeff * (f+ - 2*f0 + f-)
     diag_vals = vals[1 : 1 + 2 * n].reshape(n, 2)
@@ -1289,7 +1287,6 @@ class ProgramViz:
                     ref = np.asarray(center, dtype=np.float64).reshape(-1)
                     delta = periodic_wrap(samples[-1], reference=ref) - samples[-1]
                     samples = samples + delta
-                    assert np.max(np.abs(samples[-1] - ref)) <= np.pi + 1e-9
             kwargs["samples"] = samples
         return scan_pca(self.program, **kwargs)
 

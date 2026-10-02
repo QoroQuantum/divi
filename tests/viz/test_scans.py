@@ -21,8 +21,14 @@ from divi.qprog import (
 )
 from divi.qprog.algorithms import InterpolationStrategy
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
-from divi.reporting._events import ProgressEvent
+from divi.reporting._events import EventKind, ProgressEvent
 from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
+from divi.viz._api import (
+    _evaluate_param_sets_reported,
+    _require_supported_program,
+    _resolve_2d_directions,
+    _resolve_center,
+)
 
 
 @pytest.fixture
@@ -647,3 +653,336 @@ class TestGradientOverlay:
             assert len(quivers) == 0
         finally:
             plt.close(fig)
+
+
+_VIZ_ATTRS = (
+    "n_layers",
+    "n_params_per_layer",
+    "_best_params",
+    "_progress_key",
+    "_supports_fixed_param_scans",
+)
+_VIZ_METHODS = (
+    "_has_run_optimization",
+    "_evaluate_cost_param_sets",
+    "_ensure_progress_session",
+    "_progress_emitter",
+)
+_PCA_SAMPLES = np.array([[-0.4, -0.2], [-0.2, 0.3], [0.2, -0.1], [0.4, 0.5]])
+
+
+def _resolve(direction_x=None, direction_y=None, *, n_params=3, normalize=True):
+    return _resolve_2d_directions(
+        direction_x,
+        direction_y,
+        n_params=n_params,
+        rng=np.random.default_rng(0),
+        normalize_directions=normalize,
+    )
+
+
+def _assert_orthogonal(dx, dy):
+    assert float(np.dot(dx, dy)) == pytest.approx(0.0, abs=1e-12)
+
+
+def test_scan_2d_rejects_single_parameter_program(vqe_program, mocker):
+    mocker.patch("divi.viz._api._n_program_params", return_value=1)
+
+    with pytest.raises(ValueError, match="2D scans need at least 2 parameters, got 1"):
+        scan_2d(vqe_program, center=np.zeros(1), grid_shape=(2, 2), rng=0)
+
+
+@pytest.mark.parametrize(
+    "normalize, expected_x, expected_y",
+    [(True, [1.0, 0.0], [0.0, 1.0]), (False, [2.0, 0.0], [0.0, 3.0])],
+    ids=["normalised", "raw"],
+)
+def test_resolve_2d_given_directions(normalize, expected_x, expected_y):
+    dx, dy = _resolve([2.0, 0.0], [0.0, 3.0], n_params=2, normalize=normalize)
+
+    np.testing.assert_allclose(dx, expected_x)
+    np.testing.assert_allclose(dy, expected_y)
+
+
+@pytest.mark.parametrize("normalize", [True, False], ids=["normalised", "raw"])
+@pytest.mark.parametrize("given", ["x", "y"])
+def test_resolve_2d_fills_missing_direction_orthogonally(given, normalize):
+    ref = np.array([0.0, 3.0, 4.0])
+
+    dx, dy = _resolve(**{f"direction_{given}": ref}, normalize=normalize)
+
+    fixed, filled = (dx, dy) if given == "x" else (dy, dx)
+    np.testing.assert_allclose(fixed, ref / 5.0 if normalize else ref)
+    assert np.linalg.norm(filled) == pytest.approx(1.0 if normalize else 5.0)
+    _assert_orthogonal(dx, dy)
+
+
+@pytest.mark.parametrize("normalize", [True, False], ids=["normalised", "raw"])
+def test_resolve_2d_random_pair(normalize):
+    dx, dy = _resolve(normalize=normalize)
+
+    assert np.linalg.norm(dy) == pytest.approx(np.linalg.norm(dx))
+    assert bool(np.linalg.norm(dx) == pytest.approx(1.0)) is normalize
+    _assert_orthogonal(dx, dy)
+
+
+@pytest.mark.parametrize(
+    "direction_x, direction_y, match",
+    [
+        ([1.0, 0.0], [0.0, 1.0, 0.0], "direction_x and direction_y must have shape"),
+        ([1.0, 0.0, 0.0], [0.0, 1.0], "direction_x and direction_y must have shape"),
+        ([1.0, 0.0], None, "direction_x must have shape"),
+        (None, [1.0, 0.0], "direction_y must have shape"),
+        ([0.0, 0.0, 0.0], [0.0, 1.0, 0.0], "must be non-zero"),
+        ([1.0, 0.0, 0.0], [0.0, 0.0, 0.0], "must be non-zero"),
+        ([0.0, 0.0, 0.0], None, "direction_x must be non-zero"),
+        (None, [0.0, 0.0, 0.0], "direction_y must be non-zero"),
+        ([1.0, 0.0, 0.0], [2.0, 0.0, 0.0], "linearly independent"),
+        ([1.0, 0.0, 0.0], [-2.0, 0.0, 0.0], "linearly independent"),
+    ],
+)
+def test_resolve_2d_rejects_invalid_directions(direction_x, direction_y, match):
+    with pytest.raises(ValueError, match=match):
+        _resolve(direction_x, direction_y)
+
+
+@pytest.mark.parametrize(
+    "direction_x, direction_y",
+    [([1.0, 0.0, 0.0], None), (None, [1.0, 0.0, 0.0]), (None, None)],
+    ids=["x_given", "y_given", "neither"],
+)
+def test_resolve_2d_rejects_parallel_random_sample(mocker, direction_x, direction_y):
+    mocker.patch(
+        "divi.viz._api._random_gaussian_direction",
+        return_value=np.array([2.0, 0.0, 0.0]),
+    )
+
+    with pytest.raises(RuntimeError, match="parallel to the reference"):
+        _resolve(direction_x, direction_y)
+
+
+def test_scan_2d_parameter_sets_span_the_plane(vqe_program):
+    center = np.array([0.1, -0.2])
+    dx = np.array([2.0, 0.0])
+    dy = np.array([0.0, 3.0])
+
+    result = scan_2d(
+        vqe_program,
+        center=center,
+        direction_x=dx,
+        direction_y=dy,
+        grid_shape=(3, 2),
+        span_x=(-1.0, 1.0),
+        span_y=(0.0, 0.5),
+        normalize_directions=False,
+    )
+
+    np.testing.assert_allclose(result.x_offsets, [-1.0, 0.0, 1.0])
+    np.testing.assert_allclose(result.y_offsets, [0.0, 0.5])
+    xx, yy = np.meshgrid(result.x_offsets, result.y_offsets)
+    np.testing.assert_allclose(
+        result.parameter_sets,
+        center + xx.ravel()[:, None] * dx + yy.ravel()[:, None] * dy,
+    )
+
+
+@pytest.mark.parametrize(
+    "direction, match",
+    [(np.zeros(2), "direction must be non-zero"), (np.ones(3), "must have shape")],
+)
+def test_scan_1d_rejects_bad_direction(vqe_program, direction, match):
+    with pytest.raises(ValueError, match=match):
+        scan_1d(vqe_program, center=np.zeros(2), direction=direction, n_points=2)
+
+
+def test_scan_interp_2d_random_y_orthogonal_to_non_unit_direction(vqe_program):
+    result = scan_interp_2d(
+        vqe_program, np.zeros(2), np.array([0.3, 0.4]), grid_shape=(2, 2), rng=0
+    )
+
+    _assert_orthogonal(result.direction_x, result.direction_y)
+
+
+def test_evaluate_param_sets_reported_emits_progress(mocker):
+    program = mocker.Mock()
+    program._evaluate_cost_param_sets.return_value = {2: 3.0, 0: 1.0, 1: 2.0}
+
+    values = _evaluate_param_sets_reported(
+        program, np.zeros((3, 2)), scan_label="probe"
+    )
+
+    np.testing.assert_array_equal(values, [1.0, 2.0, 3.0])
+    events = [c.args[0] for c in program._progress_emitter.call_args_list]
+    assert [e.kind for e in events] == [
+        EventKind.SHOW,
+        EventKind.ADVANCE,
+        EventKind.SHOW,
+    ]
+    assert all(e.progress_key is program._progress_key for e in events)
+    assert "evaluating 3 parameter set(s)" in events[0].message
+    assert events[1].amount == 3
+    assert "finished (3 evaluations)" in events[2].message
+
+
+@pytest.mark.parametrize("missing", _VIZ_ATTRS + _VIZ_METHODS)
+def test_require_supported_program_rejects_missing_member(mocker, missing):
+    program = mocker.Mock(spec=[n for n in _VIZ_ATTRS + _VIZ_METHODS if n != missing])
+
+    with pytest.raises(TypeError, match="supports VariationalQuantumAlgorithm only"):
+        _require_supported_program(program)
+
+
+@pytest.mark.parametrize("method", _VIZ_METHODS)
+def test_require_supported_program_rejects_non_callable_method(mocker, method):
+    program = mocker.Mock(spec=_VIZ_ATTRS + _VIZ_METHODS)
+    setattr(program, method, 0)
+
+    with pytest.raises(TypeError, match="supports VariationalQuantumAlgorithm only"):
+        _require_supported_program(program)
+
+
+def test_require_supported_program_checks_fixed_parameter_space(mocker):
+    program = mocker.Mock(spec=_VIZ_ATTRS + _VIZ_METHODS)
+    program._supports_fixed_param_scans = True
+    _require_supported_program(program)
+
+    program._supports_fixed_param_scans = False
+    with pytest.raises(NotImplementedError, match="no fixed parameter space"):
+        _require_supported_program(program)
+
+
+def test_resolve_center_requires_optimisation(vqe_program):
+    with pytest.raises(ValueError, match="center must be provided"):
+        _resolve_center(vqe_program, None)
+
+
+@pytest.mark.parametrize(
+    "best_params, expected",
+    [
+        pytest.param(np.array([[0.4, -0.3]]), [0.4, -0.3], id="best_params"),
+        pytest.param(np.array([]), None, id="empty_best_params"),
+    ],
+)
+def test_resolve_center_after_optimisation(vqe_program, mocker, best_params, expected):
+    mocker.patch.object(vqe_program, "_has_run_optimization", return_value=True)
+    vqe_program._best_params = best_params
+
+    if expected is None:
+        with pytest.raises(ValueError, match="center must be provided"):
+            _resolve_center(vqe_program, None)
+    else:
+        np.testing.assert_array_equal(_resolve_center(vqe_program, None), expected)
+
+
+def test_resolve_center_flattens_explicit_center_to_float(vqe_program):
+    center = _resolve_center(vqe_program, [[1], [2]])
+
+    assert center.dtype == np.float64
+    np.testing.assert_array_equal(center, [1.0, 2.0])
+
+
+def test_resolve_center_rejects_wrong_shape(vqe_program):
+    with pytest.raises(ValueError, match="center must have shape"):
+        _resolve_center(vqe_program, np.zeros(3))
+
+
+@pytest.mark.parametrize(
+    "samples, match",
+    [
+        pytest.param([[0.1, 0.2]], "at least two parameter vectors", id="one_sample"),
+        pytest.param([0.1, 0.2], "2D array", id="flat"),
+        pytest.param(
+            [[0.1, 0.2, 0.3], [0.2, 0.1, 0.0]], "samples must have shape", id="width"
+        ),
+    ],
+)
+def test_scan_pca_rejects_bad_samples(vqe_program, samples, match):
+    with pytest.raises(ValueError, match=match):
+        scan_pca(vqe_program, samples=samples)
+
+
+def test_scan_pca_collects_best_per_iteration_history(vqe_program, mocker):
+    history = mocker.patch.object(
+        vqe_program,
+        "param_history",
+        return_value=[row.reshape(1, -1) for row in _PCA_SAMPLES],
+    )
+
+    result = vqe_program.viz.scan_pca(grid_shape=(2, 2))
+
+    history.assert_called_once_with(mode="best_per_iteration")
+    assert result.projected_samples.shape == (len(_PCA_SAMPLES), 2)
+
+
+def test_scan_pca_without_history_raises(vqe_program, mocker):
+    mocker.patch.object(vqe_program, "param_history", return_value=[])
+
+    with pytest.raises(ValueError, match="No param_history available"):
+        vqe_program.viz.scan_pca()
+
+
+@pytest.mark.parametrize(
+    "offset, pad",
+    [((-0.5, 0.7), (-0.5, 0.7)), (0.3, (-0.3, 0.3)), (-0.3, (-0.3, 0.3))],
+    ids=["tuple", "scalar", "negative_scalar"],
+)
+@pytest.mark.parametrize("scale", [1.0, 0.05], ids=["unit_cloud", "small_cloud"])
+@pytest.mark.parametrize(
+    "center",
+    [None, np.array([5.0, 3.0]), np.array([-5.0, -3.0])],
+    ids=["sample_mean", "shifted_up", "shifted_down"],
+)
+def test_scan_pca_auto_span_pads_projected_extent(
+    vqe_program, offset, pad, scale, center
+):
+    result = scan_pca(
+        vqe_program,
+        samples=scale * _PCA_SAMPLES,
+        center=center,
+        grid_shape=(3, 3),
+        offset=offset,
+    )
+
+    proj = result.projected_samples
+    for offsets, scores in (
+        (result.x_offsets, proj[:, 0]),
+        (result.y_offsets, proj[:, 1]),
+    ):
+        assert offsets[0] == pytest.approx(scores.min() + pad[0])
+        assert offsets[-1] == pytest.approx(scores.max() + pad[1])
+
+
+def test_scan_pca_flat_component_gets_unit_span(vqe_program, mocker, mock_landscape):
+    mocker.patch("divi.viz._api._n_program_params", return_value=3)
+    mock_landscape(vqe_program, lambda p: np.sum(p**2))
+    samples = np.column_stack([_PCA_SAMPLES, np.zeros(len(_PCA_SAMPLES))])
+
+    result = scan_pca(
+        vqe_program,
+        samples=samples,
+        components_ids=(0, 2),
+        grid_shape=(3, 3),
+        offset=(-0.5, 0.7),
+    )
+
+    assert result.y_offsets[0] == pytest.approx(-1.5, abs=1e-9)
+    assert result.y_offsets[-1] == pytest.approx(1.7, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "center", [None, np.array([2.0, 3.0])], ids=["sample_mean", "explicit"]
+)
+def test_scan_pca_symmetric_grid_is_centred_on_anchor(vqe_program, center):
+    result = scan_pca(
+        vqe_program,
+        samples=_PCA_SAMPLES,
+        center=center,
+        grid_shape=(3, 3),
+        span_x=(-1.0, 1.0),
+        span_y=(-1.0, 1.0),
+    )
+
+    anchor = _PCA_SAMPLES.mean(axis=0) if center is None else center
+    np.testing.assert_allclose(
+        result.parameter_sets.reshape(3, 3, 2)[1, 1], anchor, atol=1e-12
+    )

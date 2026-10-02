@@ -5,7 +5,17 @@
 import numpy as np
 import pytest
 
-from divi.viz import GradientMethod, compute_hessian
+from divi.viz import GradientMethod, HessianResult, compute_hessian
+
+_QUADRATIC = np.array([[3.0, 1.0], [1.0, 5.0]])
+
+
+def _quadratic(p):
+    return p @ _QUADRATIC @ p
+
+
+def _sin_cos(p):
+    return np.sin(p[0]) * np.cos(p[1])
 
 
 class TestComputeHessian:
@@ -85,18 +95,12 @@ class TestComputeHessian:
                 eps=0.0,
             )
 
-    def test_hessian_values_correct_for_known_quadratic(self, vqe_program, mocker):
+    def test_hessian_values_correct_for_known_quadratic(
+        self, vqe_program, mock_landscape
+    ):
         """Verify Hessian of f(x) = 3*x0^2 + 5*x1^2 + 2*x0*x1 is [[6, 2], [2, 10]]."""
-        A = np.array([[3.0, 1.0], [1.0, 5.0]])
-
-        def _mock_eval(param_sets, **kwargs):
-            return {
-                i: float(p @ A @ p) for i, p in enumerate(np.atleast_2d(param_sets))
-            }
-
-        mocker.patch.object(
-            vqe_program, "_evaluate_cost_param_sets", side_effect=_mock_eval
-        )
+        A = _QUADRATIC
+        mock_landscape(vqe_program, _quadratic)
         center = np.array([1.0, -0.5])
         result = compute_hessian(
             vqe_program,
@@ -111,16 +115,11 @@ class TestComputeHessian:
         expected = 2 * A
         np.testing.assert_allclose(result.hessian, expected, atol=1e-10)
 
-    def test_hessian_values_correct_for_trig_function(self, vqe_program, mocker):
+    def test_hessian_values_correct_for_trig_function(
+        self, vqe_program, mock_landscape
+    ):
         """Verify Hessian of f(x) = sin(x0)*cos(x1) at (pi/4, 0)."""
-
-        def _mock_eval(param_sets, **kwargs):
-            ps = np.atleast_2d(param_sets)
-            return {i: float(np.sin(p[0]) * np.cos(p[1])) for i, p in enumerate(ps)}
-
-        mocker.patch.object(
-            vqe_program, "_evaluate_cost_param_sets", side_effect=_mock_eval
-        )
+        mock_landscape(vqe_program, _sin_cos)
         # At (pi/4, 0):
         #   d2f/dx0^2 = -sin(pi/4)*cos(0) = -sqrt(2)/2
         #   d2f/dx1^2 = -sin(pi/4)*cos(0) = -sqrt(2)/2
@@ -137,17 +136,10 @@ class TestComputeHessian:
         expected = np.array([[s, 0.0], [0.0, s]])
         np.testing.assert_allclose(result.hessian, expected, atol=1e-5)
 
-    def test_single_parameter(self, vqe_program, mocker):
+    def test_single_parameter(self, vqe_program, mocker, mock_landscape):
         """n_params=1: off-diagonal loop is empty, 1x1 Hessian."""
         mocker.patch("divi.viz._api._n_program_params", return_value=1)
-
-        def _mock_eval(param_sets, **kwargs):
-            ps = np.atleast_2d(param_sets)
-            return {i: float(p[0] ** 2) for i, p in enumerate(ps)}
-
-        mocker.patch.object(
-            vqe_program, "_evaluate_cost_param_sets", side_effect=_mock_eval
-        )
+        mock_landscape(vqe_program, lambda p: p[0] ** 2)
         result = compute_hessian(
             vqe_program,
             np.array([1.0]),
@@ -158,16 +150,9 @@ class TestComputeHessian:
         assert result.hessian.shape == (1, 1)
         np.testing.assert_allclose(result.hessian[0, 0], 2.0, atol=1e-8)
 
-    def test_parameter_shift_hessian_for_trig(self, vqe_program, mocker):
+    def test_parameter_shift_hessian_for_trig(self, vqe_program, mock_landscape):
         """Verify parameter-shift Hessian of f(x) = sin(x0)*cos(x1) at (pi/4, 0)."""
-
-        def _mock_eval(param_sets, **kwargs):
-            ps = np.atleast_2d(param_sets)
-            return {i: float(np.sin(p[0]) * np.cos(p[1])) for i, p in enumerate(ps)}
-
-        mocker.patch.object(
-            vqe_program, "_evaluate_cost_param_sets", side_effect=_mock_eval
-        )
+        mock_landscape(vqe_program, _sin_cos)
         center = np.array([np.pi / 4, 0.0])
         result = compute_hessian(
             vqe_program,
@@ -180,29 +165,49 @@ class TestComputeHessian:
         # Parameter-shift is exact for trig functions.
         np.testing.assert_allclose(result.hessian, expected, atol=1e-10)
 
-    def test_finite_difference_hessian_explicit(self, vqe_program, mocker):
-        """Verify finite-difference method can be selected explicitly."""
-        A = np.array([[3.0, 1.0], [1.0, 5.0]])
-
-        def _mock_eval(param_sets, **kwargs):
-            return {
-                i: float(p @ A @ p) for i, p in enumerate(np.atleast_2d(param_sets))
-            }
-
-        mocker.patch.object(
-            vqe_program, "_evaluate_cost_param_sets", side_effect=_mock_eval
-        )
-        result = compute_hessian(
-            vqe_program,
-            np.array([1.0, -0.5]),
-            gradient_method=GradientMethod.FINITE_DIFFERENCE,
-            eps=1e-4,
-        )
-
-        np.testing.assert_allclose(result.hessian, 2 * A, atol=1e-10)
-
     def test_fluent_api(self, vqe_program):
         center = np.zeros(2)
         result = vqe_program.viz.compute_hessian(center)
 
         assert result.hessian.shape == (2, 2)
+
+    def test_fluent_api_defaults_to_best_params(
+        self, vqe_program, mocker, mock_landscape
+    ):
+        best = np.array([0.4, -0.3])
+        mocker.patch.object(vqe_program, "_has_run_optimization", return_value=True)
+        vqe_program._best_params = best
+        mock_landscape(vqe_program, _quadratic)
+
+        result = vqe_program.viz.compute_hessian(
+            gradient_method=GradientMethod.FINITE_DIFFERENCE, eps=1e-4
+        )
+
+        np.testing.assert_array_equal(result.center, best)
+        np.testing.assert_allclose(result.hessian, 2 * _QUADRATIC, atol=1e-8)
+
+
+_EIGENVECTORS = np.linalg.qr(np.random.default_rng(0).normal(size=(3, 3)))[0]
+_HESSIAN = HessianResult(
+    hessian=np.eye(3),
+    eigenvalues=np.array([1.0, 2.0, 3.0]),
+    eigenvectors=_EIGENVECTORS,
+    center=np.zeros(3),
+    program_type="Synthetic",
+)
+
+
+@pytest.mark.parametrize(
+    "method, columns",
+    [
+        pytest.param("top_eigenvectors", [-1, -2], id="top"),
+        pytest.param("bottom_eigenvectors", [0, 1], id="bottom"),
+    ],
+)
+@pytest.mark.parametrize("kwargs", [{}, {"k": 2}], ids=["default_k", "k_2"])
+def test_extreme_eigenvectors(method, columns, kwargs):
+    vectors = getattr(_HESSIAN, method)(**kwargs)
+
+    assert len(vectors) == 2
+    for vector, column in zip(vectors, columns):
+        np.testing.assert_array_equal(vector, _EIGENVECTORS[:, column])

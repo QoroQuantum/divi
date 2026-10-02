@@ -7,7 +7,31 @@ import numpy as np
 import pytest
 
 from divi.viz import GradientMethod, run_neb
-from divi.viz._gradients import _finite_difference_gradients, _parameter_shift_gradients
+from divi.viz._gradients import (
+    _compute_gradients,
+    _finite_difference_gradients,
+    _parameter_shift_gradients,
+)
+from divi.viz._neb import (
+    _cumulative_distances,
+    _neb_perpendicular_gradients,
+    _redistribute_uniform,
+)
+
+_SPHERE_PIVOTS = np.array([[1.0, 2.0], [-0.5, 0.3]])
+_TRIG_PIVOTS = np.array([[0.3, 0.7], [1.0, -0.5]])
+
+
+def _sphere(param_sets):
+    return np.sum(param_sets**2, axis=1)
+
+
+def _trig(param_sets):
+    return np.sin(param_sets[:, 0]) + np.cos(param_sets[:, 1])
+
+
+def _trig_gradient(pivots):
+    return np.column_stack([np.cos(pivots[:, 0]), -np.sin(pivots[:, 1])])
 
 
 class TestRunNEB:
@@ -87,17 +111,10 @@ class TestRunNEB:
         finally:
             plt.close(fig)
 
-    def test_barrier_decreases_on_known_landscape(self, vqe_program, mocker):
+    def test_barrier_decreases_on_known_landscape(self, vqe_program, mock_landscape):
         """On a 1D double-well, NEB should find a path with lower barrier than the straight line."""
-
-        def _double_well(param_sets, **kwargs):
-            # f(x0, x1) = (x0^2 - 1)^2  (two minima at x0=±1, barrier at x0=0)
-            ps = np.atleast_2d(param_sets)
-            return {i: float((p[0] ** 2 - 1) ** 2) for i, p in enumerate(ps)}
-
-        mocker.patch.object(
-            vqe_program, "_evaluate_cost_param_sets", side_effect=_double_well
-        )
+        # f(x0, x1) = (x0^2 - 1)^2  (two minima at x0=±1, barrier at x0=0)
+        mock_landscape(vqe_program, lambda p: (p[0] ** 2 - 1) ** 2)
         t1 = np.array([-1.0, 0.0])  # minimum
         t2 = np.array([1.0, 0.0])  # minimum
 
@@ -118,29 +135,15 @@ class TestRunNEB:
 
     def test_finite_difference_gradients_correct_for_known_function(self):
         """Verify finite-difference gradients of f(x) = x0^2 + x1^2."""
+        grads = _finite_difference_gradients(_sphere, _SPHERE_PIVOTS, eps=1e-5)
 
-        def _sphere(param_sets):
-            return np.array([float(np.sum(p**2)) for p in param_sets])
-
-        pivots = np.array([[1.0, 2.0], [-0.5, 0.3]], dtype=np.float64)
-        grads = _finite_difference_gradients(_sphere, pivots, eps=1e-5)
-
-        # Analytical gradient of x0^2 + x1^2 is [2*x0, 2*x1].
-        expected = 2.0 * pivots
-        np.testing.assert_allclose(grads, expected, atol=1e-8)
+        np.testing.assert_allclose(grads, 2.0 * _SPHERE_PIVOTS, atol=1e-8)
 
     def test_parameter_shift_gradients_correct_for_trig(self):
         """Verify parameter-shift gradients of f(x) = sin(x0) + cos(x1)."""
+        grads = _parameter_shift_gradients(_trig, _TRIG_PIVOTS)
 
-        def _trig(param_sets):
-            return np.array([float(np.sin(p[0]) + np.cos(p[1])) for p in param_sets])
-
-        pivots = np.array([[0.3, 0.7], [1.0, -0.5]], dtype=np.float64)
-        grads = _parameter_shift_gradients(_trig, pivots)
-
-        # Analytical: df/dx0 = cos(x0), df/dx1 = -sin(x1).
-        expected = np.column_stack([np.cos(pivots[:, 0]), -np.sin(pivots[:, 1])])
-        np.testing.assert_allclose(grads, expected, atol=1e-10)
+        np.testing.assert_allclose(grads, _trig_gradient(_TRIG_PIVOTS), atol=1e-10)
 
     def test_neb_with_finite_difference_method(self, vqe_program):
         t1 = np.zeros(2)
@@ -191,3 +194,75 @@ class TestRunNEB:
         )
 
         assert result.path.shape == (4, 2)
+
+
+@pytest.mark.parametrize("scale", [1.0, 0.01])
+def test_cumulative_distances_normalised_by_total_length(scale):
+    chain = scale * np.array([[1.0], [3.0], [4.0], [8.0], [11.0]])
+
+    np.testing.assert_allclose(
+        _cumulative_distances(chain), [0.0, 0.2, 0.3, 0.7, 1.0], rtol=0, atol=1e-12
+    )
+
+
+@pytest.mark.filterwarnings("error")
+def test_cumulative_distances_of_collapsed_chain():
+    np.testing.assert_array_equal(_cumulative_distances(np.zeros((3, 2))), [0, 0, 1])
+
+
+def test_redistribute_uniform_spaces_pivots_by_arc_length():
+    chain = np.array([[0.0], [0.1], [1.0]])
+
+    np.testing.assert_allclose(
+        _redistribute_uniform(chain, 3), [[0.0], [0.5], [1.0]], atol=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    "chain, grads, expected",
+    [
+        pytest.param(
+            [[0.0, 1.0], [0.5, 1.0], [1.0, 1.0], [1.5, 1.0]],
+            [[1.0, 1.0], [2.0, -1.0]],
+            [[0.0, 1.0], [0.0, -1.0]],
+            id="tangent_removed",
+        ),
+        pytest.param(
+            [[0.0, 0.0], [0.0, 0.0], [1.0, 1.0]],
+            [[1.0, 2.0]],
+            [[1.0, 2.0]],
+            id="repeated_pivot",
+        ),
+    ],
+)
+def test_perpendicular_gradients(chain, grads, expected):
+    perp = _neb_perpendicular_gradients(np.array(chain), np.array(grads))
+
+    np.testing.assert_allclose(perp, expected, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "method, fn, pivots, expected, atol",
+    [
+        pytest.param(
+            GradientMethod.FINITE_DIFFERENCE,
+            _sphere,
+            _SPHERE_PIVOTS,
+            2.0 * _SPHERE_PIVOTS,
+            1e-8,
+            id="finite_difference",
+        ),
+        pytest.param(
+            GradientMethod.PARAMETER_SHIFT,
+            _trig,
+            _TRIG_PIVOTS,
+            _trig_gradient(_TRIG_PIVOTS),
+            1e-10,
+            id="parameter_shift",
+        ),
+    ],
+)
+def test_compute_gradients_dispatches_on_method(method, fn, pivots, expected, atol):
+    grads = _compute_gradients(fn, pivots, method, eps=1e-5)
+
+    np.testing.assert_allclose(grads, expected, atol=atol)

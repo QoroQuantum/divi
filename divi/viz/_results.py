@@ -54,10 +54,10 @@ def _plot_2d_contourf(
     title: str,
     xlabel: str,
     ylabel: str,
-    ax=None,
-    show: bool = False,
-    levels: int = 20,
-    add_colorbar: bool = True,
+    ax,
+    show: bool,
+    levels: int,
+    add_colorbar: bool,
     **contour_kwargs,
 ):
     """Smooth filled contours for direction scans (``scan_2d``)."""
@@ -90,10 +90,10 @@ def _plot_pca_scan_cells(
     title: str,
     xlabel: str,
     ylabel: str,
-    ax=None,
-    show: bool = False,
-    levels: int = 20,
-    add_colorbar: bool = True,
+    ax,
+    show: bool,
+    levels: int,
+    add_colorbar: bool,
     **plot_kwargs,
 ):
     """Cell heatmap for PCA scans (avoids large unfilled regions from ``contourf``)."""
@@ -109,10 +109,9 @@ def _plot_pca_scan_cells(
     pm_kwargs = dict(plot_kwargs)
     pm_kwargs.pop("corner_mask", None)
 
-    cmap_in = pm_kwargs.pop("cmap", None)
-    if cmap_in is None:
-        cmap_in = plt.rcParams.get("image.cmap", "viridis")
-    cmap = plt.get_cmap(cmap_in).with_extremes(bad=(0.88, 0.88, 0.88, 1.0))
+    cmap = plt.get_cmap(pm_kwargs.pop("cmap", None)).with_extremes(
+        bad=(0.88, 0.88, 0.88, 1.0)
+    )
 
     z_plot = np.ma.masked_invalid(z)
 
@@ -161,8 +160,8 @@ def _overlay_gradients(
     gradient_kwargs: dict | None,
 ) -> None:
     """Overlay a quiver plot of :func:`numpy.gradient` on existing axes."""
-    dy = float(y_offsets[1] - y_offsets[0]) if y_offsets.size > 1 else 1.0
-    dx = float(x_offsets[1] - x_offsets[0]) if x_offsets.size > 1 else 1.0
+    dy = float(y_offsets[1] - y_offsets[0])
+    dx = float(x_offsets[1] - x_offsets[0])
     grad_y, grad_x = np.gradient(values, dy, dx)
     xx, yy = np.meshgrid(x_offsets, y_offsets, indexing="xy")
     defaults: dict = {
@@ -184,8 +183,8 @@ def _plot_3d_surface(
     title: str,
     xlabel: str,
     ylabel: str,
-    ax=None,
-    show: bool = False,
+    ax,
+    show: bool,
     **surface_kwargs,
 ):
     """3D surface rendering for 2D scan grids."""
@@ -547,11 +546,13 @@ class Fourier2DResult:
         """
         fig, ax = _resolve_axes(ax)
 
+        x_edges = _cell_edges_from_centers(self.frequencies_x)
+        y_edges = _cell_edges_from_centers(self.frequencies_y)
         extent: tuple[float, float, float, float] = (
-            float(self.frequencies_x[0]),
-            float(self.frequencies_x[-1]),
-            float(self.frequencies_y[0]),
-            float(self.frequencies_y[-1]),
+            float(x_edges[0]),
+            float(x_edges[-1]),
+            float(y_edges[0]),
+            float(y_edges[-1]),
         )
         defaults: dict = {"cmap": "inferno", "aspect": "auto", "origin": "lower"}
         if log_scale and "norm" not in imshow_kwargs:

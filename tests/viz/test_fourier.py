@@ -9,7 +9,7 @@ import pytest
 
 from divi.qprog import QAOA
 from divi.qprog.problems import MaxCutProblem
-from divi.viz import fourier_analysis_2d, scan_2d
+from divi.viz import Scan2DResult, fourier_analysis_2d, scan_2d
 
 
 @pytest.fixture
@@ -69,3 +69,47 @@ class TestFourierAnalysis2D:
             assert len(ax.images) > 0
         finally:
             plt.close(fig)
+
+
+def _grid_scan(x_offsets, y_offsets) -> Scan2DResult:
+    values = np.random.default_rng(0).normal(size=(len(y_offsets), len(x_offsets)))
+    return Scan2DResult(
+        x_offsets=np.asarray(x_offsets, dtype=np.float64),
+        y_offsets=np.asarray(y_offsets, dtype=np.float64),
+        values=values,
+        parameter_sets=np.zeros((values.size, 2)),
+        center=np.zeros(2),
+        direction_x=np.array([1.0, 0.0]),
+        direction_y=np.array([0.0, 1.0]),
+        program_type="Synthetic",
+    )
+
+
+def test_frequencies_follow_grid_spacing():
+    scan = _grid_scan(np.linspace(0.0, 1.5, 4), [0.0, 0.25])
+
+    result = fourier_analysis_2d(scan)
+
+    np.testing.assert_allclose(
+        result.frequencies_x, np.fft.fftshift(np.fft.fftfreq(4, d=0.5))
+    )
+    np.testing.assert_allclose(
+        result.frequencies_y, np.fft.fftshift(np.fft.fftfreq(2, d=0.25))
+    )
+
+
+def test_single_point_axis_has_zero_frequency():
+    result = fourier_analysis_2d(_grid_scan([0.0, 0.5, 1.0], [0.0]))
+
+    np.testing.assert_array_equal(result.frequencies_y, [0.0])
+    assert result.power_spectrum.shape == (1, 3)
+
+
+def test_power_spectrum_satisfies_parseval():
+    scan = _grid_scan(np.linspace(0.0, 1.0, 5), np.linspace(0.0, 2.0, 3))
+
+    result = fourier_analysis_2d(scan)
+
+    np.testing.assert_allclose(
+        np.sum(result.power_spectrum), 5 * 3 * np.sum(scan.values**2), rtol=1e-12
+    )

@@ -36,13 +36,13 @@ def _finite_difference_gradients(
 ) -> npt.NDArray[np.float64]:
     """Compute gradients via centred finite differences (shift = *eps*)."""
     m, d = pivots.shape
-    eye = eps * np.eye(d, dtype=np.float64)
+    eye = eps * np.eye(d)
 
     pivots_exp = pivots[:, np.newaxis, :]  # (m, 1, d)
     plus = (pivots_exp + eye).reshape(m * d, d)
     minus = (pivots_exp - eye).reshape(m * d, d)
 
-    probes = np.empty((2 * m * d, d), dtype=np.float64)
+    probes = np.empty((2 * m * d, d))
     probes[0::2] = plus
     probes[1::2] = minus
 
@@ -56,13 +56,13 @@ def _parameter_shift_gradients(
 ) -> npt.NDArray[np.float64]:
     """Compute gradients via the parameter-shift rule (shift = π/2)."""
     m, d = pivots.shape
-    eye = _PARAM_SHIFT * np.eye(d, dtype=np.float64)
+    eye = _PARAM_SHIFT * np.eye(d)
 
     pivots_exp = pivots[:, np.newaxis, :]
     plus = (pivots_exp + eye).reshape(m * d, d)
     minus = (pivots_exp - eye).reshape(m * d, d)
 
-    probes = np.empty((2 * m * d, d), dtype=np.float64)
+    probes = np.empty((2 * m * d, d))
     probes[0::2] = plus
     probes[1::2] = minus
 
