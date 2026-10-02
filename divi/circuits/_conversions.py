@@ -127,7 +127,7 @@ def _assert_finite(values: np.ndarray, *, source: str) -> None:
 def _format_bound_param(value: float, precision: int) -> str:
     """Format a bound numeric gate parameter (a radian angle) for QASM substitution.
 
-    Renders to *precision* decimal places, strips trailing zeros and dots, and
+    Renders to *precision* decimal places, strips trailing fractional zeros, and
     normalises negative zero to ``"0"``. Angles below ``10 ** -precision`` round
     toward ``"0"`` (≈5e-9 rad at the default 8 places — physically negligible);
     scale features to O(1) if sub-precision magnitudes must be represented.
@@ -138,9 +138,10 @@ def _format_bound_param(value: float, precision: int) -> str:
     its own. DAG-serialised values are guarded separately in
     :func:`_format_gate_param`.
     """
-    value = float(value)
-    s = f"{value:.{precision}f}".rstrip("0").rstrip(".")
-    return "0" if s in {"-0", ""} else s
+    s = f"{float(value):.{precision}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return "0" if s == "-0" else s
 
 
 def _bind_op_params(op, substitution: dict):
@@ -287,10 +288,13 @@ def measurement_qasms_from_groups(
         # has at most one non-I Pauli across all labels in the group.
         active_basis: dict[int, str] = {}
         for label in group:
+            if len(label) > n_qubits:
+                raise ValueError(
+                    f"Pauli label {label!r} spans {len(label)} qubits but the "
+                    f"register has only {n_qubits}."
+                )
             for q, char in enumerate(label):
                 if char != "I":
-                    if q >= n_qubits:
-                        raise IndexError("list assignment index out of range")
                     active_basis[q] = char
 
         # Emit diagonalising gates.

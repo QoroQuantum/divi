@@ -4,6 +4,7 @@
 
 """Tests for Divi's PennyLane circuit adapter."""
 
+import sys
 from collections import Counter
 
 import numpy as np
@@ -11,33 +12,164 @@ import pytest
 import sympy
 import sympy as sp
 from qiskit import QuantumCircuit
-from qiskit.circuit import ParameterExpression
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.circuit import Parameter
+from qiskit.converters import dag_to_circuit
+from qiskit.quantum_info import Operator
 
 # Precedes the divi import below, which imports PennyLane itself.
 qp = pytest.importorskip("pennylane")
 
+import divi.circuits
 from divi.circuits import build_template, dag_to_qasm_body, render_template
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.circuits._pennylane import (
-    _detect_batch_input_argnames,
+    _PL_TO_QISKIT_GATE,
+    _SHAPE_HINT,
+    _batch_input_argnums,
     _fresh_symbols,
     _qnode_to_symbolic_qscript,
     _qscript_to_dag,
+    _symbol_arg_name,
+    _symbolize_trainable_ops,
     _symbolize_trainable_subset,
+    _validate_expectation_measurement,
     _validate_single_measurement,
+    qnode_to_meta,
     qscript_to_meta,
 )
+from divi.pipeline import CircuitPipeline, PipelineEnv
+from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
+from tests._helpers import exact_match
 
 CountsMP = qp.measurements.CountsMP
 ExpectationMP = qp.measurements.ExpectationMP
 ProbabilityMP = qp.measurements.ProbabilityMP
 
+_DEFAULT_BAKED_IN_WARNING = (
+    "A default-valued QNode parameter was baked into a gate as a fixed constant "
+    "and will not be trained. Remove the default (pass the value as a required "
+    "argument) to make it trainable."
+)
+_ARRAY_PARAMETER_ERROR = "Failed to convert QNode with array parameter. " + _SHAPE_HINT
 
-def test_public_pennylane_conversion_exports():
-    from divi.circuits import qnode_to_meta, qscript_to_meta
 
-    assert callable(qnode_to_meta)
-    assert callable(qscript_to_meta)
+def _gate_list(dag):
+    return [
+        (node.op.name, tuple(dag.find_bit(qubit).index for qubit in node.qargs))
+        for node in dag.topological_op_nodes()
+    ]
+
+
+def _expval_script(ops, observable=None):
+    return qp.tape.QuantumScript(
+        ops, [qp.expval(qp.Z(0) if observable is None else observable)]
+    )
+
+
+def _observable_free_expval_script():
+    return qp.tape.QuantumScript(
+        [qp.RX(0.1, wires=0)], [ExpectationMP(wires=qp.wires.Wires([0]))]
+    )
+
+
+def _qnode(n_wires, func):
+    return qp.qnode(qp.device("default.qubit", wires=n_wires))(func)
+
+
+def _rx_with_default_rz(theta, phi=0.5):
+    qp.RX(theta, wires=0)
+    qp.RZ(phi, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="needs skip_file_prefixes")
+@pytest.mark.parametrize(
+    "convert",
+    [
+        _qnode_to_symbolic_qscript,
+        qnode_to_meta,
+        lambda qnode: qnode_to_meta(qnode, arg_shapes={"theta": ()}),
+    ],
+    ids=["symbolic-qscript", "qnode-to-meta", "arg-shapes"],
+)
+def test_default_valued_warning_points_at_the_caller(convert):
+    with pytest.warns(
+        UserWarning, match=exact_match(_DEFAULT_BAKED_IN_WARNING)
+    ) as record:
+        convert(_qnode(1, _rx_with_default_rz))
+    assert [w.filename for w in record] == [__file__]
+
+
+def _flat_array_with_default(weights, phi=0.5):
+    qp.RX(weights[0], wires=0)
+    qp.RZ(phi, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _template_with_default(x, phi=0.5):
+    qp.AngleEmbedding(x, wires=range(2))
+    qp.RZ(phi, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _shaped_inputs_with_default(inputs, phi=0.5):
+    qp.AngleEmbedding(inputs, wires=range(2), rotation="Y")
+    qp.RZ(phi, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _scalar_with_constant(theta):
+    qp.RX(theta, wires=0)
+    qp.RZ(0.5, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _shaped_inputs_with_constant(inputs):
+    qp.AngleEmbedding(inputs, wires=range(2), rotation="Y")
+    qp.RZ(0.5, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _shaped_inputs_then_rx(inputs, theta):
+    qp.AngleEmbedding(inputs, wires=range(2), rotation="Y")
+    qp.RX(theta, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _layers_with_structural_default(weights, n_layers=2):
+    for layer in range(n_layers):
+        qp.RX(weights[layer], wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _indexed_weights(weights):
+    qp.RX(weights[0], wires=0)
+    qp.RY(weights[1], wires=1)
+    return qp.expval(qp.Z(0))
+
+
+def _iterated_weights(weights):
+    for weight in weights:
+        qp.RX(weight, wires=0)
+    return qp.expval(qp.Z(0))
+
+
+def _single_wire_embedding(x):
+    qp.AngleEmbedding(x, wires=[0])
+    return qp.expval(qp.Z(0))
+
+
+def _three_wire_embedding(inputs):
+    qp.AngleEmbedding(inputs, wires=range(3), rotation="Y")
+    return qp.expval(qp.Z(0) @ qp.Z(1) @ qp.Z(2))
+
+
+@pytest.mark.parametrize(
+    "name,implementation",
+    [("qnode_to_meta", qnode_to_meta), ("qscript_to_meta", qscript_to_meta)],
+)
+def test_public_pennylane_conversion_exports(name, implementation):
+    assert getattr(divi.circuits, name) is implementation
 
 
 class TestQnodeToSymbolicQscript:
@@ -56,19 +188,6 @@ class TestQnodeToSymbolicQscript:
         # Two sympy symbols were created, one per function parameter.
         assert len(params) == 2
 
-    def test_array_param_is_probed(self):
-        dev = qp.device("default.qubit", wires=2)
-
-        @qp.qnode(dev)
-        def circuit(params):
-            qp.RX(params[0], wires=0)
-            qp.RY(params[1], wires=1)
-            return qp.expval(qp.Z(0))
-
-        qs = _qnode_to_symbolic_qscript(circuit)
-        assert isinstance(qs, qp.tape.QuantumScript)
-        assert len(qs.get_parameters()) == 2
-
     def test_zero_param_qnode(self):
         dev = qp.device("default.qubit", wires=1)
 
@@ -80,77 +199,6 @@ class TestQnodeToSymbolicQscript:
         qs = _qnode_to_symbolic_qscript(circuit)
         assert isinstance(qs, qp.tape.QuantumScript)
         assert len(qs.get_parameters()) == 0
-
-    @pytest.mark.filterwarnings("ignore:Setting shots on device is deprecated")
-    def test_device_with_shots_warns(self):
-        # divi runs its own backend/shots, so a shot count on the QNode device
-        # is ignored — and that should be flagged, not silent.
-        dev = qp.device("default.qubit", wires=1, shots=100)
-
-        @qp.qnode(dev)
-        def circuit(theta):
-            qp.RX(theta, wires=0)
-            return qp.expval(qp.Z(0))
-
-        with pytest.warns(UserWarning, match="divi ignores it"):
-            _qnode_to_symbolic_qscript(circuit)
-
-    def test_default_valued_param_is_frozen_non_trainable(self):
-        # A plain-Python-default argument is non-trainable in PennyLane
-        # (requires_grad=False); only the no-default arg should be symbolized
-        # and marked trainable. The default value stays baked in.
-        dev = qp.device("default.qubit", wires=1)
-
-        @qp.qnode(dev)
-        def circuit(theta, phi=0.5):
-            qp.RX(theta, wires=0)
-            qp.RZ(phi, wires=0)
-            return qp.expval(qp.Z(0))
-
-        # A frozen default angle is surprising, so conversion warns.
-        with pytest.warns(UserWarning, match="default-valued QNode parameter"):
-            qs = _qnode_to_symbolic_qscript(circuit)
-        # Only theta is trainable; phi=0.5 is frozen, matching PennyLane's
-        # verdict when the QNode is traced with requires_grad inputs.
-        assert qs.trainable_params == [0]
-        trainable = qs.get_parameters()
-        assert len(trainable) == 1
-        full = qs.get_parameters(trainable_only=False)
-        assert len(full) == 2
-        # The frozen slot is the literal default, not a symbol.
-        assert full[1] == pytest.approx(0.5)
-
-    def test_structural_default_hyperparameter_is_respected(self):
-        # A structural default like n_layers=2 must keep its int value so the
-        # function's control flow (range(n_layers)) works; it is never a gate
-        # parameter, so it does not appear in trainable_params at all.
-        dev = qp.device("default.qubit", wires=1)
-
-        @qp.qnode(dev)
-        def circuit(weights, n_layers=2):
-            for layer in range(n_layers):
-                qp.RX(weights[layer], wires=0)
-            return qp.expval(qp.Z(0))
-
-        qs = _qnode_to_symbolic_qscript(circuit)
-        # 2 layers -> 2 trainable gate params from the array probe.
-        assert qs.trainable_params == [0, 1]
-        assert len(qs.get_parameters()) == 2
-
-    def test_angle_embedding_template_converts_symbolically(self):
-        # A single 1-D-array AngleEmbedding encoder traces symbolically (numpy
-        # object array of symbols) and decomposes to one RY symbol per input.
-        dev = qp.device("default.qubit", wires=3)
-
-        @qp.qnode(dev)
-        def circuit(inputs):
-            qp.AngleEmbedding(inputs, wires=range(3), rotation="Y")
-            return qp.expval(qp.Z(0) @ qp.Z(1) @ qp.Z(2))
-
-        qs = _qnode_to_symbolic_qscript(circuit)
-        assert isinstance(qs, qp.tape.QuantumScript)
-        # 3 inputs -> 3 RY gates -> 3 trainable symbols.
-        assert len(qs.get_parameters()) == 3
 
     def test_nonlinear_template_converts_symbolically(self):
         # IQPEmbedding's entangling angle is a product of inputs (x_i * x_j).
@@ -188,8 +236,112 @@ class TestQnodeToSymbolicQscript:
             template(weights)
             return qp.expval(qp.Z(0))
 
-        with pytest.raises(TypeError, match="couldn't infer the array shape"):
+        with pytest.raises(
+            TypeError, match=exact_match(_ARRAY_PARAMETER_ERROR)
+        ) as excinfo:
             _qnode_to_symbolic_qscript(circuit)
+        assert excinfo.value.__cause__ is not None
+
+    def test_multiple_array_parameters_raise(self):
+        def circuit(a, b):
+            qp.RX(a[0], wires=0)
+            qp.RY(b[0], wires=0)
+            return qp.expval(qp.Z(0))
+
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "Failed to convert QNode — the function appears to use array "
+                "parameters or numpy operations on its arguments. QNodes with "
+                "multiple array parameters are not supported. Pass a "
+                "QuantumScript with explicit sympy symbols instead."
+            ),
+        ) as excinfo:
+            _qnode_to_symbolic_qscript(_qnode(1, circuit))
+        assert excinfo.value.__cause__ is not None
+
+    def test_arg_shapes_trace_failure_raises_clear_error(self):
+        def circuit(weights):
+            qp.StronglyEntanglingLayers(weights, wires=range(2))
+            return qp.expval(qp.Z(0))
+
+        with pytest.raises(
+            TypeError, match=exact_match("Failed to convert QNode. " + _SHAPE_HINT)
+        ) as excinfo:
+            _qnode_to_symbolic_qscript(_qnode(2, circuit), arg_shapes={})
+        assert excinfo.value.__cause__ is not None
+
+    @pytest.mark.parametrize(
+        "func,n_wires,names",
+        [
+            (_indexed_weights, 2, ["p0", "p1"]),
+            (_iterated_weights, 2, ["p0", "p1"]),
+            (_single_wire_embedding, 1, ["p0"]),
+            (_three_wire_embedding, 3, ["p0", "p1", "p2"]),
+        ],
+        ids=[
+            "indexed-flat-array",
+            "iterated-array-sized-by-wires",
+            "single-wire-template",
+            "template",
+        ],
+    )
+    def test_array_argument_gets_one_symbol_per_slot(self, func, n_wires, names):
+        qs = _qnode_to_symbolic_qscript(_qnode(n_wires, func))
+        assert [str(p) for p in qs.get_parameters()] == names
+
+    def test_template_trace_without_gate_parameters_raises(self):
+        def circuit(x):
+            if len(x):
+                qp.Hadamard(wires=0)
+            return qp.expval(qp.Z(0))
+
+        with pytest.raises(TypeError, match=exact_match(_ARRAY_PARAMETER_ERROR)):
+            _qnode_to_symbolic_qscript(_qnode(2, circuit))
+
+    @pytest.mark.parametrize(
+        "func,arg_shapes,trainable_params",
+        [
+            (_rx_with_default_rz, None, [0]),
+            (_flat_array_with_default, None, [0]),
+            (_template_with_default, None, [0, 1]),
+            (_shaped_inputs_with_default, {"inputs": (2,)}, [0, 1]),
+        ],
+        ids=["scalar", "flat-array", "template", "arg-shapes"],
+    )
+    def test_baked_in_default_warns_on_every_path(
+        self, func, arg_shapes, trainable_params
+    ):
+        with pytest.warns(UserWarning, match=exact_match(_DEFAULT_BAKED_IN_WARNING)):
+            qs = _qnode_to_symbolic_qscript(_qnode(2, func), arg_shapes=arg_shapes)
+        assert qs.trainable_params == trainable_params
+        assert qs.get_parameters(trainable_only=False)[-1] == pytest.approx(0.5)
+
+    @pytest.mark.filterwarnings("error::UserWarning")
+    @pytest.mark.parametrize(
+        "func,arg_shapes,trainable_params",
+        [
+            (_scalar_with_constant, None, [0]),
+            (_shaped_inputs_with_constant, {"inputs": (2,)}, [0, 1]),
+            (_layers_with_structural_default, None, [0, 1]),
+        ],
+        ids=["scalar", "arg-shapes", "structural-default"],
+    )
+    def test_literal_constant_without_default_is_silent(
+        self, func, arg_shapes, trainable_params
+    ):
+        qs = _qnode_to_symbolic_qscript(_qnode(2, func), arg_shapes=arg_shapes)
+        assert qs.trainable_params == trainable_params
+
+    def test_arg_shapes_unwraps_mixed_operation_data(self):
+        def circuit(w):
+            qp.U3(w[..., 0], w[1], 0.3, wires=0)
+            return qp.expval(qp.Z(0))
+
+        qs = _qnode_to_symbolic_qscript(_qnode(1, circuit), arg_shapes={"w": (2,)})
+        (operation,) = qs.operations
+        assert [str(d) for d in operation.data] == ["w__0", "w__1", "0.3"]
+        assert not any(isinstance(d, np.ndarray) for d in operation.data)
 
     def test_arg_shapes_enables_multiarg_structured_conversion(self):
         # With explicit per-arg shapes, a multi-argument template circuit
@@ -211,6 +363,52 @@ class TestQnodeToSymbolicQscript:
         assert sum(s.startswith("inputs__") for s in names) == 3
         assert sum(s.startswith("weights__") for s in names) == 9
         assert all(isinstance(p, sympy.Basic) for p in qs.get_parameters())
+        assert all(op.name in _PL_TO_QISKIT_GATE for op in qs.operations)
+
+
+def _three_params_on_two_wires(w):
+    qp.RX(w[0], wires=0)
+    qp.RY(w[1], wires=1)
+    qp.RZ(w[2], wires=0)
+    qp.CNOT(wires=[0, 1])
+    return qp.expval(qp.Z(0))
+
+
+def _three_params_on_two_wires_with_default(w, c=0.3):
+    return _three_params_on_two_wires(w)
+
+
+@pytest.mark.parametrize(
+    "func", [_three_params_on_two_wires, _three_params_on_two_wires_with_default]
+)
+def test_qnode_to_meta_counts_indexed_params_beyond_wire_count(func):
+    assert len(qnode_to_meta(_qnode(2, func)).parameters) == 3
+
+
+@pytest.mark.parametrize(
+    "angle,expected_params",
+    [
+        pytest.param(np.array([sp.Symbol("x")], dtype=object), ["x"], id="symbolic"),
+        pytest.param(np.array([0.3]), [], id="numeric"),
+    ],
+)
+def test_qscript_to_dag_collapses_a_broadcast_of_one(angle, expected_params):
+    qs = qp.tape.QuantumScript([qp.RX(angle, wires=0)], [qp.expval(qp.Z(0))])
+    dag, params = _qscript_to_dag(qs)
+    assert _gate_list(dag) == [("rx", (0,))]
+    assert [p.name for p in params] == expected_params
+
+
+def test_qnode_to_meta_traces_with_arg_shapes_and_precision():
+    meta = qnode_to_meta(
+        _qnode(2, _shaped_inputs_then_rx), arg_shapes={"inputs": (2,)}, precision=5
+    )
+    assert [p.name for p in meta.parameters] == ["inputs__0", "inputs__1", "theta__0"]
+    assert meta.precision == 5
+
+
+def test_symbol_arg_name_strips_only_the_trailing_index():
+    assert _symbol_arg_name("my__arg__3") == "my__arg"
 
 
 class TestDetectBatchInput:
@@ -224,7 +422,7 @@ class TestDetectBatchInput:
             qp.RY(weights[0], wires=0)
             return qp.expval(qp.Z(0))
 
-        assert _detect_batch_input_argnames(circuit) == ["inputs"]
+        assert _batch_input_argnums(circuit) == [0]
 
     def test_detects_multiple_argnums(self):
         @qp.batch_input(argnum=[0, 1])
@@ -235,7 +433,7 @@ class TestDetectBatchInput:
             qp.RY(weights, wires=0)
             return qp.expval(qp.Z(0))
 
-        assert _detect_batch_input_argnames(circuit) == ["a", "b"]
+        assert _batch_input_argnums(circuit) == [0, 1]
 
     def test_plain_qnode_has_no_batch_input(self):
         @qp.qnode(qp.device("default.qubit", wires=1))
@@ -243,7 +441,27 @@ class TestDetectBatchInput:
             qp.RX(theta, wires=0)
             return qp.expval(qp.Z(0))
 
-        assert _detect_batch_input_argnames(circuit) == []
+        assert _batch_input_argnums(circuit) == []
+
+    def test_detects_batch_input_after_another_transform(self):
+        @qp.batch_input(argnum=0)
+        @qp.transforms.merge_rotations
+        @qp.qnode(qp.device("default.qubit", wires=2))
+        def circuit(inputs, weights):
+            qp.RX(inputs, wires=0)
+            qp.RY(weights, wires=0)
+            return qp.expval(qp.Z(0))
+
+        assert _batch_input_argnums(circuit) == [0]
+
+    def test_detects_positional_argnum(self):
+        @qp.qnode(qp.device("default.qubit", wires=2))
+        def circuit(inputs, weights):
+            qp.RX(inputs, wires=0)
+            qp.RY(weights, wires=0)
+            return qp.expval(qp.Z(0))
+
+        assert _batch_input_argnums(qp.batch_input(circuit, 1)) == [1]
 
 
 class TestValidateSingleMeasurement:
@@ -269,36 +487,39 @@ class TestValidateSingleMeasurement:
             caller="PennyLaneSpecStage",
         )
 
-    def test_rejects_disallowed_measurement(self, probs_script):
-        # Strict expval-only caller rejects probs — the error names the
-        # offending measurement type, not just the caller.
+    @pytest.mark.parametrize(
+        "measurements,allowed,expected",
+        [
+            (
+                [qp.probs(wires=0)],
+                (ExpectationMP,),
+                "ExpectationMP. Got: ['ProbabilityMP']",
+            ),
+            ([], (ExpectationMP,), "ExpectationMP. Got: []"),
+            (
+                [qp.expval(qp.Z(0)), qp.expval(qp.Z(0))],
+                (ExpectationMP,),
+                "ExpectationMP. Got: ['ExpectationMP', 'ExpectationMP']",
+            ),
+            (
+                [qp.counts(wires=0)],
+                (ProbabilityMP, ExpectationMP),
+                "ProbabilityMP, ExpectationMP. Got: ['CountsMP']",
+            ),
+        ],
+        ids=["disallowed", "none", "multiple", "default-description-lists-allowed"],
+    )
+    def test_rejects_anything_but_one_allowed_measurement(
+        self, measurements, allowed, expected
+    ):
+        qs = qp.tape.QuantumScript(ops=[qp.RX(0.0, wires=0)], measurements=measurements)
         with pytest.raises(
-            ValueError, match=r"CustomVQA requires.*Got:.*ProbabilityMP"
+            ValueError,
+            match=exact_match(
+                f"CustomVQA requires exactly one measurement of type {expected}"
+            ),
         ):
-            _validate_single_measurement(
-                probs_script,
-                allowed=(ExpectationMP,),
-                caller="CustomVQA",
-            )
-
-    def test_rejects_no_measurement(self):
-        qs = qp.tape.QuantumScript(ops=[qp.RX(0.0, wires=0)], measurements=[])
-        with pytest.raises(ValueError, match=r"exactly one measurement.*Got: \[\]"):
-            _validate_single_measurement(
-                qs, allowed=(ExpectationMP,), caller="CustomVQA"
-            )
-
-    def test_rejects_multiple_measurements(self):
-        qs = qp.tape.QuantumScript(
-            ops=[qp.RX(0.0, wires=0)],
-            measurements=[qp.expval(qp.Z(0)), qp.expval(qp.Z(0))],
-        )
-        with pytest.raises(
-            ValueError, match=r"exactly one measurement.*ExpectationMP.*ExpectationMP"
-        ):
-            _validate_single_measurement(
-                qs, allowed=(ExpectationMP,), caller="CustomVQA"
-            )
+            _validate_single_measurement(qs, allowed=allowed, caller="CustomVQA")
 
     def test_custom_description_appears_in_error(self, probs_script):
         with pytest.raises(ValueError, match="my-friendly-description"):
@@ -309,15 +530,58 @@ class TestValidateSingleMeasurement:
                 description="my-friendly-description",
             )
 
-    def test_default_description_uses_class_names(self, probs_script):
-        with pytest.raises(ValueError, match="ExpectationMP"):
-            _validate_single_measurement(
-                probs_script, allowed=(ExpectationMP,), caller="X"
-            )
+
+@pytest.mark.parametrize(
+    "script,message",
+    [
+        (
+            qp.tape.QuantumScript([qp.RX(0.1, wires=0)], [qp.probs(wires=0)]),
+            "CustomVQA requires exactly one measurement of type "
+            "expectation-value (expval()). Got: ['ProbabilityMP']",
+        ),
+        (
+            _observable_free_expval_script(),
+            "CustomVQA requires the QuantumScript's expectation-value measurement "
+            "to declare an observable; got expval() with obs=None.",
+        ),
+    ],
+    ids=["non-expval", "no-observable"],
+)
+def test_validate_expectation_measurement_rejects(script, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _validate_expectation_measurement(script, caller="CustomVQA")
+
+
+def test_symbolize_trainable_ops_binds_only_the_trainable_subset():
+    qs = _expval_script([qp.RX(0.1, wires=0), qp.RY(0.2, wires=0)])
+    qs.trainable_params = [1]
+
+    out = _symbolize_trainable_ops(qs)
+
+    assert [str(p) for p in out.get_parameters(trainable_only=False)] == [
+        "0.1",
+        "p0",
+    ]
+    assert out.trainable_params == [1]
+
+
+def test_symbolize_trainable_ops_rejects_observable_only_indices():
+    qs = _expval_script([qp.RX(0.1, wires=0)], qp.Hamiltonian([0.7], [qp.Z(0)]))
+    qs.trainable_params = [1]
+
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "QuantumScript's trainable_params point only at observable "
+            "coefficients; CustomVQA only trains operation parameters. "
+            "Remove observable-coefficient indices from qs.trainable_params."
+        ),
+    ):
+        _symbolize_trainable_ops(qs)
 
 
 class TestSymbolizeTrainableSubset:
-    """A proper-subset ``trainable_params`` symbolizes only operation slots."""
+    """A proper-subset ``trainable_params`` symbolises only operation slots."""
 
     def test_leaves_observable_coefficient_untouched(self):
         """Observable coefficients must never become circuit parameters."""
@@ -337,6 +601,21 @@ class TestSymbolizeTrainableSubset:
         assert names.isdisjoint({"p0", "p2"})
         assert len(names) == 2
 
+    @pytest.mark.parametrize(
+        "n_symbols,existing,expected",
+        [
+            (2, [], ["p0", "p1"]),
+            (
+                3,
+                [sp.Symbol("p1"), sp.Symbol("p2"), Parameter("p4"), Parameter("p5")],
+                ["p0", "p3", "p6"],
+            ),
+        ],
+        ids=["nothing-taken", "sympy-and-qiskit-taken"],
+    )
+    def test_fresh_symbols_take_lowest_free_names(self, n_symbols, existing, expected):
+        assert [s.name for s in _fresh_symbols(n_symbols, existing)] == expected
+
 
 class TestQScriptToDag:
     """End-to-end QuantumScript to DAG conversion."""
@@ -344,7 +623,7 @@ class TestQScriptToDag:
     def test_non_parametric_circuit(self):
         ops = [qp.Hadamard(0), qp.CNOT([0, 1]), qp.PauliZ(1)]
         qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.PauliZ(0))])
-        dag, params, _ = _qscript_to_dag(qscript)
+        dag, params = _qscript_to_dag(qscript)
         assert params == ()
         gate_names = Counter(node.op.name for node in dag.op_nodes())
         assert gate_names == {"h": 1, "cx": 1, "z": 1}
@@ -369,31 +648,91 @@ class TestQScriptToDag:
             qp.RX(beta, 2),
         ]
         qscript = qp.tape.QuantumScript(ops=ops, measurements=[qp.expval(qp.PauliZ(0))])
-        dag, params, _ = _qscript_to_dag(qscript)
+        dag, params = _qscript_to_dag(qscript)
         assert [param.name for param in params] == ["gamma", "beta"]
         assert dag.size() == len(ops)
 
-    def test_parameters_preserve_first_appearance_order(self):
-        a, b, c = sp.symbols("a b c")
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RX(c, 0), qp.RY(a, 0), qp.RZ(b, 0)],
-            measurements=[qp.expval(qp.PauliZ(0))],
+    def test_qiskit_parameters_are_deduplicated_in_first_appearance_order(self):
+        a, b = Parameter("a"), Parameter("b")
+        dag, params = _qscript_to_dag(
+            _expval_script([qp.RX(b, 0), qp.RY(a, 0), qp.RZ(a + b, 0)])
         )
-        _, params, _ = _qscript_to_dag(qscript)
-        assert [param.name for param in params] == ["c", "a", "b"]
+        assert params == (b, a)
+        assert [name for name, _ in _gate_list(dag)] == ["rx", "ry", "rz"]
 
-    def test_compound_sympy_expression(self):
-        theta = sp.Symbol("theta")
-        qscript = qp.tape.QuantumScript(
-            ops=[qp.RX(2 * theta, 0)],
-            measurements=[qp.expval(qp.PauliZ(0))],
+    @pytest.mark.parametrize(
+        "ops,observable,expected",
+        [
+            (
+                [qp.Hadamard("a"), qp.CNOT(["a", "b"])],
+                qp.Z("b"),
+                [("h", (0,)), ("cx", (0, 1))],
+            ),
+            (
+                [qp.Hadamard(0), qp.CNOT([0, 2])],
+                qp.Z(2),
+                [("h", (0,)), ("cx", (0, 1))],
+            ),
+            (
+                [qp.Hadamard(1), qp.CNOT([1, 0])],
+                qp.Z(0),
+                [("h", (1,)), ("cx", (1, 0))],
+            ),
+        ],
+        ids=["string-labels", "non-contiguous", "contiguous-out-of-order"],
+    )
+    def test_wires_map_onto_a_compact_register(self, ops, observable, expected):
+        dag, _ = _qscript_to_dag(_expval_script(ops, observable))
+        assert dag.num_qubits() == 2
+        assert _gate_list(dag) == expected
+
+    def test_unsupported_operations_are_decomposed(self):
+        dag, _ = _qscript_to_dag(
+            _expval_script(
+                [qp.Rot(0.1, 0.2, 0.3, wires=0), qp.IsingZZ(0.5, wires=[0, 1])]
+            )
         )
-        dag, (param,), _ = _qscript_to_dag(qscript)
-        operation = next(iter(dag.op_nodes()))
-        assert operation.op.name == "rx"
-        (expression,) = operation.op.params
-        assert isinstance(expression, ParameterExpression)
-        assert float(expression.bind({param: 1.0})) == pytest.approx(2.0)
+        assert _gate_list(dag) == [
+            ("rz", (0,)),
+            ("ry", (0,)),
+            ("rz", (0,)),
+            ("cx", (0, 1)),
+            ("rz", (1,)),
+            ("cx", (0, 1)),
+        ]
+
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            qp.QubitUnitary(np.array([[0, 1], [1, 0]]), wires=0),
+            qp.QubitUnitary(np.eye(4)[[0, 1, 3, 2]], wires=[0, 1]),
+            qp.StatePrep(np.array([0, 1, 0, 0]), wires=[0, 1]),
+        ],
+        ids=["one-qubit-unitary", "two-qubit-unitary", "state-prep"],
+    )
+    def test_matrix_operations_lower_to_the_qasm2_basis(self, operation):
+        dag, _ = _qscript_to_dag(_expval_script([operation]))
+        names = [name for name, _ in _gate_list(dag)]
+        assert names
+        assert set(names) <= set(_QISKIT_TO_QASM2)
+
+    @pytest.mark.parametrize(
+        "matrix,wires",
+        [
+            (np.array([[0, 1], [1, 0]]), [0]),
+            (np.eye(4)[[0, 1, 3, 2]], [0, 1]),
+        ],
+        ids=["one-qubit", "two-qubit"],
+    )
+    def test_matrix_unitaries_keep_their_action(self, matrix, wires):
+        dag, _ = _qscript_to_dag(_expval_script([qp.QubitUnitary(matrix, wires=wires)]))
+        # PennyLane orders wire 0 as the most significant bit; Qiskit as the least.
+        expected = Operator(matrix).reverse_qargs()
+        assert Operator(dag_to_circuit(dag)).equiv(expected)
+
+    def test_adjacent_inverse_gates_are_kept(self):
+        dag, _ = _qscript_to_dag(_expval_script([qp.Hadamard(0), qp.Hadamard(0)]))
+        assert _gate_list(dag) == [("h", (0,)), ("h", (0,))]
 
 
 class TestEndToEndEquivalence:
@@ -426,7 +765,7 @@ class TestEndToEndEquivalence:
             ],
             measurements=[qp.expval(qp.PauliZ(0))],
         )
-        dag, params, _ = _qscript_to_dag(qscript)
+        dag, params = _qscript_to_dag(qscript)
         body = dag_to_qasm_body(dag, precision=8)
         template = build_template(body, tuple(param.name for param in params))
         bound_body = render_template(template, ("0.30000000", "1.10000000"))
@@ -449,7 +788,7 @@ class TestEndToEndEquivalence:
             ],
             measurements=[qp.expval(qp.PauliZ(0))],
         )
-        reference_dag, _, _ = _qscript_to_dag(reference)
+        reference_dag, _ = _qscript_to_dag(reference)
         expected = self._bound_unitary(
             self._preamble(3) + dag_to_qasm_body(reference_dag, precision=8)
         )
@@ -461,7 +800,7 @@ class TestEndToEndEquivalence:
             ops=[qp.RX(2 * theta, 0), qp.RY(theta + 1, 0)],
             measurements=[qp.expval(qp.PauliZ(0))],
         )
-        dag, (param,), _ = _qscript_to_dag(qscript)
+        dag, (param,) = _qscript_to_dag(qscript)
         body = dag_to_qasm_body(dag, precision=8)
         assert "theta" in body
         template = build_template(body, (param.name,))
@@ -476,45 +815,26 @@ class TestEndToEndEquivalence:
 class TestQscriptToMetaObservable:
     """``MetaCircuit.observable`` reflects the QuantumScript measurement shape."""
 
-    def test_single_expval_yields_length_one_tuple(self):
+    @pytest.mark.parametrize(
+        "observables,labels",
+        [
+            ([qp.PauliZ(0)], ["IZ"]),
+            ([qp.PauliZ(0), qp.PauliZ(0) @ qp.PauliZ(1)], ["IZ", "ZZ"]),
+            ([qp.PauliX(0), qp.PauliY(0), qp.PauliZ(0)], ["IX", "IY", "IZ"]),
+        ],
+        ids=["one", "two", "three-in-order"],
+    )
+    def test_expvals_become_a_tuple_of_observables_in_order(self, observables, labels):
         script = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)], measurements=[qp.expval(qp.PauliZ(0))]
+            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
+            measurements=[qp.expval(obs) for obs in observables],
         )
         meta = qscript_to_meta(script)
         assert isinstance(meta.observable, tuple)
-        assert len(meta.observable) == 1
-        assert isinstance(meta.observable[0], SparsePauliOp)
-        assert meta.measured_wires is None
-
-    def test_two_expvals_yields_tuple_of_sparse_pauli_ops(self):
-        script = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
-            measurements=[
-                qp.expval(qp.PauliZ(0)),
-                qp.expval(qp.PauliZ(0) @ qp.PauliZ(1)),
-            ],
-        )
-        meta = qscript_to_meta(script)
-        assert isinstance(meta.observable, tuple)
-        assert len(meta.observable) == 2
-        assert all(isinstance(obs, SparsePauliOp) for obs in meta.observable)
-        assert meta.measured_wires is None
-
-    def test_three_expvals_preserve_order(self):
-        script = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0), qp.CNOT([0, 1])],
-            measurements=[
-                qp.expval(qp.PauliX(0)),
-                qp.expval(qp.PauliY(0)),
-                qp.expval(qp.PauliZ(0)),
-            ],
-        )
-        meta = qscript_to_meta(script)
-        assert [str(obs.paulis.to_labels()[0]) for obs in meta.observable] == [
-            "IX",
-            "IY",
-            "IZ",
+        assert [obs.paulis.to_labels() for obs in meta.observable] == [
+            [label] for label in labels
         ]
+        assert meta.measured_wires is None
 
     def test_mixing_multi_expval_with_probs_raises(self):
         script = qp.tape.QuantumScript(
@@ -525,16 +845,69 @@ class TestQscriptToMetaObservable:
                 qp.probs(wires=[0]),
             ],
         )
-        with pytest.raises(ValueError, match="mixing"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "qscript_to_meta: mixing `expval` with `probs`/`counts` "
+                "measurements in a single QuantumScript is not supported."
+            ),
+        ):
             qscript_to_meta(script)
 
-    def test_single_probs_yields_measured_wires_no_observable(self):
+    def test_expval_without_observable_raises(self):
+        with pytest.raises(
+            ValueError,
+            match=exact_match("ExpectationMP without an observable is not supported."),
+        ):
+            qscript_to_meta(_observable_free_expval_script())
+
+    @pytest.mark.parametrize(
+        "measurement,measured_wires",
+        [
+            (qp.probs(wires=[0]), (0,)),
+            (qp.probs(wires=[1]), (1,)),
+            (qp.probs(), (0, 1)),
+        ],
+        ids=["first-wire", "explicit-subset", "all-wires"],
+    )
+    def test_probs_measured_wires(self, measurement, measured_wires):
         script = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)], measurements=[qp.probs(wires=[0])]
+            ops=[qp.Hadamard(0), qp.CNOT([0, 1])], measurements=[measurement]
         )
         meta = qscript_to_meta(script)
         assert meta.observable is None
-        assert meta.measured_wires == (0,)
+        assert meta.measured_wires == measured_wires
+
+    @pytest.mark.parametrize(
+        "was_multi_obs,expected",
+        [(None, 0.0), (True, [0.0])],
+        ids=["inferred", "explicit"],
+    )
+    def test_single_expval_result_shape_follows_multi_obs_flag(
+        self, default_test_simulator, was_multi_obs, expected
+    ):
+        meta = qscript_to_meta(
+            _expval_script([qp.Hadamard(0)]), was_multi_obs=was_multi_obs
+        )
+        result = CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()]).run(
+            meta, PipelineEnv(backend=default_test_simulator)
+        )
+        assert result.value == pytest.approx(expected, abs=1e-9)
+        assert isinstance(result.value, type(expected))
+
+    def test_explicit_parameter_order_is_kept(self):
+        a, b = sp.symbols("a b")
+        order = (Parameter("b"), Parameter("a"))
+        meta = qscript_to_meta(
+            _expval_script([qp.RX(a, 0), qp.RY(b, 0)]), parameter_order=order
+        )
+        assert meta.parameters == order
+
+    def test_precision_is_forwarded(self):
+        assert (
+            qscript_to_meta(_expval_script([qp.Hadamard(0)]), precision=4).precision
+            == 4
+        )
 
     def test_no_measurement_yields_no_observable(self):
         meta = qscript_to_meta(

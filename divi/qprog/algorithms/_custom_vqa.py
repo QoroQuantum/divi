@@ -11,12 +11,13 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit import QuantumCircuit
+from qiskit import QuantumCircuit, transpile
 from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi._optional import module_if_imported
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._mixers import single_pauli_label
 
 if TYPE_CHECKING:
@@ -215,7 +216,9 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
 
             qnode = cast(QNode, qscript)
             if data_arg is None and data_param_indices is None:
-                data_arg = self._infer_data_arg_from_batch_input(qnode)
+                data_arg = self._infer_data_arg_from_batch_input(
+                    qnode, arg_shapes, feature_batch
+                )
 
             sig_args = list(inspect.signature(qnode.func).parameters)
             unknown = set(arg_shapes or {}) - set(sig_args)
@@ -297,24 +300,57 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             warn(_LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
 
     @staticmethod
-    def _infer_data_arg_from_batch_input(qnode: QNode) -> str | None:
+    def _infer_data_arg_from_batch_input(
+        qnode: QNode,
+        arg_shapes: Mapping[str, tuple[int, ...]] | None,
+        feature_batch: npt.ArrayLike | None,
+    ) -> str | None:
         """Read the data axis from a ``@qml.batch_input`` decorator, if present.
 
-        Returns the single batched argument name, or ``None`` when the QNode
-        has no detectable batch_input transform. Raises if more than one
-        argument is batched, since a single data axis is supported.
+        ``argnum`` indexes gate parameters, so the argument feeding them is found
+        by tracing the QNode with each candidate argument shaped like one
+        ``feature_batch`` row. Returns ``None`` when the QNode has no
+        batch_input transform. Raises if the batched parameters come from more
+        than one argument, since a single data axis is supported.
         """
-        from divi.circuits._pennylane import _detect_batch_input_argnames
+        from divi.circuits._pennylane import (
+            _batch_input_argnums,
+            _gate_parameter_arg_names,
+        )
 
-        detected = _detect_batch_input_argnames(qnode)
-        if not detected:
+        argnums = _batch_input_argnums(qnode)
+        if not argnums:
             return None
-        if len(set(detected)) > 1:
+        if feature_batch is None:
             raise ValueError(
-                f"@qml.batch_input marks multiple batched arguments {detected}; "
-                f"pass data_arg explicitly (one data axis is supported)."
+                "data_arg requires feature_batch; pass feature_batch "
+                "(data_arg may have been inferred from an "
+                "@qml.batch_input decorator)."
             )
-        return detected[0]
+        n_features = np.atleast_2d(np.asarray(feature_batch)).shape[1]
+        candidates = [
+            name
+            for name, p in inspect.signature(qnode.func).parameters.items()
+            if p.default is inspect.Parameter.empty
+        ]
+        mixed: set[str] = set()
+        for candidate in candidates:
+            shapes = {candidate: (n_features,), **(arg_shapes or {})}
+            names = _gate_parameter_arg_names(qnode, argnums, shapes)
+            if names == {candidate}:
+                return candidate
+            if names is not None and len(names) > 1:
+                mixed = names
+        if mixed:
+            raise ValueError(
+                f"@qml.batch_input marks gate parameters from multiple "
+                f"arguments {sorted(mixed)}; pass data_arg explicitly (one "
+                f"data axis is supported)."
+            )
+        raise ValueError(
+            f"Could not trace which argument @qml.batch_input(argnum={argnums}) "
+            "batches; pass data_arg explicitly."
+        )
 
     @property
     def n_params_per_layer(self) -> int:
@@ -350,7 +386,20 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         self.n_qubits = qc.num_qubits
         self.measured_wires = tuple(measured_wires)
         self._qiskit_circuit = _strip_measurements(qc)
-        self._composed_circuit = self._qiskit_circuit
+        # Lower to the gate set the QASM body emitter accepts; transpiling
+        # reorders gates topologically, so leave already-supported circuits alone.
+        self._composed_circuit = (
+            self._qiskit_circuit
+            if all(
+                instruction.operation.name in _QISKIT_TO_QASM2
+                for instruction in self._qiskit_circuit.data
+            )
+            else transpile(
+                self._qiskit_circuit,
+                basis_gates=list(_QISKIT_TO_QASM2),
+                optimization_level=0,
+            )
+        )
         self._set_cost_hamiltonian(_z_sum_observable(qc.num_qubits, measured_wires))
         return np.array(list(qc.parameters), dtype=object)
 
@@ -406,14 +455,13 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 "or both be None."
             )
 
-        if data_param_indices is None:
+        if data_param_indices is None or feature_batch is None:
             if labels is not None:
                 raise ValueError(
                     "labels require data binding; provide feature_batch with "
                     "data_arg or data_param_indices."
                 )
-            # No data axis: nothing to supervise, but still warn if loss_fn was
-            # set, since it is ignored.
+            # No data axis: nothing to supervise; __init__ warns if loss_fn is ignored.
             self.labels, self._sample_loss_fn = self._resolve_supervision(
                 None, loss_fn, 0
             )
@@ -441,10 +489,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
 
         self._data_symbols = tuple(self._base_params[i] for i in data_indices)
         self._weight_symbols = tuple(self._base_params[i] for i in weight_indices)
-        # feature_batch is non-None here: the XOR guard above pairs it with
-        # data_param_indices, which is set in this branch.
         self.feature_batch = self._validate_feature_batch(
-            cast(npt.ArrayLike, feature_batch), len(self._data_symbols)
+            feature_batch, len(self._data_symbols)
         )
         self._set_loss_reduction(loss_reduction)
         self.labels, self._sample_loss_fn = self._resolve_supervision(

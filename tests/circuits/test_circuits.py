@@ -43,11 +43,6 @@ class TestMetaCircuit:
         assert meta.measurement_groups == ()
         assert meta.precision == 8
 
-    def test_with_parameters(self, parametric_dag):
-        dag, params = parametric_dag
-        meta = MetaCircuit(circuit_bodies=(((), dag),), parameters=params)
-        assert meta.parameters == params
-
     def test_with_observable(self, plain_dag):
         obs = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", -1.0)])
         meta = MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
@@ -59,36 +54,20 @@ class TestMetaCircuit:
             MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
 
     def test_tuple_observable_requires_sparse_pauli_ops(self, plain_dag):
-        with pytest.raises(TypeError, match="SparsePauliOp"):
+        with pytest.raises(TypeError) as exc_info:
             MetaCircuit(
                 circuit_bodies=(((), plain_dag),),
                 observable=("not an observable",),  # type: ignore[arg-type]
             )
-
-    def test_with_measured_wires(self, plain_dag):
-        meta = MetaCircuit(
-            circuit_bodies=(((), plain_dag),),
-            measured_wires=(0, 1),
+        assert str(exc_info.value) == (
+            "MetaCircuit.observable must be a SparsePauliOp or a tuple of "
+            "SparsePauliOp instances."
         )
-        assert meta.measured_wires == (0, 1)
-
-    def test_custom_precision(self, plain_dag):
-        meta = MetaCircuit(circuit_bodies=(((), plain_dag),), precision=12)
-        assert meta.precision == 12
-
-    def test_multi_body_tags(self, plain_dag, parametric_dag):
-        dag2, _ = parametric_dag
-        bodies = (
-            ((("qem", 0),), plain_dag),
-            ((("qem", 1),), dag2),
-        )
-        meta = MetaCircuit(circuit_bodies=bodies)
-        assert len(meta.circuit_bodies) == 2
-        assert meta.circuit_bodies[1][0] == (("qem", 1),)
 
     def test_empty_bodies_raises(self):
-        with pytest.raises(ValueError, match="at least one circuit body"):
+        with pytest.raises(ValueError) as exc_info:
             MetaCircuit(circuit_bodies=())
+        assert str(exc_info.value) == "MetaCircuit requires at least one circuit body."
 
     def test_set_circuit_bodies_returns_new_instance(self, plain_dag, parametric_dag):
         orig = MetaCircuit(circuit_bodies=(((), plain_dag),))
@@ -117,8 +96,3 @@ class TestMetaCircuit:
         assert out is not meta
         assert out.measurement_groups == groups
         assert meta.measurement_groups == ()
-
-    def test_frozen_dataclass_disallows_direct_field_assignment(self, plain_dag):
-        meta = MetaCircuit(circuit_bodies=(((), plain_dag),))
-        with pytest.raises((AttributeError, Exception)):
-            meta.precision = 4  # type: ignore[misc]

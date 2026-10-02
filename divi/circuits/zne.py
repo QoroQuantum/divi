@@ -5,6 +5,7 @@
 """Zero-noise extrapolation protocols and folding helpers."""
 
 import copy
+import functools
 import random
 import warnings
 from collections.abc import Callable, Sequence
@@ -17,7 +18,7 @@ from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.transpiler.basepasses import TransformationPass
 
-from divi.circuits.qem import QEMContext, QEMProtocol, select_by_dag_indices
+from divi.circuits.qem import QEMContext, QEMProtocol
 from divi.pipeline.abc import ResultFormat
 
 __all__ = [
@@ -69,8 +70,6 @@ def _warn_on_collapsed_scales(
 
 def _compute_fold_plan(d: int, scale_factor: float) -> tuple[int, int]:
     """Return base folds and extra-fold count for ``d`` foldable gates."""
-    if d == 0 or scale_factor == 1.0:
-        return 0, 0
     k = int((scale_factor - 1) // 2)
     remainder = scale_factor - (1 + 2 * k)
     n = max(0, min(d, round(remainder * d / 2)))
@@ -205,8 +204,6 @@ class LocalFoldPass(TransformationPass):
         )
 
     def _pick_extra_indices(self, d: int, n: int) -> set[int]:
-        if n <= 0:
-            return set()
         if self.selection == "from_left":
             return set(range(n))
         if self.selection == "from_right":
@@ -361,8 +358,9 @@ def global_fold(dag: DAGCircuit, scale: float) -> tuple[DAGCircuit, float]:
 
     Mutates ``dag`` in place (deepcopy first if the original is needed).
     """
-    effective = _compute_effective_scale(_count_foldable_gates(dag), scale)
-    return GlobalFoldPass(scale).run(dag), effective
+    pass_ = GlobalFoldPass(scale)
+    effective = pass_.effective_scale(dag)
+    return pass_.run(dag), effective
 
 
 def local_fold(
@@ -505,10 +503,19 @@ class ZNE(QEMProtocol):
 
         _warn_on_collapsed_scales(self._scale_factors, effective_scales)
 
-        return folded_dags, {
-            "effective_scales": effective_scales,
-            "dag_indices": list(range(len(folded_dags))),
-        }
+        return folded_dags, {"effective_scales": effective_scales}
+
+    def _dry_effective_scale(self, dag: DAGCircuit, scale: float) -> float:
+        """Scale ``folding_fn`` would realise on ``dag``, without folding a built-in."""
+        fn = self._folding_fn
+        if fn is global_fold:
+            return GlobalFoldPass(scale).effective_scale(dag)
+        if fn is local_fold:
+            return LocalFoldPass(scale).effective_scale(dag)
+        if isinstance(fn, functools.partial) and fn.func is local_fold:
+            exclude = fn.keywords.get("exclude")
+            return LocalFoldPass(scale, exclude=exclude).effective_scale(dag)
+        return fn(copy.deepcopy(dag), scale)[1]
 
     def dry_expand(
         self,
@@ -518,17 +525,13 @@ class ZNE(QEMProtocol):
         """One unfolded alias of ``dag`` per scale factor; never mutates the
         input (dry batches may alias one DAG across entries)."""
         scales = tuple(self._scale_factors)
-        n_foldable = _count_foldable_gates(dag)
         effective_scales = tuple(
-            float(_compute_effective_scale(n_foldable, s)) for s in scales
+            float(self._dry_effective_scale(dag, s)) for s in scales
         )
 
         _warn_on_collapsed_scales(scales, effective_scales)
 
-        return tuple(dag for _ in scales), {
-            "effective_scales": effective_scales,
-            "dag_indices": list(range(len(scales))),
-        }
+        return tuple(dag for _ in scales), {"effective_scales": effective_scales}
 
     def reduce(
         self,
@@ -541,7 +544,7 @@ class ZNE(QEMProtocol):
         observable expectation values from one scale factor.  Extrapolation
         runs independently per observable.
         """
-        selected = select_by_dag_indices(quantum_results, context)
+        selected = list(quantum_results)
         scales = context.get("effective_scales", self._scale_factors)
 
         if not selected:

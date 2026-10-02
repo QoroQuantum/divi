@@ -14,6 +14,7 @@ from divi.circuits._payloads import (
     bound_payloads,
     is_bound,
 )
+from tests._helpers import exact_match
 
 QASM_BELL = (
     'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
@@ -62,12 +63,17 @@ def test_bound_circuits_rejects_a_parametric_payload():
         parameter_sets=(("row_0", (0.1,)), ("row_1", (0.2,))),
     )
 
-    with pytest.raises(ValueError, match="still carries free parameters"):
+    expected = (
+        "bound_circuits needs resolved payloads, but one still carries free "
+        "parameters. Its rows share a single unresolved template, so the "
+        "mapping would submit the same circuit under every label."
+    )
+    with pytest.raises(ValueError, match=exact_match(expected)):
         bound_circuits([parametric])
 
 
 def test_bound_circuits_accepts_the_mapping_shorthand():
-    """Backends need no separate normalization step, so the contract cannot
+    """Backends need no separate normalisation step, so the contract cannot
     be skipped by forgetting one."""
     circuits = {"a": QASM_H, "b": QASM_BELL}
 
@@ -90,8 +96,52 @@ def test_as_payloads_passes_a_payload_sequence_through_untouched():
 def test_as_payloads_rejects_a_bare_circuit(payload):
     """A bare string is a Sequence, so it must be refused explicitly rather
     than silently iterated character by character."""
-    with pytest.raises(TypeError, match="bare circuit string"):
+    expected = (
+        "submit_circuits expects a collection of circuits; wrap a single "
+        "circuit in a list. A bare circuit string is itself a Sequence and "
+        "would otherwise be iterated character by character."
+    )
+    with pytest.raises(TypeError, match=exact_match(expected)):
         as_payloads(payload)
+
+
+@pytest.mark.parametrize(
+    "build,error,expected",
+    [
+        pytest.param(
+            lambda: CircuitPayload(circuit=QASM_H, parameters=(), parameter_sets=()),
+            ValueError,
+            "CircuitPayload requires at least one parameter set.",
+            id="no-parameter-sets",
+        ),
+        pytest.param(
+            lambda: CircuitPayload(
+                circuit=QASM_H,
+                parameters=(Parameter("theta"),),
+                parameter_sets=(("row", (0.1, 0.2)),),
+            ),
+            ValueError,
+            "Parameter set 'row' has 2 value(s) but the circuit declares 1 "
+            "parameter(s). Row order must match CircuitPayload.parameters.",
+            id="row-width-mismatch",
+        ),
+        pytest.param(
+            lambda: as_payloads([*bound_payloads({"a": QASM_H}), QASM_BELL]),
+            TypeError,
+            "A sequence must hold either CircuitPayloads or circuits, not both.",
+            id="mixed-sequence",
+        ),
+        pytest.param(
+            lambda: as_payloads([42]),
+            TypeError,
+            "Circuit '0' must be an OpenQASM string or a QuantumCircuit, got int.",
+            id="unsupported-circuit-type",
+        ),
+    ],
+)
+def test_payload_construction_errors(build, error, expected):
+    with pytest.raises(error, match=exact_match(expected)):
+        build()
 
 
 def test_backend_accepts_the_mapping_shorthand(default_test_simulator):

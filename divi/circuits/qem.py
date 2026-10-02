@@ -29,20 +29,6 @@ QEMContext = dict
 OBSERVABLE_OVERRIDE = "observable_override"
 
 
-def select_by_dag_indices(
-    quantum_results: Sequence[Any], context: QEMContext
-) -> list[Any]:
-    """The results this protocol's own DAGs produced, in ``expand`` order.
-
-    ``dag_indices`` is absent when nothing else shared the QEM axis, in which
-    case every result belongs to this protocol.
-    """
-    indices = context.get("dag_indices")
-    if indices is None:
-        return list(quantum_results)
-    return [quantum_results[i] for i in indices]
-
-
 class QEMProtocol(ABC):
     """Abstract base class for Quantum Error Mitigation protocols.
 
@@ -129,9 +115,6 @@ class QEMProtocol(ABC):
         ``quantum_results`` is ordered along the QEM axis; each entry is
         itself a ``list[float]`` of per-observable expectation values from
         :class:`~divi.pipeline.stages.MeasurementStage`.
-
-        Implementations may use ``context["dag_indices"]`` (when present)
-        to select the relevant positions in ``quantum_results``.
         """
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
@@ -164,19 +147,18 @@ class _NoMitigation(QEMProtocol):
         dag: DAGCircuit,
         observable: tuple[SparsePauliOp, ...] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-        return (dag,), {"dag_indices": [0]}
+        return (dag,), {}
 
     def reduce(
         self,
         quantum_results: Sequence[Any],
         context: QEMContext,
     ) -> list[float]:
-        selected = select_by_dag_indices(quantum_results, context)
-        if len(selected) == 0:
+        if len(quantum_results) == 0:
             raise RuntimeError("NoMitigation received an empty results sequence.")
-        if len(selected) > 1:
+        if len(quantum_results) > 1:
             raise RuntimeError("NoMitigation class received multiple partial results.")
-        only = selected[0]
+        only = quantum_results[0]
         if isinstance(only, list):
             return [float(v) for v in only]
         return [float(only)]

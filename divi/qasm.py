@@ -92,7 +92,6 @@ KEYWORDS = {
 class Tok(NamedTuple):
     type: str
     value: str
-    pos: int
     line: int
     col: int
 
@@ -106,9 +105,8 @@ def _param_regex(parameters: Collection[str]) -> re.Pattern[str] | None:
 
     Placeholder names are substitution tokens, not QASM identifiers: a
     ``ParameterVector`` element is ``w_0[3]`` and Greek letters are common.
-    The boundary guards mirror
-    :func:`divi.circuits._qasm_template.build_template`, so the validator
-    accepts exactly the occurrences that binding will replace.
+    :func:`divi.circuits._qasm_template.build_template` uses the same pattern,
+    so the validator accepts exactly the occurrences that binding will replace.
     """
     if not parameters:
         return None
@@ -137,7 +135,7 @@ def _lex(src: str, parameters: Collection[str] = ()) -> list[Tok]:
         if param_re is not None:
             m = param_re.match(src, i)
             if m:
-                out.append(Tok("PARAM", m.group(0), i, line, i - line_start + 1))
+                out.append(Tok("PARAM", m.group(0), line, i - line_start + 1))
                 i = m.end()
                 continue
         m = TOKEN_REGEX.match(src, i)
@@ -147,18 +145,14 @@ def _lex(src: str, parameters: Collection[str] = ()) -> list[Tok]:
                 f"Illegal character at {line}:{i-line_start+1}: {snippet!r}"
             )
         kind = m.lastgroup
-        if kind is None:
-            raise SyntaxError(
-                f"Tokenizer match at {line}:{i-line_start+1} produced no named "
-                f"group; this is a tokenizer bug."
-            )
+        assert kind is not None
         val = m.group(kind)
         col = i - line_start + 1
         if kind == "ID" and val in KEYWORDS:
             kind = val.upper()
-        out.append(Tok(kind, val, i, line, col))
+        out.append(Tok(kind, val, line, col))
         i = m.end()
-    out.append(Tok("EOF", "", i, line, i - line_start + 1))
+    out.append(Tok("EOF", "", line, i - line_start + 1))
     return out
 
 
@@ -225,8 +219,7 @@ class Parser:
 
     # -- helpers --
     def peek(self, k=0) -> Tok:
-        j = self.i + k
-        return self.toks[j] if j < len(self.toks) else self.toks[-1]
+        return self.toks[self.i + k]
 
     def match(self, *types: str) -> Tok:
         t = self.peek()
@@ -247,15 +240,7 @@ class Parser:
         while self.accept("INCLUDE"):
             self.include_stmt()
         while self.peek().type != "EOF":
-            start_line = self.peek().line
             self.statement()
-            # After statement, check if it ended correctly
-            prev_tok = self.toks[self.i - 1] if self.i > 0 else None
-            # A statement is valid if it ends in a semicolon OR a closing brace (for gates)
-            if not prev_tok or (prev_tok.type != "SEMI" and prev_tok.type != "RBRACE"):
-                raise SyntaxError(
-                    f"Statement at line {start_line} must end with a semicolon or a closing brace."
-                )
         self.match("EOF")
 
     # OPENQASM 2.0 ;
@@ -390,13 +375,11 @@ class Parser:
     def gate_op_stmt_top(self):
         name_tok = self.match("ID")
         gname = name_tok.value
-        param_count = None
-        arity = None
 
         if self.accept("LPAREN"):
             # Declared parameters only; _expr_atom rejects any other bare ID,
             # so an empty declaration set means no free IDs at all.
-            n_params = self._expr_list_count(allow_id=True)
+            n_params = self._expr_list_count()
             self.match("RPAREN")
         else:
             n_params = 0
@@ -431,7 +414,7 @@ class Parser:
         gname = name_tok.value
 
         if self.accept("LPAREN"):
-            n_params = self._expr_list_count(allow_id=True)  # may use local params
+            n_params = self._expr_list_count()
             self.match("RPAREN")
         else:
             n_params = 0
@@ -512,15 +495,10 @@ class Parser:
 
     # ---- measure/reset/barrier/if ----
     def measure_stmt(self):
-        # two forms: measure qarg -> carg ;  |  carg = measure qarg ;
-        if self.peek().type == "MEASURE":
-            self.match("MEASURE")
-            q_t, q_sz = self._measure_qarg()
-            self.match("ARROW")
-            c_t, c_sz = self._measure_carg()
-        else:
-            # handled only when starts with MEASURE in statement(), so unreachable
-            raise SyntaxError("Internal: measure_stmt misuse")
+        self.match("MEASURE")
+        q_t, q_sz = self._measure_qarg()
+        self.match("ARROW")
+        c_t, c_sz = self._measure_carg()
         if q_sz != c_sz:
             t = self.peek()
             raise SyntaxError(
@@ -575,7 +553,7 @@ class Parser:
         self.match("SEMI")
 
     def barrier_stmt(self):
-        self.match("BARrier".upper())  # tolerate case in tokenization
+        self.match("BARRIER")
         # barrier accepts one or more qargs (full regs and/or indices)
         self.qarg_top()
         while self.accept("COMMA"):
@@ -602,43 +580,42 @@ class Parser:
         self.gate_op_stmt_top()
 
     # ---- expressions (with symbol policy) ----
-    def _expr_list_count(self, *, allow_id: bool) -> int:
-        # count expressions in list; expressions may reference IDs only if allow_id
+    def _expr_list_count(self) -> int:
         count = 0
-        self._expr(allow_id)
+        self._expr()
         count += 1
         while self.accept("COMMA"):
-            self._expr(allow_id)
+            self._expr()
             count += 1
         return count
 
-    def _expr(self, allow_id: bool):
-        self._expr_addsub(allow_id)
+    def _expr(self):
+        self._expr_addsub()
 
-    def _expr_addsub(self, allow_id: bool):
-        self._expr_muldiv(allow_id)
+    def _expr_addsub(self):
+        self._expr_muldiv()
         while self.peek().type in ("PLUS", "MINUS"):
             self.match(self.peek().type)
-            self._expr_muldiv(allow_id)
+            self._expr_muldiv()
 
-    def _expr_muldiv(self, allow_id: bool):
-        self._expr_power(allow_id)
+    def _expr_muldiv(self):
+        self._expr_power()
         while self.peek().type in ("STAR", "SLASH"):
             self.match(self.peek().type)
-            self._expr_power(allow_id)
+            self._expr_power()
 
-    def _expr_power(self, allow_id: bool):
-        self._expr_unary(allow_id)
+    def _expr_power(self):
+        self._expr_unary()
         if self.peek().type == "CARET":
             self.match("CARET")
-            self._expr_power(allow_id)
+            self._expr_power()
 
-    def _expr_unary(self, allow_id: bool):
+    def _expr_unary(self):
         while self.peek().type in ("PLUS", "MINUS"):
             self.match(self.peek().type)
-        self._expr_atom(allow_id)
+        self._expr_atom()
 
-    def _expr_atom(self, allow_id: bool):
+    def _expr_atom(self):
         t = self.peek()
         if t.type == "PARAM":
             # Gate bodies see only their own formals, so a caller-declared
@@ -658,30 +635,21 @@ class Parser:
         if t.type in _MATH_FUNCS:
             self.match(t.type)  # Consume the function name (e.g., COS)
             self.match("LPAREN")
-            self._expr(allow_id)  # Parse the inner expression
+            self._expr()  # Parse the inner expression
             # Note: QASM 2.0 math functions only take one argument
             self.match("RPAREN")
             return
         if t.type == "ID":
-            # function call or plain ID
             id_tok = self.match("ID")
             ident = id_tok.value
-            if self.accept("LPAREN"):
-                if self.peek().type != "RPAREN":
-                    self._expr(allow_id)
-                    while self.accept("COMMA"):
-                        self._expr(allow_id)
-                self.match("RPAREN")
-                return
-            # bare identifier: only allowed if in gate body params and allow_id=True
-            if not allow_id or ident not in self.g_params:
+            if ident not in self.g_params:
                 raise SyntaxError(
                     f"Unknown symbol '{ident}' in expression at {id_tok.line}:{id_tok.col}"
                 )
             return
         if t.type == "LPAREN":
             self.match("LPAREN")
-            self._expr(allow_id)
+            self._expr()
             self.match("RPAREN")
             return
         raise SyntaxError(

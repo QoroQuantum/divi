@@ -187,14 +187,12 @@ class QEMStage(BundleStage):
         if not isinstance(sample, dict):
             return False
         if isinstance(next(iter(sample)), str):
-            if self.protocol.name != "NoMitigation":
-                raise TypeError(
-                    f"QEMStage expects scalar expectation values, "
-                    f"but received probability dicts. "
-                    f"{type(self.protocol).__name__} is not supported "
-                    f"for probability-based measurements."
-                )
-            return False
+            raise TypeError(
+                f"QEMStage expects scalar expectation values, "
+                f"but received probability dicts. "
+                f"{type(self.protocol).__name__} is not supported "
+                f"for probability-based measurements."
+            )
         return True
 
     def _reduce_grouped(
@@ -242,18 +240,16 @@ class QEMStage(BundleStage):
             return info
 
         per_obs = ctx.get("per_obs")
-        if per_obs:
-            info["n_observables"] = len(per_obs)
-            weights = per_obs[0].weights
-            classical = per_obs[0].classical_values
-        else:
-            # Dry path skips per_obs but persists the count separately so
-            # introspect() can still surface it.
+        if not per_obs:
+            # Dry path skips per_obs but persists the count separately.
             if "n_observables" in ctx:
                 info["n_observables"] = ctx["n_observables"]
-            weights = ctx.get("weights")
-            classical = ctx.get("classical_values")
-        if weights is not None and len(weights) > 0:
+            return info
+
+        info["n_observables"] = len(per_obs)
+        weights = per_obs[0].weights
+        classical = per_obs[0].classical_values
+        if len(weights) > 0:
             info["weight_sum"] = round(float(np.sum(weights)), 4)
             # L1 norm = ∑|w_i|. Coincides with weight_sum for non-negative
             # weight schemes but diverges when any path carries a negative
@@ -268,7 +264,6 @@ class QEMStage(BundleStage):
                 round(float(np.min(weights)), 4),
                 round(float(np.max(weights)), 4),
             ]
-        if classical is not None and weights is not None and len(weights) > 0:
             info["classical_estimate"] = round(float(weights @ classical), 6)
         return info
 

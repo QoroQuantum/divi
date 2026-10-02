@@ -33,11 +33,19 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
+from tests._helpers import exact_match
 from tests.pipeline._helpers import (
     DummySpecStage,
     ones_execute_fn,
     two_group_meta,
 )
+
+
+def _missing_twirl_stage_message(n_twirls: int) -> str:
+    return exact_match(
+        f"QEMStage with n_twirls={n_twirls} requires a PauliTwirlStage after it "
+        "in the pipeline."
+    )
 
 
 class _DummyQEMProtocol(QEMProtocol):
@@ -86,6 +94,188 @@ def parametric_meta() -> MetaCircuit:
         parameters=params,
         measured_wires=(0, 1, 2, 3),
     )
+
+
+_BASE_KEY = (("spec", "circ"),)
+
+
+def _symbolic_quepp_context() -> dict:
+    """A QuEPP context whose weights are still ``cos(theta)`` / ``sin(theta)``."""
+    theta = Parameter("theta")
+    return {
+        "per_obs": [
+            _ObservableCPT(
+                weights=np.array([theta.cos(), theta.sin()], dtype=object),
+                classical_values=np.array([1.0, 0.0]),
+                dag_indices=[0, 1, 2],
+                entry_slots=[0, 0],
+                target_slots=[0],
+            )
+        ],
+        "symbolic": True,
+        "weight_symbols": [theta],
+        "target_idx": 0,
+        "ensemble_start": 1,
+        "n_rotations": 1,
+        "n_paths": 2,
+    }
+
+
+def _observable_cpt(weights: list[float], classical: list[float]) -> _ObservableCPT:
+    return _ObservableCPT(
+        weights=np.array(weights),
+        classical_values=np.array(classical),
+        dag_indices=list(range(len(weights) + 1)),
+        entry_slots=[0] * len(weights),
+        target_slots=[0],
+    )
+
+
+_QUEPP_COUNTS = {
+    "protocol": "quepp",
+    "n_rotations": 2,
+    "n_paths": 3,
+    "n_clifford_sims": 3,
+}
+
+
+@pytest.mark.parametrize(
+    "per_obs, expected",
+    [
+        pytest.param(
+            [
+                _observable_cpt([0.12345678, -0.65432109], [1.0, 0.5]),
+                _observable_cpt([2.0], [3.0]),
+            ],
+            {
+                **_QUEPP_COUNTS,
+                "n_observables": 2,
+                "weight_sum": -0.5309,
+                "weight_l1_norm": 0.7778,
+                "weight_range": [-0.6543, 0.1235],
+                "classical_estimate": -0.203704,
+            },
+            id="mixed-sign-weights-first-observable",
+        ),
+        pytest.param(
+            [_observable_cpt([0.25], [2.0])],
+            {
+                **_QUEPP_COUNTS,
+                "n_observables": 1,
+                "weight_sum": 0.25,
+                "weight_l1_norm": 0.25,
+                "weight_range": [0.25, 0.25],
+                "classical_estimate": 0.5,
+            },
+            id="single-weight",
+        ),
+        pytest.param(
+            [_observable_cpt([], [])],
+            {**_QUEPP_COUNTS, "n_observables": 1},
+            id="no-weights",
+        ),
+    ],
+)
+def test_introspect_reports_weight_statistics(per_obs, expected, dummy_pipeline_env):
+    stage = QEMStage(QuEPP(truncation_order=1, n_twirls=0))
+    ctx = {
+        "n_rotations": 2,
+        "n_paths": 3,
+        "target_idx": 0,
+        "ensemble_start": 1,
+        "per_obs": per_obs,
+    }
+    info = stage.introspect({}, env=dummy_pipeline_env, token={_BASE_KEY: ctx})
+    assert info == expected
+
+
+def test_introspect_leaves_symbolic_weights_unbound(dummy_pipeline_env):
+    stage = QEMStage(QuEPP(truncation_order=1, n_twirls=0))
+    info = stage.introspect(
+        {}, env=dummy_pipeline_env, token={_BASE_KEY: _symbolic_quepp_context()}
+    )
+    assert info == {
+        "protocol": "quepp",
+        "n_rotations": 1,
+        "n_paths": 2,
+        "n_clifford_sims": 2,
+        "weights": "unbound (run after parameter binding)",
+    }
+
+
+def test_reused_quepp_context_does_not_carry_eta_rejection_forward(
+    dummy_pipeline_env,
+):
+    """A cached forward trace hands the same concrete contexts to every reduce."""
+    stage = QEMStage(QuEPP(truncation_order=1, n_twirls=0))
+    ctx = {
+        "per_obs": [_observable_cpt([0.5, 0.5], [1.0, 0.5])],
+        "target_idx": 0,
+        "ensemble_start": 1,
+        "n_rotations": 1,
+        "n_paths": 2,
+    }
+
+    def run(values):
+        results = {
+            (*_BASE_KEY, (stage.axis_name, i)): value for i, value in enumerate(values)
+        }
+        return stage.reduce(results, dummy_pipeline_env, token={_BASE_KEY: ctx})
+
+    with pytest.warns(UserWarning, match="signal destroyed"):
+        run([0.3, 0.0, 0.0])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        reduced = run([0.3, 1.0, 0.5])
+
+    assert reduced == {_BASE_KEY: pytest.approx([0.3])}
+
+
+def test_reduce_grouped_zne_extrapolates_each_observable(
+    default_zne_protocol, dummy_pipeline_env
+):
+    stage = QEMStage(default_zne_protocol)
+    group_key = (*_BASE_KEY, ("obs_group", 0))
+    results = {
+        (*group_key, ("qem_zne", i)): {0: 1 + s, 1: 10 - s}
+        for i, s in enumerate((1, 2, 3))
+    }
+    token = {group_key: {"effective_scales": (1.0, 2.0, 3.0)}}
+
+    reduced = stage.reduce(results, dummy_pipeline_env, token=token)
+
+    assert reduced == {group_key: {0: pytest.approx([1.0]), 1: pytest.approx([10.0])}}
+
+
+def test_reduce_single_variant_per_observable(dummy_pipeline_env):
+    stage = QEMStage(_NoMitigation())
+    results = {(*_BASE_KEY, ("qem_NoMitigation", 0)): {0: 1.5, 1: -0.5}}
+    assert stage.reduce(results, dummy_pipeline_env, token=None) == {
+        _BASE_KEY: {0: [1.5], 1: [-0.5]}
+    }
+
+
+def test_reduce_empty_results(dummy_pipeline_env):
+    assert QEMStage(_NoMitigation()).reduce({}, dummy_pipeline_env, token=None) == {}
+
+
+@pytest.mark.parametrize("use_zne", [True, False], ids=["zne", "no-mitigation"])
+def test_reduce_rejects_probability_dicts(
+    use_zne, default_zne_protocol, dummy_pipeline_env
+):
+    protocol = default_zne_protocol if use_zne else _NoMitigation()
+    stage = QEMStage(protocol)
+    results = {(*_BASE_KEY, (stage.axis_name, 0)): {"00": 0.5, "11": 0.5}}
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "QEMStage expects scalar expectation values, but received probability "
+            f"dicts. {type(protocol).__name__} is not supported for "
+            "probability-based measurements."
+        ),
+    ):
+        stage.reduce(results, dummy_pipeline_env, token=None)
 
 
 class TestObservableOverrideAgreement:
@@ -169,76 +359,15 @@ class TestQEMStage:
         assert len(reduced) == 1
         assert list(reduced.values())[0] == pytest.approx([3.9])
 
-    def test_reduce_handles_multi_obs_expval_dicts(self, dummy_pipeline_env):
-        """QEM reduce applies postprocessing per observable when values are {int: float} dicts."""
-
-        class _ScaleFactorProtocol(_DummyQEMProtocol):
-            """Produces 3 body variants (like 3 scale factors) and sums during reduce."""
-
-            def __init__(self) -> None:
-                self.scale_factors = (1.0, 2.0, 3.0)
-
-            def expand(
-                self, dag: DAGCircuit, observable: Any | None = None
-            ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
-                return tuple(dag for _ in self.scale_factors), QEMContext()
-
-        protocol = _ScaleFactorProtocol()
-        stage = QEMStage(protocol=protocol)
-
-        # Simulate results with {int: float} dicts, as _counts_to_expvals produces
-        # for multi-observable measurement groups.
-        # Three QEM scale variants (indices 0, 1, 2), each with two obs values.
-        results = {
-            (("spec", "circ"), ("obs_group", 0), ("qem_dummy-qem", 0)): {
-                0: 1.0,
-                1: 10.0,
-            },
-            (("spec", "circ"), ("obs_group", 0), ("qem_dummy-qem", 1)): {
-                0: 2.0,
-                1: 11.0,
-            },
-            (("spec", "circ"), ("obs_group", 0), ("qem_dummy-qem", 2)): {
-                0: 3.0,
-                1: 12.0,
-            },
-        }
-
-        reduced = stage.reduce(results, dummy_pipeline_env, token=None)
-
-        # _DummyQEMProtocol.reduce sums values across scale factors.
-        # obs 0: sum(1.0, 2.0, 3.0) = 6.0
-        # obs 1: sum(10.0, 11.0, 12.0) = 33.0
-        assert len(reduced) == 1
-        key = (("spec", "circ"), ("obs_group", 0))
-        assert key in reduced
-        assert reduced[key] == {0: pytest.approx([6.0]), 1: pytest.approx([33.0])}
-
     def test_reduce_binds_symbolic_weights_from_param_set_foreign_key(
         self, dummy_pipeline_env
     ):
-        theta = Parameter("theta")
         stage = QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0))
         base_key = (("spec", "circ"),)
+        bound_key = (("spec", "bound"),)
         contexts = {
-            base_key: {
-                "per_obs": [
-                    _ObservableCPT(
-                        weights=np.array([theta.cos(), theta.sin()], dtype=object),
-                        classical_values=np.array([1.0, 0.0]),
-                        dag_indices=[0, 1, 2],
-                        entry_slots=[0, 0],
-                        target_slots=[0],
-                        n_paths=2,
-                    )
-                ],
-                "symbolic": True,
-                "weight_symbols": [theta],
-                "target_idx": 0,
-                "ensemble_start": 1,
-                "n_rotations": 1,
-                "n_paths": 2,
-            },
+            base_key: _symbolic_quepp_context(),
+            bound_key: {"n_rotations": 0},
             FOREIGN_KEY_ATTR: (("param_set", 1),),
         }
         env = dummy_pipeline_env
@@ -256,6 +385,7 @@ class TestQEMStage:
         bound_weights = contexts[base_key]["per_obs"][0].weights
         assert bound_weights[0] == pytest.approx(1.0)
         assert bound_weights[1] == pytest.approx(0.0)
+        assert contexts[bound_key] == {"n_rotations": 0}
 
 
 class TestPipelineOutputMetaCircuitWithQEM:
@@ -442,26 +572,32 @@ class TestQuEPPLocalEffectiveness:
             ).values()
         )[0][0]
 
-        assert np.isfinite(noisy_result)
-        assert np.isfinite(quepp_result)
-        assert np.isfinite(twirl_result)
+        assert abs(noisy_result - exact) > tolerance
+        assert quepp_result == pytest.approx(exact, abs=tolerance)
+        assert twirl_result == pytest.approx(exact, abs=tolerance)
 
-        noisy_err = abs(noisy_result - exact)
-        quepp_err = abs(quepp_result - exact)
-        twirl_err = abs(twirl_result - exact)
-        assert quepp_err <= noisy_err + tolerance
-        assert twirl_err <= noisy_err + tolerance
-
-    def test_quepp_after_measurement_raises(self):
+    @pytest.mark.parametrize(
+        "trailing_stages",
+        [
+            pytest.param([], id="nothing-after"),
+            pytest.param([PauliTwirlStage(n_twirls=1, seed=0)], id="twirl-after"),
+        ],
+    )
+    def test_quepp_after_measurement_raises(self, trailing_stages):
+        n_twirls = 1 if trailing_stages else 0
         with pytest.raises(
             ContractViolation,
-            match="requires a measurement-handling stage after it",
+            match=exact_match(
+                "QEMStage with QuEPP requires a measurement-handling stage after "
+                "it so that observable groups are recombined before QEM reduction."
+            ),
         ):
             CircuitPipeline(
                 stages=[
                     DummySpecStage(meta=two_group_meta()),
                     MeasurementStage(),
-                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
+                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=n_twirls)),
+                    *trailing_stages,
                 ]
             )
 
@@ -494,58 +630,46 @@ class TestQuEPPLocalEffectiveness:
             ]
         )
 
-    def test_twirls_missing_twirl_stage_raises(self):
+    @pytest.mark.parametrize(
+        "n_twirls, twirl_before_qem",
+        [
+            pytest.param(1, False, id="missing-1"),
+            pytest.param(10, False, id="missing-10"),
+            pytest.param(10, True, id="before-qem"),
+        ],
+    )
+    def test_twirls_require_a_twirl_stage_after_qem(self, n_twirls, twirl_before_qem):
+        leading = [PauliTwirlStage(n_twirls=n_twirls)] if twirl_before_qem else []
         with pytest.raises(
             ContractViolation,
-            match=r"n_twirls=10 requires a PauliTwirlStage after it",
+            match=_missing_twirl_stage_message(n_twirls),
         ):
             CircuitPipeline(
                 stages=[
                     DummySpecStage(meta=two_group_meta()),
-                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
+                    *leading,
+                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=n_twirls)),
                     MeasurementStage(),
                 ]
             )
-
-    def test_twirls_twirl_before_qem_raises(self):
-        with pytest.raises(
-            ContractViolation,
-            match=r"n_twirls=10 requires a PauliTwirlStage after it",
-        ):
-            CircuitPipeline(
-                stages=[
-                    DummySpecStage(meta=two_group_meta()),
-                    PauliTwirlStage(n_twirls=10),
-                    QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
-                    MeasurementStage(),
-                ]
-            )
-
-    def test_quepp_with_twirls_full_pipeline_passes(self):
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=10)),
-                PauliTwirlStage(n_twirls=10),
-                MeasurementStage(),
-            ]
-        )
-
-    def test_no_twirls_no_twirl_stage_passes(self):
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                QEMStage(protocol=QuEPP(truncation_order=1, n_twirls=0)),
-                MeasurementStage(),
-            ]
-        )
 
 
 class TestExhaustiveQuEPPWarning:
     """Spec: QuEPP with sampling='exhaustive' emits DiviPerformanceWarning."""
 
     def test_exhaustive_sampling_warns(self):
-        with pytest.warns(DiviPerformanceWarning, match="exhaustive"):
+        with pytest.warns(
+            DiviPerformanceWarning,
+            match=exact_match(
+                "QuEPP with sampling='exhaustive' enumerates all Pauli paths and "
+                "scales poorly with truncation_order and circuit depth. Consider "
+                "the default sampling='auto' unless you specifically need "
+                "deterministic enumeration. To suppress this warning, pass "
+                "suppress_performance_warnings=True to CircuitPipeline, or filter "
+                "DiviPerformanceWarning via warnings.filterwarnings (import it "
+                "from divi.pipeline)."
+            ),
+        ) as record:
             CircuitPipeline(
                 stages=[
                     DummySpecStage(meta=two_group_meta()),
@@ -561,6 +685,8 @@ class TestExhaustiveQuEPPWarning:
                     MeasurementStage(),
                 ]
             )
+        exhaustive = [w for w in record if "exhaustive" in str(w.message)]
+        assert [w.filename for w in exhaustive] == [__file__]
 
     def test_montecarlo_sampling_does_not_warn(self):
         stages = [

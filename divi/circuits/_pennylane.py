@@ -5,9 +5,11 @@
 """Convert PennyLane QNodes and QuantumScripts into Divi circuits."""
 
 import inspect
+import os
+import sys
 import warnings
-from collections.abc import Callable, Mapping
-from typing import cast
+from collections.abc import Callable, Mapping, Sequence
+from typing import Any, cast
 
 import numpy as np
 import pennylane as qp
@@ -60,6 +62,13 @@ from divi.circuits._conversions import (
 )
 from divi.circuits._core import DEFAULT_PRECISION, MetaCircuit
 from divi.hamiltonians import to_spo
+
+# Attribute warnings to the first caller outside divi; Python 3.11 lacks skip_file_prefixes.
+_OUTSIDE_DIVI: dict[str, Any] = (
+    {"skip_file_prefixes": (os.path.dirname(os.path.dirname(__file__)) + os.sep,)}
+    if sys.version_info >= (3, 12)
+    else {"stacklevel": 3}
+)
 
 _PROBE_SIZE = 100
 
@@ -208,10 +217,19 @@ def _validate_expectation_measurement(qscript: QuantumScript, *, caller: str) ->
         )
 
 
+def _collapse_broadcast_of_one(qscript: QuantumScript) -> QuantumScript:
+    """A broadcast of one (e.g. a scalar gate fed a length-1 array) is one circuit."""
+    if qscript.batch_size != 1:
+        return qscript
+    [expanded], _ = qp.transforms.broadcast_expand(qscript)
+    return expanded
+
+
 def _qscript_to_dag(
     qscript: QuantumScript,
-) -> tuple[DAGCircuit, tuple[Parameter, ...], dict | None]:
+) -> tuple[DAGCircuit, tuple[Parameter, ...]]:
     """Convert a PennyLane QuantumScript into a Qiskit DAGCircuit."""
+    qscript = _collapse_broadcast_of_one(qscript)
     ordered_qiskit_params: list[Parameter] = []
     ordered_sympy_symbols: list[sp.Symbol] = []
     seen_qiskit: set[Parameter] = set()
@@ -229,17 +247,12 @@ def _qscript_to_dag(
                         seen_sympy.add(symbol)
                         ordered_sympy_symbols.append(symbol)
 
-    parameter_map: dict[sp.Symbol, Parameter] | None = None
-    if ordered_sympy_symbols:
-        parameter_map = {
-            symbol: Parameter(str(symbol)) for symbol in ordered_sympy_symbols
-        }
+    parameter_map = {symbol: Parameter(str(symbol)) for symbol in ordered_sympy_symbols}
 
     wires = qscript.wires
     needs_wire_map = any(not isinstance(wire, int) for wire in wires) or set(
         wires
     ) != set(range(len(wires)))
-    wire_map: dict | None = None
     if needs_wire_map:
         wire_map = {wire: index for index, wire in enumerate(wires)}
         mapped_qscripts, _ = qp.map_wires(qscript, wire_map=wire_map)
@@ -251,7 +264,7 @@ def _qscript_to_dag(
         stopping_condition=lambda operation: operation.name in _PL_TO_QISKIT_GATE,
     )
 
-    if ordered_sympy_symbols and parameter_map:
+    if parameter_map:
         new_values: list = []
         indices: list[int] = []
         for index, parameter in enumerate(decomposed.get_parameters()):
@@ -268,13 +281,8 @@ def _qscript_to_dag(
         optimization_level=0,
     )
 
-    sympy_params = (
-        tuple(parameter_map[symbol] for symbol in ordered_sympy_symbols)
-        if ordered_sympy_symbols and parameter_map
-        else ()
-    )
-    ordered_params = tuple(ordered_qiskit_params) + sympy_params
-    return circuit_to_dag(circuit), ordered_params, wire_map
+    ordered_params = tuple(ordered_qiskit_params) + tuple(parameter_map.values())
+    return circuit_to_dag(circuit), ordered_params
 
 
 def qscript_to_meta(
@@ -286,7 +294,7 @@ def qscript_to_meta(
     """Convert a PennyLane QuantumScript into a MetaCircuit."""
     measurements = list(qscript.measurements)
     qscript = _symbolize_trainable_subset(qscript)
-    dag, inferred_params, _ = _qscript_to_dag(qscript)
+    dag, inferred_params = _qscript_to_dag(qscript)
     params = parameter_order if parameter_order is not None else inferred_params
 
     observable: tuple[SparsePauliOp, ...] | None = None
@@ -329,23 +337,6 @@ def qscript_to_meta(
     )
 
 
-def _warn_on_device_settings(qnode: QNode) -> None:
-    """Warn when a QNode declares a shot count divi will not honour.
-
-    Divi runs every QNode against its own configured backend with its own
-    shot count, so device-level shots are silently ignored — flag them so
-    users don't expect them to take effect.
-    """
-    if getattr(qnode.device, "shots", None):
-        warnings.warn(
-            "QNode device declares a shot count; divi ignores it and uses "
-            "the backend's configured shots instead. Set shots on the divi "
-            "backend (e.g. MaestroSimulator(shots=...)) to control sampling.",
-            UserWarning,
-            stacklevel=3,
-        )
-
-
 def _mark_symbolic_params_trainable(
     qscript: QuantumScript, *, signature_has_defaults: bool
 ) -> QuantumScript:
@@ -369,7 +360,7 @@ def _mark_symbolic_params_trainable(
             "constant and will not be trained. Remove the default (pass the value "
             "as a required argument) to make it trainable.",
             UserWarning,
-            stacklevel=3,
+            **_OUTSIDE_DIVI,
         )
     qscript.trainable_params = symbolic
     return qscript
@@ -432,7 +423,7 @@ def _qnode_to_symbolic_qscript(
     Returns:
         A ``QuantumScript`` with each trainable parameter slot replaced by a
         sympy symbol and ``trainable_params`` restricted to those slots. Symbol
-        names are ``p0``/``p[i]`` for the inferred paths, or ``<arg>__<i>``
+        names are ``p0``, ``p1``, … for the inferred paths, or ``<arg>__<i>``
         when ``arg_shapes`` is given.
 
     Raises:
@@ -442,7 +433,6 @@ def _qnode_to_symbolic_qscript(
     if arg_shapes is not None:
         return _qnode_to_qscript_with_shapes(qnode, arg_shapes)
 
-    _warn_on_device_settings(qnode)
     sig = inspect.signature(qnode.func)
     n_params = sum(
         1 for p in sig.parameters.values() if p.default is inspect.Parameter.empty
@@ -529,28 +519,22 @@ def _symbol_arg_name(symbol_name: str) -> str:
     return symbol_name.rsplit("__", 1)[0]
 
 
-def _detect_batch_input_argnames(qnode: QNode) -> list[str]:
-    """Return the argument names a ``@qml.batch_input`` transform batches.
+def _batch_input_argnums(qnode: QNode) -> list[int]:
+    """Return the ``argnum`` indices of the QNode's ``@qml.batch_input`` transforms.
 
-    Reads the QNode's ``compile_pipeline``, matching the batch_input transform
-    by identity against ``qml.batch_input.tape_transform`` and mapping each
-    batched ``argnum`` to its argument name. Any failure to introspect the
-    pipeline yields ``[]``.
+    As in PennyLane, each index points into the traced tape's gate parameters
+    (``tape.get_parameters(trainable_only=False)``), not into the function
+    signature. Any failure to introspect the compile pipeline yields ``[]``.
     """
     try:
         program = qnode.compile_pipeline
-        signature_names = list(inspect.signature(qnode.func).parameters)
     except Exception:
         return []
 
     target = qp.batch_input.tape_transform
-
-    def _is_batch_input(container) -> bool:
-        return getattr(container, "tape_transform", None) is target
-
-    batched: list[str] = []
+    argnums: list[int] = []
     for container in program:
-        if not _is_batch_input(container):
+        if getattr(container, "tape_transform", None) is not target:
             continue
         kwargs = getattr(container, "kwargs", None) or {}
         argnum = kwargs.get("argnum")
@@ -560,10 +544,63 @@ def _detect_batch_input_argnames(qnode: QNode) -> list[str]:
         if argnum is None:
             continue
         indices = [argnum] if isinstance(argnum, int) else list(argnum)
-        for i in indices:
-            if isinstance(i, int) and 0 <= i < len(signature_names):
-                batched.append(signature_names[i])
-    return batched
+        argnums.extend(int(i) for i in indices)
+    return argnums
+
+
+def _gate_parameter_arg_names(
+    qnode: QNode, argnums: Sequence[int], arg_shapes: Mapping[str, tuple[int, ...]]
+) -> set[str] | None:
+    """Name the QNode arguments that feed the gate parameters at ``argnums``.
+
+    Traces the undecomposed tape that ``@qml.batch_input`` indexes, seeding
+    arguments as :func:`_qnode_to_qscript_with_shapes` does. Returns ``None``
+    when the QNode does not trace under ``arg_shapes``.
+    """
+    call_args, _ = _symbolic_call_args(qnode, arg_shapes)
+    try:
+        params = qp.tape.make_qscript(qnode.func)(*call_args).get_parameters(
+            trainable_only=False
+        )
+    except Exception:
+        return None
+    names: set[str] = set()
+    for i in argnums:
+        if not -len(params) <= i < len(params):
+            raise ValueError(
+                f"batch_input argnum={i} is out of range for a circuit with "
+                f"{len(params)} gate parameter(s)."
+            )
+        for value in np.asarray(params[i], dtype=object).ravel():
+            if isinstance(value, sp.Basic):
+                names |= {_symbol_arg_name(str(s)) for s in value.free_symbols}
+    return names
+
+
+def _symbolic_call_args(
+    qnode: QNode, arg_shapes: Mapping[str, tuple[int, ...]]
+) -> tuple[list, bool]:
+    """Seed each no-default argument with ``<arg>__<i>`` symbols of its declared shape.
+
+    Returns the call arguments and whether the signature has default-valued
+    parameters.
+    """
+    sig = inspect.signature(qnode.func)
+    call_args: list = []
+    for name, p in sig.parameters.items():
+        if p.default is not inspect.Parameter.empty:
+            continue
+        shape = tuple(arg_shapes.get(name, ()))
+        count = int(np.prod(shape)) if shape else 1
+        symbols = sp.symbols(f"{name}__0:{count}")  # always a tuple for "0:n"
+        if shape:
+            call_args.append(np.array(symbols, dtype=object).reshape(shape))
+        else:
+            call_args.append(symbols[0])  # scalar arg → bare symbol
+    has_defaults = any(
+        p.default is not inspect.Parameter.empty for p in sig.parameters.values()
+    )
+    return call_args, has_defaults
 
 
 def _qnode_to_qscript_with_shapes(
@@ -580,27 +617,7 @@ def _qnode_to_qscript_with_shapes(
     The ``<arg>__<i>`` naming lets callers map parameters back to arguments via
     :func:`_symbol_arg_name`.
     """
-    _warn_on_device_settings(qnode)
-    sig = inspect.signature(qnode.func)
-    trainable_args = [
-        name
-        for name, p in sig.parameters.items()
-        if p.default is inspect.Parameter.empty
-    ]
-
-    call_args: list = []
-    for name in trainable_args:
-        shape = tuple(arg_shapes.get(name, ()))
-        count = int(np.prod(shape)) if shape else 1
-        symbols = sp.symbols(f"{name}__0:{count}")  # always a tuple for "0:n"
-        if shape:
-            call_args.append(np.array(symbols, dtype=object).reshape(shape))
-        else:
-            call_args.append(symbols[0])  # scalar arg → bare symbol
-
-    has_defaults = any(
-        p.default is not inspect.Parameter.empty for p in sig.parameters.values()
-    )
+    call_args, has_defaults = _symbolic_call_args(qnode, arg_shapes)
     try:
         return _decompose_and_mark(
             qp.tape.make_qscript(qnode.func)(*call_args),
@@ -656,7 +673,7 @@ def _try_flat_array_symbols(
     n_gate_params = len(probe_qs.get_parameters())
     if n_gate_params == 0 or n_gate_params >= _PROBE_SIZE:
         return None
-    sym_array = sp.symarray("p", (n_gate_params,))
+    sym_array = np.array(sp.symbols(f"p0:{n_gate_params}"), dtype=object)
     try:
         return _mark_symbolic_params_trainable(
             qp.tape.make_qscript(func)(sym_array),

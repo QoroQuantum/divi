@@ -59,6 +59,10 @@ from divi.pipeline.abc import ResultFormat
 
 __all__ = ["QuEPP", "SymbolicAngleWarning"]
 
+# stim's first PauliString.to_numpy() deadlocks when made from several threads at
+# once (ensembles expand QuEPP programs concurrently); make it here, single-threaded.
+stim.PauliString(1).to_numpy()
+
 # ---------------------------------------------------------------------------
 # Constants and type aliases
 # ---------------------------------------------------------------------------
@@ -69,14 +73,14 @@ _PAULI_I, _PAULI_X, _PAULI_Y, _PAULI_Z = 0, 1, 2, 3
 # Generator index for each rotation axis
 _GENERATOR = {"x": _PAULI_X, "y": _PAULI_Y, "z": _PAULI_Z}
 
-# R_P(π/2) conjugation rules: maps (axis, input_pauli) → (output_pauli, sign_flip)
-# R_X(π/2): X→X, Y→-Z, Z→Y
-# R_Y(π/2): X→Z, Y→Y, Z→-X
-# R_Z(π/2): X→-Y, Y→X, Z→Z
-_RP_CONJUGATION: dict[str, dict[int, tuple[int, int]]] = {
-    "x": {_PAULI_X: (_PAULI_X, 1), _PAULI_Y: (_PAULI_Z, -1), _PAULI_Z: (_PAULI_Y, 1)},
-    "y": {_PAULI_X: (_PAULI_Z, 1), _PAULI_Y: (_PAULI_Y, 1), _PAULI_Z: (_PAULI_X, -1)},
-    "z": {_PAULI_X: (_PAULI_Y, -1), _PAULI_Y: (_PAULI_X, 1), _PAULI_Z: (_PAULI_Z, 1)},
+# R_P(π/2) conjugation rules, up to sign: maps (axis, input_pauli) → output_pauli
+# R_X(π/2): X→X, Y→Z, Z→Y
+# R_Y(π/2): X→Z, Y→Y, Z→X
+# R_Z(π/2): X→Y, Y→X, Z→Z
+_RP_CONJUGATION: dict[str, dict[int, int]] = {
+    "x": {_PAULI_X: _PAULI_X, _PAULI_Y: _PAULI_Z, _PAULI_Z: _PAULI_Y},
+    "y": {_PAULI_X: _PAULI_Z, _PAULI_Y: _PAULI_Y, _PAULI_Z: _PAULI_X},
+    "z": {_PAULI_X: _PAULI_Y, _PAULI_Y: _PAULI_X, _PAULI_Z: _PAULI_Z},
 }
 
 # Qiskit Clifford rotations for angle normalisation (axis, n_mod_4) → gate or None.
@@ -207,6 +211,8 @@ def _qiskit_clifford_to_stim(qc_or_dag: QuantumCircuit | DAGCircuit) -> stim.Cir
         if stim_name is not None:
             sc.append(stim_name, [qubit_idx[q] for q in qargs], ())
             continue
+        if name == "barrier":
+            continue
         if name in rotation_names:
             (angle,) = op.params
             if isinstance(angle, ParameterExpression):
@@ -281,7 +287,6 @@ class _ObservableCPT:
     dag_indices: list[int]
     entry_slots: list[int]
     target_slots: list[int]
-    n_paths: int
     eta_rejection: str | None = None
     """Why η was unusable, from :meth:`QuEPP.compute_eta`; ``None`` if it was."""
     eta_amplifying: float | None = None
@@ -393,7 +398,6 @@ class _PreprocResult:
     :meth:`QuEPP._select_paths`."""
 
     working: QuantumCircuit
-    n_qubits: int
     rotations: list["_RotationGate"]
     tableaus: list[stim.Tableau]
     obs_terms: list[tuple[float, stim.PauliString]]
@@ -721,20 +725,19 @@ def _enumerate_paths_dfs(
                     cos_w = weight * np.cos(angle)
                     sin_w = weight * np.sin(angle)
 
+                # A weight already carrying a symbolic factor has no magnitude to prune on.
+                unprunable = symbolic or isinstance(weight, ParameterExpression)
                 sin_order = order + 1
                 sin_kept = sin_order <= max_order and (
-                    symbolic or abs(sin_w) >= coefficient_threshold
+                    unprunable or abs(sin_w) >= coefficient_threshold
                 )
-                cos_kept = symbolic or abs(cos_w) >= coefficient_threshold
+                cos_kept = unprunable or abs(cos_w) >= coefficient_threshold
 
                 if sin_kept:
                     # Inline R_P(π/2)† · pauli · R_P(π/2) on qubit_idx
                     # (p != I guaranteed here by the earlier commute check).
-                    new_p, sign = _RP_CONJUGATION[axis][p]
                     sin_pauli = stim.PauliString(pauli)
-                    sin_pauli[qubit_idx] = new_p
-                    if sign < 0:
-                        sin_pauli *= -1
+                    sin_pauli[qubit_idx] = _RP_CONJUGATION[axis][p]
                     prop_sin = inv_tab(sin_pauli)
                     stack.append(
                         (idx - 1, prop_sin, branches_bits | 1, sin_w, sin_order)
@@ -885,11 +888,8 @@ def _sample_paths_montecarlo(
                     is_weight *= np.sign(sin_val) * normalizer
                     # Inline R_P(π/2)† · pauli · R_P(π/2) on qubit_idx
                     # (non-commuting ⇒ p != I).
-                    new_p, sign = _RP_CONJUGATION[axis][p]
                     pauli = stim.PauliString(pauli)
-                    pauli[qubit_idx] = new_p
-                    if sign < 0:
-                        pauli *= -1
+                    pauli[qubit_idx] = _RP_CONJUGATION[axis][p]
                     pauli = inv_tab(pauli)
 
         branches.reverse()
@@ -1117,28 +1117,18 @@ class QuEPP(QEMProtocol):
         """
         observables = self._validate_observable_tuple(observable)
 
-        # ----- Observable-independent preprocessing ---------------------- #
-        target_qc = dag_to_circuit(dag)
-        n_qubits = target_qc.num_qubits
-        decomposed = _decompose_controlled_rotations(target_qc)
-        symbolic = _has_symbolic_angles(decomposed)
-        working = _normalize_circuit(decomposed)
-        rotations = _extract_rotation_gates(working)
-        tableaus = _build_clifford_tableaus(working, rotations)
+        preps = self._preprocess(dag, observables)
+        working, rotations, symbolic = (
+            preps[0].working,
+            preps[0].rotations,
+            preps[0].symbolic,
+        )
 
         # ----- Per-observable path enumeration --------------------------- #
-        obs_terms_list = [_obs_to_stim_terms(obs, n_qubits) for obs in observables]
-        obs_paths_list: list[list[_PauliPath]] = []
-        for obs_terms in obs_terms_list:
-            prep = _PreprocResult(
-                working=working,
-                n_qubits=n_qubits,
-                rotations=rotations,
-                tableaus=tableaus,
-                obs_terms=obs_terms,
-                symbolic=symbolic,
-            )
-            obs_paths_list.append(self._select_paths(prep))
+        obs_terms_list = [prep.obs_terms for prep in preps]
+        obs_paths_list: list[list[_PauliPath]] = [
+            self._select_paths(prep) for prep in preps
+        ]
         self._warn_on_truncation_ratio(len(rotations))
         self._warn_no_diagonal_paths(
             len(rotations), [len(paths) for paths in obs_paths_list]
@@ -1166,16 +1156,6 @@ class QuEPP(QEMProtocol):
         declared, term_slots_per_obs = _split_into_single_terms(observables)
 
         # ----- Per (term, path) classical sim + weights ------------------- #
-        all_params: set[Parameter] | None = None
-        if symbolic:
-            all_params = set().union(
-                *(
-                    rot.angle.parameters
-                    for rot in rotations
-                    if _is_parametric(rot.angle)
-                )
-            )
-
         per_obs: list[_ObservableCPT] = []
         for obs_idx, paths in enumerate(obs_paths_list):
             obs_terms = obs_terms_list[obs_idx]
@@ -1203,7 +1183,6 @@ class QuEPP(QEMProtocol):
                     dag_indices=[0] + path_positions,
                     entry_slots=[obs_slots[p.term_idx] for p in paths],
                     target_slots=obs_slots,
-                    n_paths=len({p.branches for p in paths}),
                 )
             )
 
@@ -1216,11 +1195,15 @@ class QuEPP(QEMProtocol):
             OBSERVABLE_OVERRIDE: declared,
         }
         if symbolic:
-            context["symbolic"] = True
-            context["weight_symbols"] = sorted(
-                all_params if all_params is not None else [],
-                key=lambda p: p.name,
+            all_params: set[Parameter] = set().union(
+                *(
+                    rot.angle.parameters
+                    for rot in rotations
+                    if _is_parametric(rot.angle)
+                )
             )
+            context["symbolic"] = True
+            context["weight_symbols"] = sorted(all_params, key=lambda p: p.name)
         return merged_dags, context
 
     def dry_expand(
@@ -1239,13 +1222,8 @@ class QuEPP(QEMProtocol):
         """
         observables = self._validate_observable_tuple(observable)
 
-        target_qc = dag_to_circuit(dag)
-        n_qubits = target_qc.num_qubits
-        decomposed = _decompose_controlled_rotations(target_qc)
-        symbolic = _has_symbolic_angles(decomposed)
-        working = _normalize_circuit(decomposed)
-        rotations = _extract_rotation_gates(working)
-        tableaus = _build_clifford_tableaus(working, rotations)
+        preps = self._preprocess(dag, observables)
+        rotations, symbolic = preps[0].rotations, preps[0].symbolic
 
         # A throwaway stream, so previewing leaves self._rng where a run found it.
         preview_rng = np.random.default_rng(0)
@@ -1253,15 +1231,7 @@ class QuEPP(QEMProtocol):
 
         unique_branches: set[tuple[int, ...]] = set()
         n_paths_per_obs: list[int] = []
-        for obs in observables:
-            prep = _PreprocResult(
-                working=working,
-                n_qubits=n_qubits,
-                rotations=rotations,
-                tableaus=tableaus,
-                obs_terms=_obs_to_stim_terms(obs, n_qubits),
-                symbolic=symbolic,
-            )
+        for prep in preps:
             # The run itself reports any symbolic fallback; keep the preview quiet.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SymbolicAngleWarning)
@@ -1279,9 +1249,6 @@ class QuEPP(QEMProtocol):
         n_paths = len(unique_branches)
         all_dags = (dag,) * (1 + n_paths)
         context: QEMContext = {
-            "per_obs": None,
-            "target_idx": 0,
-            "ensemble_start": 1,
             "n_rotations": len(rotations),
             "n_paths": n_paths,
             # Persisted for introspect(); the dry path skips per_obs
@@ -1293,7 +1260,6 @@ class QuEPP(QEMProtocol):
             context["sampled_paths"] = True
         if symbolic:
             context["symbolic"] = True
-            context["weight_symbols"] = []
         return all_dags, context
 
     @staticmethod
@@ -1321,8 +1287,10 @@ class QuEPP(QEMProtocol):
         return observable
 
     @staticmethod
-    def _preprocess(dag: DAGCircuit, observable: SparsePauliOp) -> "_PreprocResult":
-        """Decompose, normalise, extract rotations + tableaus + obs terms."""
+    def _preprocess(
+        dag: DAGCircuit, observables: tuple[SparsePauliOp, ...]
+    ) -> list["_PreprocResult"]:
+        """Decompose, normalise, extract rotations + tableaus once; obs terms per observable."""
         target_qc = dag_to_circuit(dag)
         n_qubits = target_qc.num_qubits
         decomposed = _decompose_controlled_rotations(target_qc)
@@ -1330,15 +1298,16 @@ class QuEPP(QEMProtocol):
         working = _normalize_circuit(decomposed)
         rotations = _extract_rotation_gates(working)
         tableaus = _build_clifford_tableaus(working, rotations)
-        obs_terms = _obs_to_stim_terms(observable, n_qubits)
-        return _PreprocResult(
-            working=working,
-            n_qubits=n_qubits,
-            rotations=rotations,
-            tableaus=tableaus,
-            obs_terms=obs_terms,
-            symbolic=symbolic,
-        )
+        return [
+            _PreprocResult(
+                working=working,
+                rotations=rotations,
+                tableaus=tableaus,
+                obs_terms=_obs_to_stim_terms(obs, n_qubits),
+                symbolic=symbolic,
+            )
+            for obs in observables
+        ]
 
     def _select_paths(
         self, prep: "_PreprocResult", rng: np.random.Generator | None = None
@@ -1523,6 +1492,9 @@ class QuEPP(QEMProtocol):
 
         out: list[float] = []
         for entry in per_obs:
+            # Cached traces reuse entries, so clear the previous evaluation's flags.
+            entry.eta_rejection = None
+            entry.eta_amplifying = None
             dag_indices = entry.dag_indices
             target_noisy = sum(
                 _read_slot(quantum_results[dag_indices[target_idx]], slot)
@@ -1561,22 +1533,20 @@ class QuEPP(QEMProtocol):
         return out
 
     def post_reduce(self, contexts: Sequence[QEMContext]) -> None:
-        reasons: dict[str, int] = {}
-        amplifications: list[float] = []
+        reasons: set[str] = set()
+        amplified = False
         for ctx in contexts:
             for entry in ctx.get("per_obs") or []:
                 if entry.eta_rejection is not None:
-                    reasons[entry.eta_rejection] = (
-                        reasons.get(entry.eta_rejection, 0) + 1
-                    )
+                    reasons.add(entry.eta_rejection)
                 if entry.eta_amplifying is not None:
-                    amplifications.append(entry.eta_amplifying)
+                    amplified = True
 
         # Messages carry no per-call counts on purpose: post_reduce runs once
         # per evaluation, and Python deduplicates warnings by message text, so
         # an interpolated count that drifts between optimizer iterations would
         # defeat the dedup and emit one warning per iteration.
-        if reasons.get("no_signal"):
+        if "no_signal" in reasons:
             warnings.warn(
                 "QuEPP: an observable had no Pauli path with a non-negligible "
                 "classical expectation value, so η is undefined and the raw "
@@ -1588,14 +1558,14 @@ class QuEPP(QEMProtocol):
                 "surfacing at reduction time.",
                 stacklevel=3,
             )
-        if reasons.get("below_floor"):
+        if "below_floor" in reasons:
             warnings.warn(
                 "QuEPP: signal destroyed — η fell below the safety threshold "
                 "and mitigation fell back to the raw noisy value. "
                 "Consider increasing shots or reducing noise.",
                 stacklevel=3,
             )
-        if reasons.get("negative"):
+        if "negative" in reasons:
             warnings.warn(
                 "QuEPP: an observable produced a negative η — the noisy "
                 "Clifford ensemble came back with the opposite sign to the "
@@ -1606,7 +1576,7 @@ class QuEPP(QEMProtocol):
                 "instead.",
                 stacklevel=3,
             )
-        if amplifications:
+        if amplified:
             warnings.warn(
                 f"QuEPP: η was small enough to amplify the noisy residual "
                 f"(T - N) by more than {_ETA_AMPLIFICATION_LIMIT:.0f}x. That "

@@ -4,33 +4,51 @@
 
 """Tests for divi.circuits._qasm_template."""
 
+import pytest
+
 from divi.circuits import build_template, render_template
 
 
 class TestBuildTemplate:
-    def test_no_symbols(self):
-        body = "OPENQASM 2.0;\nrx(1.0) q[0];\n"
-        template = build_template(body, ())
-        assert template.fragments == (body,)
-        assert template.slot_indices == ()
-
-    def test_single_symbol(self):
-        body = "rx(w_0) q[0];\n"
-        template = build_template(body, ("w_0",))
-        assert template.fragments == ("rx(", ") q[0];\n")
-        assert template.slot_indices == (0,)
-
-    def test_repeated_symbol(self):
-        body = "rx(w_0) q[0];\nry(w_0) q[1];\n"
-        template = build_template(body, ("w_0",))
-        assert template.fragments == ("rx(", ") q[0];\nry(", ") q[1];\n")
-        assert template.slot_indices == (0, 0)
-
-    def test_multiple_symbols(self):
-        body = "rx(a) q[0];\nry(b) q[1];\n"
-        template = build_template(body, ("a", "b"))
-        assert template.fragments == ("rx(", ") q[0];\nry(", ") q[1];\n")
-        assert template.slot_indices == (0, 1)
+    @pytest.mark.parametrize(
+        "body, symbols, fragments, slot_indices",
+        [
+            pytest.param(
+                "OPENQASM 2.0;\nrx(1.0) q[0];\n",
+                (),
+                ("OPENQASM 2.0;\nrx(1.0) q[0];\n",),
+                (),
+                id="no_symbols",
+            ),
+            pytest.param(
+                "rx(w_0) q[0];\n",
+                ("w_0",),
+                ("rx(", ") q[0];\n"),
+                (0,),
+                id="single_symbol",
+            ),
+            pytest.param(
+                "rx(w_0) q[0];\nry(w_0) q[1];\n",
+                ("w_0",),
+                ("rx(", ") q[0];\nry(", ") q[1];\n"),
+                (0, 0),
+                id="repeated_symbol",
+            ),
+            pytest.param(
+                "rx(a) q[0];\nry(b) q[1];\n",
+                ("a", "b"),
+                ("rx(", ") q[0];\nry(", ") q[1];\n"),
+                (0, 1),
+                id="multiple_symbols",
+            ),
+        ],
+    )
+    def test_splits_body_into_fragments_and_slots(
+        self, body, symbols, fragments, slot_indices
+    ):
+        template = build_template(body, symbols)
+        assert template.fragments == fragments
+        assert template.slot_indices == slot_indices
 
     def test_overlapping_names_longest_first(self):
         """w_1 must not match inside w_10."""
@@ -63,21 +81,17 @@ class TestBuildTemplate:
         rendered = render_template(template, ("1.0", "2.0"))
         assert rendered == "rx(1.0) q[0];\nry(2.0) q[1];\n"
 
-    def test_short_symbol_does_not_match_inside_other_identifier(self):
-        """A parameter named ``h`` must not match the ``h`` in
-        identifier-continuation contexts (e.g., hypothetical names like
-        ``theta`` should be untouched)."""
-        body = "rx(theta) q[0];\nh q[0];\n"
-        template = build_template(body, ("h",))
-        rendered = render_template(template, ("1.5",))
-        # `h` inside `theta` must NOT match; the standalone `h q[0]`
-        # also has `h` as a gate name — it would match here because the
-        # surrounding chars (start-of-line / space) are non-identifier.
-        # We accept that — naming a parameter ``h`` is user error and
-        # would shadow the H gate; we just guarantee no false hits inside
-        # other identifiers.
-        assert "thetA" not in rendered  # 'h' inside 'theta' not touched
-        assert "theta" in rendered
+    def test_longest_symbol_wins_when_prefix_is_followed_by_non_identifier(self):
+        body = "rx(x[0]) q[0];\nrz(x) q[1];\n"
+        template = build_template(body, ("x", "x[0]"))
+        assert render_template(template, ("A", "B")) == "rx(B) q[0];\nrz(A) q[1];\n"
+
+    def test_letters_of_either_case_block_a_match(self):
+        body = "rx(Ax) q[0];\nry(xB) q[0];\nrz(xb) q[0];\nrz(x) q[0];\n"
+        template = build_template(body, ("x",))
+        assert render_template(template, ("1.5",)) == (
+            "rx(Ax) q[0];\nry(xB) q[0];\nrz(xb) q[0];\nrz(1.5) q[0];\n"
+        )
 
 
 class TestRenderTemplate:

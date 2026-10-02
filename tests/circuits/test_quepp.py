@@ -4,6 +4,8 @@
 
 """Tests for divi.circuits.quepp (DAG-native QuEPP implementation)."""
 
+import subprocess
+import sys
 import warnings
 
 import maestro
@@ -15,8 +17,8 @@ from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 
-from divi.backends import MaestroConfig, MaestroSimulator
-from divi.circuits import MetaCircuit
+from divi.backends import MaestroConfig
+from divi.circuits import MetaCircuit, quepp
 from divi.circuits.qem import _NoMitigation
 from divi.circuits.quepp import (
     QuEPP,
@@ -24,22 +26,27 @@ from divi.circuits.quepp import (
     _all_cos_paths,
     _build_clifford_tableaus,
     _build_path_dag,
+    _coerce_angle,
     _decompose_controlled_rotations,
     _enumerate_paths_dfs,
     _extract_rotation_gates,
     _has_symbolic_angles,
     _is_pauli_rotation,
+    _merge_paths_by_branch,
     _normalize_angle,
     _normalize_circuit,
     _obs_to_stim_terms,
     _ObservableCPT,
+    _PauliPath,
     _PreprocResult,
     _qiskit_clifford_to_stim,
     _sample_paths_montecarlo,
     _simulate_clifford_ensemble,
+    _warn_on_term_starvation,
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
+from tests._helpers import exact_match
 from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
 
 _Z0 = SparsePauliOp("Z")
@@ -47,13 +54,18 @@ _Z0_2Q = SparsePauliOp.from_list([("IZ", 1.0)])
 _Z0Z1 = SparsePauliOp.from_list([("ZZ", 1.0)])
 
 
-def _quepp_backend(*, force_sampling: bool = False, **config_kwargs):
+@pytest.fixture
+def quepp_backend(make_maestro_simulator):
     """A seeded maestro backend at the shot count the end-to-end tests need."""
-    return MaestroSimulator(
-        shots=200000,
-        force_sampling=force_sampling,
-        maestro_config=MaestroConfig(seed=42, **config_kwargs),
-    )
+
+    def _make(*, force_sampling: bool = False, **config_kwargs):
+        return make_maestro_simulator(
+            shots=200000,
+            force_sampling=force_sampling,
+            maestro_config=MaestroConfig(seed=42, **config_kwargs),
+        )
+
+    return _make
 
 
 def _rx_expval_meta(angle: float) -> MetaCircuit:
@@ -100,27 +112,87 @@ def mixed_qc():
     return qc
 
 
+def _prep(qc: QuantumCircuit, obs: SparsePauliOp):
+    """``(rotations, tableaus, obs_terms)`` for ``obs`` back-propagated through ``qc``."""
+    rots = _extract_rotation_gates(qc)
+    tabs = _build_clifford_tableaus(qc, rots)
+    return rots, tabs, _obs_to_stim_terms(obs, qc.num_qubits)
+
+
+def _two_rx_qc() -> QuantumCircuit:
+    """``RX(0.5)`` then ``RX(0.4)`` on one qubit: under ``Z``, paths (0,0) and (1,1)."""
+    qc = QuantumCircuit(1)
+    qc.rx(0.5, 0)
+    qc.rx(0.4, 0)
+    return qc
+
+
+_CONCURRENT_FIRST_TO_NUMPY = """
+import threading
+import divi.circuits.quepp
+import stim
+barrier = threading.Barrier(8)
+def work():
+    barrier.wait()
+    stim.PauliString("XZ").to_numpy()
+threads = [threading.Thread(target=work) for _ in range(8)]
+for t in threads:
+    t.start()
+for t in threads:
+    t.join()
+"""
+
+
+def test_importing_quepp_makes_concurrent_stim_to_numpy_safe():
+    """A fresh interpreter, so no earlier test has already warmed stim."""
+    subprocess.run(
+        [sys.executable, "-c", _CONCURRENT_FIRST_TO_NUMPY], check=True, timeout=60
+    )
+
+
+def _mixed_rx_qc(angle, angle_first: bool) -> QuantumCircuit:
+    """``RX(angle)`` and a fixed non-Clifford ``RX(0.3)`` on one qubit, in either order."""
+    qc = QuantumCircuit(1)
+    for a in (angle, 0.3) if angle_first else (0.3, angle):
+        qc.rx(a, 0)
+    return qc
+
+
+_TWO_RX_PATHS = {
+    (0, (0, 0), 0): np.cos(0.5) * np.cos(0.4),
+    (0, (1, 1), 2): np.sin(0.5) * np.sin(0.4),
+}
+
+
+def _assert_paths(paths, expected, tol=1e-12):
+    """``paths`` are exactly ``expected``'s ``(term_idx, branches, order) → weight``."""
+    got = {(p.term_idx, p.branches, p.order): p.weight for p in paths}
+    assert len(got) == len(paths)
+    assert got == pytest.approx(expected, abs=tol)
+
+
+def test_coerce_angle_rejects_non_numeric_angles():
+    with pytest.raises(
+        TypeError, match=exact_match("Unsupported angle type for QuEPP: str")
+    ):
+        _coerce_angle("0.5")
+
+
 class TestIsPauliRotation:
-    def test_rx_detected(self):
+    @pytest.mark.parametrize(
+        "axis, angle",
+        [
+            pytest.param("x", 0.5, id="rx"),
+            pytest.param("y", 1.2, id="ry"),
+            pytest.param("z", -0.7, id="rz"),
+        ],
+    )
+    def test_rotation_detected(self, axis, angle):
         qc = QuantumCircuit(1)
-        qc.rx(0.5, 0)
-        axis, angle = _is_pauli_rotation(qc.data[0].operation)
-        assert axis == "x"
-        assert angle == pytest.approx(0.5)
-
-    def test_ry_detected(self):
-        qc = QuantumCircuit(1)
-        qc.ry(1.2, 0)
-        axis, angle = _is_pauli_rotation(qc.data[0].operation)
-        assert axis == "y"
-        assert angle == pytest.approx(1.2)
-
-    def test_rz_detected(self):
-        qc = QuantumCircuit(1)
-        qc.rz(-0.7, 0)
-        axis, angle = _is_pauli_rotation(qc.data[0].operation)
-        assert axis == "z"
-        assert angle == pytest.approx(-0.7)
+        getattr(qc, f"r{axis}")(angle, 0)
+        got_axis, got_angle = _is_pauli_rotation(qc.data[0].operation)
+        assert got_axis == axis
+        assert got_angle == pytest.approx(angle)
 
     def test_non_rotation_returns_none(self):
         qc = QuantumCircuit(1)
@@ -137,27 +209,21 @@ class TestIsPauliRotation:
         assert "theta" in str(angle)
 
 
-class TestNormalizeAngle:
-    def test_small_angle_unchanged(self):
-        n, theta_prime = _normalize_angle(0.2)
-        assert n == 0
-        assert theta_prime == pytest.approx(0.2)
-
-    def test_pi_over_2(self):
-        n, theta_prime = _normalize_angle(np.pi / 2)
-        assert n == 1
-        assert abs(theta_prime) < 1e-12
-
-    def test_large_angle_normalized(self):
-        n, theta_prime = _normalize_angle(1.2)
-        # 1.2 is closer to π/2 (≈1.5708) than to 0 → n=1.
-        assert n == 1
-        assert abs(theta_prime) <= np.pi / 4 + 1e-12
-
-    def test_negative_angle(self):
-        n, theta_prime = _normalize_angle(-np.pi / 2 - 0.1)
-        assert n == -1
-        assert abs(theta_prime) <= np.pi / 4 + 1e-12
+@pytest.mark.parametrize(
+    "theta, expected_n",
+    [
+        pytest.param(0.2, 0, id="small_angle_unchanged"),
+        pytest.param(np.pi / 2, 1, id="pi_over_2"),
+        pytest.param(1.2, 1, id="closer_to_pi_over_2_than_0"),
+        pytest.param(-np.pi / 2 - 0.1, -1, id="negative"),
+    ],
+)
+def test_normalise_angle(theta, expected_n):
+    """θ = n·(π/2) + θ' with |θ'| ≤ π/4."""
+    n, theta_prime = _normalize_angle(theta)
+    assert n == expected_n
+    assert theta_prime == pytest.approx(theta - n * np.pi / 2, abs=1e-12)
+    assert abs(theta_prime) <= np.pi / 4 + 1e-12
 
 
 class TestNormalizeCircuit:
@@ -203,6 +269,29 @@ class TestDecomposeControlledRotations:
         assert Operator(out).equiv(Operator(mixed_qc))
 
 
+@pytest.mark.parametrize(
+    "rewrite", [_decompose_controlled_rotations, _normalize_circuit]
+)
+def test_rewrites_keep_classical_bits(rewrite):
+    qc = QuantumCircuit(1, 1)
+    qc.h(0)
+    qc.measure(0, 0)
+    out = rewrite(qc)
+    assert out.num_clbits == 1
+    assert [(i.operation.name, len(i.clbits)) for i in out.data] == [
+        ("h", 0),
+        ("measure", 1),
+    ]
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_path_dags_keep_the_targets_classical_register():
+    qc = QuantumCircuit(1, 1)
+    qc.rx(0.3, 0)
+    dags, _ = QuEPP(sampling="exhaustive", n_twirls=0).expand(circuit_to_dag(qc), _Z0)
+    assert [d.num_clbits() for d in dags] == [1, 1]
+
+
 class TestExtractRotationGates:
     def test_fully_clifford(self, bell_qc):
         assert _extract_rotation_gates(bell_qc) == []
@@ -219,6 +308,11 @@ class TestExtractRotationGates:
         assert [r.qubit_idx for r in rots] == [0, 1]
 
 
+def test_one_tableau_per_clifford_layer():
+    rots, tabs, _ = _prep(_two_rx_qc(), _Z0)
+    assert len(tabs) == len(rots) + 1 == 3
+
+
 class TestQiskitCliffordToStim:
     def test_basic_cliffords(self, bell_qc):
         sc = _qiskit_clifford_to_stim(bell_qc)
@@ -226,12 +320,6 @@ class TestQiskitCliffordToStim:
         # Tableau builds successfully (no exception).
         tab = stim.Tableau.from_circuit(sc)
         assert len(tab) == 2
-
-    def test_clifford_rotation(self):
-        qc = QuantumCircuit(1)
-        qc.rx(np.pi / 2, 0)
-        sc = _qiskit_clifford_to_stim(qc)
-        assert "SQRT_X" in str(sc)
 
     def test_non_clifford_raises(self):
         qc = QuantumCircuit(1)
@@ -244,6 +332,42 @@ class TestQiskitCliffordToStim:
         qc = QuantumCircuit(1)
         qc.rx(theta, 0)
         with pytest.raises(ValueError, match="parametric"):
+            _qiskit_clifford_to_stim(qc)
+
+    @pytest.mark.parametrize(
+        "gates,expected",
+        [
+            ([("rx", np.pi / 2)], "I 0\nSQRT_X 0"),
+            ([("rz", np.pi / 2)], "I 0\nS 0"),
+            ([("rx", -np.pi / 2), ("ry", 2 * np.pi)], "I 0\nSQRT_X_DAG 0"),
+            ([], "I 0"),
+        ],
+        ids=[
+            "rx-quarter-turn",
+            "rz-quarter-turn",
+            "negative-and-full-turn",
+            "idle-qubit-padded",
+        ],
+    )
+    def test_exact_conversion(self, gates, expected):
+        qc = QuantumCircuit(1)
+        for name, angle in gates:
+            getattr(qc, name)(angle, 0)
+        assert str(_qiskit_clifford_to_stim(qc)) == expected
+
+    def test_empty_register_converts_to_an_empty_circuit(self):
+        assert _qiskit_clifford_to_stim(QuantumCircuit(0)) == stim.Circuit()
+
+    def test_unrecognised_gate_raises(self):
+        qc = QuantumCircuit(1, 1)
+        qc.measure(0, 0)
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Gate 'measure' is not recognised as Clifford by QuEPP's stim "
+                "converter."
+            ),
+        ):
             _qiskit_clifford_to_stim(qc)
 
 
@@ -263,29 +387,88 @@ class TestObsToStimTerms:
         coeffs = sorted(c for c, _ in terms)
         assert coeffs == pytest.approx([-0.3, 0.5])
 
+    def test_pads_a_narrower_observable_to_the_circuit_width(self):
+        obs = SparsePauliOp.from_list([("XZ", 0.5), ("ZI", -2.0)])
+        terms = _obs_to_stim_terms(obs, 3)
+        assert [(c, str(ps)) for c, ps in terms] == [(0.5, "+ZX_"), (-2.0, "+_Z_")]
+
 
 class TestEnumeratePathsDFS:
     def test_no_rotations_single_identity_path(self, bell_qc):
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        rots = _extract_rotation_gates(bell_qc)
-        tabs = _build_clifford_tableaus(bell_qc, rots)
-        obs_terms = _obs_to_stim_terms(obs, 2)
-        paths = _enumerate_paths_dfs(rots, tabs, obs_terms, max_order=2)
+        paths = _enumerate_paths_dfs(*_prep(bell_qc, obs), max_order=2)
         assert len(paths) == 1
         assert paths[0].branches == ()
         assert paths[0].weight == pytest.approx(1.0)
         assert paths[0].order == 0
 
-    def test_coefficient_threshold_prunes(self, mixed_qc):
-        obs = SparsePauliOp.from_list([("IZ", 1.0)])
-        rots = _extract_rotation_gates(mixed_qc)
-        tabs = _build_clifford_tableaus(mixed_qc, rots)
-        obs_terms = _obs_to_stim_terms(obs, 2)
-        paths_all = _enumerate_paths_dfs(rots, tabs, obs_terms, max_order=2)
-        paths_pruned = _enumerate_paths_dfs(
-            rots, tabs, obs_terms, max_order=2, coefficient_threshold=0.5
+    @pytest.mark.parametrize(
+        "max_order,expected",
+        [
+            (2, _TWO_RX_PATHS),
+            (1, {k: w for k, w in _TWO_RX_PATHS.items() if k[2] <= 1}),
+        ],
+    )
+    def test_truncation_order_caps_the_sine_branches(self, max_order, expected):
+        paths = _enumerate_paths_dfs(*_prep(_two_rx_qc(), _Z0), max_order=max_order)
+        _assert_paths(paths, expected)
+
+    @pytest.mark.parametrize(
+        "obs,threshold,expected",
+        [
+            (_Z0, float(np.cos(0.5)), {(0, (0,), 0): np.cos(0.5)}),
+            (SparsePauliOp("Y"), float(np.sin(0.5)), {(0, (1,), 1): np.sin(0.5)}),
+            (_Z0, 0.99, {}),
+        ],
+        ids=["cos-at-threshold", "sin-at-threshold", "both-below"],
+    )
+    def test_coefficient_threshold_keeps_weights_equal_to_it(
+        self, obs, threshold, expected
+    ):
+        paths = _enumerate_paths_dfs(
+            *_prep(_rx_qc(0.5), obs), max_order=2, coefficient_threshold=threshold
         )
-        assert len(paths_pruned) <= len(paths_all)
+        _assert_paths(paths, expected)
+
+    @pytest.mark.parametrize(
+        "obs,branches,trig", [(_Z0, (0,), np.cos), (SparsePauliOp("Y"), (1,), np.sin)]
+    )
+    def test_symbolic_weights_are_the_trigonometric_factor(self, obs, branches, trig):
+        theta = Parameter("theta")
+        qc = QuantumCircuit(1)
+        qc.rx(theta, 0)
+        (path,) = _enumerate_paths_dfs(*_prep(qc, obs), max_order=2)
+        assert path.branches == branches
+        assert float(path.weight.bind({theta: 0.3})) == pytest.approx(trig(0.3))
+
+
+@pytest.mark.parametrize(
+    "select",
+    [
+        lambda terms: _enumerate_paths_dfs([], [stim.Tableau(1)], terms, max_order=2),
+        lambda terms: _sample_paths_montecarlo(
+            [], [stim.Tableau(1)], terms, 10, np.random.default_rng(0)
+        ),
+    ],
+    ids=["exhaustive", "montecarlo"],
+)
+def test_clifford_only_circuit_yields_one_unit_path_per_term(select):
+    terms = _obs_to_stim_terms(SparsePauliOp.from_list([("Z", 1.0), ("X", 0.5)]), 1)
+    _assert_paths(select(terms), {(0, (), 0): 1.0, (1, (), 0): 1.0})
+
+
+def test_merge_sums_weights_per_term_and_branches():
+    merged = _merge_paths_by_branch(
+        [
+            _PauliPath((1, 0), 0.25, 1, term_idx=1),
+            _PauliPath((1, 0), 0.5, 1, term_idx=1),
+            _PauliPath((1, 0), 0.125, 1, term_idx=0),
+        ]
+    )
+    assert set(merged) == {
+        _PauliPath((1, 0), 0.75, 1, term_idx=1),
+        _PauliPath((1, 0), 0.125, 1, term_idx=0),
+    }
 
 
 class TestPathDagConstruction:
@@ -297,7 +480,7 @@ class TestPathDagConstruction:
         qc.rz(-0.4, 1)
 
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        prep = QuEPP._preprocess(circuit_to_dag(qc), obs)
+        (prep,) = QuEPP._preprocess(circuit_to_dag(qc), (obs,))
         working_dag = circuit_to_dag(prep.working)
         topo_nodes = list(working_dag.topological_op_nodes())
 
@@ -343,22 +526,6 @@ class TestPathDagConstruction:
         assert Operator(dag_to_circuit(second_only)).equiv(Operator(second_expected))
 
 
-def test_deterministic_with_seed(mixed_qc):
-    obs = SparsePauliOp.from_list([("IZ", 1.0)])
-    rots = _extract_rotation_gates(mixed_qc)
-    tabs = _build_clifford_tableaus(mixed_qc, rots)
-    obs_terms = _obs_to_stim_terms(obs, 2)
-    # This small circuit + observable triggers the MC fallback (all samples
-    # non-diagonal).  Assert the warning is emitted and results are still
-    # deterministic across identical seeds.
-    with pytest.warns(UserWarning, match="non-diagonal Pauli strings"):
-        rng1 = np.random.default_rng(42)
-        paths1 = _sample_paths_montecarlo(rots, tabs, obs_terms, 100, rng1)
-        rng2 = np.random.default_rng(42)
-        paths2 = _sample_paths_montecarlo(rots, tabs, obs_terms, 100, rng2)
-    assert sorted(p.branches for p in paths1) == sorted(p.branches for p in paths2)
-
-
 def _all_cos_weight_of(rots, inv_tabs, obs_terms, term_idx=0) -> float:
     """The all-cos path weight for one term, or 0.0 when it has no such path."""
     path = next(
@@ -372,19 +539,20 @@ def _all_cos_weight_of(rots, inv_tabs, obs_terms, term_idx=0) -> float:
     return 0.0 if path is None else path.weight
 
 
+def _all_cos_of(qc: QuantumCircuit, obs: SparsePauliOp):
+    """``_all_cos_paths`` for ``obs`` back-propagated through ``qc``."""
+    rots, tabs, obs_terms = _prep(qc, obs)
+    return _all_cos_paths(rots, [t.inverse() for t in tabs], obs_terms)
+
+
 class TestAllCosPaths:
     """Spec: ``_all_cos_paths`` returns the branches=(0,)*K path per observable term."""
 
     def test_matches_exhaustive_dfs_all_zero_branch(self):
         """Deterministic fallback weight matches the DFS-enumerated all-zero path."""
         angle = 0.7
-        qc = _rx_qc(angle)  # Rx(θ) on qubit 0
-        nc = _normalize_circuit(qc)
-        obs = SparsePauliOp("Z")
-        rots = _extract_rotation_gates(nc)
-        tabs = _build_clifford_tableaus(nc, rots)
+        rots, tabs, obs_terms = _prep(_normalize_circuit(_rx_qc(angle)), _Z0)
         inv_tabs = [t.inverse() for t in tabs]
-        obs_terms = _obs_to_stim_terms(obs, 1)
 
         fallback_w = _all_cos_weight_of(rots, inv_tabs, obs_terms)
 
@@ -396,17 +564,9 @@ class TestAllCosPaths:
 
     def test_emits_no_path_when_no_term_diagonal(self):
         """Observable that never propagates to a diagonal Pauli yields no path."""
-        qc = _rx_qc(0.4)
-        nc = _normalize_circuit(qc)
-        obs = SparsePauliOp("X")  # X commutes with Rx
-        rots = _extract_rotation_gates(nc)
-        tabs = _build_clifford_tableaus(nc, rots)
-        inv_tabs = [t.inverse() for t in tabs]
-        obs_terms = _obs_to_stim_terms(obs, 1)
-
         # X commutes with Rx so no cos factor accumulates, but the final
         # Pauli is still X — non-diagonal — so the term contributes no path.
-        assert _all_cos_paths(rots, inv_tabs, obs_terms) == []
+        assert _all_cos_of(_normalize_circuit(_rx_qc(0.4)), SparsePauliOp("X")) == []
 
     def test_weights_are_coefficient_free_and_per_term(self):
         """Only the Z term propagates diagonally, and its weight excludes its coeff.
@@ -415,40 +575,107 @@ class TestAllCosPaths:
         pairs with; folding it in here would double-count it.
         """
         angle = 0.5
-        qc = _rx_qc(angle)
-        nc = _normalize_circuit(qc)
         obs = SparsePauliOp.from_list([("Z", 0.8), ("X", 0.2)])  # X term → no path
-        rots = _extract_rotation_gates(nc)
-        tabs = _build_clifford_tableaus(nc, rots)
-        inv_tabs = [t.inverse() for t in tabs]
-        obs_terms = _obs_to_stim_terms(obs, 1)
 
-        paths = _all_cos_paths(rots, inv_tabs, obs_terms)
+        paths = _all_cos_of(_normalize_circuit(_rx_qc(angle)), obs)
 
         assert [p.term_idx for p in paths] == [0]
         assert paths[0].weight == pytest.approx(np.cos(angle), abs=1e-12)
 
-    def test_mc_fallback_returns_computed_weight(self, mixed_qc):
-        """When every MC sample is discarded, the returned path carries the all-cos weight."""
-        obs = SparsePauliOp.from_list([("IZ", 1.0)])
-        rots = _extract_rotation_gates(mixed_qc)
-        tabs = _build_clifford_tableaus(mixed_qc, rots)
-        inv_tabs = [t.inverse() for t in tabs]
-        obs_terms = _obs_to_stim_terms(obs, 2)
-        expected = _all_cos_paths(rots, inv_tabs, obs_terms)
+    def test_commuting_rotations_contribute_no_cos_factor(self):
+        qc = QuantumCircuit(2)
+        qc.rz(0.2, 0)
+        qc.rx(0.3, 0)
+        qc.rx(0.4, 0)
+        obs = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 0.5)])
+        _assert_paths(
+            _all_cos_of(qc, obs),
+            {(0, (0, 0, 0), 0): np.cos(0.3) * np.cos(0.4), (1, (0, 0, 0), 0): 1.0},
+        )
 
-        with pytest.warns(UserWarning, match="non-diagonal Pauli strings"):
+    def test_mc_fallback_returns_the_all_cos_path(self):
+        # default_rng(0)'s single draw takes the non-diagonal sin branch.
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "QuEPP Monte Carlo: all 1 samples produced non-diagonal Pauli "
+                "strings.  Falling back to the deterministic all-cos path of 1 "
+                "observable term(s).  Consider increasing n_samples or using "
+                "exhaustive enumeration."
+            ),
+        ):
             paths = _sample_paths_montecarlo(
-                rots, tabs, obs_terms, 100, np.random.default_rng(42)
+                *_prep(_rx_qc(0.7), _Z0), 1, np.random.default_rng(0)
             )
+        _assert_paths(paths, {(0, (0,), 0): np.cos(0.7)})
 
-        if not expected:
-            # Fallback correctly declines to fabricate a path with bogus weight.
-            assert paths == []
-        else:
-            assert len(paths) == len(expected)
-            assert paths[0].branches == (0,) * len(rots)
-            assert paths[0].weight == pytest.approx(expected[0].weight, rel=1e-12)
+
+def _rz_on_qubit_0_qc() -> QuantumCircuit:
+    """``RZ(0.3)`` on qubit 0 of two: commutes with every Z-type term."""
+    qc = QuantumCircuit(2)
+    qc.rz(0.3, 0)
+    return qc
+
+
+@pytest.mark.parametrize(
+    "qc,obs,n_samples,seed,expected,tol",
+    [
+        (
+            _rz_on_qubit_0_qc(),
+            SparsePauliOp.from_list([("IZ", 0.9), ("ZI", 0.1)]),
+            8000,
+            0,
+            {(0, (0,), 0): 1.0, (1, (0,), 0): 1.0},
+            0.15,
+        ),
+        (_two_rx_qc(), _Z0, 20000, 1, _TWO_RX_PATHS, 0.02),
+    ],
+    ids=["terms-drawn-by-coefficient", "weights-multiply-across-rotations"],
+)
+def test_mc_weights_converge_to_the_cpt_weights(
+    qc, obs, n_samples, seed, expected, tol
+):
+    paths = _sample_paths_montecarlo(
+        *_prep(qc, obs), n_samples, np.random.default_rng(seed)
+    )
+    _assert_paths(paths, expected, tol=tol)
+
+
+def test_mc_with_all_zero_coefficients_returns_no_paths():
+    obs = SparsePauliOp.from_list([("Z", 0.0)])
+    with pytest.warns(
+        UserWarning,
+        match=exact_match(
+            "QuEPP Monte Carlo: every coefficient of a 1-term observable is zero, "
+            "so it has no paths to sample and mitigation is a no-op. Check whether "
+            "the observable was built as intended (a coefficient that optimises to "
+            "zero reaches this too)."
+        ),
+    ):
+        paths = _sample_paths_montecarlo(
+            *_prep(_two_rx_qc(), obs), 10, np.random.default_rng(0)
+        )
+    assert paths == []
+
+
+_STARVATION_AT_200_SAMPLES = (
+    "QuEPP Monte Carlo: with n_samples=200 across 2 Pauli terms, the "
+    "smallest-coefficient term expects only 2.0 samples (terms are "
+    "drawn in proportion to |coefficient|). Its contribution will be "
+    "poorly estimated, and it may draw none at all. Raise n_samples "
+    "to at least 2000 or use sampling='exhaustive'."
+)
+
+
+class TestTermStarvationWarning:
+    def test_warns_below_twenty_expected_samples(self):
+        with pytest.warns(UserWarning, match=exact_match(_STARVATION_AT_200_SAMPLES)):
+            _warn_on_term_starvation(np.array([0.99, 0.01]), 200)
+
+    def test_silent_at_twenty_expected_samples(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _warn_on_term_starvation(np.array([0.5, 0.5]), 40)
 
 
 def _single_term_specs(obs: SparsePauliOp, n_qubits: int, n_circuits: int):
@@ -511,13 +738,9 @@ class TestPathCircuitsMatchTargetStructure:
 
 
 class TestSimulateCliffordEnsemble:
-    def test_bell_state_zz(self, bell_qc):
-        obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        vals = _simulate_clifford_ensemble([bell_qc], _single_term_specs(obs, 2, 1))
-        assert vals[0] == pytest.approx(1.0)
-
-    def test_bell_state_xx(self, bell_qc):
-        obs = SparsePauliOp.from_list([("XX", 1.0)])
+    @pytest.mark.parametrize("pauli", ["ZZ", "XX"])
+    def test_bell_state_stabiliser(self, bell_qc, pauli):
+        obs = SparsePauliOp.from_list([(pauli, 1.0)])
         vals = _simulate_clifford_ensemble([bell_qc], _single_term_specs(obs, 2, 1))
         assert vals[0] == pytest.approx(1.0)
 
@@ -533,6 +756,18 @@ class TestSimulateCliffordEnsemble:
         )
         vals = _simulate_clifford_ensemble([bell_qc, bell_qc], terms)
         assert vals == pytest.approx([0.5, -2.0])
+
+    def test_simulates_each_distinct_circuit_once(self, bell_qc, mocker):
+        flipped = QuantumCircuit(2)
+        flipped.x(0)
+        dag_a, dag_b = circuit_to_dag(bell_qc), circuit_to_dag(flipped)
+        spy = mocker.spy(quepp, "_qiskit_clifford_to_stim")
+        terms = _obs_to_stim_terms(
+            SparsePauliOp.from_list([("ZZ", 0.5), ("ZZ", -2.0), ("ZZ", 3.0)]), 2
+        )
+        vals = _simulate_clifford_ensemble([dag_a, dag_a, dag_b], terms)
+        assert spy.call_count == 2
+        assert vals == pytest.approx([0.5, -2.0, -3.0])
 
 
 class TestHasSymbolicAngles:
@@ -601,7 +836,10 @@ class TestQuEPPProtocol:
         # diagonal paths and does not fall back.
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         p = QuEPP(sampling="montecarlo", n_samples=100, seed=42, n_twirls=0)
-        _, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
+        with warnings.catch_warnings(record=True) as record:
+            warnings.simplefilter("always")
+            _, ctx = p.expand(circuit_to_dag(mixed_qc), obs)
+        assert not any("non-diagonal Pauli strings" in str(w.message) for w in record)
         assert ctx["n_paths"] >= 1
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
@@ -627,7 +865,6 @@ def _reduce_entry(classical_values, weights) -> _ObservableCPT:
         dag_indices=list(range(1 + n)),
         entry_slots=[0] * n,
         target_slots=[0],
-        n_paths=n,
     )
 
 
@@ -695,6 +932,97 @@ def test_small_but_accepted_eta_records_amplification():
     assert per_obs[0].eta_amplifying == pytest.approx(1 / 0.15, rel=1e-9)
 
 
+@pytest.mark.parametrize(
+    "ensemble_noisy", [[0.3, 0.15], [0.2, 0.1]], ids=["eta_0.3", "eta_0.2_at_limit"]
+)
+def test_eta_within_the_amplification_limit_is_not_flagged(ensemble_noisy):
+    """``1/η`` of at most 5 is reported as no amplification."""
+    per_obs = [_reduce_entry([1.0, 0.5], [0.5, 0.5])]
+    QuEPP(n_twirls=0).reduce([0.3, *ensemble_noisy], _reduce_ctx(per_obs, n_paths=2))
+    assert per_obs[0].eta_amplifying is None
+
+
+def test_reduce_rescales_the_noisy_residual_by_eta():
+    """η = 0.5: classical 0.75 + (T 0.3 - N 0.375) / 0.5."""
+    ctx = _reduce_ctx([_reduce_entry([1.0, 0.5], [0.5, 0.5])], n_paths=2)
+    assert QuEPP(n_twirls=0).reduce([0.3, 0.5, 0.25], ctx) == pytest.approx([0.6])
+
+
+def test_reduce_without_rotations_returns_each_exact_value():
+    per_obs = [_reduce_entry([1.0], [1.0]), _reduce_entry([1.0], [1.0])]
+    ctx = _reduce_ctx(per_obs, n_paths=1, n_rotations=0)
+    assert QuEPP(n_twirls=0).reduce([0.5, 0.8], ctx) == pytest.approx([1.0, 1.0])
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+@pytest.mark.parametrize(
+    "method, angle, error, message",
+    [
+        (
+            "expand",
+            Parameter("theta"),
+            ValueError,
+            "QuEPP weights are still symbolic — parameter values were never "
+            "substituted. Add ParameterBindingStage to the pipeline or use "
+            "QuEPP(sampling='exhaustive') to bind parameters before mitigation.",
+        ),
+        (
+            "dry_expand",
+            0.4,
+            RuntimeError,
+            "QuEPP.reduce: context has no per_obs entries (was this a dry-run "
+            "context?).",
+        ),
+    ],
+    ids=["symbolic", "dry_run"],
+)
+def test_reduce_refuses_an_unevaluable_context(method, angle, error, message):
+    protocol = QuEPP(n_twirls=0)
+    _, ctx = getattr(protocol, method)(circuit_to_dag(_rx_qc(angle)), _Z0)
+    with pytest.raises(error, match=exact_match(message)):
+        protocol.reduce([1.0] * (1 + ctx["n_paths"]), ctx)
+
+
+@pytest.mark.parametrize(
+    "n_classical, n_slots, dag_indices, message",
+    [
+        (
+            1,
+            2,
+            [0, 1, 2],
+            "_ObservableCPT: weights (2), classical_values (1) and entry_slots "
+            "(2) must run in parallel over (term, path) pairs.",
+        ),
+        (
+            2,
+            1,
+            [0, 1, 2],
+            "_ObservableCPT: weights (2), classical_values (2) and entry_slots "
+            "(1) must run in parallel over (term, path) pairs.",
+        ),
+        (
+            2,
+            2,
+            [0, 1],
+            "_ObservableCPT: dag_indices has 2 entries; expected 3 (the target "
+            "slot plus one per (term, path) pair).",
+        ),
+    ],
+    ids=["classical_values", "entry_slots", "dag_indices"],
+)
+def test_observable_cpt_rejects_misaligned_fields(
+    n_classical, n_slots, dag_indices, message
+):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _ObservableCPT(
+            weights=np.zeros(2),
+            classical_values=np.zeros(n_classical),
+            dag_indices=dag_indices,
+            entry_slots=[0] * n_slots,
+            target_slots=[0],
+        )
+
+
 class TestQuEPPNoDiagonalPathsWarning:
     """Spec: when path enumeration yields zero diagonal-final paths for an
     observable, ``QuEPP.reduce`` silently returns the noisy target unchanged
@@ -713,23 +1041,19 @@ class TestQuEPPNoDiagonalPathsWarning:
         qc.rz(0.5, 0)
         return qc
 
-    def test_warns_on_zero_diagonal_paths_in_expand(self):
+    @pytest.mark.parametrize("method", ["expand", "dry_expand"])
+    def test_warning_text(self, method):
         proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        obs = SparsePauliOp("Z")
-        with warnings.catch_warnings():
-            # The truncation-ratio warning also fires on this tiny circuit
-            # (K/n_rot = 100%); silence it so pytest.warns sees the target.
-            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
-            with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
-                proto.expand(circuit_to_dag(self._h_then_rz_qc()), (obs,))
-
-    def test_warns_on_zero_diagonal_paths_in_dry_expand(self):
-        proto = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        obs = SparsePauliOp("Z")
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", message=r"QuEPP:.*shallow circuits")
-            with pytest.warns(UserWarning, match=r"zero diagonal Pauli paths"):
-                proto.dry_expand(circuit_to_dag(self._h_then_rz_qc()), (obs,))
+        with pytest.warns(UserWarning) as record:
+            getattr(proto, method)(circuit_to_dag(self._h_then_rz_qc()), (_Z0,))
+        assert (
+            "QuEPP: observable(s) at index/indices [0] produced zero diagonal "
+            "Pauli paths (truncation_order=1, 1 non-Clifford rotation(s)). The "
+            "Heisenberg back-propagation terminates in a non-diagonal basis, so "
+            "mitigation will be a no-op for these observables and the raw noisy "
+            "expectation will be returned. Consider rebasing the observable or "
+            "restructuring the circuit's final Clifford layer."
+        ) in [str(w.message) for w in record]
 
     def test_warns_lists_all_offending_observables_once(self):
         # Two failing observables in one tuple → ONE batched warning that
@@ -811,6 +1135,46 @@ class TestSymbolicExpand:
             _, ctx = p.expand(circuit_to_dag(qc), obs)
         assert ctx.get("symbolic") is True
 
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    def test_dry_expand_marks_symbolic(self):
+        _, ctx = QuEPP(n_twirls=0).dry_expand(
+            circuit_to_dag(_rx_qc(Parameter("theta"))), _Z0
+        )
+        assert ctx.get("symbolic") is True
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    @pytest.mark.parametrize(
+        "symbolic_first", [True, False], ids=["symbolic-first", "concrete-first"]
+    )
+    def test_coefficient_threshold_is_disabled(self, symbolic_first):
+        qc = _mixed_rx_qc(Parameter("theta"), symbolic_first)
+        n_paths = [
+            QuEPP(
+                truncation_order=2, coefficient_threshold=threshold, n_twirls=0
+            ).expand(circuit_to_dag(qc), _Z0)[1]["n_paths"]
+            for threshold in (None, 0.5)
+        ]
+        assert n_paths == [2, 2]
+
+    @pytest.mark.usefixtures("suppress_quepp_warnings")
+    @pytest.mark.parametrize(
+        "symbolic_first", [True, False], ids=["symbolic-first", "concrete-first"]
+    )
+    def test_bound_symbolic_weights_match_the_bound_circuit(self, symbolic_first):
+        theta = Parameter("theta")
+        quepp = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        _, symbolic_ctx = quepp.expand(
+            circuit_to_dag(_mixed_rx_qc(theta, symbolic_first)), _Z0
+        )
+        (entry,) = symbolic_ctx["per_obs"]
+        QuEPP.evaluate_symbolic_weights(entry, symbolic_ctx["weight_symbols"], [0.5])
+        _, bound_ctx = quepp.expand(
+            circuit_to_dag(_mixed_rx_qc(0.5, symbolic_first)), _Z0
+        )
+        np.testing.assert_allclose(
+            sorted(entry.weights), sorted(bound_ctx["per_obs"][0].weights)
+        )
+
 
 class TestEvaluateSymbolicWeights:
     def test_substitutes_concrete_values(self):
@@ -824,6 +1188,14 @@ class TestEvaluateSymbolicWeights:
         QuEPP.evaluate_symbolic_weights(entry, [theta], np.array([0.0]))
         assert entry.weights[0] == pytest.approx(1.0)
         assert entry.weights[1] == pytest.approx(0.0)
+
+    def test_passes_concrete_weights_through(self):
+        theta = Parameter("theta_mixed")
+        entry = _reduce_entry(
+            np.array([1.0, 1.0]), np.array([0.5, theta.cos()], dtype=object)
+        )
+        QuEPP.evaluate_symbolic_weights(entry, [theta], np.array([0.0]))
+        np.testing.assert_allclose(entry.weights, [0.5, 1.0])
 
     def test_rejects_full_context(self):
         theta = Parameter("theta_full_ctx")
@@ -913,9 +1285,15 @@ class TestCPTExpansion:
     """Verify that the Heisenberg CPT expansion recovers exact expectation values."""
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_single_rx(self):
-        """Rx(θ) with Z observable → cos(θ)."""
-        angle = 0.8
+    @pytest.mark.parametrize(
+        "angle",
+        [
+            pytest.param(0.8, id="below_pi_over_4"),
+            pytest.param(1.2, id="above_pi_over_4_normalised"),
+        ],
+    )
+    def test_single_rx(self, angle):
+        """Rx(θ) with Z observable → cos(θ), including when normalisation kicks in."""
         qc = _rx_qc(angle)
         obs = SparsePauliOp("Z")
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
@@ -974,7 +1352,7 @@ class TestDecomposeControlledRotationsExtended:
     """Additional controlled-rotation decomposition tests."""
 
     def test_clifford_cry_produces_no_rotations(self):
-        """CRY(π) is Clifford — after decomposition and normalization, no rotations."""
+        """CRY(π) is Clifford — after decomposition and normalisation, no rotations."""
         qc = QuantumCircuit(2)
         qc.cry(np.pi, 0, 1)
         dc = _decompose_controlled_rotations(qc)
@@ -993,66 +1371,24 @@ class TestDecomposeControlledRotationsExtended:
         assert rots[1].axis == "y"
 
 
-@pytest.mark.usefixtures("suppress_quepp_warnings")
-def test_cpt_accuracy_with_normalization():
-    """CPT expansion on normalized circuit still recovers exact value."""
-    angle = 1.2  # > π/4, so normalization kicks in
-    qc = _rx_qc(angle)
-    obs = SparsePauliOp("Z")
-    _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
-        circuit_to_dag(qc), obs
-    )
-    entry = ctx["per_obs"][0]
-    cpt = float(entry.weights @ entry.classical_values)
-    assert cpt == pytest.approx(np.cos(angle), rel=1e-9)
-
-
-@pytest.mark.usefixtures("suppress_quepp_warnings")
-def test_mc_weights_are_cpt_coefficients():
-    """MC IS-weighted paths converge to the correct CPT estimate."""
-    angle = 0.5
-    qc = _rx_qc(angle)
-    nc = _normalize_circuit(qc)
-    obs = SparsePauliOp("Z")
-    rots = _extract_rotation_gates(nc)
-    tabs = _build_clifford_tableaus(nc, rots)
-    obs_terms = _obs_to_stim_terms(obs, 1)
-    paths = _sample_paths_montecarlo(
-        rots, tabs, obs_terms, 1000, np.random.default_rng(42)
-    )
-    weights = np.array([p.weight for p in paths])
-    nc_dag = circuit_to_dag(nc)
-    rotation_positions = [(rot.inst_idx, rot) for rot in rots]
-    path_dags = [_build_path_dag(nc_dag, rotation_positions, p.branches) for p in paths]
-    cv = _simulate_clifford_ensemble(path_dags, [obs_terms[p.term_idx] for p in paths])
-    mc_estimate = float(weights @ cv)
-    assert mc_estimate == pytest.approx(np.cos(angle), abs=0.05)
-
-
 class TestQuEPPRoundTrip:
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_full_round_trip_single_qubit(self):
-        """expand → reduce with exact quantum results recovers ideal value."""
+    @pytest.mark.parametrize(
+        "noise_factor",
+        [
+            pytest.param(1.0, id="exact_results"),
+            pytest.param(0.9, id="global_noise_bias"),
+        ],
+    )
+    def test_full_round_trip_single_qubit(self, noise_factor):
+        """expand → reduce recovers the ideal value from exact results and corrects
+        a globally-scaled noise bias."""
         angle = 0.8
         qc = _rx_qc(angle)
         exact = np.cos(angle)
         obs = SparsePauliOp("Z")
         protocol = QuEPP(sampling="exhaustive", truncation_order=10, n_twirls=0)
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
-        qr = [exact]
-        qr.extend(ctx["per_obs"][0].classical_values)
-        assert protocol.reduce(qr, ctx) == pytest.approx([exact], rel=1e-9)
-
-    @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_noise_correction(self):
-        """QuEPP corrects a globally-scaled noise bias."""
-        angle = 0.8
-        qc = _rx_qc(angle)
-        exact = np.cos(angle)
-        obs = SparsePauliOp("Z")
-        protocol = QuEPP(sampling="exhaustive", truncation_order=10, n_twirls=0)
-        _, ctx = protocol.expand(circuit_to_dag(qc), obs)
-        noise_factor = 0.9
         qr = [exact * noise_factor]
         qr.extend(ctx["per_obs"][0].classical_values * noise_factor)
         assert protocol.reduce(qr, ctx) == pytest.approx([exact], rel=1e-9)
@@ -1089,42 +1425,52 @@ class TestQuEPPSignalDestructionExtended:
         QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
         assert ctx["per_obs"][0].eta_rejection is None
 
-    def test_near_zero_classical_reports_no_signal_not_destruction(self):
-        """All-negligible classical values are undefined η, not decayed signal."""
-        ctx = self._make_context([1e-15, 1e-15])
-        quantum_results = [0.5, 0.01, 0.01]
-        QuEPP(truncation_order=1, n_twirls=0).reduce(quantum_results, ctx)
-        assert ctx["per_obs"][0].eta_rejection == "no_signal"
-
-    def test_post_reduce_warns_on_destroyed_signal(self):
-        """post_reduce() emits a UserWarning when contexts have destroyed signals."""
-        destroyed = {"per_obs": [_flagged_entry(eta_rejection="below_floor")]}
-        healthy = {"per_obs": [_flagged_entry()]}
-        protocol = QuEPP(truncation_order=1, n_twirls=0)
-        with pytest.warns(UserWarning, match=r"signal destroyed"):
-            protocol.post_reduce([destroyed, healthy])
-
-    def test_post_reduce_warns_separately_on_no_signal(self):
-        """An undefined η reads differently from a decayed one."""
-        protocol = QuEPP(truncation_order=1, n_twirls=0)
-        with pytest.warns(UserWarning, match=r"no Pauli path with a non-negligible"):
-            protocol.post_reduce(
-                [{"per_obs": [_flagged_entry(eta_rejection="no_signal")]}]
-            )
-
-    def test_post_reduce_warns_separately_on_negative_eta(self):
-        """A sign inversion is not a rescaling problem and must say so."""
-        protocol = QuEPP(truncation_order=1, n_twirls=0)
-        with pytest.warns(UserWarning, match=r"negative η"):
-            protocol.post_reduce(
-                [{"per_obs": [_flagged_entry(eta_rejection="negative")]}]
-            )
-
     def test_post_reduce_warns_on_noise_amplification(self):
         """A small-but-accepted η amplifies (T - N); post_reduce reports it."""
         protocol = QuEPP(truncation_order=1, n_twirls=0)
         with pytest.warns(UserWarning, match=r"amplify the noisy residual"):
             protocol.post_reduce([{"per_obs": [_flagged_entry(eta_amplifying=8.0)]}])
+
+    @pytest.mark.parametrize(
+        "rejection, message",
+        [
+            (
+                "no_signal",
+                "QuEPP: an observable had no Pauli path with a non-negligible "
+                "classical expectation value, so η is undefined and the raw noisy "
+                "value was returned unmitigated. Check that the observable's "
+                "coefficients are not all negligible, and that the circuit's final "
+                "Clifford layer leaves the back-propagated Pauli diagonal. If you "
+                "also saw the zero-diagonal-paths warning, this is that same cause "
+                "surfacing at reduction time.",
+            ),
+            (
+                "below_floor",
+                "QuEPP: signal destroyed — η fell below the safety threshold and "
+                "mitigation fell back to the raw noisy value. Consider increasing "
+                "shots or reducing noise.",
+            ),
+            (
+                "negative",
+                "QuEPP: an observable produced a negative η — the noisy Clifford "
+                "ensemble came back with the opposite sign to the exact one, which "
+                "rescaling cannot repair, so the raw noisy value was returned. "
+                "Raise the shot count first: a sign flip on a weak signal is often "
+                "statistical. If it persists, the noise is past this protocol's "
+                "usable range — use ZNE instead.",
+            ),
+        ],
+        ids=["no_signal", "below_floor", "negative"],
+    )
+    def test_post_reduce_rejection_warning_text(self, rejection, message):
+        with pytest.warns(UserWarning) as record:
+            QuEPP(n_twirls=0).post_reduce(
+                [
+                    {"per_obs": [_flagged_entry(eta_rejection=rejection)]},
+                    {"per_obs": [_flagged_entry()]},
+                ]
+            )
+        assert [str(w.message) for w in record] == [message]
 
     def test_post_reduce_silent_when_no_destruction(self):
         """post_reduce() does not warn when all groups are healthy."""
@@ -1136,7 +1482,9 @@ class TestQuEPPSignalDestructionExtended:
     def test_post_reduce_default_noop_on_base_class(self):
         """QEMProtocol.post_reduce() is a no-op that does not raise."""
         ctx = {"per_obs": [_flagged_entry(eta_rejection="below_floor")]}
-        _NoMitigation().post_reduce([ctx])  # should not raise
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            _NoMitigation().post_reduce([ctx])
 
 
 class TestComputeEta:
@@ -1159,6 +1507,24 @@ class TestComputeEta:
             None,
             "below_floor",
         )
+
+    @pytest.mark.parametrize(
+        "classical, noisy, expected",
+        [(1e-12, 1e-12, (None, "no_signal")), (1.0, 0.1, (None, "below_floor"))],
+        ids=["classical_at_cutoff", "eta_at_floor"],
+    )
+    def test_boundaries_are_rejected(self, classical, noisy, expected):
+        result = QuEPP.compute_eta(np.array([classical]), np.array([noisy]), 0.1)
+        assert result == expected
+
+
+def _shallow_circuit_warning(k: int, n_rotations: int, ratio: str) -> str:
+    return (
+        f"QuEPP: truncation order K={k} replaces a large fraction of the "
+        f"{n_rotations} non-Clifford rotations ({ratio}). Mitigation quality "
+        f"may degrade on shallow circuits — consider reducing "
+        f"truncation_order or using a deeper circuit."
+    )
 
 
 class TestShallowCircuitWarning:
@@ -1184,13 +1550,26 @@ class TestShallowCircuitWarning:
             warnings.simplefilter("error")
             protocol.expand(circuit_to_dag(qc), obs)
 
+    @pytest.mark.parametrize("n_rotations, ratio", [(1, "100%"), (2, "50%")])
+    def test_warning_text(self, n_rotations, ratio):
+        with pytest.warns(UserWarning) as record:
+            QuEPP(truncation_order=1)._warn_on_truncation_ratio(n_rotations)
+        assert [str(w.message) for w in record] == [
+            _shallow_circuit_warning(1, n_rotations, ratio)
+        ]
+
+    def test_ratio_at_the_limit_is_silent(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            QuEPP(truncation_order=33)._warn_on_truncation_ratio(100)
+
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")
-def test_hybrid_normalization():
-    """Concrete rotations are normalized; symbolic ones are kept as-is."""
+def test_hybrid_normalisation():
+    """Concrete rotations are normalised; symbolic ones are kept as-is."""
     theta = Parameter("theta")
     qc = QuantumCircuit(1)
-    # Rx(π/2) is concrete Clifford → normalized away; Rx(theta) is symbolic → kept
+    # Rx(π/2) is concrete Clifford → normalised away; Rx(theta) is symbolic → kept
     qc.rx(np.pi / 2, 0)
     qc.rx(theta, 0)
     obs = SparsePauliOp("Z")
@@ -1201,17 +1580,33 @@ def test_hybrid_normalization():
     assert ctx["n_rotations"] == 1
 
 
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_barriers_do_not_change_the_expansion():
+    plain, fenced = QuantumCircuit(1), QuantumCircuit(1)
+    for qc in (plain, fenced):
+        qc.rx(0.3, 0)
+        if qc is fenced:
+            qc.barrier()
+        qc.h(0)
+    quepp = QuEPP(sampling="exhaustive", n_twirls=0)
+    (expected,), (actual,) = (
+        quepp.expand(circuit_to_dag(qc), SparsePauliOp("X"))[1]["per_obs"]
+        for qc in (plain, fenced)
+    )
+    np.testing.assert_allclose(actual.weights, expected.weights)
+    np.testing.assert_allclose(actual.classical_values, expected.classical_values)
+
+
 def _single_rx_prep(angle) -> _PreprocResult:
     """Preprocessed ``RX(angle)`` measured as ``<Z0>``, symbolic iff ``angle`` is."""
     qc = QuantumCircuit(1)
     qc.rx(angle, 0)
-    rotations = _extract_rotation_gates(qc)
+    rotations, tableaus, obs_terms = _prep(qc, _Z0)
     return _PreprocResult(
         working=qc,
-        n_qubits=1,
         rotations=rotations,
-        tableaus=_build_clifford_tableaus(qc, rotations),
-        obs_terms=_obs_to_stim_terms(_Z0, 1),
+        tableaus=tableaus,
+        obs_terms=obs_terms,
         symbolic=isinstance(angle, Parameter),
     )
 
@@ -1223,7 +1618,12 @@ def test_symbolic_fallback_warnings_carry_their_own_category():
     prep = _single_rx_prep(Parameter("theta"))
     with pytest.warns(SymbolicAngleWarning) as record:
         proto._select_paths(prep)
-    assert len(record) == 2
+    assert [str(w.message) for w in record] == [
+        "QuEPP: Monte Carlo sampling requires concrete angles. Falling back to "
+        "exhaustive enumeration for symbolic circuit.",
+        "QuEPP: coefficient_threshold pruning disabled for symbolic circuit "
+        "(angle magnitudes unknown).",
+    ]
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -1231,13 +1631,122 @@ def test_symbolic_fallback_warnings_carry_their_own_category():
         proto._select_paths(prep)
 
 
-class TestBindBeforeMitigation:
-    @pytest.mark.parametrize("sampling", ["auto", "montecarlo"])
-    def test_sampling_modes_keep_symbolic_weights(self, sampling):
-        assert QuEPP(sampling=sampling).requires_bound_params is False
+@pytest.mark.parametrize(
+    "sampling,requires_bound_params",
+    [("auto", False), ("montecarlo", False), ("exhaustive", True)],
+)
+def test_requires_bound_params_by_sampling(sampling, requires_bound_params):
+    assert QuEPP(sampling=sampling).requires_bound_params is requires_bound_params
 
-    def test_exhaustive_sampling_binds_before_mitigation(self):
-        assert QuEPP(sampling="exhaustive").requires_bound_params is True
+
+def test_default_options():
+    assert QuEPP().n_twirls == 10
+
+    with pytest.warns(UserWarning) as record:
+        QuEPP(sampling="exhaustive", n_twirls=0).expand(
+            circuit_to_dag(_two_rx_qc()), _Z0
+        )
+    assert _shallow_circuit_warning(2, 2, "100%") in [str(w.message) for w in record]
+
+    starved = SparsePauliOp.from_list([("ZZ", 0.99), ("ZI", 0.01)])
+    with pytest.warns(UserWarning) as record:
+        QuEPP(sampling="montecarlo", n_twirls=0).dry_expand(
+            circuit_to_dag(_two_qubit_qc()), starved
+        )
+    assert _STARVATION_AT_200_SAMPLES in [str(w.message) for w in record]
+
+
+@pytest.mark.parametrize(
+    "kwargs", [dict(sampling="exhaustive", n_samples=0), dict(n_samples=1)]
+)
+def test_accepts_valid_sample_counts(kwargs):
+    QuEPP(**kwargs)
+
+
+_N_SAMPLES_ERROR = "n_samples must be a positive integer for montecarlo sampling."
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        (dict(sampling="montecarlo", n_samples=0), _N_SAMPLES_ERROR),
+        (dict(sampling="montecarlo", n_samples=None), _N_SAMPLES_ERROR),
+        (dict(truncation_order=-1), "truncation_order must be non-negative."),
+        (
+            dict(sampling="sobol"),
+            "sampling must be 'auto', 'exhaustive' or 'montecarlo', got 'sobol'",
+        ),
+    ],
+    ids=["zero_samples", "no_samples", "negative_order", "unknown_sampling"],
+)
+def test_rejects_invalid_options(kwargs, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        QuEPP(**kwargs)
+
+
+def _montecarlo_weights(seed: int) -> np.ndarray:
+    """Path weights of a seeded Monte Carlo expansion of :func:`_two_qubit_qc`."""
+    protocol = QuEPP(sampling="montecarlo", n_samples=30, seed=seed, n_twirls=0)
+    _, ctx = protocol.expand(circuit_to_dag(_two_qubit_qc()), _Z0Z1)
+    return ctx["per_obs"][0].weights
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_seed_makes_montecarlo_expansion_reproducible():
+    np.testing.assert_array_equal(_montecarlo_weights(3), _montecarlo_weights(3))
+    assert not np.array_equal(_montecarlo_weights(3), _montecarlo_weights(4))
+
+
+def _layered_two_qubit_qc() -> QuantumCircuit:
+    """Eight layers of non-commuting rotations, so sampled path counts vary."""
+    qc = QuantumCircuit(2)
+    for i in range(8):
+        qc.ry(0.5 + 0.1 * i, 0)
+        qc.rx(0.6 + 0.07 * i, 1)
+        qc.cx(0, 1)
+    return qc
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_dry_expand_preview_path_count_is_deterministic():
+    dag = circuit_to_dag(_layered_two_qubit_qc())
+    counts = {
+        QuEPP(sampling="montecarlo", n_samples=20, n_twirls=0).dry_expand(dag, _Z0Z1)[
+            1
+        ]["n_paths"]
+        for _ in range(10)
+    }
+    assert len(counts) == 1
+
+
+def test_dry_expand_preview_keeps_montecarlo_warnings():
+    obs = SparsePauliOp.from_list([("ZZ", 1.0), ("ZI", 0.001)])
+    protocol = QuEPP(sampling="montecarlo", n_samples=50, seed=1, n_twirls=0)
+    with pytest.warns(UserWarning) as record:
+        protocol.dry_expand(circuit_to_dag(_two_qubit_qc()), obs)
+    assert any(
+        str(w.message).startswith(
+            "QuEPP Monte Carlo: with n_samples=50 across 2 Pauli terms"
+        )
+        for w in record
+    )
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+@pytest.mark.parametrize("threshold, n_paths", [(0.0, 2), (0.1, 1)])
+def test_exhaustive_coefficient_threshold_prunes_small_paths(threshold, n_paths):
+    """The sin·sin path weighs sin²(0.3) ≈ 0.087."""
+    qc = QuantumCircuit(1)
+    qc.rx(0.3, 0)
+    qc.rx(0.3, 0)
+    protocol = QuEPP(
+        sampling="exhaustive",
+        truncation_order=2,
+        coefficient_threshold=threshold,
+        n_twirls=0,
+    )
+    _, ctx = protocol.expand(circuit_to_dag(qc), _Z0)
+    assert ctx["n_paths"] == n_paths
 
 
 class TestAutoSampling:
@@ -1283,7 +1792,7 @@ class TestQuEPPPipelineIntegration:
 
     @pytest.mark.e2e
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_effectiveness_with_readout_noise(self):
+    def test_effectiveness_with_readout_noise(self, quepp_backend):
         """QuEPP mitigates uniform readout noise on a real backend."""
         meta = _rx_expval_meta(0.8)
 
@@ -1294,7 +1803,7 @@ class TestQuEPPPipelineIntegration:
         # estimate never sees it — every arm here has to sample.
         exact = list(
             CircuitPipeline(stages=[CircuitSpecStage(), MeasurementStage()])
-            .run(meta, PipelineEnv(backend=_quepp_backend(force_sampling=True)))
+            .run(meta, PipelineEnv(backend=quepp_backend(force_sampling=True)))
             .values()
         )[0][0]
 
@@ -1303,7 +1812,7 @@ class TestQuEPPPipelineIntegration:
             .run(
                 meta,
                 PipelineEnv(
-                    backend=_quepp_backend(force_sampling=True, noise_model=noise)
+                    backend=quepp_backend(force_sampling=True, noise_model=noise)
                 ),
             )
             .values()
@@ -1327,7 +1836,7 @@ class TestQuEPPPipelineIntegration:
             .run(
                 meta,
                 PipelineEnv(
-                    backend=_quepp_backend(force_sampling=True, noise_model=noise)
+                    backend=quepp_backend(force_sampling=True, noise_model=noise)
                 ),
             )
             .values()
@@ -1339,6 +1848,21 @@ class TestQuEPPPipelineIntegration:
             f"QuEPP error ({quepp_err:.4f}) should be less than half "
             f"of noisy error ({noisy_err:.4f})"
         )
+
+
+def _quepp_pipeline_values(meta: MetaCircuit, backend) -> list[float]:
+    """Mitigated values of ``meta`` through spec → QuEPP → measurement on ``backend``."""
+    pipeline = CircuitPipeline(
+        stages=[
+            CircuitSpecStage(),
+            QEMStage(
+                protocol=QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+            ),
+            MeasurementStage(),
+        ],
+        suppress_performance_warnings=True,
+    )
+    return list(pipeline.run(meta, PipelineEnv(backend=backend)).values())[0]
 
 
 class TestQuEPPMultiObservable:
@@ -1405,7 +1929,8 @@ class TestQuEPPMultiObservable:
         target_dag_for_obs2 = dags[per_obs[1].dag_indices[0]]
         assert target_dag_for_obs1 is target_dag_for_obs2
 
-    def test_path_dag_dedup_across_observables(self):
+    @pytest.mark.parametrize("n_copies", [2, 3])
+    def test_path_dag_dedup_across_observables(self, n_copies):
         qc = QuantumCircuit(1)
         qc.rx(0.4, 0)
         obs = SparsePauliOp("Z")
@@ -1414,24 +1939,11 @@ class TestQuEPPMultiObservable:
             warnings.simplefilter("ignore")
             dags_solo, _ = protocol.expand(circuit_to_dag(qc.copy()), obs)
             dags_multi, ctx_multi = protocol.expand(
-                circuit_to_dag(qc.copy()), (obs, obs)
+                circuit_to_dag(qc.copy()), (obs,) * n_copies
             )
-        per_obs = ctx_multi["per_obs"]
         assert len(dags_multi) == len(dags_solo)
-        assert per_obs[0].dag_indices == per_obs[1].dag_indices
-
-    def test_n_identical_observables_share_path_dags(self):
-        """N identical observables produce the same number of DAGs as 1
-        observable solo — path enumeration is not duplicated."""
-        qc = QuantumCircuit(1)
-        qc.rx(0.4, 0)
-        obs = SparsePauliOp("Z")
-        protocol = QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            dags_solo, _ = protocol.expand(circuit_to_dag(qc.copy()), obs)
-            dags_multi, _ = protocol.expand(circuit_to_dag(qc.copy()), (obs, obs, obs))
-        assert len(dags_multi) == len(dags_solo)
+        indices = [entry.dag_indices for entry in ctx_multi["per_obs"]]
+        assert indices == [indices[0]] * n_copies
 
     def test_reduce_returns_list_for_multi_obs_context(self, qc_two_rotations):
         obs1 = SparsePauliOp.from_list([("IZ", 1.0)])
@@ -1491,53 +2003,33 @@ class TestQuEPPMultiObservable:
         with pytest.raises(ValueError, match="at least one observable"):
             protocol.expand(circuit_to_dag(qc_two_rotations), ())
 
-    def test_pipeline_e2e_matches_independent_runs(self, suppress_quepp_warnings):
+    def test_pipeline_e2e_matches_independent_runs(
+        self, suppress_quepp_warnings, quepp_backend
+    ):
         """End-to-end pipeline (CircuitSpecStage → QEMStage(QuEPP) →
         MeasurementStage) on a noiseless backend with two QWC observables
         produces the same per-observable mitigated values as running each
         observable through its own pipeline.
         """
-        # One circuit read out three ways: both QWC observables together, then
-        # each on its own.
         qc = _entangled_two_qubit_circuit()
-        multi_meta = meta_from_circuit(qc, observable=(_Z0_2Q, _Z0Z1))
-        single_meta_1 = meta_from_circuit(qc, observable=_Z0_2Q)
-        single_meta_2 = meta_from_circuit(qc, observable=_Z0Z1)
+        multi_out = _quepp_pipeline_values(
+            meta_from_circuit(qc, observable=(_Z0_2Q, _Z0Z1)), quepp_backend()
+        )
+        solo_1, solo_2 = (
+            _quepp_pipeline_values(
+                meta_from_circuit(qc, observable=obs), quepp_backend()
+            )
+            for obs in (_Z0_2Q, _Z0Z1)
+        )
 
-        def _run(meta):
-            return list(
-                CircuitPipeline(
-                    stages=[
-                        CircuitSpecStage(),
-                        QEMStage(
-                            protocol=QuEPP(
-                                sampling="exhaustive",
-                                truncation_order=2,
-                                n_twirls=0,
-                            )
-                        ),
-                        MeasurementStage(),
-                    ],
-                    suppress_performance_warnings=True,
-                )
-                .run(meta, PipelineEnv(backend=_quepp_backend()))
-                .values()
-            )[0]
+        assert multi_out == [
+            pytest.approx(solo_1[0], abs=1e-9),
+            pytest.approx(solo_2[0], abs=1e-9),
+        ]
 
-        multi_out = _run(multi_meta)
-        solo_1 = _run(single_meta_1)
-        solo_2 = _run(single_meta_2)
-
-        assert isinstance(multi_out, list)
-        assert len(multi_out) == 2
-        # Tolerances are loose because the noiseless QuEPP path still passes
-        # through finite-shot measurement; QWC grouping plus the η rescale
-        # produce numbers that agree between modes only up to statistical
-        # noise (and tiny numerical drift from the path-DAG dedup).
-        assert multi_out[0] == pytest.approx(solo_1[0], abs=5e-3)
-        assert multi_out[1] == pytest.approx(solo_2[0], abs=5e-3)
-
-    def test_pipeline_e2e_on_a_multi_term_hamiltonian(self, suppress_quepp_warnings):
+    def test_pipeline_e2e_on_a_multi_term_hamiltonian(
+        self, suppress_quepp_warnings, quepp_backend
+    ):
         """A Pauli sum has to survive the real measurement stage, not just expand.
 
         QuEPP declares single-term observables so the noisy side is
@@ -1551,31 +2043,9 @@ class TestQuEPPMultiObservable:
         (spo,) = meta.observable
         assert len(spo.paulis) > 1, "fixture must be genuinely multi-term"
 
-        out = list(
-            CircuitPipeline(
-                stages=[
-                    CircuitSpecStage(),
-                    QEMStage(
-                        protocol=QuEPP(
-                            sampling="exhaustive", truncation_order=2, n_twirls=0
-                        )
-                    ),
-                    MeasurementStage(),
-                ],
-                suppress_performance_warnings=True,
-            )
-            .run(meta, PipelineEnv(backend=_quepp_backend()))
-            .values()
-        )[0]
-
-        # One value per *requested* observable, however many terms it holds.
-        value = out[0] if isinstance(out, list) else out
-        qc = QuantumCircuit(2)
-        qc.h(0)
-        qc.rx(0.3, 0)
-        qc.cx(0, 1)
-        qc.rz(0.7, 1)
-        assert value == pytest.approx(_exact_expval(qc, spo), abs=2e-2)
+        assert _quepp_pipeline_values(meta, quepp_backend()) == [
+            pytest.approx(_exact_expval(_entangled_two_qubit_circuit(), spo), abs=1e-9)
+        ]
 
 
 @pytest.mark.usefixtures("suppress_quepp_warnings")

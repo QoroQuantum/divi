@@ -5,6 +5,7 @@
 """Tests for divi.circuits.zne."""
 
 import copy
+import functools
 import random
 
 import pytest
@@ -14,15 +15,27 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import Operator
 from qiskit.transpiler import PassManager
 
-from divi.circuits.qem import QEMProtocol
 from divi.circuits.zne import (
     ZNE,
     GlobalFoldPass,
     LinearExtrapolator,
     LocalFoldPass,
     RichardsonExtrapolator,
+    global_fold,
+    local_fold,
 )
 from divi.pipeline.abc import ResultFormat
+from tests._helpers import exact_match
+
+
+def _op_names(dag):
+    return [inst.operation.name for inst in dag_to_circuit(dag).data]
+
+
+def _fold_to_requested_scale(dag, scale):
+    """A custom fold that mutates its input and realises the requested scale."""
+    dag.apply_operation_back(dag.op_nodes()[0].op, dag.op_nodes()[0].qargs)
+    return dag, scale
 
 
 @pytest.fixture
@@ -31,6 +44,20 @@ def bell_dag():
     qc.h(0)
     qc.cx(0, 1)
     return circuit_to_dag(qc)
+
+
+@pytest.fixture
+def h_rz_cx_dag():
+    qc = QuantumCircuit(2)
+    qc.h(0)
+    qc.rz(0.3, 1)
+    qc.cx(0, 1)
+    return circuit_to_dag(qc)
+
+
+@pytest.fixture
+def stub_rng(mocker):
+    return mocker.Mock(spec=random.Random)
 
 
 class TestGlobalFoldPass:
@@ -101,6 +128,15 @@ class TestGlobalFoldPass:
     def test_rejects_below_one_scale(self):
         with pytest.raises(ValueError, match=">= 1"):
             GlobalFoldPass(0.5)
+
+    @pytest.mark.parametrize(
+        "scale,expected", [(1.0, 1.0), (1.25, 1.0), (1.5, 1.5), (3.0, 3.0)]
+    )
+    def test_effective_scale_snaps_to_the_gate_grid(self, scale, expected):
+        qc = QuantumCircuit(1)
+        for angle in (0.1, 0.2, 0.3, 0.4):
+            qc.rx(angle, 0)
+        assert GlobalFoldPass(scale).effective_scale(circuit_to_dag(qc)) == expected
 
     @pytest.mark.parametrize(
         "scale,d,expected_size",
@@ -352,11 +388,55 @@ class TestLocalFoldPass:
         folded = PassManager([LocalFoldPass(3.0)]).run(qc)
         assert folded.size() == 0
 
+    def test_random_selection_without_rng_uses_a_default_source(self):
+        qc = QuantumCircuit(1)
+        for _ in range(4):
+            qc.rx(0.3, 0)
+        folded = PassManager([LocalFoldPass(1.5)]).run(qc)
+        assert folded.size() == 6
+
+
+@pytest.mark.parametrize("fold_pass", [GlobalFoldPass, LocalFoldPass])
+def test_single_gate_triples_at_scale_3(fold_pass):
+    qc = QuantumCircuit(1)
+    qc.rx(0.3, 0)
+    pass_ = fold_pass(3.0)
+    assert pass_.effective_scale(circuit_to_dag(qc)) == 3.0
+    assert PassManager([pass_]).run(qc).size() == 3
+
+
+@pytest.mark.parametrize("exclude", [{"cx"}, {"double"}])
+def test_local_fold_exclude_sets_the_effective_scale(h_rz_cx_dag, exclude):
+    folded, effective = local_fold(
+        h_rz_cx_dag, 2.0, selection="from_left", exclude=exclude
+    )
+    assert _op_names(folded) == ["h", "h", "h", "rz", "cx"]
+    assert effective == 2.0
+
+
+def test_local_fold_from_left_ignores_rng(h_rz_cx_dag, stub_rng):
+    stub_rng.sample.return_value = [0, 2]
+    folded, effective = local_fold(
+        h_rz_cx_dag, 2.0, selection="from_left", rng=stub_rng
+    )
+    assert _op_names(folded) == ["h", "h", "h", "rz", "rz", "rz", "cx"]
+    assert effective == pytest.approx(7 / 3)
+    stub_rng.sample.assert_not_called()
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_local_fold_defaults_to_random_selection_from_rng(h_rz_cx_dag, seed):
+    default, default_scale = local_fold(
+        copy.deepcopy(h_rz_cx_dag), 2.0, rng=random.Random(seed)
+    )
+    explicit, explicit_scale = local_fold(
+        h_rz_cx_dag, 2.0, selection="random", rng=random.Random(seed)
+    )
+    assert _op_names(default) == _op_names(explicit)
+    assert default_scale == explicit_scale == pytest.approx(7 / 3)
+
 
 class TestZNEProtocol:
-    def test_is_qem_protocol(self):
-        assert isinstance(ZNE([1.0, 3.0]), QEMProtocol)
-
     def test_applies_to_expvals_only(self):
         zne = ZNE([1.0, 3.0])
         assert zne.applies_to(ResultFormat.EXPVALS) is True
@@ -389,31 +469,63 @@ class TestZNE:
         ],
     )
     def test_rejects_invalid_scale_factor_types(self, bad_scale):
-        with pytest.raises(ValueError, match="sequence of real numbers"):
+        with pytest.raises(
+            ValueError, match=r"^scale_factors must be a sequence of real numbers\.$"
+        ):
             ZNE(scale_factors=bad_scale)
 
     def test_rejects_scale_factor_below_one(self):
-        with pytest.raises(ValueError, match="≥ 1"):
+        with pytest.raises(ValueError, match=r"^All scale factors must be ≥ 1\.0\.$"):
             ZNE(scale_factors=[0.5, 1.0])
 
     @pytest.mark.parametrize("bad_scale", [[], [1.0]])
     def test_rejects_fewer_than_two_scale_factors(self, bad_scale):
-        with pytest.raises(ValueError, match="at least two points"):
+        expected = (
+            "scale_factors must contain at least two points to extrapolate to the "
+            f"zero-noise limit; got {bad_scale}."
+        )
+        with pytest.raises(ValueError, match=exact_match(expected)):
             ZNE(scale_factors=bad_scale)
 
     def test_rejects_duplicate_scale_factors(self):
-        with pytest.raises(ValueError, match="unique"):
+        with pytest.raises(
+            ValueError,
+            match=r"^scale_factors must be unique; got duplicates in \[1\.0, 1\.0, 3\.0\]\.$",
+        ):
             ZNE(scale_factors=[1.0, 1.0, 3.0])
 
     def test_rejects_non_extrapolator(self):
-        with pytest.raises(ValueError, match="ZNEExtrapolator"):
+        with pytest.raises(
+            ValueError, match=r"^extrapolator must be a ZNEExtrapolator, got str\.$"
+        ):
             ZNE(scale_factors=[1.0, 3.0], extrapolator="not an extrapolator")
 
-    def test_expand_returns_one_dag_per_scale(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        dags, ctx = zne.expand(bell_dag)
-        assert len(dags) == 3
+    def test_expand_effective_scales_ignore_non_unitary_ops(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.barrier()
+        qc.cx(0, 1)
+        dags, ctx = ZNE(scale_factors=[1.0, 2.0]).expand(circuit_to_dag(qc))
+        assert ctx["effective_scales"] == (1.0, 2.0)
+        assert [_op_names(d) for d in dags] == [
+            ["h", "barrier", "cx"],
+            ["h", "barrier", "cx", "cx", "cx"],
+        ]
+
+    def test_reduce_rejects_empty_results(self):
+        with pytest.raises(
+            RuntimeError, match=r"^ZNE received an empty results sequence\.$"
+        ):
+            ZNE(scale_factors=[1.0, 3.0]).reduce([], {})
+
+    def test_expand_folds_one_dag_per_scale(self, bell_dag):
+        dags, ctx = ZNE(scale_factors=[1.0, 3.0, 5.0]).expand(bell_dag)
         assert ctx["effective_scales"] == (1.0, 3.0, 5.0)
+        assert [_op_names(d) for d in dags] == [
+            ["h", "cx"],
+            ["h", "cx", "cx", "h", "h", "cx"],
+            ["h", "cx", "cx", "h", "h", "cx", "cx", "h", "h", "cx"],
+        ]
 
     def test_expand_leaves_the_callers_dag_untouched(self, bell_dag):
         """``expand`` receives a DAG it does not own — a program's seed circuit,
@@ -439,22 +551,16 @@ class TestZNE:
         for d in dags:
             assert Operator(dag_to_circuit(d)).equiv(u_orig)
 
-    def test_expand_scales_gate_count(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        base = bell_dag.size()
-        dags, _ = zne.expand(bell_dag)
-        assert [d.size() for d in dags] == [base, 3 * base, 5 * base]
-
-    def test_reduce_extrapolates_to_zero(self, bell_dag):
+    @pytest.mark.parametrize(
+        "ctx",
+        [
+            pytest.param({"effective_scales": (1.0, 3.0, 5.0)}, id="effective_scales"),
+            pytest.param({}, id="falls_back_to_requested_scales"),
+        ],
+    )
+    def test_reduce_extrapolates_to_zero(self, ctx):
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        extrapolated = zne.reduce(
-            [1.0, -1.0, -3.0], {"effective_scales": (1.0, 3.0, 5.0)}
-        )
-        assert extrapolated == pytest.approx([2.0])
-
-    def test_reduce_falls_back_to_requested_scales_without_context(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
-        assert zne.reduce([1.0, -1.0, -3.0], {}) == pytest.approx([2.0])
+        assert zne.reduce([1.0, -1.0, -3.0], ctx) == pytest.approx([2.0])
 
     def test_expand_forwards_effective_scales_to_reduce(self, bell_dag):
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0], extrapolator=LinearExtrapolator())
@@ -486,12 +592,25 @@ class TestZNEDryExpand:
         assert len(dags) == 3
         assert all(d is bell_dag for d in dags)
         assert bell_dag.size() == base
-        assert ctx["dag_indices"] == [0, 1, 2]
+        assert len(ctx["effective_scales"]) == 3
 
-    def test_effective_scales_match_expand(self, bell_dag):
-        zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
-        _, dry_ctx = zne.dry_expand(copy.deepcopy(bell_dag))
-        _, real_ctx = zne.expand(bell_dag)
+    @pytest.mark.parametrize(
+        "folding_fn",
+        [
+            global_fold,
+            local_fold,
+            functools.partial(local_fold, selection="from_left", exclude={"cx"}),
+            _fold_to_requested_scale,
+            functools.partial(_fold_to_requested_scale),
+        ],
+        ids=["global", "local", "local-excluding-cx", "custom", "custom-partial"],
+    )
+    def test_effective_scales_match_expand(self, h_rz_cx_dag, folding_fn):
+        zne = ZNE(scale_factors=[1.0, 2.0, 3.0], folding_fn=folding_fn)
+        before = copy.deepcopy(h_rz_cx_dag)
+        _, dry_ctx = zne.dry_expand(h_rz_cx_dag)
+        assert h_rz_cx_dag == before
+        _, real_ctx = zne.expand(h_rz_cx_dag)
         assert dry_ctx["effective_scales"] == real_ctx["effective_scales"]
 
     def test_aliased_batch_does_not_compound(self, bell_dag):
@@ -506,6 +625,12 @@ class TestZNEDryExpand:
         zne = ZNE(scale_factors=[1.5, 2.5, 3.0])
         with pytest.warns(UserWarning, match="collapse to effective scales"):
             zne.dry_expand(bell_dag)
+
+    def test_circuit_without_foldable_gates_stays_at_unit_scale(self):
+        zne = ZNE(scale_factors=[1.0, 3.0])
+        with pytest.warns(UserWarning, match="collapse to effective scales"):
+            _, ctx = zne.dry_expand(circuit_to_dag(QuantumCircuit(1)))
+        assert ctx["effective_scales"] == (1.0, 1.0)
 
 
 class TestLinearExtrapolator:
@@ -524,16 +649,10 @@ class TestLinearExtrapolator:
             LinearExtrapolator().extrapolate([1.0, 3.0], [1.0])
 
     def test_rejects_single_point(self):
-        with pytest.raises(ValueError, match="at least 2"):
+        with pytest.raises(
+            ValueError, match=r"^LinearExtrapolator requires at least 2 data points\.$"
+        ):
             LinearExtrapolator().extrapolate([1.0], [2.0])
-
-    def test_rejects_nan_input(self):
-        with pytest.raises(ValueError, match="NaN or Inf"):
-            LinearExtrapolator().extrapolate([1.0, 3.0], [float("nan"), 1.0])
-
-    def test_rejects_inf_input(self):
-        with pytest.raises(ValueError, match="NaN or Inf"):
-            LinearExtrapolator().extrapolate([1.0, float("inf")], [1.0, 2.0])
 
 
 class TestRichardsonExtrapolator:
@@ -555,9 +674,37 @@ class TestRichardsonExtrapolator:
             RichardsonExtrapolator().extrapolate([1.0, 3.0], [1.0])
 
     def test_rejects_duplicate_scale_factors(self):
-        with pytest.raises(ValueError, match="duplicates"):
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"^RichardsonExtrapolator requires unique scale factors; "
+                r"got duplicates in \[1\.0, 3\.0, 3\.0\]\.$"
+            ),
+        ):
             RichardsonExtrapolator().extrapolate([1.0, 3.0, 3.0], [0.5, 0.3, 0.3])
 
-    def test_rejects_nan_input(self):
-        with pytest.raises(ValueError, match="NaN or Inf"):
-            RichardsonExtrapolator().extrapolate([1.0, 3.0], [float("nan"), 1.0])
+    def test_single_point_returns_its_value(self):
+        assert RichardsonExtrapolator().extrapolate([2.0], [0.7]) == 0.7
+
+    def test_rejects_empty_input(self):
+        with pytest.raises(
+            ValueError,
+            match=r"^RichardsonExtrapolator requires at least 1 data point\.$",
+        ):
+            RichardsonExtrapolator().extrapolate([], [])
+
+
+@pytest.mark.parametrize("extrapolator", [LinearExtrapolator, RichardsonExtrapolator])
+@pytest.mark.parametrize(
+    "scale_factors,results,field",
+    [
+        ([1.0, 3.0], [float("nan"), 1.0], "results"),
+        ([1.0, float("inf")], [1.0, 2.0], "scale_factors"),
+    ],
+)
+def test_extrapolators_reject_non_finite_input(
+    extrapolator, scale_factors, results, field
+):
+    expected = f"{extrapolator.__name__}: {field} contains NaN or Inf values."
+    with pytest.raises(ValueError, match=exact_match(expected)):
+        extrapolator().extrapolate(scale_factors, results)

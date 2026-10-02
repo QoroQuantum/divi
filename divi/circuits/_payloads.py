@@ -153,9 +153,10 @@ def as_payloads(
 
     items = list(submitted)
     payloads = [item for item in items if isinstance(item, CircuitPayload)]
+    circuits = [item for item in items if not isinstance(item, CircuitPayload)]
     if not payloads:
-        return bound_payloads(cast(CircuitBatch, items))
-    if len(payloads) != len(items):
+        return bound_payloads(circuits)
+    if circuits:
         raise TypeError(
             "A sequence must hold either CircuitPayloads or circuits, not both."
         )

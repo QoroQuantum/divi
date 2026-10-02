@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import warnings
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -11,7 +13,9 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.pipeline.stages import DataBindingStage
 from divi.qprog import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.mixins._data_binding import _LOSS_FN_IGNORED_MSG
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_correct_circuit_count,
@@ -25,8 +29,61 @@ def _cost_stage_types(program):
     return [type(stage) for stage in pipeline.stages]
 
 
+def _indexed_data_then_weight(qp):
+    def circuit(x, w):
+        qp.RX(x[0], wires=0)
+        qp.RX(x[1], wires=1)
+        qp.RY(w, wires=0)
+        return qp.expval(qp.Z(0))
+
+    return circuit
+
+
+def _scalar_data_then_weight(qp):
+    def circuit(x, w):
+        qp.RX(x, wires=0)
+        qp.RY(w, wires=0)
+        return qp.expval(qp.Z(0))
+
+    return circuit
+
+
+def _indexed_weights_then_data(qp):
+    def circuit(w, x):
+        qp.RY(w[0], wires=0)
+        qp.RY(w[1], wires=1)
+        qp.RX(x[0], wires=0)
+        return qp.expval(qp.Z(0))
+
+    return circuit
+
+
 def _unexpected_optional_probe(*args, **kwargs):
     raise AssertionError("Qiskit input must not probe optional frontends")
+
+
+def _rxx_rzz_circuit(lowered: bool) -> QuantumCircuit:
+    """``rxx`` then ``rzz`` between ``h(0)`` gates, natively or in basis gates."""
+    theta, phi = Parameter("theta"), Parameter("phi")
+    qc = QuantumCircuit(2, 2)
+    if lowered:
+        qc.h([0, 1])
+        qc.cx(0, 1)
+        qc.rz(phi, 1)
+        qc.cx(0, 1)
+        qc.h([0, 1])
+    else:
+        qc.rxx(phi, 0, 1)
+    qc.h(0)
+    if lowered:
+        qc.cx(0, 1)
+        qc.rz(theta, 1)
+        qc.cx(0, 1)
+    else:
+        qc.rzz(theta, 0, 1)
+    qc.h(0)
+    qc.measure([0, 1], [0, 1])
+    return qc
 
 
 @pytest.fixture
@@ -228,7 +285,7 @@ class TestInitialization:
         assert program.param_shape == (1,)
         # <Z>([0.3]) should match cos(3 * 0.3) = cos(0.9), not be untied.
         loss = program._evaluate_cost_param_sets(np.array([[0.3]]))[0]
-        assert loss == pytest.approx(np.cos(0.9), abs=0.05)
+        assert loss == pytest.approx(np.cos(0.9), abs=1e-9)
 
     def test_qnode_arg_expression_preserves_coefficient(
         self, qp, default_test_simulator, make_custom_vqa
@@ -247,7 +304,7 @@ class TestInitialization:
         program = make_custom_vqa(qscript=circuit, backend=default_test_simulator)
         assert program.param_shape == (1,)
         loss = program._evaluate_cost_param_sets(np.array([[0.4]]))[0]
-        assert loss == pytest.approx(np.cos(0.8), abs=0.05)
+        assert loss == pytest.approx(np.cos(0.8), abs=1e-9)
 
     def test_qiskit_parameter_names_preserved(
         self, qiskit_circuit_with_measurements, make_custom_vqa
@@ -264,11 +321,40 @@ class TestInitialization:
         self, qiskit_circuit_no_measurements, make_custom_vqa
     ):
         """Test that Qiskit circuit without measurements warns and defaults to all wires."""
-        with pytest.warns(UserWarning, match="no measurement operations"):
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "Provided QuantumCircuit has no measurement operations. "
+                "Defaulting to all wires."
+            ),
+        ):
             program = make_custom_vqa(qscript=qiskit_circuit_no_measurements)
 
         assert program.n_qubits == 1
         assert isinstance(program.cost_hamiltonian, SparsePauliOp)
+
+    def test_defaults(self, qiskit_circuit_multi_qubit_all_measured, make_custom_vqa):
+        """Plain construction neither warns nor binds data, and each measured
+        wire contributes one unit-weight ``Z``."""
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            program = make_custom_vqa(qscript=qiskit_circuit_multi_qubit_all_measured)
+
+        assert program.max_iterations == 10
+        assert program.loss_reduction == "mean"
+        assert program.cost_hamiltonian.equiv(SparsePauliOp(["IIZ", "IZI", "ZII"]))
+
+    def test_gates_after_a_mid_circuit_measurement_are_kept(self, make_custom_vqa):
+        theta, phi = Parameter("theta"), Parameter("phi")
+        qc = QuantumCircuit(2, 2)
+        qc.rx(theta, 0)
+        qc.measure(0, 0)
+        qc.ry(phi, 1)
+        qc.measure(1, 1)
+
+        program = make_custom_vqa(qscript=qc)
+
+        assert program.param_shape == (2,)
 
     @pytest.mark.parametrize(
         "observable_kind",
@@ -297,30 +383,28 @@ class TestConstructionValidation:
         with pytest.raises(TypeError, match="must be a PennyLane QuantumScript"):
             make_custom_vqa(qscript="not a circuit")
 
-    def test_multiple_measurements_fails(self, qp, make_custom_vqa):
-        """Test that QuantumScript with multiple measurements fails."""
+    @pytest.mark.parametrize(
+        "make_measurements, match",
+        [
+            pytest.param(
+                lambda qp: [qp.expval(qp.Z(0)), qp.expval(qp.Z(0))],
+                "exactly one measurement",
+                id="multiple_measurements",
+            ),
+            pytest.param(lambda qp: [], "exactly one measurement", id="no_measurement"),
+            pytest.param(
+                lambda qp: [qp.probs(wires=0)], "expval", id="non_expval_measurement"
+            ),
+        ],
+    )
+    def test_invalid_measurements_fail(
+        self, qp, make_custom_vqa, make_measurements, match
+    ):
+        """A QuantumScript must carry exactly one expectation-value measurement."""
         ops = [qp.RX(0.0, wires=0)]
-        measurements = [qp.expval(qp.Z(0)), qp.expval(qp.Z(0))]
-        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
+        qscript = qp.tape.QuantumScript(ops=ops, measurements=make_measurements(qp))
 
-        with pytest.raises(ValueError, match="exactly one measurement"):
-            make_custom_vqa(qscript=qscript)
-
-    def test_no_measurement_fails(self, qp, make_custom_vqa):
-        """Test that QuantumScript without measurement fails."""
-        ops = [qp.RX(0.0, wires=0)]
-        qscript = qp.tape.QuantumScript(ops=ops, measurements=[])
-
-        with pytest.raises(ValueError, match="exactly one measurement"):
-            make_custom_vqa(qscript=qscript)
-
-    def test_non_expval_measurement_fails(self, qp, make_custom_vqa):
-        """Test that non-expectation-value measurement fails."""
-        ops = [qp.RX(0.0, wires=0)]
-        measurements = [qp.probs(wires=0)]
-        qscript = qp.tape.QuantumScript(ops=ops, measurements=measurements)
-
-        with pytest.raises(ValueError, match="expval"):
+        with pytest.raises(ValueError, match=match):
             make_custom_vqa(qscript=qscript)
 
     def test_constant_only_hamiltonian_fails(self, qp, make_custom_vqa):
@@ -365,7 +449,7 @@ class TestConstructionValidation:
         )
         losses = program._evaluate_cost_param_sets(np.array([[0.0]]))
         # Correct: 0.5 * 1.0 + 5.0 = 5.5. Buggy double-count would be 10.5.
-        assert losses[0] == pytest.approx(5.5, abs=0.05)
+        assert losses[0] == pytest.approx(5.5, abs=1e-9)
 
     def test_pennylane_respects_user_set_trainable_params_filter(
         self, qp, make_custom_vqa
@@ -476,6 +560,18 @@ class TestQiskitConversion:
         assert program.n_params_per_layer == expected_n_params
         assert isinstance(program.cost_hamiltonian, SparsePauliOp)
         assert set(program.measured_wires) == expected_measured_wires
+
+    def test_gates_outside_the_qasm_basis_are_lowered(
+        self, default_test_simulator, make_custom_vqa
+    ):
+        point = np.array([[0.7, 0.4]])
+        losses = [
+            make_custom_vqa(
+                qscript=_rxx_rzz_circuit(lowered), backend=default_test_simulator
+            )._evaluate_cost_param_sets(point)[0]
+            for lowered in (False, True)
+        ]
+        assert losses[0] == pytest.approx(losses[1], abs=1e-9)
 
 
 class TestOptimization:
@@ -710,12 +806,6 @@ class TestDataBindingConstruction:
                 labels=[1.0, -1.0],
             )
 
-    def test_loss_fn_without_labels_warns(self, make_custom_vqa):
-        with pytest.warns(UserWarning, match="loss_fn"):
-            make_custom_vqa(
-                param_shape=(2,), loss_fn=lambda pred, label: abs(pred - label)
-            )
-
     def test_multiarg_qnode_with_arg_shapes_and_data_arg(
         self, qp, default_test_simulator, make_custom_vqa
     ):
@@ -754,7 +844,7 @@ class TestDataBindingConstruction:
             )
             for x in X
         ]
-        assert divi_loss == pytest.approx(float(np.mean(per_sample)), abs=0.05)
+        assert divi_loss == pytest.approx(float(np.mean(per_sample)), abs=1e-9)
 
     def test_batch_input_decorator_auto_detects_data_arg(self, qp, make_custom_vqa):
         """A ``@qml.batch_input(argnum=...)`` QNode supplies the data axis; divi
@@ -840,8 +930,72 @@ class TestDataBindingConstruction:
             qp.RX(b, wires=1)
             return qp.expval(qp.Z(0))
 
-        with pytest.raises(ValueError, match="multiple batched arguments"):
+        message = (
+            "@qml.batch_input marks gate parameters from multiple arguments "
+            "['a', 'b']; pass data_arg explicitly (one data axis is supported)."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
             make_custom_vqa(qscript=circuit, feature_batch=np.zeros((2, 1)))
+
+    @pytest.mark.parametrize(
+        "build,argnum,arg_shapes,n_features,n_weights",
+        [
+            (_indexed_data_then_weight, [0, 1], None, 2, 1),
+            (_indexed_weights_then_data, 2, {"w": (2,)}, 1, 2),
+            (_indexed_weights_then_data, -1, {"w": (2,)}, 1, 2),
+            (_indexed_data_then_weight, -2, None, 2, 1),
+        ],
+        ids=[
+            "indices-past-the-argument-count",
+            "last-gate",
+            "negative-index",
+            "negative-index-to-first-gate",
+        ],
+    )
+    def test_batch_input_argnum_indexes_gate_parameters(
+        self, qp, make_custom_vqa, build, argnum, arg_shapes, n_features, n_weights
+    ):
+        circuit = qp.batch_input(
+            qp.qnode(qp.device("default.qubit", wires=2))(build(qp)), argnum
+        )
+        program = make_custom_vqa(
+            qscript=circuit,
+            arg_shapes=arg_shapes,
+            feature_batch=np.zeros((2, n_features)),
+        )
+        assert program.param_shape == (n_weights,)
+        assert program.feature_batch.shape == (2, n_features)
+
+    @pytest.mark.parametrize("argnum", [2, -3])
+    def test_batch_input_argnum_past_the_gate_parameters_raises(
+        self, qp, make_custom_vqa, argnum
+    ):
+        circuit = qp.batch_input(
+            qp.qnode(qp.device("default.qubit", wires=1))(_scalar_data_then_weight(qp)),
+            argnum=argnum,
+        )
+        message = (
+            f"batch_input argnum={argnum} is out of range for a circuit with 2 gate "
+            "parameter(s)."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
+            make_custom_vqa(qscript=circuit, feature_batch=np.zeros((2, 1)))
+
+    def test_batch_input_scalar_data_argument_binds_each_feature(
+        self, qp, default_test_simulator, make_custom_vqa
+    ):
+        """A scalar data argument takes the single feature column, sample by sample."""
+        circuit = qp.batch_input(
+            qp.qnode(qp.device("default.qubit", wires=1))(_scalar_data_then_weight(qp)),
+            argnum=0,
+        )
+        features = np.array([[0.4], [1.1]])
+        program = make_custom_vqa(
+            qscript=circuit, feature_batch=features, backend=default_test_simulator
+        )
+        assert program.param_shape == (1,)
+        loss = program._evaluate_cost_param_sets(np.array([[0.3]]))[0]
+        assert loss == pytest.approx(np.mean(np.cos(features[:, 0]) * np.cos(0.3)))
 
     def test_rejects_zero_row_feature_batch(self, data_circuit, make_custom_vqa):
         qc, data_idx = data_circuit
@@ -863,7 +1017,7 @@ class TestDataBindingConstruction:
 
     def test_rejects_bool_data_param_index(self, qiskit_data_circuit, make_custom_vqa):
         qc, _, _ = qiskit_data_circuit
-        with pytest.raises(TypeError):
+        with pytest.raises(TypeError, match="data_param_indices entries must be ints"):
             make_custom_vqa(
                 qscript=qc, data_param_indices=[True], feature_batch=np.zeros((1, 1))
             )
@@ -968,6 +1122,13 @@ class TestDataBindingConstruction:
         [
             ([0, 0], "duplicate"),
             ([5], "out of range"),
+            (
+                [3],
+                exact_match(
+                    "data_param_indices index 3 is out of range for a circuit "
+                    "with 3 parameters."
+                ),
+            ),
             ([-1], "out of range"),
         ],
     )
@@ -1090,12 +1251,13 @@ class TestDataBindingConstruction:
     def test_loss_fn_without_labels_warns_at_caller(
         self, qiskit_data_circuit, make_custom_vqa
     ):
-        # loss_fn is ignored without labels; the warning must be attributed to
-        # the user's constructor call, not to a frame inside divi.
+        """The ignored-``loss_fn`` warning points at the caller's constructor call."""
         qc, _, _ = qiskit_data_circuit
-        with pytest.warns(UserWarning, match="loss_fn is ignored") as record:
+        with pytest.warns(
+            UserWarning, match=exact_match(_LOSS_FN_IGNORED_MSG)
+        ) as record:
             make_custom_vqa(qscript=qc, loss_fn=lambda pred, label: (pred - label) ** 2)
-        ignored = [w for w in record if "loss_fn is ignored" in str(w.message)]
+        ignored = [w for w in record if str(w.message) == _LOSS_FN_IGNORED_MSG]
         assert ignored and ignored[0].filename == __file__
 
 

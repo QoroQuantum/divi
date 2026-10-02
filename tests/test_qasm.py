@@ -122,6 +122,16 @@ VALID_QASM = {
     measure q[2] -> c[2];
     measure q[3] -> c[3];
     """,
+        """OPENQASM 2.0;
+    qreg q[2];
+    gate g(t) a,b { rx(2*t+cos(t)-(t)^2) a; cx a,b; }
+    g(1) q[0],q[1];
+    """,
+        "OPENQASM 2.0; qreg a[2]; qreg b[3]; cx a[0], b;",
+        "OPENQASM 2.0; qreg q[1]; ry(pi-1) q[0];",
+        "OPENQASM 2.0; qreg q[1]; rx(+pi) q[0];",
+        "OPENQASM 2; qreg q[1]; h q[0];",
+        "OPENQASM 2.0; qreg q[1]; creg c[2]; if(c==3) h q[0];",
     ],
     "ids": [
         "Simple",
@@ -139,6 +149,12 @@ VALID_QASM = {
         "UserGateInBody",
         "ComplexExpr",
         "ScientificNotation",
+        "GateParamExpr",
+        "BroadcastBitAgainstRegister",
+        "BinaryMinus",
+        "UnaryPlus",
+        "IntegerVersion",
+        "IfValAtCregWidth",
     ],
 }
 
@@ -250,6 +266,7 @@ INVALID_QASM = {
     """,
         # If value too large for creg
         """OPENQASM 2.0;
+    qreg q[1];
     creg c[2];
     if(c==4) h q[0];
     """,
@@ -309,6 +326,16 @@ INVALID_QASM = {
         "OPENQASM 2.0; -> q[0];",
         # Invalid expression
         "OPENQASM 2.0; qreg q[1]; ry((pi) q[0];",
+        # Unknown function call in expression
+        "OPENQASM 2.0; qreg q[1]; rx(bogus(1)) q[0];",
+        "OPENQASM 2.0; qreg q[1]; rx(bogus()) q[0];",
+        # Non-natural numbers where a natural number is required
+        "OPENQASM 2.0; qreg q[1e1];",
+        "OPENQASM 2.0; qreg q[1]; h q[0.0];",
+        "OPENQASM 2.0; qreg q[1]; h q[0e0];",
+        "OPENQASM 2.0; qreg q[1]; creg c[1]; if(c==1e0) h q[0];",
+        # Number as a gate-body qubit argument
+        "OPENQASM 2.0; gate g a { h 1; }",
     ],
     "ids": [
         "MissingHeader",
@@ -351,6 +378,13 @@ INVALID_QASM = {
         "ResetOOB",
         "UnexpectedToken",
         "InvalidExpr",
+        "UnknownFunctionCall",
+        "UnknownFunctionCallNoArgs",
+        "ScientificQregSize",
+        "FloatQubitIndex",
+        "ScientificQubitIndex",
+        "ScientificIfValue",
+        "NumberGateBodyQubit",
     ],
 }
 
@@ -475,3 +509,20 @@ cx q[0],q[1];
 """
 
     assert is_valid_qasm(qasm, ("x",)) is True
+
+
+@pytest.mark.parametrize(
+    "body, parameters, expected",
+    [
+        ("qreg q[1]; rz(theta[0]) q[0]; rx(theta) q[0];", ("theta", "theta[0]"), True),
+        ("qreg xA[1]; qreg xb[1]; rx(x) xA[0]; rx(x) xb[0];", ("x",), True),
+        ("qreg q[1]; rx(aβ[0]) q[0];", ("β[0]",), False),
+    ],
+    ids=[
+        "prefix-name-longest-first",
+        "no-match-before-identifier",
+        "no-match-after-identifier",
+    ],
+)
+def test_placeholder_boundaries(body, parameters, expected):
+    assert is_valid_qasm(f"OPENQASM 2.0; {body}", parameters) is expected
