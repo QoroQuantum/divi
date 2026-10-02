@@ -93,13 +93,16 @@ jobs:
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
+    env:
+      # Compile at install time so third-party SyntaxWarnings don't land in tutorial output.
+      UV_COMPILE_BYTECODE: "1"
     steps:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup-divi
         with:
           python-version: ${{ matrix.python-version }}
-          sync-args: --group testing --all-extras
+          sync-args: --group testing --all-extras --no-extra ai
 
       - name: Run tutorial scripts
         shell: bash
