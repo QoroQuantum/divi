@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
-from qiskit.circuit.library import RYGate, RZGate
+from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -31,7 +31,7 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     QEMStage,
 )
-from divi.qprog import QAOA, VQE, QuantumProgram
+from divi.qprog import QAOA, QNN, VQE, AngleEmbedding, QuantumProgram
 from divi.qprog._metrics import (
     METRIC_ROUTINE,
     FubiniStudyMetricEstimator,
@@ -120,15 +120,68 @@ class _ParametricProgram(QuantumProgram):
         pass
 
 
-@pytest.mark.parametrize("force", [False, True])
-def test_direct_subclass_previews_its_real_parameter_width(dummy_simulator, force):
-    """A direct subclass must get a parameter vector of its seed's width in both
-    modes: the analytic path otherwise reports ``n_params: 0`` for a parametric
-    circuit, and the forced path fails outright."""
-    program = _ParametricProgram(dummy_simulator)
+def _qnn_for_width(backend, optimizer) -> QNN:
+    """Two data parameters bound by their own stage, four trainable weights."""
+    return QNN(
+        n_qubits=2,
+        feature_map=AngleEmbedding(rotation="Y"),
+        ansatz=GenericLayerAnsatz(
+            gate_sequence=[RYGate, RZGate],
+            entangler=CXGate,
+            entangling_layout="linear",
+        ),
+        observable=SparsePauliOp("ZI"),
+        feature_batch=np.array([[0.1, 0.2], [0.3, 0.4]]),
+        backend=backend,
+        optimizer=optimizer,
+    )
+
+
+@pytest.mark.parametrize("force", [False, True], ids=["analytic", "forced"])
+@pytest.mark.parametrize(
+    "make_program, expected, expected_total",
+    [
+        pytest.param(
+            lambda backend, _: _ParametricProgram(backend),
+            1,
+            1,
+            id="direct-subclass",
+        ),
+        pytest.param(_maxcut_qaoa_for_totals, 2, None, id="qaoa-hamiltonian-seed"),
+        pytest.param(_qnn_for_width, 4, None, id="qnn-trainable-only"),
+    ],
+)
+def test_preview_binds_the_trainable_width(
+    make_program, expected, expected_total, force, dummy_simulator, default_optimizer
+):
+    program = make_program(dummy_simulator, default_optimizer)
     report = program.dry_run(force_circuit_generation=force)["cost"]
     binding = next(s for s in report.stages if s.name == "ParameterBindingStage")
-    assert binding.metadata["n_bound_params"] == 1
+    assert binding.metadata["n_bound_params"] == expected
+    if expected_total is not None:
+        assert report.total_circuits == expected_total
+
+
+@pytest.mark.parametrize(
+    "make_program",
+    [
+        pytest.param(lambda backend, _: _ParametricProgram(backend), id="base"),
+        pytest.param(h2_vqe, id="variational"),
+    ],
+)
+def test_preview_env_is_silent_and_uses_a_throwaway_rng(
+    make_program, default_test_simulator, default_optimizer, mocker
+):
+    program = make_program(default_test_simulator, default_optimizer)
+    spy = mocker.spy(program, "_build_pipeline_env")
+
+    program.dry_run()
+
+    assert spy.call_count > 0
+    for call in spy.call_args_list:
+        assert call.kwargs["progress_emitter"] is None
+        assert isinstance(call.kwargs["rng"], np.random.Generator)
+        assert call.kwargs["rng"] is not getattr(program, "_rng", None)
 
 
 def test_routines_sharing_a_name_are_all_reported(dummy_simulator, mocker):
@@ -551,17 +604,6 @@ class TestQuantumProgramDryRun:
             reports_a["cost"].env_artifacts["per_group_shots"]
             == reports_b["cost"].env_artifacts["per_group_shots"]
         )
-
-    def test_dry_run_builds_env_without_reporter(
-        self, default_test_simulator, default_optimizer, mocker
-    ):
-        """The preview must stay silent — no progress reporter is wired into the
-        forward-pass env, so nothing bleeds into stdout."""
-        vqe = h2_vqe(default_test_simulator, default_optimizer)
-        spy = mocker.spy(vqe, "_build_pipeline_env")
-        vqe.dry_run()
-        assert spy.call_count > 0
-        assert all(call.kwargs.get("reporter") is None for call in spy.call_args_list)
 
     @pytest.mark.filterwarnings(
         "ignore:Backend supports analytic expectation values:UserWarning"

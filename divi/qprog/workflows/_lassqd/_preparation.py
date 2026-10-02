@@ -25,7 +25,6 @@ from divi.pipeline import sample_preprocessor
 from divi.pipeline.stages import QiskitSpecStage
 from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.checkpointing import _fsync_directory
-from divi.qprog.mixins._solution_sampling import _average_probabilities
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.quantum_program import (
     QuantumProgram,
@@ -113,8 +112,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
             backend=self._sampling_backend,
         )
         self._results["best_probs"] = {
-            index: _average_probabilities(probabilities)
-            for index, probabilities in result.items()
+            index: dict(probabilities) for index, probabilities in result.items()
         }
         return self
 

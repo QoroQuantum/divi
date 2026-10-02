@@ -48,7 +48,7 @@ class ObservableMeasuringMixin:
         from divi.qprog.quantum_program import QuantumProgram
 
         mro = cls.__mro__
-        if ObservableMeasuringMixin in mro and QuantumProgram in mro:
+        if QuantumProgram in mro:
             mixin_idx = mro.index(ObservableMeasuringMixin)
             base_idx = mro.index(QuantumProgram)
             if mixin_idx > base_idx:

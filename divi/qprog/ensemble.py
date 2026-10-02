@@ -59,7 +59,6 @@ from divi.reporting._events import (
     TerminalStatus,
     discard_progress_event,
 )
-from divi.reporting._logging import log_progress_event
 from divi.reporting._rich import render_failure
 from divi.reporting._session import ProgressSession, _environment_disables_progress
 from divi.reporting._state import ProgressState
@@ -556,12 +555,7 @@ class ProgramEnsemble(ABC):
 
         self._progress_session: ProgressSession | None = None
         self._progress_bindings: ExitStack | None = None
-        self._progress_emitter: ProgressEmitter = (
-            discard_progress_event
-            if self.reporting_level is ReportingLevel.OFF
-            or _environment_disables_progress()
-            else log_progress_event
-        )
+        self._progress_emitter: ProgressEmitter = discard_progress_event
         self._preparation_registered = False
         self._workflow_registered = False
         self._workflow_message: str | None = None
@@ -627,8 +621,9 @@ class ProgramEnsemble(ABC):
 
     @programs.setter
     def programs(self, value: dict):
-        """Set the programs dictionary."""
-        self._programs = value
+        """Set the programs dictionary; :meth:`run` uses it for its first round."""
+        self._programs = dict(value)
+        self._programs_pending = bool(self._programs)
 
     def dry_run(self, *, force_circuit_generation: bool = False) -> EnsembleReports:
         """Preview every sub-program's circuit fan-out without executing anything.
@@ -759,7 +754,6 @@ class ProgramEnsemble(ABC):
     def _clear_completed_round(self) -> None:
         """Discard program instances only after their round has completed."""
         self._programs.clear()
-        self._programs_pending = False
 
     def _reset_workflow_state(self) -> None:
         """Clear per-workflow state without touching programs or lifetime totals.
@@ -1111,7 +1105,7 @@ class ProgramEnsemble(ABC):
             runtime_before = self.total_run_time
             self._round_context = (self._round_index, max_rounds)
             self._round_cancelled = False
-            program_count = len(self._programs)
+            program_count = len(self._programs) if use_caller_programs else 0
             round_target = None
             try:
                 if checkpoint_root is not None:
@@ -1253,7 +1247,7 @@ class ProgramEnsemble(ABC):
     def _serialize_round_history(
         history: list[RoundRecord],
     ) -> list[dict[str, Any]]:
-        return [{**asdict(record), "status": record.status.value} for record in history]
+        return [asdict(record) for record in history]
 
     def _save_completed_round_checkpoint(
         self,
@@ -1281,24 +1275,6 @@ class ProgramEnsemble(ABC):
             completed.model_dump_json(indent=2, exclude_none=True),
         )
         return round_path
-
-    def save_state(self, checkpoint_config: CheckpointConfig) -> Path:
-        """Persist the latest successfully completed ensemble round."""
-        if self._executor is not None:
-            raise RuntimeError("Cannot save an ensemble while it is running.")
-        if (
-            not self._round_history
-            or self._round_history[-1].status is not WorkflowStatus.COMPLETE
-        ):
-            raise RuntimeError("Cannot save an ensemble before a round has completed.")
-        checkpoint_root = checkpoint_config.checkpoint_dir
-        if checkpoint_root is None:
-            raise ValueError(
-                "checkpoint_config.checkpoint_dir must be a non-None Path."
-            )
-        return self._save_completed_round_checkpoint(
-            checkpoint_root, self._workflow_state, list(self._round_history)
-        )
 
     @staticmethod
     def _deserialize_round_history(
@@ -1388,7 +1364,6 @@ class ProgramEnsemble(ABC):
         self._total_circuit_count = total_circuit_count
         self._total_run_time = total_run_time
         self._stop_reason = None
-        self._round_context = None
         self._programs_pending = False
         self._interrupted_checkpoint = interrupted_checkpoint
         self._restored_checkpoint_root = Path(checkpoint_dir)
@@ -1428,8 +1403,6 @@ class ProgramEnsemble(ABC):
         except BaseException:
             self._programs.clear()
             raise
-        finally:
-            self._programs_pending = False
 
     def _round_record(
         self,
@@ -1816,12 +1789,7 @@ class ProgramEnsemble(ABC):
         finally:
             if bindings is not None:
                 bindings.close()
-            self._progress_emitter = (
-                discard_progress_event
-                if self.reporting_level is ReportingLevel.OFF
-                or _environment_disables_progress()
-                else log_progress_event
-            )
+            self._progress_emitter = discard_progress_event
 
     def _emit_progress_message(
         self,
@@ -1848,12 +1816,10 @@ class ProgramEnsemble(ABC):
         """Name the stage a multi-stage ``update_state`` is currently in.
 
         Active dispatches route the phase through their queued session;
-        classical reduction after dispatch uses the normal logging emitter.
+        classical reduction after dispatch, and ``final`` messages, are logged.
         """
-        if final:
+        if final or not self._workflow_registered:
             logger.info(message)
-            return
-        if not self._workflow_registered:
             return
         self._progress_emitter(ProgressEvent.show(("workflow", id(self)), message))
 
@@ -1919,10 +1885,7 @@ class ProgramEnsemble(ABC):
                 # Mark already-failed futures so their progress bars don't
                 # freeze.  Futures that completed successfully are fine.
                 if not future.cancelled():
-                    try:
-                        exc = future.exception()
-                    except Exception:
-                        exc = True  # defensive; treat as failed
+                    exc = future.exception()
                     if exc is not None:
                         # Workers that raised ExecutionCancelledError were
                         # cooperating with the user's cancel; everything
@@ -2014,10 +1977,7 @@ class ProgramEnsemble(ABC):
         for future, program in self._future_to_program.items():
             if not future.done() or future.cancelled():
                 continue
-            try:
-                exc = future.exception()
-            except Exception:
-                continue
+            exc = future.exception()
             if exc is None or isinstance(exc, ExecutionCancelledError):
                 continue
             failures.append((program, exc))
@@ -2053,26 +2013,12 @@ class ProgramEnsemble(ABC):
                 label = f" (Programs {', '.join(map(str, keys))})"
             render_failure(exc, label=label, console=console)
 
-    def _handle_failure(self, failed_future: Future | None) -> None:
+    def _handle_failure(self) -> None:
         """Handle a program failure by stopping remaining programs.
 
-        Marks the failed program's progress bar as failed, then stops
-        all other running programs using the same mechanism as
-        cancellation.
-
-        Args:
-            failed_future: The future that raised the exception, or
-                ``None`` if it could not be identified.
+        Stops every other running program using the same mechanism as
+        cancellation, which also marks each failed program's progress bar.
         """
-        if failed_future is not None:
-            failed_program = self._future_to_program.get(failed_future)
-            if failed_program is not None:
-                self._emit_progress_message(
-                    failed_program._progress_key,
-                    final_status=TerminalStatus.FAILED,
-                    message="Job failed",
-                )
-
         self._stop_remaining_programs(
             pending_status=TerminalStatus.CANCELLED,
             pending_message="Cancelled due to failure",
@@ -2132,27 +2078,16 @@ class ProgramEnsemble(ABC):
             return False
 
         except Exception as e:
-            # A task has failed. Identify the culprit and stop everything.
-            failed_future = None
             # Count programs that finished successfully *before* we stop
             # anything — programs interrupted by the cancellation event
             # should not count as "completed".
-            n_already_done = 0
-            for f in self.futures:
-                if f.done() and not f.cancelled():
-                    try:
-                        exc = f.exception()
-                    except Exception:
-                        exc = True
-                    if exc is not None:
-                        if failed_future is None:
-                            failed_future = f
-                    else:
-                        n_already_done += 1
+            n_already_done = sum(
+                1
+                for f in self.futures
+                if f.done() and not f.cancelled() and f.exception() is None
+            )
 
-            # _handle_failure renders a panel per failed program, so every
-            # failure is reported rather than only this first one.
-            self._handle_failure(failed_future)
+            self._handle_failure()
             self._finish_workflow_progress(TerminalStatus.FAILED)
 
             n_total = len(self._programs)

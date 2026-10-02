@@ -248,8 +248,7 @@ def reduce_merge_histograms(
 ) -> ChildResults:
     """Reduce grouped probability dicts by averaging across groups.
 
-    For ``PROBS`` / ``COUNTS`` results only. Equivalent to the VQA
-    ``_average_probabilities`` logic: for each base_key, collects all
+    For ``PROBS`` / ``COUNTS`` results only: for each base_key, collects all
     probability dicts, unions all bitstrings, and averages the probability
     values. Used by ``TrotterSpecStage`` in measurement pipelines to merge
     probability histograms across Hamiltonian samples. For ``EXPVALS`` results

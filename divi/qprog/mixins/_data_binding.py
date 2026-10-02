@@ -33,7 +33,6 @@ from divi.pipeline.stages import (
     CircuitSpecStage,
     DataBindingStage,
     LossReductionFn,
-    MeasurementStage,
     SampleLossFn,
     resolve_loss_reduction,
     resolve_sample_loss,
@@ -463,15 +462,9 @@ class DataBindingMixin(_MixinBase):
         spec = self._cost_meta_circuit(self._data_symbols + self._weight_symbols)
         # super() (not self) skips the mixin's data-binding injection: the predict
         # pipeline binds each joined (data, weights) row directly, with no data fan-out.
-        # Data-bound programs measure expectation values; the predict pipeline
-        # mirrors the cost terminal (a plain MeasurementStage) without the
-        # data-binding fan-out.
         pipeline = super()._assemble_pipeline(
             CircuitSpecStage(),
-            MeasurementStage(
-                grouping_strategy=self._grouping_strategy,
-                shot_distribution=self._shot_distribution,
-            ),
+            self._make_measurement_stage(),
             result_format=ResultFormat.EXPVALS,
         )
         # Base env (not the mixin override): the predict pipeline has no

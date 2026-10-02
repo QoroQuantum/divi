@@ -22,6 +22,12 @@ class ConcreteObservableMeasuringProgram(ObservableMeasuringMixin, QuantumProgra
         return self
 
 
+def test_mixin_only_subclass_defines_without_quantum_program():
+    partial = type("_PartialObservableMeasuring", (ObservableMeasuringMixin,), {})
+
+    assert issubclass(partial, ObservableMeasuringMixin)
+
+
 @pytest.mark.parametrize(
     "attribute, expected",
     [

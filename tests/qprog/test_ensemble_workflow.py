@@ -25,7 +25,7 @@ from divi.qprog._ensemble_checkpoint import (
     _encode_program_id,
 )
 from divi.qprog._program_checkpoint import ProgramCheckpoint
-from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.checkpointing import PROGRAM_COMPLETION_FILE, CheckpointConfig
 from divi.qprog.ensemble import (
     BatchConfig,
     BatchMode,
@@ -44,7 +44,11 @@ from divi.reporting._events import (
 from divi.reporting._logging import log_progress_event
 from divi.reporting._session import ProgressSession
 from divi.reporting._state import ProgressState
-from tests.qprog._helpers import FailingTestProgram, SimpleTestProgram
+from tests.qprog._helpers import (
+    FailingTestProgram,
+    SimpleTestProgram,
+    _RecordingSession,
+)
 
 # Each round of _LifecycleEnsemble contributes these totals via
 # SimpleTestProgram(10, 5.5) + SimpleTestProgram(5, 10.0).
@@ -286,20 +290,13 @@ class _OneShotEnsemble(ProgramEnsemble):
         return None
 
 
-class _RecordingSession:
-    """Synchronous session double retaining the real progress reducer."""
+class _FailingMaterialisationEnsemble(_LifecycleEnsemble):
+    """Raises from ``create_programs`` on ``fail_on_round``, before building any."""
 
-    def __init__(self, state: ProgressState):
-        self.state = state
-        self.events: list[ProgressEvent] = []
-        self.closed = False
-
-    def emit(self, event: ProgressEvent) -> None:
-        self.events.append(event)
-        self.state.apply(event)
-
-    def close(self) -> None:
-        self.closed = True
+    def create_programs(self, state=None):
+        if state + 1 == self._fail_on_round:
+            raise ValueError("materialisation boom")
+        super().create_programs(state)
 
 
 @pytest.fixture
@@ -759,6 +756,37 @@ class TestEnsembleCheckpointing:
 
         assert (tmp_path / "round_001" / "round_completion.json").is_file()
 
+    def test_checkpointed_run_after_a_plain_run(self, lifecycle_ensemble, tmp_path):
+        ensemble = lifecycle_ensemble(n_rounds=1)
+        ensemble.run()
+
+        ensemble.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert ensemble.stop_reason is WorkflowStatus.COMPLETE
+        assert (tmp_path / "round_001" / "round_completion.json").is_file()
+
+    @pytest.mark.parametrize("checkpointed", [False, True], ids=["plain", "fresh-dir"])
+    def test_run_after_a_resumed_run_starts_a_fresh_workflow(
+        self, lifecycle_ensemble, tmp_path, checkpointed
+    ):
+        source, fresh = tmp_path / "source", tmp_path / "fresh"
+        _interrupt_round_two(lifecycle_ensemble(n_rounds=2), source)
+        resumed = lifecycle_ensemble(n_rounds=2).restore_state(source)
+        resumed.run()
+        resumed.calls.clear()
+
+        resumed.run(
+            checkpoint_config=CheckpointConfig(
+                checkpoint_dir=fresh if checkpointed else None
+            )
+        )
+
+        assert resumed.calls[0] == "initial_state"
+        assert resumed.stop_reason is WorkflowStatus.COMPLETE
+        assert [record.number for record in resumed.round_history] == [1, 2]
+        if checkpointed:
+            assert (fresh / "round_002" / "round_completion.json").is_file()
+
     def test_explicit_checkpoint_dir_overrides_the_restored_root(
         self, lifecycle_ensemble, tmp_path
     ):
@@ -772,22 +800,6 @@ class TestEnsembleCheckpointing:
 
         assert (target / "round_002" / "round_completion.json").is_file()
         assert not (source / "round_002").exists()
-
-    def test_run_after_a_resumed_run_starts_a_fresh_workflow(
-        self, lifecycle_ensemble, tmp_path
-    ):
-        lifecycle_ensemble(n_rounds=2).run(
-            max_rounds=1, checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
-        )
-        restored = lifecycle_ensemble(n_rounds=2).restore_state(tmp_path)
-        restored.run()
-        restored.calls.clear()
-
-        restored.run()
-
-        assert restored.calls[0] == "initial_state"
-        assert [record.number for record in restored.round_history] == [1, 2]
-        assert restored.stop_reason is WorkflowStatus.COMPLETE
 
     def test_restore_targets_an_explicit_round(self, lifecycle_ensemble, tmp_path):
         lifecycle_ensemble(n_rounds=3).run(
@@ -912,6 +924,29 @@ class TestEnsembleCheckpointing:
         assert session.recovered_circuit_count == 7
         assert session.recovered_run_time == pytest.approx(6.0)
         assert not session.unfinalised_programs
+
+    def test_completed_children_sum_their_recovered_accounting(self, tmp_path, mocker):
+        children = [
+            _iterative_child(mocker, tmp_path / name, (1, 1.0), (0, 0.0))
+            for name in ("a", "b")
+        ]
+        for child in children:
+            (child.path / PROGRAM_COMPLETION_FILE).write_text("{}")
+        mocker.patch.object(
+            ensemble_module,
+            "_restore_completion",
+            return_value=mocker.Mock(total_circuit_count=1, total_run_time=1.0),
+        )
+        session = _iterative_session(children)
+
+        session._recover(
+            [child.program for child in children],
+            {child.program: child.record for child in children},
+        )
+
+        assert session.completed_programs == {child.program for child in children}
+        assert session.recovered_circuit_count == 2
+        assert session.recovered_run_time == 2.0
 
     def test_vqa_child_without_iterative_support_is_not_recovered(
         self, tmp_path, mocker
@@ -1163,6 +1198,7 @@ class TestRoundFailureHandling:
             ensemble.run()
 
         assert ensemble.stop_reason == WorkflowStatus.FAILED
+        assert ensemble.workflow_state == 1
         assert [record.status for record in ensemble.round_history] == [
             WorkflowStatus.COMPLETE,
             WorkflowStatus.FAILED,
@@ -1177,6 +1213,24 @@ class TestRoundFailureHandling:
         assert failed.error.startswith("RuntimeError: Ensemble execution failed")
         # The program's own exception, not only the ensemble's wrapper.
         assert failed.error.endswith(" Caused by RuntimeError: program boom")
+
+    def test_failed_materialisation_records_its_own_program_count(
+        self, lifecycle_ensemble
+    ):
+        ensemble = lifecycle_ensemble(
+            cls=_FailingMaterialisationEnsemble,
+            n_rounds=3,
+            programs_per_round=3,
+            fail_on_round=2,
+        )
+
+        with pytest.raises(ValueError, match="materialisation boom"):
+            ensemble.run()
+
+        assert [
+            (record.number, record.program_count, record.status)
+            for record in ensemble.round_history
+        ] == [(1, 3, WorkflowStatus.COMPLETE), (2, 0, WorkflowStatus.FAILED)]
 
     def test_failed_first_round_leaves_the_initial_state(self, lifecycle_ensemble):
         ensemble = lifecycle_ensemble(n_rounds=2, fail_on_round=1)
@@ -1393,20 +1447,36 @@ class TestRunOneRoundInteropWithRun:
             ensemble.join()
 
 
+def test_programs_assigned_before_run_are_its_first_round(dummy_simulator):
+    ensemble = _OneShotEnsemble(
+        backend=dummy_simulator, reporting_level=ReportingLevel.OFF
+    )
+    assigned = {"mine": SimpleTestProgram(3, 1.0, backend=dummy_simulator)}
+
+    ensemble.programs = assigned
+    assigned["stray"] = SimpleTestProgram(100, 1.0, backend=dummy_simulator)
+    ensemble.run(max_rounds=1)
+
+    assert ensemble.total_circuit_count == 3
+    assert [record.program_count for record in ensemble.round_history] == [1]
+
+
 class TestReportingLevels:
     """Visibility and standing-row lifecycles are reducer state."""
 
-    def test_unregistered_workflow_stage_is_not_emitted(self, dummy_simulator):
+    def test_workflow_stage_after_dispatch_is_logged(self, mocker, dummy_simulator):
         ensemble = _OneShotEnsemble(
             backend=dummy_simulator,
             reporting_level=ReportingLevel.COMPACT,
         )
         events: list[ProgressEvent] = []
         ensemble._progress_emitter = events.append
+        info = mocker.spy(ensemble_module.logger, "info")
 
         ensemble._emit_workflow_stage("Reducing samples")
 
         assert events == []
+        info.assert_called_once_with("Reducing samples")
 
     @staticmethod
     def _scope_targets(ensemble, scope):

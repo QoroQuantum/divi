@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 import matplotlib.pyplot as plt
+import numpy as np
 from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 
@@ -55,7 +56,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
         n_steps: int = 1,
         order: int = 1,
         initial_state: InitialState | None = None,
-        observable: SparsePauliOp | None = None,
+        observable: SparsePauliOp | Sequence[SparsePauliOp] | None = None,
         seed: int | None = None,
         **kwargs,
     ):
@@ -73,7 +74,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             order: Suzuki-Trotter order (1 or even).
             initial_state: Initial state preparation (:class:`~divi.qprog.algorithms.InitialState` instance).
                 Defaults to ``ZerosState()`` if None.
-            observable: If None, measure probabilities; else expectation value.
+            observable: If None, measure probabilities; else the expectation
+                value of one observable, or of each observable in a sequence.
             seed: Random seed for reproducible results.
             **kwargs: Forwarded verbatim to every per-time-point
                 :class:`~divi.qprog.algorithms.TimeEvolution`.  Use this for
@@ -181,13 +183,14 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
         return replace(template, parameters=(t_param,)), t_param
 
-    def aggregate_results(self) -> dict[float, dict | float]:
+    def aggregate_results(self) -> dict[float, dict | float | list[float]]:
         """Aggregate results into a time-ordered mapping.
 
         Returns:
             dict mapping each time point to its result. The value is a
             ``dict[str, float]`` of probabilities when no observable is set,
-            or a ``float`` expectation value otherwise.
+            a ``float`` expectation value for one observable, or a
+            ``list[float]`` with one value per observable for a sequence.
         """
         self._check_ready_for_aggregation()
         return {t: self._programs[f"t={t}"].results for t in self._time_points}
@@ -195,7 +198,8 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
     def visualize_results(self):
         """Plot the expectation-value trajectory over time.
 
-        Requires that the trajectory was run with an ``observable``.
+        Requires that the trajectory was run with an ``observable``. A
+        sequence of observables is drawn as one line per observable.
 
         Raises:
             RuntimeError: If no observable was set (probability mode).
@@ -208,9 +212,17 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
 
         results = self.aggregate_results()
         times = list(results.keys())
-        values = [float(v) for v in results.values() if isinstance(v, (int, float))]
+        series = np.atleast_2d(np.asarray(list(results.values()), dtype=float).T)
 
-        plt.plot(times, values, marker="o")
+        for index, values in enumerate(series):
+            plt.plot(
+                times,
+                values,
+                marker="o",
+                label=f"Observable {index}" if len(series) > 1 else None,
+            )
+        if len(series) > 1:
+            plt.legend()
         plt.xlabel("Time")
         plt.ylabel("Expectation value")
         plt.title("Time Evolution Trajectory")

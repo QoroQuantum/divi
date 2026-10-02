@@ -3,7 +3,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
+import warnings
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 import numpy as np
@@ -29,6 +31,7 @@ from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
     MonteCarloOptimizer,
+    Optimizer,
     ScipyMethod,
     ScipyOptimizer,
     SPSAOptimizer,
@@ -36,11 +39,13 @@ from divi.qprog.optimizers import (
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
+    _argmin_finite,
     _compute_parameter_shift_rule,
 )
 from divi.reporting._events import ProgressEvent, TerminalStatus
 from tests._helpers import exact_match
 from tests.pipeline._helpers import meta_from_circuit
+from tests.qprog._helpers import restore_iteration_checkpoint
 from tests.qprog.algorithms._helpers import seed_best_probs
 
 
@@ -166,6 +171,25 @@ def test_solution_sampling_mixin_works_on_non_vqa_host(dummy_simulator):
     assert host._results["best_probs"]  # populated by the real PROBS sample pipeline
     top = host.get_top_solutions(n=2)
     assert top and isinstance(top[0], SolutionEntry)
+
+
+def test_sample_solution_without_params_needs_a_resolver(dummy_simulator):
+    host = _NonVQASampler(backend=dummy_simulator)
+
+    with pytest.raises(TypeError, match="does not define _resolve_sample_params"):
+        host.sample_solution()
+
+
+def test_sample_solution_samples_what_the_resolver_returns(dummy_simulator, mocker):
+    host = _NonVQASampler(backend=dummy_simulator)
+    host._resolve_sample_params = mocker.Mock(return_value=np.array([0.25, 0.5]))
+    evaluate = mocker.patch.object(host, "evaluate", return_value={0: {"00": 1.0}})
+
+    host.sample_solution()
+
+    host._resolve_sample_params.assert_called_once_with(None)
+    np.testing.assert_array_equal(evaluate.call_args.args[0], [[0.25, 0.5]])
+    assert host._results["best_probs"] == {0: {"00": 1.0}}
 
 
 def test_solution_sampling_mixin_routes_sampling_to_configured_backend(
@@ -449,6 +473,31 @@ class TestProgram(BaseVariationalQuantumAlgorithmTest):
                 samples_used=8,
             )
         }
+
+    def test_evaluate_estimates_threads_params_backend_and_samples(self, mocker):
+        program = self._create_sample_program(mocker)
+        evaluate = mocker.patch.object(
+            program,
+            "evaluate",
+            return_value=({0: [1.0], 1: [2.0]}, {0: 0.5, 1: 0.25}),
+        )
+        params = np.arange(8, dtype=float).reshape(2, 4)
+        preprocessor = program.cost_preprocessor()
+
+        estimates = program.evaluate_estimates(
+            params, preprocessor, estimator_samples=[2, 8], backend=mocker.sentinel.b
+        )
+
+        (passed_params, passed_preprocessor), kwargs = evaluate.call_args
+        np.testing.assert_array_equal(passed_params, params)
+        assert passed_preprocessor is preprocessor
+        assert kwargs == {
+            "backend": mocker.sentinel.b,
+            "estimator_samples": (2, 8),
+            "return_variance": True,
+        }
+        assert [e.single_shot_variance for e in estimates.values()] == [1.0, 2.0]
+        assert [e.samples_used for e in estimates.values()] == [2, 8]
 
     @pytest.mark.parametrize(
         ("estimator_samples", "message"),
@@ -962,6 +1011,7 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         full = program.param_history(mode="all_evaluated")
         np.testing.assert_allclose(full[0], row0)
         np.testing.assert_allclose(full[1], row1)
+        np.testing.assert_array_equal(program.param_history(), full)
 
     def test_run_method_cancellation_handling(self, mocker):
         """Cancellation now halts the script at ``run()``: ``ExecutionCancelledError``
@@ -1310,12 +1360,13 @@ class TestCheckpointing:
             optimizer=default_optimizer,
         )
 
-        restored = fresh._restore_state(tmp_path)
+        restored = restore_iteration_checkpoint(fresh, tmp_path)
 
         assert restored is fresh
         assert fresh.current_iteration == 3
         assert fresh._best_loss == 0.123
         assert isinstance(fresh.optimizer, MonteCarloOptimizer)
+        assert fresh.optimizer is not default_optimizer, "the loaded one is installed"
         np.testing.assert_allclose(fresh._best_params, [0.1, 0.2, 0.3, 0.4])
 
     def test_restore_state_rolls_back_when_subclass_restore_fails(
@@ -1346,7 +1397,7 @@ class TestCheckpointing:
         mocker.patch.object(fresh, "_load_subclass_state", fail_after_mutation)
 
         with pytest.raises(ValueError, match="stale subclass state"):
-            fresh._restore_state(tmp_path)
+            restore_iteration_checkpoint(fresh, tmp_path)
 
         assert fresh.current_iteration == 7
         assert fresh.max_iterations == 11
@@ -1378,7 +1429,7 @@ class TestCheckpointing:
         )
 
         with pytest.raises(ValueError, match="SomeOtherProgram"):
-            fresh._restore_state(tmp_path)
+            restore_iteration_checkpoint(fresh, tmp_path)
 
         assert fresh.current_iteration == 0
         assert fresh.optimizer is default_optimizer
@@ -1719,6 +1770,39 @@ class TestCheckpointing:
 
         with pytest.raises(RuntimeError, match="optimisation has not been run"):
             sample_program.save_state(CheckpointConfig(checkpoint_dir=checkpoint_dir))
+        assert not checkpoint_dir.exists()
+
+    def test_save_state_twice_at_one_iteration_overwrites(
+        self, sample_program, tmp_path, mocker
+    ):
+        self._save_one_iteration(sample_program, tmp_path, mocker)
+
+        sample_program.save_state(CheckpointConfig(checkpoint_dir=tmp_path))
+
+        assert [info.iteration for info in list_checkpoints(tmp_path)] == [1]
+
+    def test_load_keeps_the_base_seed(self, tmp_path, mocker, mock_backend):
+        program = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=MonteCarloOptimizer(),
+            seed=11,
+        )
+        program.max_iterations = 10
+        self._save_one_iteration(program, tmp_path, mocker)
+
+        loaded = SampleVQAProgram.load_state(
+            tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+        )
+
+        assert loaded._base_seed == program._base_seed == 11
+
+    def test_load_rejects_a_seed_before_reading_anything(self, tmp_path, mock_backend):
+        with pytest.raises(TypeError, match="restores seed"):
+            SampleVQAProgram.load_state(
+                tmp_path, backend=mock_backend, circ_count=0, run_time=0.0, seed=1
+            )
 
     def test_automatic_checkpointing_in_run(self, sample_program, tmp_path, mocker):
         """Test that run() triggers checkpointing."""
@@ -1950,11 +2034,13 @@ class TestCheckpointing:
         )
         target._results = {"best_probs": {0: {"11": 1.0}}}
 
-        target._restore_state(tmp_path, subdirectory="checkpoint_001")
+        restore_iteration_checkpoint(target, tmp_path, subdirectory="checkpoint_001")
         assert target._results == {}
 
-        target._restore_state(tmp_path)
-        assert target._results["best_probs"] == {0: {"01": 1.0}}
+        latest = SampleVQAProgram.load_state(
+            tmp_path, backend=mock_backend, circ_count=0, run_time=0.0
+        )
+        assert latest._results["best_probs"] == {0: {"01": 1.0}}
 
     @pytest.mark.parametrize(
         "abort",
@@ -2381,6 +2467,22 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         result = program.get_top_solutions(n=100)
 
         assert len(result) == 2  # Only 2 available
+
+    def test_get_top_solutions_single_entry_from_one_set_is_silent(self, mocker):
+        program = self._setup_program_with_probs(mocker, {"00": 0.6, "01": 0.4})
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            result = program.get_top_solutions(n=1)
+
+        assert result == [SolutionEntry(bitstring="00", prob=0.6)]
+
+    def test_get_top_solutions_min_prob_one_keeps_a_certain_outcome(self, mocker):
+        program = self._setup_program_with_probs(mocker, {"00": 1.0, "01": 0.0})
+
+        result = program.get_top_solutions(min_prob=1.0)
+
+        assert result == [SolutionEntry(bitstring="00", prob=1.0)]
 
     def test_get_top_solutions_n_zero_returns_empty(self, mocker):
         """Test that get_top_solutions returns empty list when n=0."""
@@ -3011,3 +3113,308 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
             assert len(nonzero) == 1, f"Row {2*i} shifts {len(nonzero)} params"
             assert nonzero[0] == i
             np.testing.assert_allclose(np.abs(diff_pos[nonzero[0]]), np.pi / 2)
+
+
+class _ScriptedOptimizer(Optimizer):
+    """An optimizer whose whole run is ``script(cost_fn, callback_fn, kwargs)``."""
+
+    def __init__(self, script, n_param_sets=1, evaluators=None):
+        self._script = script
+        self._n_param_sets = n_param_sets
+        self._evaluators = evaluators or {}
+
+    @property
+    def n_param_sets(self) -> int:
+        return self._n_param_sets
+
+    def optimize(self, cost_fn, initial_params=None, callback_fn=None, **kwargs):
+        return self._script(cost_fn, callback_fn, kwargs)
+
+    def get_config(self):
+        return {"type": "_ScriptedOptimizer"}
+
+    def save_state(self, checkpoint_dir):
+        pass
+
+    @classmethod
+    def load_state(cls, checkpoint_dir):
+        raise NotImplementedError
+
+    def reset(self):
+        pass
+
+    def build_evaluators(self, program):
+        return dict(self._evaluators)
+
+
+_X0 = np.array([[0.1, 0.2, 0.3, 0.4]])
+_X1 = np.array([[0.5, 0.6, 0.7, 0.8]])
+
+
+def _iterations(*steps, final=None, then=None):
+    """A script reporting each ``(x, fun, extra)`` step, then raising ``then`` or
+    returning ``final`` (by default the last step, as a 1-D result)."""
+
+    def script(cost_fn, callback_fn, kwargs):
+        for x, fun, extra in steps:
+            callback_fn(OptimizeResult(x=x, fun=np.asarray(fun), **extra))
+        if then is not None:
+            raise then
+        if final is not None:
+            return final
+        x, fun, _ = steps[-1]
+        return OptimizeResult(x=x[0], fun=fun[0])
+
+    return script
+
+
+def _scripted_program(mocker, backend, script, *, loss=-0.5, **kwargs):
+    """A ``SampleVQAProgram`` driven by ``script``, every cost evaluating to ``loss``."""
+    optimizer_kwargs = {
+        key: kwargs.pop(key) for key in ("n_param_sets", "evaluators") if key in kwargs
+    }
+    program = SampleVQAProgram(
+        circ_count=1,
+        run_time=0.1,
+        backend=backend,
+        optimizer=_ScriptedOptimizer(script, **optimizer_kwargs),
+        seed=7,
+        **kwargs,
+    )
+    program.max_iterations = 5
+    mocker.patch.object(
+        program,
+        "_evaluate_cost_param_sets",
+        side_effect=lambda params, **_: {
+            i: loss for i in range(len(np.atleast_2d(params)))
+        },
+    )
+    return program
+
+
+def _record_progress(program):
+    events = []
+    program._progress_emitter = events.append
+    return events
+
+
+def test_cost_fn_returns_a_python_float_for_a_single_vector(mocker, mock_backend):
+    seen = {}
+
+    def script(cost_fn, callback_fn, kwargs):
+        seen["single"] = cost_fn(np.zeros(4))
+        seen["batch"] = cost_fn(np.zeros((1, 4)))
+        return _iterations((_X0, [-0.5], {}))(cost_fn, callback_fn, kwargs)
+
+    _scripted_program(mocker, mock_backend, script).run(perform_final_computation=False)
+
+    assert type(seen["single"]) is float
+    assert seen["batch"].shape == (1,)
+
+
+def test_optimizer_evaluators_reach_the_optimizer(mocker, mock_backend):
+    """``jac`` is wrapped into the program's gradient function; every other
+    evaluator is forwarded as is."""
+    jac = mocker.Mock(return_value=np.ones(4))
+    metric_fn = mocker.Mock()
+    seen = {}
+
+    def script(cost_fn, callback_fn, kwargs):
+        seen.update(kwargs)
+        seen["grad"] = kwargs["jac"](np.zeros(4))
+        return _iterations((_X0, [-0.5], {}))(cost_fn, callback_fn, kwargs)
+
+    program = _scripted_program(
+        mocker,
+        mock_backend,
+        script,
+        evaluators={"jac": jac, "metric_fn": metric_fn},
+    )
+    default_gradient = mocker.spy(program, "_evaluate_gradient_at")
+    program.run(perform_final_computation=False)
+
+    jac.assert_called_once()
+    default_gradient.assert_not_called()
+    np.testing.assert_array_equal(seen["grad"], np.ones(4))
+    assert seen["metric_fn"] is metric_fn
+    assert seen["jac"] is not jac
+
+
+@pytest.mark.parametrize(
+    "optimizer, expected",
+    [
+        (
+            lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+            StopReason.GRADIENT_BELOW_THRESHOLD,
+        ),
+        (MonteCarloOptimizer, None),
+    ],
+    ids=["gradient-based", "gradient-free"],
+)
+def test_grad_norm_threshold_uses_the_reported_gradient(
+    mocker, mock_backend, optimizer, expected
+):
+    """A gradient-free optimizer reports no gradient, so the threshold must not
+    compare against one."""
+    program = SampleVQAProgram(
+        circ_count=1,
+        run_time=0.1,
+        backend=mock_backend,
+        optimizer=optimizer(),
+        seed=7,
+        early_stopping=EarlyStopping(patience=50, grad_norm_threshold=1e-3),
+    )
+    mocker.patch.object(
+        program,
+        "_evaluate_cost_param_sets",
+        side_effect=lambda params, **_: {
+            i: float(np.sum((row - 1.0) ** 2))
+            for i, row in enumerate(np.atleast_2d(params))
+        },
+    )
+    mocker.patch.object(
+        program, "_evaluate_gradient_at", side_effect=lambda p: 2.0 * (p - 1.0)
+    )
+
+    program.run(max_iterations=20, perform_final_computation=False)
+
+    assert program.stop_reason is expected
+
+
+@pytest.mark.parametrize(
+    "track_best, expected", [(False, 2.0), (True, 1.0)], ids=["latest", "best"]
+)
+def test_track_best_flag_decides_which_iterate_is_kept(
+    mocker, mock_backend, track_best, expected
+):
+    """An optimizer that reports ``track_best=False`` keeps its latest iterate as
+    the best, even when an earlier one had a lower loss."""
+    extra = {"track_best": track_best}
+    script = _iterations(
+        (_X0, [1.0], extra),
+        (_X1, [2.0], extra),
+        final=OptimizeResult(x=_X1[0], fun=np.nan),
+    )
+    program = _scripted_program(mocker, mock_backend, script)
+
+    program.run(perform_final_computation=False)
+
+    assert program.best_loss == expected
+    np.testing.assert_array_equal(
+        program.best_params, (_X1 if expected == 2.0 else _X0)[0]
+    )
+
+
+@pytest.mark.parametrize(
+    "case, message, nit",
+    [
+        ("stop-iteration", "Early stopping: Stopped", 1),
+        ("patience", "Early stopping: patience_exceeded", 2),
+        ("cancel", "Cancelled by user", 1),
+    ],
+)
+def test_interrupted_run_records_the_best_so_far(
+    mocker, mock_backend, case, message, nit
+):
+    """However the optimizer is interrupted, ``optimize_result`` reports the best
+    iterate seen and the iterations spent; only a cancellation finishes the
+    progress row as cancelled."""
+    steps = [(_X0, [0.3], {}), (_X1, [0.3], {})]
+    kwargs = {}
+    if case == "stop-iteration":
+        script = _iterations(steps[0], then=StopIteration())
+    else:
+        script = _iterations(*steps)
+    if case == "patience":
+        kwargs["early_stopping"] = EarlyStopping(patience=1)
+    program = _scripted_program(mocker, mock_backend, script, **kwargs)
+    if case == "cancel":
+        program._cancellation_event = Event()
+        program._cancellation_event.set()
+    events = _record_progress(program)
+
+    if case == "cancel":
+        with pytest.raises(ExecutionCancelledError, match=message):
+            program.run(perform_final_computation=False)
+    else:
+        program.run(perform_final_computation=False)
+
+    result = program.optimize_result
+    np.testing.assert_array_equal(result.x, _X0)
+    np.testing.assert_array_equal(result.fun, [0.3])
+    assert result.nit == nit
+    assert result.success is False
+    assert result.message == message
+    cancelled = ProgressEvent.finish(
+        program._progress_key, TerminalStatus.CANCELLED, detail="Cancelled by user"
+    )
+    assert (cancelled in events) is (case == "cancel")
+
+
+def test_all_nan_iterate_still_leaves_one_parameter_vector(mocker, mock_backend):
+    population = np.arange(8, dtype=float).reshape(2, 4)
+    script = _iterations((population, [np.nan, np.nan], {}), then=StopIteration())
+    program = _scripted_program(mocker, mock_backend, script, n_param_sets=2)
+
+    program.run(perform_final_computation=False)
+
+    assert program.final_params.shape == (4,)
+    np.testing.assert_array_equal(program.final_params, population[0])
+
+
+def test_checkpointed_run_without_any_iteration_succeeds(
+    mocker, mock_backend, tmp_path
+):
+    """An optimizer that returns before reporting an iteration leaves nothing to
+    checkpoint, which must not fail the run."""
+    script = _iterations(final=OptimizeResult(x=np.zeros(4), fun=0.5))
+    program = _scripted_program(mocker, mock_backend, script)
+
+    program.run(
+        checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path),
+        perform_final_computation=False,
+    )
+
+    assert program.optimize_result.success is True
+    assert list_checkpoints(tmp_path) == []
+
+
+def test_run_progress_events_are_keyed_to_the_program(mocker, mock_backend):
+    program = _scripted_program(mocker, mock_backend, _iterations((_X0, [-0.5], {})))
+    events = _record_progress(program)
+
+    program.run(perform_final_computation=False)
+
+    assert events
+    assert all(isinstance(event, ProgressEvent) for event in events)
+    assert {event.progress_key for event in events} == {program._progress_key}
+
+
+def test_resources_used_count_each_run_alone(mocker, mock_backend):
+    def script(cost_fn, callback_fn, kwargs):
+        cost_fn(np.zeros(4))
+        return _iterations((_X0, [-0.5], {}))(cost_fn, callback_fn, kwargs)
+
+    program = _scripted_program(mocker, mock_backend, script)
+
+    def spend(params, **_):
+        program._total_circuit_count += 3
+        program._total_device_shots += 300
+        program._total_backend_jobs += 2
+        return {0: -0.5}
+
+    program._evaluate_cost_param_sets.side_effect = spend
+
+    for max_iterations in (1, 2):
+        program.run(max_iterations=max_iterations, perform_final_computation=False)
+        result = program.optimize_result
+        assert (
+            result.circuits_used,
+            result.device_shots_used,
+            result.backend_jobs_used,
+        ) == (3, 300, 2)
+
+
+def test_argmin_finite_skips_non_finite_entries():
+    assert _argmin_finite(np.array([np.nan, 2.0, 1.0])) == 2
+    assert _argmin_finite(np.array([np.nan, np.inf])) is None

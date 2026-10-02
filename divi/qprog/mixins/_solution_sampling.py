@@ -456,7 +456,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             backend=backend,
         )
         self._results["best_probs"] = {
-            idx: _average_probabilities(value) for idx, value in result.items()
+            idx: dict(value) for idx, value in result.items()
         }
 
 
@@ -493,18 +493,3 @@ def _spin_moments(
     correlations = spins.T @ (probabilities[:, np.newaxis] * spins)
     np.fill_diagonal(correlations, 1.0)
     return magnetisations, correlations
-
-
-def _average_probabilities(
-    value: dict[str, float] | list[dict[str, float]],
-) -> dict[str, float]:
-    """Average one or more probability distributions."""
-    if isinstance(value, dict):
-        return dict(value)
-    if not value:
-        return {}
-    bitstrings = set().union(*(probs.keys() for probs in value))
-    return {
-        bitstring: sum(probs.get(bitstring, 0.0) for probs in value) / len(value)
-        for bitstring in sorted(bitstrings)
-    }

@@ -6,6 +6,7 @@ import logging
 import math
 import warnings
 
+import matplotlib.pyplot as plt
 import pytest
 from qiskit.circuit import ParameterExpression
 from qiskit.converters import dag_to_circuit
@@ -14,8 +15,8 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits.quepp import QuEPP
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.pipeline import DiviPerformanceWarning
-from divi.qprog import TimeEvolutionTrajectory
-from divi.qprog.algorithms import TimeEvolution
+from divi.qprog import ReportingLevel, TimeEvolutionTrajectory
+from divi.qprog.algorithms import SuperpositionState, TimeEvolution
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import BatchConfig, BatchMode
 from divi.qprog.workflows import _time_evolution_trajectory as workflow
@@ -103,6 +104,35 @@ class TestTimeEvolutionTrajectoryKwargForwarding:
         assert all(
             prog._shot_distribution == "weighted" for prog in traj.programs.values()
         )
+
+    def test_trajectory_settings_reach_every_program(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        """Constructor settings reach each child; ``reporting_level`` stays here."""
+        strategy = ExactTrotterization(keep_top_n=1)
+        initial_state = SuperpositionState()
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.1, 0.5],
+            backend=dummy_simulator,
+            trotterization_strategy=strategy,
+            n_steps=3,
+            order=2,
+            initial_state=initial_state,
+            seed=9,
+            reporting_level="off",
+        )
+
+        traj.create_programs()
+
+        assert traj.reporting_level == ReportingLevel.OFF
+        for prog in traj.programs.values():
+            assert prog._seed == 9
+            assert prog.n_steps == 3
+            assert prog.order == 2
+            assert prog.initial_state is initial_state
+            assert prog.trotterization_strategy == strategy
+            assert prog.trotterization_strategy is not strategy
 
     def test_invalid_kwarg_rejected_at_program_construction(
         self, two_qubit_hamiltonian, dummy_simulator
@@ -366,19 +396,38 @@ def cache_test_hamiltonian():
     )
 
 
-def _build_meta_at(H, observable, time, backend, *, n_steps=1, order=1):
+def _build_meta_at(H, observable, time, backend, **program_kwargs):
     """Helper: instantiate a single-shot ``TimeEvolution`` and run its
     factory to obtain the un-cached ``MetaCircuit`` at ``time``."""
     prog = TimeEvolution(
         hamiltonian=H,
         time=time,
-        n_steps=n_steps,
-        order=order,
         observable=observable,
         backend=backend,
+        **program_kwargs,
     )
     result = prog.trotterization_strategy.process_hamiltonian(H)
     return prog._meta_circuit_factory(result, ham_id=0)
+
+
+def _assert_template_binds_to(template, t_param, fresh, t_value, atol):
+    """The template bound at ``t_value`` has ``fresh``'s gates, wires and angles."""
+    for (tag_t, dag_t), (tag_f, dag_f) in zip(
+        template.circuit_bodies, fresh.circuit_bodies, strict=True
+    ):
+        assert tag_t == tag_f
+        bound = dag_to_circuit(dag_t).assign_parameters({t_param: t_value})
+        unbound = dag_to_circuit(dag_f)
+        assert len(bound.data) == len(unbound.data)
+        for inst_b, inst_f in zip(bound.data, unbound.data, strict=True):
+            assert inst_b.operation.name == inst_f.operation.name
+            assert tuple(bound.find_bit(q).index for q in inst_b.qubits) == tuple(
+                unbound.find_bit(q).index for q in inst_f.qubits
+            )
+            for pb, pf in zip(
+                inst_b.operation.params, inst_f.operation.params, strict=True
+            ):
+                assert abs(float(pb) - float(pf)) < atol
 
 
 def _dag_signature(meta):
@@ -512,24 +561,36 @@ class TestParametricTemplate:
         t_test = 0.7
         m_fresh = _build_meta_at(H, obs, t_test, dummy_simulator)
 
-        for (tag_template, dag_template), (tag_fresh, dag_fresh) in zip(
-            template.circuit_bodies, m_fresh.circuit_bodies, strict=True
-        ):
-            assert tag_template == tag_fresh
-            qc = dag_to_circuit(dag_template)
-            bound = qc.assign_parameters({t_param: t_test}, inplace=False)
-            fresh = dag_to_circuit(dag_fresh)
+        _assert_template_binds_to(template, t_param, m_fresh, t_test, atol=1e-9)
 
-            assert len(bound.data) == len(fresh.data)
-            for inst_b, inst_f in zip(bound.data, fresh.data, strict=True):
-                assert inst_b.operation.name == inst_f.operation.name
-                wb = tuple(bound.find_bit(q).index for q in inst_b.qubits)
-                wf = tuple(fresh.find_bit(q).index for q in inst_f.qubits)
-                assert wb == wf
-                for pb, pf in zip(
-                    inst_b.operation.params, inst_f.operation.params, strict=True
-                ):
-                    assert abs(float(pb) - float(pf)) < 1e-9
+    def test_shared_template_honours_program_settings(
+        self, cache_test_hamiltonian, dummy_simulator
+    ):
+        """The shared template is built with the trajectory's initial state,
+        term truncation and precision, not the defaults."""
+        settings = dict(
+            initial_state=SuperpositionState(),
+            trotterization_strategy=ExactTrotterization(keep_top_n=1),
+            precision=4,
+        )
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=cache_test_hamiltonian,
+            time_points=[0.1 * (i + 1) for i in range(workflow._CACHE_MIN_TIME_POINTS)],
+            observable=_Z0_2Q,
+            backend=dummy_simulator,
+            **settings,
+        )
+        traj.create_programs()
+        programs = list(traj.programs.values())
+        template, t_param = programs[0]._template_meta, programs[0]._template_param
+        assert template is not None
+
+        fresh = _build_meta_at(
+            cache_test_hamiltonian, _Z0_2Q, 0.7, dummy_simulator, **settings
+        )
+
+        assert template.precision == 4
+        _assert_template_binds_to(template, t_param, fresh, 0.7, atol=1e-9)
 
 
 class TestCacheGating:
@@ -658,19 +719,7 @@ def test_bound_angles_match_fresh_at_third_t(
     m_fresh = _build_meta_at(
         H, obs, t_test, dummy_simulator, n_steps=n_steps, order=order
     )
-    for (_, dag_t), (_, dag_f) in zip(
-        template.circuit_bodies, m_fresh.circuit_bodies, strict=True
-    ):
-        qc = dag_to_circuit(dag_t)
-        bound = qc.assign_parameters({t_param: t_test}, inplace=False)
-        fresh = dag_to_circuit(dag_f)
-        assert len(bound.data) == len(fresh.data)
-        for inst_b, inst_f in zip(bound.data, fresh.data, strict=True):
-            assert inst_b.operation.name == inst_f.operation.name
-            for pb, pf in zip(
-                inst_b.operation.params, inst_f.operation.params, strict=True
-            ):
-                assert abs(float(pb) - float(pf)) < 1e-12
+    _assert_template_binds_to(template, t_param, m_fresh, t_test, atol=1e-12)
 
 
 def test_cached_and_uncached_results_agree(
@@ -753,3 +802,63 @@ def test_templated_programs_run_exhaustive_quepp(default_test_simulator):
         trajectory.run()
 
     assert all(math.isfinite(p.results) for p in trajectory.programs.values())
+
+
+def _plotted_lines(dummy_simulator, mocker, observable, results):
+    """Draw a trajectory whose programs hold ``results`` and return its lines."""
+    show = mocker.patch("matplotlib.pyplot.show")
+    traj = TimeEvolutionTrajectory(
+        hamiltonian=_H_Z0_Z1,
+        time_points=list(results),
+        observable=observable,
+        backend=dummy_simulator,
+    )
+    traj.create_programs()
+    for t, value in results.items():
+        traj.programs[f"t={t}"]._results["evolved_state_measurement"] = value
+
+    plt.figure()
+    try:
+        traj.visualize_results()
+        lines = [
+            (list(line.get_xdata()), list(line.get_ydata()), line.get_label())
+            for line in plt.gca().get_lines()
+        ]
+        has_legend = plt.gca().get_legend() is not None
+    finally:
+        plt.close("all")
+    show.assert_called_once()
+    return lines, has_legend
+
+
+@pytest.mark.parametrize(
+    "observable, results, expected_lines, expected_legend",
+    [
+        pytest.param(
+            _Z0_2Q,
+            {0.5: 0.25, 0.1: -0.75, 1.0: 0.5},
+            [([0.5, 0.1, 1.0], [0.25, -0.75, 0.5])],
+            None,
+            id="single-observable",
+        ),
+        pytest.param(
+            [_Z0_2Q, _H_Z0_Z1],
+            {0.5: [0.25, 1.0], 0.1: [-0.75, 0.5], 1.0: [0.5, -1.0]},
+            [
+                ([0.5, 0.1, 1.0], [0.25, -0.75, 0.5]),
+                ([0.5, 0.1, 1.0], [1.0, 0.5, -1.0]),
+            ],
+            ["Observable 0", "Observable 1"],
+            id="one-line-per-observable",
+        ),
+    ],
+)
+def test_visualize_results_plots_each_time_against_its_expectation(
+    dummy_simulator, mocker, observable, results, expected_lines, expected_legend
+):
+    lines, has_legend = _plotted_lines(dummy_simulator, mocker, observable, results)
+
+    assert [(x, y) for x, y, _ in lines] == expected_lines
+    assert has_legend is (expected_legend is not None)
+    if expected_legend is not None:
+        assert [label for *_, label in lines] == expected_legend

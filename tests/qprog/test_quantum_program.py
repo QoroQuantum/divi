@@ -372,6 +372,69 @@ class TestQuantumProgramBase:
         assert program.precision == expected
         assert program._precision == expected
 
+    def test_unseeded_base_seed_is_one_stable_int(self, dummy_simulator):
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
+        base_seed = program._base_seed
+
+        assert type(base_seed) is int
+        assert 0 <= base_seed < 2**63
+        assert program._build_pipeline_env().base_seed == base_seed
+
+
+def _two_group_pipeline() -> CircuitPipeline:
+    return CircuitPipeline(
+        stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
+    )
+
+
+def test_execute_totals_start_at_zero_and_accumulate(dummy_simulator, mocker):
+    program = ConcreteQuantumProgram(backend=dummy_simulator)
+    pipeline = _two_group_pipeline()
+
+    def fake_run(initial_spec, env):
+        env.artifacts.update(
+            circuit_count=3,
+            device_shots=300,
+            backend_jobs=2,
+            run_time=0.5,
+            _current_execution_result=mocker.sentinel.result,
+        )
+        return {}
+
+    mocker.patch.object(pipeline, "run", side_effect=fake_run)
+
+    def totals():
+        return (
+            program.total_circuit_count,
+            program.total_device_shots,
+            program.total_backend_jobs,
+            program.total_run_time,
+        )
+
+    assert totals() == (0, 0, 0, 0.0)
+    program._execute(pipeline, "x")
+    program._execute(pipeline, "x")
+
+    assert totals() == (6, 600, 4, 1.0)
+    assert program._current_execution_result is mocker.sentinel.result
+
+
+def test_pipeline_stage_events_carry_the_program_key(dummy_simulator):
+    program = ConcreteQuantumProgram(backend=dummy_simulator)
+    program._progress_key = "program-key"
+    events = []
+    program._progress_emitter = events.append
+
+    program._execute(_two_group_pipeline(), "x")
+
+    stage_events = [
+        event
+        for event in events
+        if event.message and event.message.startswith("Pipeline:")
+    ]
+    assert stage_events
+    assert {event.progress_key for event in stage_events} == {"program-key"}
+
 
 class TestQuantumProgramJobManagement:
     """Tests for QuantumProgram job management and cancellation."""
@@ -393,6 +456,16 @@ class TestQuantumProgramJobManagement:
         with pytest.warns(
             UserWarning, match="Cannot cancel job: execution result has no job_id"
         ):
+            program.cancel_unfinished_job()
+
+    def test_cancel_unfinished_job_on_a_synchronous_backend_warns(
+        self, dummy_simulator
+    ):
+        assert not isinstance(dummy_simulator, AsyncJobBackend)
+        program = ConcreteQuantumProgram(backend=dummy_simulator)
+        program._current_execution_result = ExecutionResult(job_id="job_1")
+
+        with pytest.warns(UserWarning, match="does not implement the AsyncJobBackend"):
             program.cancel_unfinished_job()
 
     def test_cancel_unfinished_job_success(self, mocker):
@@ -418,11 +491,8 @@ class TestQuantumProgramJobManagement:
         backend.poll_job_status.return_value = JobStatus.COMPLETED
         backend.get_job_results.return_value = ExecutionResult(results=[])
         program = ConcreteQuantumProgram(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
-        )
 
-        program._execute(pipeline, "x")
+        program._execute(_two_group_pipeline(), "x")
         program.cancel_unfinished_job()
 
         backend.cancel_job.assert_called_once_with(backend.submit_circuits.return_value)

@@ -61,12 +61,17 @@ class _ZMatrixEntry(NamedTuple):
     dihedral: float | None
 
 
-# --- Helper functions ---
+_X_AXIS = np.array([1.0, 0.0, 0.0])
+_Y_AXIS = np.array([0.0, 1.0, 0.0])
+_Z_AXIS = np.array([0.0, 0.0, 1.0])
+_COLLINEAR_TOL = 1e-6
+
+
 def _safe_normalize(v, fallback=None):
     norm = np.linalg.norm(v)
     if norm < 1e-6:
         if fallback is None:
-            fallback = np.array([1.0, 0.0, 0.0])
+            fallback = _X_AXIS
         return fallback / np.linalg.norm(fallback)
     return v / norm
 
@@ -76,137 +81,166 @@ def _compute_angle(v1, v2):
     return np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
 
 
-def _compute_dihedral(b0, b1, b2):
-    n1 = np.cross(b0, b1)
-    n2 = np.cross(b0, b2)
-    if np.linalg.norm(n1) < 1e-6 or np.linalg.norm(n2) < 1e-6:
-        return 0.0
-    dot = np.dot(n1, n2) / (np.linalg.norm(n1) * np.linalg.norm(n2))
-    angle = np.degrees(np.arccos(np.clip(dot, -1.0, 1.0)))
-    if np.dot(b1, n2) < 0:
-        angle *= -1
-    return angle
+def _bfs_parents(
+    n_atoms: int, connectivity: Sequence[tuple[int, int]]
+) -> dict[int, int | None]:
+    """BFS parent of every atom reachable from atom 0, in visiting order."""
+    adj = [[] for _ in range(n_atoms)]
+    for i, j in connectivity:
+        adj[i].append(j)
+        adj[j].append(i)
+
+    parents: dict[int, int | None] = {0: None}
+    queue = deque([0])
+    while queue:
+        parent = queue.popleft()
+        for child in adj[parent]:
+            if child not in parents:
+                parents[child] = parent
+                queue.append(child)
+    return parents
 
 
-def _find_refs(adj, placed, parent, child):
-    gp = next((n for n in adj[parent] if n != child and n in placed), None)
-    ggp = None
-    if gp is not None:
-        ggp = next((n for n in adj[gp] if n != parent and n in placed), None)
-    return gp, ggp
+def _is_collinear(a, b, c) -> bool:
+    return bool(
+        np.linalg.norm(np.cross(_safe_normalize(a - b), _safe_normalize(c - b)))
+        < _COLLINEAR_TOL
+    )
 
 
-# --- Main functions ---
+def _local_frame(bond_pos, angle_pos, dihedral_pos):
+    """Orthonormal ``(b, m, n)`` frame for placing an atom bonded to ``bond_pos``.
+
+    ``b`` points from ``angle_pos`` to ``bond_pos`` and ``n`` is normal to the
+    plane of the three references. Without a usable dihedral reference, ``n``
+    is the direction perpendicular to ``b`` closest to +Z.
+    """
+    b = _safe_normalize(bond_pos - angle_pos)
+    normal = np.zeros(3)
+    if dihedral_pos is not None:
+        normal = np.cross(_safe_normalize(angle_pos - dihedral_pos), b)
+    if np.linalg.norm(normal) < _COLLINEAR_TOL:
+        normal = _safe_normalize(_Z_AXIS - np.dot(_Z_AXIS, b) * b, fallback=_Y_AXIS)
+    n = _safe_normalize(normal)
+    return b, np.cross(n, b), n
+
+
 def _cartesian_to_zmatrix(
-    coords: npt.NDArray[np.float64], connectivity: list[tuple[int, int]]
+    coords: npt.NDArray[np.float64], connectivity: Sequence[tuple[int, int]]
 ) -> list[_ZMatrixEntry]:
+    """Internal coordinates over the BFS spanning tree of ``connectivity``.
+
+    Each atom is bonded to its BFS parent. The angle reference is the parent's
+    own parent, or the first-placed sibling when the parent is the root. The
+    dihedral reference is the first placed atom not collinear with the bond
+    and angle references, preferring bonded neighbours. Rebuilding with
+    :func:`_zmatrix_to_cartesian` reproduces ``coords`` up to a proper rigid
+    motion, whatever the atom numbering.
+    """
     num_atoms = len(coords)
     if num_atoms == 0:
         raise ValueError(
             "Cannot convert empty coordinate array to Z-matrix: molecule must have at least one atom."
         )
 
-    adj = [[] for _ in range(num_atoms)]
+    parents = _bfs_parents(num_atoms, connectivity)
+    order = list(parents)
+    neighbours = [set() for _ in range(num_atoms)]
     for i, j in connectivity:
-        adj[i].append(j)
-        adj[j].append(i)
+        neighbours[i].add(j)
+        neighbours[j].add(i)
 
-    zmatrix_entries = {0: _ZMatrixEntry(None, None, None, None, None, None)}
-    q = deque([0])
-    placed_atoms = {0}
+    entries = {order[0]: _ZMatrixEntry(None, None, None, None, None, None)}
+    for k, atom in enumerate(order[1:], start=1):
+        parent = parents[atom]
+        assert parent is not None
+        bond_len = float(np.linalg.norm(coords[atom] - coords[parent]))
+        if k == 1:
+            entries[atom] = _ZMatrixEntry(parent, None, None, bond_len, None, None)
+            continue
 
-    while q:
-        parent_idx = q.popleft()
-        for child_idx in adj[parent_idx]:
-            if child_idx in placed_atoms:
-                continue
-            placed_atoms.add(child_idx)
-            q.append(child_idx)
-
-            bond_len = np.linalg.norm(coords[child_idx] - coords[parent_idx])
-            gp, ggp = _find_refs(adj, placed_atoms, parent_idx, child_idx)
-
-            angle = None
-            if gp is not None:
-                angle = _compute_angle(
-                    coords[child_idx] - coords[parent_idx],
-                    coords[gp] - coords[parent_idx],
-                )
-
-            dihedral = None
-            if gp is not None and ggp is not None:
-                dihedral = _compute_dihedral(
-                    coords[parent_idx] - coords[gp],
-                    coords[child_idx] - coords[parent_idx],
-                    coords[ggp] - coords[gp],
-                )
-
-            zmatrix_entries[child_idx] = _ZMatrixEntry(
-                parent_idx, gp, ggp, float(bond_len), angle, dihedral
+        grandparent = parents[parent]
+        angle_ref = grandparent if grandparent is not None else order[1]
+        angle = float(
+            _compute_angle(
+                coords[atom] - coords[parent], coords[angle_ref] - coords[parent]
             )
+        )
+        if k == 2:
+            entries[atom] = _ZMatrixEntry(
+                parent, angle_ref, None, bond_len, angle, None
+            )
+            continue
 
-    return [zmatrix_entries[i] for i in range(num_atoms)]
+        candidates = sorted(
+            (a for a in order[:k] if a not in (parent, angle_ref)),
+            key=lambda a: (a not in neighbours[angle_ref], a not in neighbours[parent]),
+        )
+        dihedral_ref = next(
+            (
+                a
+                for a in candidates
+                if not _is_collinear(coords[a], coords[angle_ref], coords[parent])
+            ),
+            candidates[0],
+        )
+        _, m, n = _local_frame(coords[parent], coords[angle_ref], coords[dihedral_ref])
+        offset = coords[atom] - coords[parent]
+        dihedral = float(np.degrees(np.arctan2(np.dot(offset, n), np.dot(offset, m))))
+        entries[atom] = _ZMatrixEntry(
+            parent, angle_ref, dihedral_ref, bond_len, angle, dihedral
+        )
+
+    return [entries[i] for i in range(num_atoms)]
+
+
+def _place_atom(coords, entry: _ZMatrixEntry) -> npt.NDArray[np.float64]:
+    if entry.bond_ref is None:
+        return np.zeros(3)
+    bond_pos = coords[entry.bond_ref]
+    if entry.angle_ref is None:
+        return bond_pos + entry.bond_length * _X_AXIS
+
+    dihedral_pos = (
+        coords[entry.dihedral_ref] if entry.dihedral_ref is not None else None
+    )
+    b, m, n = _local_frame(bond_pos, coords[entry.angle_ref], dihedral_pos)
+    theta = np.radians(entry.angle or 0.0)
+    phi = np.radians(entry.dihedral or 0.0)
+    return bond_pos + entry.bond_length * (
+        -np.cos(theta) * b + np.sin(theta) * (np.cos(phi) * m + np.sin(phi) * n)
+    )
 
 
 def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> npt.NDArray[np.float64]:
-    n_atoms = len(z_matrix)
-    coords = np.zeros((n_atoms, 3))
+    """Cartesian coordinates of a Z-matrix, placing each atom after its references.
 
-    if n_atoms == 0:
-        return coords
-
-    for i, entry in enumerate(z_matrix[1:], start=1):
+    The root sits at the origin, the atom with only a bond reference lies along
+    +X from its partner, and the atom without a dihedral reference lies in the
+    XY plane.
+    """
+    for i, entry in enumerate(z_matrix):
         if entry.bond_length is not None and entry.bond_length <= 0:
             raise ValueError(
                 f"Bond length for atom {i} must be positive, got {entry.bond_length}"
             )
 
-    # --- First atom at origin ---
-    coords[0] = np.array([0.0, 0.0, 0.0])
-
-    # --- Second atom along +X axis ---
-    if n_atoms > 1:
-        coords[1] = np.array([z_matrix[1].bond_length, 0.0, 0.0])
-
-    # --- Third atom in XY plane ---
-    if n_atoms > 2:
-        entry = z_matrix[2]
-        r = entry.bond_length
-        theta = np.radians(entry.angle) if entry.angle is not None else 0.0
-
-        a1 = coords[entry.bond_ref]
-        a2 = coords[entry.angle_ref]
-
-        v = a2 - a1
-        v /= np.linalg.norm(v)
-        # fixed perpendicular in XY plane, fallback handled inline
-        perp = np.array([-v[1], v[0], 0.0])
-        perp /= np.linalg.norm(perp) if np.linalg.norm(perp) > 1e-6 else 1.0
-
-        coords[2] = a1 + r * (np.cos(theta) * v + np.sin(theta) * perp)
-
-    for i, entry in enumerate(z_matrix[3:], start=3):
-        a1 = coords[entry.bond_ref] if entry.bond_ref is not None else np.zeros(3)
-        a2 = coords[entry.angle_ref] if entry.angle_ref is not None else np.zeros(3)
-        a3 = (
-            coords[entry.dihedral_ref]
-            if entry.dihedral_ref is not None
-            else np.zeros(3)
-        )
-
-        r = entry.bond_length
-
-        theta = np.radians(entry.angle) if entry.angle is not None else 0.0
-        phi = np.radians(entry.dihedral) if entry.dihedral is not None else 0.0
-
-        b1 = _safe_normalize(a1 - a2, fallback=np.array([1.0, 0.0, 0.0]))
-        b2 = a3 - a2
-        n = _safe_normalize(np.cross(b1, b2), fallback=np.array([0.0, 0.0, 1.0]))
-        nc = np.cross(n, b1)
-
-        coords[i] = a1 + r * (
-            -np.cos(theta) * b1 + np.sin(theta) * (np.cos(phi) * nc + np.sin(phi) * n)
-        )
+    coords = np.zeros((len(z_matrix), 3))
+    placed: set[int] = set()
+    pending = list(range(len(z_matrix)))
+    while pending:
+        ready = [
+            i
+            for i in pending
+            if {z_matrix[i].bond_ref, z_matrix[i].angle_ref, z_matrix[i].dihedral_ref}
+            <= placed | {None}
+        ]
+        if not ready:
+            raise ValueError("Z-matrix references form a cycle.")
+        for i in ready:
+            coords[i] = _place_atom(coords, z_matrix[i])
+        placed.update(ready)
+        pending = [i for i in pending if i not in placed]
 
     return coords
 
@@ -215,7 +249,7 @@ def _transform_bonds(
     zmatrix: list[_ZMatrixEntry],
     bonds_to_transform: list[tuple[int, int]],
     value: float,
-    transform_type: Literal["scale", "delta"] = "scale",
+    transform_type: Literal["scale", "delta"],
 ) -> list[_ZMatrixEntry]:
     """
     Transform specified bonds in a Z-matrix.
@@ -224,7 +258,7 @@ def _transform_bonds(
         zmatrix: List of _ZMatrixEntry.
         bonds_to_transform: List of (atom1, atom2) tuples specifying bonds.
         value: Multiplier or additive value.
-        transform_type: "scale" or "add".
+        transform_type: "scale" or "delta".
 
     Returns:
         New Z-matrix with transformed bond lengths.
@@ -286,12 +320,10 @@ def _kabsch_align(
     H = P_centered.T @ Q_centered
     U, _, Vt = np.linalg.svd(H)
 
-    R = Vt.T @ U.T
-
-    # Reflections have det = -1; flipping Vt's last row restores a rotation.
-    if np.linalg.det(R) < 0:
-        Vt[-1, :] *= -1
-        R = Vt.T @ U.T
+    # Row vectors: P @ R ≈ Q. Flipping the weakest singular axis keeps det(R) = +1.
+    D = np.eye(H.shape[0])
+    D[-1, -1] = np.sign(np.linalg.det(U @ Vt))
+    R = U @ D @ Vt
     t = Qc - Pc @ R
 
     P_aligned = P_in @ R + t
@@ -382,6 +414,11 @@ class MoleculeTransformer:
                     "`atom_connectivity` should be a sequence of tuples of"
                     " atom indices in (0, len(molecule.symbols))"
                 )
+            if len(_bfs_parents(n_symbols, atom_connectivity)) < n_symbols:
+                raise ValueError(
+                    "`atom_connectivity` must connect every atom of the molecule"
+                    " into one bonded structure."
+                )
 
         if self.bonds_to_transform is None:
             object.__setattr__(self, "bonds_to_transform", atom_connectivity)
@@ -392,6 +429,19 @@ class MoleculeTransformer:
             if not set(bonds_to_transform).issubset(atom_connectivity):
                 raise ValueError(
                     "`bonds_to_transform` is not a subset of `atom_connectivity`"
+                )
+            tree_bonds = {
+                frozenset((child, parent))
+                for child, parent in _bfs_parents(n_symbols, atom_connectivity).items()
+                if parent is not None
+            }
+            ring_bonds = [
+                b for b in bonds_to_transform if frozenset(b) not in tree_bonds
+            ]
+            if ring_bonds:
+                raise ValueError(
+                    f"Bonds {ring_bonds} close a ring in `atom_connectivity`; a "
+                    "ring-closing bond cannot be transformed independently."
                 )
 
         if self.alignment_atoms is not None and not all(

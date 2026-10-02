@@ -10,9 +10,10 @@ from qiskit.circuit.library import RYGate
 from qiskit.quantum_info import SparsePauliOp
 from scipy.spatial.distance import pdist, squareform
 
+from divi.qprog import ReportingLevel
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.optimizers import MonteCarloOptimizer
+from divi.qprog.optimizers import MonteCarloOptimizer, SPSAOptimizer
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.workflows import (
     MoleculeTransformer,
@@ -22,8 +23,6 @@ from divi.qprog.workflows import (
 from divi.qprog.workflows._vqe_sweep import (
     _cartesian_to_zmatrix,
     _compute_angle,
-    _compute_dihedral,
-    _find_refs,
     _kabsch_align,
     _safe_normalize,
     _transform_bonds,
@@ -141,14 +140,21 @@ class TestMoleculeTransformerValidation:
         mt = MoleculeTransformer(base_molecule=h2_molecule, bond_modifiers=[1.1])
         assert mt.atom_connectivity == ((0, 1),)
 
-    def test_out_of_bounds_atom_connectivity(self, h2_molecule):
+    @pytest.mark.parametrize("bond", [(0, 2), (2, 0), (-1, 0), (1, -1)])
+    def test_out_of_bounds_atom_connectivity(self, h2_molecule, bond):
         """Test ValueError for out-of-bounds indices in atom_connectivity."""
         with pytest.raises(ValueError, match="atom indices"):
             MoleculeTransformer(
                 base_molecule=h2_molecule,
                 bond_modifiers=[1.1],
-                atom_connectivity=[(0, 2)],
+                atom_connectivity=[bond],
             )
+
+    def test_reversed_bond_is_in_bounds(self, h2_molecule):
+        mt = MoleculeTransformer(
+            base_molecule=h2_molecule, bond_modifiers=[1.1], atom_connectivity=[(1, 0)]
+        )
+        assert mt.atom_connectivity == [(1, 0)]
 
     def test_default_bonds_to_transform(self, h2_molecule):
         """Test that bonds_to_transform defaults to the full atom_connectivity list."""
@@ -178,6 +184,24 @@ class TestMoleculeTransformerValidation:
                 atom_connectivity=[(0, 1)],
                 bonds_to_transform=[(0, 2)],  # This bond is not in connectivity
             )
+
+    def test_ring_closing_bond_to_transform_raises(self, water_molecule):
+        with pytest.raises(ValueError, match=r"Bonds \[\(2, 1\)\] close a ring"):
+            MoleculeTransformer(
+                base_molecule=water_molecule,
+                bond_modifiers=[1.1],
+                atom_connectivity=[(0, 1), (0, 2), (2, 1)],
+                bonds_to_transform=[(0, 1), (2, 1)],
+            )
+
+    def test_spanning_tree_bond_in_a_ring_is_accepted(self, water_molecule):
+        mt = MoleculeTransformer(
+            base_molecule=water_molecule,
+            bond_modifiers=[1.1],
+            atom_connectivity=[(0, 1), (0, 2), (2, 1)],
+            bonds_to_transform=[(0, 1)],
+        )
+        assert mt.bonds_to_transform == [(0, 1)]
 
     def test_out_of_bounds_alignment_atoms(self, h2_molecule):
         """Test ValueError for out-of-bounds indices in alignment_atoms."""
@@ -500,6 +524,49 @@ class TestVQEHyperparameterSweep:
             program.sampling_backend is None for program in sweep.programs.values()
         )
 
+    @pytest.mark.parametrize(
+        "reporting_kwargs, expected_level",
+        [
+            pytest.param({}, ReportingLevel.COMPACT, id="default"),
+            pytest.param({"reporting_level": "off"}, ReportingLevel.OFF, id="off"),
+        ],
+    )
+    def test_children_receive_sweep_configuration(
+        self,
+        default_test_simulator,
+        h2_problem,
+        vqe_sweep_ansatze,
+        reporting_kwargs,
+        expected_level,
+    ):
+        """Children get the sweep's ansatz, a fresh optimizer copy and forwarded kwargs."""
+        template = SPSAOptimizer()
+        sweep = VQEHyperparameterSweep(
+            ansatze=vqe_sweep_ansatze,
+            problems=[h2_problem],
+            optimizer=template,
+            max_iterations=3,
+            backend=default_test_simulator,
+            seed=11,
+            precision=5,
+            **reporting_kwargs,
+        )
+
+        sweep.create_programs()
+
+        assert sweep.reporting_level == expected_level
+        optimizers = []
+        for ansatz in vqe_sweep_ansatze:
+            program = sweep.programs[(ansatz.name, 0)]
+            assert program.ansatz is ansatz
+            assert program.max_iterations == 3
+            assert program._seed == 11
+            assert program._precision == 5
+            assert program.backend is default_test_simulator
+            assert isinstance(program.optimizer, SPSAOptimizer)
+            optimizers.append(program.optimizer)
+        assert len({id(o) for o in optimizers + [template]}) == len(optimizers) + 1
+
     def test_verify_basic_behaviour(self, vqe_sweep, mocker):
         """Test that the sweep conforms to basic batch program behavior."""
         verify_basic_program_ensemble_behaviour(vqe_sweep, mocker)
@@ -681,9 +748,17 @@ class TestVQEHyperparameterSweep:
         assert smallest_key == (uccsd_instance, 0.9)
         assert smallest_value == -1.2
 
-    def test_visualize_results_line_plot_data(self, mocker, vqe_sweep):
+    @pytest.mark.parametrize(
+        "plot_kwargs",
+        [
+            pytest.param({}, id="default"),
+            pytest.param({"graph_type": "line"}, id="line"),
+        ],
+    )
+    def test_visualize_results_line_plot_data(self, mocker, vqe_sweep, plot_kwargs):
         """Test that the line plot visualization is called with the correct data."""
         mock_plot = mocker.patch("matplotlib.pyplot.plot")
+        mock_scatter = mocker.patch("matplotlib.pyplot.scatter")
         mocker.patch("matplotlib.pyplot.show")
         mocker.patch("matplotlib.pyplot.legend")
         mocker.patch("matplotlib.pyplot.xlabel")
@@ -700,9 +775,9 @@ class TestVQEHyperparameterSweep:
                 mock_programs[(ansatz.name, modifier)] = mock_program
         vqe_sweep.programs = mock_programs
 
-        vqe_sweep.visualize_results(graph_type="line")
+        vqe_sweep.visualize_results(**plot_kwargs)
 
-        # One plot call per ansatz
+        mock_scatter.assert_not_called()
         assert mock_plot.call_count == len(vqe_sweep.ansatze)
 
         # Collect per-call data
@@ -770,8 +845,10 @@ class TestVQEHyperparameterSweep:
         vqe_sweep.visualize_results(graph_type="scatter")
 
         assert mock_scatter.call_count == len(vqe_sweep.ansatze)
-        for call in mock_scatter.call_args_list:
+        for ansatz_idx, call in enumerate(mock_scatter.call_args_list):
             assert call.args[0] == available
+            assert call.args[1] == [-(m * 10 + ansatz_idx) for m in available]
+            assert call.kwargs["label"] == vqe_sweep.ansatze[ansatz_idx].name
 
     def test_visualize_results_with_executor(self, mocker, vqe_sweep):
         """Test visualization calls join() when executor is present."""
@@ -849,47 +926,6 @@ def test_compute_angle_edge_cases():
     v2 = np.array([1e-8, 0.0, 0.0])
     angle = _compute_angle(v1, v2)
     assert 0 <= angle <= 180
-
-
-def test_compute_dihedral_edge_cases():
-    """Test _compute_dihedral with edge cases."""
-    # Test with collinear vectors
-    b0 = np.array([1.0, 0.0, 0.0])
-    b1 = np.array([2.0, 0.0, 0.0])
-    b2 = np.array([3.0, 0.0, 0.0])
-    dihedral = _compute_dihedral(b0, b1, b2)
-    assert np.isclose(dihedral, 0.0)
-
-    # Test with very small vectors
-    b0 = np.array([1e-8, 1e-8, 0.0])
-    b1 = np.array([1e-8, 0.0, 0.0])
-    b2 = np.array([0.0, 1e-8, 0.0])
-    dihedral = _compute_dihedral(b0, b1, b2)
-    assert np.isclose(dihedral, 0.0)
-
-    # Test with normal case
-    b0 = np.array([1.0, 0.0, 0.0])
-    b1 = np.array([0.0, 1.0, 0.0])
-    b2 = np.array([0.0, 0.0, 1.0])
-    dihedral = _compute_dihedral(b0, b1, b2)
-    assert isinstance(dihedral, float)
-
-
-def test_find_refs_edge_cases():
-    """Test _find_refs with edge cases."""
-    # Test with no valid references
-    adj = [[2], [2], [0, 1]]
-    placed = {0, 1}
-    gp, ggp = _find_refs(adj, placed, 1, 2)
-    assert gp is None  # No valid references
-    assert ggp is None
-
-    # Test with valid references
-    adj = [[1], [0, 2], [1]]
-    placed = {0, 1, 2}
-    gp, ggp = _find_refs(adj, placed, 1, 2)
-    assert gp == 0  # 0 is in adj[1] and in placed
-    assert ggp is None  # No grandparent found
 
 
 class TestZMatrixConversion:
@@ -1016,72 +1052,6 @@ class TestZMatrixConversion:
         assert coords.shape == (4, 3)
         assert np.all(np.isfinite(coords))
 
-    def test_roundtrip_two_atoms(self):
-        """Cartesian -> Z-matrix -> Cartesian recovers original coordinates for 2 atoms."""
-        coords = np.array([[0.0, 0.0, 0.0], [1.5, 0.0, 0.0]])
-        connectivity = [(0, 1)]
-
-        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
-        recovered = _zmatrix_to_cartesian(zmatrix)
-
-        # Bond length must be preserved; absolute position may differ (origin/orientation freedom)
-        original_dist = np.linalg.norm(coords[1] - coords[0])
-        recovered_dist = np.linalg.norm(recovered[1] - recovered[0])
-        np.testing.assert_almost_equal(recovered_dist, original_dist, decimal=10)
-
-    def test_roundtrip_three_atoms(self):
-        """Cartesian -> Z-matrix -> Cartesian preserves pairwise distances for 3 atoms."""
-        coords = np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [0.5, 0.866, 0.0],  # roughly equilateral triangle
-            ]
-        )
-        connectivity = [(0, 1), (1, 2)]
-
-        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
-        recovered = _zmatrix_to_cartesian(zmatrix)
-
-        original_dists = get_pairwise_distances(coords)
-        recovered_dists = get_pairwise_distances(recovered)
-        np.testing.assert_array_almost_equal(
-            recovered_dists, original_dists, decimal=10
-        )
-
-    def test_roundtrip_four_atoms_with_dihedral(self):
-        """Cartesian -> Z-matrix -> Cartesian preserves geometry for 4 atoms (dihedral path)."""
-        # Non-planar arrangement to exercise dihedral angles
-        coords = np.array(
-            [
-                [0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0],
-                [1.5, 1.0, 0.0],
-                [1.5, 1.0, 1.2],  # out-of-plane
-            ]
-        )
-        connectivity = [(0, 1), (1, 2), (2, 3)]
-
-        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
-        recovered = _zmatrix_to_cartesian(zmatrix)
-
-        original_dists = get_pairwise_distances(coords)
-        recovered_dists = get_pairwise_distances(recovered)
-        np.testing.assert_array_almost_equal(recovered_dists, original_dists, decimal=8)
-
-    def test_roundtrip_water_molecule(self, water_molecule):
-        """Roundtrip preserves water molecule geometry (realistic molecule)."""
-        coords = np.array(water_molecule.coordinates)
-        # O-H bonds: O is atom 0, H's are atoms 1 and 2
-        connectivity = [(0, 1), (0, 2)]
-
-        zmatrix = _cartesian_to_zmatrix(coords, connectivity)
-        recovered = _zmatrix_to_cartesian(zmatrix)
-
-        original_dists = get_pairwise_distances(coords)
-        recovered_dists = get_pairwise_distances(recovered)
-        np.testing.assert_array_almost_equal(recovered_dists, original_dists, decimal=8)
-
     def test_zero_bond_length_raises(self):
         """Z-matrix entries with zero bond length are rejected as unphysical."""
         zmatrix = [
@@ -1110,6 +1080,18 @@ def test_transform_bonds_zero_length_error():
         _transform_bonds(zmatrix, bonds_to_transform, -1.0, "delta")
 
 
+def _rotation(axis, degrees):
+    axis = np.asarray(axis, dtype=float) / np.linalg.norm(axis)
+    k = np.array(
+        [[0, -axis[2], axis[1]], [axis[2], 0, -axis[0]], [-axis[1], axis[0], 0]]
+    )
+    theta = np.radians(degrees)
+    return np.eye(3) + np.sin(theta) * k + (1 - np.cos(theta)) * k @ k
+
+
+_RNG_POINTS = np.random.default_rng(7).normal(size=(6, 3))
+
+
 class TestKabschAlignment:
     """Tests for Kabsch alignment algorithm."""
 
@@ -1126,28 +1108,16 @@ class TestKabschAlignment:
                 np.array([[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]]),
                 id="translation",
             ),
+            pytest.param(
+                _RNG_POINTS,
+                _RNG_POINTS @ _rotation([1.0, 2.0, -0.5], 73.0).T + [3.0, -1.0, 2.0],
+                id="rotation+translation",
+            ),
         ],
     )
     def test_kabsch_align_recovers_target(self, P, Q):
         """_kabsch_align maps P exactly onto a rigidly displaced Q."""
-        np.testing.assert_array_almost_equal(_kabsch_align(P, Q), Q)
-
-    def test_kabsch_align_rotation(self):
-        """Test _kabsch_align with rotated point sets."""
-        # Simple rotation around Z-axis
-        angle = np.pi / 4
-        cos_a, sin_a = np.cos(angle), np.sin(angle)
-        R = np.array([[cos_a, -sin_a, 0], [sin_a, cos_a, 0], [0, 0, 1]])
-
-        P = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
-        Q = P @ R.T
-        aligned = _kabsch_align(P, Q)
-
-        # Check that the alignment produces reasonable results
-        assert aligned.shape == Q.shape
-        # Verify that the function runs without error and produces output
-        assert not np.allclose(aligned, P)  # Should be different from original
-        assert np.all(np.isfinite(aligned))  # Should be finite values
+        np.testing.assert_allclose(_kabsch_align(P, Q), Q, atol=1e-10)
 
     def test_kabsch_align_with_reference_atoms(self):
         """Test _kabsch_align with reference atom subset."""
@@ -1162,32 +1132,191 @@ class TestKabschAlignment:
         # Third atom should be transformed but not necessarily aligned
         assert aligned.shape == P.shape
 
-    def test_kabsch_align_avoids_reflection(self):
-        """Kabsch returns a proper rotation (det=+1), not a reflection (det=-1)."""
-        # Create a right-handed coordinate system for P (non-planar)
-        P = np.array(
-            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+
+def _iupac_dihedral(a, b, c, d):
+    b0, b1, b2 = b - a, c - b, d - c
+    n1, n2 = np.cross(b0, b1), np.cross(b1, b2)
+    m1 = np.cross(n1, b1 / np.linalg.norm(b1))
+    return np.degrees(np.arctan2(np.dot(m1, n2), np.dot(n1, n2)))
+
+
+def _signed_volumes(coords):
+    """Signed volume of every atom quadruple; equal values mean equal handedness."""
+    n = len(coords)
+    return np.array(
+        [
+            np.linalg.det(coords[[j, k, l]] - coords[i])
+            for i in range(n)
+            for j in range(i + 1, n)
+            for k in range(j + 1, n)
+            for l in range(k + 1, n)
+        ]
+    )
+
+
+def _assert_congruent(actual, expected, atol=1e-10):
+    """Same shape up to a proper rigid motion: distances and handedness agree."""
+    np.testing.assert_allclose(
+        get_pairwise_distances(actual), get_pairwise_distances(expected), atol=atol
+    )
+    np.testing.assert_allclose(
+        _signed_volumes(actual), _signed_volumes(expected), atol=atol
+    )
+
+
+def _chain(bonds, angles, dihedrals):
+    """Unbranched chain from bond lengths, bond angles and IUPAC dihedrals."""
+    coords = [np.zeros(3), np.array([bonds[0], 0.0, 0.0])]
+    for bond, angle in zip(bonds[1:], angles):
+        a, b = coords[-2], coords[-1]
+        direction = _rotation([0.0, 0.0, 1.0], 180.0 - angle) @ (b - a)
+        coords.append(b + bond * direction / np.linalg.norm(direction))
+    coords = np.array(coords)
+    for i, target in enumerate(dihedrals, start=3):
+        a, b, c = coords[i - 3], coords[i - 2], coords[i - 1]
+        twist = _iupac_dihedral(a, b, c, coords[i]) - target
+        coords[i:] = (coords[i:] - c) @ _rotation(c - b, twist).T + c
+    return coords
+
+
+_CHAIN_COORDS = _chain(
+    bonds=[1.4, 1.1, 1.6, 1.2], angles=[109.5, 120.0, 100.0], dihedrals=[60.0, -130.0]
+)
+_CHAIN_EDGES = [(0, 1), (1, 2), (2, 3), (3, 4)]
+_NH3_COORDS = np.array(
+    [
+        [0.0, 0.0, 0.0],
+        [1.77, 0.0, -0.72],
+        [-0.885, 1.533, -0.72],
+        [-0.885, -1.533, -0.72],
+    ]
+)
+_NH3_EDGES = [(0, 1), (0, 2), (0, 3)]
+
+
+def test_chain_fixture_has_requested_dihedrals():
+    assert np.isclose(_iupac_dihedral(*_CHAIN_COORDS[:4]), 60.0)
+    assert np.isclose(_iupac_dihedral(*_CHAIN_COORDS[1:]), -130.0)
+
+
+@pytest.mark.parametrize(
+    "coords, connectivity",
+    [
+        pytest.param(
+            np.array([[0.3, -1.0, 2.0], [1.5, 0.2, 0.4]]), [(0, 1)], id="diatomic"
+        ),
+        pytest.param(
+            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.866, 0.0]]),
+            [(0, 1), (1, 2)],
+            id="triangle",
+        ),
+        pytest.param(
+            np.array([[0.0, 0.0, 0.0], [0.757, 0.586, 0.0], [-0.757, 0.586, 0.0]]),
+            [(0, 1), (0, 2)],
+            id="water",
+        ),
+        pytest.param(_CHAIN_COORDS, _CHAIN_EDGES, id="chain"),
+        pytest.param(
+            _CHAIN_COORDS, [(3, 4), (1, 0), (3, 2), (2, 1)], id="chain_out_of_order"
+        ),
+        pytest.param(
+            _chain([1.4, 0.05, 1.6, 0.02], [109.5, 120.0, 100.0], [60.0, -130.0]),
+            _CHAIN_EDGES,
+            id="chain_short_bonds",
+        ),
+        pytest.param(_NH3_COORDS, _NH3_EDGES, id="nh3"),
+        pytest.param(
+            _NH3_COORDS[[1, 2, 0, 3]], [(0, 2), (1, 2), (2, 3)], id="nh3_permuted"
+        ),
+        pytest.param(
+            np.array(
+                [[0.0, 0.0, 0.0], [2.2, 0.0, 0.0], [4.4, 0.0, 0.0], [4.4, 1.9, 0.7]]
+            ),
+            [(0, 1), (1, 2), (2, 3)],
+            id="collinear_prefix",
+        ),
+    ],
+)
+def test_zmatrix_roundtrip_is_exact(coords, connectivity):
+    """Any connected tree rebuilds to the same shape, handedness included."""
+    rebuilt = _zmatrix_to_cartesian(_cartesian_to_zmatrix(coords, connectivity))
+
+    _assert_congruent(rebuilt, coords)
+
+
+@pytest.mark.parametrize(
+    "bonds_to_transform, expected_scale",
+    [
+        pytest.param(_NH3_EDGES, np.where(np.eye(4), 1.0, 1.1), id="all_bonds"),
+        pytest.param(
+            [(0, 1)],
+            np.array(
+                [
+                    [1.0, 1.1, 1.0, 1.0],
+                    [1.1, 1.0, np.nan, np.nan],
+                    [1.0, np.nan, 1.0, 1.0],
+                    [1.0, np.nan, 1.0, 1.0],
+                ]
+            ),
+            id="one_bond",
+        ),
+    ],
+)
+def test_bond_scan_on_branched_molecule(qp, bonds_to_transform, expected_scale):
+    """Scanning NH3 changes only the scanned bonds; the rest of the shape holds."""
+    molecule = qp.qchem.Molecule(["N", "H", "H", "H"], _NH3_COORDS)
+    variant = MoleculeTransformer(
+        base_molecule=molecule,
+        bond_modifiers=[1.1],
+        atom_connectivity=_NH3_EDGES,
+        bonds_to_transform=bonds_to_transform,
+    ).generate()[1.1]
+
+    original = get_pairwise_distances(_NH3_COORDS)
+    ratio = np.divide(
+        get_pairwise_distances(variant.coordinates),
+        original,
+        out=np.ones_like(original),
+        where=original > 0,
+    )
+    fixed = ~np.isnan(expected_scale)
+    np.testing.assert_allclose(ratio[fixed], expected_scale[fixed], atol=1e-10)
+
+
+def test_bond_scan_with_root_not_first_in_bfs_order(qp):
+    """Water numbered H, H, O scales its bonds without assuming index order."""
+    coords = np.array([[1.43, 1.11, 0.0], [-1.43, 1.11, 0.0], [0.0, 0.0, 0.0]])
+    molecule = qp.qchem.Molecule(["H", "H", "O"], coords)
+    variant = MoleculeTransformer(
+        base_molecule=molecule,
+        bond_modifiers=[1.2],
+        atom_connectivity=[(0, 2), (1, 2)],
+    ).generate()[1.2]
+
+    _assert_congruent(variant.coordinates, coords * 1.2)
+
+
+@pytest.mark.parametrize(
+    "n_atoms, connectivity",
+    [
+        pytest.param(4, [(0, 1), (2, 3)], id="disconnected"),
+        pytest.param(4, [(0, 1), (1, 2)], id="atom_left_out"),
+    ],
+)
+def test_connectivity_must_span_every_atom(qp, n_atoms, connectivity):
+    molecule = qp.qchem.Molecule(["H"] * n_atoms, _NH3_COORDS[:n_atoms])
+    with pytest.raises(ValueError, match="must connect every atom"):
+        MoleculeTransformer(
+            base_molecule=molecule,
+            bond_modifiers=[1.1],
+            atom_connectivity=connectivity,
         )
 
-        # Create Q as a reflection of P (a left-handed system)
-        Q = np.copy(P)
-        Q[:, 2] *= -1.0  # Reflection across xy plane
 
-        # Align P to Q
-        P_aligned = _kabsch_align(P, Q)
+def test_kabsch_align_keeps_handedness_against_a_mirror_image():
+    """Aligning onto a reflection still moves the source by a proper rotation."""
+    mirror = _RNG_POINTS * [1.0, 1.0, -1.0]
 
-        # A naive Kabsch implementation might return a rotation matrix with det=-1,
-        # which is a reflection. This would make P_aligned very close to Q.
-        # The corrected implementation should find the best *proper rotation* (det=+1),
-        # which will not perfectly align P to the reflected Q.
-        # Therefore, we assert that the aligned points are NOT close to the reflected target points.
-        is_close = np.allclose(P_aligned, Q, atol=1e-7)
-        assert (
-            not is_close
-        ), "Kabsch alignment should produce a proper rotation, not a reflection."
+    aligned = _kabsch_align(_RNG_POINTS, mirror)
 
-        # For a proper rotation, the RMSD should be non-zero in this case.
-        rmsd = np.sqrt(np.mean(np.sum((P_aligned - Q) ** 2, axis=1)))
-        assert (
-            rmsd > 0.1
-        ), f"Expected non-zero RMSD when avoiding reflection, but got {rmsd}"
+    _assert_congruent(aligned, _RNG_POINTS)

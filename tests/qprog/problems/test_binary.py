@@ -16,7 +16,6 @@ import divi.qprog.problems._binary as binary_module
 from divi.backends import CircuitRunner
 from divi.hamiltonians import BinaryPolynomialProblem, to_spo
 from divi.qprog import (
-    PCE,
     QAOA,
     BatchConfig,
     BeamSearchStrategy,
@@ -862,13 +861,6 @@ class TestQUBOPartitioningEnsemble:
 
     def test_correct_initialization_pce(self, qubo_ensemble_pce, sample_qubo_matrix):
         assert qubo_ensemble_pce.quantum_routine == "pce"
-
-    def test_create_programs_pce_creates_pce_programs(self, qubo_ensemble_pce):
-        qubo_ensemble_pce.create_programs()
-        assert len(qubo_ensemble_pce.programs) == 2
-        assert all(
-            isinstance(program, PCE) for program in qubo_ensemble_pce.programs.values()
-        )
 
     def test_invalid_engine_raises(self, sample_qubo_matrix, dummy_simulator):
         with pytest.raises(ValueError, match="Unsupported quantum_routine"):

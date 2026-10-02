@@ -698,9 +698,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """Read and validate the program portion of a checkpoint."""
         checkpoint_path = cls._resolve_checkpoint_path(checkpoint_dir, subdirectory)
         state = _load_and_validate_pydantic_model(
-            checkpoint_path / PROGRAM_STATE_FILE,
-            VQACheckpoint,
-            required_fields=["kind", "program_type", "current_iteration"],
+            checkpoint_path / PROGRAM_STATE_FILE, VQACheckpoint
         )
         if state.kind != "iteration":
             raise ValueError("Expected an iterative VQA checkpoint.")
@@ -726,19 +724,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 f"Checkpoints can be loaded for: {supported}."
             )
         return optimizer_class.load_state(checkpoint_path)
-
-    def _restore_state(
-        self,
-        checkpoint_dir: Path | str,
-        subdirectory: str | None = None,
-    ) -> Self:
-        """Restore a checkpoint onto this already-constructed program."""
-        checkpoint_path, state = type(self)._load_checkpoint_state(
-            checkpoint_dir, subdirectory
-        )
-        self._restore_loaded_checkpoint(checkpoint_path, state)
-        self._continue_in(checkpoint_dir, subdirectory)
-        return self
 
     def _continue_in(
         self, checkpoint_dir: Path | str, subdirectory: str | None
@@ -1120,11 +1105,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         return _compute_parameter_shift_rule(frequencies)
 
     def _evaluate_gradient_at(
-        self, params: npt.NDArray[np.float64], **kwargs
+        self, params: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
         """Evaluate the parameter-shift gradient at a single parameter vector."""
         shifts, weights = self._grad_shift_rule
-        exp_vals = self._evaluate_cost_param_sets(shifts + params, **kwargs)
+        exp_vals = self._evaluate_cost_param_sets(shifts + params)
         return weights @ np.asarray(list(exp_vals.values()), dtype=np.float64)
 
     def _resolve_sample_params(

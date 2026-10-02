@@ -4,13 +4,16 @@
 
 import math
 import warnings
+from contextlib import nullcontext
 
 import numpy as np
 import pytest
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPreprocessor, ContractViolation
+from divi.pipeline.stages import MeasurementStage, QEMStage
 from divi.qprog import (
     QNN,
     AngleEmbedding,
@@ -18,6 +21,7 @@ from divi.qprog import (
     ZZFeatureMap,
 )
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.ensemble import _restore_completion
 from divi.qprog.mixins import DataBindingMixin
 from divi.qprog.mixins._data_binding import _LOSS_FN_IGNORED_MSG
 from divi.qprog.optimizers import (
@@ -28,6 +32,7 @@ from divi.qprog.optimizers import (
 )
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests._helpers import exact_match
+from tests.qprog._helpers import restore_iteration_checkpoint
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
@@ -433,16 +438,34 @@ class TestConstructionValidation:
         ):
             make_qnn(observable=None, labels=[0.0, 3.0, 0.0, 3.0], fit_bias=True)
 
-    def test_fit_bias_requires_two_samples(self, make_qnn):
-        # With one sample the bias absorbs the whole error, so the loss is 0.
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "fit_bias requires at least 2 samples; with one, the bias "
-                "absorbs the whole error and the loss is always 0."
+    @pytest.mark.parametrize(
+        "feature_batch, labels, expectation",
+        [
+            pytest.param(
+                [[0.1, 0.2]],
+                [1.0],
+                pytest.raises(
+                    ValueError,
+                    match=exact_match(
+                        "fit_bias requires at least 2 samples; with one, the bias "
+                        "absorbs the whole error and the loss is always 0."
+                    ),
+                ),
+                id="one-sample",
             ),
-        ):
-            make_qnn(feature_batch=[[0.1, 0.2]], labels=[1.0], fit_bias=True)
+            pytest.param(
+                [[0.1, 0.2], [0.3, 0.4]], [1.0, -1.0], nullcontext(), id="two-samples"
+            ),
+        ],
+    )
+    def test_fit_bias_requires_two_samples(
+        self, make_qnn, feature_batch, labels, expectation
+    ):
+        with expectation:
+            program = make_qnn(
+                feature_batch=np.array(feature_batch), labels=labels, fit_bias=True
+            )
+            assert program.fit_bias is True
 
     def test_fitted_bias_without_fit_bias_raises(self, make_qnn):
         program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
@@ -721,6 +744,7 @@ class TestFitBias:
         program.labels = self.LABELS + 5.0
 
         assert program.fitted_bias == bias
+        self._assert_bias_fits_the_readout(program, make_qnn, default_test_simulator)
         np.testing.assert_allclose(
             program.predict(program.feature_batch, return_scores=True),
             scores,
@@ -735,9 +759,11 @@ class TestFitBias:
         )
 
         restored = self._make_biased_qnn(make_qnn, default_test_simulator)
-        restored._restore_state(tmp_path)
+        _restore_completion(restored, tmp_path)
+        restored.labels = self.LABELS + 5.0
 
         assert restored.fitted_bias == program.fitted_bias
+        self._assert_bias_fits_the_readout(restored, make_qnn, default_test_simulator)
 
     def test_load_rejects_a_mismatched_fit_bias(
         self, make_qnn, default_test_simulator, tmp_path
@@ -748,7 +774,7 @@ class TestFitBias:
         )
 
         with pytest.raises(ValueError, match="trained with fit_bias=True"):
-            unbiased._restore_state(tmp_path)
+            restore_iteration_checkpoint(unbiased, tmp_path)
 
     def test_bias_missing_after_restore_is_fitted_on_read(
         self, make_qnn, default_test_simulator, tmp_path
@@ -759,7 +785,7 @@ class TestFitBias:
             make_qnn, default_test_simulator, tmp_path
         )
         restored = self._make_biased_qnn(make_qnn, default_test_simulator)
-        restored._restore_state(tmp_path, subdirectory="checkpoint_002")
+        restore_iteration_checkpoint(restored, tmp_path, subdirectory="checkpoint_002")
 
         np.testing.assert_allclose(restored.fitted_bias, program.fitted_bias, atol=1e-9)
 
@@ -902,3 +928,133 @@ def test_build_pipeline_env_honors_silent_override(make_qnn):
     program = make_qnn()
     assert program._build_pipeline_env()._progress_emitter is program._progress_emitter
     assert program._build_pipeline_env(progress_emitter=None)._progress_emitter is None
+
+
+_WEIGHTS = np.array([0.5, 1.0, 1.5, 2.0])
+
+
+def _trained(program, bias=None):
+    """Mark ``program`` as trained at ``_WEIGHTS``, with an optional stored bias."""
+    program._best_params = _WEIGHTS.copy()
+    if bias is not None:
+        program._results["fitted_bias"] = bias
+    return program
+
+
+def _predict_pipeline(mocker, program, features):
+    """The pipeline ``predict`` assembles, captured from the base assembler."""
+    assemble = mocker.spy(VariationalQuantumAlgorithm, "_assemble_pipeline")
+    program.predict(features, params=_WEIGHTS)
+    return assemble.spy_return
+
+
+@pytest.mark.parametrize(
+    "fit_bias, bias", [pytest.param(False, 0.0, id="no_bias"), (True, 0.25)]
+)
+def test_predict_thresholds_scores_at_zero(mocker, make_qnn, fit_bias, bias):
+    scores = np.array([-0.5, 0.0, 0.5])
+    labels = [1.0, -1.0, 1.0, -1.0] if fit_bias else None
+    program = _trained(
+        make_qnn(labels=labels, fit_bias=fit_bias), bias if fit_bias else None
+    )
+    mocker.patch.object(program, "_scores", return_value=scores)
+    features = np.zeros((3, 2))
+
+    np.testing.assert_array_equal(
+        program.predict(features), np.where(scores + bias >= 0.0, 1.0, -1.0)
+    )
+    np.testing.assert_array_equal(
+        program.predict(features, return_scores=True), scores + bias
+    )
+
+
+@pytest.mark.parametrize(
+    "params",
+    [pytest.param(None, id="best_params"), pytest.param(_WEIGHTS[None, :], id="row")],
+)
+def test_scores_bind_features_then_weights_and_add_the_constant(
+    mocker, make_qnn, params
+):
+    """Each row binds its features ahead of the weights; the readout carries
+    the observable's constant."""
+    program = _trained(
+        make_qnn(observable=SparsePauliOp.from_list([("ZI", 1.0), ("II", 3.0)]))
+    )
+    measure = mocker.patch.object(
+        program, "_measure_observable_for", return_value=np.array([0.1, -0.2])
+    )
+    features = np.array([[0.1, 0.2], [0.3, 0.4]])
+
+    scores = program.predict(features, params=params, return_scores=True)
+
+    np.testing.assert_allclose(scores, [3.1, 2.8])
+    np.testing.assert_array_equal(
+        measure.call_args.args[0], np.hstack([features, np.tile(_WEIGHTS, (2, 1))])
+    )
+
+
+def test_predict_pipeline_mitigates_like_the_cost_pipeline(
+    mocker, make_qnn, feature_batch_2x2
+):
+    program = make_qnn(qem_protocol=ZNE(scale_factors=[1.0, 3.0]))
+    cost = program._build_preprocessor_pipeline(program.cost_preprocessor())
+
+    predict = _predict_pipeline(mocker, program, feature_batch_2x2)
+
+    for pipeline in (cost, predict):
+        assert any(isinstance(stage, QEMStage) for stage in pipeline.stages)
+
+
+def test_predict_measures_with_the_program_strategies(
+    mocker, make_qnn, feature_batch_2x2
+):
+    program = make_qnn(
+        grouping_strategy="wires", shot_distribution="uniform", measure_all_qubits=True
+    )
+
+    pipeline = _predict_pipeline(mocker, program, feature_batch_2x2)
+
+    (stage,) = [s for s in pipeline.stages if isinstance(s, MeasurementStage)]
+    assert stage._grouping_strategy == "wires"
+    assert stage._shot_distribution == "uniform"
+    assert stage._measure_all is True
+
+
+def test_predict_accumulates_circuit_and_runtime_totals(
+    make_qnn, feature_batch_2x2, mocker
+):
+    program = make_qnn()
+    mocker.patch(
+        "divi.pipeline.CircuitPipeline.run",
+        autospec=True,
+        side_effect=lambda pipeline, initial_spec, env: _fake_predict_run(env, 4),
+    )
+
+    program.predict(feature_batch_2x2, params=_WEIGHTS)
+    program.predict(feature_batch_2x2, params=_WEIGHTS)
+
+    assert program.total_circuit_count == 2 * 7
+    assert program.total_run_time == pytest.approx(2 * 0.5)
+
+
+def _fake_predict_run(env, n_rows):
+    env.artifacts["circuit_count"] = 7
+    env.artifacts["run_time"] = 0.5
+    return {(("param_set", i),): [0.0] for i in range(n_rows)}
+
+
+def test_labels_are_flattened_to_float64(make_qnn):
+    program = make_qnn(labels=[[1], [0], [1], [0]])
+
+    assert program.labels.shape == (4,)
+    assert program.labels.dtype == np.float64
+
+
+def test_cost_meta_circuit_converts_the_composed_dag_once(make_qnn):
+    program = make_qnn()
+    symbols = program._data_symbols + program._weight_symbols
+
+    first = program._cost_meta_circuit(symbols)
+    second = program._cost_meta_circuit(symbols)
+
+    assert first.circuit_bodies[0][1] is second.circuit_bodies[0][1]

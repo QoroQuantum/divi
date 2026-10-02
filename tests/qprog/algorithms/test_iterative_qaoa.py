@@ -37,6 +37,7 @@ from divi.qprog.problems import (
 )
 from divi.reporting._events import EventKind, ProgressEvent, TerminalStatus
 from tests._helpers import exact_match
+from tests.qprog._helpers import restore_iteration_checkpoint
 from tests.qprog._program_contracts import verify_load_state_rejects_missing_state_key
 from tests.qprog.problems._helpers import QUBO_MATRIX, QUBO_SOLUTION, make_bull_graph
 
@@ -851,7 +852,7 @@ class TestIterativeQAOACheckpointing:
             optimizer=MonteCarloOptimizer(population_size=4, n_best_sets=2),
         )
 
-        target._restore_state(tmp_path)
+        restore_iteration_checkpoint(target, tmp_path)
 
         assert target.n_layers == self.MAX_DEPTH
         assert target.current_iteration == self.ITERS_PER_DEPTH

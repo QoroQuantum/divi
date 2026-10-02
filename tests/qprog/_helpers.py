@@ -31,6 +31,29 @@ class RecordingProgressSession(ProgressSession):
         super().emit(event)
 
 
+class _RecordingSession:
+    """Synchronous session double that retains real reducer behaviour."""
+
+    def __init__(self, state: ProgressState):
+        self.state = state
+        self.events: list[ProgressEvent] = []
+        self.closed = False
+
+    def emit(self, event: ProgressEvent) -> None:
+        self.events.append(event)
+        self.state.apply(event)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def restore_iteration_checkpoint(program, checkpoint_dir, subdirectory=None):
+    """Restore an iteration checkpoint onto ``program``, as ensemble recovery does."""
+    path, state = type(program)._load_checkpoint_state(checkpoint_dir, subdirectory)
+    program._restore_loaded_checkpoint(path, state)
+    return program
+
+
 class _FakeRunResult:
     """Mimics a program instance returned by run() for mocked futures."""
 

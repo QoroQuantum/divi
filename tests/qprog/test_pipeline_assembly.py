@@ -4,6 +4,8 @@
 
 """Tests for the program pipeline assembler and the per-protocol pipelines."""
 
+import warnings
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -13,10 +15,15 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE
-from divi.pipeline import CircuitPreprocessor, ResultFormat
-from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
+from divi.pipeline import CircuitPreprocessor, DiviPerformanceWarning, ResultFormat
+from divi.pipeline.stages import (
+    CircuitSpecStage,
+    MeasurementStage,
+    PauliTwirlStage,
+    QEMStage,
+)
 from divi.qprog import PCE, VQE, CustomVQA
-from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.algorithms import GenericLayerAnsatz, TimeEvolution
 from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
 
 
@@ -37,27 +44,26 @@ def _metric_pipeline(program):
     return program._build_preprocessor_pipeline(CircuitPreprocessor("metric"))
 
 
-@pytest.fixture
-def vqe(dummy_simulator, default_optimizer):
+def _vqe_with(backend, optimizer, qem_protocol=None, **kwargs):
     return VQE(
         HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
         ansatz=GenericLayerAnsatz([RYGate]),
         n_layers=1,
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
+        backend=backend,
+        optimizer=optimizer,
+        qem_protocol=qem_protocol,
+        **kwargs,
     )
+
+
+@pytest.fixture
+def vqe(dummy_simulator, default_optimizer):
+    return _vqe_with(dummy_simulator, default_optimizer)
 
 
 @pytest.fixture
 def mitigated_vqe(dummy_simulator, default_optimizer):
-    return VQE(
-        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
-        ansatz=GenericLayerAnsatz([RYGate]),
-        n_layers=1,
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
-        qem_protocol=ZNE(scale_factors=[1.0, 3.0]),
-    )
+    return _vqe_with(dummy_simulator, default_optimizer, ZNE(scale_factors=[1.0, 3.0]))
 
 
 def test_vqe_exposes_cost_and_sample(vqe):
@@ -123,19 +129,14 @@ def test_twirl_stage_draws_from_the_program_seed(dummy_simulator, default_optimi
     program produces different circuits each time it assembles a pipeline."""
 
     def twirled(seed):
-        program = VQE(
-            HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5), ("IZ", 0.5)])),
-            ansatz=GenericLayerAnsatz([RYGate]),
-            n_layers=1,
-            backend=dummy_simulator,
-            optimizer=default_optimizer,
-            qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
+        program = _vqe_with(
+            dummy_simulator,
+            default_optimizer,
+            QuEPP(truncation_order=1, n_twirls=3),
             seed=seed,
         )
-        stage = next(
-            s
-            for s in _protocol_pipeline(program, program.cost_preprocessor()).stages
-            if type(s).__name__ == "PauliTwirlStage"
+        (stage,) = _stages_of(
+            _protocol_pipeline(program, program.cost_preprocessor()), PauliTwirlStage
         )
         return program._base_seed, stage._seed
 
@@ -144,6 +145,80 @@ def test_twirl_stage_draws_from_the_program_seed(dummy_simulator, default_optimi
     # Two programs given the same seed twirl identically; a different seed does not.
     assert twirled(1234)[1] == stage_seed
     assert twirled(4321)[1] != stage_seed
+
+
+def _stages_of(pipeline, stage_type):
+    return [stage for stage in pipeline.stages if isinstance(stage, stage_type)]
+
+
+@pytest.mark.parametrize("n_twirls", [0, 1, 3])
+def test_mitigation_stages_carry_the_programs_protocol(
+    dummy_simulator, default_optimizer, n_twirls
+):
+    protocol = QuEPP(truncation_order=1, n_twirls=n_twirls)
+    program = _vqe_with(dummy_simulator, default_optimizer, protocol)
+    pipeline = _protocol_pipeline(program, program.cost_preprocessor())
+
+    (qem_stage,) = _stages_of(pipeline, QEMStage)
+    assert qem_stage.protocol is program._qem_protocol
+    twirls = _stages_of(pipeline, PauliTwirlStage)
+    assert [stage._n_twirls for stage in twirls] == ([n_twirls] if n_twirls else [])
+
+
+def _exhaustive_quepp():
+    return QuEPP(truncation_order=1, sampling="exhaustive", n_twirls=0)
+
+
+def test_exhaustive_quepp_binds_parameters_before_mitigation(
+    dummy_simulator, default_optimizer
+):
+    program = _vqe_with(
+        dummy_simulator,
+        default_optimizer,
+        _exhaustive_quepp(),
+        suppress_performance_warnings=True,
+    )
+    types = _stage_types(_protocol_pipeline(program, program.cost_preprocessor()))
+
+    assert types.index("ParameterBindingStage") < types.index("QEMStage")
+    assert types.count("ParameterBindingStage") == 1
+
+
+def _time_evolution_with(backend, qem_protocol, **kwargs):
+    return TimeEvolution(
+        hamiltonian=SparsePauliOp.from_list([("X", 1.0), ("Z", 1.0)]),
+        observable=SparsePauliOp("Z"),
+        backend=backend,
+        qem_protocol=qem_protocol,
+        **kwargs,
+    )
+
+
+def _vqe_cost_pipeline(backend, optimizer, **kwargs):
+    program = _vqe_with(backend, optimizer, _exhaustive_quepp(), **kwargs)
+    return _protocol_pipeline(program, program.cost_preprocessor())
+
+
+def _time_evolution_pipeline(backend, optimizer, **kwargs):
+    program = _time_evolution_with(backend, _exhaustive_quepp(), **kwargs)
+    return _protocol_pipeline(program, program._evolution_preprocessor())
+
+
+@pytest.mark.parametrize(
+    "build", [_vqe_cost_pipeline, _time_evolution_pipeline], ids=["vqa", "base"]
+)
+def test_exhaustive_quepp_warns_unless_suppressed(
+    dummy_simulator, default_optimizer, build
+):
+    """Both the variational assembler and the shared one honour the program's
+    ``suppress_performance_warnings``."""
+    with pytest.warns(DiviPerformanceWarning) as record:
+        build(dummy_simulator, default_optimizer)
+    assert any("sampling='exhaustive'" in str(w.message) for w in record)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DiviPerformanceWarning)
+        build(dummy_simulator, default_optimizer, suppress_performance_warnings=True)
 
 
 def test_custom_vqa_has_no_sample_pipeline(dummy_simulator, default_optimizer):

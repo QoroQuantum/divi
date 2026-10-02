@@ -6,9 +6,16 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from divi.qprog import QAOA, VariationalQuantumAlgorithm
+from divi.qprog import (
+    PCE,
+    QAOA,
+    IterativeQAOA,
+    ReportingLevel,
+    VariationalQuantumAlgorithm,
+)
 from divi.qprog.aggregation import BeamSearchStrategy, HierarchicalStrategy
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.early_stopping import EarlyStopping
 from divi.qprog.mixins import SolutionEntry
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
@@ -122,6 +129,105 @@ def _attach_program_with_candidates(ensemble, mocker, decoded_candidates):
     return prog
 
 
+_TWO_VARIABLE_QUBO = np.array([[1.0, -2.0], [0.0, 1.0]])
+
+
+@pytest.mark.parametrize(
+    "routine, engine_cls, depth_attrs",
+    [
+        pytest.param("qaoa", QAOA, {"n_layers": 2, "max_iterations": 7}, id="qaoa"),
+        pytest.param("pce", PCE, {"n_layers": 2, "max_iterations": 7}, id="pce"),
+        pytest.param(
+            "iterative_qaoa",
+            IterativeQAOA,
+            {"_max_depth": 2, "_max_iterations_per_depth": 7},
+            id="iterative_qaoa",
+        ),
+    ],
+)
+def test_children_are_built_from_the_routine_configuration(
+    mocker, dummy_simulator, routine, engine_cls, depth_attrs
+):
+    """Each child is the routine's engine with the ensemble's depth, a private
+    early-stopping copy and the forwarded engine kwargs."""
+    problem = _make_stub_problem(mocker, solution_size=2)
+    problem.decompose.return_value = {
+        pid: BinaryOptimizationProblem(_TWO_VARIABLE_QUBO) for pid in ("A", "B")
+    }
+    early_stopping = EarlyStopping(patience=3)
+    ensemble = _make_ensemble(
+        problem,
+        dummy_simulator,
+        n_layers=2,
+        quantum_routine=routine,
+        max_iterations=7,
+        early_stopping=early_stopping,
+        reporting_level="off",
+        seed=5,
+    )
+
+    ensemble.create_programs()
+
+    assert ensemble._engine_kwargs == {"seed": 5}
+    assert ensemble.reporting_level == ReportingLevel.OFF
+    children = list(ensemble.programs.values())
+    assert len(children) == 2
+    for child in children:
+        assert type(child) is engine_cls
+        for attr, expected in depth_attrs.items():
+            assert getattr(child, attr) == expected
+        assert child._seed == 5
+        assert child.backend is dummy_simulator
+        assert isinstance(child._early_stopping, EarlyStopping)
+        assert child._early_stopping is not early_stopping
+        assert child._early_stopping._loss_history is not early_stopping._loss_history
+        assert child._early_stopping.patience == 3
+        assert child.optimizer is not _DEFAULT_OPTIMIZER
+    assert children[0]._early_stopping is not children[1]._early_stopping
+
+
+def test_explicit_max_iterations_per_depth_wins_for_iterative_qaoa(
+    mocker, dummy_simulator
+):
+    problem = _make_stub_problem(mocker, solution_size=2)
+    problem.decompose.return_value = {
+        "A": BinaryOptimizationProblem(_TWO_VARIABLE_QUBO)
+    }
+    ensemble = _make_ensemble(
+        problem,
+        dummy_simulator,
+        quantum_routine="iterative_qaoa",
+        max_iterations=7,
+        max_iterations_per_depth=3,
+    )
+
+    ensemble.create_programs()
+
+    assert ensemble.programs["A"]._max_iterations_per_depth == 3
+
+
+def test_aggregation_extends_from_an_all_zero_global_solution(mocker, dummy_simulator):
+    problem = _make_stub_problem(mocker, solution_size=3)
+    ensemble = _make_ensemble(problem, dummy_simulator)
+    ensemble.create_programs()
+    _attach_program_with_candidates(ensemble, mocker, [[1, 1]])
+
+    assert ensemble.aggregate_results() == ([1, 1, 0], -2)
+
+
+def test_get_top_solutions_defaults_to_ten(mocker, dummy_simulator):
+    problem = _make_stub_problem(mocker, solution_size=4)
+    ensemble = _make_ensemble(problem, dummy_simulator)
+    ensemble.create_programs()
+    _attach_program_with_candidates(
+        ensemble,
+        mocker,
+        [[(index >> bit) & 1 for bit in range(4)] for index in range(12)],
+    )
+
+    assert len(ensemble.get_top_solutions()) == 10
+
+
 class TestPartitioningProgramEnsemble:
     def test_checkpointing_rejects_arbitrary_binary_decomposer(
         self, dummy_simulator, tmp_path
@@ -221,9 +327,11 @@ class TestStrictAggregation:
         problem = _make_stub_problem(mocker, solution_size=2)
         ensemble = _make_ensemble(problem, dummy_simulator)
         ensemble.create_programs()
-        _attach_program_with_candidates(ensemble, mocker, [[1, 1]])
+        _attach_program_with_candidates(ensemble, mocker, [[1, 1], [1, 0]])
 
-        result = ensemble.aggregate_results()
+        result = ensemble.aggregate_results(
+            strategy=BeamSearchStrategy(beam_width=None, n_partition_candidates=None)
+        )
 
         assert result == ([1, 1], -2)
         problem.evaluate_global_solution.assert_called()

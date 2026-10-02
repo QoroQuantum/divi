@@ -552,7 +552,6 @@ class QuantumProgram(ABC):
         in :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`).
         """
         progress_emitter = overrides.pop("progress_emitter", self._progress_emitter)
-        progress_key = overrides.pop("progress_key", self._progress_key)
         env_kwargs = {
             "backend": self.backend,
             "cancellation_event": self._cancellation_event,
@@ -561,7 +560,7 @@ class QuantumProgram(ABC):
         }
         env_kwargs.update(overrides)  # caller-supplied values win
         env = PipelineEnv(**env_kwargs)
-        env._bind_progress(progress_emitter, progress_key)
+        env._bind_progress(progress_emitter, self._progress_key)
         return env
 
     def _execute(self, pipeline: CircuitPipeline, initial_spec: Any, **env_overrides):
@@ -572,11 +571,11 @@ class QuantumProgram(ABC):
         """
         env = self._build_pipeline_env(**env_overrides)
         result = pipeline.run(initial_spec=initial_spec, env=env)
-        self._total_circuit_count += env.artifacts.get("circuit_count", 0)
-        self._total_device_shots += env.artifacts.get("device_shots", 0)
-        self._total_backend_jobs += env.artifacts.get("backend_jobs", 0)
-        self._total_run_time += env.artifacts.get("run_time", 0.0)
-        self._current_execution_result = env.artifacts.get("_current_execution_result")
+        self._total_circuit_count += env.artifacts["circuit_count"]
+        self._total_device_shots += env.artifacts["device_shots"]
+        self._total_backend_jobs += env.artifacts["backend_jobs"]
+        self._total_run_time += env.artifacts["run_time"]
+        self._current_execution_result = env.artifacts["_current_execution_result"]
         self._last_cost_variance = env.artifacts.get("cost_variance")
         return result
 

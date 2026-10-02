@@ -17,6 +17,7 @@ import os
 import pickle
 import re
 import threading
+import time
 import warnings
 from concurrent.futures import Future
 
@@ -58,6 +59,7 @@ from divi.reporting._state import ProgressState
 from tests.qprog._helpers import (
     SimpleTestProgram,
     _FakeRunResult,
+    _RecordingSession,
     _StubProgram,
 )
 from tests.qprog._program_contracts import verify_basic_program_ensemble_behaviour
@@ -85,22 +87,6 @@ class SampleProgramEnsemble(ProgramEnsemble):
         return sum(p.circ_count for p in self.programs.values())
 
 
-class _RecordingSession:
-    """Synchronous session double that retains real reducer behaviour."""
-
-    def __init__(self, state: ProgressState):
-        self.state = state
-        self.events: list[ProgressEvent] = []
-        self.closed = False
-
-    def emit(self, event: ProgressEvent) -> None:
-        self.events.append(event)
-        self.state.apply(event)
-
-    def close(self) -> None:
-        self.closed = True
-
-
 class _CancellationBlockingProgram(SimpleTestProgram):
     """Block the first run until its ensemble cancellation event is set."""
 
@@ -120,6 +106,7 @@ class _CancellationBlockingProgram(SimpleTestProgram):
             if not self._cancellation_event.wait(timeout=5):
                 raise RuntimeError("worker was not cancelled during setup cleanup")
             self.emitter_when_cancelled = self._progress_emitter
+            time.sleep(0.1)
             self.finished.set()
         return super().run()
 
@@ -171,15 +158,26 @@ def program_ensemble(dummy_simulator):
         pass  # Don't break test teardown due to a race condition
 
 
-def _fail_programs(ensemble, exc):
-    """Install one future per program, each finished with ``exc``."""
+def _settle_futures(ensemble, outcomes):
+    """Install one finished future per program, in program order.
+
+    An exception outcome fails that program's future; ``None`` succeeds it.
+    """
     futures = {}
-    for program in ensemble.programs.values():
+    for program, outcome in zip(ensemble.programs.values(), outcomes, strict=True):
         future = Future()
-        future.set_exception(exc)
+        if outcome is None:
+            future.set_result(program)
+        else:
+            future.set_exception(outcome)
         futures[future] = program
     ensemble.futures = list(futures)
     ensemble._future_to_program = futures
+
+
+def _fail_programs(ensemble, exc):
+    """Install one future per program, each finished with ``exc``."""
+    _settle_futures(ensemble, [exc] * len(ensemble.programs))
 
 
 def _assert_counts_every_dispatched_program(ensemble):
@@ -557,6 +555,7 @@ class TestProgramEnsemble:
         program_ensemble.run_one_round(blocking=True)
 
         assert add_to_executor.call_count == len(program_ensemble.programs)
+        assert session.closed
 
     def test_compact_program_is_initially_not_visible(self, program_ensemble, mocker):
         program_ensemble.create_programs()
@@ -843,18 +842,53 @@ class TestProgramEnsemble:
         assert TerminalStatus.FAILED in statuses
         assert TerminalStatus.CANCELLED not in statuses
 
-    def test_shared_failure_is_reported_once(self, program_ensemble, mocker):
-        """A backend error that fails every child prints one panel naming them
-        all, not one panel per child."""
-        program_ensemble.create_programs()
-        program_ensemble._start_progress_session(batching_enabled=False)
+    @pytest.mark.parametrize(
+        "outcomes, labels",
+        [
+            pytest.param([None, ValueError("x")], [" (Program b)"], id="one-failure"),
+            pytest.param(
+                [ValueError("a"), ValueError("b")],
+                [" (Program a)", " (Program b)"],
+                id="distinct-messages",
+            ),
+            pytest.param(
+                [ValueError("x"), TypeError("x")],
+                [" (Program a)", " (Program b)"],
+                id="distinct-types",
+            ),
+            pytest.param(
+                [ValueError("x"), ValueError("x")],
+                [" (Programs a, b)"],
+                id="same-cause",
+            ),
+        ],
+    )
+    @pytest.mark.parametrize("with_session", [False, True], ids=["idle", "in-session"])
+    def test_failure_panels_are_grouped_by_cause(
+        self, dummy_simulator, mocker, request, outcomes, labels, with_session
+    ):
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.programs = {
+            key: SimpleTestProgram(1, 0.1, backend=dummy_simulator) for key in "ab"
+        }
+        if with_session:
+            ensemble._start_progress_session(batching_enabled=False)
+            request.addfinalizer(ensemble.reset)
         render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
-        _fail_programs(program_ensemble, RuntimeError("backend down"))
+        _settle_futures(ensemble, outcomes)
 
-        program_ensemble._report_failed_programs()
+        ensemble._report_failed_programs()
 
-        render_failure.assert_called_once()
-        assert render_failure.call_args.kwargs["label"] == " (Programs prog1, prog2)"
+        assert [
+            call.kwargs["label"] for call in render_failure.call_args_list
+        ] == labels
+
+    def test_base_ensemble_has_no_top_solutions(self, program_ensemble):
+        with pytest.raises(
+            NotImplementedError,
+            match="SampleProgramEnsemble does not support get_top_solutions",
+        ):
+            program_ensemble.get_top_solutions()
 
     def test_off_prints_no_failure_panels(self, dummy_simulator, mocker):
         ensemble = SampleProgramEnsemble(

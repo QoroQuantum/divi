@@ -27,12 +27,15 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
     Args:
         problem: A :class:`~divi.qprog.problems.QAOAProblem` configured for decomposition
             (e.g. ``MaxCutProblem(graph, config=...)``).
-        n_layers: Number of ansatz layers per sub-program.
+        n_layers: Number of ansatz layers per sub-program; the maximum depth
+            for ``"iterative_qaoa"``.
         backend: Backend for circuit execution.
         optimizer: Optimizer for each sub-program.
         quantum_routine: Per-partition quantum algorithm.
             ``"qaoa"`` (default), ``"pce"``, or ``"iterative_qaoa"``.
-        max_iterations: Max optimisation iterations per sub-program.
+        max_iterations: Max optimisation iterations per sub-program; per depth
+            for ``"iterative_qaoa"``, unless ``max_iterations_per_depth`` is
+            passed.
         **kwargs: If ``early_stopping`` is present it is extracted and
             deep-copied per sub-program.  ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live
@@ -67,7 +70,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         _ENGINE_MAP = {
             "qaoa": (QAOA, dict(max_iterations=max_iterations, n_layers=n_layers)),
             "pce": (PCE, dict(max_iterations=max_iterations, n_layers=n_layers)),
-            "iterative_qaoa": (IterativeQAOA, dict(max_depth=n_layers)),
+            "iterative_qaoa": (
+                IterativeQAOA,
+                dict(max_depth=n_layers, max_iterations_per_depth=max_iterations),
+            ),
         }
 
         routine = quantum_routine.lower()
@@ -90,7 +96,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             )
 
         self._constructor = partial(
-            self._engine_cls, backend=backend, **engine_args, **self._engine_kwargs
+            self._engine_cls, backend=backend, **{**engine_args, **self._engine_kwargs}
         )
 
     # ------------------------------------------------------------------
