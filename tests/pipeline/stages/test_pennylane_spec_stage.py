@@ -16,6 +16,20 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     PennyLaneSpecStage,
 )
+from tests._helpers import exact_match
+
+_UNBINDABLE_PARAM_COLUMNS_MESSAGE = exact_match(
+    "env.param_sets has 2 parameter column(s) but a converted circuit exposes "
+    "no bindable parameters. A concrete-valued QuantumScript binds nothing — "
+    "set qscript.trainable_params to the slots to bind, or use parametric gates."
+)
+
+
+def _unsupported_measurement_message(got: str) -> str:
+    return exact_match(
+        "PennyLaneSpecStage requires exactly one measurement of type "
+        f"probs(), expval(), or counts(). Got: {got}"
+    )
 
 
 def _bell_script():
@@ -92,7 +106,13 @@ class TestPennyLaneSpecStageExpand:
     def test_invalid_input_raises(self, dummy_pipeline_env):
         stage = PennyLaneSpecStage()
 
-        with pytest.raises(TypeError, match="PennyLaneSpecStage expects"):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "PennyLaneSpecStage expects a QuantumScript, QNode, sequence, "
+                "or mapping, got int"
+            ),
+        ):
             stage.expand(42, dummy_pipeline_env)
 
 
@@ -217,32 +237,40 @@ class TestPennyLaneSpecStageQNodeArray:
 
         stage = PennyLaneSpecStage()
 
-        with pytest.raises(TypeError, match="array parameters"):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "Failed to convert QNode — the function appears to use array "
+                "parameters or numpy operations on its arguments. QNodes with "
+                "multiple array parameters are not supported. Pass a "
+                "QuantumScript with explicit sympy symbols instead."
+            ),
+        ):
             stage.expand(circuit, dummy_pipeline_env)
 
 
 class TestPennyLaneSpecStageMeasurementValidation:
     """Measurement type validation: only probs, expval, counts are supported."""
 
-    def test_multi_measurement_raises(self, dummy_pipeline_env):
+    @pytest.mark.parametrize(
+        "make_measurements, got",
+        [
+            pytest.param(
+                lambda: [qp.expval(qp.Z(0)), qp.probs()],
+                "['ExpectationMP', 'ProbabilityMP']",
+                id="multiple",
+            ),
+            pytest.param(lambda: [qp.sample()], "['SampleMP']", id="unsupported"),
+        ],
+    )
+    def test_rejects_anything_but_one_supported_measurement(
+        self, dummy_pipeline_env, make_measurements, got
+    ):
         qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)],
-            measurements=[qp.expval(qp.Z(0)), qp.probs()],
+            ops=[qp.Hadamard(0)], measurements=make_measurements()
         )
-        stage = PennyLaneSpecStage()
-
-        with pytest.raises(ValueError, match="exactly one measurement"):
-            stage.expand(qs, dummy_pipeline_env)
-
-    def test_unsupported_measurement_raises(self, dummy_pipeline_env):
-        qs = qp.tape.QuantumScript(
-            ops=[qp.Hadamard(0)],
-            measurements=[qp.sample()],
-        )
-        stage = PennyLaneSpecStage()
-
-        with pytest.raises(ValueError, match="probs.*expval.*counts"):
-            stage.expand(qs, dummy_pipeline_env)
+        with pytest.raises(ValueError, match=_unsupported_measurement_message(got)):
+            PennyLaneSpecStage().expand(qs, dummy_pipeline_env)
 
     def test_counts_measurement_accepted(self, dummy_pipeline_env):
         qs = qp.tape.QuantumScript(
@@ -298,7 +326,9 @@ class TestPennyLaneSpecStagePipeline:
         probs = result[()]
         assert "00" in probs
         assert "11" in probs
-        assert probs["00"] + probs["11"] == pytest.approx(1.0, abs=0.05)
+        assert probs["00"] + probs["11"] == pytest.approx(1.0, abs=1e-12)
+        # σ = sqrt(0.25 / 5000) ≈ 0.007 at the fixture's 5000 shots, so this is 5σ.
+        assert probs["00"] == pytest.approx(0.5, abs=0.035)
 
     def test_parametric_qnode_with_binding(self, default_test_simulator):
         """QNode with parameter binding produces expectation value."""
@@ -321,9 +351,9 @@ class TestPennyLaneSpecStagePipeline:
         env = PipelineEnv(backend=default_test_simulator, param_sets=param_sets)
         result = pipeline.run(initial_spec=circuit, env=env)
 
-        # RX(0) RZ(0) |0> = |0>, so <Z> ≈ 1.0
+        # RX(0) RZ(0) |0> = |0>, so <Z> = 1.0
         expval = next(iter(result.values()))
-        assert expval == pytest.approx([1.0], abs=0.05)
+        assert expval == pytest.approx([1.0], abs=1e-9)
 
     def test_concrete_tape_with_trainable_subset_binds(self, default_test_simulator):
         """A concrete-valued tape with an explicit trainable_params subset
@@ -350,7 +380,7 @@ class TestPennyLaneSpecStagePipeline:
         )
         result = pipeline.run(initial_spec=qs, env=env)
         expval = float(np.atleast_1d(next(iter(result.values())))[0])
-        assert expval == pytest.approx(np.cos(0.3) * np.cos(0.7), abs=0.05)
+        assert expval == pytest.approx(np.cos(0.3) * np.cos(0.7), abs=1e-9)
 
     def test_concrete_tape_with_param_columns_raises(self, default_test_simulator):
         """A concrete tape with no bindable parameters must reject param_sets
@@ -369,5 +399,39 @@ class TestPennyLaneSpecStagePipeline:
         env = PipelineEnv(
             backend=default_test_simulator, param_sets=np.array([[0.3, 0.9]])
         )
-        with pytest.raises(ValueError, match="no bindable parameters"):
+        with pytest.raises(ValueError, match=_UNBINDABLE_PARAM_COLUMNS_MESSAGE):
             pipeline.run(initial_spec=qs, env=env)
+
+
+def _concrete_script():
+    return qp.tape.QuantumScript(
+        ops=[qp.RX(0.0, wires=0)], measurements=[qp.expval(qp.Z(0))]
+    )
+
+
+def _param_columns_env():
+    return PipelineEnv(backend=None, param_sets=np.array([[0.3, 0.9]]))
+
+
+_CONTAINERS = [
+    pytest.param(lambda a, b: [a, b], id="sequence"),
+    pytest.param(lambda a, b: {"a": a, "b": b}, id="mapping"),
+]
+
+
+@pytest.mark.parametrize("make_container", _CONTAINERS)
+def test_container_with_an_unbindable_circuit_rejects_param_columns(make_container):
+    with pytest.raises(ValueError, match=_UNBINDABLE_PARAM_COLUMNS_MESSAGE):
+        PennyLaneSpecStage().expand(
+            make_container(_parametric_script(), _concrete_script()),
+            _param_columns_env(),
+        )
+
+
+@pytest.mark.parametrize("make_container", _CONTAINERS)
+def test_container_of_parametric_circuits_accepts_param_columns(make_container):
+    batch, _ = PennyLaneSpecStage().expand(
+        make_container(_parametric_script(), _parametric_script()),
+        _param_columns_env(),
+    )
+    assert len(batch) == 2

@@ -24,7 +24,6 @@ from divi.backends import (
     JobFailedError,
     JobStatus,
 )
-from divi.backends._cancellation import _best_effort_cancel_job
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
 from divi.circuits._payloads import bound_circuits
@@ -36,19 +35,20 @@ from divi.pipeline import (
     PipelineEnv,
     PipelineResult,
     PipelineTrace,
+    SpecStage,
     StageOutput,
     format_pipeline_tree,
 )
 from divi.pipeline._compilation import (
     _batch_has_free_parameters,
     _compile_batch,
+    reject_colliding_body_tags,
 )
 from divi.pipeline._core import (
     _build_shot_groups,
     _default_execute_fn,
     _scope_token,
     _sigint_to_cancellation,
-    _validate_stage_order,
     _wait_for_async_result,
 )
 from divi.pipeline.abc import BundleStage
@@ -58,13 +58,18 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
 )
 from divi.reporting._events import ProgressEvent
+from tests._helpers import exact_match
 
 from ._helpers import (
     DummySpecStage,
+    ExpvalBackendSpy,
     FakeBackend,
     FanoutAndSumStage,
     MisTaggedFanoutStage,
+    RecordingBackend,
+    ShotsBackendSpy,
     StatefulFanoutStage,
+    meta_from_circuit,
     ones_execute_fn,
     run_binding_pipeline,
     two_group_meta,
@@ -153,40 +158,43 @@ class TestScopeToken:
         token = {"a": 1, "b": 2}
         assert _scope_token(token, (("obs", 0),), {"obs"}) is token
 
-    def test_exact_foreign_match_strips_axes(self):
-        token = {
-            (("circuit", 0), ("obs_group", 0)): "ctx0",
-            (("circuit", 0), ("obs_group", 1)): "ctx1",
-        }
-        scoped = _scope_token(token, (("obs_group", 0),), {"obs_group"})
-        assert scoped == {(("circuit", 0),): "ctx0"}
-
-    def test_subset_match_when_token_has_fewer_foreign_axes(self):
-        """Token has param_set but not obs_group; should still match."""
-        token = {
-            (("circuit", 0), ("param_set", 0)): "ctx_p0",
-            (("circuit", 0), ("param_set", 1)): "ctx_p1",
-        }
-        foreign_key = (("param_set", 0), ("obs_group", 0))
-        scoped = _scope_token(token, foreign_key, {"param_set", "obs_group"})
-        assert scoped == {(("circuit", 0),): "ctx_p0"}
-
-    def test_subset_match_does_not_cross_values(self):
-        """param_set=1 entry should not match foreign_key with param_set=0."""
-        token = {
-            (("circuit", 0), ("param_set", 0)): "ctx_p0",
-            (("circuit", 0), ("param_set", 1)): "ctx_p1",
-        }
-        foreign_key = (("param_set", 0), ("obs_group", 0))
-        scoped = _scope_token(token, foreign_key, {"param_set", "obs_group"})
-        assert (("circuit", 0),) in scoped
-        assert scoped[(("circuit", 0),)] == "ctx_p0"
-
-    def test_no_foreign_axes_in_token_matches_all(self):
-        """Token keys with no foreign axes match any foreign_key (vacuously)."""
-        token = {(("circuit", 0),): "ctx"}
-        scoped = _scope_token(token, (("obs_group", 0),), {"obs_group"})
-        assert scoped == {(("circuit", 0),): "ctx"}
+    @pytest.mark.parametrize(
+        "token, foreign_key, foreign_axes, expected",
+        [
+            pytest.param(
+                {
+                    (("circuit", 0), ("obs_group", 0)): "ctx0",
+                    (("circuit", 0), ("obs_group", 1)): "ctx1",
+                },
+                (("obs_group", 0),),
+                {"obs_group"},
+                {(("circuit", 0),): "ctx0"},
+                id="exact_foreign_match_strips_axes",
+            ),
+            pytest.param(
+                {
+                    (("circuit", 0), ("param_set", 0)): "ctx_p0",
+                    (("circuit", 0), ("param_set", 1)): "ctx_p1",
+                },
+                (("param_set", 0), ("obs_group", 0)),
+                {"param_set", "obs_group"},
+                {(("circuit", 0),): "ctx_p0"},
+                id="subset_match_with_fewer_foreign_axes",
+            ),
+            pytest.param(
+                {(("circuit", 0),): "ctx"},
+                (("obs_group", 0),),
+                {"obs_group"},
+                {(("circuit", 0),): "ctx"},
+                id="no_foreign_axes_matches_all",
+            ),
+        ],
+    )
+    def test_matching_entries_are_scoped(
+        self, token, foreign_key, foreign_axes, expected
+    ):
+        """Matching entries have their foreign axes stripped; non-matching values are dropped."""
+        assert _scope_token(token, foreign_key, foreign_axes) == expected
 
     def test_empty_token_raises(self):
         with pytest.raises(KeyError, match="no token entries matched"):
@@ -213,62 +221,73 @@ class TestScopeToken:
         assert scoped == {(("circuit", 0),): "ctx_01"}
 
 
-class TestValidateStageOrder:
-    """Spec: _validate_stage_order enforces pipeline structure and unique axis names."""
+_SPEC_ORDER_ERROR = (
+    "Pipeline must have exactly one 'spec' stage and it must come before "
+    "any 'bundle' stage"
+)
+_NO_MEASUREMENT_ERROR = (
+    "Pipeline must contain at least one stage that handles measurement "
+    "(a stage with handles_measurement=True)"
+)
 
-    def test_empty_stages_raises(self):
-        with pytest.raises(ValueError, match="stages cannot be empty"):
-            _validate_stage_order([])
 
-    def test_bundle_stage_first_raises(self):
-        meta = two_group_meta()
-        with pytest.raises(
-            ValueError,
-            match="exactly one 'spec' stage and it must come before",
-        ):
-            CircuitPipeline(
-                stages=[
-                    MeasurementStage(),
-                    DummySpecStage(meta=meta),
-                ]
-            )
+def _collision_error(stage_name: str, n_bodies: int, key: tuple) -> str:
+    return (
+        f"{stage_name} produced {n_bodies} circuit bodies sharing 1 distinct "
+        f"tag(s) for batch key {key!r}. Execution identifies circuits by tag, so "
+        "the duplicates would collapse into one submission and the extra bodies "
+        "would never run. A fan-out stage must extend each body's tag, e.g. "
+        "``(*parent_tag, (self.axis_name, i))``."
+    )
 
-    def test_spec_stage_only_raises_missing_measurement_stage(self):
-        """Single spec stage without MeasurementStage raises."""
-        with pytest.raises(
-            ValueError,
-            match="Pipeline must contain at least one stage that handles measurement",
-        ):
-            CircuitPipeline(stages=[DummySpecStage(meta=two_group_meta())])
 
-    def test_no_measurement_stage_raises(self):
-        """Pipeline with spec + bundle but no MeasurementStage raises."""
-        with pytest.raises(
-            ValueError,
-            match="Pipeline must contain at least one stage that handles measurement",
-        ):
-            CircuitPipeline(
-                stages=[
-                    DummySpecStage(meta=two_group_meta()),
-                    FanoutAndSumStage("x", 2),
-                ]
-            )
+def _spec_stage():
+    return DummySpecStage(meta=two_group_meta())
 
-    def test_duplicate_axis_names_raise(self):
-        """Duplicate stage axis_name (e.g. two FanoutAndSumStages) raises."""
-        meta = two_group_meta()
-        with pytest.raises(
-            ValueError,
-            match="Duplicate stage axis names",
-        ):
-            CircuitPipeline(
-                stages=[
-                    DummySpecStage(meta=meta),
-                    FanoutAndSumStage("x", 2),
-                    FanoutAndSumStage("x", 3),
-                    MeasurementStage(),
-                ]
-            )
+
+@pytest.mark.parametrize(
+    ("make_stages", "message"),
+    [
+        (lambda: [], "stages cannot be empty"),
+        (
+            lambda: [_spec_stage(), _spec_stage(), MeasurementStage()],
+            _SPEC_ORDER_ERROR,
+        ),
+        (lambda: [MeasurementStage(), _spec_stage()], _SPEC_ORDER_ERROR),
+        (lambda: [_spec_stage()], _NO_MEASUREMENT_ERROR),
+        (
+            lambda: [_spec_stage(), FanoutAndSumStage("x", 2)],
+            _NO_MEASUREMENT_ERROR,
+        ),
+        (
+            lambda: [
+                _spec_stage(),
+                FanoutAndSumStage("x", 2),
+                FanoutAndSumStage("x", 3),
+                MeasurementStage(),
+            ],
+            "Duplicate stage axis names are not allowed: FanoutAndSumStage:x",
+        ),
+        (
+            lambda: [_spec_stage(), MeasurementStage(), MeasurementStage()],
+            "Multiple measurement-handling stages: "
+            "['MeasurementStage', 'MeasurementStage']. "
+            "Use exactly one measurement-handling stage.",
+        ),
+    ],
+    ids=[
+        "empty",
+        "second-spec-stage",
+        "bundle-stage-first",
+        "spec-stage-only",
+        "no-measurement-stage",
+        "duplicate-axis-names",
+        "duplicate-measurement-stages",
+    ],
+)
+def test_invalid_stage_order_raises(make_stages, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        CircuitPipeline(stages=make_stages())
 
 
 class TestCircuitPipelineRunForwardPass:
@@ -303,7 +322,12 @@ class TestCircuitPipelineRunForwardPass:
                 MeasurementStage(),
             ]
         )
-        with pytest.raises(ContractViolation, match="MisTaggedFanoutStage produced 3"):
+        with pytest.raises(
+            ContractViolation,
+            match=exact_match(
+                _collision_error("MisTaggedFanoutStage", 3, (("spec", "circ"),))
+            ),
+        ):
             pipeline.run_forward_pass(
                 initial_spec="ignored", env=dummy_pipeline_env, dry=dry
             )
@@ -393,6 +417,54 @@ class TestCircuitPipelineRunForwardPass:
         # because the volatile parameter-binding tail re-ran.
         assert trace2.initial_batch is trace1.initial_batch
         assert trace2 is not trace1
+        assert len(trace2.stage_expansions) == len(pipeline.stages) - 1
+        assert trace2.stage_expansions[-1].batch is trace2.final_batch
+
+
+class _VolatileSpecStage(DummySpecStage):
+    @property
+    def volatile(self) -> bool:
+        return True
+
+
+def _forward_pass(pipeline, env, **kwargs):
+    pipeline.run_forward_pass("x", env, **kwargs)
+
+
+def _full_run(pipeline, env, **kwargs):
+    pipeline.run("x", env, execute_fn=ones_execute_fn, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("spec_type", "entry", "second_kwargs", "expected_expands"),
+    [
+        (DummySpecStage, _forward_pass, {}, 1),
+        (DummySpecStage, _forward_pass, {"bypass_cache": True}, 2),
+        (DummySpecStage, _forward_pass, {"dry": True}, 2),
+        (DummySpecStage, _full_run, {}, 1),
+        (DummySpecStage, _full_run, {"bypass_cache": True}, 2),
+        (_VolatileSpecStage, _forward_pass, {}, 2),
+    ],
+    ids=[
+        "forward-cached",
+        "forward-bypass-cache",
+        "forward-dry",
+        "run-cached",
+        "run-bypass-cache",
+        "volatile-spec-stage",
+    ],
+)
+def test_forward_pass_cache_is_reused_only_for_plain_real_passes(
+    mocker, dummy_pipeline_env, spec_type, entry, second_kwargs, expected_expands
+):
+    spec_stage = spec_type(meta=two_group_meta())
+    spy = mocker.spy(spec_stage, "expand")
+    pipeline = CircuitPipeline(stages=[spec_stage, MeasurementStage()])
+
+    entry(pipeline, dummy_pipeline_env)
+    entry(pipeline, dummy_pipeline_env, **second_kwargs)
+
+    assert spy.call_count == expected_expands
 
 
 class TestCompileBoundBatch:
@@ -409,7 +481,13 @@ class TestCompileBoundBatch:
             for key, node in trace.final_batch.items()
         }
 
-        with pytest.raises(ValueError, match="no measurement_qasms"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "MetaCircuit has no measurement_qasms for key "
+                "'(('spec', 'circ'),)'. Run MeasurementStage before execution."
+            ),
+        ):
             _compile_bound(unmeasured)
 
     def test_produces_lineage_and_circuits_for_grouped_batch(self, dummy_pipeline_env):
@@ -425,6 +503,53 @@ class TestCompileBoundBatch:
             branch_key = lineage_by_label[label]
             assert branch_key[0] == ("spec", "circ") and len(branch_key) >= 2
             assert any(e[0] == "obs_group" for e in branch_key)
+
+    def test_compiled_qasm_honours_the_node_precision(self, dummy_pipeline_env):
+        qc = QuantumCircuit(1)
+        qc.rx(0.123456789, 0)
+        meta = meta_from_circuit(qc, observable=SparsePauliOp("Z"), precision=3)
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages(meta=meta))
+
+        circuits, _ = _compile_bound(
+            pipeline.run_forward_pass("x", dummy_pipeline_env).final_batch
+        )
+
+        assert circuits
+        assert all("rx(0.123) q[0];" in qasm for qasm in circuits.values())
+
+    @pytest.mark.parametrize(
+        ("body_tag", "meas_tag"),
+        [((), (("obs_group", 0),)), ((("param_set", 0),), ())],
+        ids=["no-param-set", "no-obs-group"],
+    )
+    def test_param_group_shots_need_param_set_and_obs_group_tags(
+        self, dummy_pipeline_env, body_tag, meas_tag
+    ):
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+        key, node = next(iter(trace.final_batch.items()))
+        node = (
+            node.set_qasm_bodies(((body_tag, "h q[0];\n"),))
+            .set_measurement_bodies(((meas_tag, "measure q[0] -> c[0];\n"),))
+            .set_param_group_shots({0: {0: 5}})
+        )
+
+        with pytest.raises(ValueError, match="require bound param_set body tags"):
+            _compile_batch({key: node}, [[]])
+
+
+def test_colliding_body_tags_are_rejected_in_any_batch_key():
+    meta = two_group_meta()
+    batch = {
+        (("spec", "a"),): meta,
+        (("spec", "b"),): meta.set_circuit_bodies(meta.circuit_bodies * 2),
+    }
+
+    with pytest.raises(
+        ContractViolation,
+        match=exact_match(_collision_error("FanoutStage", 2, (("spec", "b"),))),
+    ):
+        reject_colliding_body_tags("FanoutStage", batch)
 
 
 def _run_pipeline_with_deferred_binding(
@@ -540,8 +665,38 @@ class TestCompileQasmPayloadBatch:
         )
         env = PipelineEnv(backend=FakeBackend(), param_sets=self.PARAM_SETS)
         trace = pipeline.run_forward_pass("x", env)
-        with pytest.raises(ContractViolation, match="free parameters"):
+        with pytest.raises(
+            ContractViolation,
+            match=exact_match(
+                "Batch still carries free parameters at execution, but this "
+                "backend cannot resolve them. Ensure ParameterBindingStage ran, "
+                "or use a backend that sets resolves_parameters."
+            ),
+        ):
             _default_execute_fn(trace, env)
+
+    def test_execute_rejects_group_shots_on_unbound_circuits(self):
+        backend = FakeBackend(
+            resolves_parameters=True, supports_expval=False, strict=False
+        )
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=_parametric_meta_one_body()),
+                MeasurementStage(shot_distribution="weighted"),
+            ]
+        )
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Per-group shot allocation needs bound circuits, but the batch "
+                "reached execution with free parameters for the backend to "
+                "resolve. Add a ParameterBindingStage to the pipeline so each "
+                "circuit is bound before its group's shots are applied."
+            ),
+        ):
+            pipeline.run("x", PipelineEnv(backend=backend, param_sets=self.PARAM_SETS))
+        assert backend.calls == []
 
     def test_multi_body_multi_measurement_emits_cartesian_product(self):
         """N bodies × M measurements → N*M payloads, each with the same
@@ -822,7 +977,9 @@ class TestFormatPipelineTree:
         format_pipeline_tree(trace)
         lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
 
-        assert any("param_set" in line for line in lines)
+        assert [line.lstrip("│├└─ ") for line in lines if "param_set" in line] == [
+            "param_set:0"
+        ]
 
     def test_deferred_and_bound_trees_agree_on_axes(self, capsys):
         """The same program must produce the same tree axes whether the
@@ -854,6 +1011,37 @@ class TestFormatPipelineTree:
         )
         format_pipeline_tree(trace)
         assert capsys.readouterr().out.strip() == "(empty)"
+
+    def test_several_spec_keys_hang_under_an_unnamed_root(
+        self, capsys, dummy_pipeline_env
+    ):
+        pipeline = CircuitPipeline(
+            stages=[_TwoRootSpecStage(two_group_meta()), MeasurementStage()]
+        )
+
+        format_pipeline_tree(pipeline.run_forward_pass("x", dummy_pipeline_env))
+        lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+
+        assert lines[0].startswith("├── ")
+        assert [line.lstrip("│├└─ ") for line in lines] == [
+            "spec:a",
+            "obs_group:0",
+            "spec:b",
+            "obs_group:0",
+        ]
+
+
+class _TwoRootSpecStage(SpecStage[str]):
+    """Emits one circuit under two spec keys."""
+
+    def __init__(self, meta: MetaCircuit) -> None:
+        super().__init__(name=type(self).__name__)
+        self._meta = meta
+
+    def expand(self, items: str, env: PipelineEnv) -> StageOutput:
+        return StageOutput(
+            batch={(("spec", "a"),): self._meta, (("spec", "b"),): self._meta}
+        )
 
 
 def test_custom_execute_fn_returning_per_key_values_reduces_correctly(
@@ -890,6 +1078,15 @@ class TestPipelineProgressEvents:
             ProgressEvent.show("program", "Pipeline: DummySpecStage"),
             ProgressEvent.show("program", "Pipeline: MeasurementStage"),
         ]
+
+    def test_reports_spec_stage_name_on_spec_only_expansion(self, dummy_pipeline_env):
+        events: list[ProgressEvent] = []
+        dummy_pipeline_env._bind_progress(events.append, "program")
+
+        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
+        pipeline.run_spec_stage("x", dummy_pipeline_env)
+
+        assert events == [ProgressEvent.show("program", "Pipeline: DummySpecStage")]
 
     def test_reports_each_bundle_stage_in_order(self, dummy_pipeline_env):
         events: list[ProgressEvent] = []
@@ -942,6 +1139,115 @@ class TestPipelineProgressEvents:
         with pytest.raises(RuntimeError, match="backend exploded"):
             pipeline.run(initial_spec="x", env=dummy_pipeline_env, execute_fn=boom)
         assert events == [ProgressEvent.show("program", "")]
+
+
+_SPEC_TOKEN = object()
+
+
+class _TokenSpecStage(DummySpecStage):
+    """Spec stage that expands with a sentinel token and records reduce tokens."""
+
+    def __init__(self, meta: MetaCircuit) -> None:
+        super().__init__(meta=meta)
+        self.reduce_tokens: list = []
+
+    def expand(self, items, env):
+        return StageOutput(batch=super().expand(items, env).batch, token=_SPEC_TOKEN)
+
+    def reduce(self, results, env, token):
+        self.reduce_tokens.append(token)
+        return results
+
+
+class _EnvRecordingMeasurementStage(MeasurementStage):
+    """Measurement stage that records the env each reduce receives."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reduce_envs: list = []
+
+    def reduce(self, results, env, token):
+        self.reduce_envs.append(env)
+        return super().reduce(results, env, token)
+
+
+class _VarianceFreeMeasurementStage(MeasurementStage):
+    """Measurement stage that leaves cost variance to the pipeline's default."""
+
+    def _estimate_cost_variance(self, raw, batch, token):
+        return None
+
+
+def test_run_hands_each_stage_its_own_token_and_the_env(dummy_pipeline_env):
+    spec, measurement = (
+        _TokenSpecStage(two_group_meta()),
+        _EnvRecordingMeasurementStage(),
+    )
+
+    CircuitPipeline(stages=[spec, measurement]).run(
+        "x", dummy_pipeline_env, execute_fn=ones_execute_fn
+    )
+
+    assert spec.reduce_tokens == [_SPEC_TOKEN]
+    assert len(measurement.reduce_envs) == 1
+    assert measurement.reduce_envs[0] is dummy_pipeline_env
+
+
+def test_run_spec_stage_reuses_the_cached_spec_output(dummy_pipeline_env):
+    pipeline = CircuitPipeline(
+        stages=[_TokenSpecStage(two_group_meta()), MeasurementStage()]
+    )
+    trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
+
+    output = pipeline.run_spec_stage("x", dummy_pipeline_env)
+
+    assert output.batch is trace.initial_batch
+    assert output.token is _SPEC_TOKEN
+
+
+@pytest.mark.parametrize(
+    ("backend_type", "shots_per_circuit"),
+    [(RecordingBackend, 50), (ExpvalBackendSpy, 0)],
+    ids=["counts", "backend-expval"],
+)
+def test_run_records_the_device_shots_it_requests(backend_type, shots_per_circuit):
+    env = PipelineEnv(backend=backend_type(shots=50))
+
+    CircuitPipeline(stages=two_group_pipeline_stages()).run("x", env)
+
+    assert env.artifacts["circuit_count"] > 0
+    assert env.artifacts["device_shots"] == (
+        env.artifacts["circuit_count"] * shots_per_circuit
+    )
+
+
+def test_run_hands_the_cancellation_event_to_the_backend():
+    backend = RecordingBackend()
+    event = Event()
+
+    CircuitPipeline(stages=two_group_pipeline_stages()).run(
+        "x", PipelineEnv(backend=backend, cancellation_event=event)
+    )
+
+    assert backend.last_kwargs["cancellation_event"] is event
+
+
+def test_collect_variance_falls_back_to_the_shot_noise_estimate():
+    env = PipelineEnv(backend=ShotsBackendSpy(shots=100), collect_variance=True)
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=two_group_meta()),
+            _VarianceFreeMeasurementStage(grouping_strategy="qwc"),
+        ]
+    )
+
+    pipeline.run("x", env)
+
+    # Each group measures +1 on 80 of 100 shots, so <Z> = <X> = 0.6.
+    expected = (0.9**2 + 0.4**2) * (1 - 0.6**2) / 100
+    assert env.artifacts["cost_variance"] == {
+        (("spec", "circ"),): pytest.approx(expected)
+    }
 
 
 def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
@@ -1131,6 +1437,24 @@ class TestWaitForAsyncResult:
         assert result is expected
         mock_backend.get_job_results.assert_called_once_with(execution_result)
 
+    @pytest.mark.parametrize("bind_progress", [False, True], ids=["unbound", "bound"])
+    def test_polls_to_completion_through_one_reporting_channel(
+        self, mocker, bind_progress
+    ):
+        mock_backend = mocker.Mock()
+        mock_backend.poll_job_status.return_value = JobStatus.COMPLETED
+        mock_backend.max_retries = 100
+        env = PipelineEnv(backend=mock_backend)
+        if bind_progress:
+            env._bind_progress([].append, "program")
+
+        _wait_for_async_result(mock_backend, ExecutionResult(job_id="job"), env)
+
+        kwargs = mock_backend.poll_job_status.call_args.kwargs
+        assert kwargs["loop_until_complete"] is True
+        assert kwargs["verbose"] is not bind_progress
+        assert callable(kwargs["progress_callback"]) is bind_progress
+
     def test_cancellation_event_is_forwarded_to_backend(self, mocker):
         """The env's cancellation_event must reach backend.poll_job_status
         so the polling loop can exit promptly when the user signals cancel."""
@@ -1177,86 +1501,30 @@ class _TimedAsyncBackend(_TimedBackend):
 @pytest.mark.parametrize(
     "backend_type", [_TimedBackend, _TimedAsyncBackend], ids=["sync", "async"]
 )
-def test_execute_accumulates_the_reported_run_time(backend_type):
+@pytest.mark.parametrize(
+    ("prior_artifacts", "expected"),
+    [({}, 3.5), ({"run_time": 1.0}, 4.5)],
+    ids=["first", "accumulated"],
+)
+def test_execute_accumulates_the_reported_run_time(
+    backend_type, prior_artifacts, expected
+):
     backend = backend_type()
     param_sets = [[0.1, 0.2]]
     trace = run_binding_pipeline(
         _parametric_meta_one_body(), backend=backend, param_sets=param_sets
     )
-    env = PipelineEnv(backend=backend, param_sets=param_sets)
-    env.artifacts["run_time"] = 1.0
+    env = PipelineEnv(
+        backend=backend, param_sets=param_sets, artifacts=dict(prior_artifacts)
+    )
 
     _default_execute_fn(trace, env)
 
-    assert env.artifacts["run_time"] == 4.5
+    assert env.artifacts["run_time"] == expected
 
 
 def _noop_handler(signum, frame):
     pass
-
-
-class TestBestEffortCancelJob:
-    """Tests for the helper that funnels in-flight async-job cancellation."""
-
-    def test_calls_backend_cancel_for_async_backend_with_job_id(self, mocker):
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        _best_effort_cancel_job(backend, ExecutionResult(job_id="job_x"))
-        backend.cancel_job.assert_called_once()
-
-    def test_noop_for_sync_backend(self, mocker):
-        sync_backend = mocker.Mock(spec=[])
-        _best_effort_cancel_job(sync_backend, ExecutionResult(job_id="job_y"))
-
-    def test_noop_when_no_job_id(self, mocker):
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        _best_effort_cancel_job(backend, ExecutionResult(results=[]))
-        backend.cancel_job.assert_not_called()
-
-    def test_swallows_cancel_job_exception(self, mocker):
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        backend.cancel_job.side_effect = RuntimeError("server says no")
-        # Must not propagate — the user's CTRL-C should not be masked by
-        # network/server hiccups during the courtesy cancel.
-        _best_effort_cancel_job(backend, ExecutionResult(job_id="job_z"))
-
-
-class TestAutoCancellationScope:
-    """Tests for ``_auto_cancellation_scope``: bundles the SIGINT funnel with
-    best-effort remote-job cleanup for direct callers of ``poll_job_status``."""
-
-    def test_cancels_backend_on_execution_cancelled(self, mocker):
-        from divi.backends._cancellation import _auto_cancellation_scope
-
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        result = ExecutionResult(job_id="job_x")
-
-        with pytest.raises(ExecutionCancelledError):
-            with _auto_cancellation_scope(backend, result):
-                raise ExecutionCancelledError("polling cancelled")
-
-        backend.cancel_job.assert_called_once_with(result)
-
-    def test_does_not_cancel_on_unrelated_exceptions(self, mocker):
-        from divi.backends._cancellation import _auto_cancellation_scope
-
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        result = ExecutionResult(job_id="job_x")
-
-        with pytest.raises(RuntimeError):
-            with _auto_cancellation_scope(backend, result):
-                raise RuntimeError("not a cancellation")
-
-        backend.cancel_job.assert_not_called()
-
-    def test_yields_a_fresh_unset_event(self, mocker):
-        from divi.backends._cancellation import _auto_cancellation_scope
-
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        with _auto_cancellation_scope(
-            backend, ExecutionResult(job_id="job_x")
-        ) as event:
-            assert isinstance(event, Event)
-            assert not event.is_set()
 
 
 class TestSigintToCancellation:
@@ -1277,11 +1545,6 @@ class TestSigintToCancellation:
         t.start()
         t.join()
         assert observed["installed"] is before
-
-    def test_creates_event_when_missing(self):
-        env = PipelineEnv(backend=object())
-        with _sigint_to_cancellation(env):
-            assert env.cancellation_event is not None
 
     def test_first_sigint_sets_event(self):
         env = PipelineEnv(backend=object())
@@ -1359,93 +1622,85 @@ class TestDefaultExecuteFnCancellation:
         backend.cancel_job.assert_called_once()
 
 
-class TestPipelineResultSqueeze:
-    """``.value`` squeezes a length-1 list only when ``_squeeze`` is True
-    (the pipeline disables it when any source MetaCircuit was built with
-    ``_was_multi_obs=True``)."""
-
-    def test_squeeze_unwraps_length_one_list_by_default(self):
-        result = PipelineResult({(): [0.42]})
-        assert result.value == 0.42
-
-    def test_squeeze_preserves_multi_element_list(self):
-        result = PipelineResult({(): [0.1, 0.2, 0.3]})
-        assert result.value == [0.1, 0.2, 0.3]
-
-    def test_squeeze_passes_dict_through_unchanged(self):
-        probs = {"00": 0.5, "11": 0.5}
-        result = PipelineResult({(): probs})
-        assert result.value == probs
-
-    def test_squeeze_disabled_preserves_length_one_list(self):
-        result = PipelineResult({(): [0.42]})
+@pytest.mark.parametrize(
+    "value,squeeze,expected",
+    [
+        ([0.42], True, 0.42),
+        ([0.1, 0.2, 0.3], True, [0.1, 0.2, 0.3]),
+        ({"00": 0.5, "11": 0.5}, True, {"00": 0.5, "11": 0.5}),
+        ([0.42], False, [0.42]),
+        ({"00": 1.0}, False, {"00": 1.0}),
+    ],
+)
+def test_pipeline_result_value_squeeze(value, squeeze, expected):
+    """``.value`` squeezes a length-1 list only when ``_squeeze`` is True (the default)."""
+    result = PipelineResult({(): value})
+    if not squeeze:
         result._squeeze = False
-        assert result.value == [0.42]
-
-    def test_squeeze_disabled_does_not_affect_dicts(self):
-        probs = {"00": 1.0}
-        result = PipelineResult({(): probs})
-        result._squeeze = False
-        assert result.value == probs
+    assert result.value == expected
 
 
 class TestBuildShotGroupsPure:
     """Spec: _build_shot_groups maps lineage + per-spec shot dicts to ranges."""
 
-    def test_returns_none_when_no_circuits_match(self):
+    @pytest.mark.parametrize(
+        "lineage",
+        [
+            {
+                "a": (("circuit", 0), ("obs_group", 0)),
+                "b": (("circuit", 0), ("obs_group", 1)),
+            },
+            {"a": (("circuit", 0),), "b": (("circuit", 1),)},
+        ],
+        ids=["measured", "no-obs-group-axis"],
+    )
+    def test_returns_none_when_no_circuits_match(self, lineage):
         circuits = {"a": "qasm", "b": "qasm"}
-        lineage = {
-            "a": (("circuit", 0), ("obs_group", 0)),
-            "b": (("circuit", 0), ("obs_group", 1)),
-        }
         per_group = {(("other", 0),): {0: 100, 1: 200}}
         assert _build_shot_groups(circuits, lineage, per_group) is None
 
-    def test_single_spec_consecutive_groups_collapsed(self):
-        circuits = {"a": "x", "b": "x", "c": "x"}
-        lineage = {
-            "a": (("circuit", 0), ("obs_group", 0)),
-            "b": (("circuit", 0), ("obs_group", 1)),
-            "c": (("circuit", 0), ("obs_group", 2)),
-        }
-        per_group = {(("circuit", 0),): {0: 50, 1: 50, 2: 200}}
-        assert _build_shot_groups(circuits, lineage, per_group) == [
-            [0, 2, 50],
-            [2, 3, 200],
-        ]
-
-    def test_distinct_shots_create_separate_ranges(self):
-        circuits = {"a": "x", "b": "x", "c": "x"}
-        lineage = {
-            "a": (("circuit", 0), ("obs_group", 0)),
-            "b": (("circuit", 0), ("obs_group", 1)),
-            "c": (("circuit", 0), ("obs_group", 2)),
-        }
-        per_group = {(("circuit", 0),): {0: 100, 1: 200, 2: 300}}
-        assert _build_shot_groups(circuits, lineage, per_group) == [
-            [0, 1, 100],
-            [1, 2, 200],
-            [2, 3, 300],
-        ]
-
-    def test_two_specs_independent_allocations(self):
-        circuits = {"a": "x", "b": "x", "c": "x", "d": "x"}
-        lineage = {
-            "a": (("circuit", 0), ("obs_group", 0)),
-            "b": (("circuit", 0), ("obs_group", 1)),
-            "c": (("circuit", 1), ("obs_group", 0)),
-            "d": (("circuit", 1), ("obs_group", 1)),
-        }
-        per_group = {
-            (("circuit", 0),): {0: 100, 1: 200},
-            (("circuit", 1),): {0: 300, 1: 400},
-        }
-        assert _build_shot_groups(circuits, lineage, per_group) == [
-            [0, 1, 100],
-            [1, 2, 200],
-            [2, 3, 300],
-            [3, 4, 400],
-        ]
+    @pytest.mark.parametrize(
+        "lineage, per_group, expected",
+        [
+            pytest.param(
+                {
+                    "a": (("circuit", 0), ("obs_group", 0)),
+                    "b": (("circuit", 0), ("obs_group", 1)),
+                    "c": (("circuit", 0), ("obs_group", 2)),
+                },
+                {(("circuit", 0),): {0: 50, 1: 50, 2: 200}},
+                [[0, 2, 50], [2, 3, 200]],
+                id="single_spec_consecutive_groups_collapsed",
+            ),
+            pytest.param(
+                {
+                    "a": (("circuit", 0), ("obs_group", 0)),
+                    "b": (("circuit", 0), ("obs_group", 1)),
+                    "c": (("circuit", 0), ("obs_group", 2)),
+                },
+                {(("circuit", 0),): {0: 100, 1: 200, 2: 300}},
+                [[0, 1, 100], [1, 2, 200], [2, 3, 300]],
+                id="distinct_shots_create_separate_ranges",
+            ),
+            pytest.param(
+                {
+                    "a": (("circuit", 0), ("obs_group", 0)),
+                    "b": (("circuit", 0), ("obs_group", 1)),
+                    "c": (("circuit", 1), ("obs_group", 0)),
+                    "d": (("circuit", 1), ("obs_group", 1)),
+                },
+                {
+                    (("circuit", 0),): {0: 100, 1: 200},
+                    (("circuit", 1),): {0: 300, 1: 400},
+                },
+                [[0, 1, 100], [1, 2, 200], [2, 3, 300], [3, 4, 400]],
+                id="two_specs_independent_allocations",
+            ),
+        ],
+    )
+    def test_builds_shot_ranges(self, lineage, per_group, expected):
+        circuits = dict.fromkeys(lineage, "x")
+        assert _build_shot_groups(circuits, lineage, per_group) == expected
 
     def test_missing_obs_group_for_a_circuit_raises(self):
         circuits = {"a": "x", "b": "x"}
@@ -1486,28 +1741,6 @@ class TestBuildShotGroupsPure:
         ) == [[0, 1, 2], [1, 2, 3], [2, 3, 5]]
 
 
-class TestMeasurementExclusivity:
-    """Spec: at most one measurement-handling stage per pipeline."""
-
-    def test_single_measurement_stage_passes(self):
-        CircuitPipeline(
-            stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
-        )
-
-    def test_duplicate_measurement_stages_raises(self):
-        with pytest.raises(
-            ValueError,
-            match="Multiple measurement-handling stages",
-        ):
-            CircuitPipeline(
-                stages=[
-                    DummySpecStage(meta=two_group_meta()),
-                    MeasurementStage(),
-                    MeasurementStage(),
-                ]
-            )
-
-
 def test_pauli_twirl_without_qem_stage():
     """Spec: PauliTwirlStage works without QEMStage."""
     CircuitPipeline(
@@ -1527,13 +1760,12 @@ class _PerfWarningStage(BundleStage):
     silencing behaviour is.
     """
 
-    def __init__(self):
+    def __init__(self, category: type[Warning] = DiviPerformanceWarning):
         super().__init__(name=type(self).__name__)
+        self._category = category
 
     def validate(self, before, after):
-        warnings.warn(
-            "synthetic performance issue", DiviPerformanceWarning, stacklevel=3
-        )
+        warnings.warn("synthetic performance issue", self._category, stacklevel=3)
 
     def expand(self, batch, env):
         return StageOutput(batch=batch)
@@ -1542,14 +1774,31 @@ class _PerfWarningStage(BundleStage):
         return results
 
 
+def _perf_warning_stages(category: type[Warning] = DiviPerformanceWarning):
+    return [
+        DummySpecStage(meta=two_group_meta()),
+        _PerfWarningStage(category),
+        MeasurementStage(),
+    ]
+
+
+def test_perf_warning_stage_warns_without_suppression():
+    with pytest.warns(DiviPerformanceWarning, match="synthetic performance issue"):
+        CircuitPipeline(stages=_perf_warning_stages())
+
+
 def test_suppress_performance_warnings_kwarg_silences_warning():
     """``suppress_performance_warnings=True`` silences ``DiviPerformanceWarning``
     emitted by any stage during pipeline construction."""
-    stages = [
-        DummySpecStage(meta=two_group_meta()),
-        _PerfWarningStage(),
-        MeasurementStage(),
-    ]
+    stages = _perf_warning_stages()
     with warnings.catch_warnings():
         warnings.simplefilter("error", DiviPerformanceWarning)
         CircuitPipeline(stages=stages, suppress_performance_warnings=True)
+
+
+def test_suppress_performance_warnings_keeps_other_warnings():
+    with pytest.warns(UserWarning, match="synthetic performance issue"):
+        CircuitPipeline(
+            stages=_perf_warning_stages(UserWarning),
+            suppress_performance_warnings=True,
+        )

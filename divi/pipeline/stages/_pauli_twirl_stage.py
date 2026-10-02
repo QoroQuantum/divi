@@ -25,9 +25,9 @@ Two output paths:
   per-variant ``dag_to_qasm_body`` pass.
 
 * **Structural path** — used whenever the parametric path's preconditions
-  aren't met.  Bodies are grouped by structural tag, sampled
-  twirl-label-index vectors are deduplicated and reused across variants,
-  and each twirled body is produced via ``deepcopy`` + targeted
+  aren't met.  Sampled twirl-label-index vectors are deduplicated per
+  body, every body draws the same vector for a given ``twirl_idx``
+  (common random numbers across bodies), and each twirled body is produced via ``deepcopy`` + targeted
   ``substitute_node_with_dag`` on the cx/cz subset using a precomputed
   twirl plan (positions + gate names).  This keeps the hot loop in C-level
   node substitution while avoiding redundant Python dispatch in each
@@ -44,7 +44,6 @@ from qiskit.circuit.library import CXGate, CZGate, IGate, XGate, YGate, ZGate
 from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import Clifford, Pauli
-from qiskit.transpiler.basepasses import TransformationPass
 
 from divi.circuits import MetaCircuit, build_template, dag_to_qasm_body, render_template
 from divi.circuits._conversions import _format_bound_param
@@ -71,11 +70,8 @@ _TWIRL_LABEL_INDICES = tuple(range(len(_TWO_QUBIT_PAULI_LABELS)))
 
 
 def _strip_sign(label: str) -> str:
-    """Remove any global-phase prefix from a Pauli label."""
-    for prefix in ("-i", "+i", "-", "+", "i"):
-        if label.startswith(prefix):
-            return label[len(prefix) :]
-    return label
+    """Remove the sign a Clifford conjugation of a Pauli label can carry."""
+    return label.removeprefix("-")
 
 
 def _build_twirl_table(gate) -> dict[str, str]:
@@ -188,14 +184,16 @@ def _discover_twirl_plan(
 def _apply_twirl_substitute(
     dag: DAGCircuit,
     label_indices: list[int],
-    twirl_positions: tuple[int, ...] | None = None,
-    twirl_gate_names: tuple[str, ...] | None = None,
+    twirl_positions: tuple[int, ...],
+    twirl_gate_names: tuple[str, ...],
 ) -> DAGCircuit:
     """Produce a twirled copy of *dag* via ``deepcopy`` + targeted
     ``substitute_node_with_dag`` on each ``cx`` / ``cz``.
 
     *label_indices* is one sampled index per twirl-eligible gate (aligned to
     :data:`_TWO_QUBIT_PAULI_LABELS` order), in topological order.
+    *twirl_positions* and *twirl_gate_names* are the plan from
+    :func:`_discover_twirl_plan`.
 
     The DAG-level ``deepcopy`` is the Rust-optimised clone path for a
     Rust-backed DAGCircuit; a ``copy_empty_like`` + per-node
@@ -204,13 +202,6 @@ def _apply_twirl_substitute(
     untouched nodes dwarfs what ``deepcopy`` handles in a single
     batched pass.
     """
-    if twirl_positions is None or twirl_gate_names is None:
-        discovered_positions, discovered_gate_names = _discover_twirl_plan(dag)
-        if twirl_positions is None:
-            twirl_positions = discovered_positions
-        if twirl_gate_names is None:
-            twirl_gate_names = discovered_gate_names
-
     dag_copy = copy.deepcopy(dag)
     op_nodes = list(dag_copy.op_nodes())
     for pos, gate_name, label_idx in zip(
@@ -220,34 +211,6 @@ def _apply_twirl_substitute(
             op_nodes[pos], _TWIRL_DAG_ARRAY_TABLES[gate_name][label_idx]
         )
     return dag_copy
-
-
-class PauliTwirlPass(TransformationPass):
-    """Insert random Pauli gates around each 2-qubit Clifford in a DAG."""
-
-    def __init__(self, rng: random.Random | None = None):
-        super().__init__()
-        self._rng = rng or random.Random()
-
-    def run(self, dag: DAGCircuit) -> DAGCircuit:
-        twirl_specs = [
-            (node, _TWIRL_DAG_TABLES[node.op.name])
-            for node in dag.op_nodes()
-            if node.op.name in _TWIRL_DAG_TABLES
-        ]
-        if not twirl_specs:
-            return dag
-        return self._apply(dag, twirl_specs)
-
-    def _apply(
-        self,
-        dag: DAGCircuit,
-        twirl_specs: list,
-    ) -> DAGCircuit:
-        labels = self._rng.choices(_TWO_QUBIT_PAULI_LABELS, k=len(twirl_specs))
-        for (node, sub_table), pre_label in zip(twirl_specs, labels):
-            dag.substitute_node_with_dag(node, sub_table[pre_label])
-        return dag
 
 
 class PauliTwirlStage(BundleStage):
@@ -323,8 +286,8 @@ class PauliTwirlStage(BundleStage):
         self,
         dag: DAGCircuit,
         label_indices: list[int],
-        twirl_positions: tuple[int, ...] | None = None,
-        twirl_gate_names: tuple[str, ...] | None = None,
+        twirl_positions: tuple[int, ...],
+        twirl_gate_names: tuple[str, ...],
     ) -> DAGCircuit:
         """One-shot twirl used inside the parametric fast path. Same algo
         as :func:`_apply_twirl_substitute`; kept as a thin wrapper so the
@@ -354,7 +317,7 @@ class PauliTwirlStage(BundleStage):
     ) -> StageOutput[MetaCircuitBatch]:
         """Analytic path: emit ``n_bodies × n_twirls`` shape-correct placeholders.
 
-        Skips label sampling, topology grouping, deep-copying, and QASM
+        Skips label sampling, deep-copying, and QASM
         rendering entirely — twirling is a purely multiplicative fan-out, so
         the circuit count is exact from ``n_twirls`` alone. Matches the output
         slot (``qasm_bodies`` vs ``circuit_bodies``) of the real path
@@ -387,55 +350,32 @@ class PauliTwirlStage(BundleStage):
         )
         return meta.set_circuit_bodies(placeholders)
 
-    def _group_by_topology(
-        self, meta: MetaCircuit
-    ) -> tuple[list[tuple], dict[tuple, list[tuple[tuple, DAGCircuit]]]]:
-        """Partition ``meta.circuit_bodies`` by tag with stable group ordering."""
-        groups: dict[tuple, list[tuple[tuple, DAGCircuit]]] = {}
-        order: list[tuple] = []
-        for tag, dag in meta.circuit_bodies:
-            key = tag
-            if key not in groups:
-                groups[key] = []
-                order.append(key)
-            groups[key].append((tag, dag))
-        return order, groups
-
     def _expand_structural(self, meta: MetaCircuit) -> MetaCircuit:
-        """Group bodies by topology, sample labels once per
-        ``(group, twirl_idx)``, and twirl each variant via
-        ``deepcopy`` + substitution with precomputed twirl plans.
+        """Sample labels once per ``twirl_idx`` and twirl each body via
+        ``deepcopy`` + substitution with its precomputed twirl plan.
         """
-        order, groups = self._group_by_topology(meta)
-
         updated_bodies: list[tuple] = []
-        for group_key in order:
-            variants = groups[group_key]
-            _, ref_dag = variants[0]
-
-            ref_twirl_positions, _ = _discover_twirl_plan(ref_dag)
-            n_twirl_gates = len(ref_twirl_positions)
-
-            unique_labels, twirl_to_unique = self._sample_unique_labels(n_twirl_gates)
-
-            for variant_tag, variant_dag in variants:
-                variant_twirl_positions, variant_twirl_gate_names = (
-                    _discover_twirl_plan(variant_dag)
+        for body_tag, body_dag in meta.circuit_bodies:
+            twirl_positions, twirl_gate_names = _discover_twirl_plan(body_dag)
+            unique_labels, twirl_to_unique = self._sample_unique_labels(
+                len(twirl_positions)
+            )
+            twirled_by_unique = [
+                _apply_twirl_substitute(
+                    body_dag,
+                    labels,
+                    twirl_positions=twirl_positions,
+                    twirl_gate_names=twirl_gate_names,
                 )
-                twirled_by_unique = [
-                    _apply_twirl_substitute(
-                        variant_dag,
-                        labels,
-                        twirl_positions=variant_twirl_positions,
-                        twirl_gate_names=variant_twirl_gate_names,
+                for labels in unique_labels
+            ]
+            for twirl_idx, unique_idx in enumerate(twirl_to_unique):
+                updated_bodies.append(
+                    (
+                        _twirl_tag(body_tag, self.axis_name, twirl_idx),
+                        twirled_by_unique[unique_idx],
                     )
-                    for labels in unique_labels
-                ]
-                for twirl_idx, unique_idx in enumerate(twirl_to_unique):
-                    twirled = twirled_by_unique[unique_idx]
-                    updated_bodies.append(
-                        (_twirl_tag(variant_tag, self.axis_name, twirl_idx), twirled)
-                    )
+                )
 
         return meta.set_circuit_bodies(tuple(updated_bodies))
 

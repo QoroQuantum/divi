@@ -46,37 +46,6 @@ OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
 
 
-def _warn_imag_coeffs(
-    observable: SparsePauliOp | tuple[SparsePauliOp, ...],
-    spec_key: object,
-) -> None:
-    """Warn if any observable term carries a non-negligible imaginary coefficient.
-
-    Runs before flattening, which keeps only the real parts.
-    """
-    obs_iter = observable if isinstance(observable, tuple) else (observable,)
-    for obs in obs_iter:
-        coeffs = np.asarray(obs.coeffs)
-        if not coeffs.size:
-            continue
-        max_abs = float(np.max(np.abs(coeffs)))
-        if max_abs == 0.0:
-            continue
-        max_imag = float(np.max(np.abs(coeffs.imag)))
-        if max_imag > 1e-8 * max_abs:
-            warnings.warn(
-                f"Observable for spec {spec_key!r} has non-negligible "
-                f"imaginary coefficients (max |Im(c)| = {max_imag:.3g}, "
-                f"max |c| = {max_abs:.3g}). Shot allocation uses only the "
-                f"real parts; if the operator is meant to be Hermitian, "
-                f"symmetrise it as 0.5 * (O + O.adjoint()) before "
-                f"constructing the program.",
-                UserWarning,
-                stacklevel=3,
-            )
-            return
-
-
 def _split_identity_offset(observable: SparsePauliOp) -> tuple[SparsePauliOp, float]:
     """Remove identity terms and return their exact real-valued contribution."""
     identity = np.asarray(
@@ -140,9 +109,6 @@ def _plan_group_shots(
     ``observable`` is the flattened union, with real coefficients only.
     """
     n_groups = len(measurement_groups)
-    if n_groups == 0:
-        return _GroupShotPlan([], None)
-
     if shot_distribution is None:
         # Every group gets the full budget; an override becomes uniform group
         # shots so it reaches the backend.
@@ -609,7 +575,6 @@ class MeasurementStage(BundleStage):
             # 1-tuple via object.__setattr__, which type checkers can't track.
             assert isinstance(meta.observable, tuple)
             observable = meta.observable
-            _warn_imag_coeffs(observable, key)
             constant_offset = 0.0
             if sample_budgets is not None:
                 if len(observable) != 1:

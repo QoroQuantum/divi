@@ -162,9 +162,9 @@ class DryRunReport:
     circuit_stats: Mapping[str, float] = field(default_factory=dict)
     """Aggregate depth/width stats across the post-fan-out final batch's
     DAG bodies — the pre-execution analogue of
-    :attr:`~divi.backends.CircuitRunner.depth_history`.  Empty when the
-    final batch has no DAG bodies (e.g. probability-mode pipelines that
-    only carry bound QASM strings). Populated keys: ``min_depth``,
+    :attr:`~divi.backends.CircuitRunner.depth_history`.  Empty only when the
+    final batch is empty, since every MetaCircuit carries at least one DAG
+    body. Populated keys: ``min_depth``,
     ``max_depth``, ``mean_width``, ``min_width``, ``max_width``,
     ``mean_2q_depth``, and ``total_2q_gates`` (entangling gates summed over
     every submitted circuit, counting each body once per measurement circuit),
@@ -248,8 +248,8 @@ def _aggregate_circuit_stats(batch: MetaCircuitBatch) -> dict[str, float]:
     Pre-execution analogue of :attr:`~divi.backends.CircuitRunner.depth_history`
     aggregates: walks every ``circuit_bodies`` DAG in the batch and
     summarises its depth, two-qubit depth, and qubit count.  Returns an
-    empty dict when no DAG bodies are reachable (e.g. probability-mode
-    pipelines whose final batch carries only bound QASM strings).
+    empty dict only for an empty batch, since every MetaCircuit carries at
+    least one DAG body.
     """
     depths: list[int] = []
     twoq_depths: list[int] = []
@@ -260,8 +260,6 @@ def _aggregate_circuit_stats(batch: MetaCircuitBatch) -> dict[str, float]:
         # binding doesn't change depth or width. Bodies sharing a tag collapse on
         # submission, so they are counted once, as the circuit total counts them.
         distinct = dict(mc.circuit_bodies)
-        if not distinct:
-            continue
         for dag in distinct.values():
             depths.append(dag.depth())
             twoq_depths.append(_two_qubit_depth(dag))
@@ -296,7 +294,7 @@ def _distinct_body_tags(mc: MetaCircuit) -> int:
     return len({tag for tag, _ in _effective_bodies(mc)})
 
 
-def _logical_count(mc: MetaCircuit, *, count_observable_terms: bool = True) -> int:
+def _logical_count(mc: MetaCircuit, *, count_observable_terms: bool) -> int:
     # Distinct tags, matching the submitted count: counting collapsed bodies here
     # would advertise a fan-out the total (correctly) omits.
     n_bodies = _distinct_body_tags(mc)
@@ -310,7 +308,7 @@ def _logical_count(mc: MetaCircuit, *, count_observable_terms: bool = True) -> i
 
 
 def _batch_logical_circuits(
-    batch: MetaCircuitBatch, *, count_observable_terms: bool = True
+    batch: MetaCircuitBatch, *, count_observable_terms: bool
 ) -> int:
     return sum(
         _logical_count(mc, count_observable_terms=count_observable_terms)
@@ -422,15 +420,14 @@ def _terminal_metadata(
     stages: Sequence[Stage], infos: Sequence[StageInfo]
 ) -> Mapping[str, Any]:
     """Metadata of the stage that handles measurement — the one that decides what a
-    sampled readout is actually measuring.
-
-    Falls back to the last stage's metadata only when no stage claims measurement,
-    which a valid pipeline cannot be.
+    sampled readout is actually measuring. Pipeline validation guarantees exactly
+    one such stage.
     """
-    for stage, info in zip(stages, infos):
-        if isinstance(stage, BundleStage) and stage.handles_measurement:
-            return info.metadata
-    return infos[-1].metadata if infos else {}
+    return next(
+        info.metadata
+        for stage, info in zip(stages, infos)
+        if isinstance(stage, BundleStage) and stage.handles_measurement
+    )
 
 
 def _stage_metadata_value_in(stages: Sequence[StageInfo], *keys: str) -> Any:
@@ -476,8 +473,9 @@ def dry_run_pipeline(
     count_observable_terms = _measures_observable_per_term(trace)
 
     spec_stage = stages[0]
-    spec_token = trace.stage_tokens[0] if trace.stage_tokens else None
-    spec_meta = _safe_introspect(spec_stage, trace.initial_batch, env, spec_token)
+    spec_meta = _safe_introspect(
+        spec_stage, trace.initial_batch, env, trace.stage_tokens[0]
+    )
     prev_logical = _batch_logical_circuits(
         trace.initial_batch, count_observable_terms=count_observable_terms
     )
@@ -502,8 +500,7 @@ def dry_run_pipeline(
         else:
             factor = float(cur_logical)
 
-        token = trace.stage_tokens[i + 1] if i + 1 < len(trace.stage_tokens) else None
-        meta = _safe_introspect(stage, expansion.batch, env, token)
+        meta = _safe_introspect(stage, expansion.batch, env, trace.stage_tokens[i + 1])
 
         infos.append(
             StageInfo(

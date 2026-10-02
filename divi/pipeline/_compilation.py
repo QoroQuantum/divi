@@ -157,10 +157,6 @@ def _compile_batch(
     for batch_key, node in batch.items():
         _require_measurements(batch_key, node)
 
-        if not node.circuit_bodies:
-            raise ValueError(
-                f"MetaCircuit has no circuit_bodies for key '{batch_key}'."
-            )
         # Rendered bodies take precedence when the binding stage has run;
         # otherwise serialize the DAGs on demand.
         bodies = node.qasm_bodies or tuple(

@@ -5,7 +5,7 @@
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits import measurement_qasms_from_groups
 from divi.circuits._core import flatten_observable_tuple
@@ -13,6 +13,7 @@ from divi.pipeline._grouping import (
     _compute_measurement_groups,
     _wire_grouping_from_labels,
 )
+from tests._helpers import exact_match
 from tests.pipeline._helpers import meta_from_circuit
 
 
@@ -34,15 +35,10 @@ class TestComputeMeasurementGroupsSingle:
         assert partition == [[0]]
         assert postproc([0.5]) == pytest.approx([0.5])
 
-    def test_single_term_qwc(self):
+    @pytest.mark.parametrize("strategy", ["qwc", "default", None])
+    def test_single_term_one_group(self, strategy):
         obs = SparsePauliOp("Z")
-        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 1)
-        assert len(groups) == 1
-        assert partition == [[0]]
-
-    def test_single_term_default(self):
-        obs = SparsePauliOp("Z")
-        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), "default", 1)
+        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), strategy, 1)
         assert len(groups) == 1
         assert partition == [[0]]
 
@@ -52,12 +48,6 @@ class TestComputeMeasurementGroupsSingle:
             _wrap(obs), "_backend_expval", 1
         )
         assert groups == ((),)
-        assert partition == [[0]]
-
-    def test_single_term_none_strategy(self):
-        obs = SparsePauliOp("Z")
-        groups, partition, _, _ = _compute_measurement_groups(_wrap(obs), None, 1)
-        assert len(groups) == 1
         assert partition == [[0]]
 
     def test_multi_term_postprocessing(self):
@@ -70,15 +60,17 @@ class TestComputeMeasurementGroupsSingle:
         out = postproc([0.5, 0.3])
         assert out == pytest.approx([0.5 * 0.5 + 0.3 * 0.3])
 
-    def test_qwc_groups_commuting_terms(self):
-        obs = SparsePauliOp.from_list([("IZ", 0.5), ("ZI", 0.3)])
+    @pytest.mark.parametrize(
+        "terms, n_groups",
+        [
+            pytest.param([("IZ", 0.5), ("ZI", 0.3)], 1, id="groups_commuting"),
+            pytest.param([("IZ", 0.5), ("IX", 0.3)], 2, id="splits_non_commuting"),
+        ],
+    )
+    def test_qwc_grouping(self, terms, n_groups):
+        obs = SparsePauliOp.from_list(terms)
         groups, _, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
-        assert len(groups) == 1
-
-    def test_qwc_splits_non_commuting(self):
-        obs = SparsePauliOp.from_list([("IZ", 0.5), ("IX", 0.3)])
-        groups, _, _, _ = _compute_measurement_groups(_wrap(obs), "qwc", 2)
-        assert len(groups) == 2
+        assert len(groups) == n_groups
 
     def test_unknown_strategy_raises(self):
         obs = SparsePauliOp("Z")
@@ -236,6 +228,33 @@ class TestComputeMeasurementGroupsMulti:
             assert v == pytest.approx(2.0)
 
 
+@pytest.mark.parametrize(
+    "observable,expected",
+    [
+        pytest.param(
+            (),
+            "flatten_observable_tuple requires at least one observable.",
+            id="no-observables",
+        ),
+        pytest.param(
+            (
+                SparsePauliOp(
+                    PauliList.from_symplectic(
+                        np.zeros((0, 1), dtype=bool), np.zeros((0, 1), dtype=bool)
+                    ),
+                    coeffs=np.zeros(0),
+                ),
+            ),
+            "flatten_observable_tuple: every observable in the tuple is empty.",
+            id="only-empty-observables",
+        ),
+    ],
+)
+def test_flatten_observable_tuple_rejects_nothing_to_flatten(observable, expected):
+    with pytest.raises(ValueError, match=exact_match(expected)):
+        flatten_observable_tuple(observable)
+
+
 def test_wires_and_empty_group_produce_same_measurement_qasm():
     qc = QuantumCircuit(2)
     qc.h(0)
@@ -279,10 +298,13 @@ class TestMeasureAllFlag:
         } == {0}
 
     def test_all_identity_group_raises_when_restricting(self):
-        # An all-identity group has nothing to measure; restricting is a misuse.
-        # (In the pipeline this never happens — constants are stripped upstream
-        # and the _backend_expval sentinel forces measure_all.)
-        with pytest.raises(ValueError, match="all-identity group"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "all-identity group with measure_all=False has no qubit to measure; "
+                "pass measure_all=True or drop the constant term."
+            ),
+        ):
             measurement_qasms_from_groups(((),), 3, measure_all=False)
 
     def test_all_identity_group_measures_full_register_when_measure_all(self):
@@ -297,21 +319,23 @@ def _measure_lines(qasm: str) -> list[str]:
     return [line for line in qasm.splitlines() if line.startswith("measure")]
 
 
-class TestWireGroupingFromLabels:
-    def test_non_overlapping_in_one_group(self):
-        labels = ["ZII", "IZI", "IIZ"]
-        groups = _wire_grouping_from_labels(labels)
-        assert len(groups) == 1
-        assert groups[0] == [0, 1, 2]
+@pytest.mark.parametrize(
+    ("labels", "expected"),
+    [
+        (["ZII", "IZI", "IIZ"], [[0, 1, 2]]),
+        (["ZI", "ZI"], [[0], [1]]),
+        (["ZII", "IZI", "ZZI"], [[0, 1], [2]]),
+        (["ZII", "IZI", "IZZ"], [[0, 1], [2]]),
+    ],
+    ids=["non-overlapping", "overlapping", "mixed", "group-wires-grow"],
+)
+def test_wire_grouping_partitions_labels_by_disjoint_wires(labels, expected):
+    assert _wire_grouping_from_labels(labels) == expected
 
-    def test_overlapping_split(self):
-        labels = ["ZI", "ZI"]
-        groups = _wire_grouping_from_labels(labels)
-        assert len(groups) == 2
 
-    def test_mixed(self):
-        labels = ["ZII", "IZI", "ZZI"]
-        groups = _wire_grouping_from_labels(labels)
-        assert len(groups) == 2
-        assert 0 in groups[0] and 1 in groups[0]
-        assert 2 in groups[1]
+@pytest.mark.parametrize("strategy", ["qwc", "wires", None])
+def test_observable_narrower_than_circuit_is_padded_with_identity(strategy):
+    groups, _, _, _ = _compute_measurement_groups(
+        _wrap(SparsePauliOp.from_list([("ZX", 1.0), ("XI", 0.5)])), strategy, 3
+    )
+    assert sorted(label for group in groups for label in group) == ["IXI", "XZI"]

@@ -10,11 +10,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._core import _assert_hermitian_spo
-from divi.hamiltonians import (
-    ExactTrotterization,
-    QDrift,
-    TrotterizationStrategy,
-)
+from divi.hamiltonians import QDrift, TrotterizationStrategy
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline._result_keys_operations import (
     group_by_base_key,
@@ -70,11 +66,7 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         """
         super().__init__(name=type(self).__name__)
 
-        self._trotterization_strategy = (
-            trotterization_strategy
-            if trotterization_strategy is not None
-            else ExactTrotterization()
-        )
+        self._trotterization_strategy = trotterization_strategy
         self._meta_circuit_factory = meta_circuit_factory
 
     def _prepare(

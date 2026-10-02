@@ -167,7 +167,7 @@ class DataBindingStage(BundleStage):
         sample_loss: Callable[[float, float], float] | None = None,
         fit_bias: bool = False,
     ) -> None:
-        super().__init__(name=DATA_AXIS)
+        super().__init__(name=type(self).__name__)
         self.data_params = tuple(data_params)
         self._data_param_names = tuple(p.name for p in self.data_params)
         self.loss_reduction = loss_reduction

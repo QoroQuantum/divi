@@ -18,6 +18,7 @@ from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from tests._helpers import exact_match
 from tests.pipeline._helpers import meta_with_observable
 
 _Z0 = SparsePauliOp("Z")
@@ -70,13 +71,18 @@ class TestExpand:
             ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        with pytest.raises(ValueError, match="only constant terms|empty"):
+        with pytest.raises(
+            ValueError, match=exact_match("Hamiltonian contains only constant terms.")
+        ):
             stage.expand(_I0, env)
 
     def test_raises_non_operator_input(self, dummy_expval_backend):
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
         env = PipelineEnv(backend=dummy_expval_backend)
-        with pytest.raises(TypeError, match="SparsePauliOp"):
+        with pytest.raises(
+            TypeError,
+            match=exact_match("TrotterSpecStage expects a SparsePauliOp, got str"),
+        ):
             stage.expand("not a hamiltonian", env)
 
     def test_accepts_sparse_pauli_op_input(self, dummy_expval_backend):
@@ -94,7 +100,13 @@ class TestExpand:
             _DummyStrategy(n=1), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        with pytest.raises(ValueError, match="Hermitian"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "SparsePauliOp observables must be Hermitian; Pauli coefficients "
+                "must be real."
+            ),
+        ):
             stage.expand(SparsePauliOp.from_list([("Z", 1.0j)]), env)
 
 
@@ -148,8 +160,9 @@ class TestReduce:
             return {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
 
         reduced = pipeline.run(initial_spec=_Z0, env=env, execute_fn=_execute_fn)
-        assert len(reduced) >= 1
-        assert any(v == pytest.approx([2.0]) for v in reduced.values())
+        # Three samples score 1, 2, 3 and average to 2.
+        assert len(reduced) == 1
+        assert next(iter(reduced.values())) == pytest.approx([2.0])
 
     def test_merges_histogram_results(self, dummy_expval_backend):
         """Dict (histogram) results from multiple ham samples are averaged."""
@@ -225,3 +238,48 @@ def test_forward_pass_produces_ham_keyed_trace(dummy_expval_backend):
     for key in trace.final_batch:
         ham_axes = [axis for axis in key if axis[0] == "ham"]
         assert len(ham_axes) == 1
+
+
+def test_dry_expand_matches_real_labels_and_metadata(dummy_expval_backend):
+    stage = TrotterSpecStage(_DummyStrategy(n=3), meta_circuit_factory=_meta_factory)
+    pipeline = CircuitPipeline(stages=[stage, MeasurementStage()])
+    env = PipelineEnv(backend=dummy_expval_backend)
+
+    real = pipeline.run_forward_pass(initial_spec=_Z0, env=env)
+    dry = pipeline.run_forward_pass(initial_spec=_Z0, env=env, dry=True)
+
+    assert batch_lineage(dry.final_batch) == batch_lineage(real.final_batch)
+    assert stage.introspect(
+        dry.initial_batch, env, dry.stage_tokens[0]
+    ) == stage.introspect(real.initial_batch, env, real.stage_tokens[0])
+
+
+_FOUR_TERM_HAMILTONIAN = SparsePauliOp.from_list(
+    [("ZI", 1.0), ("IZ", 0.7), ("XX", 0.5), ("YY", 0.3)]
+)
+
+
+def _seeded_qdrift_draws(evaluation_counter: int) -> list:
+    """``(ham_id, sampled Hamiltonian)`` for each sample one expand hands the factory."""
+    draws = []
+
+    def recording_factory(result, ham_id):
+        draws.append((ham_id, result.effective_hamiltonian.simplify()))
+        return meta_with_observable(_Z0_Z1)
+
+    stage = TrotterSpecStage(
+        QDrift(sampling_budget=2, seed=7, n_hamiltonians_per_iteration=3),
+        meta_circuit_factory=recording_factory,
+    )
+    stage.expand(
+        _FOUR_TERM_HAMILTONIAN,
+        PipelineEnv(backend=None, evaluation_counter=evaluation_counter),
+    )
+    return draws
+
+
+def test_seeded_qdrift_resamples_per_evaluation_only():
+    first = _seeded_qdrift_draws(0)
+    assert [ham_id for ham_id, _ in first] == [0, 1, 2]
+    assert _seeded_qdrift_draws(0) == first
+    assert _seeded_qdrift_draws(1) != first

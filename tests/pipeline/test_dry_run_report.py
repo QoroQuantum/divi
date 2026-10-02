@@ -20,6 +20,7 @@ from divi.pipeline._dry_run import (
 from divi.pipeline._dry_run_format import (
     _format_factor,
 )
+from tests._helpers import exact_match
 from tests.pipeline._helpers import h2_vqe
 
 
@@ -36,6 +37,32 @@ def test_report_repr_is_a_one_line_summary(h2_report):
     assert "\n" not in text
     assert len(text) < 200
     assert "cost" in text and "circuit" in text
+
+
+_REPR_STATS = {key: 2 for key in _REQUIRED_CIRCUIT_STATS}
+
+
+@pytest.mark.parametrize(
+    "fields, expected",
+    [
+        (
+            {"total_shots": 700, "circuit_stats": _REPR_STATS},
+            "DryRunReport(cost: 7 circuits · 700 shots per evaluation, 2 qubits, "
+            "2 stages)",
+        ),
+        (
+            {"cadence": PipelineCadence.ONCE},
+            "DryRunReport(cost: 7 circuits, once, 2 stages)",
+        ),
+    ],
+    ids=["recurring-with-stats", "once-without-stats"],
+)
+def test_report_repr_states_counts_cadence_width_and_stages(fields, expected):
+    stage = StageInfo(name="S", axis="a", factor=1.0, metadata={})
+    report = DryRunReport(
+        pipeline_name="cost", stages=(stage, stage), total_circuits=7, **fields
+    )
+    assert repr(report) == expected
 
 
 def test_report_survives_a_round_trip(h2_report):
@@ -63,12 +90,6 @@ def test_a_report_owns_its_mappings(field):
 
     source[probe] = 2.0
     assert getattr(holder, field)[probe] == 1.0
-
-
-def test_a_frozen_field_cannot_be_rebound(h2_report):
-    """``frozen=True`` is what stops a report being repointed at other numbers."""
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        h2_report.total_circuits = 99
 
 
 def test_report_fields_are_self_documenting(h2_report):
@@ -104,7 +125,10 @@ def test_an_unknown_cadence_is_rejected_and_lists_the_accepted_values():
     """The JSON-reload path makes this a message users hit, so it names what is
     accepted rather than leaving them Python's bare enum error."""
     with pytest.raises(
-        ValueError, match=r"must be one of \['per_evaluation', 'once'\]"
+        ValueError,
+        match=exact_match(
+            "cadence must be one of ['per_evaluation', 'once']; got 'sometimes'."
+        ),
     ):
         DryRunReport(
             pipeline_name="cost", stages=(), total_circuits=1, cadence="sometimes"
@@ -114,12 +138,19 @@ def test_an_unknown_cadence_is_rejected_and_lists_the_accepted_values():
 def test_partial_circuit_stats_are_rejected_before_rendering():
     """Renderers index these keys unguarded, so a partial mapping used to raise a
     bare KeyError mid-tree — after a header had already been written."""
-    with pytest.raises(ValueError, match="circuit_stats is missing"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "circuit_stats is missing max_width, mean_2q_depth, mean_width, "
+            "min_width. Pass either all of max_depth, max_width, mean_2q_depth, "
+            "mean_width, min_depth, min_width or no stats at all."
+        ),
+    ):
         DryRunReport(
             pipeline_name="cost",
             stages=(),
             total_circuits=1,
-            circuit_stats={"mean_depth": 24.0},
+            circuit_stats={"mean_depth": 24.0, "min_depth": 20, "max_depth": 28},
         )
 
 

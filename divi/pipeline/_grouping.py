@@ -80,13 +80,6 @@ def _create_postprocessing_fn(
         for pos, orig_idx in enumerate(indices):
             reverse_lookup[orig_idx] = (group_idx, pos)
 
-    missing = [i for i in range(n_union_terms) if i not in reverse_lookup]
-    if missing:
-        raise RuntimeError(
-            f"partition_indices does not cover all union term indices. "
-            f"Missing: {missing}"
-        )
-
     reverse_map: list[tuple[int, int]] = [
         reverse_lookup[i] for i in range(n_union_terms)
     ]

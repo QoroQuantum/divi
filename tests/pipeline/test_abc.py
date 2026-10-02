@@ -6,7 +6,8 @@
 
 import numpy as np
 
-from divi.pipeline import CircuitPipeline, PipelineEnv
+from divi.pipeline import CircuitPipeline, PipelineEnv, StageOutput
+from divi.pipeline.abc import BundleStage
 from divi.pipeline.stages import MeasurementStage
 
 from ._helpers import (
@@ -41,15 +42,7 @@ class TestPipelineTypes:
         assert len(trace.stage_tokens) == 2
         assert len(trace.stage_expansions) == len(trace.stage_tokens) - 1
         assert trace.stage_expansions[0].stage_name == "MeasurementStage"
-
-    def test_expansion_result_has_batch_and_stage_name(self, dummy_pipeline_env):
-        pipeline = CircuitPipeline(stages=two_group_pipeline_stages())
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        spec_circ_key = (("spec", "circ"),)
-        exp = trace.stage_expansions[0]
-
-        assert exp.stage_name == "MeasurementStage"
-        assert set(exp.batch.keys()) == {spec_circ_key}
+        assert set(trace.stage_expansions[0].batch.keys()) == {spec_circ_key}
 
 
 def test_plain_bundle_stages_pass():
@@ -61,3 +54,22 @@ def test_plain_bundle_stages_pass():
             MeasurementStage(),
         ]
     )
+
+
+class _EnvEchoStage(BundleStage):
+    """Returns its input batch unchanged with the env as its token."""
+
+    def __init__(self):
+        super().__init__(name=type(self).__name__)
+
+    def expand(self, batch, env):
+        return StageOutput(batch=batch, token=env)
+
+
+def test_default_dry_expand_is_the_real_expand(dummy_pipeline_env):
+    batch = {(("spec", "circ"),): two_group_meta()}
+
+    output = _EnvEchoStage().dry_expand(batch, dummy_pipeline_env)
+
+    assert output.batch is batch
+    assert output.token is dummy_pipeline_env

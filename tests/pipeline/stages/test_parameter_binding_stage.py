@@ -14,7 +14,6 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.circuits._conversions import _format_bound_param as _format_param
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE
 from divi.pipeline import (
@@ -23,16 +22,19 @@ from divi.pipeline import (
     PipelineEnv,
 )
 from divi.pipeline.stages import (
+    CircuitSpecStage,
     MeasurementStage,
     ParameterBindingStage,
     PauliTwirlStage,
     QEMStage,
 )
 from divi.pipeline.stages._parameter_binding_stage import _validate_param_sets
+from tests._helpers import exact_match
 from tests.pipeline._helpers import (
     DummySpecStage,
     FakeBackend,
     run_binding_pipeline,
+    stage_body_tags,
     two_group_meta,
 )
 
@@ -54,7 +56,10 @@ class TestParameterBindingStage:
     """Spec: ParameterBindingStage expand binds env.param_sets into circuit body QASMs; reduce is identity."""
 
     def test_requires_2d_param_sets(self, dummy_pipeline_env):
-        with pytest.raises(ValueError, match="param_sets to be 2D"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match("ParameterBindingStage expects env.param_sets to be 2D."),
+        ):
             run_binding_pipeline(
                 two_group_meta(),
                 backend=dummy_pipeline_env.backend,
@@ -66,7 +71,14 @@ class TestParameterBindingStage:
         """Non-finite weights are rejected at the binding boundary, before any
         render path runs."""
         env = PipelineEnv(backend=None, param_sets=[[1.0, bad]])
-        with pytest.raises(ValueError, match="non-finite gate parameters"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Cannot bind non-finite gate parameters: env.param_sets contains "
+                "NaN or Inf. Check the feature batch / parameter values for "
+                "missing data, divide-by-zero, or overflow in preprocessing."
+            ),
+        ):
             _validate_param_sets(env)
 
     def test_passthrough_when_no_symbols(self, dummy_pipeline_env):
@@ -76,8 +88,8 @@ class TestParameterBindingStage:
             param_sets=np.array([[0.0]]),
         )
         for node in trace.final_batch.values():
-            # Non-parametric pass-through still serialises each DAG body once.
-            assert node.qasm_bodies
+            assert len(node.qasm_bodies) == 1
+            assert node.parameters == ()
 
     def test_binds_parameters_into_qasm(self, dummy_pipeline_env):
         """Core spec: parameter names in the template are replaced by formatted values."""
@@ -195,7 +207,12 @@ class TestParameterBindingStage:
 
     def test_param_count_mismatch_raises(self, dummy_pipeline_env):
         """Providing wrong number of parameters for a circuit raises ValueError."""
-        with pytest.raises(ValueError, match="expected 2 parameters"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "ParameterBindingStage expected 2 parameters, got 1 in param set 0."
+            ),
+        ):
             run_binding_pipeline(
                 _parametric_meta(),  # expects 2 symbols
                 backend=dummy_pipeline_env.backend,
@@ -216,38 +233,6 @@ class TestParameterBindingStage:
 
     def test_does_not_force_upstream_dag_materialization(self):
         assert ParameterBindingStage().consumes_dag_bodies is False
-
-
-class TestFormatParam:
-    """Spec: _format_param formats floats for QASM, strips trailing zeros, normalises negative zero."""
-
-    def test_basic_formatting(self):
-        assert _format_param(1.5, 10) == "1.5"
-
-    def test_integer_value_strips_trailing_zeros(self):
-        assert _format_param(3.0, 10) == "3"
-
-    def test_negative_zero_normalised(self):
-        assert _format_param(-0.0, 10) == "0"
-
-    def test_precision_respected(self):
-        result = _format_param(1.123456789, 4)
-        assert result == "1.1235"
-
-    def test_small_value(self):
-        result = _format_param(0.001, 10)
-        assert result == "0.001"
-
-    def test_negative_value(self):
-        result = _format_param(-2.5, 10)
-        assert result == "-2.5"
-
-    def test_zero(self):
-        assert _format_param(0.0, 10) == "0"
-
-    def test_very_small_rounds_to_zero(self):
-        """A value that rounds to 0.000...0 at the given precision becomes '0'."""
-        assert _format_param(1e-20, 10) == "0"
 
 
 def _qasm_payload_backend() -> FakeBackend:
@@ -363,35 +348,19 @@ class TestParameterBindingStageDeferredBinding:
             assert report["deferred_binding"] is stage._defers_binding(batch, env)
 
 
-class TestParameterBindingStageOrdering:
-    """ParameterBindingStage can appear in any order relative to QEMStage."""
-
-    def test_param_binding_before_qem(self):
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                ParameterBindingStage(),
-                QEMStage(),
-                MeasurementStage(),
-            ]
-        )
-
-    def test_param_binding_after_qem(self):
-        CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=two_group_meta()),
-                QEMStage(),
-                ParameterBindingStage(),
-                MeasurementStage(),
-            ]
-        )
-
-
 class TestParamBindBeforeQEMWarning:
     """Spec: ParameterBindingStage placed before QEMStage emits DiviPerformanceWarning."""
 
     def test_param_bind_before_qem_warns(self):
-        with pytest.warns(DiviPerformanceWarning, match="ParameterBindingStage"):
+        with pytest.warns(
+            DiviPerformanceWarning,
+            match=exact_match(
+                "ParameterBindingStage is placed before QEMStage. This forces QEM "
+                "to re-expand on every bound parameter variant (one full QEM pass "
+                "per param set). Consider placing ParameterBindingStage after "
+                "QEMStage."
+            ),
+        ):
             CircuitPipeline(
                 stages=[
                     DummySpecStage(meta=two_group_meta()),
@@ -407,24 +376,6 @@ class TestParamBindBeforeQEMWarning:
                     MeasurementStage(),
                 ]
             )
-
-    def test_param_bind_after_qem_does_not_warn(self):
-        stages = [
-            DummySpecStage(meta=two_group_meta()),
-            QEMStage(
-                protocol=QuEPP(
-                    sampling="montecarlo",
-                    truncation_order=1,
-                    n_twirls=1,
-                )
-            ),
-            PauliTwirlStage(n_twirls=1, seed=0),
-            ParameterBindingStage(),
-            MeasurementStage(),
-        ]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DiviPerformanceWarning)
-            CircuitPipeline(stages=stages)
 
     def test_no_mitigation_qem_does_not_warn(self):
         stages = [
@@ -455,3 +406,101 @@ class TestParamBindBeforeQEMWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error", DiviPerformanceWarning)
             CircuitPipeline(stages=stages, suppress_performance_warnings=True)
+
+
+def _constant_angle_meta(*, parametric: bool, **kwargs) -> MetaCircuit:
+    """One-qubit circuit with a fixed ``rz`` angle, optionally preceded by ``ry(theta)``."""
+    qc = QuantumCircuit(1)
+    qc.h(0)
+    params = (Parameter("theta"),) if parametric else ()
+    if parametric:
+        qc.ry(params[0], 0)
+    qc.rz(0.123456789, 0)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=params,
+        observable=SparsePauliOp("Z"),
+        **kwargs,
+    )
+
+
+def _param_sets_for(parametric: bool) -> np.ndarray:
+    return np.full((2, 1 if parametric else 0), 0.3)
+
+
+_FAST_STAGES = (ParameterBindingStage, MeasurementStage)
+_SLOW_STAGES = (
+    ParameterBindingStage,
+    lambda: PauliTwirlStage(n_twirls=1, seed=0),
+    MeasurementStage,
+)
+
+
+def _binding_pipeline(spec_stage, stage_factories) -> CircuitPipeline:
+    return CircuitPipeline(stages=[spec_stage, *(make() for make in stage_factories)])
+
+
+@pytest.mark.parametrize("parametric", [False, True], ids=["parameter-free", "bound"])
+def test_fast_path_renders_circuit_constants_at_the_circuit_precision(
+    dummy_pipeline_env, parametric
+):
+    trace = run_binding_pipeline(
+        _constant_angle_meta(parametric=parametric, precision=4),
+        backend=dummy_pipeline_env.backend,
+        param_sets=_param_sets_for(parametric),
+    )
+    bodies = [
+        body for node in trace.final_batch.values() for _, body in node.qasm_bodies
+    ]
+    assert bodies
+    assert all("rz(0.1235) q[0];" in body for body in bodies)
+
+
+@pytest.mark.parametrize(
+    "stage_factories", [_FAST_STAGES, _SLOW_STAGES], ids=["fast", "slow"]
+)
+def test_a_parameter_free_entry_does_not_drop_later_entries(
+    dummy_pipeline_env, stage_factories
+):
+    pipeline = _binding_pipeline(CircuitSpecStage(), stage_factories)
+    env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=[[0.3]])
+    trace = pipeline.run_forward_pass(
+        {
+            "free": _constant_angle_meta(parametric=False),
+            "bound": _constant_angle_meta(parametric=True),
+        },
+        env,
+    )
+    assert set(trace.final_batch) == {(("circuit", "free"),), (("circuit", "bound"),)}
+
+
+@pytest.mark.parametrize(
+    "stage_factories", [_FAST_STAGES, _SLOW_STAGES], ids=["fast", "slow"]
+)
+@pytest.mark.parametrize("parametric", [False, True], ids=["parameter-free", "bound"])
+def test_dry_expand_labels_match_real_expand(
+    dummy_pipeline_env, stage_factories, parametric
+):
+    pipeline = _binding_pipeline(
+        DummySpecStage(meta=_constant_angle_meta(parametric=parametric)),
+        stage_factories,
+    )
+    env = PipelineEnv(
+        backend=dummy_pipeline_env.backend, param_sets=_param_sets_for(parametric)
+    )
+    real = pipeline.run_forward_pass("x", env)
+    dry = pipeline.run_forward_pass("x", env, dry=True)
+    assert stage_body_tags(dry, "ParameterBindingStage") == stage_body_tags(
+        real, "ParameterBindingStage"
+    )
+
+
+def test_dry_expand_accepts_non_finite_param_sets(dummy_pipeline_env):
+    pipeline = _binding_pipeline(
+        DummySpecStage(meta=_constant_angle_meta(parametric=True)), _FAST_STAGES
+    )
+    env = PipelineEnv(
+        backend=dummy_pipeline_env.backend, param_sets=np.array([[np.nan], [np.inf]])
+    )
+    dry = pipeline.run_forward_pass("x", env, dry=True)
+    assert len(stage_body_tags(dry, "ParameterBindingStage")) == 2

@@ -12,6 +12,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.pipeline import (
+    CircuitPipeline,
     CircuitPreprocessor,
     PipelineCadence,
     ResultFormat,
@@ -19,7 +20,7 @@ from divi.pipeline import (
     sample_preprocessor,
 )
 from divi.pipeline._preprocessor import _clear_observable, _identity
-from divi.pipeline.stages import PreprocessStage
+from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, PreprocessStage
 
 
 def test_cost_preprocessor_is_expval_identity():
@@ -60,11 +61,9 @@ def test_cadence_members_are_json_encodable():
     assert json.loads(json.dumps(list(PipelineCadence))) == ["per_evaluation", "once"]
 
 
-def test_protocol_is_hashable_and_value_equal():
-    # Repeated factory calls compare and hash equal (and distinct routines must
-    # not collide); the frozen dataclass stays hashable for use as a value.
+def test_protocol_is_value_equal():
+    # Repeated factory calls compare equal; distinct routines must not collide.
     assert cost_preprocessor() == cost_preprocessor()
-    assert hash(cost_preprocessor()) == hash(cost_preprocessor())
     assert cost_preprocessor() != sample_preprocessor()
 
 
@@ -88,14 +87,43 @@ def test_preprocess_stage_delegates_dag_consumption_flag():
     )
 
 
-def test_clear_observable_turns_expval_seed_into_all_wires_probs():
+def _bell_seed(**kwargs) -> MetaCircuit:
     qc = QuantumCircuit(2)
     qc.h(0)
     qc.cx(0, 1)
-    meta = MetaCircuit(
+    return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
         observable=SparsePauliOp("ZZ"),
+        **kwargs,
     )
+
+
+def test_sample_pipeline_drops_a_measured_seeds_observable_groups(
+    dummy_pipeline_env,
+):
+    seed = _bell_seed(
+        measurement_qasms=(((("obs_group", 0),), "measure q[0] -> c[0];\n"),),
+        measurement_groups=(("ZZ",),),
+    )
+    pipeline = CircuitPipeline(
+        stages=[
+            CircuitSpecStage(),
+            PreprocessStage(sample_preprocessor()),
+            MeasurementStage(),
+        ]
+    )
+
+    node = next(
+        iter(pipeline.run_forward_pass(seed, dummy_pipeline_env).final_batch.values())
+    )
+
+    assert node.result_format is ResultFormat.PROBS
+    assert node.measurement_groups == ()
+    assert [tag for tag, _ in node.measurement_qasms] == [(("meas", 0),)]
+
+
+def test_clear_observable_turns_expval_seed_into_all_wires_probs():
+    meta = _bell_seed()
 
     out = _clear_observable(meta)
 

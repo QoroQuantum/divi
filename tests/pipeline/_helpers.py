@@ -173,6 +173,21 @@ def run_binding_pipeline(
     return pipeline.run_forward_pass(input_key, env)
 
 
+def stage_output(trace: PipelineTrace, stage_name: str) -> MetaCircuit:
+    """The single MetaCircuit that ``stage_name`` emitted during ``trace``."""
+    expansion = next(
+        exp for exp in trace.stage_expansions if exp.stage_name == stage_name
+    )
+    (node,) = expansion.batch.values()
+    return node
+
+
+def stage_body_tags(trace: PipelineTrace, stage_name: str) -> tuple:
+    """Body tags ``stage_name`` emitted, from whichever body slot it populated."""
+    node = stage_output(trace, stage_name)
+    return tuple(tag for tag, _ in node.qasm_bodies or node.circuit_bodies)
+
+
 def measured_qubits(qasm: str) -> set[int]:
     """Qubit indices measured by a QASM body/string (``measure q[i] -> c[i];``)."""
     return {

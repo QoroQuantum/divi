@@ -21,7 +21,8 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
-from tests.pipeline._helpers import DummySpecStage
+from tests._helpers import exact_match
+from tests.pipeline._helpers import DummySpecStage, stage_output
 
 
 def _two_qubit_parametric_meta() -> MetaCircuit:
@@ -40,24 +41,7 @@ def _two_qubit_parametric_meta() -> MetaCircuit:
 
 
 def _param_bind_output(trace: PipelineTrace) -> MetaCircuit:
-    """Extract the MetaCircuit emitted by ParameterBindingStage from a run_forward_pass trace.
-
-    Avoids peeking at private stage state — tests the observable post-expand
-    output without depending on subsequent stages having already mutated it.
-    """
-    pb_expansion = next(
-        exp
-        for exp in trace.stage_expansions
-        if exp.stage_name == "ParameterBindingStage"
-    )
-    return next(iter(pb_expansion.batch.values()))
-
-
-def _stage_output(trace: PipelineTrace, stage_name: str) -> MetaCircuit:
-    expansion = next(
-        exp for exp in trace.stage_expansions if exp.stage_name == stage_name
-    )
-    return next(iter(expansion.batch.values()))
+    return stage_output(trace, "ParameterBindingStage")
 
 
 @pytest.fixture
@@ -193,7 +177,12 @@ def test_param_count_mismatch_raises(dummy_pipeline_env, meta):
         backend=dummy_pipeline_env.backend,
         param_sets=np.array([[1.0]]),  # meta expects 2 parameters
     )
-    with pytest.raises(ValueError, match="expected 2 parameters"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "ParameterBindingStage expected 2 parameters, got 1 in param set 0."
+        ),
+    ):
         stage.expand({(("spec", "circ"),): meta}, env)
 
 
@@ -263,8 +252,8 @@ class TestFastSlowEquivalence:
 
         fast_trace = fast_pipeline.run_forward_pass("x", env)
         structural_trace = structural_pipeline.run_forward_pass("x", env)
-        fast_twirl_meta = _stage_output(fast_trace, "PauliTwirlStage")
-        structural_twirl_meta = _stage_output(structural_trace, "PauliTwirlStage")
+        fast_twirl_meta = stage_output(fast_trace, "PauliTwirlStage")
+        structural_twirl_meta = stage_output(structural_trace, "PauliTwirlStage")
 
         qreg_header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
         fast_ops = {

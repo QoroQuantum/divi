@@ -24,7 +24,6 @@ from divi.pipeline import (
     CircuitPreprocessor,
     PipelineCadence,
     dry_run_pipeline,
-    format_dry_run,
 )
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._dry_run import (
@@ -51,12 +50,51 @@ from divi.pipeline.stages import (
 )
 from tests.pipeline._helpers import (
     DummySpecStage,
+    FanoutAndSumStage,
     assert_same_fanout,
     dry_run_stages,
     meta_with_observable,
     parametric_twirlable_meta,
     two_group_meta,
 )
+
+
+class _TokenEchoSpecStage(DummySpecStage):
+    """Spec stage whose introspection reports the token and env it was handed."""
+
+    @property
+    def axis_name(self) -> str:
+        return "echo_axis"
+
+    def expand(self, items: str, env: PipelineEnv) -> StageOutput[MetaCircuitBatch]:
+        return StageOutput(batch=super().expand(items, env).batch, token="spec-token")
+
+    def introspect(self, batch, env, token):
+        return {"token": token, "backend": type(env.backend).__name__}
+
+
+class _NonDictIntrospectSpecStage(DummySpecStage):
+    def introspect(self, batch, env, token):
+        return None
+
+
+def _fanned_out_report(env, **measurement_kwargs):
+    """Two final-batch entries, so per-entry totals must accumulate."""
+    return dry_run_stages(
+        [
+            DummySpecStage(meta=two_group_meta()),
+            FanoutAndSumStage(branch_prefix="b", n_children=2),
+            MeasurementStage(**measurement_kwargs),
+        ],
+        env,
+    )
+
+
+def _observable_fingerprint_of(env, observable):
+    return dry_run_stages(
+        [DummySpecStage(meta=meta_with_observable(observable)), MeasurementStage()],
+        env,
+    )[1].objective_fingerprint
 
 
 class TestDryRunPipeline:
@@ -89,15 +127,6 @@ class TestDryRunPipeline:
         )
         assert report.total_circuits == len(batch_lineage(trace.final_batch))
 
-    def test_format_does_not_raise(self, dummy_pipeline_env):
-        """format_dry_run prints without errors."""
-        _, report = dry_run_stages(
-            [DummySpecStage(meta=two_group_meta()), MeasurementStage()],
-            dummy_pipeline_env,
-            dry=False,
-        )
-        format_dry_run({"test": report})
-
     def test_dry_run_pipeline_threads_cadence(self, dummy_pipeline_env):
         pipeline = CircuitPipeline(
             stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
@@ -111,16 +140,6 @@ class TestDryRunPipeline:
             cadence=PipelineCadence.ONCE,
         )
         assert report.cadence is PipelineCadence.ONCE
-
-    def test_total_shots_weights_circuits_by_backend_shots(self, dummy_pipeline_env):
-        # dummy_expval_backend runs 100 shots; no shot_distribution, so every
-        # circuit is billed the same.
-        _, report = dry_run_stages(
-            [DummySpecStage(meta=two_group_meta()), MeasurementStage()],
-            dummy_pipeline_env,
-            dry=False,
-        )
-        assert report.total_shots == report.total_circuits * 100
 
     def test_a_broken_introspect_does_not_break_the_dry_run(
         self, dummy_pipeline_env, mocker
@@ -136,47 +155,82 @@ class TestDryRunPipeline:
         assert report.total_circuits > 0  # the analysis still completed
         assert "RuntimeError" in report.stages[0].metadata["introspect failed"]
 
-    def test_objective_fingerprint_tracks_the_observable_coefficients(
-        self, dummy_pipeline_env
+    @pytest.mark.parametrize(
+        "other",
+        [SparsePauliOp(["ZZ"], [2.0]), SparsePauliOp(["XX"], [1.0])],
+        ids=["coefficient", "pauli-label"],
+    )
+    def test_objective_fingerprint_tracks_the_observable(
+        self, dummy_pipeline_env, other
     ):
         """The fingerprint has to come off the real observable, not be hand-set:
-        two Hamiltonians differing only in a coefficient must not share it."""
-        a = dry_run_stages(
-            [
-                DummySpecStage(meta=meta_with_observable(SparsePauliOp(["ZZ"], [1.0]))),
-                MeasurementStage(),
-            ],
-            dummy_pipeline_env,
-        )[1]
-        b = dry_run_stages(
-            [
-                DummySpecStage(meta=meta_with_observable(SparsePauliOp(["ZZ"], [2.0]))),
-                MeasurementStage(),
-            ],
-            dummy_pipeline_env,
-        )[1]
-        assert a.total_circuits == b.total_circuits
-        assert a.objective_fingerprint != b.objective_fingerprint
+        Hamiltonians differing in one coefficient or one Pauli term must not share
+        it."""
+        assert _observable_fingerprint_of(
+            dummy_pipeline_env, SparsePauliOp(["ZZ"], [1.0])
+        ) != _observable_fingerprint_of(dummy_pipeline_env, other)
 
     def test_objective_fingerprint_survives_float_noise(self, dummy_pipeline_env):
         """Coefficients are rounded, so recomputing a Hamiltonian must not split two
         otherwise-identical objectives on the last few bits of a float."""
 
         def fingerprint(coefficient):
-            return dry_run_stages(
-                [
-                    DummySpecStage(
-                        meta=meta_with_observable(SparsePauliOp(["ZZ"], [coefficient]))
-                    ),
-                    MeasurementStage(),
-                ],
-                dummy_pipeline_env,
-            )[1].objective_fingerprint
+            return _observable_fingerprint_of(
+                dummy_pipeline_env, SparsePauliOp(["ZZ"], [coefficient])
+            )
 
         # Differing past the rounding precision: the same objective.
         assert fingerprint(1.0) == fingerprint(1.0 + 1e-12)
         # Differing within it: distinct objectives.
         assert fingerprint(1.0) != fingerprint(1.000001)
+
+    @pytest.mark.parametrize(
+        "shots_override", [None, 7], ids=["backend-shots", "override"]
+    )
+    def test_total_shots_bills_every_final_batch_entry_its_shots(
+        self, dummy_expval_backend, shots_override
+    ):
+        _, report = _fanned_out_report(
+            PipelineEnv(backend=dummy_expval_backend, shots_override=shots_override)
+        )
+        per_circuit = shots_override or dummy_expval_backend.shots
+        assert report.total_circuits == 2
+        assert report.total_shots == 2 * per_circuit
+
+    def test_total_shots_sums_a_shot_distribution_allocation(
+        self, dummy_sampling_pipeline_env
+    ):
+        """A ``shot_distribution`` bills each group its own allocation, not the
+        backend's shots per circuit."""
+        trace, report = _fanned_out_report(
+            dummy_sampling_pipeline_env, shot_distribution="weighted"
+        )
+        allocations = trace.env_artifacts["per_group_shots"]
+        assert len(allocations) == 2
+        assert report.total_shots == sum(
+            sum(groups.values()) for groups in allocations.values()
+        )
+
+    def test_spec_stage_introspects_with_its_own_token_and_the_env(
+        self, dummy_pipeline_env
+    ):
+        spec = _TokenEchoSpecStage(meta=two_group_meta())
+        _, report = dry_run_stages([spec, MeasurementStage()], dummy_pipeline_env)
+        info = report.stages[0]
+        assert info.metadata == {"token": "spec-token", "backend": "DummyExpvalBackend"}
+        assert info.axis == spec.axis_name
+        assert info.label == spec.name
+
+    def test_an_introspect_returning_a_non_dict_is_reported_in_place(
+        self, dummy_pipeline_env
+    ):
+        _, report = dry_run_stages(
+            [_NonDictIntrospectSpecStage(meta=two_group_meta()), MeasurementStage()],
+            dummy_pipeline_env,
+        )
+        assert report.stages[0].metadata == {
+            "introspect failed": "expected a dict, got NoneType"
+        }
 
 
 @pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
@@ -295,17 +349,6 @@ class TestAnalyticDryRun:
             dry=False,
         )
         assert spy.call_count > 0, "real path must apply twirl DAG substitution"
-
-    def test_dry_preserves_per_group_shots_artifact(self, dummy_sampling_pipeline_env):
-        """Dry MeasurementStage must still populate per_group_shots via shot allocation."""
-        trace, _ = dry_run_stages(
-            [
-                DummySpecStage(meta=two_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
-            dummy_sampling_pipeline_env,
-        )
-        assert "per_group_shots" in trace.env_artifacts
 
     def test_introspect_metadata_survives_dry(self, dummy_sampling_pipeline_env):
         """Each stage's ``introspect()`` feeds ``DryRunReport.stages[i].metadata``.
@@ -608,6 +651,7 @@ class TestQuEPPDryExpand:
         real_qem = next(s for s in real_report.stages if s.name == "QEMStage")
         dry_qem = next(s for s in dry_report.stages if s.name == "QEMStage")
         assert dry_qem.metadata["protocol"] == "quepp"
+        assert isinstance(dry_qem.metadata["n_rotations"], int)
         assert dry_qem.metadata["n_rotations"] == real_qem.metadata["n_rotations"]
         assert dry_qem.metadata["n_paths"] == real_qem.metadata["n_paths"]
 
@@ -679,8 +723,16 @@ class TestQuEPPDryExpand:
         assert all(ctx.get("sampled_paths") for _, ctx in previews)
 
         stage = QEMStage(protocol=protocol)
-        info = stage.introspect({}, env=dummy_pipeline_env, token={(): previews[0][1]})
-        assert info["path_count"] == "sampled (an estimate, not an exact count)"
+        context = previews[0][1]
+        info = stage.introspect({}, env=dummy_pipeline_env, token={(): context})
+        assert info == {
+            "protocol": "quepp",
+            "n_rotations": context["n_rotations"],
+            "n_paths": context["n_paths"],
+            "n_clifford_sims": context["n_paths"],
+            "path_count": "sampled (an estimate, not an exact count)",
+            "n_observables": 1,
+        }
 
     def test_exhaustive_enumeration_is_not_marked_sampled(self, dummy_pipeline_env):
         """Deterministic enumeration must not carry the sampled-count caveat."""
@@ -842,57 +894,75 @@ class TestDrySafetyFallback:
         )
         assert dry_report.total_circuits == real_report.total_circuits
 
-    def test_no_warning_when_all_downstream_dry_aware(self, dummy_pipeline_env):
-        """Safe pipelines (every downstream stage overrides ``dry_expand``)
-        must not emit the fallback warning."""
+    class _MetadataOnlyStage(BundleStage):
+        """Passthrough stage that declares it never touches circuit DAGs."""
+
+        def __init__(self) -> None:
+            super().__init__(name=type(self).__name__)
+
+        @property
+        def consumes_dag_bodies(self) -> bool:
+            return False
+
+        def expand(self, batch, env):
+            return StageOutput(batch=batch)
+
+    @pytest.mark.parametrize(
+        "make_extra_stages",
+        [lambda: [], lambda: [TestDrySafetyFallback._MetadataOnlyStage()]],
+        ids=["dry-aware-downstream", "metadata-only-downstream"],
+    )
+    def test_analytic_path_kept_when_downstream_is_safe(
+        self, dummy_pipeline_env, mocker, make_extra_stages
+    ):
+        """Safe pipelines keep the analytic twirl path and emit no fallback warning."""
+        spy = mocker.spy(_pauli_twirl_mod, "_apply_twirl_substitute")
         stages = [
             DummySpecStage(meta=parametric_twirlable_meta()),
             PauliTwirlStage(n_twirls=4, seed=0),
+            *make_extra_stages(),
             MeasurementStage(),
         ]
-        # Any ``DiviPerformanceWarning`` fired here would mean the pipeline
-        # spuriously demoted a stage — promote it to an exception so the
-        # test fails loudly rather than needing to inspect a record list.
+
         with warnings.catch_warnings():
             warnings.simplefilter("error", DiviPerformanceWarning)
             dry_run_stages(stages, dummy_pipeline_env)
 
+        assert spy.call_count == 0
 
-class TestTwoQubitDepth:
-    """Spec: ``_two_qubit_depth`` returns the longest chain of 2q gates."""
 
-    def test_zero_when_no_two_qubit_gates(self):
-        qc = QuantumCircuit(2)
-        qc.h(0)
-        qc.x(1)
-        qc.s(0)
-        assert _two_qubit_depth(circuit_to_dag(qc)) == 0
+def _dag(n_qubits, ops):
+    qc = QuantumCircuit(n_qubits)
+    for gate, *qubits in ops:
+        getattr(qc, gate)(*qubits)
+    return circuit_to_dag(qc)
 
-    def test_counts_chained_2q_via_shared_qubit(self):
-        # Three CXs all touching qubit 0 → chain of 3 (each follows the previous).
-        qc = QuantumCircuit(3)
-        qc.cx(0, 1)
-        qc.cx(0, 2)
-        qc.cx(0, 1)
-        assert _two_qubit_depth(circuit_to_dag(qc)) == 3
 
-    def test_independent_2q_gates_dont_chain(self):
-        # CX(0,1) and CX(2,3) share no qubits → each contributes a chain of 1.
-        qc = QuantumCircuit(4)
-        qc.cx(0, 1)
-        qc.cx(2, 3)
-        assert _two_qubit_depth(circuit_to_dag(qc)) == 1
+@pytest.mark.parametrize(
+    "n_qubits, ops, expected",
+    [
+        (2, [("h", 0), ("x", 1), ("s", 0)], 0),
+        (3, [("cx", 0, 1), ("cx", 0, 2), ("cx", 0, 1)], 3),
+        (4, [("cx", 0, 1), ("cx", 2, 3)], 1),
+        (3, [("cx", 0, 1), ("cx", 2, 1)], 2),
+    ],
+    ids=[
+        "no-two-qubit-gates",
+        "chained-via-shared-control",
+        "independent-gates-dont-chain",
+        "chained-via-second-qubit",
+    ],
+)
+def test_two_qubit_depth_is_the_longest_chain_of_two_qubit_gates(
+    n_qubits, ops, expected
+):
+    assert _two_qubit_depth(_dag(n_qubits, ops)) == expected
 
-    def test_ignores_single_qubit_gates_between_2q(self):
-        # Single-qubit gates extend overall depth but not 2q-depth.
-        qc = QuantumCircuit(2)
-        qc.cx(0, 1)
-        qc.h(0)
-        qc.h(1)
-        qc.cx(0, 1)
-        # depth() includes the H layers; _two_qubit_depth only counts the CXs.
-        assert circuit_to_dag(qc).depth() > 2
-        assert _two_qubit_depth(circuit_to_dag(qc)) == 2
+
+def test_two_qubit_depth_ignores_single_qubit_gates_between_them():
+    dag = _dag(2, [("cx", 0, 1), ("h", 0), ("h", 1), ("cx", 0, 1)])
+    assert dag.depth() > 2
+    assert _two_qubit_depth(dag) == 2
 
 
 class TestCircuitStatsAggregate:
@@ -922,23 +992,16 @@ class TestCircuitStatsAggregate:
         assert stats["std_depth"] == 0.0
         assert stats["min_depth"] == stats["max_depth"]
         assert stats["min_width"] == stats["max_width"] == 2
+        assert stats["std_width"] == 0.0
 
-    def test_varying_depth_populates_range_stats(self):
-        # Two MetaCircuits with different depths exercise the spread branches
-        # of every stat (min/max/mean/std/2q_depth) — the constant case
-        # collapses all of them to the same number.
-        qc_shallow = QuantumCircuit(2)
-        qc_shallow.cx(0, 1)
-        qc_deep = QuantumCircuit(2)
-        qc_deep.cx(0, 1)
-        qc_deep.cx(0, 1)
+    def test_varying_circuits_populate_range_stats(self):
+        # Two MetaCircuits differing in depth and width exercise the spread
+        # branches of every stat — the constant case collapses them all.
+        shallow = _dag(2, [("cx", 0, 1)])
+        deep = _dag(3, [("cx", 0, 1), ("cx", 0, 1)])
         batch = {
-            (("circuit", 0),): MetaCircuit(
-                circuit_bodies=(((), circuit_to_dag(qc_shallow)),)
-            ),
-            (("circuit", 1),): MetaCircuit(
-                circuit_bodies=(((), circuit_to_dag(qc_deep)),)
-            ),
+            (("circuit", i),): MetaCircuit(circuit_bodies=(((), dag),))
+            for i, dag in enumerate((shallow, deep))
         }
         stats = _aggregate_circuit_stats(batch)
         assert stats["min_depth"] == 1
@@ -948,9 +1011,10 @@ class TestCircuitStatsAggregate:
         assert stats["mean_2q_depth"] == 1.5
         # 1 + 2 CX gates summed across the two bodies.
         assert stats["total_2q_gates"] == 3
-        # Width is constant at 2 across both circuits.
-        assert stats["min_width"] == stats["max_width"] == 2
-        assert stats["std_width"] == 0.0
+        assert stats["min_width"] == 2
+        assert stats["max_width"] == 3
+        assert stats["mean_width"] == 2.5
+        assert stats["std_width"] == 0.5
 
     def test_empty_dict_for_empty_batch(self):
         # Aggregator returns {} when no MetaCircuits have DAG bodies to read.

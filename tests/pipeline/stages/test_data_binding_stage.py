@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import functools
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -24,6 +26,7 @@ from divi.pipeline.stages import (
     resolve_sample_loss,
 )
 from divi.pipeline.stages._data_binding_stage import DATA_AXIS
+from tests._helpers import exact_match
 
 
 def _make_circuit():
@@ -38,11 +41,12 @@ def _make_circuit():
     return qc, tuple(data), tuple(weights)
 
 
-def _make_meta(qc, data_params, weight_params):
+def _make_meta(qc, data_params, weight_params, **kwargs):
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
         parameters=data_params + weight_params,
         observable=SparsePauliOp.from_list([("ZI", 1.0)]),
+        **kwargs,
     )
 
 
@@ -55,6 +59,10 @@ def _env(*, feature_batch=None, labels=None):
     data axis passed through. End-to-end tests that actually run circuits build
     their own env with a real backend."""
     return PipelineEnv(backend=None, feature_batch=feature_batch, labels=labels)
+
+
+def _reported_path(stage: DataBindingStage) -> str:
+    return stage.introspect({}, _env(), token=None)["path"]
 
 
 @pytest.fixture
@@ -129,7 +137,14 @@ def test_expand_rejects_non_finite_feature_batch(composed, bad):
     before any render path bakes it into a circuit."""
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-    with pytest.raises(ValueError, match="non-finite gate parameters"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Cannot bind non-finite gate parameters: env.feature_batch contains "
+            "NaN or Inf. Check the feature batch / parameter values for missing "
+            "data, divide-by-zero, or overflow in preprocessing."
+        ),
+    ):
         stage.expand(
             {(): _make_meta(qc, data_params, weight_params)},
             env=_env(feature_batch=np.array([[0.1, bad]])),
@@ -162,15 +177,21 @@ def test_supervised_pairs_label_by_axis_index_not_arrival_order(composed):
     assert reduced[(("param_set", 0),)] == [pytest.approx(405.0)]
 
 
-def test_eager_path_substitutes_data_into_dag(composed):
-    """Eager path: per-sample DAGs carry data values directly; the DAG's
-    remaining free parameters are weight-only."""
+def test_eager_path_substitutes_data_into_fresh_dags(composed):
+    """Eager path: per-sample DAGs carry data values directly, leaving only weight
+    parameters free, and each expand builds new DAGs."""
     qc, data_params, weight_params = composed
-    feature_batch = np.array([[1.5, -0.5]])
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-    stage._use_template_path = False  # force eager path for this assertion
+    stage.validate(
+        before=(), after=(PauliTwirlStage(n_twirls=1), ParameterBindingStage())
+    )
+    env = _env(feature_batch=np.array([[1.5, -0.5]]))
+    assert _reported_path(stage) == "eager"
     meta = _make_meta(qc, data_params, weight_params)
-    result = stage.expand({(): meta}, env=_env(feature_batch=feature_batch))
+
+    result = stage.expand({(): meta}, env=env)
+    second = stage.expand({(): meta}, env=env)
+
     _, dag = result.batch[()].circuit_bodies[0]
     remaining_params = {
         sym
@@ -179,9 +200,21 @@ def test_eager_path_substitutes_data_into_dag(composed):
         for sym in getattr(param, "parameters", set())
     }
     assert remaining_params == set(weight_params)
-    # Eager path does NOT populate qasm_bodies — that's a
-    # template-path-only artifact.
+    assert result.batch[()].parameters == tuple(weight_params)
     assert result.batch[()].qasm_bodies == ()
+    assert second.batch[()].circuit_bodies[0][1] is not dag
+
+
+def test_cache_key_extras_depend_on_feature_values_not_dtype(composed):
+    _, data_params, _ = composed
+    stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
+
+    def key(features):
+        return stage.cache_key_extras(_env(feature_batch=features))
+
+    assert key(None) == ()
+    assert key(np.array([[1, 2]])) == key(np.array([[1.0, 2.0]]))
+    assert key(np.array([[1.0, 2.0]])) != key(np.array([[1.0, 3.0]]))
 
 
 @pytest.mark.parametrize(
@@ -349,7 +382,13 @@ def test_supervised_rejects_multiple_observables(composed):
         ((DATA_AXIS, 0), ("param_set", 0)): [1.0, 2.0],
         ((DATA_AXIS, 1), ("param_set", 0)): [3.0, 4.0],
     }
-    with pytest.raises(ValueError, match="single cost observable"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Supervised labels require a single cost observable so each sample "
+            "has one prediction; got 2 observables."
+        ),
+    ):
         stage.reduce(results, env=_env(labels=[1.0, 0.0]), token=None)
 
 
@@ -366,7 +405,9 @@ def test_reduce_rejects_label_count_mismatch(composed):
         ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
         ((DATA_AXIS, 2), ("param_set", 0)): [3.0],
     }
-    with pytest.raises(ValueError, match="3 per-sample predictions but 2 labels"):
+    with pytest.raises(
+        ValueError, match=exact_match("got 3 per-sample predictions but 2 labels.")
+    ):
         stage.reduce(results, env=_env(labels=[1.0, 0.0]), token=None)
 
 
@@ -406,7 +447,9 @@ def test_reduce_rejects_fit_bias_without_labels(composed):
         ((DATA_AXIS, 0), ("param_set", 0)): [1.0],
         ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
     }
-    with pytest.raises(ValueError, match="fit_bias requires env.labels"):
+    with pytest.raises(
+        ValueError, match=exact_match("fit_bias requires env.labels to be set.")
+    ):
         stage.reduce(results, env=_env(), token=None)
 
 
@@ -418,7 +461,10 @@ def test_reduce_rejects_labels_without_sample_loss(composed):
         ((DATA_AXIS, 0), ("param_set", 0)): [1.0],
         ((DATA_AXIS, 1), ("param_set", 0)): [2.0],
     }
-    with pytest.raises(ValueError, match="no sample_loss"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("env.labels were provided but the stage has no sample_loss."),
+    ):
         stage.reduce(results, env=_env(labels=[1.0, 0.0]), token=None)
 
 
@@ -437,7 +483,12 @@ def test_resolve_sample_loss_callable_passthrough():
 
 
 def test_resolve_sample_loss_rejects_unknown_literal():
-    with pytest.raises(ValueError, match="loss_fn must be"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "loss_fn must be 'squared_error' or a callable; got 'huber'."
+        ),
+    ):
         resolve_sample_loss("huber")  # type: ignore[arg-type]
 
 
@@ -534,7 +585,12 @@ def test_expand_rejects_mismatched_feature_columns(composed):
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     env = _env(feature_batch=np.array([[0.1, 0.2, 0.3]]))
-    with pytest.raises(ValueError, match="2 data parameters were declared"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "feature_batch has 3 columns but 2 data parameters were declared."
+        ),
+    ):
         stage.expand({(): _make_meta(qc, data_params, weight_params)}, env=env)
 
 
@@ -542,14 +598,19 @@ def test_expand_rejects_1d_feature_batch(composed):
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     env = _env(feature_batch=np.array([0.1, 0.2]))
-    with pytest.raises(ValueError, match="feature_batch must be 2D"):
+    with pytest.raises(
+        ValueError, match=exact_match("feature_batch must be 2D; got shape (2,).")
+    ):
         stage.expand({(): _make_meta(qc, data_params, weight_params)}, env=env)
 
 
 def test_expand_requires_feature_batch_in_env(composed):
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-    with pytest.raises(ValueError, match="requires env.feature_batch"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("DataBindingStage requires env.feature_batch to be set."),
+    ):
         stage.expand(
             {(): _make_meta(qc, data_params, weight_params)},
             env=_env(),
@@ -571,16 +632,28 @@ def test_resolve_callable_reduction_passthrough():
 
 
 def test_resolve_loss_reduction_rejects_unknown_literal():
-    with pytest.raises(ValueError, match="loss_reduction must be"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "loss_reduction must be 'mean', 'sum', or a callable; got 'median'."
+        ),
+    ):
         resolve_loss_reduction("median")  # type: ignore[arg-type]
 
 
-def test_dry_expand_shares_one_dag_across_sample_variants(composed):
+@pytest.mark.parametrize(
+    "feature_batch",
+    [
+        pytest.param(np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]), id="finite"),
+        pytest.param(np.array([[np.nan, 0.1], [0.2, np.inf]]), id="non-finite"),
+    ],
+)
+def test_dry_expand_shares_one_dag_across_sample_variants(composed, feature_batch):
     """Dry-run skips per-sample data substitution; all N body variants
     point at the same incoming parametric DAG, giving O(1) DAG memory
-    irrespective of ``feature_batch`` size."""
+    irrespective of ``feature_batch`` size. Values are never rendered, so
+    non-finite features are accepted."""
     qc, data_params, weight_params = composed
-    feature_batch = np.array([[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]])
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     meta = _make_meta(qc, data_params, weight_params)
     result = stage.dry_expand({(): meta}, env=_env(feature_batch=feature_batch))
@@ -589,14 +662,6 @@ def test_dry_expand_shares_one_dag_across_sample_variants(composed):
     # All variants share the same DAG instance — that's the "lazy" win.
     shared = bodies[0][1]
     assert all(dag is shared for _, dag in bodies)
-
-
-def test_no_per_sample_dag_cache_on_stage(composed):
-    """The stage retains no per-sample DAG state; only a parametric-template
-    cache keyed by the incoming body DAG."""
-    qc, data_params, weight_params = composed
-    stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-    assert not hasattr(stage, "_per_sample_dags")
 
 
 def test_template_path_passes_through_incoming_dag(composed):
@@ -617,29 +682,13 @@ def test_template_path_passes_through_incoming_dag(composed):
     assert first_dag is second_dag
 
 
-def test_eager_path_builds_fresh_dags_each_call(composed):
-    """Eager path materializes per-sample DAGs fresh each expand call —
-    previous batch can be GC'd between iterations."""
-    qc, data_params, weight_params = composed
-    feature_batch = np.array([[0.1, 0.2], [0.3, 0.4]])
-    stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-    stage._use_template_path = False
-    meta = _make_meta(qc, data_params, weight_params)
-    env = _env(feature_batch=feature_batch)
-    first = stage.expand({(): meta}, env=env)
-    second = stage.expand({(): meta}, env=env)
-    first_dag = first.batch[()].circuit_bodies[0][1]
-    second_dag = second.batch[()].circuit_bodies[0][1]
-    assert first_dag is not second_dag
-
-
 def test_validate_picks_template_path_when_only_pb_downstream(composed):
     """With only ParameterBindingStage downstream, the template path is
     chosen — its fast-path lookup consumes ``qasm_bodies``."""
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     stage.validate(before=(), after=(ParameterBindingStage(),))
-    assert stage._use_template_path is True
+    assert _reported_path(stage) == "template"
 
 
 def test_validate_treats_no_mitigation_qem_as_transparent(composed):
@@ -648,7 +697,7 @@ def test_validate_treats_no_mitigation_qem_as_transparent(composed):
     qc, data_params, weight_params = composed
     stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
     stage.validate(before=(), after=(QEMStage(), ParameterBindingStage()))
-    assert stage._use_template_path is True
+    assert _reported_path(stage) == "template"
 
 
 def test_validate_falls_back_to_eager_when_active_qem_downstream(composed):
@@ -663,7 +712,7 @@ def test_validate_falls_back_to_eager_when_active_qem_downstream(composed):
             ParameterBindingStage(),
         ),
     )
-    assert stage._use_template_path is False
+    assert _reported_path(stage) == "eager"
 
 
 def test_validate_falls_back_to_eager_when_pauli_twirl_downstream(composed):
@@ -673,23 +722,20 @@ def test_validate_falls_back_to_eager_when_pauli_twirl_downstream(composed):
         before=(),
         after=(PauliTwirlStage(n_twirls=1), ParameterBindingStage()),
     )
-    assert stage._use_template_path is False
+    assert _reported_path(stage) == "eager"
 
 
 @pytest.mark.e2e
 def test_template_and_eager_paths_yield_equivalent_loss(
     composed, default_test_simulator
 ):
-    """End-to-end equivalence: a QNN-style program produces (within shot
-    noise) the same scalar loss whether DataBindingStage takes its
-    template fast path or its eager fallback. Pins the load-bearing
-    correctness invariant of the refactor."""
+    """A QNN-style program produces the same scalar loss whether DataBindingStage
+    takes its template fast path or its eager fallback."""
     qc, data_params, weight_params = composed
     feature_batch = np.array([[0.1, 0.2], [0.3, 0.4]])
 
     def _build_program(use_template: bool):
         stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
-        stage._use_template_path = use_template
         backend = default_test_simulator
         backend.set_seed(1997)  # reset per build so both paths share one RNG draw
         pipeline = CircuitPipeline(
@@ -700,23 +746,26 @@ def test_template_and_eager_paths_yield_equivalent_loss(
                 ParameterBindingStage(),
             ]
         )
+        # Pipeline construction re-runs ``validate``, so the path is forced after it.
+        stage._use_template_path = use_template
         meta = _make_meta(qc, data_params, weight_params)
         env = PipelineEnv(
             backend=backend,
             param_sets=np.array([[0.7, 1.3]]),
             feature_batch=feature_batch,
         )
+        assert _reported_path(stage) == ("template" if use_template else "eager")
         return pipeline.run(initial_spec={"cost": meta}, env=env)
 
     template = _build_program(use_template=True)
     eager = _build_program(use_template=False)
-    # Same set of result keys, same values up to shot noise.
     assert set(template.keys()) == set(eager.keys())
     for key in template:
         np.testing.assert_allclose(
             np.asarray(template[key], dtype=np.float64),
             np.asarray(eager[key], dtype=np.float64),
-            atol=0.1,
+            rtol=0,
+            atol=1e-12,
         )
 
 
@@ -727,3 +776,68 @@ def test_resolve_loss_reduction_wraps_numpy_callables_into_float():
     result = fn(np.array([1.0, 2.0, 3.0]))
     assert type(result) is float
     assert result == pytest.approx(2.0)
+
+
+def _reported_names(stage: DataBindingStage) -> dict:
+    metadata = stage.introspect({}, _env(), token=None)
+    return {
+        key: metadata[key] for key in ("loss_reduction", "loss_fn") if key in metadata
+    }
+
+
+@pytest.mark.parametrize(
+    "loss_reduction, sample_loss, expected",
+    [
+        pytest.param(
+            resolve_loss_reduction(np.median),
+            None,
+            {"loss_reduction": "median"},
+            id="named-reduction",
+        ),
+        pytest.param(
+            resolve_loss_reduction(functools.partial(np.quantile, q=0.5)),
+            resolve_sample_loss(functools.partial(np.subtract)),
+            {"loss_reduction": "custom", "loss_fn": "custom"},
+            id="nameless-callables",
+        ),
+        pytest.param(
+            functools.partial(np.quantile, q=0.5),
+            None,
+            {"loss_reduction": "partial"},
+            id="unresolved-callable",
+        ),
+    ],
+)
+def test_introspect_names_user_callables(
+    composed, loss_reduction, sample_loss, expected
+):
+    _, data_params, _ = composed
+    stage = DataBindingStage(
+        data_params=data_params,
+        loss_reduction=loss_reduction,
+        sample_loss=sample_loss,
+    )
+    assert _reported_names(stage) == expected
+
+
+def test_template_path_renders_circuit_constants_at_the_circuit_precision(composed):
+    qc, data_params, weight_params = composed
+    qc.rz(0.123456789, 0)
+    meta = _make_meta(qc, data_params, weight_params, precision=4)
+    stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
+    result = stage.expand(
+        {(): meta}, env=_env(feature_batch=np.array([[0.1, 0.2], [0.3, 0.4]]))
+    )
+    bodies = [body for _, body in result.batch[()].qasm_bodies]
+    assert len(bodies) == 2
+    assert all("rz(0.1235) q[0];" in body for body in bodies)
+
+
+def test_dry_expand_drops_data_parameters_like_expand(composed):
+    qc, data_params, weight_params = composed
+    stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
+    batch = {(): _make_meta(qc, data_params, weight_params)}
+    env = _env(feature_batch=np.array([[0.1, 0.2]]))
+    dry = stage.dry_expand(batch, env=env).batch[()]
+    real = stage.expand(batch, env=env).batch[()]
+    assert dry.parameters == real.parameters == weight_params

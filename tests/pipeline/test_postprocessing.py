@@ -19,7 +19,54 @@ from divi.pipeline._postprocessing import (
 )
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage
+from tests._helpers import exact_match
 from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
+
+
+def _measured_trace(env, observable, n_qubits=None, **stage_kw):
+    """Forward pass of one counts-measured observable, with its lineage and node.
+
+    ``wires`` grouping keeps a real counts-measured group; the default would
+    promote to the backend-native expval path, which carries no counts.
+    """
+    if n_qubits is None:
+        n_qubits = observable.num_qubits
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(
+                meta=meta_from_circuit(QuantumCircuit(n_qubits), observable=observable)
+            ),
+            MeasurementStage(grouping_strategy="wires", **stage_kw),
+        ]
+    )
+    trace = pipeline.run_forward_pass("x", env)
+    return (
+        trace,
+        batch_lineage(trace.final_batch),
+        next(iter(trace.final_batch.values())),
+    )
+
+
+def _wrs_trace(env, observable):
+    """``_measured_trace`` under weighted-random sampling, with group probabilities."""
+    trace, lineage, _ = _measured_trace(
+        env, observable, shot_distribution="weighted_random"
+    )
+    token = trace.stage_tokens[1]
+    probabilities = {
+        key: plan.probabilities_by_group
+        for key, plan in token.group_shot_plans_by_spec.items()
+    }
+    return trace, lineage, probabilities
+
+
+def _with_param_sets(lineage, counts_by_param_set) -> ChildResults:
+    """Raw results with every branch repeated once per parameter set."""
+    return {
+        (*bk, ("param_set", idx)): counts
+        for idx, counts in enumerate(counts_by_param_set)
+        for bk in lineage.values()
+    }
 
 
 class TestCountsToExpvals:
@@ -36,16 +83,7 @@ class TestCountsToExpvals:
         observable = SparsePauliOp.from_sparse_list(
             [("Z", [obs_qubit], 1.0)], num_qubits=3
         )
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(
-                    meta=meta_from_circuit(QuantumCircuit(3), observable=observable)
-                ),
-                MeasurementStage(grouping_strategy="wires"),
-            ]
-        )
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        lineage_by_label = batch_lineage(trace.final_batch)
+        trace, lineage_by_label, _ = _measured_trace(dummy_pipeline_env, observable)
         raw: ChildResults = {bk: {"011": 100} for bk in lineage_by_label.values()}
 
         result = _counts_to_expvals(raw, trace.final_batch)
@@ -59,16 +97,7 @@ class TestCountsToExpvals:
         observable = SparsePauliOp.from_sparse_list(
             [("Z", [0], 0.5), ("Z", [1], 0.3), ("Z", [2], 0.2)], num_qubits=3
         )
-        meta = meta_from_circuit(QuantumCircuit(3), observable=observable)
-
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(grouping_strategy="wires"),
-            ]
-        )
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        lineage_by_label = batch_lineage(trace.final_batch)
+        trace, lineage_by_label, _ = _measured_trace(dummy_pipeline_env, observable)
 
         # Little-endian backend counts giving distinct <Z0>=0.4, <Z1>=0.6,
         # <Z2>=0.8, so any qubit permutation (not just a full reversal) is caught
@@ -96,33 +125,104 @@ class TestCountsToCostVariance:
 
     @pytest.fixture
     def single_z_trace(self, dummy_pipeline_env):
-        """Forward pass for a single-qubit ``<Z0>`` cost (one measurement group).
+        """Forward pass for a single-qubit ``<Z0>`` cost (one measurement group)."""
+        trace, lineage, _ = _measured_trace(dummy_pipeline_env, SparsePauliOp("Z"))
+        return trace, lineage
 
-        Uses ``wires`` grouping so a real counts-measured group is produced; the
-        default would promote to the backend-native expval path (no counts), on
-        which ``_counts_to_cost_variance`` is never invoked.
-        """
-        observable = SparsePauliOp("Z")
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(
-                    meta=meta_from_circuit(QuantumCircuit(1), observable=observable)
-                ),
-                MeasurementStage(grouping_strategy="wires"),
-            ]
+    @pytest.mark.parametrize(
+        ("observable", "n_qubits", "counts", "expected"),
+        [
+            (SparsePauliOp("Z"), 1, {"0": 75, "1": 25}, 0.0075),
+            (SparsePauliOp("Z"), 1, {"0": 100}, 0.0),
+            (
+                SparsePauliOp.from_list([("Z", 0.5), ("Z", 0.5)]),
+                1,
+                {"0": 75, "1": 25},
+                0.0075,
+            ),
+            (
+                SparsePauliOp.from_list([("IZ", 0.0), ("ZI", 1.0)]),
+                2,
+                {"00": 75, "10": 25},
+                0.0075,
+            ),
+            (SparsePauliOp("Z"), 2, {"00": 75, "01": 25}, 0.0075),
+            (SparsePauliOp("Z"), 1, {"0": 1}, 0.0),
+        ],
+        ids=[
+            "analytic-formula",
+            "saturated-pauli",
+            "duplicate-terms",
+            "zero-coefficient-first",
+            "narrow-observable",
+            "one-shot",
+        ],
+    )
+    def test_single_group_matches_analytic_formula(
+        self, dummy_pipeline_env, observable, n_qubits, counts, expected
+    ):
+        trace, lineage, node = _measured_trace(dummy_pipeline_env, observable, n_qubits)
+        raw: ChildResults = {bk: counts for bk in lineage.values()}
+
+        variances = list(_counts_to_cost_variance(raw, trace.final_batch).values())
+
+        assert sum(len(group) for group in node.measurement_groups) == len(
+            set(observable.paulis.to_labels())
         )
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        return trace, batch_lineage(trace.final_batch)
+        assert variances == [pytest.approx(expected)]
+        assert variances[0] >= 0.0
 
-    def test_matches_analytic_formula(self, single_z_trace):
-        # <Z> = (75 - 25)/100 = 0.5, coeff = 1, M = 100
-        # Var = 1²·(1 - 0.5²)/100 = 0.0075
-        trace, lineage_by_label = single_z_trace
-        raw: ChildResults = {bk: {"0": 75, "1": 25} for bk in lineage_by_label.values()}
+    def test_sums_weighted_terms_within_and_across_groups(self, dummy_pipeline_env):
+        # Little-endian counts: <Z_q0>=0.4 and <Z_q1>=0.6 in the Z group, <XX>=0.4.
+        observable = SparsePauliOp.from_list([("ZI", 2.0), ("IZ", 0.5), ("XX", 1.5)])
+        trace, lineage, node = _measured_trace(dummy_pipeline_env, observable)
+        z_counts = {"00": 50, "01": 30, "10": 20}
+        xx_counts = {"00": 70, "01": 30}
+        raw: ChildResults = {
+            bk: (
+                xx_counts
+                if "XX" in node.measurement_groups[dict(bk)["obs_group"]]
+                else z_counts
+            )
+            for bk in lineage.values()
+        }
+
+        expected = (
+            4.0 * (1 - 0.6**2) + 0.25 * (1 - 0.4**2) + 2.25 * (1 - 0.4**2)
+        ) / 100
+        assert list(_counts_to_cost_variance(raw, trace.final_batch).values()) == [
+            pytest.approx(expected)
+        ]
+
+    def test_multi_observable_cost_variance_is_nan_for_every_key(
+        self, dummy_pipeline_env
+    ):
+        trace, lineage, _ = _measured_trace(
+            dummy_pipeline_env, (SparsePauliOp("Z"), SparsePauliOp("X")), 1
+        )
+        counts = {"0": 75, "1": 25}
+        raw = _with_param_sets(lineage, [counts, counts])
+
         result = _counts_to_cost_variance(raw, trace.final_batch)
-        assert result
-        for v in result.values():
-            assert v == pytest.approx(0.0075)
+
+        assert len(result) == 2
+        assert all(np.isnan(v) for v in result.values())
+
+    def test_zero_shot_key_leaves_other_keys_intact(self, single_z_trace):
+        trace, lineage = single_z_trace
+        raw = _with_param_sets(lineage, [{}, {"0": 75, "1": 25}])
+        (base_key,) = {
+            tuple(ax for ax in bk if ax[0] != "obs_group") for bk in lineage.values()
+        }
+
+        result = _counts_to_cost_variance(raw, trace.final_batch)
+
+        assert set(result) == {
+            (*base_key, ("param_set", 0)),
+            (*base_key, ("param_set", 1)),
+        }
+        assert np.isnan(result[(*base_key, ("param_set", 0))])
+        assert result[(*base_key, ("param_set", 1))] == pytest.approx(0.0075)
 
     def test_zero_shots_returns_nan(self, single_z_trace):
         trace, lineage_by_label = single_z_trace
@@ -130,16 +230,6 @@ class TestCountsToCostVariance:
         result = _counts_to_cost_variance(raw, trace.final_batch)
         assert result
         assert all(np.isnan(v) for v in result.values())
-
-    def test_saturated_pauli_clamps_to_nonnegative_zero(self, single_z_trace):
-        # All shots in one eigenstate → <Z> = 1 → 1 − <Z>² = 0 (never negative).
-        trace, lineage_by_label = single_z_trace
-        raw: ChildResults = {bk: {"0": 100} for bk in lineage_by_label.values()}
-        result = _counts_to_cost_variance(raw, trace.final_batch)
-        assert result
-        for v in result.values():
-            assert v == pytest.approx(0.0)
-            assert v >= 0.0
 
     def test_variance_scales_inversely_with_shots(self, single_z_trace):
         trace, lineage_by_label = single_z_trace
@@ -162,73 +252,117 @@ class TestCountsToCostVariance:
 class TestCountsToWRSCostVariance:
     @pytest.fixture
     def wrs_trace(self, dummy_pipeline_env):
-        observable = SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(
-                    meta=meta_from_circuit(QuantumCircuit(1), observable=observable)
-                ),
-                MeasurementStage(
-                    grouping_strategy="wires", shot_distribution="weighted_random"
-                ),
-            ]
+        return _wrs_trace(
+            dummy_pipeline_env, SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
         )
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        token = trace.stage_tokens[1]
-        probabilities = {
-            key: plan.probabilities_by_group
-            for key, plan in token.group_shot_plans_by_spec.items()
-        }
-        return trace, batch_lineage(trace.final_batch), probabilities
 
-    def test_single_shot_variance_is_undefined(self, wrs_trace):
-        trace, lineage_by_label, probabilities = wrs_trace
-        branch_key = next(iter(lineage_by_label.values()))
-        raw: ChildResults = {branch_key: {"0": 1}}
+    @pytest.fixture
+    def zz_wrs_trace(self, dummy_pipeline_env):
+        """One commuting group whose per-shot value is ``z_q0 + z_q1``."""
+        return _wrs_trace(
+            dummy_pipeline_env, SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
+        )
+
+    def test_single_shot_keys_are_each_undefined(self, wrs_trace):
+        trace, lineage, probabilities = wrs_trace
+        raw = _with_param_sets(dict(list(lineage.items())[:1]), [{"0": 1}, {"1": 1}])
 
         result = _counts_to_wrs_cost_variance(raw, trace.final_batch, probabilities)
 
-        assert np.isnan(next(iter(result.values())))
+        assert len(result) == 2
+        assert all(np.isnan(v) for v in result.values())
 
-    def test_includes_covariance_within_a_commuting_group(self, dummy_pipeline_env):
-        observable = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(
-                    meta=meta_from_circuit(QuantumCircuit(2), observable=observable)
-                ),
-                MeasurementStage(
-                    grouping_strategy="wires", shot_distribution="weighted_random"
-                ),
-            ]
-        )
-        trace = pipeline.run_forward_pass("x", dummy_pipeline_env)
-        token = trace.stage_tokens[1]
-        probabilities = {
-            key: plan.probabilities_by_group
-            for key, plan in token.group_shot_plans_by_spec.items()
-        }
-        branch_key = next(iter(batch_lineage(trace.final_batch).values()))
+    @pytest.mark.parametrize(
+        ("counts", "expected"),
+        [
+            ({"00": 1, "11": 1}, 4.0),
+            (
+                {"00": 4, "01": 3, "10": 2, "11": 1},
+                np.repeat([2.0, 0.0, 0.0, -2.0], [4, 3, 2, 1]).var(ddof=1) / 10,
+            ),
+        ],
+        ids=["covariance-within-group", "several-bins"],
+    )
+    def test_matches_sample_variance_of_the_weighted_shots(
+        self, zz_wrs_trace, counts, expected
+    ):
+        # Per-shot values are z_q0 + z_q1; counting the two Z terms
+        # independently would halve the covariance case's variance.
+        trace, lineage, probabilities = zz_wrs_trace
+        branch_key = next(iter(lineage.values()))
 
         result = _counts_to_wrs_cost_variance(
-            {branch_key: {"00": 1, "11": 1}},
-            trace.final_batch,
-            probabilities,
+            {branch_key: counts}, trace.final_batch, probabilities
         )
 
-        # Per-shot group values are +2 and -2. Their sample variance divided
-        # by two is 4; treating both Pauli terms independently would miss half.
-        assert next(iter(result.values())) == pytest.approx(4.0)
+        assert next(iter(result.values())) == pytest.approx(expected)
+
+    def test_a_group_without_shots_invalidates_its_cost(self, wrs_trace):
+        trace, lineage, probabilities = wrs_trace
+        raw: ChildResults = {
+            bk: {} if dict(bk)["obs_group"] == 0 else {"0": 3, "1": 2}
+            for bk in sorted(lineage.values(), key=lambda bk: dict(bk)["obs_group"])
+        }
+
+        result = _counts_to_wrs_cost_variance(raw, trace.final_batch, probabilities)
+
+        assert len(result) == 1
+        assert np.isnan(next(iter(result.values())))
+
+
+@pytest.mark.parametrize(
+    "payload,found",
+    [
+        (0.5, "float"),
+        ([0.5], "list"),
+        ({0: 0.5}, "a dict not keyed by bitstrings"),
+    ],
+    ids=["scalar", "list", "expval-dict"],
+)
+@pytest.mark.parametrize(
+    "consume",
+    [
+        lambda raw, trace, _: _counts_to_expvals(raw, trace.final_batch),
+        lambda raw, trace, _: _counts_to_cost_variance(raw, trace.final_batch),
+        lambda raw, trace, probs: _counts_to_wrs_cost_variance(
+            raw, trace.final_batch, probs
+        ),
+    ],
+    ids=["expvals", "cost-variance", "wrs-cost-variance"],
+)
+def test_counts_consumers_reject_non_histogram_results(
+    dummy_pipeline_env, consume, payload, found
+):
+    trace, lineage, probabilities = _wrs_trace(
+        dummy_pipeline_env, SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
+    )
+    raw: ChildResults = {bk: payload for bk in lineage.values()}
+    first_key = next(iter(raw))
+    message = (
+        "Expected a bitstring→count histogram from the backend for branch "
+        f"{first_key!r}, got {found}."
+    )
+    with pytest.raises(TypeError, match=exact_match(message)):
+        consume(raw, trace, probabilities)
 
 
 class TestBatchedExpectation:
     """Tests for _batched_expectation with big-endian Pauli label strings."""
 
-    def test_single_z_observable(self):
-        """Z on qubit 0 (big-endian "ZII"); position 0 must map to qubit 0."""
-        histogram = {"000": 70, "100": 30}  # qubit 0 = 1 only in "100"
-        result = _batched_expectation([histogram], ["ZII"], n_qubits=3)
-        expected = (70 * 1 + 30 * (-1)) / 100  # 0.4
+    @pytest.mark.parametrize(
+        ("histogram", "label", "expected"),
+        [
+            ({"000": 70, "100": 30}, "ZII", 0.4),
+            ({"000": 100}, "ZIZ", 1.0),
+            ({"001": 100}, "ZIZ", -1.0),
+            ({"0000": 1}, "IXYZ", 1.0),
+        ],
+        ids=["z-on-qubit-0", "product-even", "product-odd", "every-pauli"],
+    )
+    def test_single_label_expectation(self, histogram, label, expected):
+        """Big-endian labels: position 0 is qubit 0, and ``ZIZ`` acts on qubits
+        0 and 2 so a reversal that swaps them is distinguishable."""
+        result = _batched_expectation([histogram], [label], n_qubits=len(label))
         assert result[0, 0] == pytest.approx(expected)
 
     def test_narrowed_bitstrings_raise(self):
@@ -273,21 +407,6 @@ class TestBatchedExpectation:
         """Every observable label must address exactly the declared register."""
         with pytest.raises(ValueError, match="2-character"):
             _batched_expectation([{"00": 1}], [label], n_qubits=2)
-
-    def test_product_observable(self):
-        """ZIZ on 3 qubits: product of the qubit-0 and qubit-2 Z eigenvalues.
-
-        Acting on qubits 0 and 2 (not 0 and 1) so a reversal that swaps them is
-        distinguishable from the identity.
-        """
-        # "000" → (+1)(+1) = +1
-        assert _batched_expectation([{"000": 100}], ["ZIZ"], n_qubits=3)[
-            0, 0
-        ] == pytest.approx(1.0)
-        # "001" → qubit 0 = 0 (+1), qubit 2 = 1 (-1) → -1
-        assert _batched_expectation([{"001": 100}], ["ZIZ"], n_qubits=3)[
-            0, 0
-        ] == pytest.approx(-1.0)
 
     def test_multiple_histograms(self):
         hist_1 = {"000": 100}
@@ -358,6 +477,11 @@ class TestBatchedExpectation:
         # All-zero bitstring → all Z eigenvalues +1 → product = +1
         assert result[0, 0] == pytest.approx(1.0)
 
+    def test_identity_label_does_not_stop_later_labels(self):
+        result = _batched_expectation([{"10": 100}], ["II", "ZI"], n_qubits=2)
+
+        np.testing.assert_allclose(result[:, 0], [1.0, -1.0])
+
     def test_identity_expectation_is_exact(self):
         """Integer counts are contracted before division, so identity stays exact."""
         result = _batched_expectation([{"00": 1, "01": 2, "10": 3}], ["II"], n_qubits=2)
@@ -423,9 +547,15 @@ class TestCountsToProbs:
 class TestExpvalDictsToIndexed:
     """Tests for _expval_dicts_to_indexed."""
 
-    def test_multi_op_returns_indexed_dict(self):
-        raw = {("k",): {"XII": 0.5, "IZI": -0.3, "IIX": 0.2}}
-        result = _expval_dicts_to_indexed(raw, "XII;IZI;IIX")
+    @pytest.mark.parametrize(
+        "expvals",
+        [
+            pytest.param({"XII": 0.5, "IZI": -0.3, "IIX": 0.2}, id="matching_order"),
+            pytest.param({"IZI": -0.3, "IIX": 0.2, "XII": 0.5}, id="shuffled_order"),
+        ],
+    )
+    def test_multi_op_indexed_in_ham_ops_order(self, expvals):
+        result = _expval_dicts_to_indexed({("k",): expvals}, "XII;IZI;IIX")
         assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
 
     def test_single_op_returns_float(self):
@@ -433,12 +563,8 @@ class TestExpvalDictsToIndexed:
         result = _expval_dicts_to_indexed(raw, "ZII")
         assert result[("k",)] == pytest.approx(0.7)
 
-    def test_preserves_ham_ops_ordering(self):
-        raw = {("k",): {"IZI": -0.3, "IIX": 0.2, "XII": 0.5}}
-        result = _expval_dicts_to_indexed(raw, "XII;IZI;IIX")
-        assert result[("k",)] == {0: 0.5, 1: -0.3, 2: 0.2}
-
-    def test_non_dict_passthrough(self):
-        raw = {("k",): 1.5}
-        result = _expval_dicts_to_indexed(raw, "XII;IZI")
-        assert result[("k",)] == 1.5
+    @pytest.mark.parametrize(
+        "raw", [{("k",): 1.5}, {}], ids=["non-dict-values", "empty"]
+    )
+    def test_non_pauli_dict_input_passes_through(self, raw):
+        assert _expval_dicts_to_indexed(raw, "XII;IZI") == raw

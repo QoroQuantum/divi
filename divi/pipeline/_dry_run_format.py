@@ -13,7 +13,6 @@ import re
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import replace
-from statistics import mean
 from typing import Any, TextIO, cast
 from warnings import warn
 
@@ -118,8 +117,14 @@ def _total_expression(report: DryRunReport) -> str:
     return factors[0][1] + "".join(f" {op} {tok}" for op, tok in factors[1:])
 
 
-def _populate_pipeline_node(node: Tree, report: DryRunReport) -> None:
-    """Attach per-stage rows, the total line, and the summary line to ``node``."""
+def _populate_pipeline_node(
+    node: Tree, report: DryRunReport, stats: Mapping[str, float]
+) -> None:
+    """Attach per-stage rows, the total line, and the summary line to ``node``.
+
+    ``stats`` feeds the summary line: the report's own ``circuit_stats``, or a
+    group's envelope from :func:`_aggregate_group_stats`.
+    """
     for idx, stage in enumerate(report.stages):
         axis_str = f" [dim]\\[{_safe_text(stage.axis)}][/dim]" if stage.axis else ""
         line_token, total_token, total_op = _format_factor(stage.factor)
@@ -159,8 +164,7 @@ def _populate_pipeline_node(node: Tree, report: DryRunReport) -> None:
         f"{_cost_headline(report.total_circuits, report.total_shots)}[/bold]"
     )
 
-    if report.circuit_stats:
-        stats = report.circuit_stats
+    if stats:
         # A merged group omits mean_depth where its members differ; show the span.
         if "mean_depth" not in stats:
             depth_part = f"depth {stats['min_depth']}-{stats['max_depth']}"
@@ -191,7 +195,7 @@ def _render_reports(reports: dict[str, DryRunReport], console: Console) -> None:
     """Print one rich tree per pipeline — the single-program layout."""
     for report in reports.values():
         tree = Tree(f"[bold]{_safe_text(report.pipeline_name)}[/bold]")
-        _populate_pipeline_node(tree, report)
+        _populate_pipeline_node(tree, report, report.circuit_stats)
         console.print(tree)
         console.print()
 
@@ -203,7 +207,7 @@ def _populate_program_tree(root: Tree, reports: dict[str, DryRunReport]) -> None
         return
     for report in reports.values():
         node = root.add(f"[bold]{_safe_text(report.pipeline_name)}[/bold]")
-        _populate_pipeline_node(node, report)
+        _populate_pipeline_node(node, report, report.circuit_stats)
 
 
 def _ensemble_max_stat(nested: EnsembleReports, key: str) -> float | None:
@@ -325,7 +329,7 @@ def _program_signature(reports: dict[str, DryRunReport]) -> tuple:
             _declared_n_params(report),
             report.objective_fingerprint,
         )
-        for name, report in reports.items()
+        for name, report in sorted(reports.items())
     )
 
 
@@ -390,7 +394,9 @@ def _aggregate_group_stats(reports: list[DryRunReport]) -> Mapping[str, float]:
 
     Members of a group share a pipeline shape but not circuit content, so a
     single member's depth would misrepresent the group. Report the true
-    envelope: min/max span the members' extremes.
+    envelope: min/max span the members' extremes. Only the keys the summary line
+    reads are produced, so the result feeds :func:`_populate_pipeline_node`
+    directly rather than a :class:`DryRunReport`.
 
     ``mean_depth`` is emitted only when the members agree. Averaging genuinely
     different circuits produces a figure describing none of them — an ansatz
@@ -413,8 +419,6 @@ def _aggregate_group_stats(reports: list[DryRunReport]) -> Mapping[str, float]:
     merged = {
         "min_depth": min(col("min_depth")),
         "max_depth": max(col("max_depth")),
-        "mean_2q_depth": round(mean(col("mean_2q_depth")), 2),
-        "mean_width": round(mean(col("mean_width")), 2),
         "min_width": min(col("min_width")),
         "max_width": max(col("max_width")),
     }
@@ -481,8 +485,9 @@ def _shared_metadata(metas: list[Mapping[str, Any]]) -> dict[str, Any]:
 def _merge_group_report(reports: list[DryRunReport]) -> DryRunReport:
     """Fold a group's per-pipeline reports into one representative report.
 
-    Depth/width stats are enveloped across members and only metadata common to
-    all is kept. Totals are identical by :func:`_program_signature`; a per-stage
+    Only metadata common to all members is kept, and the report carries no
+    ``circuit_stats``: :func:`_aggregate_group_stats` supplies the group's
+    envelope. Totals are identical by :func:`_program_signature`; a per-stage
     factor may not be, so a stage whose factor varies across the group reports
     the range alongside the representative's value rather than passing one
     member's number off as the group's.
@@ -502,9 +507,7 @@ def _merge_group_report(reports: list[DryRunReport]) -> DryRunReport:
                 ],
             }
         merged_stages.append(replace(aligned[0], metadata=metadata))
-    return replace(
-        rep, stages=tuple(merged_stages), circuit_stats=_aggregate_group_stats(reports)
-    )
+    return replace(rep, stages=tuple(merged_stages), circuit_stats={})
 
 
 #: Traits the grouping key distinguishes, as ``(label, extractor)``. Split into
@@ -599,9 +602,10 @@ def _render_grouped(nested: EnsembleReports, console: Console) -> None:
         if not rep_reports:
             root.add(_NO_PREPROCESSORS_ROW)
         for name in rep_reports:
-            merged = _merge_group_report([m[name] for m in members])
+            group = [m[name] for m in members]
+            merged = _merge_group_report(group)
             node = root.add(f"[bold]{_safe_text(merged.pipeline_name)}[/bold]")
-            _populate_pipeline_node(node, merged)
+            _populate_pipeline_node(node, merged, _aggregate_group_stats(group))
         root.add(
             _cadence_summary(f"Subtotal (× {count})", [rep_reports], multiplier=count)
         )

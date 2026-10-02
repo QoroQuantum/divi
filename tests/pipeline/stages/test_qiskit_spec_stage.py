@@ -4,6 +4,8 @@
 
 """Tests for divi.pipeline.stages._qiskit_spec_stage."""
 
+import warnings
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -15,6 +17,7 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     QiskitSpecStage,
 )
+from tests._helpers import exact_match
 
 
 def _bell_qiskit():
@@ -84,11 +87,32 @@ class TestQiskitSpecStageExpand:
         stage = QiskitSpecStage()
         qc = _no_measure_qiskit()
 
-        with pytest.warns(UserWarning, match="no measurement operations"):
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "Provided QuantumCircuit has no measurement operations. "
+                "Defaulting to all wires."
+            ),
+        ):
             batch, _ = stage.expand(qc, dummy_pipeline_env)
 
         meta = batch[(("circuit", 0),)]
         assert meta.measured_wires == (0, 1)
+
+    def test_partial_measurement_keeps_only_measured_wires(self, dummy_pipeline_env):
+        qc = QuantumCircuit(3, 3)
+        qc.h(0)
+        qc.cx(0, 2)
+        qc.measure(2, 2)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            batch, _ = QiskitSpecStage().expand(qc, dummy_pipeline_env)
+
+        meta = batch[(("circuit", 0),)]
+        assert meta.measured_wires == (2,)
+        _, dag = meta.circuit_bodies[0]
+        assert {node.op.name for node in dag.op_nodes()} == {"h", "cx"}
 
     def test_sequence(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
@@ -115,7 +139,13 @@ class TestQiskitSpecStageExpand:
     def test_invalid_input_raises(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
 
-        with pytest.raises(TypeError, match="QiskitSpecStage expects"):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "QiskitSpecStage expects a QuantumCircuit, sequence, or mapping, "
+                "got int"
+            ),
+        ):
             stage.expand(42, dummy_pipeline_env)
 
 
@@ -209,7 +239,9 @@ class TestQiskitSpecStagePipeline:
         probs = result[()]
         assert "00" in probs
         assert "11" in probs
-        assert probs["00"] + probs["11"] == pytest.approx(1.0, abs=0.05)
+        assert probs["00"] + probs["11"] == pytest.approx(1.0, abs=1e-12)
+        # σ = sqrt(0.25 / 5000) ≈ 0.007 at the fixture's 5000 shots, so this is 5σ.
+        assert probs["00"] == pytest.approx(0.5, abs=0.035)
 
     def test_parametric_with_binding(self, default_test_simulator):
         """Parametric Qiskit circuit with parameter binding produces valid probs."""
@@ -227,7 +259,7 @@ class TestQiskitSpecStagePipeline:
 
         probs = next(iter(result.values()))
         assert "0" in probs
-        assert probs["0"] == pytest.approx(1.0, abs=0.05)
+        assert probs["0"] == pytest.approx(1.0, abs=1e-12)
 
     def test_parameter_expression_executes_correctly(self, default_test_simulator):
         """rx(2*theta) with theta=π/2 → rx(π) flips |0⟩ to |1⟩."""
@@ -249,4 +281,4 @@ class TestQiskitSpecStagePipeline:
 
         probs = next(iter(result.values()))
         assert "1" in probs
-        assert probs["1"] == pytest.approx(1.0, abs=0.05)
+        assert probs["1"] == pytest.approx(1.0, abs=1e-12)

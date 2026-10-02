@@ -63,23 +63,15 @@ _ForwardCacheKey = tuple[
 def _path_children(keys: Sequence[Any]) -> dict[str, list[str]]:
     children: dict[str, set[str]] = defaultdict(set)
     for key in keys:
-        if isinstance(key, tuple) and key and isinstance(key[0], tuple):
-            key_str = "/".join(f"{p[0]}:{p[1]}" for p in key)
-        elif isinstance(key, tuple):
-            key_str = "/".join(str(part) for part in key)
-        else:
-            key_str = str(key)
-        parts = key_str.split("/")
+        parts = "/".join(f"{axis}:{value}" for axis, value in key).split("/")
         for i in range(1, len(parts) + 1):
-            child = "/".join(parts[:i])
-            parent = "/".join(parts[: i - 1]) if i > 1 else ""
-            children[parent].add(child)
+            children["/".join(parts[: i - 1])].add("/".join(parts[:i]))
     return {p: sorted(c) for p, c in children.items()}
 
 
 def format_pipeline_tree(trace: PipelineTrace) -> None:
     """Print the full pipeline expansion tree to the terminal."""
-    keys = sorted(batch_lineage(trace.final_batch).values(), key=str)
+    keys = list(batch_lineage(trace.final_batch).values())
     if not keys:
         print("(empty)")
         return
@@ -163,16 +155,14 @@ def _shot_count_for_branch(
     spec_match = next(
         (spec_key for spec_key in spec_keys if set(spec_key) <= branch_axes), None
     )
-    obs_group = next((value for axis, value in branch_key if axis == "obs_group"), None)
-    if spec_match is None or obs_group is None:
+    if spec_match is None:
         return None
 
+    obs_group = next(value for axis, value in branch_key if axis == "obs_group")
     if spec_match not in per_param_group_shots:
         return per_group_shots[spec_match].get(obs_group)
 
-    param_set = next((value for axis, value in branch_key if axis == "param_set"), None)
-    if param_set is None:
-        return None
+    param_set = next(value for axis, value in branch_key if axis == "param_set")
     return per_param_group_shots[spec_match].get(param_set, {}).get(obs_group)
 
 
@@ -306,9 +296,14 @@ def _default_execute_fn(
     per_group_shots = artifacts.get("per_group_shots")
     per_param_group_shots = artifacts.get("per_param_group_shots")
     shot_groups = None
-    if (per_group_shots or per_param_group_shots) and is_bound(payloads):
-        # Per-group shots attach to concrete circuits, so the binding stage
-        # has already bound them.
+    if per_group_shots or per_param_group_shots:
+        if not is_bound(payloads):
+            raise ValueError(
+                "Per-group shot allocation needs bound circuits, but the batch "
+                "reached execution with free parameters for the backend to "
+                "resolve. Add a ParameterBindingStage to the pipeline so each "
+                "circuit is bound before its group's shots are applied."
+            )
         shot_groups = _build_shot_groups(
             bound_circuits(payloads),
             lineage_by_label,
@@ -656,12 +651,6 @@ class CircuitPipeline:
             None,
         )
 
-        # Measurement metadata (ham_ops / per-group shots / result format) now
-        # rides on each MetaCircuit, so a cached trace replays it verbatim —
-        # nothing to restore onto the live env.
-        if cached is not None and recompute_from_idx is None:
-            return cached
-
         if cached is None or recompute_from_idx == 0:
             spec_stage, spec_expand = plan[0]
             _report_pipeline_stage(env, spec_stage.name)
@@ -681,10 +670,9 @@ class CircuitPipeline:
                 self._forward_cache[cache_key] = trace
             return trace
 
-        if recompute_from_idx is None or recompute_from_idx <= 0:
-            raise ValueError(
-                "first volatile stage must be at index >= 1 for partial rerun."
-            )
+        # A cached trace carries its measurement metadata on each MetaCircuit.
+        if recompute_from_idx is None:
+            return cached
 
         if recompute_from_idx == 1:
             data = cached.initial_batch

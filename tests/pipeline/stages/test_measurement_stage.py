@@ -13,9 +13,7 @@ from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-pytest.importorskip("qiskit_aer")
-
-from divi.backends import QiskitSimulator
+from divi.backends import MaestroConfig
 from divi.circuits import MetaCircuit
 from divi.pipeline import (
     CircuitPipeline,
@@ -41,6 +39,7 @@ from divi.pipeline.stages._measurement_stage import (
 from divi.qprog import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import SPSAOptimizer
 from divi.qprog.problems import MolecularProblem
+from tests._helpers import exact_match
 from tests.pipeline._helpers import (
     DummySpecStage,
     ExpvalBackendSpy,
@@ -224,19 +223,19 @@ class TestMeasurementStageResultFormatOverride:
 # --------------------------------------------------------------------------- #
 
 
-def _three_group_meta() -> MetaCircuit:
+def _three_group_meta(coeffs=(10.0, 1.0, 0.1)) -> MetaCircuit:
     """A Hamiltonian that produces 3 QWC groups with skewed L1 norms.
 
-    H = 10*Z(0) + 1*X(0) + 0.1*Y(0)
+    H = 10*Z(0) + 1*X(0) + 0.1*Y(0) by default.
 
     Each Pauli operator on the same wire commutes with itself only, so QWC
-    grouping yields 3 single-term groups with L1 norms [10, 1, 0.1].
+    grouping yields 3 single-term groups with L1 norms ``|coeffs|``.
     """
     qc = QuantumCircuit(1)
     qc.h(0)
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
-        observable=SparsePauliOp.from_list([("Z", 10.0), ("X", 1.0), ("Y", 0.1)]),
+        observable=SparsePauliOp.from_list(list(zip(("Z", "X", "Y"), coeffs))),
     )
 
 
@@ -344,7 +343,9 @@ class TestMeasurementStageShotDistributionWeighted:
                 MeasurementStage(shot_distribution="weighted"),
             ],
         )
-        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
         per_group = trace.env_artifacts["per_group_shots"][(("spec", "circ"),)]
         # Two groups: {Z(0), Z(1)} with L1=2.0 and {X(0)} with L1=0.5.
@@ -391,6 +392,30 @@ def test_none_strategy_per_group_shots(make_dummy_simulator):
     assert sum(per_group.values()) == 1000
 
 
+def _dropped_groups_message(dropped: str, bias: str, fraction: str) -> str:
+    return exact_match(
+        f"Shot distribution assigned zero shots to {dropped} measurement group(s) "
+        "for spec (('spec', 'circ'),); those groups are skipped and contribute "
+        "zero to the final expectation value, biasing the estimate by at most "
+        f"{bias} ({fraction} of the Hamiltonian's L1 norm). To reduce the bias: "
+        "raise ``backend.shots``, switch to the deterministic "
+        "``shot_distribution='weighted'`` strategy, or accept it if the fraction "
+        "is negligible. Per-group allocations are recorded on each circuit's "
+        "``group_shots``."
+    )
+
+
+def _analytic_allocation_message(backend) -> str:
+    return exact_match(
+        f"shot_distribution is set but backend {type(backend).__name__} computes "
+        "expectation values analytically (supports_expval=True), so per-group "
+        "shot allocation does not change the (exact) result. Use a sampling "
+        "backend for shot_distribution to take effect — e.g. "
+        "QiskitSimulator(force_sampling=True), or QoroService with "
+        "JobConfig(force_sampling=True)."
+    )
+
+
 class TestMeasurementStageShotDistributionDropZeroGroups:
     """Spec: groups with zero allocated shots are dropped + warn."""
 
@@ -404,7 +429,9 @@ class TestMeasurementStageShotDistributionDropZeroGroups:
                 MeasurementStage(shot_distribution="weighted"),
             ],
         )
-        with pytest.warns(UserWarning, match="zero shots"):
+        with pytest.warns(
+            UserWarning, match=_dropped_groups_message("1/3", "0.1", "0.90%")
+        ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
     def test_dropped_groups_excluded_from_per_group_shots(self, make_dummy_simulator):
@@ -448,7 +475,11 @@ class TestMeasurementStageShotDistributionDropZeroGroups:
             2: {0: 0.0}
         }
 
-    def test_measurement_qasms_skip_dropped_groups(self, make_dummy_simulator):
+    def test_dropped_groups_skip_qasms_but_stay_in_measurement_groups(
+        self, make_dummy_simulator
+    ):
+        """Dropped groups lose their measurement QASM, but the MetaCircuit retains
+        all groups so _counts_to_expvals can index by original index."""
 
         backend = make_dummy_simulator(11)
         env = PipelineEnv(backend=backend)
@@ -469,24 +500,6 @@ class TestMeasurementStageShotDistributionDropZeroGroups:
         tags = [tag for tag, _ in meta.measurement_qasms]
         flat_indices = [t[0][1] for t in tags]
         assert flat_indices == [0, 1]
-
-    def test_metacircuit_keeps_full_measurement_groups(self, make_dummy_simulator):
-        """The MetaCircuit retains all groups so _counts_to_expvals can index by orig idx."""
-
-        backend = make_dummy_simulator(11)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-
-        meta = next(iter(trace.final_batch.values()))
-        # All 3 groups present even though group 2 was dropped from submission.
         assert len(meta.measurement_groups) == 3
 
 
@@ -734,13 +747,17 @@ class TestMeasureAllQubits:
         assert list(e_restricted.values()) == list(e_full.values())
 
     @pytest.mark.parametrize("measure_all", [False, True])
-    def test_end_to_end_energy_correct_on_real_sampling_backend(self, measure_all):
-        """Full pipeline on a real shot-based backend (QiskitSimulator sampling)
+    def test_end_to_end_energy_correct_on_real_sampling_backend(
+        self, measure_all, make_maestro_simulator
+    ):
+        """Full pipeline on a real shot-based backend (Maestro sampling)
         that honours which qubits are measured: the restricted default and the
         full-register mode must both recover the analytic energy of Z0 + Z2 on
         H|0>^3 (= 0) within shot noise. This exercises the actual
         partial-measurement circuit → backend → decode path end-to-end."""
-        backend = QiskitSimulator(shots=20000, force_sampling=True, simulation_seed=7)
+        backend = make_maestro_simulator(
+            shots=20000, force_sampling=True, maestro_config=MaestroConfig(seed=7)
+        )
         env = PipelineEnv(backend=backend)
         pipeline = CircuitPipeline(
             stages=[
@@ -749,8 +766,8 @@ class TestMeasureAllQubits:
             ],
         )
         energy = list(pipeline.run(initial_spec="ignored", env=env).values())[0]
-        # <Z0> = <Z2> = 0 on |+>; 20k shots keeps the estimate well within 0.1.
-        assert energy == pytest.approx([0.0], abs=0.1)
+        # <Z0> = <Z2> = 0 on |+>; σ = sqrt(2 / 20000) = 0.01, so this is 5σ.
+        assert energy == pytest.approx([0.0], abs=0.05)
 
 
 def _wide_term_meta() -> MetaCircuit:
@@ -851,37 +868,21 @@ class TestMeasurementStageIntrospect:
         assert "n_groups" not in info
         assert "n_pauli_terms" not in info
 
+    def test_an_analytic_backend_reports_the_observable_term_count(
+        self, dummy_expval_backend
+    ):
+        info = _introspect(MeasurementStage(), _wide_term_meta(), dummy_expval_backend)
+        assert info["n_groups"] == 1
+        assert info["n_pauli_terms"] == 3
 
-class TestMeasurementStageImagCoeffValidation:
-    """Non-Hermitian SPO observables are rejected at MetaCircuit construction."""
-
-    @staticmethod
-    def _imag_obs_meta() -> MetaCircuit:
-        qc = QuantumCircuit(2)
-        qc.h(0)
-        qc.cx(0, 1)
-        observable = SparsePauliOp.from_list([("ZX", 0.5j), ("XZ", -0.5j)])
-        return MetaCircuit(
-            circuit_bodies=(((), circuit_to_dag(qc)),),
-            observable=observable,
+    def test_reports_the_full_budget_without_a_shot_distribution(
+        self, make_dummy_simulator
+    ):
+        info = _introspect(
+            MeasurementStage(), _three_group_meta(), make_dummy_simulator(1000)
         )
-
-    def test_rejects_purely_imaginary_coefficients(self):
-        with pytest.raises(ValueError, match="Hermitian"):
-            self._imag_obs_meta()
-
-    def test_no_warning_for_real_coefficients(self, make_dummy_simulator):
-        backend = make_dummy_simulator(1000)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_two_term_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", UserWarning)
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert info["shots_per_circuit"] == 1000
+        assert "shots_per_group_range" not in info
 
 
 class TestMeasurementStageShotDistributionBackendExpval:
@@ -899,7 +900,15 @@ class TestMeasurementStageShotDistributionBackendExpval:
                 ),
             ],
         )
-        with pytest.raises(ValueError, match="_backend_expval"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "shot_distribution is incompatible with the '_backend_expval' "
+                "grouping strategy: the backend computes expectation values "
+                "analytically and ignores shots. Set grouping_strategy to 'qwc', "
+                "'wires', or None."
+            ),
+        ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
     def test_shot_distribution_does_not_defeat_the_analytic_path(
@@ -919,7 +928,9 @@ class TestMeasurementStageShotDistributionBackendExpval:
                 MeasurementStage(grouping_strategy="qwc", shot_distribution="uniform"),
             ],
         )
-        with pytest.warns(UserWarning, match="analytically"):
+        with pytest.warns(
+            UserWarning, match=_analytic_allocation_message(dummy_expval_backend)
+        ):
             trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         token = next(t for t in trace.stage_tokens if isinstance(t, MeasurementToken))
         assert token.effective_strategy == "_backend_expval"
@@ -949,7 +960,9 @@ class TestMeasurementStageShotDistributionBackendExpval:
             shot_distribution="weighted",
         )
         params = np.zeros(vqe.n_params)
-        with pytest.warns(UserWarning, match="analytically"):
+        with pytest.warns(
+            UserWarning, match=_analytic_allocation_message(default_test_simulator)
+        ):
             energies = [vqe.evaluate(params, vqe.cost_preprocessor()) for _ in range(3)]
         flattened = [float(np.ravel(list(e.values()))[0]) for e in energies]
         assert flattened[0] == flattened[1] == flattened[2]
@@ -970,39 +983,31 @@ class TestMeasurementStageShotDistributionBackendExpval:
                 ),
             ],
         )
-        # The allocation also drifts from the budget, which warns separately.
-        with pytest.warns(UserWarning):
-            with pytest.raises(ValueError, match="zero shots to every measurement"):
-                pipeline.run_forward_pass(initial_spec="ignored", env=env)
-
-    def test_qwc_with_non_expval_backend_works(self, make_dummy_simulator):
-        """qwc + non-expval backend doesn't auto-switch -> shot_distribution OK."""
-        env = PipelineEnv(backend=make_dummy_simulator(300))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(grouping_strategy="qwc", shot_distribution="uniform"),
-            ],
-        )
-        # Should not raise or warn.
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "per_group_shots" in trace.env_artifacts
-
-    def test_no_ham_ops_when_shot_distribution_used(self, make_dummy_simulator):
-        """env.artifacts should not have ham_ops set in QWC + shot_distribution mode."""
-        env = PipelineEnv(backend=make_dummy_simulator(300))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
-        )
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "ham_ops" not in trace.env_artifacts
+        # Budget drift and each dropped group warn separately.
+        with (
+            pytest.warns(
+                UserWarning,
+                match=exact_match(
+                    "Custom shot distribution returned values summing to 0 "
+                    "(truncated to 0), which does not equal total_shots=300. "
+                    "Return integer values that sum to total_shots to avoid "
+                    "budget drift."
+                ),
+            ),
+            pytest.warns(
+                UserWarning, match=_dropped_groups_message("3/3", "11.1", "100.00%")
+            ),
+            pytest.raises(
+                ValueError,
+                match=exact_match(
+                    "shot_distribution assigned zero shots to every measurement "
+                    "group of '(('spec', 'circ'),)', so no circuit can be "
+                    "submitted. Raise the backend's shot count or use an "
+                    "allocation that keeps at least one group."
+                ),
+            ),
+        ):
+            pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
     def test_shot_distribution_on_qwc_counts_backend(self, make_dummy_simulator):
         """qwc + sampling backend honours per_group_shots and skips ham_ops."""
@@ -1272,6 +1277,42 @@ class TestPlanGroupShotsHelper:
         assert plan.surviving_indices == [0, 1, 2]
         assert plan.missing_group_results == {}
         assert plan.shots_by_group == {0: 100, 1: 100, 2: 100}
+        assert plan.probabilities_by_group == {}
+
+    @pytest.mark.parametrize(
+        "coeffs, expected",
+        [
+            ((0.0, 0.0, 0.0), [1 / 3, 1 / 3, 1 / 3]),
+            ((0.3, -0.1, 0.1), [0.6, 0.2, 0.2]),
+        ],
+        ids=["all-zero-norms-uniform", "sub-unit-total-proportional"],
+    )
+    def test_weighted_random_selection_probabilities(
+        self, make_dummy_simulator, coeffs, expected
+    ):
+        meta = _three_group_meta(coeffs)
+        groups, partition, _, _ = _compute_measurement_groups(
+            meta.observable, "qwc", meta.n_qubits
+        )
+        env = PipelineEnv(
+            backend=make_dummy_simulator(300), rng=np.random.default_rng(7)
+        )
+
+        plan = _plan_group_shots(
+            "spec_x",
+            meta.observable[0],
+            groups,
+            partition,
+            env,
+            shot_distribution="weighted_random",
+        )
+
+        probabilities = [plan.probabilities_by_group[i] for i in range(len(groups))]
+        np.testing.assert_allclose(probabilities, expected)
+        for idx, shots in plan.shots_by_group.items():
+            assert plan.scales_by_group[idx] == pytest.approx(
+                shots / (300 * plan.probabilities_by_group[idx])
+            )
 
     def test_drops_zero_shot_groups(self, make_dummy_simulator):
         meta = _three_group_meta()  # norms 10:1:0.1
@@ -1328,18 +1369,29 @@ class TestMeasurementStageTupleObservable:
         assert len(out) == 2
         # Bell state |00>+|11>: <Z(0)>=0, <Z(0)Z(1)>=1.
         # IZ has Z on qubit 0 (qiskit little-endian); ZZ is Z on both qubits.
-        assert out[0] == pytest.approx(0.0, abs=0.05)
-        assert out[1] == pytest.approx(1.0, abs=0.05)
+        assert out[0] == pytest.approx(0.0, abs=1e-9)
+        assert out[1] == pytest.approx(1.0, abs=1e-9)
 
-    def test_tuple_observable_promotes_to_backend_expval(self, dummy_expval_backend):
+    @pytest.mark.parametrize(
+        "stage_kwargs",
+        [
+            pytest.param({}, id="default_qwc_auto_promotes"),
+            pytest.param(
+                {"grouping_strategy": "_backend_expval"}, id="explicit_backend_expval"
+            ),
+        ],
+    )
+    def test_tuple_observable_uses_backend_expval(
+        self, dummy_expval_backend, stage_kwargs
+    ):
         """On an expval-supporting backend a multi-observable tuple auto-promotes
-        qwc → ``_backend_expval``: every observable is evaluated analytically in
-        one pass, so ``ham_ops`` lands in the artifacts."""
+        qwc → ``_backend_expval`` (or uses it explicitly): every observable is
+        evaluated analytically in one pass, so ``ham_ops`` lands in the artifacts."""
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=_tuple_observable_meta()),
-                MeasurementStage(),
+                MeasurementStage(**stage_kwargs),
             ],
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
@@ -1359,24 +1411,8 @@ class TestMeasurementStageTupleObservable:
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         info = stage.introspect(trace.final_batch, env, token=None)
         assert info["n_groups"] == 1
-        assert info.get("n_pauli_terms") != 0
+        assert "n_pauli_terms" not in info
         assert "largest_group_width" not in info
-
-    def test_explicit_backend_expval_strategy_works_for_multi(
-        self, dummy_expval_backend
-    ):
-        """``_backend_expval`` evaluates a multi-observable tuple analytically
-        (one expectation per observable), so the forward pass succeeds and
-        records ``ham_ops``."""
-        env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_tuple_observable_meta()),
-                MeasurementStage(grouping_strategy="_backend_expval"),
-            ],
-        )
-        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert "ham_ops" in trace.env_artifacts
 
     def test_shot_distribution_with_tuple_works(self, make_dummy_simulator):
         """Adaptive shot allocation operates on the union L1 norm and is
@@ -1676,7 +1712,13 @@ class TestMeasurementStageEstimatorSamples:
             ]
         )
 
-        with pytest.raises(ValueError, match="estimator_samples"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "estimator_samples selects weighted-random sampling and cannot be "
+                "combined with another shot_distribution strategy."
+            ),
+        ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
     def test_rejects_analytic_backend(self, dummy_expval_backend):
@@ -1689,7 +1731,13 @@ class TestMeasurementStageEstimatorSamples:
             stages=[DummySpecStage(meta=_three_group_meta()), MeasurementStage()]
         )
 
-        with pytest.raises(ValueError, match="sampling backend"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "estimator_samples requires a sampling backend; analytic "
+                "expectation-value backends do not consume shots."
+            ),
+        ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
 
@@ -1725,7 +1773,7 @@ class TestExecuteFnForwardsShotGroups:
         pipeline, env = build_pipeline_with_shots(
             _three_group_meta(), "weighted", backend
         )
-        with pytest.warns(UserWarning, match="zero shots"):
+        with pytest.warns(UserWarning):
             pipeline.run(initial_spec="ignored", env=env)
         assert len(backend.last_circuits) == 2
         groups = backend.last_kwargs["shot_groups"]

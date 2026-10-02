@@ -23,6 +23,7 @@ from divi.pipeline.abc import PipelineEnv, ResultFormat
 from divi.pipeline.stages import PCECostStage
 from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS, _PCEMeasToken
 from divi.qprog.algorithms._pce import _decode_parities, _pack_masks
+from tests._helpers import exact_match
 from tests.pipeline._helpers import measured_qubits
 
 
@@ -95,25 +96,20 @@ def _make_sampling_backend():
 class TestExpandSingleCircuit:
     """PCECostStage.expand should produce one measurement circuit per param_set."""
 
-    def test_expand_one_circuit_per_param_set_expval_backend(self):
-        """With an expval-capable backend, still produces exactly 1 circuit."""
+    @pytest.mark.parametrize(
+        "make_backend",
+        [
+            pytest.param(_make_expval_backend, id="expval_backend"),
+            pytest.param(_make_sampling_backend, id="sampling_backend"),
+        ],
+    )
+    def test_expand_one_circuit_per_param_set(self, make_backend):
+        """Produces exactly 1 circuit, whether or not the backend supports expval."""
         n_qubits = 16
         batch = _make_z_hamiltonian_batch(n_qubits)
         stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
 
-        env = PipelineEnv(backend=_make_expval_backend())
-        output = stage.expand(batch, env)
-
-        expanded = list(output.batch.values())[0]
-        assert len(expanded.measurement_qasms) == 1
-
-    def test_expand_one_circuit_per_param_set_sampling_backend(self):
-        """With a sampling-only backend, produces exactly 1 circuit."""
-        n_qubits = 16
-        batch = _make_z_hamiltonian_batch(n_qubits)
-        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
-
-        env = PipelineEnv(backend=_make_sampling_backend())
+        env = PipelineEnv(backend=make_backend())
         output = stage.expand(batch, env)
 
         expanded = list(output.batch.values())[0]
@@ -142,6 +138,14 @@ class TestExpandSingleCircuit:
         output = stage.expand(batch, env)
 
         assert all(meta.backend_ham_ops is None for meta in output.batch.values())
+
+
+_NARROWED_KEYS_MESSAGE = exact_match(
+    "Backend returned 2-bit PCE histogram keys for the 3-qubit circuit; expected "
+    "full-width keys (creg c[3]). Partial-measurement circuits must still report "
+    "all classical bits. If your backend cannot, set measure_all_qubits=True to "
+    "measure the full register."
+)
 
 
 class TestMeasureAll:
@@ -178,15 +182,19 @@ class TestMeasureAll:
         e_full = stage.reduce({_meas_key(0): {"0111": 100}}, env, token=None)
         assert list(e_restricted.values()) == list(e_full.values())
 
-    def test_reduce_rejects_narrowed_histogram_keys(self):
+    def test_expand_token_rejects_narrowed_histogram_keys(self):
         """If a backend narrows keys to only measured clbits, positional parity
         decoding would silently corrupt — the reduce guard must fail loudly."""
         stage = _make_stage(np.diag([1.0, 2.0]), masks=self._MASKS_Q0_Q1)
-        env = _make_env(ResultFormat.COUNTS)
-        # expand emitted an n_qubits=3 circuit, but the backend returned 2-bit keys.
-        token = _PCEMeasToken(n_qubits=3)
-        with pytest.raises(ValueError, match="full-width keys"):
-            stage.reduce({_meas_key(0): {"01": 100}}, env, token=token)
+        output = stage.expand(
+            _make_z_hamiltonian_batch(3), PipelineEnv(backend=_make_sampling_backend())
+        )
+        with pytest.raises(ValueError, match=_NARROWED_KEYS_MESSAGE):
+            stage.reduce(
+                {_meas_key(0): {"01": 100}},
+                _make_env(ResultFormat.COUNTS),
+                token=output.token,
+            )
 
     def test_wide_register_limb_masks_through_stage(self):
         """A >64-qubit problem uses 2-D limb masks; expand must measure the
@@ -217,29 +225,44 @@ class TestMeasureAll:
         assert isinstance(energy[0], float)
 
 
-class TestReduceHistogram:
-    """Verify that reduce correctly processes single-histogram results."""
+def _soft_energy(z: float) -> float:
+    x_soft = 0.5 * (1.0 + np.tanh(z))
+    return 3.0 * x_soft**2
 
-    def test_different_histograms_produce_different_energies(self):
-        """Different shot distributions yield different energies."""
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.COUNTS)
 
-        result_a = stage.reduce(
-            {_meas_key(0): {"00": 100}},
-            env,
-            token=None,
-        )
-        result_b = stage.reduce(
-            {_meas_key(0): {"11": 100}},
-            env,
-            token=None,
-        )
+@pytest.mark.parametrize("shots", [1, 100])
+def test_reduce_histogram_soft_energy_per_param_set(shots):
+    """A single-outcome histogram fixes every parity, so each soft variable is
+    ``(1 + tanh(alpha * z)) / 2`` and the diagonal QUBO evaluates to
+    ``1*x0*x0 + 2*x1*x1``. Each param set is scored from its own histogram."""
+    stage = _make_stage(np.diag([1.0, 2.0]), alpha=1.0, soft=True)
+    result = stage.reduce(
+        {_meas_key(0): {"00": shots}, _meas_key(1): {"11": shots}},
+        _make_env(ResultFormat.COUNTS),
+        token=None,
+    )
+    assert result == {
+        (("param_set", 0),): [pytest.approx(_soft_energy(1.0))],
+        (("param_set", 1),): [pytest.approx(_soft_energy(-1.0))],
+    }
 
-        assert list(result_a.values())[0][0] != pytest.approx(
-            list(result_b.values())[0][0]
-        )
+
+@pytest.mark.parametrize(
+    "soft, kwargs",
+    [(True, {"alpha": 1.0}), (False, {"alpha": 6.0, "alpha_cvar": 0.25})],
+)
+@pytest.mark.parametrize("histogram", [{}, {"00": 0}], ids=["empty", "zero-counts"])
+def test_reduce_rejects_a_histogram_without_shots(soft, kwargs, histogram):
+    stage = _make_stage(np.diag([1.0, 2.0]), soft=soft, **kwargs)
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            f"Backend returned an empty PCE histogram for circuit {_meas_key(0)!r}; "
+            "the energy is undefined without shots. This indicates a backend "
+            "fault, so check the job's results."
+        ),
+    ):
+        stage.reduce({_meas_key(0): histogram}, _make_env(ResultFormat.COUNTS), None)
 
 
 class TestReducePathRouting:
@@ -263,57 +286,29 @@ class TestReducePathRouting:
 
         assert soft_energy != pytest.approx(hard_energy)
 
-    def test_deterministic_histogram_soft_energy(self):
-        """All shots in one bitstring → known energy.
-
-        qubo = diag([1, 2]), all shots "00" → parities [0, 0] for masks [1, 2].
-        mean_parities = [0, 0], z = 1 - 2*0 = [1, 1].
-        x_soft = 0.5*(1 + tanh(1*1)) = 0.5*(1 + tanh(1)) for both vars.
-        energy = 1*x0² + 2*x1² (degree-1 terms use x²).
-        """
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=1.0, soft=True)
-        env = _make_env(ResultFormat.COUNTS)
-
-        result = stage.reduce({_meas_key(0): {"00": 100}}, env, token=None)
-
-        x = 0.5 * (1.0 + np.tanh(1.0))  # ≈ 0.8808
-        expected = 1.0 * x**2 + 2.0 * x**2  # 3 * x²
-        assert list(result.values())[0][0] == pytest.approx(expected)
-
-    def test_deterministic_histogram_hard_cvar_energy(self):
-        """All shots in one bitstring → known CVaR energy.
-
-        qubo = diag([1, 2]), all shots "11" → parities [1, 1] for masks [1, 2].
-        x_vals = 1 - parities = [0, 0].  Energy = 0 for every shot.
-        CVaR of a single-valued distribution is that value: 0.
-        """
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=6.0, soft=False, alpha_cvar=0.25)
-        env = _make_env(ResultFormat.COUNTS)
-
-        result = stage.reduce({_meas_key(0): {"11": 100}}, env, token=None)
-
-        assert list(result.values())[0][0] == pytest.approx(0.0)
-
-    def test_hard_cvar_selects_low_energy_tail(self):
-        """CVaR with alpha_cvar=0.5 selects the lower-energy half of shots.
-
-        qubo = diag([1, 2]), masks = [1, 2].
-        Bitstring "11" → parities [1, 1] → x = [0, 0] → energy = 0.
-        Bitstring "00" → parities [0, 0] → x = [1, 1] → energy = 1+2 = 3.
-
-        50 shots of "11" (energy 0) + 50 shots of "00" (energy 3).
-        Mean energy = 1.5.
-        CVaR(0.5) takes the lowest 50 shots → all "11" → energy = 0.
-        """
-        qubo = np.diag([1.0, 2.0])
-        stage = _make_stage(qubo, alpha=6.0, soft=False, alpha_cvar=0.5)
-        env = _make_env(ResultFormat.COUNTS)
-
-        result = stage.reduce({_meas_key(0): {"11": 50, "00": 50}}, env, token=None)
-
-        assert list(result.values())[0][0] == pytest.approx(0.0)
+    @pytest.mark.parametrize(
+        "histogram, alpha_cvar, expected",
+        [
+            pytest.param({"11": 100}, 0.25, 0.0, id="single-outcome"),
+            pytest.param({"11": 50, "00": 50}, 0.5, 0.0, id="low-energy-half"),
+            pytest.param({"10": 2, "01": 3, "00": 5}, 0.5, 1.6, id="nonzero-tail"),
+        ],
+    )
+    def test_hard_cvar_averages_the_low_energy_tail(
+        self, histogram, alpha_cvar, expected
+    ):
+        """qubo = diag([1, 2]), masks = [1, 2]: ``"11"`` → energy 0, ``"10"`` → 1,
+        ``"01"`` → 2, ``"00"`` → 3. CVaR averages the best ``ceil(alpha_cvar *
+        shots)`` shots: single-outcome is that outcome's 0; the low half of 50/50
+        "11"/"00" is all "11", so 0; the best 5 of the nonzero tail are two at 1
+        and three at 2, so 8/5."""
+        stage = _make_stage(
+            np.diag([1.0, 2.0]), alpha=6.0, soft=False, alpha_cvar=alpha_cvar
+        )
+        result = stage.reduce(
+            {_meas_key(0): histogram}, _make_env(ResultFormat.COUNTS), token=None
+        )
+        assert result == {(("param_set", 0),): [pytest.approx(expected)]}
 
 
 @pytest.mark.parametrize(
@@ -339,22 +334,3 @@ def test_introspect_reports_restricted_wires():
     stage = _make_stage(np.diag([1.0, 2.0]), measure_all=False)
     info = stage.introspect({}, _make_env(ResultFormat.COUNTS), token=None)
     assert info["measured_wires"] == "problem-relevant"
-
-
-def test_two_param_sets_independent():
-    """Two param_sets with different histograms produce different energies."""
-    qubo = np.diag([1.0, 2.0])
-    stage = _make_stage(qubo, alpha=1.0, soft=True)
-    env = _make_env(ResultFormat.COUNTS)
-
-    results = {
-        _meas_key(0): {"00": 100},  # all parities 0
-        _meas_key(1): {"11": 100},  # all parities 1
-    }
-
-    reduced = stage.reduce(results, env, token=None)
-
-    assert len(reduced) == 2
-    energies = [v[0] for v in reduced.values()]
-    # Different histograms must yield different energies
-    assert energies[0] != pytest.approx(energies[1])

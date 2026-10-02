@@ -156,11 +156,8 @@ class PCECostStage(BundleStage):
         self._measure_all = measure_all
         # Wires touched by at least one mask (bit i ↔ wire i); others need no
         # measurement. Masks are 1-D uint64 (<=64 qubits) or 2-D limbs.
-        if variable_masks_u64.size == 0:
-            mask_union = 0
-        else:
-            limbs = np.atleast_1d(np.bitwise_or.reduce(variable_masks_u64, axis=0))
-            mask_union = sum(int(limb) << (64 * j) for j, limb in enumerate(limbs))
+        limbs = np.atleast_1d(np.bitwise_or.reduce(variable_masks_u64, axis=0))
+        mask_union = sum(int(limb) << (64 * j) for j, limb in enumerate(limbs))
         self._relevant_wires = tuple(
             i for i in range(mask_union.bit_length()) if (mask_union >> i) & 1
         )
@@ -244,7 +241,7 @@ class PCECostStage(BundleStage):
             ):
                 raise ValueError(
                     f"Backend returned {len(state_strings[0])}-bit PCE histogram "
-                    f"keys for an {token.n_qubits}-qubit circuit; expected "
+                    f"keys for the {token.n_qubits}-qubit circuit; expected "
                     f"full-width keys (creg c[{token.n_qubits}]). "
                     "Partial-measurement circuits must still report all "
                     "classical bits. If your backend cannot, set "
@@ -252,6 +249,12 @@ class PCECostStage(BundleStage):
                 )
             counts = np.array(list(histogram.values()), dtype=float)
             total_shots = counts.sum()
+            if total_shots <= 0:
+                raise ValueError(
+                    f"Backend returned an empty PCE histogram for circuit {key!r}; "
+                    "the energy is undefined without shots. This indicates a "
+                    "backend fault, so check the job's results."
+                )
             parities = self._decode(state_strings, self._masks)
 
             if self._soft:

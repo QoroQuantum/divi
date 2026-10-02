@@ -44,6 +44,7 @@ class TestGroupByBaseKey:
         }
         grouped = group_by_base_key(results, "ham", indexed=False)
         assert grouped == {(): [10.0, 20.0, 30.0]}
+        assert group_by_base_key(results, "ham") == grouped
 
     def test_indexed_true_keyed_by_axis_value(self):
         results = {
@@ -139,15 +140,35 @@ class TestReducePostprocessOrdered:
 class TestReduceMergeHistograms:
     """Tests for reduce_merge_histograms: probability histogram averaging across ham samples."""
 
-    def test_merges_two_histograms(self):
-        """Averages probability dicts across two Hamiltonian samples."""
-        grouped = {(("circ", 0),): [{"00": 0.8, "11": 0.2}, {"00": 0.6, "11": 0.4}]}
-
+    @pytest.mark.parametrize(
+        "grouped, expected",
+        [
+            pytest.param(
+                {
+                    (("circ", 0),): [{"00": 0.8, "11": 0.2}, {"00": 0.6, "11": 0.4}],
+                    (("circ", 1),): [{"01": 1.0}, {"01": 0.5, "10": 0.5}],
+                },
+                {
+                    (("circ", 0),): {"00": 0.7, "11": 0.3},
+                    (("circ", 1),): {"01": 0.75, "10": 0.25},
+                },
+                id="two_histograms_per_base_key",
+            ),
+            pytest.param(
+                {(("circ", 0),): [{"00": 0.7, "11": 0.3}]},
+                {(("circ", 0),): {"00": 0.7, "11": 0.3}},
+                id="single_histogram_identity",
+            ),
+        ],
+    )
+    def test_merges_histograms(self, grouped, expected):
+        """Averages probability dicts across Hamiltonian samples, merging each
+        base key independently."""
         result = reduce_merge_histograms(grouped)
 
-        assert (("circ", 0),) in result
-        assert result[(("circ", 0),)]["00"] == pytest.approx(0.7)
-        assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
+        assert set(result) == set(expected)
+        for key, probs in expected.items():
+            assert result[key] == pytest.approx(probs)
 
     def test_merged_probabilities_sum_to_one(self):
         """Merged probability distribution sums to 1.0."""
@@ -182,32 +203,10 @@ class TestReduceMergeHistograms:
 
     def test_empty_prob_dicts(self):
         """Empty list of prob dicts returns empty dict."""
-        grouped = {(("circ", 0),): []}
+        grouped = {(("circ", 0),): [], (("circ", 1),): [{"00": 1.0}]}
 
         result = reduce_merge_histograms(grouped)
-        assert result[(("circ", 0),)] == {}
-
-    def test_single_histogram_identity(self):
-        """Single histogram merges to itself."""
-        grouped = {(("circ", 0),): [{"00": 0.7, "11": 0.3}]}
-
-        result = reduce_merge_histograms(grouped)
-        assert result[(("circ", 0),)]["00"] == pytest.approx(0.7)
-        assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
-
-    def test_multiple_base_keys(self):
-        """Multiple base keys are each merged independently."""
-        grouped = {
-            (("circ", 0),): [{"00": 0.8, "11": 0.2}, {"00": 0.6, "11": 0.4}],
-            (("circ", 1),): [{"01": 1.0}, {"01": 0.5, "10": 0.5}],
-        }
-
-        result = reduce_merge_histograms(grouped)
-
-        assert result[(("circ", 0),)]["00"] == pytest.approx(0.7)
-        assert result[(("circ", 0),)]["11"] == pytest.approx(0.3)
-        assert result[(("circ", 1),)]["01"] == pytest.approx(0.75)
-        assert result[(("circ", 1),)]["10"] == pytest.approx(0.25)
+        assert result == {(("circ", 0),): {}, (("circ", 1),): {"00": 1.0}}
 
     def test_rejects_expval_values_with_actionable_error(self):
         """An EXPVALS float raises a TypeError naming the right helper, instead
@@ -229,6 +228,15 @@ def test_average_by_param_set_collapses_preserved_axes():
     assert set(averaged) == {0, 1}
     np.testing.assert_allclose(averaged[0], [2.0, 4.0])
     np.testing.assert_allclose(averaged[1], [10.0, 12.0])
+
+
+def test_average_by_param_set_reads_a_key_without_param_set_as_the_first_set():
+    averaged = average_by_param_set(
+        {(("ham", 0),): [1.0], (("ham", 1),): [3.0]}, np.asarray
+    )
+
+    assert set(averaged) == {0}
+    np.testing.assert_allclose(averaged[0], [2.0])
 
 
 def test_group_by_branch_and_param_set_keeps_preserved_axes():
@@ -261,26 +269,25 @@ class TestCollapseToParentResults:
         assert out[(spec_circ, ("obs_group", 1))] == 2.0
 
     def test_ignores_unknown_labels(self):
-        lineage = {"only": (("spec", "k"),)}
-        raw = {"only": 1, "unknown": 2}
+        lineage = {"only": (("spec", "k"),), "later": (("spec", "j"),)}
+        raw = {"only": 1, "unknown": 2, "later": 3}
         out = _collapse_to_parent_results(raw, lineage)
-        assert out == {(("spec", "k"),): 1}
+        assert out == {(("spec", "k"),): 1, (("spec", "j"),): 3}
 
 
 class TestFindBatchKey:
     """Spec: _find_batch_key routes a branch key to its subset batch key."""
 
-    def test_exact_match(self):
-        batch_keys = {("a", "b"), ("c",)}
-        assert _find_batch_key(("a", "b"), batch_keys) == ("a", "b")
-
-    def test_subset_match(self):
-        batch_keys = {("x",)}
-        assert _find_batch_key(("x", "y", "z"), batch_keys) == ("x",)
-
-    def test_empty_batch_key_matches_anything(self):
-        batch_keys = {()}
-        assert _find_batch_key(("a", "b"), batch_keys) == ()
+    @pytest.mark.parametrize(
+        "branch_key, batch_keys, expected",
+        [
+            pytest.param(("a", "b"), {("a", "b"), ("c",)}, ("a", "b"), id="exact"),
+            pytest.param(("x", "y", "z"), {("x",)}, ("x",), id="subset"),
+            pytest.param(("a", "b"), {()}, (), id="empty_batch_key_matches_anything"),
+        ],
+    )
+    def test_match(self, branch_key, batch_keys, expected):
+        assert _find_batch_key(branch_key, batch_keys) == expected
 
     def test_no_match_raises_key_error(self):
         batch_keys = {("x", "y")}

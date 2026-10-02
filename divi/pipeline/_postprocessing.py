@@ -37,7 +37,7 @@ def _bitstring_eigenvalues(
     if offending is not None:
         raise ValueError(
             f"Backend returned {len(offending)}-bit histogram keys "
-            f"for an {n_qubits}-qubit circuit; expected full-width keys "
+            f"for the {n_qubits}-qubit circuit; expected full-width keys "
             f"(creg c[{n_qubits}]). Partial-measurement circuits must still "
             f"report all classical bits. If your backend cannot, set "
             f"measure_all_qubits=True to measure the full register."
@@ -47,15 +47,9 @@ def _bitstring_eigenvalues(
         raise ValueError(f"Backend returned a non-binary histogram key: {malformed!r}.")
 
     n_states = len(bitstrings)
-    if n_qubits <= 64:
-        states_as_int = np.array([int(bs, 2) for bs in bitstrings], dtype=np.uint64)
-        state_bits = None
-    else:
-        states_as_int = None
-        state_chars = np.frombuffer(
-            "".join(bitstrings).encode("ascii"), dtype=np.uint8
-        ).reshape(n_states, n_qubits)
-        state_bits = state_chars - np.uint8(ord("0"))
+    state_bits = np.frombuffer(
+        "".join(bitstrings).encode("ascii"), dtype=np.uint8
+    ).reshape(n_states, n_qubits) - np.uint8(ord("0"))
 
     eigenvalues = np.zeros((len(pauli_labels), n_states))
     for obs_idx, label in enumerate(pauli_labels):
@@ -71,15 +65,7 @@ def _bitstring_eigenvalues(
             eigenvalues[obs_idx, :] = 1.0
             continue
 
-        positions = np.array(active_positions, dtype=np.uint32)
-        if states_as_int is not None:
-            shifts = n_qubits - 1 - positions
-            bits = (states_as_int[:, np.newaxis] >> shifts) & 1
-        elif state_bits is not None:
-            bits = state_bits[:, positions]
-        else:
-            raise RuntimeError("unreachable: states_as_int or state_bits must be set")
-
+        bits = state_bits[:, np.array(active_positions, dtype=np.uint32)]
         parity = bits.sum(axis=1, dtype=np.int64) & 1
         eigenvalues[obs_idx, :] = 1 - 2 * parity
 
@@ -156,9 +142,22 @@ def _batched_expectation(
     return (count_matrix @ eigenvalues.T / totals[:, None]).T
 
 
-def _reverse_endianness(counts: Mapping) -> dict:
-    """Little-endian backend bitstrings → big-endian, matching stored labels."""
-    return {bitstring[::-1]: count for bitstring, count in counts.items()}
+def _big_endian_histogram(branch_key: tuple, counts: Any) -> dict[str, int]:
+    """Validate a backend histogram and flip its little-endian bitstrings.
+
+    Raises:
+        TypeError: If ``counts`` is not a mapping keyed by bitstrings.
+    """
+    if not isinstance(counts, Mapping):
+        found = type(counts).__name__
+    elif not all(isinstance(bitstring, str) for bitstring in counts):
+        found = f"a {type(counts).__name__} not keyed by bitstrings"
+    else:
+        return {bitstring[::-1]: count for bitstring, count in counts.items()}
+    raise TypeError(
+        "Expected a bitstring→count histogram from the backend for branch "
+        f"{branch_key!r}, got {found}."
+    )
 
 
 def _group_lookups(
@@ -181,7 +180,7 @@ def _resolve_group(
 ) -> tuple[tuple, tuple[object, ...], int]:
     """Return ``(batch_key, group_labels, n_qubits)`` for one branch key."""
     bk = _find_batch_key(branch_key, batch_keys)
-    obs_group_idx = int(dict(branch_key).get("obs_group", 0))
+    obs_group_idx = int(dict(branch_key)["obs_group"])
     return bk, labels_by_bk[bk][obs_group_idx], nq_by_bk[bk]
 
 
@@ -207,12 +206,7 @@ def _counts_to_expvals(
             branch_key, batch_keys, labels_by_bk, nq_by_bk
         )
 
-        # Any bitstring→count mapping (incl. qiskit's dict-subclass Counts) is
-        # reversed; a non-mapping value crashes loudly below in
-        # _batched_expectation rather than silently skipping the reversal.
-        if isinstance(counts, Mapping):
-            counts = _reverse_endianness(counts)
-
+        counts = _big_endian_histogram(branch_key, counts)
         expvals = _batched_expectation(
             [counts], [str(p) for p in group_labels], n_qubits
         )
@@ -279,19 +273,11 @@ def _counts_to_cost_variance(
             out[base_key] = float("nan")
             continue
 
-        if isinstance(counts, Mapping):
-            counts = _reverse_endianness(counts)
-            shots = sum(counts.values())
-        else:
-            # Non-count payload (shouldn't reach here on the shot path); skip.
-            out[base_key] = out.get(base_key, 0.0) + float("nan")
-            continue
-
+        counts = _big_endian_histogram(branch_key, counts)
+        shots = sum(counts.values())
         if shots <= 0:
-            # Degenerate group with no measurements: invalidate the whole cost
-            # variance (nan) rather than silently omitting it, which would
-            # deflate the summed estimate. Matches the multi-observable and
-            # non-count paths above.
+            # A group with no shots invalidates the whole cost variance rather
+            # than silently deflating the sum.
             out[base_key] = float("nan")
             continue
 
@@ -308,9 +294,7 @@ def _counts_to_cost_variance(
             # mathematically; clamp to guard float rounding when |exp| ≈ 1.
             group_var += coeff * coeff * max(0.0, 1.0 - float(exp) ** 2) / shots
 
-        prev = out.get(base_key, 0.0)
-        # Once a base key is nan (multi-observable / degenerate group) keep it nan.
-        out[base_key] = prev if np.isnan(prev) else prev + group_var
+        out[base_key] = out.get(base_key, 0.0) + group_var
 
     return out
 
@@ -344,20 +328,17 @@ def _counts_to_wrs_cost_variance(
         )
         base_key = tuple(ax for ax in branch_key if ax[0] != "obs_group")
         coeff_map = coeffs_by_bk[bk]
-        if coeff_map is None or not isinstance(counts, Mapping):
+        if coeff_map is None:
             invalid_keys.add(base_key)
             continue
 
-        counts = _reverse_endianness(counts)
+        counts = _big_endian_histogram(branch_key, counts)
         if sum(counts.values()) <= 0:
             invalid_keys.add(base_key)
             continue
         group_idx = next(value for axis, value in branch_key if axis == "obs_group")
         probability_key = _find_batch_key(base_key, probability_keys)
         probability = probabilities_by_spec[probability_key][group_idx]
-        if probability <= 0:
-            invalid_keys.add(base_key)
-            continue
 
         labels = [str(label) for label in group_labels]
         coefficients = np.asarray(
