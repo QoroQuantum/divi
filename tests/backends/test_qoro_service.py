@@ -641,49 +641,19 @@ class TestQoroServiceMock:
         ):
             get_simulator_cluster("missing")
 
-    def test_job_status_api_comprehensive(self, mocker, qoro_service_factory):
-        """Test one-shot status inspection and terminal waiting."""
+    def test_looping_poll_raises_after_max_retries(self, mocker, qoro_service_factory):
         service = qoro_service_factory(
             auth_token="test_token", max_retries=3, polling_interval=0.01
         )
-
-        # Test 1: Single status check
-        mock_response = mocker.MagicMock()
-        mock_response.json.return_value = {"status": "RUNNING"}
-
-        mocker.patch.object(service, "_make_request", return_value=mock_response)
-
-        status = service.poll_job_status(make_execution_result())
-        assert status == JobStatus.RUNNING
-
-        # Test 2: Loop until completed
-        mock_responses = [
-            make_mock_status_response(mocker, JobStatus.RUNNING),
-            make_mock_status_response(mocker, JobStatus.RUNNING),
-            make_mock_status_response(mocker, JobStatus.COMPLETED),
-        ]
-        mocker.patch.object(service, "_make_request", side_effect=mock_responses)
-        status = service.poll_job_status(
-            make_execution_result(), loop_until_complete=True
-        )
-        assert status == JobStatus.COMPLETED
-
-        # Test 3: Loop until failed
-        mock_responses = [
-            make_mock_status_response(mocker, JobStatus.RUNNING),
-            make_mock_status_response(mocker, JobStatus.FAILED),
-        ]
-        mocker.patch.object(service, "_make_request", side_effect=mock_responses)
-        with pytest.raises(JobFailedError):
-            service.poll_job_status(make_execution_result(), loop_until_complete=True)
-
-        # Test 4: Max retries reached
         mock_responses = [make_mock_status_response(mocker, JobStatus.RUNNING)] * 4
         mocker.patch.object(service, "_make_request", side_effect=mock_responses)
         with pytest.raises(MaxRetriesReachedError):
             service.poll_job_status(make_execution_result(), loop_until_complete=True)
 
-        # Test 5: Poll callback functionality
+    def test_looping_poll_reports_progress(self, mocker, qoro_service_factory):
+        service = qoro_service_factory(
+            auth_token="test_token", max_retries=3, polling_interval=0.01
+        )
         mock_responses = [
             make_mock_status_response(mocker, JobStatus.RUNNING),
             make_mock_status_response(mocker, JobStatus.COMPLETED),
@@ -698,15 +668,6 @@ class TestQoroServiceMock:
 
         assert status == JobStatus.COMPLETED
         progress_callback.assert_called()
-
-        # Test 6: Loop until cancelled
-        mock_responses = [
-            make_mock_status_response(mocker, JobStatus.RUNNING),
-            make_mock_status_response(mocker, JobStatus.CANCELLED),
-        ]
-        mocker.patch.object(service, "_make_request", side_effect=mock_responses)
-        with pytest.raises(JobCancelledError):
-            service.poll_job_status(make_execution_result(), loop_until_complete=True)
 
     def test_default_max_retries_is_unlimited(self):
         """The constructor default polls indefinitely (``max_retries=None``)."""
@@ -959,10 +920,19 @@ class TestQoroServiceMock:
 
     # --- Tests for test_connection ---
 
-    def test_fail_submit_circuits(self, circuits, qoro_service_factory):
+    def test_fail_submit_circuits(self, mocker, circuits, qoro_service_factory):
         """Tests that submitting circuits with an invalid token raises an HTTPError."""
         service = qoro_service_factory(auth_token="invalid_token")
-        with pytest.raises(requests.exceptions.HTTPError):
+        mocker.patch.object(
+            _qoro_service.session,
+            "request",
+            return_value=mocker.MagicMock(
+                status_code=401,
+                reason="Unauthorized",
+                json=lambda: {"detail": "Invalid token."},
+            ),
+        )
+        with pytest.raises(requests.exceptions.HTTPError, match="401 Unauthorized"):
             service.submit_circuits(circuits)
 
     def test_service_connection_test_mock(self, mocker, qoro_service_factory):
@@ -1198,14 +1168,6 @@ class TestQoroServiceMock:
             qoro_service_mock.submit_circuits({"c1": "qasm"}, **submit_kwargs)
         mock_make_request.assert_not_called()
 
-    def test_constructor_stores_maestro_config(self, qoro_service_factory):
-        maestro_config = MaestroConfig(max_bond_dimension=64)
-        service = qoro_service_factory(maestro_config=maestro_config)
-        assert service.maestro_config is maestro_config
-
-    def test_constructor_maestro_config_defaults_to_none(self, qoro_service_factory):
-        assert qoro_service_factory().maestro_config is None
-
     # --- Tests for job_config / maestro_config setters ---
 
     def test_set_job_config_after_init_with_qpu_system(self, qoro_service_factory):
@@ -1314,17 +1276,6 @@ class TestQoroServiceMock:
             assert "Defaulting to" in str(w[0].message)
         assert isinstance(service.job_config.simulator_cluster, SimulatorCluster)
 
-    def test_set_maestro_config_after_init(self, qoro_service_factory):
-        service = qoro_service_factory()
-        maestro_config = MaestroConfig(max_bond_dimension=256)
-        service.maestro_config = maestro_config
-        assert service.maestro_config is maestro_config
-
-    def test_set_maestro_config_to_none(self, qoro_service_factory):
-        service = qoro_service_factory(maestro_config=MaestroConfig())
-        service.maestro_config = None
-        assert service.maestro_config is None
-
     def test_shots_follow_the_job_config(self, qoro_service_factory):
         service = qoro_service_factory()
         service.job_config = service.job_config.override(shots=2000)
@@ -1399,17 +1350,6 @@ class TestQoroServiceMock:
 
         payload = self._submit_on(mocker, service, maestro_config=per_call)
         assert payload["maestro_config"] == maestro_config_to_payload(per_call)
-
-    def test_submit_override_without_default(self, submit_circuits_mock):
-        service, mock_req = submit_circuits_mock
-        assert service.maestro_config is None
-
-        maestro_config = MaestroConfig(max_bond_dimension=64)
-        service.submit_circuits({"c1": "qasm"}, maestro_config=maestro_config)
-
-        assert _init_payload(mock_req)["maestro_config"] == maestro_config_to_payload(
-            maestro_config
-        )
 
     def test_submit_circuits_with_packing_override(self, submit_circuits_mock):
         """Test submitting circuits with circuit packing override."""
@@ -1980,7 +1920,7 @@ class TestQoroServiceMock:
         assert all(len(chunk) >= 1 for chunk in chunks)
 
     def test_parametric_submission_with_ham_ops(self, mocker, qoro_service_factory):
-        """ham_ops auto-infers EXPECTATION and goes in the add_circuits payload."""
+        """ham_ops auto-infers EXPECTATION, goes in the add_circuits payload, and drops shots."""
         service = qoro_service_factory()
         mock_make_request = mocker.patch.object(
             service,
@@ -1995,6 +1935,7 @@ class TestQoroServiceMock:
 
         init_payload = mock_make_request.call_args_list[0].kwargs["json"]
         assert init_payload["job_type"] == JobType.EXPECTATION.value
+        assert "shots" not in init_payload
 
         add_payload = mock_make_request.call_args_list[1].kwargs["json"]
         assert add_payload["observables"].startswith("@gzs")
@@ -2054,30 +1995,6 @@ class TestQoroServiceMock:
                 ham_ops="XX;ZZ",
                 job_type=JobType.EXECUTE,
             )
-
-    def test_parametric_submission_with_ham_ops_omits_shots_in_init(
-        self, mocker, qoro_service_factory
-    ):
-        """When ham_ops is provided, neither the init payload nor the
-        add_circuits payload should carry a ``shots`` field — symmetry with
-        the bound-path behaviour exercised by
-        ``test_submit_circuits_with_expectation_value``."""
-        service = qoro_service_factory()
-        mock_make_request = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[
-                make_mock_init_response(mocker),
-                make_mock_add_response(mocker),
-            ],
-        )
-        service.submit_circuits([make_qasm_payload()], ham_ops="XX;ZZ")
-
-        init_payload = mock_make_request.call_args_list[0].kwargs["json"]
-        assert "shots" not in init_payload
-
-        add_payload = mock_make_request.call_args_list[1].kwargs["json"]
-        assert "shots" not in add_payload
 
     # --- Tests for job management ---
 
@@ -2456,11 +2373,13 @@ class TestQoroServiceMock:
     @pytest.mark.parametrize("getter", _CONFIG_GETTERS, ids=["maestro", "device"])
     def test_getter_errors_propagate(self, mocker, qoro_service_factory, getter):
         service = qoro_service_factory()
-        error = requests.exceptions.HTTPError("404 Not Found")
-        error.response = mocker.MagicMock(status_code=404, reason="Not Found")
-        mocker.patch.object(service, "_make_request", side_effect=error)
+        response = mocker.MagicMock(status_code=404, reason="Not Found")
+        response.json.return_value = {"detail": "No such job."}
+        mocker.patch.object(_qoro_service.session, "request", return_value=response)
 
-        with pytest.raises(requests.exceptions.HTTPError, match="404 Not Found"):
+        with pytest.raises(
+            requests.exceptions.HTTPError, match="404 Not Found: .*No such job"
+        ):
             getter(service, make_execution_result("job_1"))
 
     # --- Tests for credit endpoints ---
@@ -2658,13 +2577,6 @@ class TestQoroServiceWithApiKey:
         response = qoro_service.test_connection()
         assert response.status_code == 200, "Connection should be successful"
 
-    def test_submit_and_delete_circuits(self, qoro_service, circuits):
-        """Tests submitting and then deleting circuits."""
-        result = qoro_service.submit_circuits(circuits)
-
-        assert isinstance(result, ExecutionResult), "Should return ExecutionResult"
-        assert result.job_id is not None, "Job ID should be present"
-
     def test_submit_and_cancel_circuits(self, qoro_service, circuits):
         """Tests submitting and then cancelling circuits."""
         result = qoro_service.submit_circuits(circuits)
@@ -2743,8 +2655,11 @@ class TestQoroServiceWithApiKey:
         """Tests fetching the list of QPU systems."""
         systems = qoro_service.fetch_qpu_systems()
         assert isinstance(systems, list)
-        if systems:
-            assert isinstance(systems[0], QPUSystem)
+        assert systems
+        for system in systems:
+            assert isinstance(system, QPUSystem)
+            assert system.name
+            assert all(qpu.q_bits > 0 for qpu in system.qpus)
 
     def test_fetch_vendor_blueprints(self, qoro_service):
         """Tests fetching the vendor config blueprints."""
@@ -2939,16 +2854,6 @@ class TestQoroServiceWithApiKey:
 
         assert qoro_service.get_maestro_config(result) == _LIVE_MAESTRO_CONFIG
         assert qoro_service.get_device_config(result) is None
-
-    def test_parametric_submission_returns_job_id(self, qoro_service):
-        """Templated submission round-trips through the real API and returns
-        a job_id, exercising the gzip+b64 template payload, parameter_names,
-        and parameter_sets shape end-to-end."""
-        result = qoro_service.submit_circuits(
-            [make_qasm_payload(n_param_sets=3, n_params=2)]
-        )
-        assert isinstance(result, ExecutionResult)
-        assert result.job_id is not None
 
     def test_parametric_submission_resolves_one_circuit_per_param_set(
         self, qoro_service

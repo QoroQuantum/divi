@@ -4,12 +4,44 @@
 
 """Shared helpers for backend tests."""
 
+from collections.abc import Callable
 from http import HTTPStatus
 
+import pytest
+from pydantic import ValidationError
 from qiskit.circuit import Parameter
 
 from divi.backends import ExecutionResult, JobStatus
 from divi.circuits._payloads import CircuitPayload
+
+SHOT_GROUPS_WITH_HAM_OPS_MESSAGE = (
+    "shot_groups is incompatible with ham_ops: expectation-value mode is "
+    "analytical and ignores shot counts. Pass exactly one."
+)
+
+
+def padding_warning(short: str, padded: str) -> str:
+    """The warning raised when ``short`` is padded to ``padded`` (first example)."""
+    return (
+        "Observables shorter than their circuit are padded onto its first "
+        f"qubits, e.g. {short!r} -> {padded!r}."
+    )
+
+
+def reset_unknown_message(name: str, suggestion: str) -> str:
+    return f"Cannot reset unknown fields {name!r} (did you mean {suggestion!r}?)."
+
+
+def uncovered_circuits_message(missing: list[int]) -> str:
+    return f"Shot ranges do not cover every circuit; missing indices {missing}."
+
+
+def validation_error_message(build: Callable[[], object]) -> str:
+    """The message of the one error a validator raised while ``build`` ran."""
+    with pytest.raises(ValidationError) as exc_info:
+        build()
+    (error,) = exc_info.value.errors()
+    return str(error["ctx"]["error"])
 
 
 def make_execution_result(job_id: str = "test_job") -> ExecutionResult:

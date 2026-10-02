@@ -26,6 +26,7 @@ from qiskit import QuantumCircuit
 from divi.backends import CircuitRunner
 from divi.circuits._payloads import CircuitPayload, bound_payloads
 from divi.exceptions import ExecutionCancelledError
+from tests._helpers import exact_match
 
 ContractCase = tuple[Callable[[CircuitRunner], None], str]
 PayloadFactory = Callable[..., list[CircuitPayload]]
@@ -201,7 +202,11 @@ def verify_cancellation_before_dispatch(runner: CircuitRunner) -> None:
 
 def verify_rejects_unknown_options(runner: CircuitRunner) -> None:
     """An option the backend does not take raises instead of being dropped."""
-    with pytest.raises(TypeError, match=r"unexpected keyword arguments \['shots'\]"):
+    message = (
+        f"{type(runner).__name__}.submit_circuits() got unexpected keyword "
+        "arguments ['shots']."
+    )
+    with pytest.raises(TypeError, match=exact_match(message)):
         runner.submit_circuits({"c1": QASM_MINIMAL}, shots=7)
 
 
@@ -222,6 +227,7 @@ SIGNATURE_CONTRACTS = [
 
 SYNC_RUNNER_CONTRACT_CASES = flatten_contract_cases(
     (DEPTH_CONTRACTS_DISABLED, "contract_runner_disabled"),
+    (DEPTH_CONTRACTS_DISABLED, "contract_runner_default"),
     (DEPTH_CONTRACTS_ENABLED, "contract_runner_enabled"),
     (SYNC_CANCELLATION_CONTRACTS, "contract_runner_default"),
     (SIGNATURE_CONTRACTS, "contract_runner_disabled"),

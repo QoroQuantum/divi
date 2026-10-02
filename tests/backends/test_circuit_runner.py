@@ -10,6 +10,7 @@ from qiskit.circuit import Parameter
 
 from divi.backends import CircuitRunner, ExecutionResult, normalise_circuit_batch
 from divi.circuits._payloads import CircuitPayload
+from tests._helpers import exact_match
 
 
 class ConcreteCircuitRunner(CircuitRunner):
@@ -35,30 +36,14 @@ class TestCircuitRunner:
         runner = ConcreteCircuitRunner(shots=1000)
         assert runner.shots == 1000
 
-    def test_init_with_zero_shots_raises(self):
-        """Test that ValueError is raised when shots is 0 (line 15)."""
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
-            ConcreteCircuitRunner(shots=0)
-
-    def test_init_with_negative_shots_raises(self):
-        """Test that ValueError is raised when shots is negative (line 15)."""
-        with pytest.raises(ValueError, match="Shots must be a positive integer"):
-            ConcreteCircuitRunner(shots=-1)
-
-    def test_shots_property(self):
-        """Test shots property getter."""
-        runner = ConcreteCircuitRunner(shots=5000)
-        assert runner.shots == 5000
-
-    def test_concrete_implementation(self):
-        """Test that a concrete implementation works correctly."""
-        runner = ConcreteCircuitRunner(shots=100)
-        assert runner.shots == 100
-        assert runner.supports_expval is False
-        assert runner.is_async is False
-        result = runner.submit_circuits([])
-        assert isinstance(result, ExecutionResult)
-        assert result.results == []
+    @pytest.mark.parametrize("shots", [0, -1])
+    def test_init_with_non_positive_shots_raises(self, shots):
+        """Test that ValueError is raised when shots is not positive."""
+        with pytest.raises(
+            ValueError,
+            match=exact_match(f"Shots must be a positive integer. Got {shots}."),
+        ):
+            ConcreteCircuitRunner(shots=shots)
 
 
 QASM_MINIMAL = (

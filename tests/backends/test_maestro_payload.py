@@ -6,6 +6,7 @@
 
 import json
 import math
+from fractions import Fraction
 
 import maestro
 import pytest
@@ -15,6 +16,7 @@ from divi.backends.runners._maestro_payload import (
     maestro_config_from_payload,
     maestro_config_to_payload,
 )
+from tests._helpers import exact_match
 
 _BELL_QASM = (
     'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
@@ -24,11 +26,11 @@ _BELL_QASM = (
 
 
 def _mixed_noise_model(*, kraus: bool = True):
-    """A noise model whose calls carry tuples and, optionally, complex Kraus
-    entries — which only density-matrix or MPO backends can run."""
+    """A noise model whose calls carry keyword arguments, tuples and, optionally,
+    complex Kraus entries — which only density-matrix or MPO backends can run."""
     gamma = 0.19
     noise_model = maestro.NoiseModel()
-    noise_model.set_all_depolarizing(2, 0.02)
+    noise_model.set_all_depolarizing(num_qubits=2, p=0.02)
     noise_model.set_readout_error(0, 0.02, 0.05)
     noise_model.set_multi_correlated_ou(1, [(15.0, 0.5), (3.0, 2.0)], 1e-7)
     if not kraus:
@@ -122,6 +124,24 @@ def test_noise_model_round_trip():
     assert maestro_config_to_payload(rebuilt) == maestro_config_to_payload(config)
 
 
+def test_noise_realizations_travel_without_a_noise_model():
+    assert maestro_config_to_payload(MaestroConfig(noise_realizations=5)) == {
+        "noise_realizations": 5
+    }
+
+
+def test_a_non_serialisable_argument_is_refused():
+    noise_model = maestro.NoiseModel()
+    noise_model.set_all_depolarizing(num_qubits=2, p=Fraction(1, 20))
+
+    message = (
+        "noise_model's recorded calls do not replay, so it cannot be sent to the "
+        "Qoro Service: Fraction is not JSON serialisable."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
+        maestro_config_to_payload(MaestroConfig(noise_model=noise_model))
+
+
 def test_rebuilt_noise_model_samples_identically():
     noise_model = _mixed_noise_model(kraus=False)
     rebuilt = _over_the_wire(MaestroConfig(noise_model=noise_model)).noise_model
@@ -135,9 +155,13 @@ def test_an_unknown_enum_code_is_rejected():
 
 
 def test_unknown_keys_are_dropped_with_a_warning():
-    with pytest.warns(UserWarning, match=r"\['noisy_device'\]"):
+    message = (
+        "Ignoring stored maestro_config keys this version of divi does not "
+        "support: ['noisy_device']. Please report this to the divi maintainers."
+    )
+    with pytest.warns(UserWarning, match=exact_match(message)):
         config = maestro_config_from_payload(
-            {"max_bond_dimension": 64, "noisy_device": "ibm_torino"}
+            {"noisy_device": "ibm_torino", "max_bond_dimension": 64}
         )
 
     assert config == MaestroConfig(max_bond_dimension=64)

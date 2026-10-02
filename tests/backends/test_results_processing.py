@@ -264,7 +264,7 @@ class TestQoroServiceUtilities:
 
     # --- Wide-register (limb array) tests ---
 
-    @pytest.mark.parametrize("n_bits", [63, 64, 65, 100, 128, 129, 200])
+    @pytest.mark.parametrize("n_bits", [1, 63, 64, 65, 100, 128, 129, 200])
     def test_decompress_top_bit_set_index(self, n_bits):
         """Index with the top bit set must decode to the correct bitstring.
 
@@ -295,14 +295,34 @@ class TestQoroServiceUtilities:
         assert result == expected
         assert all(len(k) == n_bits for k in result)
 
-    def test_decompress_index_exceeding_n_bits_raises(self):
-        """A blob whose encoded index doesn't fit in its declared n_bits must fail loudly."""
-        # n_bits=4 claims indices live in [0, 15], but we encode index=16.
-        # The top limb holds bits that must all be zero above bit 4; they
-        # aren't, so the validator must raise rather than silently return a
-        # wrong-width bitstring.
-        blob = build_qh_histogram(4, [(16, 1)])
-        with pytest.raises(ValueError, match="exceeds n_bits"):
+    @pytest.mark.parametrize(
+        "n_bits, entries, magic, match",
+        [
+            pytest.param(
+                4, [(16, 1)], b"QH1", "exceeds n_bits", id="qh1_index_too_wide"
+            ),
+            pytest.param(
+                300, [(1 << 300, 1)], b"QH2", "exceeds n_bits", id="qh2_index_too_wide"
+            ),
+            pytest.param(
+                64,
+                [(1 << 63, 1), (1 << 64, 1)],
+                b"QH1",
+                "overflows limb buffer",
+                id="gap_sum_overflow",
+            ),
+        ],
+    )
+    def test_decompress_corrupt_blob_raises(self, n_bits, entries, magic, match):
+        """Corrupt blobs must fail loudly rather than return wrong-width bitstrings.
+
+        An encoded index past the declared ``n_bits`` sets top-limb bits that must
+        be zero, on both the QH1 and QH2 paths. Gaps that each fit in a uint64 but
+        sum to 2**64 wrap to 0; with ``n_bits == 64`` the top-limb mask check is
+        skipped, so only the ripple-carry guard catches it.
+        """
+        blob = build_qh_histogram(n_bits, entries, magic=magic)
+        with pytest.raises(ValueError, match=match):
             _decompress_histogram(blob)
 
     # --- QH2 (>255 bits, ULEB128 width) tests ---
@@ -319,6 +339,12 @@ class TestQoroServiceUtilities:
 
         expected = {format(i, f"0{n_bits}b"): c for i, c in entries}
         assert result == expected
+
+    def test_decompress_qh2_width_at_the_maximum_decodes(self):
+        blob = build_qh_histogram(_MAX_HISTOGRAM_WIDTH, [(1, 2)], magic=b"QH2")
+        assert _decompress_histogram(blob) == {
+            "0" * (_MAX_HISTOGRAM_WIDTH - 1) + "1": 2
+        }
 
     @pytest.mark.parametrize("n_bits", [_MAX_HISTOGRAM_WIDTH + 1, 2**63 + 5])
     def test_decompress_qh2_width_above_the_maximum_raises(self, n_bits):
@@ -351,14 +377,6 @@ class TestQoroServiceUtilities:
         limbs = np.arange(n_rows, dtype=np.uint64).reshape(n_rows, 1)
         rendered = _limbs_to_bitstrings(limbs, 20, 1)
         assert rendered == [format(i, "020b") for i in range(n_rows)]
-
-    def test_decompress_qh2_index_exceeding_n_bits_raises(self):
-        """The width validator must still fire on the QH2 path."""
-        # n_bits=300 -> 5 limbs, top limb carrying 44 valid bits; bit 300 is
-        # inside the buffer but outside the declared width.
-        blob = build_qh_histogram(300, [(1 << 300, 1)], magic=b"QH2")
-        with pytest.raises(ValueError, match="exceeds n_bits"):
-            _decompress_histogram(blob)
 
     # --- Reviewer defensive-decoding cases ---
 
@@ -427,78 +445,52 @@ class TestQoroServiceUtilities:
         with pytest.raises(ValueError, match="truncated"):
             _uleb128_decode_limbs_jit(data, 0, out)
 
-    def test_decompress_histogram_gap_sum_overflow_raises(self):
-        """Gap values that individually fit in L limbs but whose sum wraps past
-        2**(64*L) must raise — the ripple-carry check catches what the
-        top-bit validator cannot when ``n_bits`` is a multiple of 64.
-        """
-        # Two entries whose gaps are both 2**63. Each gap fits in a 1-limb
-        # (uint64) buffer, but their sum is 2**64 which wraps to 0 inside
-        # uint64 arithmetic. For n_bits=64 the top-limb mask check is
-        # skipped (top_bits_used == 64), so only the final-carry guard can
-        # detect this corruption.
-        blob = build_qh_histogram(64, [(1 << 63, 1), (1 << 64, 1)])
-        with pytest.raises(ValueError, match="overflows limb buffer"):
-            _decompress_histogram(blob)
+
+@pytest.mark.parametrize(
+    "inp, expected",
+    [
+        pytest.param(
+            {"tag0": {"100": 0.5, "011": 0.5}},
+            {"tag0": {"001": 0.5, "110": 0.5}},
+            id="single_tag",
+        ),
+        pytest.param(
+            {"a": {"10": 0.7, "01": 0.3}, "b": {"11": 1.0}},
+            {"a": {"01": 0.7, "10": 0.3}, "b": {"11": 1.0}},
+            id="multiple_tags",
+        ),
+        pytest.param({}, {}, id="empty"),
+        pytest.param(
+            {"t": {"010": 0.4, "111": 0.6}},
+            {"t": {"010": 0.4, "111": 0.6}},
+            id="palindromic_unchanged",
+        ),
+    ],
+)
+def test_reverse_dict_endianness(inp, expected):
+    """Bitstrings are reversed independently within each tag."""
+    assert reverse_dict_endianness(inp) == expected
 
 
-class TestReverseDictEndianness:
-    """Tests for reverse_dict_endianness."""
-
-    def test_single_tag_single_bitstring(self):
-        """Bitstrings are reversed within each tag."""
-        result = reverse_dict_endianness({"tag0": {"100": 0.5, "011": 0.5}})
-        assert result == {"tag0": {"001": 0.5, "110": 0.5}}
-
-    def test_multiple_tags(self):
-        """Each tag's bitstrings are reversed independently."""
-        inp = {
-            "a": {"10": 0.7, "01": 0.3},
-            "b": {"11": 1.0},
-        }
-        result = reverse_dict_endianness(inp)
-        assert result == {
-            "a": {"01": 0.7, "10": 0.3},
-            "b": {"11": 1.0},
-        }
-
-    def test_empty_outer_dict(self):
-        """Empty input returns empty output."""
-        assert reverse_dict_endianness({}) == {}
-
-    def test_palindromic_bitstrings_unchanged(self):
-        """Palindromic bitstrings are unaffected by reversal."""
-        result = reverse_dict_endianness({"t": {"010": 0.4, "111": 0.6}})
-        assert result == {"t": {"010": 0.4, "111": 0.6}}
-
-
-class TestConvertCountsToProbs:
-    """Tests for convert_counts_to_probs."""
-
-    def test_basic_conversion(self):
-        """Counts are divided by shots to produce probabilities."""
-        counts = {"tag0": {"00": 30, "11": 70}}
-        result = convert_counts_to_probs(counts, shots=100)
-        assert result == {"tag0": {"00": 0.3, "11": 0.7}}
-
-    def test_multiple_tags(self):
-        """Each tag is converted independently."""
-        counts = {
-            "a": {"0": 5, "1": 5},
-            "b": {"0": 2, "1": 8},
-        }
-        result = convert_counts_to_probs(counts, shots=10)
-        assert result == {
-            "a": {"0": 0.5, "1": 0.5},
-            "b": {"0": 0.2, "1": 0.8},
-        }
-
-    def test_empty_dict(self):
-        """Empty input returns empty output."""
-        assert convert_counts_to_probs({}, shots=100) == {}
-
-    def test_single_shot(self):
-        """With shots=1, counts equal probabilities."""
-        counts = {"t": {"101": 1}}
-        result = convert_counts_to_probs(counts, shots=1)
-        assert result == {"t": {"101": 1.0}}
+@pytest.mark.parametrize(
+    "counts, shots, expected",
+    [
+        pytest.param(
+            {"tag0": {"00": 30, "11": 70}},
+            100,
+            {"tag0": {"00": 0.3, "11": 0.7}},
+            id="basic",
+        ),
+        pytest.param(
+            {"a": {"0": 5, "1": 5}, "b": {"0": 2, "1": 8}},
+            10,
+            {"a": {"0": 0.5, "1": 0.5}, "b": {"0": 0.2, "1": 0.8}},
+            id="multiple_tags",
+        ),
+        pytest.param({}, 100, {}, id="empty"),
+        pytest.param({"t": {"101": 1}}, 1, {"t": {"101": 1.0}}, id="single_shot"),
+    ],
+)
+def test_convert_counts_to_probs(counts, shots, expected):
+    """Counts are divided by shots independently within each tag."""
+    assert convert_counts_to_probs(counts, shots=shots) == expected

@@ -13,37 +13,39 @@ from divi.backends._pauli_serde import (
     ham_ops_terms_for_circuit,
     pad_ham_ops,
 )
+from tests._helpers import exact_match
+from tests.backends._helpers import padding_warning
 
 
-class TestHamOpsTermsForCircuit:
-    """Tests for resolving which Pauli terms a circuit was measured for."""
+def _too_short(term: str, widths: list[int]) -> str:
+    return f"Observables [{term!r}] are too short for circuits of widths {widths}."
 
-    @pytest.mark.parametrize(
-        "circuit_index, ham_ops, circuit_ham_map, expected",
-        [
-            (0, "ZI;IZ;XX", None, ["ZI", "IZ", "XX"]),
-            (0, "ZI;IZ|XX;YY", None, ["ZI", "IZ", "XX", "YY"]),
-            (0, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["ZI", "IZ"]),
-            (2, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["ZI", "IZ"]),
-            (3, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["XX", "YY"]),
-            (4, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["XX", "YY"]),
-            (10, "ZI|XX", [[0, 2], [2, 4]], ["ZI", "XX"]),
-        ],
-        ids=[
-            "no-map-flat",
-            "no-map-pipe-delimited",
-            "map-first-group-start",
-            "map-first-group-end",
-            "map-second-group-start",
-            "map-second-group-end",
-            "index-outside-all-ranges",
-        ],
+
+@pytest.mark.parametrize(
+    "circuit_index, ham_ops, circuit_ham_map, expected",
+    [
+        (0, "ZI;IZ;XX", None, ["ZI", "IZ", "XX"]),
+        (0, "ZI;IZ|XX;YY", None, ["ZI", "IZ", "XX", "YY"]),
+        (0, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["ZI", "IZ"]),
+        (2, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["ZI", "IZ"]),
+        (3, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["XX", "YY"]),
+        (4, "ZI;IZ|XX;YY", [[0, 3], [3, 5]], ["XX", "YY"]),
+        (10, "ZI|XX", [[0, 2], [2, 4]], ["ZI", "XX"]),
+    ],
+    ids=[
+        "no-map-flat",
+        "no-map-pipe-delimited",
+        "map-first-group-start",
+        "map-first-group-end",
+        "map-second-group-start",
+        "map-second-group-end",
+        "index-outside-all-ranges",
+    ],
+)
+def test_ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map, expected):
+    assert (
+        ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map) == expected
     )
-    def test_terms_for_circuit(self, circuit_index, ham_ops, circuit_ham_map, expected):
-        assert (
-            ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map)
-            == expected
-        )
 
 
 class TestPadHamOps:
@@ -54,22 +56,26 @@ class TestPadHamOps:
         assert not recwarn.list
 
     def test_short_terms_act_on_first_qubits(self):
-        with pytest.warns(UserWarning, match="'ZZ' -> 'ZZIII'"):
+        with pytest.warns(
+            UserWarning, match=exact_match(padding_warning("ZZ", "ZZIII"))
+        ):
             assert pad_ham_ops("ZZ;XX", None, [5]) == "ZZIII;XXIII"
 
     def test_each_group_is_padded_to_its_own_circuits_in_one_warning(self):
-        with pytest.warns(UserWarning, match="'Z' -> 'ZI'") as record:
+        with pytest.warns(
+            UserWarning, match=exact_match(padding_warning("Z", "ZI"))
+        ) as record:
             padded = pad_ham_ops("Z|X", [[0, 1], [1, 2]], [2, 3])
         assert padded == "ZI|XII"
         assert len(record) == 1
 
     def test_short_group_on_circuits_of_different_widths_raises(self):
-        with pytest.raises(ValueError, match=r"widths \[3, 5\]"):
+        with pytest.raises(ValueError, match=exact_match(_too_short("ZZ", [3, 5]))):
             pad_ham_ops("ZZ", None, [3, 5])
 
     def test_circuit_outside_every_range_is_measured_on_every_group(self):
         """The 3-qubit circuit outside both ranges widens both 2-qubit groups."""
-        with pytest.raises(ValueError, match=r"widths \[2, 3\]"):
+        with pytest.raises(ValueError, match=exact_match(_too_short("ZZ", [2, 3]))):
             pad_ham_ops("ZZ|XX", [[0, 1], [1, 2]], [2, 2, 3])
 
 

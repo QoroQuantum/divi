@@ -6,7 +6,6 @@ import copy
 import os
 import re
 import warnings
-import weakref
 import zlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -289,16 +288,6 @@ def require_maestro_config(value: Any, name: str) -> None:
     )
 
 
-def _shutdown_executor(executor: ThreadPoolExecutor) -> None:
-    """Module-level finalizer callback for the per-instance fan-out pool.
-
-    Lives at module scope (rather than as a method) so the
-    :class:`weakref.finalize` registration does not capture a strong
-    reference to the simulator instance, which would defeat GC.
-    """
-    executor.shutdown(wait=False)
-
-
 class MaestroSimulator(CircuitRunner):
     """A CircuitRunner backend powered by qoro-maestro, Qoro's C++ quantum simulator.
 
@@ -350,7 +339,6 @@ class MaestroSimulator(CircuitRunner):
         # through the same worker pool instead of each spawning their own.
         self._executor: ThreadPoolExecutor | None = None
         self._executor_lock = Lock()
-        self._executor_finalizer: weakref.finalize | None = None
 
     @property
     def maestro_config(self) -> MaestroConfig:
@@ -393,27 +381,18 @@ class MaestroSimulator(CircuitRunner):
         with self._executor_lock:
             if self._executor is None:
                 n_workers = max(1, (os.cpu_count() or 2) // 2)
-                executor = ThreadPoolExecutor(
+                self._executor = ThreadPoolExecutor(
                     max_workers=n_workers,
                     thread_name_prefix="maestro",
-                )
-                # Finalizer: shut the pool down when the simulator is GC'd
-                # so its threads don't outlive the instance.  Use a static
-                # callable (no ``self`` reference) so the weakref can
-                # actually be collected.
-                self._executor = executor
-                self._executor_finalizer = weakref.finalize(
-                    self, _shutdown_executor, executor
                 )
             return self._executor
 
     def close(self) -> None:
         """Shut down the per-instance executor.
 
-        Safe to call multiple times.  Called automatically when the
-        instance is garbage-collected via :class:`weakref.finalize`, but
-        callers that want deterministic cleanup (e.g. inside long-running
-        services) can invoke this explicitly.
+        Safe to call multiple times.  The pool's idle threads also exit once
+        the instance is garbage-collected; callers that want deterministic
+        cleanup (e.g. inside long-running services) can invoke this explicitly.
 
         ``shutdown(wait=True)`` runs **outside** ``_executor_lock`` — a
         concurrent ``submit_circuits`` on another thread can grab the lock
@@ -424,13 +403,7 @@ class MaestroSimulator(CircuitRunner):
         """
         with self._executor_lock:
             executor = self._executor
-            finalizer = self._executor_finalizer
-            # Detach the finalizer before zeroing attributes so a GC pass
-            # interleaving these two writes can't fire the callback.
-            if finalizer is not None:
-                finalizer.detach()
             self._executor = None
-            self._executor_finalizer = None
         if executor is not None:
             executor.shutdown(wait=True)
 
@@ -499,11 +472,7 @@ class MaestroSimulator(CircuitRunner):
             noise_kwargs = config._noise_realization_kwargs()
 
         base_config = config._simulator_config()
-        per_circuit_shots = (
-            per_circuit_or_none(shot_groups, len(circuit_labels))
-            if ham_ops is None
-            else None
-        )
+        per_circuit_shots = per_circuit_or_none(shot_groups, len(circuit_labels))
 
         def _run(item):
             i, label, qasm = item

@@ -4,7 +4,6 @@
 
 """Utilities for working with Qiskit BackendProperties and BackendV2 conversion."""
 
-import datetime
 from typing import Any
 
 from qiskit.circuit.library.standard_gates import get_standard_gate_name_mapping
@@ -33,147 +32,95 @@ def _to_hertz(value: float, unit: str) -> float:
     return float(value) * factor
 
 
-def _normalize_properties(
-    properties: dict[str, Any],
-    default_date: datetime.datetime | None = None,
-) -> dict[str, Any]:
+def _normalize_properties(properties: dict[str, Any]) -> dict[str, Any]:
     """
     Preprocess an incomplete BackendProperties dictionary by filling in missing
-    required fields with sensible defaults.
+    fields with sensible defaults.
 
-    This function makes it easier to create BackendProperties dictionaries by
-    allowing you to omit fields that have obvious defaults, such as:
-    - Missing top-level fields: `backend_name`, `backend_version`, `last_update_date`
-    - Missing `unit` field for dimensionless parameters (e.g., gate_error)
-    - Missing `general` field (empty list)
-    - Missing `gates` field (empty list)
-    - Missing `qubits` field (empty list)
-    - Missing `date` fields in Nduv objects
+    The ``gates`` and ``qubits`` lists default to empty, and
+    each Nduv's missing ``unit`` is inferred from its name ("" for
+    dimensionless quantities such as ``gate_error``).
 
     Args:
-        properties: Incomplete BackendProperties dictionary. Can omit:
-            - `unit` field in parameter/qubit Nduv objects (defaults to "" for
-              dimensionless quantities like gate_error, or inferred from name)
-            - `general` field (defaults to empty list)
-            - `gates` field (defaults to empty list)
-            - `qubits` field (defaults to empty list)
-            - `date` field in Nduv objects (defaults to current time or provided default)
-        default_date: Optional datetime to use for missing date fields.
-            If None, uses current time.
+        properties: Incomplete BackendProperties dictionary.
 
     Returns:
-        Complete BackendProperties dictionary ready for downstream consumption.
+        Normalised BackendProperties dictionary.
 
     Example:
         >>> props = {
-        ...     "backend_name": "test",
         ...     "gates": [{
         ...         "gate": "sx",
         ...         "qubits": [0],
         ...         "parameters": [{
         ...             "name": "gate_error",
         ...             "value": 0.01,
-        ...             # unit and date will be added automatically
+        ...             # unit will be added automatically
         ...         }]
         ...     }]
         ... }
         >>> normalized = _normalize_properties(props)
     """
-    if default_date is None:
-        default_date = datetime.datetime.now()
-
     # Create a shallow copy to avoid mutating the input
     # (nested structures are rebuilt below to ensure no mutation)
     normalized = properties.copy()
 
-    # Add missing required top-level fields
-    if "backend_name" not in normalized:
-        normalized["backend_name"] = "custom_backend"
-    if "backend_version" not in normalized:
-        normalized["backend_version"] = "1.0.0"
-    if "last_update_date" not in normalized:
-        normalized["last_update_date"] = default_date
-
-    # Add missing general field
-    if "general" not in normalized:
-        normalized["general"] = []
-
-    # Add missing gates field (required by BackendProperties)
+    # Add missing gates field
     if "gates" not in normalized:
         normalized["gates"] = []
 
-    # Add missing qubits field (required by BackendProperties)
+    # Add missing qubits field
     if "qubits" not in normalized:
         normalized["qubits"] = []
 
     # Normalise qubits (list of lists of Nduv objects)
-    if "qubits" in normalized:
-        normalized["qubits"] = [
-            [_normalize_nduv(param, default_date) for param in qubit_params]
-            for qubit_params in normalized["qubits"]
-        ]
+    normalized["qubits"] = [
+        [_normalize_nduv(param) for param in qubit_params]
+        for qubit_params in normalized["qubits"]
+    ]
 
     # Normalise gates (list of gate dicts with parameters)
-    if "gates" in normalized:
-        normalized["gates"] = [
-            {
-                **gate,
-                "parameters": [
-                    _normalize_nduv(param, default_date)
-                    for param in gate.get("parameters", [])
-                ],
-            }
-            for gate in normalized["gates"]
-        ]
-
-    # Normalise general (list of Nduv objects)
-    if "general" in normalized and normalized["general"]:
-        normalized["general"] = [
-            _normalize_nduv(param, default_date) for param in normalized["general"]
-        ]
+    normalized["gates"] = [
+        {
+            **gate,
+            "parameters": [
+                _normalize_nduv(param) for param in gate.get("parameters", [])
+            ],
+        }
+        for gate in normalized["gates"]
+    ]
 
     return normalized
 
 
-def _normalize_nduv(
-    nduv: dict[str, Any], default_date: datetime.datetime
-) -> dict[str, Any]:
+def _normalize_nduv(nduv: dict[str, Any]) -> dict[str, Any]:
     """
-    Normalise a single Nduv (Name, Date, Unit, Value) object by adding
-    missing required fields.
+    Normalise a single Nduv (Name, Date, Unit, Value) object by inferring a
+    missing ``unit`` from its name.
 
     Args:
         nduv: Nduv dictionary (may be incomplete)
-        default_date: Default date to use if missing
 
     Returns:
-        Complete Nduv dictionary
-    """
-    normalized = nduv.copy()
+        Nduv dictionary with a ``unit``.
 
-    # Add missing date field
-    if "date" not in normalized:
-        normalized["date"] = default_date
+    Raises:
+        ValueError: If ``nduv`` has no ``name``.
+    """
+    if "name" not in nduv:
+        raise ValueError(f"Calibration entry {nduv!r} has no 'name'.")
+    normalized = nduv.copy()
 
     # Add missing unit field
     if "unit" not in normalized:
-        name = normalized.get("name", "").lower()
-        # Dimensionless quantities
-        if name in ("gate_error", "readout_error", "prob"):
-            normalized["unit"] = ""
-        # Time-based quantities
-        elif name in ("t1", "t2", "gate_length", "readout_length"):
-            # Infer unit from common patterns, default to "ns" for gate_length
-            if name == "gate_length":
-                normalized["unit"] = "ns"
-            elif name in ("t1", "t2"):
-                normalized["unit"] = "us"  # microseconds is common
-            else:
-                normalized["unit"] = "ns"
-        # Frequency-based quantities
+        name = normalized["name"].lower()
+        if name in ("t1", "t2"):
+            normalized["unit"] = "us"
+        elif name in ("gate_length", "readout_length"):
+            normalized["unit"] = "ns"
         elif name in ("frequency", "freq"):
             normalized["unit"] = "GHz"
-        # Default to empty string for unknown quantities
+        # Dimensionless (gate_error, readout_error, prob) and unknown quantities
         else:
             normalized["unit"] = ""
 
@@ -194,9 +141,9 @@ def _qubit_calibration_from_nduv_list(
     readout_error: float | None = None
     readout_length_s: float | None = None
     for nduv in nduv_list:
-        name = str(nduv.get("name", "")).lower()
+        name = str(nduv["name"]).lower()
         value = nduv["value"]
-        unit = str(nduv.get("unit", ""))
+        unit = str(nduv["unit"])
         if name == "t1":
             qp_kwargs["t1"] = _to_seconds(value, unit)
         elif name == "t2":
@@ -220,9 +167,9 @@ def _gate_calibration_from_nduv_list(
     duration_s: float | None = None
     error: float | None = None
     for nduv in nduv_list:
-        name = str(nduv.get("name", "")).lower()
+        name = str(nduv["name"]).lower()
         value = nduv["value"]
-        unit = str(nduv.get("unit", ""))
+        unit = str(nduv["unit"])
         if name == "gate_length":
             duration_s = _to_seconds(value, unit)
         elif name == "gate_error":
@@ -242,7 +189,7 @@ def _build_target_from_normalized(
     :class:`QubitProperties`; gates not listed in ``properties["gates"]``
     are not added.
     """
-    qubits_list = normalized_properties.get("qubits", [])
+    qubits_list = normalized_properties["qubits"]
     qubit_properties: list[QubitProperties] = []
     readout_props: dict[tuple[int, ...], InstructionProperties] = {}
     for q in range(n_qubits):
@@ -264,14 +211,14 @@ def _build_target_from_normalized(
     # carries every (qarg → InstructionProperties) entry for that gate.
     name_to_gate = get_standard_gate_name_mapping()
     grouped: dict[str, dict[tuple[int, ...], InstructionProperties]] = {}
-    for gate_dict in normalized_properties.get("gates", []):
+    for gate_dict in normalized_properties["gates"]:
+        if "qubits" not in gate_dict:
+            raise ValueError(f"Gate entry {gate_dict!r} has no 'qubits'.")
         name = str(gate_dict.get("gate", ""))
         if name not in name_to_gate:
             continue
-        qargs = tuple(int(q) for q in gate_dict.get("qubits", []))
-        duration_s, error = _gate_calibration_from_nduv_list(
-            gate_dict.get("parameters", [])
-        )
+        qargs = tuple(int(q) for q in gate_dict["qubits"])
+        duration_s, error = _gate_calibration_from_nduv_list(gate_dict["parameters"])
         grouped.setdefault(name, {})[qargs] = InstructionProperties(
             duration=duration_s, error=error
         )
@@ -299,7 +246,6 @@ def _build_target_from_normalized(
 def create_backend_from_properties(
     properties: dict[str, Any],
     n_qubits: int | None = None,
-    default_date: datetime.datetime | None = None,
 ) -> GenericBackendV2:
     """
     Create a populated GenericBackendV2 from a BackendProperties dictionary.
@@ -322,8 +268,6 @@ def create_backend_from_properties(
             Missing fields will be filled automatically.
         n_qubits: Optional number of qubits. If None, will be inferred from the
             length of the "qubits" list in the properties dictionary.
-        default_date: Optional datetime to use for missing date fields.
-            If None, uses current time.
 
     Returns:
         GenericBackendV2 backend whose ``target`` carries the supplied
@@ -331,11 +275,12 @@ def create_backend_from_properties(
 
     Raises:
         ValueError: If n_qubits is not provided and cannot be inferred from properties
-            (i.e., qubits list is empty or missing), or if n_qubits is less than 1.
+            (i.e., qubits list is empty or missing), if n_qubits is less than 1,
+            if a calibration entry has no ``name``, or if a gate entry has no
+            ``qubits``.
 
     Example:
         >>> props = {
-        ...     "backend_name": "test",
         ...     "qubits": [[{"name": "T1", "value": 100.0}]],  # 1 qubit
         ...     "gates": [{"gate": "sx", "qubits": [0], "parameters": []}]
         ... }
@@ -349,11 +294,11 @@ def create_backend_from_properties(
         120
     """
     # Normalise the properties first
-    normalized_properties = _normalize_properties(properties, default_date)
+    normalized_properties = _normalize_properties(properties)
 
     # Infer number of qubits from qubits list length if not provided
     if n_qubits is None:
-        n_qubits = len(normalized_properties.get("qubits", []))
+        n_qubits = len(normalized_properties["qubits"])
         if n_qubits == 0:
             raise ValueError(
                 "n_qubits must be provided when properties dictionary has no qubits, "

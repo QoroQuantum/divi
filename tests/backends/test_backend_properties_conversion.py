@@ -2,7 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-import datetime
 import math
 
 import pytest
@@ -18,184 +17,56 @@ from divi.backends._backend_properties_conversion import (
     _normalize_nduv,
     _normalize_properties,
 )
+from tests._helpers import exact_match
+
+
+def _sx_gate(*parameters: dict, qubits: tuple[int, ...] = (0,)) -> dict:
+    return {"gate": "sx", "qubits": list(qubits), "parameters": list(parameters)}
 
 
 class TestNormalizeNduv:
     """Tests for _normalize_nduv helper function."""
 
-    def test_adds_missing_date(self):
-        """Test that missing date field is added."""
-        default_date = datetime.datetime(2025, 1, 1, 12, 0, 0)
-        nduv = {"name": "T1", "value": 100.0}
+    @pytest.mark.parametrize(
+        ("name", "unit"),
+        [
+            ("gate_error", ""),
+            ("readout_error", ""),
+            ("T1", "us"),
+            ("T2", "us"),
+            ("gate_length", "ns"),
+            ("readout_length", "ns"),
+            ("frequency", "GHz"),
+            ("freq", "GHz"),
+            ("unknown_param", ""),
+            ("t1", "us"),
+            ("Gate_Length", "ns"),
+            ("FREQUENCY", "GHz"),
+        ],
+    )
+    def test_adds_unit_by_name(self, name, unit):
+        """Test that a missing unit is inferred from the parameter name, ignoring case."""
+        result = _normalize_nduv({"name": name, "value": 1.0})
 
-        result = _normalize_nduv(nduv, default_date)
+        assert result["unit"] == unit
 
-        assert result["date"] == default_date
-        assert result["name"] == "T1"
-        assert result["value"] == 100.0
-
-    def test_preserves_existing_date(self):
-        """Test that existing date field is preserved."""
-        existing_date = datetime.datetime(2024, 12, 25, 10, 0, 0)
-        default_date = datetime.datetime(2025, 1, 1, 12, 0, 0)
-        nduv = {"name": "T1", "date": existing_date, "value": 100.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["date"] == existing_date
-        assert result["date"] != default_date
-
-    def test_adds_unit_for_gate_error(self):
-        """Test that gate_error gets empty string unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "gate_error", "value": 0.01}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == ""
-
-    def test_adds_unit_for_readout_error(self):
-        """Test that readout_error gets empty string unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "readout_error", "value": 0.02}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == ""
-
-    def test_adds_unit_for_t1(self):
-        """Test that T1 gets microseconds unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "T1", "value": 100.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "us"
-
-    def test_adds_unit_for_t2(self):
-        """Test that T2 gets microseconds unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "T2", "value": 80.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "us"
-
-    def test_adds_unit_for_gate_length(self):
-        """Test that gate_length gets nanoseconds unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "gate_length", "value": 35.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "ns"
-
-    def test_adds_unit_for_readout_length(self):
-        """Test that readout_length gets nanoseconds unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "readout_length", "value": 1000.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "ns"
-
-    def test_adds_unit_for_frequency(self):
-        """Test that frequency gets GHz unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "frequency", "value": 5.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "GHz"
-
-    def test_adds_unit_for_freq(self):
-        """Test that freq gets GHz unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "freq", "value": 5.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "GHz"
-
-    def test_adds_empty_unit_for_unknown_parameter(self):
-        """Test that unknown parameters get empty string unit."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv = {"name": "unknown_param", "value": 42.0}
-
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == ""
-
-    def test_preserves_existing_unit(self):
-        """Test that existing unit field is preserved."""
-        default_date = datetime.datetime(2025, 1, 1)
+    def test_a_complete_entry_is_unchanged(self):
+        """A given unit is kept rather than inferred (T1 would infer "us")."""
         nduv = {"name": "T1", "unit": "ms", "value": 100.0}
 
-        result = _normalize_nduv(nduv, default_date)
-
-        assert result["unit"] == "ms"  # Preserved, not overridden to "us"
-
-    def test_case_insensitive_name_matching(self):
-        """Test that parameter name matching is case-insensitive."""
-        default_date = datetime.datetime(2025, 1, 1)
-        nduv_upper = {"name": "GATE_ERROR", "value": 0.01}
-        nduv_lower = {"name": "gate_error", "value": 0.01}
-        nduv_mixed = {"name": "Gate_Error", "value": 0.01}
-
-        result_upper = _normalize_nduv(nduv_upper, default_date)
-        result_lower = _normalize_nduv(nduv_lower, default_date)
-        result_mixed = _normalize_nduv(nduv_mixed, default_date)
-
-        assert result_upper["unit"] == ""
-        assert result_lower["unit"] == ""
-        assert result_mixed["unit"] == ""
+        assert _normalize_nduv(nduv) == nduv
 
 
 class TestNormalizeProperties:
     """Tests for _normalize_properties function."""
 
-    def test_adds_missing_top_level_fields(self):
-        """Test that missing top-level fields are added."""
-        props = {}
-        default_date = datetime.datetime(2025, 1, 1, 12, 0, 0)
+    def test_adds_missing_lists(self):
+        result = _normalize_properties({})
 
-        result = _normalize_properties(props, default_date)
-
-        assert result["backend_name"] == "custom_backend"
-        assert result["backend_version"] == "1.0.0"
-        assert result["last_update_date"] == default_date
-        assert result["general"] == []
-        assert result["gates"] == []
-        assert result["qubits"] == []
-
-    def test_uses_current_time_when_no_default_date(self):
-        """Test that current time is used when default_date is None."""
-        props = {}
-        before = datetime.datetime.now()
-
-        result = _normalize_properties(props, None)
-
-        after = datetime.datetime.now()
-        assert before <= result["last_update_date"] <= after
-
-    def test_preserves_existing_top_level_fields(self):
-        """Test that existing top-level fields are preserved."""
-        props = {
-            "backend_name": "my_backend",
-            "backend_version": "2.0.0",
-            "last_update_date": datetime.datetime(2024, 1, 1),
-        }
-        default_date = datetime.datetime(2025, 1, 1)
-
-        result = _normalize_properties(props, default_date)
-
-        assert result["backend_name"] == "my_backend"
-        assert result["backend_version"] == "2.0.0"
-        assert result["last_update_date"] == datetime.datetime(2024, 1, 1)
+        assert result == {"gates": [], "qubits": []}
 
     def test_normalizes_qubits(self):
         """Test that qubit parameters are normalized."""
-        default_date = datetime.datetime(2025, 1, 1)
         props = {
             "qubits": [
                 [{"name": "T1", "value": 100.0}],
@@ -203,17 +74,14 @@ class TestNormalizeProperties:
             ]
         }
 
-        result = _normalize_properties(props, default_date)
+        result = _normalize_properties(props)
 
         assert len(result["qubits"]) == 2
         assert result["qubits"][0][0]["unit"] == "us"
-        assert result["qubits"][0][0]["date"] == default_date
         assert result["qubits"][1][0]["unit"] == "us"
-        assert result["qubits"][1][0]["date"] == default_date
 
     def test_normalizes_gate_parameters(self):
         """Test that gate parameters are normalized."""
-        default_date = datetime.datetime(2025, 1, 1)
         props = {
             "gates": [
                 {
@@ -227,32 +95,12 @@ class TestNormalizeProperties:
             ]
         }
 
-        result = _normalize_properties(props, default_date)
+        result = _normalize_properties(props)
 
         assert len(result["gates"]) == 1
         assert len(result["gates"][0]["parameters"]) == 2
         assert result["gates"][0]["parameters"][0]["unit"] == ""
-        assert result["gates"][0]["parameters"][0]["date"] == default_date
         assert result["gates"][0]["parameters"][1]["unit"] == "ns"
-        assert result["gates"][0]["parameters"][1]["date"] == default_date
-
-    def test_normalizes_general_parameters(self):
-        """Test that general parameters are normalized."""
-        default_date = datetime.datetime(2025, 1, 1)
-        props = {
-            "general": [
-                {"name": "frequency", "value": 5.0},
-                {"name": "unknown", "value": 42.0},
-            ]
-        }
-
-        result = _normalize_properties(props, default_date)
-
-        assert len(result["general"]) == 2
-        assert result["general"][0]["unit"] == "GHz"
-        assert result["general"][0]["date"] == default_date
-        assert result["general"][1]["unit"] == ""
-        assert result["general"][1]["date"] == default_date
 
     def test_does_not_mutate_input(self):
         """Test that input dictionary is not mutated."""
@@ -262,36 +110,17 @@ class TestNormalizeProperties:
         props_copy = {
             "qubits": [[{"name": "T1", "value": 100.0}]],
         }
-        default_date = datetime.datetime(2025, 1, 1)
 
-        _normalize_properties(props, default_date)
+        _normalize_properties(props)
 
-        # Original should be unchanged (no unit/date added)
-        assert "unit" not in props["qubits"][0][0]
-        assert "date" not in props["qubits"][0][0]
         assert props == props_copy
 
-    def test_handles_empty_qubits_list(self):
-        """Test that empty qubits list is handled."""
-        props = {"qubits": []}
-        default_date = datetime.datetime(2025, 1, 1)
-
-        result = _normalize_properties(props, default_date)
-
-        assert result["qubits"] == []
-
-    def test_handles_empty_gates_list(self):
-        """Test that empty gates list is handled."""
-        props = {"gates": []}
-        default_date = datetime.datetime(2025, 1, 1)
-
-        result = _normalize_properties(props, default_date)
-
-        assert result["gates"] == []
+    @pytest.mark.parametrize("key", ["qubits", "gates"])
+    def test_handles_empty_lists(self, key):
+        assert _normalize_properties({key: []})[key] == []
 
     def test_handles_gates_without_parameters(self):
         """Test that gates without parameters are handled."""
-        default_date = datetime.datetime(2025, 1, 1)
         props = {
             "gates": [
                 {
@@ -302,22 +131,10 @@ class TestNormalizeProperties:
             ]
         }
 
-        result = _normalize_properties(props, default_date)
+        result = _normalize_properties(props)
 
         assert len(result["gates"]) == 1
         assert result["gates"][0]["parameters"] == []
-
-    def test_handles_missing_qubits_field(self):
-        """Test that missing qubits field is added as empty list."""
-        props = {
-            "backend_name": "test",
-            "gates": [],
-        }
-        default_date = datetime.datetime(2025, 1, 1)
-
-        result = _normalize_properties(props, default_date)
-
-        assert result["qubits"] == []
 
 
 class TestCreateBackendFromProperties:
@@ -351,14 +168,22 @@ class TestCreateBackendFromProperties:
         """Test that ValueError is raised when qubits is empty and n_qubits is None."""
         props = {"backend_name": "test", "gates": []}
 
-        with pytest.raises(ValueError, match="n_qubits must be provided"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "n_qubits must be provided when properties dictionary has no "
+                "qubits, or qubits list must contain at least one qubit"
+            ),
+        ):
             create_backend_from_properties(props)
 
     def test_raises_error_when_n_qubits_is_zero(self):
         """Test that ValueError is raised when n_qubits is 0."""
         props = {"backend_name": "test"}
 
-        with pytest.raises(ValueError, match="n_qubits must be at least 1"):
+        with pytest.raises(
+            ValueError, match=exact_match("n_qubits must be at least 1")
+        ):
             create_backend_from_properties(props, n_qubits=0)
 
 
@@ -388,12 +213,13 @@ class TestTargetReflectsCalibration:
         assert backend.target.qubit_properties[1].t1 == pytest.approx(200e-6)
         assert backend.target.qubit_properties[1].t2 == pytest.approx(150e-6)
 
-    def test_frequency_reaches_target_qubit_properties(self):
-        """Qubit frequency in GHz reaches the target in Hz."""
+    @pytest.mark.parametrize("name", ["frequency", "freq"])
+    def test_frequency_reaches_target_qubit_properties(self, name):
+        """Qubit frequency in GHz reaches the target in Hz, under either name."""
         props = {
             "qubits": [
-                [{"name": "frequency", "value": 5.0, "unit": "GHz"}],
-                [{"name": "frequency", "value": 5.2, "unit": "GHz"}],
+                [{"name": name, "value": 5.0, "unit": "GHz"}],
+                [{"name": name, "value": 5.2, "unit": "GHz"}],
             ],
         }
 
@@ -435,6 +261,62 @@ class TestTargetReflectsCalibration:
         assert backend.target["sx"][(0,)].duration == pytest.approx(35e-9)
         assert backend.target["cx"][(0, 1)].error == pytest.approx(0.05)
         assert backend.target["cx"][(0, 1)].duration == pytest.approx(250e-9)
+
+    @pytest.mark.parametrize(
+        "parameter, duration, error",
+        [
+            ({"name": "gate_error", "value": 0.01}, None, pytest.approx(0.01)),
+            (
+                {"name": "gate_length", "value": 35.0, "unit": "ns"},
+                pytest.approx(35e-9),
+                None,
+            ),
+        ],
+        ids=["error_only", "length_only"],
+    )
+    def test_missing_gate_calibration_stays_unset(self, parameter, duration, error):
+        """A gate calibration field the input leaves out is ``None`` on the target."""
+        props = {"qubits": [[]], "gates": [_sx_gate(parameter)]}
+
+        properties = create_backend_from_properties(props).target["sx"][(0,)]
+
+        assert properties.duration == duration
+        assert properties.error == error
+
+    @pytest.mark.parametrize(
+        "nduv, message",
+        [
+            (
+                {"name": "T1", "value": 1.0, "unit": "fortnight"},
+                "Unsupported time unit: 'fortnight'",
+            ),
+            (
+                {"name": "frequency", "value": 1.0, "unit": "furlong"},
+                "Unsupported frequency unit: 'furlong'",
+            ),
+        ],
+    )
+    def test_unsupported_unit_raises(self, nduv, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            create_backend_from_properties({"qubits": [[nduv]]})
+
+    @pytest.mark.parametrize(
+        "props, message",
+        [
+            (
+                {"qubits": [[{"value": 1.0}]]},
+                "Calibration entry {'value': 1.0} has no 'name'.",
+            ),
+            (
+                {"qubits": [[]], "gates": [{"gate": "sx", "parameters": []}]},
+                "Gate entry {'gate': 'sx', 'parameters': []} has no 'qubits'.",
+            ),
+        ],
+        ids=["nameless_calibration", "gate_without_qubits"],
+    )
+    def test_malformed_calibration_raises(self, props, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            create_backend_from_properties(props)
 
     def test_readout_calibration_reaches_target_measure(self):
         """readout_error and readout_length end up on the ``measure`` instruction."""
@@ -490,8 +372,16 @@ class TestTargetReflectsCalibration:
         assert backend.target.qubit_properties[1].t1 is None
         assert backend.target.qubit_properties[2].t1 is None
 
+    def test_missing_readout_calibration_measures_without_error_or_duration(self):
+        backend = create_backend_from_properties({"qubits": [[]]}, n_qubits=2)
+
+        for qubit in range(2):
+            assert backend.target["measure"][(qubit,)].duration == 0.0
+            assert backend.target["measure"][(qubit,)].error == 0.0
+
     def test_unknown_gate_names_are_skipped(self):
-        """A gate whose name isn't in qiskit's standard gate registry is dropped."""
+        """A gate whose name isn't in qiskit's standard gate registry is dropped,
+        and the gates listed after it are kept."""
         props = {
             "qubits": [[{"name": "T1", "value": 100.0, "unit": "us"}]],
             "gates": [
@@ -499,13 +389,15 @@ class TestTargetReflectsCalibration:
                     "gate": "definitely_not_a_real_gate",
                     "qubits": [0],
                     "parameters": [{"name": "gate_error", "value": 0.5}],
-                }
+                },
+                _sx_gate({"name": "gate_error", "value": 0.01}),
             ],
         }
 
         backend = create_backend_from_properties(props)
 
         assert "definitely_not_a_real_gate" not in backend.target.operation_names
+        assert backend.target["sx"][(0,)].error == pytest.approx(0.01)
 
 
 class TestNoiseModelRoundtrip:

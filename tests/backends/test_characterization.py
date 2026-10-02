@@ -315,6 +315,7 @@ class TestSerializeQuboForWire:
         )
         diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
         signs_arr = np.asarray(wire["signs"], dtype=np.float64)
+        assert set(wire["signs"]) <= {-1.0, 1.0}
         Q_decoded = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
         # Tolerance tracks ``eigh``'s ``O(n · eps · ‖Q‖)`` backward error.
         np.testing.assert_allclose(
@@ -1678,16 +1679,9 @@ class TestTopLevelCharacterize:
         assert options["cost_qubo"]["0"] == -1.0
 
 
-class TestJobTypeCharacterize:
-    """Tests for the CHARACTERIZE enum member."""
-
-    def test_member_exists_with_validate_wire_value(self):
-        # Wire value must remain ``"VALIDATE"`` — server compatibility.
-        assert JobType.CHARACTERIZE.value == "VALIDATE"
-
-    def test_member_in_all_values(self):
-        values = [j.value for j in JobType]
-        assert "VALIDATE" in values
+def test_job_type_characterize_has_validate_wire_value():
+    # Wire value must remain ``"VALIDATE"`` — server compatibility.
+    assert JobType.CHARACTERIZE.value == "VALIDATE"
 
 
 @pytest.fixture
@@ -1881,7 +1875,9 @@ class TestCanonicalResultFields:
         assert "λ ≤" not in summary
 
     def test_constraint_diagnostics(self):
-        assert self._result().constraint_diagnostics[0]["type"] == "max_cardinality"
+        result = self._result()
+        assert result.constraint_diagnostics[0]["type"] == "max_cardinality"
+        assert "Constraint Diagnostics: 1 constraint(s)" in result.summary()
 
     def test_summary_shows_regime_confidence_and_ar(self):
         s = self._result().summary()
@@ -1889,13 +1885,6 @@ class TestCanonicalResultFields:
         assert "estimated" in s
         assert "0.87" in s
         assert "± 0.05" in s
-
-    def test_summary_shows_penalty_thresholds_and_diagnostics_count(self):
-        summary = self._result().summary()
-
-        assert "Empirical Feasible Threshold: λ ≥ 2.00" in summary
-        assert "Guaranteed Penalty Threshold: λ ≥ 3.50" in summary
-        assert "Constraint Diagnostics: 1 constraint(s)" in summary
 
     def test_summary_labels_amenability_not_quality_score(self):
         """D2: summary must match display()'s 'QAOA Amenability' label and not
@@ -1908,10 +1897,10 @@ class TestCanonicalResultFields:
         assert "mean over the output" in s.lower()
         assert "light-cone" in s.lower()
 
-    def test_summary_shows_normalized_cost_gap(self):
+    def test_summary_shows_normalised_cost_gap(self):
         """D5: the summary leads with the scale-invariant normalised gap."""
         s = self._result().summary()
-        assert "normalised" in s
+        assert "Cost Gap: 0.3300 normalised (1.0000 raw)" in s
 
     def test_summary_shows_relaxation_bound_when_present(self):
         """D4: the provable LP relaxation bound is surfaced in the summary."""
@@ -2109,39 +2098,6 @@ class TestNamedVariableBQMSerialization:
         assert wire["2"] == -1.0  # x9
         assert wire["1,2"] == 1.5  # (x9, x2) -> sorted by index -> (1, 2)
         assert wire["0,2"] == 0.5  # (x10, x9) -> sorted by index -> (0, 2)
-
-
-class TestFactoredWireContract:
-    """The factored_v1 payload must satisfy composer's from_wire decode."""
-
-    def test_factored_payload_matches_server_decode_contract(self):
-        rng = np.random.default_rng(0)
-        u = rng.standard_normal((80, 1))
-        Q = u @ u.T  # rank-1 -> factored encoding wins over legacy
-        terms: dict = {}
-        for i in range(80):
-            if abs(Q[i, i]) > 0:
-                terms[(i,)] = float(Q[i, i])
-            for j in range(i + 1, 80):
-                v = Q[i, j] + Q[j, i]
-                if abs(v) > 0:
-                    terms[(i, j)] = float(v)
-        wire = _serialize_qubo_for_wire(BinaryOptimizationProblem(terms))
-        assert wire.get("_format") == "factored_v1"
-
-        # Decode exactly as composer-service FactoredQUBO.from_wire does and
-        # confirm the byte-length / sign contract and the reconstruction.
-        n, k = wire["n"], wire["k"]
-        f_bytes = bytes.fromhex(wire["F"])
-        assert len(f_bytes) == n * k * 8
-        f = np.frombuffer(f_bytes, dtype=np.float64).reshape(n, k)
-        signs = np.asarray(wire["signs"], dtype=np.float64)
-        assert len(signs) == k and np.all((signs == 1.0) | (signs == -1.0))
-        diag_bytes = bytes.fromhex(wire["diag"])
-        assert len(diag_bytes) == n * 8
-        residual = np.frombuffer(diag_bytes, dtype=np.float64)
-        q_recon = f @ np.diag(signs) @ f.T + np.diag(residual)
-        assert np.allclose(q_recon, Q, atol=1e-6)
 
 
 @pytest.mark.requires_api_key

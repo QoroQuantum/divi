@@ -15,6 +15,8 @@ from divi.backends._shot_allocation import (
     to_wire,
     validate,
 )
+from tests._helpers import exact_match
+from tests.backends._helpers import uncovered_circuits_message
 
 
 class TestShotRange:
@@ -29,48 +31,68 @@ class TestShotRange:
 
 
 class TestValidate:
-    def test_contiguous_full_coverage_passes(self):
-        ranges = [ShotRange(0, 2, 100), ShotRange(2, 5, 200)]
-        validate(ranges, n_circuits=5)  # no raise
-
-    def test_non_contiguous_full_coverage_passes(self):
-        ranges = [ShotRange(2, 5, 200), ShotRange(0, 2, 100)]
+    @pytest.mark.parametrize(
+        "ranges",
+        [
+            [ShotRange(0, 2, 100), ShotRange(2, 5, 200)],
+            [ShotRange(2, 5, 200), ShotRange(0, 2, 100)],
+        ],
+        ids=["contiguous", "non_contiguous"],
+    )
+    def test_full_coverage_passes(self, ranges):
         validate(ranges, n_circuits=5)
 
     def test_partial_coverage_raises(self):
         ranges = [ShotRange(0, 3, 100)]
-        with pytest.raises(ValueError, match=r"missing indices \[3, 4\]"):
+        with pytest.raises(
+            ValueError, match=exact_match(uncovered_circuits_message([3, 4]))
+        ):
             validate(ranges, n_circuits=5)
 
     def test_overlap_raises(self):
         ranges = [ShotRange(0, 3, 100), ShotRange(2, 5, 200)]
-        with pytest.raises(ValueError, match=r"overlaps an earlier range"):
+        message = (
+            f"ShotRange {ShotRange(2, 5, 200)} overlaps an earlier range at index 2."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
             validate(ranges, n_circuits=5)
 
     def test_non_positive_shots_raises(self):
         ranges = [ShotRange(0, 5, 0)]
-        with pytest.raises(ValueError, match=r"non-positive shot count"):
+        message = f"ShotRange {ShotRange(0, 5, 0)} has non-positive shot count."
+        with pytest.raises(ValueError, match=exact_match(message)):
             validate(ranges, n_circuits=5)
 
-    def test_reversed_range_raises(self):
-        ranges = [ShotRange(5, 2, 100)]
-        with pytest.raises(ValueError, match=r"out of bounds"):
+    @pytest.mark.parametrize(
+        "ranges",
+        [
+            [ShotRange(5, 2, 100)],
+            [ShotRange(0, 10, 100)],
+            [ShotRange(0, 5, 100), ShotRange(2, 2, 100)],
+        ],
+        ids=["reversed", "past_end", "empty"],
+    )
+    def test_out_of_bounds_raises(self, ranges):
+        message = f"ShotRange {ranges[-1]} is out of bounds for n_circuits=5."
+        with pytest.raises(ValueError, match=exact_match(message)):
             validate(ranges, n_circuits=5)
 
-    def test_out_of_bounds_raises(self):
-        ranges = [ShotRange(0, 10, 100)]
-        with pytest.raises(ValueError, match=r"out of bounds"):
-            validate(ranges, n_circuits=5)
 
-
-class TestPerCircuit:
-    def test_expands_uniform_range(self):
-        ranges = [ShotRange(0, 3, 100)]
-        assert per_circuit(ranges, 3) == [100, 100, 100]
-
-    def test_expands_heterogeneous_ranges(self):
-        ranges = [ShotRange(0, 2, 100), ShotRange(2, 5, 200)]
-        assert per_circuit(ranges, 5) == [100, 100, 200, 200, 200]
+@pytest.mark.parametrize(
+    "ranges, n_circuits, expected",
+    [
+        ([ShotRange(0, 3, 100)], 3, [100, 100, 100]),
+        (
+            [ShotRange(0, 2, 100), ShotRange(2, 5, 200)],
+            5,
+            [100, 100, 200, 200, 200],
+        ),
+        ([ShotRange(1, 2, 100)], 3, [0, 100, 0]),
+    ],
+    ids=["uniform", "heterogeneous", "uncovered_get_zero"],
+)
+def test_per_circuit_expands_ranges(ranges, n_circuits, expected):
+    assert per_circuit(ranges, n_circuits) == expected
 
 
 class TestBucketByShots:
@@ -116,16 +138,7 @@ class TestWireFormat:
         ranges = [ShotRange(0, 2, 100), ShotRange(2, 5, 200)]
         assert to_wire(ranges) == [[0, 2, 100], [2, 5, 200]]
 
-    def test_from_wire_normalises_triples(self):
-        out = from_wire([[0, 2, 100], [2, 5, 200]])
-        assert out == [ShotRange(0, 2, 100), ShotRange(2, 5, 200)]
-
-    def test_from_wire_passes_through_shot_ranges(self):
-        ranges = [ShotRange(0, 2, 100)]
-        out = from_wire(ranges)
-        assert out == ranges
-
-    def test_from_wire_accepts_mixed_inputs(self):
+    def test_from_wire_normalises_triples_and_shot_ranges(self):
         out = from_wire([ShotRange(0, 2, 100), [2, 5, 200]])
         assert out == [ShotRange(0, 2, 100), ShotRange(2, 5, 200)]
 

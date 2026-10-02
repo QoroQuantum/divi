@@ -127,10 +127,6 @@ def _limbs_to_bitstrings(limbs: np.ndarray, n_bits: int, L: int) -> list[str]:
     n_rows = limbs.shape[0]
     if n_bits < 0 or n_bits > L * 64:
         raise ValueError(f"width {n_bits} is not renderable from {L} limb(s)")
-    if n_bits == 0:
-        # Python's ``s[-0:] == s`` quirk has a slicing analogue here: a
-        # ``[-0:]`` bit slice would keep the whole limb width.
-        return [""] * n_rows
 
     out: list[str] = []
     rows_per_block = max(1, _RENDER_BLOCK_CELLS // (L * 64))

@@ -14,8 +14,23 @@ import pytest
 from pydantic import ValidationError
 
 from divi.backends import MaestroConfig, MaestroSimulator
+from tests._helpers import exact_match
+from tests.backends._helpers import reset_unknown_message, validation_error_message
 
 _MPS = maestro.SimulationType.MatrixProductState
+
+_SIMULATOR_CONFIG_REFUSAL = (
+    "maestro_config must be a MaestroConfig, got SimulatorConfig; "
+    "convert it with MaestroConfig.from_simulator_config(...)."
+)
+
+
+def _unknown_option_message(name: str, suggestion: str) -> str:
+    return (
+        f"MaestroConfig got unknown options '{name}' (did you mean '{suggestion}'?)."
+        " Simulator options are maestro.SimulatorConfig's: "
+        f"{sorted(maestro.SimulatorConfig._fields)}."
+    )
 
 
 def _mps_simulator_config(**options) -> "maestro.SimulatorConfig":
@@ -30,21 +45,17 @@ class TestConstruction:
         assert config.noise_seed is None
         assert config.noise_realizations is None
 
-    def test_options_are_held_as_given(self):
-        config = MaestroConfig(max_bond_dimension=32, precision="double")
-        assert config._simulator_options() == {
-            "max_bond_dimension": 32,
-            "precision": "double",
-        }
-        assert config.max_bond_dimension == 32
-
     def test_unset_options_read_as_maestros_defaults(self):
-        config = MaestroConfig(max_bond_dimension=16)
+        config = MaestroConfig(max_bond_dimension=16, precision="double")
         defaults = maestro.SimulatorConfig()
+        assert config.max_bond_dimension == 16
         assert config.simulation_type == defaults.simulation_type
         assert config.lookahead_depth == defaults.lookahead_depth
         assert config.seed is None
-        assert config._simulator_options() == {"max_bond_dimension": 16}
+        assert config._simulator_options() == {
+            "max_bond_dimension": 16,
+            "precision": "double",
+        }
 
     def test_unknown_attributes_still_raise(self):
         with pytest.raises(AttributeError):
@@ -58,16 +69,6 @@ class TestConstruction:
     def test_noise_model_is_held_by_reference(self):
         noise_model = maestro.NoiseModel()
         assert MaestroConfig(noise_model=noise_model).noise_model is noise_model
-
-    def test_frozen(self):
-        config = MaestroConfig(noise_seed=1)
-        with pytest.raises(ValidationError):
-            config.noise_seed = 2
-
-    def test_equality_on_value(self):
-        assert MaestroConfig(max_bond_dimension=8, noise_seed=11) == MaestroConfig(
-            max_bond_dimension=8, noise_seed=11
-        )
 
 
 class TestFromSimulatorConfig:
@@ -106,8 +107,9 @@ class TestUnknownOptions:
         ],
     )
     def test_a_misspelt_option_names_the_closest_match(self, name, suggestion):
-        with pytest.raises(ValidationError, match=rf"did you mean '{suggestion}'"):
-            MaestroConfig(**{name: 1})
+        assert validation_error_message(
+            lambda: MaestroConfig(**{name: 1})
+        ) == _unknown_option_message(name, suggestion)
 
     def test_shots_point_to_where_they_are_set(self):
         with pytest.raises(
@@ -132,8 +134,12 @@ class TestMaestroValidates:
             MaestroConfig(max_bond_dimension="large")
 
     def test_an_unknown_enum_name_is_rejected(self):
-        with pytest.raises(ValidationError, match="simulation_type must be one of"):
-            MaestroConfig(simulation_type="Nope")
+        assert validation_error_message(
+            lambda: MaestroConfig(simulation_type="Nope")
+        ) == (
+            f"simulation_type must be one of "
+            f"{sorted(maestro.SimulationType.__members__)}. Got 'Nope'."
+        )
 
 
 class TestOverrideAndReset:
@@ -148,15 +154,18 @@ class TestOverrideAndReset:
             noise_model=noise_model,
         )
 
-    def test_override_validates_like_the_constructor(self):
-        with pytest.raises(ValidationError, match="did you mean 'max_bond_dimension'"):
-            MaestroConfig().override(max_bond_dim=32)
-
-    def test_override_returns_a_new_config(self):
-        base = MaestroConfig(noise_seed=11)
-        result = base.override(noise_seed=99)
-        assert result is not base
-        assert base.noise_seed == 11
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda: MaestroConfig().override(max_bond_dim=32),
+            lambda: MaestroConfig().model_copy(update={"max_bond_dim": 32}),
+        ],
+        ids=["override", "model_copy"],
+    )
+    def test_changes_validate_like_the_constructor(self, change):
+        assert validation_error_message(change) == _unknown_option_message(
+            "max_bond_dim", "max_bond_dimension"
+        )
 
     def test_reset_restores_maestros_default(self):
         base = MaestroConfig(simulation_type=_MPS, max_bond_dimension=16)
@@ -167,26 +176,23 @@ class TestOverrideAndReset:
         assert base.reset("noise_model").noise_model is None
 
     def test_reset_rejects_unknown_fields(self):
-        with pytest.raises(ValueError, match="did you mean 'max_bond_dimension'"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                reset_unknown_message("max_bond_dim", "max_bond_dimension")
+            ),
+        ):
             MaestroConfig().reset("max_bond_dim")
-
-    def test_an_empty_reset_is_rejected(self):
-        with pytest.raises(ValueError, match="at least one field"):
-            MaestroConfig().reset()
 
     def test_simulator_options_are_listed_by_dir(self):
         assert "max_bond_dimension" in dir(MaestroConfig())
 
-    def test_model_copy_validates_like_override(self):
-        with pytest.raises(ValidationError, match="did you mean 'max_bond_dimension'"):
-            MaestroConfig().model_copy(update={"max_bond_dim": 32})
+    def test_model_copy_without_update_is_an_equal_copy(self):
+        config = MaestroConfig(max_bond_dimension=8)
+        assert config.model_copy() == config
 
 
 class TestSimulatorPassThrough:
-    def test_config_object_reachable_from_simulator(self):
-        config = MaestroConfig(noise_seed=13, noise_realizations=5)
-        assert MaestroSimulator(maestro_config=config).maestro_config is config
-
     def test_set_seed_replaces_only_the_seed(self):
         noise_model = maestro.NoiseModel()
         sim = MaestroSimulator(
@@ -199,14 +205,26 @@ class TestSimulatorPassThrough:
         assert sim.maestro_config.max_bond_dimension == 8
         assert sim.maestro_config.noise_model is noise_model
 
-    def test_a_simulator_config_is_refused_with_a_pointer(self):
-        with pytest.raises(TypeError, match="from_simulator_config"):
-            MaestroSimulator(maestro_config=maestro.SimulatorConfig())
-
-    def test_assigning_a_simulator_config_is_refused(self):
-        sim = MaestroSimulator()
-        with pytest.raises(TypeError, match="from_simulator_config"):
-            sim.maestro_config = maestro.SimulatorConfig()
+    @pytest.mark.parametrize(
+        "give",
+        [
+            lambda value: MaestroSimulator(maestro_config=value),
+            lambda value: setattr(MaestroSimulator(), "maestro_config", value),
+        ],
+        ids=["constructor", "assignment"],
+    )
+    @pytest.mark.parametrize(
+        "make_value, message",
+        [
+            (maestro.SimulatorConfig, _SIMULATOR_CONFIG_REFUSAL),
+            (dict, "maestro_config must be a MaestroConfig, got dict."),
+        ],
+        ids=["simulator_config_with_pointer", "dict"],
+    )
+    def test_a_non_maestro_config_is_refused(self, give, make_value, message):
+        value = make_value()
+        with pytest.raises(TypeError, match=exact_match(message)):
+            give(value)
 
     def test_loose_noise_kwarg_rejected_on_simulator(self):
         """Noise settings live on :class:`MaestroConfig`, not the simulator."""

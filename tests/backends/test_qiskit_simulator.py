@@ -4,6 +4,7 @@
 
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 
 import pytest
 from qiskit import QuantumCircuit, qasm2
@@ -11,15 +12,20 @@ from qiskit import QuantumCircuit, qasm2
 pytest.importorskip("qiskit_aer")
 
 from qiskit_aer import AerJob, AerSimulator
-from qiskit_aer.noise import NoiseModel
+from qiskit_aer.noise import NoiseModel, ReadoutError
 from qiskit_ibm_runtime.fake_provider import FakeQuitoV2
 
-from divi.backends import ExecutionResult, QiskitSimulator
+from divi.backends import (
+    ExecutionResult,
+    QiskitSimulator,
+    create_backend_from_properties,
+)
 from divi.backends.runners._qiskit import (
     FAKE_BACKENDS,
     _default_n_processes,
     _find_best_fake_backend,
 )
+from tests._helpers import exact_match
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
     QASM_DEPTH_2,
@@ -27,46 +33,94 @@ from tests.backends._circuit_runner_contracts import (
     QASM_X_ON_FIRST_QUBIT,
     SyncRunnerContractsBase,
 )
+from tests.backends._helpers import (
+    SHOT_GROUPS_WITH_HAM_OPS_MESSAGE,
+    padding_warning,
+    uncovered_circuits_message,
+)
+
+_DOUBLE_X_QASM = (
+    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
+    "x q[0];\nx q[0];\nmeasure q[0] -> c[0];\n"
+)
+
+_WIDE_QASM = (
+    'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[28];\ncreg c[28];\n'
+    "h q[0];\nmeasure q[0] -> c[0];\n"
+)
+
+_NO_FAKE_BACKEND_MESSAGE = (
+    "No fake backend available for circuit with 28 qubits. "
+    "Please provide an explicit backend or use a smaller circuit."
+)
 
 
-class TestFindBestFakeBackend:
-    """Tests for _find_best_fake_backend function."""
+def _gate(
+    name: str,
+    qubits: tuple[int, ...],
+    *,
+    length_ns: float | None = None,
+    error: float = 0.0,
+) -> dict:
+    parameters = [{"name": "gate_error", "value": error}]
+    if length_ns is not None:
+        parameters.append({"name": "gate_length", "value": length_ns, "unit": "ns"})
+    return {"gate": name, "qubits": list(qubits), "parameters": parameters}
 
-    def test_find_backend_for_small_circuit(self):
-        """Test finding backend for a small circuit."""
-        circuit = QuantumCircuit(3)
-        circuit.h(0)
-        circuit.cx(0, 1)
-        circuit.measure_all()
 
-        result = _find_best_fake_backend(circuit)
-        assert result is not None
-        # Should find a backend with at least 3 qubits (5-qubit backend)
-        assert 5 in FAKE_BACKENDS
-        assert result == FAKE_BACKENDS[5]
+def _calibrated_backend(
+    n_qubits: int, *gates: dict, readout_length_ns: float | None = None
+):
+    """A backend carrying exactly ``gates``, on long-lived qubits."""
+    qubit = [
+        {"name": "T1", "value": 1e6, "unit": "us"},
+        {"name": "T2", "value": 1e6, "unit": "us"},
+    ]
+    if readout_length_ns is not None:
+        qubit.append(
+            {"name": "readout_length", "value": readout_length_ns, "unit": "ns"}
+        )
+    return create_backend_from_properties(
+        {"qubits": [qubit] * n_qubits, "gates": list(gates)}
+    )
 
-    def test_find_backend_for_large_circuit(self):
-        """Test finding backend for a large circuit."""
-        circuit = QuantumCircuit(20)
-        circuit.h(0)
-        circuit.cx(0, 1)
-        circuit.measure_all()
 
-        result = _find_best_fake_backend(circuit)
-        assert result is not None
-        # Should find a backend with at least 20 qubits
-        assert result == FAKE_BACKENDS[20]
+class _InProcessPool:
+    """Stands in for ``multiprocessing.Pool``, mapping in the calling process."""
 
-    def test_find_backend_edge_case_exceeds_all(self):
-        """Test edge case where circuit exceeds all fake backend sizes (lines 56-58)."""
-        # Create a circuit with more qubits than the largest fake backend (27)
-        circuit = QuantumCircuit(100)
-        circuit.h(0)
-        circuit.measure_all()
+    def __enter__(self):
+        return self
 
-        result = _find_best_fake_backend(circuit)
-        # Should return None when circuit exceeds all backend sizes
-        assert result is None
+    def __exit__(self, *exc_info):
+        return False
+
+    def map(self, fn, iterable):
+        return [fn(item) for item in iterable]
+
+
+def test_fake_backend_sizes_match_their_keys():
+    for n_qubits, backend_classes in FAKE_BACKENDS.items():
+        assert [cls().num_qubits for cls in backend_classes] == [n_qubits] * len(
+            backend_classes
+        )
+
+
+@pytest.mark.parametrize(
+    "n_qubits, expected",
+    [
+        pytest.param(3, FAKE_BACKENDS[5], id="small_circuit_gets_5q_backend"),
+        pytest.param(20, FAKE_BACKENDS[20], id="large_circuit_gets_20q_backend"),
+        pytest.param(100, None, id="exceeds_all_backends"),
+    ],
+)
+def test_find_best_fake_backend(n_qubits, expected):
+    """_find_best_fake_backend picks the smallest fitting backend, or None if none fit."""
+    circuit = QuantumCircuit(n_qubits)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    circuit.measure_all()
+
+    assert _find_best_fake_backend(circuit) == expected
 
 
 class TestQiskitSimulatorInit:
@@ -90,32 +144,42 @@ class TestQiskitSimulatorInit:
         assert simulator.qiskit_backend == backend
         assert simulator.noise_model == noise_model
 
-    def test_init_with_backend_only(self):
-        """Test initialization with backend only."""
-        backend = FakeQuitoV2()
-        simulator = QiskitSimulator(qiskit_backend=backend)
+    @pytest.mark.parametrize(
+        "backend, noise_model",
+        [(FakeQuitoV2(), None), ("auto", None), (None, NoiseModel())],
+        ids=["backend", "auto_backend", "noise_model"],
+    )
+    def test_a_backend_or_noise_model_alone_forces_sampling_without_warning(
+        self, backend, noise_model
+    ):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            simulator = QiskitSimulator(qiskit_backend=backend, noise_model=noise_model)
 
-        assert simulator.qiskit_backend == backend
-        assert simulator.noise_model is None
+        assert simulator.qiskit_backend is backend
+        assert simulator.noise_model is noise_model
+        assert simulator.supports_expval is False
 
-    def test_init_with_noise_model_only(self):
-        """Test initialization with noise model only."""
-        noise_model = NoiseModel()
-        simulator = QiskitSimulator(noise_model=noise_model)
+    def test_init_accepts_a_single_process(self):
+        assert QiskitSimulator(n_processes=1).n_processes == 1
 
-        assert simulator.qiskit_backend is None
-        assert simulator.noise_model == noise_model
+    def test_shots_default_to_5000(self):
+        assert QiskitSimulator().shots == 5000
 
     @pytest.mark.parametrize("bad_value", [0, -1, -100])
     def test_init_rejects_n_processes_below_one(self, bad_value):
         """Constructor raises ValueError when n_processes < 1."""
-        with pytest.raises(ValueError, match="n_processes must be >= 1"):
+        with pytest.raises(
+            ValueError, match=exact_match(f"n_processes must be >= 1, got {bad_value}")
+        ):
             QiskitSimulator(n_processes=bad_value)
 
     def test_setter_rejects_n_processes_below_one(self):
         """The n_processes setter raises ValueError when value < 1."""
         sim = QiskitSimulator()
-        with pytest.raises(ValueError, match="n_processes must be >= 1"):
+        with pytest.raises(
+            ValueError, match=exact_match("n_processes must be >= 1, got 0")
+        ):
             sim.n_processes = 0
 
     def test_init_none_uses_default(self, mocker):
@@ -141,15 +205,17 @@ class TestQiskitSimulatorProperties:
         simulator.set_seed(100)
         assert simulator.simulation_seed == 100
 
-    def test_supports_expval(self):
-        """Test supports_expval property."""
-        simulator = QiskitSimulator()
-        assert simulator.supports_expval is True
-
-    def test_force_sampling_disables_expval(self):
+    @pytest.mark.parametrize(
+        "force_sampling, expected",
+        [
+            pytest.param(False, True, id="default"),
+            pytest.param(True, False, id="force_sampling"),
+        ],
+    )
+    def test_supports_expval(self, force_sampling, expected):
         """force_sampling=True makes supports_expval return False."""
-        simulator = QiskitSimulator(force_sampling=True)
-        assert simulator.supports_expval is False
+        simulator = QiskitSimulator(force_sampling=force_sampling)
+        assert simulator.supports_expval is expected
 
     def test_is_async(self):
         """Test is_async property (line 121)."""
@@ -260,34 +326,89 @@ class TestQiskitSimulatorSubmitCircuits:
         )
 
     def test_submit_circuits_with_auto_backend(self, mocker):
-        """Test submit_circuits with 'auto' backend selection (lines 191-192)."""
+        """'auto' simulates on the newest fake backend wide enough for the circuit."""
         simulator = QiskitSimulator(qiskit_backend="auto", shots=100)
-
         qasm = self._create_qasm_circuit(n_qubits=3)
-        qasm = qasm.replace("h q[0];", "h q[0];\n        cx q[0], q[1];")
-        circuits = {"test_circuit": qasm}
+        spy = mocker.spy(AerSimulator, "from_backend")
 
-        # Mock the fake backend to avoid actual backend creation
-        mock_backend_class = mocker.Mock()
-        mocker.patch(
-            "divi.backends.runners._qiskit._find_best_fake_backend",
-            return_value=[mock_backend_class],
+        result = simulator.submit_circuits({"test_circuit": qasm})
+
+        assert isinstance(spy.call_args.args[0], FAKE_BACKENDS[5][-1])
+        assert result.results[0]["label"] == "test_circuit"
+        assert sum(result.results[0]["results"].values()) == 100
+
+    def test_auto_backend_rejects_circuits_wider_than_every_fake_backend(self):
+        with pytest.raises(ValueError, match=exact_match(_NO_FAKE_BACKEND_MESSAGE)):
+            QiskitSimulator(qiskit_backend="auto").submit_circuits({"c0": _WIDE_QASM})
+
+    @pytest.mark.parametrize(
+        "deterministic", [False, True], ids=["batched", "deterministic"]
+    )
+    def test_the_seed_pins_the_sampling_stream(self, deterministic):
+        def counts(seed):
+            simulator = QiskitSimulator(
+                shots=200,
+                simulation_seed=seed,
+                _deterministic_execution=deterministic,
+            )
+            result = simulator.submit_circuits(
+                {"c0": self._create_qasm_circuit(), "c1": self._create_qasm_circuit()}
+            )
+            return [entry["results"] for entry in result.results]
+
+        assert counts(7) == counts(7)
+        assert counts(7) != counts(8)
+
+    def test_noise_model_is_applied(self):
+        noise_model = NoiseModel()
+        noise_model.add_all_qubit_readout_error(ReadoutError([[0, 1], [1, 0]]))
+        simulator = QiskitSimulator(shots=100, noise_model=noise_model)
+
+        result = simulator.submit_circuits({"c0": _IDENTITY_QASM})
+
+        assert result.results[0]["results"] == {"1": 100}
+
+    def test_circuits_are_transpiled_to_the_backend(self):
+        """``h`` runs as noisy ``sx`` pulses only if transpiled to the backend's basis."""
+        backend = _calibrated_backend(
+            1,
+            _gate("sx", (0,), error=0.5),
+            _gate("rz", (0,)),
+        )
+        simulator = QiskitSimulator(
+            shots=200, qiskit_backend=backend, optimization_level=0, simulation_seed=3
+        )
+        qasm = self._create_qasm_circuit(n_qubits=1).replace(
+            "h q[0];", "h q[0];\n        h q[0];"
         )
 
-        mock_from_backend = self._setup_mock_aer_simulator(
-            mocker, use_from_backend=True
-        )[0]
-        self._setup_mock_transpile(mocker, n_qubits=3)
+        counts = simulator.submit_circuits({"c0": qasm}).results[0]["results"]
 
-        result = simulator.submit_circuits(circuits)
+        assert counts.get("1", 0) > 0
 
-        assert isinstance(result, ExecutionResult)
-        assert result.results is not None
-        assert len(result.results) == 1
-        assert result.results[0]["label"] == "test_circuit"
-        assert "results" in result.results[0]
-        # Verify from_backend was called (line 200)
-        mock_from_backend.assert_called_once()
+    @pytest.mark.parametrize(
+        "seed, parallel_experiments",
+        [(None, 2), (42, 1)],
+        ids=["parallel_unseeded", "seeded_serial"],
+    )
+    def test_no_nondeterminism_warning_without_both_seed_and_parallelism(
+        self, mocker, seed, parallel_experiments
+    ):
+        simulator = QiskitSimulator(shots=100, simulation_seed=seed)
+        self._setup_mock_aer_simulator(
+            mocker,
+            metadata={
+                "parallel_experiments": parallel_experiments,
+                "omp_nested": False,
+            },
+        )
+        self._setup_mock_transpile(mocker, num_circuits=2)
+        mock_logger = mocker.patch("divi.backends.runners._qiskit.logger")
+
+        qasm = self._create_qasm_circuit()
+        simulator.submit_circuits({"c0": qasm, "c1": qasm})
+
+        mock_logger.warning.assert_not_called()
 
     def test_submit_circuits_with_explicit_backend(self, mocker):
         """Test submit_circuits with explicit backend provided (line 194)."""
@@ -451,11 +572,8 @@ def _setup_qiskit_contract_mocks(mocker):
     return mock_aer
 
 
-def _contract_qiskit_runner(*, track_depth: bool = False):
-    return QiskitSimulator(
-        track_depth=track_depth,
-        shots=CONTRACT_TEST_SHOTS,
-    )
+def _contract_qiskit_runner(**kwargs):
+    return QiskitSimulator(shots=CONTRACT_TEST_SHOTS, **kwargs)
 
 
 class TestContracts(SyncRunnerContractsBase):
@@ -486,38 +604,22 @@ class TestExpvalSubmission:
         "h q[0];\ncx q[0],q[1];\nmeasure q[0] -> c[0];\nmeasure q[1] -> c[1];\n"
     )
 
-    def test_supports_expval(self):
-        sim = QiskitSimulator()
-        assert sim.supports_expval is True
-
-    def test_expval_basic(self):
-        """Expval mode returns {pauli: float} dicts with correct values."""
-        sim = QiskitSimulator(shots=5000)
-        result = sim.submit_circuits(
-            {"c0": self.QASM_2Q},
-            ham_ops="ZI;IZ",
-        )
-        assert result.results is not None
-        assert len(result.results) == 1
-        assert result.results[0]["label"] == "c0"
-        # Bell state: <ZI> and <IZ> should both be ~0
-        expvals = result.results[0]["results"]
-        assert "ZI" in expvals
-        assert "IZ" in expvals
-        assert isinstance(expvals["ZI"], float)
-        assert isinstance(expvals["IZ"], float)
+    QASM_1Q_PLUS = (
+        'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
+        "h q[0];\nmeasure q[0] -> c[0];\n"
+    )
 
     def test_expval_known_value(self):
         """H|0> = |+>, so <Z> = 0 and <X> = 1 on a single qubit."""
-        qasm_1q = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
-            "h q[0];\nmeasure q[0] -> c[0];\n"
-        )
         sim = QiskitSimulator(shots=5000)
-        result = sim.submit_circuits({"c0": qasm_1q}, ham_ops="Z;X")
+        result = sim.submit_circuits({"c0": self.QASM_1Q_PLUS}, ham_ops="Z;X")
+        assert [entry["label"] for entry in result.results] == ["c0"]
         expvals = result.results[0]["results"]
-        assert expvals["Z"] == pytest.approx(0.0, abs=1e-10)
-        assert expvals["X"] == pytest.approx(1.0, abs=1e-10)
+        assert expvals == {
+            "Z": pytest.approx(0.0, abs=1e-10),
+            "X": pytest.approx(1.0, abs=1e-10),
+        }
+        assert all(isinstance(value, float) for value in expvals.values())
 
     def test_expval_bell_state_zz(self):
         """Bell state |00>+|11>: <ZZ> = 1, <ZI> = 0."""
@@ -529,7 +631,7 @@ class TestExpvalSubmission:
 
     def test_short_observables_act_on_first_qubits(self):
         sim = QiskitSimulator(shots=5000)
-        with pytest.warns(UserWarning, match="'Z' -> 'ZI'"):
+        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZI"))):
             result = sim.submit_circuits({"c0": QASM_X_ON_FIRST_QUBIT}, ham_ops="Z")
         assert result.results[0]["results"] == {"ZI": pytest.approx(-1.0)}
 
@@ -553,20 +655,16 @@ class TestExpvalSubmission:
         result = sim.submit_circuits({"c0": self.QASM_2Q})
         assert result.results[0]["results"] == {"00": 50, "11": 50}
 
-    def test_expval_with_circuit_ham_map(self):
-        """Different circuits get different observables via circuit_ham_map."""
-        qasm_1q = (
-            'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[1];\ncreg c[1];\n'
-            "h q[0];\nmeasure q[0] -> c[0];\n"
-        )
+    def test_each_observable_group_is_padded_to_its_own_circuits(self):
         sim = QiskitSimulator(shots=5000)
-        result = sim.submit_circuits(
-            {"c0": qasm_1q, "c1": qasm_1q},
-            ham_ops="Z|X",
-            circuit_ham_map=[[0, 1], [1, 2]],
-        )
-        assert result.results[0]["results"] == {"Z": pytest.approx(0.0, abs=1e-10)}
-        assert result.results[1]["results"] == {"X": pytest.approx(1.0, abs=1e-10)}
+        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZI"))):
+            result = sim.submit_circuits(
+                {"c0": self.QASM_1Q_PLUS, "c1": QASM_X_ON_FIRST_QUBIT},
+                ham_ops="X|Z",
+                circuit_ham_map=[[0, 1], [1, 2]],
+            )
+        assert result.results[0]["results"] == {"X": pytest.approx(1.0, abs=1e-10)}
+        assert result.results[1]["results"] == {"ZI": pytest.approx(-1.0)}
 
     def test_prepare_expval_circuit_strips_measurements(self):
         """_prepare_expval_circuit removes measurements and adds save instructions."""
@@ -590,101 +688,127 @@ class TestExpvalSubmission:
 class TestQiskitSimulatorRuntimeEstimation:
     """Tests for QiskitSimulator runtime estimation methods."""
 
-    def test_estimate_run_time_single_circuit(self, mocker):
-        """Test estimate_run_time_single_circuit method."""
-        # Mock backend with instruction durations
-        mock_backend = mocker.Mock()
-        mock_target = mocker.Mock()
-        mock_durations = mocker.Mock()
-
-        # Mock durations.get() method to return duration in seconds
-        def mock_get(inst_name, qubits, unit="s"):
-            durations_map = {
-                ("h", (0,)): 1.6e-7,
-                ("cx", (0, 1)): 3.2e-7,
-                ("measure", (0,)): 5.0e-7,
-                ("measure", (1,)): 5.0e-7,
-            }
-            return durations_map.get((inst_name, qubits), 0.0)
-
-        mock_durations.get = mock_get
-        mock_target.durations.return_value = mock_durations
-        mock_backend.target = mock_target
-
-        # Create a circuit matching the mocked durations
-        qasm = """
-        OPENQASM 2.0;
-        include "qelib1.inc";
-        qreg q[2];
-        creg c[2];
-        h q[0];
-        cx q[0], q[1];
-        measure q[0] -> c[0];
-        measure q[1] -> c[1];
-        """
-
-        # Mock transpile to return a circuit that preserves structure
-        # We need a real circuit for circuit_to_dag to work
-        transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
-        mocker.patch(
-            "divi.backends.runners._qiskit.transpile",
-            return_value=transpiled_circuit,
-        )
-
-        # We also need to mock _find_best_fake_backend if we were using "auto",
-        # but here we pass explicit backend
-
-        estimated_time = QiskitSimulator.estimate_run_time_single_circuit(
-            qasm, qiskit_backend=mock_backend
-        )
-
-        # Expected time: h(0) + cx(0,1) + max(measure(0), measure(1))?
-        # The logic in QiskitSimulator sums up durations of longest path?
-        # Code: for node in dag.longest_path(): total += duration
-        # Longest path in this circuit:
-        # q[0]: h -> cx -> measure
-        # q[1]: cx -> measure
-        # Path 0: h(1.6) + cx(3.2) + measure(5.0) = 9.8e-7
-        # Path 1: cx(3.2) + measure(5.0) = 8.2e-7
-        # So it should be roughly 9.8e-7
-
-        assert estimated_time == pytest.approx(9.8e-7)
-
-    def test_estimate_run_time_single_circuit_auto_backend(self, mocker):
-        """Test estimate_run_time_single_circuit with 'auto' backend."""
-        qasm = 'OPENQASM 2.0; include "qelib1.inc"; qreg q[1]; h q[0];'
-
-        mock_backend_cls = mocker.Mock()
-        mock_backend_instance = mock_backend_cls.return_value
-        mock_target = mocker.Mock()
-        mock_durations = mocker.Mock()
-
-        # Mock durations.get() method to return duration in seconds
-        def mock_get(inst_name, qubits, unit="s"):
-            if inst_name == "h" and qubits == (0,):
-                return 1.0
-            return 0.0
-
-        mock_durations.get = mock_get
-        mock_target.durations.return_value = mock_durations
-        mock_backend_instance.target = mock_target
-
-        mocker.patch(
-            "divi.backends.runners._qiskit._find_best_fake_backend",
-            return_value=[mock_backend_cls],
-        )
-
-        transpiled_circuit = QuantumCircuit.from_qasm_str(qasm)
-        mocker.patch(
-            "divi.backends.runners._qiskit.transpile",
-            return_value=transpiled_circuit,
+    def test_estimate_run_time_single_circuit(self):
+        """The estimate sums the backend's durations, in seconds, along the
+        longest path of the circuit transpiled with the given options."""
+        backend = _calibrated_backend(
+            1, _gate("x", (0,), length_ns=35.0), readout_length_ns=1000.0
         )
 
         estimated_time = QiskitSimulator.estimate_run_time_single_circuit(
-            qasm, qiskit_backend="auto"
+            _DOUBLE_X_QASM, qiskit_backend=backend, optimization_level=0
         )
 
-        assert estimated_time == 1.0
+        assert estimated_time == pytest.approx(2 * 35e-9 + 1000e-9)
+
+    def test_estimate_run_time_single_circuit_auto_backend(self):
+        """'auto' estimates on the newest fake backend wide enough for the circuit."""
+        estimate = partial(
+            QiskitSimulator.estimate_run_time_single_circuit,
+            _DOUBLE_X_QASM,
+            seed_transpiler=0,
+        )
+
+        assert estimate(qiskit_backend="auto") == estimate(
+            qiskit_backend=FAKE_BACKENDS[5][-1]()
+        )
+
+    def test_estimate_run_time_single_circuit_rejects_circuits_too_wide(self):
+        with pytest.raises(ValueError, match=exact_match(_NO_FAKE_BACKEND_MESSAGE)):
+            QiskitSimulator.estimate_run_time_single_circuit(
+                _WIDE_QASM, qiskit_backend="auto"
+            )
+
+    def test_barriers_take_no_time_and_do_not_warn(self):
+        backend = _calibrated_backend(1, _gate("x", (0,), length_ns=35.0))
+        qasm = _DOUBLE_X_QASM.replace("x q[0];\nx q[0];", "x q[0];\nbarrier q[0];")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            estimated_time = QiskitSimulator.estimate_run_time_single_circuit(
+                qasm, qiskit_backend=backend, optimization_level=0
+            )
+
+        assert estimated_time == pytest.approx(35e-9)
+
+    def test_instructions_without_a_duration_warn(self):
+        backend = _calibrated_backend(1, _gate("x", (0,)))
+
+        with pytest.warns(
+            UserWarning, match=exact_match("Instruction duration not found: x")
+        ):
+            QiskitSimulator.estimate_run_time_single_circuit(
+                _DOUBLE_X_QASM, qiskit_backend=backend, optimization_level=0
+            )
+
+    def test_a_backend_without_a_target_is_rejected(self, mocker):
+        mocker.patch(
+            "divi.backends.runners._qiskit.transpile",
+            side_effect=lambda circuit, *args, **kwargs: circuit,
+        )
+
+        with pytest.raises(RuntimeError, match="has no transpiler target"):
+            QiskitSimulator.estimate_run_time_single_circuit(
+                _DOUBLE_X_QASM, qiskit_backend=mocker.Mock(target=None)
+            )
+
+    @pytest.mark.parametrize(
+        "durations, qpus, expected",
+        [
+            ([3.0, 5.0, 3.0, 4.0, 3.0], {"n_qpus": 2}, 10.0),
+            ([2.0, 7.0, 1.0], {"n_qpus": 5}, 7.0),
+            ([], {"n_qpus": 5}, 0.0),
+            ([1.0] * 6, {}, 2.0),
+        ],
+        ids=[
+            "longest_first_scheduling",
+            "one_circuit_per_qpu",
+            "empty",
+            "defaults_to_five_qpus",
+        ],
+    )
+    def test_estimate_run_time_batch_schedules_precomputed_durations(
+        self, durations, qpus, expected
+    ):
+        assert QiskitSimulator.estimate_run_time_batch(
+            precomputed_durations=durations, **qpus
+        ) == pytest.approx(expected)
+
+    def test_estimate_run_time_batch_requires_an_input(self):
+        message = (
+            "estimate_run_time_batch requires either ``circuits`` or "
+            "``precomputed_durations`` to be provided."
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
+            QiskitSimulator.estimate_run_time_batch()
+
+    def test_estimate_run_time_batch_schedules_auto_estimates(self, mocker):
+        """Circuit estimates are computed on 'auto' backends with the given
+        transpile options."""
+        mocker.patch(
+            "divi.backends.runners._qiskit.Pool", return_value=_InProcessPool()
+        )
+        circuits = [
+            _DOUBLE_X_QASM,
+            _DOUBLE_X_QASM.replace("x q[0];\n", "", 1),
+            QASM_X_ON_FIRST_QUBIT,
+        ]
+        singles = [
+            QiskitSimulator.estimate_run_time_single_circuit(
+                qasm, "auto", optimization_level=0, seed_transpiler=0
+            )
+            for qasm in circuits
+        ]
+
+        estimate = QiskitSimulator.estimate_run_time_batch(
+            circuits=circuits, n_qpus=2, optimization_level=0, seed_transpiler=0
+        )
+
+        assert estimate == pytest.approx(
+            QiskitSimulator.estimate_run_time_batch(
+                precomputed_durations=singles, n_qpus=2
+            )
+        )
 
     def test_estimate_run_time_batch_pins_pool_processes(self, mocker):
         """``estimate_run_time_batch`` must construct
@@ -749,6 +873,7 @@ class TestDefaultNProcesses:
             (16, 15),  # 16-1 = 15 (medium)
             (32, 16),  # min(16, 32*0.75=24) = 16 (large, capped)
             (20, 15),  # min(16, 20*0.75=15) = 15 (large)
+            (17, 12),  # min(16, 17*0.75=12.75) = 12 (smallest large)
         ],
     )
     def test_cpu_count_scaling(self, mocker, cpu_count, expected):
@@ -800,7 +925,7 @@ def test_submission_reports_aers_time_taken(mocker, sim_kwargs, submit_kwargs):
 def test_both_provided_raises_value_error():
     """Spec: ham_ops + shot_groups together is rejected at the API boundary."""
     sim = QiskitSimulator(shots=100)
-    with pytest.raises(ValueError, match="incompatible with ham_ops"):
+    with pytest.raises(ValueError, match=exact_match(SHOT_GROUPS_WITH_HAM_OPS_MESSAGE)):
         sim.submit_circuits(
             {"c0": "OPENQASM 2.0;\nqreg q[1];\n"},
             ham_ops="Z",
@@ -845,7 +970,7 @@ def test_partial_coverage_raises():
         "c1": _IDENTITY_QASM,
         "c2": _IDENTITY_QASM,
     }
-    with pytest.raises(ValueError, match="do not cover every circuit"):
+    with pytest.raises(ValueError, match=exact_match(uncovered_circuits_message([2]))):
         sim.submit_circuits(circuits, shot_groups=[[0, 2, 100]])
 
 

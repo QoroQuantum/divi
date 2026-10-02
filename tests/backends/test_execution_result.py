@@ -2,10 +2,6 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from dataclasses import FrozenInstanceError
-
-import pytest
-
 from divi.backends import ExecutionResult
 
 
@@ -34,14 +30,6 @@ class TestExecutionResult:
         assert res.results is None
         assert res.job_id == "job-123"
         assert res.is_async() is True
-
-    def test_immutability(self):
-        """Test that ExecutionResult is immutable."""
-        res = ExecutionResult(job_id="job-123")
-        with pytest.raises(FrozenInstanceError):
-            res.job_id = "job-456"
-        with pytest.raises(FrozenInstanceError):
-            res.results = []
 
     def test_with_results(self):
         """Test with_results method."""

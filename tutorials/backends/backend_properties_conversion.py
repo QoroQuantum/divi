@@ -10,8 +10,6 @@ to Qiskit 2.0+ BackendV2 instances and shows the quantitative
 impact of backend properties (gate errors, T1/T2) on simulation results.
 """
 
-import datetime
-
 import qiskit.qasm2
 from qiskit import QuantumCircuit
 
@@ -42,9 +40,6 @@ if __name__ == "__main__":
 
     # Simplified properties dictionary - missing fields will be filled automatically
     example_properties = {
-        "backend_name": "example_backend",
-        "backend_version": "1.0.0",
-        "last_update_date": datetime.datetime(2025, 5, 21, 3, 29, 4),
         "qubits": [
             [
                 {

@@ -2,7 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import gc
 import os
+import threading
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
 
@@ -13,12 +16,18 @@ import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends.runners._maestro import _circuit_seed, _run_with_cancellation
 from divi.exceptions import ExecutionCancelledError
+from tests._helpers import exact_match
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
     QASM_DEPTH_2,
     QASM_DEPTH_3,
     QASM_X_ON_FIRST_QUBIT,
     SyncRunnerContractsBase,
+)
+from tests.backends._helpers import (
+    SHOT_GROUPS_WITH_HAM_OPS_MESSAGE,
+    padding_warning,
+    uncovered_circuits_message,
 )
 
 _BELL_QASM = (
@@ -37,6 +46,12 @@ _ID_QASM = (
 def _depolarizing_model():
     noise_model = maestro.NoiseModel()
     noise_model.set_all_depolarizing(num_qubits=2, p=0.05)
+    return noise_model
+
+
+def _readout_error_model():
+    noise_model = maestro.NoiseModel()
+    noise_model.set_all_readout_error(2, 0.1)
     return noise_model
 
 
@@ -83,13 +98,17 @@ def _make_fake_maestro(mocker, counts=None, expvals=None):
         "MatrixProductOperator": "MatrixProductOperator",
     }
 
-    # ``SimulatorConfig(**kwargs)`` — echo kwargs back as a ``spec=dict`` mock so
-    # tests can inspect what was passed.
+    # ``SimulatorConfig(**kwargs)`` echoes its kwargs; every built config is kept
+    # in ``built_configs`` so tests can check which one reached maestro.
+    maestro.built_configs = []
+
     def _make_sim_config(**kwargs):
         cfg = mocker.MagicMock(name="SimulatorConfig")
         cfg.kwargs = kwargs
+        cfg.seed = None
         for k, v in kwargs.items():
             setattr(cfg, k, v)
+        maestro.built_configs.append(cfg)
         return cfg
 
     maestro.SimulatorConfig.side_effect = _make_sim_config
@@ -136,6 +155,12 @@ def _make_noisy_sim(
     return _make_simulator(mocker, fake_maestro, **sim_kwargs), nm
 
 
+def _threads_started_by_submit(sim) -> set[threading.Thread]:
+    before = set(threading.enumerate())
+    sim.submit_circuits({"c0": QASM_DEPTH_2})
+    return set(threading.enumerate()) - before
+
+
 def _sim_config_call(fake_maestro):
     """Return kwargs passed to the most recent ``SimulatorConfig(**kwargs)`` call."""
     return fake_maestro.SimulatorConfig.call_args.kwargs
@@ -147,25 +172,31 @@ def _submit_config_arg(call):
 
 
 class TestProperties:
-    def test_supports_expval(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.supports_expval is True
-
-    def test_force_sampling_disables_expval(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker), force_sampling=True)
-        assert sim.supports_expval is False
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            pytest.param({}, True, id="default"),
+            pytest.param({"force_sampling": True}, False, id="force_sampling"),
+        ],
+    )
+    def test_supports_expval(self, mocker, kwargs, expected):
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker), **kwargs)
+        assert sim.supports_expval is expected
 
     def test_is_async(self, mocker):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker))
         assert sim.is_async is False
 
-    def test_default_shots(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.shots == 5000
-
-    def test_custom_shots(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker), shots=1024)
-        assert sim.shots == 1024
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            pytest.param({}, 5000, id="default"),
+            pytest.param({"shots": 1024}, 1024, id="custom"),
+        ],
+    )
+    def test_shots(self, mocker, kwargs, expected):
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker), **kwargs)
+        assert sim.shots == expected
 
     def test_default_config(self, mocker):
         """No ``maestro_config=`` argument → backend uses a default MaestroConfig."""
@@ -261,9 +292,8 @@ class TestSamplingSubmission:
         call = fake.simple_execute.call_args
         assert call[1]["shots"] == 1234
         passed_config = _submit_config_arg(call)
-        assert passed_config is fake.SimulatorConfig.return_value or hasattr(
-            passed_config, "kwargs"
-        )
+        assert passed_config is fake.built_configs[-1]
+        assert passed_config.kwargs == {}
 
     def test_config_passthrough(self, mocker):
         """MaestroConfig fields are forwarded to maestro.SimulatorConfig."""
@@ -346,38 +376,42 @@ class TestParallelExecution:
         spy.assert_called_once()
         assert spy.call_args.kwargs["max_workers"] == 1
 
-    def test_close_shuts_down_pool(self, mocker):
-        """``close()`` releases the pool so its threads don't outlive the
-        simulator instance.  Calling ``close()`` a second time is a no-op."""
+    def test_submit_after_close_runs_on_a_fresh_pool(self, mocker):
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(mocker, fake)
-        sim.submit_circuits({"c0": QASM_DEPTH_2})
-        assert sim._executor is not None
+        first_threads = _threads_started_by_submit(sim)
+        sim.close()
+
+        second_threads = _threads_started_by_submit(sim)
+
+        assert second_threads
+        assert second_threads.isdisjoint(first_threads)
+        assert fake.simple_execute.call_count == 2
+
+    def test_close_stops_the_pool_threads_and_can_be_repeated(self, mocker):
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
+        threads = _threads_started_by_submit(sim)
 
         sim.close()
-        assert sim._executor is None
-        # Idempotent.
         sim.close()
-        assert sim._executor is None
 
-    def test_submit_after_close_recreates_pool(self, mocker):
-        """A ``submit_circuits`` after ``close()`` lazily re-initializes a
-        fresh pool and registers a new finalizer."""
-        fake = _make_fake_maestro(mocker)
-        sim = _make_simulator(mocker, fake)
-        sim.submit_circuits({"c0": QASM_DEPTH_2})
-        first_pool = sim._executor
-        first_finalizer = sim._executor_finalizer
+        assert threads
+        assert not any(thread.is_alive() for thread in threads)
 
-        sim.close()
-        assert sim._executor is None
-        assert sim._executor_finalizer is None
+    def test_pool_threads_stop_when_the_simulator_is_collected(self, mocker):
+        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
+        threads = _threads_started_by_submit(sim)
 
-        sim.submit_circuits({"c1": QASM_DEPTH_3})
-        assert sim._executor is not None
-        assert sim._executor is not first_pool
-        assert sim._executor_finalizer is not None
-        assert sim._executor_finalizer is not first_finalizer
+        del sim
+        gc.collect()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert threads
+        assert not any(thread.is_alive() for thread in threads)
+
+    def test_close_before_any_submission_is_a_no_op(self, mocker):
+        _make_simulator(mocker, _make_fake_maestro(mocker)).close()
 
     def test_close_does_not_block_concurrent_submit(self, mocker):
         """``close()`` releases ``_executor_lock`` before draining the old
@@ -596,6 +630,18 @@ def test_event_set_mid_batch_stops_consuming(mocker):
         )
 
 
+def test_preset_event_aborts_before_dispatch(mocker):
+    fake = _make_fake_maestro(mocker)
+    sim = _make_simulator(mocker, fake)
+    event = Event()
+    event.set()
+
+    with pytest.raises(ExecutionCancelledError, match="before any circuit"):
+        sim.submit_circuits({"c0": QASM_DEPTH_2}, cancellation_event=event)
+
+    fake.simple_execute.assert_not_called()
+
+
 class TestExpvalSubmission:
     def test_basic_expval(self, mocker):
         """submit_circuits with ham_ops returns expectation values as {op: val} dict."""
@@ -628,40 +674,18 @@ class TestExpvalSubmission:
 
         assert fake.simple_estimate.call_args[1]["observables"] == "ZI;IZ"
 
-    def test_expval_passes_measurements_through(self, mocker):
-        """Maestro ignores terminal measurement on the estimate path, so
-        circuits reach it unchanged."""
+    def test_expval_forwards_circuits_unchanged(self, mocker):
+        """Maestro ignores terminal measurement on the estimate path, so each
+        circuit reaches it intact."""
         fake = _make_fake_maestro(mocker)
         fake.simple_estimate.side_effect = [_estimated([0.5]), _estimated([0.8])]
         sim = _make_simulator(mocker, fake)
 
         sim.submit_circuits({"c0": QASM_DEPTH_2, "c1": QASM_DEPTH_3}, ham_ops="ZI")
 
-        for call in fake.simple_estimate.call_args_list:
-            assert "measure" in call[0][0]
-
-    def test_expval_preserves_circuit_body(self, mocker):
-        """Stripping measurements must leave the circuit gates intact."""
-        fake = _make_fake_maestro(mocker, expvals=[0.5])
-        sim = _make_simulator(mocker, fake)
-
-        sim.submit_circuits({"c0": QASM_DEPTH_2}, ham_ops="ZI")
-
-        called_qasm = fake.simple_estimate.call_args[0][0]
-        # The H gate from QASM_DEPTH_2 must survive stripping
-        assert "h q[0]" in called_qasm
-        # Header must survive
-        assert "OPENQASM 2.0" in called_qasm
-        assert "qreg q[2]" in called_qasm
-
-    def test_expval_zips_ops_to_values(self, mocker):
-        """Each Pauli operator maps to the corresponding expectation value."""
-        fake = _make_fake_maestro(mocker, expvals=[0.1, 0.2, 0.3])
-        sim = _make_simulator(mocker, fake)
-
-        result = sim.submit_circuits({"c0": QASM_DEPTH_2}, ham_ops="ZI;IX;YY")
-
-        assert result.results[0]["results"] == {"ZI": 0.1, "IX": 0.2, "YY": 0.3}
+        assert sorted(
+            call[0][0] for call in fake.simple_estimate.call_args_list
+        ) == sorted([QASM_DEPTH_2, QASM_DEPTH_3])
 
     def test_expval_config_passthrough(self, mocker):
         """MaestroConfig fields are passed through to simple_estimate via config=."""
@@ -682,8 +706,7 @@ class TestExpvalSubmission:
         assert kwargs["simulator_type"] == maestro.SimulatorType.QCSim
         assert kwargs["simulation_type"] == maestro.SimulationType.MatrixProductState
         assert kwargs["max_bond_dimension"] == 32
-        # config is forwarded to simple_estimate
-        assert "config" in fake.simple_estimate.call_args[1]
+        assert fake.simple_estimate.call_args[1]["config"] is fake.built_configs[-1]
 
     def test_sampling_retains_measurements(self, mocker):
         """Sampling mode must NOT strip measurements — they are needed."""
@@ -738,25 +761,6 @@ class TestExpvalSubmission:
         assert calls[1][1]["observables"] == "ZI;XX"
 
 
-class TestMaestroConfigNoiseDefaults:
-    """``MaestroConfig`` carries noise knobs; defaults disable noise."""
-
-    def test_default_noise_fields(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.maestro_config.noise_model is None
-        assert sim.maestro_config.noise_seed is None
-        assert sim.maestro_config.noise_realizations is None
-
-    def test_noise_fields_stored(self, mocker):
-        """noise_model / noise_seed / noise_realizations land on MaestroConfig."""
-        sim, nm = _make_noisy_sim(
-            mocker, _make_fake_maestro(mocker), noise_seed=7, noise_realizations=4
-        )
-        assert sim.maestro_config.noise_model is nm
-        assert sim.maestro_config.noise_seed == 7
-        assert sim.maestro_config.noise_realizations == 4
-
-
 class TestNoisySamplingSubmission:
     """Sampling-mode dispatch: ``simple_execute`` vs ``full_noise_execute``."""
 
@@ -781,7 +785,7 @@ class TestNoisySamplingSubmission:
         call = fake.full_noise_execute.call_args
         assert call.args == (("maestro_circuit", _BELL_QASM), nm)
         assert call.kwargs["shots"] == 321
-        assert "config" in call.kwargs
+        assert call.kwargs["config"] is fake.built_configs[-1]
 
     def test_unset_seeds_and_realizations_are_not_passed(self, mocker):
         """Maestro then seeds from entropy and uses its own realisation count."""
@@ -838,6 +842,14 @@ class TestNoisySamplingSubmission:
         seen_shots = sorted(call.kwargs["shots"] for call in calls)
         assert seen_shots == [50, 200, 200]
 
+    def test_readout_errors_do_not_warn_in_sampling_mode(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_model=_readout_error_model())
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            sim.submit_circuits({"c0": _BELL_QASM})
+
 
 class TestNoisyExpvalSubmission:
     """Expval-mode dispatch: ``simple_estimate`` vs ``full_noise_estimate``."""
@@ -864,7 +876,7 @@ class TestNoisyExpvalSubmission:
         assert call.kwargs["noise_model"] is nm
         assert call.kwargs["observables"] == "ZI;IZ"
         assert {"noise_seed", "noise_realizations"}.isdisjoint(call.kwargs)
-        assert "config" in call.kwargs
+        assert call.kwargs["config"] is fake.built_configs[-1]
 
     def test_forwards_explicit_realizations(self, mocker):
         fake = _make_fake_maestro(mocker)
@@ -875,27 +887,15 @@ class TestNoisyExpvalSubmission:
         assert fake.full_noise_estimate.call_args.kwargs["noise_realizations"] == 5
 
     def test_readout_errors_warn_in_expectation_mode(self, mocker):
-        noise_model = maestro.NoiseModel()
-        noise_model.set_all_readout_error(2, 0.1)
         fake = _make_fake_maestro(mocker)
-        sim, _ = _make_noisy_sim(mocker, fake, noise_model=noise_model)
+        sim, _ = _make_noisy_sim(mocker, fake, noise_model=_readout_error_model())
 
-        with pytest.warns(UserWarning, match="force_sampling=True"):
+        message = (
+            "Readout errors do not affect expectation values; use "
+            "force_sampling=True to include them."
+        )
+        with pytest.warns(UserWarning, match=exact_match(message)):
             sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
-
-    def test_noisy_estimate_passes_measurements_through(self, mocker):
-        """The noisy estimators ignore terminal measurement too, so the circuit
-        reaches them intact."""
-        fake = _make_fake_maestro(mocker)
-        sim, _ = _make_noisy_sim(mocker, fake)
-
-        sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI")
-
-        parsed_input = fake.QasmToCirc.return_value.parse_and_translate.call_args.args[
-            0
-        ]
-        assert "measure" in parsed_input
-        assert "h q[0]" in parsed_input  # body preserved
 
     def test_noisy_estimate_zips_results(self, mocker):
         fake = _make_fake_maestro(mocker, expvals=[0.1, 0.2, 0.3])
@@ -905,13 +905,20 @@ class TestNoisyExpvalSubmission:
 
         assert result.results[0]["results"] == {"ZI": 0.1, "IX": 0.2, "YY": 0.3}
 
-    def test_labels_keep_input_order(self, mocker):
-        fake = _make_fake_maestro(mocker, expvals=[0.9])
+    def test_labels_keep_their_own_results(self, mocker):
+        fake = _make_fake_maestro(mocker)
+        fake.full_noise_estimate.side_effect = lambda circuit, *_, **__: _estimated(
+            [-0.4 if "\nx q[0];" in circuit[1] else 0.9]
+        )
         sim, _ = _make_noisy_sim(mocker, fake)
+        flipped = _BELL_QASM.replace("h q[0];", "x q[0];")
 
-        result = sim.submit_circuits({"b": _BELL_QASM, "a": _BELL_QASM}, ham_ops="ZI")
+        result = sim.submit_circuits({"b": _BELL_QASM, "a": flipped}, ham_ops="ZI")
 
-        assert [r["label"] for r in result.results] == ["b", "a"]
+        assert [(r["label"], r["results"]) for r in result.results] == [
+            ("b", {"ZI": 0.9}),
+            ("a", {"ZI": -0.4}),
+        ]
 
 
 class TestPerCircuitSeeds:
@@ -1005,13 +1012,8 @@ class TestNoiseBackendFit:
         assert "noise_realizations" not in fake.full_noise_estimate.call_args.kwargs
 
 
-def _contract_maestro_runner(mocker, fake_maestro, *, track_depth: bool = False):
-    return _make_simulator(
-        mocker,
-        fake_maestro,
-        shots=CONTRACT_TEST_SHOTS,
-        track_depth=track_depth,
-    )
+def _contract_maestro_runner(mocker, fake_maestro, **kwargs):
+    return _make_simulator(mocker, fake_maestro, shots=CONTRACT_TEST_SHOTS, **kwargs)
 
 
 class TestContracts(SyncRunnerContractsBase):
@@ -1065,7 +1067,9 @@ class TestShotGroupsSampling:
         must be caught at the backend boundary."""
         fake = _make_fake_maestro(mocker, expvals=[0.5])
         sim = _make_simulator(mocker, fake)
-        with pytest.raises(ValueError, match="incompatible with ham_ops"):
+        with pytest.raises(
+            ValueError, match=exact_match(SHOT_GROUPS_WITH_HAM_OPS_MESSAGE)
+        ):
             sim.submit_circuits(
                 {"c0": _QASM_SMALL, "c1": _QASM_SMALL},
                 ham_ops="Z" + "I" * 9,
@@ -1075,7 +1079,9 @@ class TestShotGroupsSampling:
     def test_partial_coverage_raises_at_submit(self, mocker):
         fake = _make_fake_maestro(mocker)
         sim = _make_simulator(mocker, fake)
-        with pytest.raises(ValueError, match="do not cover every circuit"):
+        with pytest.raises(
+            ValueError, match=exact_match(uncovered_circuits_message([2]))
+        ):
             sim.submit_circuits(
                 {"c0": _QASM_SMALL, "c1": _QASM_SMALL, "c2": _QASM_SMALL},
                 shot_groups=[[0, 2, 100]],
@@ -1253,7 +1259,7 @@ class TestMaestroIntegration:
         assert set(result.results[0]["results"]) == {"ZI", "IZ"}
 
     def test_short_observables_act_on_first_qubits(self, default_test_simulator):
-        with pytest.warns(UserWarning, match="'Z' -> 'ZI'"):
+        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZI"))):
             result = default_test_simulator.submit_circuits(
                 {"c0": QASM_X_ON_FIRST_QUBIT}, ham_ops="Z"
             )

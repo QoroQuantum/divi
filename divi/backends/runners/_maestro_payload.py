@@ -39,8 +39,8 @@ def _noise_model_to_payload(noise_model: Any) -> list[dict]:
         {"method": method, "args": list(args), "kwargs": dict(kwargs)}
         for method, args, kwargs in noise_model._call_log
     ]
-    calls = json.loads(json.dumps(calls, default=_to_json))
     try:
+        calls = json.loads(json.dumps(calls, default=_to_json))
         _noise_model_from_payload(calls)
     except Exception as exc:
         raise ValueError(

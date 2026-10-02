@@ -263,15 +263,9 @@ class QiskitSimulator(CircuitRunner):
         """
         return False
 
-    def _resolve_backend(
-        self, circuit: QuantumCircuit | None = None
-    ) -> BackendV2 | None:
+    def _resolve_backend(self, circuit: QuantumCircuit) -> BackendV2 | None:
         """Resolve the backend from qiskit_backend setting."""
         if self.qiskit_backend == "auto":
-            if circuit is None:
-                raise ValueError(
-                    "Circuit must be provided when qiskit_backend is 'auto'"
-                )
             backend_list = _find_best_fake_backend(circuit)
             if backend_list is None:
                 raise ValueError(
