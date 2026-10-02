@@ -277,72 +277,104 @@ def test_beam_wider_than_reachable_returns_only_reachable_solutions():
     assert len(results) == 2
 
 
-class TestBeamSearchAggregateDefaultsAndGreedy:
-    """Test the shipped defaults and explicit greedy mode."""
+def test_default_strategy_uses_balanced_search(mocker):
+    """The shipped defaults pin the balanced quality/runtime configuration."""
+    strategy = BeamSearchStrategy()
+    assert strategy.beam_width == 256
+    assert strategy.n_partition_candidates == 6
 
-    def test_default_strategy_uses_balanced_search(self, mocker):
-        """The shipped defaults pin the balanced quality/runtime configuration."""
-        strategy = BeamSearchStrategy()
-        assert strategy.beam_width == 256
-        assert strategy.n_partition_candidates == 6
+    candidates_a = [
+        SolutionEntry(bitstring="10", prob=0.6, decoded=[1, 0]),
+        SolutionEntry(bitstring="01", prob=0.4, decoded=[0, 1]),
+    ]
+    programs = _mock_programs({"A": candidates_a})
+    get_top_solutions = mocker.spy(programs["A"], "get_top_solutions")
+    var_maps = {"A": [0, 1]}
 
-        candidates_a = [
-            SolutionEntry(bitstring="10", prob=0.6, decoded=[1, 0]),
-            SolutionEntry(bitstring="01", prob=0.4, decoded=[0, 1]),
-        ]
-        programs = _mock_programs({"A": candidates_a})
-        get_top_solutions = mocker.spy(programs["A"], "get_top_solutions")
-        var_maps = {"A": [0, 1]}
+    result = strategy.aggregate(
+        programs=programs,
+        initial_solution=[0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=_neg_sum_evaluate,
+    )
 
-        result = strategy.aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-        )
+    get_top_solutions.assert_called_once_with(n=6, include_decoded=True)
+    assert result == [(pytest.approx(-1.0), [1, 0])]
 
-        get_top_solutions.assert_called_once_with(n=6, include_decoded=True)
-        assert result == [(pytest.approx(-1.0), [1, 0])]
 
-    def test_single_partition_single_candidate(self):
-        """Greedy with one partition and one candidate returns that candidate."""
-        candidates = [SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0])]
-        programs = _mock_programs({"A": candidates})
-        var_maps = {"A": [0, 1]}
+@pytest.mark.parametrize(
+    "candidates_by_id, var_maps, initial_solution, evaluate_fn, beam_width, expected",
+    [
+        pytest.param(
+            {"A": [SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0])]},
+            {"A": [0, 1]},
+            [0, 0],
+            _neg_sum_evaluate,
+            1,
+            [1, 0],
+            id="greedy_single_partition_single_candidate",
+        ),
+        pytest.param(
+            {
+                "A": [SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0])],
+                "B": [SolutionEntry(bitstring="11", prob=0.7, decoded=[1, 1])],
+            },
+            {"A": [0, 1], "B": [2, 3]},
+            [0, 0, 0, 0],
+            _neg_sum_evaluate,
+            1,
+            [1, 0, 1, 1],
+            id="greedy_picks_best_per_partition",
+        ),
+        pytest.param(
+            {
+                "A": [
+                    SolutionEntry(bitstring="01", prob=0.9, decoded=[0, 1]),
+                    SolutionEntry(bitstring="10", prob=0.1, decoded=[1, 0]),
+                ]
+            },
+            {"A": [0, 1]},
+            [0, 0],
+            _neg_sum_evaluate,
+            2,
+            [0, 1],
+            id="single_partition_beam_2",
+        ),
+        pytest.param(
+            {"A": _binary_candidates()},
+            {"A": [0]},
+            [0],
+            _sum_evaluate,
+            1,
+            [1],
+            id="beam_width_limits_extraction",
+        ),
+        pytest.param(
+            {"A": [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]},
+            {"A": [1]},
+            [1, 0, 1],
+            _neg_sum_evaluate,
+            1,
+            [1, 1, 1],
+            id="untouched_initial_positions_preserved",
+        ),
+    ],
+)
+def test_beam_search_aggregate_known_solution(
+    candidates_by_id, var_maps, initial_solution, evaluate_fn, beam_width, expected
+):
+    """Greedy (``beam_width=1``) takes the single best candidate per partition,
+    a wider beam sees more candidates, and positions no partition maps keep their
+    initial values."""
+    result = beam_search_aggregate(
+        programs=_mock_programs(candidates_by_id),
+        initial_solution=initial_solution,
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=evaluate_fn,
+        beam_width=beam_width,
+    )
 
-        result = beam_search_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            beam_width=1,
-        )
-
-        assert result == [1, 0]
-
-    def test_two_partitions_greedy_picks_best_per_partition(self):
-        """Greedy picks the single best candidate from each partition."""
-        # Partition A: variables 0,1 — candidates: [1,0] (prob=0.9)
-        candidates_a = [
-            SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0]),
-        ]
-        # Partition B: variables 2,3 — candidates: [1,1] (prob=0.7)
-        candidates_b = [
-            SolutionEntry(bitstring="11", prob=0.7, decoded=[1, 1]),
-        ]
-        programs = _mock_programs({"A": candidates_a, "B": candidates_b})
-        var_maps = {"A": [0, 1], "B": [2, 3]}
-
-        result = beam_search_aggregate(
-            programs=programs,
-            initial_solution=[0, 0, 0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            beam_width=1,
-        )
-
-        # Greedy: After A, only [1,0,0,0]. After B, only [1,0,1,1].
-        assert result == [1, 0, 1, 1]
+    assert result == expected
 
 
 class TestBeamSearchAggregateBeam:
@@ -469,26 +501,6 @@ class TestBeamSearchAggregateExhaustive:
 class TestBeamSearchAggregateEdgeCases:
     """Test edge cases."""
 
-    def test_single_partition(self):
-        """Single partition still works correctly."""
-        candidates = [
-            SolutionEntry(bitstring="01", prob=0.9, decoded=[0, 1]),
-            SolutionEntry(bitstring="10", prob=0.1, decoded=[1, 0]),
-        ]
-        programs = _mock_programs({"A": candidates})
-        var_maps = {"A": [0, 1]}
-
-        # beam_width=2 sees both candidates, picks highest sum
-        result = beam_search_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            beam_width=2,
-        )
-
-        assert result == [0, 1]
-
     def test_empty_programs_returns_initial(self):
         """No programs at all returns the initial solution."""
         result = beam_search_aggregate(
@@ -514,41 +526,6 @@ class TestBeamSearchAggregateEdgeCases:
         )
 
         assert result == [0, 0]
-
-    def test_beam_width_limits_extraction(self):
-        """beam_width limits both candidates extracted and beam size."""
-        many_candidates = _binary_candidates()
-        programs = _mock_programs({"A": many_candidates})
-        var_maps = {"A": [0]}
-
-        # beam_width=1 should only consider 1 candidate: [1]
-        result = beam_search_aggregate(
-            programs=programs,
-            initial_solution=[0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_sum_evaluate,
-            beam_width=1,
-        )
-
-        # Only candidate [1] is considered (beam_width=1), so result is [1]
-        assert result == [1]
-
-    def test_non_zero_initial_solution_preserved(self):
-        """Positions not touched by any partition retain their initial values."""
-        # Partition only covers position 1; positions 0 and 2 should stay as-is
-        candidates = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
-        programs = _mock_programs({"A": candidates})
-        var_maps = {"A": [1]}
-
-        result = beam_search_aggregate(
-            programs=programs,
-            initial_solution=[1, 0, 1],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            beam_width=1,
-        )
-
-        assert result == [1, 1, 1]
 
     def test_overlapping_partitions(self):
         """Partitions writing to overlapping global positions work correctly."""
@@ -851,40 +828,91 @@ def test_hierarchical_invalid_params_raise(kwargs, match):
 class TestHierarchicalAggregateBasic:
     """Test basic hierarchical aggregation functionality."""
 
-    def test_single_partition_single_candidate(self):
-        """Single partition with one candidate returns that candidate."""
-        candidates = [SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0])]
-        programs = _mock_programs({"A": candidates})
-        var_maps = {"A": [0, 1]}
-
+    @pytest.mark.parametrize(
+        "candidates_by_id, var_maps, initial_solution, group_size, expected",
+        [
+            pytest.param(
+                {"A": [SolutionEntry(bitstring="10", prob=0.8, decoded=[1, 0])]},
+                {"A": [0, 1]},
+                [0, 0],
+                4,
+                [1, 0],
+                id="single_partition_single_candidate",
+            ),
+            pytest.param(
+                {
+                    "A": [SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0])],
+                    "B": [SolutionEntry(bitstring="11", prob=0.7, decoded=[1, 1])],
+                },
+                {"A": [0, 1], "B": [2, 3]},
+                [0, 0, 0, 0],
+                4,
+                [1, 0, 1, 1],
+                id="two_partitions_picks_best",
+            ),
+            pytest.param(
+                {
+                    "A": [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])],
+                    "B": [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])],
+                },
+                {"A": [0], "B": [1]},
+                [0, 0],
+                1,
+                [1, 1],
+                id="group_size_1_merges_pairwise",
+            ),
+            pytest.param(
+                {
+                    "A": [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])],
+                    "B": [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])],
+                },
+                {"A": [0], "B": [1]},
+                [0, 0],
+                100,
+                [1, 1],
+                id="group_size_larger_than_partitions",
+            ),
+            pytest.param(
+                {
+                    "A": [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])],
+                    "B": [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])],
+                    "C": [SolutionEntry(bitstring="1", prob=0.5, decoded=[1])],
+                },
+                {"A": [0], "B": [1], "C": [2]},
+                [0, 0, 0],
+                1,
+                [1, 1, 1],
+                id="odd_number_of_groups_last_carried_forward",
+            ),
+            pytest.param(
+                {
+                    "A": [SolutionEntry(bitstring="1", prob=1.0, decoded=[1])],
+                    "B": [SolutionEntry(bitstring="1", prob=1.0, decoded=[1])],
+                },
+                {"A": [1], "B": [2]},
+                [1, 0, 0, 0],
+                1,
+                [1, 1, 1, 0],
+                id="unowned_initial_bit_survives_merge",
+            ),
+        ],
+    )
+    def test_combines_best_candidates(
+        self, candidates_by_id, var_maps, initial_solution, group_size, expected
+    ):
+        """Partitions combine to the best solution for any ``group_size``: one group
+        per partition merges pairwise, an odd group count carries the last group
+        forward unpaired, and an initial bit owned by no partition survives a
+        multi-group merge."""
         result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
+            programs=_mock_programs(candidates_by_id),
+            initial_solution=initial_solution,
             extend_fn=_write_extend(var_maps),
             evaluate_fn=_neg_sum_evaluate,
+            group_size=group_size,
         )
 
-        assert result == [1, 0]
-
-    def test_two_partitions_picks_best(self):
-        """Two partitions should combine to produce best solution."""
-        candidates_a = [
-            SolutionEntry(bitstring="10", prob=0.9, decoded=[1, 0]),
-        ]
-        candidates_b = [
-            SolutionEntry(bitstring="11", prob=0.7, decoded=[1, 1]),
-        ]
-        programs = _mock_programs({"A": candidates_a, "B": candidates_b})
-        var_maps = {"A": [0, 1], "B": [2, 3]}
-
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0, 0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-        )
-
-        assert result == [1, 0, 1, 1]
+        assert result == expected
 
     def test_empty_programs_returns_initial(self):
         """No programs returns the initial solution."""
@@ -909,64 +937,6 @@ class TestHierarchicalAggregateBasic:
         )
 
         assert result == [0, 0]
-
-
-class TestHierarchicalAggregateGrouping:
-    """Test the grouping and pairwise merge logic."""
-
-    def test_group_size_1_processes_each_partition_separately(self):
-        """group_size=1 creates one group per partition, then merges pairwise."""
-        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
-        candidates_b = [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])]
-        programs = _mock_programs({"A": candidates_a, "B": candidates_b})
-        var_maps = {"A": [0], "B": [1]}
-
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            group_size=1,
-        )
-
-        assert result == [1, 1]
-
-    def test_group_size_larger_than_partitions(self):
-        """group_size larger than the number of partitions is fine."""
-        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
-        candidates_b = [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])]
-        programs = _mock_programs({"A": candidates_a, "B": candidates_b})
-        var_maps = {"A": [0], "B": [1]}
-
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            group_size=100,
-        )
-
-        assert result == [1, 1]
-
-    def test_odd_number_of_groups_last_carried_forward(self):
-        """An odd number of groups carries the last group forward unpaired."""
-        candidates_a = [SolutionEntry(bitstring="1", prob=0.9, decoded=[1])]
-        candidates_b = [SolutionEntry(bitstring="1", prob=0.7, decoded=[1])]
-        candidates_c = [SolutionEntry(bitstring="1", prob=0.5, decoded=[1])]
-        programs = _mock_programs(
-            {"A": candidates_a, "B": candidates_b, "C": candidates_c}
-        )
-        var_maps = {"A": [0], "B": [1], "C": [2]}
-
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            group_size=1,
-        )
-
-        assert result == [1, 1, 1]
 
 
 class TestHierarchicalAggregateFindsOptimal:
@@ -1093,62 +1063,34 @@ class TestHierarchicalAggregateTopN:
         assert result == [1, 1, 1]
 
 
-class TestHierarchicalAggregateMerge:
-    """Robustness of the merge primitive: it rebuilds combined solutions by
-    replaying selections through ``extend_fn`` rather than overlaying bits.
+def test_hierarchical_merge_overlapping_maps_later_group_wins():
+    """On a shared index, the later group's value wins (incl. an explicit 0).
 
-    These exercise the primitive on inputs a hardcoded bit-overlay would mishandle
-    (overlapping indices, non-zero "unset" values). divi's own decomposers always
-    produce disjoint partitions, so these are robustness guards on the merge logic,
-    not coverage of a reachable overlapping decomposition.
+    The merge primitive rebuilds combined solutions by replaying selections
+    through ``extend_fn`` rather than overlaying bits. A sets index 1 to 1; B owns
+    the same index 1 and assigns it 0. A bit-OR merge would keep A's 1; replaying
+    B's selection correctly overwrites it. ``group_size=1`` forces the two
+    partitions into separate groups so the merge path runs. divi's own decomposers
+    always produce disjoint partitions, so this guards the merge logic rather than
+    covering a reachable overlapping decomposition.
     """
+    programs = _mock_programs(
+        {
+            "A": [SolutionEntry(bitstring="11", prob=1.0, decoded=[1, 1])],
+            "B": [SolutionEntry(bitstring="01", prob=1.0, decoded=[0, 1])],
+        }
+    )
+    var_maps = {"A": [0, 1], "B": [1, 2]}
 
-    def test_overlapping_maps_later_group_wins(self):
-        """On a shared index, the later group's value wins (incl. an explicit 0).
+    result = hierarchical_aggregate(
+        programs=programs,
+        initial_solution=[0, 0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=_sum_evaluate,
+        group_size=1,
+    )
 
-        A sets index 1 to 1; B owns the same index 1 and assigns it 0. A bit-OR
-        merge would keep A's 1; replaying B's selection correctly overwrites it.
-        ``group_size=1`` forces the two partitions into separate groups so the
-        merge path runs.
-        """
-        # A -> indices [0, 1] = [1, 1]; B -> indices [1, 2] = [0, 1] (overlap at 1)
-        programs = _mock_programs(
-            {
-                "A": [SolutionEntry(bitstring="11", prob=1.0, decoded=[1, 1])],
-                "B": [SolutionEntry(bitstring="01", prob=1.0, decoded=[0, 1])],
-            }
-        )
-        var_maps = {"A": [0, 1], "B": [1, 2]}
-
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[0, 0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_sum_evaluate,
-            group_size=1,
-        )
-
-        assert result == [1, 0, 1]
-
-    def test_non_zero_initial_preserved_across_merge(self):
-        """An initial bit owned by no partition survives a multi-group merge.
-
-        ``group_size=1`` puts A and B in separate groups; index 0 is set in the
-        initial solution and owned by neither, so the merge must carry it through.
-        """
-        one = [SolutionEntry(bitstring="1", prob=1.0, decoded=[1])]
-        programs = _mock_programs({"A": one, "B": one})
-        var_maps = {"A": [1], "B": [2]}
-
-        result = hierarchical_aggregate(
-            programs=programs,
-            initial_solution=[1, 0, 0, 0],
-            extend_fn=_write_extend(var_maps),
-            evaluate_fn=_neg_sum_evaluate,
-            group_size=1,
-        )
-
-        assert result == [1, 1, 1, 0]
+    assert result == [1, 0, 1]
 
 
 class TestHierarchicalAggregateCost:
@@ -1162,19 +1104,18 @@ class TestHierarchicalAggregateCost:
         """A larger top_n must not increase the number of evaluate_fn calls.
 
         ``top_n`` only widens the final slice (a sort+slice), so the scoring work
-        is identical whether the caller asks for 1 solution or 50. ``group_size=2``
-        makes the within-group pool grow to 4 candidates (2 partitions × 2) which
-        ``max_per_group=2`` then prunes — so the search-cap pruning is load-bearing
-        and a regression that let ``top_n`` widen intermediate pools would change
-        the count.
+        is identical whether the caller asks for 1 solution or 50. With
+        ``group_size=3`` the third step of each group extends the pool that
+        ``max_per_group=2`` pruned, so letting ``top_n`` widen any intermediate
+        pool would change the count.
         """
-        programs, var_maps = _single_var_programs(4)
+        programs, var_maps = _single_var_programs(6)
 
         def calls_for(top_n):
             ev = _CountingEval(_sum_evaluate)
             HierarchicalStrategy(
-                group_size=2, k_per_partition=2, max_per_group=2
-            ).aggregate(programs, [0, 0, 0, 0], _write_extend(var_maps), ev, top_n)
+                group_size=3, k_per_partition=2, max_per_group=2
+            ).aggregate(programs, [0] * 6, _write_extend(var_maps), ev, top_n)
             return ev.calls
 
         assert calls_for(1) == calls_for(50)
@@ -1248,3 +1189,92 @@ class TestHierarchicalAggregateCost:
 
         assert full == [0, 1]  # global optimum, cost -10
         assert narrow == [1, 1]  # local-best prefixes only, cost 4
+
+    def test_top_n_exceeds_max_per_group_across_a_merge(self):
+        """The final merge level, not only a lone group, widens to ``top_n``."""
+        programs, var_maps = _single_var_programs(2)
+
+        results = hierarchical_top_n(
+            programs,
+            [0, 0],
+            _write_extend(var_maps),
+            _sum_evaluate,
+            top_n=3,
+            group_size=1,
+            max_per_group=2,
+        )
+
+        assert len(results) == 3
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        BeamSearchStrategy(beam_width=1, n_partition_candidates=1),
+        HierarchicalStrategy(k_per_partition=1, max_per_group=1),
+    ],
+    ids=["beam", "hierarchical"],
+)
+def test_minimum_widths_are_accepted(strategy):
+    programs, var_maps = _single_var_programs(2)
+
+    results = strategy.aggregate(
+        programs, [0, 0], _write_extend(var_maps), _neg_sum_evaluate
+    )
+
+    assert results == [(-2, [1, 1])]
+
+
+def test_beam_width_below_top_n_prunes_at_top_n():
+    """A beam bumped to ``top_n`` still prunes, so it misses an optimum a wider
+    beam would find."""
+    cost_table = _three_var_cost_table()
+    programs, var_maps = _single_var_programs(3)
+
+    results = beam_search_top_n(
+        programs=programs,
+        initial_solution=[0, 0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=lambda solution: cost_table[tuple(solution)],
+        beam_width=1,
+        top_n=2,
+    )
+
+    assert results == [(-6.0, [1, 0, 1]), (-5.0, [1, 0, 0])]
+
+
+def test_beam_continues_past_a_partition_without_candidates():
+    programs = _mock_programs({"A": [], "B": _binary_candidates()})
+    var_maps = {"B": [1]}
+
+    result = beam_search_aggregate(
+        programs=programs,
+        initial_solution=[0, 0],
+        extend_fn=_write_extend(var_maps),
+        evaluate_fn=_neg_sum_evaluate,
+        beam_width=1,
+    )
+
+    assert result == [0, 1]
+
+
+def test_hierarchical_default_top_n_returns_one_solution():
+    programs, var_maps = _single_var_programs(2)
+
+    results = HierarchicalStrategy().aggregate(
+        programs, [0, 0], _write_extend(var_maps), _sum_evaluate
+    )
+
+    assert results == [(0, [0, 0])]
+
+
+def test_hierarchical_fetches_k_per_partition_candidates(mocker):
+    programs, var_maps = _single_var_programs(2)
+    spies = [mocker.spy(program, "get_top_solutions") for program in programs.values()]
+
+    hierarchical_aggregate(
+        programs, [0, 0], _write_extend(var_maps), _sum_evaluate, k_per_partition=1
+    )
+
+    for spy in spies:
+        spy.assert_called_once_with(n=1, include_decoded=True)

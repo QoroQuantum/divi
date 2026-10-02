@@ -23,6 +23,7 @@ from divi.circuits._payloads import bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.qprog import BatchConfig, BatchMode
 from divi.qprog._batch_coordinator import (
+    _BATCH_COLORS,
     _Batch,
     _BatchCoordinator,
     _fail_futures,
@@ -38,6 +39,7 @@ from divi.reporting._events import (
     TerminalStatus,
 )
 from divi.reporting._state import ProgressState
+from tests._helpers import exact_match
 
 
 class FakeSyncBackend(CircuitRunner):
@@ -92,11 +94,16 @@ class FakeExpvalBackend(CircuitRunner):
 
 
 class _FakeAsyncBackend(FakeSyncBackend):
-    """Production-shaped async backend for typed polling-event tests."""
+    """Production-shaped async backend that records how it is driven."""
 
-    def __init__(self):
+    def __init__(self, max_retries: int | None = None):
         super().__init__()
+        self.max_retries = max_retries
         self._submitted_circuits: dict[str, str] = {}
+        self.jobs: list[ExecutionResult] = []
+        self.poll_calls: list[dict] = []
+        self.fetched: list[ExecutionResult] = []
+        self.cancelled_jobs: list[ExecutionResult] = []
 
     @property
     def is_async(self) -> bool:
@@ -104,7 +111,9 @@ class _FakeAsyncBackend(FakeSyncBackend):
 
     def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
         self._submitted_circuits = bound_circuits(payloads)
-        return ExecutionResult(results=None, job_id="job-123")
+        job = ExecutionResult(results=None, job_id=f"job-{len(self.jobs) + 1}")
+        self.jobs.append(job)
+        return job
 
     def poll_job_status(
         self,
@@ -114,11 +123,19 @@ class _FakeAsyncBackend(FakeSyncBackend):
         progress_callback=None,
         cancellation_event=None,
     ):
+        self.poll_calls.append(
+            {
+                "loop_until_complete": loop_until_complete,
+                "verbose": verbose,
+                "cancellation_event": cancellation_event,
+            }
+        )
         if progress_callback is not None:
             progress_callback(1, "RUNNING")
         return JobStatus.COMPLETED
 
     def get_job_results(self, execution_result) -> ExecutionResult:
+        self.fetched.append(execution_result)
         return ExecutionResult(
             results=[
                 {"label": label, "results": {"00": 100}}
@@ -128,7 +145,50 @@ class _FakeAsyncBackend(FakeSyncBackend):
         )
 
     def cancel_job(self, execution_result):
-        return None
+        self.cancelled_jobs.append(execution_result)
+
+
+class _BlockingAsyncBackend(_FakeAsyncBackend):
+    """Async backend whose polling blocks until the cancellation event is set."""
+
+    def __init__(self, cancel_error: Exception | None = None):
+        super().__init__()
+        self.polling = Event()
+        self._cancel_error = cancel_error
+
+    def poll_job_status(
+        self,
+        execution_result,
+        loop_until_complete=False,
+        verbose=True,
+        progress_callback=None,
+        cancellation_event=None,
+    ):
+        self.polling.set()
+        cancellation_event.wait(timeout=10)
+        raise ExecutionCancelledError("Polling interrupted.")
+
+    def cancel_job(self, execution_result):
+        super().cancel_job(execution_result)
+        if self._cancel_error is not None:
+            raise self._cancel_error
+
+
+class _SubmissionCounter:
+    """Progress emitter that signals once ``target`` programs have first submitted."""
+
+    def __init__(self, target: int):
+        self._target = target
+        self._count = 0
+        self._lock = Lock()
+        self.reached = Event()
+
+    def __call__(self, event: ProgressEvent) -> None:
+        if event.kind is EventKind.ADVANCE:
+            with self._lock:
+                self._count += 1
+                if self._count >= self._target:
+                    self.reached.set()
 
 
 class _UnknownStatusAsyncBackend(_FakeAsyncBackend):
@@ -188,6 +248,49 @@ def _make_entry(circuits: dict[str, str], kwargs: dict | None = None) -> _Pendin
     return _PendingEntry(circuits, kwargs or {}, Future())
 
 
+def _flush_group_for(batch: _Batch) -> _FlushGroup:
+    return _FlushGroup(program_keys=tuple(batch), color="green")
+
+
+def _run_flush(coord: _BatchCoordinator, batch: _Batch) -> None:
+    """Flush ``batch`` on the calling thread, tracked in flight as a real flush is."""
+    flush_group = _flush_group_for(batch)
+    with coord._in_flight_lock:
+        coord._in_flight.append(flush_group)
+    coord._do_flush(batch, flush_group)
+
+
+def _submit_in_background(
+    coord: _BatchCoordinator, program_key, circuits: dict[str, str], **kwargs
+) -> Future:
+    """Run ``coord.submit`` on a worker thread; the future carries its outcome."""
+    outcome: Future = Future()
+
+    def _run():
+        try:
+            outcome.set_result(coord.submit(program_key, circuits, **kwargs))
+        except BaseException as exc:
+            outcome.set_exception(exc)
+
+    Thread(target=_run, daemon=True).start()
+    return outcome
+
+
+def _batch_registrations(emitted: list[ProgressEvent]) -> list[ProgressEvent]:
+    return [
+        event
+        for event in emitted
+        if event.kind is EventKind.REGISTER and event.scope is ProgressScope.BATCH
+    ]
+
+
+_SINGLE_AND_MIXED_HAM_OPS = pytest.mark.parametrize(
+    "kwargs_by_program",
+    [{"p1": {}}, {"p_ham": {"ham_ops": "Z"}, "p_shots": {}}],
+    ids=["single_job", "mixed_ham_ops"],
+)
+
+
 def test_routed_labels_do_not_depend_on_merge_order():
     """Backends seed circuits per label, so the label must not encode position."""
     first = {"a": _make_entry({"c": "qa"}), "b": _make_entry({"c": "qb"})}
@@ -198,21 +301,6 @@ def test_routed_labels_do_not_depend_on_merge_order():
 
     assert routes_first == routes_second
     assert len(routes_first) == 2
-
-
-class TestPendingEntry:
-    def test_named_access(self):
-        entry = _make_entry({"t": "qasm"}, {"ham_ops": "Z"})
-        assert entry.circuits == {"t": "qasm"}
-        assert entry.kwargs == {"ham_ops": "Z"}
-        assert isinstance(entry.future, Future)
-
-    def test_unpacking(self):
-        entry = _make_entry({"t": "qasm"})
-        circuits, kwargs, future = entry
-        assert circuits == {"t": "qasm"}
-        assert kwargs == {}
-        assert isinstance(future, Future)
 
 
 class TestFailFutures:
@@ -237,12 +325,8 @@ class TestFailFutures:
         assert batch["a"].future.result() == "ok"
 
 
-def test_program_keys_from_futures():
-    fg = _FlushGroup(
-        futures={"prog_a": Future(), "prog_b": Future()},
-        color="green",
-        label="expval",
-    )
+def test_flush_group_starts_without_a_job():
+    fg = _FlushGroup(program_keys=("prog_a", "prog_b"), color="green", label="expval")
     assert fg.program_keys == ("prog_a", "prog_b")
     assert fg.color == "green"
     assert fg.label == "expval"
@@ -273,21 +357,28 @@ class TestBatchConfig:
         with pytest.raises(ValueError, match="_sort_programs has no effect"):
             BatchConfig(mode=BatchMode.OFF, _sort_programs=True)
 
-    def test_max_concurrent_programs_accepted(self):
-        cfg = BatchConfig(max_concurrent_programs=64)
-        assert cfg.max_concurrent_programs == 64
+    def test_max_batch_size_one_accepted(self):
+        assert BatchConfig(max_batch_size=1).max_batch_size == 1
 
-    def test_max_concurrent_programs_zero_raises(self):
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(1, id="one"),
+            pytest.param(64, id="sixty_four"),
+            pytest.param(-1, id="minus_one_unbounded"),
+        ],
+    )
+    def test_max_concurrent_programs_accepted(self, value):
+        cfg = BatchConfig(max_concurrent_programs=value)
+        assert cfg.max_concurrent_programs == value
+
+    @pytest.mark.parametrize(
+        "value",
+        [pytest.param(0, id="zero"), pytest.param(-2, id="other_negative")],
+    )
+    def test_max_concurrent_programs_rejected(self, value):
         with pytest.raises(ValueError, match="max_concurrent_programs must be >= 1"):
-            BatchConfig(max_concurrent_programs=0)
-
-    def test_max_concurrent_programs_negative_one_accepted(self):
-        cfg = BatchConfig(max_concurrent_programs=-1)
-        assert cfg.max_concurrent_programs == -1
-
-    def test_max_concurrent_programs_other_negatives_raise(self):
-        with pytest.raises(ValueError, match="max_concurrent_programs must be >= 1"):
-            BatchConfig(max_concurrent_programs=-2)
+            BatchConfig(max_concurrent_programs=value)
 
     def test_mode_off_with_max_concurrent_programs_raises(self):
         with pytest.raises(ValueError, match="max_concurrent_programs has no effect"):
@@ -332,6 +423,33 @@ class TestMergeCircuitsAndKwargs:
         # p1 and p3 share "XX" so they should be contiguous.
         assert kw["ham_ops"] == "XX|ZZ"
         assert kw["circuit_ham_map"] == [[0, 2], [2, 3]]
+
+    def test_different_ham_ops_keep_shared_kwargs(self):
+        batch: _Batch = {
+            "p1": _make_entry({"p1@c1": "q1"}, {"shots": 100, "ham_ops": "Z0"}),
+            "p2": _make_entry({"p2@c1": "q2"}, {"shots": 100, "ham_ops": "Z1"}),
+        }
+        _, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+        assert kw == {
+            "shots": 100,
+            "ham_ops": "Z0|Z1",
+            "circuit_ham_map": [[0, 1], [1, 2]],
+        }
+
+    def test_different_ham_ops_with_diverging_other_kwargs_raises(self):
+        batch: _Batch = {
+            "p1": _make_entry({"p1@c1": "q1"}, {"shots": 100, "ham_ops": "Z0"}),
+            "p2": _make_entry({"p2@c1": "q2"}, {"shots": 200, "ham_ops": "Z1"}),
+        }
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Cannot merge programs whose kwargs differ in keys other than "
+                "'ham_ops'. Submit such programs in separate batches."
+            ),
+        ):
+            _BatchCoordinator._merge_circuits_and_kwargs(batch)
 
 
 class TestMergeCircuitsAndKwargsShotGroups:
@@ -386,6 +504,37 @@ class TestMergeCircuitsAndKwargsShotGroups:
             flat.extend([shots] * (e - s))
         # p1's allocation: [50, 200], p2's: [300, 300] -> merged [50, 200, 300, 300]
         assert flat == [50, 200, 300, 300]
+
+    @pytest.mark.parametrize(
+        ("programs", "expected"),
+        [
+            pytest.param(
+                [(2, [[0, 2, 100]])] * 3,
+                [[0, 2, 100], [2, 4, 100], [4, 6, 100]],
+                id="identical_kwargs",
+            ),
+            pytest.param(
+                [
+                    (2, [[0, 1, 50], [1, 2, 200]]),
+                    (1, [[0, 1, 300]]),
+                    (2, [[0, 2, 400]]),
+                ],
+                [[0, 1, 50], [1, 2, 200], [2, 3, 300], [3, 5, 400]],
+                id="distinct_shot_groups",
+            ),
+        ],
+    )
+    def test_shot_groups_are_offset_into_merged_circuit_list(self, programs, expected):
+        batch: _Batch = {
+            f"p{i}": _make_entry(
+                {f"p{i}@c{j}": "q" for j in range(n_circuits)},
+                {"shot_groups": shot_groups},
+            )
+            for i, (n_circuits, shot_groups) in enumerate(programs)
+        }
+        _, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+        assert kw["shot_groups"] == expected
 
     def test_mixed_with_without_shot_groups_raises(self):
         """Programs that mix shot_groups-set and shot_groups-unset can't merge."""
@@ -507,32 +656,28 @@ class TestNWorkersBarrierCap:
     """The ``n_workers`` cap on the barrier predicate keeps the wait-for-all
     barrier satisfiable when ``_active_programs`` exceeds executor capacity."""
 
-    def test_no_cap_waits_for_every_active(self):
-        coord = _BatchCoordinator(FakeSyncBackend())
-        for key in ("a", "b", "c"):
+    @pytest.mark.parametrize(
+        "coordinator_kwargs, active, flush_at",
+        [
+            pytest.param({}, "abc", 3, id="no_cap_waits_for_every_active"),
+            pytest.param(
+                {"n_workers": 2}, "abcde", 2, id="cap_fires_below_full_active"
+            ),
+            pytest.param(
+                {"n_workers": 14}, "ab", 2, id="cap_dormant_when_active_below_cap"
+            ),
+        ],
+    )
+    def test_flushes_at_min_of_active_and_cap(
+        self, coordinator_kwargs, active, flush_at
+    ):
+        coord = _BatchCoordinator(FakeSyncBackend(), **coordinator_kwargs)
+        for key in active:
             coord.register_program(key)
-        coord._pending["a"] = _make_entry({"c": "q"})
-        coord._pending["b"] = _make_entry({"c": "q"})
+        for key in active[: flush_at - 1]:
+            coord._pending[key] = _make_entry({"c": "q"})
         assert not coord._should_flush()
-        coord._pending["c"] = _make_entry({"c": "q"})
-        assert coord._should_flush()
-
-    def test_cap_fires_below_full_active(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), n_workers=2)
-        for key in ("a", "b", "c", "d", "e"):
-            coord.register_program(key)
-        coord._pending["a"] = _make_entry({"c": "q"})
-        assert not coord._should_flush()
-        coord._pending["b"] = _make_entry({"c": "q"})
-        assert coord._should_flush()
-
-    def test_cap_dormant_when_active_smaller_than_cap(self):
-        coord = _BatchCoordinator(FakeSyncBackend(), n_workers=14)
-        coord.register_program("a")
-        coord.register_program("b")
-        coord._pending["a"] = _make_entry({"c": "q"})
-        assert not coord._should_flush()
-        coord._pending["b"] = _make_entry({"c": "q"})
+        coord._pending[active[flush_at - 1]] = _make_entry({"c": "q"})
         assert coord._should_flush()
 
     def test_predicate_collapses_when_active_drops_below_cap(self):
@@ -692,13 +837,7 @@ class TestFlushWithSyncBackend:
         mocker.patch.object(_BatchCoordinator, "_poll_and_get_results", raise_base)
 
         batch = {"p1": _make_entry({"c1": "q"}, {})}
-        flush_group = _FlushGroup(
-            futures={k: e.future for k, e in batch.items()}, color="green"
-        )
-        with coord._in_flight_lock:
-            coord._in_flight.append(flush_group)
-
-        coord._do_flush(batch, flush_group)
+        _run_flush(coord, batch)
 
         future = batch["p1"].future
         assert future.done()
@@ -840,38 +979,29 @@ class TestFlushWithSyncBackend:
                 p1_pos < p2_pos
             ), f"Expected p1 before p2 (sorted), got order: {merged_values}"
 
-    def test_sort_programs_false_can_produce_arrival_order(self):
-        """With _sort_programs=False (default) the batch is flushed in arrival
-        order, so a single-threaded submission preserves insertion sequence."""
+    @pytest.mark.parametrize(
+        ("sort_programs", "expected_order"),
+        [(False, ["q2", "q1"]), (True, ["q1", "q2"])],
+        ids=["arrival_order", "key_order"],
+    )
+    def test_merge_order_follows_sort_setting(self, sort_programs, expected_order):
         backend = FakeSyncBackend()
+        first_submitted = _SubmissionCounter(1)
         coord = _BatchCoordinator(
-            backend, batch_config=BatchConfig(_sort_programs=False)
+            backend,
+            progress_emitter=first_submitted,
+            batch_config=BatchConfig(_sort_programs=sort_programs),
+            preparation_key="preparation",
         )
-        # Register and immediately submit sequentially (no concurrency) so
-        # the insertion order is deterministic: "p2" then "p1".
-        coord.register_program("p2")
         coord.register_program("p1")
+        coord.register_program("p2")
 
-        futures = {}
-        with coord._lock:
-            futures["p2"] = Future()
-            coord._pending["p2"] = _PendingEntry({"c": "q2"}, {}, futures["p2"])
-            futures["p1"] = Future()
-            coord._pending["p1"] = _PendingEntry({"c": "q1"}, {}, futures["p1"])
-            coord._trigger_flush()
+        early = _submit_in_background(coord, "p2", {"c": "q2"})
+        assert first_submitted.reached.wait(timeout=5)
+        coord.submit("p1", {"c": "q1"})
+        early.result(timeout=5)
 
-        # Collect results so the flush thread can finish.
-        for f in futures.values():
-            f.result(timeout=5)
-
-        assert len(backend.submitted) == 1
-        merged_values = list(backend.submitted[0].values())
-        p2_pos = merged_values.index("q2")
-        p1_pos = merged_values.index("q1")
-        # With _sort_programs=False the insertion order (p2, then p1) is preserved.
-        assert (
-            p2_pos < p1_pos
-        ), f"Expected p2 before p1 (arrival order), got: {merged_values}"
+        assert [list(batch.values()) for batch in backend.submitted] == [expected_order]
 
 
 class TestHamOpsSplitting:
@@ -995,28 +1125,109 @@ class TestBatchProgress:
         assert finish.progress_key == register.progress_key
         assert finish.terminal_status is TerminalStatus.SUCCESS
 
-    def test_default_no_op_emitter_keeps_standalone_coordinator_quiet(self):
+    def test_default_no_op_emitter_keeps_standalone_coordinator_quiet(
+        self, capsys, caplog
+    ):
         backend = FakeSyncBackend()
         coord = _BatchCoordinator(backend)
         coord.register_program("p1")
+
         coord.submit("p1", {"c1": "q1"})
 
-    def test_batch_registration_color_cycles(self):
-        """Each flush group gets the next color in the cycle."""
+        assert [list(batch.values()) for batch in backend.submitted] == [["q1"]]
+        assert capsys.readouterr() == ("", "")
+        assert caplog.records == []
+
+    def test_plural_batch_label(self):
+        emitted: list[ProgressEvent] = []
+        coord = _BatchCoordinator(FakeSyncBackend(), progress_emitter=emitted.append)
+        coord.register_program("p1")
+        coord.register_program("p2")
+
+        outcomes = [
+            _submit_in_background(coord, "p1", {"c1": "q", "c2": "q"}),
+            _submit_in_background(coord, "p2", {"c1": "q"}),
+        ]
+        for outcome in outcomes:
+            outcome.result(timeout=5)
+
+        assert [event.label for event in _batch_registrations(emitted)] == [
+            "Batch (3 circuits, 2 programs)"
+        ]
+
+    def test_batch_colours_cycle_through_the_palette(self):
+        emitted: list[ProgressEvent] = []
+        coord = _BatchCoordinator(FakeSyncBackend(), progress_emitter=emitted.append)
+        coord.register_program("p1")
+
+        for index in range(len(_BATCH_COLORS) + 1):
+            coord.submit("p1", {f"c{index}": "q"})
+
+        assert [event.batch_color for event in _batch_registrations(emitted)] == [
+            *_BATCH_COLORS,
+            _BATCH_COLORS[0],
+        ]
+
+    def test_deregister_with_nothing_pending_starts_no_batch(self):
         emitted: list[ProgressEvent] = []
         backend = FakeSyncBackend()
         coord = _BatchCoordinator(backend, progress_emitter=emitted.append)
-
         coord.register_program("p1")
-        coord.submit("p1", {"c1": "q1"})
-        coord.submit("p1", {"c2": "q2"})
+        coord.register_program("p2")
 
-        colors = [
-            event.batch_color
-            for event in emitted
-            if event.kind is EventKind.REGISTER and event.scope is ProgressScope.BATCH
+        coord.deregister_program("p2")
+        coord.submit("p1", {"c1": "q"})
+
+        assert [list(batch.values()) for batch in backend.submitted] == [["q"]]
+        assert [event.batch_color for event in _batch_registrations(emitted)] == [
+            _BATCH_COLORS[0]
         ]
-        assert colors[0] != colors[1]
+
+    @pytest.mark.parametrize(
+        ("backend_cls", "job_status"),
+        [(FakeSyncBackend, None), (_FakeAsyncBackend, JobStatus.COMPLETED)],
+        ids=["sync", "async"],
+    )
+    def test_successful_batch_finish_reports_job_status(self, backend_cls, job_status):
+        emitted: list[ProgressEvent] = []
+        coord = _BatchCoordinator(backend_cls(), progress_emitter=emitted.append)
+        coord.register_program("p1")
+
+        coord.submit("p1", {"c1": "q"})
+
+        finish = emitted[-1]
+        assert finish.kind is EventKind.FINISH
+        assert finish.terminal_status is TerminalStatus.SUCCESS
+        assert finish.job_status is job_status
+
+    def test_polling_reports_the_backend_retry_limit(self):
+        emitted: list[ProgressEvent] = []
+        coord = _BatchCoordinator(
+            _FakeAsyncBackend(max_retries=7), progress_emitter=emitted.append
+        )
+        coord.register_program("p1")
+
+        coord.submit("p1", {"c1": "q"})
+
+        polling = [event for event in emitted if event.kind is EventKind.POLLING]
+        assert [event.max_retries for event in polling] == [7]
+
+    def test_polling_waits_quietly_and_cancellably_for_the_submitted_job(self):
+        cancellation_event = Event()
+        backend = _FakeAsyncBackend()
+        coord = _BatchCoordinator(backend, cancellation_event=cancellation_event)
+        coord.register_program("p1")
+
+        coord.submit("p1", {"c1": "q"})
+
+        assert backend.poll_calls == [
+            {
+                "loop_until_complete": True,
+                "verbose": False,
+                "cancellation_event": cancellation_event,
+            }
+        ]
+        assert backend.fetched == backend.jobs
 
     def test_sequential_flushes_keep_distinct_batch_lifecycles(self):
         emitted: list[ProgressEvent] = []
@@ -1026,12 +1237,7 @@ class TestBatchProgress:
         for index in range(32):
             coord.submit("p1", {f"c{index}": "qasm"})
 
-        registrations = [
-            event
-            for event in emitted
-            if event.kind is EventKind.REGISTER and event.scope is ProgressScope.BATCH
-        ]
-        targets = [event.progress_key for event in registrations]
+        targets = [event.progress_key for event in _batch_registrations(emitted)]
         assert len(targets) == 32
         assert len(set(targets)) == 32
 
@@ -1069,15 +1275,15 @@ class TestBatchProgress:
         t1.join(timeout=10)
         t2.join(timeout=10)
 
-        labels = {
-            event.label
-            for event in emitted
-            if event.kind is EventKind.REGISTER and event.scope is ProgressScope.BATCH
-        }
-        assert labels == {
+        registrations = _batch_registrations(emitted)
+        assert [event.label for event in registrations] == [
             "Batch expval (1 circuit, 1 program)",
             "Batch shots (1 circuit, 1 program)",
-        }
+        ]
+        assert [event.batch_color for event in registrations] == [
+            _BATCH_COLORS[0],
+            _BATCH_COLORS[0],
+        ]
 
     def test_first_program_submit_advances_preparation_once(self):
         emitted: list[ProgressEvent] = []
@@ -1105,6 +1311,7 @@ class TestBatchProgress:
 
         completed = coord._poll_and_get_results(
             ExecutionResult(results=None, job_id="job-123"),
+            job_id="job-123",
             batch_progress_key="registered-batch",
         )
 
@@ -1125,6 +1332,7 @@ class TestBatchProgress:
 
         completed = coord._poll_and_get_results(
             ExecutionResult(results=None, job_id="job-123"),
+            job_id="job-123",
             batch_progress_key="registered-batch",
         )
 
@@ -1264,7 +1472,7 @@ class TestBatchProgress:
 
     def test_success_follows_parsing_but_precedes_future_release(self):
         entry = _make_entry({"c1": "qasm"})
-        flush_group = _FlushGroup({"p1": entry.future}, "cyan")
+        batch = {"p1": entry}
         future_done_at_success: list[bool] = []
 
         def _record(event: ProgressEvent) -> None:
@@ -1276,7 +1484,7 @@ class TestBatchProgress:
 
         coord = _BatchCoordinator(_FakeAsyncBackend(), progress_emitter=_record)
 
-        coord._submit_sub_batch({"p1": entry}, flush_group)
+        coord._submit_sub_batch(batch, _flush_group_for(batch))
 
         assert future_done_at_success == [False]
         _, run_time = entry.future.result(timeout=0)
@@ -1343,6 +1551,76 @@ class TestCancellation:
 
         assert "p1" in error_holder
 
+    def test_flush_started_after_cancellation_never_reaches_backend(self):
+        cancellation_event = Event()
+        backend = FakeSyncBackend()
+        coord = _BatchCoordinator(backend, cancellation_event=cancellation_event)
+        batch = {"p1": _make_entry({"c1": "q"})}
+
+        cancellation_event.set()
+        _run_flush(coord, batch)
+
+        with pytest.raises(ExecutionCancelledError):
+            batch["p1"].future.result(timeout=0)
+        assert backend.submitted == []
+
+    @_SINGLE_AND_MIXED_HAM_OPS
+    def test_cancel_cancels_the_job_being_polled(self, kwargs_by_program):
+        backend = _BlockingAsyncBackend()
+        coord = _BatchCoordinator(backend)
+        for key in kwargs_by_program:
+            coord.register_program(key)
+
+        outcomes = [
+            _submit_in_background(coord, key, {"c": "q"}, **kwargs)
+            for key, kwargs in kwargs_by_program.items()
+        ]
+        assert backend.polling.wait(timeout=5)
+        coord.cancel()
+
+        for outcome in outcomes:
+            with pytest.raises(ExecutionCancelledError):
+                outcome.result(timeout=5)
+        assert [job.job_id for job in backend.cancelled_jobs] == ["job-1"]
+
+    @_SINGLE_AND_MIXED_HAM_OPS
+    def test_cancel_after_finished_flush_cancels_no_job(self, kwargs_by_program):
+        backend = _FakeAsyncBackend()
+        coord = _BatchCoordinator(backend)
+        batch = {
+            key: _make_entry({"c": "q"}, kwargs)
+            for key, kwargs in kwargs_by_program.items()
+        }
+        _run_flush(coord, batch)
+
+        coord.cancel()
+
+        assert len(backend.jobs) == len(kwargs_by_program)
+        assert backend.cancelled_jobs == []
+
+    def test_cancel_job_failure_still_fails_every_waiting_program(self):
+        backend = _BlockingAsyncBackend(cancel_error=RuntimeError("cancel refused"))
+        both_submitted = _SubmissionCounter(2)
+        coord = _BatchCoordinator(
+            backend,
+            progress_emitter=both_submitted,
+            batch_config=BatchConfig(max_batch_size=2),
+            preparation_key="preparation",
+        )
+        for key in ("a", "b", "c"):
+            coord.register_program(key)
+
+        in_flight = _submit_in_background(coord, "a", {"c1": "q", "c2": "q"})
+        assert backend.polling.wait(timeout=5)
+        pending = _submit_in_background(coord, "b", {"c1": "q"})
+        assert both_submitted.reached.wait(timeout=5)
+        coord.cancel()
+
+        for outcome in (in_flight, pending):
+            with pytest.raises(ExecutionCancelledError):
+                outcome.result(timeout=5)
+        assert [job.job_id for job in backend.cancelled_jobs] == ["job-1"]
+
 
 def test_partial_subbatch_failure_keeps_the_successful_share(mocker):
     """Sub-batch 0 succeeds and sub-batch 1 raises: sub-batch 0's program still
@@ -1354,13 +1632,7 @@ def test_partial_subbatch_failure_keeps_the_successful_share(mocker):
         "p_with_ham": _make_entry({"c1": "q"}, {"ham_ops": "Z"}),
         "p_no_ham": _make_entry({"c2": "q"}, {}),
     }
-    flush_group = _FlushGroup(
-        futures={k: e.future for k, e in batch.items()}, color="green"
-    )
-    with coord._in_flight_lock:
-        coord._in_flight.append(flush_group)
-
-    coord._do_flush(batch, flush_group)
+    _run_flush(coord, batch)
 
     _, run_time = batch["p_with_ham"].future.result(timeout=0)
     assert run_time == 7.5

@@ -66,8 +66,7 @@ def _extract_iteration_from_subdir(subdir_name: str) -> int | None:
     if not suffix.isdigit():
         return None
     iteration = int(suffix)
-    # Validate that iteration number is reasonable
-    if iteration < 0 or iteration > _MAX_ITERATION_NUMBER:
+    if iteration > _MAX_ITERATION_NUMBER:
         return None
     return iteration
 
@@ -115,23 +114,19 @@ def _find_latest_checkpoint_subdir(main_dir: Path) -> Path:
     Raises:
         CheckpointNotFoundError: If no complete checkpoint subdirectory is found.
     """
-    checkpoint_dirs = [
-        d
+    iteration_by_dir = {
+        d: iteration
         for d in main_dir.iterdir()
-        if d.is_dir() and _extract_iteration_from_subdir(d.name) is not None
-    ]
-    if not checkpoint_dirs:
-        # Provide helpful error message with available directories
-        available_dirs = [d.name for d in main_dir.iterdir() if d.is_dir()]
-        available_str = ", ".join(available_dirs[:5])  # Show first 5
-        if len(available_dirs) > 5:
-            available_str += f", ... ({len(available_dirs) - 5} more)"
+        if d.is_dir()
+        and (iteration := _extract_iteration_from_subdir(d.name)) is not None
+    }
+    if not iteration_by_dir:
         raise CheckpointNotFoundError(
             f"No checkpoint subdirectories found in {main_dir}",
             main_dir=main_dir,
-            available_directories=available_dirs,
+            available_directories=[d.name for d in main_dir.iterdir() if d.is_dir()],
         )
-    checkpoint_dirs.sort(key=lambda d: _extract_iteration_from_subdir(d.name) or -1)
+    checkpoint_dirs = sorted(iteration_by_dir, key=iteration_by_dir.__getitem__)
 
     complete_dirs = [d for d in checkpoint_dirs if _is_checkpoint_valid(d)]
     if not complete_dirs:
@@ -355,14 +350,9 @@ def _load_and_validate_pydantic_model(
         CheckpointNotFoundError: If the file does not exist.
         CheckpointCorruptedError: If the file is invalid JSON, missing required fields, or fails Pydantic validation.
     """
-    try:
-        json_data_dict = _validate_checkpoint_json(
-            path, required_fields=required_fields
-        )
-        json_data = json.dumps(json_data_dict)
-    except (CheckpointNotFoundError, CheckpointCorruptedError):
-        # Both already carry their own context, including available_directories.
-        raise
+    json_data = json.dumps(
+        _validate_checkpoint_json(path, required_fields=required_fields)
+    )
 
     try:
         return model_class.model_validate_json(json_data)
@@ -556,22 +546,11 @@ def list_checkpoints(main_dir: Path) -> list[CheckpointInfo]:
             main_dir=main_dir,
         )
 
-    checkpoints = []
-    for subdir in main_dir.iterdir():
-        if not subdir.is_dir():
-            continue
-
-        iteration = _extract_iteration_from_subdir(subdir.name)
-        if iteration is None:
-            continue
-
-        try:
-            info = get_checkpoint_info(subdir)
-            checkpoints.append(info)
-        except (CheckpointNotFoundError, ValueError):
-            # Skip invalid checkpoints
-            continue
-
+    checkpoints = [
+        get_checkpoint_info(subdir)
+        for subdir in main_dir.iterdir()
+        if subdir.is_dir() and _extract_iteration_from_subdir(subdir.name) is not None
+    ]
     checkpoints.sort(key=lambda x: x.iteration)
     return checkpoints
 

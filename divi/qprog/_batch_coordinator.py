@@ -206,13 +206,12 @@ def _route_batch_circuits(
 
 
 class _FlushGroup:
-    """Tracks one merged submission: the per-program futures and the backend job."""
+    """Tracks one merged submission: its programs and the backend job."""
 
-    __slots__ = ("futures", "execution_result", "color", "program_keys", "label")
+    __slots__ = ("execution_result", "color", "program_keys", "label")
 
-    def __init__(self, futures: dict[Hashable, Future], color: str, label: str = ""):
-        self.futures = futures
-        self.program_keys = tuple(futures)
+    def __init__(self, program_keys: tuple[Hashable, ...], color: str, label: str = ""):
+        self.program_keys = program_keys
         self.color = color
         self.label = label
         self.execution_result: ExecutionResult | None = None
@@ -223,6 +222,22 @@ def _fail_futures(batch: _Batch, exc: BaseException) -> None:
     for entry in batch.values():
         if not entry.future.done():
             entry.future.set_exception(exc)
+
+
+def _require_kwargs_match_except(all_kwargs: list[dict], varying_key: str) -> None:
+    """Raise unless every kwargs dict equals the first one outside *varying_key*."""
+
+    def _without(kw: dict) -> dict:
+        return {k: v for k, v in kw.items() if k != varying_key}
+
+    template = _without(all_kwargs[0])
+    for kw in all_kwargs[1:]:
+        if _without(kw) != template:
+            raise ValueError(
+                "Cannot merge programs whose kwargs differ in keys "
+                f"other than {varying_key!r}. Submit such programs in "
+                "separate batches."
+            )
 
 
 def _job_status_from_backend_exception(exc: BaseException) -> JobStatus | None:
@@ -419,10 +434,7 @@ class _BatchCoordinator:
         self._pending.clear()
 
         color = self._next_color()
-        flush_group = _FlushGroup(
-            futures={key: entry.future for key, entry in batch.items()},
-            color=color,
-        )
+        flush_group = _FlushGroup(program_keys=tuple(batch), color=color)
         with self._in_flight_lock:
             self._in_flight.append(flush_group)
 
@@ -478,9 +490,10 @@ class _BatchCoordinator:
         that circuits sharing the same ``ham_ops`` are contiguous.  The
         individual ``ham_ops`` strings are combined with ``|`` and a
         ``circuit_ham_map`` is computed so the backend routes each group to the
-        correct circuit slice. Combining heterogeneous ``ham_ops`` with
-        ``shot_groups`` is currently rejected because the circuit reordering
-        would require reshuffling the per-circuit shot allocation in lockstep.
+        correct circuit slice; every other kwarg must match across programs.
+        Combining heterogeneous ``ham_ops`` with ``shot_groups`` is currently
+        rejected because the circuit reordering would require reshuffling the
+        per-circuit shot allocation in lockstep.
 
         Returns:
             ``(merged_circuits, submit_kwargs)``
@@ -535,20 +548,7 @@ class _BatchCoordinator:
                         "shot_distribution on every program or none."
                     )
 
-            # Guard against future kwargs silently diverging: the template
-            # below uses all_kwargs[0], so any other differing key would be
-            # discarded without notice.
-            def _without_shot_groups(kw: dict) -> dict:
-                return {k: v for k, v in kw.items() if k != "shot_groups"}
-
-            template_other = _without_shot_groups(all_kwargs[0])
-            for kw in all_kwargs[1:]:
-                if _without_shot_groups(kw) != template_other:
-                    raise ValueError(
-                        "Cannot merge programs whose kwargs differ in keys "
-                        "other than 'shot_groups'. Submit such programs in "
-                        "separate batches."
-                    )
+            _require_kwargs_match_except(all_kwargs, "shot_groups")
 
             merged = {}
             merged_ranges = []
@@ -574,6 +574,7 @@ class _BatchCoordinator:
                     f"Cannot merge programs with incompatible submit kwargs."
                 )
             ham_to_programs.setdefault(ham, []).append(prog_key)
+        _require_kwargs_match_except(all_kwargs, "ham_ops")
 
         merged = {}
         ham_groups: list[str] = []
@@ -589,8 +590,7 @@ class _BatchCoordinator:
             ham_groups.append(ham)
             circuit_ham_map.append([group_start, offset])
 
-        # Base kwargs from first program, replacing ham_ops with merged version.
-        merged_kw = {k: v for k, v in all_kwargs[0].items() if k != "ham_ops"}
+        merged_kw = dict(all_kwargs[0])
         merged_kw["ham_ops"] = "|".join(ham_groups)
         merged_kw["circuit_ham_map"] = circuit_ham_map
         return merged, merged_kw
@@ -643,7 +643,7 @@ class _BatchCoordinator:
                 for sub_batch in sub_batches:
                     has_ham = any(e.kwargs.get("ham_ops") for e in sub_batch.values())
                     sub_fg = _FlushGroup(
-                        futures={k: e.future for k, e in sub_batch.items()},
+                        program_keys=tuple(sub_batch),
                         color=flush_group.color,
                         label="expval" if has_ham else "shots",
                     )
@@ -695,9 +695,10 @@ class _BatchCoordinator:
             if self._cancelled.is_set():
                 raise ExecutionCancelledError("Batch coordinator has been cancelled.")
 
-            if execution_result.job_id is not None:
+            if (job_id := execution_result.job_id) is not None:
                 execution_result = self._poll_and_get_results(
                     execution_result,
+                    job_id,
                     batch_progress_key,
                 )
                 final_job_status = JobStatus.COMPLETED
@@ -725,7 +726,7 @@ class _BatchCoordinator:
                     item | {"label": original_label}
                 )
 
-            per_program_runtime = runtime / n_programs if n_programs > 0 else 0.0
+            per_program_runtime = runtime / n_programs
         except ExecutionCancelledError as exc:
             self._progress_emitter(
                 ProgressEvent.finish(
@@ -774,6 +775,7 @@ class _BatchCoordinator:
     def _poll_and_get_results(
         self,
         execution_result: ExecutionResult,
+        job_id: str,
         batch_progress_key: Hashable,
     ) -> ExecutionResult:
         """Poll an async job to completion and return its fetched results."""
@@ -785,9 +787,6 @@ class _BatchCoordinator:
                 "cancel_job)."
             )
         backend = self._real_backend
-        job_id = execution_result.job_id
-        if job_id is None:
-            raise ValueError("Async batch polling requires a job_id.")
 
         def _progress_callback(n_polls, job_status):
             self._progress_emitter(

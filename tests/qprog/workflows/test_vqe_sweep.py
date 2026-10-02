@@ -460,7 +460,9 @@ class TestVQEHyperparameterSweep:
         vqe_sweep_problems._round_index = 1
         original = CheckpointConfig(checkpoint_dir=tmp_path, checkpoint_interval=2)
 
-        session = vqe_sweep_problems._prepare_checkpoint_session(None, original)
+        session = vqe_sweep_problems._prepare_checkpoint_session(
+            original, vqe_sweep_problems._save_round_input_state(None, tmp_path)
+        )
         configs = session.iterative_config_by_program
 
         assert set(configs) == set(vqe_sweep_problems.programs.values())
@@ -503,10 +505,9 @@ class TestVQEHyperparameterSweep:
         verify_basic_program_ensemble_behaviour(vqe_sweep, mocker)
 
     def test_correct_number_of_programs_created_molecule_transformer(
-        self, mocker, vqe_sweep, vqe_sweep_max_iterations
+        self, vqe_sweep, vqe_sweep_max_iterations
     ):
         """Test that the correct number of VQE programs are created with molecule_transformer."""
-        mocker.patch("divi.qprog.VQE")
         bond_modifiers = vqe_sweep.molecule_transformer.bond_modifiers
         ansatze = vqe_sweep.ansatze
 
@@ -559,10 +560,9 @@ class TestVQEHyperparameterSweep:
             assert isinstance(program.cost_hamiltonian, SparsePauliOp)
 
     def test_correct_number_of_programs_created_problems(
-        self, mocker, vqe_sweep_problems, vqe_sweep_max_iterations
+        self, vqe_sweep_problems, vqe_sweep_max_iterations
     ):
         """Test that the correct number of VQE programs are created with problems."""
-        mocker.patch("divi.qprog.VQE")
         problems = vqe_sweep_problems.problems
         ansatze = vqe_sweep_problems.ansatze
 
@@ -585,7 +585,6 @@ class TestVQEHyperparameterSweep:
 
     def test_problem_dict_keys_use_ids(
         self,
-        mocker,
         default_test_simulator,
         h2_problem,
         vqe_sweep_ansatze,
@@ -593,7 +592,6 @@ class TestVQEHyperparameterSweep:
         vqe_sweep_max_iterations,
     ):
         """Test that dict problem inputs use the dict keys as program IDs."""
-        mocker.patch("divi.qprog.VQE")
         problems = {"h0": h2_problem}
 
         vqe_sweep = VQEHyperparameterSweep(
@@ -662,7 +660,6 @@ class TestVQEHyperparameterSweep:
 
     def test_results_aggregated_correctly(self, mocker, vqe_sweep):
         """Test that results from multiple VQE runs are aggregated to find the minimum energy."""
-        mocker.patch("divi.qprog.VQE")
 
         mock_program_1 = mocker.MagicMock()
         mock_program_1.losses_history = [{0: -1.2}]
@@ -686,7 +683,6 @@ class TestVQEHyperparameterSweep:
 
     def test_visualize_results_line_plot_data(self, mocker, vqe_sweep):
         """Test that the line plot visualization is called with the correct data."""
-        mocker.patch("divi.qprog.VQE")
         mock_plot = mocker.patch("matplotlib.pyplot.plot")
         mocker.patch("matplotlib.pyplot.show")
         mocker.patch("matplotlib.pyplot.legend")
@@ -731,7 +727,6 @@ class TestVQEHyperparameterSweep:
 
     def test_visualize_results_with_invalid_graph_type(self, mocker, vqe_sweep):
         """Test that providing an invalid graph type raises a ValueError."""
-        mocker.patch("divi.qprog.VQE")
         mock_show = mocker.patch("matplotlib.pyplot.show")
 
         mock_program = mocker.MagicMock()
@@ -748,19 +743,25 @@ class TestVQEHyperparameterSweep:
 
         mock_show.assert_not_called()
 
-    def test_visualize_results_scatter_plot(self, mocker, vqe_sweep):
-        """Test scatter plot visualization functionality."""
-        mocker.patch("divi.qprog.VQE")
+    @pytest.mark.parametrize(
+        "n_modifiers",
+        [
+            pytest.param(None, id="all_programs"),
+            pytest.param(2, id="missing_programs"),
+        ],
+    )
+    def test_visualize_results_scatter_plot(self, mocker, vqe_sweep, n_modifiers):
+        """One scatter per ansatz, over the bond modifiers that have programs."""
         mock_scatter = mocker.patch("matplotlib.pyplot.scatter")
         mocker.patch("matplotlib.pyplot.show")
         mocker.patch("matplotlib.pyplot.legend")
         mocker.patch("matplotlib.pyplot.xlabel")
         mocker.patch("matplotlib.pyplot.ylabel")
 
-        # Setup mock programs
+        available = list(vqe_sweep.molecule_transformer.bond_modifiers[:n_modifiers])
         mock_programs = {}
         for ansatz_idx, ansatz in enumerate(vqe_sweep.ansatze):
-            for modifier in vqe_sweep.molecule_transformer.bond_modifiers:
+            for modifier in available:
                 mock_program = mocker.MagicMock()
                 mock_program.best_loss = -(modifier * 10 + ansatz_idx)
                 mock_programs[(ansatz.name, modifier)] = mock_program
@@ -768,37 +769,12 @@ class TestVQEHyperparameterSweep:
 
         vqe_sweep.visualize_results(graph_type="scatter")
 
-        # Check that scatter was called for each ansatz
         assert mock_scatter.call_count == len(vqe_sweep.ansatze)
-
-    def test_visualize_results_missing_programs(self, mocker, vqe_sweep):
-        """Test visualization behavior with missing programs."""
-        mocker.patch("divi.qprog.VQE")
-        mock_scatter = mocker.patch("matplotlib.pyplot.scatter")
-        mocker.patch("matplotlib.pyplot.show")
-        mocker.patch("matplotlib.pyplot.legend")
-        mocker.patch("matplotlib.pyplot.xlabel")
-        mocker.patch("matplotlib.pyplot.ylabel")
-
-        # Setup mock programs with some missing
-        mock_programs = {}
-        for ansatz_idx, ansatz in enumerate(vqe_sweep.ansatze):
-            # Only add programs for first two modifiers, skip the third
-            for modifier in vqe_sweep.molecule_transformer.bond_modifiers[:2]:
-                mock_program = mocker.MagicMock()
-                mock_program.best_loss = -(modifier * 10 + ansatz_idx)
-                mock_programs[(ansatz.name, modifier)] = mock_program
-        vqe_sweep.programs = mock_programs
-
-        # This should not raise an error, just skip missing programs
-        vqe_sweep.visualize_results(graph_type="scatter")
-
-        # Should still call scatter for available programs
-        assert mock_scatter.call_count == len(vqe_sweep.ansatze)
+        for call in mock_scatter.call_args_list:
+            assert call.args[0] == available
 
     def test_visualize_results_with_executor(self, mocker, vqe_sweep):
         """Test visualization calls join() when executor is present."""
-        mocker.patch("divi.qprog.VQE")
         mock_join = mocker.patch.object(vqe_sweep, "join")
         mocker.patch("matplotlib.pyplot.plot")
         mocker.patch("matplotlib.pyplot.show")
@@ -1137,18 +1113,24 @@ def test_transform_bonds_zero_length_error():
 class TestKabschAlignment:
     """Tests for Kabsch alignment algorithm."""
 
-    def test_kabsch_align_identical_points(self):
-        """Test _kabsch_align with identical point sets."""
-        points = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
-        aligned = _kabsch_align(points, points)
-        np.testing.assert_array_almost_equal(aligned, points)
-
-    def test_kabsch_align_translation(self):
-        """Test _kabsch_align with translated point sets."""
-        P = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
-        Q = P + np.array([10.0, 20.0, 30.0])  # Translation
-        aligned = _kabsch_align(P, Q)
-        np.testing.assert_array_almost_equal(aligned, Q)
+    @pytest.mark.parametrize(
+        "P, Q",
+        [
+            pytest.param(
+                np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]),
+                np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]),
+                id="identical",
+            ),
+            pytest.param(
+                np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+                np.array([[11.0, 22.0, 33.0], [14.0, 25.0, 36.0]]),
+                id="translation",
+            ),
+        ],
+    )
+    def test_kabsch_align_recovers_target(self, P, Q):
+        """_kabsch_align maps P exactly onto a rigidly displaced Q."""
+        np.testing.assert_array_almost_equal(_kabsch_align(P, Q), Q)
 
     def test_kabsch_align_rotation(self):
         """Test _kabsch_align with rotated point sets."""

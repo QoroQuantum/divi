@@ -31,30 +31,23 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
 _N_ORBITALS = 6
 
 
-def test_even_n_active_orbitals_splits_evenly():
-    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 3, 4)
-    assert occupied == (1, 2)
-    assert virtual == (3, 4)
-
-
-def test_odd_n_active_orbitals_favors_occupied():
-    """ceil(k/2) occupied, floor(k/2) virtual."""
-    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 3, 3)
-    assert occupied == (1, 2)
-    assert virtual == (3,)
-
-
-def test_n_active_orbitals_clamps_at_register_edges():
-    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 3, 12)
-    assert occupied == (0, 1, 2)
-    assert virtual == (3, 4, 5)
-
-
-def test_asymmetric_clamping_only_clamps_the_occupied_side():
-    """A one-orbital occupied register clamps while the virtual side does not."""
-    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, 1, 6)
-    assert occupied == (0,)
-    assert virtual == (1, 2, 3)
+@pytest.mark.parametrize(
+    "n_occupied, n_active, expected_occupied, expected_virtual",
+    [
+        pytest.param(3, 4, (1, 2), (3, 4), id="even_splits_evenly"),
+        pytest.param(3, 3, (1, 2), (3,), id="odd_favours_occupied"),
+        pytest.param(3, 12, (0, 1, 2), (3, 4, 5), id="clamps_at_register_edges"),
+        pytest.param(1, 6, (0,), (1, 2, 3), id="asymmetric_clamps_occupied_only"),
+    ],
+)
+def test_select_frontier_orbitals(
+    n_occupied, n_active, expected_occupied, expected_virtual
+):
+    """ceil(k/2) occupied, floor(k/2) virtual, each side clamped independently at
+    the register edges."""
+    occupied, virtual = select_frontier_orbitals(_N_ORBITALS, n_occupied, n_active)
+    assert occupied == expected_occupied
+    assert virtual == expected_virtual
 
 
 def test_rejects_selection_without_both_occupied_and_virtual():

@@ -9,7 +9,7 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Self, cast
+from typing import Any, Literal, Self
 from warnings import warn
 
 import ffsim
@@ -107,13 +107,10 @@ class LinearMethodFragmentProgram(QuantumProgram):
             two_body=self._preparation.two_body,
             orbital_rotation=self._preparation.orbital_rotation,
         )
-        result = cast(
-            "dict[int, dict[str, float] | list[dict[str, float]]]",
-            self.evaluate(
-                np.empty(0),
-                sample_preprocessor(),
-                backend=self._sampling_backend,
-            ),
+        result = self.evaluate(
+            np.empty(0),
+            sample_preprocessor(),
+            backend=self._sampling_backend,
         )
         self._results["best_probs"] = {
             index: _average_probabilities(probabilities)

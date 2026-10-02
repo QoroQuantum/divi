@@ -2,14 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import math
+import warnings
 
 import pytest
 from qiskit.circuit import ParameterExpression
 from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits.quepp import QuEPP
 from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.pipeline import DiviPerformanceWarning
 from divi.qprog import TimeEvolutionTrajectory
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.checkpointing import CheckpointConfig
@@ -203,7 +207,9 @@ class TestTimeEvolutionTrajectoryRun:
         assert 1.0 in results
         for t, probs in results.items():
             assert isinstance(probs, dict)
-            assert abs(sum(probs.values()) - 1.0) < 0.1
+            assert sum(probs.values()) == pytest.approx(1.0, abs=1e-12)
+            # A diagonal Hamiltonian leaves |00> fixed.
+            assert probs["00"] == pytest.approx(1.0, abs=1e-12)
 
     def test_run_expval_mode(self, two_qubit_hamiltonian, default_test_simulator):
         traj = TimeEvolutionTrajectory(
@@ -394,16 +400,30 @@ class TestCacheStructuralInvariant:
     linearly. These tests prove that invariant on the multi-term
     Hamiltonian we'd cache for."""
 
-    def test_dag_topology_identical_across_t(
-        self, cache_test_hamiltonian, dummy_simulator
+    @pytest.mark.parametrize(
+        "times, build_kwargs",
+        [
+            pytest.param((1.0, 2.0, 0.5), {}, id="across_t"),
+            pytest.param((1.0, 0.0), {}, id="t_zero_keeps_zero_angle_rotations"),
+            pytest.param((1.0, 2.0), {"n_steps": 2}, id="n_steps_gt_1"),
+        ],
+    )
+    def test_dag_topology_identical(
+        self, cache_test_hamiltonian, dummy_simulator, times, build_kwargs
     ):
-        H = cache_test_hamiltonian
-        obs = _Z0_2Q
-        m1 = _build_meta_at(H, obs, 1.0, dummy_simulator)
-        m2 = _build_meta_at(H, obs, 2.0, dummy_simulator)
-        m05 = _build_meta_at(H, obs, 0.5, dummy_simulator)
-
-        assert _dag_signature(m1) == _dag_signature(m2) == _dag_signature(m05)
+        """Decomposition yields the same DAG at every ``t``. Zero-angle rotations
+        at ``t=0`` must not be pruned, or the cache would inflate gate counts
+        there; with multiple Trotter steps the same symbolic ``t`` flows through
+        more rotations and the topology must still hold."""
+        first, *rest = [
+            _dag_signature(
+                _build_meta_at(
+                    cache_test_hamiltonian, _Z0_2Q, t, dummy_simulator, **build_kwargs
+                )
+            )
+            for t in times
+        ]
+        assert all(signature == first for signature in rest)
 
     def test_rotation_angles_scale_linearly(
         self, cache_test_hamiltonian, dummy_simulator
@@ -444,27 +464,6 @@ class TestCacheStructuralInvariant:
             assert (
                 abs(ratio - 1.0) < 1e-9 or abs(ratio - 2.0) < 1e-9
             ), f"Non-linear param scaling: t1={x1}, t2={x2}, ratio={ratio}"
-
-    def test_t_zero_preserves_structure(self, cache_test_hamiltonian, dummy_simulator):
-        """t=0 must keep the same DAG length — zero-angle rotations don't
-        get pruned. If they did, the cache would inflate gate counts at t=0."""
-        H = cache_test_hamiltonian
-        obs = _Z0_2Q
-        m1 = _build_meta_at(H, obs, 1.0, dummy_simulator)
-        m0 = _build_meta_at(H, obs, 0.0, dummy_simulator)
-        assert _dag_signature(m1) == _dag_signature(m0)
-
-    def test_invariant_holds_with_n_steps_gt_1(
-        self, cache_test_hamiltonian, dummy_simulator
-    ):
-        """With multiple Trotter steps the same symbolic ``t`` flows through
-        more rotations; the topology and linear-scaling invariants must
-        still hold."""
-        H = cache_test_hamiltonian
-        obs = _Z0_2Q
-        m1 = _build_meta_at(H, obs, 1.0, dummy_simulator, n_steps=2)
-        m2 = _build_meta_at(H, obs, 2.0, dummy_simulator, n_steps=2)
-        assert _dag_signature(m1) == _dag_signature(m2)
 
 
 class TestParametricTemplate:
@@ -549,49 +548,36 @@ class TestCacheGating:
         for prog in traj.programs.values():
             assert prog._template_meta is None
 
+    @pytest.mark.parametrize(
+        "time_points, strategy",
+        [
+            (
+                [0.1 * (i + 1) for i in range(workflow._CACHE_MIN_TIME_POINTS)],
+                None,
+            ),
+            ([0.0, 0.25, 0.5, 0.75, 1.0], None),
+            ([0.1, 0.2, 0.3, 0.4, 0.5], ExactTrotterization()),
+        ],
+        ids=["exact_threshold", "above_threshold", "explicit_exact_trotterization"],
+    )
     def test_cache_engaged_at_or_above_threshold(
-        self, cache_test_hamiltonian, dummy_simulator
+        self, cache_test_hamiltonian, dummy_simulator, time_points, strategy
     ):
+        """Every program shares one template from ``_CACHE_MIN_TIME_POINTS``
+        points on, for the implicit and the explicit ``ExactTrotterization``."""
         traj = TimeEvolutionTrajectory(
             hamiltonian=cache_test_hamiltonian,
-            time_points=[0.0, 0.25, 0.5, 0.75, 1.0],
+            time_points=time_points,
+            trotterization_strategy=strategy,
             backend=dummy_simulator,
         )
         traj.create_programs()
+        assert len(traj.programs) == len(time_points)
         for prog in traj.programs.values():
             assert prog._template_meta is not None
             assert prog._template_param is not None
-        # All programs share the same template object — that's the point.
         templates = {id(p._template_meta) for p in traj.programs.values()}
         assert len(templates) == 1
-
-    def test_cache_engaged_at_exact_threshold(
-        self, cache_test_hamiltonian, dummy_simulator
-    ):
-        """Boundary check: ``len(time_points) == _CACHE_MIN_TIME_POINTS``
-        must engage the cache (the gate is ``< MIN``, not ``<= MIN``)."""
-        n = workflow._CACHE_MIN_TIME_POINTS
-        traj = TimeEvolutionTrajectory(
-            hamiltonian=cache_test_hamiltonian,
-            time_points=[0.1 * (i + 1) for i in range(n)],
-            backend=dummy_simulator,
-        )
-        traj.create_programs()
-        assert all(p._template_meta is not None for p in traj.programs.values())
-
-    def test_cache_engaged_with_explicit_exact_trotterization(
-        self, cache_test_hamiltonian, dummy_simulator
-    ):
-        """Explicit ``ExactTrotterization()`` must engage the cache, not
-        only the implicit-default-via-None path."""
-        traj = TimeEvolutionTrajectory(
-            hamiltonian=cache_test_hamiltonian,
-            time_points=[0.1, 0.2, 0.3, 0.4, 0.5],
-            trotterization_strategy=ExactTrotterization(),
-            backend=dummy_simulator,
-        )
-        traj.create_programs()
-        assert all(p._template_meta is not None for p in traj.programs.values())
 
     def test_cache_skipped_for_qdrift(self, cache_test_hamiltonian, dummy_simulator):
         """QDrift's per-program random sampling invalidates the structural
@@ -607,7 +593,7 @@ class TestCacheGating:
             assert prog._template_meta is None
 
     def test_falls_back_when_probe_raises(
-        self, cache_test_hamiltonian, dummy_simulator, monkeypatch
+        self, cache_test_hamiltonian, dummy_simulator, monkeypatch, caplog
     ):
         """If the symbolic-time probe raises, the trajectory must log a
         warning and degrade to per-program construction (every program's
@@ -628,7 +614,14 @@ class TestCacheGating:
             time_points=[0.0, 0.25, 0.5, 0.75, 1.0],
             backend=dummy_simulator,
         )
-        traj.create_programs()
+        with caplog.at_level(logging.WARNING, logger=workflow.logger.name):
+            traj.create_programs()
+
+        assert [record.getMessage() for record in caplog.records] == [
+            "TimeEvolutionTrajectory: parametric template build failed; "
+            "falling back to per-program circuit construction."
+        ]
+        assert len(traj.programs) == 5
         for prog in traj.programs.values():
             assert prog._template_meta is None
             assert prog._template_param is None
@@ -717,3 +710,46 @@ def test_cached_and_uncached_results_agree(
         assert abs(cached[t] - uncached[t]) < 1e-9
 
     assert traj_cached.total_circuit_count == traj_un.total_circuit_count
+
+
+def _templated_trajectory(backend, **kwargs):
+    """A trajectory long enough to share one parametric template across times."""
+    trajectory = TimeEvolutionTrajectory(
+        SparsePauliOp.from_sparse_list(
+            [("ZZ", [0, 1], 1.0), ("X", [1], 0.5)], num_qubits=2
+        ),
+        time_points=[0.2, 0.4, 0.6, 0.8, 1.0, 1.2],
+        backend=backend,
+        observable=SparsePauliOp.from_sparse_list([("ZZ", [0, 1], 1.0)], num_qubits=2),
+        **kwargs,
+    )
+    trajectory.create_programs()
+    assert all(p._template_meta is not None for p in trajectory.programs.values())
+    return trajectory
+
+
+def test_templated_programs_bind_their_time_in_a_forced_dry_run(
+    default_test_simulator,
+):
+    trajectory = _templated_trajectory(default_test_simulator)
+
+    reports = trajectory.dry_run(force_circuit_generation=True)
+
+    assert {r["evolution"].total_circuits for r in reports.values()} == {1}
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_templated_programs_run_exhaustive_quepp(default_test_simulator):
+    """Exhaustive QuEPP binds parameters before it runs, and its performance
+    warnings honour the program's opt-out."""
+    trajectory = _templated_trajectory(
+        default_test_simulator,
+        qem_protocol=QuEPP(sampling="exhaustive"),
+        suppress_performance_warnings=True,
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DiviPerformanceWarning)
+        trajectory.run()
+
+    assert all(math.isfinite(p.results) for p in trajectory.programs.values())

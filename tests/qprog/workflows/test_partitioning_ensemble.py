@@ -156,19 +156,6 @@ class TestPartitioningProgramEnsemble:
 
         assert (tmp_path / "round_001" / "round_completion.json").is_file()
 
-    def test_aggregate_results_calls_problem_hooks(self, mocker, dummy_simulator):
-        problem = _make_stub_problem(mocker, solution_size=2)
-        ensemble = _make_ensemble(problem, dummy_simulator)
-        ensemble.create_programs()
-
-        _attach_program_with_candidates(ensemble, mocker, [[1, 1]])
-
-        result = ensemble.aggregate_results()
-
-        assert result == ([1, 1], -2)
-        problem.evaluate_global_solution.assert_called()
-        problem.postprocess_candidates.assert_called_once()
-
     def test_get_top_solutions_calls_problem_hooks(self, mocker, dummy_simulator):
         problem = _make_stub_problem(mocker, solution_size=2)
         ensemble = _make_ensemble(problem, dummy_simulator)
@@ -239,6 +226,7 @@ class TestStrictAggregation:
         result = ensemble.aggregate_results()
 
         assert result == ([1, 1], -2)
+        problem.evaluate_global_solution.assert_called()
         problem.postprocess_candidates.assert_called_once_with([(-2, [1, 1])])
 
     def test_aggregate_results_warns_when_postprocessing_rejects_everything(

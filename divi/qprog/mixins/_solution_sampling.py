@@ -29,7 +29,7 @@ their ``sample_solution`` overrides to validate explicit params before decoding.
 """
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, NamedTuple, Self, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, Self
 from warnings import warn
 
 import numpy as np
@@ -450,13 +450,10 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         backend: CircuitRunner | None = None,
     ) -> None:
         """Sample the prepared state for the provided parameter sets."""
-        result = cast(
-            "dict[int, dict[str, float] | list[dict[str, float]]]",
-            self.evaluate(
-                np.atleast_2d(param_sets),
-                self._sample_preprocessor(),
-                backend=backend,
-            ),
+        result = self.evaluate(
+            np.atleast_2d(param_sets),
+            self._sample_preprocessor(),
+            backend=backend,
         )
         self._results["best_probs"] = {
             idx: _average_probabilities(value) for idx, value in result.items()

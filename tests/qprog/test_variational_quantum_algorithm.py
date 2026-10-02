@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-import warnings
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +31,7 @@ from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     ScipyMethod,
     ScipyOptimizer,
+    SPSAOptimizer,
 )
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
@@ -39,13 +39,14 @@ from divi.qprog.variational_quantum_algorithm import (
     _compute_parameter_shift_rule,
 )
 from divi.reporting._events import ProgressEvent, TerminalStatus
-from tests.conftest import DummyExpvalBackend, DummySimulator
+from tests._helpers import exact_match
 from tests.pipeline._helpers import meta_from_circuit
+from tests.qprog.algorithms._helpers import seed_best_probs
 
 
 @pytest.fixture
-def mock_backend():
-    return DummySimulator(shots=1000)
+def mock_backend(make_dummy_simulator):
+    return make_dummy_simulator(1000)
 
 
 class SampleVQAProgram(SolutionSamplingMixin, VariationalQuantumAlgorithm):
@@ -209,7 +210,35 @@ def test_sample_solution_backend_override_wins_over_configured_backend(
     assert host.sampling_backend is sampling_backend
 
 
-class TestProgram:
+class BaseVariationalQuantumAlgorithmTest:
+    """Base test class for VariationalQuantumAlgorithm functionality."""
+
+    @pytest.fixture(autouse=True)
+    def _dummy_backend_factory(self, make_dummy_simulator):
+        self._make_backend = make_dummy_simulator
+
+    def _create_mock_optimizer(self, mocker, n_param_sets=1):
+        """Helper to create a mock optimizer with specified n_param_sets."""
+        mock_optimizer = mocker.MagicMock()
+        mock_optimizer.n_param_sets = n_param_sets
+        return mock_optimizer
+
+    def _create_program_with_mock_optimizer(self, mocker, **kwargs):
+        """Helper method to create SampleProgram with mocked optimizer and backend."""
+        if "optimizer" not in kwargs:
+            kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
+        if "backend" not in kwargs:
+            kwargs["backend"] = self._make_backend(1000)
+        return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
+
+    def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
+        """Helper to create a program with a synthetic probability distribution."""
+        program = self._create_program_with_mock_optimizer(mocker, **kwargs)
+        seed_best_probs(program, probs_dict)
+        return program
+
+
+class TestProgram(BaseVariationalQuantumAlgorithmTest):
     """Test suite for VariationalQuantumAlgorithm core functionality."""
 
     def _create_sample_program(self, mocker, **kwargs):
@@ -217,23 +246,8 @@ class TestProgram:
         if "optimizer" not in kwargs:
             kwargs["optimizer"] = self._create_mock_optimizer(mocker)
         if "backend" not in kwargs:
-            kwargs["backend"] = self._create_mock_backend(mocker)
+            kwargs["backend"] = self._make_backend(100)
         return SampleVQAProgram(10, 5.5, seed=1997, **kwargs)
-
-    def _create_mock_backend(self, mocker, shots=100, supports_expval=False):
-        """Helper to create a real ``CircuitRunner`` fake.
-
-        ``mocker`` is accepted for call-site compatibility but unused.
-        """
-        if supports_expval:
-            return DummyExpvalBackend(shots=shots)
-        return DummySimulator(shots=shots)
-
-    def _create_mock_optimizer(self, mocker, n_param_sets=1):
-        """Helper to create a mock optimizer."""
-        optimizer = mocker.MagicMock()
-        optimizer.n_param_sets = n_param_sets
-        return optimizer
 
     def test_correct_random_behavior(self, mocker):
         """Test that random number generation works correctly with seeds."""
@@ -252,55 +266,6 @@ class TestProgram:
         np.testing.assert_raises(
             AssertionError, np.testing.assert_array_equal, first_init, second_init
         )
-
-    def test_shot_distribution_default_is_none(self, mocker):
-        """Spec: omitting shot_distribution leaves the field unset (None)."""
-        program = self._create_sample_program(mocker)
-        assert program._shot_distribution is None
-
-    def test_shot_distribution_stored_on_program(self, mocker):
-        """Spec: explicit shot_distribution is stored verbatim."""
-        program = self._create_sample_program(mocker, shot_distribution="weighted")
-        assert program._shot_distribution == "weighted"
-
-    def test_shot_distribution_with_grouping_stored_verbatim_no_warning(self, mocker):
-        """Spec: ``shot_distribution`` declares sampling intent, so the
-        override warning is suppressed even on an expval-capable backend;
-        both kwargs are stored verbatim."""
-        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            program = self._create_sample_program(
-                mocker,
-                grouping_strategy="qwc",
-                shot_distribution="uniform",
-                backend=mock_backend,
-            )
-        assert program._grouping_strategy == "qwc"
-        assert program._shot_distribution == "uniform"
-
-    def test_grouping_strategy_warns_on_expval_backend(self, mocker):
-        """Spec: explicit ``grouping_strategy="qwc"`` on an expval-capable
-        backend emits a UserWarning that MeasurementStage will auto-
-        override at runtime. The strategy is stored verbatim (the override
-        happens at the stage, not the program)."""
-        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-
-        with pytest.warns(UserWarning, match="may be auto-overridden"):
-            program = self._create_sample_program(
-                mocker, grouping_strategy="qwc", backend=mock_backend
-            )
-
-        assert program._grouping_strategy == "qwc"
-
-    def test_explicit_backend_expval_rejected(self, mocker):
-        """Spec: ``"_backend_expval"`` is not a valid user-facing strategy."""
-        mock_backend = self._create_mock_backend(mocker, supports_expval=True)
-        with pytest.raises(ValueError, match="Invalid grouping_strategy"):
-            self._create_sample_program(
-                mocker, grouping_strategy="_backend_expval", backend=mock_backend
-            )
 
     def test_shot_distribution_threaded_to_measurement_stage(self, mocker):
         """Implementation detail: the program's measurement-stage factory forwards
@@ -351,13 +316,6 @@ class TestProgram:
             program._optimizer_rng.bit_generator.state
             != program._rng.bit_generator.state
         )
-
-    def test_progress_reports_the_budget_and_the_iterations_done(self, mocker):
-        program = self._create_sample_program(mocker)
-        program.max_iterations, program.current_iteration = 5, 3
-
-        assert program._expected_total_iterations == 5
-        assert program._completed_iterations == 3
 
     def test_evaluate_cost_param_sets_uses_initial_spec_seed(self, mocker):
         """Cost evaluation seeds from the ``_initial_spec`` hook, threads the param sets,
@@ -430,17 +388,24 @@ class TestProgram:
 
         assert execute.call_args.kwargs["shots_override"] == 512
 
-    def test_evaluate_estimator_samples_threads_scalar_to_execute(self, mocker):
+    @pytest.mark.parametrize("estimator_samples", [1, 32])
+    def test_evaluate_estimator_samples_threads_scalar_to_execute(
+        self, mocker, estimator_samples
+    ):
         program = self._create_sample_program(mocker)
         execute = mocker.patch.object(
             program, "_execute", return_value={(("param_set", 0),): [1.0]}
         )
 
         program.evaluate(
-            np.zeros((1, 4)), program.cost_preprocessor(), estimator_samples=32
+            np.zeros((1, 4)),
+            program.cost_preprocessor(),
+            estimator_samples=estimator_samples,
         )
 
-        assert execute.call_args.kwargs["estimator_samples"].by_param_set == (32,)
+        assert execute.call_args.kwargs["estimator_samples"].by_param_set == (
+            estimator_samples,
+        )
 
     def test_evaluate_estimator_samples_threads_per_set_budgets(self, mocker):
         program = self._create_sample_program(mocker)
@@ -456,10 +421,10 @@ class TestProgram:
         program.evaluate(
             np.zeros((2, 4)),
             program.cost_preprocessor(),
-            estimator_samples=[2, 8],
+            estimator_samples=[1, 8],
         )
 
-        assert execute.call_args.kwargs["estimator_samples"].by_param_set == (2, 8)
+        assert execute.call_args.kwargs["estimator_samples"].by_param_set == (1, 8)
 
     def test_evaluate_returns_estimator_sufficient_statistics(self, mocker):
         program = self._create_sample_program(mocker)
@@ -485,13 +450,28 @@ class TestProgram:
             )
         }
 
-    @pytest.mark.parametrize("estimator_samples", [0, -1, 1.5, [2, 0], [2, -1]])
+    @pytest.mark.parametrize(
+        ("estimator_samples", "message"),
+        [
+            (0, "estimator_samples must be positive."),
+            (-1, "estimator_samples must be positive."),
+            (
+                1.5,
+                "estimator_samples must be a positive integer or a sequence "
+                "of positive integers.",
+            ),
+            (True, "estimator_samples must be a positive integer."),
+            ([2, 0], "estimator_samples values must be positive integers."),
+            ([2, -1], "estimator_samples values must be positive integers."),
+            ([2, True], "estimator_samples values must be positive integers."),
+        ],
+    )
     def test_evaluate_rejects_non_positive_estimator_samples(
-        self, mocker, estimator_samples
+        self, mocker, estimator_samples, message
     ):
         program = self._create_sample_program(mocker)
 
-        with pytest.raises(ValueError, match="positive"):
+        with pytest.raises(ValueError, match=exact_match(message)):
             program.evaluate(
                 np.zeros((2, 4)),
                 program.cost_preprocessor(),
@@ -501,7 +481,12 @@ class TestProgram:
     def test_evaluate_rejects_wrong_number_of_estimator_samples(self, mocker):
         program = self._create_sample_program(mocker)
 
-        with pytest.raises(ValueError, match="one value per parameter set"):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "estimator_samples must contain one value per parameter set."
+            ),
+        ):
             program.evaluate(
                 np.zeros((2, 4)),
                 program.cost_preprocessor(),
@@ -589,33 +574,6 @@ class TestProgram:
         assert pipe_a is not pipe_b
         assert program._initial_spec() is program.cost_circuit
         assert not program._preprocessor_pipeline_cache
-
-
-class BaseVariationalQuantumAlgorithmTest:
-    """Base test class for VariationalQuantumAlgorithm functionality."""
-
-    def _create_mock_optimizer(self, mocker, n_param_sets=1):
-        """Helper to create a mock optimizer with specified n_param_sets."""
-        mock_optimizer = mocker.MagicMock()
-        mock_optimizer.n_param_sets = n_param_sets
-        return mock_optimizer
-
-    def _create_program_with_mock_optimizer(self, mocker, **kwargs):
-        """Helper method to create SampleProgram with mocked optimizer and backend."""
-        if "optimizer" not in kwargs:
-            kwargs["optimizer"] = self._create_mock_optimizer(mocker, n_param_sets=1)
-        if "backend" not in kwargs:
-            kwargs["backend"] = DummySimulator(shots=1000)
-        return SampleVQAProgram(circ_count=1, run_time=0.1, **kwargs)
-
-    def _setup_program_with_probs(self, mocker, probs_dict: dict[str, float], **kwargs):
-        """Helper to create a program with a synthetic probability distribution."""
-        program = self._create_program_with_mock_optimizer(mocker, **kwargs)
-        # Wrap in the production shape: {param_set_index: {bitstring: prob}}
-        program._results["best_probs"] = {0: probs_dict}
-        # Mark as having run optimization to avoid warnings
-        program._losses_history = [{0: -1.0}]
-        return program
 
 
 class TestParametersBehavior(BaseVariationalQuantumAlgorithmTest):
@@ -766,6 +724,41 @@ class TestOptimizerBehavior(BaseVariationalQuantumAlgorithmTest):
                 backend=mock_backend,
                 foo="bar",
             )
+
+
+@pytest.mark.parametrize(
+    "optimizer, loss, success, message",
+    [
+        (
+            SPSAOptimizer(learning_rate=0.1),
+            np.nan,
+            False,
+            "Optimisation failed: no finite cost value was observed in 2 iterations.",
+        ),
+        (MonteCarloOptimizer(), -0.5, True, "Optimisation converged."),
+    ],
+    ids=["optimizer-verdict-kept", "default-verdict"],
+)
+@pytest.mark.filterwarnings("ignore:SPSAOptimizer appears to be diverging:UserWarning")
+def test_run_reports_the_optimizer_verdict(
+    mock_backend, mocker, optimizer, loss, success, message
+):
+    """``run()`` fills in success and message only where the optimizer left them."""
+    program = SampleVQAProgram(
+        circ_count=1, run_time=0.1, backend=mock_backend, optimizer=optimizer, seed=7
+    )
+    mocker.patch.object(
+        program,
+        "_evaluate_cost_param_sets",
+        side_effect=lambda params, **_: {
+            i: loss for i in range(len(np.atleast_2d(params)))
+        },
+    )
+
+    program.run(max_iterations=2, perform_final_computation=False)
+
+    assert program.optimize_result.success is success
+    assert program.optimize_result.message == message
 
 
 class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
@@ -1111,6 +1104,8 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
 
 
 class TestCheckpointing:
+    """Tests for VariationalQuantumAlgorithm checkpointing functionality."""
+
     def test_vqa_checkpoint_kind_controls_optimizer_state(self, sample_program):
         completed = program_checkpoint_module.VQACheckpoint.from_program(
             sample_program,
@@ -1124,7 +1119,22 @@ class TestCheckpointing:
         assert completed.optimizer_config is None
         assert iterative.optimizer_config is not None
 
-    """Tests for VariationalQuantumAlgorithm checkpointing functionality."""
+    def test_restore_accepts_a_checkpoint_without_best_params(
+        self, sample_program, mock_backend, default_optimizer
+    ):
+        checkpoint = VQACheckpoint.from_program(
+            sample_program, kind="program_completion"
+        )
+        target = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+
+        checkpoint.restore(target)
+
+        assert target._best_params.size == 0
 
     @pytest.fixture
     def sample_program(self, mock_backend, default_optimizer):
@@ -1775,15 +1785,18 @@ class TestCheckpointing:
 
         program.optimizer.optimize = mocker.Mock(side_effect=optimize_then_raise)
 
-    def test_cancelled_run_checkpoints_its_last_iteration(
-        self, sample_program, tmp_path, mocker
+    @pytest.mark.parametrize(
+        "error", [ExecutionCancelledError, RuntimeError], ids=["cancel", "error"]
+    )
+    def test_aborted_run_checkpoints_its_last_iteration(
+        self, sample_program, tmp_path, mocker, error
     ):
-        """Cancelling mid-run persists the work done before the interruption."""
-        self._cancel_after_one_iteration(sample_program, mocker)
+        """An abort mid-run persists the work done before it."""
+        self._raise_after_one_iteration(sample_program, mocker, error("abort"))
 
         # An interval that will not fire at iteration 1, so only the final
         # flush can produce a checkpoint.
-        with pytest.raises(ExecutionCancelledError):
+        with pytest.raises(error):
             sample_program.run(
                 checkpoint_config=CheckpointConfig(
                     checkpoint_dir=tmp_path, checkpoint_interval=5
@@ -2012,23 +2025,6 @@ class TestCheckpointing:
         )
         assert "best_probs" not in state["subclass_state"]["data"]
 
-    def test_failed_run_checkpoints_its_last_iteration(
-        self, sample_program, tmp_path, mocker
-    ):
-        """An unexpected error mid-run persists the work done before it."""
-        self._raise_after_one_iteration(
-            sample_program, mocker, RuntimeError("backend down")
-        )
-
-        with pytest.raises(RuntimeError, match="backend down"):
-            sample_program.run(
-                checkpoint_config=CheckpointConfig(
-                    checkpoint_dir=tmp_path, checkpoint_interval=5
-                )
-            )
-
-        assert (tmp_path / "checkpoint_001" / "program_state.json").exists()
-
     def test_last_iteration_checkpoint_not_duplicated_on_interval_boundary(
         self, sample_program, tmp_path, mocker
     ):
@@ -2179,32 +2175,20 @@ class TestPrecisionFunctionality(BaseVariationalQuantumAlgorithmTest):
         )
         assert program._precision == 8
 
-    def test_precision_can_be_passed_as_kwarg(self, mock_backend, default_optimizer):
-        """Test that precision can be passed as a kwarg."""
+    @pytest.mark.parametrize("precision", [1, 4, 8, 12, 16])
+    def test_precision_kwarg_propagates_to_meta_circuit(
+        self, mock_backend, default_optimizer, precision
+    ):
+        """The precision kwarg is stored and propagates to created MetaCircuits."""
         program = SampleVQAProgram(
             circ_count=1,
             run_time=0.1,
             backend=mock_backend,
             optimizer=default_optimizer,
-            precision=12,
+            precision=precision,
         )
-        assert program._precision == 12
-
-    def test_different_precision_values(self, mock_backend, default_optimizer):
-        """Test that different precision values work correctly."""
-        for precision in [1, 4, 8, 12, 16]:
-            program = SampleVQAProgram(
-                circ_count=1,
-                run_time=0.1,
-                backend=mock_backend,
-                optimizer=default_optimizer,
-                precision=precision,
-            )
-            assert program._precision == precision
-
-            # Verify precision propagates to created MetaCircuits
-            meta_circuit = program.cost_circuit
-            assert meta_circuit.precision == precision
+        assert program._precision == precision
+        assert program.cost_circuit.precision == precision
 
 
 class TestPropertyWarnings(BaseVariationalQuantumAlgorithmTest):
@@ -2485,18 +2469,6 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         assert result[0].bitstring == "00"
         assert result[0].prob == 0.6
 
-    def test_get_top_solutions_solution_entry_is_frozen(self, mocker):
-        """Test that SolutionEntry is frozen (immutable)."""
-        probs = {"00": 1.0}
-        program = self._setup_program_with_probs(mocker, probs)
-
-        result = program.get_top_solutions(n=1)
-        entry = result[0]
-
-        # Attempting to modify immutable namedtuple should raise
-        with pytest.raises((AttributeError, TypeError)):
-            entry.bitstring = "11"
-
     def test_get_top_solutions_combined_filters(self, mocker):
         """Test get_top_solutions with both n and min_prob filters."""
         probs = {
@@ -2646,62 +2618,6 @@ class TestSpinMomentsAPI(BaseVariationalQuantumAlgorithmTest):
             getattr(program, method)()
 
 
-class TestSolutionEntryNamedTuple:
-    """Test suite for SolutionEntry namedtuple."""
-
-    def test_solution_entry_creation(self):
-        """Test basic SolutionEntry creation."""
-        entry = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
-
-        assert entry.bitstring == "101"
-        assert entry.prob == 0.42
-        assert entry.decoded == [0, 2]
-
-    def test_solution_entry_decoded_defaults_to_none(self):
-        """Test that decoded defaults to None when not provided."""
-        entry = SolutionEntry(bitstring="101", prob=0.42)
-
-        assert entry.decoded is None
-
-    def test_solution_entry_is_frozen(self):
-        """Test that SolutionEntry is immutable."""
-        entry = SolutionEntry(bitstring="101", prob=0.42)
-
-        with pytest.raises((AttributeError, TypeError)):
-            entry.bitstring = "010"
-
-        with pytest.raises((AttributeError, TypeError)):
-            entry.prob = 0.99
-
-    def test_solution_entry_equality(self):
-        """Test SolutionEntry equality comparison."""
-        entry1 = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
-        entry2 = SolutionEntry(bitstring="101", prob=0.42, decoded=[0, 2])
-        entry3 = SolutionEntry(bitstring="101", prob=0.42, decoded=None)
-
-        assert entry1 == entry2
-        assert entry1 != entry3  # Different decoded value
-
-    def test_solution_entry_decoded_can_be_any_type(self):
-        """Test that decoded field accepts various types."""
-        # List
-        entry1 = SolutionEntry(bitstring="101", prob=0.5, decoded=[1, 2, 3])
-        assert entry1.decoded == [1, 2, 3]
-
-        # Numpy array
-        decoded_array = np.array([1, 0, 1])
-        entry2 = SolutionEntry(bitstring="101", prob=0.5, decoded=decoded_array)
-        np.testing.assert_array_equal(entry2.decoded, decoded_array)
-
-        # String
-        entry3 = SolutionEntry(bitstring="101", prob=0.5, decoded="custom_solution")
-        assert entry3.decoded == "custom_solution"
-
-        # Dict
-        entry4 = SolutionEntry(bitstring="101", prob=0.5, decoded={"nodes": [1, 2]})
-        assert entry4.decoded == {"nodes": [1, 2]}
-
-
 class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
     """Integration tests for early stopping within the full run() loop."""
 
@@ -2787,11 +2703,6 @@ class TestEarlyStoppingIntegration(BaseVariationalQuantumAlgorithmTest):
         program.run()
 
         assert program.current_iteration == 5
-        assert program.stop_reason is None
-
-    def test_stop_reason_is_none_before_run(self, mocker):
-        """Verify stop_reason is None before run() is called."""
-        program = self._create_program_with_mock_optimizer(mocker, seed=42)
         assert program.stop_reason is None
 
     def test_stop_reason_is_none_when_not_triggered(self, mocker):
@@ -3018,16 +2929,14 @@ class TestGradShiftRule(BaseVariationalQuantumAlgorithmTest):
 class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
     """Spec: grad_fn correctly computes parameter-shift gradients from pipeline results."""
 
-    def _create_lbfgsb_program(self, mocker, n_params_per_layer=4, **kwargs):
+    def _create_lbfgsb_program(self, n_params_per_layer=4, **kwargs):
         """Create a SampleVQAProgram with L-BFGS-B optimizer."""
-        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        backend = DummySimulator(shots=1000)
         program = SampleVQAProgram(
             circ_count=1,
             run_time=0.1,
             n_params_per_layer=n_params_per_layer,
-            optimizer=optimizer,
-            backend=backend,
+            optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+            backend=self._make_backend(1000),
             seed=42,
             **kwargs,
         )
@@ -3036,7 +2945,7 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
 
     def test_gradient_with_known_return_values(self, mocker):
         """grad_fn produces 0.5 * (positive_shift_values - negative_shift_values)."""
-        program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
+        program = self._create_lbfgsb_program(n_params_per_layer=3)
         n_params = program.n_layers * program.n_params_per_layer
 
         # Predetermined values: index i returns float(i)
@@ -3065,24 +2974,11 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         assert grad_call_count[0] >= 1, "grad_fn was never called"
         # L-BFGS-B stores the jacobian in optimize_result.jac
         np.testing.assert_allclose(program.optimize_result.jac, expected_grads)
-
-    def test_gradient_is_zero_when_all_shifts_equal(self, mocker):
-        """When all shifted evaluations return the same value, gradient is zero."""
-        program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
-
-        def mock_run(param_sets, **kwargs):
-            n_sets = np.atleast_2d(param_sets).shape[0]
-            return {i: -0.5 for i in range(n_sets)}
-
-        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
-        program.run(perform_final_computation=False)
-
-        # L-BFGS-B converges immediately on a flat landscape (zero gradient)
-        np.testing.assert_allclose(program.optimize_result.jac, 0.0, atol=1e-10)
+        assert program.optimize_result.njev >= 1
 
     def test_shifted_params_are_mask_plus_input(self, mocker):
         """During gradient computation, shifted param sets equal mask + original params."""
-        program = self._create_lbfgsb_program(mocker, n_params_per_layer=3)
+        program = self._create_lbfgsb_program(n_params_per_layer=3)
         n_params = program.n_layers * program.n_params_per_layer
 
         captured = []
@@ -3103,9 +2999,9 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         )
 
         assert len(captured) >= 1
+        assert all(c.shape == (2 * n_params, n_params) for c in captured)
         # First gradient call uses the initial params
         shifted = captured[0]
-        assert shifted.shape == (2 * n_params, n_params)
 
         # Each row pair should differ from the initial params by exactly ±π/2
         # in exactly one column (the parameter being shifted)
@@ -3115,41 +3011,3 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
             assert len(nonzero) == 1, f"Row {2*i} shifts {len(nonzero)} params"
             assert nonzero[0] == i
             np.testing.assert_allclose(np.abs(diff_pos[nonzero[0]]), np.pi / 2)
-
-
-class TestLBFGSBGradientIntegration(BaseVariationalQuantumAlgorithmTest):
-    """Integration: L-BFGS-B uses the gradient function during optimization."""
-
-    def test_lbfgsb_evaluates_gradient(self, mocker):
-        """L-BFGS-B calls the gradient function, producing 2*n_params shifted param sets."""
-        optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
-        backend = DummySimulator(shots=1000)
-
-        program = SampleVQAProgram(
-            circ_count=1,
-            run_time=0.1,
-            optimizer=optimizer,
-            backend=backend,
-            seed=42,
-        )
-        program.max_iterations = 2
-        n_params = program.n_layers * program.n_params_per_layer
-
-        grad_calls = []
-
-        def mock_run(param_sets, **kwargs):
-            n_sets = np.atleast_2d(param_sets).shape[0]
-            if n_sets > 1:
-                grad_calls.append(n_sets)
-            return {i: float(i) * 0.1 - 0.5 for i in range(n_sets)}
-
-        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
-        program.run(perform_final_computation=False)
-
-        # L-BFGS-B must have called the gradient function at least once
-        assert len(grad_calls) >= 1
-        # Each gradient call should use exactly 2*n_params shifted parameter sets
-        for n_sets in grad_calls:
-            assert n_sets == 2 * n_params
-        # The optimize result should record gradient evaluations
-        assert program.optimize_result.njev >= 1

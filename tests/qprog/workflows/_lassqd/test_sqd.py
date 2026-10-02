@@ -783,13 +783,6 @@ def test_solver_carries_the_best_energy_across_iterations():
     assert multi_energy == pytest.approx(-20.0, abs=1e-9)
 
 
-def test_carryover_is_off_by_default():
-    """Conventional SQD must be untouched by the carryover machinery. The solve
-    it then reproduces is pinned by
-    ``test_solver_carries_the_best_energy_across_iterations``."""
-    assert SQDSolver(3, 1, 1).carryover_cutoff is None
-
-
 def _spy_on_retained(monkeypatch):
     """Capture what ``_heaviest_strings`` decides to keep, per call."""
     kept = []
@@ -928,7 +921,7 @@ def test_the_convergence_break_can_stop_carryover_short():
 
     assert stopped.amplitudes.size == 30
     assert exhaustive.amplitudes.size == 36
-    assert stopped.energy - exact == pytest.approx(1.17e-2, rel=0.05)
+    assert stopped.energy - exact == pytest.approx(1.16846068e-2, abs=1e-9)
     assert exhaustive.energy == pytest.approx(exact, abs=1e-9)
 
 

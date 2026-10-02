@@ -167,7 +167,6 @@ def _load_round(path: Path) -> RoundCheckpoint | None:
             state = _load_and_validate_pydantic_model(
                 checkpoint_path,
                 RoundCheckpoint,
-                required_fields=["kind", "ensemble_type", "round_index"],
                 error_context=error_context,
             )
         except (CheckpointNotFoundError, CheckpointCorruptedError):
@@ -190,14 +189,13 @@ def _resolve_ensemble_checkpoint(
     if subdirectory is not None:
         candidates = [main_dir / subdirectory]
     elif main_dir.is_dir():
+        index_by_child = {
+            child: index
+            for child in main_dir.iterdir()
+            if child.is_dir() and (index := _round_index(child)) is not None
+        }
         candidates = sorted(
-            (
-                child
-                for child in main_dir.iterdir()
-                if child.is_dir() and _round_index(child) is not None
-            ),
-            key=lambda child: _round_index(child) or -1,
-            reverse=True,
+            index_by_child, key=index_by_child.__getitem__, reverse=True
         )
     else:
         candidates = []

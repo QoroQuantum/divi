@@ -245,7 +245,7 @@ class HierarchicalStrategy(AggregationStrategy):
         # that adds no scoring), so it never inflates the per-stage cost.
         search_cap = self.max_per_group
         result_cap = max(self.max_per_group, top_n)
-        merge_width = self.merge_width if self.merge_width is not None else search_cap
+        merge_width = self.merge_width
         initial_list = list(initial_solution)
 
         prog_ids = list(programs.keys())
@@ -294,8 +294,6 @@ class HierarchicalStrategy(AggregationStrategy):
             for step, pid in enumerate(group):
                 last_step = single_group and step == len(group) - 1
                 pool = _extend_pool(pool, pid, result_cap if last_step else search_cap)
-                if not pool:
-                    break
             group_pools.append(pool)
 
         # Pairwise merge tree. A merge rebuilds each combined solution by replaying
@@ -315,9 +313,6 @@ class HierarchicalStrategy(AggregationStrategy):
                     continue
 
                 pool_a, pool_b = group_pools[i], group_pools[i + 1]
-                if not pool_a or not pool_b:
-                    next_level.append(pool_a or pool_b)
-                    continue
 
                 def merged_entries():
                     for _, sol_a, sel_a in pool_a[:merge_width]:
@@ -333,5 +328,4 @@ class HierarchicalStrategy(AggregationStrategy):
 
             group_pools = next_level
 
-        final = group_pools[0] if group_pools else []
-        return [(score, solution) for score, solution, _ in final[:top_n]]
+        return [(score, solution) for score, solution, _ in group_pools[0][:top_n]]

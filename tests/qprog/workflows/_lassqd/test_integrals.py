@@ -32,6 +32,7 @@ from divi.qprog.workflows._lassqd._integrals import (
     transform_integrals,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
+from tests._helpers import exact_match
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     dense_fci_energy,
     h2_mean_field,
@@ -72,8 +73,37 @@ def test_spo_from_integrals_ground_state_matches_fci(h2_mean_field):
 
 
 def test_spo_from_integrals_rejects_mismatched_shapes():
-    with pytest.raises(ValueError, match="two_body"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("two_body must have shape (2, 2, 2, 2); got (3, 3, 3, 3)."),
+    ):
         _spo_from_integrals(np.zeros((2, 2)), np.zeros((3, 3, 3, 3)), 0.0)
+
+
+@pytest.mark.parametrize(
+    "one_body, one_body_beta, message",
+    [
+        (np.zeros((2, 3)), None, "one_body must be square; got (2, 3)."),
+        (
+            np.zeros((2, 2)),
+            np.zeros((3, 3)),
+            "one_body_beta must have shape (2, 2); got (3, 3).",
+        ),
+    ],
+    ids=["non_square_one_body", "mismatched_beta"],
+)
+def test_spo_from_integrals_rejects_bad_one_body_shapes(
+    one_body, one_body_beta, message
+):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _spo_from_integrals(
+            one_body, np.zeros((2,) * 4), 0.0, one_body_beta=one_body_beta
+        )
+
+
+def test_spo_from_integrals_keeps_idle_orbitals_in_the_register():
+    spo = _spo_from_integrals(np.diag([-1.0, 0.0]), np.zeros((2,) * 4), 0.0)
+    assert spo.num_qubits == 4
 
 
 def test_build_active_permutation_orders_core_active_virtual():

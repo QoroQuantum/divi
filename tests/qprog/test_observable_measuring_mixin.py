@@ -22,20 +22,19 @@ class ConcreteObservableMeasuringProgram(ObservableMeasuringMixin, QuantumProgra
         return self
 
 
-class TestMixinDefaults:
+@pytest.mark.parametrize(
+    "attribute, expected",
+    [
+        pytest.param("_grouping_strategy", "qwc", id="grouping_strategy_qwc"),
+        pytest.param("_shot_distribution", None, id="shot_distribution_none"),
+        pytest.param("_measure_all_qubits", False, id="measure_all_qubits_false"),
+    ],
+)
+def test_mixin_defaults(dummy_simulator, attribute, expected):
     """Defaults applied when no kwargs are passed."""
-
-    def test_grouping_strategy_defaults_to_qwc(self, dummy_simulator):
-        program = ConcreteObservableMeasuringProgram(backend=dummy_simulator)
-        assert program._grouping_strategy == "qwc"
-
-    def test_shot_distribution_defaults_to_none(self, dummy_simulator):
-        program = ConcreteObservableMeasuringProgram(backend=dummy_simulator)
-        assert program._shot_distribution is None
-
-    def test_measure_all_qubits_defaults_to_false(self, dummy_simulator):
-        program = ConcreteObservableMeasuringProgram(backend=dummy_simulator)
-        assert program._measure_all_qubits is False
+    program = ConcreteObservableMeasuringProgram(backend=dummy_simulator)
+    assert getattr(program, attribute) == expected
+    assert type(getattr(program, attribute)) is type(expected)
 
 
 class TestVerbatimStorage:
@@ -219,27 +218,14 @@ class TestKwargForwarding:
             )
 
 
-class TestMROGuard:
+def test_mixin_after_quantum_program_raises_at_class_definition():
     """``__init_subclass__`` rejects subclasses where the mixin sits
     after :class:`QuantumProgram` in the inheritance order."""
+    with pytest.raises(TypeError, match="must precede QuantumProgram"):
 
-    def test_wrong_order_raises_at_class_definition(self):
-        with pytest.raises(TypeError, match="must precede QuantumProgram"):
-
-            class _WrongOrder(QuantumProgram, ObservableMeasuringMixin):
-                def has_results(self):
-                    return False
-
-                def run(self):
-                    return self
-
-    def test_correct_order_succeeds(self):
-        class _RightOrder(ObservableMeasuringMixin, QuantumProgram):
+        class _WrongOrder(QuantumProgram, ObservableMeasuringMixin):
             def has_results(self):
                 return False
 
             def run(self):
                 return self
-
-        mro = _RightOrder.__mro__
-        assert mro.index(ObservableMeasuringMixin) < mro.index(QuantumProgram)

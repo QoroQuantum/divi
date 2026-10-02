@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from threading import Event
-from typing import Any, Self, cast
+from typing import Any, Self
 from warnings import warn
 
 import numpy as np
@@ -77,7 +77,7 @@ logger = logging.getLogger(__name__)
 
 
 def _qualified_type(value: Any) -> str:
-    cls = value if isinstance(value, type) else type(value)
+    cls = type(value)
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
@@ -758,10 +758,6 @@ class ProgramEnsemble(ABC):
 
     def _clear_completed_round(self) -> None:
         """Discard program instances only after their round has completed."""
-        if self._executor is not None:
-            raise RuntimeError(
-                "Cannot replace programs while an ensemble round is running."
-            )
         self._programs.clear()
         self._programs_pending = False
 
@@ -851,6 +847,7 @@ class ProgramEnsemble(ABC):
 
     def _add_program_to_executor(
         self,
+        executor: ThreadPoolExecutor,
         program: QuantumProgram,
         task_fn: Callable[..., Any],
     ) -> Future:
@@ -882,11 +879,7 @@ class ProgramEnsemble(ABC):
                 if coordinator is not None:
                     coordinator.deregister_program(program_key)
 
-        if self._executor is None:
-            raise RuntimeError(
-                "Cannot submit program: executor is not initialised. Call run() first."
-            )
-        return self._executor.submit(_coordinated_task, program)
+        return executor.submit(_coordinated_task, program)
 
     def run_one_round(
         self,
@@ -1101,6 +1094,7 @@ class ProgramEnsemble(ABC):
             state = self.initial_state()
             self._workflow_state = state
         use_caller_programs = self._programs_pending and bool(self._programs)
+        checkpoint_root = checkpoint_config.checkpoint_dir
 
         while True:
             if self.is_complete(state):
@@ -1118,25 +1112,27 @@ class ProgramEnsemble(ABC):
             self._round_context = (self._round_index, max_rounds)
             self._round_cancelled = False
             program_count = len(self._programs)
-            round_input_snapshot = None
+            round_target = None
             try:
-                if (
-                    interrupted_checkpoint is None
-                    and checkpoint_config.checkpoint_dir is not None
-                ):
-                    round_input_snapshot = self._save_round_input_state(
-                        state, checkpoint_config
-                    )
+                if checkpoint_root is not None:
+                    if interrupted_checkpoint is not None:
+                        round_target = (
+                            _round_dir(
+                                checkpoint_root, interrupted_checkpoint.round_index
+                            ),
+                            interrupted_checkpoint.ensemble_state,
+                        )
+                    else:
+                        round_target = self._save_round_input_state(
+                            state, checkpoint_root
+                        )
                 if not use_caller_programs:
                     self._clear_completed_round()
                     self.create_programs(state)
                 use_caller_programs = False
                 program_count = len(self._programs)
                 checkpoint_session = self._prepare_checkpoint_session(
-                    state,
-                    checkpoint_config,
-                    interrupted_checkpoint,
-                    round_input_snapshot,
+                    checkpoint_config, round_target, interrupted_checkpoint
                 )
                 interrupted_checkpoint = None
                 self._total_circuit_count += checkpoint_session.recovered_circuit_count
@@ -1164,9 +1160,9 @@ class ProgramEnsemble(ABC):
                     runtime_before,
                     status=WorkflowStatus.COMPLETE,
                 )
-                if checkpoint_config.checkpoint_dir is not None:
+                if checkpoint_root is not None:
                     self._save_completed_round_checkpoint(
-                        checkpoint_config,
+                        checkpoint_root,
                         state,
                         [*self._round_history, completed_record],
                     )
@@ -1219,27 +1215,15 @@ class ProgramEnsemble(ABC):
 
     def _prepare_checkpoint_session(
         self,
-        state: Any,
         checkpoint_config: CheckpointConfig,
+        round_target: tuple[Path, dict[str, Any]] | None,
         interrupted_checkpoint: RoundCheckpoint | None = None,
-        round_input_snapshot: tuple[Path, dict[str, Any]] | None = None,
     ) -> _RoundCheckpointSession:
-        if interrupted_checkpoint is None and checkpoint_config.checkpoint_dir is None:
+        """``round_target`` is the round's directory and ensemble state; ``None``
+        when the run is not checkpointing."""
+        if round_target is None:
             return _RoundCheckpointSession.inactive()
-
-        if interrupted_checkpoint is not None:
-            checkpoint_dir = checkpoint_config.checkpoint_dir
-            if checkpoint_dir is None:
-                raise ValueError("A checkpoint directory is required.")
-            round_path = _round_dir(
-                Path(checkpoint_dir), interrupted_checkpoint.round_index
-            )
-            ensemble_state_payload = interrupted_checkpoint.ensemble_state
-        else:
-            round_path, ensemble_state_payload = (
-                round_input_snapshot
-                or self._save_round_input_state(state, checkpoint_config)
-            )
+        round_path, ensemble_state_payload = round_target
 
         child_recovery_states = self._child_recovery_states()
         return _RoundCheckpointSession.prepare(
@@ -1254,13 +1238,10 @@ class ProgramEnsemble(ABC):
         )
 
     def _save_round_input_state(
-        self, state: Any, checkpoint_config: CheckpointConfig
+        self, state: Any, checkpoint_root: Path
     ) -> tuple[Path, dict[str, Any]]:
         """Snapshot round input before program construction consumes RNG state."""
-        checkpoint_dir = checkpoint_config.checkpoint_dir
-        if checkpoint_dir is None:
-            raise ValueError("A checkpoint directory is required.")
-        root = _ensure_checkpoint_dir(checkpoint_dir)
+        root = _ensure_checkpoint_dir(checkpoint_root)
         round_path = _round_dir(root, self._round_index)
         round_path.mkdir(parents=True, exist_ok=True)
         ensemble_state_payload = self._save_workflow_checkpoint_state(
@@ -1276,14 +1257,11 @@ class ProgramEnsemble(ABC):
 
     def _save_completed_round_checkpoint(
         self,
-        checkpoint_config: CheckpointConfig,
+        checkpoint_root: Path,
         state: Any,
         history: list[RoundRecord],
     ) -> Path:
-        checkpoint_dir = checkpoint_config.checkpoint_dir
-        if checkpoint_dir is None:
-            raise ValueError("A checkpoint directory is required.")
-        root = _ensure_checkpoint_dir(checkpoint_dir)
+        root = _ensure_checkpoint_dir(checkpoint_root)
         round_path = _round_dir(root, self._round_index)
         round_path.mkdir(parents=True, exist_ok=True)
         ensemble_state_payload = self._save_workflow_checkpoint_state(
@@ -1313,12 +1291,13 @@ class ProgramEnsemble(ABC):
             or self._round_history[-1].status is not WorkflowStatus.COMPLETE
         ):
             raise RuntimeError("Cannot save an ensemble before a round has completed.")
-        if checkpoint_config.checkpoint_dir is None:
+        checkpoint_root = checkpoint_config.checkpoint_dir
+        if checkpoint_root is None:
             raise ValueError(
                 "checkpoint_config.checkpoint_dir must be a non-None Path."
             )
         return self._save_completed_round_checkpoint(
-            checkpoint_config, self._workflow_state, list(self._round_history)
+            checkpoint_root, self._workflow_state, list(self._round_history)
         )
 
     @staticmethod
@@ -1549,7 +1528,8 @@ class ProgramEnsemble(ABC):
         # down on failure so the caller can retry cleanly.
         try:
             self._start_progress_session(batching_enabled)
-            self._executor = ThreadPoolExecutor(max_workers=n_workers)
+            executor = ThreadPoolExecutor(max_workers=n_workers)
+            self._executor = executor
             if batching_enabled:
                 self._install_coordinator(batch_config, n_workers, backend)
             elif backend is not None:
@@ -1558,7 +1538,7 @@ class ProgramEnsemble(ABC):
                     program.backend = backend
 
             for program in self._programs.values():
-                future = self._add_program_to_executor(program, task_fn)
+                future = self._add_program_to_executor(executor, program, task_fn)
                 self.futures.append(future)
                 self._future_to_program[future] = program
 
@@ -1607,7 +1587,8 @@ class ProgramEnsemble(ABC):
             # A completion file written before sampling holds no samples.
             if program in completed_programs and "best_probs" in program._results:
                 return program
-            result = cast(SolutionSamplingMixin, program).sample_solution(
+            assert isinstance(program, SolutionSamplingMixin)
+            result = program.sample_solution(
                 resolved[program_to_id[program]], backend=program.backend
             )
             if on_sampled is not None:

@@ -9,7 +9,7 @@ from abc import abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cached_property, wraps
 from pathlib import Path
-from typing import Any, ClassVar, Literal, Self, TypeAlias, cast
+from typing import Any, ClassVar, Literal, Self, TypeAlias
 from warnings import warn
 
 import numpy as np
@@ -1072,17 +1072,21 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Subclasses should prefer overriding the initial-spec hook over
         replacing the full evaluator.
         """
-        out = self.evaluate(
-            np.atleast_2d(param_sets),
-            self.cost_preprocessor(),
-            shots=shots,
-            estimator_samples=estimator_samples,
-            return_variance=collect_variance,
-        )
         if collect_variance:
-            result, _ = cast("tuple[dict[int, Any], dict[int, float]]", out)
+            result, _ = self.evaluate(
+                np.atleast_2d(param_sets),
+                self.cost_preprocessor(),
+                shots=shots,
+                estimator_samples=estimator_samples,
+                return_variance=True,
+            )
         else:
-            result = cast("dict[int, Any]", out)
+            result = self.evaluate(
+                np.atleast_2d(param_sets),
+                self.cost_preprocessor(),
+                shots=shots,
+                estimator_samples=estimator_samples,
+            )
 
         constant = 0.0 if self._loss_constant_consumed else self.loss_constant
         return {idx: float(value[0]) + constant for idx, value in result.items()}
@@ -1548,8 +1552,11 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                     )
                     raise ExecutionCancelledError(message) from exc
                 else:
-                    self.optimize_result.success = True
-                    self.optimize_result.message = "Optimisation converged."
+                    # Keep an optimizer's own verdict; default only where it reports none.
+                    self.optimize_result.setdefault("success", True)
+                    self.optimize_result.setdefault(
+                        "message", "Optimisation converged."
+                    )
 
                     # Set _best_params from final result (source of truth); a
                     # non-finite loss never wins (falls back to the

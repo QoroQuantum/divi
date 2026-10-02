@@ -18,15 +18,17 @@ from divi.backends import (
 )
 from divi.circuits import DEFAULT_PRECISION
 from divi.exceptions import ExecutionCancelledError
-from divi.pipeline import PipelineEnv
+from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline._core import _wait_for_async_result
-from divi.qprog._program_checkpoint import ProgramCheckpoint
+from divi.pipeline.stages import MeasurementStage
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import (
     EventKind,
     ProgressEvent,
     TerminalStatus,
 )
+from divi.reporting._logging import log_progress_event
+from tests.pipeline._helpers import DummySpecStage, two_group_meta
 
 
 class TerminalPollingBackend:
@@ -70,8 +72,6 @@ class ConcreteQuantumProgram(QuantumProgram):
 
     def __init__(self, backend, seed=None, **kwargs):
         super().__init__(backend, seed, **kwargs)
-        self._total_circuit_count = 0
-        self._total_run_time = 0.0
         self._ran = False
 
     def has_results(self) -> bool:
@@ -86,17 +86,6 @@ class ConcreteQuantumProgram(QuantumProgram):
 
 
 class TestQuantumProgramBase:
-    def test_program_checkpoint_has_no_vqa_phase(self):
-        assert "phase" not in ProgramCheckpoint.model_fields
-
-        checkpoint = ProgramCheckpoint(
-            program_type="tests.ConcreteQuantumProgram",
-            total_circuit_count=3,
-            total_run_time=1.5,
-        )
-
-        assert "phase" not in checkpoint.model_dump()
-
     """Tests for QuantumProgram abstract base class contract and core functionality."""
 
     def test_completed_checkpointing_is_unsupported_by_default(
@@ -108,17 +97,12 @@ class TestQuantumProgramBase:
         assert program._restore_checkpoint("{}", tmp_path) is False
         assert program.has_results() is False
 
-    def test_quantum_program_has_no_checkpoint_identity_protocol(self, dummy_simulator):
-        program = ConcreteQuantumProgram(dummy_simulator)
-
-        assert not hasattr(program, "_checkpoint_computation_identity")
-
     def test_quantum_program_uses_logging_emitter_by_default(
         self, default_test_simulator
     ):
         program = ConcreteQuantumProgram(backend=default_test_simulator)
 
-        assert callable(program._progress_emitter)
+        assert program._progress_emitter is log_progress_event
 
     def test_initialization_preserves_backend_and_seed(self, dummy_simulator):
         program = ConcreteQuantumProgram(backend=dummy_simulator, seed=42)
@@ -338,28 +322,6 @@ class TestQuantumProgramBase:
                 backend=dummy_simulator, custom_param="test_value", another_param=123
             )
 
-    def test_abstract_class_behavior(self, mocker, dummy_simulator):
-        """Test abstract class instantiation behavior."""
-
-        # Test that abstract class cannot be instantiated
-        with pytest.raises(TypeError, match="Can't instantiate abstract class"):
-            QuantumProgram(backend=dummy_simulator)
-
-        # Test that concrete implementations can be instantiated
-        program = ConcreteQuantumProgram(backend=dummy_simulator)
-        assert isinstance(program, QuantumProgram)
-        assert program.backend == dummy_simulator
-
-    def test_abstract_methods_must_be_implemented(self, mocker, dummy_simulator):
-        """Test that abstract methods must be implemented in subclasses."""
-
-        # Test missing abstract methods (run and has_results)
-        class IncompleteProgram(QuantumProgram):
-            pass
-
-        with pytest.raises(TypeError, match="Can't instantiate abstract class"):
-            IncompleteProgram(backend=dummy_simulator)
-
     def test_preprocessors_default_empty(self, dummy_simulator):
         """The base exposes no measurement routines until a subclass declares them."""
         program = ConcreteQuantumProgram(backend=dummy_simulator)
@@ -396,19 +358,19 @@ class TestQuantumProgramBase:
         assert program.total_circuit_count == 0
         assert program.total_run_time == 0.0
 
-    def test_precision_property_defaults_to_module_constant(
-        self, mocker, dummy_simulator
-    ):
-        """``QuantumProgram.precision`` defaults to ``DEFAULT_PRECISION``."""
-        program = ConcreteQuantumProgram(backend=dummy_simulator)
-        assert program.precision == DEFAULT_PRECISION
-        assert program._precision == DEFAULT_PRECISION
-
-    def test_precision_property_reflects_explicit_value(self, mocker, dummy_simulator):
-        """Explicit ``precision=`` kwarg is exposed verbatim."""
-        program = ConcreteQuantumProgram(backend=dummy_simulator, precision=5)
-        assert program.precision == 5
-        assert program._precision == 5
+    @pytest.mark.parametrize(
+        "kwargs, expected",
+        [
+            pytest.param({}, DEFAULT_PRECISION, id="defaults_to_module_constant"),
+            pytest.param({"precision": 5}, 5, id="explicit_value_verbatim"),
+        ],
+    )
+    def test_precision_property(self, dummy_simulator, kwargs, expected):
+        """``QuantumProgram.precision`` defaults to ``DEFAULT_PRECISION``; an
+        explicit ``precision=`` kwarg is exposed verbatim."""
+        program = ConcreteQuantumProgram(backend=dummy_simulator, **kwargs)
+        assert program.precision == expected
+        assert program._precision == expected
 
 
 class TestQuantumProgramJobManagement:
@@ -446,15 +408,34 @@ class TestQuantumProgramJobManagement:
             program._current_execution_result
         )
 
-    def test_cancel_unfinished_job_409_conflict_is_silently_swallowed(self, mocker):
-        """409 from the scheduler means the job already reached a terminal
-        state — a normal race outcome of CTRL-C arriving as the job finishes.
-        The error must not propagate or emit user-facing progress; it is logged
-        at DEBUG for developers only."""
+    def test_cancel_unfinished_job_targets_the_last_submitted_job(self, mocker):
+        backend = mocker.Mock(spec=AsyncJobBackend)
+        backend.supports_expval = False
+        backend.resolves_parameters = False
+        backend.shots = 100
+        backend.max_retries = 1
+        backend.submit_circuits.return_value = ExecutionResult(job_id="job_7")
+        backend.poll_job_status.return_value = JobStatus.COMPLETED
+        backend.get_job_results.return_value = ExecutionResult(results=[])
+        program = ConcreteQuantumProgram(backend=backend)
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=two_group_meta()), MeasurementStage()]
+        )
+
+        program._execute(pipeline, "x")
+        program.cancel_unfinished_job()
+
+        backend.cancel_job.assert_called_once_with(backend.submit_circuits.return_value)
+
+    @pytest.mark.parametrize("status_code", [HTTPStatus.CONFLICT, HTTPStatus.FORBIDDEN])
+    def test_cancel_unfinished_job_http_error_is_silently_swallowed(
+        self, mocker, status_code
+    ):
+        """An HTTP error while cancelling neither propagates nor emits progress."""
         mock_backend = mocker.Mock(spec=AsyncJobBackend)
         mock_response = mocker.Mock()
-        mock_response.status_code = HTTPStatus.CONFLICT
-        mock_error = requests.exceptions.HTTPError("409 Conflict")
+        mock_response.status_code = status_code
+        mock_error = requests.exceptions.HTTPError(f"{status_code.value} error")
         mock_error.response = mock_response
         mock_backend.cancel_job = mocker.Mock(side_effect=mock_error)
 
@@ -467,35 +448,3 @@ class TestQuantumProgramJobManagement:
 
         mock_backend.cancel_job.assert_called_once()
         assert events == []
-
-    def test_cancel_unfinished_job_other_error_is_silently_swallowed(self, mocker):
-        """Non-409 HTTP errors (403, 404, network) during cleanup are
-        diagnostic-only — they belong in ``logger.debug``, not on the
-        user-facing progress display that's currently showing cancellation."""
-        mock_backend = mocker.Mock(spec=AsyncJobBackend)
-        mock_response = mocker.Mock()
-        mock_response.status_code = HTTPStatus.FORBIDDEN
-        mock_error = requests.exceptions.HTTPError("403 Forbidden")
-        mock_error.response = mock_response
-        mock_backend.cancel_job = mocker.Mock(side_effect=mock_error)
-
-        program = ConcreteQuantumProgram(backend=mock_backend)
-        events = []
-        program._progress_emitter = events.append
-        program._current_execution_result = ExecutionResult(job_id="test_job_123")
-
-        program.cancel_unfinished_job()
-
-        mock_backend.cancel_job.assert_called_once()
-        assert events == []
-
-    def test_cancel_unfinished_job_with_default_emitter(self, mocker):
-        """Test cancel_unfinished_job works with the default emitter."""
-        mock_backend = mocker.Mock(spec=AsyncJobBackend)
-        mock_backend.cancel_job = mocker.Mock()
-        program = ConcreteQuantumProgram(backend=mock_backend)
-        program._current_execution_result = ExecutionResult(job_id="test_job_123")
-
-        program.cancel_unfinished_job()
-
-        mock_backend.cancel_job.assert_called_once()

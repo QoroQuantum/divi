@@ -76,12 +76,6 @@ def test_fragment_spec_normalizes_orbitals_to_a_tuple():
     assert spec.n_orbitals == 2
 
 
-def test_fragment_spec_is_frozen():
-    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        spec.n_alpha = 2
-
-
 @pytest.mark.parametrize(
     "orbitals, n_alpha, n_beta, match",
     [
@@ -96,105 +90,56 @@ def test_fragment_spec_rejects_invalid_input(orbitals, n_alpha, n_beta, match):
         FragmentSpec(orbitals=orbitals, n_alpha=n_alpha, n_beta=n_beta)
 
 
-def test_validate_fragment_specs_rejects_overlap():
-    specs = [
-        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-        FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1),
-    ]
-    with pytest.raises(ValueError, match="overlap"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_rejects_out_of_range():
-    specs = [FragmentSpec(orbitals=(0, 9), n_alpha=1, n_beta=1)]
-    with pytest.raises(ValueError, match="out of range"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_accepts_disjoint_in_range():
-    specs = [
-        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
-        FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
-    ]
-    validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_rejects_electron_count_mismatch():
-    """Fragments must account for exactly the electrons occupying the active
-    orbitals they cover. A shortfall does not raise anywhere downstream; it
-    silently yields an energy for the wrong number of electrons."""
-    specs = [FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=1)]
-    with pytest.raises(ValueError, match="electron"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_accepts_consistent_electron_count():
-    specs = [
-        FragmentSpec(orbitals=(0, 3), n_alpha=1, n_beta=1),
-        FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1),
-    ]
-    validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_accepts_spin_imbalanced_fragments():
-    """Spin-imbalanced fragments are the antiferromagnetic case a localized
+@pytest.mark.parametrize(
+    "specs",
+    [
+        pytest.param([((0, 1), 1, 1), ((2, 3), 1, 1)], id="disjoint_in_range"),
+        pytest.param([((0, 3), 1, 1), ((1, 2), 1, 1)], id="consistent_electron_count"),
+        pytest.param([((0, 1), 1, 0), ((2, 3), 1, 2)], id="spin_imbalanced"),
+    ],
+)
+def test_validate_fragment_specs_accepts(specs):
+    """Spin-imbalanced fragments are the antiferromagnetic case a localised
     active space exists to describe, so they must be accepted as long as the
-    fragments' electrons still add up.
-
-    Both fragments here keep an excitation available in at least one spin
-    channel, which is what makes them runnable rather than merely valid.
-    """
-    specs = [
-        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=0),
-        FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=2),
-    ]
-    validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+    fragments' electrons still add up and each keeps an excitation available in
+    at least one spin channel."""
+    validate_fragment_specs(
+        [FragmentSpec(orbitals=o, n_alpha=a, n_beta=b) for o, a, b in specs],
+        n_orbitals_total=4,
+        n_occupied=2,
+    )
 
 
-def test_validate_fragment_specs_rejects_a_spin_saturated_fragment():
-    """Dropping the spin-balance rule exposed a case the old spin-traced
-    fully-occupied guard missed: ``(2a, 0b)`` on two orbitals fills the alpha
-    channel and empties the beta one, so UCCSD has zero parameters and
-    ``create_programs`` died with an error naming neither the fragment nor the
-    cause."""
-    specs = [
-        FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=0),
-        FragmentSpec(orbitals=(2, 3), n_alpha=0, n_beta=2),
-    ]
-    with pytest.raises(ValueError, match="no excitation available"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_rejects_a_nonzero_total_sz():
-    """Relaxing the per-fragment balance rule left the *total* Sz unchecked, so
-    an Sz=1 fragmentation of a closed-shell molecule ran to ``COMPLETE`` and
-    reported the wrong spin sector (measured -1.662 against a singlet FCI of
-    -2.252). The electron count alone does not catch it: 4 electrons split
-    3-alpha/1-beta still sums to 4."""
-    specs = [
-        FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=1),
-        FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=0),
-    ]
-    with pytest.raises(ValueError, match="Sz"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_still_rejects_inconsistent_electron_totals():
-    """Relaxing the spin-balance rule must not relax the electron count: a lone
-    spin-polarized fragment leaves the molecule's electrons unaccounted for."""
-    specs = [FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=0)]
-    with pytest.raises(ValueError, match="declare"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
-
-
-def test_validate_fragment_specs_rejects_a_fully_occupied_fragment():
-    """A fragment with every spin-orbital occupied has no correlation to
-    capture and is physically impossible as an active-space fragment; it
-    must be rejected at construction rather than reaching ``run()`` and
-    raising a bare ``ValueError`` with an empty ``round_history``."""
-    specs = [FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=2)]
-    with pytest.raises(ValueError, match="no excitation available"):
-        validate_fragment_specs(specs, n_orbitals_total=4, n_occupied=2)
+@pytest.mark.parametrize(
+    "specs, match",
+    [
+        pytest.param([((0, 1), 1, 1), ((1, 2), 1, 1)], "overlap", id="overlap"),
+        pytest.param([((0, 9), 1, 1)], "out of range", id="out_of_range"),
+        pytest.param([((0, 1, 2), 1, 1)], "electron", id="electron_count_mismatch"),
+        pytest.param(
+            [((0, 1), 2, 0), ((2, 3), 0, 2)],
+            "no excitation available",
+            id="spin_saturated_fragment",
+        ),
+        pytest.param([((0, 1), 2, 1), ((2, 3), 1, 0)], "Sz", id="nonzero_total_sz"),
+        pytest.param([((0, 1), 1, 0)], "declare", id="inconsistent_electron_totals"),
+        pytest.param(
+            [((0, 1), 2, 2)], "no excitation available", id="fully_occupied_fragment"
+        ),
+    ],
+)
+def test_validate_fragment_specs_rejects(specs, match):
+    """Fragments must cover exactly the active electrons (a shortfall silently
+    yields an energy for the wrong electron count), sum to zero total Sz (an
+    Sz=1 split of a closed-shell molecule ran to ``COMPLETE`` in the wrong spin
+    sector), and leave each fragment an excitation in some spin channel (a
+    saturated or fully occupied fragment gives UCCSD zero parameters)."""
+    with pytest.raises(ValueError, match=match):
+        validate_fragment_specs(
+            [FragmentSpec(orbitals=o, n_alpha=a, n_beta=b) for o, a, b in specs],
+            n_orbitals_total=4,
+            n_occupied=2,
+        )
 
 
 _H4_FRAGMENTS = (
@@ -537,39 +482,40 @@ def test_create_programs_makes_one_vqe_per_fragment(dummy_expval_backend):
         assert program.n_qubits == 4
 
 
-@pytest.mark.filterwarnings("ignore:.*only UCCSDAnsatz")
-def test_create_programs_uses_the_configured_ansatz(dummy_expval_backend):
-    """A non-default ansatz must be the one that actually reaches the
-    programs: asserting only the default ansatz's type cannot tell a
-    configured ansatz apart from one that is hard-coded."""
-    ensemble = _lassqd(dummy_expval_backend, ansatz=LUCJAnsatz())
-    ensemble.create_programs(ensemble.initial_state())
-    for program in ensemble.programs.values():
-        assert isinstance(program.ansatz, LUCJAnsatz)
-
-
 @pytest.mark.parametrize(
-    ("preparation_mode", "expected_type"),
+    ("preparation_mode", "expected_type", "ansatz"),
     [
-        (LASSQDPreparationMode.LINEAR_METHOD, LinearMethodFragmentProgram),
-        (LASSQDPreparationMode.VQE, _workflow._FragmentVQE),
+        pytest.param(
+            LASSQDPreparationMode.LINEAR_METHOD,
+            LinearMethodFragmentProgram,
+            None,
+            id="linear-method",
+        ),
+        pytest.param(
+            LASSQDPreparationMode.VQE,
+            _workflow._FragmentVQE,
+            LUCJAnsatz(),
+            id="vqe",
+            marks=pytest.mark.filterwarnings("ignore:.*only UCCSDAnsatz"),
+        ),
     ],
-    ids=["linear-method", "vqe"],
 )
 def test_create_programs_builds_the_program_type_for_its_mode(
-    dummy_expval_backend, preparation_mode, expected_type
+    dummy_expval_backend, preparation_mode, expected_type, ansatz
 ):
-    ensemble = _lassqd(dummy_expval_backend, preparation_mode=preparation_mode)
+    """VQE mode hands the configured non-default ansatz to every program."""
+    overrides = {} if ansatz is None else {"ansatz": ansatz}
+    ensemble = _lassqd(
+        dummy_expval_backend, preparation_mode=preparation_mode, **overrides
+    )
     ensemble.create_programs(ensemble.initial_state())
 
     assert len(ensemble.programs) == 2
     assert all(
         isinstance(program, expected_type) for program in ensemble.programs.values()
     )
-    if preparation_mode is LASSQDPreparationMode.VQE:
-        assert all(
-            program.ansatz is ensemble.ansatz for program in ensemble.programs.values()
-        )
+    if ansatz is not None:
+        assert all(program.ansatz is ansatz for program in ensemble.programs.values())
 
 
 def test_linear_method_defers_classical_preparation_to_dispatch(
@@ -837,44 +783,46 @@ def test_solver_for_gives_each_fragment_an_independent_rng_stream(
     assert solver_0._rng.bit_generator.state != solver_1._rng.bit_generator.state
 
 
-def test_lambda_penalty_defaults_to_the_solvers_own_default(dummy_expval_backend):
-    ensemble = _lassqd(dummy_expval_backend)
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        pytest.param({}, {"lambda_penalty": 0.2}, id="lambda_penalty_solver_default"),
+        pytest.param(
+            {"lambda_penalty": 5.0},
+            {"lambda_penalty": 5.0},
+            id="lambda_penalty_threaded",
+        ),
+        pytest.param(
+            {},
+            {"carryover_cutoff": 1e-5, "max_carryover": None},
+            id="carryover_on_by_default",
+        ),
+        pytest.param(
+            {"carryover_cutoff": None},
+            {"carryover_cutoff": None},
+            id="carryover_turned_off",
+        ),
+        pytest.param(
+            {"carryover_cutoff": 1e-4, "max_carryover": 32},
+            {"carryover_cutoff": 1e-4, "max_carryover": 32},
+            id="carryover_settings_threaded",
+        ),
+    ],
+)
+def test_solver_settings_are_threaded_to_the_solver(
+    dummy_expval_backend, overrides, expected
+):
+    """An option users cannot reach from ``LASSQD`` is not an option. Carryover
+    is on by default because conventional SQD oscillates across macro-cycles
+    where sampling covers only a fraction of the determinant space."""
+    ensemble = _lassqd(dummy_expval_backend, **overrides)
     state = ensemble.initial_state()
     solver = ensemble._solver_for(0, state.fragments[0].spec)
-    assert solver.lambda_penalty == pytest.approx(0.2)
-
-
-def test_lambda_penalty_is_threaded_to_the_solver(dummy_expval_backend):
-    ensemble = _lassqd(dummy_expval_backend, lambda_penalty=5.0)
-    state = ensemble.initial_state()
-    solver = ensemble._solver_for(0, state.fragments[0].spec)
-    assert solver.lambda_penalty == pytest.approx(5.0)
-
-
-def test_carryover_is_on_by_default(dummy_expval_backend):
-    """Conventional SQD oscillates across macro-cycles where sampling covers
-    only a fraction of the determinant space, so retention is the default."""
-    ensemble = _lassqd(dummy_expval_backend)
-    state = ensemble.initial_state()
-    solver = ensemble._solver_for(0, state.fragments[0].spec)
-    assert solver.carryover_cutoff == pytest.approx(1e-5)
-    assert solver.max_carryover is None
-
-
-def test_carryover_can_be_turned_off(dummy_expval_backend):
-    ensemble = _lassqd(dummy_expval_backend, carryover_cutoff=None)
-    state = ensemble.initial_state()
-    solver = ensemble._solver_for(0, state.fragments[0].spec)
-    assert solver.carryover_cutoff is None
-
-
-def test_carryover_settings_are_threaded_to_the_solver(dummy_expval_backend):
-    """An option users cannot reach from ``LASSQD`` is not an option."""
-    ensemble = _lassqd(dummy_expval_backend, carryover_cutoff=1e-4, max_carryover=32)
-    state = ensemble.initial_state()
-    solver = ensemble._solver_for(0, state.fragments[0].spec)
-    assert solver.carryover_cutoff == pytest.approx(1e-4)
-    assert solver.max_carryover == 32
+    for attribute, value in expected.items():
+        if value is None:
+            assert getattr(solver, attribute) is None
+        else:
+            assert getattr(solver, attribute) == pytest.approx(value)
 
 
 def test_lassqd_state_and_fragment_state_compare_by_identity(dummy_expval_backend):

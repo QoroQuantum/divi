@@ -19,7 +19,7 @@ a defaulted lookup.
 """
 
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -130,8 +130,11 @@ class DataBindingMixin(_MixinBase):
         return self._results["fitted_bias"]
 
     def _fit_bias_at_best_params(self) -> float:
-        scores = self._scores(cast(npt.NDArray[np.float64], self.feature_batch), None)
-        return float(np.mean(self.labels - scores))
+        feature_batch, labels = self.feature_batch, self.labels
+        if feature_batch is None or labels is None:
+            raise RuntimeError("Fitting a bias requires a feature_batch and labels.")
+        scores = self._scores(feature_batch, None)
+        return float(np.mean(labels - scores))
 
     def _finalize(self, perform_final_computation: bool) -> None:
         super()._finalize(perform_final_computation)

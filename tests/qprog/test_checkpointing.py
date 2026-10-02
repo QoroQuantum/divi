@@ -5,7 +5,6 @@
 """Tests for checkpointing utilities."""
 
 import os
-from dataclasses import FrozenInstanceError
 from datetime import datetime
 from pathlib import Path
 
@@ -18,7 +17,6 @@ from divi.qprog.checkpointing import (
     PROGRAM_STATE_FILE,
     CheckpointConfig,
     CheckpointCorruptedError,
-    CheckpointInfo,
     CheckpointNotFoundError,
     _atomic_write,
     _ensure_checkpoint_dir,
@@ -34,6 +32,7 @@ from divi.qprog.checkpointing import (
     list_checkpoints,
     resolve_checkpoint_path,
 )
+from tests._helpers import exact_match
 
 
 def make_checkpoint(main_dir: Path, iteration: int, complete: bool = True) -> Path:
@@ -72,38 +71,37 @@ class TestNamingUtilities:
         assert _extract_iteration_from_subdir("") is None
         assert _extract_iteration_from_subdir("checkpoint_001_extra") is None
 
+    @pytest.mark.parametrize(
+        "name, expected",
+        [("checkpoint_1000000", 1_000_000), ("checkpoint_1000001", None)],
+    )
+    def test_extract_iteration_caps_the_iteration_number(self, name, expected):
+        assert _extract_iteration_from_subdir(name) == expected
+
 
 class TestDirectoryUtilities:
     """Tests for checkpoint directory management utility functions."""
 
-    def test_ensure_checkpoint_dir_creates_directory(self, tmp_path):
-        """Test that ensure_checkpoint_dir creates the directory."""
-        checkpoint_dir = tmp_path / "new_checkpoint"
-        assert not checkpoint_dir.exists()
+    @pytest.mark.parametrize(
+        "parts, pre_existing",
+        [
+            (("new_checkpoint",), False),
+            (("nested", "deep", "checkpoint"), False),
+            (("existing",), True),
+        ],
+        ids=["new", "nested_parents", "existing"],
+    )
+    def test_ensure_checkpoint_dir(self, tmp_path, parts, pre_existing):
+        """ensure_checkpoint_dir creates the directory and any parents, and
+        accepts one that already exists."""
+        checkpoint_dir = tmp_path.joinpath(*parts)
+        if pre_existing:
+            checkpoint_dir.mkdir()
 
         result = _ensure_checkpoint_dir(checkpoint_dir)
+
         assert result == checkpoint_dir
-        assert checkpoint_dir.exists()
         assert checkpoint_dir.is_dir()
-
-    def test_ensure_checkpoint_dir_creates_parents(self, tmp_path):
-        """Test that ensure_checkpoint_dir creates parent directories."""
-        checkpoint_dir = tmp_path / "nested" / "deep" / "checkpoint"
-        assert not checkpoint_dir.exists()
-
-        result = _ensure_checkpoint_dir(checkpoint_dir)
-        assert result == checkpoint_dir
-        assert checkpoint_dir.exists()
-        assert checkpoint_dir.is_dir()
-
-    def test_ensure_checkpoint_dir_existing_directory(self, tmp_path):
-        """Test that ensure_checkpoint_dir handles existing directories."""
-        checkpoint_dir = tmp_path / "existing"
-        checkpoint_dir.mkdir()
-
-        result = _ensure_checkpoint_dir(checkpoint_dir)
-        assert result == checkpoint_dir
-        assert checkpoint_dir.exists()
 
     def test_get_checkpoint_subdir_path(self, tmp_path):
         """Test getting checkpoint subdirectory path."""
@@ -136,6 +134,29 @@ class TestDirectoryUtilities:
             CheckpointNotFoundError, match="No checkpoint subdirectories found"
         ):
             _find_latest_checkpoint_subdir(main_dir)
+
+    def test_find_latest_checkpoint_subdir_only_other_directories(self, tmp_path):
+        """Directories without a checkpoint name are listed, never resolved."""
+        main_dir = tmp_path / "checkpoints"
+        other = main_dir / "other_dir"
+        other.mkdir(parents=True)
+        (other / PROGRAM_STATE_FILE).write_text("{}")
+        (other / OPTIMIZER_STATE_FILE).write_text("{}")
+        (main_dir / "checkpoint_005").write_text("a file, not a checkpoint")
+
+        with pytest.raises(
+            CheckpointNotFoundError, match="No checkpoint subdirectories found"
+        ) as exc_info:
+            _find_latest_checkpoint_subdir(main_dir)
+
+        assert exc_info.value.available_directories == ["other_dir"]
+
+    def test_find_latest_checkpoint_subdir_orders_by_iteration_number(self, tmp_path):
+        main_dir = tmp_path / "checkpoints"
+        make_checkpoint(main_dir, 999)
+        make_checkpoint(main_dir, 1000)
+
+        assert _find_latest_checkpoint_subdir(main_dir).name == "checkpoint_1000"
 
     def test_find_latest_checkpoint_subdir_ignores_invalid_names(self, tmp_path):
         """Test that invalid subdirectory names are ignored."""
@@ -174,26 +195,6 @@ class TestDirectoryUtilities:
 
 class TestCheckpointConfig:
     """Tests for CheckpointConfig."""
-
-    def test_checkpoint_config_default(self):
-        """Test default CheckpointConfig."""
-        config = CheckpointConfig()
-        assert config.checkpoint_dir is None
-        assert config.checkpoint_interval is None
-
-    def test_checkpoint_config_with_dir(self, tmp_path):
-        """Test CheckpointConfig with directory."""
-        checkpoint_dir = tmp_path / "my_checkpoint"
-        config = CheckpointConfig(checkpoint_dir=checkpoint_dir)
-        assert config.checkpoint_dir == checkpoint_dir
-        assert config.checkpoint_interval is None
-
-    def test_checkpoint_config_with_interval(self, tmp_path):
-        """Test CheckpointConfig with interval."""
-        checkpoint_dir = tmp_path / "my_checkpoint"
-        config = CheckpointConfig(checkpoint_dir=checkpoint_dir, checkpoint_interval=5)
-        assert config.checkpoint_dir == checkpoint_dir
-        assert config.checkpoint_interval == 5
 
     def test_checkpoint_config_with_timestamped_dir(self):
         """Test auto-generation of checkpoint directory."""
@@ -271,12 +272,6 @@ class TestCheckpointConfig:
             config = CheckpointConfig()
         for iteration, expected in cases:
             assert config._should_checkpoint(iteration) is expected
-
-    def test_checkpoint_config_frozen(self, tmp_path):
-        """Test that CheckpointConfig is frozen."""
-        config = CheckpointConfig(checkpoint_dir=tmp_path / "checkpoint")
-        with pytest.raises(FrozenInstanceError):
-            config.checkpoint_dir = tmp_path / "other"
 
 
 class TestManagementUtilities:
@@ -404,24 +399,18 @@ class TestManagementUtilities:
         latest = get_latest_checkpoint(main_dir)
         assert latest is None
 
-    def test_cleanup_old_checkpoints(self, tmp_path):
-        """Test cleaning up old checkpoints."""
+    @pytest.mark.parametrize(
+        "keep_last_n, expected", [(2, [4, 5]), (1, [5])], ids=["two", "one"]
+    )
+    def test_cleanup_old_checkpoints(self, tmp_path, keep_last_n, expected):
+        """Only the newest ``keep_last_n`` checkpoints survive cleanup."""
         main_dir = tmp_path / "checkpoints"
-        main_dir.mkdir()
-
-        # Create 5 checkpoints
         for i in range(1, 6):
-            checkpoint_dir = main_dir / f"checkpoint_{i:03d}"
-            checkpoint_dir.mkdir()
-            (checkpoint_dir / PROGRAM_STATE_FILE).write_text('{"test": "data"}')
-            (checkpoint_dir / "optimizer_state.json").write_text('{"test": "data"}')
+            make_checkpoint(main_dir, i)
 
-        # Keep only last 2
-        cleanup_old_checkpoints(main_dir, keep_last_n=2)
+        cleanup_old_checkpoints(main_dir, keep_last_n=keep_last_n)
 
-        remaining = list_checkpoints(main_dir)
-        assert len(remaining) == 2
-        assert [c.iteration for c in remaining] == [4, 5]
+        assert [c.iteration for c in list_checkpoints(main_dir)] == expected
 
     def test_cleanup_old_checkpoints_keep_all(self, tmp_path):
         """Test cleanup when keeping all checkpoints."""
@@ -461,31 +450,7 @@ class TestManagementUtilities:
 
         info = get_checkpoint_info(checkpoint_dir)
 
-        # Should be at least 2000 bytes (2 files * 1000 bytes)
-        assert info.size_bytes >= 2000
-
-    def test_checkpoint_info_dataclass(self, tmp_path):
-        """Test CheckpointInfo dataclass properties."""
-        checkpoint_dir = tmp_path / "checkpoints" / "checkpoint_001"
-        checkpoint_dir.mkdir(parents=True)
-        (checkpoint_dir / PROGRAM_STATE_FILE).write_text('{"test": "data"}')
-        (checkpoint_dir / "optimizer_state.json").write_text('{"test": "data"}')
-
-        info = get_checkpoint_info(checkpoint_dir)
-
-        # Test that it's a CheckpointInfo instance
-        assert isinstance(info, CheckpointInfo)
-
-        # Test that it's frozen (immutable)
-        with pytest.raises(FrozenInstanceError):
-            info.iteration = 999
-
-        # Test all fields are accessible
-        assert isinstance(info.path, Path)
-        assert isinstance(info.iteration, int)
-        assert isinstance(info.timestamp, datetime)
-        assert isinstance(info.size_bytes, int)
-        assert isinstance(info.is_valid, bool)
+        assert info.size_bytes == 2000
 
     @pytest.mark.parametrize(
         "func, path_name",
@@ -535,13 +500,15 @@ class TestResolveCheckpointPath:
         main_dir = tmp_path / "checkpoints"
         main_dir.mkdir()
         (main_dir / "checkpoint_001").mkdir()
+        (main_dir / "other_dir").mkdir()
+        (main_dir / "checkpoint_002").write_text("a file, not a checkpoint")
 
         with pytest.raises(
             CheckpointNotFoundError, match="Checkpoint subdirectory not found"
         ) as exc_info:
             resolve_checkpoint_path(main_dir, subdirectory="checkpoint_999")
 
-        assert "checkpoint_001" in exc_info.value.available_directories
+        assert exc_info.value.available_directories == ["checkpoint_001"]
 
     def test_resolves_latest_when_no_subdirectory(self, tmp_path):
         """resolve_checkpoint_path resolves the latest checkpoint if no subdirectory given."""
@@ -589,7 +556,7 @@ class TestValidationAndAtomicWrite:
 
         _atomic_write(tmp_path / "output.json", "{}")
 
-        assert file_sync.call_count >= 1
+        assert file_sync.call_count == (2 if os.name == "posix" else 1)
         directory_sync.assert_called_once_with(tmp_path)
 
     def test_atomic_write_cleans_up_temp_on_failure(self, tmp_path, mocker):
@@ -616,6 +583,16 @@ class TestValidationAndAtomicWrite:
         corrupt_file.write_text("{invalid json///")
         with pytest.raises(CheckpointCorruptedError, match="not valid JSON"):
             _validate_checkpoint_json(corrupt_file)
+
+    def test_validate_checkpoint_json_unreadable(self, tmp_path):
+        """A path that cannot be read raises CheckpointCorruptedError."""
+        unreadable = tmp_path / "state.json"
+        unreadable.mkdir()
+        with pytest.raises(
+            CheckpointCorruptedError,
+            match=exact_match(f"Failed to read checkpoint file: {unreadable}"),
+        ):
+            _validate_checkpoint_json(unreadable)
 
     def test_validate_checkpoint_json_missing_fields(self, tmp_path):
         """Missing required fields raises CheckpointCorruptedError."""
@@ -652,7 +629,10 @@ class TestValidationAndAtomicWrite:
             class Config:
                 strict = True
 
-        with pytest.raises(CheckpointCorruptedError, match="Failed to validate"):
+        with pytest.raises(
+            CheckpointCorruptedError,
+            match=exact_match(f"Failed to validate checkpoint state: {bad_file}"),
+        ):
             _load_and_validate_pydantic_model(bad_file, StrictModel)
 
     def test_load_and_validate_pydantic_model_success(self, tmp_path):

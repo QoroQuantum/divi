@@ -26,6 +26,17 @@ class TestEarlyStoppingInit:
         with pytest.raises(ValueError, match="variance_window must be >= 2"):
             EarlyStopping(variance_window=1)
 
+    def test_defaults(self):
+        es = EarlyStopping()
+        assert es.patience == 5
+        assert es.min_delta == 1e-4
+        assert es.grad_norm_threshold is None
+        assert es.variance_window == 20
+        assert es.variance_threshold is None
+
+    def test_smallest_variance_window_accepted(self):
+        assert EarlyStopping(variance_window=2).variance_window == 2
+
     def test_custom_values_accepted(self):
         es = EarlyStopping(
             patience=3,
@@ -155,6 +166,10 @@ class TestGradientNormCriterion:
         assert result is None
         assert es._stale_count == 0
 
+    def test_does_not_trigger_at_threshold(self):
+        es = EarlyStopping(patience=100, grad_norm_threshold=1e-5)
+        assert es.check(0.5, grad_norm=1e-5) is None
+
     def test_skipped_when_grad_norm_is_none(self):
         es = EarlyStopping(patience=100, grad_norm_threshold=1e-5)
         result = es.check(0.5, grad_norm=None)
@@ -201,6 +216,11 @@ class TestCostVarianceCriterion:
             result = es.check(loss)
         assert result is None
         assert len(es._loss_history) == 5
+
+    def test_does_not_trigger_at_threshold(self):
+        es = EarlyStopping(patience=100, variance_window=3, variance_threshold=0.0)
+        for _ in range(3):
+            assert es.check(1.0) is None
 
     def test_does_not_trigger_before_window_fills(self):
         es = EarlyStopping(

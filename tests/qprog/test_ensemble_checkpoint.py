@@ -19,7 +19,6 @@ from divi.qprog._ensemble_checkpoint import (
     _resolve_ensemble_checkpoint,
     _round_dir,
 )
-from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.checkpointing import CheckpointNotFoundError
 
 
@@ -68,6 +67,20 @@ class TestProgramIdEncoding:
             ],
         }
 
+    @pytest.mark.parametrize(
+        "value, encoded",
+        [
+            (None, {"kind": "none"}),
+            (True, {"kind": "bool", "value": True}),
+            (3, {"kind": "int", "value": 3}),
+            (0.5, {"kind": "float", "value": 0.5}),
+            ("a", {"kind": "str", "value": "a"}),
+        ],
+        ids=["none", "bool", "int", "float", "str"],
+    )
+    def test_encodes_scalars_with_their_kind(self, value, encoded):
+        assert _encode_program_id(value) == encoded
+
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), object()])
     def test_rejects_values_without_stable_json_identity(self, value):
         with pytest.raises(TypeError, match="checkpoint program ID"):
@@ -113,7 +126,7 @@ class TestStateModels:
         ],
     )
     def test_round_checkpoint_rejects_an_incomplete_or_mixed_kind(self, kind_fields):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError, match="fields do not match kind"):
             RoundCheckpoint(
                 ensemble_type="tests.SampleEnsemble",
                 round_index=1,
@@ -146,41 +159,6 @@ class TestStateModels:
                 "run_time_at_round_start": 0.0,
             }
         ]
-
-    def test_completed_round_rejects_negative_counters(self):
-        with pytest.raises(ValidationError):
-            RoundCheckpoint(
-                kind="round_completion",
-                ensemble_type="tests.SampleEnsemble",
-                round_index=1,
-                ensemble_state={},
-                round_history=[],
-                total_circuit_count=-1,
-                total_run_time=0.0,
-            )
-
-    def test_completed_child_rejects_invalid_accounting(self):
-        with pytest.raises(ValidationError):
-            ProgramCheckpoint(
-                program_type="tests.SampleProgram",
-                total_circuit_count=-1,
-                total_run_time=float("inf"),
-            )
-
-    def test_interrupted_round_requires_child_accounting(self):
-        with pytest.raises(ValidationError):
-            RoundCheckpoint(
-                kind="round_start",
-                ensemble_type="tests.SampleEnsemble",
-                round_index=1,
-                ensemble_state={},
-                programs=[
-                    ProgramRoundRecord(
-                        program_id=_encode_program_id("a"),
-                        program_type="tests.SampleProgram",
-                    )
-                ],
-            )
 
     def test_program_checkpoint_path_uses_round_local_slot(self, tmp_path):
         assert _program_checkpoint_path(tmp_path, 2) == tmp_path / "program_002"
@@ -268,3 +246,97 @@ class TestRoundResolution:
     def test_no_valid_round_raises(self, tmp_path):
         with pytest.raises(CheckpointNotFoundError, match="ensemble checkpoint"):
             _resolve_ensemble_checkpoint(tmp_path)
+
+    def test_missing_root_raises(self, tmp_path):
+        with pytest.raises(CheckpointNotFoundError, match="ensemble checkpoint"):
+            _resolve_ensemble_checkpoint(tmp_path / "missing")
+
+    def test_orders_rounds_by_number(self, tmp_path):
+        for round_index in (999, 1000):
+            _write_json(
+                _round_dir(tmp_path, round_index) / ROUND_COMPLETION_FILE,
+                _completed_payload(round_index),
+            )
+
+        assert _resolve_ensemble_checkpoint(tmp_path).round_index == 1000
+
+    def test_ignores_entries_without_a_round_name(self, tmp_path):
+        _write_json(
+            _round_dir(tmp_path, 1) / ROUND_COMPLETION_FILE, _completed_payload(1)
+        )
+        (tmp_path / "other").mkdir()
+        (tmp_path / "round_005").write_text("a file, not a round")
+
+        assert _resolve_ensemble_checkpoint(tmp_path).round_index == 1
+
+    def test_error_lists_only_round_directories(self, tmp_path):
+        invalid = _round_dir(tmp_path, 3) / ROUND_START_FILE
+        invalid.parent.mkdir()
+        invalid.write_text("not-json")
+        (tmp_path / "other").mkdir()
+        (tmp_path / "round_002").write_text("a file, not a round")
+
+        with pytest.raises(CheckpointNotFoundError) as exc_info:
+            _resolve_ensemble_checkpoint(tmp_path)
+
+        assert exc_info.value.available_directories == ["round_003"]
+
+    def test_explicit_subdirectory_without_a_round_name_raises(self, tmp_path):
+        (tmp_path / "other").mkdir()
+        with pytest.raises(CheckpointNotFoundError, match="ensemble checkpoint"):
+            _resolve_ensemble_checkpoint(tmp_path, "other")
+
+    def test_corrupt_completion_falls_back_to_round_start(self, tmp_path):
+        round_dir = _round_dir(tmp_path, 2)
+        _write_json(round_dir / ROUND_START_FILE, _interrupted_payload(2))
+        (round_dir / ROUND_COMPLETION_FILE).write_text("not-json")
+
+        resolved = _resolve_ensemble_checkpoint(tmp_path)
+
+        assert (resolved.round_index, resolved.kind) == (2, "round_start")
+
+
+def _resolved_round_for_state(tmp_path, ensemble_state):
+    """Resolve with round 2 carrying ``ensemble_state`` and round 1 as fallback."""
+    round_dir = _round_dir(tmp_path, 2)
+    round_dir.mkdir(parents=True)
+    (round_dir / "state.npz").write_bytes(b"")
+    (tmp_path / "outside.npz").write_bytes(b"")
+    payload = _completed_payload(2)
+    payload["ensemble_state"] = ensemble_state
+    _write_json(round_dir / ROUND_COMPLETION_FILE, payload)
+    _write_json(_round_dir(tmp_path, 1) / ROUND_COMPLETION_FILE, _completed_payload(1))
+    return _resolve_ensemble_checkpoint(tmp_path).round_index
+
+
+@pytest.mark.parametrize(
+    "ensemble_state",
+    [
+        {"artifact": "state.npz"},
+        {"nested": {"artifact": "state.npz"}},
+        {"items": [{"artifact": "state.npz"}]},
+        {"items": [1, "plain"]},
+    ],
+    ids=["top_level", "nested_dict", "in_list", "list_without_artifacts"],
+)
+def test_round_with_present_state_artifacts_is_accepted(tmp_path, ensemble_state):
+    assert _resolved_round_for_state(tmp_path, ensemble_state) == 2
+
+
+@pytest.mark.parametrize(
+    "ensemble_state",
+    [
+        {"artifact": 5},
+        {"artifact": "../outside.npz"},
+        {"nested": {"artifact": "missing.npz"}},
+        {"items": [{"artifact": "missing.npz"}]},
+    ],
+    ids=["not_a_string", "parent_escape", "nested_missing", "list_missing"],
+)
+def test_round_with_invalid_state_artifacts_is_skipped(tmp_path, ensemble_state):
+    assert _resolved_round_for_state(tmp_path, ensemble_state) == 1
+
+
+def test_round_with_absolute_state_artifact_is_skipped(tmp_path):
+    ensemble_state = {"artifact": str(tmp_path / "outside.npz")}
+    assert _resolved_round_for_state(tmp_path, ensemble_state) == 1
