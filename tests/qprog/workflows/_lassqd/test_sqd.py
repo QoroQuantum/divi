@@ -4,6 +4,7 @@
 
 """Tests for SQD post-processing, checked against exact classical oracles."""
 
+import functools
 import itertools
 
 import numpy as np
@@ -47,20 +48,27 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
 )
 
 
-def _integrals_from_mol(mol):
-    return mo_integrals(scf.RHF(mol).run(verbose=0))
+@functools.cache
+def _mean_field(system):
+    """RHF solved once per system; callers get fresh integral arrays each time."""
+    molecule = {
+        "h2": h2_molecule,
+        "h2_631g": lambda: h2_molecule(basis="6-31g"),
+        "h4": h4_chain,
+    }[system]()
+    return scf.RHF(molecule).run(verbose=0)
 
 
 def _h2_integrals():
-    return _integrals_from_mol(h2_molecule())
+    return mo_integrals(_mean_field("h2"))
 
 
 def _h2_631g_integrals():
-    return _integrals_from_mol(h2_molecule(basis="6-31g"))
+    return mo_integrals(_mean_field("h2_631g"))
 
 
 def _h4_integrals():
-    return _integrals_from_mol(h4_chain())
+    return mo_integrals(_mean_field("h4"))
 
 
 def _solver(n_orb, n_alpha, n_beta, **overrides):
@@ -181,81 +189,34 @@ def test_slater_condon_vanishes_beyond_double_excitation():
     assert slater_condon(det_i, det_j, hs, gs) == pytest.approx(0.0)
 
 
-def test_full_subspace_diagonalization_reproduces_fci():
-    """The strongest single check: Slater-Condon over the COMPLETE determinant
-    space must give exactly the FCI energy."""
-    one_body, two_body, n_orb, constant = _h2_integrals()
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
-
-    n_alpha = n_beta = 1
-    dets = [
-        spatial_to_spin_occupations(a, b, n_orb)
-        for a in itertools.combinations(range(n_orb), n_alpha)
-        for b in itertools.combinations(range(n_orb), n_beta)
-    ]
-    dim = len(dets)
-    hamiltonian = np.array(
-        [
-            [slater_condon(dets[i], dets[j], h_spin, g_spin) for j in range(dim)]
-            for i in range(dim)
-        ]
-    )
-    lowest = float(np.min(np.linalg.eigvalsh(hamiltonian))) + constant
-    expected = dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant)
-
-    assert lowest == pytest.approx(expected, abs=1e-9)
-
-
 @pytest.mark.parametrize(
     "integrals_fn, n_alpha, n_beta",
     [
-        (_h2_631g_integrals, 1, 1),
-        (_h4_integrals, 2, 2),
+        pytest.param(_h2_integrals, 1, 1, id="h2-sto3g"),
+        # Beyond two spatial orbitals a double-excitation sign error is no
+        # longer an exact gauge transformation and must change the energy.
+        pytest.param(_h2_631g_integrals, 1, 1, id="h2-631g"),
+        pytest.param(_h4_integrals, 2, 2, id="h4"),
     ],
 )
-def test_full_subspace_diagonalization_reproduces_fci_beyond_two_orbitals(
-    integrals_fn, n_alpha, n_beta
-):
-    """Same check as above, but on active spaces with more than 2 spatial
-    orbitals, where a double-excitation sign error is no longer an exact
-    gauge transformation and must change the ground-state energy."""
+def test_full_subspace_diagonalization_reproduces_fci(integrals_fn, n_alpha, n_beta):
+    """The strongest single check: Slater-Condon over the COMPLETE determinant
+    space is symmetric and gives exactly the FCI energy."""
     one_body, two_body, n_orb, constant = integrals_fn()
     h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
-
     dets = [
         spatial_to_spin_occupations(a, b, n_orb)
         for a in itertools.combinations(range(n_orb), n_alpha)
         for b in itertools.combinations(range(n_orb), n_beta)
     ]
-    dim = len(dets)
     hamiltonian = np.array(
-        [
-            [slater_condon(dets[i], dets[j], h_spin, g_spin) for j in range(dim)]
-            for i in range(dim)
-        ]
+        [[slater_condon(d_i, d_j, h_spin, g_spin) for d_j in dets] for d_i in dets]
     )
+
+    np.testing.assert_allclose(hamiltonian, hamiltonian.T, atol=1e-12)
     lowest = float(np.min(np.linalg.eigvalsh(hamiltonian))) + constant
     expected = dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant)
-
     assert lowest == pytest.approx(expected, abs=1e-9)
-
-
-def test_hamiltonian_matrix_is_symmetric():
-    one_body, two_body, n_orb, _ = _h2_integrals()
-    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
-    dets = [
-        spatial_to_spin_occupations(a, b, n_orb)
-        for a in itertools.combinations(range(n_orb), 1)
-        for b in itertools.combinations(range(n_orb), 1)
-    ]
-    dim = len(dets)
-    matrix = np.array(
-        [
-            [slater_condon(dets[i], dets[j], h_spin, g_spin) for j in range(dim)]
-            for i in range(dim)
-        ]
-    )
-    np.testing.assert_allclose(matrix, matrix.T, atol=1e-12)
 
 
 def _scalar_spin_orbital_integrals(one_body, two_body, n_orb, one_body_beta=None):
@@ -578,14 +539,15 @@ def test_s2_of_high_spin_determinant_is_maximal():
     assert s2_matrix_element(det, det) == pytest.approx(2.0, abs=1e-9)
 
 
-def test_filter_symmetry_keeps_only_correct_particle_numbers():
-    candidates = ["1010", "1100", "0110", "1110"]
-    kept = filter_symmetry(candidates, n_orb=2, n_alpha=1, n_beta=1)
-    assert kept == ["1010", "0110"]
-
-
-def test_filter_symmetry_can_return_empty():
-    assert filter_symmetry(["1100"], n_orb=2, n_alpha=1, n_beta=1) == []
+@pytest.mark.parametrize(
+    "candidates, kept",
+    [
+        (["1010", "1100", "0110", "1110"], ["1010", "0110"]),
+        (["1100"], []),
+    ],
+)
+def test_filter_symmetry_keeps_only_correct_particle_numbers(candidates, kept):
+    assert filter_symmetry(candidates, n_orb=2, n_alpha=1, n_beta=1) == kept
 
 
 def test_bit_flip_correction_always_restores_particle_numbers():
@@ -781,6 +743,21 @@ def test_spin_penalty_suppresses_the_triplet_ground_state():
     assert singlet_energy == pytest.approx(0.3, abs=1e-8)
 
 
+def test_spin_penalty_targets_a_polarised_sector_s_squared():
+    """A large penalty must still land on the sector's exact ground state, which
+    it only does if the penalty's target spin is the sector's own ``S``."""
+    one_body, two_body, n_orb, _ = _h4_integrals()
+    solver = _solver(
+        n_orb, 3, 1, n_batches=1, batch_size=64, n_iterations=1, lambda_penalty=50.0
+    )
+
+    result = solver.solve(uniform_full_space_probs(n_orb, 3, 1), one_body, two_body)
+
+    assert result.energy == pytest.approx(
+        dense_fci_energy(one_body, two_body, 3, 1), abs=1e-8
+    )
+
+
 def test_beta_one_body_applies_to_the_beta_channel():
     """``one_body_beta`` must reach the beta spin-orbitals, not the alpha ones.
 
@@ -813,30 +790,6 @@ def test_beta_one_body_applies_to_the_beta_channel():
     result = solver.solve(probs, h_alpha, two_body, one_body_beta=h_beta)
 
     assert result.energy == pytest.approx(-1.1, abs=1e-9)
-
-
-def test_solver_recovers_fci_when_subspace_is_complete():
-    one_body, two_body, n_orb, constant = _h2_integrals()
-    probs = uniform_full_space_probs(n_orb, 1, 1)
-
-    # Batch subspaces are drawn with replacement, so a single small batch can
-    # miss an alpha or beta half and project onto an incomplete space. Four
-    # batches of batch_size draws each make the best-of-batches subspace
-    # complete with overwhelming probability.
-    solver = _solver(
-        n_orb,
-        1,
-        1,
-        n_batches=4,
-        batch_size=256,
-        n_iterations=1,
-        lambda_penalty=0.0,
-        rng=np.random.default_rng(0),
-    )
-    result = solver.solve(probs, one_body, two_body, constant=constant)
-    expected = dense_fci_energy(one_body, two_body, 1, 1, constant)
-
-    assert result.energy == pytest.approx(expected, abs=1e-8)
 
 
 @pytest.mark.parametrize(
@@ -937,60 +890,57 @@ def _spy_on_retained(monkeypatch):
     return kept
 
 
-def test_carryover_grows_the_subspace_across_iterations(monkeypatch):
-    """Retention must enlarge later subspaces and lower the energy.
-
-    Real H4 integrals: with zero two-body terms the projected Hamiltonian is
-    diagonal, its ground state is a single determinant, and the cutoff has
-    nothing to retain beyond that one.
-    """
-    one_body, two_body, n_orb, _ = _h4_integrals()
-    probs = uniform_full_space_probs(n_orb, 2, 2)
-
+def _spy_on_dimensions(monkeypatch):
+    """Capture the subspace dimension of every projected diagonalization."""
     dimensions = []
-    real_projected = sqd_module.projected_matrices
+    real = sqd_module.projected_matrices
 
     def spy(dets, dets_spin, *args, **kwargs):
         dimensions.append(len(dets))
-        return real_projected(dets, dets_spin, *args, **kwargs)
+        return real(dets, dets_spin, *args, **kwargs)
 
     monkeypatch.setattr(sqd_module, "projected_matrices", spy)
+    return dimensions
 
-    kwargs = dict(
+
+def _h4_exact_energy():
+    one_body, two_body, _, _ = _h4_integrals()
+    return dense_fci_energy(one_body, two_body, 2, 2, 0.0)
+
+
+def _solve_h4(batch_size, seed, **solver_kwargs):
+    """Five-iteration H4 ``(2, 2)`` solve from uniform probabilities, without
+    recovery or the reference, so the subspace is only what was drawn or carried."""
+    one_body, two_body, n_orb, _ = _h4_integrals()
+    return _solver(
+        n_orb,
+        2,
+        2,
         n_batches=1,
-        batch_size=1,
+        batch_size=batch_size,
         n_iterations=5,
         lambda_penalty=0.0,
         recovery=False,
         include_reference=False,
-    )
-    energy = (
-        _solver(
-            n_orb,
-            2,
-            2,
-            carryover_cutoff=1e-2,
-            rng=np.random.default_rng(3),
-            **kwargs,
-        )
-        .solve(one_body=one_body, two_body=two_body, probs=probs)
-        .energy
-    )
+        rng=np.random.default_rng(seed),
+        **solver_kwargs,
+    ).solve(uniform_full_space_probs(n_orb, 2, 2), one_body, two_body)
+
+
+def test_carryover_grows_the_subspace_across_iterations(monkeypatch):
+    """Retention must enlarge later subspaces and lower the energy."""
+    dimensions = _spy_on_dimensions(monkeypatch)
+    energy = _solve_h4(1, seed=3, carryover_cutoff=1e-2).energy
+    monkeypatch.undo()
 
     assert len(dimensions) == 5
     assert max(dimensions) > dimensions[0]
-
-    plain_energy = (
-        _solver(n_orb, 2, 2, rng=np.random.default_rng(3), **kwargs)
-        .solve(one_body=one_body, two_body=two_body, probs=probs)
-        .energy
-    )
     # Measured 87 mHa on this configuration. A bound of a millihartree or two
     # would also pass on an implementation that retained almost nothing.
-    assert energy < plain_energy - 0.05
+    assert energy < _solve_h4(1, seed=3).energy - 0.05
 
 
-def test_carryover_can_recover_the_full_determinant_space(monkeypatch):
+def test_carryover_can_recover_the_full_determinant_space():
     """The sharpest statement of what retention buys: on H4 with a sampling
     budget that reaches a quarter of the space, accumulating across iterations
     completes it and the projected energy becomes exactly FCI.
@@ -999,29 +949,14 @@ def test_carryover_can_recover_the_full_determinant_space(monkeypatch):
     run before the accumulation finishes, which is exactly why it is opt-in (see
     ``test_the_convergence_break_can_stop_carryover_short``).
     """
-    one_body, two_body, n_orb, _ = _h4_integrals()
-    probs = uniform_full_space_probs(n_orb, 2, 2)
-    exact = dense_fci_energy(one_body, two_body, 2, 2, 0.0)
+    exact = _h4_exact_energy()
     full_space = 36  # C(4,2) alpha strings x C(4,2) beta strings
 
-    kwargs = dict(
-        n_batches=1,
-        batch_size=4,
-        n_iterations=5,
-        lambda_penalty=0.0,
-        recovery=False,
-        include_reference=False,
-    )
-    plain = _solver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
-        one_body=one_body, two_body=two_body, probs=probs
-    )
-    carried = _solver(
-        n_orb, 2, 2, carryover_cutoff=1e-2, rng=np.random.default_rng(0), **kwargs
-    ).solve(one_body=one_body, two_body=two_body, probs=probs)
+    plain = _solve_h4(4, seed=0)
+    carried = _solve_h4(4, seed=0, carryover_cutoff=1e-2)
 
     assert len(set(plain.subspace)) < full_space
     assert plain.energy > exact + 0.02
-
     assert len(set(carried.subspace)) == full_space
     assert carried.energy == pytest.approx(exact, abs=1e-9)
 
@@ -1030,39 +965,15 @@ def test_the_convergence_break_can_stop_carryover_short():
     """Pins the cost of ending recovery early, which is why it is opt-in.
 
     Carryover improves the subspace non-monotonically, so the break stops 6
-    determinants and 11.7 mHa short here. Tolerances are passed explicitly since
-    they default to zero.
+    determinants and 11.7 mHa short of the full space the same run reaches
+    without it. Tolerances are passed explicitly since they default to zero.
     """
-    one_body, two_body, n_orb, _ = _h4_integrals()
-    probs = uniform_full_space_probs(n_orb, 2, 2)
-    exact = dense_fci_energy(one_body, two_body, 2, 2, 0.0)
-    kwargs = dict(
-        n_batches=1,
-        batch_size=4,
-        n_iterations=5,
-        lambda_penalty=0.0,
-        recovery=False,
-        include_reference=False,
-        carryover_cutoff=1e-2,
-    )
-
-    stopped = _solver(
-        n_orb,
-        2,
-        2,
-        energy_tol=1e-8,
-        occupancies_tol=1e-5,
-        rng=np.random.default_rng(0),
-        **kwargs,
-    ).solve(probs, one_body, two_body)
-    exhaustive = _solver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
-        probs, one_body, two_body
+    stopped = _solve_h4(
+        4, seed=0, carryover_cutoff=1e-2, energy_tol=1e-8, occupancies_tol=1e-5
     )
 
     assert stopped.amplitudes.size == 30
-    assert exhaustive.amplitudes.size == 36
-    assert stopped.energy - exact == pytest.approx(1.16846068e-2, abs=1e-9)
-    assert exhaustive.energy == pytest.approx(exact, abs=1e-9)
+    assert stopped.energy - _h4_exact_energy() == pytest.approx(1.16846068e-2, abs=1e-9)
 
 
 def test_carried_strings_persist_through_an_iteration_that_does_not_resample_them(
@@ -1075,23 +986,9 @@ def test_carried_strings_persist_through_an_iteration_that_does_not_resample_the
     single-iteration lookback reaches the same sizes here, which is why a size
     assertion cannot tell the two apart.
     """
-    one_body, two_body, n_orb, _ = _h4_integrals()
-    probs = uniform_full_space_probs(n_orb, 2, 2)
     kept = _spy_on_retained(monkeypatch)
 
-    _solver(
-        n_orb,
-        2,
-        2,
-        n_batches=1,
-        batch_size=1,
-        n_iterations=5,
-        lambda_penalty=0.0,
-        recovery=False,
-        include_reference=False,
-        carryover_cutoff=1e-3,
-        rng=np.random.default_rng(3),
-    ).solve(one_body=one_body, two_body=two_body, probs=probs)
+    _solve_h4(1, seed=3, carryover_cutoff=1e-3)
 
     # Two calls per iteration (alpha then beta), skipping the first iteration
     # where nothing has been retained yet.
@@ -1134,39 +1031,29 @@ def test_carryover_weights_rank_by_the_full_marginal_not_the_eligible_part():
     assert alpha_weights["10"] > alpha_weights["01"]
 
 
-def test_the_cap_keeps_the_heaviest_string_not_the_first_one():
-    """Ranking must be by weight. A lexicographic cap passes every test that
-    only inspects subspace sizes, so pin the choice itself -- with the heaviest
-    string placed last alphabetically, where the two disagree."""
-    weights = {"001": 0.9, "010": 0.05, "100": 0.05}
-    assert _heaviest_strings(weights, 1) == ["001"]
-
-    weights = {"001": 0.05, "010": 0.05, "100": 0.9}
-    assert _heaviest_strings(weights, 1) == ["100"]
-    assert _heaviest_strings(weights, 2) == ["100", "001"]
+_NUDGED = 1.0 - 2.0**-52
 
 
-def test_the_cap_is_not_decided_by_float_noise():
-    """Two weights differing at the last bit must resolve the same way every
-    time. Threaded BLAS and set iteration order perturb eigenvector components
-    there, which without rounding lets the retained set -- and the energy --
-    change between runs at a fixed seed."""
-    nudged = 1.0 - 2.0**-52
-    assert _heaviest_strings({"010": 1.0, "001": nudged}, 1) == ["001"]
-    assert _heaviest_strings({"010": nudged, "001": 1.0}, 1) == ["001"]
-
-
-def test_the_cap_still_ranks_differences_the_rounding_keeps():
-    """Rounding to twelve places absorbs only float noise: a difference at the
-    tenth place still decides the rank, one at the fourteenth falls to the
-    string tiebreak, and no limit returns every string in rank order."""
-    assert _heaviest_strings({"001": 0.5, "010": 0.5 + 1e-10}, 1) == ["010"]
-    assert _heaviest_strings({"001": 0.5, "010": 0.5 + 1e-14}, 1) == ["001"]
-    assert _heaviest_strings({"001": 0.1, "010": 0.3, "100": 0.2}, None) == [
-        "010",
-        "100",
-        "001",
-    ]
+@pytest.mark.parametrize(
+    "weights, limit, expected",
+    [
+        # Ranking is by weight, not lexicographic: a lexicographic cap passes
+        # every test that only inspects subspace sizes.
+        ({"001": 0.9, "010": 0.05, "100": 0.05}, 1, ["001"]),
+        ({"001": 0.05, "010": 0.05, "100": 0.9}, 1, ["100"]),
+        ({"001": 0.05, "010": 0.05, "100": 0.9}, 2, ["100", "001"]),
+        # Weights differing at the last bit resolve the same way every time:
+        # threaded BLAS and set order perturb eigenvector components there.
+        ({"010": 1.0, "001": _NUDGED}, 1, ["001"]),
+        ({"010": _NUDGED, "001": 1.0}, 1, ["001"]),
+        # Rounding to twelve places absorbs only float noise.
+        ({"001": 0.5, "010": 0.5 + 1e-10}, 1, ["010"]),
+        ({"001": 0.5, "010": 0.5 + 1e-14}, 1, ["001"]),
+        ({"001": 0.1, "010": 0.3, "100": 0.2}, None, ["010", "100", "001"]),
+    ],
+)
+def test_the_cap_keeps_the_heaviest_strings(weights, limit, expected):
+    assert _heaviest_strings(weights, limit) == expected
 
 
 def test_carryover_cutoff_prunes_relative_to_the_largest_coefficient():
@@ -1198,32 +1085,10 @@ def test_carryover_cutoff_prunes_relative_to_the_largest_coefficient():
 def test_max_carryover_bounds_the_subspace(monkeypatch, cap):
     """The cap must actually bind, holding the subspace below what uncapped
     carryover reaches -- that is the whole point of offering it."""
-    one_body, two_body, n_orb, _ = _h4_integrals()
-    probs = uniform_full_space_probs(n_orb, 2, 2)
-    real_projected = sqd_module.projected_matrices
 
     def run(max_carryover):
-        dimensions = []
-
-        def spy(dets, dets_spin, *args, **kwargs):
-            dimensions.append(len(dets))
-            return real_projected(dets, dets_spin, *args, **kwargs)
-
-        monkeypatch.setattr(sqd_module, "projected_matrices", spy)
-        _solver(
-            n_orb,
-            2,
-            2,
-            n_batches=1,
-            batch_size=1,
-            n_iterations=5,
-            lambda_penalty=0.0,
-            recovery=False,
-            include_reference=False,
-            carryover_cutoff=1e-8,
-            max_carryover=max_carryover,
-            rng=np.random.default_rng(3),
-        ).solve(probs=probs, one_body=one_body, two_body=two_body)
+        dimensions = _spy_on_dimensions(monkeypatch)
+        _solve_h4(1, seed=3, carryover_cutoff=1e-8, max_carryover=max_carryover)
         monkeypatch.undo()
         return dimensions
 
@@ -1613,43 +1478,6 @@ def test_batch_occupancy_is_the_eigenvector_weighted_occupation():
     np.testing.assert_allclose(occupancy, expected, atol=1e-12)
 
 
-def test_subspace_pools_alpha_and_beta_separately():
-    """Alpha candidates must come only from alpha halves, and beta from beta.
-
-    The reference merges both halves into one pool and filters that by
-    particle count. Both schemes are equally constrained by n_alpha and
-    n_beta whenever they differ, since a pooled string with the wrong
-    popcount for a given role is rejected either way -- so this only
-    discriminates when n_alpha == n_beta, where a merged pool additionally
-    lets an alpha half stand in for a beta half (and vice versa) that was
-    never actually sampled in that role.
-    """
-    n_orb, n_alpha, n_beta = 2, 1, 1
-    one_body = np.diag([-1.0, -0.5])
-    two_body = np.zeros((n_orb,) * 4)
-
-    # Only "1001" (alpha half "10", beta half "01") is ever sampled. Separate
-    # pooling can only ever offer "10" as an alpha half and "01" as a beta
-    # half, so the subspace is exactly {"1001"}. Merged pooling would offer
-    # both "10" and "01" to each role, producing the extra determinants
-    # "1010", "0101", "0110" -- none of which were ever sampled as a pair.
-    probs = {"1001": 1.0}
-    solver = _solver(
-        n_orb,
-        n_alpha,
-        n_beta,
-        n_batches=4,
-        batch_size=16,
-        n_iterations=1,
-        lambda_penalty=0.0,
-        include_reference=False,
-        rng=np.random.default_rng(0),
-    )
-    result = solver.solve(probs, one_body, two_body)
-
-    assert set(result.subspace) == {"1001"}
-
-
 def _rdms_from(result, n_orb):
     """Both RDM paths off one solve, asserted to agree so every assertion below
     constrains the PySCF layout as well as the definitions."""
@@ -1664,7 +1492,7 @@ def _rdms_from(result, n_orb):
     return fast
 
 
-def test_spatial_rdm1_matches_pyscf_fci():
+def test_solver_reproduces_fci_energy_and_rdm1_when_subspace_is_complete():
     one_body, two_body, n_orb, constant = _h2_integrals()
     solver = _solver(
         n_orb,
@@ -1684,6 +1512,9 @@ def test_spatial_rdm1_matches_pyscf_fci():
     _, civec = fci.direct_spin1.kernel(one_body, two_body, n_orb, (1, 1))
     expected = fci.direct_spin1.make_rdm1(civec, n_orb, (1, 1))
 
+    assert result.energy == pytest.approx(
+        dense_fci_energy(one_body, two_body, 1, 1, constant), abs=1e-8
+    )
     assert np.trace(rdm1) == pytest.approx(2.0, abs=1e-12)
     np.testing.assert_allclose(rdm1, expected, atol=1e-9)
 

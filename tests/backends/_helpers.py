@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from qiskit.circuit import Parameter
 
 from divi.backends import ExecutionResult, JobStatus
+from divi.backends.runners._qoro import API_URL
 from divi.circuits._payloads import CircuitPayload
 
 SHOT_GROUPS_WITH_HAM_OPS_MESSAGE = (
@@ -69,10 +70,26 @@ def make_mock_status_response(mocker, status: JobStatus):
     return mocker.MagicMock(json=lambda: {"status": status.value})
 
 
-def assert_delete_successful(service, result):
-    """Helper to assert successful job deletion."""
-    res = service.delete_job(result)
-    assert res.status_code == 204, "Deletion should be successful"
+def http_response(
+    mocker, status_code=HTTPStatus.OK, *, body=None, text="", reason="OK"
+):
+    """A ``requests`` response; ``body=None`` makes ``json()`` fail as on an HTML page."""
+    response = mocker.MagicMock(
+        status_code=status_code, reason=reason, url=f"{API_URL}/endpoint", text=text
+    )
+    if body is None:
+        response.json.side_effect = ValueError("not JSON")
+    else:
+        response.json.return_value = body
+    return response
+
+
+def patch_transport(mocker, *, session=None, plain=None):
+    """Patch the retrying session and the plain ``requests.request`` path."""
+    return (
+        mocker.patch("requests.Session.request", side_effect=session),
+        mocker.patch("requests.request", side_effect=plain),
+    )
 
 
 def create_failed_job(service):

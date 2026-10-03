@@ -4,6 +4,9 @@
 
 """Tests for ham_ops wire-format serialisation (divi.backends._pauli_serde)."""
 
+import base64
+import gzip
+
 import pytest
 
 from divi.backends._pauli_serde import (
@@ -69,6 +72,10 @@ class TestPadHamOps:
         assert padded == "ZI|XII"
         assert len(record) == 1
 
+    def test_warning_example_is_the_first_short_term(self):
+        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZII"))):
+            assert pad_ham_ops("ZZZ;Z", None, [3]) == "ZZZ;ZII"
+
     def test_short_group_on_circuits_of_different_widths_raises(self):
         with pytest.raises(ValueError, match=exact_match(_too_short("ZZ", [3, 5]))):
             pad_ham_ops("ZZ", None, [3, 5])
@@ -101,14 +108,28 @@ class TestCompressedObservables:
 
     # -- encode_ham_ops --------------------------------------------------
 
-    def test_encode_prefix(self):
+    def test_encoded_body_decodes_to_the_sparse_terms(self):
         encoded = encode_ham_ops("ZZII;IZIZ;IIII")
-        assert encoded.startswith("@gzs4:")
+        prefix, body = encoded.split(":", 1)
+        assert prefix == "@gzs4"
+        assert gzip.decompress(base64.b64decode(body)).decode() == "Z0Z1;Z1Z3;I"
+
+    @pytest.mark.parametrize(
+        "dense, message",
+        [
+            ("", "dense_ham_ops must be a non-empty semicolon-separated Pauli string"),
+            ("ZZ;Z", "All Pauli terms must have the same length; got lengths {1, 2}"),
+        ],
+        ids=["empty", "ragged"],
+    )
+    def test_encode_rejects_malformed_input(self, dense, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            encode_ham_ops(dense)
 
     def test_encode_large_qubit_count(self):
-        dense = "Z" + "I" * 63
-        encoded = encode_ham_ops(dense)
-        assert encoded.startswith("@gzs64:")
+        prefix, body = encode_ham_ops("I" * 63 + "Z").split(":", 1)
+        assert prefix == "@gzs64"
+        assert gzip.decompress(base64.b64decode(body)).decode() == "Z63"
 
     def test_compress_ham_ops_multi_group(self):
         """Pipe-delimited groups are each independently compressed."""

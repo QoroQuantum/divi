@@ -19,30 +19,31 @@ def qoro_service(api_key):
 
 
 @pytest.fixture
-def qoro_service_factory():
+def qoro_service_factory(mocker):
     """Provides a factory to create mocked QoroService instances.
 
-    Temporarily replaces ``_make_request`` during construction so that
-    ``fetch_qpu_systems`` and ``fetch_simulator_clusters`` receive empty
-    responses. The original method is restored immediately after construction,
-    so tests can set up their own mocks freely.
+    Temporarily replaces ``_make_request`` during construction with
+    ``construction_request`` (by default a mock answering every request with an
+    empty list), so ``fetch_qpu_systems`` and ``fetch_simulator_clusters`` see
+    empty responses and a test can inspect the requests construction made. The
+    original method is restored immediately after construction, so tests can
+    set up their own mocks freely.
     """
 
-    class _EmptyResponse:
-        @staticmethod
-        def json():
-            return []
-
-    def _factory(**kwargs):
+    def _factory(*, construction_request=None, **kwargs):
         config = {
             "auth_token": "mock_token",
             "max_retries": 3,
             "polling_interval": 0.01,
         }
         config.update(kwargs)
+        if construction_request is None:
+            construction_request = mocker.MagicMock(
+                return_value=mocker.MagicMock(json=list)
+            )
 
         original = QoroService._make_request
-        QoroService._make_request = lambda self, *a, **kw: _EmptyResponse()
+        QoroService._make_request = construction_request
         try:
             service = QoroService(**config)
         finally:
@@ -55,7 +56,7 @@ def qoro_service_factory():
 @pytest.fixture
 def submit_circuits_mock(mocker, qoro_service_factory):
     """Mocks the dependencies for submit_circuits and returns the make_request mock."""
-    mocker.patch(f"{_qoro_service.__name__}.is_valid_qasm", return_value=True)
+    mocker.patch(f"{_qoro_service.__name__}.validate_qasm")
 
     mock_init_response = mocker.MagicMock()
     mock_init_response.status_code = HTTPStatus.CREATED

@@ -119,6 +119,7 @@ def depth_contracts(
         assert len(runner.depth_history) == 1
         assert sorted(runner.depth_history[0]) == [2, 3]
         assert runner.average_depth() == pytest.approx(2.5)
+        assert runner.std_depth() == pytest.approx(0.5)
 
     def verify_depth_history_accumulates(runner: CircuitRunner) -> None:
         """Each ``submit_circuits`` call appends a new batch entry."""

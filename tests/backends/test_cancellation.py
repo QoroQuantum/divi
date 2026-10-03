@@ -4,6 +4,7 @@
 
 """Tests for divi.backends._cancellation."""
 
+import logging
 from threading import Event
 
 import pytest
@@ -35,12 +36,18 @@ class TestBestEffortCancelJob:
         _best_effort_cancel_job(backend, ExecutionResult(results=[]))
         backend.cancel_job.assert_not_called()
 
-    def test_swallows_cancel_job_exception(self, mocker):
+    def test_swallows_cancel_job_exception(self, mocker, caplog):
         backend = mocker.Mock(spec=AsyncJobBackend)
-        backend.cancel_job.side_effect = RuntimeError("server says no")
+        error = RuntimeError("server says no")
+        backend.cancel_job.side_effect = error
         result = ExecutionResult(job_id="job_z")
-        _best_effort_cancel_job(backend, result)
+        with caplog.at_level(logging.DEBUG, logger="divi.backends._cancellation"):
+            _best_effort_cancel_job(backend, result)
         backend.cancel_job.assert_called_once_with(result)
+        (record,) = caplog.records
+        assert record.levelno == logging.DEBUG
+        assert record.getMessage() == "Best-effort cancel_job failed for job_z"
+        assert record.exc_info[1] is error
 
 
 class TestAutoCancellationScope:

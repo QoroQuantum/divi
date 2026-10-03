@@ -94,40 +94,26 @@ def _serialize_qubo_legacy(canonical) -> dict[str, float]:
     via ``variable_to_idx``. Accepts terms of any degree, so it is the only
     valid path for HUBO inputs.
     """
-    idx = canonical.variable_to_idx
-    return {
-        ",".join(str(idx[v]) for v in term_key): float(coeff)
-        for term_key, coeff in canonical.terms.items()
-        if coeff != 0 and term_key
-    }
+    return _serialize_qubo_component_legacy(canonical, canonical.variable_to_idx)
 
 
 def _serialize_qubo_component_legacy(
     canonical, variable_to_idx: dict
 ) -> dict[str, float]:
     """Serialise a component using another QUBO's variable indexing."""
-    wire: dict[str, float] = {}
-    for term_key, coeff in canonical.terms.items():
-        if coeff == 0 or not term_key:
-            continue
-        try:
-            mapped = [variable_to_idx[v] for v in term_key]
-        except KeyError as exc:
-            raise ValueError(
-                "Penalty tuning components must use variables present in the "
-                "full BinaryOptimizationProblem."
-            ) from exc
-        wire[",".join(str(i) for i in mapped)] = float(coeff)
-    return wire
+    return {
+        ",".join(str(variable_to_idx[v]) for v in term_key): float(coeff)
+        for term_key, coeff in canonical.terms.items()
+        if coeff != 0 and term_key
+    }
 
 
 def _qubo_to_dense(canonical) -> np.ndarray:
     """Build the symmetric dense QUBO matrix from canonical polynomial terms.
 
     Off-diagonal coefficients are split half-and-half between ``Q[i,j]`` and
-    ``Q[j,i]`` so the result is exactly symmetric. ``(i,)`` and ``(i, i)``
-    terms both write to the diagonal, since ``x_i² = x_i`` for binary
-    variables.
+    ``Q[j,i]`` so the result is exactly symmetric. Linear ``(i,)`` terms write
+    to the diagonal; canonical terms never repeat a variable.
     """
     n = canonical.n_vars
     idx = canonical.variable_to_idx
@@ -141,11 +127,8 @@ def _qubo_to_dense(canonical) -> np.ndarray:
             Q[i, i] += float(coeff)
         else:
             i, j = mapped
-            if i == j:
-                Q[i, i] += float(coeff)
-            else:
-                Q[i, j] += float(coeff) / 2.0
-                Q[j, i] += float(coeff) / 2.0
+            Q[i, j] += float(coeff) / 2.0
+            Q[j, i] += float(coeff) / 2.0
     return Q
 
 
@@ -198,9 +181,9 @@ def _factored_truncated(
     the residual. The diagonal of the reconstructed matrix matches ``Q``
     exactly; off-diagonal entries pick up a bounded error.
 
-    Returns ``None`` when truncation does not apply (no eigenvalues, ``k ≥ n``
-    after both magnitude and budget checks) or when the reconstruction
-    relative error exceeds :data:`_TRUNCATED_REL_ERROR_MAX`.
+    Returns ``None`` when truncation does not apply (no eigenvalues, or every
+    eigenvalue survives both the magnitude and budget cuts) or when the
+    reconstruction relative error exceeds :data:`_TRUNCATED_REL_ERROR_MAX`.
     """
     n = Q.shape[0]
     if not eigvals.size:
@@ -213,11 +196,8 @@ def _factored_truncated(
     V_s = V[:, order]
     abs_s = np.abs(eigvals_s)
 
-    lambda_max = float(abs_s[0])
-    if lambda_max == 0.0:
-        return None
     # Magnitude cut: keep every eigenvalue at least ε·|λ_max|.
-    k_mag = int(np.sum(abs_s >= _TRUNCATED_MAGNITUDE_THRESHOLD * lambda_max))
+    k_mag = int(np.sum(abs_s >= _TRUNCATED_MAGNITUDE_THRESHOLD * abs_s[0]))
 
     # Payload-budget cap. JSON cost per kept column ≈ n·16 hex chars for F
     # plus ≈5 chars for the corresponding ``signs`` entry; envelope + diag
@@ -227,41 +207,17 @@ def _factored_truncated(
         return None
     k_budget = max(1, budget_for_F // (n * 16 + 5))
 
-    k = min(k_mag, k_budget, n)
-    if k >= n:
+    k = min(k_mag, k_budget)
+    if k == eigvals.size:
         return None  # nothing to truncate
 
-    keep_eigvals = eigvals_s[:k]
-    keep_V = V_s[:, :k]
-    # Re-apply the noise-floor mask in case any kept eigenvalue is now
-    # below tolerance (would emit zero-magnitude columns of F otherwise).
-    # Any eigenvalues demoted here must also be absorbed into the diagonal
-    # residual to preserve the diagonal-exact property.
-    max_abs_kept = float(np.abs(keep_eigvals).max())
-    if max_abs_kept > 0.0:
-        tol = (
-            max(_EIGVAL_TOL_REL, keep_eigvals.size * float(np.finfo(np.float64).eps))
-            * max_abs_kept
-        )
-        mask = np.abs(keep_eigvals) > tol
-        demoted_eigvals = keep_eigvals[~mask]
-        demoted_V = keep_V[:, ~mask]
-        keep_eigvals = keep_eigvals[mask]
-        keep_V = keep_V[:, mask]
-    else:
-        demoted_eigvals = eigvals_s[:0]
-        demoted_V = V_s[:, :0]
-
-    # Diagonal absorption: drop_diag[i] = Σ_{j∈dropped} λ_j · v_{i,j}².
-    # Folds both the magnitude-cut drops and any noise-floor-demoted
-    # eigenpairs, so ``(F · diag(signs) · Fᵀ + diag(diag_orig + drop_diag))[i,i]``
-    # matches ``Q[i,i]`` exactly — only off-diagonal entries are lossy.
-    drop_eigvals = np.concatenate([eigvals_s[k:], demoted_eigvals])
-    drop_V = np.concatenate([V_s[:, k:], demoted_V], axis=1)
-    drop_diag = (drop_V**2) @ drop_eigvals
+    # Diagonal absorption: drop_diag[i] = Σ_{j∈dropped} λ_j · v_{i,j}², so
+    # ``(F · diag(signs) · Fᵀ + diag(diag_orig + drop_diag))[i,i]`` matches
+    # ``Q[i,i]`` exactly — only off-diagonal entries are lossy.
+    drop_diag = (V_s[:, k:] ** 2) @ eigvals_s[k:]
 
     residual = diag_orig + drop_diag
-    payload = _payload_from_eigh(keep_eigvals, keep_V, residual, n)
+    payload = _payload_from_eigh(eigvals_s[:k], V_s[:, :k], residual, n)
 
     # Sanity-check reconstruction error against the original Q before
     # accepting the lossy candidate.
@@ -270,13 +226,8 @@ def _factored_truncated(
     )
     signs = np.asarray(payload["signs"], dtype=np.float64)
     Q_recon = F @ np.diag(signs) @ F.T + np.diag(residual)
-    abs_Q_max = float(np.abs(Q).max())
-    err_max = float(np.abs(Q_recon - Q).max())
-    rel_err = err_max if abs_Q_max == 0.0 else err_max / abs_Q_max
+    rel_err = float(np.abs(Q_recon - Q).max()) / float(np.abs(Q).max())
     if rel_err > _TRUNCATED_REL_ERROR_MAX:
-        return None
-    # Belt-and-suspenders against the budget formula understating reality.
-    if _payload_size(payload) > _TRUNCATED_PAYLOAD_BUDGET_BYTES:
         return None
     return payload
 
@@ -359,12 +310,7 @@ def _serialize_qubo_for_wire(problem: "BinaryOptimizationProblem") -> dict:
         return legacy
 
     factored = _serialize_qubo_factored(canonical)
-    if (
-        _payload_size(factored) < _payload_size(legacy)
-        and _payload_size(factored) <= _TRUNCATED_PAYLOAD_BUDGET_BYTES
-    ):
-        return factored
-    return legacy
+    return factored if _payload_size(factored) < _payload_size(legacy) else legacy
 
 
 def _attach_penalty_tuning_components(
@@ -1144,7 +1090,7 @@ class _Subspace(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    auto_warmstart: StrictBool = True
+    auto_warmstart: StrictBool | None = None
     solver: str | None = None
     max_variable_qubits: StrictInt | None = Field(default=None, gt=0)
     restarts: StrictInt | None = Field(default=None, gt=0)
@@ -1170,12 +1116,13 @@ class _Subspace(BaseModel):
             getattr(self, name) is not None
             for name in ("solver", "max_variable_qubits", "restarts")
         )
-        if self.auto_warmstart and (has_base or has_variables):
+        manual = self.auto_warmstart is False
+        if not manual and (has_base or has_variables):
             raise ValueError(
                 "base_bitstring and variable_qubits are manual subspace controls. "
                 "Set auto_warmstart=False when providing them."
             )
-        if not self.auto_warmstart and has_auto_controls:
+        if manual and has_auto_controls:
             raise ValueError(
                 "solver, max_variable_qubits, and restarts only affect automatic "
                 "subspace selection. Omit them when auto_warmstart=False."
@@ -1485,12 +1432,12 @@ class CharacterizationOptions(BaseModel):
                 "preset": self.preset,
                 "analysis": analysis or None,
                 "ansatz": (
-                    self.ansatz.model_dump(exclude_none=True, exclude_unset=True)
+                    self.ansatz.model_dump(exclude_none=True)
                     if self.ansatz is not None
                     else None
                 ),
                 "subspace": (
-                    self.subspace.model_dump(exclude_none=True, exclude_unset=True)
+                    self.subspace.model_dump(exclude_none=True)
                     if self.subspace is not None
                     else None
                 ),

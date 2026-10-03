@@ -252,7 +252,7 @@ class CircuitRunner(ABC):
         Returns 0.0 when depth history is empty or has a single value.
         """
         all_depths = [d for batch in self._depth_history for d in batch]
-        return float(np.std(all_depths)) if len(all_depths) > 1 else 0.0
+        return float(np.std(all_depths)) if all_depths else 0.0
 
     def clear_depth_history(self) -> None:
         """Clear the depth history. Use when reusing the backend for a new run."""

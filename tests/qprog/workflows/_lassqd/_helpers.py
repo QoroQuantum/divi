@@ -417,13 +417,13 @@ def _build_exact_sampler_program(self, fragment, problem, seed):
     return ExactSamplerVQE(problem.hamiltonian, fragment.spec, backend=self.backend)
 
 
-def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
+def build_exact_sampler_lassqd(backend, mocker, seed=0, problem=None, **overrides):
     """Build a fresh ``LASSQD`` ensemble whose fragment programs sample an
     exact ground state.
 
-    Builds two 2-orbital fragments on ``h4_chain()`` and patches
-    ``LASSQD._build_fragment_program`` to return :class:`ExactSamplerVQE`
-    instances in place of real VQE optimizations.
+    Builds two 2-orbital fragments on ``h4_chain()`` unless ``problem`` is
+    given, and patches ``LASSQD._build_fragment_program`` to return
+    :class:`ExactSamplerVQE` instances in place of real VQE optimizations.
 
     Args:
         overrides: Extra keyword arguments forwarded to ``LASSQD``,
@@ -445,7 +445,7 @@ def build_exact_sampler_lassqd(backend, mocker, seed=0, **overrides):
     )
     kwargs.update(overrides)
     ensemble = LASSQD(
-        MolecularProblem.from_molecule(h4_chain()),
+        problem or MolecularProblem.from_molecule(h4_chain()),
         optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
         preparation_mode=LASSQDPreparationMode.VQE,
         backend=backend,

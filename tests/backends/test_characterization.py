@@ -11,7 +11,10 @@ Tests cover:
 - divi.backends.characterization convenience functions
 """
 
+import dataclasses
+import io
 import logging
+import re
 import warnings
 from http import HTTPStatus
 
@@ -19,6 +22,7 @@ import dimod
 import numpy as np
 import pytest
 import requests
+from rich.console import Console
 
 from divi.backends import (
     ExecutionResult,
@@ -50,6 +54,13 @@ from divi.exceptions import (
     ExecutionCancelledError,
 )
 from divi.qprog.problems import BinaryOptimizationProblem
+from tests._helpers import exact_match
+from tests.backends._helpers import (
+    http_response,
+    make_mock_add_response,
+    make_mock_init_response,
+    patch_transport,
+)
 
 
 def _is_number(val) -> bool:
@@ -160,6 +171,49 @@ def characterization_result():
 
 
 @pytest.fixture
+def display_result(characterization_result):
+    """``characterization_result`` plus the fields that drive the gauge and tables."""
+    return dataclasses.replace(
+        characterization_result,
+        report={**SAMPLE_REPORT, "num_qubits": 2, "reference_states": ["01", "10"]},
+    )
+
+
+_SAMPLE_SUMMARY_LINES = (
+    "QUBO Characterisation Result — Job abc-123...",
+    "  Status: COMPLETED",
+    "  Approximation Ratio (mean over the output): 0.9200 (light-cone, not a live run)",
+    "  QAOA Amenability: 78.50 / 100  (formulation fit, NOT solution quality)",
+    "  Concentration Ratio: 3.20x  (vs subspace uniform)",
+    "  Hardness: moderate",
+    "    Ground-state Degeneracy: 2",
+    "  Best Parameters: γ=1.2, β=0.7",
+    "  Penalty Recommendation: λ=2.50",
+    "  Feasibility Rate: 85.0%",
+    "  Created: 2026-04-25T12:00:00Z",
+    "  Completed: 2026-04-25T12:00:01Z",
+)
+
+_BOX_CHARS = str.maketrans({c: " " for c in "│┃╭╮╰╯─━┏┓┗┛┡┩╇┳┻└┘┴┬┼"})
+
+
+def _content_lines(rendered: str) -> list[str]:
+    """Rendered lines with box-drawing stripped and whitespace collapsed."""
+    lines = (
+        " ".join(line.translate(_BOX_CHARS).split()) for line in rendered.splitlines()
+    )
+    return [line for line in lines if line]
+
+
+def _assert_lines_in_order(lines: list[str], expected) -> None:
+    """Every ``expected`` line (whitespace-collapsed) appears in ``lines``, in order."""
+    position = 0
+    for want in (" ".join(e.split()) for e in expected):
+        assert want in lines[position:], f"{want!r} missing after line {position}"
+        position = lines.index(want, position) + 1
+
+
+@pytest.fixture
 def empty_result():
     """A minimal CharacterizationResult with no report or hardness."""
     return CharacterizationResult(
@@ -169,36 +223,194 @@ def empty_result():
     )
 
 
-@pytest.fixture
-def qoro_service_factory():
-    """Factory for creating mocked QoroService instances."""
+def _pydantic_error(location: str, message: str) -> str:
+    """``match=`` pattern for one pydantic error: its location line, then its message."""
+    return rf"{re.escape(location)}\n\s+{message}"
 
-    class _EmptyResponse:
-        @staticmethod
-        def json():
-            return []
 
-    def _factory(**kwargs):
-        config = {
-            "auth_token": "mock_token",
-            "max_retries": 3,
-            "polling_interval": 0.01,
-        }
-        config.update(kwargs)
+_INVALID_OPTIONS = [
+    pytest.param(
+        {"sensitivity": True},
+        _pydantic_error("sensitivity", "Extra inputs are not permitted"),
+        id="old-sensitivity-option",
+    ),
+    pytest.param(
+        {"auto_tune": True},
+        _pydantic_error("auto_tune", "Extra inputs are not permitted"),
+        id="old-auto-tune-option",
+    ),
+    pytest.param(
+        {"cost_qubo": BinaryOptimizationProblem({(0,): -1.0})},
+        _pydantic_error("cost_qubo", "Extra inputs are not permitted"),
+        id="cost-qubo-option",
+    ),
+    pytest.param(
+        {"penalty_qubo": BinaryOptimizationProblem({(0, 1): 2.0})},
+        _pydantic_error("penalty_qubo", "Extra inputs are not permitted"),
+        id="penalty-qubo-option",
+    ),
+    pytest.param(
+        {"structural_sensitivity": "yes"},
+        _pydantic_error("structural_sensitivity", "Input should be a valid boolean"),
+        id="structural-sensitivity-not-bool",
+    ),
+    pytest.param(
+        {"penalty_tuning": "yes"},
+        _pydantic_error("penalty_tuning", "Input should be a valid boolean"),
+        id="penalty-tuning-not-bool",
+    ),
+    pytest.param(
+        {"n_qubits": 0},
+        _pydantic_error("n_qubits", "Input should be greater than 0"),
+        id="n-qubits-zero",
+    ),
+    pytest.param(
+        {"n_qubits": -3},
+        _pydantic_error("n_qubits", "Input should be greater than 0"),
+        id="n-qubits-negative",
+    ),
+    pytest.param(
+        {"preset": "turbo"},
+        _pydantic_error("preset", "Input should be 'fast', 'standard' or 'deep'"),
+        id="unknown-preset",
+    ),
+    pytest.param(
+        # Weight keys are qubit indices; negatives must not reach the wire.
+        {"constraints": [{"type": "inequality", "bound": 10, "weights": {-1: 4}}]},
+        _pydantic_error(
+            "constraints.0.weights.-1.[key]",
+            "Input should be greater than or equal to 0",
+        ),
+        id="negative-weight-index",
+    ),
+    pytest.param(
+        {"constraints": [{"type": "max_cardinaltiy", "bound": 3}]},
+        _pydantic_error("constraints.0.type", "Input should be 'max_cardinality'"),
+        id="unknown-constraint-type",
+    ),
+    pytest.param(
+        {"constraints": [{"type": "max_cardinality", "bound": 3, "lower_bound": 1}]},
+        _pydantic_error("constraints.0.lower_bound", "Extra inputs are not permitted"),
+        id="unknown-constraint-key",
+    ),
+    pytest.param(
+        {"constraints": [{"type": "inequality", "bound": 10}]},
+        "'inequality' requires a non-empty 'weights' mapping",
+        id="inequality-without-weights",
+    ),
+    pytest.param(
+        {"constraints": [{"type": "equality", "bound": 10}]},
+        "'equality' requires a non-empty 'weights' mapping",
+        id="equality-without-weights",
+    ),
+    pytest.param(
+        {
+            "n_qubits": 4,
+            "constraints": [
+                {"type": "inequality", "bound": 10, "weights": {0: 1, 7: 2}}
+            ],
+        },
+        "weight index 7",
+        id="weight-index-out-of-range",
+    ),
+    pytest.param(
+        {
+            "n_qubits": 4,
+            "constraints": [{"type": "max_cardinality", "bound": 2, "qubits": [0, 9]}],
+        },
+        "qubit index 9",
+        id="qubit-index-out-of-range",
+    ),
+    pytest.param(
+        {"ansatz": {"mixer": "x", "layers": 0}},
+        _pydantic_error("ansatz.layers", "Input should be greater than 0"),
+        id="ansatz-layers-zero",
+    ),
+    pytest.param(
+        {"ansatz": {"mixer": "x", "auto_warmstart": True}},
+        _pydantic_error("ansatz.auto_warmstart", "Extra inputs are not permitted"),
+        id="ansatz-unknown-key",
+    ),
+    pytest.param(
+        {"ansatz": {"mixer": "bad"}},
+        _pydantic_error("ansatz.mixer", "Input should be 'x', 'xy' or 'I'"),
+        id="ansatz-unknown-mixer",
+    ),
+    # Strict typing: no silent coercion of strings or bools into an angle.
+    pytest.param(
+        {"gamma": "1.2"},
+        _pydantic_error("gamma.float", "Input should be a valid number"),
+        id="gamma-string",
+    ),
+    pytest.param(
+        {"gamma": True},
+        _pydantic_error("gamma.float", "Input should be a valid number"),
+        id="gamma-bool",
+    ),
+    pytest.param(
+        {"parameter_sweep": True, "gamma": 1.0},
+        "mutually exclusive",
+        id="sweep-with-fixed-gamma",
+    ),
+    pytest.param(
+        {"subspace": {"restarts": 0}},
+        _pydantic_error("subspace.restarts", "Input should be greater than 0"),
+        id="restarts-zero",
+    ),
+    pytest.param(
+        {"subspace": {"auto_warmstart": False, "restarts": 20}},
+        "and restarts only affect automatic subspace selection",
+        id="restarts-without-warmstart",
+    ),
+    pytest.param(
+        {
+            "subspace": {
+                "auto_warmstart": False,
+                "solver": "sa",
+                "max_variable_qubits": 8,
+            }
+        },
+        "only affect automatic subspace selection",
+        id="auto-controls-with-warmstart-off",
+    ),
+    pytest.param(
+        {"subspace": {"base_bitstring": "10", "variable_qubits": [0]}},
+        "Set auto_warmstart=False",
+        id="manual-subspace-with-unset-warmstart",
+    ),
+    pytest.param(
+        {
+            "subspace": {
+                "auto_warmstart": True,
+                "base_bitstring": "10",
+                "variable_qubits": [0],
+            }
+        },
+        "manual subspace",
+        id="manual-subspace-with-warmstart-on",
+    ),
+    pytest.param(
+        {"subspace": {"auto_warmstart": False, "base_bitstring": "10"}},
+        "provided together",
+        id="manual-subspace-missing-variables",
+    ),
+    pytest.param(
+        {
+            "subspace": {
+                "auto_warmstart": False,
+                "base_bitstring": "10",
+                "variable_qubits": [0, 0],
+            }
+        },
+        "variable_qubits must not contain duplicate indices",
+        id="duplicate-variable-qubits",
+    ),
+]
 
-        original = QoroService._make_request
 
-        def _stub(self, method, endpoint, **kwargs):
-            return _EmptyResponse()
-
-        QoroService._make_request = _stub  # type: ignore[method-assign]
-        try:
-            service = QoroService(**config)
-        finally:
-            QoroService._make_request = original  # type: ignore[method-assign]
-        return service
-
-    return _factory
+def _init_ok(mocker):
+    """A successful ``job/init/`` response for job ``char-1``."""
+    return http_response(mocker, body={"job_id": "char-1"})
 
 
 def _mock_characterization_requests(mocker, service, job_id):
@@ -217,6 +429,37 @@ def _mock_characterization_requests(mocker, service, job_id):
     )
 
 
+def _terms_from_dense(Q):
+    """Upper-triangular term dict for a symmetric dense ``Q``, skipping zeros."""
+    n = Q.shape[0]
+    terms = {}
+    for i in range(n):
+        if Q[i, i] != 0:
+            terms[(i,)] = float(Q[i, i])
+        for j in range(i + 1, n):
+            v = Q[i, j] + Q[j, i]
+            if v != 0:
+                terms[(i, j)] = float(v)
+    return terms
+
+
+def _decode_factored(wire):
+    """Rebuild ``F · diag(signs) · Fᵀ + diag(diag)`` from a ``factored_v1`` payload."""
+    F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
+        wire["n"], wire["k"]
+    )
+    diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
+    return F @ np.diag(np.asarray(wire["signs"], dtype=np.float64)) @ F.T + np.diag(
+        diag
+    )
+
+
+def _rank_one_problem(n, seed=5):
+    """Dense rank-1 ``u·uᵀ`` QUBO, which the dispatcher encodes as factored."""
+    u = np.random.default_rng(seed).standard_normal(n)
+    return BinaryOptimizationProblem(_terms_from_dense(np.outer(u, u)))
+
+
 class TestSerializeQuboForWire:
     """Wire-format dispatch between legacy and factored encodings."""
 
@@ -225,6 +468,17 @@ class TestSerializeQuboForWire:
         problem = BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]]))
         wire = _serialize_qubo_for_wire(problem)
         assert wire == {"0": -1.0, "0,1": 2.0, "1": -1.0}
+
+    def test_constant_offset_is_dropped_not_serialized(self):
+        """A constant term (e.g. from expanding a cardinality penalty) must not
+        become an empty wire key or crash the dense path."""
+        problem = BinaryOptimizationProblem({(0,): -1.0, (0, 1): 2.0, (): 5.0})
+
+        with pytest.warns(UserWarning, match="constant offset"):
+            wire = _serialize_qubo_for_wire(problem)
+
+        assert wire == {"0": -1.0, "0,1": 2.0}
+        assert _qubo_to_dense(problem.canonical_problem).shape == (2, 2)
 
     def test_zero_coefficients_skipped(self):
         problem = BinaryOptimizationProblem({(0,): -1.0, (0, 1): 0.0, (1,): -1.0})
@@ -244,16 +498,7 @@ class TestSerializeQuboForWire:
     def test_low_rank_qubo_uses_factored(self):
         """``Q = u·uᵀ`` serializes as a rank-1 factored payload."""
         n = _FACTORED_PROBE_MIN_QUBITS
-        rng = np.random.default_rng(seed=0)
-        u = rng.standard_normal(n)
-        Q = np.outer(u, u)
-        terms = {}
-        for i in range(n):
-            terms[(i,)] = float(Q[i, i])
-            for j in range(i + 1, n):
-                terms[(i, j)] = float(Q[i, j] + Q[j, i])
-        problem = BinaryOptimizationProblem(terms)
-        wire = _serialize_qubo_for_wire(problem)
+        wire = _serialize_qubo_for_wire(_rank_one_problem(n, seed=0))
         assert wire["_format"] == "factored_v1"
         assert wire["n"] == n
         assert wire["k"] == 1
@@ -299,28 +544,77 @@ class TestSerializeQuboForWire:
         U = rng.standard_normal((n, 5))
         signs = rng.choice([-1.0, 1.0], size=5)
         Q = U @ np.diag(signs) @ U.T
-        terms: dict = {}
-        for i in range(n):
-            if Q[i, i] != 0:
-                terms[(i,)] = float(Q[i, i])
-            for j in range(i + 1, n):
-                if Q[i, j] != 0:
-                    terms[(i, j)] = float(Q[i, j] + Q[j, i])
-        problem = BinaryOptimizationProblem(terms)
+        problem = BinaryOptimizationProblem(_terms_from_dense(Q))
         wire = _serialize_qubo_for_wire(problem)
         assert wire["_format"] == "factored_v1"
 
-        F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
-            n, wire["k"]
-        )
-        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
-        signs_arr = np.asarray(wire["signs"], dtype=np.float64)
         assert set(wire["signs"]) <= {-1.0, 1.0}
-        Q_decoded = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
         # Tolerance tracks ``eigh``'s ``O(n · eps · ‖Q‖)`` backward error.
         np.testing.assert_allclose(
-            Q_decoded, Q, rtol=1e-10, atol=1e-12 * max(1.0, float(np.abs(Q).max()))
+            _decode_factored(wire),
+            Q,
+            rtol=1e-10,
+            atol=1e-12 * max(1.0, float(np.abs(Q).max())),
         )
+
+    def test_factored_round_trip_on_small_scale_qubo(self):
+        """A QUBO scaled by 1e-3 with unit coefficients survives the noise floor.
+
+        ``Q = 1e-3 · (J − I)`` has spectral radius exactly ``1e-3 · (n − 1)``
+        and unit-magnitude (times the scale) entries, so an absolute noise
+        threshold would drop its whole spectrum.
+        """
+        n = _FACTORED_PROBE_MIN_QUBITS
+        Q = 1e-3 * (np.ones((n, n)) - np.eye(n))
+        problem = BinaryOptimizationProblem(_terms_from_dense(Q))
+
+        wire = _serialize_qubo_factored(problem.canonical_problem)
+
+        np.testing.assert_allclose(_decode_factored(wire), Q, rtol=0, atol=1e-15)
+
+    def test_factored_round_trip_at_unit_spectral_radius(self):
+        """``Q = J / n`` (spectral radius exactly 1) decodes to its unit-rank self."""
+        n = _FACTORED_PROBE_MIN_QUBITS
+        Q = np.ones((n, n)) / n
+        problem = BinaryOptimizationProblem(_terms_from_dense(Q))
+
+        wire = _serialize_qubo_factored(problem.canonical_problem)
+
+        assert wire["k"] == 1
+        np.testing.assert_allclose(_decode_factored(wire), Q, rtol=0, atol=1e-15)
+
+    def test_dense_low_rank_qubo_over_budget_still_prefers_smaller_factored(self):
+        """Factored wins whenever it is smaller, even above the truncation budget.
+
+        ``U·Uᵀ`` at ``n=400`` and rank 160 is ~1.0 MB factored against ~2.3 MB
+        legacy, so the legacy dict would be the worse payload to ship.
+        """
+        rng = np.random.default_rng(seed=0)
+        U = rng.standard_normal((400, 160))
+        problem = BinaryOptimizationProblem(_terms_from_dense(U @ U.T))
+
+        wire = _serialize_qubo_for_wire(problem)
+
+        assert wire["_format"] == "factored_v1"
+        assert wire["k"] == 160
+        assert _payload_size(wire) > _TRUNCATED_PAYLOAD_BUDGET_BYTES
+        assert _payload_size(wire) < _payload_size(
+            _serialize_qubo_legacy(problem.canonical_problem)
+        )
+
+    def test_dense_quadratic_with_one_cubic_term_uses_legacy(self):
+        """A single degree-3 term forces legacy even where factored would win."""
+        n = _FACTORED_PROBE_MIN_QUBITS
+        terms = _terms_from_dense(np.ones((n, n)))
+        terms[(0, 1, 2)] = 3.0
+        problem = BinaryOptimizationProblem(terms)
+
+        wire = _serialize_qubo_for_wire(problem)
+
+        assert "_format" not in wire
+        assert wire["0,1,2"] == 3.0
+        assert wire["0,1"] == 2.0
+        assert len(wire) == n * (n + 1) // 2 + 1
 
     def test_legacy_helper_directly(self):
         """``_serialize_qubo_legacy`` accepts HUBO of any degree."""
@@ -330,19 +624,9 @@ class TestSerializeQuboForWire:
 
     def test_factored_helper_picks_smaller_k(self):
         """Encoder picks the residual=0 decomposition for a rank-1 ``u·uᵀ``."""
-        rng = np.random.default_rng(seed=3)
-        n = 16
-        u = rng.standard_normal(n)
-        Q = np.outer(u, u)
-        terms = {}
-        for i in range(n):
-            terms[(i,)] = float(Q[i, i])
-            for j in range(i + 1, n):
-                terms[(i, j)] = float(Q[i, j] + Q[j, i])
-        problem = BinaryOptimizationProblem(terms)
-        wire = _serialize_qubo_factored(problem.canonical_problem)
+        wire = _serialize_qubo_factored(_rank_one_problem(16, seed=3).canonical_problem)
         assert wire["_format"] == "factored_v1"
-        assert wire["n"] == n
+        assert wire["n"] == 16
         assert wire["k"] == 1
 
 
@@ -358,19 +642,6 @@ class TestSerializeQuboMidScale:
       independent linear/diagonal contributions. The full ``Q`` is now
       effectively full rank, forcing the truncated (lossy) path.
     """
-
-    @staticmethod
-    def _terms_from_dense(Q):
-        n = Q.shape[0]
-        terms = {}
-        for i in range(n):
-            if Q[i, i] != 0:
-                terms[(i,)] = float(Q[i, i])
-            for j in range(i + 1, n):
-                v = Q[i, j] + Q[j, i]
-                if v != 0:
-                    terms[(i, j)] = float(v)
-        return terms
 
     @staticmethod
     def _structural_plus_cardinality(n, n_structural=8, cardinality=10.0, seed=0):
@@ -417,29 +688,14 @@ class TestSerializeQuboMidScale:
         lossless ``residual=0`` candidate wins outright.
         """
         Q = self._structural_plus_cardinality(n, n_structural=8)
-        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        problem = BinaryOptimizationProblem(_terms_from_dense(Q))
         wire = _serialize_qubo_for_wire(problem)
         assert wire["_format"] == "factored_v1"
         # Q has rank ≤ structural rank + 1 (cardinality direction).
         assert wire["k"] <= 16
         # Reconstruction is at eigh-noise level (lossless).
-        F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
-            n, wire["k"]
-        )
-        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
-        signs_arr = np.asarray(wire["signs"], dtype=np.float64)
-        Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
-        rel_err = np.abs(Q_recon - Q).max() / np.abs(Q).max()
+        rel_err = np.abs(_decode_factored(wire) - Q).max() / np.abs(Q).max()
         assert rel_err < 1e-10
-
-    def test_truncated_preserves_structural_eigenvalues(self):
-        """Truncated payload keeps every off-diagonal eigenvalue above 1% of ``|λ_max|``."""
-        n = 1000
-        Q = self._esg_portfolio_qubo(n)
-        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
-        wire = _serialize_qubo_for_wire(problem)
-        assert wire["_format"] == "factored_v1"
-        assert 2 <= wire["k"] <= 32
 
     def test_esg_portfolio_qubo_uses_truncated_factored(self):
         """A production-scale ESG QUBO (n=1000) ships under the payload budget.
@@ -453,17 +709,13 @@ class TestSerializeQuboMidScale:
         """
         n = 1000
         Q = self._esg_portfolio_qubo(n)
-        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        problem = BinaryOptimizationProblem(_terms_from_dense(Q))
         wire = _serialize_qubo_for_wire(problem)
         assert wire["_format"] == "factored_v1"
+        assert 2 <= wire["k"] <= 32
         assert _payload_size(wire) < _TRUNCATED_PAYLOAD_BUDGET_BYTES
 
-        F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
-            n, wire["k"]
-        )
-        diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
-        signs_arr = np.asarray(wire["signs"], dtype=np.float64)
-        Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+        Q_recon = _decode_factored(wire)
 
         Q_max = float(np.abs(Q).max())
         rel_err = float(np.abs(Q_recon - Q).max() / Q_max)
@@ -472,12 +724,38 @@ class TestSerializeQuboMidScale:
         diag_err = float(np.abs(np.diagonal(Q_recon - Q)).max())
         assert diag_err < 1e-9 * Q_max
 
-    @pytest.mark.parametrize("n", [64, 128, 256, 512])
+    def test_budget_capped_truncation_is_accepted(self):
+        """A dominant diagonal keeps the budget-capped candidate under the error gate.
+
+        The off-diagonal part is a dense random matrix with more eigenvalues
+        above the magnitude cut than the payload budget allows, so only the
+        budget cap keeps the payload under the proxy limit.
+        """
+        n = 256
+        rng = np.random.default_rng(seed=0)
+        off = rng.standard_normal((n, n))
+        off = 0.5 * (off + off.T)
+        np.fill_diagonal(off, 0.0)
+        Q = off + 1e4 * np.eye(n)
+        k_budget = (_TRUNCATED_PAYLOAD_BUDGET_BYTES - 16 * n - 200) // (16 * n + 5)
+        eigvals = np.abs(np.linalg.eigvalsh(off))
+        assert np.sum(eigvals >= 1e-2 * eigvals.max()) > k_budget
+
+        wire = _serialize_qubo_factored(
+            BinaryOptimizationProblem(_terms_from_dense(Q)).canonical_problem
+        )
+
+        assert wire["k"] == k_budget
+        assert _payload_size(wire) <= _TRUNCATED_PAYLOAD_BUDGET_BYTES
+        rel_err = np.abs(_decode_factored(wire) - Q).max() / np.abs(Q).max()
+        assert rel_err < _TRUNCATED_REL_ERROR_MAX
+
+    @pytest.mark.parametrize("n", [64, 128, 256])
     @pytest.mark.parametrize("seed", [0, 1, 2])
     def test_random_low_rank_plus_noise_produces_valid_payload(self, n, seed):
         """Encoder output is structurally valid across random inputs.
 
-        Spans the realistic problem-size range (64..512) at multiple seeds
+        Spans the realistic problem-size range (64..256) at multiple seeds
         to catch failure modes the focused unit tests miss — invalid
         signs, NaN/Inf in hex blobs, dimension mismatches, oversized
         payloads, or relative errors above the documented bound.
@@ -487,7 +765,7 @@ class TestSerializeQuboMidScale:
         U = rng.standard_normal((n, rank))
         Q = U @ U.T + 0.01 * rng.standard_normal((n, n))
         Q = 0.5 * (Q + Q.T)
-        problem = BinaryOptimizationProblem(self._terms_from_dense(Q))
+        problem = BinaryOptimizationProblem(_terms_from_dense(Q))
         wire = _serialize_qubo_for_wire(problem)
 
         # Either format is acceptable; whichever was chosen must be
@@ -496,16 +774,11 @@ class TestSerializeQuboMidScale:
             assert wire["n"] == n
             assert 0 <= wire["k"] <= n
             assert all(s in (-1.0, 1.0) for s in wire["signs"])
-            F_bytes = bytes.fromhex(wire["F"])
-            diag_bytes = bytes.fromhex(wire["diag"])
-            assert len(F_bytes) == n * wire["k"] * 8
-            assert len(diag_bytes) == n * 8
-            F = np.frombuffer(F_bytes, dtype=np.float64).reshape(n, wire["k"])
-            diag = np.frombuffer(diag_bytes, dtype=np.float64)
-            assert np.isfinite(F).all() and np.isfinite(diag).all()
+            assert len(bytes.fromhex(wire["F"])) == n * wire["k"] * 8
+            assert len(bytes.fromhex(wire["diag"])) == n * 8
             # Reconstruction must obey the documented relative-error bound.
-            signs_arr = np.asarray(wire["signs"], dtype=np.float64)
-            Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
+            Q_recon = _decode_factored(wire)
+            assert np.isfinite(Q_recon).all()
             Q_max = float(np.abs(Q).max())
             if Q_max > 0:
                 rel_err = float(np.abs(Q_recon - Q).max() / Q_max)
@@ -515,58 +788,138 @@ class TestSerializeQuboMidScale:
             assert all(isinstance(k, str) for k in wire.keys())
             assert all(isinstance(v, (int, float)) for v in wire.values())
 
-    def test_smooth_decay_no_gap_avoids_lossy_path(self):
-        """Random full-rank QUBO with no spectral gap stays lossless.
-
-        Without a clean gap the truncated candidate is either rejected
-        (relative error exceeds the threshold) or beaten on byte size by
-        the lossless paths; in both cases the dispatcher returns a
-        lossless payload.
-        """
-        rng = np.random.default_rng(seed=11)
-        n = _FACTORED_PROBE_MIN_QUBITS
-        terms = {}
-        for i in range(n):
-            terms[(i,)] = float(rng.standard_normal())
-            for j in range(i + 1, n):
-                terms[(i, j)] = float(rng.standard_normal())
-        problem = BinaryOptimizationProblem(terms)
-        wire = _serialize_qubo_for_wire(problem)
-        if isinstance(wire, dict) and wire.get("_format") == "factored_v1":
-            n_w = wire["n"]
-            F = np.frombuffer(bytes.fromhex(wire["F"]), dtype=np.float64).reshape(
-                n_w, wire["k"]
-            )
-            diag = np.frombuffer(bytes.fromhex(wire["diag"]), dtype=np.float64)
-            signs_arr = np.asarray(wire["signs"], dtype=np.float64)
-            Q = _qubo_to_dense(problem.canonical_problem)
-            Q_recon = F @ np.diag(signs_arr) @ F.T + np.diag(diag)
-            assert np.abs(Q_recon - Q).max() < 1e-8 * max(1.0, np.abs(Q).max())
-
 
 class TestCharacterizationResult:
     """Tests for the characterization result dataclass."""
 
-    def test_quality_score(self, characterization_result):
-        assert characterization_result.quality_score == 78.5
+    @pytest.mark.parametrize(
+        "result_fixture, attribute, expected",
+        [
+            ("characterization_result", "quality_score", 78.5),
+            ("characterization_result", "concentration_ratio", 3.2),
+            ("characterization_result", "is_well_tuned", True),
+            ("empty_result", "quality_score", None),
+            ("empty_result", "concentration_ratio", None),
+            ("empty_result", "is_well_tuned", None),
+        ],
+    )
+    def test_report_property(self, request, result_fixture, attribute, expected):
+        assert getattr(request.getfixturevalue(result_fixture), attribute) == expected
 
-    def test_concentration_ratio(self, characterization_result):
-        assert characterization_result.concentration_ratio == 3.2
+    def test_summary_content(self, characterization_result):
+        assert characterization_result.summary() == "\n".join(_SAMPLE_SUMMARY_LINES)
 
-    def test_is_well_tuned(self, characterization_result):
-        assert characterization_result.is_well_tuned is True
+    def test_display_renders_the_full_report(self, mocker, display_result):
+        """Pins report content in order; borders, colours and titles are free to change."""
+        console = Console(record=True, width=100, color_system=None, file=io.StringIO())
+        mocker.patch(
+            "divi.backends.characterization._characterization.Console",
+            return_value=console,
+        )
 
-    def test_empty_result_properties(self, empty_result):
-        assert empty_result.quality_score is None
-        assert empty_result.concentration_ratio is None
-        assert empty_result.is_well_tuned is None
+        display_result.display()
 
-    def test_summary_contains_key_metrics(self, characterization_result):
-        s = characterization_result.summary()
-        assert "78.5" in s
-        assert "3.2" in s
-        assert "moderate" in s
-        assert "abc-123" in s
+        rendered = console.export_text()
+        # Recommendation HTML is reduced to plain text in the terminal.
+        assert "<strong>" not in rendered
+        _assert_lines_in_order(
+            _content_lines(rendered),
+            [
+                *_SAMPLE_SUMMARY_LINES,
+                "QAOA Amenability (concentration): "
+                + "█" * 31
+                + "░" * 9
+                + " 78.50 / 100",
+                "γ = 1.2000",
+                "β = 0.7000",
+                "P(reference) = 0.650000 (2.6× full-space uniform)",
+                "• Quality is moderate — consider tuning penalty parameters.",
+                "• Feasibility rate is low; review constraint penalties.",
+                "Recommended λ = 2.50",
+                "✓ Well-tuned",
+                "State Reference? Probability vs Uniform",
+                "01 ✓ 0.350000 1.4×",
+                "10 ✓ 0.300000 1.2×",
+                "00 ✗ 0.200000 0.80×",
+                "11 ✗ 0.150000 0.60×",
+                "Uniform: 0.250000 (1/4)",
+                "Metric Value",
+                "Difficulty moderate",
+                "Matrix Spectral Gap 0.3500",
+                "Matrix Condition Number 4.2000",
+                "Ground State Degeneracy 2",
+                "Cost Spectrum Estimated False",
+                "Qubit Score Assessment",
+                "0 0.4200 moderate",
+                "1 0.1800 stable",
+            ],
+        )
+
+    def test_qaoa_initial_params_broadcasts_best_parameters(self):
+        result = CharacterizationResult(
+            job_id="j",
+            status="COMPLETED",
+            report={"best_parameters": {"gamma": 0.1, "beta": 0.2}},
+        )
+
+        np.testing.assert_array_equal(
+            result.qaoa_initial_params(layers=3), [[0.1, 0.2, 0.1, 0.2, 0.1, 0.2]]
+        )
+
+    @pytest.mark.parametrize(
+        ("extra", "expected_layers"), [({}, 1), ({"recommended_min_layers": 2}, 2)]
+    )
+    def test_qaoa_initial_params_broadcast_default_depth(self, extra, expected_layers):
+        result = CharacterizationResult(
+            job_id="j",
+            status="COMPLETED",
+            report={"best_parameters": {"gamma": 0.1, "beta": 0.2}, **extra},
+        )
+
+        np.testing.assert_array_equal(
+            result.qaoa_initial_params(), [[0.1, 0.2] * expected_layers]
+        )
+
+    def test_qaoa_initial_params_defaults_to_deepest_curve_entry(self):
+        result = CharacterizationResult(
+            job_id="j",
+            status="COMPLETED",
+            report={
+                "ar_vs_depth": [
+                    {"layers": 1, "gammas": [0.4], "betas": [0.8]},
+                    {"layers": 2, "gammas": [0.3, 0.5], "betas": [0.9, 0.4]},
+                ]
+            },
+        )
+
+        np.testing.assert_array_equal(
+            result.qaoa_initial_params(), [[0.3, 0.9, 0.5, 0.4]]
+        )
+
+    @pytest.mark.parametrize(
+        "report",
+        [
+            {"ar_vs_depth": [{"layers": 1, "gammas": [0.4, 0.5], "betas": [0.8]}]},
+            {"ar_vs_depth": [{"layers": 1, "gammas": [], "betas": []}]},
+            {"best_parameters": {"gamma": 0.1}},
+            {"best_parameters": {"beta": 0.2}},
+            {"regime": "refuse"},
+        ],
+    )
+    def test_qaoa_initial_params_none_for_incomplete_angles(self, report):
+        result = CharacterizationResult(job_id="j", status="COMPLETED", report=report)
+
+        assert result.qaoa_initial_params() is None
+
+    @pytest.mark.parametrize(
+        "report",
+        [{}, {"certificate": {"uncertain": True}}, {"certificate": "unavailable"}],
+    )
+    def test_structural_fields_none_without_structural_certificate(self, report):
+        result = CharacterizationResult(job_id="j", status="COMPLETED", report=report)
+
+        assert result.is_psd is None
+        assert result.rank is None
 
     @pytest.mark.parametrize("layers", [7, 99])
     def test_qaoa_initial_params_rejects_unswept_depth(self, layers):
@@ -595,6 +948,64 @@ class TestCharacterizationResult:
 
         assert exc.value.job_id == "failed-1"
         assert exc.value.status == "FAILED"
+        assert str(exc.value) == (
+            "Characterization job failed-1 (FAILED): "
+            "the analysis did not complete on the server."
+        )
+
+    @pytest.mark.parametrize(
+        ("status", "error_type"),
+        [
+            ("INSUFFICIENT_CREDITS", InsufficientCreditsError),
+            ("TIMED_OUT", JobTimedOutError),
+        ],
+    )
+    def test_billing_and_timeout_statuses_carry_the_job_id(
+        self, mocker, status, error_type
+    ):
+        with pytest.raises(error_type) as exc:
+            _wrap_response(
+                {"job_id": "terminal-1", "status": status}, mocker.MagicMock()
+            )
+
+        assert exc.value.job_id == "terminal-1"
+
+    def test_hardness_only_completed_job_is_accepted(self, mocker):
+        service = mocker.MagicMock()
+        service._fetch_characterization_html.return_value = ""
+
+        result = _wrap_response(
+            {"job_id": "h-1", "status": "COMPLETED", "hardness": SAMPLE_HARDNESS},
+            service,
+        )
+
+        assert result.report is None
+        assert result.hardness == SAMPLE_HARDNESS
+
+    def test_wrap_response_builds_the_full_result(
+        self, mocker, characterization_result
+    ):
+        service = mocker.MagicMock()
+        service._fetch_characterization_html.return_value = "<div>report</div>"
+
+        result = _wrap_response(SAMPLE_RESPONSE, service)
+
+        assert result == characterization_result
+        assert result.html == "<div>report</div>"
+        service._fetch_characterization_html.assert_called_once_with("abc-123")
+
+    def test_get_characterization_result_fetches_by_job_id(
+        self, mocker, characterization_result
+    ):
+        service = mocker.MagicMock()
+        service.characterize_and_validate.return_value = SAMPLE_RESPONSE
+        service._fetch_characterization_html.return_value = "<div>report</div>"
+
+        result = get_characterization_result("abc-123", service=service)
+
+        assert result == characterization_result
+        assert result.html == "<div>report</div>"
+        service.characterize_and_validate.assert_called_once_with(job_id="abc-123")
 
     def test_cancelled_job_raises_the_shared_cancellation_error(self, mocker):
         """Cancellation reuses divi's existing signal, not a bespoke one."""
@@ -609,8 +1020,11 @@ class TestCharacterizationResult:
         service = mocker.MagicMock()
         service._fetch_characterization_html.return_value = ""
 
-        with pytest.raises(CharacterizationFailedError, match="no report"):
+        with pytest.raises(CharacterizationFailedError, match="no report") as exc:
             _wrap_response({"job_id": "empty-1", "status": "COMPLETED"}, service)
+
+        assert exc.value.job_id == "empty-1"
+        assert exc.value.status == "COMPLETED"
 
     @pytest.mark.parametrize("status", ["PENDING", "RUNNING", "UNKNOWN"])
     def test_non_completed_job_raises_with_reported_status(self, mocker, status):
@@ -621,6 +1035,7 @@ class TestCharacterizationResult:
 
         assert exc.value.job_id == "unfinished-1"
         assert exc.value.status == status
+        assert str(exc.value).endswith("re-fetch it once it reaches COMPLETED.")
 
     def test_html_fetch_failure_returns_structured_result(self, mocker, caplog):
         service = mocker.MagicMock()
@@ -667,58 +1082,9 @@ class TestCharacterizationResult:
         )
         assert result._repr_html_() == "<div>server-rendered</div>"
 
-    def test_recommendations_field_carries_server_value(self):
-        """The ``recommendations`` dataclass field stores the server's list."""
-        recs = [
-            {
-                "level": "warn",
-                "metric": "quality_score",
-                "text": "X",
-                "html": "<strong>X</strong>",
-            }
-        ]
-        result = CharacterizationResult(
-            job_id="r1",
-            status="COMPLETED",
-            recommendations=recs,
-            html="",
-        )
-        assert result.recommendations == recs
-
     def test_recommendations_empty_list_when_missing(self, empty_result):
-        """``recommendations`` is an empty list when the server omits the field.
-
-        Iterating, ``len()``, and truthiness checks must all behave like a
-        list — never raise ``TypeError`` because of a ``None`` slipping
-        through.
-        """
+        """``recommendations`` is an empty list, never ``None``, when the server omits it."""
         assert empty_result.recommendations == []
-        # Smoke-test the patterns user code is likely to use:
-        assert list(empty_result.recommendations) == []
-        assert len(empty_result.recommendations) == 0
-        assert not empty_result.recommendations
-
-    def test_display_renders_server_recommendations(self, capsys):
-        """``display()`` surfaces server-supplied recommendations."""
-        result = CharacterizationResult(
-            job_id="d1",
-            status="COMPLETED",
-            recommendations=[
-                {
-                    "level": "action",
-                    "metric": "feasibility_rate",
-                    "text": "Feasibility rate is only 30%",
-                    "html": "Feasibility rate is only <strong>30%</strong>",
-                },
-            ],
-            html="",
-        )
-        result.display()
-        captured = capsys.readouterr().out
-        assert "Recommendations" in captured
-        assert "Feasibility rate is only" in captured
-        # HTML <strong> stripped to plain text in the terminal output.
-        assert "<strong>" not in captured
 
     def test_display_does_not_read_recommendations_from_report_dict(self, capsys):
         """Regression: ``display()`` reads the ``recommendations`` dataclass
@@ -778,56 +1144,13 @@ class TestCharacterizationResult:
         assert result_null.recommendations == []
         assert result_missing.recommendations == []
 
-    def test_wrap_response_passes_recommendations_through(self, mocker):
-        """``_wrap_response`` must pass a non-empty ``recommendations`` list
-        through unchanged onto the dataclass field.
-
-        This is the direct regression test for the original bug: the previous
-        ``_wrap_response`` silently dropped the top-level ``recommendations``
-        field, leaving the result blank even when the server provided one.
-        """
-        service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = ""
-        recs = [
-            {
-                "level": "warn",
-                "metric": "feasibility_rate",
-                "text": "Feasibility is low.",
-                "html": "<strong>Feasibility</strong> is low.",
-            },
-        ]
-        result = _wrap_response(
-            {
-                "job_id": "p1",
-                "status": "COMPLETED",
-                "report": {"regime": "exact"},
-                "recommendations": recs,
-            },
-            service,
-        )
-        assert result.recommendations == recs
-
 
 class TestQoroServiceCharacterize:
     """Tests for the consolidated submit + fetch flow in QoroService."""
 
     def test_full_submit_flow(self, mocker, qoro_service_factory):
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "val-job-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        mock_req = _mock_characterization_requests(mocker, service, "val-job-123")
 
         result = service.characterize_and_validate(
             qubo={"0,0": -1.0, "0,1": 2.0},
@@ -855,21 +1178,7 @@ class TestQoroServiceCharacterize:
 
     def test_options_pass_through(self, mocker, qoro_service_factory):
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "val-opt-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        mock_req = _mock_characterization_requests(mocker, service, "val-opt-123")
 
         options = {
             "ansatz": {"mixer": "x", "layers": 1},
@@ -957,27 +1266,164 @@ class TestQoroServiceCharacterize:
         with pytest.raises(ValueError, match="qubo.*or.*job_id"):
             service.characterize_and_validate()
 
+    @pytest.mark.parametrize(
+        "submit, plain, session, phase",
+        [
+            pytest.param(
+                True,
+                lambda m: [_init_ok(m), requests.ReadTimeout("timed out")],
+                lambda m: [],
+                "submission",
+                id="submit-timeout",
+            ),
+            pytest.param(
+                True,
+                lambda m: [
+                    _init_ok(m),
+                    http_response(
+                        m,
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                        body={},
+                        reason="Internal Server Error",
+                    ),
+                ],
+                lambda m: [],
+                "submission",
+                id="submit-server-error",
+            ),
+            pytest.param(
+                True,
+                lambda m: [_init_ok(m), http_response(m, body={})],
+                lambda m: [requests.ReadTimeout("result fetch timed out")],
+                "result retrieval",
+                id="result-timeout",
+            ),
+            pytest.param(
+                False,
+                lambda m: [],
+                lambda m: [requests.ReadTimeout("timed out")],
+                "status polling",
+                id="status-polling-timeout",
+            ),
+        ],
+    )
+    def test_recoverable_failure_surfaces_the_job_id_and_phase(
+        self, mocker, qoro_service_factory, submit, plain, session, phase
+    ):
+        """A timeout or 5xx after the job exists must not lose its id."""
+        service = qoro_service_factory()
+        patch_transport(mocker, plain=plain(mocker), session=session(mocker))
+
+        with pytest.raises(CharacterizationSubmitError) as exc:
+            if submit:
+                service.characterize_and_validate(
+                    qubo={"0,0": -1.0}, reference_states=["0"]
+                )
+            else:
+                service.characterize_and_validate(job_id="char-1")
+
+        assert (exc.value.job_id, exc.value.phase) == ("char-1", phase)
+        assert isinstance(
+            exc.value.__cause__, (requests.ReadTimeout, requests.HTTPError)
+        )
+
+    def test_job_id_is_logged_before_the_blocking_submit(
+        self, mocker, qoro_service_factory, caplog
+    ):
+        """The id must reach the user when it is created, not only on failure."""
+        service = qoro_service_factory()
+        patch_transport(
+            mocker, plain=[_init_ok(mocker), requests.ReadTimeout("timed out")]
+        )
+
+        with caplog.at_level(logging.INFO, logger="divi.backends.runners._qoro"):
+            with pytest.raises(CharacterizationSubmitError):
+                service.characterize_and_validate(
+                    qubo={"0,0": -1.0}, reference_states=["0"]
+                )
+
+        assert "char-1" in caplog.text
+
+    def test_a_rejected_submit_is_raised_as_is(self, mocker, qoro_service_factory):
+        """A 4xx means the job never ran; it must not advise re-fetching."""
+        service = qoro_service_factory()
+        patch_transport(
+            mocker,
+            plain=[
+                _init_ok(mocker),
+                http_response(
+                    mocker,
+                    HTTPStatus.BAD_REQUEST,
+                    body={"detail": "bad qubo"},
+                    reason="Bad Request",
+                ),
+            ],
+        )
+
+        with pytest.raises(
+            requests.HTTPError,
+            match=exact_match('400 Bad Request: {"detail": "bad qubo"}'),
+        ):
+            service.characterize_and_validate(
+                qubo={"0,0": -1.0}, reference_states=["0"]
+            )
+
+    def test_a_client_error_while_waiting_is_raised_as_is(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        error = requests.HTTPError(
+            "404 Not Found", response=mocker.MagicMock(status_code=HTTPStatus.NOT_FOUND)
+        )
+        mocker.patch.object(service, "_make_request", side_effect=error)
+
+        with pytest.raises(requests.HTTPError) as exc_info:
+            service.characterize_and_validate(job_id="char-1")
+
+        assert exc_info.value is error
+
+    def test_init_body_and_job_id_fallback(self, mocker, qoro_service_factory):
+        service = qoro_service_factory()
+        result = mocker.MagicMock(json=lambda: {"status": "COMPLETED"})
+        mock_request = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker, "char-1"),
+                make_mock_add_response(mocker),
+                result,
+            ],
+        )
+
+        assert service.characterize_and_validate(
+            qubo={"0,0": -1.0}, reference_states=["0"]
+        ) == {"status": "COMPLETED", "job_id": "char-1"}
+        init_call = mock_request.call_args_list[0]
+        assert init_call.args == ("post", "job/init/")
+        assert init_call.kwargs["json"] == {
+            "job_type": "VALIDATE",
+            "tag": "divi-characterize",
+        }
+
+    def test_the_html_report_is_returned_as_text(self, mocker, qoro_service_factory):
+        service = qoro_service_factory()
+        mock_request = mocker.patch.object(
+            service, "_make_request", return_value=mocker.MagicMock(text="<div>r</div>")
+        )
+
+        assert service._fetch_characterization_html("char-1") == "<div>r</div>"
+        assert mock_request.call_args.args == (
+            "get",
+            "job/char-1/validation_result/html/",
+        )
+
 
 class TestTopLevelCharacterize:
     """Tests for the divi.backends.characterize_and_validate convenience function."""
 
     def test_characterize_with_ndarray(self, mocker, qoro_service_factory):
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "top-123"}
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        _mock_characterization_requests(mocker, service, "top-123")
 
         problem = BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]]))
         result = characterize_and_validate(
@@ -987,98 +1433,14 @@ class TestTopLevelCharacterize:
         assert isinstance(result, CharacterizationResult)
         assert result.quality_score == 78.5
 
-    def test_characterize_with_options(self, mocker, qoro_service_factory):
-        service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "top-opt-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
-
-        problem = BinaryOptimizationProblem(
-            np.array([[-1.0, 0.0], [0.0, -1.0]]),
-            penalty=np.array([[0.0, 2.0], [0.0, 0.0]]),
-        )
-
-        characterize_and_validate(
-            problem,
-            reference_states=["01"],
-            service=service,
-            options=CharacterizationOptions(
-                structural_sensitivity=True,
-                parameter_sweep=True,
-                penalty_tuning=True,
-            ),
-        )
-
-        options = mock_req.call_args_list[1].kwargs["json"]["options"]
-        assert options["analysis"]["structural_sensitivity"] is True
-        assert options["analysis"]["parameter_sweep"] is True
-        assert options["analysis"]["penalty_tuning"] is True
-        assert "cost_qubo" in options and "penalty_qubo" in options
-
-    def test_characterization_options_preserve_false_analysis_flags(self):
-        options = CharacterizationOptions(
-            structural_sensitivity=False,
-            parameter_sweep=False,
-            penalty_tuning=False,
-        )._to_wire()
-
-        assert options["analysis"]["structural_sensitivity"] is False
-        assert options["analysis"]["parameter_sweep"] is False
-        assert options["analysis"]["penalty_tuning"] is False
-
-    def test_old_sensitivity_option_is_not_accepted(self):
-        with pytest.raises(ValueError, match="sensitivity"):
-            CharacterizationOptions(sensitivity=True)
-
-    def test_structural_sensitivity_must_be_boolean(self):
-        with pytest.raises(ValueError, match="structural_sensitivity"):
-            CharacterizationOptions(structural_sensitivity="yes")
-
-    def test_old_auto_tune_option_is_not_accepted(self):
-        with pytest.raises(ValueError, match="auto_tune"):
-            CharacterizationOptions(auto_tune=True)
-
-    def test_cost_and_penalty_qubo_options_are_not_accepted(self):
-        with pytest.raises(ValueError, match="cost_qubo"):
-            CharacterizationOptions(cost_qubo=BinaryOptimizationProblem({(0,): -1.0}))
-        with pytest.raises(ValueError, match="penalty_qubo"):
-            CharacterizationOptions(
-                penalty_qubo=BinaryOptimizationProblem({(0, 1): 2.0})
-            )
-
-    def test_penalty_tuning_must_be_boolean(self):
-        with pytest.raises(ValueError, match="penalty_tuning"):
-            CharacterizationOptions(penalty_tuning="yes")
+    @pytest.mark.parametrize("kwargs, match", _INVALID_OPTIONS)
+    def test_invalid_options_rejected(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            CharacterizationOptions(**kwargs)
 
     def test_characterize_with_fixed_gamma_beta(self, mocker, qoro_service_factory):
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "top-fixed-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        mock_req = _mock_characterization_requests(mocker, service, "top-fixed-123")
 
         characterize_and_validate(
             BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]])),
@@ -1096,35 +1458,14 @@ class TestTopLevelCharacterize:
     ):
         """Factored submissions ship ``options['n_qubits']`` alongside the payload."""
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "fac-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        mock_req = _mock_characterization_requests(mocker, service, "fac-123")
 
         # Rank-1 dense QUBO at the probe threshold encodes with k=1,
         # forcing the dispatcher to pick factored.
         n = _FACTORED_PROBE_MIN_QUBITS
-        rng = np.random.default_rng(seed=5)
-        u = rng.standard_normal(n)
-        Q = np.outer(u, u)
-        terms = {(i,): float(Q[i, i]) for i in range(n)}
-        for i in range(n):
-            for j in range(i + 1, n):
-                terms[(i, j)] = float(Q[i, j] + Q[j, i])
 
         characterize_and_validate(
-            BinaryOptimizationProblem(terms),
+            _rank_one_problem(n),
             reference_states=["0" * n],
             service=service,
         )
@@ -1141,12 +1482,6 @@ class TestTopLevelCharacterize:
         assert wire is not None
         assert wire["n_qubits"] == 5
 
-    def test_options_n_qubits_rejects_non_positive(self):
-        with pytest.raises(ValueError, match="greater than 0"):
-            CharacterizationOptions(n_qubits=0)
-        with pytest.raises(ValueError, match="greater than 0"):
-            CharacterizationOptions(n_qubits=-3)
-
     def test_penalty_tuning_requires_problem_penalty(
         self, mocker, qoro_service_factory
     ):
@@ -1161,19 +1496,7 @@ class TestTopLevelCharacterize:
                 options=CharacterizationOptions(penalty_tuning=True),
             )
 
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "pen-ok"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        _mock_characterization_requests(mocker, service, "pen-ok")
         characterize_and_validate(
             BinaryOptimizationProblem({(0,): -1.0}, penalty={(0, 1): 2.0}),
             reference_states=["00"],
@@ -1186,36 +1509,15 @@ class TestTopLevelCharacterize:
     ):
         """A user-supplied ``options['n_qubits']`` survives the auto-attach pass."""
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "fac-2"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
-        )
+        mock_req = _mock_characterization_requests(mocker, service, "fac-2")
 
         n = _FACTORED_PROBE_MIN_QUBITS
-        rng = np.random.default_rng(seed=5)
-        u = rng.standard_normal(n)
-        Q = np.outer(u, u)
-        terms = {(i,): float(Q[i, i]) for i in range(n)}
-        for i in range(n):
-            for j in range(i + 1, n):
-                terms[(i, j)] = float(Q[i, j] + Q[j, i])
 
         options = CharacterizationOptions()
         mocker.patch.object(options, "_to_wire", return_value={"n_qubits": 999})
 
         characterize_and_validate(
-            BinaryOptimizationProblem(terms),
+            _rank_one_problem(n),
             reference_states=["0" * n],
             service=service,
             options=options,
@@ -1224,17 +1526,14 @@ class TestTopLevelCharacterize:
         submit_json = mock_req.call_args_list[1].kwargs["json"]
         assert submit_json["options"]["n_qubits"] == 999
 
-    @pytest.mark.parametrize("preset", ["fast", "standard", "deep"])
-    def test_preset_serialized_as_top_level_key(self, preset):
-        """preset is emitted top-level, not nested under analysis; no analysis dict when no flags set."""
-        wire = CharacterizationOptions(preset=preset)._to_wire()
+    @pytest.mark.parametrize("preset", [None, "fast", "standard", "deep"])
+    def test_preset_and_unset_flags_on_the_wire(self, preset):
+        """preset is top-level and only when set; unset flags defer to the server."""
+        wire = CharacterizationOptions(preset=preset, n_qubits=4)._to_wire()
 
-        assert wire["preset"] == preset
+        assert ("preset" in wire) == (preset is not None)
+        assert wire.get("preset") == preset
         assert "analysis" not in wire
-
-    def test_preset_invalid_value_rejected(self):
-        with pytest.raises(ValueError, match="preset"):
-            CharacterizationOptions(preset="turbo")
 
     def test_preset_reaches_the_submit_payload(self, mocker, qoro_service_factory):
         """preset survives the whole path from options to the HTTP request body."""
@@ -1249,19 +1548,6 @@ class TestTopLevelCharacterize:
         )
 
         assert mock_req.call_args_list[1].kwargs["json"]["options"]["preset"] == "deep"
-
-    def test_preset_none_does_not_appear_in_wire(self):
-        """The default None preset must not emit a 'preset' key at all."""
-        wire = CharacterizationOptions(n_qubits=4)._to_wire()
-
-        assert "preset" not in wire
-
-    @pytest.mark.parametrize("preset", [None, "fast", "deep"])
-    def test_unset_flags_are_withheld(self, preset):
-        """The None default defers to the server, with or without a preset."""
-        wire = CharacterizationOptions(preset=preset, n_qubits=4)._to_wire()
-
-        assert "analysis" not in wire
 
     @pytest.mark.parametrize(
         "flag", ["parameter_sweep", "structural_sensitivity", "penalty_tuning"]
@@ -1314,105 +1600,6 @@ class TestTopLevelCharacterize:
             warnings.simplefilter("error")
             CharacterizationOptions(preset="fast", **kwargs)
 
-    def test_job_id_is_logged_before_the_blocking_submit(
-        self, mocker, qoro_service_factory, caplog
-    ):
-        """The id must reach the user when it is created, not only on failure."""
-        service = qoro_service_factory()
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "announced-job-1"}
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, requests.exceptions.ReadTimeout("timed out")],
-        )
-
-        with caplog.at_level(logging.INFO, logger="divi.backends.runners._qoro"):
-            with pytest.raises(CharacterizationSubmitError):
-                service.characterize_and_validate(
-                    qubo={"0,0": -1.0}, reference_states=["0"]
-                )
-
-        assert "announced-job-1" in caplog.text
-
-    def test_submit_timeout_surfaces_the_job_id(self, mocker, qoro_service_factory):
-        """A timed-out submit must not lose the id of the job it created."""
-        service = qoro_service_factory()
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "stranded-job-1"}
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, requests.exceptions.ReadTimeout("timed out")],
-        )
-
-        with pytest.raises(CharacterizationSubmitError) as exc:
-            service.characterize_and_validate(
-                qubo={"0,0": -1.0}, reference_states=["0"]
-            )
-
-        assert exc.value.job_id == "stranded-job-1"
-        assert exc.value.phase == "submission"
-        assert isinstance(exc.value.__cause__, requests.exceptions.ReadTimeout)
-
-    def test_submit_server_error_surfaces_the_job_id(
-        self, mocker, qoro_service_factory
-    ):
-        service = qoro_service_factory()
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "server-error-job-1"}
-        response = mocker.MagicMock(status_code=502)
-        error = requests.HTTPError("502 Bad Gateway", response=response)
-        mocker.patch.object(service, "_make_request", side_effect=[mock_init, error])
-
-        with pytest.raises(CharacterizationSubmitError) as exc:
-            service.characterize_and_validate(
-                qubo={"0,0": -1.0}, reference_states=["0"]
-            )
-
-        assert exc.value.job_id == "server-error-job-1"
-        assert exc.value.phase == "submission"
-        assert exc.value.__cause__ is error
-
-    def test_result_timeout_surfaces_the_job_id(self, mocker, qoro_service_factory):
-        service = qoro_service_factory()
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "result-timeout-job-1"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        error = requests.ReadTimeout("result fetch timed out")
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, error],
-        )
-
-        with pytest.raises(CharacterizationSubmitError) as exc:
-            service.characterize_and_validate(
-                qubo={"0,0": -1.0}, reference_states=["0"]
-            )
-
-        assert exc.value.job_id == "result-timeout-job-1"
-        assert exc.value.phase == "result retrieval"
-        assert exc.value.__cause__ is error
-
-    def test_rejected_payload_is_not_reported_as_recoverable(
-        self, mocker, qoro_service_factory
-    ):
-        """A 4xx means the job never ran; it must not advise re-fetching."""
-        service = qoro_service_factory()
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "rejected-job-1"}
-        mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, requests.HTTPError("400 Bad Request")],
-        )
-
-        with pytest.raises(requests.HTTPError):
-            service.characterize_and_validate(
-                qubo={"0,0": -1.0}, reference_states=["0"]
-            )
-
     @pytest.mark.parametrize(
         ("reference_states", "message"),
         [
@@ -1450,24 +1637,6 @@ class TestTopLevelCharacterize:
 
         service.characterize_and_validate.assert_not_called()
 
-    def test_constant_offset_is_dropped_not_serialized(self):
-        """A constant term (e.g. from expanding a cardinality penalty) must not
-        become an empty wire key or crash the dense path."""
-        problem = BinaryOptimizationProblem({(0,): -1.0, (0, 1): 2.0, (): 5.0})
-
-        with pytest.warns(UserWarning, match="constant offset"):
-            wire = _serialize_qubo_for_wire(problem)
-
-        assert wire == {"0": -1.0, "0,1": 2.0}
-        assert _qubo_to_dense(problem.canonical_problem).shape == (2, 2)
-
-    def test_constraint_negative_weight_index_rejected(self):
-        """Weight keys are qubit indices; negatives must not reach the wire."""
-        with pytest.raises(ValueError, match="weights"):
-            CharacterizationOptions(
-                constraints=[{"type": "inequality", "bound": 10, "weights": {-1: 4}}]
-            )
-
     def test_constraints_serialized_to_wire(self):
         wire = CharacterizationOptions(
             constraints=[
@@ -1480,41 +1649,6 @@ class TestTopLevelCharacterize:
             {"type": "max_cardinality", "bound": 3},
             {"type": "inequality", "bound": 10, "weights": {0: 4, 1: 5}},
         ]
-
-    def test_constraint_unknown_type_rejected(self):
-        with pytest.raises(ValueError, match="type"):
-            CharacterizationOptions(
-                constraints=[{"type": "max_cardinaltiy", "bound": 3}]
-            )
-
-    def test_constraint_unknown_key_rejected(self):
-        with pytest.raises(ValueError, match="lower_bound"):
-            CharacterizationOptions(
-                constraints=[{"type": "max_cardinality", "bound": 3, "lower_bound": 1}]
-            )
-
-    @pytest.mark.parametrize("constraint_type", ["inequality", "equality"])
-    def test_weighted_constraint_requires_weights(self, constraint_type):
-        with pytest.raises(ValueError, match="weights"):
-            CharacterizationOptions(
-                constraints=[{"type": constraint_type, "bound": 10}]
-            )
-
-    def test_constraint_weight_index_out_of_range_rejected(self):
-        with pytest.raises(ValueError, match="weight index 7"):
-            CharacterizationOptions(
-                n_qubits=4,
-                constraints=[
-                    {"type": "inequality", "bound": 10, "weights": {0: 1, 7: 2}}
-                ],
-            )
-
-    def test_constraint_qubit_index_out_of_range_rejected(self):
-        with pytest.raises(ValueError, match="qubit index 9"):
-            CharacterizationOptions(
-                n_qubits=4,
-                constraints=[{"type": "max_cardinality", "bound": 2, "qubits": [0, 9]}],
-            )
 
     def test_constraint_indices_unchecked_without_n_qubits(self):
         """Without n_qubits there is nothing to check against; the server decides."""
@@ -1543,15 +1677,24 @@ class TestTopLevelCharacterize:
             == original._to_wire()
         )
 
-    def test_ansatz_layers_must_be_positive(self):
-        with pytest.raises(ValueError, match="layers"):
-            CharacterizationOptions(ansatz={"mixer": "x", "layers": 0})
+    def test_unset_auto_warmstart_stays_unsent_after_a_round_trip(self):
+        """Leaving auto_warmstart unset defers to the server's small-problem rule."""
+        original = CharacterizationOptions(subspace={"solver": "greedy"})
 
-    @pytest.mark.parametrize("bad_gamma", ["1.2", True])
-    def test_gamma_rejects_non_numeric(self, bad_gamma):
-        """Strict typing: no silent coercion of strings or bools into an angle."""
-        with pytest.raises(ValueError, match="gamma"):
-            CharacterizationOptions(gamma=bad_gamma)
+        restored = CharacterizationOptions.model_validate(original.model_dump())
+
+        assert restored._to_wire() == {"subspace": {"solver": "greedy"}}
+
+    def test_ansatz_and_subspace_wire_exactly(self):
+        wire = CharacterizationOptions(
+            ansatz={"layers": 2},
+            subspace={"auto_warmstart": True, "max_variable_qubits": 6},
+        )._to_wire()
+
+        assert wire == {
+            "ansatz": {"layers": 2},
+            "subspace": {"auto_warmstart": True, "max_variable_qubits": 6},
+        }
 
     def test_gamma_accepts_int_and_float(self):
         assert CharacterizationOptions(gamma=1).gamma == 1
@@ -1561,26 +1704,6 @@ class TestTopLevelCharacterize:
         wire = CharacterizationOptions(subspace={"restarts": 20})._to_wire()
 
         assert wire["subspace"]["restarts"] == 20
-
-    def test_subspace_restarts_must_be_positive(self):
-        with pytest.raises(ValueError, match="restarts"):
-            CharacterizationOptions(subspace={"restarts": 0})
-
-    def test_subspace_restarts_rejected_without_warmstart(self):
-        with pytest.raises(ValueError, match="restarts"):
-            CharacterizationOptions(subspace={"auto_warmstart": False, "restarts": 20})
-
-    def test_parameter_sweep_with_fixed_gamma_raises(self):
-        with pytest.raises(ValueError, match="mutually exclusive"):
-            CharacterizationOptions(parameter_sweep=True, gamma=1.0)
-
-    def test_ansatz_unknown_key_rejected(self):
-        with pytest.raises(ValueError, match="auto_warmstart"):
-            CharacterizationOptions(ansatz={"mixer": "x", "auto_warmstart": True})
-
-    def test_ansatz_invalid_mixer_rejected(self):
-        with pytest.raises(ValueError, match="ansatz.mixer"):
-            CharacterizationOptions(ansatz={"mixer": "bad"})
 
     def test_identity_mixer_options_pass_through(self):
         options = CharacterizationOptions(ansatz={"mixer": "I", "layers": 1})
@@ -1608,90 +1731,63 @@ class TestTopLevelCharacterize:
             "variable_qubits": [0],
         }
 
-    def test_manual_subspace_requires_auto_warmstart_false(self):
-        with pytest.raises(ValueError, match="manual subspace"):
-            CharacterizationOptions(
-                subspace={
-                    "auto_warmstart": True,
-                    "base_bitstring": "10",
-                    "variable_qubits": [0],
-                }
-            )
-
-    def test_manual_subspace_requires_base_and_variables(self):
-        with pytest.raises(ValueError, match="provided together"):
-            CharacterizationOptions(
-                subspace={"auto_warmstart": False, "base_bitstring": "10"}
-            )
-
-    def test_auto_subspace_controls_rejected_when_auto_disabled(self):
-        with pytest.raises(ValueError, match="only affect automatic"):
-            CharacterizationOptions(
-                subspace={
-                    "auto_warmstart": False,
-                    "solver": "sa",
-                    "max_variable_qubits": 8,
-                }
-            )
-
-    def test_variable_qubits_reject_duplicates(self):
-        with pytest.raises(ValueError, match="duplicate"):
-            CharacterizationOptions(
-                subspace={
-                    "auto_warmstart": False,
-                    "base_bitstring": "10",
-                    "variable_qubits": [0, 0],
-                }
-            )
-
-    def test_characterize_with_problem_penalty(self, mocker, qoro_service_factory):
+    def test_penalty_tuning_components_wire_exactly(self, mocker, qoro_service_factory):
+        """Zero-coefficient and constant terms never reach the component dicts."""
         service = qoro_service_factory()
-
-        mock_init = mocker.MagicMock()
-        mock_init.json.return_value = {"job_id": "pen-123"}
-        mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
-        mock_result = mocker.MagicMock()
-        mock_result.json.return_value = SAMPLE_RESPONSE
-
-        mock_req = mocker.patch.object(
-            service,
-            "_make_request",
-            side_effect=[mock_init, mock_submit, mock_result],
-        )
-        mocker.patch.object(
-            service, "_fetch_characterization_html", return_value="<div/>"
+        mock_req = _mock_characterization_requests(mocker, service, "pen-wire")
+        problem = BinaryOptimizationProblem(
+            {(0,): -1.0, (0, 2): 1.5, (0, 1): 0.0, (): 2.0},
+            penalty={(1, 2): 3.0, (1,): -0.5, (): 1.0},
         )
 
-        characterize_and_validate(
-            BinaryOptimizationProblem(
-                np.array([[-1.0, 0.0], [0.0, -1.0]]),
-                penalty=np.array([[0.0, 2.0], [0.0, 0.0]]),
-            ),
-            reference_states=["01"],
-            service=service,
-            options=CharacterizationOptions(penalty_tuning=True),
-        )
+        with pytest.warns(UserWarning, match="constant offset"):
+            characterize_and_validate(
+                problem,
+                reference_states=["000"],
+                service=service,
+                options=CharacterizationOptions(penalty_tuning=True),
+            )
 
         options = mock_req.call_args_list[1].kwargs["json"]["options"]
-        assert "cost_qubo" in options
-        assert "penalty_qubo" in options
-        # n=2 routes to legacy. Diagonal entries serialize as single-index keys.
-        assert options["cost_qubo"]["0"] == -1.0
+        assert options["cost_qubo"] == {"0": -1.0, "0,2": 1.5}
+        assert options["penalty_qubo"] == {"1,2": 3.0, "1": -0.5}
+
+    def test_reference_states_match_a_wider_explicit_n_qubits(self, mocker):
+        service = mocker.MagicMock()
+        service.characterize_and_validate.return_value = SAMPLE_RESPONSE
+        service._fetch_characterization_html.return_value = ""
+
+        characterize_and_validate(
+            BinaryOptimizationProblem(np.eye(2)),
+            reference_states=["0100"],
+            service=service,
+            options=CharacterizationOptions(n_qubits=4),
+        )
+
+        assert service.characterize_and_validate.call_args.kwargs[
+            "reference_states"
+        ] == ["0100"]
+
+    def test_n_qubits_below_problem_size_rejected(self, mocker):
+        service = mocker.MagicMock()
+
+        with pytest.raises(
+            ValueError,
+            match=r"^n_qubits=1 is smaller than the problem's 2 represented variables\.$",
+        ):
+            characterize_and_validate(
+                BinaryOptimizationProblem(np.eye(2)),
+                reference_states=["0"],
+                service=service,
+                options=CharacterizationOptions(n_qubits=1),
+            )
+
+        service.characterize_and_validate.assert_not_called()
 
 
 def test_job_type_characterize_has_validate_wire_value():
     # Wire value must remain ``"VALIDATE"`` — server compatibility.
     assert JobType.CHARACTERIZE.value == "VALIDATE"
-
-
-@pytest.fixture
-def qoro_service(api_key):
-    """Live ``QoroService`` for E2E tests in this module.
-
-    Mirrors the fixture in ``test_qoro_service.py``; defined locally because
-    fixtures in test modules don't propagate across files.
-    """
-    return QoroService(auth_token=api_key)
 
 
 # Report/hardness matching the redesigned canonical composer-service schema.
@@ -1785,24 +1881,33 @@ class TestCanonicalResultFields:
             html="",
         )
 
-    def test_quality_prefers_reference_concentration_score(self):
-        assert self._result().quality_score == 61.0
-
-    def test_formulation_and_target_quality(self):
-        r = self._result()
-        assert r.formulation_quality == 72.0
-        assert r.reference_concentration_score == 61.0
-
-    def test_approximation_ratio_value(self):
-        assert self._result().approximation_ratio == 0.87
-
-    def test_approximation_ratio_error_bound(self):
-        assert self._result().approximation_ratio_error_bound == 0.05
-
-    def test_regime_and_confidence(self):
-        r = self._result()
-        assert r.regime == "estimate"
-        assert r.confidence == "estimated"
+    @pytest.mark.parametrize(
+        "attribute, expected",
+        [
+            # quality_score prefers the reference concentration score.
+            ("quality_score", 61.0),
+            ("formulation_quality", 72.0),
+            ("reference_concentration_score", 61.0),
+            ("approximation_ratio", 0.87),
+            ("approximation_ratio_error_bound", 0.05),
+            ("regime", "estimate"),
+            ("confidence", "estimated"),
+            ("is_psd", False),
+            ("rank", 12),
+            ("cost_gap", 1.0),
+            ("ground_state_degeneracy", 2),
+            ("treewidth_estimate", 2),
+            ("frustration_index", 0.25),
+            ("recommended_min_layers", 2),
+            ("recommended_layers_basis", "threshold_reached"),
+            ("penalty_lambda_min_feasible", 2.0),
+            ("penalty_lambda_safe", 3.5),
+        ],
+    )
+    def test_scalar_field(self, attribute, expected):
+        value = getattr(self._result(), attribute)
+        assert value == expected
+        assert type(value) is type(expected)
 
     def test_certificate_fields(self):
         cert = self._result().certificate
@@ -1815,26 +1920,11 @@ class TestCanonicalResultFields:
         assert qc["status"] == "unresolved"
         assert qc["next_step"] == "run deeper light-cone probe at p=4"
 
-    def test_structural_is_psd_and_rank(self):
-        r = self._result()
-        assert r.is_psd is False
-        assert r.rank == 12
-
     def test_classical_baseline(self):
         assert self._result().classical_baseline["best_energy"] == -2.0
 
-    def test_hardness_cost_spectrum_fields(self):
-        r = self._result()
-        assert r.cost_gap == 1.0
-        assert r.ground_state_degeneracy == 2
-        assert r.treewidth_estimate == 2
-        assert r.frustration_index == 0.25
-
     def test_depth_recommendation_curve(self):
-        r = self._result()
-        assert r.recommended_min_layers == 2
-        assert r.recommended_layers_basis == "threshold_reached"
-        curve = r.ar_vs_depth
+        curve = self._result().ar_vs_depth
         assert [c["layers"] for c in curve] == [1, 2]
         ars = [c["approximation_ratio"] for c in curve]
         assert all(hi >= lo for lo, hi in zip(ars, ars[1:]))
@@ -1850,21 +1940,6 @@ class TestCanonicalResultFields:
         ip = self._result().qaoa_initial_params(layers=1)
         assert ip.shape == (1, 2)
         assert ip.ravel().tolist() == [0.4, 0.8]
-
-    def test_qaoa_initial_params_none_without_angles(self):
-        r = CharacterizationResult(
-            job_id="r",
-            status="COMPLETED",
-            hardness=None,
-            report={"regime": "refuse"},
-            html="",
-        )
-        assert r.qaoa_initial_params() is None
-
-    def test_penalty_interval(self):
-        r = self._result()
-        assert r.penalty_lambda_min_feasible == 2.0
-        assert r.penalty_lambda_safe == 3.5
 
     def test_summary_treats_safe_lambda_as_a_minimum_threshold(self):
         summary = self._result().summary()

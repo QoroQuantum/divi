@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import platform
-import time
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
@@ -40,12 +39,11 @@ from divi.exceptions import (
 from divi.qasm import (
     _format_validation_error_with_context,
     count_qubits,
-    is_valid_qasm,
     validate_qasm,
 )
 
 from .._base import CircuitRunner, ExecutionResult
-from .._cancellation import _auto_cancellation_scope
+from .._cancellation import _auto_cancellation_scope, raise_if_cancelled
 from .._config import DeviceConfig, JobConfig
 from .._job_status import (
     InsufficientCreditsError,
@@ -58,6 +56,7 @@ from .._job_status import (
 from .._pauli_serde import compress_ham_ops, pad_ham_ops
 from .._results_processing import _decode_histogram_b64
 from .._shot_allocation import (
+    ShotRange,
     from_wire,
     restrict_to_chunk,
     to_wire,
@@ -349,11 +348,7 @@ class QoroService(CircuitRunner):
     @staticmethod
     def _resolved_target(job_config: JobConfig) -> SimulatorCluster | QPUSystem:
         target = job_config.simulator_cluster or job_config.qpu_system
-        if not isinstance(target, (SimulatorCluster, QPUSystem)):
-            raise RuntimeError(
-                "JobConfig target is unresolved; this should have been resolved "
-                "by _resolve_and_validate_target before reaching here."
-            )
+        assert isinstance(target, (SimulatorCluster, QPUSystem))
         return target
 
     @property
@@ -453,8 +448,8 @@ class QoroService(CircuitRunner):
             endpoint (str): API endpoint path (without base URL).
             retry (bool): When ``True`` (the default), the request goes
                 through the session that has the retry adapter mounted.
-                Set to ``False`` for state-mutating endpoints where a
-                retry would target a job already past its initial state.
+                Set to ``False`` for state-changing requests, which a retry
+                after a lost response would apply twice.
             **kwargs: Additional arguments to pass to requests.request(), such as
                 'json', 'timeout', 'params', etc.
 
@@ -468,7 +463,7 @@ class QoroService(CircuitRunner):
 
         headers = {"Authorization": self.auth_token, "User-Agent": USER_AGENT}
 
-        if method.upper() in ["POST", "PUT", "PATCH"]:
+        if method.upper() == "POST":
             headers["Content-Type"] = "application/json"
 
         # Allow overriding default headers
@@ -660,25 +655,57 @@ class QoroService(CircuitRunner):
     def _compress_data(value: str) -> str:
         return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
 
-    def _split_circuits(self, circuits: Mapping[str, str]) -> list[dict[str, str]]:
+    def _split_circuits(
+        self,
+        circuits: Mapping[str, str],
+        envelope: Mapping[str, Any],
+        shot_ranges: list[ShotRange] | None,
+    ) -> list[dict[str, str]]:
+        """Compress circuits and chunk them so that each ``add_circuits/`` body,
+        as ``json.dumps`` renders it, stays under :data:`_MAX_PAYLOAD_SIZE_MB`.
+
+        A chunk's ``shot_groups`` holds the ranges starting inside it plus at
+        most one continuing from the chunk before, so each range is charged to
+        the circuit it starts at and the widest one to every chunk.
         """
-        Splits circuits into chunks by estimating payload size with a simplified,
-        consistent overhead calculation.
-        Assumes that BASE64 encoding produces ASCI characters, which are 1 byte each.
-        """
+        overhead = len(json.dumps({**envelope, "circuits": {}}))
+        range_sizes: dict[int, int] = {}
+        if shot_ranges is not None:
+            range_sizes = {r.start: len(json.dumps(r)) + 2 for r in shot_ranges}
+            overhead += len(', "shot_groups": []') + max(range_sizes.values())
+
+        def entry_size(entry: tuple[int, tuple[str, str]]) -> int:
+            index, (key, value) = entry
+            # '"key": "value", '
+            return len(json.dumps(key)) + len(value) + 6 + range_sizes.get(index, 0)
+
         compressed = [
             (key, self._compress_data(value)) for key, value in circuits.items()
         ]
         chunks = _greedy_size_chunks(
-            compressed,
-            # 6 bytes of JSON punctuation per entry: two quote pairs, a colon
-            # and a comma.
-            lambda item: len(item[0]) + len(item[1]) + 6,
-            # The opening and closing curly braces.
-            base_overhead=2,
+            enumerate(compressed),
+            entry_size,
+            base_overhead=overhead,
             max_bytes=int(_MAX_PAYLOAD_SIZE_MB * 1024 * 1024),
         )
-        return [dict(chunk) for chunk in chunks]
+        return [dict(entry for _, entry in chunk) for chunk in chunks]
+
+    @staticmethod
+    def _fragment_envelope(
+        ham_ops: str | None,
+        circuit_ham_map: list[list[int]] | None,
+        shot_groups: list[list[int]] | None,
+        shots: int,
+    ) -> dict[str, Any]:
+        """The ``add_circuits/`` keys every fragment of a job carries."""
+        envelope: dict[str, Any] = {"mode": "append", "finalized": "false"}
+        if ham_ops is not None:
+            envelope["observables"] = compress_ham_ops(ham_ops)
+            if circuit_ham_map is not None:
+                envelope["circuit_ham_map"] = circuit_ham_map
+        elif shot_groups is None:
+            envelope["shots"] = shots
+        return envelope
 
     def _require_expval(self, job_config: JobConfig) -> None:
         """Raise if ``job_config`` cannot run an expectation-value job."""
@@ -746,7 +773,12 @@ class QoroService(CircuitRunner):
     def _job_type_for(job_type: JobType | None, ham_ops: str | None) -> JobType:
         """Resolve the job type, inferring EXPECTATION from ``ham_ops``."""
         if ham_ops is None:
-            return job_type if job_type is not None else JobType.EXECUTE
+            if job_type is not None and job_type is not JobType.EXECUTE:
+                raise ValueError(
+                    "submit_circuits runs EXECUTE jobs, or EXPECTATION jobs when "
+                    f"ham_ops is given; got job_type {job_type.name} without ham_ops."
+                )
+            return JobType.EXECUTE
         if job_type is not None and job_type != JobType.EXPECTATION:
             raise ValueError(
                 "Hamiltonian operators are only supported for EXPECTATION job type."
@@ -821,8 +853,8 @@ class QoroService(CircuitRunner):
                 spanning multiple internal chunks are re-indexed automatically.
                 Bound payloads only, for the same reason as ``circuit_ham_map``.
             job_type (JobType | None, optional):
-                Type of job to execute (EXECUTE or EXPECTATION).
-                If not provided, defaults to EXECUTE.
+                Type of job to execute: EXECUTE, or EXPECTATION with
+                ``ham_ops``. If not provided, inferred from ``ham_ops``.
             maestro_config (MaestroConfig | None, optional):
                 Maestro settings for this submission on a simulator target,
                 used in place of the service's ``maestro_config``, e.g.
@@ -844,7 +876,8 @@ class QoroService(CircuitRunner):
             **kwargs: Rejected with ``TypeError``.
 
         Raises:
-            ValueError: If any circuit is not valid QASM, ``ham_ops`` is given
+            ValueError: If any circuit is not valid QASM, ``job_type`` does
+                not match the presence of ``ham_ops``, ``ham_ops`` is given
                 for a job whose target or ``force_sampling`` rules out
                 expectation values, a config is aimed
                 at the other kind of target (``maestro_config`` on a
@@ -867,6 +900,7 @@ class QoroService(CircuitRunner):
                 "compute expectation values analytically on the backend and "
                 "ignore shot counts. Pass exactly one."
             )
+        job_type = self._job_type_for(job_type, ham_ops)
 
         if ham_ops is not None:
             # Each |-delimited group is validated independently.
@@ -896,11 +930,14 @@ class QoroService(CircuitRunner):
         )
         if device_config is not None:
             self._check_device_options(device_config)
+        envelope = self._fragment_envelope(
+            ham_ops, circuit_ham_map, shot_groups, job_config.shots
+        )
         call_plan = (
-            self._bound_call_plan(payloads, shot_groups)
+            self._bound_call_plan(payloads, shot_groups, envelope)
             if is_bound(payloads)
             else self._parametric_call_plan(
-                payloads, ham_ops, circuit_ham_map, shot_groups
+                payloads, ham_ops, circuit_ham_map, shot_groups, envelope
             )
         )
 
@@ -909,13 +946,15 @@ class QoroService(CircuitRunner):
             job_config=job_config,
             maestro_config=maestro_config,
             device_config=device_config,
-            job_type=self._job_type_for(job_type, ham_ops),
-            ham_ops=ham_ops,
-            circuit_ham_map=circuit_ham_map,
+            job_type=job_type,
+            envelope=envelope,
         )
 
     def _bound_call_plan(
-        self, payloads: Sequence[CircuitPayload], shot_groups: list[list[int]] | None
+        self,
+        payloads: Sequence[CircuitPayload],
+        shot_groups: list[list[int]] | None,
+        envelope: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         """Chunk resolved circuits into ``add_circuits/`` payload fragments."""
         circuits = bound_circuits(payloads)
@@ -926,14 +965,11 @@ class QoroService(CircuitRunner):
             validate(shot_ranges, len(circuits))
 
         for key, circuit in circuits.items():
-            if not is_valid_qasm(circuit):
-                try:
-                    validate_qasm(circuit)
-                except SyntaxError as e:
-                    msg = _format_validation_error_with_context(circuit, e)
-                    raise ValueError(
-                        f"Circuit '{key}' is not a valid QASM: {msg}"
-                    ) from e
+            try:
+                validate_qasm(circuit)
+            except SyntaxError as e:
+                msg = _format_validation_error_with_context(circuit, e)
+                raise ValueError(f"Circuit '{key}' is not a valid QASM: {msg}") from e
 
         if self.track_depth:
             self._depth_history.append(
@@ -943,7 +979,7 @@ class QoroService(CircuitRunner):
                 ]
             )
 
-        chunks = self._split_circuits(circuits)
+        chunks = self._split_circuits(circuits, envelope, shot_ranges)
         # Per-chunk starting offset into the global circuit list, used to
         # re-index ``shot_groups`` when chunking.
         offsets = itertools.accumulate((len(c) for c in chunks), initial=0)
@@ -963,41 +999,41 @@ class QoroService(CircuitRunner):
         compressed_template_b64: str,
         parameter_names: tuple[str, ...],
         parameter_sets: tuple[tuple[str, tuple[float, ...]], ...],
+        envelope: Mapping[str, Any],
     ) -> list[list[tuple[str, tuple[float, ...]]]]:
-        """Split a ``CircuitPayload``'s ``parameter_sets`` into chunks bounded
-        by :data:`_MAX_PAYLOAD_SIZE_MB`.
+        """Split a ``CircuitPayload``'s ``parameter_sets`` into chunks whose
+        ``add_circuits/`` bodies, as ``json.dumps`` renders them, stay under
+        :data:`_MAX_PAYLOAD_SIZE_MB`.
 
         Each chunk re-uses the same already-compressed ``circuit_template``
-        and ``parameter_names``; only ``parameter_sets`` is split.  The size
-        estimate is an intentionally loose upper bound on the JSON body's
-        character count — the JSON encoder may add whitespace and per-value
-        floats round up rather than down, so a small cushion keeps us under
-        the cap.  This mirrors :meth:`_split_circuits` for the bound path.
+        and ``parameter_names``; only ``parameter_sets`` is split.  This
+        mirrors :meth:`_split_circuits` for the bound path.
         """
         max_payload_bytes = int(_MAX_PAYLOAD_SIZE_MB * 1024 * 1024)
-        # Fixed per-call overhead: compressed template + parameter_names JSON
-        # + JSON structural keys (circuit_template, parameter_names,
-        # parameter_sets, mode, finalized, shots/observables).
-        parameter_names_bytes = (
-            sum(len(n) for n in parameter_names) + 4 * len(parameter_names) + 2
+        fixed_overhead = len(
+            json.dumps(
+                {
+                    **envelope,
+                    "circuit_template": compressed_template_b64,
+                    "parameter_names": list(parameter_names),
+                    "parameter_sets": [],
+                }
+            )
         )
-        # 512-byte cushion absorbs key names, observables blob, and whitespace.
-        fixed_overhead = len(compressed_template_b64) + parameter_names_bytes + 512
 
         if fixed_overhead >= max_payload_bytes:
             raise ValueError(
                 "Compressed circuit_template "
-                f"({len(compressed_template_b64)} bytes) alone exceeds the "
-                f"per-request payload cap ({_MAX_PAYLOAD_SIZE_MB} MB); "
-                "reduce the template size or split the program."
+                f"({len(compressed_template_b64)} bytes) with the request's other "
+                f"fields exceeds the per-request payload cap "
+                f"({_MAX_PAYLOAD_SIZE_MB} MB); reduce the template size or "
+                "split the program."
             )
 
         def row_size(row: tuple[str, tuple[float, ...]]) -> int:
-            # One row's JSON: {"label": "<label>", "values": [v0, v1, ...]},
-            # ≈ 26 + len(label) + per-value chars + trailing ", ".
             label, values = row
-            values_size = sum(len(repr(float(v))) + 2 for v in values)
-            return 26 + len(label) + values_size + 2
+            # The row's JSON plus the ", " separating it from the next.
+            return len(json.dumps({"label": label, "values": list(values)})) + 2
 
         return _greedy_size_chunks(
             parameter_sets, row_size, fixed_overhead, max_payload_bytes
@@ -1009,6 +1045,7 @@ class QoroService(CircuitRunner):
         ham_ops: str | None,
         circuit_ham_map: list[list[int]] | None,
         shot_groups: list[list[int]] | None,
+        envelope: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         """Chunk parameter matrices into ``add_circuits/`` payload fragments.
 
@@ -1044,18 +1081,15 @@ class QoroService(CircuitRunner):
                 )
             # One check per template, not per resolved row: the rows differ
             # only in the substituted values.
-            if not is_valid_qasm(payload.circuit, payload.parameter_names):
-                try:
-                    validate_qasm(payload.circuit, payload.parameter_names)
-                except SyntaxError as e:
-                    msg = _format_validation_error_with_context(payload.circuit, e)
-                    raise ValueError(
-                        f"Circuit template is not valid QASM: {msg}"
-                    ) from e
+            try:
+                validate_qasm(payload.circuit, payload.parameter_names)
+            except SyntaxError as e:
+                msg = _format_validation_error_with_context(payload.circuit, e)
+                raise ValueError(f"Circuit template is not valid QASM: {msg}") from e
 
             compressed = self._compress_data(payload.circuit)
             for chunk in self._split_payload_parameter_sets(
-                compressed, payload.parameter_names, payload.parameter_sets
+                compressed, payload.parameter_names, payload.parameter_sets, envelope
             ):
                 call_plan.append(
                     {
@@ -1077,13 +1111,14 @@ class QoroService(CircuitRunner):
         maestro_config: MaestroConfig | None,
         device_config: DeviceConfig | None,
         job_type: JobType,
-        ham_ops: str | None,
-        circuit_ham_map: list[list[int]] | None,
+        envelope: Mapping[str, Any],
     ) -> ExecutionResult:
         """Open a job, upload every payload fragment, return its ``job_id``.
 
         The plan is complete before ``job/init/`` runs, so the last fragment
-        is known up front and is the only one marked ``finalized``.
+        is known up front and is the only one marked ``finalized``. Neither
+        request is retried: a retry after a lost response would open a second
+        job or append the circuits twice.
         """
         init_payload: dict[str, Any] = {
             "tag": job_config.tag,
@@ -1097,38 +1132,25 @@ class QoroService(CircuitRunner):
         init_payload |= _config_body(maestro_config, device_config)
 
         init_response = self._make_request(
-            "post", "job/init/", json=init_payload, timeout=100
+            "post", "job/init/", retry=False, json=init_payload, timeout=100
         )
-        if init_response.status_code not in [HTTPStatus.OK, HTTPStatus.CREATED]:
-            _raise_with_details(init_response)
         job_id = init_response.json()["job_id"]
 
-        compressed_ham_ops = compress_ham_ops(ham_ops) if ham_ops is not None else None
-
         for i, fragment in enumerate(call_plan):
-            payload: dict[str, Any] = {
+            payload = {
                 **fragment,
-                "mode": "append",
+                **envelope,
                 "finalized": "true" if i == len(call_plan) - 1 else "false",
             }
-            if compressed_ham_ops is not None:
-                payload["observables"] = compressed_ham_ops
-                if circuit_ham_map is not None:
-                    payload["circuit_ham_map"] = circuit_ham_map
-            elif "shot_groups" not in payload:
-                payload["shots"] = job_config.shots
-
-            response = self._make_request(
-                "post", f"job/{job_id}/add_circuits/", json=payload, timeout=100
+            self._make_request(
+                "post",
+                f"job/{job_id}/add_circuits/",
+                retry=False,
+                json=payload,
+                timeout=100,
             )
-            if response.status_code != HTTPStatus.OK:
-                _raise_with_details(response)
 
-        return ExecutionResult(
-            results=None,
-            job_id=job_id,
-            backend_jobs=len(call_plan),
-        )
+        return ExecutionResult(job_id=job_id, backend_jobs=len(call_plan))
 
     def delete_job(self, execution_result: ExecutionResult) -> requests.Response:
         """
@@ -1166,6 +1188,7 @@ class QoroService(CircuitRunner):
         return self._make_request(
             "post",
             f"job/{job_id}/cancel/",
+            retry=False,
             timeout=50,
         )
 
@@ -1321,7 +1344,7 @@ class QoroService(CircuitRunner):
 
         scope = (
             _auto_cancellation_scope(self, execution_result)
-            if loop_until_complete and cancellation_event is None
+            if cancellation_event is None
             else nullcontext(cancellation_event)
         )
 
@@ -1358,11 +1381,9 @@ class QoroService(CircuitRunner):
                     if self.max_retries is None
                     else range(1, self.max_retries + 1)
                 )
+                cancelled = f"Polling cancelled for job {job_id}."
                 for retry_count in attempts:
-                    if cancellation_event is not None and cancellation_event.is_set():
-                        raise ExecutionCancelledError(
-                            f"Polling cancelled for job {job_id}."
-                        )
+                    raise_if_cancelled(cancellation_event, cancelled)
 
                     response = self._make_request(
                         "get", f"job/{job_id}/status/", timeout=200
@@ -1371,22 +1392,14 @@ class QoroService(CircuitRunner):
 
                     if status is JobStatus.COMPLETED:
                         return status
-                    if cancellation_event is not None and cancellation_event.is_set():
-                        raise ExecutionCancelledError(
-                            f"Polling cancelled for job {job_id}."
-                        )
+                    raise_if_cancelled(cancellation_event, cancelled)
                     if error_type := terminal_errors.get(status):
                         raise error_type(job_id)
 
                     update_fn(retry_count, status.value)
 
-                    if cancellation_event is not None:
-                        if cancellation_event.wait(self.polling_interval):
-                            raise ExecutionCancelledError(
-                                f"Polling cancelled for job {job_id}."
-                            )
-                    else:
-                        time.sleep(self.polling_interval)
+                    if cancellation_event.wait(self.polling_interval):
+                        raise ExecutionCancelledError(cancelled)
 
                 raise MaxRetriesReachedError(job_id, self.max_retries)
         finally:

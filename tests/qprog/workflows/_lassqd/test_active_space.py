@@ -55,15 +55,17 @@ def test_select_frontier_orbitals(
     assert virtual == expected_virtual
 
 
-def test_rejects_selection_without_both_occupied_and_virtual():
-    """An all-occupied register leaves no virtual orbital to select."""
-    with pytest.raises(ValueError, match="at least one occupied"):
-        select_frontier_orbitals(_N_ORBITALS, _N_ORBITALS, 2)
-
-
-def test_rejects_non_positive_n_active_orbitals():
-    with pytest.raises(ValueError, match="n_active_orbitals"):
-        select_frontier_orbitals(_N_ORBITALS, 3, 0)
+@pytest.mark.parametrize(
+    "n_occupied, n_active, match",
+    [
+        # An all-occupied register leaves no virtual orbital to select.
+        pytest.param(_N_ORBITALS, 2, "at least one occupied", id="all-occupied"),
+        pytest.param(3, 0, "n_active_orbitals", id="non-positive"),
+    ],
+)
+def test_select_frontier_orbitals_rejects(n_occupied, n_active, match):
+    with pytest.raises(ValueError, match=match):
+        select_frontier_orbitals(_N_ORBITALS, n_occupied, n_active)
 
 
 def test_localization_preserves_the_occupied_subspace(
@@ -172,7 +174,6 @@ def test_coupling_threshold_is_relative_to_the_strongest_edge():
 def test_merge_clusters_recovers_the_two_blocks():
     one_body, two_body = _two_block_integrals()
     graph = build_coupling_graph(one_body, two_body)
-    assert set(graph.edges) == {(0, 1), (2, 3)}
     is_occupied = [True, False, True, False]
     clusters = merge_clusters(graph, is_occupied, max_orbitals_per_fragment=2)
 

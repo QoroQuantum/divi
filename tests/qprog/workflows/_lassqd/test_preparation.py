@@ -189,39 +189,27 @@ def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     np.testing.assert_allclose(result.h_beta, np.diag([0.7, -0.8]))
 
 
-def test_fragment_rohf_retries_unconverged_scf_with_newton(mocker):
+@pytest.mark.parametrize("newton_converges", [True, False])
+def test_fragment_rohf_retries_unconverged_scf_with_newton(mocker, newton_converges):
     direct_solver = mocker.Mock(converged=False)
-    newton_solver = mocker.Mock(converged=True)
+    newton_solver = mocker.Mock(converged=newton_converges)
     direct_solver.newton.return_value = newton_solver
     rohf = mocker.patch("pyscf.scf.ROHF", return_value=direct_solver)
-    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
+    spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
 
-    result = _fragment_rohf(
-        np.diag([-1.0, 0.5]),
-        np.zeros((2, 2, 2, 2)),
-        spec,
-    )
+    def solve():
+        return _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+
+    if newton_converges:
+        assert solve() is newton_solver
+    else:
+        with pytest.raises(RuntimeError, match=r"ROHF did not converge.*\(3, 4\)"):
+            solve()
 
     rohf.assert_called_once()
     direct_solver.kernel.assert_called_once_with()
     direct_solver.newton.assert_called_once_with()
     newton_solver.kernel.assert_called_once_with()
-    assert result is newton_solver
-
-
-def test_fragment_rohf_raises_when_newton_solver_does_not_converge(mocker):
-    direct_solver = mocker.Mock(converged=False)
-    newton_solver = mocker.Mock(converged=False)
-    direct_solver.newton.return_value = newton_solver
-    mocker.patch("pyscf.scf.ROHF", return_value=direct_solver)
-    spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
-
-    with pytest.raises(RuntimeError, match=r"ROHF did not converge.*\(3, 4\)"):
-        _fragment_rohf(
-            np.diag([-1.0, 0.5]),
-            np.zeros((2, 2, 2, 2)),
-            spec,
-        )
 
 
 def test_fragment_rohf_uses_positive_local_spin_for_beta_majority(mocker):
@@ -314,16 +302,17 @@ def _two_orbital_program(backend, **kwargs):
     )
 
 
-def test_linear_method_program_prepares_classically_then_samples_once(
-    dummy_simulator, mocker, tmp_path
-):
+_PREPARED_FIELDS = ("h_alpha", "h_beta", "two_body", "orbital_rotation")
+
+
+def _measured_x0_preparation():
     circuit = QuantumCircuit(4)
     circuit.x(0)
     classical_bits = ClassicalRegister(4)
     circuit.add_register(classical_bits)
     for index, qubit in enumerate(circuit.qubits):
         circuit.measure(qubit, classical_bits[index])
-    preparation = LUCJPreparation(
+    return LUCJPreparation(
         circuit=circuit,
         params=np.array([0.1, -0.2]),
         h_alpha=np.eye(2),
@@ -331,26 +320,43 @@ def test_linear_method_program_prepares_classically_then_samples_once(
         two_body=np.zeros((2, 2, 2, 2)),
         orbital_rotation=np.eye(2),
     )
+
+
+@pytest.fixture
+def prepared_program(dummy_simulator, mocker):
+    """A linear-method program run once against a patched classical preparation.
+
+    Returns ``(program, preparation, prepare, submit)``.
+    """
+    preparation = _measured_x0_preparation()
     prepare = mocker.patch(
         f"{_PREPARATION}.prepare_lucj_fragment", return_value=preparation
     )
     submit = mocker.spy(dummy_simulator, "submit_circuits")
     program = _two_orbital_program(dummy_simulator, seed=7)
+    assert program.run() is program
+    return program, preparation, prepare, submit
 
-    returned = program.run()
 
-    assert returned is program
+def test_linear_method_program_prepares_classically_then_samples_once(
+    prepared_program,
+):
+    program, preparation, prepare, submit = prepared_program
+
     prepare.assert_called_once()
     assert submit.call_count == 1
     assert program.total_circuit_count == 1
     assert program.has_results()
     assert set(program.best_probs) == {0}
     np.testing.assert_allclose(program.best_params, preparation.params)
-    np.testing.assert_allclose(program.h_alpha, preparation.h_alpha)
-    np.testing.assert_allclose(program.h_beta, preparation.h_beta)
-    np.testing.assert_allclose(program.two_body, preparation.two_body)
-    np.testing.assert_allclose(program.orbital_rotation, preparation.orbital_rotation)
+    for name in _PREPARED_FIELDS:
+        np.testing.assert_allclose(getattr(program, name), getattr(preparation, name))
 
+
+def test_linear_method_checkpoint_restores_without_preparing_or_sampling(
+    prepared_program, dummy_simulator, tmp_path
+):
+    program, _, prepare, submit = prepared_program
     checkpoint = program._make_checkpoint(tmp_path)
     restored = _two_orbital_program(dummy_simulator, seed=7)
     prepare.reset_mock()
@@ -363,18 +369,21 @@ def test_linear_method_program_prepares_classically_then_samples_once(
     submit.assert_not_called()
     assert restored.best_probs == program.best_probs
     np.testing.assert_allclose(restored.best_params, program.best_params)
-    np.testing.assert_allclose(restored.h_alpha, program.h_alpha)
-    np.testing.assert_allclose(restored.h_beta, program.h_beta)
-    np.testing.assert_allclose(restored.two_body, program.two_body)
-    np.testing.assert_allclose(restored.orbital_rotation, program.orbital_rotation)
+    for name in _PREPARED_FIELDS:
+        np.testing.assert_allclose(getattr(restored, name), getattr(program, name))
 
+
+def test_linear_method_checkpoint_rejects_a_mismatched_digest(
+    prepared_program, dummy_simulator, tmp_path
+):
+    program, *_ = prepared_program
+    checkpoint = program._make_checkpoint(tmp_path).model_copy(
+        update={"state_sha256": "0" * 64}
+    )
     mismatched = _two_orbital_program(dummy_simulator, seed=7)
-    mismatched_checkpoint = checkpoint.model_copy(update={"state_sha256": "0" * 64})
 
     with pytest.raises(ValueError, match="digest"):
-        mismatched._restore_checkpoint(
-            mismatched_checkpoint.model_dump_json(), tmp_path
-        )
+        mismatched._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
     assert not mismatched.has_results()
 
 
