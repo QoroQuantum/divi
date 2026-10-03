@@ -1109,10 +1109,12 @@ class SQDSolver:
             spatial_to_spin_occupations(alpha, beta, self.n_orb) for alpha, beta in dets
         ]
 
-        h_proj, s2_proj = projected_matrices(
+        h_proj, deviation = projected_matrices(
             dets, dets_spin, h_spin, g_spin, self.n_orb
         )
-        deviation = s2_proj - target_s * (target_s + 1.0) * np.eye(len(dets))
+        # S^2 less its target eigenvalue, shifted in place: a copy would add a
+        # third dense matrix of the subspace's size.
+        deviation[np.diag_indices(len(dets))] -= target_s * (target_s + 1.0)
         energy, eigenvector = ground_root(h_proj, deviation, self.lambda_penalty)
         amplitudes = eigenvector.reshape(len(strings_alpha), len(strings_beta))
 

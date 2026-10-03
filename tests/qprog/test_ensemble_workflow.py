@@ -228,6 +228,22 @@ class _ArtifactEnsemble(_LifecycleEnsemble):
         return json.loads((round_dir / payload["artifact"]).read_text())
 
 
+class _StatefulLoadEnsemble(_ArtifactEnsemble):
+    """Restores side state from whichever snapshot it loads, as LASSQD's loader
+    does with its generators; ``fail_on_stem`` makes that load raise."""
+
+    def __init__(self, backend, *, fail_on_stem=None, **kwargs):
+        super().__init__(backend, **kwargs)
+        self.fail_on_stem = fail_on_stem
+        self.restored_from = None
+
+    def _load_workflow_checkpoint_state(self, payload, round_dir, stem):
+        if stem == self.fail_on_stem:
+            raise ValueError(f"{stem} boom")
+        self.restored_from = stem
+        return super()._load_workflow_checkpoint_state(payload, round_dir, stem)
+
+
 class _MixedCheckpointEnsemble(_TerminalTestEnsemble):
     """Puts a program without checkpoint support ahead of checkpointing ones."""
 
@@ -549,6 +565,38 @@ class TestEnsembleCheckpointing:
         assert restored.stop_reason is WorkflowStatus.MAX_ROUNDS
         assert [record.number for record in restored.round_history] == [1, 2]
         assert restored.program_ids_per_round == [["r1p0", "r1p1"], ["r2p0", "r2p1"]]
+
+    def test_completed_round_restore_leaves_the_output_state_applied(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        """Rebuilding the round's programs loads its input snapshot too; the
+        output snapshot must be the last one applied, or a loader with side
+        effects is left at the round's start."""
+        lifecycle_ensemble(cls=_StatefulLoadEnsemble, n_rounds=3).run(
+            max_rounds=1, checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+        )
+
+        restored = lifecycle_ensemble(cls=_StatefulLoadEnsemble, n_rounds=3)
+        restored.restore_state(tmp_path)
+
+        assert restored.restored_from == "output_state"
+        assert restored.workflow_state == 1
+
+    def test_completed_round_restore_keeps_no_programs_when_the_state_fails_to_load(
+        self, lifecycle_ensemble, tmp_path
+    ):
+        lifecycle_ensemble(cls=_StatefulLoadEnsemble, n_rounds=3).run(
+            max_rounds=1, checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+        )
+        restoring = lifecycle_ensemble(
+            cls=_StatefulLoadEnsemble, n_rounds=3, fail_on_stem="output_state"
+        )
+
+        with pytest.raises(ValueError, match="output_state boom"):
+            restoring.restore_state(tmp_path)
+
+        assert restoring.programs == {}
+        assert restoring.workflow_state is None
 
     def test_one_shot_completed_checkpoint_stays_complete(
         self, dummy_simulator, tmp_path

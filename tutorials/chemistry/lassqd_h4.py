@@ -71,7 +71,6 @@ def main() -> None:
 
     settings = dict(
         sqd=SQDConfig(n_batches=6, batch_size=32, n_recovery_iterations=3),
-        max_iterations=60,
         seed=7,
         backend=get_backend(shots=5000),
         reporting_level=ReportingLevel.OFF,

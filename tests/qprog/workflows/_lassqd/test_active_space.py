@@ -516,12 +516,20 @@ def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
     assert len(partitions) == 1
 
 
-def test_auto_fragment_specs_active_integrals_include_frozen_core(h4_chain_mean_field):
+@pytest.mark.parametrize("relativistic", [False, True], ids=["rhf", "sfx2c1e"])
+def test_auto_fragment_specs_active_integrals_include_frozen_core(
+    h4_chain_mean_field, relativistic
+):
     """With an occupied orbital left out of the active space, the one-body
     integrals feeding the coupling graph must carry its mean-field
     potential, matching a CASCI effective core Hamiltonian built the same
-    way."""
-    mean_field = h4_chain_mean_field
+    way. A scalar-relativistic mean field's own core Hamiltonian must reach
+    them too, since CASCI takes it from ``get_hcore``."""
+    mean_field = (
+        scf.RHF(h4_chain()).sfx2c1e().run(verbose=0)
+        if relativistic
+        else h4_chain_mean_field
+    )
     mol = mean_field.mol
     mo_coeff = np.asarray(mean_field.mo_coeff)
 
@@ -537,7 +545,12 @@ def test_auto_fragment_specs_active_integrals_include_frozen_core(h4_chain_mean_
     localized = np.hstack([localized_occ, localized_virt])
 
     one_body, _ = _localized_active_space_integrals(
-        mol, mo_coeff, occupied_indices, n_occupied=2, localized=localized
+        mol,
+        mo_coeff,
+        occupied_indices,
+        n_occupied=2,
+        localized=localized,
+        h_ao=mean_field.get_hcore(),
     )
 
     mc = mcscf.CASCI(mean_field, 2, 2)

@@ -39,16 +39,14 @@ class OrbitalSolve:
     Attributes:
         mo_coeff: The rotated MO coefficients.
         energy: Total energy at the returned orbitals.
-        converged: Whether the optimizer reported success rather than exhausting
-            its budget. A capped solve still returns its best point, so the
+        converged: Whether ``gradient_norm`` is within the caller's tolerance.
+            A capped or stalled solve still returns its best point, so the
             energy remains an upper bound, but not a stationary point.
         n_iterations: Optimizer iterations taken.
         n_evaluations: Objective evaluations taken, each one four-index MO
             transform.
-        gradient_norm: Largest absolute orbital-gradient component at the
-            returned orbitals. A solve that stops on its energy-reduction
-            tolerance can report ``converged`` with this well above
-            ``ORBITAL_MINIMIZE_OPTIONS``' gradient tolerance.
+        gradient_norm: L2 norm of the orbital gradient over the rotation pairs
+            at the returned orbitals.
         n_rotation_pairs: Number of orbital pairs the rotation spanned.
     """
 
@@ -123,6 +121,7 @@ def transform_integrals(
     n_core: int,
     n_act: int,
     ao_eri: np.ndarray | None = None,
+    h_ao: np.ndarray | None = None,
 ) -> MOIntegrals:
     """Transform the active-space integrals and build the frozen-core potentials.
 
@@ -137,11 +136,13 @@ def transform_integrals(
         ao_eri: AO-basis electron-repulsion integral from :func:`cached_ao_eri`.
             Supplying it avoids rebuilding the AO integrals every round;
             ``None`` builds them here.
+        h_ao: AO-basis core Hamiltonian; ``None`` uses :func:`cached_h_ao`.
     """
 
     if ao_eri is None:
         ao_eri = cached_ao_eri(mol)
-    h_ao = cached_h_ao(mol)
+    if h_ao is None:
+        h_ao = cached_h_ao(mol)
 
     core_coeff = mo_coeff[:, :n_core]
     active_coeff = mo_coeff[:, n_core : n_core + n_act]
@@ -289,13 +290,17 @@ def cached_ao_eri(mol) -> np.ndarray:
 
 
 def cached_h_ao(mol) -> np.ndarray:
-    """Compute the AO-basis one-electron (kinetic + nuclear) integral once per run.
+    """Compute the AO-basis core Hamiltonian of ``mol`` once per run.
+
+    Kinetic and nuclear-attraction integrals plus any effective core
+    potential. A mean field with its own core Hamiltonian, such as a
+    scalar-relativistic one, supplies it through ``get_hcore`` instead.
 
     The returned array is suitable as the ``h_ao`` argument to
     :func:`_total_energy` for every orbital-rotation loss evaluation in a
     macro-cycle, avoiding repeated AO integral recomputation.
     """
-    return mol.intor("int1e_kin") + mol.intor("int1e_nuc")
+    return hf.get_hcore(mol)
 
 
 def _total_energy(
@@ -551,6 +556,8 @@ def optimize_orbitals(
     ao_eri: np.ndarray,
     h_ao: np.ndarray,
     max_orbital_iterations: int | None = None,
+    *,
+    gradient_tol: float,
 ) -> OrbitalSolve:
     """Optimise molecular orbitals against the current active-space RDMs.
 
@@ -576,10 +583,11 @@ def optimize_orbitals(
     ``fun=0.0`` without evaluating the objective when there are zero rotation
     parameters) instead of raising.
 
-    That monotonicity is also why the third return value matters: an optimizer
+    That monotonicity is also why the convergence flag matters: an optimizer
     that gives up returns the baseline, so the round's energy barely moves and
     looks exactly like a converged macro-cycle. The flag lets the caller tell
-    the two apart.
+    the two apart. It tests the orbital gradient itself, not L-BFGS-B's status,
+    which also reports success once the relative energy change stalls.
 
     Args:
         mol: A PySCF ``gto.Mole``.
@@ -599,6 +607,8 @@ def optimize_orbitals(
             solve, bounding the cost of one round at the price of returning
             before convergence. Unrelated to any VQE iteration budget.
             ``None`` uses scipy's default.
+        gradient_tol: The solve counts as converged when the L2 norm of the
+            orbital gradient at the returned orbitals is at most this.
 
     Returns:
         An :class:`OrbitalSolve` carrying the rotated orbitals, the energy, and
@@ -610,8 +620,8 @@ def optimize_orbitals(
             :func:`_total_energy`.
 
     Warns:
-        UserWarning: If the optimizer stopped without converging, naming the
-            iteration count and scipy's reason.
+        UserWarning: If the solve ended without converging, naming the
+            iteration count, scipy's reason and the gradient norm.
     """
     n_orb_total = mo_coeff.shape[1]
 
@@ -633,9 +643,9 @@ def optimize_orbitals(
     best_params = init_params
     best_energy = baseline_energy
     best_gradient = baseline_gradient
-    converged = True
     n_iterations = 0
     n_evaluations = 1
+    stop_reason = "no rotation freedom"
     if n_rot > 0:
         options = dict(ORBITAL_MINIMIZE_OPTIONS)
         if max_orbital_iterations is not None:
@@ -655,19 +665,22 @@ def optimize_orbitals(
             best_params = res.x
             best_energy = float(res.fun)
             best_gradient = np.asarray(res.jac)
-        converged = bool(res.success)
-        if not converged:
-            warn(
-                "Orbital optimisation stopped without converging after "
-                f"{res.nit} iterations and {res.nfev} evaluations: "
-                f"{str(res.message).strip()}. The returned orbitals are the best "
-                "seen, so the energy is still an upper bound, but this round is "
-                "not a stationary point -- a small round-to-round energy change "
-                "here means the optimizer gave up, not that the macro-cycle "
-                "converged.",
-                UserWarning,
-                stacklevel=2,
-            )
+        stop_reason = str(res.message).strip()
+
+    gradient_norm = float(np.linalg.norm(best_gradient))
+    converged = gradient_norm <= gradient_tol
+    if not converged:
+        warn(
+            "Orbital optimisation ended without converging after "
+            f"{n_iterations} iterations and {n_evaluations} evaluations "
+            f"({stop_reason}): its orbital-gradient norm {gradient_norm:.2e} "
+            f"exceeds {gradient_tol:.2e}. The returned orbitals are the best "
+            "seen, so the energy is still an upper bound, but this round is not a "
+            "stationary point -- a small round-to-round energy change here means "
+            "the optimizer gave up, not that the macro-cycle converged.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     generator = np.zeros((n_orb_total, n_orb_total))
     if n_rot > 0:
@@ -682,8 +695,6 @@ def optimize_orbitals(
         converged=converged,
         n_iterations=n_iterations,
         n_evaluations=n_evaluations,
-        gradient_norm=(
-            float(np.max(np.abs(best_gradient))) if best_gradient.size else 0.0
-        ),
+        gradient_norm=gradient_norm,
         n_rotation_pairs=n_rot,
     )

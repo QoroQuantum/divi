@@ -492,6 +492,7 @@ def _localized_active_space_integrals(
     occupied_indices,
     n_occupied: int,
     localized: np.ndarray,
+    h_ao: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build one- and two-body integrals for the localised active space.
 
@@ -510,13 +511,16 @@ def _localized_active_space_integrals(
         n_occupied: Number of occupied spatial orbitals in ``mo_coeff``.
         localized: ``(nao, n_act)`` localised active-space AO-basis
             coefficient matrix.
+        h_ao: AO-basis core Hamiltonian; ``None`` uses
+            :func:`~divi.qprog.workflows._lassqd._integrals.cached_h_ao`.
 
     Returns:
         ``(one_body, two_body)`` in the localised active basis.
     """
 
     n_act = localized.shape[1]
-    h_ao = cached_h_ao(mol)
+    if h_ao is None:
+        h_ao = cached_h_ao(mol)
 
     core_indices = sorted(set(range(n_occupied)) - set(occupied_indices))
     if core_indices:
@@ -543,6 +547,7 @@ def auto_fragment_specs(
     active_orbitals: Sequence[int] | None = None,
     fragment_atoms: Sequence[Sequence[int]] | None = None,
     local_spins: Sequence[int] | None = None,
+    h_ao: np.ndarray | None = None,
 ) -> tuple[list[FragmentSpec], np.ndarray, tuple[int, ...]]:
     """Automatically fragment an active space from orbital coupling.
 
@@ -585,6 +590,9 @@ def auto_fragment_specs(
             fragment order depends on ``max_orbitals_per_fragment``,
             ``coupling_threshold`` and the localisation RNG, so a positional
             spin list would not name a stable fragment there.
+        h_ao: AO-basis core Hamiltonian for the coupling-graph integrals;
+            ``None`` builds it from ``mol``. Ignored when ``fragment_atoms``
+            is given.
 
     The selector and ``local_spins`` combinations are those
     ``FragmentationConfig`` accepts; they are not re-validated here.
@@ -621,7 +629,7 @@ def auto_fragment_specs(
         clusters = assign_orbitals_to_atoms(mol, localized, fragment_atoms)
     else:
         one_body, two_body = _localized_active_space_integrals(
-            mol, mo_coeff, occupied_indices, n_occupied, localized
+            mol, mo_coeff, occupied_indices, n_occupied, localized, h_ao
         )
         graph = build_coupling_graph(
             one_body, two_body, coupling_threshold=coupling_threshold

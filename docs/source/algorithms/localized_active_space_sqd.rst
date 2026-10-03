@@ -149,8 +149,10 @@ Explicit Fragment Specification
 :class:`~divi.qprog.workflows.FragmentSpec` names one fragment: which spatial
 orbitals belong to it and how many alpha and beta electrons are assigned to
 it. Indices refer to canonical RHF molecular orbitals, not spatial positions.
-Fragments must be disjoint and closed shell, with valid electron counts. Pass
-known splits through ``active_spaces``. For the four-orbital H4 tutorial:
+Fragments must be disjoint, carry valid electron counts, and list their
+occupied orbitals before their virtual ones, since each fragment's reference
+determinant fills its orbitals in the order given. Pass known splits through
+``active_spaces``. For the four-orbital H4 tutorial:
 
 .. code-block:: python
 
@@ -373,8 +375,9 @@ one determinant starves recovery. Compare per-fragment subspace sizes in
 full determinant count.
 
 The default path fixes the paper's one-repetition topology, including its final
-orbital rotation and local interaction pairs. ``n_layers`` and
-``ansatz_kwargs`` configure only the explicit VQE route.
+orbital rotation and local interaction pairs. ``n_layers``, ``ansatz_kwargs``
+and ``max_iterations`` configure only the explicit VQE route, and the default
+mode rejects them at construction.
 
 Next Steps
 ------------

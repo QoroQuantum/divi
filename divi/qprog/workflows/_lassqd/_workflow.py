@@ -5,6 +5,7 @@
 """The LASSQD program ensemble: construction and per-round program creation."""
 
 import copy
+import hashlib
 import os
 import tempfile
 import time
@@ -81,6 +82,22 @@ _SEED_CC_MAX_CYCLE = 500
 # and covers a ten-orbital fragment, the largest either SQD paper runs.
 _SEED_CHECK_MAX_QUBITS = 20
 
+_DEFAULT_MAX_ITERATIONS = 10
+
+# Program options a linear-method fragment takes, beyond those LASSQD sets itself.
+_LINEAR_METHOD_PROGRAM_OPTIONS = (
+    "precision",
+    "qem_protocol",
+    "suppress_performance_warnings",
+)
+_LINEAR_METHOD_KWARGS = frozenset(
+    {*_LINEAR_METHOD_PROGRAM_OPTIONS, "backend", "sampling_backend", "reporting_level"}
+)
+
+# Largest deviation of a checkpoint's orbital overlap from the identity. Orbital
+# rotations keep it near machine precision; a scaled or edited array does not.
+_ORTHONORMALITY_TOL = 1e-8
+
 
 @dataclass(frozen=True)
 class LASSQDRoundReport:
@@ -100,10 +117,11 @@ class LASSQDRoundReport:
         orbital_iterations: Iterations the orbital solve took.
         orbital_evaluations: Objective evaluations the orbital solve took, each
             one four-index MO transform.
-        orbital_gradient_norm: Largest orbital-gradient component at the
-            returned orbitals.
-        orbital_converged: Whether the orbital solve reached a stationary point
-            rather than stopping on a budget or an energy-reduction floor.
+        orbital_gradient_norm: L2 norm of the orbital gradient at the returned
+            orbitals.
+        orbital_converged: Whether that norm is at most ``sqrt(energy_tol)``,
+            rather than the solve stopping on a budget or an energy-reduction
+            floor.
         rotation_pairs: Orbital pairs the rotation spanned.
         recovery_seconds: Wall-clock time in SQD recovery for all fragments.
         orbital_seconds: Wall-clock time in the orbital re-optimisation.
@@ -133,7 +151,7 @@ class LASSQDRoundReport:
             f"({change}); subspaces "
             f"{list(self.subspace_sizes)}; orbitals: {self.orbital_iterations} "
             f"iterations over {self.rotation_pairs} pairs, "
-            f"|g|max {self.orbital_gradient_norm:.2e}, "
+            f"|g| {self.orbital_gradient_norm:.2e}, "
             f"converged={self.orbital_converged}; "
             f"SQD {self.recovery_seconds:.1f}s, orbitals {self.orbital_seconds:.1f}s"
         )
@@ -629,6 +647,16 @@ def _stored_array(
     return array.copy()
 
 
+def _molecule_fingerprint(mol) -> str:
+    """Digest of what fixes a molecule's integrals: atoms, geometry, basis,
+    effective core potentials and electron count."""
+    digest = hashlib.sha256()
+    for array in (mol._atm, mol._bas, mol._env[gto.PTR_ENV_START :], mol._ecpbas):
+        digest.update(np.ascontiguousarray(array).tobytes())
+    digest.update(f"{mol.cart}:{mol.nelectron}".encode())
+    return digest.hexdigest()
+
+
 def _compute_n_core(specs: Sequence[FragmentSpec], n_occupied: int) -> int:
     """Frozen occupied-orbital count implied by a fragment spec list.
 
@@ -644,13 +672,12 @@ def _compute_n_core(specs: Sequence[FragmentSpec], n_occupied: int) -> int:
 def _diagonal_rdm_guess(
     spec: FragmentSpec,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Build a diagonal RDM guess for a fresh fragment.
+    """RDMs of a fresh fragment's reference determinant.
 
-    Places ``n_alpha`` alpha electrons and ``n_beta`` beta electrons on the
-    fragment's lowest-indexed orbitals to form the 1-RDM. Only the
-    ``[p, p, q, q]`` elements of the 2-RDM are populated, each set to
-    ``rdm1[p, p] * rdm1[q, q]``; every other element, including all
-    off-diagonal-block elements, stays zero.
+    The determinant places ``n_alpha`` alpha and ``n_beta`` beta electrons on
+    the fragment's lowest-indexed orbitals. Its 2-RDM carries the Coulomb term
+    ``Gamma[p, p, q, q] = n_p n_q`` and the same-spin exchange term
+    ``Gamma[p, q, q, p] -= sum_sigma n^sigma_p n^sigma_q``.
 
     Returns ``(rdm1, rdm2, rdm1_alpha, rdm1_beta)``.
     """
@@ -660,12 +687,12 @@ def _diagonal_rdm_guess(
     occ_beta = np.zeros(n_orb)
     occ_beta[: spec.n_beta] = 1.0
     occupation = occ_alpha + occ_beta
-    rdm1 = np.diag(occupation)
 
     rdm2 = np.zeros((n_orb, n_orb, n_orb, n_orb))
     p, q = np.meshgrid(np.arange(n_orb), np.arange(n_orb), indexing="ij")
     rdm2[p, p, q, q] = occupation[p] * occupation[q]
-    return rdm1, rdm2, np.diag(occ_alpha), np.diag(occ_beta)
+    rdm2[p, q, q, p] -= np.outer(occ_alpha, occ_alpha) + np.outer(occ_beta, occ_beta)
+    return np.diag(occupation), rdm2, np.diag(occ_alpha), np.diag(occ_beta)
 
 
 class LASSQD(ProgramEnsemble):
@@ -709,21 +736,24 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         preparation_mode: Fragment-circuit preparation strategy. Defaults to
             ``'linear_method'``; use ``'vqe'`` to restore backend-driven
             parameter optimization.
-        max_iterations: Max optimisation iterations per fragment in VQE mode.
+        max_iterations: Max optimisation iterations per fragment in VQE mode,
+            10 when omitted. Linear-method mode does not take it.
         max_orbital_iterations: Cap on L-BFGS-B iterations in each round's
             orbital re-optimisation, a separate solve from the fragment VQEs and
             usually the round's dominant cost on a large register. ``None``
             leaves it uncapped. A capped round still returns its best orbitals
             but is not a stationary point, and reports as not converged.
         energy_tol: Macro-cycle stops once consecutive rounds' total energies
-            differ by less than this (Hartree).
+            differ by less than this (Hartree) and the round's orbital solve
+            converged, meaning its orbital-gradient L2 norm is at most
+            ``sqrt(energy_tol)`` (PySCF's CASSCF convention).
         seed: Seed for fragmentation, localisation, and SQD subsampling.
         **kwargs: ``backend`` (required), ``sampling_backend``, and
             ``reporting_level`` are consumed here; ``sampling_backend`` runs
             each fragment's final sample. Other keywords are
-            forwarded to each fragment program. Shared
-            quantum-program options such as ``precision`` and ``qem_protocol``
-            work in either mode; VQE-specific options such as
+            forwarded to each fragment program. ``precision``,
+            ``qem_protocol`` and ``suppress_performance_warnings`` work in
+            either mode; VQE options such as ``n_layers``, ``ansatz_kwargs``,
             ``grouping_strategy`` and ``early_stopping`` require VQE mode.
 
     Raises:
@@ -737,8 +767,10 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
             fragments overlap, or the fragments do not sum to ``Sz = 0``. The
             configuration objects validate their own fields on construction.
         TypeError: If ``backend`` is missing, if ``problem`` was not built
-            from a PySCF ``Mole`` or mean-field, or if ``ansatz`` is not an
-            :class:`~divi.qprog.algorithms.Ansatz`.
+            from a PySCF ``Mole`` or mean-field, if ``ansatz`` is not an
+            :class:`~divi.qprog.algorithms.Ansatz`, or if linear-method mode
+            receives ``max_iterations`` or a keyword its fragment programs do
+            not take.
         ImportError: If the ``chem`` extra is not installed.
     """
 
@@ -753,7 +785,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         preparation_mode: LASSQDPreparationMode | str = (
             LASSQDPreparationMode.LINEAR_METHOD
         ),
-        max_iterations: int = 10,
+        max_iterations: int | None = None,
         max_orbital_iterations: int | None = None,
         energy_tol: float = 1e-6,
         seed: int | None = None,
@@ -787,6 +819,19 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
                 "optimizer is only used by preparation_mode='vqe'; omit it for "
                 "the paper-faithful linear_method path."
             )
+        if preparation_mode is LASSQDPreparationMode.LINEAR_METHOD:
+            unsupported = set(kwargs) - _LINEAR_METHOD_KWARGS
+            if max_iterations is not None:
+                unsupported.add("max_iterations")
+            if unsupported:
+                raise TypeError(
+                    "preparation_mode='linear_method' does not take "
+                    f"{', '.join(sorted(unsupported))}; its fragment programs "
+                    f"accept only {', '.join(_LINEAR_METHOD_PROGRAM_OPTIONS)}. "
+                    "VQE options need preparation_mode='vqe'."
+                )
+        if max_iterations is None:
+            max_iterations = _DEFAULT_MAX_ITERATIONS
         if max_iterations < 1:
             raise ValueError(
                 f"max_iterations must be at least 1; got {max_iterations}."
@@ -837,7 +882,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         # Validate the caller's orbital choices against this molecule here
         # rather than in ``initial_state``, so an out-of-range index fails at
         # construction.
-        n_orbitals_total = self._mol.nao_nr()
+        n_orbitals_total = self._register_size()
         n_occupied = self._mol.nelectron // 2
         if fragmentation.active_spaces is not None:
             validate_fragment_specs(
@@ -886,6 +931,14 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         self._ao_eri: np.ndarray | None = None
         self._h_ao: np.ndarray | None = None
 
+    def _register_size(self) -> int:
+        """Molecular-orbital count: the supplied mean field's, which drops
+        linearly dependent basis functions, else the basis size."""
+        mean_field = self._mean_field
+        if mean_field is not None and mean_field.mo_coeff is not None:
+            return np.asarray(mean_field.mo_coeff).shape[1]
+        return self._mol.nao_nr()
+
     @property
     def sampling_backend(self) -> CircuitRunner | None:
         """Backend the fragments' final samples run on, when configured."""
@@ -909,8 +962,12 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         ``validate_fragment_specs``; or automatic fragmentation via
         ``auto_fragment_specs``), permutes the MO register into
         ``[core | fragments | virtual]`` order via
-        ``build_active_permutation``, and seeds each fragment with a diagonal
-        mean-field RDM guess.
+        ``build_active_permutation``, and seeds each fragment with its
+        reference determinant's RDMs.
+
+        While a program map built by :meth:`create_programs` waits to run, this
+        returns the state those programs were built from instead, so the round
+        that runs them is reduced against the same orbitals.
 
         Returns:
             A fresh :class:`~divi.qprog.workflows.LASSQDState` with ``energy``
@@ -925,10 +982,13 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
                 LUMO lies below its HOMO. Frontier selection assumes ascending
                 orbital energies, so the active space would be wrong.
         """
+        if self._programs_pending and self._state is not None:
+            return self._state
 
         mean_field = self._mean_field
         if mean_field is None or mean_field.mo_coeff is None:
-            mean_field = scf.RHF(self._mol).run(verbose=0)
+            mean_field = scf.RHF(self._mol) if mean_field is None else mean_field
+            mean_field.run(verbose=0)
             if not mean_field.converged:
                 raise RuntimeError(
                     "The mean-field reference did not converge, so every orbital "
@@ -975,6 +1035,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
                 active_orbitals=config.active_orbitals,
                 fragment_atoms=config.fragment_atoms,
                 local_spins=config.local_spins,
+                h_ao=self._core_hamiltonian(),
             )
             mo_coeff = mo_coeff.copy()
             mo_coeff[:, active_positions] = localized
@@ -1254,6 +1315,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             reports.append(data)
         return {
             "artifact": artifact,
+            "molecule": _molecule_fingerprint(self._mol),
+            "configuration": self._configuration_record(),
             "fragments": fragments,
             "rng_state": self._rng.bit_generator.state,
             "solvers": solvers,
@@ -1269,6 +1332,22 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             raise ValueError("LASSQD checkpoint is missing its NPZ artifact.")
         if artifact != f"{stem}.npz":
             raise ValueError("LASSQD checkpoint references the wrong state artifact.")
+        molecule = payload.get("molecule")
+        if not isinstance(molecule, str):
+            raise ValueError("LASSQD checkpoint is missing its molecule fingerprint.")
+        if molecule != _molecule_fingerprint(self._mol):
+            raise ValueError(
+                "LASSQD checkpoint was written for a different molecule: its "
+                "geometry, basis or electron count differs from this one's."
+            )
+        configuration = payload.get("configuration")
+        if not isinstance(configuration, str):
+            raise ValueError("LASSQD checkpoint is missing its configuration.")
+        if configuration != self._configuration_record():
+            raise ValueError(
+                "LASSQD checkpoint was written with a different LASSQD "
+                "configuration: fragmentation, sqd or preparation_mode differ."
+            )
         fragment_metadata = payload.get("fragments")
         if not isinstance(fragment_metadata, list) or not fragment_metadata:
             raise ValueError("LASSQD checkpoint has no fragment metadata.")
@@ -1282,7 +1361,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         if not isinstance(report_payloads, list):
             raise ValueError("LASSQD checkpoint round reports must be a list.")
 
-        n_orbitals_total = self._mol.nao_nr()
+        n_orbitals_total = self._register_size()
         with np.load(round_dir / artifact, allow_pickle=False) as stored:
             fragments = []
             for index, metadata in enumerate(fragment_metadata):
@@ -1323,7 +1402,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     )
                 )
             mo_coeff = _stored_array(
-                stored, "mo_coeff", (n_orbitals_total, n_orbitals_total)
+                stored, "mo_coeff", (self._mol.nao_nr(), n_orbitals_total)
             )
             energy = _stored_array(stored, "energy", (), allow_infinite=True)
             previous_energy = _stored_array(
@@ -1334,14 +1413,19 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             if energy_history.ndim != 1:
                 raise ValueError("LASSQD checkpoint energy history is not 1-D.")
 
+        deviation = float(
+            np.abs(
+                mo_coeff.T @ self._mol.intor_symmetric("int1e_ovlp") @ mo_coeff
+                - np.eye(n_orbitals_total)
+            ).max()
+        )
+        if deviation > _ORTHONORMALITY_TOL:
+            raise ValueError(
+                "LASSQD checkpoint mo_coeff is not orthonormal: its overlap "
+                f"deviates from the identity by {deviation:.1e}."
+            )
         specs = [fragment.spec for fragment in fragments]
         validate_fragment_specs(specs, n_orbitals_total, self._mol.nelectron // 2)
-        explicit_specs = self._fragmentation.active_spaces
-        if explicit_specs is not None and tuple(specs) != tuple(explicit_specs):
-            raise ValueError(
-                "LASSQD checkpoint fragment layout does not match the "
-                "configured active_spaces."
-            )
         state = LASSQDState(
             mo_coeff=mo_coeff,
             fragments=tuple(fragments),
@@ -1401,6 +1485,11 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._state = state
         return state
 
+    def _configuration_record(self) -> str:
+        """The settings a checkpoint must have been written with to resume
+        here: those that decide which computation a round performs."""
+        return repr((self._fragmentation, self._sqd, self._preparation_mode.value))
+
     def _solver_for(self, index: int, spec: FragmentSpec) -> SQDSolver:
         """Return this fragment's cached ``SQDSolver``, building it once.
 
@@ -1443,10 +1532,21 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         round's :func:`optimize_orbitals` call, which itself evaluates
         :func:`_total_energy` many times per round.
         """
-        if self._ao_eri is None or self._h_ao is None:
+        if self._ao_eri is None:
             self._ao_eri = cached_ao_eri(self._mol)
-            self._h_ao = cached_h_ao(self._mol)
-        return self._ao_eri, self._h_ao
+        return self._ao_eri, self._core_hamiltonian()
+
+    def _core_hamiltonian(self) -> np.ndarray:
+        """This run's AO core Hamiltonian, computed once: the mean field's when
+        one is held, so a relativistic or otherwise modified one carries
+        through, else built from ``mol``."""
+        if self._h_ao is None:
+            self._h_ao = (
+                cached_h_ao(self._mol)
+                if self._mean_field is None
+                else np.asarray(self._mean_field.get_hcore())
+            )
+        return self._h_ao
 
     def _active_space_integrals(self, state: LASSQDState) -> tuple[MOIntegrals, int]:
         """This state's active-space integrals and its frozen-core count."""
@@ -1454,10 +1554,10 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         n_core = _compute_n_core(
             [fragment.spec for fragment in state.fragments], n_occupied
         )
-        ao_eri, _ = self._cached_mol_integrals()
+        ao_eri, h_ao = self._cached_mol_integrals()
         n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
         integrals = transform_integrals(
-            self._mol, state.mo_coeff, n_core, n_act, ao_eri
+            self._mol, state.mo_coeff, n_core, n_act, ao_eri, h_ao
         )
         return integrals, n_core
 
@@ -1598,7 +1698,14 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             ao_eri,
             h_ao,
             max_orbital_iterations=self._max_orbital_iterations,
+            gradient_tol=float(np.sqrt(self._energy_tol)),
         )
+        if not np.isfinite(solve.energy):
+            raise ValueError(
+                f"Round {len(self._energy_history) + 1} produced a non-finite "
+                f"energy ({solve.energy}), so its orbitals and RDMs cannot seed "
+                "another round."
+            )
         self._energy_history.append(solve.energy)
 
         self._round_reports.append(

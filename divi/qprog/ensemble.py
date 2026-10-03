@@ -1352,11 +1352,17 @@ class ProgramEnsemble(ABC):
         stem = (
             "output_state" if checkpoint.kind == "round_completion" else "input_state"
         )
-        state = self._load_workflow_checkpoint_state(
-            checkpoint.ensemble_state, round_path, stem
-        )
+        # Rebuilding loads the round's input snapshot, so it goes first: the
+        # snapshot loaded last is the one whose side effects a loader keeps.
         if checkpoint.kind == "round_completion":
             self._rebuild_completed_round(round_path)
+        try:
+            state = self._load_workflow_checkpoint_state(
+                checkpoint.ensemble_state, round_path, stem
+            )
+        except BaseException:
+            self._programs.clear()
+            raise
 
         self._workflow_state = state
         self._round_history = history

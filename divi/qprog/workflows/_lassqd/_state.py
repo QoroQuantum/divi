@@ -16,7 +16,8 @@ class FragmentSpec:
 
     Args:
         orbitals: Canonical RHF molecular-orbital indices, in energy order —
-            not the caller's own arbitrary numbering.
+            not the caller's own arbitrary numbering. Occupied orbitals come
+            first, since the reference determinant fills them in order.
         n_alpha: Alpha electrons assigned to the fragment. May differ from
             ``n_beta`` for a spin-polarised fragment.
         n_beta: Beta electrons assigned to the fragment.
@@ -152,11 +153,16 @@ def validate_fragment_specs(
         n_occupied: Number of doubly occupied orbitals in the reference
             determinant (``mol.nelectron // 2``).
 
+    Each fragment must list its occupied orbitals before its virtual ones: the
+    reference determinant and the initial density fill a fragment's orbitals in
+    the order given.
+
     Raises:
         ValueError: If any orbital index is out of range or shared between
             fragments, if ``specs`` is empty, if a fragment leaves every spin
             channel empty or full (no excitation available, so no correlation to
-            capture), if the fragments' total electron count does not match the
+            capture), if a fragment lists a virtual orbital before an occupied
+            one, if the fragments' total electron count does not match the
             orbitals they cover, or if the fragments do not sum to ``Sz = 0``.
             Per-fragment spin-count bounds are enforced by
             :class:`FragmentSpec` itself.
@@ -188,6 +194,18 @@ def validate_fragment_specs(
                     f"{orbital}. Fragments must be disjoint."
                 )
             seen[orbital] = index
+        virtual = next((o for o in spec.orbitals if o >= n_occupied), None)
+        if virtual is not None:
+            position = spec.orbitals.index(virtual)
+            occupied = next(
+                (o for o in spec.orbitals[position:] if o < n_occupied), None
+            )
+            if occupied is not None:
+                raise ValueError(
+                    f"Fragment {index} lists virtual orbital {virtual} before "
+                    f"occupied orbital {occupied}. List each fragment's occupied "
+                    "orbitals first: its reference determinant fills them in order."
+                )
 
     n_active_occupied = sum(1 for orbital in seen if orbital < n_occupied)
     n_declared = sum(spec.n_alpha + spec.n_beta for spec in specs)

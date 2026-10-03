@@ -595,8 +595,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     def cost_circuit(self) -> MetaCircuit:
         """The cost MetaCircuit for this program (lazily built, cached).
 
-        Note: When used with ProgramEnsemble, this is initialised sequentially
-        in the main thread before parallel execution to avoid thread-safety issues.
+        Note: Built on first access. Under a ProgramEnsemble that is the worker
+        thread running this program.
         """
         if self._cost_circuit is None:
             self._cost_circuit = self._create_cost_circuit()

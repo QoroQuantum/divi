@@ -11,7 +11,7 @@ import scipy.optimize
 
 pytest.importorskip("pyscf")
 
-from pyscf import ao2mo, fci, mcscf, scf
+from pyscf import ao2mo, fci, gto, mcscf, scf
 from pyscf.fci import cistring
 
 from divi.hamiltonians import molecular_hamiltonian_from_pyscf
@@ -228,9 +228,13 @@ def test_spo_beta_one_body_touches_only_beta_spin_orbitals():
     ), f"beta one-body reached qubits {sorted(acted_on)}; even qubits are alpha"
 
 
+# sqrt of LASSQD's default energy_tol, the convergence threshold it passes.
+_GRADIENT_TOL = 1e-3
+
+
 @pytest.fixture(scope="module")
 def converged_orbital_solve(orbital_rotation_case):
-    return optimize_orbitals(*orbital_rotation_case)
+    return optimize_orbitals(*orbital_rotation_case, gradient_tol=_GRADIENT_TOL)
 
 
 def test_optimize_orbitals_reports_whether_it_converged(
@@ -246,9 +250,11 @@ def test_optimize_orbitals_reports_whether_it_converged(
     converged_solve = converged_orbital_solve
     assert converged_solve.converged is True
 
-    with pytest.warns(UserWarning, match="stopped without converging"):
+    with pytest.warns(UserWarning, match="ended without converging"):
         starved_solve = optimize_orbitals(
-            *orbital_rotation_case, max_orbital_iterations=1
+            *orbital_rotation_case,
+            max_orbital_iterations=1,
+            gradient_tol=_GRADIENT_TOL,
         )
 
     assert starved_solve.converged is False
@@ -257,6 +263,21 @@ def test_optimize_orbitals_reports_whether_it_converged(
     # Still monotone: the starved run cannot beat the converged one, and both
     # remain at or below the unrotated baseline.
     assert starved_solve.energy >= converged_solve.energy - 1e-12
+
+
+def test_an_optimizer_stop_above_the_gradient_tolerance_is_not_converged(
+    orbital_rotation_case, converged_orbital_solve
+):
+    """L-BFGS-B also reports success when the relative energy change stalls,
+    which happens well before the gradient vanishes. Convergence is the
+    gradient norm against the caller's tolerance, not scipy's status."""
+    tolerance = converged_orbital_solve.gradient_norm / 10
+
+    with pytest.warns(UserWarning, match="orbital-gradient norm"):
+        solve = optimize_orbitals(*orbital_rotation_case, gradient_tol=tolerance)
+
+    assert solve.converged is False
+    assert solve.gradient_norm > tolerance
 
 
 def test_polarized_neighbour_splits_the_embedding_by_spin(h4_chain_mean_field):
@@ -617,7 +638,15 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(h4_chain_mean_fiel
     h_ao = cached_h_ao(mol)
 
     solve = optimize_orbitals(
-        mol, permuted_mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao
+        mol,
+        permuted_mo_coeff,
+        n_core,
+        specs,
+        rdm1_active,
+        rdm2_active,
+        ao_eri,
+        h_ao,
+        gradient_tol=_GRADIENT_TOL,
     )
 
     expected_n_rot = (
@@ -655,7 +684,9 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom(
     h_ao = cached_h_ao(mol)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    solve = optimize_orbitals(mol, mo_coeff, 0, [spec], rdm1, rdm2, ao_eri, h_ao)
+    solve = optimize_orbitals(
+        mol, mo_coeff, 0, [spec], rdm1, rdm2, ao_eri, h_ao, gradient_tol=_GRADIENT_TOL
+    )
 
     unrotated_energy = _total_energy(mol, mo_coeff, 0, rdm1, rdm2, ao_eri, h_ao)
     assert solve.energy == pytest.approx(unrotated_energy)
@@ -668,6 +699,7 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom(
     assert solve.gradient_norm == 0.0
 
 
+@pytest.mark.filterwarnings("ignore:Orbital optimisation ended without converging")
 @pytest.mark.parametrize(
     "energy_offset, accepted",
     [(1.0, False), (0.0, False), (-1.0, True)],
@@ -708,7 +740,15 @@ def test_optimize_orbitals_keeps_scipy_result_only_when_strictly_lower(
     mocker.patch.object(_integrals_module, "minimize", return_value=fake_result)
 
     solve = optimize_orbitals(
-        mol, mo_coeff, 0, specs, rdm1_active, rdm2_active, ao_eri, h_ao
+        mol,
+        mo_coeff,
+        0,
+        specs,
+        rdm1_active,
+        rdm2_active,
+        ao_eri,
+        h_ao,
+        gradient_tol=_GRADIENT_TOL,
     )
 
     assert solve.n_evaluations == 1 + fake_result.nfev
@@ -719,13 +759,13 @@ def test_optimize_orbitals_keeps_scipy_result_only_when_strictly_lower(
         generator[rows, cols] = fake_result.x
         generator[cols, rows] = -fake_result.x
         assert solve.energy == fake_result.fun
-        assert solve.gradient_norm == 7.0
+        assert solve.gradient_norm == pytest.approx(np.linalg.norm(fake_result.jac))
         np.testing.assert_allclose(
             solve.mo_coeff, mo_coeff @ scipy.linalg.expm(generator), atol=1e-12
         )
     else:
         assert solve.energy == baseline_energy
-        assert solve.gradient_norm == np.max(np.abs(baseline_gradient))
+        assert solve.gradient_norm == pytest.approx(np.linalg.norm(baseline_gradient))
         np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
 
 
@@ -745,6 +785,21 @@ def test_transform_integrals_reuses_a_supplied_ao_eri(mocker, h4_chain_mean_fiel
     np.testing.assert_allclose(
         cached_h_ao(mol), h4_chain_mean_field.get_hcore(), atol=1e-14
     )
+
+
+def test_cached_h_ao_includes_the_effective_core_potential():
+    """An ECP belongs to the one-electron Hamiltonian; leaving it out shifts a
+    heavy atom's energy by tens of Hartree while every other term stays
+    consistent."""
+    mol = gto.M(
+        atom="I 0 0 0; H 0 0 1.61",
+        basis="def2-svp",
+        ecp={"I": "def2-svp"},
+        verbose=0,
+    )
+    expected = mol.intor("int1e_kin") + mol.intor("int1e_nuc") + mol.intor("ECPscalar")
+
+    np.testing.assert_allclose(cached_h_ao(mol), expected, atol=1e-12)
 
 
 def _rotated_mo_coeff(mo_coeff, rotation_pairs, rotation_params):
