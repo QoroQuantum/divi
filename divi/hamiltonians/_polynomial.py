@@ -280,8 +280,12 @@ def _eval_poly_1d_jit(
     return energy
 
 
-@numba.njit(cache=True, parallel=True)
-def _eval_poly_2d_jit(
+#: Term evaluations (states x terms) below which the serial kernel beats the
+#: parallel one: thread-pool start-up costs ~5 ms, measured break-even ~4e6.
+_PARALLEL_POLY_MIN_WORK = 4_000_000
+
+
+def _eval_poly_2d(
     x_vals: npt.NDArray[np.float64],
     term_indices: npt.NDArray[np.int32],
     term_offsets: npt.NDArray[np.int32],
@@ -290,14 +294,10 @@ def _eval_poly_2d_jit(
 ) -> npt.NDArray[np.float64]:
     """Evaluate binary polynomial for batched variable assignments (2D).
 
-    Uses ``prange`` to parallelise over states.  Each thread computes the
-    full polynomial for a subset of states independently — no shared writes.
-    On single-core or constrained environments, ``prange`` degrades to
-    sequential execution with no overhead beyond a thread-pool check.
-
-    SIMD auto-vectorisation alone is insufficient here because the inner
-    gather pattern (``x_vals[term_indices[k], s]``) defeats LLVM's
-    vectoriser.  ``prange`` provides the needed throughput scaling.
+    Each state's polynomial is computed independently, with no shared writes,
+    so the state loop parallelises under ``prange``. SIMD auto-vectorisation
+    alone is insufficient because the inner gather
+    (``x_vals[term_indices[k], s]``) defeats LLVM's vectoriser.
 
     Args:
         x_vals: Shape ``(n_vars, n_states)``.
@@ -327,6 +327,28 @@ def _eval_poly_2d_jit(
     return energies
 
 
+_eval_poly_2d_serial_jit = numba.njit(cache=True)(_eval_poly_2d)
+_eval_poly_2d_parallel_jit = numba.njit(cache=True, parallel=True)(_eval_poly_2d)
+
+
+@numba.njit(cache=True)
+def _eval_poly_2d_jit(
+    x_vals: npt.NDArray[np.float64],
+    term_indices: npt.NDArray[np.int32],
+    term_offsets: npt.NDArray[np.int32],
+    coeffs: npt.NDArray[np.float64],
+    constant: float,
+) -> npt.NDArray[np.float64]:
+    """:func:`_eval_poly_2d`, on the thread pool only when the work pays for it."""
+    if x_vals.shape[1] * len(coeffs) < _PARALLEL_POLY_MIN_WORK:
+        return _eval_poly_2d_serial_jit(
+            x_vals, term_indices, term_offsets, coeffs, constant
+        )
+    return _eval_poly_2d_parallel_jit(
+        x_vals, term_indices, term_offsets, coeffs, constant
+    )
+
+
 @numba.njit(cache=True)
 def _compute_hard_cvar_energy_jit(
     x_vals: npt.NDArray[np.float64],
@@ -354,9 +376,6 @@ def _compute_hard_cvar_energy_jit(
     len(coeffs)
     n_states = x_vals.shape[1]
 
-    # Note: _eval_poly_2d_jit uses ``parallel=True`` / ``prange``, so this
-    # call crosses an implicit threading boundary.  Numba's thread pool is
-    # reused (not re-spawned) and degrades to sequential on single-core.
     energies = _eval_poly_2d_jit(x_vals, term_indices, term_offsets, coeffs, constant)
 
     sorted_indices = np.argsort(energies)

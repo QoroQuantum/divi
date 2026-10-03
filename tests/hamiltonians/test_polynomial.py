@@ -25,6 +25,7 @@ from divi.hamiltonians import (
     qubo_to_matrix,
 )
 from divi.hamiltonians._polynomial import (
+    _PARALLEL_POLY_MIN_WORK,
     _compute_hard_cvar_energy_jit,
     _eval_poly_1d_jit,
     _eval_poly_2d_jit,
@@ -400,17 +401,26 @@ class TestEvalPoly2dJit:
 
         assert result_2d == pytest.approx(result_1d, rel=1e-12)
 
-    def test_large_batch(self):
-        """2D kernel handles 5000 states without error."""
-        Q = np.eye(10)
+    @pytest.mark.parametrize(
+        "n_states",
+        [1_000, 10_000],
+        ids=["serial-kernel", "parallel-kernel"],
+    )
+    def test_both_sides_of_the_parallel_threshold_match(self, n_states):
+        """Dense 40-variable QUBO: 820 terms put 1k states below and 10k above
+        ``_PARALLEL_POLY_MIN_WORK``."""
+        rng = np.random.default_rng(7)
+        Q = np.triu(rng.normal(size=(40, 40)))
         problem = _make_problem(Q)
         ti, to, tc, const = compile_problem(problem)
+        assert (n_states * len(tc) >= _PARALLEL_POLY_MIN_WORK) == (n_states == 10_000)
 
-        x = np.random.default_rng(42).random((10, 5000))
+        x = (rng.random((40, n_states)) < 0.5).astype(np.float64)
         result = _eval_poly_2d_jit(x, ti, to, tc, const)
 
-        assert result.shape == (5000,)
-        assert np.all(np.isfinite(result))
+        np.testing.assert_allclose(
+            result, _evaluate_binary_polynomial(x, problem), rtol=1e-10
+        )
 
 
 class TestComputeHardCvarEnergyJit:

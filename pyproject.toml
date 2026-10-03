@@ -33,7 +33,7 @@ dependencies = [
     "networkx>=3.5,<4.0",
     "rustworkx>=0.18",
     "pymetis>=2025.1.1,<2026.0.0; sys_platform != 'win32'",
-    "qoro-maestro==0.3.4",
+    "qoro-maestro==0.3.5",
     # Optimization algorithms
     "pymoo>=0.6,<0.7",
     "dimod>=0.12.22,<0.13",
