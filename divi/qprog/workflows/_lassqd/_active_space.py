@@ -70,17 +70,14 @@ def _canonicalize_columns(mol, block: np.ndarray) -> np.ndarray:
 
     Columns are sorted by the index of the atom carrying their largest
     Mulliken population, tiebroken by the population-weighted centroid
-    coordinate. Pipek-Mezey's cost function is invariant to the order of the
-    localised columns it returns, so two runs that converge to the same
-    physical solution (same cost) can still return it in a different column
-    order; without canonicalizing that order, the fragment partition built
-    from those columns would not be reproducible under a fixed seed even
-    though the physical solution, and its energy, are unchanged.
+    coordinate; columns tied on both keep their input order. Pipek-Mezey's
+    cost function is invariant to the order of the localised columns it
+    returns, so two runs that converge to the same physical solution (same
+    cost) can still return it in a different column order, and the fragment
+    partition built from those columns would follow it. Sorting removes that
+    dependence wherever the keys differ.
     """
     n_col = block.shape[1]
-    if n_col <= 1:
-        return block
-
     atom_population = _atom_populations(mol, block)
     dominant_atom = np.argmax(atom_population, axis=0)
 
@@ -406,13 +403,13 @@ def merge_clusters(
         disjoint, and covering every node in ``graph`` exactly once.
 
     Raises:
-        ValueError: If ``max_orbitals_per_fragment`` is below 1, or if an
+        ValueError: If ``max_orbitals_per_fragment`` is below 2, or if an
             occupied-only or virtual-only cluster cannot be merged with any
             neighbour without exceeding ``max_orbitals_per_fragment``.
     """
-    if max_orbitals_per_fragment < 1:
+    if max_orbitals_per_fragment < 2:
         raise ValueError(
-            "max_orbitals_per_fragment must be at least 1; got "
+            "max_orbitals_per_fragment must be at least 2; got "
             f"{max_orbitals_per_fragment}."
         )
 
@@ -466,10 +463,8 @@ def merge_clusters(
             for other in within_limit
             if _inter_cluster_weight(graph, cluster, other) > 0.0
         ]
-        # A zero-coupling partner is used only as a fallback.
-        candidates = coupled if coupled else within_limit
         partner = max(
-            candidates,
+            within_limit,
             key=lambda other: (
                 _inter_cluster_weight(graph, cluster, other),
                 -len(other),
@@ -591,6 +586,9 @@ def auto_fragment_specs(
             ``coupling_threshold`` and the localisation RNG, so a positional
             spin list would not name a stable fragment there.
 
+    The selector and ``local_spins`` combinations are those
+    ``FragmentationConfig`` accepts; they are not re-validated here.
+
     Returns:
         ``(specs, localized, active_positions)``: one ``FragmentSpec`` per
         fragment with ``orbitals`` already in ``mo_coeff`` register indices, the
@@ -599,29 +597,17 @@ def auto_fragment_specs(
 
     Raises:
         ImportError: If the ``chem`` extra is not installed.
-        ValueError: If ``local_spins`` is given without ``fragment_atoms``, if
-            its length differs from the fragment count, or if a requested ``2S``
-            exceeds the fragment's electron count. Also propagated from
+        ValueError: If a requested ``2S`` exceeds a fragment's electron count
+            or has the wrong parity. Also propagated from
             :func:`select_frontier_orbitals`, :func:`split_active_orbitals`,
             :func:`assign_orbitals_to_atoms`, or :func:`merge_clusters`.
     """
-    if local_spins is not None and fragment_atoms is None:
-        raise ValueError(
-            "local_spins requires fragment_atoms: coupling-graph fragment order "
-            "depends on max_orbitals_per_fragment, coupling_threshold and the "
-            "localisation RNG, so a positional spin list would not name a "
-            "stable fragment. Name the fragments by atom to assign their spins."
-        )
-
     if active_orbitals is not None:
         occupied_indices, virtual_indices = split_active_orbitals(
             active_orbitals, n_occupied, mo_coeff.shape[1]
         )
     else:
-        if n_active_orbitals is None:
-            raise ValueError(
-                "Pass exactly one of n_active_orbitals or active_orbitals."
-            )
+        assert n_active_orbitals is not None
         occupied_indices, virtual_indices = select_frontier_orbitals(
             mo_coeff.shape[1], n_occupied, n_active_orbitals
         )
@@ -641,12 +627,6 @@ def auto_fragment_specs(
             one_body, two_body, coupling_threshold=coupling_threshold
         )
         clusters = merge_clusters(graph, is_occupied, max_orbitals_per_fragment)
-
-    if local_spins is not None and len(local_spins) != len(clusters):
-        raise ValueError(
-            f"local_spins has {len(local_spins)} entries but fragment_atoms "
-            f"names {len(clusters)} fragments."
-        )
 
     active_positions = tuple(occupied_indices) + tuple(virtual_indices)
     specs = []

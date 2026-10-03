@@ -67,9 +67,8 @@ def test_paper_lucj_interaction_pairs_match_the_reference_topology():
     )
 
 
-def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires():
-    norb = 3
-    nelec = (2, 0)
+def _identity_lucj_operator(norb):
+    """The paper-topology LUCJ operator at zero parameters, i.e. the identity."""
     pairs = paper_lucj_interaction_pairs(norb)
     n_params = ffsim.UCJOpSpinUnbalanced.n_params(
         norb,
@@ -77,7 +76,7 @@ def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires():
         interaction_pairs=pairs,
         with_final_orbital_rotation=True,
     )
-    operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
+    return ffsim.UCJOpSpinUnbalanced.from_parameters(
         np.zeros(n_params),
         norb=norb,
         n_reps=1,
@@ -85,11 +84,28 @@ def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires():
         with_final_orbital_rotation=True,
     )
 
-    circuit = build_lucj_circuit(operator, norb, nelec)
 
+def _reference_probabilities(circuit):
     unmeasured = circuit.remove_final_measurements(inplace=False)
-    probabilities = Statevector.from_instruction(unmeasured).probabilities_dict()
-    assert probabilities == {"000101": 1.0}
+    return Statevector.from_instruction(unmeasured).probabilities_dict()
+
+
+@pytest.mark.parametrize(
+    "nelec, expected",
+    [
+        pytest.param((2, 0), "000101", id="alpha-only"),
+        pytest.param((2, 1), "000111", id="beta-on-odd-wires"),
+    ],
+)
+def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires(nelec, expected):
+    """Qubit ``2p`` holds orbital ``p``'s alpha electron and ``2p + 1`` its beta
+    one; the key is little-endian, so qubit 0 is the rightmost bit."""
+    norb = 3
+
+    circuit = build_lucj_circuit(_identity_lucj_operator(norb), norb, nelec)
+
+    assert _reference_probabilities(circuit) == {expected: 1.0}
+    assert circuit.num_clbits == 2 * norb
     assert {instruction.operation.name for instruction in circuit.data} <= {
         "cx",
         "measure",
@@ -362,6 +378,33 @@ def test_linear_method_program_prepares_classically_then_samples_once(
     assert not mismatched.has_results()
 
 
+def _completed_state_arrays():
+    return {
+        "params": np.array([0.1]),
+        "h_alpha": np.eye(2),
+        "h_beta": np.eye(2),
+        "two_body": np.zeros((2, 2, 2, 2)),
+        "orbital_rotation": np.eye(2),
+    }
+
+
+def _restore_completed_state(program, directory, arrays):
+    """Write ``arrays`` as a completed fragment state and restore it."""
+    state_path = directory / "completed_state.npz"
+    np.savez(state_path, **arrays)
+    with state_path.open("rb") as handle:
+        state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
+    checkpoint = preparation._LinearMethodCheckpoint(
+        program_type="LinearMethodFragmentProgram",
+        total_circuit_count=0,
+        total_run_time=0.0,
+        state_file="completed_state.npz",
+        state_sha256=state_sha256,
+        best_probs={0: {"0011": 1.0}},
+    )
+    program._restore_checkpoint(checkpoint.model_dump_json(), directory)
+
+
 @pytest.mark.parametrize(
     "missing",
     ["params", "h_alpha", "h_beta", "two_body", "orbital_rotation"],
@@ -369,32 +412,37 @@ def test_linear_method_program_prepares_classically_then_samples_once(
 def test_completed_linear_method_state_requires_every_array(
     missing, dummy_simulator, tmp_path
 ):
-    arrays = {
-        "params": np.array([0.1]),
-        "h_alpha": np.eye(2),
-        "h_beta": np.eye(2),
-        "two_body": np.zeros((2, 2, 2, 2)),
-        "orbital_rotation": np.eye(2),
-    }
+    arrays = _completed_state_arrays()
     arrays.pop(missing)
-    state_path = tmp_path / "completed_state.npz"
-    np.savez(state_path, **arrays)
-    with state_path.open("rb") as handle:
-        state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
     program = _two_orbital_program(dummy_simulator)
 
     with pytest.raises(ValueError, match="missing or extra arrays"):
-        checkpoint = preparation._LinearMethodCheckpoint(
-            program_type="LinearMethodFragmentProgram",
-            total_circuit_count=0,
-            total_run_time=0.0,
-            state_file="completed_state.npz",
-            state_sha256=state_sha256,
-            best_probs={0: {"0011": 1.0}},
-        )
-        program._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+        _restore_completed_state(program, tmp_path, arrays)
 
     assert not program.has_results()
+
+
+def test_completed_linear_method_state_refuses_an_object_array(
+    dummy_simulator, tmp_path
+):
+    arrays = _completed_state_arrays()
+    arrays["params"] = np.array([{"payload": 1}], dtype=object)
+    program = _two_orbital_program(dummy_simulator)
+
+    with pytest.raises(ValueError, match="allow_pickle=False"):
+        _restore_completed_state(program, tmp_path, arrays)
+
+    assert not program.has_results()
+
+
+@pytest.mark.parametrize(
+    "attribute", ["best_params", "h_alpha", "h_beta", "two_body", "orbital_rotation"]
+)
+def test_linear_method_results_are_unavailable_before_run(dummy_simulator, attribute):
+    program = _two_orbital_program(dummy_simulator)
+
+    with pytest.raises(RuntimeError, match=r"call run\(\) first"):
+        getattr(program, attribute)
 
 
 def test_rotates_sqd_rdms_back_to_the_workflow_fragment_basis():

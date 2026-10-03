@@ -195,7 +195,7 @@ def fragment_effective_integrals(
             fragment specs.
     """
     blocks = fragment_blocks([fragment.spec for fragment in fragments])
-    running = blocks[-1].stop if blocks else 0
+    running = blocks[-1].stop
 
     n_act = integrals.h_act.shape[0]
     if running != n_act:
@@ -335,58 +335,6 @@ def _total_energy(
     return energy
 
 
-def _build_energy_rdms(
-    n_orb: int, n_core: int, rdm1_active: np.ndarray, rdm2_active: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Build the full-register 1- and 2-particle densities of :func:`_total_energy`.
-
-    Returns dense ``D`` and ``d`` over the whole permuted MO register such that
-
-    .. math::
-
-        E = E_\\mathrm{nuc} + \\sum_{mn} h_{mn} D_{mn}
-            + \\tfrac{1}{2} \\sum_{mnop} d_{mnop} g_{mnop}
-
-    reproduces :func:`_total_energy` exactly, with ``h`` and ``g`` the MO-basis
-    one- and two-electron integrals (chemist order) over the same register.
-    Frozen-core orbitals occupy ``[0, n_core)``, the active space follows, and
-    the virtual block is zero in both densities.
-
-    Args:
-        n_orb: Size of the full MO register.
-        n_core: Number of frozen-core orbitals.
-        rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
-        rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
-
-    Returns:
-        ``(D, d)`` of shapes ``(n_orb, n_orb)`` and ``(n_orb,) * 4``.
-    """
-    n_act = rdm1_active.shape[0]
-    active = slice(n_core, n_core + n_act)
-
-    one_rdm = np.zeros((n_orb, n_orb))
-    two_rdm = np.zeros((n_orb,) * 4)
-
-    for i in range(n_core):
-        one_rdm[i, i] = 2.0
-    one_rdm[active, active] = rdm1_active
-
-    for i in range(n_core):
-        for j in range(n_core):
-            two_rdm[i, i, j, j] += 4.0
-            two_rdm[i, j, j, i] -= 2.0
-
-    for i in range(n_core):
-        two_rdm[active, active, i, i] += 2.0 * rdm1_active
-        two_rdm[i, i, active, active] += 2.0 * rdm1_active
-        two_rdm[active, i, i, active] -= rdm1_active
-        two_rdm[i, active, active, i] -= rdm1_active
-
-    two_rdm[active, active, active, active] += rdm2_active
-
-    return one_rdm, two_rdm
-
-
 def energy_and_generalized_fock(
     mol,
     mo_coeff: np.ndarray,
@@ -398,7 +346,8 @@ def energy_and_generalized_fock(
 ) -> tuple[float, np.ndarray]:
     """Energy and generalized Fock matrix without a full four-index transform.
 
-    Equivalent to contracting :func:`_build_energy_rdms`' dense densities against
+    Equivalent to contracting the dense full-register 1- and 2-particle
+    densities (doubly occupied core, the active RDMs, empty virtuals) against
     the full MO integrals, but built from the blocks those densities actually
     reach. The two-particle density vanishes whenever any index is virtual and
     is diagonal within the core, so the contraction reduces to Coulomb/exchange
@@ -497,10 +446,10 @@ def rotation_energy_gradient_fn(
     """Build the orbital-rotation objective and its analytic gradient.
 
     The returned callable evaluates :func:`_total_energy` at
-    ``mo_coeff @ expm(K(x))`` -- to within floating-point round-off, via the
-    contracted form of :func:`_build_energy_rdms` rather than the explicit
-    loops -- together with its exact derivative with respect to the rotation
-    angles ``x``, sharing the single four-index MO transform between the two.
+    ``mo_coeff @ expm(K(x))`` -- via
+    :func:`energy_and_generalized_fock` -- together with its exact derivative
+    with respect to the rotation angles ``x``, sharing the single four-index MO
+    transform between the two.
 
     The gradient follows from the generalized Fock matrix
     ``F = h @ D.T + einsum("mqrs,nqrs->mn", g, d)``. Because the

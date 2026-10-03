@@ -108,22 +108,16 @@ def embedded_fragment_ccsd(h_eff, g_frag, spec):
     """
     n_orb = spec.n_orbitals
     mol = gto.M(verbose=0)
-    mol.nelectron = spec.n_alpha + spec.n_beta
     mol.incore_anyway = True
 
     mean_field = scf.RHF(mol)
     mean_field.get_hcore = lambda *args: h_eff
-    mean_field.get_ovlp = lambda *args: np.eye(n_orb)
     mean_field._eri = ao2mo.restore(8, g_frag, n_orb)
 
     occupations = np.zeros(n_orb)
     occupations[: spec.n_alpha] = 2.0
     mean_field.mo_coeff = np.eye(n_orb)
     mean_field.mo_occ = occupations
-    density = mean_field.make_rdm1()
-    mean_field.mo_energy = np.diag(mean_field.get_fock(dm=density))
-    mean_field.e_tot = mean_field.energy_tot(dm=density)
-    mean_field.converged = True
 
     coupled_cluster = cc.CCSD(mean_field)
     coupled_cluster.kernel()
@@ -273,6 +267,39 @@ def orbital_rotation_case():
         cached_ao_eri(mol),
         cached_h_ao(mol),
     )
+
+
+def build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active):
+    """Dense full-register ``(D, d)`` whose contraction reproduces ``_total_energy``.
+
+    ``E = E_nuc + sum(h * D) + 0.5 * sum(d * g)`` over the permuted MO register,
+    with ``g`` in chemist order: core ``[0, n_core)`` doubly occupied, the active
+    RDMs next, the virtual block zero.
+    """
+    n_act = rdm1_active.shape[0]
+    active = slice(n_core, n_core + n_act)
+
+    one_rdm = np.zeros((n_orb, n_orb))
+    two_rdm = np.zeros((n_orb,) * 4)
+
+    for i in range(n_core):
+        one_rdm[i, i] = 2.0
+    one_rdm[active, active] = rdm1_active
+
+    for i in range(n_core):
+        for j in range(n_core):
+            two_rdm[i, i, j, j] += 4.0
+            two_rdm[i, j, j, i] -= 2.0
+
+    for i in range(n_core):
+        two_rdm[active, active, i, i] += 2.0 * rdm1_active
+        two_rdm[i, i, active, active] += 2.0 * rdm1_active
+        two_rdm[active, i, i, active] -= rdm1_active
+        two_rdm[i, active, active, i] -= rdm1_active
+
+    two_rdm[active, active, active, active] += rdm2_active
+
+    return one_rdm, two_rdm
 
 
 def uniform_full_space_probs(n_orb, n_alpha, n_beta):

@@ -11,6 +11,7 @@ density-matrix reconstruction.
 """
 
 import bisect
+import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -123,10 +124,9 @@ def spin_orbital_integrals(
 
 
 def _annihilation_sign(occ, p):
-    """Return the sign and remaining occupation from annihilating spin-orbital p."""
+    """Return the sign and remaining occupation from annihilating spin-orbital p,
+    which must be occupied in ``occ``."""
     occ_tup = tuple(occ)
-    if p not in occ_tup:
-        return 0, None
     idx = occ_tup.index(p)
     sign = (-1) ** idx
     new_occ = occ_tup[:idx] + occ_tup[idx + 1 :]
@@ -134,10 +134,9 @@ def _annihilation_sign(occ, p):
 
 
 def _creation_sign(occ, p):
-    """Return the sign and updated occupation from creating spin-orbital p."""
+    """Return the sign and updated occupation from creating spin-orbital p,
+    which must be empty in ``occ``."""
     occ_tup = tuple(occ)
-    if p in occ_tup:
-        return 0, None
     idx = bisect.bisect_left(occ_tup, p)
     sign = (-1) ** idx
     new_occ = occ_tup[:idx] + (p,) + occ_tup[idx:]
@@ -164,14 +163,12 @@ def slater_condon(det_i, det_j, h_spin, g_spin) -> float:
                     val += g_spin[p, q, p, q]
         return val
 
-    elif len(diff_i) == 1:  # Differ by 1
+    if len(diff_i) == 1:  # Differ by 1
         p = diff_i[0]
         q = diff_j[0]
         # We compute <det_i | H | det_j> where det_i = det_j - {q} + {p}
         # Annihilate q in det_j, create p in det_j
         sign_ann, occ_mid = _annihilation_sign(det_j, q)
-        if sign_ann == 0:
-            return 0.0
         sign_cre, _ = _creation_sign(occ_mid, p)
         sign = sign_ann * sign_cre
 
@@ -181,27 +178,18 @@ def slater_condon(det_i, det_j, h_spin, g_spin) -> float:
                 val += g_spin[p, r, q, r]
         return sign * val
 
-    elif len(diff_i) == 2:  # Differ by 2
-        p, r = diff_i
-        q, s = diff_j
-        # We compute <det_i | H | det_j> where det_i = det_j - {q, s} + {p, r}
-        # Annihilate q in det_j, then s in remaining, then create r, then p
-        sign_q, occ_1 = _annihilation_sign(det_j, q)
-        if sign_q == 0:
-            return 0.0
-        sign_s, occ_2 = _annihilation_sign(occ_1, s)
-        if sign_s == 0:
-            return 0.0
-        sign_r, occ_3 = _creation_sign(occ_2, r)
-        if sign_r == 0:
-            return 0.0
-        sign_p, _ = _creation_sign(occ_3, p)
-        sign = sign_q * sign_s * sign_r * sign_p
+    # Differ by 2
+    p, r = diff_i
+    q, s = diff_j
+    # We compute <det_i | H | det_j> where det_i = det_j - {q, s} + {p, r}
+    # Annihilate q in det_j, then s in remaining, then create r, then p
+    sign_q, occ_1 = _annihilation_sign(det_j, q)
+    sign_s, occ_2 = _annihilation_sign(occ_1, s)
+    sign_r, occ_3 = _creation_sign(occ_2, r)
+    sign_p, _ = _creation_sign(occ_3, p)
+    sign = sign_q * sign_s * sign_r * sign_p
 
-        val = g_spin[p, r, q, s]
-        return sign * val
-
-    return 0.0
+    return sign * g_spin[p, r, q, s]
 
 
 def spatial_to_spin_occupations(
@@ -232,7 +220,7 @@ def bitstring_to_spatial_det(
     return alpha_occ, beta_occ
 
 
-def _apply_s_plus(det, n_orb):
+def _apply_s_plus(det):
     """Apply the S+ ladder operator to a spatial (alpha_occ, beta_occ) determinant."""
     alpha_occ, beta_occ = det
     results = []
@@ -247,7 +235,7 @@ def _apply_s_plus(det, n_orb):
     return results
 
 
-def _apply_s_minus(det, n_orb):
+def _apply_s_minus(det):
     """Apply the S- ladder operator to a spatial (alpha_occ, beta_occ) determinant."""
     alpha_occ, beta_occ = det
     results = []
@@ -262,28 +250,22 @@ def _apply_s_minus(det, n_orb):
     return results
 
 
-def s2_matrix_element(det_i, det_j, n_orb: int) -> float:
+def s2_matrix_element(det_i, det_j) -> float:
     """Compute <det_i | S^2 | det_j> via S^2 = S_z(S_z + 1) + S_- S_+.
 
     ``det_i`` and ``det_j`` are ``(alpha_occ, beta_occ)`` spatial-orbital pairs.
     """
-    alpha_i, beta_i = det_i
     alpha_j, beta_j = det_j
-
     sz_j = 0.5 * (len(alpha_j) - len(beta_j))
-    sz_i = 0.5 * (len(alpha_i) - len(beta_i))
-
-    if sz_i != sz_j:
-        return 0.0
 
     diag = 0.0
     if det_i == det_j:
         diag = sz_j * (sz_j + 1.0)
 
-    s_plus_results = _apply_s_plus(det_j, n_orb)
+    s_plus_results = _apply_s_plus(det_j)
     coeff_ij = 0.0
     for sign_p, det_p in s_plus_results:
-        s_minus_results = _apply_s_minus(det_p, n_orb)
+        s_minus_results = _apply_s_minus(det_p)
         for sign_m, det_m in s_minus_results:
             if det_m == det_i:
                 coeff_ij += sign_p * sign_m
@@ -454,7 +436,7 @@ def projected_matrices(
                 & (lower_annihilated == upper_created - n_orb)
             )
             for row, col in zip(rows[spin_exchange], cols[spin_exchange]):
-                s2_proj[row, col] = s2_matrix_element(dets[row], dets[col], n_orb)
+                s2_proj[row, col] = s2_matrix_element(dets[row], dets[col])
 
     return h_proj, s2_proj
 
@@ -578,11 +560,6 @@ def _occupations_from_bit_matrix(bits: np.ndarray) -> list[tuple[int, ...]]:
     return [tuple(cols[bounds[i] : bounds[i + 1]].tolist()) for i in range(len(bits))]
 
 
-def _sector_occupations(strings: Sequence[str], n_orb: int) -> list[tuple[int, ...]]:
-    """Occupied-orbital tuple for each of one spin sector's strings."""
-    return _occupations_from_bit_matrix(_bit_matrix(strings, n_orb))
-
-
 def carryover_weights(
     strings_alpha: Sequence[str],
     strings_beta: Sequence[str],
@@ -644,7 +621,7 @@ def filter_symmetry(bitstrings, n_orb: int, n_alpha: int, n_beta: int) -> list[s
     return [half for half, keeping in zip(bitstrings, keep) if keeping]
 
 
-def _modified_relu(distance: float, threshold: float, delta: float = 0.01) -> float:
+def _modified_relu(distance: float, threshold: float, delta: float) -> float:
     """Flip-weight profile from arXiv:2405.05068."""
     if distance <= threshold:
         return delta
@@ -682,10 +659,7 @@ def _correct_spin_part(
     new_value = 1 - from_value
 
     weight_sum = sum(weights)
-    if weight_sum > 1e-9:
-        probabilities = [w / weight_sum for w in weights]
-    else:
-        probabilities = [1.0 / len(indices)] * len(indices)
+    probabilities = [w / weight_sum for w in weights]
 
     chosen = rng.choice(indices, size=n_flips, replace=False, p=probabilities)
     for index in chosen:
@@ -785,8 +759,10 @@ class SQDSolver:
     Implements arXiv:2405.05068. ``occupancy`` holds the running per-spin
     orbital occupancy estimate consumed by the self-consistent recovery step;
     it is refreshed at the end of every iteration from that iteration's batch
-    results, and is seeded from the target electron counts when a solver has
-    not yet run.
+    results.
+
+    Every setting is required: the defaults live in
+    :class:`~divi.qprog.workflows._lassqd._config.SQDConfig`.
     """
 
     def __init__(
@@ -795,19 +771,19 @@ class SQDSolver:
         n_alpha: int,
         n_beta: int,
         *,
-        n_batches: int = 15,
-        batch_size: int = 170,
-        n_iterations: int = 6,
-        lambda_penalty: float = 0.2,
-        recovery: bool = True,
-        carryover_cutoff: float | None = None,
-        max_carryover: int | None = None,
-        max_dim: int | tuple[int, int] | None = None,
-        include_reference: bool = True,
-        symmetrize_spin: bool = False,
-        energy_tol: float = 0.0,
-        occupancies_tol: float = 0.0,
-        rng: np.random.Generator | None = None,
+        n_batches: int,
+        batch_size: int,
+        n_iterations: int,
+        lambda_penalty: float,
+        recovery: bool,
+        carryover_cutoff: float | None,
+        max_carryover: int | None,
+        max_dim: int | tuple[int, int] | None,
+        include_reference: bool,
+        symmetrize_spin: bool,
+        energy_tol: float,
+        occupancies_tol: float,
+        rng: np.random.Generator,
     ):
         """Initialise the solver.
 
@@ -826,13 +802,13 @@ class SQDSolver:
             carryover_cutoff: Enables carryover when given, as a fraction of the
                 winning batch's largest eigenvector coefficient. Determinants
                 above it are retained and later batches extended with their
-                alpha and beta halves; ``None`` (default) is conventional SQD.
+                alpha and beta halves; ``None`` is conventional SQD.
                 Re-decided each iteration, and selected from the *penalised*
                 ground state, so ``lambda_penalty`` influences what is kept.
             max_carryover: Keeps at most this many alpha and beta strings, the
                 heaviest, so retention can shrink between iterations. ``None``
-                (default) leaves the subspace bounded only by the fragment's
-                determinant space; worth setting on a wide fragment.
+                leaves the subspace bounded only by the fragment's determinant
+                space; worth setting on a wide fragment.
             max_dim: Caps each spin sector, as one integer or an
                 ``(alpha, beta)`` pair, so the subspace never exceeds their
                 product.
@@ -843,10 +819,10 @@ class SQDSolver:
                 ``n_alpha == n_beta``.
             energy_tol: Stop iterating once the winning energy moves less than
                 this between iterations and the occupancies have also settled.
-                Zero (the default) never stops early.
+                Zero never stops early.
             occupancies_tol: The occupancy half of that test, on the largest
                 change in any orbital's average occupancy.
-            rng: Subsampling generator; fresh default when omitted.
+            rng: Subsampling generator.
 
         Raises:
             ValueError: If ``n_batches``, ``batch_size`` or ``n_iterations`` is
@@ -903,7 +879,7 @@ class SQDSolver:
         self.symmetrize_spin = symmetrize_spin and n_alpha == n_beta
         self.energy_tol = energy_tol
         self.occupancies_tol = occupancies_tol
-        self._rng = np.random.default_rng() if rng is None else rng
+        self._rng = rng
         self.occupancy = np.zeros((2, n_orb))
         self._reference_alpha = _aufbau_string(n_orb, n_alpha)
         self._reference_beta = _aufbau_string(n_orb, n_beta)
@@ -933,8 +909,7 @@ class SQDSolver:
 
         Raises:
             ValueError: If, in some iteration, no sampled bitstring can be
-                brought into agreement with the target particle symmetry, or
-                if no batch ever produces a candidate eigenvector.
+                brought into agreement with the target particle symmetry.
         """
         h_spin, g_spin = spin_orbital_integrals(
             one_body, two_body, self.n_orb, one_body_beta
@@ -948,11 +923,6 @@ class SQDSolver:
         # present in the current subspace anyway.
         carried_alpha: list[str] = []
         carried_beta: list[str] = []
-
-        # Only reached when this solver has not produced any batch results yet.
-        if np.sum(self.occupancy) == 0:
-            self.occupancy[0] = self.n_alpha / self.n_orb
-            self.occupancy[1] = self.n_beta / self.n_orb
 
         previous_energy: float | None = None
         previous_occupancy: np.ndarray | None = None
@@ -993,8 +963,7 @@ class SQDSolver:
                 carried_alpha = _heaviest_strings(alpha_weights, self.max_carryover)
                 carried_beta = _heaviest_strings(beta_weights, self.max_carryover)
 
-        if best is None:
-            raise ValueError("No batch produced a candidate eigenvector.")
+        assert best is not None
         return best
 
     def _recovered_distribution(
@@ -1216,75 +1185,67 @@ def _spatial_rdms_exact(
     amplitudes: np.ndarray,
     n_orb: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Reconstruct both RDMs from the second-quantized definitions directly.
+    """Reconstruct both RDMs from the second-quantised definitions directly.
 
-    One pass over every pair of determinants, so orders of magnitude slower than
+    Only determinant pairs within a double excitation of each other are
+    visited, located by one occupation product per block of rows, and every
+    ``a+_p a+_r a_s a_q`` term connecting them is accumulated straight into
+    the spatial blocks. Memory therefore scales with ``n_orb ** 4`` rather
+    than the spin-orbital ``(2 n_orb) ** 4``. Still far slower than
     :func:`compute_spatial_rdms`'s usual path.
     """
-    alpha_occs = _sector_occupations(strings_alpha, n_orb)
-    beta_occs = _sector_occupations(strings_beta, n_orb)
-    subspace_dets = [(alpha, beta) for alpha in alpha_occs for beta in beta_occs]
-    eigenvector = np.asarray(amplitudes, dtype=float).ravel()
-    m_dim = len(eigenvector)
+    alpha_bits = _bit_matrix(strings_alpha, n_orb)
+    beta_bits = _bit_matrix(strings_beta, n_orb)
+    occupation = np.concatenate(
+        [
+            np.repeat(alpha_bits, len(strings_beta), axis=0),
+            np.tile(beta_bits, (len(strings_alpha), 1)),
+        ],
+        axis=1,
+    ).astype(float)
+    dets = _occupations_from_bit_matrix(occupation)
+    det_sets = [frozenset(det) for det in dets]
+    coefficients = np.asarray(amplitudes, dtype=float).ravel()
+    n_electrons = len(dets[0])
 
-    dets_spin = [spatial_to_spin_occupations(d[0], d[1], n_orb) for d in subspace_dets]
-    det_masks = [sum(1 << orbital for orbital in det) for det in dets_spin]
+    rdm1s = np.zeros((2, n_orb, n_orb))
+    rdm2 = np.zeros((n_orb,) * 4)
+    for start in range(0, len(dets), _PAIR_BLOCK_ROWS):
+        stop = min(start + _PAIR_BLOCK_ROWS, len(dets))
+        rank = n_electrons - np.rint(occupation[start:stop] @ occupation.T)
+        for local, j in zip(*np.nonzero(rank <= 2)):
+            i = int(local) + start
+            weight = coefficients[i] * coefficients[j]
+            det_j = dets[j]
+            created = tuple(sorted(det_sets[i] - det_sets[j]))
+            annihilated = tuple(sorted(det_sets[j] - det_sets[i]))
+            common = sorted(det_sets[i] & det_sets[j])
 
-    n_spin = 2 * n_orb
-    rdm1_spin = np.zeros((n_spin, n_spin))
-    rdm2_spin = np.zeros((n_spin, n_spin, n_spin, n_spin))
-    for i in range(m_dim):
-        det_i = dets_spin[i]
-        det_i_mask = det_masks[i]
-        for j in range(m_dim):
-            det_j = dets_spin[j]
-            det_j_mask = det_masks[j]
-            val_ij = eigenvector[i] * eigenvector[j]
+            if not created:
+                for p in det_j:
+                    rdm1s[p // n_orb, p % n_orb, p % n_orb] += weight
+                spectators = list(itertools.combinations(common, 2))
+            elif len(created) == 1:
+                (p,), (q,) = created, annihilated
+                sign_q, occupied = _annihilation_sign(det_j, q)
+                sign_p, _ = _creation_sign(occupied, p)
+                rdm1s[p // n_orb, p % n_orb, q % n_orb] += weight * sign_p * sign_q
+                spectators = [(t,) for t in common]
+            else:
+                spectators = [()]
 
-            for q in det_j:
-                sign_q, occ_1 = _annihilation_sign(det_j, q)
-                if sign_q == 0 or occ_1 is None:
-                    continue
-
-                occ_1_mask = det_j_mask ^ (1 << q)
-                diff = det_i_mask & ~occ_1_mask
-                if diff.bit_count() == 1:
-                    p = diff.bit_length() - 1
-                    sign_p, occ_final = _creation_sign(occ_1, p)
-                    if sign_p != 0 and occ_final == det_i:
-                        rdm1_spin[p, q] += val_ij * sign_p * sign_q
-
-                for s in occ_1:
+            for spectator in spectators:
+                for q, s in itertools.permutations(annihilated + spectator):
+                    sign_q, occ_1 = _annihilation_sign(det_j, q)
                     sign_s, occ_2 = _annihilation_sign(occ_1, s)
-                    if sign_s == 0 or occ_2 is None:
-                        continue
-                    occ_2_mask = occ_1_mask ^ (1 << s)
-                    diff = det_i_mask & ~occ_2_mask
-                    if diff.bit_count() == 2:
-                        p_bit = diff & -diff
-                        p_cand = p_bit.bit_length() - 1
-                        r_cand = (diff ^ p_bit).bit_length() - 1
-                        for p, r in [(p_cand, r_cand), (r_cand, p_cand)]:
-                            sign_r, occ_3 = _creation_sign(occ_2, r)
-                            if sign_r == 0:
-                                continue
-                            sign_p, occ_final = _creation_sign(occ_3, p)
-                            if sign_p != 0 and occ_final == det_i:
-                                rdm2_spin[p, q, r, s] += (
-                                    val_ij * sign_q * sign_s * sign_r * sign_p
-                                )
+                    for p, r in itertools.permutations(created + spectator):
+                        if p // n_orb != q // n_orb:
+                            continue
+                        sign_r, occ_3 = _creation_sign(occ_2, r)
+                        sign_p, _ = _creation_sign(occ_3, p)
+                        rdm2[p % n_orb, q % n_orb, r % n_orb, s % n_orb] += (
+                            weight * sign_q * sign_s * sign_r * sign_p
+                        )
 
-    rdm1_alpha = rdm1_spin[:n_orb, :n_orb].copy()
-    rdm1_beta = rdm1_spin[n_orb:, n_orb:].copy()
-    rdm1 = rdm1_alpha + rdm1_beta
-
-    # Spin-trace the 2-RDM: sum the four same-spin-pair blocks (aa, ab, ba, bb).
-    alpha, beta = slice(None, n_orb), slice(n_orb, None)
-    rdm2 = (
-        rdm2_spin[alpha, alpha, alpha, alpha]
-        + rdm2_spin[alpha, alpha, beta, beta]
-        + rdm2_spin[beta, beta, alpha, alpha]
-        + rdm2_spin[beta, beta, beta, beta]
-    )
-
-    return rdm1, rdm2, rdm1_alpha, rdm1_beta
+    rdm1_alpha, rdm1_beta = rdm1s
+    return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta

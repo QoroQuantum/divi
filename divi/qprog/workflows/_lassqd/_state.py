@@ -80,6 +80,9 @@ class FragmentState:
             closed-shell split ``rdm1 / 2``. Needed for the cross-fragment
             exchange term, which contracts same-spin densities.
         rdm1_beta: Beta-spin half of ``rdm1``, under the same convention.
+
+    Raises:
+        ValueError: If exactly one of ``rdm1_alpha`` and ``rdm1_beta`` is given.
     """
 
     spec: FragmentSpec
@@ -88,6 +91,12 @@ class FragmentState:
     params: np.ndarray | None = None
     rdm1_alpha: np.ndarray | None = None
     rdm1_beta: np.ndarray | None = None
+
+    def __post_init__(self):
+        if (self.rdm1_alpha is None) != (self.rdm1_beta is None):
+            raise ValueError(
+                "rdm1_alpha and rdm1_beta must be given together or not at all."
+            )
 
     def spin_rdm1s(self) -> tuple[np.ndarray, np.ndarray]:
         """``(alpha, beta)`` 1-RDM halves, splitting ``rdm1`` if not supplied."""

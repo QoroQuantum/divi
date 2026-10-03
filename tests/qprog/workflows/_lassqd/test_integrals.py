@@ -20,7 +20,6 @@ from divi.qprog.workflows._lassqd import _integrals as _integrals_module
 from divi.qprog.workflows._lassqd._integrals import (
     ORBITAL_MINIMIZE_OPTIONS,
     MOIntegrals,
-    _build_energy_rdms,
     _total_energy,
     assemble_active_rdms,
     build_active_permutation,
@@ -28,12 +27,14 @@ from divi.qprog.workflows._lassqd._integrals import (
     cached_h_ao,
     fragment_effective_integrals,
     optimize_orbitals,
+    pair_indices,
     rotation_energy_gradient_fn,
     transform_integrals,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
 from tests._helpers import exact_match
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+    build_energy_rdms,
     dense_fci_energy,
     h2_mean_field,
     h4_chain_mean_field,
@@ -710,18 +711,25 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom(
     np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
     assert solve.n_rotation_pairs == 0
     assert solve.n_iterations == 0
+    assert solve.converged is True
+    assert solve.n_evaluations == 1
+    assert solve.gradient_norm == 0.0
 
 
-def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(
-    mocker, h4_chain_mean_field
+@pytest.mark.parametrize(
+    "energy_offset, accepted",
+    [(1.0, False), (0.0, False), (-1.0, True)],
+    ids=["worse", "tie", "better"],
+)
+def test_optimize_orbitals_keeps_scipy_result_only_when_strictly_lower(
+    mocker, h4_chain_mean_field, energy_offset, accepted
 ):
-    """If ``minimize`` returns a result whose energy is worse than doing no
-    rotation at all, that result must be discarded in favor of the baseline,
-    keeping the routine monotone regardless of what scipy reports."""
+    """``minimize``'s result replaces the zero-rotation baseline only when its
+    energy is strictly lower, keeping the routine monotone regardless of what
+    scipy reports; the gradient and orbitals follow whichever point is kept."""
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
-    n_act = 4
-    rdm1_active, rdm2_active = _diagonal_active_rdms(n_act)
+    rdm1_active, rdm2_active = _diagonal_active_rdms(4)
     ao_eri = cached_ao_eri(mol)
     h_ao = cached_h_ao(mol)
     specs = [
@@ -729,27 +737,62 @@ def test_optimize_orbitals_discards_a_scipy_result_worse_than_baseline(
         FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
     ]
 
-    baseline_energy = _total_energy(
-        mol, mo_coeff, 0, rdm1_active, rdm2_active, ao_eri, h_ao
+    rotation_pairs, energy_and_gradient = rotation_energy_gradient_fn(
+        mol, mo_coeff, 0, specs, rdm1_active, rdm2_active, ao_eri, h_ao
+    )
+    baseline_energy, baseline_gradient = energy_and_gradient(
+        np.zeros(len(rotation_pairs))
     )
 
-    fake_result = mocker.Mock()
-    fake_result.fun = baseline_energy + 1.0
-    fake_result.x = np.full(4, 0.5)
-    fake_result.jac = np.full(4, 1.0)
-    fake_result.nit = 3
-    fake_result.nfev = 4
-    fake_result.success = True
+    fake_result = scipy.optimize.OptimizeResult(
+        fun=baseline_energy + energy_offset,
+        x=np.array([0.5, -0.2, 0.1, 0.3]),
+        jac=np.array([0.1, -7.0, 0.2, 0.3]),
+        nit=3,
+        nfev=4,
+        success=True,
+        message="",
+    )
     mocker.patch.object(_integrals_module, "minimize", return_value=fake_result)
 
     solve = optimize_orbitals(
         mol, mo_coeff, 0, specs, rdm1_active, rdm2_active, ao_eri, h_ao
     )
 
-    assert solve.energy == pytest.approx(baseline_energy)
-    np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
-    # The discarded result's gradient must be discarded with it.
-    assert solve.gradient_norm != pytest.approx(1.0)
+    assert solve.n_evaluations == 1 + fake_result.nfev
+    assert solve.n_iterations == fake_result.nit
+    if accepted:
+        rows, cols = pair_indices(rotation_pairs)
+        generator = np.zeros((4, 4))
+        generator[rows, cols] = fake_result.x
+        generator[cols, rows] = -fake_result.x
+        assert solve.energy == fake_result.fun
+        assert solve.gradient_norm == 7.0
+        np.testing.assert_allclose(
+            solve.mo_coeff, mo_coeff @ scipy.linalg.expm(generator), atol=1e-12
+        )
+    else:
+        assert solve.energy == baseline_energy
+        assert solve.gradient_norm == np.max(np.abs(baseline_gradient))
+        np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
+
+
+def test_transform_integrals_reuses_a_supplied_ao_eri(mocker, h4_chain_mean_field):
+    """A supplied AO ERI is used as-is, giving the same integrals as building it."""
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    built = transform_integrals(mol, mo_coeff, n_core=1, n_act=2)
+
+    ao_eri = cached_ao_eri(mol)
+    spy = mocker.spy(_integrals_module, "cached_ao_eri")
+    reused = transform_integrals(mol, mo_coeff, n_core=1, n_act=2, ao_eri=ao_eri)
+
+    spy.assert_not_called()
+    for name in ("h_act", "g_act", "j_core", "k_core"):
+        np.testing.assert_array_equal(getattr(reused, name), getattr(built, name))
+    np.testing.assert_allclose(
+        cached_h_ao(mol), h4_chain_mean_field.get_hcore(), atol=1e-14
+    )
 
 
 def _rotated_mo_coeff(mo_coeff, rotation_pairs, rotation_params):
@@ -772,7 +815,7 @@ def test_energy_rdms_reconstruct_total_energy(orbital_rotation_case):
     )
     n_orb = mo_coeff.shape[1]
 
-    one_rdm, two_rdm = _build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active)
+    one_rdm, two_rdm = build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active)
     h_mo = mo_coeff.T @ h_ao @ mo_coeff
     g_mo = ao2mo.restore(1, ao2mo.incore.full(ao_eri, mo_coeff), n_orb)
 

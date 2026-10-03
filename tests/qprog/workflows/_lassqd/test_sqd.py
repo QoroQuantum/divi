@@ -14,10 +14,16 @@ pytest.importorskip("pyscf")
 from pyscf import fci, scf
 
 import divi.qprog.workflows._lassqd._sqd as sqd_module
+from divi.qprog.workflows._lassqd._config import SQDConfig
 from divi.qprog.workflows._lassqd._sqd import (
     SQDSolver,
+    _annihilation_sign,
+    _bit_matrix,
+    _correct_spin_part,
+    _creation_sign,
     _heaviest_strings,
-    _sector_occupations,
+    _modified_relu,
+    _occupations_from_bit_matrix,
     _spatial_rdms_exact,
     bit_flip_correction,
     bitstring_to_spatial_det,
@@ -55,6 +61,39 @@ def _h2_631g_integrals():
 
 def _h4_integrals():
     return _integrals_from_mol(h4_chain())
+
+
+def _solver(n_orb, n_alpha, n_beta, **overrides):
+    """An ``SQDSolver`` on ``SQDConfig``'s defaults, seeded, and conventional SQD
+    unless ``carryover_cutoff`` is overridden."""
+    config = SQDConfig()
+    settings = dict(
+        n_batches=config.n_batches,
+        batch_size=config.batch_size,
+        n_iterations=config.n_recovery_iterations,
+        lambda_penalty=config.lambda_penalty,
+        recovery=True,
+        carryover_cutoff=None,
+        max_carryover=config.max_carryover,
+        max_dim=config.max_dim,
+        include_reference=config.include_reference,
+        symmetrize_spin=config.symmetrize_spin,
+        energy_tol=config.recovery_energy_tol,
+        occupancies_tol=config.recovery_occupancies_tol,
+        rng=np.random.default_rng(0),
+    )
+    return SQDSolver(n_orb, n_alpha, n_beta, **(settings | overrides))
+
+
+def _sector_occupations(strings, n_orb):
+    return _occupations_from_bit_matrix(_bit_matrix(strings, n_orb))
+
+
+def test_solver_settings_have_no_defaults():
+    """Defaults live only in ``SQDConfig``, so a solver built without them must
+    fail rather than silently diverge from the configuration."""
+    with pytest.raises(TypeError, match="required keyword-only"):
+        SQDSolver(2, 1, 1, rng=np.random.default_rng(0))
 
 
 def test_spatial_to_spin_occupations_uses_blocked_indexing():
@@ -130,11 +169,8 @@ def test_non_binary_sector_string_is_rejected():
 
 def test_slater_condon_vanishes_beyond_double_excitation():
     # Only 2 spatial orbitals available in H2/STO-3G, so build a 3-orbital toy instead.
-    # Pins the physical property that Slater-Condon matrix elements vanish
-    # beyond a double excitation -- not a claim about the specific early-return
-    # guard in slater_condon(), which is redundant with the function's own
-    # trailing fallback. Integrals are non-zero so a future refactor that
-    # dropped or reordered that fallback would still be caught here.
+    # Integrals are non-zero so dropping the beyond-double guard would surface
+    # as a non-zero element (or a failed unpacking) here.
     n = 3
     h3 = np.zeros((n, n))
     g3 = np.arange(1, n**4 + 1, dtype=float).reshape((n,) * 4) * 0.01
@@ -276,7 +312,7 @@ def test_spin_orbital_integrals_match_the_elementwise_definition(n_orb, polarize
     np.testing.assert_array_equal(g_spin, expected_g)
 
 
-def _scalar_projected_matrices(dets, dets_spin, h_spin, g_spin, n_orb):
+def _scalar_projected_matrices(dets, dets_spin, h_spin, g_spin):
     """The double loop ``projected_matrices`` replaced, kept as the reference."""
     dim = len(dets)
     h_proj = np.zeros((dim, dim))
@@ -284,7 +320,7 @@ def _scalar_projected_matrices(dets, dets_spin, h_spin, g_spin, n_orb):
     for i in range(dim):
         for j in range(dim):
             h_proj[i, j] = slater_condon(dets_spin[i], dets_spin[j], h_spin, g_spin)
-            s2_proj[i, j] = s2_matrix_element(dets[i], dets[j], n_orb)
+            s2_proj[i, j] = s2_matrix_element(dets[i], dets[j])
     return h_proj, s2_proj
 
 
@@ -344,7 +380,7 @@ def test_projected_matrices_match_the_scalar_rules(n_orb, n_alpha, n_beta, symme
     dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
 
     expected_h, expected_s2 = _scalar_projected_matrices(
-        space, dets_spin, h_spin, g_spin, n_orb
+        space, dets_spin, h_spin, g_spin
     )
     h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
 
@@ -371,7 +407,7 @@ def test_projected_matrices_are_independent_of_the_row_block(monkeypatch, block_
     ]
     dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
     expected_h, expected_s2 = _scalar_projected_matrices(
-        space, dets_spin, h_spin, g_spin, n_orb
+        space, dets_spin, h_spin, g_spin
     )
 
     monkeypatch.setattr(sqd_module, "_PAIR_BLOCK_ROWS", block_rows)
@@ -428,6 +464,30 @@ def test_ground_root_iterative_branch_matches_the_dense_solve(monkeypatch):
     assert energy == pytest.approx(expected_values[0], abs=1e-10)
     # The sign of an eigenvector is arbitrary in either solver.
     assert abs(float(vector @ expected_vectors[:, 0])) == pytest.approx(1.0, abs=1e-8)
+
+
+def test_ground_root_iterative_branch_lets_the_penalty_choose_the_root(
+    mocker, monkeypatch
+):
+    """With the penalty applied as an operator, the iterative branch must still
+    move the root: unpenalised the Sz=0 triplet component is lowest, penalised
+    the singlet is. Neither solve may fall back to the dense form."""
+    one_body, two_body, n_orb = _degenerate_orbital_integrals(exchange=0.3)
+    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+    space = [((a,), (b,)) for a in range(n_orb) for b in range(n_orb)]
+    dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
+    h_proj, deviation = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
+
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
+
+    triplet, _ = sqd_module.ground_root(h_proj, deviation, 0.0)
+    singlet, vector = sqd_module.ground_root(h_proj, deviation, 20.0)
+
+    dense.assert_not_called()
+    assert triplet == pytest.approx(-0.3, abs=1e-8)
+    assert singlet == pytest.approx(0.3, abs=1e-8)
+    assert float(vector @ deviation @ vector) == pytest.approx(0.0, abs=1e-8)
 
 
 def test_ground_root_falls_back_when_the_iterative_root_is_not_the_lowest(
@@ -490,27 +550,23 @@ def test_projected_matrices_handles_an_empty_subspace():
     assert s2_proj.shape == (0, 0)
 
 
-def _s2_eigenvalues(dets, n_orb):
+def _s2_eigenvalues(dets):
     dim = len(dets)
     matrix = np.array(
-        [
-            [s2_matrix_element(dets[i], dets[j], n_orb) for j in range(dim)]
-            for i in range(dim)
-        ]
+        [[s2_matrix_element(dets[i], dets[j]) for j in range(dim)] for i in range(dim)]
     )
     return np.linalg.eigvalsh(matrix), matrix
 
 
 def test_s2_eigenvalues_are_singlet_and_triplet():
     """Two electrons in two orbitals span one triplet (S^2 = 2) and singlets (0)."""
-    n_orb = 2
     dets = [
         ((0,), (0,)),
         ((0,), (1,)),
         ((1,), (0,)),
         ((1,), (1,)),
     ]
-    eigenvalues, matrix = _s2_eigenvalues(dets, n_orb)
+    eigenvalues, matrix = _s2_eigenvalues(dets)
     np.testing.assert_allclose(matrix, matrix.T, atol=1e-12)
     rounded = np.round(eigenvalues, 9)
     assert sorted(rounded) == pytest.approx([0.0, 0.0, 0.0, 2.0], abs=1e-8)
@@ -519,7 +575,7 @@ def test_s2_eigenvalues_are_singlet_and_triplet():
 def test_s2_of_high_spin_determinant_is_maximal():
     """Both electrons alpha: S = 1, so S^2 = 2 exactly and diagonally."""
     det = ((0, 1), ())
-    assert s2_matrix_element(det, det, n_orb=2) == pytest.approx(2.0, abs=1e-9)
+    assert s2_matrix_element(det, det) == pytest.approx(2.0, abs=1e-9)
 
 
 def test_filter_symmetry_keeps_only_correct_particle_numbers():
@@ -539,8 +595,92 @@ def test_bit_flip_correction_always_restores_particle_numbers():
         fixed = bit_flip_correction(
             bits, n_orb=3, n_alpha=2, n_beta=1, occupancy=occupancy, rng=rng
         )
+        assert set(fixed) <= {"0", "1"}
+        assert len(fixed) == 6
         assert fixed[:3].count("1") == 2
         assert fixed[3:].count("1") == 1
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta, match",
+    [(-1, 1, "n_alpha"), (3, 1, "n_alpha"), (1, -1, "n_beta"), (1, 3, "n_beta")],
+)
+def test_bit_flip_correction_rejects_impossible_sector_counts(n_alpha, n_beta, match):
+    with pytest.raises(ValueError, match=f"{match} must be between 0 and n_orb"):
+        bit_flip_correction(
+            "1010",
+            n_orb=2,
+            n_alpha=n_alpha,
+            n_beta=n_beta,
+            occupancy=np.full((2, 2), 0.5),
+            rng=np.random.default_rng(0),
+        )
+
+
+def test_bit_flip_correction_accepts_a_full_sector():
+    """``n_orb`` electrons per sector is the bound itself, not past it."""
+    fixed = bit_flip_correction(
+        "0000",
+        n_orb=2,
+        n_alpha=2,
+        n_beta=0,
+        occupancy=np.full((2, 2), 0.5),
+        rng=np.random.default_rng(0),
+    )
+    assert fixed == "1100"
+
+
+@pytest.mark.parametrize(
+    "distance, threshold, expected",
+    [(0.2, 0.5, 0.01), (0.5, 0.5, 0.01), (0.8, 0.5, 0.31)],
+)
+def test_modified_relu_is_the_published_flip_weight(distance, threshold, expected):
+    """arXiv:2405.05068: ``delta`` up to the threshold, then linear above it."""
+    assert _modified_relu(distance, threshold, 0.01) == pytest.approx(expected)
+
+
+@pytest.mark.parametrize(
+    "part, target, average, candidates, weights, flipped, corrected",
+    [
+        # Emptying: distance is how far each occupied bit sits from full.
+        (
+            [1, 1, 1],
+            1,
+            [1.0, 0.5, 0.2],
+            [0, 1, 2],
+            [0.01, 0.5 - 1 / 3 + 0.01, 0.8 - 1 / 3 + 0.01],
+            [0, 1],
+            [0, 0, 1],
+        ),
+        # Filling: distance is how far each empty bit sits from empty.
+        (
+            [0, 0, 1],
+            2,
+            [0.9, 0.1, 1.0],
+            [0, 1],
+            [0.9 - 2 / 3 + 0.01, 0.01],
+            [0],
+            [1, 0, 1],
+        ),
+    ],
+)
+def test_bit_flip_draws_follow_the_modified_relu_weights(
+    mocker, part, target, average, candidates, weights, flipped, corrected
+):
+    """The draw's probabilities are the normalised flip weights, and exactly the
+    surplus or deficit is flipped."""
+    rng = mocker.Mock(spec=np.random.Generator)
+    rng.choice.return_value = np.array(flipped)
+
+    result = _correct_spin_part(list(part), target, np.array(average), 3, rng)
+
+    rng.choice.assert_called_once()
+    assert list(rng.choice.call_args.args[0]) == candidates
+    call = rng.choice.call_args.kwargs
+    assert call["size"] == len(flipped)
+    assert call["replace"] is False
+    np.testing.assert_allclose(call["p"], np.array(weights) / sum(weights))
+    assert result == corrected
 
 
 def test_bit_flip_correction_is_deterministic_under_a_seed():
@@ -614,7 +754,7 @@ def test_spin_penalty_suppresses_the_triplet_ground_state():
     one_body, two_body, n_orb = _degenerate_orbital_integrals(exchange=0.3)
     probs = uniform_full_space_probs(n_orb, 1, 1)
 
-    unpenalized = SQDSolver(
+    unpenalized = _solver(
         n_orb,
         1,
         1,
@@ -627,7 +767,7 @@ def test_spin_penalty_suppresses_the_triplet_ground_state():
     triplet_energy = unpenalized.solve(probs, one_body, two_body).energy
     assert triplet_energy == pytest.approx(-0.3, abs=1e-8)
 
-    penalized = SQDSolver(
+    penalized = _solver(
         n_orb,
         1,
         1,
@@ -660,7 +800,7 @@ def test_beta_one_body_applies_to_the_beta_channel():
     two_body = np.zeros((n_orb,) * 4)
     probs = uniform_full_space_probs(n_orb, n_alpha, n_beta)
 
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         n_alpha,
         n_beta,
@@ -683,7 +823,7 @@ def test_solver_recovers_fci_when_subspace_is_complete():
     # miss an alpha or beta half and project onto an incomplete space. Four
     # batches of batch_size draws each make the best-of-batches subspace
     # complete with overwhelming probability.
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         1,
         1,
@@ -720,7 +860,7 @@ def test_batch_size_sets_the_number_of_samples_drawn(batch_size, expected_subspa
     one_body, two_body, n_orb, constant = _h2_integrals()
     probs = uniform_full_space_probs(n_orb, 1, 1)
 
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         1,
         1,
@@ -766,12 +906,12 @@ def test_solver_carries_the_best_energy_across_iterations():
         include_reference=False,
     )
 
-    single = SQDSolver(
+    single = _solver(
         n_orb, n_alpha, n_beta, n_iterations=1, rng=np.random.default_rng(0), **kwargs
     )
     single_energy = single.solve(probs, one_body, two_body).energy
 
-    multi = SQDSolver(
+    multi = _solver(
         n_orb, n_alpha, n_beta, n_iterations=3, rng=np.random.default_rng(0), **kwargs
     )
     multi_energy = multi.solve(probs, one_body, two_body).energy
@@ -825,7 +965,7 @@ def test_carryover_grows_the_subspace_across_iterations(monkeypatch):
         include_reference=False,
     )
     energy = (
-        SQDSolver(
+        _solver(
             n_orb,
             2,
             2,
@@ -841,7 +981,7 @@ def test_carryover_grows_the_subspace_across_iterations(monkeypatch):
     assert max(dimensions) > dimensions[0]
 
     plain_energy = (
-        SQDSolver(n_orb, 2, 2, rng=np.random.default_rng(3), **kwargs)
+        _solver(n_orb, 2, 2, rng=np.random.default_rng(3), **kwargs)
         .solve(one_body=one_body, two_body=two_body, probs=probs)
         .energy
     )
@@ -872,10 +1012,10 @@ def test_carryover_can_recover_the_full_determinant_space(monkeypatch):
         recovery=False,
         include_reference=False,
     )
-    plain = SQDSolver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
+    plain = _solver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
         one_body=one_body, two_body=two_body, probs=probs
     )
-    carried = SQDSolver(
+    carried = _solver(
         n_orb, 2, 2, carryover_cutoff=1e-2, rng=np.random.default_rng(0), **kwargs
     ).solve(one_body=one_body, two_body=two_body, probs=probs)
 
@@ -906,7 +1046,7 @@ def test_the_convergence_break_can_stop_carryover_short():
         carryover_cutoff=1e-2,
     )
 
-    stopped = SQDSolver(
+    stopped = _solver(
         n_orb,
         2,
         2,
@@ -915,7 +1055,7 @@ def test_the_convergence_break_can_stop_carryover_short():
         rng=np.random.default_rng(0),
         **kwargs,
     ).solve(probs, one_body, two_body)
-    exhaustive = SQDSolver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
+    exhaustive = _solver(n_orb, 2, 2, rng=np.random.default_rng(0), **kwargs).solve(
         probs, one_body, two_body
     )
 
@@ -939,7 +1079,7 @@ def test_carried_strings_persist_through_an_iteration_that_does_not_resample_the
     probs = uniform_full_space_probs(n_orb, 2, 2)
     kept = _spy_on_retained(monkeypatch)
 
-    SQDSolver(
+    _solver(
         n_orb,
         2,
         2,
@@ -1016,6 +1156,19 @@ def test_the_cap_is_not_decided_by_float_noise():
     assert _heaviest_strings({"010": nudged, "001": 1.0}, 1) == ["001"]
 
 
+def test_the_cap_still_ranks_differences_the_rounding_keeps():
+    """Rounding to twelve places absorbs only float noise: a difference at the
+    tenth place still decides the rank, one at the fourteenth falls to the
+    string tiebreak, and no limit returns every string in rank order."""
+    assert _heaviest_strings({"001": 0.5, "010": 0.5 + 1e-10}, 1) == ["010"]
+    assert _heaviest_strings({"001": 0.5, "010": 0.5 + 1e-14}, 1) == ["001"]
+    assert _heaviest_strings({"001": 0.1, "010": 0.3, "100": 0.2}, None) == [
+        "010",
+        "100",
+        "001",
+    ]
+
+
 def test_carryover_cutoff_prunes_relative_to_the_largest_coefficient():
     """The cutoff must drop light determinants, and must mean the same thing at
     any subspace size: a normalized eigenvector's components fall as
@@ -1057,7 +1210,7 @@ def test_max_carryover_bounds_the_subspace(monkeypatch, cap):
             return real_projected(dets, dets_spin, *args, **kwargs)
 
         monkeypatch.setattr(sqd_module, "projected_matrices", spy)
-        SQDSolver(
+        _solver(
             n_orb,
             2,
             2,
@@ -1097,44 +1250,48 @@ def test_max_carryover_bounds_the_subspace(monkeypatch, cap):
 )
 def test_carryover_rejects_invalid_configuration(kwargs, match):
     with pytest.raises(ValueError, match=match):
-        SQDSolver(2, 1, 1, **kwargs)
+        _solver(2, 1, 1, **kwargs)
 
 
-def test_recovery_accumulates_probability_onto_collapsed_bitstrings():
+def test_recovery_accumulates_probability_onto_collapsed_bitstrings(monkeypatch):
     """Correction is many-to-one, and the collapsed multiplicity must survive it.
 
-    Deduplicating with a ``set`` and looking each survivor up in the original
-    distribution -- what this replaced -- discards the 0.9 funnelled through
-    ``1111`` and returns a flat distribution instead.
+    The correction is pinned to a fixed mapping so the expected distribution is
+    exact: deduplicating with a ``set`` and looking each survivor up in the
+    original distribution would give ``1010`` nothing, and a uniform rebuild
+    would give every survivor a third.
     """
-    n_orb = 2
-    solver = SQDSolver(
-        n_orb,
-        1,
-        1,
-        n_iterations=2,
-        occupancies_tol=0.0,
-        rng=np.random.default_rng(0),
+    corrections = {"1111": "1010", "1100": "1010", "0011": "0101", "1001": "1001"}
+    monkeypatch.setattr(
+        sqd_module, "bit_flip_correction", lambda bits, *_args: corrections[bits]
     )
-    solver.occupancy = np.full((2, n_orb), 0.5)
-    probs = {"1111": 0.9, "1010": 0.1}
+    solver = _solver(2, 1, 1)
+    probs = {"1111": 0.4, "1100": 0.2, "0011": 0.3, "1001": 0.1}
 
     recovered = solver._recovered_distribution(probs, iteration=1)
 
-    assert sum(recovered.values()) == pytest.approx(1.0)
-    assert all(
-        bits[:n_orb].count("1") == 1 and bits[n_orb:].count("1") == 1
-        for bits in recovered
-    )
-    # "1111" corrects to one of the four valid determinants, keeping its 0.9;
-    # whichever that is must dominate, and a uniform rebuild could not.
-    assert max(recovered.values()) == pytest.approx(0.9, abs=1e-12)
+    assert recovered == {
+        "1010": pytest.approx(0.6),
+        "0101": pytest.approx(0.3),
+        "1001": pytest.approx(0.1),
+    }
+
+
+def test_a_zero_weight_distribution_is_recovered_as_uniform():
+    """Survivors that carry no probability at all still form a distribution."""
+    solver = _solver(2, 1, 1)
+    probs = {"1010": 0.0, "0101": 0.0, "1100": 0.0}
+
+    assert solver._recovered_distribution(probs, iteration=0) == {
+        "1010": 0.5,
+        "0101": 0.5,
+    }
 
 
 def test_recovery_leaves_the_first_iteration_on_the_sampled_probabilities():
     """Iteration zero postselects rather than corrects, so survivors keep their
     sampled weights renormalized."""
-    solver = SQDSolver(2, 1, 1, rng=np.random.default_rng(0))
+    solver = _solver(2, 1, 1, rng=np.random.default_rng(0))
     probs = {"1010": 0.6, "0101": 0.2, "1100": 0.2}
 
     recovered = solver._recovered_distribution(probs, iteration=0)
@@ -1146,7 +1303,7 @@ def test_recovery_leaves_the_first_iteration_on_the_sampled_probabilities():
 def test_a_batch_draws_distinct_configurations():
     """A batch of size k contributes k distinct configurations. With replacement,
     4 draws from 4 equally likely candidates reach all of them ~9% of the time."""
-    solver = SQDSolver(
+    solver = _solver(
         2,
         1,
         1,
@@ -1167,7 +1324,7 @@ def test_a_batch_draws_distinct_configurations():
 def test_a_batch_cannot_ask_for_more_than_the_positive_probability_pool():
     """An oversized batch_size must clamp to the positive-probability pool rather
     than raise."""
-    solver = SQDSolver(
+    solver = _solver(
         2,
         1,
         1,
@@ -1186,7 +1343,7 @@ def test_a_batch_cannot_ask_for_more_than_the_positive_probability_pool():
 def test_sector_strings_are_ordered_for_pyscf_addressing():
     """PySCF addresses determinants by ascending CI-string integer, which is not
     the strings' lexicographic order since bit ``p`` is character ``p``."""
-    solver = SQDSolver(3, 1, 1, rng=np.random.default_rng(0))
+    solver = _solver(3, 1, 1, rng=np.random.default_rng(0))
     counts = {"100": 1, "010": 1, "001": 1}
 
     strings = solver._sector_strings(counts, [], "100", target=1, max_dim=None)
@@ -1213,10 +1370,10 @@ def test_the_reference_determinant_is_always_available():
         rng=np.random.default_rng(0),
     )
 
-    without = SQDSolver(n_orb, 1, 1, include_reference=False, **kwargs).solve(
+    without = _solver(n_orb, 1, 1, include_reference=False, **kwargs).solve(
         probs, one_body, two_body
     )
-    with_reference = SQDSolver(n_orb, 1, 1, include_reference=True, **kwargs).solve(
+    with_reference = _solver(n_orb, 1, 1, include_reference=True, **kwargs).solve(
         probs, one_body, two_body
     )
 
@@ -1234,7 +1391,7 @@ def test_max_dim_caps_each_spin_sector(max_dim):
     probs = uniform_full_space_probs(n_orb, 2, 2)
     cap_alpha, cap_beta = max_dim if isinstance(max_dim, tuple) else (max_dim, max_dim)
 
-    result = SQDSolver(
+    result = _solver(
         n_orb,
         2,
         2,
@@ -1263,7 +1420,7 @@ def test_max_dim_keeps_the_reference_when_the_cap_binds():
     two_body = np.zeros((n_orb,) * 4)
     probs = uniform_full_space_probs(n_orb, 1, 1)
 
-    result = SQDSolver(
+    result = _solver(
         n_orb,
         1,
         1,
@@ -1277,6 +1434,28 @@ def test_max_dim_keeps_the_reference_when_the_cap_binds():
 
     assert result.strings_alpha == ("100",)
     assert result.strings_beta == ("100",)
+
+
+@pytest.mark.parametrize(
+    "include_reference, carried, counts, max_dim, expected",
+    [
+        # Sampled strings rank by how often they were drawn.
+        (False, [], {"100": 1, "010": 3, "001": 2}, 2, ("010", "001")),
+        # Equal counts fall back to the string itself.
+        (False, [], {"010": 2, "001": 2}, 1, ("001",)),
+        # Reference first, then carried, then sampled, whatever the counts.
+        (True, ["001"], {"010": 5}, 2, ("100", "001")),
+        (True, ["001"], {"010": 5}, 1, ("100",)),
+    ],
+)
+def test_max_dim_keeps_strings_in_priority_order(
+    include_reference, carried, counts, max_dim, expected
+):
+    solver = _solver(3, 1, 1, include_reference=include_reference)
+
+    kept = solver._sector_strings(counts, carried, "100", target=1, max_dim=max_dim)
+
+    assert kept == expected
 
 
 def test_symmetrize_spin_pools_the_sectors_together():
@@ -1295,10 +1474,10 @@ def test_symmetrize_spin_pools_the_sectors_together():
         rng=np.random.default_rng(0),
     )
 
-    separate = SQDSolver(n_orb, 1, 1, symmetrize_spin=False, **kwargs).solve(
+    separate = _solver(n_orb, 1, 1, symmetrize_spin=False, **kwargs).solve(
         probs, one_body, two_body
     )
-    merged = SQDSolver(n_orb, 1, 1, symmetrize_spin=True, **kwargs).solve(
+    merged = _solver(n_orb, 1, 1, symmetrize_spin=True, **kwargs).solve(
         probs, one_body, two_body
     )
 
@@ -1309,8 +1488,8 @@ def test_symmetrize_spin_pools_the_sectors_together():
 def test_symmetrize_spin_is_inactive_on_a_polarized_fragment():
     """Exchanging the sectors is not a symmetry at unequal electron counts, so the
     flag must be ignored rather than merge pools."""
-    assert SQDSolver(3, 2, 1, symmetrize_spin=True).symmetrize_spin is False
-    assert SQDSolver(3, 2, 2, symmetrize_spin=True).symmetrize_spin is True
+    assert _solver(3, 2, 1, symmetrize_spin=True).symmetrize_spin is False
+    assert _solver(3, 2, 2, symmetrize_spin=True).symmetrize_spin is True
 
 
 def _count_settled_diagonalizations(mocker, **solver_kwargs):
@@ -1318,7 +1497,7 @@ def _count_settled_diagonalizations(mocker, **solver_kwargs):
     first: zero two-body terms and one saturating batch per iteration."""
     n_orb = 2
     spy = mocker.spy(sqd_module, "projected_matrices")
-    SQDSolver(
+    _solver(
         n_orb,
         1,
         1,
@@ -1349,8 +1528,8 @@ def test_recovery_stops_once_energy_and_occupancy_settle(mocker):
 def test_recovery_runs_every_iteration_at_the_default_tolerances(mocker):
     """The default tolerances are zero, so no iteration can qualify to stop."""
     assert _count_settled_diagonalizations(mocker, n_iterations=5) == 5
-    assert SQDSolver(2, 1, 1).energy_tol == 0.0
-    assert SQDSolver(2, 1, 1).occupancies_tol == 0.0
+    assert SQDConfig().recovery_energy_tol == 0.0
+    assert SQDConfig().recovery_occupancies_tol == 0.0
 
 
 def test_solver_is_reproducible_under_a_seed():
@@ -1358,7 +1537,7 @@ def test_solver_is_reproducible_under_a_seed():
     probs = uniform_full_space_probs(n_orb, 1, 1)
 
     def run():
-        solver = SQDSolver(
+        solver = _solver(
             n_orb,
             1,
             1,
@@ -1374,7 +1553,7 @@ def test_solver_is_reproducible_under_a_seed():
 
 def test_solver_raises_when_no_configuration_has_valid_symmetry():
     one_body, two_body, n_orb, _ = _h2_integrals()
-    solver = SQDSolver(n_orb, 1, 1, n_iterations=1, rng=np.random.default_rng(0))
+    solver = _solver(n_orb, 1, 1, n_iterations=1, rng=np.random.default_rng(0))
     with pytest.raises(ValueError, match="particle symmetry"):
         solver.solve({"1100": 1.0}, one_body, two_body)
 
@@ -1391,7 +1570,7 @@ def test_occupancy_is_refreshed_from_batch_results():
     two_body = np.zeros((n_orb,) * 4)
     probs = uniform_full_space_probs(n_orb, n_alpha, n_beta)
 
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         n_alpha,
         n_beta,
@@ -1416,6 +1595,24 @@ def test_occupancy_is_refreshed_from_batch_results():
     )
 
 
+def test_batch_occupancy_is_the_eigenvector_weighted_occupation():
+    """A batch's occupancy is ``sum_k |c_k|^2 n_k`` over its determinants, which
+    the solver reads off the sector marginals instead of the determinants."""
+    one_body, two_body, n_orb, _ = _h4_integrals()
+    h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
+    sectors = (("1110", "1101", "1011"), ("1000", "0100", "0001"))
+
+    result, occupancy = _solver(n_orb, 3, 1)._diagonalize(
+        sectors, h_spin, g_spin, target_s=1.0, constant=0.0
+    )
+
+    weights = result.eigenvector**2
+    assert np.count_nonzero(weights > 1e-6) > 1
+    bits = _bit_matrix(result.subspace, 2 * n_orb)
+    expected = np.stack([weights @ bits[:, :n_orb], weights @ bits[:, n_orb:]])
+    np.testing.assert_allclose(occupancy, expected, atol=1e-12)
+
+
 def test_subspace_pools_alpha_and_beta_separately():
     """Alpha candidates must come only from alpha halves, and beta from beta.
 
@@ -1437,7 +1634,7 @@ def test_subspace_pools_alpha_and_beta_separately():
     # both "10" and "01" to each role, producing the extra determinants
     # "1010", "0101", "0110" -- none of which were ever sampled as a pair.
     probs = {"1001": 1.0}
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         n_alpha,
         n_beta,
@@ -1469,7 +1666,7 @@ def _rdms_from(result, n_orb):
 
 def test_spatial_rdm1_matches_pyscf_fci():
     one_body, two_body, n_orb, constant = _h2_integrals()
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         1,
         1,
@@ -1503,7 +1700,7 @@ def test_spatial_rdm12_and_energy_match_pyscf_fci_beyond_two_orbitals():
     """
     one_body, two_body, n_orb, constant = _h4_integrals()
     n_alpha = n_beta = 2
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         n_alpha,
         n_beta,
@@ -1549,7 +1746,7 @@ def test_spatial_spin_rdm1s_match_pyscf_for_a_polarized_sector():
     ``make_rdm1s`` gives two different matrices."""
     one_body, two_body, n_orb, constant = _h4_integrals()
     n_alpha, n_beta = 3, 1
-    solver = SQDSolver(
+    solver = _solver(
         n_orb,
         n_alpha,
         n_beta,
@@ -1579,3 +1776,114 @@ def test_spatial_spin_rdm1s_match_pyscf_for_a_polarized_sector():
     # The traces are electron counts, exact to machine precision.
     assert np.trace(rdm1_alpha) == pytest.approx(n_alpha, abs=1e-12)
     assert np.trace(rdm1_beta) == pytest.approx(n_beta, abs=1e-12)
+
+
+def _spin_orbital_reference_rdms(strings_alpha, strings_beta, amplitudes, n_orb):
+    """The spin-orbital formulation ``_spatial_rdms_exact`` replaced: every pair
+    of determinants, every ``a+_p a+_r a_s a_q``, into a ``(2 n_orb) ** 4`` array
+    spin-traced at the end. Kept as the reference definition."""
+    dets = [
+        spatial_to_spin_occupations(alpha, beta, n_orb)
+        for alpha in _sector_occupations(strings_alpha, n_orb)
+        for beta in _sector_occupations(strings_beta, n_orb)
+    ]
+    coefficients = np.asarray(amplitudes, dtype=float).ravel()
+    n_spin = 2 * n_orb
+    rdm1 = np.zeros((n_spin, n_spin))
+    rdm2 = np.zeros((n_spin,) * 4)
+    for det_i, c_i in zip(dets, coefficients):
+        for det_j, c_j in zip(dets, coefficients):
+            for q in det_j:
+                sign_q, occ_1 = _annihilation_sign(det_j, q)
+                for p in set(range(n_spin)) - set(occ_1):
+                    sign_p, occ = _creation_sign(occ_1, p)
+                    if occ == det_i:
+                        rdm1[p, q] += c_i * c_j * sign_p * sign_q
+                for s in occ_1:
+                    sign_s, occ_2 = _annihilation_sign(occ_1, s)
+                    for r in set(range(n_spin)) - set(occ_2):
+                        sign_r, occ_3 = _creation_sign(occ_2, r)
+                        for p in set(range(n_spin)) - set(occ_3):
+                            sign_p, occ = _creation_sign(occ_3, p)
+                            if occ == det_i:
+                                rdm2[p, q, r, s] += (
+                                    c_i * c_j * sign_q * sign_s * sign_r * sign_p
+                                )
+    alpha, beta = slice(None, n_orb), slice(n_orb, None)
+    rdm1_alpha, rdm1_beta = rdm1[alpha, alpha], rdm1[beta, beta]
+    spatial_rdm2 = (
+        rdm2[alpha, alpha, alpha, alpha]
+        + rdm2[alpha, alpha, beta, beta]
+        + rdm2[beta, beta, alpha, alpha]
+        + rdm2[beta, beta, beta, beta]
+    )
+    return rdm1_alpha + rdm1_beta, spatial_rdm2, rdm1_alpha, rdm1_beta
+
+
+def _random_sector_state(n_orb, n_alpha, n_beta, seed):
+    """A random state over a strict subset of each sector's strings, ordered for
+    PySCF addressing, so the pair search sees every excitation rank and misses."""
+    rng = np.random.default_rng(seed)
+
+    def sector(n_electrons):
+        strings = [
+            "".join("1" if p in occ else "0" for p in range(n_orb))
+            for occ in itertools.combinations(range(n_orb), n_electrons)
+        ]
+        if len(strings) > 2:
+            strings = list(rng.choice(strings, len(strings) - 1, replace=False))
+        return tuple(sorted(strings, key=ci_string_to_int))
+
+    strings_alpha, strings_beta = sector(n_alpha), sector(n_beta)
+    amplitudes = rng.normal(size=(len(strings_alpha), len(strings_beta)))
+    return strings_alpha, strings_beta, amplitudes / np.linalg.norm(amplitudes)
+
+
+@pytest.mark.parametrize(
+    "n_orb, n_alpha, n_beta",
+    [(2, 1, 1), (4, 2, 2), (4, 3, 1), (5, 2, 3), (4, 3, 0), (3, 0, 2)],
+)
+def test_spatial_rdms_exact_matches_the_spin_orbital_definition_and_pyscf(
+    n_orb, n_alpha, n_beta
+):
+    """Accumulating straight into the spatial blocks must reproduce the
+    spin-orbital formulation to rounding, and PySCF's contractions too."""
+    state = _random_sector_state(n_orb, n_alpha, n_beta, seed=n_orb + 7 * n_alpha)
+
+    exact = _spatial_rdms_exact(*state, n_orb)
+    reference = _spin_orbital_reference_rdms(*state, n_orb)
+    from_pyscf = compute_spatial_rdms(*state, n_orb)
+
+    for got, want, pyscf_block in zip(exact, reference, from_pyscf):
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
+        np.testing.assert_allclose(got, pyscf_block, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize("block_rows", [1, 5])
+def test_spatial_rdms_exact_is_independent_of_the_row_block(monkeypatch, block_rows):
+    """The pair search runs in row blocks, which must not drop the pairs that
+    straddle a block boundary."""
+    state = _random_sector_state(4, 2, 2, seed=3)
+    expected = _spatial_rdms_exact(*state, 4)
+
+    monkeypatch.setattr(sqd_module, "_PAIR_BLOCK_ROWS", block_rows)
+
+    for got, want in zip(_spatial_rdms_exact(*state, 4), expected):
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
+
+
+def test_wide_fragments_reconstruct_rdms_off_the_exact_path(mocker, monkeypatch):
+    """Past PySCF's 64-bit CI strings the reconstruction must switch kernels and
+    still give PySCF's answer."""
+    state = _random_sector_state(4, 3, 1, seed=11)
+    expected = compute_spatial_rdms(*state, 4)
+
+    monkeypatch.setattr(sqd_module, "_MAX_PYSCF_ORBITALS", 1)
+    exact = mocker.spy(sqd_module, "_spatial_rdms_exact")
+    pyscf_rdm2 = mocker.spy(sqd_module.selected_ci, "make_rdm2")
+    wide = compute_spatial_rdms(*state, 4)
+
+    exact.assert_called_once()
+    pyscf_rdm2.assert_not_called()
+    for got, want in zip(wide, expected):
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)

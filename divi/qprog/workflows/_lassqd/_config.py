@@ -68,9 +68,8 @@ class FragmentationConfig:
             ``fragment_atoms`` or ``local_spins`` is combined with
             ``active_spaces``; if ``local_spins`` is given without
             ``fragment_atoms`` or does not match its length; if
-            ``n_active_orbitals`` is not positive; if
-            ``max_orbitals_per_fragment`` is below 1; or if
-            ``coupling_threshold`` is negative.
+            ``n_active_orbitals`` or ``max_orbitals_per_fragment`` is below 2;
+            or if ``coupling_threshold`` is negative.
     """
 
     active_spaces: Sequence[FragmentSpec] | None = None
@@ -128,13 +127,15 @@ class FragmentationConfig:
                     f"local_spins has {len(self.local_spins)} entries but "
                     f"fragment_atoms names {len(self.fragment_atoms)} fragments."
                 )
-        if self.n_active_orbitals is not None and self.n_active_orbitals <= 0:
+        if self.n_active_orbitals is not None and self.n_active_orbitals < 2:
             raise ValueError(
-                f"n_active_orbitals must be positive; got {self.n_active_orbitals}."
+                "n_active_orbitals must be at least 2, one occupied and one "
+                f"virtual; got {self.n_active_orbitals}."
             )
-        if self.max_orbitals_per_fragment < 1:
+        if self.max_orbitals_per_fragment < 2:
             raise ValueError(
-                "max_orbitals_per_fragment must be at least 1; got "
+                "max_orbitals_per_fragment must be at least 2, since a fragment "
+                "needs an occupied and a virtual orbital; got "
                 f"{self.max_orbitals_per_fragment}."
             )
         if self.coupling_threshold < 0:
@@ -176,7 +177,8 @@ class SQDConfig:
             with it, quadratically. ``max_dim`` bounds the sector outright rather
             than only the carried part.
         max_dim: Caps each spin sector, as one integer or an ``(alpha, beta)``
-            pair, so the subspace never exceeds their product. When it binds,
+            pair (any two-item sequence, stored as a tuple), so the subspace
+            never exceeds their product. When it binds,
             strings are kept in priority order: reference, then carried, then
             sampled by descending sample count.
         include_reference: Keep the aufbau reference determinant in every batch,
@@ -195,7 +197,7 @@ class SQDConfig:
     Raises:
         ValueError: If ``n_batches``, ``batch_size`` or
             ``n_recovery_iterations`` is below 1; if ``lambda_penalty`` is
-            negative; if ``carryover_cutoff`` is not positive; if
+            negative; if ``carryover_cutoff`` is outside ``(0, 1)``; if
             ``max_carryover`` is given without a cutoff or is below 1; if
             ``max_dim`` is not a positive integer or a pair of them; or if
             ``recovery_energy_tol`` or ``recovery_occupancies_tol`` is negative.
@@ -227,10 +229,18 @@ class SQDConfig:
             raise ValueError(
                 f"lambda_penalty must be non-negative; got {self.lambda_penalty}."
             )
-        if self.carryover_cutoff is not None and self.carryover_cutoff <= 0:
-            raise ValueError(
-                f"carryover_cutoff must be positive; got {self.carryover_cutoff}."
-            )
+        if self.carryover_cutoff is not None:
+            if self.carryover_cutoff <= 0:
+                raise ValueError(
+                    f"carryover_cutoff must be positive; got {self.carryover_cutoff}."
+                )
+            if self.carryover_cutoff >= 1:
+                raise ValueError(
+                    "carryover_cutoff must be below 1: it is a fraction of the "
+                    "largest coefficient, which none exceeds, so "
+                    f"{self.carryover_cutoff} would retain nothing. Use None to "
+                    "turn carryover off."
+                )
         if self.max_carryover is not None:
             if self.carryover_cutoff is None:
                 raise ValueError(
@@ -242,7 +252,7 @@ class SQDConfig:
                     f"max_carryover must be at least 1; got {self.max_carryover}."
                 )
         if self.max_dim is not None:
-            if isinstance(self.max_dim, tuple):
+            if isinstance(self.max_dim, Sequence) and not isinstance(self.max_dim, str):
                 object.__setattr__(
                     self, "max_dim", tuple(int(dim) for dim in self.max_dim)
                 )

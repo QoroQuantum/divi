@@ -12,13 +12,18 @@ pytest.importorskip("pyscf")
 
 from pyscf import mcscf, scf
 
+from divi.qprog.workflows._lassqd import _active_space as _active_space_module
 from divi.qprog.workflows._lassqd._active_space import (
+    _canonicalize_columns,
     _localized_active_space_integrals,
+    assign_orbitals_to_atoms,
     auto_fragment_specs,
     build_coupling_graph,
     localize_blocks,
     merge_clusters,
     select_frontier_orbitals,
+    split_active_orbitals,
+    validate_fragment_atoms,
 )
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     h4_chain,
@@ -161,12 +166,13 @@ def test_coupling_threshold_is_relative_to_the_strongest_edge():
     # Scaling every integral must not change which edges survive.
     graph_small = build_coupling_graph(one_body, two_body)
     graph_large = build_coupling_graph(one_body * 1000.0, two_body)
-    assert set(graph_small.edges) == set(graph_large.edges)
+    assert set(graph_small.edges) == set(graph_large.edges) == {(0, 1), (2, 3)}
 
 
 def test_merge_clusters_recovers_the_two_blocks():
     one_body, two_body = _two_block_integrals()
     graph = build_coupling_graph(one_body, two_body)
+    assert set(graph.edges) == {(0, 1), (2, 3)}
     is_occupied = [True, False, True, False]
     clusters = merge_clusters(graph, is_occupied, max_orbitals_per_fragment=2)
 
@@ -233,6 +239,182 @@ def test_merge_clusters_returns_disjoint_complete_clusters():
     assert len(covered) == len(set(covered))
 
 
+def _weighted_graph(n_nodes, edges, scale=1.0):
+    graph = nx.Graph()
+    graph.add_nodes_from(range(n_nodes))
+    for p, q, weight in edges:
+        graph.add_edge(p, q, weight=scale * weight)
+    return graph
+
+
+_ALTERNATING_OCCUPATION = [True, False] * 4
+
+
+@pytest.mark.filterwarnings("error")
+def test_merge_clusters_fully_coupled_graph_within_limit_is_one_cluster():
+    graph = _weighted_graph(
+        4, [(p, q, 1.0 + p + q) for p in range(4) for q in range(p + 1, 4)]
+    )
+    clusters = merge_clusters(
+        graph, _ALTERNATING_OCCUPATION[:4], max_orbitals_per_fragment=4
+    )
+    assert clusters == [(0, 1, 2, 3)]
+
+
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize("scale", [1.0, 1e-3, 1e-9])
+def test_merge_clusters_skips_an_oversized_pair_and_merges_a_later_fitting_one(
+    scale,
+):
+    """Merges go 0-1, 2-3, (2,3)-4, 5-6, leaving ``(0, 1)`` with an oversized
+    candidate ``(2, 3, 4)`` scanned before the fitting ``(5, 6)``. The partition
+    depends only on the weights' order, not their scale."""
+    graph = _weighted_graph(
+        7,
+        [(0, 1, 10.0), (2, 3, 9.0), (3, 4, 8.0), (5, 6, 7.0), (1, 2, 5.0), (1, 5, 1.0)],
+        scale=scale,
+    )
+    clusters = merge_clusters(
+        graph, _ALTERNATING_OCCUPATION[:7], max_orbitals_per_fragment=4
+    )
+    assert clusters == [(0, 1, 5, 6), (2, 3, 4)]
+
+
+def test_merge_clusters_fix_up_ties_go_to_the_smallest_partner():
+    """Occupied ``(0,)`` has two uncoupled partners within the limit; absorbing
+    the smaller, virtual ``(3,)`` mixes it, where absorbing ``(1, 2)`` would leave
+    ``(3,)`` with no room."""
+    graph = _weighted_graph(4, [(1, 2, 1.0)])
+    with pytest.warns(UserWarning, match="no positive coupling"):
+        clusters = merge_clusters(
+            graph, [True, True, False, False], max_orbitals_per_fragment=3
+        )
+    assert clusters == [(0, 3), (1, 2)]
+
+
+@pytest.mark.parametrize("limit", [0, 1])
+def test_merge_clusters_rejects_a_limit_below_two(limit):
+    graph = _weighted_graph(2, [(0, 1, 1.0)])
+    with pytest.raises(ValueError, match="at least 2"):
+        merge_clusters(graph, [True, False], max_orbitals_per_fragment=limit)
+
+
+def test_split_active_orbitals_splits_on_the_occupied_count():
+    assert split_active_orbitals((4, 1, 3, 2), 3, 6) == ((1, 2), (3, 4))
+
+
+@pytest.mark.parametrize(
+    "fragment_atoms, match",
+    [
+        ((), "at least one fragment"),
+        (([0], []), "names no atoms"),
+        (([0], [4]), "out of range"),
+        (([0, 1], [1]), "disjoint"),
+    ],
+)
+def test_validate_fragment_atoms_rejects(fragment_atoms, match):
+    with pytest.raises(ValueError, match=match):
+        validate_fragment_atoms(fragment_atoms, 4)
+
+
+# One sto-3g AO per hydrogen, so an identity column's Mulliken population sits
+# entirely on its own atom.
+_ATOM_COLUMNS = np.eye(4)
+
+
+def test_assign_orbitals_to_atoms_groups_columns_by_dominant_atom():
+    assert assign_orbitals_to_atoms(h4_chain(), _ATOM_COLUMNS, ([0, 2], [1, 3])) == [
+        (0, 2),
+        (1, 3),
+    ]
+
+
+@pytest.mark.parametrize(
+    "columns, fragment_atoms, match",
+    [
+        ([0, 1], ([0],), "which no fragment claims"),
+        ([0, 1], ([0, 1], [2, 3]), "got no active orbitals"),
+    ],
+)
+def test_assign_orbitals_to_atoms_rejects(columns, fragment_atoms, match):
+    with pytest.raises(ValueError, match=match):
+        assign_orbitals_to_atoms(h4_chain(), _ATOM_COLUMNS[:, columns], fragment_atoms)
+
+
+class _ScriptedPipekMezey:
+    """Stand-in whose ``kernel`` returns its start and whose cost is scripted."""
+
+    costs: list[float] = []
+    starts: list[np.ndarray] = []
+
+    def __init__(self, mol, block):
+        self._block = block
+        type(self).starts.append(block)
+
+    def kernel(self):
+        return self._block
+
+    def cost_function(self):
+        return type(self).costs.pop(0)
+
+
+def _localize_with_scripted_costs(mocker, mean_field, costs):
+    mocker.patch.object(_ScriptedPipekMezey, "costs", list(costs))
+    mocker.patch.object(_ScriptedPipekMezey, "starts", [])
+    mocker.patch.object(_active_space_module.lo, "PipekMezey", _ScriptedPipekMezey)
+    return localize_blocks(
+        mean_field.mol,
+        np.asarray(mean_field.mo_coeff),
+        (0, 1),
+        (2, 3),
+        np.random.default_rng(0),
+    )
+
+
+@pytest.mark.parametrize(
+    "occupied_costs, kept_start",
+    [
+        pytest.param([1.0] * 9, 0, id="never_escapes_runs_every_restart"),
+        pytest.param([1.0, 2.0], 1, id="escape_stops_restarts"),
+        pytest.param(
+            [1.0, 1.0 + 1e-8, 1.0 + 1e-9] + [1.0] * 6,
+            1,
+            id="sub_tolerance_gain_kept_without_stopping",
+        ),
+    ],
+)
+def test_localize_blocks_restart_policy(
+    mocker, h4_chain_mean_field, occupied_costs, kept_start
+):
+    """Up to eight random restarts follow the canonical start; the
+    highest-cost run is kept, and a gain beyond the relative tolerance stops
+    the restarts early."""
+    virtual_costs = [1.0, 2.0]
+    localized_occ, _ = _localize_with_scripted_costs(
+        mocker, h4_chain_mean_field, occupied_costs + virtual_costs
+    )
+
+    starts = _ScriptedPipekMezey.starts
+    assert len(starts) == len(occupied_costs) + len(virtual_costs)
+    np.testing.assert_array_equal(
+        localized_occ,
+        _canonicalize_columns(h4_chain_mean_field.mol, starts[kept_start]),
+    )
+
+
+def test_localize_blocks_passes_a_single_orbital_block_through(
+    mocker, h4_chain_mean_field
+):
+    spy = mocker.patch.object(_active_space_module.lo, "PipekMezey")
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    localized_occ, localized_virt = localize_blocks(
+        h4_chain_mean_field.mol, mo_coeff, (1,), (2,), np.random.default_rng(0)
+    )
+    spy.assert_not_called()
+    np.testing.assert_array_equal(localized_occ, mo_coeff[:, [1]])
+    np.testing.assert_array_equal(localized_virt, mo_coeff[:, [2]])
+
+
 def test_auto_fragment_specs_on_h4_finds_two_fragments(h4_chain_mean_field):
     specs, localized, active_positions = auto_fragment_specs(
         h4_chain_mean_field.mol,
@@ -288,36 +470,33 @@ def test_auto_fragment_specs_applies_local_spins():
     assert sum(spec.n_alpha for spec in specs) == sum(spec.n_beta for spec in specs)
 
 
-def test_auto_fragment_specs_rejects_local_spins_without_atoms():
-    """Coupling-graph fragment order depends on an RNG seed, so a positional
-    spin list would not name a stable fragment."""
-    with pytest.raises(ValueError, match="local_spins requires fragment_atoms"):
-        _h8_auto_specs(
-            fragment_atoms=None, max_orbitals_per_fragment=4, local_spins=[2, -2]
-        )
-
-
-def test_auto_fragment_specs_rejects_wrong_number_of_local_spins():
-    with pytest.raises(ValueError, match="local_spins has 3 entries"):
-        _h8_auto_specs(local_spins=[2, -2, 0])
-
-
 def test_auto_fragment_specs_rejects_unreachable_local_spin():
     """A fragment cannot supply more unpaired spins than it has electrons."""
     with pytest.raises(ValueError, match="cannot supply that many unpaired"):
         _h8_auto_specs(local_spins=[8, -8])
 
 
-def _canonical_partition_key(mol, mo_coeff, seed):
+def _canonical_partition_key(mol, mo_coeff, seed, **selector):
     specs, _, _ = auto_fragment_specs(
         mol,
         mo_coeff,
         n_occupied=2,
         rng=np.random.default_rng(seed),
-        n_active_orbitals=4,
         max_orbitals_per_fragment=2,
+        **(selector or {"n_active_orbitals": 4}),
     )
     return tuple(sorted((spec.orbitals, spec.n_alpha, spec.n_beta) for spec in specs))
+
+
+def test_auto_fragment_specs_explicit_active_orbitals_match_frontier_selection(
+    h4_chain_mean_field,
+):
+    """Naming the four frontier orbitals explicitly gives the frontier partition."""
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    assert _canonical_partition_key(
+        mol, mo_coeff, 0, active_orbitals=(0, 1, 2, 3)
+    ) == _canonical_partition_key(mol, mo_coeff, 0)
 
 
 def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
