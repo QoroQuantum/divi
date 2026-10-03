@@ -7,6 +7,7 @@
 import hashlib
 import os
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -30,6 +31,7 @@ from divi.qprog.quantum_program import (
     QuantumProgram,
     reject_unclaimed_run_kwargs,
 )
+from divi.reporting._events import ProgressEvent
 
 from ._state import FragmentSpec
 
@@ -98,6 +100,10 @@ class LinearMethodFragmentProgram(QuantumProgram):
             self.problem.one_body_beta,
             self.problem.two_body,
             self.spec,
+            report=self._show_progress,
+            on_iteration=lambda energy: self._progress_emitter(
+                ProgressEvent.advance(self._progress_key, loss=energy)
+            ),
         )
         self._terminal_result = _LinearMethodResult(
             params=self._preparation.params,
@@ -106,6 +112,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
             two_body=self._preparation.two_body,
             orbital_rotation=self._preparation.orbital_rotation,
         )
+        self._show_progress("Sampling the prepared circuit")
         result = self.evaluate(
             np.empty(0),
             sample_preprocessor(),
@@ -115,6 +122,9 @@ class LinearMethodFragmentProgram(QuantumProgram):
             index: dict(probabilities) for index, probabilities in result.items()
         }
         return self
+
+    def _show_progress(self, message: str) -> None:
+        self._progress_emitter(ProgressEvent.show(self._progress_key, message))
 
     def has_results(self) -> bool:
         """Return whether final sampling probabilities are available."""
@@ -461,19 +471,27 @@ def prepare_lucj_fragment(
     h_beta: np.ndarray,
     two_body: np.ndarray,
     spec: FragmentSpec,
+    report: Callable[[str], None] | None = None,
+    on_iteration: Callable[[float], None] | None = None,
 ) -> LUCJPreparation:
     """Classically optimize the paper's one-repetition fragment LUCJ circuit.
 
     The sampled state uses the paper's alpha-channel preparation Hamiltonian.
     Both physical-spin one-body tensors are returned in that sampled orbital
     basis for the subsequent SQD diagonalisation.
-    """
 
+    ``report`` receives each stage's name as it starts, and ``on_iteration``
+    the energy after every linear-method iteration.
+    """
+    announce = report if report is not None else (lambda message: None)
+
+    announce("Fragment ROHF")
     mean_field = _fragment_rohf(h_alpha, two_body, spec)
     orbital_rotation = np.asarray(mean_field.mo_coeff)
     h_alpha_mo, two_body_mo = _rotate_integrals(h_alpha, two_body, orbital_rotation)
     h_beta_mo = _rotate_one_body(h_beta, orbital_rotation)
 
+    announce("CCSD seed")
     coupled_cluster = _fragment_ccsd(mean_field, spec)
     t1, t2 = _physical_spin_amplitudes(coupled_cluster, spec)
     _require_finite_fragment_values((*t1, *t2), label="CCSD amplitudes", spec=spec)
@@ -520,10 +538,18 @@ def prepare_lucj_fragment(
             nelec=n_electrons,
         )
 
+    announce("Linear method")
     result = ffsim.optimize.minimize_linear_method(
         params_to_vec,
         hamiltonian,
         x0=initial_params,
+        callback=(
+            None
+            if on_iteration is None
+            else lambda intermediate_result: on_iteration(
+                float(intermediate_result.fun)
+            )
+        ),
     )
     params = np.asarray(result.x, dtype=float)
     _require_finite_fragment_values(

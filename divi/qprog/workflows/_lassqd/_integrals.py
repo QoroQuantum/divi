@@ -14,7 +14,8 @@ Implements the frozen-core / active-space integral machinery for LASSQD:
    indices instead of silently discarding them for a contiguous range.
 """
 
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from itertools import accumulate, combinations, permutations, product
 from warnings import warn
@@ -558,6 +559,7 @@ def optimize_orbitals(
     max_orbital_iterations: int | None = None,
     *,
     gradient_tol: float,
+    report: Callable[[str], None] | None = None,
 ) -> OrbitalSolve:
     """Optimise molecular orbitals against the current active-space RDMs.
 
@@ -609,6 +611,8 @@ def optimize_orbitals(
             ``None`` uses scipy's default.
         gradient_tol: The solve counts as converged when the L2 norm of the
             orbital gradient at the returned orbitals is at most this.
+        report: Receives a progress line (iteration, energy, gradient norm,
+            elapsed time) after every iteration.
 
     Returns:
         An :class:`OrbitalSolve` carrying the rotated orbitals, the energy, and
@@ -650,12 +654,33 @@ def optimize_orbitals(
         options = dict(ORBITAL_MINIMIZE_OPTIONS)
         if max_orbital_iterations is not None:
             options["maxiter"] = max_orbital_iterations
+        started = time.monotonic()
+        latest_gradient_norm = float(np.linalg.norm(baseline_gradient))
+        iteration = 0
+
+        def tracked(rotation_params: np.ndarray) -> tuple[float, np.ndarray]:
+            nonlocal latest_gradient_norm
+            energy, gradient = energy_and_gradient(rotation_params)
+            latest_gradient_norm = float(np.linalg.norm(gradient))
+            return energy, gradient
+
+        def on_iteration(intermediate_result) -> None:
+            nonlocal iteration
+            iteration += 1
+            if report is not None:
+                report(
+                    f"Orbital solve: iteration {iteration}, energy "
+                    f"{intermediate_result.fun:.8f} Ha, |g| "
+                    f"{latest_gradient_norm:.2e}, {time.monotonic() - started:.0f} s"
+                )
+
         res = minimize(
-            energy_and_gradient,
+            tracked,
             init_params,
             method="L-BFGS-B",
             jac=True,
             options=options,
+            callback=on_iteration,
         )
         n_iterations = int(res.nit)
         n_evaluations += int(res.nfev)

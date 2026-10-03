@@ -34,7 +34,9 @@ def _patch_linear_method(mocker, optimum):
     """Stub the linear method to return ``optimum(x0)`` as its parameters."""
     return mocker.patch(
         "ffsim.optimize.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0: mocker.Mock(x=optimum(x0)),
+        side_effect=lambda _params_to_vec, _hamiltonian, x0, callback=None: mocker.Mock(
+            x=optimum(x0)
+        ),
     )
 
 

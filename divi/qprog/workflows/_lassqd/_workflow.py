@@ -1647,6 +1647,10 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
             subspace_size = result.amplitudes.size
             subspace_sizes.append(subspace_size)
+            self._emit_workflow_stage(
+                f"Recovered {program_id}: {subspace_size} determinants, "
+                f"fragment energy {result.energy:.8f} Ha"
+            )
             if subspace_size == 1:
                 warn(
                     f"{program_id}'s recovered subspace contains only one "
@@ -1699,6 +1703,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             h_ao,
             max_orbital_iterations=self._max_orbital_iterations,
             gradient_tol=float(np.sqrt(self._energy_tol)),
+            report=self._emit_workflow_stage,
         )
         if not np.isfinite(solve.energy):
             raise ValueError(
