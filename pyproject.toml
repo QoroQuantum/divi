@@ -90,6 +90,7 @@ chem = [
     "pyscf>=2.0,<3.0; sys_platform != 'win32'",
     "openfermion>=1.5,<2.0",
     "qiskit-nature>=0.8.0,<0.9.0",
+    "threadpoolctl>=3.1,<4",
 ]
 all = [
     "qoro-divi[aer,chem,jupyter,pennylane,qubo-decompose]",

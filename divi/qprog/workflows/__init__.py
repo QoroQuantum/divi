@@ -13,24 +13,32 @@ from ._vqe_sweep import MoleculeTransformer, VQEHyperparameterSweep
 if TYPE_CHECKING:
     from ._lassqd import (
         LASSQD,
+        CCSDPreparation,
         FragmentationConfig,
         FragmentSpec,
         FragmentState,
-        LASSQDPreparationMode,
+        FullOrbitalSolve,
         LASSQDRoundReport,
         LASSQDState,
+        LinearMethodPreparation,
+        SecondOrderOrbitalSolve,
         SQDConfig,
+        VQEPreparation,
     )
 
 _LASSQD_EXPORTS = (
+    "CCSDPreparation",
     "FragmentSpec",
     "FragmentState",
     "FragmentationConfig",
+    "FullOrbitalSolve",
     "LASSQD",
-    "LASSQDPreparationMode",
     "LASSQDRoundReport",
     "LASSQDState",
+    "LinearMethodPreparation",
+    "SecondOrderOrbitalSolve",
     "SQDConfig",
+    "VQEPreparation",
 )
 
 __all__ = [

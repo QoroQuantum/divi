@@ -14,9 +14,11 @@ import bisect
 import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 import scipy.linalg
+import scipy.optimize
 import scipy.sparse.linalg
 from pyscf.fci import selected_ci
 
@@ -25,6 +27,10 @@ from pyscf.fci import selected_ci
 #: memory independent of how large the subspace grows; only the returned
 #: matrices scale with its square.
 _PAIR_BLOCK_ROWS = 512
+
+# Carryover retention threshold, relative to the winning batch's largest
+# coefficient (arXiv:2512.14936 converges from 1e-3 down).
+_DEFAULT_CARRYOVER_CUTOFF = 1e-5
 
 
 def deinterleave_spin_bitstring(bitstring: str, n_orb: int) -> str:
@@ -72,19 +78,14 @@ def interleave_spin_bitstring(sqd_bitstring: str, n_orb: int) -> str:
 def probs_to_sqd_bitstrings(probs: dict[str, float], n_orb: int) -> dict[str, float]:
     """Convert a measured distribution into the SQD bitstring convention.
 
-    Probabilities of keys that map onto the same SQD bitstring are summed,
-    which cannot happen for well-formed input but keeps the result a valid
-    distribution regardless.
-
     Raises:
         ValueError: If any key in ``probs`` is not ``2 * n_orb`` characters
             wide, propagated from :func:`deinterleave_spin_bitstring`.
     """
-    converted: dict[str, float] = {}
-    for bitstring, prob in probs.items():
-        key = deinterleave_spin_bitstring(bitstring, n_orb)
-        converted[key] = converted.get(key, 0.0) + prob
-    return converted
+    return {
+        deinterleave_spin_bitstring(bitstring, n_orb): prob
+        for bitstring, prob in probs.items()
+    }
 
 
 def spin_orbital_integrals(
@@ -279,7 +280,7 @@ def projected_matrices(
     h_spin: np.ndarray,
     g_spin: np.ndarray,
     n_orb: int,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[scipy.sparse.csr_array, scipy.sparse.csr_array]:
     """Project the Hamiltonian and ``S^2`` onto the span of ``dets``.
 
     Returns what filling every entry with :func:`slater_condon` and
@@ -291,13 +292,14 @@ def projected_matrices(
     fraction of pairs that survive falls as the subspace grows.
 
     ``S^2``'s off-diagonal is handled differently. It is non-zero only between
-    determinants related by exchanging spins across two spatial orbitals, which
-    is well under 1% of pairs, so those are located by array operations and then
+    determinants related by exchanging spins across two spatial orbitals, a
+    small fraction of pairs, so those are located by array operations and then
     evaluated by the scalar routine -- keeping its ladder-operator signs as the
     single source of truth for a negligible cost.
 
     Rows are processed in blocks so the pair arrays stay bounded rather than
-    scaling with the square of the subspace; only the two returned matrices do.
+    scaling with the square of the subspace, and both matrices are returned
+    sparse, holding only the connected pairs.
 
     Args:
         dets: ``(alpha_occ, beta_occ)`` spatial occupations per determinant.
@@ -312,10 +314,17 @@ def projected_matrices(
         ``(h_proj, s2_proj)``, both ``(len(dets), len(dets))``.
     """
     m = len(dets_spin)
-    h_proj = np.zeros((m, m))
-    s2_proj = np.zeros((m, m))
+    h_entries: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    s2_entries: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+
+    def assemble(entries):
+        if not entries:
+            return scipy.sparse.csr_array((m, m))
+        rows, cols, values = (np.concatenate(part) for part in zip(*entries))
+        return scipy.sparse.csr_array((values, (rows, cols)), shape=(m, m))
+
     if m == 0:
-        return h_proj, s2_proj
+        return assemble(h_entries), assemble(s2_entries)
 
     n_spin = 2 * n_orb
     occupation = np.zeros((m, n_spin))
@@ -363,8 +372,8 @@ def projected_matrices(
 
         local, cols = np.nonzero(rank == 0)
         rows = local + start
-        h_proj[rows, cols] = diagonal[rows]
-        s2_proj[rows, cols] = s2_diagonal[rows]
+        h_entries.append((rows, cols, diagonal[rows]))
+        s2_entries.append((rows, cols, s2_diagonal[rows]))
 
         # --- Single excitations: q in j replaced by p in i ---
         local, cols = np.nonzero(rank == 1)
@@ -386,7 +395,9 @@ def projected_matrices(
             summed = np.einsum(
                 "kr,kr->k", exchange[created, annihilated], occupation[cols]
             )
-            h_proj[rows, cols] = sign * (h_spin[created, annihilated] + summed)
+            h_entries.append(
+                (rows, cols, sign * (h_spin[created, annihilated] + summed))
+            )
 
         # --- Double excitations: q, s in j replaced by p, r in i ---
         local, cols = np.nonzero(rank == 2)
@@ -416,11 +427,18 @@ def projected_matrices(
                 - (upper_annihilated < lower_created)
             )
             sign = 1.0 - 2.0 * (exponent.astype(np.int64) % 2)
-            h_proj[rows, cols] = (
-                sign
-                * g_spin[
-                    lower_created, upper_created, lower_annihilated, upper_annihilated
-                ]
+            h_entries.append(
+                (
+                    rows,
+                    cols,
+                    sign
+                    * g_spin[
+                        lower_created,
+                        upper_created,
+                        lower_annihilated,
+                        upper_annihilated,
+                    ],
+                )
             )
 
             # S^2 connects only spin-exchange pairs: i gains alpha at one spatial
@@ -435,10 +453,22 @@ def projected_matrices(
                 & (lower_created == upper_annihilated - n_orb)
                 & (lower_annihilated == upper_created - n_orb)
             )
-            for row, col in zip(rows[spin_exchange], cols[spin_exchange]):
-                s2_proj[row, col] = s2_matrix_element(dets[row], dets[col])
+            exchange_rows, exchange_cols = rows[spin_exchange], cols[spin_exchange]
+            s2_entries.append(
+                (
+                    exchange_rows,
+                    exchange_cols,
+                    np.array(
+                        [
+                            s2_matrix_element(dets[row], dets[col])
+                            for row, col in zip(exchange_rows, exchange_cols)
+                        ],
+                        dtype=float,
+                    ),
+                )
+            )
 
-    return h_proj, s2_proj
+    return assemble(h_entries), assemble(s2_entries)
 
 
 #: Subspace size from which the ground root is found iteratively rather than
@@ -451,7 +481,9 @@ _ITERATIVE_TOLERANCE = 1e-10
 
 
 def ground_root(
-    h_proj: np.ndarray, deviation: np.ndarray, lambda_penalty: float
+    h_proj: scipy.sparse.csr_array,
+    deviation: scipy.sparse.csr_array,
+    lambda_penalty: float,
 ) -> tuple[float, np.ndarray]:
     """Lowest eigenpair of the spin-penalised projected Hamiltonian.
 
@@ -476,14 +508,17 @@ def ground_root(
     Returns:
         ``(eigenvalue, eigenvector)`` for the lowest root.
     """
+    # pyrefly: ignore[unsupported-operation]  # scipy leaves _shape unannotated
     dimension = h_proj.shape[0]
     if dimension >= _ITERATIVE_SUBSPACE_MIN:
         spin_deviation = scipy.sparse.linalg.aslinearoperator(deviation)
         penalized = scipy.sparse.linalg.aslinearoperator(h_proj) + lambda_penalty * (
             spin_deviation @ spin_deviation
         )
-        diagonal = np.diag(h_proj) + lambda_penalty * np.einsum(
-            "ij,ji->i", deviation, deviation
+        diagonal = (
+            h_proj.diagonal()
+            + lambda_penalty
+            * np.asarray(deviation.multiply(deviation.T).sum(axis=1)).ravel()
         )
         # Started deterministically on the lowest-diagonal determinant, since a
         # random start would let the carryover ranking move between runs.
@@ -500,7 +535,7 @@ def ground_root(
             pass
 
     values, vectors = scipy.linalg.eigh(
-        h_proj + lambda_penalty * (deviation @ deviation)
+        (h_proj + lambda_penalty * (deviation @ deviation)).toarray()
     )
     return float(values[0]), np.asarray(vectors)[:, 0]
 
@@ -511,7 +546,7 @@ def ground_root(
 _CARRYOVER_WEIGHT_PLACES = 12
 
 
-def _heaviest_strings(weights: dict[str, float], limit: int | None) -> list[str]:
+def _heaviest_strings(weights: dict[str, float], limit: int | None) -> tuple[str, ...]:
     """The ``limit`` heaviest strings, near-ties broken on the string so float
     noise cannot decide what is kept."""
     ordered = sorted(
@@ -521,7 +556,7 @@ def _heaviest_strings(weights: dict[str, float], limit: int | None) -> list[str]
             string,
         ),
     )
-    return ordered if limit is None else ordered[:limit]
+    return tuple(ordered[:limit])
 
 
 def ci_string_to_int(half: str) -> int:
@@ -558,6 +593,150 @@ def _occupations_from_bit_matrix(bits: np.ndarray) -> list[tuple[int, ...]]:
     rows, cols = np.nonzero(bits)
     bounds = np.searchsorted(rows, np.arange(len(bits) + 1))
     return [tuple(cols[bounds[i] : bounds[i + 1]].tolist()) for i in range(len(bits))]
+
+
+@dataclass(frozen=True)
+class SQDConfig:
+    """Sampling and diagonalisation budget for each fragment's SQD solve.
+
+    Args:
+        n_batches: Subspaces diagonalised per recovery iteration; the lowest
+            energy wins.
+        batch_size: Configurations sampled per batch, so the subspace holds up
+            to ``batch_size ** 2`` determinants. The accuracy knob; a
+            one-determinant subspace is the mean field.
+        n_recovery_iterations: Configuration-recovery passes per fragment solve.
+            Each pass reweights the next one's sampling from the orbital
+            occupancies the previous pass recovered, so these are
+            self-consistent passes over the sampled distribution, not optimizer
+            steps.
+        lambda_penalty: Weight of the ``S^2`` spin-contamination penalty added
+            to the projected Hamiltonian before diagonalisation.
+        carryover_cutoff: Carryover SQD's retention threshold
+            (arXiv:2512.14936), on by default. Each recovery iteration retains
+            the determinants whose coefficient exceeds this fraction of the
+            largest coefficient in the winning batch, and extends later
+            iterations' subspaces with them. The strings retained from a
+            fragment's best result also seed the first recovery iteration of
+            its next macro-cycle, mapped into that round's orbital basis by
+            ``carryover_mapping``. ``None`` reverts to conventional SQD.
+        carryover_mapping: How strings carried between macro-cycles follow the
+            orbitals. ``'assignment'`` (default) pairs old and new orbitals
+            one-to-one by maximum total overlap, so every string keeps its
+            electron count; ``'argmax'`` gives each new orbital the occupation
+            of the old orbital it overlaps most, as the reference implementation
+            does, and drops strings whose electron count that changes.
+        max_carryover: Caps the alpha and beta strings carryover retains, *per
+            spin sector*. Carried strings join each batch's own sampled halves
+            rather than replacing them, so a cap of ``k`` bounds a batch's
+            subspace at ``(k + batch_size) ** 2`` determinants. ``None`` leaves
+            it uncapped, and since the cutoff is relative it prunes little: the
+            retained set then grows every recovery iteration and the subspace
+            with it, quadratically. ``max_dim`` bounds the sector outright rather
+            than only the carried part.
+        max_dim: Caps each spin sector, as one integer or an ``(alpha, beta)``
+            pair (any two-item sequence, stored as a tuple), so the subspace
+            never exceeds their product. When it binds,
+            strings are kept in priority order: reference, then carried, then
+            sampled by descending sample count.
+        include_reference: Keep the aufbau reference determinant in every batch,
+            bounding the fragment's energy by its reference.
+        symmetrize_spin: Pool the alpha and beta halves together for a
+            spin-exchange invariant subspace. Inactive unless
+            ``n_alpha == n_beta``.
+        recovery_energy_tol: Ends a fragment's recovery once the winning energy
+            moves less than this between iterations and the occupancies have also
+            settled. ``0.0`` (the default) spends every iteration, since a
+            settled iteration does not mean carryover had nothing left to add.
+            Not ``LASSQD``'s ``energy_tol``, which ends the macro-cycle.
+        recovery_occupancies_tol: The occupancy half of that test, on the largest
+            change in any orbital's average occupancy.
+
+    Raises:
+        ValueError: If ``n_batches``, ``batch_size`` or
+            ``n_recovery_iterations`` is below 1; if ``lambda_penalty`` is
+            negative; if ``carryover_cutoff`` is outside ``(0, 1)``; if
+            ``carryover_mapping`` is neither ``'assignment'`` nor ``'argmax'``; if
+            ``max_carryover`` is given without a cutoff or is below 1; if
+            ``max_dim`` is not a positive integer or a pair of them; or if
+            ``recovery_energy_tol`` or ``recovery_occupancies_tol`` is negative.
+    """
+
+    n_batches: int = 15
+    batch_size: int = 170
+    n_recovery_iterations: int = 6
+    lambda_penalty: float = 0.2
+    carryover_cutoff: float | None = _DEFAULT_CARRYOVER_CUTOFF
+    carryover_mapping: Literal["assignment", "argmax"] = "assignment"
+    max_carryover: int | None = None
+    max_dim: int | tuple[int, int] | None = None
+    include_reference: bool = True
+    symmetrize_spin: bool = False
+    recovery_energy_tol: float = 0.0
+    recovery_occupancies_tol: float = 0.0
+
+    def __post_init__(self):
+        if self.n_batches < 1:
+            raise ValueError(f"n_batches must be at least 1; got {self.n_batches}.")
+        if self.batch_size < 1:
+            raise ValueError(f"batch_size must be at least 1; got {self.batch_size}.")
+        if self.n_recovery_iterations < 1:
+            raise ValueError(
+                "n_recovery_iterations must be at least 1; got "
+                f"{self.n_recovery_iterations}."
+            )
+        if self.lambda_penalty < 0:
+            raise ValueError(
+                f"lambda_penalty must be non-negative; got {self.lambda_penalty}."
+            )
+        cutoff = self.carryover_cutoff
+        if cutoff is not None:
+            if not cutoff > 0:
+                raise ValueError(f"carryover_cutoff must be positive; got {cutoff}.")
+            if not cutoff < 1:
+                raise ValueError(
+                    "carryover_cutoff must be below 1: it is a fraction of the "
+                    "largest coefficient, which none exceeds, so "
+                    f"{cutoff} would retain nothing. Use None to turn carryover "
+                    "off."
+                )
+        if self.carryover_mapping not in ("assignment", "argmax"):
+            raise ValueError(
+                "carryover_mapping must be 'assignment' or 'argmax'; got "
+                f"{self.carryover_mapping!r}."
+            )
+        if self.max_carryover is not None:
+            if cutoff is None:
+                raise ValueError(
+                    "max_carryover caps what carryover retains, so it needs "
+                    "carryover_cutoff to be set."
+                )
+            if self.max_carryover < 1:
+                raise ValueError(
+                    f"max_carryover must be at least 1; got {self.max_carryover}."
+                )
+        if self.max_dim is not None:
+            if isinstance(self.max_dim, Sequence) and not isinstance(self.max_dim, str):
+                object.__setattr__(
+                    self, "max_dim", tuple(int(dim) for dim in self.max_dim)
+                )
+                if len(self.max_dim) != 2:
+                    raise ValueError(
+                        "max_dim takes one integer or an (alpha, beta) pair; got "
+                        f"{len(self.max_dim)} entries."
+                    )
+                dims = self.max_dim
+            else:
+                dims = (self.max_dim,)
+            for dim in dims:
+                if dim < 1:
+                    raise ValueError(f"max_dim entries must be at least 1; got {dim}.")
+        for name, value in (
+            ("recovery_energy_tol", self.recovery_energy_tol),
+            ("recovery_occupancies_tol", self.recovery_occupancies_tol),
+        ):
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative; got {value}.")
 
 
 def carryover_weights(
@@ -607,6 +786,37 @@ def carryover_weights(
         for col in np.flatnonzero(eligible.any(axis=0))
     }
     return alpha_weights, beta_weights
+
+
+def map_carried_strings(
+    strings: Sequence[str],
+    overlap: np.ndarray,
+    mapping: Literal["assignment", "argmax"],
+) -> tuple[str, ...]:
+    """Carry occupation strings into a new orbital basis, order kept, duplicates
+    dropped.
+
+    A determinant in one basis is a superposition in another, so this keeps the
+    nearest determinant: each new orbital takes the occupation of one old
+    orbital. ``'assignment'`` pairs old and new orbitals one-to-one by maximum
+    total ``|overlap|``, so every string keeps its electron count.
+    ``'argmax'`` gives each new orbital the old orbital it overlaps most, as
+    the reference implementation does; two new orbitals can then share an old
+    one and change a string's electron count, and the solver drops such strings.
+
+    Args:
+        strings: Occupation strings in the old basis, character ``p`` for
+            orbital ``p``.
+        overlap: ``overlap[p, q]``, new orbital ``p`` against old orbital ``q``.
+        mapping: ``'assignment'`` or ``'argmax'``.
+    """
+    magnitude = np.abs(overlap)
+    if mapping == "assignment":
+        _, source = scipy.optimize.linear_sum_assignment(magnitude, maximize=True)
+    else:
+        source = np.argmax(magnitude, axis=1)
+    mapped = ("".join(string[q] for q in source) for string in strings)
+    return tuple(dict.fromkeys(mapped))
 
 
 def filter_symmetry(bitstrings, n_orb: int, n_alpha: int, n_beta: int) -> list[str]:
@@ -724,8 +934,7 @@ class SQDResult:
             the cost is that on a spin-incomplete subspace this sits above
             ``<H>`` by the penalty term. Do not treat it as a variational bound.
             LASSQD's reported energy does not come from here: it is recomputed
-            by :func:`~divi.qprog.workflows._lassqd._integrals.total_energy` from
-            the reassembled RDMs, which carry no penalty.
+            from the reassembled RDMs, which carry no penalty.
         amplitudes: Ground-state coefficients, ``amplitudes[i, j]`` belonging to
             the determinant pairing ``strings_alpha[i]`` with
             ``strings_beta[j]``.
@@ -761,8 +970,7 @@ class SQDSolver:
     it is refreshed at the end of every iteration from that iteration's batch
     results.
 
-    Every setting is required: the defaults live in
-    :class:`~divi.qprog.workflows._lassqd._config.SQDConfig`.
+    Its settings come from an :class:`SQDConfig`, which validates them.
     """
 
     def __init__(
@@ -770,20 +978,10 @@ class SQDSolver:
         n_orb: int,
         n_alpha: int,
         n_beta: int,
+        config: SQDConfig,
         *,
-        n_batches: int,
-        batch_size: int,
-        n_iterations: int,
-        lambda_penalty: float,
-        recovery: bool,
-        carryover_cutoff: float | None,
-        max_carryover: int | None,
-        max_dim: int | tuple[int, int] | None,
-        include_reference: bool,
-        symmetrize_spin: bool,
-        energy_tol: float,
-        occupancies_tol: float,
         rng: np.random.Generator,
+        recovery: bool = True,
     ):
         """Initialise the solver.
 
@@ -791,94 +989,30 @@ class SQDSolver:
             n_orb: Spatial orbitals in the fragment.
             n_alpha: Alpha electrons in the target sector.
             n_beta: Beta electrons in the target sector.
-            n_batches: Subspaces per iteration; the lowest-energy one wins.
-            batch_size: Configurations sampled per batch. Alpha and beta halves
-                are pooled separately, so the subspace holds up to
-                ``batch_size ** 2`` determinants. The accuracy knob: a
-                one-determinant subspace is the mean field.
-            n_iterations: Configuration-recovery iterations.
-            lambda_penalty: Weight of the ``S^2`` penalty.
-            recovery: Whether to run configuration recovery.
-            carryover_cutoff: Enables carryover when given, as a fraction of the
-                winning batch's largest eigenvector coefficient. Determinants
-                above it are retained and later batches extended with their
-                alpha and beta halves; ``None`` is conventional SQD.
-                Re-decided each iteration, and selected from the *penalised*
-                ground state, so ``lambda_penalty`` influences what is kept.
-            max_carryover: Keeps at most this many alpha and beta strings, the
-                heaviest, so retention can shrink between iterations. ``None``
-                leaves the subspace bounded only by the fragment's determinant
-                space; worth setting on a wide fragment.
-            max_dim: Caps each spin sector, as one integer or an
-                ``(alpha, beta)`` pair, so the subspace never exceeds their
-                product.
-            include_reference: Keep the aufbau reference determinant in every
-                batch, so the projected energy cannot exceed the reference's.
-            symmetrize_spin: Pool alpha and beta halves together for a
-                spin-exchange invariant subspace. Ignored unless
-                ``n_alpha == n_beta``.
-            energy_tol: Stop iterating once the winning energy moves less than
-                this between iterations and the occupancies have also settled.
-                Zero never stops early.
-            occupancies_tol: The occupancy half of that test, on the largest
-                change in any orbital's average occupancy.
+            config: Sampling, carryover and stopping settings.
             rng: Subsampling generator.
-
-        Raises:
-            ValueError: If ``n_batches``, ``batch_size`` or ``n_iterations`` is
-                less than 1, if ``carryover_cutoff`` is not positive, if
-                ``max_carryover`` is given without a cutoff or is less than 1,
-                if any ``max_dim`` entry is less than 1, or if ``energy_tol`` or
-                ``occupancies_tol`` is negative.
+            recovery: Whether to run configuration recovery.
         """
-        if n_batches < 1:
-            raise ValueError(f"n_batches must be >= 1, got {n_batches}.")
-        if batch_size < 1:
-            raise ValueError(f"batch_size must be >= 1, got {batch_size}.")
-        if n_iterations < 1:
-            raise ValueError(f"n_iterations must be >= 1, got {n_iterations}.")
-        if carryover_cutoff is not None and not carryover_cutoff > 0:
-            raise ValueError(
-                f"carryover_cutoff must be positive, got {carryover_cutoff}."
-            )
-        if max_carryover is not None:
-            if carryover_cutoff is None:
-                raise ValueError(
-                    "max_carryover caps what carryover retains, so it needs "
-                    "carryover_cutoff to be set."
-                )
-            if max_carryover < 1:
-                raise ValueError(f"max_carryover must be >= 1, got {max_carryover}.")
-        max_dim_alpha, max_dim_beta = (
-            max_dim if isinstance(max_dim, tuple) else (max_dim, max_dim)
-        )
-        for name, dim in (("alpha", max_dim_alpha), ("beta", max_dim_beta)):
-            if dim is not None and dim < 1:
-                raise ValueError(f"max_dim ({name}) must be >= 1, got {dim}.")
-        for name, tol in (
-            ("energy_tol", energy_tol),
-            ("occupancies_tol", occupancies_tol),
-        ):
-            if tol < 0:
-                raise ValueError(f"{name} must be non-negative, got {tol}.")
-
         self.n_orb = n_orb
         self.n_alpha = n_alpha
         self.n_beta = n_beta
-        self.n_batches = n_batches
-        self.batch_size = batch_size
-        self.n_iterations = n_iterations
-        self.lambda_penalty = lambda_penalty
+        self.n_batches = config.n_batches
+        self.batch_size = config.batch_size
+        self.n_iterations = config.n_recovery_iterations
+        self.lambda_penalty = config.lambda_penalty
         self.recovery = recovery
-        self.carryover_cutoff = carryover_cutoff
-        self.max_carryover = max_carryover
-        self.max_dim_alpha = max_dim_alpha
-        self.max_dim_beta = max_dim_beta
-        self.include_reference = include_reference
+        self.carryover_cutoff = config.carryover_cutoff
+        self.max_carryover = config.max_carryover
+        self.max_dim_alpha, self.max_dim_beta = (
+            config.max_dim
+            if isinstance(config.max_dim, tuple)
+            else (config.max_dim, config.max_dim)
+        )
+        self.include_reference = config.include_reference
         # Exchanging the sectors is only a symmetry when they hold equal counts.
-        self.symmetrize_spin = symmetrize_spin and n_alpha == n_beta
-        self.energy_tol = energy_tol
-        self.occupancies_tol = occupancies_tol
+        self.symmetrize_spin = config.symmetrize_spin and n_alpha == n_beta
+        self.energy_tol = config.recovery_energy_tol
+        self.occupancies_tol = config.recovery_occupancies_tol
         self._rng = rng
         self.occupancy = np.zeros((2, n_orb))
         self._reference_alpha = _aufbau_string(n_orb, n_alpha)
@@ -891,6 +1025,7 @@ class SQDSolver:
         two_body: np.ndarray,
         constant: float = 0.0,
         one_body_beta: np.ndarray | None = None,
+        carried: tuple[tuple[str, ...], tuple[str, ...]] = ((), ()),
     ) -> SQDResult:
         """Run the SQD solver loop.
 
@@ -903,6 +1038,9 @@ class SQDSolver:
                 projected eigenvalue.
             one_body_beta: Beta-channel one-body integrals, when the embedding
                 potential is spin-dependent.
+            carried: Alpha and beta strings carried in from an earlier solve,
+                already in this solve's orbital basis. They join the first
+                iteration's batches; the carryover rule then decides what stays.
 
         Returns:
             The lowest-energy :class:`SQDResult` found across all iterations.
@@ -921,8 +1059,7 @@ class SQDSolver:
         # Re-read each iteration, not accumulated: weights from differently
         # normalised eigenvectors are not comparable, and a carried string is
         # present in the current subspace anyway.
-        carried_alpha: list[str] = []
-        carried_beta: list[str] = []
+        carried_alpha, carried_beta = carried
 
         previous_energy: float | None = None
         previous_occupancy: np.ndarray | None = None
@@ -953,18 +1090,28 @@ class SQDSolver:
             previous_energy = winner.energy
             previous_occupancy = occupancy
 
-            if self.carryover_cutoff is not None:
-                alpha_weights, beta_weights = carryover_weights(
-                    winner.strings_alpha,
-                    winner.strings_beta,
-                    winner.amplitudes,
-                    self.carryover_cutoff,
-                )
-                carried_alpha = _heaviest_strings(alpha_weights, self.max_carryover)
-                carried_beta = _heaviest_strings(beta_weights, self.max_carryover)
+            carried_alpha, carried_beta = self.carried_strings(winner)
 
         assert best is not None
         return best
+
+    def carried_strings(
+        self, result: SQDResult
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The alpha and beta strings carryover retains from ``result``, heaviest
+        first; none when carryover is off."""
+        if self.carryover_cutoff is None:
+            return (), ()
+        alpha_weights, beta_weights = carryover_weights(
+            result.strings_alpha,
+            result.strings_beta,
+            result.amplitudes,
+            self.carryover_cutoff,
+        )
+        return (
+            _heaviest_strings(alpha_weights, self.max_carryover),
+            _heaviest_strings(beta_weights, self.max_carryover),
+        )
 
     def _recovered_distribution(
         self, probs: dict[str, float], iteration: int
@@ -982,11 +1129,16 @@ class SQDSolver:
         # Sorted, not insertion-ordered: a dict built in a different order would
         # otherwise draw a different subspace from the same seed.
         ordered = sorted(probs)
-        weights: dict[str, float] = {}
+        weights: dict[str, float]
         if iteration == 0 or not self.recovery:
-            for bits in filter_symmetry(ordered, self.n_orb, self.n_alpha, self.n_beta):
-                weights[bits] = weights.get(bits, 0.0) + probs[bits]
+            weights = {
+                bits: probs[bits]
+                for bits in filter_symmetry(
+                    ordered, self.n_orb, self.n_alpha, self.n_beta
+                )
+            }
         else:
+            weights = {}
             for bits in ordered:
                 corrected = bit_flip_correction(
                     bits,
@@ -1109,12 +1261,12 @@ class SQDSolver:
             spatial_to_spin_occupations(alpha, beta, self.n_orb) for alpha, beta in dets
         ]
 
-        h_proj, deviation = projected_matrices(
+        h_proj, s2_proj = projected_matrices(
             dets, dets_spin, h_spin, g_spin, self.n_orb
         )
-        # S^2 less its target eigenvalue, shifted in place: a copy would add a
-        # third dense matrix of the subspace's size.
-        deviation[np.diag_indices(len(dets))] -= target_s * (target_s + 1.0)
+        deviation = s2_proj - target_s * (target_s + 1.0) * scipy.sparse.eye_array(
+            len(dets), format="csr"
+        )
         energy, eigenvector = ground_root(h_proj, deviation, self.lambda_penalty)
         amplitudes = eigenvector.reshape(len(strings_alpha), len(strings_beta))
 

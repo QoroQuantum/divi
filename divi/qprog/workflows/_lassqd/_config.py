@@ -4,23 +4,283 @@
 
 """Configuration objects for the LASSQD workflow."""
 
-from collections.abc import Sequence
-from dataclasses import dataclass
-from enum import StrEnum
+import hashlib
+import pickle
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, ClassVar
 
-from ._state import FragmentSpec
+import numpy as np
 
-# Carryover retention threshold, relative to the winning batch's largest
-# coefficient. arXiv:2512.14936 sweeps it over 1e-1 to 1e-8 and converges from
-# 1e-3 down; without carryover at all their macro-cycle energies oscillate.
-_DEFAULT_CARRYOVER_CUTOFF = 1e-5
+from divi.backends import CircuitRunner
+from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
+from divi.qprog.optimizers import Optimizer
+from divi.qprog.problems import MolecularProblem
+
+from ._integrals import OrbitalSolve, ciah_orbital_solve, optimize_orbitals
+from ._preparation import LUCJFragmentProgram
+from ._state import FragmentSpec, FragmentState
+from ._vqe_preparation import _FragmentVQE, build_fragment_vqe
 
 
-class LASSQDPreparationMode(StrEnum):
-    """How each LASSQD fragment's sampling circuit is prepared."""
+def _checkpoint_digest(value: object) -> str:
+    """Stable digest of a configuration template without object addresses."""
+    return hashlib.sha256(pickle.dumps(value, protocol=4)).hexdigest()
 
-    LINEAR_METHOD = "linear_method"
-    VQE = "vqe"
+
+# Program options an LUCJ fragment takes, beyond those LASSQD sets itself.
+_LUCJ_PROGRAM_OPTIONS = (
+    "precision",
+    "qem_protocol",
+    "suppress_performance_warnings",
+)
+
+
+@dataclass(frozen=True)
+class _LUCJPreparation:
+    """Shared behaviour of the preparations that build a CCSD-seeded LUCJ
+    circuit classically and submit only its sample."""
+
+    _run_linear_method: ClassVar[bool]
+
+    def _check_options(self, options: Mapping[str, Any]) -> None:
+        unsupported = set(options) - set(_LUCJ_PROGRAM_OPTIONS)
+        if unsupported:
+            raise TypeError(
+                f"{type(self).__name__} does not take "
+                f"{', '.join(sorted(unsupported))}; its fragment programs "
+                f"accept only {', '.join(_LUCJ_PROGRAM_OPTIONS)}. "
+                "VQE options need VQEPreparation."
+            )
+
+    def _ensemble_sampling_backend(
+        self, sampling_backend: CircuitRunner | None
+    ) -> CircuitRunner | None:
+        return None
+
+    def _build_program(
+        self,
+        problem: MolecularProblem,
+        fragment: FragmentState,
+        *,
+        backend: CircuitRunner,
+        sampling_backend: CircuitRunner | None,
+        seed: int,
+        options: Mapping[str, Any],
+    ) -> LUCJFragmentProgram:
+        return LUCJFragmentProgram(
+            problem,
+            fragment.spec,
+            backend=backend,
+            sampling_backend=sampling_backend,
+            run_linear_method=self._run_linear_method,
+            seed=seed,
+            **options,
+        )
+
+    def _checkpoint_record(self) -> object:
+        return self
+
+
+@dataclass(frozen=True)
+class CCSDPreparation(_LUCJPreparation):
+    """Sample each fragment's CCSD-seeded LUCJ circuit as it is.
+
+    Classical cost is the fragment's CCSD; one sampling job per fragment per
+    macro-cycle. Never builds the fragment statevector, so it suits fragments
+    too large for :class:`LinearMethodPreparation`.
+    """
+
+    _run_linear_method: ClassVar[bool] = False
+
+
+@dataclass(frozen=True)
+class LinearMethodPreparation(_LUCJPreparation):
+    """Optimise the CCSD-seeded LUCJ circuit with ffsim's linear method first.
+
+    The linear method works on the exact fragment statevector, so this is
+    limited to fragments small enough to simulate classically. It is the
+    preparation arXiv:2512.14936 uses.
+    """
+
+    _run_linear_method: ClassVar[bool] = True
+
+
+@dataclass(frozen=True)
+class VQEPreparation:
+    """Optimise a fragment ansatz against backend-estimated energies.
+
+    Args:
+        optimizer: Optimizer template, deep-copied for each fragment.
+        ansatz: Fragment ansatz.
+        max_iterations: Optimisation iterations per fragment and round.
+
+    Raises:
+        TypeError: If ``ansatz`` is not an :class:`~divi.qprog.algorithms.Ansatz`.
+        ValueError: If ``max_iterations`` is below 1.
+    """
+
+    optimizer: Optimizer
+    ansatz: Ansatz = field(default_factory=UCCSDAnsatz)
+    max_iterations: int = 10
+
+    def __post_init__(self):
+        if not isinstance(self.ansatz, Ansatz):
+            raise TypeError(
+                f"ansatz must be an Ansatz instance; got {type(self.ansatz).__name__}."
+            )
+        if self.max_iterations < 1:
+            raise ValueError(
+                f"max_iterations must be at least 1; got {self.max_iterations}."
+            )
+
+    def _check_options(self, options: Mapping[str, Any]) -> None:
+        pass
+
+    def _ensemble_sampling_backend(
+        self, sampling_backend: CircuitRunner | None
+    ) -> CircuitRunner | None:
+        return sampling_backend
+
+    def _build_program(
+        self,
+        problem: MolecularProblem,
+        fragment: FragmentState,
+        *,
+        backend: CircuitRunner,
+        sampling_backend: CircuitRunner | None,
+        seed: int,
+        options: Mapping[str, Any],
+    ) -> _FragmentVQE:
+        return build_fragment_vqe(
+            problem,
+            fragment,
+            ansatz=self.ansatz,
+            optimizer=self.optimizer,
+            max_iterations=self.max_iterations,
+            backend=backend,
+            seed=seed,
+            options=options,
+        )
+
+    def _checkpoint_record(self) -> object:
+        return (
+            type(self).__name__,
+            type(self.optimizer).__name__,
+            _checkpoint_digest(self.optimizer),
+            type(self.ansatz).__name__,
+            _checkpoint_digest(self.ansatz),
+            self.max_iterations,
+        )
+
+
+Preparation = CCSDPreparation | LinearMethodPreparation | VQEPreparation
+
+
+@dataclass(frozen=True)
+class FullOrbitalSolve:
+    """Re-optimise the orbitals to convergence every macro-cycle with L-BFGS-B.
+
+    Args:
+        max_iterations: Cap on L-BFGS-B iterations per macro-cycle; ``None``
+            leaves it at scipy's default. A capped round returns its best
+            orbitals and reports as not converged.
+
+    Raises:
+        ValueError: If ``max_iterations`` is given and below 1.
+    """
+
+    max_iterations: int | None = None
+
+    def __post_init__(self):
+        if self.max_iterations is not None and self.max_iterations < 1:
+            raise ValueError(
+                f"max_iterations must be at least 1; got {self.max_iterations}."
+            )
+
+    def _solve(
+        self,
+        mol,
+        mo_coeff: np.ndarray,
+        n_core: int,
+        fragment_specs: Sequence[FragmentSpec],
+        rdm1_active: np.ndarray,
+        rdm2_active: np.ndarray,
+        ao_eri: np.ndarray,
+        h_ao: np.ndarray,
+        *,
+        gradient_tol: float,
+        report: Callable[[str], None] | None = None,
+    ) -> OrbitalSolve:
+        return optimize_orbitals(
+            mol,
+            mo_coeff,
+            n_core,
+            fragment_specs,
+            rdm1_active,
+            rdm2_active,
+            ao_eri,
+            h_ao,
+            gradient_tol=gradient_tol,
+            max_iterations=self.max_iterations,
+            report=report,
+        )
+
+
+@dataclass(frozen=True)
+class SecondOrderOrbitalSolve:
+    """Re-optimise the orbitals every macro-cycle with PySCF's CIAH solver.
+
+    Each iteration takes an augmented-Hessian step, with Hessian-vector
+    products from finite differences of the analytic orbital gradient.
+
+    Args:
+        max_iterations: Cap on augmented-Hessian iterations per macro-cycle. A
+            capped round returns its best orbitals and reports as not
+            converged.
+
+    Raises:
+        ValueError: If ``max_iterations`` is below 1.
+    """
+
+    max_iterations: int = 50
+
+    def __post_init__(self):
+        if self.max_iterations < 1:
+            raise ValueError(
+                f"max_iterations must be at least 1; got {self.max_iterations}."
+            )
+
+    def _solve(
+        self,
+        mol,
+        mo_coeff: np.ndarray,
+        n_core: int,
+        fragment_specs: Sequence[FragmentSpec],
+        rdm1_active: np.ndarray,
+        rdm2_active: np.ndarray,
+        ao_eri: np.ndarray,
+        h_ao: np.ndarray,
+        *,
+        gradient_tol: float,
+        report: Callable[[str], None] | None = None,
+    ) -> OrbitalSolve:
+        return ciah_orbital_solve(
+            mol,
+            mo_coeff,
+            n_core,
+            fragment_specs,
+            rdm1_active,
+            rdm2_active,
+            ao_eri,
+            h_ao,
+            gradient_tol=gradient_tol,
+            max_iterations=self.max_iterations,
+            report=report,
+        )
+
+
+OrbitalUpdate = SecondOrderOrbitalSolve | FullOrbitalSolve
 
 
 @dataclass(frozen=True)
@@ -143,133 +403,3 @@ class FragmentationConfig:
                 "coupling_threshold must be non-negative; got "
                 f"{self.coupling_threshold}."
             )
-
-
-@dataclass(frozen=True)
-class SQDConfig:
-    """Sampling and diagonalisation budget for each fragment's SQD solve.
-
-    Args:
-        n_batches: Subspaces diagonalised per recovery iteration; the lowest
-            energy wins.
-        batch_size: Configurations sampled per batch, so the subspace holds up
-            to ``batch_size ** 2`` determinants. The accuracy knob; a
-            one-determinant subspace is the mean field.
-        n_recovery_iterations: Configuration-recovery passes per fragment solve.
-            Each pass reweights the next one's sampling from the orbital
-            occupancies the previous pass recovered, so these are
-            self-consistent passes over the sampled distribution, not optimizer
-            steps.
-        lambda_penalty: Weight of the ``S^2`` spin-contamination penalty added
-            to the projected Hamiltonian before diagonalisation.
-        carryover_cutoff: Carryover SQD's retention threshold
-            (arXiv:2512.14936), on by default. Each recovery iteration retains
-            the determinants whose coefficient exceeds this fraction of the
-            largest coefficient in the winning batch, and extends later
-            iterations' subspaces with them. ``None`` reverts to conventional
-            SQD.
-        max_carryover: Caps the alpha and beta strings carryover retains, *per
-            spin sector*. Carried strings join each batch's own sampled halves
-            rather than replacing them, so a cap of ``k`` bounds a batch's
-            subspace at ``(k + batch_size) ** 2`` determinants. ``None`` leaves
-            it uncapped, and since the cutoff is relative it prunes little: the
-            retained set then grows every recovery iteration and the subspace
-            with it, quadratically. ``max_dim`` bounds the sector outright rather
-            than only the carried part.
-        max_dim: Caps each spin sector, as one integer or an ``(alpha, beta)``
-            pair (any two-item sequence, stored as a tuple), so the subspace
-            never exceeds their product. When it binds,
-            strings are kept in priority order: reference, then carried, then
-            sampled by descending sample count.
-        include_reference: Keep the aufbau reference determinant in every batch,
-            bounding the fragment's energy by its reference.
-        symmetrize_spin: Pool the alpha and beta halves together for a
-            spin-exchange invariant subspace. Inactive unless
-            ``n_alpha == n_beta``.
-        recovery_energy_tol: Ends a fragment's recovery once the winning energy
-            moves less than this between iterations and the occupancies have also
-            settled. ``0.0`` (the default) spends every iteration, since a
-            settled iteration does not mean carryover had nothing left to add.
-            Not ``LASSQD``'s ``energy_tol``, which ends the macro-cycle.
-        recovery_occupancies_tol: The occupancy half of that test, on the largest
-            change in any orbital's average occupancy.
-
-    Raises:
-        ValueError: If ``n_batches``, ``batch_size`` or
-            ``n_recovery_iterations`` is below 1; if ``lambda_penalty`` is
-            negative; if ``carryover_cutoff`` is outside ``(0, 1)``; if
-            ``max_carryover`` is given without a cutoff or is below 1; if
-            ``max_dim`` is not a positive integer or a pair of them; or if
-            ``recovery_energy_tol`` or ``recovery_occupancies_tol`` is negative.
-    """
-
-    n_batches: int = 15
-    batch_size: int = 170
-    n_recovery_iterations: int = 6
-    lambda_penalty: float = 0.2
-    carryover_cutoff: float | None = _DEFAULT_CARRYOVER_CUTOFF
-    max_carryover: int | None = None
-    max_dim: int | tuple[int, int] | None = None
-    include_reference: bool = True
-    symmetrize_spin: bool = False
-    recovery_energy_tol: float = 0.0
-    recovery_occupancies_tol: float = 0.0
-
-    def __post_init__(self):
-        if self.n_batches < 1:
-            raise ValueError(f"n_batches must be at least 1; got {self.n_batches}.")
-        if self.batch_size < 1:
-            raise ValueError(f"batch_size must be at least 1; got {self.batch_size}.")
-        if self.n_recovery_iterations < 1:
-            raise ValueError(
-                "n_recovery_iterations must be at least 1; got "
-                f"{self.n_recovery_iterations}."
-            )
-        if self.lambda_penalty < 0:
-            raise ValueError(
-                f"lambda_penalty must be non-negative; got {self.lambda_penalty}."
-            )
-        if self.carryover_cutoff is not None:
-            if self.carryover_cutoff <= 0:
-                raise ValueError(
-                    f"carryover_cutoff must be positive; got {self.carryover_cutoff}."
-                )
-            if self.carryover_cutoff >= 1:
-                raise ValueError(
-                    "carryover_cutoff must be below 1: it is a fraction of the "
-                    "largest coefficient, which none exceeds, so "
-                    f"{self.carryover_cutoff} would retain nothing. Use None to "
-                    "turn carryover off."
-                )
-        if self.max_carryover is not None:
-            if self.carryover_cutoff is None:
-                raise ValueError(
-                    "max_carryover caps what carryover retains, so it needs "
-                    "carryover_cutoff to be set."
-                )
-            if self.max_carryover < 1:
-                raise ValueError(
-                    f"max_carryover must be at least 1; got {self.max_carryover}."
-                )
-        if self.max_dim is not None:
-            if isinstance(self.max_dim, Sequence) and not isinstance(self.max_dim, str):
-                object.__setattr__(
-                    self, "max_dim", tuple(int(dim) for dim in self.max_dim)
-                )
-                if len(self.max_dim) != 2:
-                    raise ValueError(
-                        "max_dim takes one integer or an (alpha, beta) pair; got "
-                        f"{len(self.max_dim)} entries."
-                    )
-                dims = self.max_dim
-            else:
-                dims = (self.max_dim,)
-            for dim in dims:
-                if dim < 1:
-                    raise ValueError(f"max_dim entries must be at least 1; got {dim}.")
-        for name, value in (
-            ("recovery_energy_tol", self.recovery_energy_tol),
-            ("recovery_occupancies_tol", self.recovery_occupancies_tol),
-        ):
-            if value < 0:
-                raise ValueError(f"{name} must be non-negative; got {value}.")

@@ -7,27 +7,30 @@
 import numpy as np
 import pytest
 
-pytest.importorskip("pyscf")
-
 from divi.qprog.problems import MolecularProblem
-from divi.qprog.workflows._lassqd._integrals import optimize_orbitals
+from divi.qprog.workflows._lassqd._config import (
+    FullOrbitalSolve,
+    SecondOrderOrbitalSolve,
+)
 from divi.qprog.workflows._lassqd._preparation import (
-    LinearMethodFragmentProgram,
+    LUCJFragmentProgram,
     prepare_lucj_fragment,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec
 from divi.reporting._events import EventKind
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
-    exact_sampler_lassqd,
+    build_exact_sampler_lassqd,
     orbital_rotation_case,
+    orbital_solver,
 )
 
 
-def test_the_orbital_solve_reports_every_iteration(orbital_rotation_case):
-    """Minutes pass in this solve at production size with nothing else to show."""
+def test_an_orbital_solve_reports_every_iteration(
+    orbital_rotation_case, orbital_solver
+):
     messages = []
 
-    solve = optimize_orbitals(
+    solve = orbital_solver(
         *orbital_rotation_case, gradient_tol=1e-3, report=messages.append
     )
 
@@ -61,14 +64,12 @@ def test_lucj_preparation_reports_each_stage_and_iteration_energy():
     assert energies and all(np.isfinite(energy) for energy in energies)
 
 
-def test_a_linear_method_program_reports_through_its_progress_row(dummy_simulator):
-    """Fragment preparation runs in a worker thread, so it reports through the
-    program's own progress channel: stages as row messages, and each
-    linear-method iteration as an advance carrying its energy, as a
-    variational program reports its iterations."""
+def test_a_lucj_fragment_program_reports_through_its_progress_row(dummy_simulator):
+    """Preparation stages arrive as row messages and each optimiser iteration
+    as an advance carrying its energy, on the program's own progress key."""
     spec, one_body, two_body = _three_orbital_fragment()
     problem = MolecularProblem(one_body, two_body, n_alpha=2, n_beta=1)
-    program = LinearMethodFragmentProgram(problem, spec, backend=dummy_simulator)
+    program = LUCJFragmentProgram(problem, spec, backend=dummy_simulator)
     events = []
     program._progress_emitter = events.append
 
@@ -86,10 +87,17 @@ def test_a_linear_method_program_reports_through_its_progress_row(dummy_simulato
     assert all(event.progress_key == program._progress_key for event in events)
 
 
+@pytest.mark.parametrize(
+    "orbital_update",
+    [FullOrbitalSolve(), SecondOrderOrbitalSolve()],
+    ids=["full", "second-order"],
+)
 def test_update_state_reports_each_fragment_and_the_orbital_solve(
-    exact_sampler_lassqd, mocker
+    dummy_expval_backend, mocker, orbital_update
 ):
-    ensemble, state = exact_sampler_lassqd
+    ensemble, state = build_exact_sampler_lassqd(
+        dummy_expval_backend, mocker, orbital_update=orbital_update
+    )
     stages = mocker.spy(ensemble, "_emit_workflow_stage")
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)

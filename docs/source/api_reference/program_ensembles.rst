@@ -28,7 +28,11 @@ decomposes a large graph, QUBO or portfolio problem into solvable sub-problems;
 :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs a sequence of time-evolution
 steps to build a trajectory; :class:`~divi.qprog.workflows.LASSQD` partitions a
 molecule's active space into fragments and prepares each fragment for SQD,
-configured by :class:`~divi.qprog.workflows.LASSQDPreparationMode`,
+configured by a preparation (:class:`~divi.qprog.workflows.CCSDPreparation`,
+:class:`~divi.qprog.workflows.LinearMethodPreparation` or
+:class:`~divi.qprog.workflows.VQEPreparation`), an orbital update
+(:class:`~divi.qprog.workflows.SecondOrderOrbitalSolve` or
+:class:`~divi.qprog.workflows.FullOrbitalSolve`),
 :class:`~divi.qprog.workflows.FragmentationConfig`, and
 :class:`~divi.qprog.workflows.SQDConfig`.
 

@@ -3424,12 +3424,14 @@ all = [
     { name = "qiskit-aer" },
     { name = "qiskit-ibm-runtime" },
     { name = "qiskit-nature" },
+    { name = "threadpoolctl" },
 ]
 chem = [
     { name = "ffsim", marker = "sys_platform != 'win32'" },
     { name = "openfermion" },
     { name = "pyscf", marker = "sys_platform != 'win32'" },
     { name = "qiskit-nature" },
+    { name = "threadpoolctl" },
 ]
 jupyter = [
     { name = "ipykernel" },
@@ -3519,6 +3521,7 @@ requires-dist = [
     { name = "stim", specifier = ">=1.15.0,<2.0" },
     { name = "sympy", specifier = ">=1.14,<2.0" },
     { name = "textual", marker = "extra == 'ai'", specifier = ">=8.1.1,<9.0.0" },
+    { name = "threadpoolctl", marker = "extra == 'chem'", specifier = ">=3.1,<4" },
 ]
 provides-extras = ["jupyter", "ai", "aer", "qubo-decompose", "pennylane", "chem", "all"]
 

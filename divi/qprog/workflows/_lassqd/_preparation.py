@@ -4,12 +4,17 @@
 
 """Paper-faithful classical LUCJ preparation for LASSQD fragments."""
 
+import contextlib
 import hashlib
+import itertools
+import math
 import os
 import tempfile
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from random import Random
 from typing import Any, Literal, Self
 from warnings import warn
 
@@ -18,8 +23,10 @@ import ffsim.optimize
 import ffsim.qiskit
 import numpy as np
 from pydantic import Field, model_validator
-from pyscf import ao2mo, cc, gto, scf
+from pyscf import ao2mo, cc, gto, lib, scf
+from pyscf.scf import stability
 from qiskit import ClassicalRegister, QuantumCircuit, transpile
+from threadpoolctl import threadpool_limits
 
 from divi.backends import CircuitRunner
 from divi.pipeline import sample_preprocessor
@@ -33,9 +40,18 @@ from divi.qprog.quantum_program import (
 )
 from divi.reporting._events import ProgressEvent
 
-from ._state import FragmentSpec
+from ._state import FragmentSpec, require_orthonormal
 
 _CC_MAX_CYCLE = 500
+# Re-optimisations from an unstable fragment ROHF solution's descent direction.
+_STABILITY_RESTARTS = 3
+# Starting occupations tried per fragment ROHF.
+_ROHF_STARTS = 64
+
+_PINNING_LOCK = threading.Lock()
+_pinned_users = 0
+_pinned_limits: threadpool_limits | None = None
+_pinned_pyscf_threads = 0
 
 
 @dataclass(frozen=True)
@@ -51,7 +67,7 @@ class LUCJPreparation:
 
 
 @dataclass(frozen=True)
-class _LinearMethodResult:
+class _PreparedFragment:
     params: np.ndarray
     h_alpha: np.ndarray
     h_beta: np.ndarray
@@ -59,7 +75,7 @@ class _LinearMethodResult:
     orbital_rotation: np.ndarray
 
 
-class _LinearMethodCheckpoint(ProgramCheckpoint):
+class _LUCJFragmentCheckpoint(ProgramCheckpoint):
     state_file: Literal["completed_state.npz"]
     state_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     best_probs: dict[int, dict[str, float]]
@@ -75,25 +91,31 @@ class _LinearMethodCheckpoint(ProgramCheckpoint):
         return self
 
 
-class LinearMethodFragmentProgram(QuantumProgram):
-    """Classically prepare one fragment and submit only its final sample."""
+class LUCJFragmentProgram(QuantumProgram):
+    """Classically prepare one fragment's LUCJ circuit and submit only its sample.
+
+    The circuit is the CCSD-seeded LUCJ operator, optimised by ffsim's linear
+    method when ``run_linear_method`` is set.
+    """
 
     def __init__(
         self,
         problem: MolecularProblem,
         spec: FragmentSpec,
         sampling_backend: CircuitRunner | None = None,
+        run_linear_method: bool = True,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.problem = problem
         self.spec = spec
         self._sampling_backend = sampling_backend
+        self._run_linear_method = run_linear_method
         self._preparation: LUCJPreparation | None = None
-        self._terminal_result: _LinearMethodResult | None = None
+        self._terminal_result: _PreparedFragment | None = None
 
     def run(self, **kwargs) -> Self:
-        """Optimize the fragment classically, then sample its final circuit."""
+        """Prepare the fragment classically, then sample its final circuit."""
         reject_unclaimed_run_kwargs(self, kwargs)
         self._preparation = prepare_lucj_fragment(
             self.problem.one_body,
@@ -104,8 +126,9 @@ class LinearMethodFragmentProgram(QuantumProgram):
             on_iteration=lambda energy: self._progress_emitter(
                 ProgressEvent.advance(self._progress_key, loss=energy)
             ),
+            run_linear_method=self._run_linear_method,
         )
-        self._terminal_result = _LinearMethodResult(
+        self._terminal_result = _PreparedFragment(
             params=self._preparation.params,
             h_alpha=self._preparation.h_alpha,
             h_beta=self._preparation.h_beta,
@@ -132,7 +155,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
 
     @property
     def best_params(self) -> np.ndarray:
-        """Optimized ffsim LUCJ parameter vector."""
+        """The sampled circuit's ffsim LUCJ parameter vector."""
         return self._require_terminal_result().params
 
     @property
@@ -163,7 +186,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
     def _make_checkpoint(
         self,
         checkpoint_dir: Path,
-    ) -> _LinearMethodCheckpoint:
+    ) -> _LUCJFragmentCheckpoint:
         result = self._require_terminal_result()
         artifact = "completed_state.npz"
         temporary_path = None
@@ -189,19 +212,19 @@ class LinearMethodFragmentProgram(QuantumProgram):
         finally:
             if temporary_path is not None and temporary_path.exists():
                 temporary_path.unlink()
-        return _LinearMethodCheckpoint.model_validate(
+        return _LUCJFragmentCheckpoint.model_validate(
             {
                 "program_type": type(self).__name__,
                 "total_circuit_count": self.total_circuit_count,
                 "total_run_time": self.total_run_time,
                 "state_file": artifact,
                 "state_sha256": state_sha256,
-                "best_probs": self._results.get("best_probs", {}),
+                "best_probs": self._results["best_probs"],
             }
         )
 
     def _restore_checkpoint(self, checkpoint_json: str, checkpoint_dir: Path) -> bool:
-        checkpoint = _LinearMethodCheckpoint.model_validate_json(checkpoint_json)
+        checkpoint = _LUCJFragmentCheckpoint.model_validate_json(checkpoint_json)
         if checkpoint.program_type != type(self).__name__:
             raise ValueError("Checkpoint is for a different program type.")
         artifact = checkpoint_dir / checkpoint.state_file
@@ -240,8 +263,11 @@ class LinearMethodFragmentProgram(QuantumProgram):
             raise ValueError(
                 "Completed fragment state arrays must be finite numeric data"
             )
+        require_orthonormal(
+            arrays["orbital_rotation"], "Completed fragment state orbital_rotation"
+        )
 
-        result = _LinearMethodResult(**arrays)
+        result = _PreparedFragment(**arrays)
         self._terminal_result = result
         self._results["best_probs"] = checkpoint.best_probs
         return True
@@ -257,7 +283,7 @@ class LinearMethodFragmentProgram(QuantumProgram):
             raise RuntimeError("The fragment has not been prepared; call run() first.")
         return self._preparation
 
-    def _require_terminal_result(self) -> _LinearMethodResult:
+    def _require_terminal_result(self) -> _PreparedFragment:
         if self._terminal_result is None:
             raise RuntimeError("The fragment has not been prepared; call run() first.")
         return self._terminal_result
@@ -420,12 +446,73 @@ def rotate_rdms_to_fragment_basis(
     )
 
 
+def _rohf_starts(one_body: np.ndarray, spec: FragmentSpec) -> list[np.ndarray]:
+    """Starting densities for every occupation ROHF can represent, in the
+    eigenbasis of ``one_body``, aufbau first; a fixed-seed sample of
+    ``_ROHF_STARTS`` when there are more."""
+    n_orbitals = spec.n_orbitals
+    n_majority = max(spec.n_alpha, spec.n_beta)
+    n_minority = min(spec.n_alpha, spec.n_beta)
+    minority_per_majority = math.comb(n_majority, n_minority)
+    n_occupations = math.comb(n_orbitals, n_majority) * minority_per_majority
+    if n_occupations <= _ROHF_STARTS:
+        occupations = [
+            (singles, doubles)
+            for singles in itertools.combinations(range(n_orbitals), n_majority)
+            for doubles in itertools.combinations(singles, n_minority)
+        ]
+    else:
+        ranks = [
+            0,
+            *sorted(Random(0).sample(range(1, n_occupations), _ROHF_STARTS - 1)),
+        ]
+        occupations = []
+        for rank in ranks:
+            majority_rank, minority_rank = divmod(rank, minority_per_majority)
+            singles = _unrank_combination(range(n_orbitals), n_majority, majority_rank)
+            doubles = _unrank_combination(singles, n_minority, minority_rank)
+            occupations.append((singles, doubles))
+    _, basis = np.linalg.eigh(one_body)
+
+    def density(occupied):
+        columns = basis[:, list(occupied)]
+        return columns @ columns.T
+
+    return [
+        np.array([density(singles), density(doubles)])
+        for singles, doubles in occupations
+    ]
+
+
+def _unrank_combination(items, size: int, rank: int) -> tuple[int, ...]:
+    """Select a combination by its position in itertools' lexicographic order."""
+    items = tuple(items)
+    selected = []
+    lower = 0
+    for remaining in range(size, 0, -1):
+        for index in range(lower, len(items) - remaining + 1):
+            span = math.comb(len(items) - index - 1, remaining - 1)
+            if rank < span:
+                selected.append(items[index])
+                lower = index + 1
+                break
+            rank -= span
+    return tuple(selected)
+
+
 def _fragment_rohf(
     one_body: np.ndarray,
     two_body: np.ndarray,
     spec: FragmentSpec,
 ):
-    """Solve the fragment ROHF problem whose orbitals define the LUCJ basis."""
+    """Solve the fragment ROHF problem whose orbitals define the LUCJ basis.
+
+    Open-shell fragments have several stable ROHF solutions, so ROHF runs from
+    each representable occupation and the lowest stable solution is kept.
+
+    Raises:
+        RuntimeError: If no start converges.
+    """
 
     n_orbitals = spec.n_orbitals
     molecule = gto.M(verbose=0)
@@ -435,18 +522,38 @@ def _fragment_rohf(
     molecule.spin = abs(spec.n_alpha - spec.n_beta)
     molecule.nao = n_orbitals
     molecule.incore_anyway = True
+    eri = ao2mo.restore(8, two_body, n_orbitals)
 
-    mean_field = scf.ROHF(molecule)
-    mean_field.get_hcore = lambda *args: one_body
-    mean_field.get_ovlp = lambda *args: np.eye(n_orbitals)
-    mean_field._eri = ao2mo.restore(8, two_body, n_orbitals)
-    mean_field.kernel()
-    if not mean_field.converged:
-        mean_field = mean_field.newton()
-        mean_field.kernel()
-    if not mean_field.converged:
+    best = None
+    for start in _rohf_starts(one_body, spec):
+        mean_field = scf.ROHF(molecule)
+        mean_field.get_hcore = lambda *args: one_body
+        mean_field.get_ovlp = lambda *args: np.eye(n_orbitals)
+        mean_field._eri = eri
+        mean_field.kernel(dm0=start)
+        if not mean_field.converged:
+            mean_field = mean_field.newton()
+            mean_field.kernel()
+        if not mean_field.converged:
+            continue
+        for attempt in range(_STABILITY_RESTARTS + 1):
+            mo_coeff, stable = stability.rohf_internal(
+                mean_field, with_symmetry=False, return_status=True
+            )
+            if stable:
+                break
+            if attempt == _STABILITY_RESTARTS:
+                break
+            mean_field.kernel(dm0=mean_field.make_rdm1(mo_coeff, mean_field.mo_occ))
+            if not mean_field.converged:
+                break
+        if not mean_field.converged or not stable:
+            continue
+        if best is None or mean_field.e_tot < best.e_tot:
+            best = mean_field
+    if best is None:
         raise RuntimeError(f"ROHF did not converge for fragment {spec.orbitals}.")
-    return mean_field
+    return best
 
 
 def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
@@ -466,6 +573,33 @@ def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
     return coupled_cluster
 
 
+@contextlib.contextmanager
+def _single_threaded_numerics():
+    """Pin BLAS and OpenMP to one thread while any fragment preparation runs.
+
+    Fragment-sized arrays are too small for threading to pay. The limits are
+    process-wide, so concurrent preparations share one pinning, lifted when the
+    last of them finishes.
+    """
+    global _pinned_users, _pinned_limits, _pinned_pyscf_threads
+    with _PINNING_LOCK:
+        if _pinned_users == 0:
+            _pinned_limits = threadpool_limits(limits=1)
+            _pinned_pyscf_threads = lib.num_threads()
+            lib.num_threads(1)
+        _pinned_users += 1
+    try:
+        yield
+    finally:
+        with _PINNING_LOCK:
+            _pinned_users -= 1
+            if _pinned_users == 0:
+                lib.num_threads(_pinned_pyscf_threads)
+                _pinned_limits.restore_original_limits()
+                _pinned_limits = None
+
+
+@_single_threaded_numerics()
 def prepare_lucj_fragment(
     h_alpha: np.ndarray,
     h_beta: np.ndarray,
@@ -473,17 +607,22 @@ def prepare_lucj_fragment(
     spec: FragmentSpec,
     report: Callable[[str], None] | None = None,
     on_iteration: Callable[[float], None] | None = None,
+    run_linear_method: bool = True,
 ) -> LUCJPreparation:
-    """Classically optimize the paper's one-repetition fragment LUCJ circuit.
+    """Build the paper's one-repetition fragment LUCJ circuit from CCSD.
 
     The sampled state uses the paper's alpha-channel preparation Hamiltonian.
     Both physical-spin one-body tensors are returned in that sampled orbital
     basis for the subsequent SQD diagonalisation.
 
+    With ``run_linear_method``, ffsim's linear method optimises the CCSD seed
+    on the exact fragment statevector; without it, the seed is the circuit.
+
     ``report`` receives each stage's name as it starts, and ``on_iteration``
     the energy after every linear-method iteration.
     """
     announce = report if report is not None else (lambda message: None)
+    report_iteration = on_iteration if on_iteration is not None else (lambda _: None)
 
     announce("Fragment ROHF")
     mean_field = _fragment_rohf(h_alpha, two_body, spec)
@@ -511,50 +650,45 @@ def prepare_lucj_fragment(
     _require_finite_fragment_values(
         (initial_params,), label="CCSD seed parameters", spec=spec
     )
-    reference_state = ffsim.hartree_fock_state(n_orbitals, n_electrons)
-    molecular_hamiltonian = ffsim.MolecularHamiltonian(
-        h_alpha_mo,
-        two_body_mo,
-        0.0,
-    )
-    hamiltonian = ffsim.linear_operator(
-        molecular_hamiltonian,
-        norb=n_orbitals,
-        nelec=n_electrons,
-    )
-
-    def params_to_vec(params: np.ndarray) -> np.ndarray:
-        operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
-            params,
-            norb=n_orbitals,
-            n_reps=n_repetitions,
-            interaction_pairs=interaction_pairs,
-            with_final_orbital_rotation=True,
-        )
-        return ffsim.apply_unitary(
-            reference_state,
-            operator,
+    params = initial_params
+    if run_linear_method:
+        reference_state = ffsim.hartree_fock_state(n_orbitals, n_electrons)
+        hamiltonian = ffsim.linear_operator(
+            ffsim.MolecularHamiltonian(h_alpha_mo, two_body_mo, 0.0),
             norb=n_orbitals,
             nelec=n_electrons,
         )
 
-    announce("Linear method")
-    result = ffsim.optimize.minimize_linear_method(
-        params_to_vec,
-        hamiltonian,
-        x0=initial_params,
-        callback=(
-            None
-            if on_iteration is None
-            else lambda intermediate_result: on_iteration(
-                float(intermediate_result.fun)
+        def params_to_vec(params: np.ndarray) -> np.ndarray:
+            operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
+                params,
+                norb=n_orbitals,
+                n_reps=n_repetitions,
+                interaction_pairs=interaction_pairs,
+                with_final_orbital_rotation=True,
             )
-        ),
-    )
-    params = np.asarray(result.x, dtype=float)
-    _require_finite_fragment_values(
-        (params,), label="linear-method parameters", spec=spec
-    )
+            return ffsim.apply_unitary(
+                reference_state,
+                operator,
+                norb=n_orbitals,
+                nelec=n_electrons,
+            )
+
+        announce("Linear method")
+        # Stops on the gradient alone.
+        result = ffsim.optimize.minimize_linear_method(
+            params_to_vec,
+            hamiltonian,
+            x0=initial_params,
+            ftol=0.0,
+            callback=lambda intermediate_result: report_iteration(
+                float(intermediate_result.fun)
+            ),
+        )
+        params = np.asarray(result.x, dtype=float)
+        _require_finite_fragment_values(
+            (params,), label="linear-method parameters", spec=spec
+        )
     operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
         params,
         norb=n_orbitals,

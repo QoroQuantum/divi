@@ -6,6 +6,7 @@
 
 import itertools
 from dataclasses import fields
+from functools import partial
 from typing import Self
 
 import numpy as np
@@ -18,23 +19,28 @@ from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import (
     LASSQD,
     FragmentationConfig,
-    LASSQDPreparationMode,
     ReportingLevel,
     SQDConfig,
+    VQEPreparation,
 )
 from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.workflows._lassqd._active_space import localize_blocks
+from divi.qprog.workflows._lassqd._config import SecondOrderOrbitalSolve
 from divi.qprog.workflows._lassqd._integrals import (
+    assemble_active_rdms,
     build_active_permutation,
     cached_ao_eri,
     cached_h_ao,
+    ciah_orbital_solve,
     fragment_effective_integrals,
+    optimize_orbitals,
     transform_integrals,
 )
-from divi.qprog.workflows._lassqd._state import FragmentSpec
+from divi.qprog.workflows._lassqd._sqd import ci_string_to_int, compute_spatial_rdms
+from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
 from divi.qprog.workflows._lassqd._workflow import _compute_n_core
 
 _FRAGMENTATION_FIELDS = {field.name for field in fields(FragmentationConfig)}
@@ -146,23 +152,30 @@ def h4_chain():
     )
 
 
-def h8_frontier_lassqd(backend=None, **overrides):
-    """H8 split into two frontier-selected 4-orbital fragments.
+def cobyla():
+    """A fresh COBYLA optimizer."""
+    return ScipyOptimizer(ScipyMethod.COBYLA)
 
-    The seeding tests all want this same ensemble and differ only in the backend
-    and whether the fragments are polarized.
-    """
+
+def vqe_preparation(**overrides):
+    """COBYLA-driven UCCSD fragment VQE, with ``overrides`` replacing fields."""
+    return VQEPreparation(
+        **({"optimizer": cobyla(), "ansatz": UCCSDAnsatz()} | overrides)
+    )
+
+
+def h8_frontier_lassqd(backend=None, **overrides):
+    """H8 split into two frontier-selected 4-orbital fragments, prepared by
+    :func:`vqe_preparation`."""
     kwargs = dict(
         n_active_orbitals=8,
         max_orbitals_per_fragment=4,
         seed=0,
-        ansatz=UCCSDAnsatz(),
     )
     kwargs.update(overrides)
     return LASSQD(
         MolecularProblem.from_molecule(h8_chain()),
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-        preparation_mode=LASSQDPreparationMode.VQE,
+        preparation=vqe_preparation(),
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(**kwargs),
@@ -180,6 +193,13 @@ def h8_chain():
         basis="sto-3g",
         verbose=0,
     )
+
+
+#: H4's whole active space as a single fragment.
+H4_WHOLE_SPACE = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
+
+#: ``h8_chain()``'s atoms split into two four-atom halves.
+H8_HALF_CHAINS = ([0, 1, 2, 3], [4, 5, 6, 7])
 
 
 @pytest.fixture(scope="session")
@@ -230,9 +250,9 @@ def orbital_rotation_case():
     two fragments of unequal size whose orbital indices are neither sorted nor
     contiguous, and five virtual -- 61 rotation pairs.
 
-    The active RDMs are fixed-seed random, carrying the permutation symmetries
-    of a real spatial RDM and no more: ``rdm1`` is symmetric and ``rdm2`` is
-    symmetric under ``pqrs -> rspq`` and ``pqrs -> qpsr``, otherwise dense.
+    The active RDMs are those of a product of fixed-seed random fragment
+    wavefunctions, each spanning its fragment's whole determinant space, so
+    they are physical while still dense.
 
     Returns the full positional argument list of ``optimize_orbitals``:
     ``(mol, mo_coeff, n_core, specs, rdm1_active, rdm2_active, ao_eri, h_ao)``.
@@ -247,15 +267,28 @@ def orbital_rotation_case():
         FragmentSpec(orbitals=(2, 5, 7), n_alpha=1, n_beta=1),
     ]
     n_core = 3
-    n_act = sum(spec.n_orbitals for spec in specs)
     permutation = build_active_permutation(specs, n_core, n_orbitals_total)
 
     rng = np.random.default_rng(20250801)
-    root = rng.standard_normal((n_act, n_act))
-    rdm1_active = 0.3 * (root @ root.T)
-    rdm2_active = rng.standard_normal((n_act,) * 4)
-    rdm2_active = rdm2_active + rdm2_active.transpose(2, 3, 0, 1)
-    rdm2_active = rdm2_active + rdm2_active.transpose(1, 0, 3, 2)
+    fragments = []
+    for spec in specs:
+        strings_alpha = _sector_strings(spec.n_orbitals, spec.n_alpha)
+        strings_beta = _sector_strings(spec.n_orbitals, spec.n_beta)
+        amplitudes = rng.standard_normal((len(strings_alpha), len(strings_beta)))
+        amplitudes /= np.linalg.norm(amplitudes)
+        rdm1, rdm2, rdm1_alpha, rdm1_beta = compute_spatial_rdms(
+            strings_alpha, strings_beta, amplitudes, spec.n_orbitals
+        )
+        fragments.append(
+            FragmentState(
+                spec=spec,
+                rdm1=rdm1,
+                rdm2=rdm2,
+                rdm1_alpha=rdm1_alpha,
+                rdm1_beta=rdm1_beta,
+            )
+        )
+    rdm1_active, rdm2_active = assemble_active_rdms(fragments)
 
     return (
         mol,
@@ -267,6 +300,29 @@ def orbital_rotation_case():
         cached_ao_eri(mol),
         cached_h_ao(mol),
     )
+
+
+#: ``ciah_orbital_solve`` under ``SecondOrderOrbitalSolve``'s default cap.
+capped_ciah_orbital_solve = partial(
+    ciah_orbital_solve, max_iterations=SecondOrderOrbitalSolve().max_iterations
+)
+
+
+@pytest.fixture(
+    params=[optimize_orbitals, capped_ciah_orbital_solve], ids=["l-bfgs-b", "ciah"]
+)
+def orbital_solver(request):
+    """Each orbital solve, sharing ``optimize_orbitals``'s signature."""
+    return request.param
+
+
+def _sector_strings(n_orb, n_electrons):
+    """Every occupation string of one spin sector, ascending as SQD orders them."""
+    strings = (
+        "".join("1" if p in occupied else "0" for p in range(n_orb))
+        for occupied in itertools.combinations(range(n_orb), n_electrons)
+    )
+    return sorted(strings, key=ci_string_to_int)
 
 
 def build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active):
@@ -327,8 +383,8 @@ def dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant=0.0):
 #: Energy and MO-coefficient trace of ``exact_sampler_lassqd`` over 4
 #: macro-cycles. The trace fingerprints which of several equivalent orbital
 #: solutions the optimizer reached, so it can move while the energy does not.
-PRODUCT_STATE_ENERGY = -2.221584047820374
-PRODUCT_STATE_MO_TRACE = -0.9605551058944303
+PRODUCT_STATE_ENERGY = -2.221584055981204
+PRODUCT_STATE_MO_TRACE = -0.0028071851266455727
 
 #: Stand-in for a converged VQE's parameters.
 _STUB_BEST_PARAMS = np.array([0.11, 0.22, 0.33])
@@ -341,19 +397,20 @@ class ExactSamplerVQE(QuantumProgram):
     ``SparsePauliOp`` a real VQE is built from -- restricted to the correct
     alpha/beta particle-number sector, and squares the ground-state amplitudes
     into a probability distribution: a deterministic, noise-free oracle using
-    the same Jordan-Wigner convention as a real fragment VQE.
+    the same Jordan-Wigner convention as a real fragment VQE. Like a fragment
+    VQE, it exposes its problem's integrals and an identity orbital rotation.
     """
 
     def __init__(
         self,
-        hamiltonian: SparsePauliOp,
+        problem: MolecularProblem,
         spec: FragmentSpec,
         *,
         backend,
         best_params: np.ndarray = _STUB_BEST_PARAMS,
     ):
         super().__init__(backend=backend)
-        self._hamiltonian = hamiltonian
+        self._problem = problem
         self._spec = spec
         self._best_params = best_params
 
@@ -364,6 +421,22 @@ class ExactSamplerVQE(QuantumProgram):
     @property
     def best_params(self) -> np.ndarray:
         return self._best_params
+
+    @property
+    def h_alpha(self) -> np.ndarray:
+        return self._problem.one_body
+
+    @property
+    def h_beta(self) -> np.ndarray:
+        return self._problem.one_body_beta
+
+    @property
+    def two_body(self) -> np.ndarray:
+        return self._problem.two_body
+
+    @property
+    def orbital_rotation(self) -> np.ndarray:
+        return np.eye(self._spec.n_orbitals)
 
     def has_results(self) -> bool:
         return bool(self._results)
@@ -382,7 +455,7 @@ class ExactSamplerVQE(QuantumProgram):
         n_orb = self._spec.n_orbitals
         n_alpha, n_beta = self._spec.n_alpha, self._spec.n_beta
         n_qubits = 2 * n_orb
-        matrix = self._hamiltonian.to_matrix()
+        matrix = self._problem.hamiltonian.to_matrix()
 
         valid_indices = []
         valid_bits = []
@@ -411,10 +484,12 @@ class ExactSamplerVQE(QuantumProgram):
         return self
 
 
-def _build_exact_sampler_program(self, fragment, problem, seed):
-    """Replacement for ``LASSQD._build_fragment_program`` used by
+def _build_exact_sampler_program(
+    self, problem, fragment, *, backend, sampling_backend, seed, options
+):
+    """Replacement for a preparation's ``_build_program`` used by
     :func:`build_exact_sampler_lassqd`."""
-    return ExactSamplerVQE(problem.hamiltonian, fragment.spec, backend=self.backend)
+    return ExactSamplerVQE(problem, fragment.spec, backend=backend)
 
 
 def build_exact_sampler_lassqd(backend, mocker, seed=0, problem=None, **overrides):
@@ -422,7 +497,7 @@ def build_exact_sampler_lassqd(backend, mocker, seed=0, problem=None, **override
     exact ground state.
 
     Builds two 2-orbital fragments on ``h4_chain()`` unless ``problem`` is
-    given, and patches ``LASSQD._build_fragment_program`` to return
+    given, and patches the preparation's ``_build_program`` to return
     :class:`ExactSamplerVQE` instances in place of real VQE optimizations.
 
     Args:
@@ -441,18 +516,18 @@ def build_exact_sampler_lassqd(backend, mocker, seed=0, problem=None, **override
         batch_size=8,
         n_recovery_iterations=2,
         seed=seed,
-        ansatz=UCCSDAnsatz(),
+        preparation=vqe_preparation(),
     )
     kwargs.update(overrides)
     ensemble = LASSQD(
         problem or MolecularProblem.from_molecule(h4_chain()),
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-        preparation_mode=LASSQDPreparationMode.VQE,
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(**kwargs),
     )
-    mocker.patch.object(LASSQD, "_build_fragment_program", _build_exact_sampler_program)
+    mocker.patch.object(
+        type(ensemble.preparation), "_build_program", _build_exact_sampler_program
+    )
 
     return ensemble, ensemble.initial_state()
 

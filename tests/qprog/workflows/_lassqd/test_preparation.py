@@ -5,6 +5,10 @@
 """Tests for paper-faithful LASSQD fragment-circuit preparation."""
 
 import hashlib
+import itertools
+import tracemalloc
+from operator import attrgetter, methodcaller
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,7 +20,7 @@ ffsim = pytest.importorskip("ffsim")
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows._lassqd import _preparation as preparation
 from divi.qprog.workflows._lassqd._preparation import (
-    LinearMethodFragmentProgram,
+    LUCJFragmentProgram,
     LUCJPreparation,
     _fragment_ccsd,
     _fragment_rohf,
@@ -26,6 +30,7 @@ from divi.qprog.workflows._lassqd._preparation import (
     rotate_rdms_to_fragment_basis,
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec
+from tests._helpers import exact_match
 
 _PREPARATION = "divi.qprog.workflows._lassqd._preparation"
 
@@ -34,7 +39,7 @@ def _patch_linear_method(mocker, optimum):
     """Stub the linear method to return ``optimum(x0)`` as its parameters."""
     return mocker.patch(
         "ffsim.optimize.minimize_linear_method",
-        side_effect=lambda _params_to_vec, _hamiltonian, x0, callback=None: mocker.Mock(
+        side_effect=lambda _params_to_vec, _hamiltonian, x0, **_options: mocker.Mock(
             x=optimum(x0)
         ),
     )
@@ -144,6 +149,27 @@ def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
     assert result.two_body.shape == (2, 2, 2, 2)
 
 
+def test_prepare_lucj_fragment_samples_the_ccsd_seed_without_the_linear_method(
+    mocker,
+):
+    minimize = _patch_linear_method(mocker, lambda x0: x0 + 1.0)
+    seed = mocker.spy(ffsim.UCJOpSpinUnbalanced, "to_parameters")
+    stages = []
+
+    result = prepare_lucj_fragment(
+        np.diag([-1.0, 0.5]),
+        np.diag([-0.8, 0.7]),
+        np.zeros((2, 2, 2, 2)),
+        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+        report=stages.append,
+        run_linear_method=False,
+    )
+
+    minimize.assert_not_called()
+    np.testing.assert_array_equal(result.params, seed.spy_return)
+    assert stages == ["Fragment ROHF", "CCSD seed"]
+
+
 def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker):
     rng = np.random.default_rng(17)
     t1 = (
@@ -191,12 +217,44 @@ def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     np.testing.assert_allclose(result.h_beta, np.diag([0.7, -0.8]))
 
 
+def test_fragment_rohf_reaches_the_ground_state_of_a_spin_polarised_iron_fragment():
+    """An open-shell iron fragment's ROHF reaches its stable ground state."""
+    data = np.load(Path(__file__).parent / "data" / "fefe_fragment_round1.npz")
+    n_alpha, n_beta = (int(count) for count in data["nelec"])
+    spec = FragmentSpec(orbitals=tuple(range(5)), n_alpha=n_alpha, n_beta=n_beta)
+
+    mean_field = _fragment_rohf(data["one_body"], data["two_body"], spec)
+
+    _, stable = preparation.stability.rohf_internal(
+        mean_field, with_symmetry=False, return_status=True
+    )
+    assert stable
+    assert mean_field.e_tot == pytest.approx(-18.158417, abs=1e-6)
+
+
+_ONE_START = np.array([np.diag([1.0, 0.0]), np.diag([1.0, 0.0])])
+
+
+def _report_stable(mean_field, **_):
+    return mean_field.mo_coeff, True
+
+
+def _patch_rohf_starts(mocker, starts=(_ONE_START,), stability=_report_stable):
+    """Run the fragment ROHF from ``starts``, its stability check answered by
+    ``stability`` (every solution stable by default)."""
+    mocker.patch(f"{_PREPARATION}._rohf_starts", return_value=list(starts))
+    return mocker.patch(
+        f"{_PREPARATION}.stability.rohf_internal", side_effect=stability
+    )
+
+
 @pytest.mark.parametrize("newton_converges", [True, False])
 def test_fragment_rohf_retries_unconverged_scf_with_newton(mocker, newton_converges):
     direct_solver = mocker.Mock(converged=False)
     newton_solver = mocker.Mock(converged=newton_converges)
     direct_solver.newton.return_value = newton_solver
     rohf = mocker.patch("pyscf.scf.ROHF", return_value=direct_solver)
+    _patch_rohf_starts(mocker)
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
 
     def solve():
@@ -209,14 +267,133 @@ def test_fragment_rohf_retries_unconverged_scf_with_newton(mocker, newton_conver
             solve()
 
     rohf.assert_called_once()
-    direct_solver.kernel.assert_called_once_with()
+    direct_solver.kernel.assert_called_once()
+    assert direct_solver.kernel.call_args.kwargs["dm0"] is _ONE_START
     direct_solver.newton.assert_called_once_with()
     newton_solver.kernel.assert_called_once_with()
+
+
+def test_rohf_starts_cover_every_representable_occupation_aufbau_first():
+    spec = FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=2)
+
+    starts = preparation._rohf_starts(np.diag([-1.0, -0.5, 0.5]), spec)
+
+    # Two singly-or-doubly occupied orbitals of three, one of them doubly.
+    assert len(starts) == 3 * 2
+    np.testing.assert_allclose(
+        np.abs(starts[0]), [np.diag([1.0, 1.0, 0.0]), np.diag([1.0, 0.0, 0.0])]
+    )
+
+
+def test_rohf_starts_are_a_fixed_sample_once_the_cap_binds():
+    spec = FragmentSpec(orbitals=tuple(range(10)), n_alpha=6, n_beta=2)
+    one_body = np.diag(np.arange(10.0))
+
+    starts = preparation._rohf_starts(one_body, spec)
+
+    assert len(starts) == preparation._ROHF_STARTS
+    for again, start in zip(preparation._rohf_starts(one_body, spec), starts):
+        np.testing.assert_array_equal(again, start)
+
+
+def test_capped_rohf_starts_can_select_the_first_non_aufbau_occupation():
+    spec = FragmentSpec(orbitals=tuple(range(7)), n_alpha=3, n_beta=1)
+    occupations = (
+        (singles, doubles)
+        for singles in itertools.combinations(range(7), 3)
+        for doubles in itertools.combinations(singles, 1)
+    )
+    next(occupations)
+    singles, doubles = next(occupations)
+    expected = np.array(
+        [
+            np.diag(np.isin(range(7), occupied).astype(float))
+            for occupied in (singles, doubles)
+        ]
+    )
+
+    starts = preparation._rohf_starts(np.diag(np.arange(7.0)), spec)
+
+    assert any(np.array_equal(start, expected) for start in starts)
+
+
+def test_capped_rohf_starts_do_not_store_every_occupation():
+    spec = FragmentSpec(orbitals=tuple(range(14)), n_alpha=7, n_beta=3)
+    tracemalloc.start()
+    try:
+        starts = preparation._rohf_starts(np.diag(np.arange(14.0)), spec)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert len(starts) == preparation._ROHF_STARTS
+    assert peak < 8_000_000
+
+
+def test_a_capped_rohf_sample_is_distinct_and_keeps_aufbau_first():
+    """90 occupations exceed the cap, so the sample must still lead with the
+    aufbau occupation and never repeat one."""
+    spec = FragmentSpec(orbitals=tuple(range(6)), n_alpha=4, n_beta=2)
+
+    starts = preparation._rohf_starts(np.diag(np.arange(6.0)), spec)
+
+    assert len(starts) == preparation._ROHF_STARTS
+    np.testing.assert_allclose(
+        np.abs(starts[0]),
+        [np.diag([1.0] * 4 + [0.0] * 2), np.diag([1.0] * 2 + [0.0] * 4)],
+    )
+    for first, second in itertools.combinations(starts, 2):
+        assert not np.allclose(first, second)
+
+
+def test_fragment_rohf_keeps_the_lowest_converged_solution(mocker):
+    low = mocker.Mock(converged=True, e_tot=-2.0)
+    high = mocker.Mock(converged=True, e_tot=-1.0)
+    failed = mocker.Mock(converged=False)
+    failed.newton.return_value = mocker.Mock(converged=False)
+    mocker.patch("pyscf.scf.ROHF", side_effect=[high, failed, low])
+    _patch_rohf_starts(mocker, starts=[_ONE_START] * 3)
+    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
+
+    assert _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec) is low
+
+
+def test_fragment_rohf_reoptimises_from_an_unstable_solution(mocker):
+    solver = mocker.Mock(converged=True, mo_occ=np.array([2.0, 0.0]))
+    mocker.patch("pyscf.scf.ROHF", return_value=solver)
+    rotated = np.array([[0.0, 1.0], [1.0, 0.0]])
+    _patch_rohf_starts(mocker, stability=[(rotated, False), (rotated, True)])
+    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
+
+    _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+
+    assert solver.kernel.call_count == 2
+    solver.make_rdm1.assert_called_once_with(rotated, solver.mo_occ)
+
+
+@pytest.mark.parametrize("restart_converges", [False, True])
+def test_fragment_rohf_rejects_an_unstable_or_unconverged_restart(
+    mocker, restart_converges
+):
+    solver = mocker.Mock(converged=True, mo_occ=np.array([2.0, 0.0]))
+
+    def kernel(*args, **kwargs):
+        if solver.kernel.call_count > 1:
+            solver.converged = restart_converges
+
+    solver.kernel.side_effect = kernel
+    mocker.patch("pyscf.scf.ROHF", return_value=solver)
+    _patch_rohf_starts(mocker, stability=[(np.eye(2), False)] * 4)
+    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
+
+    with pytest.raises(RuntimeError, match="ROHF did not converge"):
+        _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
 
 
 def test_fragment_rohf_uses_positive_local_spin_for_beta_majority(mocker):
     solver = mocker.Mock(converged=True)
     rohf = mocker.patch("pyscf.scf.ROHF", return_value=solver)
+    _patch_rohf_starts(mocker)
     spec = FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=2)
 
     _fragment_rohf(
@@ -284,8 +461,12 @@ def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
     ccsd = mocker.patch("pyscf.cc.CCSD", return_value=coupled_cluster)
     mean_field = mocker.Mock()
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
+    message = (
+        "CCSD seed did not converge for fragment (3, 4) after 500 cycles; using "
+        "its best available amplitudes, as in the LASSQD reference implementation."
+    )
 
-    with pytest.warns(UserWarning, match="best available amplitudes"):
+    with pytest.warns(UserWarning, match=exact_match(message)):
         result = _fragment_ccsd(mean_field, spec)
 
     ccsd.assert_called_once_with(mean_field)
@@ -296,7 +477,7 @@ def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
 
 def _two_orbital_program(backend, **kwargs):
     problem = MolecularProblem(np.eye(2), np.zeros((2, 2, 2, 2)), n_alpha=1, n_beta=1)
-    return LinearMethodFragmentProgram(
+    return LUCJFragmentProgram(
         problem,
         FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
         backend=backend,
@@ -326,7 +507,7 @@ def _measured_x0_preparation():
 
 @pytest.fixture
 def prepared_program(dummy_simulator, mocker):
-    """A linear-method program run once against a patched classical preparation.
+    """A LUCJ fragment program run once against a patched classical preparation.
 
     Returns ``(program, preparation, prepare, submit)``.
     """
@@ -340,7 +521,7 @@ def prepared_program(dummy_simulator, mocker):
     return program, preparation, prepare, submit
 
 
-def test_linear_method_program_prepares_classically_then_samples_once(
+def test_lucj_fragment_program_prepares_classically_then_samples_once(
     prepared_program,
 ):
     program, preparation, prepare, submit = prepared_program
@@ -355,7 +536,24 @@ def test_linear_method_program_prepares_classically_then_samples_once(
         np.testing.assert_allclose(getattr(program, name), getattr(preparation, name))
 
 
-def test_linear_method_checkpoint_restores_without_preparing_or_sampling(
+def test_lucj_fragment_program_rejects_an_unclaimed_run_keyword(
+    dummy_simulator, mocker
+):
+    prepare = mocker.patch(f"{_PREPARATION}.prepare_lucj_fragment")
+    program = _two_orbital_program(dummy_simulator)
+
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "LUCJFragmentProgram.run() got unexpected keyword argument(s): bogus."
+        ),
+    ):
+        program.run(bogus=1)
+
+    prepare.assert_not_called()
+
+
+def test_lucj_fragment_checkpoint_restores_without_preparing_or_sampling(
     prepared_program, dummy_simulator, tmp_path
 ):
     program, _, prepare, submit = prepared_program
@@ -364,7 +562,7 @@ def test_linear_method_checkpoint_restores_without_preparing_or_sampling(
     prepare.reset_mock()
     submit.reset_mock()
 
-    restored._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
+    assert restored._restore_checkpoint(checkpoint.model_dump_json(), tmp_path) is True
 
     assert "phase" not in checkpoint.model_dump()
     prepare.assert_not_called()
@@ -375,7 +573,7 @@ def test_linear_method_checkpoint_restores_without_preparing_or_sampling(
         np.testing.assert_allclose(getattr(restored, name), getattr(program, name))
 
 
-def test_linear_method_checkpoint_rejects_a_mismatched_digest(
+def test_lucj_fragment_checkpoint_rejects_a_mismatched_digest(
     prepared_program, dummy_simulator, tmp_path
 ):
     program, *_ = prepared_program
@@ -384,9 +582,47 @@ def test_linear_method_checkpoint_rejects_a_mismatched_digest(
     )
     mismatched = _two_orbital_program(dummy_simulator, seed=7)
 
-    with pytest.raises(ValueError, match="digest"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("Completed fragment state digest does not match metadata"),
+    ):
         mismatched._restore_checkpoint(checkpoint.model_dump_json(), tmp_path)
     assert not mismatched.has_results()
+
+
+def test_lucj_fragment_checkpoint_writes_its_temporary_state_beside_the_artifact(
+    prepared_program, mocker, tmp_path
+):
+    """The state is staged in the checkpoint directory so the final rename stays
+    on one filesystem."""
+    program, *_ = prepared_program
+    temporary = mocker.spy(preparation.tempfile, "NamedTemporaryFile")
+
+    program._make_checkpoint(tmp_path)
+
+    assert Path(temporary.spy_return.name).parent == tmp_path
+    assert [path.name for path in tmp_path.iterdir()] == ["completed_state.npz"]
+
+
+def test_a_failed_checkpoint_write_leaves_no_temporary_state(
+    prepared_program, mocker, tmp_path
+):
+    program, *_ = prepared_program
+    mocker.patch(f"{_PREPARATION}.np.savez", side_effect=OSError("disk full"))
+
+    with pytest.raises(OSError, match=exact_match("disk full")):
+        program._make_checkpoint(tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_checkpoint_into_a_missing_directory_raises_file_not_found(
+    prepared_program, tmp_path
+):
+    program, *_ = prepared_program
+
+    with pytest.raises(FileNotFoundError):
+        program._make_checkpoint(tmp_path / "missing")
 
 
 def _completed_state_arrays():
@@ -399,43 +635,103 @@ def _completed_state_arrays():
     }
 
 
-def _restore_completed_state(program, directory, arrays):
+def _restore_completed_state(
+    program, directory, arrays, program_type="LUCJFragmentProgram"
+):
     """Write ``arrays`` as a completed fragment state and restore it."""
     state_path = directory / "completed_state.npz"
     np.savez(state_path, **arrays)
     with state_path.open("rb") as handle:
         state_sha256 = hashlib.file_digest(handle, "sha256").hexdigest()
-    checkpoint = preparation._LinearMethodCheckpoint(
-        program_type="LinearMethodFragmentProgram",
+    checkpoint = preparation._LUCJFragmentCheckpoint(
+        program_type=program_type,
         total_circuit_count=0,
         total_run_time=0.0,
         state_file="completed_state.npz",
         state_sha256=state_sha256,
         best_probs={0: {"0011": 1.0}},
     )
-    program._restore_checkpoint(checkpoint.model_dump_json(), directory)
+    return program._restore_checkpoint(checkpoint.model_dump_json(), directory)
+
+
+def test_completed_fragment_state_is_refused_for_another_program_type(
+    dummy_simulator, tmp_path
+):
+    program = _two_orbital_program(dummy_simulator)
+
+    with pytest.raises(
+        ValueError, match=exact_match("Checkpoint is for a different program type.")
+    ):
+        _restore_completed_state(
+            program, tmp_path, _completed_state_arrays(), program_type="VQE"
+        )
+
+    assert not program.has_results()
 
 
 @pytest.mark.parametrize(
     "missing",
     ["params", "h_alpha", "h_beta", "two_body", "orbital_rotation"],
 )
-def test_completed_linear_method_state_requires_every_array(
+def test_completed_fragment_state_requires_every_array(
     missing, dummy_simulator, tmp_path
 ):
     arrays = _completed_state_arrays()
     arrays.pop(missing)
     program = _two_orbital_program(dummy_simulator)
 
-    with pytest.raises(ValueError, match="missing or extra arrays"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match("Completed fragment state has missing or extra arrays"),
+    ):
         _restore_completed_state(program, tmp_path, arrays)
 
     assert not program.has_results()
 
 
-def test_completed_linear_method_state_refuses_an_object_array(
+_INCOMPATIBLE_SHAPES = "Completed fragment state has incompatible array shapes"
+_NON_FINITE = "Completed fragment state arrays must be finite numeric data"
+
+
+@pytest.mark.parametrize(
+    "name, value, message",
+    [
+        ("h_alpha", np.eye(3), _INCOMPATIBLE_SHAPES),
+        ("params", np.zeros((1, 1)), _INCOMPATIBLE_SHAPES),
+        ("two_body", np.full((2, 2, 2, 2), np.nan), _NON_FINITE),
+        ("params", np.array(["a"]), _NON_FINITE),
+    ],
+)
+def test_completed_fragment_state_rejects_corrupt_arrays(
+    name, value, message, dummy_simulator, tmp_path
+):
+    arrays = _completed_state_arrays()
+    arrays[name] = value
+    program = _two_orbital_program(dummy_simulator)
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _restore_completed_state(program, tmp_path, arrays)
+
+    assert not program.has_results()
+
+
+def test_completed_fragment_state_requires_an_orthonormal_rotation(
     dummy_simulator, tmp_path
 ):
+    arrays = _completed_state_arrays()
+    arrays["orbital_rotation"] = 2.0 * np.eye(2)
+    program = _two_orbital_program(dummy_simulator)
+
+    with pytest.raises(
+        ValueError,
+        match=r"^Completed fragment state orbital_rotation is not orthonormal",
+    ):
+        _restore_completed_state(program, tmp_path, arrays)
+
+    assert not program.has_results()
+
+
+def test_completed_fragment_state_refuses_an_object_array(dummy_simulator, tmp_path):
     arrays = _completed_state_arrays()
     arrays["params"] = np.array([{"payload": 1}], dtype=object)
     program = _two_orbital_program(dummy_simulator)
@@ -447,13 +743,21 @@ def test_completed_linear_method_state_refuses_an_object_array(
 
 
 @pytest.mark.parametrize(
-    "attribute", ["best_params", "h_alpha", "h_beta", "two_body", "orbital_rotation"]
+    "read",
+    [
+        *(attrgetter(name) for name in ("best_params", *_PREPARED_FIELDS)),
+        methodcaller("_initial_spec"),
+    ],
+    ids=["best_params", *_PREPARED_FIELDS, "initial_spec"],
 )
-def test_linear_method_results_are_unavailable_before_run(dummy_simulator, attribute):
+def test_lucj_fragment_results_are_unavailable_before_run(dummy_simulator, read):
     program = _two_orbital_program(dummy_simulator)
 
-    with pytest.raises(RuntimeError, match=r"call run\(\) first"):
-        getattr(program, attribute)
+    with pytest.raises(
+        RuntimeError,
+        match=exact_match("The fragment has not been prepared; call run() first."),
+    ):
+        read(program)
 
 
 def test_rotates_sqd_rdms_back_to_the_workflow_fragment_basis():

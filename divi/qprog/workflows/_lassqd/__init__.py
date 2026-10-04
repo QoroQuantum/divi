@@ -4,17 +4,29 @@
 
 """Localised active-space sample-based quantum diagonalisation."""
 
-from ._config import FragmentationConfig, LASSQDPreparationMode, SQDConfig
+from ._config import (
+    CCSDPreparation,
+    FragmentationConfig,
+    FullOrbitalSolve,
+    LinearMethodPreparation,
+    SecondOrderOrbitalSolve,
+    VQEPreparation,
+)
+from ._sqd import SQDConfig
 from ._state import FragmentSpec, FragmentState, LASSQDState
 from ._workflow import LASSQD, LASSQDRoundReport
 
 __all__ = [
+    "CCSDPreparation",
     "FragmentationConfig",
     "FragmentSpec",
     "FragmentState",
+    "FullOrbitalSolve",
     "LASSQD",
-    "LASSQDPreparationMode",
     "LASSQDRoundReport",
     "LASSQDState",
+    "LinearMethodPreparation",
+    "SecondOrderOrbitalSolve",
     "SQDConfig",
+    "VQEPreparation",
 ]

@@ -5,8 +5,10 @@ Localised Active-Space SQD (LASSQD)
 molecule whose active space is too large for one circuit. It first partitions
 the active space. Each macro-cycle then:
 
-1. prepares each fragment's LUCJ circuit classically from CCSD with ffsim's
-   exact-statevector linear method;
+1. prepares each fragment's LUCJ circuit classically from CCSD, without
+   optimisation by default
+   (:class:`~divi.qprog.workflows.LinearMethodPreparation` optionally refines
+   it);
 2. samples each final circuit once on a quantum backend;
 3. recovers fragment states with sample-based quantum diagonalisation (SQD);
 4. reassembles the fragment reduced density matrices (RDMs); and
@@ -64,20 +66,31 @@ calculation on the same active space:
        seed=0,
        backend=MaestroSimulator(shots=500),
    )
-   print(ensemble.preparation_mode.value)  # linear_method
-   print(type(ensemble.ansatz).__name__)   # LUCJAnsatz
+   print(type(ensemble.preparation).__name__)  # CCSDPreparation
    ensemble.run(max_rounds=2)
    print(f"Energy: {ensemble.energy:.6f} Ha")
 
-LUCJ and VQE Preparation
---------------------------
+LUCJ, CCSD and VQE Preparation
+--------------------------------
 
-The default ``linear_method`` preparation follows arXiv:2512.14936: CCSD seeds
-a one-repetition spin-unbalanced LUCJ operator. The CCSD amplitudes are fitted
-subject to the paper's local interaction graph, ffsim optimises the resulting
-operator classically, and only the final computational-basis sample reaches
+The two LUCJ preparations, ``CCSDPreparation`` and ``LinearMethodPreparation``,
+seed a one-repetition spin-unbalanced LUCJ operator from
+each fragment's CCSD amplitudes, fitted subject to the local interaction graph
+of arXiv:2512.14936, and send only the final computational-basis sample to
 ``backend``. Independent fragment preparations remain separate ensemble
 programs and can run in parallel.
+
+:class:`~divi.qprog.workflows.CCSDPreparation`, the default, samples the
+CCSD-seeded operator as it is, with no optimisation and without building the
+fragment statevector: its classical cost is CCSD's and it submits one sampling
+job per fragment per round. Without the optimisation, the sampled state is CCSD's quality,
+and carryover across rounds (:ref:`lassqd-carryover`) does more of the work.
+
+:class:`~divi.qprog.workflows.LinearMethodPreparation` follows
+arXiv:2512.14936: ffsim optimises the CCSD-seeded operator classically with the
+linear method before the sample. The linear method works on the fragment's
+exact statevector, whose size grows combinatorially with the fragment, so it is
+limited to fragments that can be simulated classically.
 
 For a spin-polarised fragment, ROHF and ffsim use the paper's single one-body
 preparation Hamiltonian. SQD diagonalisation receives both physical-spin
@@ -86,39 +99,36 @@ embedding field remains present during recovery. Non-finite CCSD amplitudes or
 linear-method parameters raise ``RuntimeError`` with the affected fragment
 before a circuit is submitted.
 
-VQE preparation is available as an explicit alternative. Select
-:attr:`~divi.qprog.workflows.LASSQDPreparationMode.VQE`, provide an optimizer,
-and optionally choose another Divi ansatz. In that mode ``backend`` runs the
-VQE expectation-value loop and ``sampling_backend`` can run the separate final
-SQD sample:
+VQE preparation is available as an explicit alternative. Pass
+:class:`~divi.qprog.workflows.VQEPreparation` with an optimizer, and optionally
+another Divi ansatz and ``max_iterations`` (default 10). ``backend`` then runs
+the VQE expectation-value loop and ``sampling_backend`` can run the separate
+final SQD sample:
 
 .. skip: next
 
 .. code-block:: python
 
    from divi.backends import MaestroSimulator, QiskitSimulator
-   from divi.qprog import LASSQDPreparationMode
-   from divi.qprog.algorithms import UCCSDAnsatz
-   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog import ScipyMethod, ScipyOptimizer, UCCSDAnsatz, VQEPreparation
 
    ensemble = LASSQD(
        ...,
-       preparation_mode=LASSQDPreparationMode.VQE,
-       ansatz=UCCSDAnsatz(),
-       optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
+       preparation=VQEPreparation(
+           ScipyOptimizer(ScipyMethod.COBYLA), ansatz=UCCSDAnsatz()
+       ),
        backend=MaestroSimulator(shots=500),
        sampling_backend=QiskitSimulator(force_sampling=True, shots=4000),
    )
    ensemble.run(max_rounds=2)
 
 If ``sampling_backend`` is omitted, VQE optimisation and final sampling both
-use ``backend``. In the default mode, ``sampling_backend`` simply overrides
-``backend`` for the one final sample.
+use ``backend``. With the LUCJ preparations, ``sampling_backend`` simply
+overrides ``backend`` for the one final sample.
 
-VQE mode selects :class:`~divi.qprog.algorithms.UCCSDAnsatz` when ``ansatz`` is
-omitted and emits a warning about the implicit choice. Pass the ansatz
-explicitly, as above, for reproducible configuration. The resolved choices are
-always available as ``ensemble.preparation_mode`` and ``ensemble.ansatz``.
+:class:`~divi.qprog.workflows.VQEPreparation` uses
+:class:`~divi.qprog.algorithms.UCCSDAnsatz` when ``ansatz`` is omitted. The
+configured strategy is available as ``ensemble.preparation``.
 
 .. important::
 
@@ -138,10 +148,10 @@ always available as ``ensemble.preparation_mode`` and ``ensemble.ansatz``.
    is accurate. An energy equal to the mean field means the subspace held only
    the reference determinant; the workflow warns when that happens.
 
-For this H2 example, the configured subspace can recover the FCI result when it
-samples the relevant determinants. At ``batch_size=32`` it instead returns the
-mean-field energy because the correlated determinant carries about 1% of the
-distribution.
+For this H2 example, the configured subspace recovers the FCI result when it
+samples the relevant determinants. A smaller ``batch_size`` can miss a
+correlated determinant that carries little of the distribution and return the
+mean-field energy instead.
 
 Explicit Fragment Specification
 --------------------------------
@@ -209,9 +219,11 @@ Rounds Are Macro-Cycles
 
 One LASSQD round prepares and samples every fragment, runs SQD recovery,
 reassembles the RDM, and optimises the orbitals. ``run(max_rounds=N)`` caps
-macro-cycles; ``None``
-runs until consecutive energies differ by less than ``energy_tol`` (default
-``1e-6`` Ha). Key results are:
+macro-cycles; ``None`` runs until consecutive energies differ by less than
+``energy_tol`` (default ``1e-6`` Ha) and that round's orbital solve converged,
+meaning its orbital-gradient norm is at most ``sqrt(energy_tol)``
+(:attr:`~divi.qprog.workflows.LASSQDRoundReport.orbital_converged`). Key
+results are:
 
 - ``ensemble.energy`` — the converged (or latest) total energy.
 - ``ensemble.workflow_state`` — orbitals, fragment states, and current/previous
@@ -226,6 +238,27 @@ Reports are recorded after reduction. An interrupted reduction can therefore
 appear in ``round_history`` without a corresponding report. General lifecycle
 and cancellation semantics are in :doc:`../execution_workflows/program_ensembles`.
 
+.. _lassqd-orbital-update:
+
+Orbital Update
+----------------
+
+Each macro-cycle ends by re-optimising the molecular orbitals against the
+reassembled active-space RDM. ``orbital_update`` selects the solver:
+
+- :class:`~divi.qprog.workflows.SecondOrderOrbitalSolve` (default) takes PySCF
+  CIAH augmented-Hessian steps, with Hessian-vector products from finite
+  differences of the analytic orbital gradient. ``max_iterations`` (default 50)
+  caps the steps per macro-cycle.
+- :class:`~divi.qprog.workflows.FullOrbitalSolve` minimises with SciPy's
+  L-BFGS-B. ``max_iterations`` defaults to ``None``, which leaves SciPy's own
+  cap.
+
+A capped solve returns its best orbitals and reports the round as not
+converged, which blocks completion. Each round's iteration count, gradient
+norm and convergence flag are in ``ensemble.round_reports``; the configured
+solver is ``ensemble.orbital_update``.
+
 .. _lassqd-accuracy-characteristics:
 
 Accuracy Characteristics
@@ -234,28 +267,26 @@ Accuracy Characteristics
 **The energy is a variational upper bound.** Reassembling the per-fragment
 RDMs reproduces the reduced density matrices of a product of fragment states,
 including the cross-fragment Coulomb and exchange blocks, so the reported
-``energy`` is a genuine expectation value and cannot fall below a CASCI or FCI
-calculation on the same active space.
+``energy`` is a genuine expectation value and cannot fall below CASSCF with the
+same active-space size, or FCI in the full basis. CASCI on fixed orbitals is
+not a bound, since LASSQD re-optimises the orbitals.
 
 **What fragmenting costs is inter-fragment correlation.** A product of fragment
 states cannot describe correlation *between* fragments, and the error grows with
-how strongly they interact. Measured against a CASCI reference on the same
-active space: essentially exact for well-separated H\ :sub:`2` pairs, tens of
-mHa on coupled hydrogen chains, and — on an N\ :sub:`2` triple bond in a
-six-orbital active space — around 50 mHa near equilibrium, rising to roughly
-285 mHa at a bond length of 3.0 Å once the bond is fully broken. Pick fragments
-along weak interactions, not through bonds.
+how strongly they interact: small for well-separated fragments, larger for
+coupled ones, and largest when a fragment boundary cuts through a bond —
+splitting a triple bond is the worst case, and the error grows as the bond is
+stretched. Pick fragments along weak interactions, not through bonds.
 
 Two consequences worth knowing before you trust a number:
 
-* **Error smoothness matters more than its size** for relative energies. On
-  H\ :sub:`4` separation and symmetric-stretch curves the error is smooth and
-  monotone; on N\ :sub:`2` it is neither. Across 1.1–3.0 Å it moves by 12–28 mHa
-  between adjacent geometries near equilibrium and by about 175 mHa between 2.5
-  and 3.0 Å, and it does not decrease monotonically. Automatic fragmentation is
-  part of the reason: the layout it picks changes along the curve, so adjacent
-  points are not always solving the same partitioning. Such a curve is unusable
-  for reaction energies even though each point is a valid bound.
+* **Error smoothness matters more than its size** for relative energies. Along
+  a curve that separates weakly interacting fragments the error varies
+  smoothly; along one that breaks a bond between fragments it can jump between
+  adjacent geometries and need not change monotonically. Automatic
+  fragmentation contributes: the layout it picks can change along the curve, so
+  adjacent points are not always solving the same partitioning. Such a curve is
+  unusable for reaction energies even though each point is a valid bound.
 * **More fragments is not automatically worse.** A single fragment spanning a
   wide active space asks more of the sampling than several narrow ones, and can
   come out less accurate despite being the more expressive ansatz. Compare
@@ -263,8 +294,8 @@ Two consequences worth knowing before you trust a number:
 
 .. _lassqd-carryover:
 
-Carrying Configurations Between Recovery Iterations
------------------------------------------------------
+Carrying Configurations Between Iterations and Rounds
+-------------------------------------------------------
 
 Without retention, each recovery iteration diagonalises only the configurations
 it just sampled, so a determinant found early is lost as soon as sampling moves
@@ -317,9 +348,27 @@ space. Where sampling already covers that space — small fragments, or a genero
 :attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
 fragment's full determinant count to see which regime you are in.
 
-Retention is scoped to one fragment solve. A determinant is a statement about a
-particular orbital basis, and every round re-optimises the orbitals, so carrying
-bitstrings across rounds would require mapping them into the new basis first.
+Retention also crosses macro-cycles. The strings retained from a fragment's best
+result seed the first recovery iteration of its next round; from there the
+cutoff decides again what stays. A determinant is a statement about a particular
+orbital basis, and every round re-optimises the orbitals and re-prepares the
+fragment in a new basis, so the carried strings are first mapped into it through
+the atomic-orbital overlap of the old and new orbitals. A determinant in one
+basis is a superposition in another, so the mapping keeps the nearest one: each
+new orbital takes the occupation of one old orbital. ``carryover_mapping``
+chooses how they are paired:
+
+- ``'assignment'`` (default) pairs old and new orbitals one-to-one by maximum
+  total overlap, so every carried string keeps its electron count.
+- ``'argmax'`` gives each new orbital the old orbital it overlaps most, as the
+  reference implementation does. Two new orbitals can then share an old one;
+  strings whose electron count that changes are dropped.
+
+.. code-block:: python
+
+   sqd = SQDConfig(carryover_cutoff=1e-3, carryover_mapping="argmax")
+
+Setting ``carryover_cutoff=None`` turns retention off within and across rounds.
 
 .. _lassqd-subspace-floor:
 
@@ -348,36 +397,38 @@ is ``LASSQD``'s own ``energy_tol``, which ends the macro-cycle.
 .. warning::
 
    Carryover improves the subspace non-monotonically, so a settled iteration does
-   not mean the next one had nothing to add. Stopping early cost 2.6 mHa on the
-   diiron complex of arXiv:2512.14936 and 11.7 mHa on a four-orbital H4 fragment.
-   Enable it only once you have confirmed that recovery, rather than the orbital
+   not mean the next one had nothing to add, and stopping early can cost
+   accuracy. Enable it only once you have confirmed that recovery, rather than the orbital
    solve, is what your runs spend their time on.
 
-Choosing a Preparation Mode
------------------------------
+Choosing a Preparation
+------------------------
 
-The paper-faithful default always uses ffsim's spin-unbalanced LUCJ operator.
-Its parameter vector and numeric orbital-rotation decomposition are owned by
-ffsim; they are not interchangeable with Divi's symbolic
-:class:`~divi.qprog.algorithms.LUCJAnsatz` parameters. The default
-``LUCJAnsatz`` instance is therefore a configuration marker in this mode;
-custom subclasses require the VQE route.
+Choose :class:`~divi.qprog.workflows.LinearMethodPreparation` while the
+fragments can be simulated classically, and
+:class:`~divi.qprog.workflows.CCSDPreparation` once they cannot. Of the three,
+only :class:`~divi.qprog.workflows.VQEPreparation` improves on the CCSD seed at
+that size, at the cost of a quantum optimisation loop. Optimising it on a
+:class:`~divi.backends.MaestroSimulator` configured for matrix-product-state
+simulation and passing the device as ``sampling_backend`` keeps the device to
+one job per fragment per round.
 
-Select :attr:`~divi.qprog.workflows.LASSQDPreparationMode.VQE` to use a Divi
-ansatz in a quantum optimisation loop. It defaults to
-:class:`~divi.qprog.algorithms.UCCSDAnsatz`, with a warning when that choice is
-implicit, and accepts :class:`~divi.qprog.algorithms.LUCJAnsatz` or another
-compatible ansatz.
+Use :class:`~divi.qprog.workflows.VQEPreparation` to run a Divi ansatz in a
+quantum optimisation loop. It defaults to
+:class:`~divi.qprog.algorithms.UCCSDAnsatz` and accepts
+:class:`~divi.qprog.algorithms.LUCJAnsatz` or another compatible ansatz.
 
 SQD needs coverage, not merely a low ansatz energy. An ansatz concentrated on
 one determinant starves recovery. Compare per-fragment subspace sizes in
 :attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
 full determinant count.
 
-The default path fixes the paper's one-repetition topology, including its final
-orbital rotation and local interaction pairs. ``n_layers``, ``ansatz_kwargs``
-and ``max_iterations`` configure only the explicit VQE route, and the default
-mode rejects them at construction.
+The LUCJ preparations fix the paper's one-repetition topology, including its
+final orbital rotation and local interaction pairs. The ``n_layers`` and
+``ansatz_kwargs`` keywords configure only
+:class:`~divi.qprog.workflows.VQEPreparation`, and ``LASSQD`` rejects them with
+the other preparations at construction. Set the VQE iteration count with
+``VQEPreparation(max_iterations=...)``.
 
 Next Steps
 ------------

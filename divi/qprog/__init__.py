@@ -90,13 +90,17 @@ from .workflows import _LASSQD_EXPORTS
 if TYPE_CHECKING:
     from .workflows import (
         LASSQD,
+        CCSDPreparation,
         FragmentationConfig,
         FragmentSpec,
         FragmentState,
-        LASSQDPreparationMode,
+        FullOrbitalSolve,
         LASSQDRoundReport,
         LASSQDState,
+        LinearMethodPreparation,
+        SecondOrderOrbitalSolve,
         SQDConfig,
+        VQEPreparation,
     )
 
 

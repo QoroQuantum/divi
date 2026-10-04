@@ -17,41 +17,44 @@ reliably captured.
 import copy
 import dataclasses
 import logging
+import time
 
 import numpy as np
 import pytest
-
-pytest.importorskip("pyscf")
-
-from pyscf import cc, fci, gto, mcscf, scf
-from pyscf.cc import addons as cc_addons
+from pyscf import fci, gto, mcscf, scf
 from pyscf.fci import cistring
-from qiskit.quantum_info import SparsePauliOp
 
-from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import (
     LASSQD,
+    CCSDPreparation,
     FragmentationConfig,
-    LASSQDPreparationMode,
+    FullOrbitalSolve,
+    LinearMethodPreparation,
     ReportingLevel,
+    SecondOrderOrbitalSolve,
     SQDConfig,
+    VQEPreparation,
     WorkflowStatus,
 )
-from divi.qprog.algorithms import LUCJAnsatz, QCCAnsatz, UCCSDAnsatz
-from divi.qprog.algorithms._ansatze import (
-    _uccsd_excitations,
-    lucj_jastrow_pairs,
-    n_rotation_params,
-)
+from divi.qprog.algorithms import LUCJAnsatz, UCCSDAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from divi.qprog.problems import HamiltonianProblem, MolecularProblem
-from divi.qprog.workflows._lassqd import _workflow
-from divi.qprog.workflows._lassqd._integrals import OrbitalSolve
-from divi.qprog.workflows._lassqd._preparation import (
-    LinearMethodFragmentProgram,
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MolecularProblem
+from divi.qprog.workflows._lassqd import (
+    _config,
+    _preparation,
+    _vqe_preparation,
+    _workflow,
 )
-from divi.qprog.workflows._lassqd._sqd import SQDResult, SQDSolver
+from divi.qprog.workflows._lassqd._integrals import OrbitalSolve, fragment_blocks
+from divi.qprog.workflows._lassqd._preparation import (
+    LUCJFragmentProgram,
+)
+from divi.qprog.workflows._lassqd._sqd import (
+    SQDResult,
+    SQDSolver,
+    map_carried_strings,
+)
 from divi.qprog.workflows._lassqd._state import (
     FragmentSpec,
     FragmentState,
@@ -60,13 +63,13 @@ from divi.qprog.workflows._lassqd._state import (
 )
 from tests._helpers import exact_match
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+    H4_WHOLE_SPACE,
+    H8_HALF_CHAINS,
     PRODUCT_STATE_ENERGY,
     PRODUCT_STATE_MO_TRACE,
-    _build_exact_sampler_program,
-    ansatz_energy,
     build_exact_sampler_lassqd,
+    cobyla,
     dense_fci_energy,
-    embedded_fragment_ccsd,
     exact_sampler_lassqd,
     fragment_integrals,
     fragment_problem,
@@ -79,6 +82,7 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     lassqd_kwargs,
     mo_integrals,
     uniform_full_space_probs,
+    vqe_preparation,
 )
 
 
@@ -168,18 +172,10 @@ _H4_FRAGMENTS = (
 )
 
 
-def _lassqd(
-    backend,
-    *,
-    problem=None,
-    preparation_mode=LASSQDPreparationMode.VQE,
-    **overrides,
-):
-    """Two-fragment H4 ensemble with a sampling budget sized for the suite.
-
-    VQE mode supplies an optimizer and UCCSD ansatz unless overridden, while
-    linear-method mode keeps its production defaults.
-    """
+def _lassqd(backend, *, problem=None, preparation=None, **overrides):
+    """Two-fragment H4 ensemble with a sampling budget sized for the suite,
+    preparing fragments by three-iteration :func:`vqe_preparation` unless told
+    otherwise."""
     kwargs = dict(
         active_spaces=list(_H4_FRAGMENTS),
         n_batches=2,
@@ -188,13 +184,11 @@ def _lassqd(
         seed=42,
     )
     kwargs.update(overrides)
-    if preparation_mode is LASSQDPreparationMode.VQE:
-        kwargs.setdefault("max_iterations", 3)
-        kwargs.setdefault("optimizer", ScipyOptimizer(ScipyMethod.COBYLA))
-        kwargs.setdefault("ansatz", UCCSDAnsatz())
     return LASSQD(
         problem or MolecularProblem.from_molecule(h4_chain()),
-        preparation_mode=preparation_mode,
+        preparation=(
+            vqe_preparation(max_iterations=3) if preparation is None else preparation
+        ),
         backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(**kwargs),
@@ -212,87 +206,95 @@ def _raw_lassqd(backend, **kwargs):
     )
 
 
-def test_defaults_to_paper_linear_method_and_lucj(dummy_expval_backend):
+def test_vqe_checkpoint_configuration_tracks_ansatz_options(dummy_expval_backend):
+    preparation = VQEPreparation(ScipyOptimizer(ScipyMethod.COBYLA))
+    first = _raw_lassqd(dummy_expval_backend, preparation=preparation, n_layers=1)
+    same = _raw_lassqd(dummy_expval_backend, preparation=preparation, n_layers=1)
+    changed = _raw_lassqd(dummy_expval_backend, preparation=preparation, n_layers=2)
+
+    assert first._configuration_record() == same._configuration_record()
+    assert first._configuration_record() != changed._configuration_record()
+
+
+@pytest.mark.parametrize(
+    "method, n_layers",
+    [(ScipyMethod.L_BFGS_B, 1), (ScipyMethod.COBYLA, 2)],
+)
+def test_vqe_checkpoint_rejects_changed_optimizer_or_ansatz_options(
+    dummy_expval_backend, tmp_path, method, n_layers
+):
+    source = _raw_lassqd(
+        dummy_expval_backend,
+        preparation=VQEPreparation(ScipyOptimizer(ScipyMethod.COBYLA)),
+        n_layers=1,
+    )
+    payload = source._save_workflow_checkpoint_state(
+        source.initial_state(), tmp_path, "output_state"
+    )
+    target = _raw_lassqd(
+        dummy_expval_backend,
+        preparation=VQEPreparation(ScipyOptimizer(method)),
+        n_layers=n_layers,
+    )
+
+    with pytest.raises(ValueError, match="different LASSQD configuration"):
+        target._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
+
+
+def test_defaults_are_the_scalable_combination(dummy_expval_backend):
     ensemble = _raw_lassqd(dummy_expval_backend)
 
-    assert ensemble.preparation_mode is LASSQDPreparationMode.LINEAR_METHOD
-    assert isinstance(ensemble.ansatz, LUCJAnsatz)
+    assert ensemble.preparation == CCSDPreparation()
+    assert ensemble.orbital_update == SecondOrderOrbitalSolve()
 
 
-def test_rejects_unknown_preparation_mode(dummy_expval_backend):
-    with pytest.raises(ValueError, match="Unknown LASSQD preparation_mode"):
-        _raw_lassqd(dummy_expval_backend, preparation_mode="not-a-mode")
+def test_reporting_level_reaches_the_ensemble(dummy_expval_backend):
+    assert _raw_lassqd(dummy_expval_backend).reporting_level is ReportingLevel.OFF
 
 
-class CustomLUCJAnsatz(LUCJAnsatz):
-    """LUCJ variant whose behavior cannot be represented by the paper path."""
-
-
-def test_linear_method_rejects_custom_lucj_subclass(dummy_expval_backend):
+def test_rejects_an_unknown_preparation(dummy_expval_backend):
     message = (
-        "The linear_method preparation mode requires LUCJAnsatz in its default "
-        "form; select preparation_mode='vqe' to use another ansatz."
+        "preparation must be CCSDPreparation, LinearMethodPreparation or "
+        "VQEPreparation; got str."
     )
     with pytest.raises(TypeError, match=exact_match(message)):
-        _raw_lassqd(dummy_expval_backend, ansatz=CustomLUCJAnsatz())
+        _raw_lassqd(dummy_expval_backend, preparation="ccsd")
 
 
-@pytest.mark.parametrize(
-    ("kwargs", "match"),
-    [
-        pytest.param(
-            dict(preparation_mode=LASSQDPreparationMode.VQE),
-            "optimizer is required",
-            id="vqe-without-optimizer",
-        ),
-        pytest.param(
-            dict(ansatz=UCCSDAnsatz()),
-            "requires LUCJAnsatz",
-            id="linear-method-with-foreign-ansatz",
-        ),
-        pytest.param(
-            dict(optimizer=ScipyOptimizer(ScipyMethod.COBYLA)),
-            "only used by",
-            id="linear-method-with-optimizer",
-        ),
-    ],
-)
-def test_preparation_mode_rejects_mismatched_configuration(
-    dummy_expval_backend, kwargs, match
-):
-    """Each message must be distinguishable: both optimizer errors mention
-    'optimizer' and 'vqe', so a loose pattern would let one guard pass the
-    other's test."""
-    with pytest.raises(TypeError, match=match):
-        _raw_lassqd(dummy_expval_backend, **kwargs)
-
-
-@pytest.mark.parametrize(
-    ("ansatz_kwargs", "expected_warnings"),
-    [
-        pytest.param({}, 1, id="implicit-uccsd-warns"),
-        pytest.param({"ansatz": UCCSDAnsatz()}, 0, id="explicit-uccsd-silent"),
-    ],
-)
-def test_vqe_mode_warns_only_when_it_implicitly_selects_uccsd(
-    dummy_expval_backend, recwarn, ansatz_kwargs, expected_warnings
-):
-    ensemble = _raw_lassqd(
-        dummy_expval_backend,
-        preparation_mode="vqe",
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-        **ansatz_kwargs,
+def test_rejects_an_unknown_orbital_update(dummy_expval_backend):
+    message = (
+        "orbital_update must be SecondOrderOrbitalSolve or FullOrbitalSolve; "
+        "got str."
     )
+    with pytest.raises(TypeError, match=exact_match(message)):
+        _raw_lassqd(dummy_expval_backend, orbital_update="ciah")
 
-    ansatz_warnings = [
-        recorded
-        for recorded in recwarn
-        if issubclass(recorded.category, UserWarning)
-        and "UCCSDAnsatz" in str(recorded.message)
-    ]
-    assert len(ansatz_warnings) == expected_warnings
-    assert ensemble.preparation_mode is LASSQDPreparationMode.VQE
-    assert isinstance(ensemble.ansatz, UCCSDAnsatz)
+
+def test_vqe_preparation_defaults_to_uccsd():
+    preparation = VQEPreparation(optimizer=cobyla())
+
+    assert isinstance(preparation.ansatz, UCCSDAnsatz)
+    assert preparation.max_iterations == 10
+
+
+def test_vqe_preparation_rejects_a_non_ansatz():
+    with pytest.raises(TypeError, match="ansatz must be an Ansatz"):
+        vqe_preparation(ansatz="uccsd")
+
+
+def test_vqe_preparation_rejects_a_non_positive_iteration_budget():
+    with pytest.raises(ValueError, match="max_iterations must be at least 1"):
+        vqe_preparation(max_iterations=0)
+
+
+def test_every_vqe_fragment_gets_its_own_optimizer(dummy_expval_backend):
+    preparation = vqe_preparation(max_iterations=3)
+    ensemble = _raw_lassqd(dummy_expval_backend, preparation=preparation)
+    ensemble.create_programs(ensemble.initial_state())
+
+    optimizers = [program.optimizer for program in ensemble.programs.values()]
+    assert len({id(optimizer) for optimizer in optimizers}) == len(optimizers)
+    assert all(optimizer is not preparation.optimizer for optimizer in optimizers)
 
 
 @pytest.mark.parametrize(
@@ -329,12 +331,12 @@ def test_rejects_overlapping_fragments(dummy_expval_backend):
         ({"n_recovery_iterations": 0}, "n_recovery_iterations"),
         ({"energy_tol": 0.0}, "energy_tol"),
         ({"coupling_threshold": -1e-3}, "coupling_threshold"),
-        ({"max_iterations": 0}, "max_iterations"),
         ({"lambda_penalty": -0.1}, "lambda_penalty"),
         ({"carryover_cutoff": 0.0}, "carryover_cutoff must be positive"),
         ({"carryover_cutoff": 1.0}, "carryover_cutoff must be below 1"),
         ({"carryover_cutoff": None, "max_carryover": 4}, "needs carryover_cutoff"),
         ({"max_carryover": 0}, "max_carryover must be at least 1"),
+        ({"carryover_mapping": "nearest"}, "carryover_mapping must be"),
         ({"max_dim": 0}, "max_dim entries must be at least 1"),
         ({"max_dim": (2, 0)}, "max_dim entries must be at least 1"),
         ({"max_dim": (1, 2, 3)}, "got 3 entries"),
@@ -348,9 +350,6 @@ def test_rejects_invalid_sqd_sizing_arguments(dummy_expval_backend, override, ma
     invalid value (e.g. n_batches=0) would dispatch a full round of paid
     circuits before SQDSolver ever raises, and batch_size=0 was never
     validated at all (silently clamped to a one-determinant pool).
-    ``max_iterations=0`` is included for the same reason: unvalidated, it
-    reaches the optimizer and raises a bare ``StopIteration``, the least
-    actionable exception in Python, instead of a clear ``ValueError`` here.
     The carryover arguments reach ``SQDSolver`` only in ``update_state``, so
     unvalidated they raise after a round's fragment VQEs have already run."""
     with pytest.raises(ValueError, match=match):
@@ -403,12 +402,6 @@ def test_active_orbitals_accepts_an_exhaustible_iterable():
     of the two readers."""
     config = FragmentationConfig(active_orbitals=(o for o in [0, 1, 2, 3]))
     assert config.active_orbitals == (0, 1, 2, 3)
-
-
-def test_rejects_non_ansatz_instance(dummy_expval_backend):
-    message = "ansatz must be an Ansatz instance; got str."
-    with pytest.raises(TypeError, match=exact_match(message)):
-        _lassqd(dummy_expval_backend, ansatz="UCCSD")
 
 
 def _pennylane_problem():
@@ -528,6 +521,36 @@ def test_initial_state_forwards_the_mean_field_core_hamiltonian_to_auto_fragment
     )
 
 
+def test_initial_state_forwards_the_fragmentation_settings_to_auto_fragment_specs(
+    dummy_expval_backend, mocker
+):
+    active_orbitals = (2, 3, 4, 5)
+    ensemble = h8_frontier_lassqd(
+        dummy_expval_backend,
+        n_active_orbitals=None,
+        active_orbitals=active_orbitals,
+        fragment_atoms=H8_HALF_CHAINS,
+        coupling_threshold=0.05,
+    )
+    spy = mocker.spy(_workflow, "auto_fragment_specs")
+
+    state = ensemble.initial_state()
+
+    config = ensemble._fragmentation
+    assert {
+        name: spy.call_args.kwargs[name]
+        for name in ("active_orbitals", "fragment_atoms", "coupling_threshold")
+    } == {
+        "active_orbitals": active_orbitals,
+        "fragment_atoms": config.fragment_atoms,
+        "coupling_threshold": 0.05,
+    }
+    assert config.fragment_atoms is not None
+    assert sorted(
+        orbital for fragment in state.fragments for orbital in fragment.spec.orbitals
+    ) == list(active_orbitals)
+
+
 def test_create_programs_makes_one_vqe_per_fragment(dummy_expval_backend):
     ensemble = _lassqd(dummy_expval_backend)
     ensemble.create_programs(ensemble.initial_state())
@@ -539,39 +562,37 @@ def test_create_programs_makes_one_vqe_per_fragment(dummy_expval_backend):
 
 
 @pytest.mark.parametrize(
-    ("preparation_mode", "expected_type", "ansatz"),
+    ("preparation", "expected_type"),
     [
         pytest.param(
-            LASSQDPreparationMode.LINEAR_METHOD,
-            LinearMethodFragmentProgram,
-            None,
-            id="linear-method",
+            LinearMethodPreparation(), LUCJFragmentProgram, id="linear-method"
         ),
+        pytest.param(CCSDPreparation(), LUCJFragmentProgram, id="ccsd"),
         pytest.param(
-            LASSQDPreparationMode.VQE,
-            _workflow._FragmentVQE,
-            LUCJAnsatz(),
-            id="vqe",
-            marks=pytest.mark.filterwarnings("ignore:.*only UCCSDAnsatz"),
+            vqe_preparation(max_iterations=3), _vqe_preparation._FragmentVQE, id="vqe"
         ),
     ],
 )
-def test_create_programs_builds_the_program_type_for_its_mode(
-    dummy_expval_backend, preparation_mode, expected_type, ansatz
+def test_create_programs_builds_the_program_type_for_its_preparation(
+    dummy_expval_backend, preparation, expected_type
 ):
-    """VQE mode hands the configured non-default ansatz to every program."""
-    overrides = {} if ansatz is None else {"ansatz": ansatz}
-    ensemble = _lassqd(
-        dummy_expval_backend, preparation_mode=preparation_mode, **overrides
-    )
+    ensemble = _lassqd(dummy_expval_backend, preparation=preparation)
     ensemble.create_programs(ensemble.initial_state())
 
     assert len(ensemble.programs) == 2
     assert all(
         isinstance(program, expected_type) for program in ensemble.programs.values()
     )
-    if ansatz is not None:
-        assert all(program.ansatz is ansatz for program in ensemble.programs.values())
+
+
+def test_vqe_preparation_hands_its_ansatz_to_every_program(dummy_expval_backend):
+    preparation = vqe_preparation(ansatz=LUCJAnsatz(), max_iterations=3)
+    ensemble = _lassqd(dummy_expval_backend, preparation=preparation)
+    ensemble.create_programs(ensemble.initial_state())
+
+    assert all(
+        program.ansatz is preparation.ansatz for program in ensemble.programs.values()
+    )
 
 
 def test_linear_method_defers_classical_preparation_to_dispatch(
@@ -580,26 +601,31 @@ def test_linear_method_defers_classical_preparation_to_dispatch(
     prepare = mocker.patch(
         "divi.qprog.workflows._lassqd._preparation.prepare_lucj_fragment"
     )
-    ensemble = _lassqd(
-        dummy_expval_backend, preparation_mode=LASSQDPreparationMode.LINEAR_METHOD
-    )
+    ensemble = _lassqd(dummy_expval_backend, preparation=LinearMethodPreparation())
 
     ensemble.create_programs(ensemble.initial_state())
 
     prepare.assert_not_called()
 
 
-def test_linear_method_samples_once_per_fragment_over_a_macro_cycle(
-    default_test_simulator,
+@pytest.mark.parametrize(
+    ("preparation", "linear_method_runs"),
+    [
+        (LinearMethodPreparation(), 2),
+        (CCSDPreparation(), 0),
+    ],
+    ids=["linear-method", "ccsd"],
+)
+def test_lucj_preparations_sample_once_per_fragment_over_a_macro_cycle(
+    default_test_simulator, mocker, preparation, linear_method_runs
 ):
-    ensemble = _lassqd(
-        default_test_simulator,
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
-        seed=9,
-    )
+    """CCSD preparation samples the seeded circuit; only the linear method optimises."""
+    minimize = mocker.spy(_preparation.ffsim.optimize, "minimize_linear_method")
+    ensemble = _lassqd(default_test_simulator, preparation=preparation, seed=9)
 
     ensemble.run(max_rounds=1)
 
+    assert minimize.call_count == linear_method_runs
     assert all(program.has_results() for program in ensemble.programs.values())
     assert all(
         program.total_circuit_count == 1 for program in ensemble.programs.values()
@@ -609,13 +635,85 @@ def test_linear_method_samples_once_per_fragment_over_a_macro_cycle(
     assert ensemble.stop_reason is WorkflowStatus.MAX_ROUNDS
 
 
-@pytest.mark.parametrize("preparation_mode", list(LASSQDPreparationMode))
+def test_a_round_keeps_its_carried_strings_in_the_basis_it_sampled(
+    default_test_simulator, mocker
+):
+    """LUCJ fragments sample in their own ROHF basis, so the carried strings
+    refer to the workflow orbitals rotated by the program's orbital rotation."""
+    ensemble = _lassqd(default_test_simulator, preparation=CCSDPreparation(), seed=9)
+    update = mocker.spy(ensemble, "update_state")
+
+    ensemble.run(max_rounds=1)
+
+    state = update.call_args.args[0]
+    specs = [fragment.spec for fragment in state.fragments]
+    n_core = _workflow._compute_n_core(specs, ensemble._mol.nelectron // 2)
+    blocks = fragment_blocks(specs, offset=n_core)
+    for index, fragment in enumerate(update.spy_return.fragments):
+        program = ensemble.programs[f"fragment_{index}"]
+        assert fragment.carried_alpha and fragment.carried_beta
+        np.testing.assert_allclose(
+            fragment.sampled_orbitals,
+            state.mo_coeff[:, blocks[index]] @ program.orbital_rotation,
+        )
+
+
+@pytest.mark.parametrize("mapping", ["assignment", "argmax"])
+def test_strings_carried_out_of_a_round_seed_the_next_rounds_solve(
+    dummy_expval_backend, mocker, mapping
+):
+    """Carried strings enter the next solve mapped into its orbital basis."""
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend, mocker, carryover_mapping=mapping
+    )
+    solve = mocker.spy(SQDSolver, "solve")
+    update = mocker.spy(ensemble, "update_state")
+    mapped = mocker.spy(_workflow, "map_carried_strings")
+
+    ensemble.run(max_rounds=2)
+
+    first_round, second_round = solve.call_args_list[:2], solve.call_args_list[2:]
+    assert all(call.kwargs["carried"] == ((), ()) for call in first_round)
+    assert [call.args[2] for call in mapped.call_args_list] == [mapping] * 4
+    ao_overlap = ensemble._mol.intor_symmetric("int1e_ovlp")
+    carried_out, resampled = (state.fragments for state in update.spy_return_list)
+    for call, fragment, next_fragment in zip(
+        second_round, carried_out, resampled, strict=True
+    ):
+        overlap = (
+            next_fragment.sampled_orbitals.T @ ao_overlap @ fragment.sampled_orbitals
+        )
+        assert call.kwargs["carried"] == (
+            map_carried_strings(fragment.carried_alpha, overlap, mapping),
+            map_carried_strings(fragment.carried_beta, overlap, mapping),
+        )
+        assert all(call.kwargs["carried"])
+
+
+def test_no_strings_are_carried_with_carryover_off(dummy_expval_backend, mocker):
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend, mocker, carryover_cutoff=None
+    )
+    update = mocker.spy(ensemble, "update_state")
+
+    ensemble.run(max_rounds=1)
+
+    for fragment in update.spy_return.fragments:
+        assert (fragment.carried_alpha, fragment.carried_beta) == ((), ())
+        assert fragment.sampled_orbitals is None
+
+
+@pytest.mark.parametrize(
+    "preparation",
+    [LinearMethodPreparation(), CCSDPreparation(), vqe_preparation(max_iterations=3)],
+    ids=["linear-method", "ccsd", "vqe"],
+)
 def test_fragment_programs_get_distinct_reproducible_seeds(
-    dummy_expval_backend, preparation_mode
+    dummy_expval_backend, preparation
 ):
     seeds = []
     for _ in range(2):
-        ensemble = _lassqd(dummy_expval_backend, preparation_mode=preparation_mode)
+        ensemble = _lassqd(dummy_expval_backend, preparation=preparation)
         ensemble.create_programs(ensemble.initial_state())
         seeds.append([program._seed for program in ensemble.programs.values()])
 
@@ -653,7 +751,7 @@ def test_fragment_integrals_use_the_mean_field_core_hamiltonian(
     ensemble = _lassqd(
         dummy_expval_backend,
         problem=MolecularProblem.from_molecule(mean_field),
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=LinearMethodPreparation(),
         active_spaces=[FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1)],
     )
 
@@ -691,28 +789,28 @@ def test_missing_backend_raises_type_error():
     with pytest.raises(TypeError, match=exact_match(message)):
         LASSQD(
             MolecularProblem.from_molecule(h4_chain()),
-            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-            preparation_mode=LASSQDPreparationMode.VQE,
+            preparation=vqe_preparation(max_iterations=3),
             **lassqd_kwargs(
                 active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)]
             ),
         )
 
 
-@pytest.mark.parametrize("attribute, value", [("n_layers", 2), ("max_iterations", 5)])
-def test_settings_are_forwarded_to_each_fragment_vqe(
-    dummy_expval_backend, attribute, value
-):
-    ensemble = _lassqd(dummy_expval_backend, **{attribute: value})
+def test_settings_are_forwarded_to_each_fragment_vqe(dummy_expval_backend):
+    ensemble = _lassqd(
+        dummy_expval_backend,
+        preparation=vqe_preparation(max_iterations=5),
+        n_layers=2,
+    )
     ensemble.create_programs(ensemble.initial_state())
     for program in ensemble.programs.values():
-        assert getattr(program, attribute) == value
+        assert (program.n_layers, program.max_iterations) == (2, 5)
 
 
-def test_sampling_backend_stays_at_the_ensemble_boundary(
+def test_vqe_sampling_backend_stays_at_the_ensemble_boundary(
     dummy_expval_backend, make_dummy_simulator
 ):
-    """LASSQD coordinates sampling instead of leaking the backend to fragments."""
+    """LASSQD coordinates VQE sampling instead of leaking the backend to fragments."""
     sampling_backend = make_dummy_simulator(100, seed=7)
     ensemble = _lassqd(
         dummy_expval_backend,
@@ -721,8 +819,35 @@ def test_sampling_backend_stays_at_the_ensemble_boundary(
     ensemble.create_programs(ensemble.initial_state())
 
     assert ensemble.sampling_backend is sampling_backend
+    assert ensemble._sampling_backend is sampling_backend
     assert all(
         program.sampling_backend is None for program in ensemble.programs.values()
+    )
+
+
+@pytest.mark.parametrize(
+    "preparation",
+    [LinearMethodPreparation(), CCSDPreparation()],
+    ids=["linear-method", "ccsd"],
+)
+def test_lucj_sampling_backend_reaches_each_fragment_program(
+    dummy_expval_backend, make_dummy_simulator, preparation
+):
+    """An LUCJ fragment samples on its own, so the backend goes to the programs
+    and the ensemble keeps no sampling phase of its own."""
+    sampling_backend = make_dummy_simulator(100, seed=7)
+    ensemble = _lassqd(
+        dummy_expval_backend,
+        preparation=preparation,
+        sampling_backend=sampling_backend,
+    )
+    ensemble.create_programs(ensemble.initial_state())
+
+    assert ensemble.sampling_backend is sampling_backend
+    assert ensemble._sampling_backend is None
+    assert all(
+        program._sampling_backend is sampling_backend
+        for program in ensemble.programs.values()
     )
 
 
@@ -741,33 +866,37 @@ def test_unknown_kwargs_raise_when_creating_programs(dummy_expval_backend):
             "ansatz_kwargs",
             id="ansatz_kwargs",
         ),
-        pytest.param({"max_iterations": 5}, "max_iterations", id="max_iterations"),
         pytest.param(
-            {"max_iterations": 5, "n_layers": 2},
-            "max_iterations, n_layers",
+            {"early_stopping": None, "n_layers": 2},
+            "early_stopping, n_layers",
             id="several",
         ),
     ],
 )
-def test_linear_method_rejects_vqe_settings_at_construction(
-    dummy_expval_backend, settings, names
+@pytest.mark.parametrize(
+    "preparation",
+    [LinearMethodPreparation(), CCSDPreparation()],
+    ids=["linear-method", "ccsd"],
+)
+def test_lucj_preparations_reject_vqe_settings_at_construction(
+    dummy_expval_backend, preparation, settings, names
 ):
-    """These configure the VQE fragment programs. The linear-method programs
-    either ignored them (``max_iterations``) or raised only inside
-    ``create_programs``, after the mean field and localisation had run."""
+    """These configure the VQE fragment programs. LUCJ fragment programs
+    would raise only inside ``create_programs``, after the mean field and
+    localisation had run."""
     message = (
-        f"preparation_mode='linear_method' does not take {names}; its fragment "
+        f"{type(preparation).__name__} does not take {names}; its fragment "
         "programs accept only precision, qem_protocol, "
-        "suppress_performance_warnings. VQE options need preparation_mode='vqe'."
+        "suppress_performance_warnings. VQE options need VQEPreparation."
     )
     with pytest.raises(TypeError, match=exact_match(message)):
-        _raw_lassqd(dummy_expval_backend, **settings)
+        _raw_lassqd(dummy_expval_backend, preparation=preparation, **settings)
 
 
 def test_linear_method_forwards_the_shared_program_options(dummy_expval_backend):
     ensemble = _lassqd(
         dummy_expval_backend,
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=LinearMethodPreparation(),
         precision=6,
         suppress_performance_warnings=True,
         qem_protocol=None,
@@ -778,26 +907,6 @@ def test_linear_method_forwards_the_shared_program_options(dummy_expval_backend)
     assert all(program._precision == 6 for program in ensemble.programs.values())
 
 
-def test_fragment_vqe_rejects_mismatched_seed_params_length(dummy_expval_backend):
-    problem = HamiltonianProblem(SparsePauliOp(["ZZ"], [1.0]), n_electrons=2)
-    baseline = _workflow._FragmentVQE(
-        problem,
-        ansatz=LUCJAnsatz(),
-        optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-        backend=dummy_expval_backend,
-    )
-    bad_params = np.ones(baseline.n_params + 1)
-
-    with pytest.raises(ValueError, match="seed_params"):
-        _workflow._FragmentVQE(
-            problem,
-            ansatz=LUCJAnsatz(),
-            optimizer=ScipyOptimizer(ScipyMethod.COBYLA),
-            backend=dummy_expval_backend,
-            seed_params=bad_params,
-        )
-
-
 @pytest.mark.parametrize(
     "energies, expected",
     [
@@ -806,6 +915,9 @@ def test_fragment_vqe_rejects_mismatched_seed_params_length(dummy_expval_backend
             {"energy": -2.0, "previous_energy": -2.0 + 1e-9}, True, id="converged"
         ),
         pytest.param({"energy": -2.0, "previous_energy": -1.0}, False, id="moving"),
+        pytest.param(
+            {"energy": 0.0, "previous_energy": 1e-5}, False, id="at-tolerance"
+        ),
     ],
 )
 def test_is_complete_compares_the_energy_change_to_the_tolerance(
@@ -883,8 +995,16 @@ def test_update_state_warns_when_a_fragment_collapses_to_one_determinant(
         ),
     )
 
-    with pytest.warns(UserWarning, match="no correlation"):
+    with pytest.warns(UserWarning) as record:
         ensemble.update_state(state)
+
+    assert [str(warning.message) for warning in record] == [
+        f"fragment_{index}'s recovered subspace contains only one determinant: "
+        "this round captured no correlation energy for this fragment. Use a "
+        "larger sampling budget (n_batches, batch_size) or a more expressive "
+        "ansatz."
+        for index in range(2)
+    ]
 
 
 def test_symmetry_failure_names_the_fragment(exact_sampler_lassqd, mocker):
@@ -897,10 +1017,13 @@ def test_symmetry_failure_names_the_fragment(exact_sampler_lassqd, mocker):
             "No valid configurations found matching particle symmetry!"
         ),
     )
-    with pytest.raises(ValueError) as exc_info:
+    message = (
+        "SQD failed for fragment_0: No valid configurations found matching "
+        "particle symmetry! Increase the backend shot count or "
+        "n_recovery_iterations."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
         ensemble.update_state(state)
-    assert "fragment_0" in str(exc_info.value)
-    assert "particle symmetry" in str(exc_info.value)
 
 
 def test_update_state_is_seed_reproducible(dummy_expval_backend):
@@ -1012,9 +1135,6 @@ def test_rejects_automatic_only_arguments_with_explicit_active_spaces(
         _lassqd(dummy_expval_backend, **{name: override[name]})
 
 
-_H8_HALF_CHAINS = ([0, 1, 2, 3], [4, 5, 6, 7])
-
-
 @pytest.mark.parametrize(
     "local_spins, expected",
     [
@@ -1028,12 +1148,19 @@ def test_local_spins_set_the_automatically_built_fragment_spins(
     """``local_spins`` must survive the remap from localized-column indices to
     register positions, which is where the automatic path rewrites every spec."""
     ensemble = h8_frontier_lassqd(
-        dummy_expval_backend, fragment_atoms=_H8_HALF_CHAINS, local_spins=local_spins
+        dummy_expval_backend, fragment_atoms=H8_HALF_CHAINS, local_spins=local_spins
     )
 
     state = ensemble.initial_state()
 
     assert [(f.spec.n_alpha, f.spec.n_beta) for f in state.fragments] == expected
+    # STO-3G hydrogen carries one basis function, so AO index is atom index.
+    blocks = fragment_blocks([fragment.spec for fragment in state.fragments])
+    overlap = ensemble._mol.intor_symmetric("int1e_ovlp")
+    for block, atoms in zip(blocks, H8_HALF_CHAINS, strict=True):
+        coeff = state.mo_coeff[:, block]
+        population = np.sum(coeff * (overlap @ coeff), axis=1)
+        assert population[atoms].sum() > 0.9 * population.sum()
 
 
 def test_local_spins_must_sum_to_zero_sz(dummy_expval_backend):
@@ -1041,7 +1168,7 @@ def test_local_spins_must_sum_to_zero_sz(dummy_expval_backend):
     ``auto_fragment_specs`` cannot see on its own since it checks each
     fragment's electron count independently."""
     ensemble = h8_frontier_lassqd(
-        dummy_expval_backend, fragment_atoms=_H8_HALF_CHAINS, local_spins=[2, 2]
+        dummy_expval_backend, fragment_atoms=H8_HALF_CHAINS, local_spins=[2, 2]
     )
 
     with pytest.raises(ValueError, match="total Sz"):
@@ -1054,13 +1181,26 @@ POLARIZED_SPECS = [
 ]
 
 
+def _build_fragment_program(ensemble, fragment, problem):
+    """One fragment's program, built by ``ensemble``'s preparation as
+    ``create_programs`` builds it."""
+    return ensemble.preparation._build_program(
+        problem,
+        fragment,
+        backend=ensemble.backend,
+        sampling_backend=ensemble.sampling_backend,
+        seed=0,
+        options=ensemble._extra_kwargs,
+    )
+
+
 @pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
 def test_default_linear_method_runs_a_beta_majority_fragment(
     default_test_simulator,
 ):
     ensemble = _lassqd(
         default_test_simulator,
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=LinearMethodPreparation(),
         active_spaces=POLARIZED_SPECS,
         seed=9,
     )
@@ -1098,10 +1238,10 @@ def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
             integrals, state.fragments, index
         )
         with pytest.warns(UserWarning, match="CCSD"):
-            program = ensemble._build_fragment_program(
+            program = _build_fragment_program(
+                ensemble,
                 fragment,
                 fragment_problem(h_alpha, h_beta, g_frag, fragment.spec),
-                seed=0,
             )
 
         program.sample_solution(params=np.zeros(program.n_params))
@@ -1120,15 +1260,8 @@ def test_polarized_fragments_reach_their_vqe_programs(default_test_simulator):
 def test_a_stalled_orbital_optimizer_is_not_reported_as_converged(
     dummy_expval_backend,
 ):
-    """A round whose inner solve gave up must not count as a fixed point.
-
-    ``optimize_orbitals`` is monotone -- it falls back to the unrotated orbitals
-    rather than returning something worse -- so a stalled optimizer yields a
-    round whose energy barely moves, which is exactly what convergence looks
-    like. Every FeFe run before this was declared COMPLETE on that signature
-    while the orbital optimization still had progress left: one round later
-    reached a lower energy than a previous three-round "converged" result.
-    """
+    """A round whose orbital solve did not converge is not complete, however
+    little its energy moved."""
     ensemble = _lassqd(dummy_expval_backend)
     converged = LASSQDState(
         mo_coeff=np.eye(4),
@@ -1140,7 +1273,12 @@ def test_a_stalled_orbital_optimizer_is_not_reported_as_converged(
     assert ensemble.is_complete(converged)
 
     stalled = dataclasses.replace(converged, orbitals_converged=False)
-    with pytest.warns(UserWarning, match="did not converge"):
+    message = (
+        "The macro-cycle energy change is below energy_tol but the orbital "
+        "optimisation did not converge, so this is not a fixed point. Continuing; "
+        "raise orbital_update's max_iterations or loosen energy_tol if this repeats."
+    )
+    with pytest.warns(UserWarning, match=exact_match(message)):
         assert not ensemble.is_complete(stalled)
 
 
@@ -1154,7 +1292,7 @@ def test_seeding_warns_when_the_embedding_is_spin_asymmetric(default_test_simula
     warning the averaging is silent in exactly the regime ``local_spins`` exists
     for.
     """
-    ensemble = _lassqd(default_test_simulator, ansatz=UCCSDAnsatz())
+    ensemble = _lassqd(default_test_simulator)
     state = ensemble.initial_state()
     polarized = dataclasses.replace(
         state.fragments[1],
@@ -1167,273 +1305,11 @@ def test_seeding_warns_when_the_embedding_is_spin_asymmetric(default_test_simula
     assert np.abs(h_alpha - h_beta).max() > 1e-6
 
     with pytest.warns(UserWarning, match="spin channels differ"):
-        ensemble._build_fragment_program(
+        _build_fragment_program(
+            ensemble,
             fragments[0],
             fragment_problem(h_alpha, h_beta, g_frag, fragments[0].spec),
-            seed=0,
         )
-
-
-@pytest.mark.parametrize(
-    "n_beta, n_params, ansatz_kwargs, match",
-    [
-        # Neither the t1/t2 read-off nor the factorization means anything for an
-        # ansatz whose parameters are unrelated to coupled-cluster amplitudes.
-        pytest.param(
-            1, 6, {"ansatz": QCCAnsatz()}, "no correspondence is defined", id="qcc"
-        ),
-        # Restricted CCSD cannot represent a polarized fragment, which is
-        # reachable whenever the fragments together still sum to Sz = 0.
-        pytest.param(0, 4, {}, "CCSD", id="spin-imbalanced"),
-    ],
-)
-def test_ccsd_seed_params_warns_and_skips(n_beta, n_params, ansatz_kwargs, match):
-    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=n_beta)
-
-    with pytest.warns(UserWarning, match=match):
-        result = _workflow._ccsd_seed_params(
-            np.eye(2), np.zeros((2,) * 4), spec, n_params=n_params, **ansatz_kwargs
-        )
-
-    assert result is None
-
-
-_H4_WHOLE_SPACE = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
-
-
-def _h4_as_one_fragment(mean_field):
-    """``(h_eff, g_frag)`` for H4's whole canonical-MO space as one fragment."""
-    integrals = _workflow.transform_integrals(
-        mean_field.mol, np.asarray(mean_field.mo_coeff), n_core=0, n_act=4
-    )
-    placeholder = FragmentState(
-        spec=_H4_WHOLE_SPACE, rdm1=np.zeros((4, 4)), rdm2=np.zeros((4, 4, 4, 4))
-    )
-    h_eff, _, g_frag = _workflow.fragment_effective_integrals(
-        integrals, [placeholder], 0
-    )
-    return h_eff, g_frag
-
-
-def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(h4_chain_mean_field):
-    """The seed's exact-statevector energy must land near the fragment's own
-    CCSD energy, and clearly beats a permutation of the same values.
-
-    A fragment with only one double excitation (e.g. a minimal H2 fragment)
-    cannot exercise ordering, sign, or magnitude errors: with a single value
-    there is nothing to permute, no crossed-spin case, and no scale to get
-    wrong. This uses a single 4-orbital fragment (8 singles, 18 doubles of
-    differing sign) so a scrambled index map, a wrong spin pairing, or an
-    un-doubled amplitude all produce a detectably worse energy.
-    """
-    spec = _H4_WHOLE_SPACE
-    h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
-    n_params = UCCSDAnsatz.n_params_per_layer(
-        2 * spec.n_orbitals, n_electrons=spec.n_alpha + spec.n_beta
-    )
-
-    seed = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, UCCSDAnsatz())
-
-    assert seed is not None
-    coupled_cluster = cc.CCSD(h4_chain_mean_field)
-    coupled_cluster.kernel()
-    ccsd_electronic_energy = (
-        coupled_cluster.e_tot - h4_chain_mean_field.mol.energy_nuc()
-    )
-
-    seed_energy = ansatz_energy(seed, h_eff, g_frag, spec)
-    permuted_energy = ansatz_energy(
-        np.random.default_rng(0).permutation(seed), h_eff, g_frag, spec
-    )
-
-    assert seed_energy == pytest.approx(ccsd_electronic_energy, abs=1e-3)
-    assert seed_energy < permuted_energy - 0.05
-
-
-@pytest.mark.parametrize(
-    "ansatz, min_recovered_fraction",
-    [(UCCSDAnsatz(), 0.9), (LUCJAnsatz(), 0.3)],
-    ids=["uccsd", "lucj"],
-)
-def test_seed_beats_the_reference_determinant_in_a_localized_basis(
-    dummy_expval_backend, ansatz, min_recovered_fraction
-):
-    """The seed must recover correlation in the basis the fragments actually use.
-
-    The canonical-MO test above cannot see this: there the fragment basis and
-    the basis an SCF on the fragment's integrals converges to coincide. Real
-    fragments are localized, and an SCF rotates within their occupied and
-    virtual blocks, permuting which amplitude belongs to which orbital pair.
-    Amplitudes read off that rotated solution seeded a state *above* the
-    reference determinant.
-
-    LUCJ's seed runs through the double factorization, where every link is a
-    sign convention -- the Jastrow's factor of ``i`` absorbed into one sector's
-    rotation, the conjugate transpose of the sandwiched block, the
-    ``RZZ(-J / 2)`` pair term -- and getting one wrong leaves the seed *at* the
-    reference. One layer holds only the leading factorization term, so its
-    recovered fraction is well short of UCCSD's (measured 0.36).
-    """
-    ensemble = h8_frontier_lassqd(dummy_expval_backend)
-    state = ensemble.initial_state()
-
-    for index, fragment in enumerate(state.fragments):
-        spec = fragment.spec
-        h_alpha, h_beta, g_frag = fragment_integrals(
-            ensemble, state.mo_coeff, state.fragments, index
-        )
-        n_params = type(ansatz).n_params_per_layer(
-            2 * spec.n_orbitals, n_electrons=spec.n_alpha + spec.n_beta
-        )
-        exact = fci.direct_spin1.kernel(
-            h_alpha, g_frag, spec.n_orbitals, (spec.n_alpha, spec.n_beta)
-        )[0]
-        seed = _workflow._ccsd_seed_params(
-            0.5 * (h_alpha + h_beta), g_frag, spec, n_params, ansatz, {}
-        )
-        assert seed is not None
-
-        reference = ansatz_energy(np.zeros(n_params), h_alpha, g_frag, spec, ansatz)
-        seeded = ansatz_energy(seed, h_alpha, g_frag, spec, ansatz)
-
-        assert seeded > exact - 1e-8
-        assert (reference - seeded) / (reference - exact) > min_recovered_fraction
-
-
-def _seed_gain(
-    ansatz,
-    h_alpha,
-    h_beta,
-    g_frag,
-    spec,
-    seed_integrals=None,
-    permute=False,
-    **kwargs,
-):
-    """``_seed_energy_gain`` for a seed on one fragment's integrals.
-
-    ``seed_integrals`` builds the seed from a *different* ``(h, g)`` than the
-    Hamiltonian it is scored against, which is what a basis mismatch is.
-    ``permute`` scores a permutation of the seed instead.
-    """
-    build_kwargs = {
-        "n_electrons": spec.n_alpha + spec.n_beta,
-        "n_alpha": spec.n_alpha,
-        "n_beta": spec.n_beta,
-        **kwargs,
-    }
-    n_params = type(ansatz).n_params_per_layer(2 * spec.n_orbitals, **build_kwargs)
-    h_seed, g_seed = seed_integrals or (0.5 * (h_alpha + h_beta), g_frag)
-    seed = _workflow._ccsd_seed_params(h_seed, g_seed, spec, n_params, ansatz, kwargs)
-    assert seed is not None
-    if permute:
-        seed = np.random.default_rng(0).permutation(seed)
-    hamiltonian = _spo_from_integrals(
-        h_alpha, g_frag, constant=0.0, one_body_beta=h_beta
-    )
-    return _workflow._seed_energy_gain(
-        seed, hamiltonian, ansatz, 2 * spec.n_orbitals, 1, build_kwargs
-    )
-
-
-@pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")
-def test_seed_acceptance_rejects_amplitudes_on_the_wrong_excitations():
-    """The failure class the check exists for, and the one a stationarity
-    precondition provably cannot see.
-
-    Running CCSD in a basis rotated within the occupied and virtual blocks --
-    what an SCF canonicalization does -- leaves the reference determinant's
-    energy identical while permuting which amplitude belongs to which orbital
-    pair. ``F_ov`` transforms as ``U_o^T F_ov U_v``, so a stationarity check
-    stays satisfied throughout. Permuting the seed vector is that same corruption
-    applied directly, and the energy comparison catches it.
-    """
-    ensemble = h8_frontier_lassqd(None)
-    state = ensemble.initial_state()
-    spec = state.fragments[0].spec
-    h_eff, _, g_frag = fragment_integrals(ensemble, state.mo_coeff, state.fragments, 0)
-
-    def gain(permute):
-        return _seed_gain(UCCSDAnsatz(), h_eff, h_eff, g_frag, spec, permute=permute)
-
-    assert gain(permute=False) > _workflow._SEED_ACCEPTANCE_MARGIN
-    assert gain(permute=True) < _workflow._SEED_ACCEPTANCE_MARGIN
-
-
-@pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")
-def test_seed_acceptance_admits_a_polarized_non_stationary_fragment():
-    """A spin-polarized fragment has no shared spatial basis making both spin
-    channels Hartree-Fock stationary, so the old precondition refused it
-    outright -- which is what left the diiron benchmark unseeded. The seed is
-    worth keeping there."""
-    ensemble = h8_frontier_lassqd(local_spins=[2, -2], fragment_atoms=_H8_HALF_CHAINS)
-    state = ensemble.initial_state()
-    spec = state.fragments[0].spec
-    assert spec.n_alpha != spec.n_beta
-    h_alpha, h_beta, g_frag = fragment_integrals(
-        ensemble, state.mo_coeff, state.fragments, 0
-    )
-
-    gain = _seed_gain(
-        LUCJAnsatz(), h_alpha, h_beta, g_frag, spec, trailing_rotation=True
-    )
-
-    assert gain > _workflow._SEED_ACCEPTANCE_MARGIN
-
-
-def test_seed_acceptance_skips_a_fragment_too_wide_to_check():
-    """Above the exact-check width the seed is accepted unchecked rather than
-    discarded: refusing a good seed is the failure this replaced."""
-    spec = FragmentSpec(orbitals=tuple(range(11)), n_alpha=2, n_beta=2)
-    n_qubits = 2 * spec.n_orbitals
-    assert n_qubits > _workflow._SEED_CHECK_MAX_QUBITS
-
-    gain = _workflow._seed_energy_gain(
-        np.zeros(4), object(), LUCJAnsatz(), n_qubits, 1, {}
-    )
-
-    assert gain is None
-
-
-def test_uccsd_seed_singles_match_the_ccsd_t1_amplitudes(h4_chain_mean_field):
-    """The energy assertion above cannot cover the singles, so pin their values.
-
-    That fragment's orbitals are canonical MOs, so ``t1`` is
-    Brillouin-suppressed: measured ``max|t1|`` is 1.25e-03 against ``max|t2|``
-    of 8.2e-02. Zeroing every single moves the seeded energy by 7.5e-06 and
-    sign-flipping them by 2.4e-05 -- both far inside that test's 1e-3 tolerance,
-    so the whole singles block could be scrambled or deleted unnoticed. The
-    doubles are caught there with 40x margin.
-    """
-    spec = _H4_WHOLE_SPACE
-    h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
-    n_params = UCCSDAnsatz.n_params_per_layer(8, n_electrons=4)
-
-    seed = _workflow._ccsd_seed_params(h_eff, g_frag, spec, n_params, UCCSDAnsatz())
-    assert seed is not None
-
-    embedded = embedded_fragment_ccsd(h_eff, g_frag, spec)
-    t1_spin = cc_addons.spatial2spin(embedded.t1)
-
-    n_spatial, n_occupied = spec.n_orbitals, spec.n_alpha
-    singles_seen = 0
-    for index, (occupied, unoccupied) in enumerate(
-        _uccsd_excitations(n_spatial, (n_occupied, n_occupied))
-    ):
-        if len(occupied) != 1:
-            continue
-        spin_o, spatial_o = divmod(occupied[0], n_spatial)
-        spin_u, spatial_u = divmod(unoccupied[0], n_spatial)
-        expected = -t1_spin[
-            2 * spatial_o + spin_o, 2 * (spatial_u - n_occupied) + spin_u
-        ]
-        assert seed[index] == pytest.approx(expected, abs=1e-12)
-        singles_seen += 1
-
-    assert singles_seen == 8
-    # Guards against the whole block being zero, which the loop above would
-    # otherwise accept if t1 itself came back empty.
-    assert np.abs(t1_spin).max() > 1e-6
 
 
 def test_create_programs_seeds_fresh_fragments_from_ccsd(dummy_expval_backend):
@@ -1461,7 +1337,6 @@ def test_create_programs_ccsd_seed_length_scales_with_n_layers(dummy_expval_back
         assert program._seed_params.shape == (expected_length,)
 
 
-@pytest.mark.filterwarnings("ignore:.*only UCCSDAnsatz has parameters")
 @pytest.mark.filterwarnings("ignore:CCSD seeding skipped")
 @pytest.mark.parametrize(
     "ansatz_kwargs",
@@ -1476,14 +1351,14 @@ def test_create_programs_ccsd_seed_length_scales_with_n_layers(dummy_expval_back
 def test_ansatz_kwargs_reach_every_fragment_vqe(dummy_expval_backend, ansatz_kwargs):
     """``ansatz_kwargs`` must reach the fragment VQE, the seed-length
     calculation, and the seed's own layout -- three places
-    ``_build_fragment_program`` derives separately.
+    ``build_fragment_vqe`` derives separately.
 
     A mismatch is silent: the VQE would reject a seed vector sized for the
     other circuit, or the optimizer would tune parameters no gate reads.
     """
     ensemble = _lassqd(
         dummy_expval_backend,
-        ansatz=LUCJAnsatz(),
+        preparation=vqe_preparation(ansatz=LUCJAnsatz(), max_iterations=3),
         ansatz_kwargs=ansatz_kwargs,
     )
     ensemble.create_programs(ensemble.initial_state())
@@ -1502,7 +1377,7 @@ def test_lucj_seeding_skips_a_shared_spin_params_ansatz(dummy_expval_backend):
     the alpha sector's angles into both."""
     ensemble = _lassqd(
         dummy_expval_backend,
-        ansatz=LUCJAnsatz(),
+        preparation=vqe_preparation(ansatz=LUCJAnsatz(), max_iterations=3),
         ansatz_kwargs={"shared_spin_params": True},
     )
 
@@ -1523,18 +1398,22 @@ def test_round_reports_record_each_round_as_it_completes(exact_sampler_lassqd):
     for expected_rounds in (1, 2):
         ensemble.create_programs(state)
         ensemble.run_one_round(blocking=True)
+        started = time.perf_counter()
         state = ensemble.update_state(state)
+        wall = time.perf_counter() - started
         ensemble._clear_completed_round()
 
         assert len(ensemble.round_reports) == expected_rounds
         report = ensemble.round_reports[-1]
+        assert 0.0 <= report.recovery_seconds
+        assert 0.0 <= report.orbital_seconds
+        assert report.recovery_seconds + report.orbital_seconds <= wall
         assert report.number == expected_rounds
         assert report.energy == ensemble.energy_history[-1]
         assert report.rotation_pairs > 0
         assert report.orbital_evaluations > report.orbital_iterations >= 0
         assert len(report.subspace_sizes) == len(state.fragments)
         assert all(size >= 1 for size in report.subspace_sizes)
-        assert report.orbital_seconds >= 0.0
         assert f"Round {expected_rounds} done" in report.summary()
 
     # The initial state's energy is ``inf``, so round 1 has no predecessor to
@@ -1558,6 +1437,13 @@ def test_round_reports_are_cleared_by_a_workflow_reset(exact_sampler_lassqd):
     assert ensemble.round_reports == ()
 
 
+_REDUCTION_STAGES = (
+    "Recovering fragment subspaces (SQD)",
+    "Assembling active-space RDMs",
+    "Re-optimising orbitals",
+)
+
+
 def test_update_state_names_each_reduction_stage(exact_sampler_lassqd, mocker):
     """Each classical stage of the reduction reports itself, so the display
     distinguishes SQD recovery from the orbital solve rather than only showing
@@ -1570,9 +1456,8 @@ def test_update_state_names_each_reduction_stage(exact_sampler_lassqd, mocker):
     ensemble.update_state(state)
 
     reported = [call.args[0] for call in spy.call_args_list]
-    assert any("SQD" in message for message in reported)
-    assert any("RDM" in message for message in reported)
-    assert any("orbital" in message.lower() for message in reported)
+    stages = [message for message in reported if message in _REDUCTION_STAGES]
+    assert stages == list(_REDUCTION_STAGES)
     assert reported[-1] == ensemble.round_reports[-1].summary()
     # Only the outcome is marked final; the stages it passed through are not.
     assert [call.kwargs.get("final", False) for call in spy.call_args_list][-1] is True
@@ -1597,8 +1482,6 @@ def test_round_summary_is_logged_not_only_painted_on_the_progress_row(
 
     summary = ensemble.round_reports[-1].summary()
     assert summary in caplog.text
-    # A stage label is progress only, and must not be logged alongside it.
-    assert "Re-optimizing orbitals" not in caplog.text
 
 
 def test_create_programs_ccsd_seeding_is_deterministic_across_ensembles(
@@ -1620,7 +1503,7 @@ def test_create_programs_ccsd_seeding_is_deterministic_across_ensembles(
 def test_create_programs_warm_starts_without_calling_ccsd(dummy_expval_backend, mocker):
     ensemble = _lassqd(dummy_expval_backend)
     state = ensemble.initial_state()
-    spy = mocker.spy(_workflow, "_ccsd_seed_params")
+    spy = mocker.spy(_vqe_preparation, "_ccsd_seed_params")
 
     spec = state.fragments[0].spec
     warm_params = np.full(
@@ -1718,8 +1601,8 @@ def test_macro_cycle_uses_separate_optimization_and_sampling_backends(
     ensemble = _lassqd(
         default_test_simulator,
         sampling_backend=sampling_test_simulator,
-        max_iterations=1,
-        max_orbital_iterations=1,
+        preparation=vqe_preparation(max_iterations=1),
+        orbital_update=FullOrbitalSolve(max_iterations=1),
         n_batches=1,
         n_recovery_iterations=1,
     )
@@ -1739,7 +1622,7 @@ def test_linear_method_samples_each_fragment_on_the_sampling_backend(
     sampling_submit = mocker.spy(sampling_test_simulator, "submit_circuits")
     ensemble = _lassqd(
         default_test_simulator,
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=LinearMethodPreparation(),
         sampling_backend=sampling_test_simulator,
         seed=9,
     )
@@ -1970,7 +1853,7 @@ def test_default_linear_method_h2_reaches_chemical_accuracy_over_two_rounds(
     ensemble = _lassqd(
         default_test_simulator,
         problem=MolecularProblem.from_molecule(h2_molecule()),
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=LinearMethodPreparation(),
         **_H2_E2E_SETTINGS,
     )
 
@@ -2007,7 +1890,7 @@ def test_single_fragment_h2_reaches_chemical_accuracy(
     ensemble = _lassqd(
         default_test_simulator,
         problem=MolecularProblem.from_molecule(h2_molecule()),
-        max_iterations=200,
+        preparation=vqe_preparation(max_iterations=200),
         **_H2_E2E_SETTINGS,
     )
     ensemble.run(max_rounds=5)
@@ -2037,7 +1920,7 @@ def test_two_fragment_h4_lands_on_the_product_state_energy(
     """
     ensemble = _lassqd(
         default_test_simulator,
-        max_iterations=60,
+        preparation=vqe_preparation(max_iterations=60),
         n_batches=6,
         batch_size=16,
         n_recovery_iterations=3,
@@ -2051,7 +1934,7 @@ def test_two_fragment_h4_lands_on_the_product_state_energy(
     assert ensemble.energy <= h4_chain_mean_field.e_tot + 1e-5
 
 
-def _round_report(number, energy_change):
+def _round_report(number, energy_change, orbital_converged=False):
     return _workflow.LASSQDRoundReport(
         number=number,
         energy=-1.25,
@@ -2060,10 +1943,23 @@ def _round_report(number, energy_change):
         orbital_iterations=3,
         orbital_evaluations=4,
         orbital_gradient_norm=0.01,
-        orbital_converged=False,
+        orbital_converged=orbital_converged,
         rotation_pairs=5,
         recovery_seconds=0.2,
         orbital_seconds=0.3,
+    )
+
+
+@pytest.mark.parametrize(
+    "energy_change, change",
+    [(None, "first round"), (-0.25, "change -2.500e-01")],
+    ids=["first-round", "later-round"],
+)
+def test_round_summary_reads_every_stage_output(energy_change, change):
+    assert _round_report(2, energy_change).summary() == (
+        f"Round 2 done. Energy: -1.25000000 Ha ({change}); subspaces [2, 3]; "
+        "orbitals: 3 iterations over 5 pairs, |g| 1.00e-02, converged=False; "
+        "SQD 0.2s, orbitals 0.3s"
     )
 
 
@@ -2077,6 +1973,11 @@ def _checkpoint_state(state, *, orbitals_converged=False):
             params=np.arange(3, dtype=float) + index,
             rdm1_alpha=fragment.rdm1 / 3 + index,
             rdm1_beta=fragment.rdm1 * 2 / 3 - index,
+            carried_alpha=("10",),
+            carried_beta=("01", "10")[: index + 1],
+            sampled_orbitals=np.full(
+                (state.mo_coeff.shape[0], fragment.spec.n_orbitals), 0.1 * (index + 1)
+            ),
         )
         for index, fragment in enumerate(state.fragments)
     )
@@ -2095,7 +1996,10 @@ def _checkpoint_state(state, *, orbitals_converged=False):
 def _save_checkpoint(ensemble, state, directory):
     """Save ``state`` after two recorded rounds and one cached solver."""
     ensemble._energy_history = [-1.0, -1.25]
-    ensemble._round_reports = [_round_report(1, None), _round_report(2, -0.25)]
+    ensemble._round_reports = [
+        _round_report(1, None),
+        _round_report(2, -0.25, orbital_converged=state.orbitals_converged),
+    ]
     ensemble._solver_for(0, state.fragments[0].spec)
     return ensemble._save_workflow_checkpoint_state(state, directory, "output_state")
 
@@ -2141,12 +2045,50 @@ def _duplicate_solver(arrays, payload):
     payload["solvers"] = payload["solvers"] * 2
 
 
+def _set_carried_alpha(value):
+    def corrupt(arrays, payload):
+        payload["fragments"][0]["carried_alpha"] = value
+
+    return corrupt
+
+
 def _solver_one_past_the_end(arrays, payload):
     payload["solvers"][0]["index"] = len(payload["fragments"])
 
 
 def _stretch_orbitals(arrays, payload):
     arrays["mo_coeff"] = 1.01 * arrays["mo_coeff"]
+
+
+def _drop_last_orbital(arrays, payload):
+    arrays["mo_coeff"] = arrays["mo_coeff"][:, :-1]
+
+
+def _drop_carried_alpha(arrays, payload):
+    del payload["fragments"][0]["carried_alpha"]
+
+
+def _drop_solver_rng_state(arrays, payload):
+    del payload["solvers"][0]["rng_state"]
+
+
+_CARRIED_ALPHA_FORMAT = (
+    "LASSQD checkpoint fragment 0 carried_alpha must be a list of 2-character "
+    "0/1 strings."
+)
+
+
+def _corrupt_case(corrupt, message, case_id):
+    """A corrupt-checkpoint case whose load must fail with exactly ``message``."""
+    return pytest.param(corrupt, exact_match(message), id=case_id)
+
+
+def _wrong_shape_case(name, shape, expected):
+    return _corrupt_case(
+        _set_array(name, np.zeros(shape)),
+        f"LASSQD checkpoint {name} has shape {shape}; expected {expected}.",
+        f"{name}-shape",
+    )
 
 
 class _PickleTripwire:
@@ -2196,8 +2138,19 @@ def test_workflow_checkpoint_state_round_trips_npz(
     np.testing.assert_array_equal(restored.mo_coeff, state.mo_coeff)
     for loaded, saved in zip(restored.fragments, state.fragments, strict=True):
         assert loaded.spec == saved.spec
-        for name in ("rdm1", "rdm2", "params", "rdm1_alpha", "rdm1_beta"):
+        for name in (
+            "rdm1",
+            "rdm2",
+            "params",
+            "rdm1_alpha",
+            "rdm1_beta",
+            "sampled_orbitals",
+        ):
             np.testing.assert_array_equal(getattr(loaded, name), getattr(saved, name))
+        assert (loaded.carried_alpha, loaded.carried_beta) == (
+            saved.carried_alpha,
+            saved.carried_beta,
+        )
     assert (restored.energy, restored.previous_energy) == (-1.25, -1.0)
     assert restored.orbitals_converged is orbitals_converged
     assert ensemble.energy_history == (-1.0, -1.25)
@@ -2214,7 +2167,7 @@ def test_resuming_from_a_checkpoint_reproduces_an_uninterrupted_run(
     """The batch is far smaller than the 36-determinant sector, so the second
     round's subspace depends on where each generator was left."""
     settings = dict(
-        active_spaces=[_H4_WHOLE_SPACE], batch_size=3, n_recovery_iterations=1
+        active_spaces=[H4_WHOLE_SPACE], batch_size=3, n_recovery_iterations=1
     )
     straight, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker, **settings)
     straight.run(max_rounds=2)
@@ -2251,7 +2204,7 @@ def test_restoring_a_run_checkpoint_reproduces_an_uninterrupted_run(
     that round's programs from its input state, which must not leave the
     workflow's generators, solvers or history at that earlier point."""
     settings = dict(
-        active_spaces=[_H4_WHOLE_SPACE], batch_size=3, n_recovery_iterations=1
+        active_spaces=[H4_WHOLE_SPACE], batch_size=3, n_recovery_iterations=1
     )
     straight, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker, **settings)
     straight.run(max_rounds=2)
@@ -2272,75 +2225,120 @@ def test_restoring_a_run_checkpoint_reproduces_an_uninterrupted_run(
 @pytest.mark.parametrize(
     "corrupt, match",
     [
-        pytest.param(
+        _corrupt_case(
+            _set_payload("artifact", 1),
+            "LASSQD checkpoint is missing its NPZ artifact.",
+            "non-string-artifact",
+        ),
+        _corrupt_case(
+            _set_payload("artifact", "input_state.npz"),
+            "LASSQD checkpoint references the wrong state artifact.",
+            "wrong-artifact",
+        ),
+        _corrupt_case(
             _set_payload("fragments", []),
-            "no fragment metadata",
-            id="empty-fragment-list",
+            "LASSQD checkpoint has no fragment metadata.",
+            "empty-fragment-list",
         ),
-        pytest.param(
+        _corrupt_case(
+            _set_payload("rng_state", []),
+            "LASSQD checkpoint is missing RNG state.",
+            "non-dict-rng-state",
+        ),
+        _corrupt_case(
             _drop_array("fragment_0_rdm2"),
-            "missing fragment_0_rdm2",
-            id="missing-array",
+            "LASSQD checkpoint artifact is missing fragment_0_rdm2.",
+            "missing-array",
         ),
-        pytest.param(
-            _set_array("fragment_0_rdm1", np.zeros((3, 3))),
-            r"fragment_0_rdm1 has shape \(3, 3\)",
-            id="rdm-shape",
+        _wrong_shape_case("fragment_0_rdm1", (3, 3), (2, 2)),
+        _wrong_shape_case("fragment_0_rdm2", (3, 3, 3, 3), (2, 2, 2, 2)),
+        _wrong_shape_case("fragment_1_rdm1_beta", (3, 3), (2, 2)),
+        _wrong_shape_case("fragment_0_sampled_orbitals", (3, 2), (4, 2)),
+        _wrong_shape_case("energy", (2,), ()),
+        _wrong_shape_case("previous_energy", (2,), ()),
+        _wrong_shape_case("orbitals_converged", (2,), ()),
+        _corrupt_case(
+            _drop_last_orbital,
+            "LASSQD checkpoint mo_coeff has shape (4, 3); expected (4, 4).",
+            "orthonormal-orbital-missing",
         ),
-        pytest.param(
-            _set_array("fragment_1_rdm1_beta", np.zeros((3, 3))),
-            r"fragment_1_rdm1_beta has shape \(3, 3\)",
-            id="spin-rdm-shape",
-        ),
-        pytest.param(
+        _corrupt_case(
             _duplicate_solver,
-            "invalid solver fragment indices",
-            id="duplicate-solver",
+            "LASSQD checkpoint has invalid solver fragment indices.",
+            "duplicate-solver",
         ),
-        pytest.param(
+        _corrupt_case(
             _solver_one_past_the_end,
-            "invalid solver fragment indices",
-            id="out-of-range-solver",
+            "LASSQD checkpoint has invalid solver fragment indices.",
+            "out-of-range-solver",
         ),
-        pytest.param(
+        _corrupt_case(
+            _drop_solver_rng_state,
+            "LASSQD checkpoint is missing solver RNG state.",
+            "missing-solver-rng-state",
+        ),
+        _corrupt_case(
             _set_array("fragment_0_params", np.zeros((3, 1))),
-            "parameters are not 1-D",
-            id="2d-params",
+            "LASSQD checkpoint fragment 0 parameters are not 1-D.",
+            "2d-params",
         ),
-        pytest.param(
+        _corrupt_case(
+            _set_array("energy_history", np.zeros((2, 1))),
+            "LASSQD checkpoint energy history is not 1-D.",
+            "2d-energy-history",
+        ),
+        _corrupt_case(
             _set_array("fragment_0_rdm2", np.full((2, 2, 2, 2), np.nan)),
-            "fragment_0_rdm2 contains non-finite values",
-            id="nan",
+            "LASSQD checkpoint fragment_0_rdm2 contains non-finite values.",
+            "nan",
         ),
-        pytest.param(
+        _corrupt_case(
+            _set_array("fragment_0_rdm1", np.full((2, 2), np.inf)),
+            "LASSQD checkpoint fragment_0_rdm1 contains non-finite values.",
+            "inf",
+        ),
+        _corrupt_case(
             _set_array("mo_coeff", np.full((4, 4), "x")),
-            "mo_coeff has non-numeric dtype",
-            id="string-dtype",
+            "LASSQD checkpoint mo_coeff has non-numeric dtype <U1.",
+            "string-dtype",
         ),
-        pytest.param(
+        _corrupt_case(
             _drop_payload("solvers"),
-            "solver metadata must be a list",
-            id="missing-solvers",
+            "LASSQD checkpoint solver metadata must be a list.",
+            "missing-solvers",
         ),
-        pytest.param(
+        _corrupt_case(
             _drop_payload("round_reports"),
-            "round reports must be a list",
-            id="missing-round-reports",
+            "LASSQD checkpoint round reports must be a list.",
+            "missing-round-reports",
         ),
         pytest.param(
             _stretch_orbitals,
-            "mo_coeff is not orthonormal",
+            "^LASSQD checkpoint mo_coeff is not orthonormal: ",
             id="non-orthonormal-orbitals",
         ),
-        pytest.param(
+        _corrupt_case(
             _drop_payload("molecule"),
-            "missing its molecule fingerprint",
-            id="missing-molecule",
+            "LASSQD checkpoint is missing its molecule fingerprint.",
+            "missing-molecule",
         ),
-        pytest.param(
+        _corrupt_case(
             _drop_payload("configuration"),
-            "missing its configuration",
-            id="missing-configuration",
+            "LASSQD checkpoint is missing its configuration.",
+            "missing-configuration",
+        ),
+        _corrupt_case(
+            _set_carried_alpha(["102"]),
+            _CARRIED_ALPHA_FORMAT,
+            "non-binary-carried-string",
+        ),
+        _corrupt_case(
+            _set_carried_alpha(["100"]),
+            _CARRIED_ALPHA_FORMAT,
+            "carried-string-width",
+        ),
+        _corrupt_case(
+            _drop_carried_alpha, _CARRIED_ALPHA_FORMAT, "missing-carried-strings"
         ),
     ],
 )
@@ -2353,6 +2351,83 @@ def test_workflow_checkpoint_rejects_a_corrupt_snapshot(
 
     with pytest.raises(ValueError, match=match):
         ensemble._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
+
+
+def test_a_checkpoint_resumes_under_an_identically_configured_preparation(
+    dummy_expval_backend, mocker, tmp_path
+):
+    """Two identically configured VQE preparations hold different optimizer
+    objects; the record compares their configuration, not their identity."""
+    writer, state = build_exact_sampler_lassqd(dummy_expval_backend, mocker)
+    payload = _save_checkpoint(writer, _checkpoint_state(state), tmp_path)
+    same, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend, mocker, preparation=vqe_preparation()
+    )
+
+    same._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
+
+
+_DIFFERENT_CONFIGURATION = (
+    "LASSQD checkpoint was written with a different LASSQD configuration: "
+    "fragmentation, sqd, preparation or orbital_update differ."
+)
+
+_DIFFERENT_MOLECULE = (
+    "LASSQD checkpoint was written for a different molecule: its geometry, "
+    "basis or electron count differs from this one's."
+)
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"preparation": CCSDPreparation()},
+        {"preparation": vqe_preparation(optimizer=MonteCarloOptimizer())},
+        {"preparation": vqe_preparation(ansatz=LUCJAnsatz())},
+        {"preparation": vqe_preparation(max_iterations=3)},
+        {"orbital_update": FullOrbitalSolve(max_iterations=7)},
+        {"orbital_update": SecondOrderOrbitalSolve(max_iterations=7)},
+    ],
+    ids=[
+        "preparation",
+        "vqe-optimizer",
+        "vqe-ansatz",
+        "vqe-iteration-budget",
+        "full-orbital-solve",
+        "second-order-orbital-solve",
+    ],
+)
+def test_a_checkpoint_resumes_only_under_the_same_configuration(
+    dummy_expval_backend, mocker, tmp_path, changed
+):
+    writer, state = build_exact_sampler_lassqd(dummy_expval_backend, mocker)
+    payload = _save_checkpoint(writer, _checkpoint_state(state), tmp_path)
+    other, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker, **changed)
+
+    with pytest.raises(ValueError, match=exact_match(_DIFFERENT_CONFIGURATION)):
+        other._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
+
+
+@pytest.mark.parametrize("strategy", [FullOrbitalSolve, SecondOrderOrbitalSolve])
+def test_an_orbital_update_respects_its_iteration_cap(
+    dummy_expval_backend, mocker, strategy
+):
+    ensemble, state = build_exact_sampler_lassqd(
+        dummy_expval_backend, mocker, orbital_update=strategy(max_iterations=1)
+    )
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+
+    with pytest.warns(UserWarning, match="without converging"):
+        ensemble.update_state(state)
+
+    assert ensemble.round_reports[-1].orbital_iterations == 1
+
+
+@pytest.mark.parametrize("strategy", [FullOrbitalSolve, SecondOrderOrbitalSolve])
+def test_an_orbital_update_rejects_a_non_positive_cap(strategy):
+    with pytest.raises(ValueError, match="max_iterations must be at least 1"):
+        strategy(max_iterations=0)
 
 
 def test_workflow_checkpoint_refuses_to_unpickle_an_object_array(
@@ -2369,16 +2444,112 @@ def test_workflow_checkpoint_refuses_to_unpickle_an_object_array(
     assert not _PickleTripwire.unpickled
 
 
+@pytest.mark.parametrize(
+    "module, failing",
+    [(_workflow.np, "savez"), (_workflow.tempfile, "NamedTemporaryFile")],
+    ids=["write", "create"],
+)
 def test_a_failed_checkpoint_save_leaves_no_temporary_file(
-    exact_sampler_lassqd, tmp_path, mocker
+    exact_sampler_lassqd, tmp_path, mocker, module, failing
 ):
     ensemble, state = exact_sampler_lassqd
-    mocker.patch.object(_workflow.np, "savez", side_effect=OSError("disk full"))
+    mocker.patch.object(module, failing, side_effect=OSError("disk full"))
 
-    with pytest.raises(OSError, match="disk full"):
+    with pytest.raises(OSError, match=exact_match("disk full")):
         ensemble._save_workflow_checkpoint_state(state, tmp_path, "output_state")
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_a_checkpoint_save_does_not_depend_on_the_system_temporary_directory(
+    exact_sampler_lassqd, tmp_path, monkeypatch
+):
+    """The snapshot is staged beside its destination, so the final rename never
+    crosses a filesystem."""
+    ensemble, state = exact_sampler_lassqd
+    monkeypatch.setattr(_workflow.tempfile, "tempdir", str(tmp_path / "missing"))
+
+    ensemble._save_workflow_checkpoint_state(state, tmp_path, "output_state")
+
+    assert [path.name for path in tmp_path.iterdir()] == ["output_state.npz"]
+
+
+def test_a_checkpoint_save_rejects_a_foreign_state(exact_sampler_lassqd, tmp_path):
+    ensemble, _ = exact_sampler_lassqd
+    message = "LASSQD checkpoint state must be LASSQDState, got NoneType."
+
+    with pytest.raises(TypeError, match=exact_match(message)):
+        ensemble._save_workflow_checkpoint_state(None, tmp_path, "output_state")
+
+
+def test_a_closed_shell_fragment_without_spin_rdms_round_trips(
+    exact_sampler_lassqd, tmp_path
+):
+    ensemble, initial = exact_sampler_lassqd
+    state = dataclasses.replace(
+        initial,
+        fragments=tuple(
+            dataclasses.replace(fragment, rdm1_alpha=None, rdm1_beta=None)
+            for fragment in initial.fragments
+        ),
+    )
+    payload = ensemble._save_workflow_checkpoint_state(state, tmp_path, "output_state")
+
+    restored = ensemble._load_workflow_checkpoint_state(
+        payload, tmp_path, "output_state"
+    )
+
+    assert all(
+        fragment.rdm1_alpha is None and fragment.rdm1_beta is None
+        for fragment in restored.fragments
+    )
+
+
+_MISMATCHED_STATE = (
+    "update_state received a different state than create_programs built this "
+    "round's circuits from; the reduction would use different orbitals than the "
+    "fragment circuits were prepared in."
+)
+
+
+def _built_round(ensemble, state, directory):
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    return state
+
+
+def _loaded_checkpoint(ensemble, state, directory):
+    payload = _save_checkpoint(ensemble, _checkpoint_state(state), directory)
+    return ensemble._load_workflow_checkpoint_state(payload, directory, "output_state")
+
+
+@pytest.mark.parametrize(
+    "prepare", [_built_round, _loaded_checkpoint], ids=["built", "loaded"]
+)
+def test_update_state_rejects_a_state_its_round_was_not_built_from(
+    exact_sampler_lassqd, tmp_path, prepare
+):
+    ensemble, initial = exact_sampler_lassqd
+    state = prepare(ensemble, initial, tmp_path)
+
+    with pytest.raises(RuntimeError, match=exact_match(_MISMATCHED_STATE)):
+        ensemble.update_state(dataclasses.replace(state))
+
+
+def test_a_restored_completed_round_reduces_against_its_input_state(
+    dummy_expval_backend, mocker, tmp_path
+):
+    """Restoring a completed round rebuilds its programs from the round's input
+    state, so the restored output state is not one they can be reduced against."""
+    ensemble, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker)
+    ensemble.run(
+        max_rounds=1, checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path)
+    )
+    restored, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker)
+    restored.restore_state(tmp_path)
+
+    with pytest.raises(RuntimeError, match=exact_match(_MISMATCHED_STATE)):
+        restored.update_state(restored.workflow_state)
 
 
 def test_rejects_a_frontier_selection_with_no_virtual_orbital(dummy_expval_backend):
@@ -2403,6 +2574,17 @@ def test_fragment_state_rejects_a_single_spin_rdm(spin_half):
             rdm1=np.eye(2),
             rdm2=np.zeros((2,) * 4),
             **{spin_half: np.eye(2) / 2},
+        )
+
+
+def test_a_spin_polarised_fragment_state_needs_its_spin_rdms():
+    """Halving ``rdm1`` is only right for equal spin counts; elsewhere it gives
+    the wrong cross-fragment exchange."""
+    with pytest.raises(ValueError, match="spin-polarised"):
+        FragmentState(
+            spec=FragmentSpec(orbitals=(0, 1), n_alpha=2, n_beta=0),
+            rdm1=np.diag([1.0, 1.0]),
+            rdm2=np.zeros((2,) * 4),
         )
 
 
@@ -2431,23 +2613,22 @@ def test_sqd_settings_reach_the_solver_constructor(dummy_expval_backend, mocker)
     ensemble._solver_for(0, spec)
 
     constructor.assert_called_once()
-    assert constructor.call_args.args == (spec.n_orbitals, spec.n_alpha, spec.n_beta)
-    keywords = dict(constructor.call_args.kwargs)
-    assert isinstance(keywords.pop("rng"), np.random.Generator)
-    assert keywords == dict(
+    n_orbitals, n_alpha, n_beta, config = constructor.call_args.args
+    assert (n_orbitals, n_alpha, n_beta) == (spec.n_orbitals, spec.n_alpha, spec.n_beta)
+    assert config == SQDConfig(
         n_batches=3,
         batch_size=5,
-        n_iterations=4,
+        n_recovery_iterations=4,
         lambda_penalty=0.7,
-        recovery=True,
         carryover_cutoff=1e-3,
         max_carryover=7,
         max_dim=(2, 3),
         include_reference=False,
         symmetrize_spin=True,
-        energy_tol=1e-4,
-        occupancies_tol=1e-3,
+        recovery_energy_tol=1e-4,
+        recovery_occupancies_tol=1e-3,
     )
+    assert isinstance(constructor.call_args.kwargs["rng"], np.random.Generator)
 
 
 def test_sqd_defaults_to_the_default_config(dummy_expval_backend):
@@ -2517,7 +2698,7 @@ def test_linear_method_rotates_fragment_rdms_back_to_the_workflow_basis(
         problem=MolecularProblem.from_molecule(
             _rotated_mean_field(h2_mean_field, np.pi / 4)
         ),
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=LinearMethodPreparation(),
         active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
         n_batches=4,
         batch_size=64,
@@ -2566,16 +2747,49 @@ def test_frozen_core_and_virtual_orbitals_bracket_the_active_space(
     assert casci - 1e-8 < ensemble.energy <= mean_field.e_tot + 1e-8
 
 
+def test_a_frozen_core_round_embeds_and_samples_past_the_core(
+    dummy_expval_backend, mocker
+):
+    """H8 with only orbitals 3 and 4 active freezes three core orbitals, which
+    the fragment's embedding and its sampled block must both skip."""
+    ensemble, state = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(h8_chain()),
+        active_spaces=[FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)],
+    )
+    assert ensemble._n_core(state) == 3
+
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    new_state = ensemble.update_state(state)
+
+    h_alpha, _, _ = fragment_integrals(ensemble, state.mo_coeff, state.fragments, 0)
+    np.testing.assert_allclose(
+        ensemble.programs["fragment_0"].h_alpha, h_alpha, atol=1e-12
+    )
+    np.testing.assert_array_equal(
+        new_state.fragments[0].sampled_orbitals, state.mo_coeff[:, 3:5]
+    )
+
+
 @pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
-def test_sqd_receives_each_linear_method_program_s_spin_integrals(
-    default_test_simulator, mocker
+@pytest.mark.filterwarnings("ignore:CCSD seeding")
+@pytest.mark.parametrize(
+    "preparation",
+    [LinearMethodPreparation(), vqe_preparation(max_iterations=1)],
+    ids=["linear-method", "vqe"],
+)
+def test_sqd_receives_each_program_s_spin_integrals(
+    default_test_simulator, mocker, preparation
 ):
     """A polarised neighbour splits the embedding by spin, so the beta channel
-    is only exercised if SQD receives the program's own ``h_beta``."""
+    is only exercised if SQD receives the program's own ``h_beta``, whichever
+    preparation built it."""
     solve = mocker.spy(SQDSolver, "solve")
     ensemble = _lassqd(
         default_test_simulator,
-        preparation_mode=LASSQDPreparationMode.LINEAR_METHOD,
+        preparation=preparation,
         active_spaces=POLARIZED_SPECS,
         seed=9,
     )
@@ -2609,7 +2823,7 @@ def test_update_state_reports_the_orbital_solve_it_received(
         )
         for index in range(2)
     ]
-    mocker.patch.object(_workflow, "optimize_orbitals", side_effect=solves)
+    mocker.patch.object(_config, "ciah_orbital_solve", side_effect=solves)
 
     for solve in solves:
         ensemble.create_programs(state)
@@ -2650,7 +2864,7 @@ def test_orbital_solves_converge_at_the_square_root_of_the_energy_tolerance(
     ensemble, _ = build_exact_sampler_lassqd(
         dummy_expval_backend, mocker, energy_tol=1e-4
     )
-    spy = mocker.spy(_workflow, "optimize_orbitals")
+    spy = mocker.spy(_config, "ciah_orbital_solve")
 
     ensemble.run(max_rounds=1)
 
@@ -2662,8 +2876,8 @@ def test_a_non_finite_round_energy_fails_the_round(exact_sampler_lassqd, mocker)
     every remaining round on a meaningless state."""
     ensemble, state = exact_sampler_lassqd
     mocker.patch.object(
-        _workflow,
-        "optimize_orbitals",
+        _config,
+        "ciah_orbital_solve",
         return_value=OrbitalSolve(
             mo_coeff=state.mo_coeff.copy(),
             energy=float("nan"),
@@ -2675,20 +2889,34 @@ def test_a_non_finite_round_energy_fails_the_round(exact_sampler_lassqd, mocker)
         ),
     )
 
-    with pytest.raises(ValueError, match="Round 1 produced a non-finite energy"):
+    message = (
+        "Round 1 produced a non-finite energy (nan), so its orbitals and RDMs "
+        "cannot seed another round."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
         ensemble.run(max_rounds=2)
 
     assert ensemble.stop_reason is WorkflowStatus.FAILED
     assert ensemble.energy_history == ()
 
 
-def test_aggregate_results_raises_before_a_round_is_reduced(exact_sampler_lassqd):
-    """The pre-round state would read as a result while carrying none."""
+@pytest.mark.parametrize("reduced_by_hand", [False, True], ids=["unreduced", "by-hand"])
+def test_aggregate_results_raises_before_a_round_is_reduced(
+    exact_sampler_lassqd, reduced_by_hand
+):
+    """The pre-round state would read as a result while carrying none, and a
+    hand-driven round's result is what ``update_state`` returned."""
     ensemble, state = exact_sampler_lassqd
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)
+    if reduced_by_hand:
+        ensemble.update_state(state)
+    message = (
+        "No LASSQD round has been reduced into workflow_state yet. Use run(), or "
+        "the state update_state returns when driving rounds by hand."
+    )
 
-    with pytest.raises(RuntimeError, match="No LASSQD round"):
+    with pytest.raises(RuntimeError, match=exact_match(message)):
         ensemble.aggregate_results()
 
 
@@ -2709,7 +2937,7 @@ def test_local_spins_are_bounded_by_parity_and_electron_count(
     with pytest.raises(ValueError, match=match):
         h8_frontier_lassqd(
             dummy_expval_backend,
-            fragment_atoms=_H8_HALF_CHAINS,
+            fragment_atoms=H8_HALF_CHAINS,
             local_spins=local_spins,
         ).initial_state()
 
@@ -2731,30 +2959,64 @@ def test_a_supplied_mean_field_is_used_without_rerunning_scf(
     np.testing.assert_array_equal(state.mo_coeff, h4_chain_mean_field.mo_coeff)
 
 
-def test_warns_when_frontier_selection_starts_from_a_non_aufbau_reference(
-    dummy_expval_backend, h4_chain_mean_field
-):
-    swapped = copy.copy(h4_chain_mean_field)
-    energies = np.array(h4_chain_mean_field.mo_energy, copy=True)
-    energies[[1, 2]] = energies[[2, 1]]
-    swapped.mo_energy = energies
-    ensemble = LASSQD(
-        MolecularProblem.from_molecule(swapped),
-        backend=dummy_expval_backend,
+def _frontier_h4_lassqd(backend, mean_field, energies):
+    """Frontier-selected H4 on a copy of ``mean_field`` with ``energies`` as its
+    orbital energies."""
+    reference = copy.copy(mean_field)
+    reference.mo_energy = energies
+    return LASSQD(
+        MolecularProblem.from_molecule(reference),
+        backend=backend,
         reporting_level=ReportingLevel.OFF,
         **lassqd_kwargs(n_active_orbitals=4, max_orbitals_per_fragment=2),
     )
 
-    with pytest.warns(UserWarning, match="not aufbau"):
+
+def test_warns_when_frontier_selection_starts_from_a_non_aufbau_reference(
+    dummy_expval_backend, h4_chain_mean_field
+):
+    energies = np.array(h4_chain_mean_field.mo_energy, copy=True)
+    energies[[1, 2]] = energies[[2, 1]]
+    ensemble = _frontier_h4_lassqd(dummy_expval_backend, h4_chain_mean_field, energies)
+    message = (
+        f"The mean-field reference is not aufbau: the LUMO sits "
+        f"{(energies[1] - energies[2]) * 1000:.1f} mHa below the HOMO, so the "
+        "occupied set is not the lowest orbitals. Frontier selection assumes "
+        "ascending orbital energies and will pick the wrong active space."
+    )
+
+    with pytest.warns(UserWarning, match=exact_match(message)):
         ensemble.initial_state()
 
 
-def test_linear_method_accepts_an_explicit_default_lucj_ansatz(dummy_expval_backend):
-    ansatz = LUCJAnsatz()
+@pytest.mark.filterwarnings("error")
+@pytest.mark.parametrize("degenerate", [False, True], ids=["ascending", "degenerate"])
+def test_an_aufbau_reference_starts_frontier_selection_silently(
+    dummy_expval_backend, h4_chain_mean_field, degenerate
+):
+    energies = np.array(h4_chain_mean_field.mo_energy, copy=True)
+    if degenerate:
+        energies[2] = energies[1]
 
-    ensemble = _raw_lassqd(dummy_expval_backend, ansatz=ansatz)
+    _frontier_h4_lassqd(
+        dummy_expval_backend, h4_chain_mean_field, energies
+    ).initial_state()
 
-    assert ensemble.ansatz is ansatz
+
+def test_an_unconverged_mean_field_fails_initial_state(dummy_expval_backend):
+    mean_field = scf.RHF(h4_chain())
+    mean_field.max_cycle = 0
+    ensemble = _lassqd(
+        dummy_expval_backend, problem=MolecularProblem.from_molecule(mean_field)
+    )
+    message = (
+        "The mean-field reference did not converge, so every orbital the "
+        "macro-cycle starts from is meaningless. Converge it yourself and pass "
+        "the mean-field object instead of the molecule."
+    )
+
+    with pytest.raises(RuntimeError, match=exact_match(message)):
+        ensemble.initial_state()
 
 
 def test_run_rejects_unknown_keywords(exact_sampler_lassqd):
@@ -2777,7 +3039,7 @@ def test_ao_integrals_are_computed_once_per_ensemble(exact_sampler_lassqd, mocke
 
 
 def test_a_seed_with_no_energy_gain_is_rejected(dummy_expval_backend, mocker):
-    mocker.patch.object(_workflow, "_seed_energy_gain", return_value=0.0)
+    mocker.patch.object(_vqe_preparation, "_seed_energy_gain", return_value=0.0)
     ensemble = _lassqd(dummy_expval_backend)
 
     with pytest.warns(UserWarning, match="seeding rejected"):
@@ -2786,140 +3048,11 @@ def test_a_seed_with_no_energy_gain_is_rejected(dummy_expval_backend, mocker):
     assert all(program._seed_params is None for program in ensemble.programs.values())
 
 
-@pytest.mark.parametrize(
-    "ansatz, match",
-    [
-        pytest.param(UCCSDAnsatz(), "^CCSD did not converge", id="uccsd"),
-        pytest.param(LUCJAnsatz(), "^UCCSD did not converge", id="lucj"),
-    ],
-)
-def test_an_unconverged_seed_calculation_warns_but_still_seeds(
-    h4_chain_mean_field, mocker, ansatz, match
-):
-    mocker.patch.object(_workflow, "_SEED_CC_MAX_CYCLE", 1)
-    h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
-    n_params = type(ansatz).n_params_per_layer(8, n_electrons=4, n_alpha=2, n_beta=2)
-
-    with pytest.warns(UserWarning, match=match):
-        seed = _workflow._ccsd_seed_params(
-            h_eff, g_frag, _H4_WHOLE_SPACE, n_params, ansatz, {}
-        )
-
-    assert seed is not None
-    assert seed.shape == (n_params,)
-
-
-def test_a_failed_lucj_seed_calculation_falls_back_with_a_warning(mocker):
-    mocker.patch.object(_workflow.cc, "UCCSD", side_effect=RuntimeError("boom"))
-    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
-
-    with pytest.warns(UserWarning, match="CCSD seeding failed.*boom"):
-        seed = _workflow._lucj_seed_params(
-            np.eye(2), np.zeros((2,) * 4), spec, n_params=6, ansatz_kwargs={}
-        )
-
-    assert seed is None
-
-
-_ONE_PAIR_SPEC = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
-
-
-def _one_pair_coupled_cluster(mocker, double, single=0.0):
-    """UCCSD amplitudes for one occupied and one virtual orbital per spin."""
-    return mocker.Mock(
-        t1=(np.full((1, 1), single), np.full((1, 1), -single)),
-        t2=(
-            np.zeros((1, 1, 1, 1)),
-            np.full((1, 1, 1, 1), double),
-            np.zeros((1, 1, 1, 1)),
-        ),
-    )
-
-
-def _lucj_n_params(**ansatz_kwargs):
-    return LUCJAnsatz.n_params_per_layer(
-        4, n_electrons=2, n_alpha=1, n_beta=1, **ansatz_kwargs
-    )
-
-
-@pytest.mark.parametrize("double", [0.3, -0.3])
-@pytest.mark.parametrize(
-    "ansatz_kwargs",
-    [{}, {"rotation_depth": 1}, {"same_spin_pairs": [(0, 1)]}],
-    ids=["default", "rotation_depth", "same_spin_pairs"],
-)
-def test_lucj_seed_places_the_factorised_jastrow_in_its_layout(
-    mocker, ansatz_kwargs, double
-):
-    """With one pair per spin the doubles tensor is a single number ``t``: its
-    singular value is ``|t|`` and each sector's one-body operator has
-    eigenvalues ``(-1, 1)``, so every opposite-spin angle is
-    ``-|t| d_p d_q / 2`` and every same-spin angle stays zero."""
-    n_params = _lucj_n_params(**ansatz_kwargs)
-    same_pairs, opposite_pairs = lucj_jastrow_pairs(
-        2, ansatz_kwargs.get("same_spin_pairs"), None
-    )
-    jastrow_start = 2 * n_rotation_params(
-        2, orbital_phases=False, depth=ansatz_kwargs.get("rotation_depth")
-    )
-    diagonal = np.array([-1.0, 1.0])
-
-    seed = _workflow._lucj_amplitude_seed(
-        _one_pair_coupled_cluster(mocker, double),
-        _ONE_PAIR_SPEC,
-        n_params,
-        ansatz_kwargs,
-    )
-
-    assert seed is not None
-    assert seed.shape == (n_params,)
-    jastrow_end = jastrow_start + len(opposite_pairs)
-    np.testing.assert_allclose(
-        seed[jastrow_start:jastrow_end],
-        [-0.5 * abs(double) * diagonal[p] * diagonal[q] for p, q in opposite_pairs],
-        atol=1e-12,
-    )
-    assert jastrow_end + 2 * len(same_pairs) == n_params
-    assert not seed[jastrow_end:].any()
-
-
-def _fit_only_the_first(count):
-    """``rotation_angles`` that gives up after its first ``count`` fits."""
-    fit = _workflow.rotation_angles
-    calls = iter(range(count))
-
-    def first_only(target, *, depth=None):
-        return fit(target, depth=depth) if next(calls, None) is not None else None
-
-    return first_only
-
-
-def test_lucj_seed_keeps_the_rest_when_the_trailing_rotation_cannot_be_fit(mocker):
-    mocker.patch.object(
-        _workflow, "rotation_angles", side_effect=_fit_only_the_first(2)
-    )
-    n_params = _lucj_n_params(trailing_rotation=True)
-    n_trailing = 2 * n_rotation_params(2, orbital_phases=True)
-
-    with pytest.warns(UserWarning, match="could not realize the trailing rotation"):
-        seed = _workflow._lucj_amplitude_seed(
-            _one_pair_coupled_cluster(mocker, 0.3, single=0.05),
-            _ONE_PAIR_SPEC,
-            n_params,
-            {"trailing_rotation": True},
-        )
-
-    assert seed is not None
-    assert seed.shape == (n_params,)
-    assert not seed[-n_trailing:].any()
-    assert seed[:-n_trailing].any()
-
-
 _STRETCHED_H4 = "H 0 0 0; H 0 0 0.80; H 0 0 2.0; H 0 0 2.80"
 
 
 @pytest.mark.parametrize(
-    "overrides, match",
+    "overrides, message",
     [
         pytest.param(
             {
@@ -2927,23 +3060,19 @@ _STRETCHED_H4 = "H 0 0 0; H 0 0 0.80; H 0 0 2.0; H 0 0 2.80"
                     gto.M(atom=_STRETCHED_H4, basis="sto-3g", verbose=0)
                 )
             },
-            "written for a different molecule",
+            _DIFFERENT_MOLECULE,
             id="geometry",
         ),
         pytest.param(
-            {"active_spaces": [_H4_WHOLE_SPACE]},
-            "written with a different LASSQD configuration",
+            {"active_spaces": [H4_WHOLE_SPACE]},
+            _DIFFERENT_CONFIGURATION,
             id="fragment-layout",
         ),
-        pytest.param(
-            {"n_batches": 3},
-            "written with a different LASSQD configuration",
-            id="sqd-budget",
-        ),
+        pytest.param({"n_batches": 3}, _DIFFERENT_CONFIGURATION, id="sqd-budget"),
     ],
 )
 def test_workflow_checkpoint_rejects_a_different_problem(
-    exact_sampler_lassqd, dummy_expval_backend, mocker, tmp_path, overrides, match
+    exact_sampler_lassqd, dummy_expval_backend, mocker, tmp_path, overrides, message
 ):
     """A snapshot from another molecule with the same orbital count, or another
     fragmentation or SQD setup, would otherwise resume silently against the
@@ -2952,7 +3081,7 @@ def test_workflow_checkpoint_rejects_a_different_problem(
     payload = source._save_workflow_checkpoint_state(state, tmp_path, "output_state")
     target, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker, **overrides)
 
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match=exact_match(message)):
         target._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
 
 

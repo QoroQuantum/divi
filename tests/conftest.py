@@ -61,9 +61,15 @@ def pytest_configure(config):
 
 
 def pytest_ignore_collect(collection_path: Path, config):
-    ai_tests = Path(__file__).parent / "ai"
-    in_ai_tests = collection_path == ai_tests or ai_tests in collection_path.parents
-    return in_ai_tests and importlib.util.find_spec("bm25s") is None
+    optional_suites = (
+        ("ai", "bm25s"),
+        ("qprog/workflows/_lassqd", "pyscf"),
+    )
+    for suite, package in optional_suites:
+        path = Path(__file__).parent / suite
+        if collection_path == path or path in collection_path.parents:
+            return importlib.util.find_spec(package) is None
+    return False
 
 
 @pytest.fixture

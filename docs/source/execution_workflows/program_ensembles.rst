@@ -47,9 +47,9 @@ detail on its own page — this section gives a quick overview and links.
 
 **Localised Active-Space SQD**
    :class:`~divi.qprog.workflows.LASSQD` partitions a molecule's active space
-   into fragments, runs one VQE per fragment against its own
-   mean-field-embedded effective Hamiltonian, and recovers the ground state
-   via sample-based quantum diagonalisation. See
+   into fragments, prepares one circuit per fragment against its own
+   mean-field-embedded effective Hamiltonian, samples it, and recovers the
+   fragment state by sample-based quantum diagonalisation. See
    :doc:`../algorithms/localized_active_space_sqd` for fragment specification, automatic
    fragmentation, and the accuracy characteristics of the reported energy.
 

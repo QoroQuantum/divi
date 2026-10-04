@@ -9,6 +9,24 @@ from dataclasses import dataclass
 
 import numpy as np
 
+# Largest deviation of a checkpointed orbital overlap from the identity. Orbital
+# rotations keep it near machine precision; a scaled or edited array does not.
+_ORTHONORMALITY_TOL = 1e-8
+
+
+def require_orthonormal(
+    coeff: np.ndarray, label: str, overlap: np.ndarray | None = None
+) -> None:
+    """Raise unless ``coeff``'s columns are orthonormal under ``overlap``
+    (the identity when ``None``)."""
+    metric_coeff = coeff if overlap is None else overlap @ coeff
+    deviation = float(np.abs(coeff.T @ metric_coeff - np.eye(coeff.shape[1])).max())
+    if deviation > _ORTHONORMALITY_TOL:
+        raise ValueError(
+            f"{label} is not orthonormal: its overlap deviates from the identity "
+            f"by {deviation:.1e}."
+        )
+
 
 @dataclass(frozen=True)
 class FragmentSpec:
@@ -74,16 +92,25 @@ class FragmentState:
             orbital ordering.
         rdm2: ``(n_orb,) * 4`` fragment 2-RDM, in the same ordering as
             ``rdm1``.
-        params: The fragment VQE's converged parameters from the previous
+        params: The fragment preparation's parameters from the previous
             round, or ``None`` for a fragment that has not been optimised
             yet (e.g. a freshly built initial state).
         rdm1_alpha: Alpha-spin half of ``rdm1``, or ``None`` to assume the
-            closed-shell split ``rdm1 / 2``. Needed for the cross-fragment
-            exchange term, which contracts same-spin densities.
+            closed-shell split ``rdm1 / 2``, which only a fragment with equal
+            spin counts may do. Needed for the cross-fragment exchange term,
+            which contracts same-spin densities.
         rdm1_beta: Beta-spin half of ``rdm1``, under the same convention.
+        carried_alpha: Alpha strings carryover retained from the previous
+            round's SQD solve, in the basis of ``sampled_orbitals``.
+        carried_beta: Beta strings, likewise.
+        sampled_orbitals: ``(nao, n_orb)`` AO coefficients of the orbital basis
+            the previous round sampled and diagonalised in, which the carried
+            strings refer to; ``None`` when nothing is carried.
 
     Raises:
-        ValueError: If exactly one of ``rdm1_alpha`` and ``rdm1_beta`` is given.
+        ValueError: If exactly one of ``rdm1_alpha`` and ``rdm1_beta`` is given,
+            if neither is given for a fragment with unequal spin counts, or if
+            strings are carried without ``sampled_orbitals``.
     """
 
     spec: FragmentSpec
@@ -92,11 +119,25 @@ class FragmentState:
     params: np.ndarray | None = None
     rdm1_alpha: np.ndarray | None = None
     rdm1_beta: np.ndarray | None = None
+    carried_alpha: tuple[str, ...] = ()
+    carried_beta: tuple[str, ...] = ()
+    sampled_orbitals: np.ndarray | None = None
 
     def __post_init__(self):
+        object.__setattr__(self, "carried_alpha", tuple(self.carried_alpha))
+        object.__setattr__(self, "carried_beta", tuple(self.carried_beta))
         if (self.rdm1_alpha is None) != (self.rdm1_beta is None):
             raise ValueError(
                 "rdm1_alpha and rdm1_beta must be given together or not at all."
+            )
+        if self.rdm1_alpha is None and self.spec.n_alpha != self.spec.n_beta:
+            raise ValueError(
+                f"A spin-polarised fragment ({self.spec.n_alpha} alpha, "
+                f"{self.spec.n_beta} beta) needs rdm1_alpha and rdm1_beta."
+            )
+        if (self.carried_alpha or self.carried_beta) and self.sampled_orbitals is None:
+            raise ValueError(
+                "Carried strings need sampled_orbitals, the basis they refer to."
             )
 
     def spin_rdm1s(self) -> tuple[np.ndarray, np.ndarray]:

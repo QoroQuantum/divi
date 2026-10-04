@@ -4,19 +4,22 @@
 
 """Tests for the LASSQD integral machinery and the raw-integral Hamiltonian builder."""
 
+from functools import partial
+
 import numpy as np
 import pytest
 import scipy.linalg
 import scipy.optimize
-
-pytest.importorskip("pyscf")
-
 from pyscf import ao2mo, fci, gto, mcscf, scf
 from pyscf.fci import cistring
 
 from divi.hamiltonians import molecular_hamiltonian_from_pyscf
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog.workflows._lassqd import _integrals as _integrals_module
+from divi.qprog.workflows._lassqd._config import (
+    FullOrbitalSolve,
+    SecondOrderOrbitalSolve,
+)
 from divi.qprog.workflows._lassqd._integrals import (
     MOIntegrals,
     _total_energy,
@@ -24,9 +27,9 @@ from divi.qprog.workflows._lassqd._integrals import (
     build_active_permutation,
     cached_ao_eri,
     cached_h_ao,
+    ciah_orbital_solve,
     fragment_effective_integrals,
     optimize_orbitals,
-    pair_indices,
     rotation_energy_gradient_fn,
     transform_integrals,
 )
@@ -34,11 +37,13 @@ from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
 from tests._helpers import exact_match
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     build_energy_rdms,
+    capped_ciah_orbital_solve,
     dense_fci_energy,
     h2_mean_field,
     h4_chain_mean_field,
     mo_integrals,
     orbital_rotation_case,
+    orbital_solver,
 )
 
 
@@ -237,41 +242,270 @@ def converged_orbital_solve(orbital_rotation_case):
     return optimize_orbitals(*orbital_rotation_case, gradient_tol=_GRADIENT_TOL)
 
 
-def test_optimize_orbitals_reports_whether_it_converged(
-    orbital_rotation_case, converged_orbital_solve
-):
-    """The convergence flag must distinguish a real fixed point from a stall.
+@pytest.fixture(scope="module")
+def second_order_solve(orbital_rotation_case):
+    return capped_ciah_orbital_solve(*orbital_rotation_case, gradient_tol=_GRADIENT_TOL)
 
-    Because the routine is monotone -- it falls back to the unrotated orbitals
-    rather than returning something worse -- a starved optimizer yields a round
-    whose energy barely moves, which is indistinguishable from convergence
-    without this flag.
-    """
-    converged_solve = converged_orbital_solve
+
+_EACH_SOLVE = pytest.mark.parametrize(
+    "solver, solve_fixture",
+    [
+        (optimize_orbitals, "converged_orbital_solve"),
+        (capped_ciah_orbital_solve, "second_order_solve"),
+    ],
+    ids=["l-bfgs-b", "ciah"],
+)
+
+
+_CAP_REASON = {
+    optimize_orbitals: "STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT",
+    capped_ciah_orbital_solve: "macro-iteration limit",
+}
+
+
+def _unconverged_warnings(record, solve, reason, gradient_tol):
+    """Assert ``record`` holds exactly the non-convergence warning for ``solve``."""
+    expected = (
+        "Orbital optimisation ended without converging after "
+        f"{solve.n_iterations} iterations and {solve.n_evaluations} evaluations "
+        f"({reason}): its orbital-gradient norm {solve.gradient_norm:.2e} "
+        f"exceeds {gradient_tol:.2e}. The returned orbitals are the best seen, so "
+        "the energy is still an upper bound, but this round is not a stationary "
+        "point -- a small round-to-round energy change here means the optimizer "
+        "gave up, not that the macro-cycle converged."
+    )
+    assert [str(warning.message) for warning in record] == [expected]
+
+
+def _energy_and_gradient_at(case, mo_coeff):
+    """Energy and orbital gradient of ``case``'s functional at ``mo_coeff``."""
+    mol, _, *rest = case
+    pairs, energy_and_gradient = rotation_energy_gradient_fn(mol, mo_coeff, *rest)
+    return energy_and_gradient(np.zeros(len(pairs)))
+
+
+def _random_rotation(n_orbitals, scale, seed):
+    generator = np.random.default_rng(seed).normal(scale=scale, size=(n_orbitals,) * 2)
+    return scipy.linalg.expm(generator - generator.T)
+
+
+@_EACH_SOLVE
+def test_an_orbital_solve_reports_whether_it_converged(
+    orbital_rotation_case, solver, solve_fixture, request
+):
+    """A solve capped before convergence is flagged, so its barely moving
+    energy is not mistaken for a converged round."""
+    converged_solve = request.getfixturevalue(solve_fixture)
     assert converged_solve.converged is True
 
-    with pytest.warns(UserWarning, match="ended without converging"):
-        starved_solve = optimize_orbitals(
-            *orbital_rotation_case,
-            max_orbital_iterations=1,
-            gradient_tol=_GRADIENT_TOL,
+    with pytest.warns(UserWarning) as record:
+        starved_solve = solver(
+            *orbital_rotation_case, max_iterations=1, gradient_tol=_GRADIENT_TOL
         )
 
+    _unconverged_warnings(record, starved_solve, _CAP_REASON[solver], _GRADIENT_TOL)
     assert starved_solve.converged is False
     assert starved_solve.n_iterations == 1
     assert starved_solve.n_iterations < converged_solve.n_iterations
-    # Still monotone: the starved run cannot beat the converged one, and both
-    # remain at or below the unrotated baseline.
     assert starved_solve.energy >= converged_solve.energy - 1e-12
+
+
+@pytest.mark.parametrize(
+    "capped_solve",
+    [
+        partial(optimize_orbitals, max_iterations=1),
+        partial(ciah_orbital_solve, max_iterations=1),
+        FullOrbitalSolve(max_iterations=1)._solve,
+        SecondOrderOrbitalSolve(max_iterations=1)._solve,
+    ],
+    ids=["l-bfgs-b", "ciah", "full-orbital-solve", "second-order-orbital-solve"],
+)
+def test_the_non_convergence_warning_points_at_the_caller(
+    orbital_rotation_case, capped_solve
+):
+    with pytest.warns(UserWarning, match="ended without converging") as record:
+        capped_solve(*orbital_rotation_case, gradient_tol=_GRADIENT_TOL)
+
+    assert [warning.filename for warning in record] == [__file__]
+
+
+@_EACH_SOLVE
+def test_an_orbital_solve_reports_the_energy_and_gradient_at_its_orbitals(
+    orbital_rotation_case, solver, solve_fixture, request
+):
+    """The reported energy and gradient are those at the returned orbitals."""
+    solve = request.getfixturevalue(solve_fixture)
+    energy, gradient = _energy_and_gradient_at(orbital_rotation_case, solve.mo_coeff)
+
+    assert solve.energy == pytest.approx(energy, abs=1e-10)
+    assert solve.gradient_norm == pytest.approx(np.linalg.norm(gradient), rel=1e-6)
+
+
+def test_the_second_order_solve_converges_below_its_start(
+    orbital_rotation_case, second_order_solve
+):
+    start_energy, _ = _energy_and_gradient_at(
+        orbital_rotation_case, orbital_rotation_case[1]
+    )
+
+    assert second_order_solve.converged
+    assert second_order_solve.gradient_norm <= _GRADIENT_TOL
+    assert second_order_solve.energy < start_energy
+
+
+def test_the_second_order_solve_never_ends_above_its_start(orbital_rotation_case):
+    """Far from the minimum the Hessian is indefinite; capped at one
+    macro-iteration the solve must still hand back the lower orbitals its step
+    reached, not its start."""
+    mol, mo_coeff, *rest = orbital_rotation_case
+    case = (mol, mo_coeff @ _random_rotation(mo_coeff.shape[1], 0.6, 5), *rest)
+    start_energy, _ = _energy_and_gradient_at(case, case[1])
+
+    with pytest.warns(UserWarning, match="without converging"):
+        solve = ciah_orbital_solve(*case, gradient_tol=1e-12, max_iterations=1)
+
+    assert solve.energy < start_energy
+
+
+def test_the_second_order_solve_leaves_a_stationary_point_alone(
+    orbital_rotation_case, converged_orbital_solve
+):
+    mol, _, *rest = orbital_rotation_case
+
+    solve = capped_ciah_orbital_solve(
+        mol, converged_orbital_solve.mo_coeff, *rest, gradient_tol=_GRADIENT_TOL
+    )
+
+    assert solve.converged
+    assert solve.n_iterations == 0
+    np.testing.assert_array_equal(solve.mo_coeff, converged_orbital_solve.mo_coeff)
+
+
+def test_the_second_order_solve_counts_every_orbital_transform(
+    orbital_rotation_case, mocker
+):
+    transforms = mocker.spy(_integrals_module, "_energy_fock_and_potentials")
+
+    solve = capped_ciah_orbital_solve(
+        *orbital_rotation_case, gradient_tol=_GRADIENT_TOL
+    )
+
+    assert solve.n_evaluations == transforms.call_count
+
+
+def test_a_capped_second_order_solve_builds_no_step_it_discards(
+    orbital_rotation_case, mocker
+):
+    hessian_builds = mocker.spy(_integrals_module._LASOrbitalHessian, "gen_g_hop")
+
+    with pytest.warns(UserWarning, match="without converging"):
+        ciah_orbital_solve(*orbital_rotation_case, gradient_tol=1e-12, max_iterations=1)
+
+    assert hessian_builds.call_count == 1
+
+
+def _scripted_steps(mocker, *scripts):
+    """Replace pyscf's step generator; each call yields the next script's steps."""
+    remaining = iter(scripts)
+
+    def rotate_orb_cc(hessian, u0, *args, **kwargs):
+        for step in next(remaining):
+            yield step, None, None
+
+    return mocker.patch.object(
+        _integrals_module.ciah, "rotate_orb_cc", side_effect=rotate_orb_cc
+    )
+
+
+def test_a_second_order_solve_with_no_step_left_reports_a_stall(
+    orbital_rotation_case, mocker
+):
+    identity = np.eye(orbital_rotation_case[1].shape[1])
+    steps = _scripted_steps(mocker, [identity] * 3)
+
+    with pytest.warns(UserWarning) as record:
+        solve = capped_ciah_orbital_solve(
+            *orbital_rotation_case, gradient_tol=_GRADIENT_TOL
+        )
+
+    _unconverged_warnings(record, solve, "stalled", _GRADIENT_TOL)
+    assert solve.n_iterations == 0
+    assert steps.call_count == 1
+
+
+def test_a_zero_step_restarts_the_second_order_solve(orbital_rotation_case, mocker):
+    """pyscf seeds each augmented-Hessian solve with the previous step, so a
+    vanishing step would repeat forever; a fresh solve seeds from the gradient."""
+    n_orbitals = orbital_rotation_case[1].shape[1]
+    step = _random_rotation(n_orbitals, 1e-3, 3)
+    steps = _scripted_steps(mocker, [step, np.eye(n_orbitals)], [step])
+
+    with pytest.warns(UserWarning, match="without converging"):
+        solve = ciah_orbital_solve(
+            *orbital_rotation_case, gradient_tol=1e-12, max_iterations=2
+        )
+
+    assert solve.n_iterations == 2
+    assert steps.call_count == 2
+
+
+def test_the_second_order_solve_prefers_a_converged_point_level_with_its_best(
+    orbital_rotation_case, mocker
+):
+    """A converged point that rounding leaves a hair above an earlier,
+    unconverged one is the better answer."""
+    n_orbitals = orbital_rotation_case[1].shape[1]
+    n_pairs = len(rotation_energy_gradient_fn(*orbital_rotation_case)[0])
+    _scripted_steps(mocker, [_random_rotation(n_orbitals, 1e-3, 3)] * 2)
+    mocker.patch.object(
+        _integrals_module._LASOrbitalHessian,
+        "energy_and_gradient_at",
+        side_effect=[
+            (0.0, np.ones(n_pairs)),
+            (-1.0, np.ones(n_pairs)),
+            (-1.0 + 1e-12, np.zeros(n_pairs)),
+        ],
+    )
+
+    solve = capped_ciah_orbital_solve(
+        *orbital_rotation_case, gradient_tol=_GRADIENT_TOL
+    )
+
+    assert solve.converged
+    assert solve.n_iterations == 2
+
+
+def test_the_second_order_solve_keeps_the_lower_of_two_unconverged_points(
+    orbital_rotation_case, mocker
+):
+    n_orbitals = orbital_rotation_case[1].shape[1]
+    n_pairs = len(rotation_energy_gradient_fn(*orbital_rotation_case)[0])
+    _scripted_steps(mocker, [_random_rotation(n_orbitals, 1e-3, 3)] * 2)
+    mocker.patch.object(
+        _integrals_module._LASOrbitalHessian,
+        "energy_and_gradient_at",
+        side_effect=[
+            (0.0, np.ones(n_pairs)),
+            (-1.0, np.ones(n_pairs)),
+            (-1.0 + 1e-12, np.ones(n_pairs)),
+        ],
+    )
+
+    with pytest.warns(UserWarning, match="without converging"):
+        solve = ciah_orbital_solve(
+            *orbital_rotation_case, gradient_tol=_GRADIENT_TOL, max_iterations=2
+        )
+
+    assert solve.energy == -1.0
 
 
 def test_an_optimizer_stop_above_the_gradient_tolerance_is_not_converged(
     orbital_rotation_case, converged_orbital_solve
 ):
-    """L-BFGS-B also reports success when the relative energy change stalls,
-    which happens well before the gradient vanishes. Convergence is the
-    gradient norm against the caller's tolerance, not scipy's status."""
-    tolerance = converged_orbital_solve.gradient_norm / 10
+    """L-BFGS-B also reports success when the relative energy change stalls.
+    Convergence is the gradient norm against the caller's tolerance, not
+    scipy's status, so a tolerance below L-BFGS-B's reach is not met."""
+    tolerance = 1e-6 * converged_orbital_solve.gradient_norm
 
     with pytest.warns(UserWarning, match="orbital-gradient norm"):
         solve = optimize_orbitals(*orbital_rotation_case, gradient_tol=tolerance)
@@ -442,10 +676,8 @@ def test_assemble_active_rdms_matches_an_explicit_product_state(
 
 
 def test_assemble_active_rdms_exchange_uses_per_spin_densities():
-    """A spin-polarized pair exchanges only within a spin channel, so supplying
-    the alpha/beta halves must give a different answer from the closed-shell
-    ``gamma / 2`` fallback -- an all-alpha and an all-beta fragment have no
-    same-spin overlap to exchange at all."""
+    """A spin-polarised pair exchanges only within a spin channel: an all-alpha
+    and an all-beta fragment have no same-spin overlap to exchange at all."""
     alpha_only = FragmentState(
         spec=FragmentSpec(orbitals=(0,), n_alpha=1, n_beta=0),
         rdm1=np.array([[1.0]]),
@@ -464,15 +696,6 @@ def test_assemble_active_rdms_exchange_uses_per_spin_densities():
 
     assert rdm2[0, 0, 1, 1] == pytest.approx(1.0)
     assert rdm2[0, 1, 1, 0] == pytest.approx(0.0)
-
-    # The closed-shell fallback would wrongly predict -0.5 here.
-    _, rdm2_traced = assemble_active_rdms(
-        [
-            FragmentState(spec=s.spec, rdm1=s.rdm1, rdm2=s.rdm2)
-            for s in (alpha_only, beta_only)
-        ]
-    )
-    assert rdm2_traced[0, 1, 1, 0] == pytest.approx(-0.5)
 
 
 def test_total_energy_matches_fci_for_full_active_space(h4_chain_mean_field):
@@ -596,7 +819,13 @@ def test_fragment_effective_integrals_rejects_mismatched_active_space():
     )
     states = [_idle_fragment((0, 1))] * 2
 
-    with pytest.raises(ValueError, match="span"):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Fragments cover 4 orbitals but the active-space integrals span 2. "
+            "`integrals` and `fragments` were built from different fragment specs."
+        ),
+    ):
         fragment_effective_integrals(integrals, states, 0)
 
 
@@ -611,14 +840,12 @@ def _diagonal_active_rdms(n_act):
     return rdm1_active, rdm2_active
 
 
-def test_optimize_orbitals_spans_all_four_rotation_categories(h4_chain_mean_field):
-    """With only two 2-orbital fragments and no frozen core or virtuals, the
-    active-active fixtures elsewhere in this test module never populate the
-    core-active, core-virtual, or active-virtual rotation categories. Build a
-    fragmentation with a real frozen core and leftover virtual orbitals so all
-    four categories are exercised, and confirm both the exact rotation count
-    and that the resulting orbitals stay orthonormal under the AO overlap --
-    the property a non-skew-symmetric generator would violate."""
+def test_an_orbital_solve_spans_all_four_rotation_categories(
+    h4_chain_mean_field, orbital_solver
+):
+    """A frozen core, two single-orbital fragments and leftover virtuals give
+    every rotation category; the rotated orbitals stay orthonormal under the AO
+    overlap."""
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     n_orb_total = mo_coeff.shape[1]
@@ -637,7 +864,7 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(h4_chain_mean_fiel
     ao_eri = cached_ao_eri(mol)
     h_ao = cached_h_ao(mol)
 
-    solve = optimize_orbitals(
+    solve = orbital_solver(
         mol,
         permuted_mo_coeff,
         n_core,
@@ -667,14 +894,11 @@ def test_optimize_orbitals_spans_all_four_rotation_categories(h4_chain_mean_fiel
     np.testing.assert_allclose(gram, np.eye(n_orb_total), atol=1e-10)
 
 
-def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom(
-    h2_mean_field,
+def test_an_orbital_solve_reports_the_real_energy_with_no_rotation_freedom(
+    h2_mean_field, orbital_solver
 ):
-    """A single fragment spanning the whole active space, with no frozen core
-    and no virtuals, leaves zero rotation pairs. ``scipy.optimize.minimize``
-    called with a zero-length ``x0`` never evaluates the objective and
-    reports a spurious ``fun=0.0``; ``optimize_orbitals`` must not surface
-    that value as the energy, and must leave the coefficients unrotated."""
+    """One fragment spanning every orbital leaves zero rotation pairs; the solve
+    reports the energy of the unrotated orbitals, not a spurious ``0.0``."""
     mol = h2_mean_field.mol
     mo_coeff = np.asarray(h2_mean_field.mo_coeff)
 
@@ -684,7 +908,7 @@ def test_optimize_orbitals_reports_the_real_energy_with_no_rotation_freedom(
     h_ao = cached_h_ao(mol)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    solve = optimize_orbitals(
+    solve = orbital_solver(
         mol, mo_coeff, 0, [spec], rdm1, rdm2, ao_eri, h_ao, gradient_tol=_GRADIENT_TOL
     )
 
@@ -737,7 +961,13 @@ def test_optimize_orbitals_keeps_scipy_result_only_when_strictly_lower(
         success=True,
         message="",
     )
-    mocker.patch.object(_integrals_module, "minimize", return_value=fake_result)
+    no_progress = scipy.optimize.OptimizeResult(
+        fun=np.inf, x=np.zeros(4), nit=0, nfev=fake_result.nfev, message=""
+    )
+    # A restart from the accepted orbitals finds nothing lower, ending the solve.
+    minimize = mocker.patch.object(
+        _integrals_module, "minimize", side_effect=[fake_result, no_progress]
+    )
 
     solve = optimize_orbitals(
         mol,
@@ -748,22 +978,23 @@ def test_optimize_orbitals_keeps_scipy_result_only_when_strictly_lower(
         rdm2_active,
         ao_eri,
         h_ao,
-        gradient_tol=_GRADIENT_TOL,
+        gradient_tol=0.0,
     )
 
-    assert solve.n_evaluations == 1 + fake_result.nfev
-    assert solve.n_iterations == fake_result.nit
+    spent = 1 + fake_result.nfev * minimize.call_count
     if accepted:
-        rows, cols = pair_indices(rotation_pairs)
-        generator = np.zeros((4, 4))
-        generator[rows, cols] = fake_result.x
-        generator[cols, rows] = -fake_result.x
-        assert solve.energy == fake_result.fun
-        assert solve.gradient_norm == pytest.approx(np.linalg.norm(fake_result.jac))
-        np.testing.assert_allclose(
-            solve.mo_coeff, mo_coeff @ scipy.linalg.expm(generator), atol=1e-12
+        rotated = _rotated_mo_coeff(mo_coeff, rotation_pairs, fake_result.x)
+        rotated_energy, local_gradient = _energy_and_gradient_at(
+            (mol, mo_coeff, 0, specs, rdm1_active, rdm2_active, ao_eri, h_ao), rotated
         )
+        assert minimize.call_count == 2
+        assert solve.n_evaluations == spent + 1
+        assert solve.energy == pytest.approx(rotated_energy)
+        assert solve.gradient_norm == pytest.approx(np.linalg.norm(local_gradient))
+        np.testing.assert_allclose(solve.mo_coeff, rotated, atol=1e-12)
     else:
+        assert minimize.call_count == 1
+        assert solve.n_evaluations == spent
         assert solve.energy == baseline_energy
         assert solve.gradient_norm == pytest.approx(np.linalg.norm(baseline_gradient))
         np.testing.assert_allclose(solve.mo_coeff, mo_coeff, atol=1e-12)
@@ -920,3 +1151,96 @@ def test_orbital_minimize_options_reach_a_small_gradient(converged_orbital_solve
     """
     assert converged_orbital_solve.converged is True
     assert converged_orbital_solve.gradient_norm < 1e-3
+
+
+def test_an_orbital_solve_rotates_a_single_pair(h2_mean_field, orbital_solver):
+    """A doubly occupied one-orbital fragment against one virtual leaves a single
+    rotation pair; from rotated orbitals the solve returns to the mean field."""
+    mol = h2_mean_field.mol
+    mixing = scipy.linalg.expm(np.array([[0.0, 0.3], [-0.3, 0.0]]))
+    mo_coeff = np.asarray(h2_mean_field.mo_coeff) @ mixing
+    spec = FragmentSpec(orbitals=(0,), n_alpha=1, n_beta=1)
+
+    solve = orbital_solver(
+        mol,
+        mo_coeff,
+        0,
+        [spec],
+        np.array([[2.0]]),
+        np.full((1, 1, 1, 1), 2.0),
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+        gradient_tol=_GRADIENT_TOL,
+    )
+
+    assert solve.n_rotation_pairs == 1
+    assert solve.converged is True
+    assert solve.energy == pytest.approx(h2_mean_field.e_tot, abs=1e-8)
+
+
+def test_optimize_orbitals_spends_one_iteration_budget_across_restarts(
+    orbital_rotation_case, mocker
+):
+    """A run that lowers the energy restarts; the restart gets only the
+    iterations the first run left over."""
+    budgets = []
+    # Lower than any real energy, then no progress, ending the solve.
+    final_energies = iter([-1e3, np.inf])
+
+    def two_iterations(fun, x0, *, method, jac, options, callback):
+        budgets.append(options["maxiter"])
+        for _ in range(2):
+            callback(scipy.optimize.OptimizeResult(fun=0.0))
+        return scipy.optimize.OptimizeResult(
+            fun=next(final_energies), x=np.zeros_like(x0), nfev=1, message=""
+        )
+
+    mocker.patch.object(_integrals_module, "minimize", side_effect=two_iterations)
+
+    with pytest.warns(UserWarning, match="without converging"):
+        solve = optimize_orbitals(
+            *orbital_rotation_case, gradient_tol=1e-12, max_iterations=5
+        )
+
+    assert budgets == [5, 3]
+    assert solve.n_iterations == 4
+
+
+@pytest.fixture
+def orbital_hessian(orbital_rotation_case):
+    return _integrals_module._LASOrbitalHessian(*orbital_rotation_case)
+
+
+def test_the_orbital_hessian_packs_what_it_unpacks(orbital_hessian):
+    angles = np.random.default_rng(7).standard_normal(orbital_hessian.pdim)
+
+    packed = orbital_hessian.pack_uniq_var(orbital_hessian.unpack_uniq_var(angles))
+
+    np.testing.assert_array_equal(packed, angles)
+
+
+def test_the_orbital_hessian_evaluates_each_rotation_once(orbital_hessian):
+    rotation = np.eye(orbital_hessian.norb)
+
+    orbital_hessian.get_grad(rotation)
+    orbital_hessian.gen_g_hop(rotation)
+
+    assert orbital_hessian.evaluations == 1
+
+
+def test_the_hessian_vector_product_is_linear(orbital_hessian):
+    """Zero maps to zero, a unit vector does not, and scaling commutes."""
+    pdim = orbital_hessian.pdim
+    _, hessian_vector, _ = orbital_hessian.gen_g_hop(np.eye(orbital_hessian.norb))
+    unit = np.zeros(pdim)
+    unit[0] = 1.0
+    vector = np.random.default_rng(11).standard_normal(pdim)
+
+    at_zero = hessian_vector(np.zeros(pdim))
+
+    assert at_zero.shape == (pdim,)
+    assert not at_zero.any()
+    assert np.linalg.norm(hessian_vector(unit)) > 0.0
+    np.testing.assert_allclose(
+        hessian_vector(2.0 * vector), 2.0 * hessian_vector(vector), rtol=1e-9
+    )

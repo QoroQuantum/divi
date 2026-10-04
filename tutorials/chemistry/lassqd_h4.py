@@ -5,27 +5,28 @@
 """LASSQD on a stretched H4 chain, and why the fragmentation matters.
 
 :class:`~divi.qprog.workflows.LASSQD` estimates a molecule's ground-state
-energy by splitting its active space into fragments, running one VQE per
-fragment, recovering each fragment's ground state from the sampled bitstring
-distribution via sample-based quantum diagonalization (SQD), reassembling the
-fragment reduced density matrices (RDMs) into an active-space RDM, and
-re-optimizing the molecular orbitals against it. One round of ``LASSQD.run()``
-is one such macro-cycle; ``run()`` repeats until the energy converges or
-``max_rounds`` is reached.
+energy by splitting its active space into fragments, preparing and sampling one
+circuit per fragment, recovering each fragment's ground state from the sampled
+bitstring distribution via sample-based quantum diagonalisation (SQD),
+reassembling the fragment reduced density matrices (RDMs) into an active-space
+RDM, and re-optimising the molecular orbitals against it. One round of
+``LASSQD.run()`` is one such macro-cycle; ``run()`` repeats until the energy
+converges or ``max_rounds`` is reached.
 
 The reassembled RDM is that of a *product* of fragment states, so the energy is
-a genuine expectation value and sits **above** a CASCI/FCI reference on the same
-active space. What fragmenting costs is the correlation *between* fragments,
-which a product state cannot represent -- so the split you choose is the main
-thing determining accuracy.
+a genuine expectation value and sits **above** the CASCI reference used here:
+CAS(4,4) spans the whole STO-3G orbital space of H4, so that CASCI is FCI. What
+fragmenting costs is the correlation *between* fragments, which a product state
+cannot represent -- so the split you choose is the main thing determining
+accuracy.
 
 This tutorial makes that concrete on a linear H4 chain built as two
 well-separated H2 pairs, comparing two fragmentations of the same 4-orbital
 active space:
 
-* **Automatic** -- localize the frontier orbitals and cut along the weakest
+* **Automatic** -- localise the frontier orbitals and cut along the weakest
   coupling, so the correlation dropped is the weak inter-pair correlation.
-  Fragment indices it reports are positions in the localized basis, not
+  Fragment indices it reports are positions in the localised basis, not
   canonical MO labels.
 * **By orbital occupancy** -- one fragment of the occupied MOs ``(0, 1)`` and
   one of the virtuals ``(2, 3)``. Every H2 unit straddles both fragments, so
@@ -34,7 +35,7 @@ active space:
 Both give two fragments over the same active space, and both are valid upper
 bounds -- but the automatic split recovers most of the correlation energy where
 the occupancy split recovers a fraction of it. See the
-`Localized Active-Space SQD (LASSQD) guide
+`Localised Active-Space SQD (LASSQD) guide
 <https://divi.readthedocs.io/en/latest/algorithms/localized_active_space_sqd.html>`_
 for the accuracy discussion and sampling-budget tuning.
 """
