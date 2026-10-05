@@ -9,88 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.0](https://github.com/QoroQuantum/divi/compare/v0.14.0...v0.15.0) (2026-10-04)
 
-
 ### ✨ Added
 
-* **backends:** add DeviceConfig for per-job device settings ([9c43e8e](https://github.com/QoroQuantum/divi/commit/9c43e8e04fac3c2c3a0514c9671d9fe6b90fc078))
-* **backends:** adopt maestro 0.3.4 options and add config override/reset ([4dcd95b](https://github.com/QoroQuantum/divi/commit/4dcd95b617ea5e815975906c4aa51b4da0fd5fbe))
-* **backends:** expose maestro 0.3.1's simulator knobs ([1a31047](https://github.com/QoroQuantum/divi/commit/1a31047fb5993951be142c165afb9037d59428da))
-* **backends:** pad short observables onto the first qubits ([dbe2812](https://github.com/QoroQuantum/divi/commit/dbe2812aa126e84314e66fa58ed756ffca3700d5))
-* **lassqd:** add pluggable preparation and CIAH orbital updates ([401f879](https://github.com/QoroQuantum/divi/commit/401f879fb8d4cb4d0f417452168cbdfb1ae9c47b))
-* **lassqd:** report progress through long fragment and orbital stages ([654603f](https://github.com/QoroQuantum/divi/commit/654603f27611ae8c3d1b1aab56040c79a0d24798))
-* **optimizers:** add gCANS allocation and route structured Maestro noise through full simulation ([fdb399b](https://github.com/QoroQuantum/divi/commit/fdb399bc5f133ddd9676a5e8cd50188478766a12))
-* **qprog:** add HamiltonianProblem and MolecularProblem as VQE and LASSQD inputs ([610f3ae](https://github.com/QoroQuantum/divi/commit/610f3aea6e5ea2af5bc5169b95b14b760ebf34ec))
-* **qprog:** add linear constraints to BinaryOptimizationProblem ([bff8462](https://github.com/QoroQuantum/divi/commit/bff8462f95193482287346cd3c80edd347e7ecab))
-* **qprog:** add portfolio selection and allocation problems ([9009bdf](https://github.com/QoroQuantum/divi/commit/9009bdfd24c9f099d23bc0b9d1daf26770a3fed1))
-* **qprog:** add shot-adaptive ROSALIN optimization ([fa66343](https://github.com/QoroQuantum/divi/commit/fa66343d8202fbe91a0349105da64b9ca5de3a25))
-* **qprog:** add spin-moment extraction to solution sampling ([58b7a50](https://github.com/QoroQuantum/divi/commit/58b7a506c93450ac612f9446b2046b68a6395681))
-* **qprog:** fit a closed-form readout bias for supervised QNNs ([6c72f94](https://github.com/QoroQuantum/divi/commit/6c72f9475da44ca78e9aaccc0bc7ff6770716d1b))
-* **qprog:** partition portfolio problems and add QUBO partitioning config ([8a0debd](https://github.com/QoroQuantum/divi/commit/8a0debd1f547fc8ab2138bbf537e5bdfa521474a))
-* **qprog:** start HartreeFock and UCCSD ansätze at the Hartree–Fock point ([05f8e66](https://github.com/QoroQuantum/divi/commit/05f8e662b0aa17736fef2fa91a9acc524280ecb2))
-
+* **LASSQD:** choose how fragments are prepared (CCSD, linear method, or VQE) and how orbitals are optimized (CIAH or L-BFGS). CCSD and CIAH are now the defaults. Progress messages show what the fragment and orbital solves are doing. **Breaking:** replace the old preparation and orbital-iteration options with `preparation=` and `orbital_update=`; use `FullOrbitalSolve` to keep L-BFGS ([401f879](https://github.com/QoroQuantum/divi/commit/401f879), [654603f](https://github.com/QoroQuantum/divi/commit/654603f)).
+* **qprog:** add portfolio selection and allocation problems, including return, volatility and Sharpe-ratio results, a ring XY mixer with `DickeState`, and covariance-based partitioning that combines feasible cluster solutions ([9009bdf](https://github.com/QoroQuantum/divi/commit/9009bdf), [8a0debd](https://github.com/QoroQuantum/divi/commit/8a0debd)).
+* **qprog:** add `LinearConstraint` to `BinaryOptimizationProblem`; constrained QAOA and PCE results are checked or repaired against the original problem ([bff8462](https://github.com/QoroQuantum/divi/commit/bff8462)).
+* **qprog:** `QNN(fit_bias=True)` fits a constant offset to reduce squared prediction error and exposes it as `fitted_bias` ([6c72f94](https://github.com/QoroQuantum/divi/commit/6c72f94)).
+* **qprog:** when no initial parameters are supplied, Hartree–Fock and UCCSD ansätze start at the Hartree–Fock state instead of random angles ([05f8e66](https://github.com/QoroQuantum/divi/commit/05f8e66)).
+* **qprog:** `get_correlations()` and `get_magnetisations()` read two-site correlations and single-site spin expectations from sampled results ([58b7a50](https://github.com/QoroQuantum/divi/commit/58b7a50)).
+* **optimizers:** add ROSALIN and gCANS, which allocate measurement shots using gradient and variance estimates. ROSALIN enforces a total evaluation budget; VQE and QAOA gain generalized parameter-shift rules, measurement stages accept different shot counts per circuit, and programs report their actual circuit, shot, and backend-job usage ([fa66343](https://github.com/QoroQuantum/divi/commit/fa66343), [fdb399b](https://github.com/QoroQuantum/divi/commit/fdb399b)).
+* **backends:** add `DeviceConfig` for per-job QPU settings and expose Maestro GPU, tensor-network, sampling and distributed-execution options. Config objects support `override(...)` and `reset(...)`, simulator seeding works, and `force_sampling=True` includes readout error in measurements ([9c43e8e](https://github.com/QoroQuantum/divi/commit/9c43e8e), [1a31047](https://github.com/QoroQuantum/divi/commit/1a31047), [60e95c7](https://github.com/QoroQuantum/divi/commit/60e95c7), [4dcd95b](https://github.com/QoroQuantum/divi/commit/4dcd95b)).
+* **qprog:** add `HamiltonianProblem` and `MolecularProblem` as VQE and LASSQD inputs. **Breaking:** construct VQE with `problem=`, LASSQD with `MolecularProblem.from_molecule(...)`, and VQE sweeps with `problems=` ([610f3ae](https://github.com/QoroQuantum/divi/commit/610f3ae)).
 
 ### 🐛 Fixed
 
-* **aggregation:** refine beam search selection ([6423502](https://github.com/QoroQuantum/divi/commit/6423502694d17c755dda4eaa41fd9c94d98d8cb7))
-* **algorithms:** harden variational algorithms ([71a0dd1](https://github.com/QoroQuantum/divi/commit/71a0dd139dfc427769183d6ea57be259d20f810d))
-* **backends:** align QoroService configs with usher's execution_config endpoint ([6002e63](https://github.com/QoroQuantum/divi/commit/6002e632a89658c9008d5abdbcc76dbc1e9afc31))
-* **backends:** count local simulator run time in total_run_time ([0b8d350](https://github.com/QoroQuantum/divi/commit/0b8d350af97a15a44636f6fb0405a459480e3e9a))
-* **backends:** harden Qoro submission, cancellation and characterisation ([e07ac2f](https://github.com/QoroQuantum/divi/commit/e07ac2f3963dc3443f44e87fd84a67847f802a61))
-* **backends:** match usher's max_bond_dimension key and vendor device options ([a14427f](https://github.com/QoroQuantum/divi/commit/a14427f08a9728862a8cf01b25f9549aa3778854))
-* **backends:** run Maestro noise through full_noise_* with per-circuit seeds ([677f7d5](https://github.com/QoroQuantum/divi/commit/677f7d5cbd46263ace8ce279d7d2d67d9f5a80a3))
-* **circuits:** harden QEM, QASM validation and circuit conversion ([fe13407](https://github.com/QoroQuantum/divi/commit/fe13407f7d8198a3caa8e135e13aa11c8056a4ba))
-* **hamiltonians:** harden Hamiltonian builders ([306828e](https://github.com/QoroQuantum/divi/commit/306828e6bda1092f0f825094df74e931c4d31760))
-* harden checkpointing, ensemble failure handling and IterativeQAOA ([389cc7d](https://github.com/QoroQuantum/divi/commit/389cc7d3936e5bd21bbdd95362adaf1cf32d4ce0))
-* **lassqd:** harden LASSQD validation, checkpoints and SQD RDMs ([ff6b4ea](https://github.com/QoroQuantum/divi/commit/ff6b4eae37ea3164b3ea2f03d18c7b401a8642dc))
-* **lassqd:** use the mean-field core Hamiltonian and harden convergence, fragments and checkpoints ([f7a63bb](https://github.com/QoroQuantum/divi/commit/f7a63bb3a81f7c2743b7a36f9be15041a4725622))
-* **optimizers:** harden optimizers and metric estimators ([3f11e36](https://github.com/QoroQuantum/divi/commit/3f11e360918f6a6ffd834f9aa0a780fa927179ee))
-* **optimizers:** improve robustness under noisy evaluations ([8977575](https://github.com/QoroQuantum/divi/commit/8977575450105e40ca51b59a88afc2fe02858325))
-* **pipeline:** stop reusing a stale feature batch after reassignment ([e238ccd](https://github.com/QoroQuantum/divi/commit/e238ccd97949cac9041b5bb15f033d7dc93a04ae))
-* **qasm:** validate parametric templates by placeholder name ([4f23b25](https://github.com/QoroQuantum/divi/commit/4f23b25b7869c321b51470575378b8f4e3ca8742))
-* **qem:** default QuEPP to auto sampling and let tutorials sample on Maestro ([d9357f8](https://github.com/QoroQuantum/divi/commit/d9357f8e0527979f41baf2ae427cb51c7af9d4e9))
-* **qprog:** harden ensembles, batching and checkpointing ([a39587a](https://github.com/QoroQuantum/divi/commit/a39587a23509d023e0c27cdc9e05d63d2dce5397))
-* **qprog:** harden problem definitions and make graph problems library-agnostic ([351f566](https://github.com/QoroQuantum/divi/commit/351f566d8b6cfe733bba6358b9e547ecb8f064e3))
-* **qprog:** harden workflows, ensembles and variational programs ([4ef6ad0](https://github.com/QoroQuantum/divi/commit/4ef6ad0c5bd315e03207bde10c13166d3481b84f))
-* **qprog:** keep a PySCF molecule's unit across sweep geometries ([b324df2](https://github.com/QoroQuantum/divi/commit/b324df2219fe4414d0ef14cd5fe4e292575fb755))
-* **qprog:** keep the trotterization strategy passed to QAOA.load_state ([299d800](https://github.com/QoroQuantum/divi/commit/299d8007e05105c65c49d76a72cd5a0655946806))
-* **qprog:** merge edgeless clusters when partitioning graphs ([a3d62a3](https://github.com/QoroQuantum/divi/commit/a3d62a34b20e60203c50007ad4a2fc81ae1ed54b))
-* **qprog:** name the mismatched program when an ensemble round can't resume ([aad595e](https://github.com/QoroQuantum/divi/commit/aad595ebeac111eadfbdee9c816d843a30fd7a93))
-* **qprog:** reject a checkpoint loaded into a mismatched program ([931c7ee](https://github.com/QoroQuantum/divi/commit/931c7eed3c422c20f3e7979ebe197739dc89809e))
-* **qprog:** route ensemble circuits by program and label ([42bfc0d](https://github.com/QoroQuantum/divi/commit/42bfc0d9c3032a045e67e35b6bf842dc0516acde))
-* **qprog:** validate a reassigned QNN data axis before run() submits ([bf1296e](https://github.com/QoroQuantum/divi/commit/bf1296e5cf61e74e0fa8ab90353319dcea5c210e))
-* **reporting:** harden progress reporting ([923d05b](https://github.com/QoroQuantum/divi/commit/923d05be8561a42ffc65be268d132070b1fdb021))
-* **viz:** harden parameter scans and plots ([3fad202](https://github.com/QoroQuantum/divi/commit/3fad2022080bbf97e301bb0c2eb8a08ee1750eff))
-
+* **LASSQD:** respect supplied mean fields, core Hamiltonians and effective core potentials; initialize fragments from the reference determinant; validate fragments and returned orbital gradients; and restore completed rounds from their saved output. Exact density-matrix accumulation cuts a 64-orbital build from about 2.2 GB to 0.13 GB ([f7a63bb](https://github.com/QoroQuantum/divi/commit/f7a63bb), [ff6b4ea](https://github.com/QoroQuantum/divi/commit/ff6b4ea), [401f879](https://github.com/QoroQuantum/divi/commit/401f879)).
+* **backends:** avoid duplicate Qoro jobs by not retrying creation or cancellation after timeouts, make polling honor cancellation, and split requests by their actual payload size. Qoro jobs now use the correct Maestro or vendor-specific QPU configuration ([e07ac2f](https://github.com/QoroQuantum/divi/commit/e07ac2f), [6002e63](https://github.com/QoroQuantum/divi/commit/6002e63), [a14427f](https://github.com/QoroQuantum/divi/commit/a14427f)).
+* **backends:** record Maestro and Qiskit simulator time in `total_run_time`, and obtain Qoro time from the completed job result ([0b8d350](https://github.com/QoroQuantum/divi/commit/0b8d350)).
+* **backends:** use Maestro's full noise simulation for noisy runs, with independent per-circuit seeds and identity gates treated as noise sites ([677f7d5](https://github.com/QoroQuantum/divi/commit/677f7d5)).
+* **qprog:** prevent Qiskit transpilation from hanging in ensemble workers; keep batched results tied to the correct program and circuit; reject incompatible merged options; and report checkpoint, round and resume failures precisely ([389cc7d](https://github.com/QoroQuantum/divi/commit/389cc7d), [a39587a](https://github.com/QoroQuantum/divi/commit/a39587a), [42bfc0d](https://github.com/QoroQuantum/divi/commit/42bfc0d), [aad595e](https://github.com/QoroQuantum/divi/commit/aad595e)).
+* **qprog:** reject VQA checkpoints from a different Hamiltonian or parameter count, and restore completed LASSQD rounds with the orbitals that produced their results ([931c7ee](https://github.com/QoroQuantum/divi/commit/931c7ee), [401f879](https://github.com/QoroQuantum/divi/commit/401f879)).
+* **qprog:** make graph problems consistent across NetworkX and rustworkx, preserve the correct node identifiers, avoid cutting the heaviest edges, and merge edgeless clusters before building subproblems ([351f566](https://github.com/QoroQuantum/divi/commit/351f566), [a3d62a3](https://github.com/QoroQuantum/divi/commit/a3d62a3)).
+* **qprog:** geometry sweeps rebuild branched molecules without reflecting them and preserve a PySCF molecule's original length unit ([4ef6ad0](https://github.com/QoroQuantum/divi/commit/4ef6ad0), [b324df2](https://github.com/QoroQuantum/divi/commit/b324df2)).
+* **qprog:** validate reassigned QNN data before submitting circuits, honor `measure_all_qubits` during prediction, and retain the caller's trotterization strategy when loading QAOA state ([bf1296e](https://github.com/QoroQuantum/divi/commit/bf1296e), [4ef6ad0](https://github.com/QoroQuantum/divi/commit/4ef6ad0), [299d800](https://github.com/QoroQuantum/divi/commit/299d800)).
+* **optimizers:** make the pullback metric independent of Hamiltonian scaling and warn when a QNG step moves a parameter more than π/4 ([3f11e36](https://github.com/QoroQuantum/divi/commit/3f11e36)).
+* **circuits:** accept declared QASM parameter names such as `x[0]`, reject undefined QASM functions, convert a length-one scalar input to one circuit, and invalidate cached bindings when feature data changes ([4f23b25](https://github.com/QoroQuantum/divi/commit/4f23b25), [fe13407](https://github.com/QoroQuantum/divi/commit/fe13407), [e238ccd](https://github.com/QoroQuantum/divi/commit/e238ccd)).
+* **reporting:** preserve bracketed status text, require a console for `ProgressSession`, and correct parameter-scan and multi-observable plots ([923d05b](https://github.com/QoroQuantum/divi/commit/923d05b), [3fad202](https://github.com/QoroQuantum/divi/commit/3fad202), [4ef6ad0](https://github.com/QoroQuantum/divi/commit/4ef6ad0)).
+* **hamiltonians:** apply evolution time with the correct sign when building Trotterized circuits ([306828e](https://github.com/QoroQuantum/divi/commit/306828e)).
+* **qem:** QuEPP now enumerates symbolic circuits without warning and samples concrete circuits when possible; its previous default warned and fell back on every VQE or QAOA run ([d9357f8](https://github.com/QoroQuantum/divi/commit/d9357f8)).
 
 ### 🔄 Changed
 
-* **ai:** cache chunk embeddings between index builds ([33b516b](https://github.com/QoroQuantum/divi/commit/33b516bf21186569dc3faf4452901865350b612e))
-* **backends:** harden backend runners and properties conversion ([0fc5fac](https://github.com/QoroQuantum/divi/commit/0fc5fac62266349c861a2805737fd5a89a08dae1))
-* **lassqd:** avoid pyscf's direct-SCF buffer in core-potential build ([5b5955b](https://github.com/QoroQuantum/divi/commit/5b5955b7ed9b3db76710a57d5c452f1d6b35a312))
-* optimize core algorithm hot paths ([b573744](https://github.com/QoroQuantum/divi/commit/b573744a98f84017460ef9e531abd92902bf6941))
-* **pipeline:** harden pipeline core and stages ([b5b3c57](https://github.com/QoroQuantum/divi/commit/b5b3c570e8e765e544f3024a910f4f10a65d2a42))
-* **qprog:** collect capability mixins into divi.qprog.mixins ([53c2462](https://github.com/QoroQuantum/divi/commit/53c246250c75d6f2fd82a95cca414f647694d1c7))
-* **qprog:** split VQA runs into optimisation and finalisation ([3d5db2b](https://github.com/QoroQuantum/divi/commit/3d5db2bb9fcd0c7648f3cae88e60bb48485b96a4))
-* **qprog:** unify problem-suite naming and add graph feasibility ([47a34ec](https://github.com/QoroQuantum/divi/commit/47a34ec21d69529ba2b6dff8c082be262f3226e2))
-* remove package import cycles ([7c6b056](https://github.com/QoroQuantum/divi/commit/7c6b056236cdc9323ab4cba622275553772305aa))
-
+* **qprog:** `BeamSearchStrategy` now keeps up to 256 partial solutions and fetches six candidates per partition by default, instead of using a greedy beam of one. It also fetches at least `top_n` candidates; set both limits to `None` to search without beam pruning ([6423502](https://github.com/QoroQuantum/divi/commit/6423502)).
+* **backends:** Pauli observables shorter than their circuit now act on the first qubits and are padded with trailing identities on every backend. Returned result keys use the padded term, and a warning reports the padding ([dbe2812](https://github.com/QoroQuantum/divi/commit/dbe2812)).
+* **qprog:** import initial states from `divi.qprog.initial_states` and capability mixins from `divi.qprog.mixins`. Existing problem constructors rename `is_constrained` to `use_constrained_mixer`, `penalty_scale` or `constraint_penalty` to `penalty_weight`, and CVRP's `capacity_penalty` to `capacity_penalty_weight`. `PCE.get_top_solutions(n=0)` now returns every solution ([7c6b056](https://github.com/QoroQuantum/divi/commit/7c6b056), [53c2462](https://github.com/QoroQuantum/divi/commit/53c2462), [47a34ec](https://github.com/QoroQuantum/divi/commit/47a34ec)).
+* **qprog:** VQA checkpoints now store the random-number state and Hamiltonian identity, and ensembles checkpoint after every completed round; earlier VQA checkpoints cannot be loaded. Optimization and final result collection now run as separate steps, and `ProgramEnsemble.save_state()` is removed ([931c7ee](https://github.com/QoroQuantum/divi/commit/931c7ee), [3d5db2b](https://github.com/QoroQuantum/divi/commit/3d5db2b), [a39587a](https://github.com/QoroQuantum/divi/commit/a39587a), [4ef6ad0](https://github.com/QoroQuantum/divi/commit/4ef6ad0)).
+* **qprog:** IterativeQAOA's Fourier and Chebyshev starting parameters now follow the published interpolation formulas, so existing runs may follow a different path. Feature maps now reject inputs whose feature count does not match the number of qubits ([71a0dd1](https://github.com/QoroQuantum/divi/commit/71a0dd1)).
+* **backends:** rename `MaestroSimulator(config=...)` and its `config` attribute to `maestro_config`. For Qoro jobs, replace `execution_config` and `override_execution_config` with `maestro_config` for simulator jobs or `device_config` for QPU jobs, and rename `override_job_config` to `job_config`. `ExecutionConfig`, `SimulationMethod` and `Simulator` are removed, `api_meta` becomes `extra_kwargs`, and `default_date` is removed. `JobConfig.shots` now defaults to 1,000, and missing calibration dates remain missing ([9c43e8e](https://github.com/QoroQuantum/divi/commit/9c43e8e), [4dcd95b](https://github.com/QoroQuantum/divi/commit/4dcd95b), [6002e63](https://github.com/QoroQuantum/divi/commit/6002e63), [0fc5fac](https://github.com/QoroQuantum/divi/commit/0fc5fac)).
+* **pipeline:** use `PauliTwirlStage` in place of `PauliTwirlPass`; QEM protocols remove `dag_indices` and `select_by_dag_indices`; `DataBindingStage.name` reports the class name; and Ising conversion results remove `wires`, `term_count` and `ancilla_variables` ([b5b3c57](https://github.com/QoroQuantum/divi/commit/b5b3c57), [fe13407](https://github.com/QoroQuantum/divi/commit/fe13407), [306828e](https://github.com/QoroQuantum/divi/commit/306828e)).
+* **optimizers:** SPSA, QN-SPSA and QUIVER replace rolling `blocking_history` and `blocking_tol` with an absolute `allowed_increase` setting; QUIVER also removes `lipschitz`. Set `learning_rate` explicitly when reproducing old runs ([8977575](https://github.com/QoroQuantum/divi/commit/8977575)).
+* **performance:** avoid PySCF's roughly 3 GiB direct-SCF work buffer in LASSQD, reduce repeated searches and allocations in algorithm loops, and reuse embeddings for unchanged AI index chunks ([5b5955b](https://github.com/QoroQuantum/divi/commit/5b5955b), [b573744](https://github.com/QoroQuantum/divi/commit/b573744), [33b516b](https://github.com/QoroQuantum/divi/commit/33b516b)).
 
 ### 🔧 Internal
 
-* **backends:** send a divi User-Agent on Qoro API requests ([50d26d9](https://github.com/QoroQuantum/divi/commit/50d26d9d4411caf760b631b8fd204eb6f8502237))
-* **deps:** bump maestro to 0.3.3 ([60e95c7](https://github.com/QoroQuantum/divi/commit/60e95c7d0dd2d791e276495edffb44c70bcc8133))
-* **deps:** bump qoro-maestro to 0.3.5 ([b2a4ca1](https://github.com/QoroQuantum/divi/commit/b2a4ca10e1cb3decb377b9ab795de0c381df008a))
-* **nightly:** allow manual hotfix pre-releases between nightlies ([baf0d3a](https://github.com/QoroQuantum/divi/commit/baf0d3a3c377bbb2a6bf9db685df328b8f6b2e71))
-* skip release-please branches and bump actions/cache ([62f5d2c](https://github.com/QoroQuantum/divi/commit/62f5d2cf72841f3cf242de2446a79f9213a6b69f))
-* skip the ai extra and precompile bytecode for tutorial runs ([954b66c](https://github.com/QoroQuantum/divi/commit/954b66c9b537612c35c33a0a2bb47c5f6d29ba25))
-
+* Update qoro-maestro to 0.3.5 and send the Divi and Python versions in Qoro API User-Agent headers ([60e95c7](https://github.com/QoroQuantum/divi/commit/60e95c7), [b2a4ca1](https://github.com/QoroQuantum/divi/commit/b2a4ca1), [50d26d9](https://github.com/QoroQuantum/divi/commit/50d26d9)).
+* Let manual nightly builds publish distinct hotfix pre-releases, skip test matrices on Release Please branches, and speed up tutorial CI ([baf0d3a](https://github.com/QoroQuantum/divi/commit/baf0d3a), [62f5d2c](https://github.com/QoroQuantum/divi/commit/62f5d2c), [954b66c](https://github.com/QoroQuantum/divi/commit/954b66c)).
 
 ### 📝 Documentation
 
-* **backends:** correct QoroService circuit packing description ([98a93c5](https://github.com/QoroQuantum/divi/commit/98a93c5427314cd34b57fbfbe1ce70c2bf5a281c))
-* clarify run time, round records, MaxCut weights and the sweep example ([17883be](https://github.com/QoroQuantum/divi/commit/17883be380e113f921a53c82666e86cf4034c45b))
-* fix the spelling check ([186f77b](https://github.com/QoroQuantum/divi/commit/186f77b4f412a21dd6a72006d215aafae94d3792))
-* trim redundancy from the README [skip ci] ([3322be8](https://github.com/QoroQuantum/divi/commit/3322be8ee51c1f6c5dfde598cbb5ccc42ef90e40))
+* Clarify Qoro circuit packing and backend run time, simplify the README, and correct MaxCut, eigenstate, spelling and VQE sweep documentation ([98a93c5](https://github.com/QoroQuantum/divi/commit/98a93c5), [17883be](https://github.com/QoroQuantum/divi/commit/17883be), [3322be8](https://github.com/QoroQuantum/divi/commit/3322be8), [186f77b](https://github.com/QoroQuantum/divi/commit/186f77b)).
 
 ## [0.14.0](https://github.com/QoroQuantum/divi/compare/v0.13.0...v0.14.0) (2026-09-02)
 
