@@ -563,7 +563,8 @@ def repair_cvrp_solution(
     customer_demands = np.asarray(demands)[customers]
     vehicle_loads = np.einsum("vtc,c->v", repaired, customer_demands)
     empty_slots = [
-        list(np.flatnonzero(repaired[v].sum(axis=1) == 0)) for v in range(n_vehicles)
+        [int(slot) for slot in np.flatnonzero(repaired[v].sum(axis=1) == 0)]
+        for v in range(n_vehicles)
     ]
 
     # Check capacity and greedily reassign overflows

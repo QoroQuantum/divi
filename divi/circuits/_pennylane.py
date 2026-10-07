@@ -237,7 +237,8 @@ def _qscript_to_dag(
     for operation in qscript.operations:
         for parameter in operation.data:
             if isinstance(parameter, ParameterExpression):
-                for qiskit_parameter in parameter.parameters:
+                parameter_expression = cast(ParameterExpression, parameter)
+                for qiskit_parameter in parameter_expression.parameters:
                     if qiskit_parameter not in seen_qiskit:
                         seen_qiskit.add(qiskit_parameter)
                         ordered_qiskit_params.append(qiskit_parameter)
@@ -316,7 +317,12 @@ def qscript_to_meta(
                 raise ValueError(
                     "ExpectationMP without an observable is not supported."
                 )
-            operators.append(to_spo(measurement.obs, wires=qscript.wires))
+            observable_op = measurement.obs
+            if not isinstance(observable_op, qp.operation.Operator):
+                raise TypeError(
+                    "ExpectationMP observable must be a PennyLane operator."
+                )
+            operators.append(to_spo(observable_op, wires=qscript.wires))
         observable = tuple(operators)
     elif measurements:
         first = measurements[0]
