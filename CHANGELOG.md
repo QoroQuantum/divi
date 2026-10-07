@@ -7,6 +7,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1](https://github.com/QoroQuantum/divi/compare/v0.15.0...v0.15.1) (2026-10-07)
+
+
+### 🔄 Changed
+
+* **ai:** refresh local models and optimize CPU inference ([3767472](https://github.com/QoroQuantum/divi/commit/376747246e944f99f6863d1cf506c2dc395d4fe1))
+
+
+### 🔧 Internal
+
+* **deps:** upgrade dependencies and compatibility constraints ([56d2d3f](https://github.com/QoroQuantum/divi/commit/56d2d3ff26dffd8b8f7004f96e4fc1d43712abf6))
+
 ## [0.15.0](https://github.com/QoroQuantum/divi/compare/v0.14.0...v0.15.0) (2026-10-04)
 
 ### ✨ Added
