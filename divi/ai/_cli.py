@@ -36,8 +36,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--top-k",
         type=int,
-        default=8,
-        help="Number of context chunks to retrieve per query (default: 8).",
+        default=3,
+        help="Number of context chunks to retrieve per query (default: 3).",
     )
     parser.add_argument(
         "--max-tokens",

@@ -4,22 +4,22 @@
 
 import pytest
 
-from divi.ai._models import AVAILABLE_MODELS, get_recommended_models
+from divi.ai._models import AVAILABLE_MODELS, get_recommended_models, load_llm
 
 
 class TestGetRecommendedModels:
     @pytest.mark.parametrize(
         "arch,ram,expected",
         [
-            ("apple_silicon", 16.0, {"7b", "14b"}),
-            ("apple_silicon", 32.0, {"7b", "14b"}),
-            ("apple_silicon", 8.0, {"1.5b", "3b", "e2b", "e4b", "7b"}),
-            ("x86_64", 32.0, {"7b", "14b"}),
-            ("x86_64", 64.0, {"7b", "14b"}),
-            ("x86_64", 16.0, {"e4b", "7b", "14b"}),
-            ("x86_64", 8.0, {"1.5b", "3b", "e2b"}),
-            ("arm64", 8.0, {"1.5b", "3b", "e2b"}),
-            ("arm64", 16.0, {"e4b", "7b", "14b"}),
+            ("apple_silicon", 16.0, {"4b", "9b"}),
+            ("apple_silicon", 32.0, {"4b", "9b"}),
+            ("apple_silicon", 8.0, {"4b"}),
+            ("x86_64", 32.0, {"4b", "9b"}),
+            ("x86_64", 64.0, {"4b", "9b"}),
+            ("x86_64", 16.0, {"4b", "9b"}),
+            ("x86_64", 8.0, {"4b"}),
+            ("arm64", 8.0, {"4b"}),
+            ("arm64", 16.0, {"4b", "9b"}),
         ],
     )
     def test_recommendations(self, arch, ram, expected):
@@ -35,3 +35,19 @@ class TestGetRecommendedModels:
                 recommended = get_recommended_models(arch, ram)
                 for key in recommended:
                     assert key in AVAILABLE_MODELS, f"{key} not in AVAILABLE_MODELS"
+
+
+def test_load_llm_uses_detected_cpu_threads(mocker, tmp_path):
+    mocker.patch("divi.ai._models.detect_cpu_threads", return_value=6)
+    llama = mocker.patch("divi.ai._models.Llama")
+    model_path = tmp_path / "model.gguf"
+
+    load_llm(model_path, n_ctx=4096, debug=True)
+
+    llama.assert_called_once_with(
+        model_path=str(model_path),
+        n_ctx=4096,
+        n_threads=6,
+        n_threads_batch=6,
+        verbose=False,
+    )

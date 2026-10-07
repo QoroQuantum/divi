@@ -222,6 +222,101 @@ def _rrf_fuse(*runs: dict[int, float], k: int = _RRF_K) -> dict[int, float]:
     return dict(fused)
 
 
+def _deduplicate_chunks(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+    """Remove repeated evidence while preserving distinct source sections.
+
+    Exact text duplicates are redundant even when they came from different
+    generated views. For chunks from the same file, prefer the wider line
+    range when one range wholly contains another; it carries the same evidence
+    with enough surrounding code or prose to keep the example coherent.
+    """
+    result: list[RetrievedChunk] = []
+    normalized_texts: set[str] = set()
+
+    for chunk in chunks:
+        normalized = " ".join(chunk.text.split())
+        if normalized in normalized_texts:
+            continue
+
+        contained_at: list[int] = []
+        redundant = False
+        for index, existing in enumerate(result):
+            if existing.source_file != chunk.source_file:
+                continue
+            existing_contains = (
+                existing.start_line <= chunk.start_line
+                and existing.end_line >= chunk.end_line
+            )
+            chunk_contains = (
+                chunk.start_line <= existing.start_line
+                and chunk.end_line >= existing.end_line
+            )
+            if existing_contains:
+                redundant = True
+                break
+            if chunk_contains:
+                contained_at.append(index)
+
+        if redundant:
+            continue
+        if contained_at:
+            insert_at = contained_at[0]
+            for index in reversed(contained_at):
+                removed = result.pop(index)
+                normalized_texts.discard(" ".join(removed.text.split()))
+            result.insert(insert_at, chunk)
+        else:
+            result.append(chunk)
+        normalized_texts.add(normalized)
+
+    return sorted(result, key=lambda chunk: chunk.score, reverse=True)
+
+
+_CODE_REQUEST_RE = re.compile(
+    r"\b(?:how\s+(?:do|can)\s+i|set\s*up|configure|create|run|use|example|code)\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_runnable_example(chunk: RetrievedChunk) -> bool:
+    """Whether *chunk* contains user-facing code rather than test scaffolding."""
+    source = chunk.source_file.replace("\\", "/")
+    if "/tests/" in source or source.startswith("tests/"):
+        return False
+    return (
+        chunk.text.startswith("[Example:")
+        or "dashboard-example:" in chunk.text
+        or "```python" in chunk.text
+        or ("from divi." in chunk.text and "\n" in chunk.text)
+    )
+
+
+def _select_chunks(
+    query: str, chunks: list[RetrievedChunk], top_k: int
+) -> list[RetrievedChunk]:
+    """Select top chunks, reserving one slot for code when code was requested."""
+    if top_k <= 0:
+        return []
+
+    selected = chunks[:top_k]
+    if (
+        not _CODE_REQUEST_RE.search(query)
+        or any(_looks_like_runnable_example(chunk) for chunk in selected)
+        or len(chunks) <= top_k
+    ):
+        return selected
+
+    example = next(
+        (chunk for chunk in chunks[top_k:] if _looks_like_runnable_example(chunk)),
+        None,
+    )
+    if example is None:
+        return selected
+
+    selected[-1] = example
+    return sorted(selected, key=lambda chunk: chunk.score, reverse=True)
+
+
 # ---------------------------------------------------------------------------
 # Out-of-corpus sanity check
 # ---------------------------------------------------------------------------
@@ -319,7 +414,7 @@ def retrieve(
     query: str,
     stack: SearchStack,
     *,
-    top_k: int = 8,
+    top_k: int = 3,
     k_dense: int = 30,
     k_bm25: int = 30,
     rerank_candidates: int = 20,
@@ -374,8 +469,6 @@ def retrieve(
         (idx, rs) for idx, rs in zip(candidate_ids, rerank_scores) if rs >= _RERANK_GATE
     ]
     survivors.sort(key=lambda x: x[1], reverse=True)
-    survivors = survivors[:top_k]
-
     if not survivors:
         return []
 
@@ -388,7 +481,7 @@ def retrieve(
         faiss.normalize_L2(qv)
         extra_cosines = _cosine_for_indices(qv, stack, missing)
 
-    return [
+    results = [
         RetrievedChunk(
             text=stack.chunks[idx].text,
             source_file=stack.chunks[idx].source_file,
@@ -399,6 +492,7 @@ def retrieve(
         )
         for idx, rs in survivors
     ]
+    return _select_chunks(query, _deduplicate_chunks(results), top_k)
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +533,7 @@ def enrich_chunks(
     chunks: list[RetrievedChunk],
     *,
     max_enrich: int = 3,
-    max_chars: int = 1500,
+    max_chars: int = 9000,
     max_total_chars: int = 16000,
 ) -> list[RetrievedChunk]:
     """Replace docstring-only chunks with full source code from disk.
@@ -457,7 +551,8 @@ def enrich_chunks(
             break
         if not chunk.source_file.endswith(".py"):
             continue
-        if not _DOCSTRING_ONLY_RE.search(chunk.text):
+        is_module_summary = chunk.text.startswith("[Module:")
+        if not is_module_summary and not _DOCSTRING_ONLY_RE.search(chunk.text):
             continue
 
         path = _resolve_source_path(chunk.source_file, repo_root)
@@ -472,7 +567,7 @@ def enrich_chunks(
             continue
 
         start = max(0, chunk.start_line - 1)
-        end = min(len(lines), chunk.end_line)
+        end = len(lines) if is_module_summary else min(len(lines), chunk.end_line)
         source_text = "".join(lines[start:end]).strip()
 
         if not source_text or len(source_text) > max_chars:

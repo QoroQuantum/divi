@@ -6,7 +6,7 @@ from collections import namedtuple
 
 import pytest
 
-from divi.ai._system import detect_arch, detect_ram_gb
+from divi.ai._system import detect_arch, detect_cpu_threads, detect_ram_gb
 
 
 @pytest.mark.parametrize(
@@ -45,3 +45,37 @@ class TestDetectRamGb:
             side_effect=RuntimeError("no psutil"),
         )
         assert detect_ram_gb() is None
+
+
+class TestDetectCpuThreads:
+    def test_uses_physical_core_count(self, mocker):
+        mocker.patch(
+            "divi.ai._system.psutil.cpu_count",
+            side_effect=lambda logical: 32 if logical else 16,
+        )
+        process = mocker.patch("divi.ai._system.psutil.Process").return_value
+        process.cpu_affinity.return_value = list(range(32))
+
+        assert detect_cpu_threads() == 16
+
+    def test_respects_process_affinity(self, mocker):
+        mocker.patch(
+            "divi.ai._system.psutil.cpu_count",
+            side_effect=lambda logical: 32 if logical else 16,
+        )
+        process = mocker.patch("divi.ai._system.psutil.Process").return_value
+        process.cpu_affinity.return_value = list(range(8))
+
+        assert detect_cpu_threads() == 8
+
+    def test_falls_back_to_logical_count(self, mocker):
+        mocker.patch(
+            "divi.ai._system.psutil.cpu_count",
+            side_effect=lambda logical: 6 if logical else None,
+        )
+        mocker.patch(
+            "divi.ai._system.psutil.Process",
+            side_effect=RuntimeError("affinity unavailable"),
+        )
+
+        assert detect_cpu_threads() == 6

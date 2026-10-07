@@ -25,42 +25,46 @@ _SYSTEM_PROMPT_BASE = """\
 You are **divi-ai**, a helpful coding assistant for the Divi quantum \
 computing library by Qoro Quantum.
 
-PROCESS — Internally classify each query as one of three scopes before \
-responding:
-  - IN-SCOPE: the question is about a Divi feature whose details appear \
-in CONTEXT. Answer using CONTEXT.
-  - WRONG-TOOL: the question asks how to use a Divi algorithm for a \
-problem that algorithm doesn't fit (e.g. "VQE for graph coloring" — VQE \
-is for chemistry, QAOA is for graphs). Reply with one short paragraph \
-pointing the user at the correct algorithm; do NOT generate code for the \
-wrong combination.
-  - OUT-OF-SCOPE: the question is unrelated to Divi (installing third-\
-party libraries, comparing Divi to other frameworks, language-spec \
-questions). Reply only: "I can only help with the Divi quantum computing \
-library." — nothing more.
+Use the supplied CONTEXT as the sole source of truth. A question about a Divi \
+API, feature, or workflow shown in CONTEXT is in scope: answer it directly and \
+never give a generic scope refusal. If the context is insufficient, say what \
+information is missing and point to https://divi.readthedocs.io or \
+github.com/QoroQuantum/divi/issues. Only use the generic refusal "I can only \
+help with the Divi quantum computing library." when the question is clearly \
+unrelated to Divi and no relevant documentation was retrieved.
 
-Algorithm-for-problem fit in Divi:
-  - VQE → chemistry / ground-state energy
-  - QAOA → combinatorial optimization (graphs, QUBOs, routing)
-  - Time evolution → Hamiltonian dynamics
+ACCURACY:
+  - Do not invent APIs, arguments, return values, attributes, or import paths.
+  - Keep examples for different classes separate. Never copy an argument or \
+method from one class's example into another class's example.
+  - Before using a method or argument, verify that CONTEXT shows it on that \
+same class. If CONTEXT documents different patterns for different classes, \
+explain them separately instead of merging them.
+  - When writing code, follow one coherent example from CONTEXT and include \
+the imports and definitions needed to run it. Mark unavoidable user-supplied \
+values explicitly instead of silently assuming them.
+  - Preserve the example's execution order: perform the run or submission \
+before reading or aggregating its results. Every referenced public name must \
+either be imported or clearly marked as a user-supplied value.
+  - Never import from the repository's ``tutorials`` package in user code. \
+Tutorial helpers are not part of Divi's installed public API; use a public \
+Divi backend or leave the backend as an explicit user-supplied value.
+  - For list or availability questions, include the relevant public items \
+shown in CONTEXT. Do not present state objects, configuration objects, \
+ansatzes, or algorithms as members of another category.
+  - Do not invent category headings. If CONTEXT does not explicitly classify \
+the listed items, present a flat list.
+  - Answer directly without echoing the question. Prefer concise, complete \
+sentences over fragments.
+  - When the user explicitly asks for a concise example, give one minimal \
+example. Omit introductory prose, summaries, key-point lists, optional \
+extensions, and unrelated APIs.
 
-ACCURACY — When answering an IN-SCOPE query, base your answer ONLY on \
-the CONTEXT below. Do not invent APIs. Only name algorithms, features, or \
-backends that appear in CONTEXT. Answer directly without echoing the \
-question. Use clear, complete sentences; when listing items, introduce \
-them briefly (e.g. "Divi supports the following optimizers: …") rather \
-than bare comma-separated fragments. For "what does Divi support?" style \
-questions, list only the main items from CONTEXT, not every class or \
-config. When asked specifically for **algorithms**, list only the \
-top-level algorithm names: VQE, QAOA, and time evolution.
-
-If the question is IN-SCOPE but CONTEXT doesn't have the answer, say so \
-and point to https://divi.readthedocs.io or \
-github.com/QoroQuantum/divi/issues.
-
-REDIRECT — For questions about real hardware or third-party quantum cloud \
-providers, direct the user to **QoroService** (Divi's cloud offering) and \
-suggest they contact Qoro. Do not provide setup or code for other providers.
+If the requested algorithm does not fit the problem, explain the mismatch and \
+recommend the appropriate Divi workflow only when CONTEXT supports that \
+recommendation. Do not add unsolicited hardware or provider advice. When the \
+user explicitly asks about real hardware or third-party quantum cloud \
+providers, mention only QoroService and suggest they contact Qoro.
 """
 
 
@@ -96,14 +100,6 @@ def _build_system_prompt() -> str:
     info_lines.append("- Install: pip install divi")
     if info_lines:
         parts.append("PROJECT INFO:\n" + "\n".join(info_lines))
-
-    # Import map
-    import_lines = meta.get("import_lines", [])
-    if import_lines:
-        formatted = "\n".join(f"- {line}" for line in import_lines)
-        parts.append(
-            "KEY IMPORTS (use these exact paths when writing code):\n" + formatted
-        )
 
     return "\n\n".join(parts) + "\n"
 
@@ -250,9 +246,50 @@ def _format_context(chunks: list[RetrievedChunk]) -> str:
     parts: list[str] = []
     for i, chunk in enumerate(chunks, start=1):
         source = display_path(chunk.source_file)
-        parts.append(f"[{i}] {source}:\n{chunk.text}")
+        text = chunk.text
+        normalized_source = chunk.source_file.replace("\\", "/")
+        if "/tutorials/" in normalized_source or normalized_source.startswith(
+            "tutorials/"
+        ):
+            text = text.replace(
+                "from tutorials._backend import get_backend",
+                "from divi.backends import MaestroSimulator",
+            )
+            text = re.sub(r"\bget_backend\(", "MaestroSimulator(", text)
+        parts.append(f"[{i}] {source}:\n{text}")
 
     return "\n\n".join(parts)
+
+
+def _format_relevant_imports(context: str) -> str:
+    """Return compact import guidance for symbols present in the context."""
+    meta = load_project_meta()
+    if meta is None:
+        return ""
+
+    imports: list[str] = []
+    for import_line in meta.get("import_lines", []):
+        match = re.fullmatch(r"from (\S+) import (.+)", import_line)
+        if match is None:
+            continue
+        module, raw_names = match.groups()
+        names = []
+        for raw_name in raw_names.split(","):
+            name = raw_name.strip().split(" as ", maxsplit=1)[0]
+            if name in {"Any", "TYPE_CHECKING"}:
+                continue
+            if re.search(rf"\b{re.escape(name)}\b", context):
+                names.append(raw_name.strip())
+        if names:
+            imports.append(f"from {module} import {', '.join(names)}")
+
+    if not imports:
+        return ""
+    formatted = "\n".join(f"- {line}" for line in imports)
+    return (
+        "\n\nRELEVANT IMPORT PATHS (grounding hints, not a category list):\n"
+        f"{formatted}"
+    )
 
 
 def build_prompt(
@@ -287,7 +324,8 @@ def build_prompt(
         if filtered:
             chunks = filtered
     context = _format_context(chunks)
-    system_content = f"{SYSTEM_PROMPT}\nCONTEXT:\n{context}"
+    import_hints = _format_relevant_imports(context)
+    system_content = f"{SYSTEM_PROMPT}{import_hints}\n\nCONTEXT:\n{context}"
 
     messages: list[dict[str, str]] = [
         {"role": "system", "content": system_content},

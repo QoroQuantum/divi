@@ -10,8 +10,9 @@ divi-ai: AI Coding Assistant
 
 **divi-ai** is a coding assistant for Divi that runs directly in your terminal.
 It answers questions, generates code examples, and explains APIs — all using a
-local LLM on your machine. No API keys required. After the first launch
-(which downloads the model), divi-ai works fully offline.
+local LLM on your machine. No API keys are required. An internet connection is
+needed initially to cache the generation and retrieval models. Once those
+models are cached, divi-ai works offline.
 
 Installation
 ------------
@@ -33,55 +34,26 @@ before launching so you know what to expect:
 
 .. list-table::
    :header-rows: 1
-   :widths: 14 25 10 12 12
+   :widths: 20 55 25
 
    * - Key
      - Model
-     - Download
-     - Est. RAM
      - Context
-   * - ``1.5b``
-     - Qwen 2.5 Coder 1.5B
-     - 1.0 GB
-     - ~1.2 GB
+   * - ``4b`` (default)
+     - Qwen 3.5 4B Q4_K_M
      - 8K
-   * - ``3b``
-     - Qwen 2.5 Coder 3B
-     - 1.9 GB
-     - ~2.3 GB
-     - 8K
-   * - ``7b`` (default)
-     - Qwen 2.5 Coder 7B
-     - 4.5 GB
-     - ~5.4 GB
-     - 16K
-   * - ``14b``
-     - Qwen 2.5 Coder 14B
-     - 8.4 GB
-     - ~10.1 GB
-     - 16K
-   * - ``e2b``
-     - Gemma 4 E2B
-     - 2.9 GB
-     - ~3.5 GB
-     - 8K
-   * - ``e4b``
-     - Gemma 4 E4B
-     - 4.6 GB
-     - ~5.5 GB
+   * - ``9b``
+     - Qwen 3.5 9B Q4_K_M
      - 8K
 
-The **Qwen Coder** models are code-specialised and generally give better
-results for code generation. The **Gemma** models are general-purpose
-alternatives that work well for explanations and conceptual questions.
-Larger models produce better answers but need more RAM and run slower.
+The 4B model is the default because it offers the best balance of grounded
+Divi answers and CPU generation speed. The 9B model is more consistent on
+multi-step API questions, but takes substantially longer to answer.
 
 **Hardware recommendations:**
 
-* Apple Silicon with 16+ GB RAM: ``7b`` or ``14b``
-* x86 with 32+ GB RAM: ``7b`` or ``14b``
-* x86 with 16+ GB RAM: ``e4b`` or ``7b``
-* Less than 16 GB RAM: ``1.5b``, ``3b``, or ``e2b``
+* 16+ GB RAM: ``4b`` for speed or ``9b`` for higher answer quality
+* Less than 16 GB RAM: ``4b``
 
 First Launch
 ------------
@@ -94,17 +66,18 @@ On the first run:
 
 1. The interactive model selector opens (arrow keys to navigate, Enter to
    confirm).
-2. The selected model is downloaded from HuggingFace (~1--9 GB depending on
-   your choice). This requires an internet connection and may take a few
-   minutes.
+2. The selected generation model and the retrieval embedding model are cached.
+   The first question may also download the relevance model. Keep the machine
+   online until the first question completes successfully.
 3. The model and search index are loaded into memory. This can take
    30--60 seconds depending on your hardware.
 4. The TUI opens and you can start asking questions.
 
-Subsequent launches skip the download step and are much faster. Models are
-cached locally (the exact location is platform-dependent, determined by
-``platformdirs``). Delete model folders from the cache directory to free
-disk space.
+Subsequent launches reuse the cached models. The cache location is
+platform-dependent and determined by ``platformdirs``. If an upgrade removes
+the selected model from the catalogue, divi-ai asks you to choose again. It
+does not delete the old model files automatically; obsolete model folders can
+be removed from the cache to recover disk space.
 
 Using the Chat Interface
 ------------------------
@@ -153,7 +126,7 @@ CLI Options
    Forget the saved model preference and re-prompt for selection.
 
 ``--top-k N``
-   Number of documentation chunks retrieved per query (default: 8).
+   Number of documentation chunks retrieved per query (default: 3).
    Higher values give the model more context but use more of the context
    window. Lower values are faster but may miss relevant information.
 
@@ -179,21 +152,18 @@ Troubleshooting
    Linux and macOS this usually succeeds silently when a C++ toolchain
    is present; on Windows it frequently fails. Try these in order:
 
-   1. **Install a prebuilt wheel from abetlen's index** (works on
-      Windows, Linux, and macOS):
+   1. **Use a prebuilt CPU wheel from abetlen's index**, when one is available
+      for your platform:
 
       .. code-block:: bash
 
-         pip install "llama-cpp-python==0.3.19" \
+         pip install "qoro-divi[ai]" \
              --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
-             --only-binary=:all:
-         pip install "qoro-divi[ai]"
+             --only-binary=llama-cpp-python
 
-      The explicit ``==0.3.19`` is required: PyPI hosts no wheels for
-      this package, so without a version pin pip downloads the latest
-      source release and compiles it. ``--only-binary=:all:`` causes
-      pip to report an error immediately if no wheel matches your
-      Python version and architecture, instead of silently compiling
+      Divi's dependency constraint selects a compatible version.
+      ``--only-binary=llama-cpp-python`` makes pip report an error if the wheel
+      index has no compatible build instead of silently compiling that package
       from source.
 
    2. **If you must build from source**, install a C++ toolchain:
@@ -218,12 +188,11 @@ Troubleshooting
 
 **"Context window exceeded" / answers cut off mid-sentence**
    The conversation has filled the model's context window. Use ``/reset``
-   to clear history. If this happens frequently, switch to a model with
-   a 16K context window (``7b`` or ``14b``).
+   to clear history.
 
 **Slow or unusable on my machine**
-   Try ``1.5b`` or ``e2b`` — they run acceptably on most hardware. If
-   even those are too slow, divi-ai may not be practical on your system.
+   Use the default ``4b`` model. If it is still too slow, divi-ai may not be
+   practical on your system.
 
 **Answers seem wrong or hallucinated**
    Try a larger model if your hardware allows it. See the important

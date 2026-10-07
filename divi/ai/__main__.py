@@ -276,8 +276,8 @@ def main() -> None:
     inspect_parser.add_argument(
         "--top-k",
         type=int,
-        default=5,
-        help="Number of chunks to retrieve (default: 5).",
+        default=3,
+        help="Number of chunks to retrieve (default: 3).",
     )
 
     eval_parser = _add_command(
@@ -289,7 +289,7 @@ def main() -> None:
         help="Label for this eval run (e.g. 'baseline', 'step1').",
     )
     eval_parser.add_argument(
-        "--top-k", type=int, default=8, help="Chunks to retrieve (default: 8)."
+        "--top-k", type=int, default=3, help="Chunks to retrieve (default: 3)."
     )
     eval_parser.add_argument(
         "--max-tokens",

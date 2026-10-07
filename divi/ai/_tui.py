@@ -320,7 +320,7 @@ class DiviAIApp(App):
         stack: "SearchStack",
         *,
         model_name: str = "",
-        top_k: int = 8,
+        top_k: int = 3,
         max_tokens: int = 1024,
         dev_mode: bool = False,
     ) -> None:

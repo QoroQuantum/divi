@@ -27,7 +27,7 @@ from rich.console import Console, Group
 from rich.live import Live
 from rich.table import Table
 
-from ._system import detect_arch, detect_ram_gb
+from ._system import detect_arch, detect_cpu_threads, detect_ram_gb
 
 logger = logging.getLogger(__name__)
 
@@ -50,36 +50,33 @@ class ModelSpec:
 
     label: str
     repo_id: str
+    revision: str
     filename: str
     n_ctx: int
     default_size_gb: float
 
 
 AVAILABLE_MODELS: dict[str, ModelSpec] = {
-    "1.5b": ModelSpec(
-        label="Qwen 2.5 Coder 1.5B",
-        repo_id="Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
-        filename="qwen2.5-coder-1.5b-instruct-q4_k_m.gguf",
+    "4b": ModelSpec(
+        label="Qwen 3.5 4B",
+        repo_id="unsloth/Qwen3.5-4B-GGUF",
+        revision="e87f176479d0855a907a41277aca2f8ee7a09523",
+        filename="Qwen3.5-4B-Q4_K_M.gguf",
         n_ctx=8192,
-        default_size_gb=1.0,
+        default_size_gb=2.6,
     ),
-    "3b": ModelSpec(
-        label="Qwen 2.5 Coder 3B",
-        repo_id="Qwen/Qwen2.5-Coder-3B-Instruct-GGUF",
-        filename="qwen2.5-coder-3b-instruct-q4_k_m.gguf",
+    "9b": ModelSpec(
+        label="Qwen 3.5 9B",
+        repo_id="unsloth/Qwen3.5-9B-GGUF",
+        revision="3885219b6810b007914f3a7950a8d1b469d598a5",
+        filename="Qwen3.5-9B-Q4_K_M.gguf",
         n_ctx=8192,
-        default_size_gb=1.9,
-    ),
-    "7b": ModelSpec(
-        label="Qwen 2.5 Coder 7B",
-        repo_id="Qwen/Qwen2.5-Coder-7B-Instruct-GGUF",
-        filename="qwen2.5-coder-7b-instruct-q4_k_m.gguf",
-        n_ctx=16384,
-        default_size_gb=4.5,
+        default_size_gb=5.3,
     ),
     "14b": ModelSpec(
         label="Qwen 2.5 Coder 14B",
         repo_id="Qwen/Qwen2.5-Coder-14B-Instruct-GGUF",
+        revision="d0a692ef765eefbf2fabb130b3cb2e8917e3d225",
         filename="qwen2.5-coder-14b-instruct-q4_k_m.gguf",
         n_ctx=16384,
         default_size_gb=8.4,
@@ -87,6 +84,7 @@ AVAILABLE_MODELS: dict[str, ModelSpec] = {
     "e2b": ModelSpec(
         label="Gemma 4 E2B",
         repo_id="unsloth/gemma-4-E2B-it-GGUF",
+        revision="0314792d7f1f7e229411f620751375812bb9faf2",
         filename="gemma-4-E2B-it-Q4_K_M.gguf",
         n_ctx=8192,
         default_size_gb=2.9,
@@ -94,13 +92,14 @@ AVAILABLE_MODELS: dict[str, ModelSpec] = {
     "e4b": ModelSpec(
         label="Gemma 4 E4B",
         repo_id="unsloth/gemma-4-E4B-it-GGUF",
+        revision="bfc15c382204943c3a8fff0c750b94ae2364d7a3",
         filename="gemma-4-E4B-it-Q4_K_M.gguf",
         n_ctx=8192,
         default_size_gb=4.6,
     ),
 }
 
-DEFAULT_MODEL_SIZE = "7b"
+DEFAULT_MODEL_SIZE = "4b"
 
 # ---------------------------------------------------------------------------
 # HuggingFace metadata cache
@@ -128,7 +127,12 @@ def _fetch_model_size_from_hf(spec: ModelSpec) -> float | None:
     """
     try:
         api = HfApi()
-        info = api.model_info(spec.repo_id, files_metadata=True, timeout=10)
+        info = api.model_info(
+            spec.repo_id,
+            revision=spec.revision,
+            files_metadata=True,
+            timeout=10,
+        )
         for f in info.siblings:
             if f.rfilename == spec.filename and f.size is not None:
                 return f.size / (1024**3)
@@ -211,6 +215,7 @@ def ensure_model(size: str) -> Path:
     print(f"Downloading {spec.label} model …")
     downloaded = hf_hub_download(
         repo_id=spec.repo_id,
+        revision=spec.revision,
         filename=spec.filename,
         local_dir=str(local_dir),
     )
@@ -231,17 +236,9 @@ def get_recommended_models(arch: str, ram_gb: float | None) -> set[str]:
     if ram_gb is None:
         return set()
 
-    is_apple = arch == "apple_silicon"
-
-    if is_apple and ram_gb >= 16.0:
-        return {"7b", "14b"}
-    if is_apple:
-        return {"1.5b", "3b", "e2b", "e4b", "7b"}
-    if ram_gb >= 32.0:
-        return {"7b", "14b"}
     if ram_gb >= 16.0:
-        return {"e4b", "7b", "14b"}
-    return {"1.5b", "3b", "e2b"}
+        return {"4b", "9b"}
+    return {"4b"}
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +335,7 @@ def select_model_interactive() -> str:
     Returns
     -------
     str
-        The chosen model key (e.g. ``"e2b"``).
+        The chosen model key (e.g. ``"4b"``).
     """
     console = Console()
 
@@ -351,11 +348,12 @@ def select_model_interactive() -> str:
     recommended = get_recommended_models(arch, ram_gb)
     model_keys = list(AVAILABLE_MODELS.keys())
 
-    # Default to the largest recommended model, or fall back to global default
-    if recommended:
-        default = max(recommended, key=lambda k: model_keys.index(k))
-    else:
-        default = DEFAULT_MODEL_SIZE
+    # Prefer the benchmarked default whenever it fits the detected system.
+    default = (
+        DEFAULT_MODEL_SIZE
+        if not recommended or DEFAULT_MODEL_SIZE in recommended
+        else max(recommended, key=lambda k: model_keys.index(k))
+    )
     current = model_keys.index(default)
 
     def _render():
@@ -437,18 +435,21 @@ def load_llm(model_path: Path, *, n_ctx: int = 8192, debug: bool = False) -> Lla
     Llama
         A loaded ``llama_cpp.Llama`` instance ready for inference.
     """
+    cpu_threads = detect_cpu_threads()
     if debug:
         _console.print(f"[dim]Loading model from {model_path} …[/dim]")
         return Llama(
             model_path=str(model_path),
             n_ctx=n_ctx,
-            n_threads=0,
+            n_threads=cpu_threads,
+            n_threads_batch=cpu_threads,
             verbose=False,
         )
     with redirect_stderr(io.StringIO()):
         return Llama(
             model_path=str(model_path),
             n_ctx=n_ctx,
-            n_threads=0,
+            n_threads=cpu_threads,
+            n_threads_batch=cpu_threads,
             verbose=False,
         )

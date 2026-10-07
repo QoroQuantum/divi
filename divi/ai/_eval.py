@@ -141,7 +141,7 @@ def run_eval(
     *,
     model_path: Path,
     n_ctx: int = 8192,
-    top_k: int = 8,
+    top_k: int = 3,
     max_tokens: int = 1024,
     debug: bool = False,
 ) -> Path:

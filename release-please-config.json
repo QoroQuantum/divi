@@ -52,6 +52,13 @@
           "type": "removed",
           "section": "🗑️ Removed"
         }
+      ],
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='qoro-divi')].version"
+        }
       ]
     }
   }

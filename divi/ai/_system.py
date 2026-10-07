@@ -41,3 +41,28 @@ def detect_ram_gb() -> float | None:
         return psutil.virtual_memory().total / (1024**3)
     except Exception:
         return None
+
+
+def detect_cpu_threads() -> int:
+    """Return a portable thread count for local model inference.
+
+    Physical cores avoid simultaneous-multithreading contention on CPU-bound
+    llama.cpp workloads. The result is capped by the process CPU affinity when
+    the platform exposes it, so containers and restricted processes do not use
+    unavailable CPUs. Logical CPUs are used only when physical-core detection
+    is unavailable.
+    """
+    try:
+        physical = psutil.cpu_count(logical=False)
+        logical = psutil.cpu_count(logical=True)
+    except Exception:
+        return 1
+
+    count = physical or logical or 1
+    try:
+        affinity = len(psutil.Process().cpu_affinity())
+    except Exception:
+        affinity = 0
+    if affinity:
+        count = min(count, affinity)
+    return max(1, count)
