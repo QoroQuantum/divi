@@ -7,6 +7,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1](https://github.com/QoroQuantum/divi/compare/v0.15.0...v0.15.1) (2026-10-16)
+
+### 🐛 Fixed
+
+* **hamiltonians:** QDrift with `n_steps > 1` now draws fresh terms at every Trotter step instead of replaying one draw, so its error keeps falling as steps are added. A seeded `TimeEvolutionTrajectory` gives each time point its own reproducible draw. Evolution circuits are lowered to the QASM basis, fixing failures on `XZ`/`ZX` terms, and QASM angles below 0.1 keep `precision` significant figures instead of rounding towards zero. **Breaking:** custom `TrotterizationStrategy` implementations must accept an `n_steps` keyword, `TrotterizationResult.sampled_terms` is a tuple with one `SparsePauliOp` per step, and sampled evolution rejects `order != 1` ([52b58e9](https://github.com/QoroQuantum/divi/commit/52b58e9)).
+
+### 🔄 Changed
+
+* **ai:** divi-ai defaults to Qwen 3.5 4B, with Qwen 3.5 9B as the higher-quality tier. Model downloads are pinned to fixed revisions, retrieval grounding is tighter, and inference runs on the available physical CPU cores. **Breaking:** the `1.5b`, `3b` and `7b` models are removed; divi-ai asks you to choose again if one of them was saved ([3767472](https://github.com/QoroQuantum/divi/commit/3767472)).
+* **deps:** minimum versions raised to `qiskit>=2.5`, `rich>=15.0` and `numba>=0.68.0`, and `qiskit-ibm-runtime>=0.50` in the `aer` extra ([56d2d3f](https://github.com/QoroQuantum/divi/commit/56d2d3f)).
+
 ## [0.15.0](https://github.com/QoroQuantum/divi/compare/v0.14.0...v0.15.0) (2026-10-04)
 
 ### ✨ Added
