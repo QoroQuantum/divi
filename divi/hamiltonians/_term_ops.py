@@ -336,10 +336,6 @@ def _spo_to_qiskit_basis_gates_numeric(
         return
 
     sub = LieTrotter().synthesize(PauliEvolutionGate(spo, time=time))
-    # ``PauliEvolutionGate`` may synthesise to ``R{XX,YY,ZZ}Gate`` for
-    # two-qubit Pauli rotations — outside our QASM2 basis. ``decompose`` is
-    # a no-op on instructions whose names aren't listed.
-    sub = sub.decompose(["rxx", "ryy", "rzz"])
     qc.compose(sub, qubits=qubit_list, inplace=True)
 
 

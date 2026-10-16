@@ -57,17 +57,22 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         self,
         trotterization_strategy: TrotterizationStrategy,
         meta_circuit_factory: Callable[..., MetaCircuit],
+        *,
+        n_steps: int = 1,
     ) -> None:
         """
         Args:
             trotterization_strategy: Strategy for term selection/sampling (e.g. ``ExactTrotterization``, ``QDrift``).
             meta_circuit_factory: Factory callable
                 ``(TrotterizationResult, ham_id) -> MetaCircuit``.
+            n_steps: Trotter steps each result is drawn for; sampling
+                strategies draw independent terms per step.
         """
         super().__init__(name=type(self).__name__)
 
         self._trotterization_strategy = trotterization_strategy
         self._meta_circuit_factory = meta_circuit_factory
+        self._n_steps = n_steps
 
     def _prepare(
         self, items: SparsePauliOp
@@ -107,7 +112,9 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         spo_clean, strategy, n_samples, token = self._prepare(batch)
 
         rng = self._rng_for_evaluation(strategy, env)
-        results = strategy.process_hamiltonian_batch(spo_clean, n_samples, rng=rng)
+        results = strategy.process_hamiltonian_batch(
+            spo_clean, n_samples, n_steps=self._n_steps, rng=rng
+        )
         metas: MetaCircuitBatch = {
             (("ham", ham_id),): self._meta_circuit_factory(result, ham_id)
             for ham_id, result in enumerate(results)
@@ -131,7 +138,9 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
 
         prototype = self._meta_circuit_factory(
             strategy.process_hamiltonian(
-                spo_clean, rng=self._rng_for_evaluation(strategy, env)
+                spo_clean,
+                n_steps=self._n_steps,
+                rng=self._rng_for_evaluation(strategy, env),
             ),
             0,
         )

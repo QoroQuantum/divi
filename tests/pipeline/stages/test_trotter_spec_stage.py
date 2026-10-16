@@ -32,7 +32,7 @@ class _DummyStrategy(TrotterizationStrategy):
     def __init__(self, n: int = 3):
         self.n_hamiltonians_per_iteration = n
 
-    def process_hamiltonian(self, hamiltonian, *, rng=None):
+    def process_hamiltonian(self, hamiltonian, *, n_steps=1, rng=None):
         return TrotterizationResult(hamiltonian)
 
 
@@ -259,23 +259,36 @@ _FOUR_TERM_HAMILTONIAN = SparsePauliOp.from_list(
 )
 
 
-def _seeded_qdrift_draws(evaluation_counter: int) -> list:
-    """``(ham_id, sampled Hamiltonian)`` for each sample one expand hands the factory."""
-    draws = []
+_EXPAND_METHODS = pytest.mark.parametrize("method", ["expand", "dry_expand"])
+
+
+def _seeded_qdrift_results(
+    evaluation_counter: int = 0, *, n_steps: int = 1, method: str = "expand"
+) -> list:
+    """``(ham_id, TrotterizationResult)`` for each sample an expansion hands the factory."""
+    results = []
 
     def recording_factory(result, ham_id):
-        draws.append((ham_id, result.effective_hamiltonian.simplify()))
+        results.append((ham_id, result))
         return meta_with_observable(_Z0_Z1)
 
     stage = TrotterSpecStage(
         QDrift(sampling_budget=2, seed=7, n_hamiltonians_per_iteration=3),
         meta_circuit_factory=recording_factory,
+        n_steps=n_steps,
     )
-    stage.expand(
+    getattr(stage, method)(
         _FOUR_TERM_HAMILTONIAN,
         PipelineEnv(backend=None, evaluation_counter=evaluation_counter),
     )
-    return draws
+    return results
+
+
+def _seeded_qdrift_draws(evaluation_counter: int) -> list:
+    return [
+        (ham_id, result.effective_hamiltonian.simplify())
+        for ham_id, result in _seeded_qdrift_results(evaluation_counter)
+    ]
 
 
 def test_seeded_qdrift_resamples_per_evaluation_only():
@@ -283,3 +296,21 @@ def test_seeded_qdrift_resamples_per_evaluation_only():
     assert [ham_id for ham_id, _ in first] == [0, 1, 2]
     assert _seeded_qdrift_draws(0) == first
     assert _seeded_qdrift_draws(1) != first
+
+
+@_EXPAND_METHODS
+def test_qdrift_results_carry_one_draw_per_trotter_step(method):
+    results = _seeded_qdrift_results(n_steps=4, method=method)
+    assert results
+    assert {len(result.sampled_terms) for _, result in results} == {4}
+
+
+@_EXPAND_METHODS
+def test_default_batch_forwards_n_steps_to_every_call(mocker, method):
+    spy = mocker.spy(_DummyStrategy, "process_hamiltonian")
+    stage = TrotterSpecStage(
+        _DummyStrategy(n=3), meta_circuit_factory=_meta_factory, n_steps=5
+    )
+    getattr(stage, method)(_Z0, PipelineEnv(backend=None))
+    assert spy.call_args_list
+    assert {call.kwargs["n_steps"] for call in spy.call_args_list} == {5}

@@ -342,16 +342,6 @@ class TestSpoToQiskitBasisGatesNumericEdgeCases:
                 qubits = sorted(qc.find_bit(q).index for q in instr.qubits)
                 assert qubits == [3, 7]
 
-    def test_two_qubit_pauli_emits_basis_gates(self):
-        # ``pauli_evolution`` emits ``rxx``/``ryy``/``rzz`` for 2-qubit Paulis;
-        # the helper must decompose those into our QASM2 basis.
-        spo = SparsePauliOp.from_list([("XX", 1.0), ("YY", 1.0), ("ZZ", 1.0)])
-        qc = _build_numeric(spo, 0.3, [0, 1], n_qubits=2)
-        gate_names = {instr.operation.name for instr in qc.data}
-        assert "rxx" not in gate_names
-        assert "ryy" not in gate_names
-        assert "rzz" not in gate_names
-
 
 class TestSpoToQiskitBasisGatesParity:
     """The numeric and symbolic paths must produce equivalent unitaries

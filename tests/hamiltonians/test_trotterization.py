@@ -4,6 +4,8 @@
 
 """Tests for TrotterizationStrategy implementations (ExactTrotterization, QDrift)."""
 
+import itertools
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -36,6 +38,13 @@ _SIMPLE_HAMILTONIAN = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 
 def simple_hamiltonian() -> SparsePauliOp:
     """Three-term SPO over 2 qubits (coeffs 1.0, 2.0, 3.0)."""
     return _SIMPLE_HAMILTONIAN
+
+
+def _only_step(result) -> SparsePauliOp:
+    """The draw of a single-step sampling result."""
+    assert result.sampled_terms is not None
+    (step_terms,) = result.sampled_terms
+    return step_terms
 
 
 single_term_hamiltonians = pytest.mark.parametrize(
@@ -252,12 +261,11 @@ class TestQDrift:
     def test_sample_budget_only_returns_valid_hamiltonian(self, simple_hamiltonian):
         """When only sample_budget is set (no keep_*), exactly ``sampling_budget``
         terms are drawn, all from the input Hamiltonian."""
-        result = QDrift(sampling_budget=4, seed=42).process_hamiltonian(
-            simple_hamiltonian
+        step_terms = _only_step(
+            QDrift(sampling_budget=4, seed=42).process_hamiltonian(simple_hamiltonian)
         )
-        assert result.sampled_terms is not None
-        assert result.sampled_terms.size == 4
-        assert set(result.sampled_terms.paulis.to_labels()) <= set(
+        assert step_terms.size == 4
+        assert set(step_terms.paulis.to_labels()) <= set(
             simple_hamiltonian.paulis.to_labels()
         )
 
@@ -284,8 +292,7 @@ class TestQDrift:
         )
         assert effective.pop("ZZ") == 3.0
         assert set(effective) and set(effective) <= {"IZ", "ZI"}
-        assert result.sampled_terms is not None
-        assert result.sampled_terms.size == 4
+        assert _only_step(result).size == 4
 
     @pytest.mark.parametrize(
         "keep", [{"keep_fraction": 0.5}, {"keep_top_n": 1}], ids=["fraction", "top_n"]
@@ -363,10 +370,10 @@ class TestQDrift:
         """Single-term sampling preserves replacement multiplicity explicitly."""
         result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(single_term_spo)
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
-        assert result.sampled_terms is not None
-        assert result.sampled_terms.size == 3
+        step_terms = _only_step(result)
+        assert step_terms.size == 3
         np.testing.assert_allclose(
-            result.sampled_terms.coeffs,
+            step_terms.coeffs,
             np.repeat(single_term_spo.coeffs / 3, 3),
         )
 
@@ -432,27 +439,52 @@ class TestQDrift:
         ]
 
     def test_sampled_terms_include_the_kept_terms(self, simple_hamiltonian):
-        result = QDrift(keep_top_n=1, sampling_budget=2, seed=0).process_hamiltonian(
-            simple_hamiltonian
+        step_terms = _only_step(
+            QDrift(keep_top_n=1, sampling_budget=2, seed=0).process_hamiltonian(
+                simple_hamiltonian
+            )
         )
-        assert result.sampled_terms is not None
-        assert result.sampled_terms.size == 3
+        assert step_terms.size == 3
         kept = [
             coeff.real
-            for label, coeff in zip(
-                result.sampled_terms.paulis.to_labels(), result.sampled_terms.coeffs
-            )
+            for label, coeff in zip(step_terms.paulis.to_labels(), step_terms.coeffs)
             if label == "ZZ"
         ]
         assert kept == [3.0]
 
     def test_tiny_terms_stay_in_the_sampling_pool(self):
         hamiltonian = SparsePauliOp.from_list([("ZZ", 3.0), ("IZ", 1e-9)])
-        result = QDrift(keep_top_n=1, sampling_budget=2, seed=0).process_hamiltonian(
-            hamiltonian
+        step_terms = _only_step(
+            QDrift(keep_top_n=1, sampling_budget=2, seed=0).process_hamiltonian(
+                hamiltonian
+            )
+        )
+        assert "IZ" in step_terms.paulis.to_labels()
+
+    def test_each_trotter_step_draws_its_own_terms_with_the_kept_terms(self):
+        hamiltonian = SparsePauliOp.from_list(
+            [("ZZ", 3.0), ("IZ", 1.0), ("ZI", 1.0), ("XX", 1.0), ("YY", 1.0)]
+        )
+        result = QDrift(keep_top_n=1, sampling_budget=3, seed=0).process_hamiltonian(
+            hamiltonian, n_steps=6
         )
         assert result.sampled_terms is not None
-        assert "IZ" in result.sampled_terms.paulis.to_labels()
+        assert len(result.sampled_terms) == 6
+        labels = [tuple(step.paulis.to_labels()) for step in result.sampled_terms]
+        assert all(len(step) == 4 and step[-1] == "ZZ" for step in labels)
+        assert len(set(labels)) > 1
+        assert result.effective_hamiltonian == result.sampled_terms[0].simplify()
+
+    def test_single_step_draw_is_unchanged_by_the_step_axis(self, simple_hamiltonian):
+        """``n_steps=1`` consumes the RNG exactly as one ``rng.choice`` draw."""
+        strategy = QDrift(sampling_budget=4, sampling_strategy="uniform")
+        step_terms = _only_step(
+            strategy.process_hamiltonian(
+                simple_hamiltonian, rng=np.random.default_rng(5)
+            )
+        )
+        indices = np.random.default_rng(5).choice(3, size=4, replace=True)
+        assert step_terms.paulis == simple_hamiltonian.paulis[indices]
 
     @pytest.mark.parametrize(
         "strategy, hamiltonian, expected",
@@ -483,27 +515,32 @@ class TestQDrift:
         assert result.effective_hamiltonian.num_qubits == expected.num_qubits
         assert result.effective_hamiltonian == expected
 
+    @pytest.mark.parametrize("n_steps", [1, 3])
     def test_process_hamiltonian_batch_matches_per_sample_calls(
-        self, simple_hamiltonian
+        self, simple_hamiltonian, n_steps
     ):
         """The batch path is identical to calling process_hamiltonian n times on
-        the same RNG (partition-once is an optimization, not a behavior change)."""
+        the same RNG (partition-once is an optimisation, not a behaviour change)."""
         budget, n = 3, 4
         batched = QDrift(
             sampling_budget=budget, seed=7, n_hamiltonians_per_iteration=n
         ).process_hamiltonian_batch(
-            simple_hamiltonian, n_samples=n, rng=np.random.default_rng(7)
+            simple_hamiltonian,
+            n_samples=n,
+            n_steps=n_steps,
+            rng=np.random.default_rng(7),
         )
         loose_strategy = QDrift(sampling_budget=budget, seed=7)
         loose_rng = np.random.default_rng(7)
         per_sample = [
-            loose_strategy.process_hamiltonian(simple_hamiltonian, rng=loose_rng)
+            loose_strategy.process_hamiltonian(
+                simple_hamiltonian, n_steps=n_steps, rng=loose_rng
+            )
             for _ in range(n)
         ]
-        for b, p in zip(batched, per_sample):
-            assert (
-                b.effective_hamiltonian.simplify() == p.effective_hamiltonian.simplify()
-            )
+        assert [b.sampled_terms for b in batched] == [
+            p.sampled_terms for p in per_sample
+        ]
 
     @pytest.mark.parametrize("strategy", ["uniform", "weighted"])
     def test_qdrift_expected_value_matches_input_hamiltonian(self, strategy):
@@ -551,32 +588,87 @@ class TestQDrift:
 
 # Y-carrying terms make the sign of t observable; YY and ZZ commute, so every
 # product formula is exact and the circuit must equal exp(-i t H) exactly.
-@pytest.mark.parametrize(
-    "strategy,hamiltonian",
-    [
-        (ExactTrotterization(), SparsePauliOp("Y", 0.8)),
-        (ExactTrotterization(), SparsePauliOp(["YY", "ZZ"], [0.8, 0.3])),
-        (QDrift(sampling_budget=4, seed=3), SparsePauliOp(["YY", "ZZ"], [0.8, 0.3])),
-    ],
-    ids=["single-term", "multi-term", "sampled"],
-)
-@pytest.mark.parametrize("order", [1, 2])
-def test_synthesized_evolution_is_exp_minus_i_t_h(strategy, hamiltonian, order):
-    time = 0.7
-    result = strategy.process_hamiltonian(hamiltonian)
-    n = hamiltonian.num_qubits
-    qc = result.synthesize_evolution(
-        QuantumCircuit(n),
+_COMMUTING_YY_ZZ = SparsePauliOp(["YY", "ZZ"], [0.8, 0.3])
+_SYNTHESIS_TIME = 0.7
+
+
+def _synthesize(
+    result, *, n_steps: int, order: int, n_qubits: int, time: float = _SYNTHESIS_TIME
+) -> QuantumCircuit:
+    return result.synthesize_evolution(
+        QuantumCircuit(n_qubits),
         time=time,
-        n_steps=2,
+        n_steps=n_steps,
         order=order,
-        qubits=list(range(n)),
+        qubits=list(range(n_qubits)),
         basis_gates=list(_QISKIT_TO_QASM2),
     )
-    generator = (
-        hamiltonian if result.sampled_terms is None else result.sampled_terms
-    ).to_matrix()
-    assert Operator(qc).equiv(Operator(expm(-1j * time * generator)), atol=1e-8)
+
+
+def _evolution(generator: SparsePauliOp, time: float = _SYNTHESIS_TIME) -> Operator:
+    return Operator(expm(-1j * time * generator.to_matrix()))
+
+
+@pytest.mark.parametrize(
+    "hamiltonian",
+    [SparsePauliOp("Y", 0.8), _COMMUTING_YY_ZZ],
+    ids=["single-term", "multi-term"],
+)
+@pytest.mark.parametrize("order", [1, 2])
+def test_synthesized_evolution_is_exp_minus_i_t_h(hamiltonian, order):
+    result = ExactTrotterization().process_hamiltonian(hamiltonian, n_steps=2)
+    qc = _synthesize(result, n_steps=2, order=order, n_qubits=hamiltonian.num_qubits)
+    assert Operator(qc).equiv(_evolution(hamiltonian), atol=1e-8)
+
+
+def test_sampled_synthesis_applies_each_step_draw():
+    """Seed 3 draws different terms per step, so replaying one draw would fail."""
+    n_steps = 2
+    result = QDrift(sampling_budget=4, seed=3).process_hamiltonian(
+        _COMMUTING_YY_ZZ, n_steps=n_steps
+    )
+    assert result.sampled_terms is not None
+    assert result.sampled_terms[0] != result.sampled_terms[1]
+    qc = _synthesize(result, n_steps=n_steps, order=1, n_qubits=2)
+    assert Operator(qc).equiv(
+        _evolution(sum(result.sampled_terms) / n_steps), atol=1e-8
+    )
+
+
+def test_qdrift_without_sampling_budget_synthesizes_deterministically():
+    with pytest.warns(UserWarning, match=_SAMPLING_BUDGET_NOT_SET):
+        strategy = QDrift(keep_top_n=1)
+    result = strategy.process_hamiltonian(_COMMUTING_YY_ZZ, n_steps=2)
+    assert result.sampled_terms is None
+    qc = _synthesize(result, n_steps=2, order=2, n_qubits=2)
+    assert Operator(qc).equiv(_evolution(SparsePauliOp("YY", 0.8)), atol=1e-8)
+
+
+def test_sampled_synthesis_rejects_higher_order():
+    result = QDrift(sampling_budget=2, seed=0).process_hamiltonian(
+        _SIMPLE_HAMILTONIAN, n_steps=3
+    )
+    with pytest.raises(
+        ValueError,
+        match=exact_match("Sampled Trotterization supports only order=1, got order=2."),
+    ):
+        _synthesize(result, n_steps=3, order=2, n_qubits=2)
+
+
+@pytest.mark.parametrize(
+    "pauli",
+    ["".join(p) for k in (1, 2, 3, 4) for p in itertools.product("XYZ", repeat=k)],
+)
+def test_every_pauli_synthesizes_into_the_qasm_basis(pauli):
+    hamiltonian = SparsePauliOp(pauli, 0.4)
+    qc = _synthesize(
+        ExactTrotterization().process_hamiltonian(hamiltonian),
+        n_steps=1,
+        order=1,
+        n_qubits=len(pauli),
+    )
+    assert {inst.operation.name for inst in qc.data} <= set(_QISKIT_TO_QASM2)
+    assert Operator(qc).equiv(_evolution(hamiltonian), atol=1e-10)
 
 
 _NON_COMMUTING = SparsePauliOp(["IX", "ZZ", "XI", "YY"], [0.7, 0.4, -0.5, 0.3])
@@ -587,16 +679,15 @@ _EVOLUTION_TIME = 0.9
 
 
 def _synthesized(order: int, n_steps: int) -> Operator:
-    result = ExactTrotterization().process_hamiltonian(_NON_COMMUTING)
-    qc = result.synthesize_evolution(
-        QuantumCircuit(2),
-        time=_EVOLUTION_TIME,
-        n_steps=n_steps,
-        order=order,
-        qubits=[0, 1],
-        basis_gates=list(_QISKIT_TO_QASM2),
+    return Operator(
+        _synthesize(
+            ExactTrotterization().process_hamiltonian(_NON_COMMUTING),
+            n_steps=n_steps,
+            order=order,
+            n_qubits=2,
+            time=_EVOLUTION_TIME,
+        )
     )
-    return Operator(qc)
 
 
 def _ordered_product(sequence, n_steps: int) -> Operator:
@@ -628,7 +719,7 @@ def test_product_formula_applies_terms_in_input_order(order, sequence):
 
 
 def test_fourth_order_formula_is_more_accurate_than_second_order():
-    exact = expm(-1j * _EVOLUTION_TIME * _NON_COMMUTING.to_matrix())
+    exact = _evolution(_NON_COMMUTING, _EVOLUTION_TIME).data
     errors = {
         order: np.linalg.norm(_synthesized(order, n_steps=3).data - exact)
         for order in (2, 4)

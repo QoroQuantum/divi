@@ -14,7 +14,12 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import ExactTrotterization, TrotterizationStrategy, to_spo
+from divi.hamiltonians import (
+    ExactTrotterization,
+    QDrift,
+    TrotterizationStrategy,
+    to_spo,
+)
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.initial_states import InitialState
@@ -25,6 +30,15 @@ logger = logging.getLogger(__name__)
 # (one symbolic ``_meta_circuit_factory`` call) outweighs the savings from
 # sharing it across programs.
 _CACHE_MIN_TIME_POINTS = 4
+
+
+def _time_point_seed(seed: int | None, time: float) -> int | None:
+    """63-bit child seed of ``seed`` keyed by ``time``; ``None`` stays unseeded."""
+    if seed is None:
+        return None
+    key = int(np.float64(time).view(np.uint64))
+    state = np.random.SeedSequence(seed, spawn_key=(key,)).generate_state(1, np.uint64)
+    return int(state[0] >> np.uint64(1))
 
 
 class TimeEvolutionTrajectory(ProgramEnsemble):
@@ -70,14 +84,17 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             backend: Quantum circuit execution backend.
             trotterization_strategy: Strategy for term selection
                 (``ExactTrotterization``, ``QDrift``). Defaults to ``ExactTrotterization()``.
-                Deep-copied per program for thread safety.
+                Copied per program for thread safety; a seeded ``QDrift`` gets
+                an independent seed derived from its own and the time value,
+                so each time point's draws do not depend on the other points.
             n_steps: Number of Trotter steps.
             order: Suzuki-Trotter order (1 or even).
             initial_state: Initial state preparation (:class:`~divi.qprog.initial_states.InitialState` instance).
                 Defaults to ``ZerosState()`` if None.
             observable: If None, measure probabilities; else the expectation
                 value of one observable, or of each observable in a sequence.
-            seed: Random seed for reproducible results.
+            seed: Random seed for reproducible results. Each time point runs
+                with an independent seed derived from it and the time value.
             **kwargs: Forwarded verbatim to every per-time-point
                 :class:`~divi.qprog.algorithms.TimeEvolution`.  Use this for
                 ``grouping_strategy``, ``shot_distribution``, ``precision``,
@@ -119,18 +136,31 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             prog_id = f"t={t}"
             self._programs[prog_id] = TimeEvolution(
                 hamiltonian=self._hamiltonian,
-                trotterization_strategy=copy.deepcopy(self._trotterization_strategy),
+                trotterization_strategy=self._strategy_for(t),
                 time=t,
                 n_steps=self._n_steps,
                 order=self._order,
                 initial_state=self._initial_state,
                 observable=self._observable,
                 backend=self.backend,
-                seed=self._seed,
+                seed=_time_point_seed(self._seed, t),
                 _template_meta=template_meta,
                 _template_param=t_param,
                 **self._extra_kwargs,
             )
+
+    def _strategy_for(self, time: float) -> TrotterizationStrategy | None:
+        """The strategy for the program at ``time``, reseeded when it samples
+        with a fixed seed."""
+        strategy = self._trotterization_strategy
+        # A budgetless QDrift samples nothing, and ``replace`` would repeat its warning.
+        if (
+            isinstance(strategy, QDrift)
+            and strategy.seed is not None
+            and strategy.sampling_budget is not None
+        ):
+            return replace(strategy, seed=_time_point_seed(strategy.seed, time))
+        return copy.deepcopy(strategy)
 
     def _maybe_build_template(self) -> tuple[MetaCircuit | None, Parameter | None]:
         """Build a parametric MetaCircuit shared across all time-point

@@ -153,8 +153,9 @@ class QuantumProgram(ABC):
             backend (CircuitRunner): Quantum circuit execution backend.
             seed (int | None): Seed for the program's random draws, such as
                 initial parameters. Defaults to None.
-            precision (int): Decimal places for numeric parameter values in
-                QASM emission.  Higher values produce longer QASM strings;
+            precision (int): QASM precision of numeric parameter values; see
+                :attr:`~divi.circuits.MetaCircuit.precision`.  Higher values
+                produce longer QASM strings;
                 lower values shrink them at the cost of parameter resolution.
                 Defaults to :data:`~divi.circuits.DEFAULT_PRECISION`.
             suppress_performance_warnings (bool): Silence
@@ -272,7 +273,8 @@ class QuantumProgram(ABC):
 
     @property
     def precision(self) -> int:
-        """Decimal places used for numeric parameter values in QASM emission."""
+        """QASM precision of numeric parameter values; see
+        :attr:`~divi.circuits.MetaCircuit.precision`."""
         return self._precision
 
     @property

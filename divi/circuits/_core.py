@@ -80,7 +80,7 @@ def flatten_observable_tuple(
     return union, per_obs_term_indices
 
 
-# Canonical decimal-precision for QASM parameter rendering, threaded
+# Canonical precision for QASM parameter rendering, threaded
 # through every MetaCircuit-producing path. Users override per-program
 # via ``QuantumProgram(precision=...)``.
 DEFAULT_PRECISION = 8
@@ -164,7 +164,10 @@ class MetaCircuit:
     values (``_backend_expval`` grouping); ``None`` for counts-based paths."""
 
     precision: int = DEFAULT_PRECISION
-    """Number of decimal places for numeric parameter values in QASM conversion."""
+    """Precision of numeric parameter values in QASM. Magnitudes of 0.1 and
+    above render to this many decimal places and smaller nonzero ones to this
+    many significant figures (exponent notation where needed), so tiny angles
+    never round to zero."""
 
     _was_multi_obs: bool = False
     """Caller-set flag: ``True`` when the user explicitly opted into the

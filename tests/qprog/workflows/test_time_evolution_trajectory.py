@@ -127,8 +127,10 @@ class TestTimeEvolutionTrajectoryKwargForwarding:
         traj.create_programs()
 
         assert traj.reporting_level == ReportingLevel.OFF
+        seeds = [prog._seed for prog in traj.programs.values()]
+        assert seeds == [workflow._time_point_seed(9, t) for t in (0.1, 0.5)]
+        assert len(set(seeds)) == 2
         for prog in traj.programs.values():
-            assert prog._seed == 9
             assert prog.n_steps == 3
             assert prog.order == 2
             assert prog.initial_state is initial_state
@@ -196,6 +198,83 @@ class TestTimeEvolutionTrajectoryCreatePrograms:
         traj.create_programs()
         with pytest.raises(RuntimeError, match="Some programs already exist"):
             traj.create_programs()
+
+
+_QDRIFT_TIME_POINTS = (0.2, 0.5, 0.9)
+
+_SEED_SOURCES = pytest.mark.parametrize(
+    "strategy_seed, trajectory_seed",
+    [(4, None), (None, 9)],
+    ids=["strategy-seed", "trajectory-seed"],
+)
+
+
+def _seeded_qdrift_trajectory_draws(
+    factory,
+    backend,
+    strategy_seed,
+    trajectory_seed,
+    time_points=_QDRIFT_TIME_POINTS,
+):
+    """Run a QDrift trajectory and return its results and each time point's
+    draws, read from ``factory``, a spy on ``TimeEvolution._meta_circuit_factory``."""
+    factory.reset_mock()
+    traj = TimeEvolutionTrajectory(
+        hamiltonian=SparsePauliOp(["XX", "ZI", "IY", "YZ"], [0.7, -0.4, 0.2, 0.5]),
+        time_points=time_points,
+        n_steps=3,
+        trotterization_strategy=QDrift(
+            sampling_budget=3, seed=strategy_seed, n_hamiltonians_per_iteration=2
+        ),
+        observable=SparsePauliOp("ZZ"),
+        backend=backend,
+        seed=trajectory_seed,
+    )
+    traj.run()
+    draws = {t: [] for t in time_points}
+    for call in factory.call_args_list:
+        program, result = call.args[0], call.args[1]
+        draws[program.time].append(
+            tuple(tuple(step.paulis.to_labels()) for step in result.sampled_terms)
+        )
+    return traj.aggregate_results(), draws
+
+
+@_SEED_SOURCES
+def test_seeded_qdrift_trajectory_draws_independently_and_reproducibly(
+    mocker, default_test_simulator, strategy_seed, trajectory_seed
+):
+    factory = mocker.spy(TimeEvolution, "_meta_circuit_factory")
+    results, draws = _seeded_qdrift_trajectory_draws(
+        factory, default_test_simulator, strategy_seed, trajectory_seed
+    )
+    rerun_results, rerun_draws = _seeded_qdrift_trajectory_draws(
+        factory, default_test_simulator, strategy_seed, trajectory_seed
+    )
+
+    per_time_point = [tuple(draws[t]) for t in _QDRIFT_TIME_POINTS]
+    assert all(per_time_point)
+    assert len(set(per_time_point)) == len(_QDRIFT_TIME_POINTS)
+    assert rerun_draws == draws
+    assert rerun_results == results
+
+
+@_SEED_SOURCES
+def test_seeded_time_point_draws_do_not_depend_on_the_grid(
+    mocker, default_test_simulator, strategy_seed, trajectory_seed
+):
+    factory = mocker.spy(TimeEvolution, "_meta_circuit_factory")
+    _, full_grid = _seeded_qdrift_trajectory_draws(
+        factory, default_test_simulator, strategy_seed, trajectory_seed
+    )
+    _, sub_grid = _seeded_qdrift_trajectory_draws(
+        factory,
+        default_test_simulator,
+        strategy_seed,
+        trajectory_seed,
+        time_points=(0.9, 0.5),
+    )
+    assert sub_grid == {t: full_grid[t] for t in (0.9, 0.5)}
 
 
 class TestTimeEvolutionTrajectoryRun:

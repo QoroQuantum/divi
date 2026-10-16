@@ -26,19 +26,23 @@ from divi.circuits._conversions import (
 from tests._helpers import exact_match
 
 
+@pytest.mark.parametrize("formatter", [_format_bound_param, _format_gate_param])
 @pytest.mark.parametrize(
     "value,precision,expected",
     [
         (0.0, 8, "0"),
         (-0.0, 8, "0"),
-        (4.9e-9, 8, "0"),
+        (4.9e-9, 8, "4.9e-09"),
+        (2.74e-8, 8, "2.74e-08"),
+        (-1.5e-10, 8, "-1.5e-10"),
+        (0.0123456789, 8, "0.012345679"),
         (np.pi, 8, "3.14159265"),
         (1234567.891, 8, "1234567.891"),
         (1.5, 10, "1.5"),
         (3.0, 10, "3"),
         (-2.5, 10, "-2.5"),
         (0.001, 10, "0.001"),
-        (1e-20, 10, "0"),
+        (1e-20, 10, "1e-20"),
         (1.123456789, 4, "1.1235"),
         (0.0, 0, "0"),
         (10.0, 0, "10"),
@@ -47,8 +51,10 @@ from tests._helpers import exact_match
         (-0.2, 0, "0"),
     ],
 )
-def test_format_bound_param_renders_finite_angles(value, precision, expected):
-    assert _format_bound_param(value, precision) == expected
+def test_numeric_angles_render_in_the_one_qasm_format(
+    formatter, value, precision, expected
+):
+    assert formatter(value, precision) == expected
 
 
 class TestAssertFinite:

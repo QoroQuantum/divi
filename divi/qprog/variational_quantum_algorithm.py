@@ -305,8 +305,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 shots are ignored in that mode. Defaults to ``None`` (every
                 group receives the full shot budget).
             precision (int): Forwarded to
-                :class:`~divi.qprog.QuantumProgram` — decimal places for
-                numeric parameter values in QASM conversion. Higher values
+                :class:`~divi.qprog.QuantumProgram` — QASM precision of
+                numeric parameter values. Higher values
                 produce longer QASM strings (more data sent to cloud
                 backends); lower values trade resolution for compactness.
                 Defaults to :data:`~divi.circuits.DEFAULT_PRECISION`.

@@ -819,8 +819,8 @@ class QoroService(CircuitRunner):
         The two shapes resolve floats differently: the backend substitutes
         via ``str(value)`` on the decoded float, preserving the full
         Python repr, whereas bound QASM was rendered locally at the
-        :class:`~divi.circuits.MetaCircuit`'s precision (8 decimals by
-        default). Values that round-trip through both formatters give
+        :class:`~divi.circuits.MetaCircuit`'s precision. Values that
+        round-trip through both formatters give
         byte-identical circuits; others differ only in the trailing digits.
 
         Args:

@@ -55,6 +55,38 @@ _PROB_TOL = 0.03
 _QDRIFT_EXPVAL_TOL = 0.15
 
 
+def _tfim(n_qubits: int) -> SparsePauliOp:
+    """Open-chain TFIM ``-Σ Z_q Z_{q+1} - Σ X_q``."""
+    return _op(
+        [("ZZ", [q, q + 1], -1.0) for q in range(n_qubits - 1)]
+        + [("X", [q], -1.0) for q in range(n_qubits)],
+        n_qubits,
+    )
+
+
+_TFIM_3Q = _tfim(3)
+# ⟨000|H|000⟩, conserved by exact evolution from the default |000⟩ state.
+_TFIM_3Q_ENERGY = -2.0
+
+
+def _qdrift_tfim_energy(n_steps: int, backend) -> float:
+    """⟨H⟩ after seeded weighted QDrift evolution of ``_TFIM_3Q`` for t = 0.8."""
+    te = TimeEvolution(
+        hamiltonian=_TFIM_3Q,
+        time=0.8,
+        n_steps=n_steps,
+        observable=_TFIM_3Q,
+        trotterization_strategy=QDrift(
+            sampling_budget=10,
+            seed=0,
+            n_hamiltonians_per_iteration=100,
+            sampling_strategy="weighted",
+        ),
+        backend=backend,
+    )
+    return te.run().results
+
+
 def _unit_expval_submit(payloads, **kwargs):
     """Return 1.0 for every requested ``ham_ops`` term on every circuit."""
     ham_ops = kwargs.get("ham_ops", "")
@@ -184,6 +216,21 @@ class TestTimeEvolutionGenerateCircuits:
         trace = _evolution_pipeline(te).run_forward_pass(te._hamiltonian, env)
         # QDrift with 3 samples → at least 3 circuits
         assert len(trace.final_batch) >= 3
+
+    def test_pipeline_qdrift_draws_for_every_trotter_step(
+        self, mocker, two_qubit_hamiltonian, default_test_simulator
+    ):
+        spy = mocker.spy(QDrift, "process_hamiltonian_batch")
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            trotterization_strategy=QDrift(sampling_budget=2, seed=42),
+            n_steps=3,
+            backend=default_test_simulator,
+        )
+        _evolution_pipeline(te).run_forward_pass(
+            te._hamiltonian, te._build_pipeline_env()
+        )
+        assert spy.call_args.kwargs["n_steps"] == 3
 
 
 class TestTimeEvolutionRun:
@@ -811,11 +858,7 @@ class TestTimeEvolutionE2E:
 
     def test_qdrift_tfim_non_commuting_expval(self, default_test_simulator):
         """QDrift TFIM 4q (non-commuting ZZ+X): Campbell's protocol matches exact."""
-        hamiltonian = _op(
-            [("ZZ", [q, q + 1], -1.0) for q in range(3)]
-            + [("X", [q], -1.0) for q in range(4)],
-            4,
-        )
+        hamiltonian = _tfim(4)
 
         te_exact = TimeEvolution(
             hamiltonian=hamiltonian,
@@ -874,6 +917,35 @@ class TestTimeEvolutionE2E:
         te_qdrift.run()
 
         assert abs(te_exact.results - te_qdrift.results) < _QDRIFT_EXPVAL_TOL
+
+    @pytest.mark.parametrize(
+        "strategy",
+        [ExactTrotterization(), QDrift(sampling_budget=3, seed=0)],
+        ids=["single-term-exact", "qdrift"],
+    )
+    def test_mixed_xz_term_evolves_exactly(self, default_test_simulator, strategy):
+        """``0.5·X₁Z₀`` from |00⟩ rotates qubit 1 about X: ⟨Z₁⟩(t) = cos(t)."""
+        te = TimeEvolution(
+            hamiltonian=_op([("XZ", [1, 0], 0.5)], 2),
+            time=0.9,
+            observable=_op([("Z", [1], 1.0)], 2),
+            trotterization_strategy=strategy,
+            backend=default_test_simulator,
+        )
+        te.run()
+        assert te.results == pytest.approx(math.cos(0.9), abs=1e-9)
+
+    def test_qdrift_energy_drift_shrinks_with_n_steps(self, default_test_simulator):
+        """Fresh draws per step cut the drift from 0.40 to 0.16 between 5 and 20
+        steps; replaying one draw every step stays at about 0.52."""
+        drift = {
+            n_steps: abs(
+                _qdrift_tfim_energy(n_steps, default_test_simulator) - _TFIM_3Q_ENERGY
+            )
+            for n_steps in (5, 20)
+        }
+        assert drift[20] < 0.6 * drift[5]
+        assert drift[20] < 0.33
 
     def test_qdrift_reduces_circuit_op_count(self, make_maestro_simulator):
         """QDrift with sampling_budget < n_terms produces shallower circuits than exact."""

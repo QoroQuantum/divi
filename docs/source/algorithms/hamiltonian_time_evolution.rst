@@ -169,7 +169,9 @@ keeps the N largest-magnitude terms, ``keep_fraction`` keeps a fraction in
 QDrift Trotterization
 ---------------------
 
-For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample terms and average over multiple Hamiltonian samples:
+For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample terms and average over multiple Hamiltonian samples.
+Each of the ``n_steps`` Trotter steps draws its own ``sampling_budget`` terms independently.
+Sampled evolution is first order, so it requires ``order=1``:
 
 .. code-block:: python
 
@@ -198,10 +200,6 @@ For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample
    )
    te.run()
    print(te.results)
-
-.. note::
-   Multi-sample QDrift with ``observable`` on an expectation-value backend is currently not supported.
-   Use a shot-based backend or run in probability mode for multi-sample averaging.
 
 Time Evolution Trajectory
 -------------------------

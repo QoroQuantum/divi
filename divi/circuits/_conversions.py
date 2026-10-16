@@ -104,7 +104,7 @@ def _format_gate_param(
             f"Cannot serialise non-finite gate parameter {value!r} to QASM; "
             f"check the circuit for NaN or Inf angles."
         )
-    return f"{value:.{precision}f}"
+    return _format_bound_param(value, precision)
 
 
 def _assert_finite(values: np.ndarray, *, source: str) -> None:
@@ -124,13 +124,13 @@ def _assert_finite(values: np.ndarray, *, source: str) -> None:
         )
 
 
-def _format_bound_param(value: float, precision: int) -> str:
-    """Format a bound numeric gate parameter (a radian angle) for QASM substitution.
+_FIXED_POINT_MIN = 0.1
 
-    Renders to *precision* decimal places, strips trailing fractional zeros, and
-    normalises negative zero to ``"0"``. Angles below ``10 ** -precision`` round
-    toward ``"0"`` (≈5e-9 rad at the default 8 places — physically negligible);
-    scale features to O(1) if sub-precision magnitudes must be represented.
+
+def _format_bound_param(value: float, precision: int) -> str:
+    """Format a numeric gate parameter (a radian angle) for QASM, per
+    :attr:`~divi.circuits.MetaCircuit.precision`, stripping trailing
+    fractional zeros and rendering negative zero as ``"0"``.
 
     Finiteness is enforced at the binding-stage ingestion boundary
     (:func:`_assert_finite` over ``param_sets``/``feature_batch``), so the
@@ -138,7 +138,10 @@ def _format_bound_param(value: float, precision: int) -> str:
     its own. DAG-serialised values are guarded separately in
     :func:`_format_gate_param`.
     """
-    s = f"{float(value):.{precision}f}"
+    value = float(value)
+    if value != 0 and abs(value) < _FIXED_POINT_MIN:
+        return f"{value:.{precision}g}"
+    s = f"{value:.{precision}f}"
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return "0" if s == "-0" else s
@@ -190,12 +193,12 @@ def dag_to_qasm_body(dag: DAGCircuit, precision: int = DEFAULT_PRECISION) -> str
     :class:`~qiskit.circuit.ParameterExpression` ``str()`` form, producing
     identifier placeholders that
     :class:`~divi.circuits.QASMTemplate` substitutes at bind time.  Numeric
-    parameters are formatted to *precision* decimal places.
+    parameters render at *precision*.
 
     Args:
         dag: Qiskit DAG containing only gates from the internal
             ``_QISKIT_TO_QASM2`` whitelist (single quantum register assumed).
-        precision: Decimal places used for numeric gate parameters.
+        precision: See :attr:`~divi.circuits.MetaCircuit.precision`.
 
     Raises:
         ValueError: if *dag* contains an instruction outside the

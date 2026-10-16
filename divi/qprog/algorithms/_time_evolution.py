@@ -224,6 +224,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         return TrotterSpecStage(
             trotterization_strategy=self.trotterization_strategy,
             meta_circuit_factory=self._meta_circuit_factory,
+            n_steps=self.n_steps,
         )
 
     def _initial_spec(self) -> SparsePauliOp:
