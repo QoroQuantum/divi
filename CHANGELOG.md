@@ -9,20 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.15.1](https://github.com/QoroQuantum/divi/compare/v0.15.0...v0.15.1) (2026-10-16)
 
-
 ### 🐛 Fixed
 
-* **hamiltonians:** draw independent QDrift terms at every Trotter step ([52b58e9](https://github.com/QoroQuantum/divi/commit/52b58e93610c846d104568ed5dce5ce47588a64c))
-
+* **hamiltonians:** QDrift with `n_steps > 1` now draws fresh terms at every Trotter step instead of replaying one draw, so its error keeps falling as steps are added. A seeded `TimeEvolutionTrajectory` gives each time point its own reproducible draw. Evolution circuits are lowered to the QASM basis, fixing failures on `XZ`/`ZX` terms, and QASM angles below 0.1 keep `precision` significant figures instead of rounding towards zero. **Breaking:** custom `TrotterizationStrategy` implementations must accept an `n_steps` keyword, `TrotterizationResult.sampled_terms` is a tuple with one `SparsePauliOp` per step, and sampled evolution rejects `order != 1` ([52b58e9](https://github.com/QoroQuantum/divi/commit/52b58e9)).
 
 ### 🔄 Changed
 
-* **ai:** refresh local models and optimize CPU inference ([3767472](https://github.com/QoroQuantum/divi/commit/376747246e944f99f6863d1cf506c2dc395d4fe1))
-
-
-### 🔧 Internal
-
-* **deps:** upgrade dependencies and compatibility constraints ([56d2d3f](https://github.com/QoroQuantum/divi/commit/56d2d3ff26dffd8b8f7004f96e4fc1d43712abf6))
+* **ai:** divi-ai defaults to Qwen 3.5 4B, with Qwen 3.5 9B as the higher-quality tier. Model downloads are pinned to fixed revisions, retrieval grounding is tighter, and inference runs on the available physical CPU cores. **Breaking:** the `1.5b`, `3b` and `7b` models are removed; divi-ai asks you to choose again if one of them was saved ([3767472](https://github.com/QoroQuantum/divi/commit/3767472)).
+* **deps:** minimum versions raised to `qiskit>=2.5`, `rich>=15.0` and `numba>=0.68.0`, and `qiskit-ibm-runtime>=0.50` in the `aer` extra ([56d2d3f](https://github.com/QoroQuantum/divi/commit/56d2d3f)).
 
 ## [0.15.0](https://github.com/QoroQuantum/divi/compare/v0.14.0...v0.15.0) (2026-10-04)
 
