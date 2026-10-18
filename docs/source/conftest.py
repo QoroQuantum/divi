@@ -239,19 +239,19 @@ class DocStubQoroService(CircuitRunner):
                         "choices": [],
                         "default": None,
                     },
-                    "TRANSPILE_LEVEL": {
+                    "TRANSPILE_OPTIMIZATION_LEVEL": {
                         "kind": "number",
                         "required": False,
                         "secret": False,
                         "choices": [],
                         "default": 2,
                     },
-                    "USE_TWIRLING": {
+                    "TWIRLING_ENABLE_GATES": {
                         "kind": "toggle",
                         "required": False,
                         "secret": False,
                         "choices": ["true", "false"],
-                        "default": "false",
+                        "default": None,
                     },
                 },
             },

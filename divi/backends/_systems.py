@@ -54,9 +54,6 @@ class QPUSystem(_Target):
     qpus: list[QPU] = Field(default_factory=list)
     """A list of QPU objects that are part of this system."""
 
-    access_level: str = "PUBLIC"
-    """The access level granted to the user for this system (e.g., 'PUBLIC')."""
-
     supports_expval: bool = False
     """Whether the system supports expectation value jobs."""
 
@@ -66,9 +63,6 @@ class SimulatorCluster(_Target):
 
     name: str
     """The name of the simulator cluster."""
-
-    access_level: str = "PUBLIC"
-    """The access level for this cluster (e.g., 'PUBLIC', 'ADMIN')."""
 
     minimum_tier: str = "FREE"
     """The minimum token tier required to access this cluster."""

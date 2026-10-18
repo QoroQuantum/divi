@@ -399,7 +399,8 @@ hardware you are targeting without consulting the dashboard.
 The reply describes *shape only*. It carries no stored values and never a
 credential, and it is keyed for direct lookup: one dictionary per vendor, each
 holding a ``label`` plus ``credentials`` and ``device`` maps of configuration
-key to its ``kind``, ``required``, ``secret``, ``choices`` and ``default``.
+key to the spec the service gives it, such as its ``kind``, ``choices``,
+``default`` and bounds.
 
 .. code-block:: python
 
@@ -409,8 +410,8 @@ key to its ``kind``, ``required``, ``secret``, ``choices`` and ``default``.
    blueprints = service.fetch_vendor_blueprints()
 
    # Read one option directly
-   print(blueprints["ibm"]["device"]["TRANSPILE_LEVEL"]["default"])   # 2
-   print(blueprints["ibm"]["device"]["USE_TWIRLING"]["choices"])      # ['true', 'false']
+   print(blueprints["ibm"]["device"]["TRANSPILE_OPTIMIZATION_LEVEL"]["default"])  # 2
+   print(blueprints["ibm"]["device"]["TWIRLING_ENABLE_GATES"]["choices"])         # ['true', 'false']
 
    # Or list everything one vendor exposes
    for key, spec in blueprints["ibm"]["device"].items():
@@ -448,18 +449,57 @@ hardware. The options are the vendors' own device keys, the ones listed under
 
    result = service.submit_circuits(
        circuits,
-       device_config=DeviceConfig(transpile_level=3, use_mitigation=True),
+       device_config=DeviceConfig(transpile_optimization_level=3, use_mitigation=True),
        job_config=JobConfig(qpu_system="my_qpu"),
    )
 
 A QPU system can include hardware from more than one vendor. The options apply
 to every QPU in the system, and each QPU reads only its own vendor's keys.
-``submit_circuits`` rejects a key or value that no vendor accepts, and options you leave
-out keep the QPU's own settings. The QPU system decides which device runs the
-job, so the device-selection keys (``IBM_DEVICE`` and ``IQM_DEVICE_URL``) are
-rejected. :meth:`~divi.backends.QoroService.get_device_config` reads the options
-back. As with the other configurations, ``QoroService(device_config=...)`` sets a
-default for every QPU job, and a per-call ``device_config`` replaces it.
+The service rejects a key or value that no vendor accepts with an ``HTTPError``
+before it creates the job, and options you leave out keep the QPU's own
+settings. The QPU system decides which device runs the job, so
+:class:`~divi.backends.DeviceConfig` rejects the device-selection keys
+(``IBM_DEVICE`` and ``IQM_DEVICE_URL``).
+:meth:`~divi.backends.QoroService.get_device_config` reads the options back. As
+with the other configurations, ``QoroService(device_config=...)`` sets a default
+for every QPU job, and a per-call ``device_config`` replaces it.
+
+.. _saved-qoro-defaults:
+
+Saving Your Defaults with ``divi-config-helper``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Set your target and its options once, and every ``QoroService()`` uses them,
+with no :class:`~divi.backends.JobConfig`,
+:class:`~divi.backends.MaestroConfig` or :class:`~divi.backends.DeviceConfig`
+in your scripts. ``divi-config-helper`` needs ``QORO_API_KEY`` and a network
+connection, because it lists the targets your key can use:
+
+.. code-block:: console
+
+   $ divi-config-helper
+
+Pick a QPU system or simulator cluster with the arrow keys. Enter makes it your
+default target; ``e`` edits its options and leaves the default as it is. The
+next screen lists the options the target takes, with an explanation of the
+highlighted one: the device options its vendors accept (see
+:meth:`~divi.backends.QoroService.fetch_vendor_blueprints`) or Maestro's
+simulator options. Enter edits an option, Delete clears it, ``a`` shows the
+advanced ones (``--advanced`` starts with them shown) and ``s`` reviews and
+saves; the footer lists the other keys. Ranges are not enforced here: a value
+outside them is flagged in the review, and the service rejects jobs that use
+it.
+
+Running it again starts from what you saved, and choosing a target of the other
+kind keeps the other kind's options. The file is ``qoro.json`` in divi's user
+configuration folder (for example ``~/.config/divi/qoro.json`` on Linux).
+
+Arguments you pass still take precedence: a ``job_config`` overrides only the
+fields you set, so ``QoroService(job_config=JobConfig(shots=500))`` keeps the
+saved target, while a ``maestro_config`` or ``device_config`` replaces the saved
+one. Pass ``use_saved_defaults=False`` to ignore the file. If it cannot be read
+or names a target your key can no longer use, ``QoroService()`` raises a
+``ValueError`` naming it; run ``divi-config-helper`` again to replace it.
 
 .. _Backend Selection Guide:
 

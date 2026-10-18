@@ -37,6 +37,7 @@ from divi.backends import (
     SimulatorCluster,
 )
 from divi.backends._pauli_serde import compress_ham_ops
+from divi.backends._saved_defaults import save_defaults
 from divi.backends._shot_allocation import from_wire, per_circuit
 from divi.backends._systems import (
     get_available_qpu_systems,
@@ -49,10 +50,7 @@ from divi.backends._systems import (
     update_simulator_clusters_cache,
 )
 from divi.backends.runners._maestro_payload import maestro_config_to_payload
-from divi.backends.runners._qoro import (
-    MaxRetriesReachedError,
-    _accepts,
-)
+from divi.backends.runners._qoro import MaxRetriesReachedError
 from divi.circuits._payloads import CircuitPayload
 from divi.exceptions import ExecutionCancelledError
 from tests._helpers import exact_match
@@ -97,10 +95,6 @@ _LIVE_MAESTRO_CONFIG = MaestroConfig(
 _CONFIG_GETTERS = (QoroService.get_maestro_config, QoroService.get_device_config)
 _QPU_JOB_CONFIG = JobConfig(qpu_system=QPUSystem(name="hw", supports_expval=False))
 _API = _qoro_service.API_URL
-_VENDOR_BLUEPRINTS = {
-    "ibm": {"label": "IBM", "credentials": {}, "device": {"TRANSPILE_LEVEL": {}}},
-    "iqm": {"label": "IQM", "credentials": {}, "device": {"USE_MITIGATION": {}}},
-}
 
 
 def _init_payload(mock_make_request) -> dict:
@@ -112,12 +106,6 @@ def _init_payload(mock_make_request) -> dict:
 def _shots_envelope(service) -> dict:
     """The ``add_circuits/`` keys a plain sampling submission shares."""
     return service._fragment_envelope(None, None, None, service.shots)
-
-
-def _mock_vendor_blueprints(mocker, service):
-    mocker.patch.object(
-        service, "fetch_vendor_blueprints", return_value=_VENDOR_BLUEPRINTS
-    )
 
 
 def _serve_job_results(mocker, service, pages, run_time=None):
@@ -546,7 +534,6 @@ class TestQoroServiceMock:
                         "system_kind": "trapped_ion",
                     },
                 ],
-                "access_level": "basic",
             }
         ]
 
@@ -610,8 +597,8 @@ class TestQoroServiceMock:
     def test_fetch_simulator_clusters(self, mocker, qoro_service_factory):
         """Test fetch_simulator_clusters."""
         mock_json_data = [
-            {"name": "qoro_maestro", "access_level": "PUBLIC", "minimum_tier": "FREE"},
-            {"name": "gpu_cluster", "access_level": "ADMIN", "minimum_tier": "PRO"},
+            {"name": "qoro_maestro", "minimum_tier": "FREE"},
+            {"name": "gpu_cluster", "minimum_tier": "PRO"},
         ]
 
         service = qoro_service_factory()
@@ -646,7 +633,7 @@ class TestQoroServiceMock:
                 ],
                 "device": [
                     {
-                        "name": "TRANSPILE_LEVEL",
+                        "name": "TRANSPILE_OPTIMIZATION_LEVEL",
                         "kind": "number",
                         "required": False,
                         "secret": False,
@@ -654,7 +641,7 @@ class TestQoroServiceMock:
                         "default": 2,
                     },
                     {
-                        "name": "USE_TWIRLING",
+                        "name": "TWIRLING_ENABLE_GATES",
                         "kind": "toggle",
                         "required": False,
                         "secret": False,
@@ -695,14 +682,14 @@ class TestQoroServiceMock:
                     }
                 },
                 "device": {
-                    "TRANSPILE_LEVEL": {
+                    "TRANSPILE_OPTIMIZATION_LEVEL": {
                         "kind": "number",
                         "required": False,
                         "secret": False,
                         "choices": [],
                         "default": 2,
                     },
-                    "USE_TWIRLING": {
+                    "TWIRLING_ENABLE_GATES": {
                         "kind": "toggle",
                         "required": False,
                         "secret": False,
@@ -719,16 +706,27 @@ class TestQoroServiceMock:
         """Test parse_simulator_clusters handles various JSON shapes."""
         clusters = parse_simulator_clusters(
             [
-                {"name": "c1", "access_level": "PUBLIC", "minimum_tier": "FREE"},
+                {"name": "c1", "minimum_tier": "PRO"},
                 {"name": "c2"},  # optional fields should default
             ]
         )
-        assert len(clusters) == 2
-        assert clusters[0] == SimulatorCluster(
-            name="c1", access_level="PUBLIC", minimum_tier="FREE"
-        )
-        assert clusters[1].access_level == "PUBLIC"
-        assert clusters[1].minimum_tier == "FREE"
+        assert clusters == [
+            SimulatorCluster(name="c1", minimum_tier="PRO"),
+            SimulatorCluster(name="c2", minimum_tier="FREE"),
+        ]
+
+    @pytest.mark.parametrize(
+        "parse, payload",
+        [
+            (parse_qpu_systems, {"name": "s", "access_level": "PUBLIC"}),
+            (parse_simulator_clusters, {"name": "c", "access_level": "PUBLIC"}),
+        ],
+        ids=["qpu_system", "simulator_cluster"],
+    )
+    def test_the_retired_access_level_is_not_a_field(self, parse, payload):
+        (target,) = parse([payload])
+
+        assert not hasattr(target, "access_level")
 
     def test_update_simulator_clusters_cache(self):
         """Test that the simulator clusters cache is correctly updated."""
@@ -888,50 +886,49 @@ class TestQoroServiceMock:
         assert "device_config" not in payload
 
     def test_qpu_submission_sends_its_device_config_and_skips_the_default(
-        self, mocker, submit_circuits_mock
+        self, submit_circuits_mock
     ):
         """A service-wide Maestro default must not leak into hardware jobs."""
         qoro_service_mock, mock_make_request = submit_circuits_mock
-        _mock_vendor_blueprints(mocker, qoro_service_mock)
         qoro_service_mock.maestro_config = MaestroConfig(max_bond_dimension=64)
         qoro_service_mock.submit_circuits(
             {"c1": "qasm"},
-            device_config=DeviceConfig(transpile_level=2, use_mitigation=True),
+            device_config=DeviceConfig(
+                transpile_optimization_level=2, use_mitigation=True
+            ),
             job_config=_QPU_JOB_CONFIG,
         )
 
         payload = _init_payload(mock_make_request)
         assert payload["device_config"] == {
-            "TRANSPILE_LEVEL": 2,
+            "TRANSPILE_OPTIMIZATION_LEVEL": 2,
             "USE_MITIGATION": True,
         }
         assert "maestro_config" not in payload
 
     def test_the_service_device_config_applies_to_qpu_jobs_only(
-        self, mocker, submit_circuits_mock
+        self, submit_circuits_mock
     ):
         service, mock_request = submit_circuits_mock
-        _mock_vendor_blueprints(mocker, service)
-        service.device_config = DeviceConfig(transpile_level=2)
+        service.device_config = DeviceConfig(transpile_optimization_level=2)
 
         service.submit_circuits({"c1": "qasm"}, job_config=_QPU_JOB_CONFIG)
-        assert _init_payload(mock_request)["device_config"] == {"TRANSPILE_LEVEL": 2}
+        assert _init_payload(mock_request)["device_config"] == {
+            "TRANSPILE_OPTIMIZATION_LEVEL": 2
+        }
 
     def test_the_service_device_config_is_skipped_for_simulator_jobs(
         self, submit_circuits_mock
     ):
         service, mock_request = submit_circuits_mock
-        service.device_config = DeviceConfig(transpile_level=2)
+        service.device_config = DeviceConfig(transpile_optimization_level=2)
 
         service.submit_circuits({"c1": "qasm"})
         assert "device_config" not in _init_payload(mock_request)
 
-    def test_a_per_call_device_config_replaces_the_default(
-        self, mocker, submit_circuits_mock
-    ):
+    def test_a_per_call_device_config_replaces_the_default(self, submit_circuits_mock):
         service, mock_request = submit_circuits_mock
-        _mock_vendor_blueprints(mocker, service)
-        service.device_config = DeviceConfig(transpile_level=2)
+        service.device_config = DeviceConfig(transpile_optimization_level=2)
 
         service.submit_circuits(
             {"c1": "qasm"},
@@ -942,53 +939,22 @@ class TestQoroServiceMock:
 
     def test_a_non_device_config_default_is_refused(self, qoro_service_factory):
         with pytest.raises(TypeError, match="must be a DeviceConfig"):
-            qoro_service_factory(device_config={"transpile_level": 2})
+            qoro_service_factory(device_config={"transpile_optimization_level": 2})
 
-    def test_a_device_option_no_vendor_accepts_is_rejected(
-        self, mocker, submit_circuits_mock
-    ):
-        """The service would store the misspelt key and no worker would read it."""
-        qoro_service_mock, mock_make_request = submit_circuits_mock
-        _mock_vendor_blueprints(mocker, qoro_service_mock)
+    def test_a_refused_device_config_stops_at_job_init(self, submit_circuits_mock):
+        """The service validates device options: nothing is sent before job/init or after its refusal."""
+        service, mock_request = submit_circuits_mock
+        mock_request.side_effect = requests.exceptions.HTTPError("400 Bad Request")
 
-        with pytest.raises(ValueError, match=r"\['TRANSPILATION_LEVEL'\]"):
-            qoro_service_mock.submit_circuits(
+        with pytest.raises(requests.exceptions.HTTPError):
+            service.submit_circuits(
                 {"c1": "qasm"},
                 device_config=DeviceConfig(transpilation_level=2),
                 job_config=_QPU_JOB_CONFIG,
             )
 
-        mock_make_request.assert_not_called()
-
-    @pytest.mark.parametrize(
-        "device_config",
-        [DeviceConfig(transpile_level="high"), DeviceConfig(use_twirling="yes")],
-        ids=["number", "toggle"],
-    )
-    def test_a_device_value_no_vendor_accepts_is_rejected(
-        self, mocker, submit_circuits_mock, device_config
-    ):
-        qoro_service_mock, mock_make_request = submit_circuits_mock
-        mocker.patch.object(
-            qoro_service_mock,
-            "fetch_vendor_blueprints",
-            return_value={
-                "ibm": {
-                    "label": "IBM",
-                    "credentials": {},
-                    "device": {
-                        "TRANSPILE_LEVEL": {"kind": "number"},
-                        "USE_TWIRLING": {"kind": "toggle"},
-                    },
-                }
-            },
-        )
-
-        with pytest.raises(ValueError, match="option values"):
-            qoro_service_mock.submit_circuits(
-                {"c1": "qasm"}, device_config=device_config, job_config=_QPU_JOB_CONFIG
-            )
-        mock_make_request.assert_not_called()
+        mock_request.assert_called_once()
+        assert mock_request.call_args.args == ("post", "job/init/")
 
     def test_submission_without_configs_sends_neither(self, submit_circuits_mock):
         qoro_service_mock, mock_make_request = submit_circuits_mock
@@ -1997,7 +1963,9 @@ class TestQoroServiceMock:
             ),
             (
                 QoroService.get_device_config,
-                DeviceConfig(transpile_level=2, use_twirling=True),
+                DeviceConfig(
+                    transpile_optimization_level=2, twirling_enable_gates=True
+                ),
             ),
         ],
         ids=["maestro", "device"],
@@ -2013,7 +1981,10 @@ class TestQoroServiceMock:
                     max_bond_dimension=512, simulation_type="MatrixProductState"
                 )
             ),
-            "device_config": {"TRANSPILE_LEVEL": 2, "USE_TWIRLING": "true"},
+            "device_config": {
+                "TRANSPILE_OPTIMIZATION_LEVEL": 2,
+                "TWIRLING_ENABLE_GATES": "true",
+            },
         }
         mock_make_request = _mock_config_endpoint(mocker, service, response_data)
 
@@ -2488,25 +2459,6 @@ def test_a_job_type_other_than_execute_needs_ham_ops(submit_circuits_mock, job_t
     mock_request.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    "spec, value, accepted",
-    [
-        ({"kind": "choice", "choices": ["a", "b"]}, "a", True),
-        ({"kind": "choice", "choices": ["a", "b"]}, "c", False),
-        ({"kind": "choice"}, "a", False),
-        ({"kind": "text"}, "abc", True),
-        ({"kind": "text"}, 3, False),
-        ({"kind": "number"}, 3, True),
-        ({"kind": "number"}, True, False),
-        ({"kind": "toggle"}, True, True),
-        ({"kind": "toggle"}, 1, False),
-        ({"kind": "unmodelled"}, object(), True),
-    ],
-)
-def test_device_option_values_are_checked_against_their_kind(spec, value, accepted):
-    assert _accepts(spec, value) is accepted
-
-
 def test_get_job_results_follows_every_page(mocker, qoro_service_factory):
     service = qoro_service_factory()
     mocker.patch(
@@ -2624,6 +2576,165 @@ def test_user_agent_without_package_metadata(mocker):
     )
 
     assert _qoro_service._build_user_agent().startswith("divi/unknown (python=")
+
+
+@pytest.fixture
+def make_service_with_targets(mocker, qoro_service_factory):
+    """Build a service whose key sees QPU system ``hw`` and clusters ``eon_cpu``, ``qoro_maestro``."""
+    listings = {
+        "qpusystem/": [{"name": "hw", "qpus": []}],
+        "simulatorcluster/": [{"name": "eon_cpu"}, {"name": "qoro_maestro"}],
+    }
+
+    def answer(method, endpoint, **kwargs):
+        return mocker.MagicMock(json=lambda: listings[endpoint])
+
+    def _make(**kwargs):
+        return qoro_service_factory(
+            construction_request=mocker.MagicMock(side_effect=answer), **kwargs
+        )
+
+    return _make
+
+
+def test_an_empty_saved_file_keeps_the_built_in_default(
+    defaults_file, make_service_with_targets
+):
+    defaults_file.parent.mkdir(parents=True)
+    defaults_file.write_text("{}")
+
+    assert (
+        make_service_with_targets().job_config.simulator_cluster.name == "qoro_maestro"
+    )
+
+
+def test_the_saved_target_and_shot_count_are_the_defaults(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(
+        defaults_file,
+        job_config=JobConfig(simulator_cluster="eon_cpu", shots=2000),
+    )
+
+    service = make_service_with_targets()
+
+    assert service.job_config.simulator_cluster.name == "eon_cpu"
+    assert service.shots == 2000
+
+
+def test_a_passed_job_config_overrides_only_its_set_fields(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(
+        defaults_file,
+        job_config=JobConfig(simulator_cluster="eon_cpu", shots=2000),
+    )
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        service = make_service_with_targets(job_config=JobConfig(shots=500))
+
+    assert service.job_config.simulator_cluster.name == "eon_cpu"
+    assert service.job_config.shots == 500
+
+
+def test_a_passed_target_replaces_the_saved_one(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(defaults_file, job_config=JobConfig(qpu_system="hw"))
+
+    service = make_service_with_targets(
+        job_config=JobConfig(simulator_cluster="eon_cpu")
+    )
+
+    assert service.job_config.qpu_system is None
+    assert service.job_config.simulator_cluster.name == "eon_cpu"
+
+
+def test_a_passed_target_replaces_a_saved_one_the_key_can_no_longer_use(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(defaults_file, job_config=JobConfig(qpu_system="gone"))
+
+    service = make_service_with_targets(
+        job_config=JobConfig(simulator_cluster="eon_cpu")
+    )
+
+    assert service.job_config.simulator_cluster.name == "eon_cpu"
+
+
+def test_saved_maestro_and_device_configs_become_the_defaults(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(
+        defaults_file,
+        maestro_config=MaestroConfig(max_bond_dimension=64),
+        device_config=DeviceConfig(use_mitigation=True),
+    )
+
+    service = make_service_with_targets()
+
+    assert service.maestro_config == MaestroConfig(max_bond_dimension=64)
+    assert service.device_config == DeviceConfig(use_mitigation=True)
+
+
+def test_passed_maestro_and_device_configs_replace_the_saved_ones(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(
+        defaults_file,
+        maestro_config=MaestroConfig(max_bond_dimension=64),
+        device_config=DeviceConfig(use_mitigation=True),
+    )
+
+    service = make_service_with_targets(
+        maestro_config=MaestroConfig(max_bond_dimension=8),
+        device_config=DeviceConfig(transpile_optimization_level=1),
+    )
+
+    assert service.maestro_config == MaestroConfig(max_bond_dimension=8)
+    assert service.device_config == DeviceConfig(transpile_optimization_level=1)
+
+
+def test_an_unknown_saved_target_names_the_file(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(defaults_file, job_config=JobConfig(qpu_system="gone"))
+
+    with pytest.raises(ValueError, match="gone") as exc_info:
+        make_service_with_targets()
+
+    assert str(exc_info.value).startswith(str(defaults_file))
+
+
+def test_an_unknown_passed_target_does_not_blame_the_file(
+    defaults_file, make_service_with_targets
+):
+    save_defaults(defaults_file, job_config=JobConfig(qpu_system="hw"))
+
+    with pytest.raises(ValueError, match="nope") as exc_info:
+        make_service_with_targets(job_config=JobConfig(qpu_system="nope"))
+
+    assert str(defaults_file) not in str(exc_info.value)
+
+
+def test_a_bad_saved_file_stops_construction(defaults_file, make_service_with_targets):
+    defaults_file.parent.mkdir(parents=True)
+    defaults_file.write_text("{not json")
+
+    with pytest.raises(ValueError) as exc_info:
+        make_service_with_targets()
+
+    assert str(exc_info.value).startswith(str(defaults_file))
+
+
+def test_saved_defaults_can_be_turned_off(defaults_file, make_service_with_targets):
+    defaults_file.parent.mkdir(parents=True)
+    defaults_file.write_text("{not json")
+
+    service = make_service_with_targets(use_saved_defaults=False)
+
+    assert service.job_config.simulator_cluster.name == "qoro_maestro"
 
 
 class TestContracts(AsyncRunnerContractsBase):
@@ -2757,6 +2868,12 @@ class TestQoroServiceWithApiKey:
             assert isinstance(system, QPUSystem)
             assert system.name
             assert all(qpu.q_bits > 0 for qpu in system.qpus)
+
+    def test_qpu_listing_reports_each_qpus_vendor(self, qoro_service):
+        vendors = set(qoro_service.fetch_vendor_blueprints())
+
+        for system in qoro_service.fetch_qpu_systems():
+            assert all(qpu.vendor_type in vendors for qpu in system.qpus)
 
     def test_fetch_vendor_blueprints(self, qoro_service):
         """Tests fetching the vendor config blueprints."""
@@ -2951,6 +3068,76 @@ class TestQoroServiceWithApiKey:
 
         assert qoro_service.get_maestro_config(result) == _LIVE_MAESTRO_CONFIG
         assert qoro_service.get_device_config(result) is None
+
+    @pytest.fixture()
+    def qpu_job_config(self, qoro_service):
+        systems = qoro_service.fetch_qpu_systems()
+        if not systems:
+            pytest.skip("The API key sees no QPU system.")
+        return JobConfig(qpu_system=systems[0])
+
+    def test_device_config_round_trips_through_the_service(
+        self, mocker, qoro_service, circuits, qpu_job_config
+    ):
+        """Every option kind is stored as sent; the job stays unfinalised, so no QPU runs it."""
+        live_request = qoro_service._make_request
+
+        def init_only(method, endpoint, **kwargs):
+            if endpoint.endswith("add_circuits/"):
+                return mocker.Mock()
+            return live_request(method, endpoint, **kwargs)
+
+        mocker.patch.object(qoro_service, "_make_request", side_effect=init_only)
+        sent = DeviceConfig(
+            transpile_optimization_level=1,
+            transpile_approximation_degree=0.5,
+            transpile_initial_layout=[0, 1],
+            twirling_enable_gates=True,
+            twirling_num_randomizations="auto",
+            twirling_strategy="active-accum",
+            execution_max_time=3600,
+            aggressive_compiling=False,
+            device_max_shots_per_batch=100,
+        )
+
+        result = qoro_service.submit_circuits(
+            {"circuit_1": circuits["circuit_0"]},
+            device_config=sent,
+            job_config=qpu_job_config,
+        )
+
+        assert qoro_service.get_device_config(result) == sent
+        assert qoro_service.poll_job_status(result) == JobStatus.PENDING
+
+    @pytest.mark.parametrize(
+        "device_config, key",
+        [
+            (DeviceConfig(transpilation_level=2), "TRANSPILATION_LEVEL"),
+            (
+                DeviceConfig(transpile_optimization_level=9),
+                "TRANSPILE_OPTIMIZATION_LEVEL",
+            ),
+            (
+                DeviceConfig(transpile_optimization_level="high"),
+                "TRANSPILE_OPTIMIZATION_LEVEL",
+            ),
+            (DeviceConfig(use_mitigation="yes"), "USE_MITIGATION"),
+        ],
+        ids=["unknown_key", "out_of_range_value", "wrong_type", "bad_toggle"],
+    )
+    def test_the_service_refuses_a_bad_device_config(
+        self, qoro_service, circuits, qpu_job_config, device_config, key
+    ):
+        with pytest.raises(requests.exceptions.HTTPError) as exc_info:
+            qoro_service.submit_circuits(
+                {"circuit_1": circuits["circuit_0"]},
+                device_config=device_config,
+                job_config=qpu_job_config,
+            )
+
+        response = exc_info.value.response
+        assert response.status_code == HTTPStatus.BAD_REQUEST
+        assert key in response.json()["device_config"]
 
     def test_parametric_submission_resolves_one_circuit_per_param_set(
         self, qoro_service

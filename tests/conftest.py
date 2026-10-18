@@ -24,6 +24,7 @@ for _blas_threads_var in (
     os.environ.setdefault(_blas_threads_var, "1")
 
 import matplotlib
+import platformdirs
 
 # Configure matplotlib to use Agg backend for testing
 matplotlib.use("Agg")
@@ -70,6 +71,19 @@ def pytest_ignore_collect(collection_path: Path, config):
         if collection_path == path or path in collection_path.parents:
             return importlib.util.find_spec(package) is None
     return False
+
+
+@pytest.fixture(autouse=True)
+def defaults_file(monkeypatch, tmp_path):
+    """Where the saved Qoro defaults live in this test: an empty temporary folder,
+    never a developer's own."""
+    folder = tmp_path / "divi"
+    monkeypatch.setattr(
+        platformdirs,
+        "user_config_path",
+        lambda appname=None, *_, **__: tmp_path / (appname or ""),
+    )
+    return folder / "qoro.json"
 
 
 @pytest.fixture

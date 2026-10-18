@@ -162,27 +162,32 @@ class TestDeviceConfig:
     """Per-job hardware options and their wire format."""
 
     def test_options_travel_under_the_service_keys(self):
-        config = DeviceConfig(transpile_level=3, use_mitigation=True)
-        assert config.to_payload() == {"TRANSPILE_LEVEL": 3, "USE_MITIGATION": True}
+        config = DeviceConfig(transpile_optimization_level=3, use_mitigation=True)
+        assert config.to_payload() == {
+            "TRANSPILE_OPTIMIZATION_LEVEL": 3,
+            "USE_MITIGATION": True,
+        }
 
     def test_unset_options_are_omitted(self):
-        assert DeviceConfig(use_twirling=None).to_payload() == {}
+        assert DeviceConfig(twirling_enable_gates=None).to_payload() == {}
 
     def test_key_case_does_not_matter(self):
-        assert DeviceConfig(TRANSPILE_LEVEL=3) == DeviceConfig(transpile_level=3)
+        assert DeviceConfig(TRANSPILE_OPTIMIZATION_LEVEL=3) == DeviceConfig(
+            transpile_optimization_level=3
+        )
 
     def test_the_stored_form_rebuilds_the_config(self):
         """The service stores toggles as the strings its workers compare against;
         other strings are kept as they are."""
         stored = {
-            "TRANSPILE_LEVEL": 1,
-            "USE_TWIRLING": "true",
+            "TRANSPILE_OPTIMIZATION_LEVEL": 1,
+            "TWIRLING_ENABLE_GATES": "true",
             "USE_MITIGATION": "false",
             "IBM_MODE": "fast",
         }
         assert DeviceConfig.from_payload(stored) == DeviceConfig(
-            transpile_level=1,
-            use_twirling=True,
+            transpile_optimization_level=1,
+            twirling_enable_gates=True,
             use_mitigation=False,
             ibm_mode="fast",
         )
@@ -205,32 +210,42 @@ class TestDeviceConfig:
     @pytest.mark.parametrize(
         "change",
         [
-            lambda config: config.override(TRANSPILE_LEVEL=3),
-            lambda config: config.model_copy(update={"TRANSPILE_LEVEL": 3}),
+            lambda config: config.override(TRANSPILE_OPTIMIZATION_LEVEL=3),
+            lambda config: config.model_copy(
+                update={"TRANSPILE_OPTIMIZATION_LEVEL": 3}
+            ),
         ],
         ids=["override", "model_copy"],
     )
     def test_changes_set_options_in_any_case(self, change):
-        config = DeviceConfig(transpile_level=1, use_mitigation=True)
-        assert change(config) == DeviceConfig(transpile_level=3, use_mitigation=True)
+        config = DeviceConfig(transpile_optimization_level=1, use_mitigation=True)
+        assert change(config) == DeviceConfig(
+            transpile_optimization_level=3, use_mitigation=True
+        )
 
     def test_reset_drops_options(self):
-        config = DeviceConfig(transpile_level=1, use_mitigation=True)
-        assert config.reset("USE_MITIGATION") == DeviceConfig(transpile_level=1)
+        config = DeviceConfig(transpile_optimization_level=1, use_mitigation=True)
+        assert config.reset("USE_MITIGATION") == DeviceConfig(
+            transpile_optimization_level=1
+        )
 
     def test_reset_rejects_options_that_are_not_set(self):
         with pytest.raises(
             ValueError,
             match=exact_match(
-                reset_unknown_message("transpile_levl", "transpile_level")
+                reset_unknown_message(
+                    "transpile_optimization_levl", "transpile_optimization_level"
+                )
             ),
         ):
-            DeviceConfig(transpile_level=1).reset("transpile_levl")
+            DeviceConfig(transpile_optimization_level=1).reset(
+                "transpile_optimization_levl"
+            )
 
 
 @pytest.mark.parametrize(
     "config",
-    [JobConfig(shots=7), DeviceConfig(transpile_level=1)],
+    [JobConfig(shots=7), DeviceConfig(transpile_optimization_level=1)],
     ids=["job_config", "device_config"],
 )
 def test_model_copy_without_update_is_an_equal_copy(config):

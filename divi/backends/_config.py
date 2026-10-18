@@ -48,14 +48,13 @@ class DeviceConfig(BaseModel):
     :meth:`~divi.backends.QoroService.fetch_vendor_blueprints` lists, given as
     keyword arguments in any case::
 
-        DeviceConfig(transpile_level=3, use_mitigation=True)
+        DeviceConfig(transpile_optimization_level=3, use_mitigation=True)
 
     Toggles take ``True`` or ``False``. The options apply to every QPU in the
     target system, and each QPU reads only its own vendor's keys. Options left
     out, or set to ``None``, keep the QPU's own settings. Configurations are frozen;
     :meth:`override` and :meth:`reset` return changed copies.
-    :meth:`~divi.backends.QoroService.submit_circuits` rejects a key no vendor
-    accepts.
+    The Qoro Service rejects a key no vendor accepts.
     """
 
     model_config = ConfigDict(frozen=True, extra="allow")
@@ -79,7 +78,7 @@ class DeviceConfig(BaseModel):
 
     def override(self, **options: Any) -> "DeviceConfig":
         """Return a copy with ``options`` set, e.g.
-        ``config.override(transpile_level=3)``."""
+        ``config.override(transpile_optimization_level=3)``."""
         return DeviceConfig(**(self.model_extra or {}) | _lowercased(options))
 
     def reset(self, *names: str) -> "DeviceConfig":
@@ -126,6 +125,9 @@ class DeviceConfig(BaseModel):
         )
 
 
+_TARGET_FIELDS = frozenset({"simulator_cluster", "qpu_system"})
+
+
 class JobConfig(BaseModel):
     """Configuration for a Qoro Service job.
 
@@ -153,6 +155,9 @@ class JobConfig(BaseModel):
 
     force_sampling: bool = Field(default=False, strict=True)
     """Whether to force sampling instead of expectation value measurements."""
+
+    def _set_fields(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self.model_fields_set}
 
     def override(self, **fields: Any) -> "JobConfig":
         """Return a copy with ``fields`` set.

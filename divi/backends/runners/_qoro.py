@@ -13,7 +13,6 @@ import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
 from enum import Enum
-from functools import cached_property
 from http import HTTPStatus
 from importlib import metadata
 from threading import Event
@@ -44,7 +43,7 @@ from divi.qasm import (
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import _auto_cancellation_scope, raise_if_cancelled
-from .._config import DeviceConfig, JobConfig
+from .._config import _TARGET_FIELDS, DeviceConfig, JobConfig
 from .._job_status import (
     InsufficientCreditsError,
     JobCancelledError,
@@ -55,6 +54,7 @@ from .._job_status import (
 )
 from .._pauli_serde import compress_ham_ops, pad_ham_ops
 from .._results_processing import _decode_histogram_b64
+from .._saved_defaults import defaults_path, load_defaults
 from .._shot_allocation import (
     ShotRange,
     from_wire,
@@ -153,20 +153,6 @@ def _require_device_config(value: Any) -> None:
         raise TypeError(
             f"device_config must be a DeviceConfig, got {type(value).__name__}."
         )
-
-
-def _accepts(spec: Mapping[str, Any], value: Any) -> bool:
-    """Whether ``value`` fits a blueprint field spec's ``kind``."""
-    kind = spec.get("kind")
-    if kind == "toggle":
-        return isinstance(value, bool)
-    if kind == "number":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if kind == "choice":
-        return value in spec.get("choices", ())
-    if kind == "text":
-        return isinstance(value, str)
-    return True
 
 
 def _is_recoverable_characterization_error(exc: Exception) -> bool:
@@ -270,6 +256,7 @@ class QoroService(CircuitRunner):
         polling_interval: float = 3.0,
         max_retries: int | None = None,
         track_depth: bool = False,
+        use_saved_defaults: bool = True,
     ):
         """Initialises the QoroService client.
 
@@ -279,20 +266,21 @@ class QoroService(CircuitRunner):
                 it will be read from ``QORO_API_KEY`` in a ``.env`` file,
                 falling back to the ``QORO_API_KEY`` environment variable.
             job_config (JobConfig | None, optional):
-                A JobConfig object containing default job settings. If not
-                provided, a default configuration will be created. If the
-                job_config has neither ``simulator_cluster`` nor ``qpu_system``,
-                it defaults to the ``qoro_maestro`` simulator cluster with a
-                warning.
+                A JobConfig object containing default job settings. Its set
+                fields override the saved defaults' ``job_config`` (see below);
+                with neither, the ``qoro_maestro`` simulator cluster is used. If
+                the result has neither ``simulator_cluster`` nor
+                ``qpu_system``, it defaults to ``qoro_maestro`` with a warning.
             maestro_config (MaestroConfig | None, optional):
                 Default Maestro settings for submitted jobs, the same
                 :class:`~divi.backends.MaestroConfig` a local
                 :class:`~divi.backends.MaestroSimulator` takes. Every call to
                 :meth:`submit_circuits` on a simulator target uses it unless
-                given its own ``maestro_config``.
+                given its own ``maestro_config``. Replaces the saved default.
             device_config (DeviceConfig | None, optional):
                 Default hardware options for jobs on a QPU target, used unless
                 :meth:`submit_circuits` is given its own ``device_config``.
+                Replaces the saved default.
             polling_interval (float, optional):
                 The interval in seconds for polling job status. Defaults to 3.0.
             max_retries (int | None, optional):
@@ -303,6 +291,14 @@ class QoroService(CircuitRunner):
             track_depth (bool, optional):
                 If True, record circuit depth for each submitted batch.
                 Access via :attr:`~divi.backends.CircuitRunner.depth_history` after execution. Defaults to False.
+            use_saved_defaults (bool, optional):
+                Whether to start from the defaults ``divi-config-helper`` saved
+                in ``qoro.json`` in divi's user config folder. Defaults to True.
+
+        Raises:
+            ValueError: If no API key is found, or the saved defaults are
+                invalid or name a target this key cannot use; the message names
+                the file.
         """
 
         # Set up auth_token first (needed for API calls like fetch_simulator_clusters)
@@ -326,14 +322,26 @@ class QoroService(CircuitRunner):
         self.fetch_qpu_systems()
         self.fetch_simulator_clusters()
 
-        # Set up job config
-        if job_config is None:
-            job_config = _DEFAULT_JOB_CONFIG
+        saved_job, saved_maestro, saved_device = (
+            load_defaults() if use_saved_defaults else (None, None, None)
+        )
+        passed = job_config._set_fields() if job_config is not None else {}
+        if saved_job is None:
+            self.job_config = _DEFAULT_JOB_CONFIG if job_config is None else job_config
+        else:
+            try:
+                self.job_config = saved_job.override(**passed)
+            except ValueError as exc:
+                if passed.keys() & _TARGET_FIELDS:
+                    raise
+                raise ValueError(f"{defaults_path()}: {exc}") from exc
 
-        self.job_config = job_config
-
-        self.maestro_config = maestro_config
-        self.device_config = device_config
+        self.maestro_config = (
+            maestro_config if maestro_config is not None else saved_maestro
+        )
+        self.device_config = (
+            device_config if device_config is not None else saved_device
+        )
 
         super().__init__(shots=self.job_config.shots, track_depth=track_depth)
 
@@ -539,10 +547,10 @@ class QoroService(CircuitRunner):
         Returns:
             Blueprints keyed by vendor name (e.g. ``"ibm"``, ``"iqm"``), each
             holding a ``label`` plus ``credentials`` and ``device`` maps of
-            config key to its ``kind``, ``required``, ``secret``, ``choices``
-            and ``default``::
+            config key to the spec the service gives it, such as its
+            ``kind``, ``choices``, ``default`` and bounds::
 
-                blueprints["ibm"]["device"]["TRANSPILE_LEVEL"]["default"]
+                blueprints["ibm"]["device"]["TRANSPILE_OPTIMIZATION_LEVEL"]["default"]
 
             A vendor whose shape is not modelled yet reports empty maps.
         """
@@ -555,38 +563,6 @@ class QoroService(CircuitRunner):
             }
             for vendor, blueprint in response.json().items()
         }
-
-    @cached_property
-    def _device_option_specs(self) -> dict[str, list[Mapping[str, Any]]]:
-        """Each device key's specs across the vendors that accept it, fetched
-        on first use."""
-        specs: dict[str, list[Mapping[str, Any]]] = {}
-        for blueprint in self.fetch_vendor_blueprints().values():
-            for key, spec in blueprint["device"].items():
-                specs.setdefault(key, []).append(spec)
-        return specs
-
-    def _check_device_options(self, device_config: DeviceConfig) -> None:
-        """Reject keys or values no vendor accepts; the service would store
-        them unread."""
-        options = device_config.to_payload()
-        specs = self._device_option_specs
-        unknown = sorted(options.keys() - specs.keys())
-        if unknown:
-            raise ValueError(
-                f"No QPU vendor accepts the device options {unknown}. "
-                "fetch_vendor_blueprints() lists the options each vendor takes."
-            )
-        rejected = {
-            key: value
-            for key, value in options.items()
-            if not any(_accepts(spec, value) for spec in specs[key])
-        }
-        if rejected:
-            raise ValueError(
-                f"No QPU vendor accepts the device option values {rejected}. "
-                "fetch_vendor_blueprints() lists each option's kind and choices."
-            )
 
     def get_credit_balance(self) -> dict:
         """
@@ -862,9 +838,10 @@ class QoroService(CircuitRunner):
                 When omitted, the service's is used; a QPU submission skips it.
             device_config (DeviceConfig | None, optional):
                 Hardware options for this submission on a QPU target, used in
-                place of the service's ``device_config`` and checked against
-                :meth:`fetch_vendor_blueprints`. When omitted, the service's is
-                used; a simulator submission skips it.
+                place of the service's ``device_config``. When omitted, the
+                service's is used; a simulator submission skips it. The
+                service rejects an option or value that no QPU vendor accepts;
+                :meth:`fetch_vendor_blueprints` lists them.
             job_config (JobConfig | None, optional):
                 Job settings for this submission, used in place of the
                 service's ``job_config``, e.g.
@@ -881,9 +858,9 @@ class QoroService(CircuitRunner):
                 for a job whose target or ``force_sampling`` rules out
                 expectation values, a config is aimed
                 at the other kind of target (``maestro_config`` on a
-                QPU job, or ``device_config`` on a simulator job), or
-                ``device_config`` sets an option or value no QPU vendor accepts.
-            requests.exceptions.HTTPError: If any API request fails.
+                QPU job, or ``device_config`` on a simulator job).
+            requests.exceptions.HTTPError: If any API request fails, including
+                ``job/init/`` refusing a ``device_config`` option or value.
 
         Returns:
             ExecutionResult: Contains job_id for asynchronous execution. Use the job_id
@@ -928,8 +905,6 @@ class QoroService(CircuitRunner):
         maestro_config, device_config = self._configs_for_target(
             job_config, maestro_config, device_config
         )
-        if device_config is not None:
-            self._check_device_options(device_config)
         envelope = self._fragment_envelope(
             ham_ops, circuit_ham_map, shot_groups, job_config.shots
         )
