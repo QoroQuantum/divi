@@ -56,6 +56,7 @@ from divi.reporting._events import (
 )
 from divi.reporting._session import ProgressSession
 from divi.reporting._state import ProgressState
+from tests._helpers import exact_match
 from tests.qprog._helpers import (
     SimpleTestProgram,
     _FakeRunResult,
@@ -198,6 +199,19 @@ class TestProgramEnsemble:
         assert program_ensemble.total_circuit_count == 0
         assert program_ensemble.total_run_time == 0.0
         assert program_ensemble._progress_session is None
+
+    @pytest.mark.parametrize("backend", [None, "maestro"], ids=["none", "str"])
+    def test_rejects_a_backend_that_is_not_a_circuit_runner(self, backend):
+        expected = f"backend must be a CircuitRunner; got {type(backend).__name__}."
+        with pytest.raises(TypeError, match=exact_match(expected)):
+            SampleProgramEnsemble(backend)
+
+    def test_rejects_a_sampling_backend_that_is_not_a_circuit_runner(
+        self, dummy_simulator
+    ):
+        expected = "sampling_backend must be a CircuitRunner or None; got str."
+        with pytest.raises(TypeError, match=exact_match(expected)):
+            SampleProgramEnsemble(dummy_simulator, sampling_backend="maestro")
 
     def test_public_import_surface(self):
         missing = [name for name in ensemble_module.__all__ if not hasattr(qprog, name)]

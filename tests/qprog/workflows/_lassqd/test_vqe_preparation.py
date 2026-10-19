@@ -270,7 +270,7 @@ def _seed_gain(
 
 
 @pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")
-def test_seed_acceptance_rejects_amplitudes_on_the_wrong_excitations():
+def test_seed_acceptance_rejects_amplitudes_on_the_wrong_excitations(dummy_simulator):
     """The failure class the check exists for, and the one a stationarity
     precondition provably cannot see.
 
@@ -281,7 +281,7 @@ def test_seed_acceptance_rejects_amplitudes_on_the_wrong_excitations():
     stays satisfied throughout. Permuting the seed vector is that same corruption
     applied directly, and the energy comparison catches it.
     """
-    ensemble = h8_frontier_lassqd(None)
+    ensemble = h8_frontier_lassqd(dummy_simulator)
     state = ensemble.initial_state()
     spec = state.fragments[0].spec
     h_eff, _, g_frag = fragment_integrals(ensemble, state.mo_coeff, state.fragments, 0)
@@ -294,12 +294,14 @@ def test_seed_acceptance_rejects_amplitudes_on_the_wrong_excitations():
 
 
 @pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")
-def test_seed_acceptance_admits_a_polarized_non_stationary_fragment():
+def test_seed_acceptance_admits_a_polarized_non_stationary_fragment(dummy_simulator):
     """A spin-polarized fragment has no shared spatial basis making both spin
     channels Hartree-Fock stationary, so the old precondition refused it
     outright -- which is what left the diiron benchmark unseeded. The seed is
     worth keeping there."""
-    ensemble = h8_frontier_lassqd(local_spins=[2, -2], fragment_atoms=H8_HALF_CHAINS)
+    ensemble = h8_frontier_lassqd(
+        dummy_simulator, local_spins=[2, -2], fragment_atoms=H8_HALF_CHAINS
+    )
     state = ensemble.initial_state()
     spec = state.fragments[0].spec
     assert spec.n_alpha != spec.n_beta

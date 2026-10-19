@@ -163,7 +163,7 @@ def vqe_preparation(**overrides):
     )
 
 
-def h8_frontier_lassqd(backend=None, **overrides):
+def h8_frontier_lassqd(backend, **overrides):
     """H8 split into two frontier-selected 4-orbital fragments, prepared by
     :func:`vqe_preparation`."""
     kwargs = dict(

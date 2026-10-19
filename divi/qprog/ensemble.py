@@ -474,6 +474,13 @@ def _resolve_sampling_params(
     return resolved
 
 
+def _check_circuit_runner(name: str, value: Any, *, optional: bool = False) -> None:
+    if (value is None and optional) or isinstance(value, CircuitRunner):
+        return
+    allowed = "a CircuitRunner or None" if optional else "a CircuitRunner"
+    raise TypeError(f"{name} must be {allowed}; got {type(value).__name__}.")
+
+
 class ProgramEnsemble(ABC):
     """This abstract class provides the basic scaffolding for higher-order
     computations that require more than one quantum program to achieve its goal.
@@ -517,7 +524,14 @@ class ProgramEnsemble(ABC):
                 :class:`~divi.qprog.ReportingLevel`; defaults to ``COMPACT``.
                 The ``DIVI_DISABLE_PROGRESS`` environment variable suppresses
                 all visual output regardless of this setting.
+
+        Raises:
+            TypeError: If ``backend`` is not a
+                :class:`~divi.backends.CircuitRunner`, or ``sampling_backend``
+                is neither one nor ``None``.
         """
+        _check_circuit_runner("backend", backend)
+        _check_circuit_runner("sampling_backend", sampling_backend, optional=True)
         super().__init__()
 
         self.backend = backend
