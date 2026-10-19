@@ -28,6 +28,7 @@ from divi.reporting._events import (
     TerminalStatus,
 )
 from divi.reporting._logging import log_progress_event
+from tests._helpers import exact_match
 from tests.pipeline._helpers import DummySpecStage, two_group_meta
 
 
@@ -371,6 +372,24 @@ class TestQuantumProgramBase:
         program = ConcreteQuantumProgram(backend=dummy_simulator, **kwargs)
         assert program.precision == expected
         assert program._precision == expected
+
+    def test_qem_protocol_that_is_not_a_protocol_is_rejected(self, dummy_simulator):
+        """Otherwise it fails at dispatch, on the first attribute the pipeline
+        reads from it."""
+        with pytest.raises(
+            TypeError, match=exact_match("qem_protocol must be a QEMProtocol; got str.")
+        ):
+            ConcreteQuantumProgram(backend=dummy_simulator, qem_protocol="zne")
+
+    @pytest.mark.parametrize("precision", [0, -1, 1.5, "8"])
+    def test_precision_that_is_not_a_positive_integer_is_rejected(
+        self, dummy_simulator, precision
+    ):
+        """It sets a format-spec width, so a bad value would otherwise surface
+        only when the first circuit is rendered."""
+        message = f"precision must be an integer of at least 1; got {precision!r}."
+        with pytest.raises(ValueError, match=exact_match(message)):
+            ConcreteQuantumProgram(backend=dummy_simulator, precision=precision)
 
     def test_unseeded_base_seed_is_one_stable_int(self, dummy_simulator):
         program = ConcreteQuantumProgram(backend=dummy_simulator)

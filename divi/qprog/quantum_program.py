@@ -5,6 +5,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Hashable, Sequence
 from contextlib import contextmanager
+from numbers import Integral
 from pathlib import Path
 from threading import Event
 from typing import Any, Literal, Self, overload
@@ -16,7 +17,7 @@ from divi.backends import AsyncJobBackend, CircuitRunner
 from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
 from divi.backends._job_status import JobStatus, QoroJobError
 from divi.circuits import DEFAULT_PRECISION
-from divi.circuits.qem import _NoMitigation
+from divi.circuits.qem import QEMProtocol, _NoMitigation
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import (
     CircuitPipeline,
@@ -162,9 +163,19 @@ class QuantumProgram(ABC):
                 :class:`~divi.pipeline.DiviPerformanceWarning` from this
                 program's pipelines (e.g. exhaustive-QuEPP scaling or
                 bind-before-mitigation hints). Defaults to False.
+
+        Raises:
+            ValueError: If ``backend`` is ``None`` or ``precision`` is not an
+                integer of at least 1.
+            TypeError: If ``qem_protocol`` is given and is not a
+                :class:`~divi.circuits.qem.QEMProtocol`.
         """
         if backend is None:
             raise ValueError("QuantumProgram requires a backend.")
+        if not isinstance(precision, Integral) or precision < 1:
+            raise ValueError(
+                f"precision must be an integer of at least 1; got {precision!r}."
+            )
 
         self.backend = backend
         self._seed = seed
@@ -172,6 +183,11 @@ class QuantumProgram(ABC):
         self._suppress_performance_warnings = suppress_performance_warnings
 
         qem_protocol = kwargs.pop("qem_protocol", None)
+        if qem_protocol is not None and not isinstance(qem_protocol, QEMProtocol):
+            raise TypeError(
+                "qem_protocol must be a QEMProtocol; got "
+                f"{type(qem_protocol).__name__}."
+            )
         self._qem_protocol = _NoMitigation() if qem_protocol is None else qem_protocol
 
         if kwargs:

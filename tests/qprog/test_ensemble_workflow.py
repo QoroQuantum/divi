@@ -44,6 +44,7 @@ from divi.reporting._events import (
 from divi.reporting._logging import log_progress_event
 from divi.reporting._session import ProgressSession
 from divi.reporting._state import ProgressState
+from tests._helpers import exact_match
 from tests.qprog._helpers import (
     FailingTestProgram,
     SimpleTestProgram,
@@ -1113,11 +1114,28 @@ class TestMaxRoundsTermination:
         assert not any(call.startswith("create_programs") for call in ensemble.calls)
         assert ensemble.total_circuit_count == 0
 
-    @pytest.mark.parametrize("max_rounds", [0, -1])
-    def test_non_positive_max_rounds_rejected(self, lifecycle_ensemble, max_rounds):
+    @pytest.mark.parametrize("max_rounds", [0, -1, 1.5, float("inf"), float("nan")])
+    def test_max_rounds_that_is_not_a_positive_integer_is_rejected(
+        self, lifecycle_ensemble, max_rounds
+    ):
+        """``inf`` and ``nan`` never reach the round cap, so they would run
+        without one."""
         ensemble = lifecycle_ensemble()
-        with pytest.raises(ValueError, match="max_rounds must be >= 1"):
+        message = f"max_rounds must be an integer of at least 1; got {max_rounds!r}."
+        with pytest.raises(ValueError, match=exact_match(message)):
             ensemble.run(max_rounds=max_rounds)
+
+    def test_batch_config_that_is_not_a_batch_config_is_rejected_before_any_work(
+        self, lifecycle_ensemble
+    ):
+        ensemble = lifecycle_ensemble()
+        with pytest.raises(
+            TypeError,
+            match=exact_match("batch_config must be a BatchConfig; got dict."),
+        ):
+            ensemble.run(batch_config={})
+
+        assert not ensemble.calls
 
 
 class TestRoundAccounting:

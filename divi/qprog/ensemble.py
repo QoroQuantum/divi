@@ -12,6 +12,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
+from numbers import Integral
 from pathlib import Path
 from threading import Event
 from typing import Any, Self
@@ -1061,6 +1062,9 @@ class ProgramEnsemble(ABC):
             :attr:`workflow_state`.
 
         Raises:
+            ValueError: If ``max_rounds`` is given and is not an integer of at
+                least 1.
+            TypeError: If ``batch_config`` is not a :class:`BatchConfig`.
             RuntimeError: If a round's programs fail. :attr:`stop_reason` and
                 :attr:`round_history` are populated before the exception
                 propagates, so catch it and inspect them to see which round
@@ -1068,8 +1072,16 @@ class ProgramEnsemble(ABC):
                 recorded the same way, so a ``FAILED`` round may still have
                 executed its circuits successfully.
         """
-        if max_rounds is not None and max_rounds < 1:
-            raise ValueError("max_rounds must be >= 1 when provided.")
+        if max_rounds is not None and (
+            not isinstance(max_rounds, Integral) or max_rounds < 1
+        ):
+            raise ValueError(
+                f"max_rounds must be an integer of at least 1; got {max_rounds!r}."
+            )
+        if not isinstance(batch_config, BatchConfig):
+            raise TypeError(
+                f"batch_config must be a BatchConfig; got {type(batch_config).__name__}."
+            )
         if self._executor is not None:
             raise RuntimeError("An ensemble is already being run.")
 
