@@ -15,7 +15,7 @@ import stim
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import MaestroConfig
 from divi.circuits import MetaCircuit, quepp
@@ -46,7 +46,7 @@ from divi.circuits.quepp import (
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage, QEMStage
-from tests._helpers import exact_match
+from tests._helpers import exact_match, same_unitary
 from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
 
 _Z0 = SparsePauliOp("Z")
@@ -227,23 +227,23 @@ def test_normalise_angle(theta, expected_n):
 
 
 class TestNormalizeCircuit:
-    def test_small_angles_unchanged(self, mixed_qc):
+    def test_small_angles_unchanged(self, mixed_qc, default_test_simulator):
         normalized = _normalize_circuit(mixed_qc)
-        assert Operator(normalized).equiv(Operator(mixed_qc))
+        assert same_unitary(default_test_simulator, normalized, mixed_qc)
 
-    def test_pi_over_2_becomes_clifford(self):
+    def test_pi_over_2_becomes_clifford(self, default_test_simulator):
         qc = QuantumCircuit(1)
         qc.rx(np.pi / 2, 0)
         normalized = _normalize_circuit(qc)
         rotations = [i for i in normalized.data if i.operation.name == "rx"]
         assert len(rotations) == 0
-        assert Operator(normalized).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, normalized, qc)
 
-    def test_large_angle_decomposed(self):
+    def test_large_angle_decomposed(self, default_test_simulator):
         qc = QuantumCircuit(1)
         qc.rx(1.2, 0)
         normalized = _normalize_circuit(qc)
-        assert Operator(normalized).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, normalized, qc)
 
     def test_symbolic_angles_passed_through(self):
         theta = Parameter("theta")
@@ -256,17 +256,17 @@ class TestNormalizeCircuit:
 
 class TestDecomposeControlledRotations:
     @pytest.mark.parametrize("method,axis", [("crx", "x"), ("cry", "y"), ("crz", "z")])
-    def test_unitary_preserved(self, method, axis):
+    def test_unitary_preserved(self, method, axis, default_test_simulator):
         qc = QuantumCircuit(2)
         getattr(qc, method)(0.6, 0, 1)
         decomposed = _decompose_controlled_rotations(qc)
-        assert Operator(decomposed).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, decomposed, qc)
         names = {i.operation.name for i in decomposed.data}
         assert method not in names
 
-    def test_non_controlled_unchanged(self, mixed_qc):
+    def test_non_controlled_unchanged(self, mixed_qc, default_test_simulator):
         out = _decompose_controlled_rotations(mixed_qc)
-        assert Operator(out).equiv(Operator(mixed_qc))
+        assert same_unitary(default_test_simulator, out, mixed_qc)
 
 
 @pytest.mark.parametrize(
@@ -489,7 +489,7 @@ class TestPathDagConstruction:
             assert node.op.name == f"r{rot.axis}"
             assert working_dag.find_bit(node.qargs[0]).index == rot.qubit_idx
 
-    def test_single_rotation_branch_semantics(self):
+    def test_single_rotation_branch_semantics(self, default_test_simulator):
         qc = QuantumCircuit(1)
         qc.rx(0.3, 0)
         working_dag = circuit_to_dag(qc)
@@ -503,10 +503,14 @@ class TestPathDagConstruction:
         clifford_qc = QuantumCircuit(1)
         clifford_qc.rx(np.pi / 2, 0)
 
-        assert Operator(dag_to_circuit(skip_dag)).equiv(Operator(identity_qc))
-        assert Operator(dag_to_circuit(replace_dag)).equiv(Operator(clifford_qc))
+        assert same_unitary(
+            default_test_simulator, dag_to_circuit(skip_dag), identity_qc
+        )
+        assert same_unitary(
+            default_test_simulator, dag_to_circuit(replace_dag), clifford_qc
+        )
 
-    def test_branch_tuple_order_matches_rotation_order(self):
+    def test_branch_tuple_order_matches_rotation_order(self, default_test_simulator):
         qc = QuantumCircuit(1)
         qc.rx(0.3, 0)
         qc.rz(0.4, 0)
@@ -522,8 +526,12 @@ class TestPathDagConstruction:
         second_expected = QuantumCircuit(1)
         second_expected.rz(np.pi / 2, 0)
 
-        assert Operator(dag_to_circuit(first_only)).equiv(Operator(first_expected))
-        assert Operator(dag_to_circuit(second_only)).equiv(Operator(second_expected))
+        assert same_unitary(
+            default_test_simulator, dag_to_circuit(first_only), first_expected
+        )
+        assert same_unitary(
+            default_test_simulator, dag_to_circuit(second_only), second_expected
+        )
 
 
 def _all_cos_weight_of(rots, inv_tabs, obs_terms, term_idx=0) -> float:
@@ -1214,10 +1222,9 @@ def _rx_qc(angle: float) -> QuantumCircuit:
     return qc
 
 
-def _exact_expval(qc: QuantumCircuit, obs: SparsePauliOp) -> float:
-    """Exact expectation value via statevector."""
-    sv = Statevector.from_instruction(qc)
-    return float(np.real(sv.expectation_value(obs)))
+def _exact_expval(simulator, qc: QuantumCircuit, obs: SparsePauliOp) -> float:
+    """Exact expectation value, for a simulator in expectation-value mode."""
+    return simulator.expectation_value(qc, obs)
 
 
 def _two_qubit_qc() -> QuantumCircuit:
@@ -1247,16 +1254,20 @@ class TestCPTMultiTermObservables:
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     @pytest.mark.parametrize("coeff", [1.0, 2.0, 0.5, -3.0])
-    def test_cpt_is_linear_in_the_observable_coefficient(self, coeff):
+    def test_cpt_is_linear_in_the_observable_coefficient(
+        self, coeff, default_test_simulator
+    ):
         """``⟨cP⟩ = c⟨P⟩``. A coefficient folded into both the path weight and the
         Clifford expectation scales the estimate by ``c²``, which unit coefficients
         hide."""
         qc = _two_qubit_qc()
         obs = SparsePauliOp.from_list([("ZI", coeff)])
-        assert _cpt_estimate(qc, obs) == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+        assert _cpt_estimate(qc, obs) == pytest.approx(
+            _exact_expval(default_test_simulator, qc, obs), rel=1e-9
+        )
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_cpt_of_a_sum_is_the_sum_of_the_terms(self):
+    def test_cpt_of_a_sum_is_the_sum_of_the_terms(self, default_test_simulator):
         """Linearity, with unit coefficients so only the cross terms can break it:
         paths from one term must not be weighted by another term's expectation."""
         qc = _two_qubit_qc()
@@ -1267,18 +1278,21 @@ class TestCPTMultiTermObservables:
         )
         assert whole == pytest.approx(per_term, rel=1e-9)
         assert whole == pytest.approx(
-            _exact_expval(qc, SparsePauliOp.from_list(terms)), rel=1e-9
+            _exact_expval(default_test_simulator, qc, SparsePauliOp.from_list(terms)),
+            rel=1e-9,
         )
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_cpt_recovers_a_realistic_hamiltonian(self):
+    def test_cpt_recovers_a_realistic_hamiltonian(self, default_test_simulator):
         """Several terms, none of unit magnitude — the shape of every chemistry and
         QUBO Hamiltonian, and the case no accuracy test covered."""
         qc = _two_qubit_qc()
         obs = SparsePauliOp.from_list(
             [("ZI", 0.7), ("IZ", -0.4), ("ZZ", 0.9), ("XI", 0.25)]
         )
-        assert _cpt_estimate(qc, obs) == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+        assert _cpt_estimate(qc, obs) == pytest.approx(
+            _exact_expval(default_test_simulator, qc, obs), rel=1e-9
+        )
 
 
 class TestCPTExpansion:
@@ -1304,7 +1318,7 @@ class TestCPTExpansion:
         assert cpt == pytest.approx(np.cos(angle), rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_h_rx_h_ry(self):
+    def test_h_rx_h_ry(self, default_test_simulator):
         """Multi-gate single-qubit circuit."""
         qc = QuantumCircuit(1)
         qc.h(0)
@@ -1317,10 +1331,12 @@ class TestCPTExpansion:
         )
         entry = ctx["per_obs"][0]
         cpt = float(entry.weights @ entry.classical_values)
-        assert cpt == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+        assert cpt == pytest.approx(
+            _exact_expval(default_test_simulator, qc, obs), rel=1e-9
+        )
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_two_qubit_circuit(self, mixed_qc):
+    def test_two_qubit_circuit(self, mixed_qc, default_test_simulator):
         """Two-qubit circuit with ZZ observable."""
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
         _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
@@ -1328,7 +1344,9 @@ class TestCPTExpansion:
         )
         entry = ctx["per_obs"][0]
         cpt = float(entry.weights @ entry.classical_values)
-        assert cpt == pytest.approx(_exact_expval(mixed_qc, obs), rel=1e-9)
+        assert cpt == pytest.approx(
+            _exact_expval(default_test_simulator, mixed_qc, obs), rel=1e-9
+        )
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
     def test_commuting_gate_no_branch(self):
@@ -1394,7 +1412,7 @@ class TestQuEPPRoundTrip:
         assert protocol.reduce(qr, ctx) == pytest.approx([exact], rel=1e-9)
 
     @pytest.mark.usefixtures("suppress_quepp_warnings")
-    def test_expand_with_controlled_rotation(self):
+    def test_expand_with_controlled_rotation(self, default_test_simulator):
         """Full QuEPP expand works on a circuit with controlled rotations."""
         qc = QuantumCircuit(2)
         qc.h(0)
@@ -1405,7 +1423,9 @@ class TestQuEPPRoundTrip:
         _, ctx = protocol.expand(circuit_to_dag(qc), obs)
         entry = ctx["per_obs"][0]
         cpt = float(entry.weights @ entry.classical_values)
-        assert cpt == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+        assert cpt == pytest.approx(
+            _exact_expval(default_test_simulator, qc, obs), rel=1e-9
+        )
 
 
 class TestQuEPPSignalDestructionExtended:
@@ -2028,7 +2048,7 @@ class TestQuEPPMultiObservable:
         ]
 
     def test_pipeline_e2e_on_a_multi_term_hamiltonian(
-        self, suppress_quepp_warnings, quepp_backend
+        self, suppress_quepp_warnings, quepp_backend, default_test_simulator
     ):
         """A Pauli sum has to survive the real measurement stage, not just expand.
 
@@ -2044,7 +2064,12 @@ class TestQuEPPMultiObservable:
         assert len(spo.paulis) > 1, "fixture must be genuinely multi-term"
 
         assert _quepp_pipeline_values(meta, quepp_backend()) == [
-            pytest.approx(_exact_expval(_entangled_two_qubit_circuit(), spo), abs=1e-9)
+            pytest.approx(
+                _exact_expval(
+                    default_test_simulator, _entangled_two_qubit_circuit(), spo
+                ),
+                abs=1e-9,
+            )
         ]
 
 
@@ -2067,7 +2092,7 @@ class TestQuEPPMultiTermUnderNonUniformNoise:
         )
 
     @staticmethod
-    def _mitigated_under_noise(qc, obs, noise_factors) -> float:
+    def _mitigated_under_noise(simulator, qc, obs, noise_factors) -> float:
         """Run expand → reduce with per-circuit noise applied to exact values.
 
         Damps each declared single-term value on each emitted circuit by that
@@ -2080,13 +2105,16 @@ class TestQuEPPMultiTermUnderNonUniformNoise:
         rows = []
         for dag_idx, dag in enumerate(dags):
             exact = [
-                _exact_expval(dag_to_circuit(dag), term_obs) for term_obs in declared
+                _exact_expval(simulator, dag_to_circuit(dag), term_obs)
+                for term_obs in declared
             ]
             factor = noise_factors[dag_idx % len(noise_factors)]
             rows.append([value * factor for value in exact])
         return protocol.reduce(rows, ctx)[0]
 
-    def test_recovers_exact_energy_when_ensemble_is_noiseless(self):
+    def test_recovers_exact_energy_when_ensemble_is_noiseless(
+        self, default_test_simulator
+    ):
         """With exact inputs the estimator must return the exact value.
 
         ``T - N`` vanishes, so this isolates the classical CPT reconstruction
@@ -2094,22 +2122,28 @@ class TestQuEPPMultiTermUnderNonUniformNoise:
         """
         qc = _two_qubit_qc()
         obs = self._hamiltonian()
-        mitigated = self._mitigated_under_noise(qc, obs, [1.0])
-        assert mitigated == pytest.approx(_exact_expval(qc, obs), rel=1e-9)
+        mitigated = self._mitigated_under_noise(default_test_simulator, qc, obs, [1.0])
+        assert mitigated == pytest.approx(
+            _exact_expval(default_test_simulator, qc, obs), rel=1e-9
+        )
 
-    def test_improves_on_the_unmitigated_value_under_non_uniform_noise(self):
+    def test_improves_on_the_unmitigated_value_under_non_uniform_noise(
+        self, default_test_simulator
+    ):
         """Mitigation must move the estimate toward exact, not away from it."""
         qc = _two_qubit_qc()
         obs = self._hamiltonian()
-        exact = _exact_expval(qc, obs)
+        exact = _exact_expval(default_test_simulator, qc, obs)
         factors = [0.88, 0.94, 0.9, 0.85, 0.92, 0.87, 0.95]
 
-        mitigated = self._mitigated_under_noise(qc, obs, factors)
+        mitigated = self._mitigated_under_noise(
+            default_test_simulator, qc, obs, factors
+        )
         unmitigated = exact * factors[0]
 
         assert abs(mitigated - exact) < abs(unmitigated - exact)
 
-    def test_is_linear_in_a_hamiltonian_rescaling(self):
+    def test_is_linear_in_a_hamiltonian_rescaling(self, default_test_simulator):
         """Scaling H scales the mitigated energy by the same factor.
 
         A coefficient applied twice makes this quadratic; an absolute
@@ -2118,8 +2152,10 @@ class TestQuEPPMultiTermUnderNonUniformNoise:
         qc = _two_qubit_qc()
         obs = self._hamiltonian()
         factors = [0.88, 0.94, 0.9, 0.85]
-        base = self._mitigated_under_noise(qc, obs, factors)
+        base = self._mitigated_under_noise(default_test_simulator, qc, obs, factors)
 
         for scale in (0.01, 3.0):
-            scaled = self._mitigated_under_noise(qc, scale * obs, factors)
+            scaled = self._mitigated_under_noise(
+                default_test_simulator, qc, scale * obs, factors
+            )
             assert scaled == pytest.approx(scale * base, rel=1e-9)

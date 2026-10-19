@@ -10,7 +10,11 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Thread
 
 import maestro
+import numpy as np
 import pytest
+from qiskit import QuantumCircuit
+from qiskit.circuit.library import XXPlusYYGate
+from qiskit.quantum_info import SparsePauliOp
 
 import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
@@ -1265,3 +1269,95 @@ class TestMaestroIntegration:
             )
 
         assert result.results[0]["results"] == {"ZI": pytest.approx(-1.0)}
+
+
+def _bell_with_phase(phase):
+    circuit = QuantumCircuit(2, global_phase=phase)
+    circuit.h(0)
+    circuit.cx(0, 1)
+    return circuit
+
+
+def test_statevector_puts_qubit_0_in_the_lowest_bit(default_test_simulator):
+    circuit = QuantumCircuit(2)
+    circuit.x(0)
+
+    np.testing.assert_allclose(
+        default_test_simulator.statevector(circuit), [0, 1, 0, 0], atol=1e-12
+    )
+
+
+@pytest.mark.parametrize(
+    "include_idle_qubits, expected",
+    [
+        pytest.param(True, np.eye(16)[0b0100], id="whole-register"),
+        pytest.param(False, [0, 1], id="active-qubits-only"),
+    ],
+)
+def test_statevector_spans_idle_qubits_unless_told_not_to(
+    default_test_simulator, include_idle_qubits, expected
+):
+    """A barrier is not a gate, so it leaves qubits 0, 1 and 3 idle."""
+    circuit = QuantumCircuit(4)
+    circuit.barrier()
+    circuit.x(2)
+
+    np.testing.assert_allclose(
+        default_test_simulator.statevector(
+            circuit, include_idle_qubits=include_idle_qubits
+        ),
+        expected,
+        atol=1e-12,
+    )
+
+
+def test_statevector_keeps_the_global_phase_qasm_drops(default_test_simulator):
+    np.testing.assert_allclose(
+        default_test_simulator.statevector(_bell_with_phase(0.3)),
+        np.exp(0.3j) * np.array([1, 0, 0, 1]) / np.sqrt(2),
+        atol=1e-12,
+    )
+
+
+def test_statevector_lowers_gates_outside_qasm2(default_test_simulator):
+    """``XXPlusYYGate`` has no OpenQASM 2 form; at angle pi it swaps |01>
+    into |10> up to a phase."""
+    circuit = QuantumCircuit(2)
+    circuit.x(0)
+    circuit.append(XXPlusYYGate(np.pi), [0, 1])
+
+    probabilities = np.abs(default_test_simulator.statevector(circuit)) ** 2
+
+    np.testing.assert_allclose(probabilities, [0, 0, 1, 0], atol=1e-12)
+
+
+def test_statevector_takes_qasm_and_ignores_final_measurements(default_test_simulator):
+    np.testing.assert_allclose(
+        default_test_simulator.statevector(_BELL_QASM),
+        np.array([1, 0, 0, 1]) / np.sqrt(2),
+        atol=1e-12,
+    )
+
+
+def test_statevector_refuses_a_noise_model(make_maestro_simulator):
+    simulator = make_maestro_simulator(
+        maestro_config=MaestroConfig(noise_model=_depolarizing_model())
+    )
+    message = (
+        "statevector cannot apply the configured noise model; use "
+        "expectation_value, or a MaestroSimulator without noise_model."
+    )
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        simulator.statevector(_bell_with_phase(0.0))
+
+
+def test_expectation_value_weights_each_term_in_qiskit_order(default_test_simulator):
+    circuit = QuantumCircuit(2)
+    circuit.x(0)
+    # Qiskit labels read right to left: "IZ" acts on qubit 0, "ZI" on qubit 1.
+    observable = SparsePauliOp(["IZ", "ZI", "II"], [1.0, 2.0, 0.5])
+
+    assert default_test_simulator.expectation_value(
+        circuit, observable
+    ) == pytest.approx(-1.0 + 2.0 + 0.5)

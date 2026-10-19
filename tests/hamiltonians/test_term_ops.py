@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import pytest
 from qiskit.circuit import Parameter, QuantumCircuit
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians import _term_ops as term_ops_module
 from divi.hamiltonians._term_ops import (
@@ -24,7 +24,7 @@ from divi.hamiltonians._term_ops import (
     generate_empty_spo,
     to_spo,
 )
-from tests._helpers import exact_match
+from tests._helpers import exact_match, same_unitary
 
 
 class QubitOperator:
@@ -309,28 +309,28 @@ class TestSpoToQiskitBasisGatesNumericEdgeCases:
         qc = _build_numeric(generate_empty_spo(2), 0.5, [0, 1], n_qubits=2)
         assert len(qc.data) == 0
 
-    def test_identity_only_row_is_skipped(self):
+    def test_identity_only_row_is_skipped(self, default_test_simulator):
         # II contributes only a global phase; gate emission should match a
         # circuit built from the non-identity terms alone.
         spo_with_identity = SparsePauliOp.from_list([("II", 1.0), ("ZZ", 0.5)])
         spo_without = SparsePauliOp.from_list([("ZZ", 0.5)])
         qc_with = _build_numeric(spo_with_identity, 0.3, [0, 1], n_qubits=2)
         qc_without = _build_numeric(spo_without, 0.3, [0, 1], n_qubits=2)
-        assert Operator(qc_with).equiv(Operator(qc_without), atol=1e-10)
+        assert same_unitary(default_test_simulator, qc_with, qc_without, atol=1e-10)
 
-    def test_zero_time_is_identity(self):
+    def test_zero_time_is_identity(self, default_test_simulator):
         spo = SparsePauliOp.from_list([("ZZ", 0.5), ("XI", 1.0), ("IY", 0.3)])
         qc = _build_numeric(spo, 0.0, [0, 1], n_qubits=2)
-        assert Operator(qc).equiv(Operator(QuantumCircuit(2)), atol=1e-10)
+        assert same_unitary(default_test_simulator, qc, QuantumCircuit(2), atol=1e-10)
 
     @pytest.mark.parametrize("pauli", ["X", "Y", "Z"])
-    def test_single_qubit_branches(self, pauli):
+    def test_single_qubit_branches(self, default_test_simulator, pauli):
         spo = SparsePauliOp.from_list([(pauli, 1.0)])
         qc = _build_numeric(spo, 0.5, [0], n_qubits=1)
         expected = QuantumCircuit(1)
         method = {"X": expected.rx, "Y": expected.ry, "Z": expected.rz}[pauli]
         method(2 * 0.5 * 1.0, 0)
-        assert Operator(qc).equiv(Operator(expected), atol=1e-10)
+        assert same_unitary(default_test_simulator, qc, expected, atol=1e-10)
 
     def test_non_contiguous_qubits(self):
         # Place a ZZ rotation on qubits [3, 7] of a 10-qubit circuit.
@@ -347,10 +347,10 @@ class TestSpoToQiskitBasisGatesParity:
     """The numeric and symbolic paths must produce equivalent unitaries
     on the same SPO + numeric time.
 
-    Cases are capped at 4 qubits — ``Operator(qc)`` materialises a
-    ``2^n × 2^n`` complex128 dense matrix, so wider cases pay
-    quadratic memory. If a wider case is genuinely needed, switch the
-    comparison to ``Statevector`` (2^n) on a fixed initial state.
+    Cases are capped at 4 qubits — ``unitary(...)`` runs ``2^n``
+    statevector simulations to build a ``2^n × 2^n`` dense matrix. If a
+    wider case is genuinely needed, compare single statevectors on a
+    fixed initial state instead.
     """
 
     _MAX_PARITY_QUBITS = 4
@@ -386,26 +386,26 @@ class TestSpoToQiskitBasisGatesParity:
             "4q_mixed_full",
         ],
     )
-    def test_numeric_matches_symbolic(self, spo, qubits):
+    def test_numeric_matches_symbolic(self, default_test_simulator, spo, qubits):
         """Numeric path (Rust accelerator) and symbolic path (CX-RZ-CX) must
         produce unitarily equivalent circuits on the same SPO + numeric time."""
         assert len(qubits) <= self._MAX_PARITY_QUBITS, (
             f"Parity test cases must stay ≤{self._MAX_PARITY_QUBITS} qubits "
-            f"so ``Operator.equiv`` doesn't materialise an oversized dense "
-            f"matrix. Got {len(qubits)} qubits."
+            f"so ``unitary`` doesn't run an oversized number of statevector "
+            f"simulations. Got {len(qubits)} qubits."
         )
         n = len(qubits)
         time = 0.37
         qc_numeric = _build_numeric(spo, time, qubits, n_qubits=n)
         qc_symbolic = _build_symbolic(spo, time, qubits, n_qubits=n)
-        assert Operator(qc_numeric).equiv(Operator(qc_symbolic), atol=1e-10)
+        assert same_unitary(default_test_simulator, qc_numeric, qc_symbolic, atol=1e-10)
 
-    def test_parity_with_non_contiguous_qubits(self):
+    def test_parity_with_non_contiguous_qubits(self, default_test_simulator):
         spo = SparsePauliOp.from_list([("ZZ", 0.5), ("XI", 0.3)])
         qc_numeric = _build_numeric(spo, 0.4, [1, 3], n_qubits=5)
         qc_symbolic = _build_symbolic(spo, 0.4, [1, 3], n_qubits=5)
         # 5-qubit dense matrix is 32×32 — still well within budget.
-        assert Operator(qc_numeric).equiv(Operator(qc_symbolic), atol=1e-10)
+        assert same_unitary(default_test_simulator, qc_numeric, qc_symbolic, atol=1e-10)
 
 
 class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
@@ -415,7 +415,7 @@ class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
         qc = _build_symbolic(generate_empty_spo(2), Parameter("t"), [0, 1], n_qubits=2)
         assert len(qc.data) == 0
 
-    def test_identity_only_row_is_skipped(self):
+    def test_identity_only_row_is_skipped(self, default_test_simulator):
         spo_with_identity = SparsePauliOp.from_list([("II", 1.0), ("ZZ", 0.5)])
         spo_without = SparsePauliOp.from_list([("ZZ", 0.5)])
         t = Parameter("t")
@@ -424,7 +424,9 @@ class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
         # Bind ``t`` to a concrete value, then compare.
         bound_with = qc_with.assign_parameters({t: 0.3})
         bound_without = qc_without.assign_parameters({t: 0.3})
-        assert Operator(bound_with).equiv(Operator(bound_without), atol=1e-10)
+        assert same_unitary(
+            default_test_simulator, bound_with, bound_without, atol=1e-10
+        )
 
     def test_parameter_expression_threads_through_gates(self):
         spo = SparsePauliOp("Z")

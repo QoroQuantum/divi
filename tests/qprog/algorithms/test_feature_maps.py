@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import ParameterVector
-from qiskit.quantum_info import Statevector
 
 from divi.qprog.algorithms import AngleEmbedding, ZZFeatureMap
 from tests._helpers import exact_match
@@ -39,15 +38,17 @@ class TestAngleEmbedding:
         with pytest.raises(ValueError, match="rotation must be one of"):
             AngleEmbedding(rotation="W")
 
-    def test_ry_amplitudes_match_reference(self):
+    def test_ry_amplitudes_match_reference(self, default_test_simulator):
         # One-qubit RY(theta) on |0> gives |psi> = (cos(theta/2), sin(theta/2)).
         fm = AngleEmbedding("Y")
         params = np.array(ParameterVector("x", 1), dtype=object)
         qc = fm.build(params, n_qubits=1)
         bound = qc.assign_parameters({params[0]: 0.7})
-        sv = Statevector.from_instruction(bound)
-        assert np.isclose(sv.data[0], np.cos(0.35))
-        assert np.isclose(sv.data[1], np.sin(0.35))
+        np.testing.assert_allclose(
+            default_test_simulator.statevector(bound),
+            [np.cos(0.35), np.sin(0.35)],
+            atol=1e-12,
+        )
 
 
 class TestZZFeatureMap:
@@ -113,7 +114,7 @@ class TestZZFeatureMap:
         with pytest.raises(ValueError, match=exact_match(message)):
             call(ZZFeatureMap())
 
-    def test_encoded_angles_match_reference(self):
+    def test_encoded_angles_match_reference(self, default_test_simulator):
         # The bound circuit must apply RZ(2*x_i) and RZZ(2*(pi-x_i)(pi-x_j)),
         # matching a hand-built reference (validates the angle formulas, not
         # just gate counts).
@@ -132,6 +133,10 @@ class TestZZFeatureMap:
         ref.rz(2.0 * x[1], 1)
         ref.rzz(2.0 * (np.pi - x[0]) * (np.pi - x[1]), 0, 1)
 
-        assert Statevector.from_instruction(bound).equiv(
-            Statevector.from_instruction(ref)
-        )
+        # Equal up to a global phase.
+        assert abs(
+            np.vdot(
+                default_test_simulator.statevector(bound),
+                default_test_simulator.statevector(ref),
+            )
+        ) == pytest.approx(1.0)

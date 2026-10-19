@@ -21,7 +21,8 @@ def _to_qasm(circuit: str | QuantumCircuit, label: str) -> str:
         return circuit
     if isinstance(circuit, QuantumCircuit):
         try:
-            return qasm2.dumps(circuit)
+            # Maestro's parser lacks these two qelib1.inc gates.
+            return qasm2.dumps(circuit.decompose(gates_to_decompose=["rzz", "rxx"]))
         except QASM2ExportError as e:
             raise ValueError(
                 f"Circuit '{label}' cannot be exported to OpenQASM 2: {e}"

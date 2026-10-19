@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 import scipy.linalg
 from pyscf import ao2mo, cc, fci, gto, scf
-from qiskit.quantum_info import SparsePauliOp, Statevector
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import (
@@ -68,9 +68,9 @@ def lassqd_kwargs(**overrides):
 
 
 def ansatz_energy(
-    params, h_eff, g_frag, spec, ansatz: Ansatz | None = None, n_layers=1
+    simulator, params, h_eff, g_frag, spec, ansatz: Ansatz | None = None, n_layers=1
 ):
-    """Exact expectation value of a fragment Hamiltonian in an ansatz state."""
+    """Expectation value of a fragment Hamiltonian in an ansatz state."""
     ansatz = ansatz if ansatz is not None else UCCSDAnsatz()
     circuit = ansatz.build(
         params,
@@ -81,8 +81,7 @@ def ansatz_energy(
         n_beta=spec.n_beta,
     )
     hamiltonian = SparsePauliOp(_spo_from_integrals(h_eff, g_frag, constant=0.0))
-    state = Statevector.from_instruction(circuit)
-    return float(np.real(state.expectation_value(hamiltonian)))
+    return simulator.expectation_value(circuit, hamiltonian)
 
 
 def fragment_integrals(ensemble, mo_coeff, fragments, index):

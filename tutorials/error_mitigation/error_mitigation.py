@@ -8,20 +8,20 @@ The script runs four VQE configurations with the same optimization budget
 and fixed seeds:
 
   1. Noiseless baseline
-  2. Noisy (shot-based with depolarizing noise)
+  2. Noisy (depolarizing gate noise)
   3. ZNE-mitigated (global folding + Richardson extrapolation)
   4. QuEPP-mitigated (CPT + Pauli twirling + rescaling)
 
 All values come from one deterministic run per method.
 """
 
+import maestro
 import numpy as np
 import pennylane as qp
-from qiskit_aer.noise import NoiseModel, depolarizing_error
 from rich.console import Console
 from rich.table import Table
 
-from divi.backends import QiskitSimulator
+from divi.backends import MaestroConfig, MaestroSimulator
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
 from divi.qprog import VQE, HartreeFockAnsatz
@@ -58,11 +58,10 @@ if __name__ == "__main__":
     )
     problem = MolecularProblem.from_molecule(mol)
 
-    noise_model = NoiseModel()
-    noise_model.add_all_qubit_quantum_error(
-        depolarizing_error(0.005, 1), ["sx", "x", "rz"]
-    )
-    noise_model.add_all_qubit_quantum_error(depolarizing_error(0.01, 2), ["cx", "ecr"])
+    n_qubits = problem.hamiltonian.num_qubits
+    noise_model = maestro.NoiseModel()
+    noise_model.set_all_1q_gate_depolarizing(n_qubits, 0.005)
+    noise_model.set_all_2q_gate_depolarizing(n_qubits, 0.01)
 
     optimizer_seed = 1997
     noiseless_simulator_seed = 4242
@@ -81,27 +80,24 @@ if __name__ == "__main__":
         seed=optimizer_seed,
     )
 
+    def noisy_simulator(seed):
+        return MaestroSimulator(
+            maestro_config=MaestroConfig(
+                seed=seed,
+                simulation_type="DensityMatrix",
+                noise_model=noise_model,
+            )
+        )
+
     vqe_noiseless = VQE(
-        backend=QiskitSimulator(
-            n_processes=1,
-            simulation_seed=noiseless_simulator_seed,
+        backend=MaestroSimulator(
+            maestro_config=MaestroConfig(seed=noiseless_simulator_seed)
         ),
         **common,
     )
-    vqe_noisy = VQE(
-        backend=QiskitSimulator(
-            n_processes=1,
-            simulation_seed=noisy_simulator_seed,
-            noise_model=noise_model,
-        ),
-        **common,
-    )
+    vqe_noisy = VQE(backend=noisy_simulator(noisy_simulator_seed), **common)
     vqe_zne = VQE(
-        backend=QiskitSimulator(
-            n_processes=1,
-            simulation_seed=zne_simulator_seed,
-            noise_model=noise_model,
-        ),
+        backend=noisy_simulator(zne_simulator_seed),
         qem_protocol=ZNE(
             scale_factors=[1.0, 3.0, 5.0],
             extrapolator=RichardsonExtrapolator(),
@@ -109,15 +105,7 @@ if __name__ == "__main__":
         **common,
     )
     vqe_quepp = VQE(
-        backend=QiskitSimulator(
-            n_processes=1,
-            simulation_seed=quepp_simulator_seed,
-            noise_model=noise_model,
-            # QuEPP's Clifford ensemble compresses much further than the target
-            # under an optimizing transpiler, which would leave it seeing less
-            # noise than the circuit it is meant to calibrate against.
-            optimization_level=0,
-        ),
+        backend=noisy_simulator(quepp_simulator_seed),
         qem_protocol=QuEPP(truncation_order=1, n_twirls=3),
         **common,
     )

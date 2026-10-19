@@ -13,7 +13,6 @@ import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterVector
 from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qiskit.quantum_info import Statevector
 
 from divi.circuits import MetaCircuit, build_overlap_meta
 from divi.hamiltonians import QDrift
@@ -1182,38 +1181,44 @@ def test_build_overlap_meta_moves_the_backward_prefix_off_ansatz_names(
     assert [p.name for p in overlap.parameters] == expected
 
 
-def _overlap_p_zero(qc, overlap, theta_fwd, theta_bwd):
+def _overlap_p_zero(simulator, overlap, theta_fwd, theta_bwd):
     bound = dag_to_circuit(overlap.circuit_bodies[0][1]).assign_parameters(
         dict(zip(overlap.parameters, [*theta_fwd, *theta_bwd]))
     )
-    return abs(Statevector.from_instruction(bound).data[0]) ** 2
+    return abs(simulator.statevector(bound)[0]) ** 2
 
 
-def test_overlap_identical_params_is_one():
-    qc, _, overlap = _ry_rz_overlap_meta()
+def test_overlap_identical_params_is_one(default_test_simulator):
+    _, _, overlap = _ry_rz_overlap_meta()
     theta = np.random.default_rng(0).random(4)
-    assert _overlap_p_zero(qc, overlap, theta, theta) == pytest.approx(1.0)
+    assert _overlap_p_zero(
+        default_test_simulator, overlap, theta, theta
+    ) == pytest.approx(1.0)
 
 
-def test_overlap_orthogonal_states_is_zero():
-    qc, _, overlap = _ry_rz_overlap_meta()
+def test_overlap_orthogonal_states_is_zero(default_test_simulator):
+    _, _, overlap = _ry_rz_overlap_meta()
     # RY(π) vs RY(0) on qubit 0 produces orthogonal states.
-    p0 = _overlap_p_zero(qc, overlap, [np.pi, 0, 0, 0], [0, 0, 0, 0])
+    p0 = _overlap_p_zero(
+        default_test_simulator, overlap, [np.pi, 0, 0, 0], [0, 0, 0, 0]
+    )
     assert p0 == pytest.approx(0.0, abs=1e-9)
 
 
-def test_overlap_matches_statevector_inner_product():
+def test_overlap_matches_statevector_inner_product(default_test_simulator):
     qc, params, overlap = _ry_rz_overlap_meta()
     rng = np.random.default_rng(3)
     a, b = rng.random(4), rng.random(4)
 
     def state(theta):
-        return Statevector.from_instruction(
+        return default_test_simulator.statevector(
             qc.assign_parameters(dict(zip(params, theta)))
         )
 
-    expected = abs(state(a).inner(state(b))) ** 2
-    assert _overlap_p_zero(qc, overlap, a, b) == pytest.approx(expected)
+    expected = abs(np.vdot(state(a), state(b))) ** 2
+    assert _overlap_p_zero(default_test_simulator, overlap, a, b) == pytest.approx(
+        expected
+    )
 
 
 # --------------------------------------------------------------------------- #

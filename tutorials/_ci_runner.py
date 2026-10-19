@@ -76,7 +76,7 @@ TUTORIALS: dict[str, dict] = {
         ],
     },
     "error_mitigation/error_mitigation.py": {
-        "timeout_seconds": 360,
+        "timeout_seconds": 180,
         "patches": [
             ("max_iterations = 20", "max_iterations = 5"),
             ("scale_factors=[1.0, 3.0, 5.0]", "scale_factors=[1.0, 3.0]"),

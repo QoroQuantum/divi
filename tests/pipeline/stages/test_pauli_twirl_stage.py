@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.pipeline import CircuitPipeline, PipelineEnv
@@ -17,6 +17,7 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     PauliTwirlStage,
 )
+from tests._helpers import equal_up_to_phase, unitary
 from tests.pipeline._helpers import (
     DummySpecStage,
     meta_from_circuit,
@@ -71,13 +72,20 @@ def _mixed_cx_cz_circuit() -> QuantumCircuit:
     return qc
 
 
-def test_structural_twirls_preserve_the_unitary_and_vary(dummy_pipeline_env):
+def test_structural_twirls_preserve_the_unitary_and_vary(
+    dummy_pipeline_env, default_test_simulator
+):
     qc = _mixed_cx_cz_circuit()
     meta = meta_from_circuit(qc, observable=SparsePauliOp.from_list([("ZZZ", 1.0)]))
     bodies = _structural_twirl_bodies(dummy_pipeline_env, meta=meta)
 
-    original = Operator(qc)
-    assert all(Operator(dag_to_circuit(dag)).equiv(original) for _, dag in bodies)
+    original = unitary(default_test_simulator, qc)
+    assert all(
+        equal_up_to_phase(
+            unitary(default_test_simulator, dag_to_circuit(dag)), original
+        )
+        for _, dag in bodies
+    )
     assert len({_op_sequence(dag) for _, dag in bodies}) > 1
 
 

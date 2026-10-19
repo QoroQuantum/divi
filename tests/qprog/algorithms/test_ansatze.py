@@ -22,7 +22,7 @@ from qiskit.circuit.library import (
     SwapGate,
     UGate,
 )
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 from scipy.linalg import expm
 from scipy.stats import unitary_group
 
@@ -53,7 +53,7 @@ from divi.qprog.algorithms._ansatze import (
     rotation_angles,
 )
 from divi.qprog.problems import HamiltonianProblem
-from tests._helpers import exact_match
+from tests._helpers import exact_match, same_unitary, unitary
 from tests.qprog.algorithms._helpers import (
     gate_names,
     gate_qubits,
@@ -566,18 +566,21 @@ def _bit_reversal(n_qubits: int) -> list[int]:
     return [int(format(i, f"0{n_qubits}b")[::-1], 2) for i in range(2**n_qubits)]
 
 
-def _big_endian_operator(qc: QuantumCircuit) -> np.ndarray:
-    """``Operator(qc)`` re-indexed so qubit 0 is the most significant bit."""
+def _big_endian_operator(simulator, qc: QuantumCircuit) -> np.ndarray:
+    """``unitary(simulator, qc)`` re-indexed so qubit 0 is the most significant
+    bit."""
     perm = _bit_reversal(qc.num_qubits)
-    return Operator(qc).data[np.ix_(perm, perm)]
+    return unitary(simulator, qc)[np.ix_(perm, perm)]
 
 
-def _embed(matrix: np.ndarray, wires: tuple[int, ...], n_qubits: int) -> np.ndarray:
+def _embed(
+    simulator, matrix: np.ndarray, wires: tuple[int, ...], n_qubits: int
+) -> np.ndarray:
     """Embed a big-endian gate matrix acting on ``wires`` into ``n_qubits``."""
     perm = _bit_reversal(len(wires))
     gate_qc = QuantumCircuit(n_qubits)
-    gate_qc.unitary(Operator(matrix[np.ix_(perm, perm)]), list(wires))
-    return _big_endian_operator(gate_qc)
+    gate_qc.unitary(matrix[np.ix_(perm, perm)], list(wires))
+    return _big_endian_operator(simulator, gate_qc)
 
 
 def test_hf_occupation_fills_the_lowest_spin_orbitals():
@@ -614,18 +617,28 @@ def test_spin_conserving_excitations_enumerate_occupied_to_virtual(
     assert doubles == expected_doubles
 
 
-def test_emit_single_excitation_is_a_two_qubit_givens_rotation():
+def test_emit_single_excitation_is_a_two_qubit_givens_rotation(
+    default_test_simulator,
+):
     theta = 0.7137
     qc = QuantumCircuit(2)
     _emit_single_excitation(qc, theta, 0, 1)
-    assert np.allclose(_big_endian_operator(qc), _single_excitation_matrix(theta))
+    assert np.allclose(
+        _big_endian_operator(default_test_simulator, qc),
+        _single_excitation_matrix(theta),
+    )
 
 
-def test_emit_double_excitation_is_a_four_qubit_givens_rotation():
+def test_emit_double_excitation_is_a_four_qubit_givens_rotation(
+    default_test_simulator,
+):
     theta = 0.7137
     qc = QuantumCircuit(4)
     _emit_double_excitation(qc, theta, 0, 1, 2, 3)
-    assert np.allclose(_big_endian_operator(qc), _double_excitation_matrix(theta))
+    assert np.allclose(
+        _big_endian_operator(default_test_simulator, qc),
+        _double_excitation_matrix(theta),
+    )
 
 
 @pytest.mark.parametrize(
@@ -713,7 +726,9 @@ class TestHartreeFockAnsatz:
             HartreeFockAnsatz().build([], n_qubits=4, n_layers=1, n_electrons=4)
 
     @pytest.mark.parametrize("n_qubits, n_layers", [(4, 1), (6, 1), (4, 2)])
-    def test_build_applies_doubles_before_singles(self, n_qubits, n_layers):
+    def test_build_applies_doubles_before_singles(
+        self, default_test_simulator, n_qubits, n_layers
+    ):
         """Parameters are ordered singles-then-doubles, but the doubles are
         applied first. The two orderings differ, so this pins the one the
         excitation amplitudes were fitted against."""
@@ -727,10 +742,14 @@ class TestHartreeFockAnsatz:
             layer_params = params[layer * per_layer : (layer + 1) * per_layer]
             for i, wires in enumerate(doubles):
                 gate = _double_excitation_matrix(layer_params[len(singles) + i])
-                expected = _embed(gate, wires, n_qubits) @ expected
+                expected = (
+                    _embed(default_test_simulator, gate, wires, n_qubits) @ expected
+                )
             for j, wires in enumerate(singles):
                 gate = _single_excitation_matrix(layer_params[j])
-                expected = _embed(gate, wires, n_qubits) @ expected
+                expected = (
+                    _embed(default_test_simulator, gate, wires, n_qubits) @ expected
+                )
 
         reference = np.zeros(2**n_qubits)
         occupation = _hf_occupation(n_electrons, n_qubits)
@@ -739,7 +758,9 @@ class TestHartreeFockAnsatz:
         qc = HartreeFockAnsatz().build(
             params, n_qubits, n_layers, n_electrons=n_electrons
         )
-        actual = _big_endian_operator(qc) @ np.eye(2**n_qubits)[:, 0]
+        actual = (
+            _big_endian_operator(default_test_simulator, qc) @ np.eye(2**n_qubits)[:, 0]
+        )
 
         assert np.allclose(actual, expected @ reference)
 
@@ -805,7 +826,7 @@ class TestQCCAnsatz:
         qc = QCCAnsatz().build([0.0] * 13, n_qubits=4, n_layers=1, n_electrons=4)
         assert gate_names(qc)[:4] == ["x"] * 4
 
-    def test_build_matches_a_hand_built_reference(self):
+    def test_build_matches_a_hand_built_reference(self, default_test_simulator):
         """Three qubits, so the second pair is distinguishable from a reversed
         or wrapped one, and distinct angles pin each entangler's parameter."""
         n_qubits = 3
@@ -820,7 +841,7 @@ class TestQCCAnsatz:
                 reference.append(gate_cls(next(entangler_params)), [q, q + 1])
 
         qc = QCCAnsatz().build(params, n_qubits, 1, n_electrons=1)
-        assert Operator(qc).equiv(Operator(reference))
+        assert same_unitary(default_test_simulator, qc, reference)
 
     def test_build_multi_layer(self):
         n_electrons, n_qubits, n_layers = 2, 4, 2
@@ -1141,7 +1162,9 @@ def test_rotation_schedule_spans_the_rotation_group(n_orb):
 
 
 @pytest.mark.parametrize("orbital, spin", [(0, 0), (0, 1), (1, 0), (2, 1)])
-def test_givens_rotation_is_a_fermionic_orbital_rotation(orbital, spin):
+def test_givens_rotation_is_a_fermionic_orbital_rotation(
+    default_test_simulator, orbital, spin
+):
     """At ``phase = -pi / 2`` the gate must equal the Jordan-Wigner image of
     ``exp(t (a+_j a_l - a+_l a_j))``.
 
@@ -1172,7 +1195,9 @@ def test_givens_rotation_is_a_fermionic_orbital_rotation(orbital, spin):
     )
     expected = expm(0.5 * angle * generator.to_matrix())
 
-    np.testing.assert_allclose(Operator(circuit).data, expected, atol=1e-12)
+    np.testing.assert_allclose(
+        unitary(default_test_simulator, circuit), expected, atol=1e-12
+    )
 
 
 def _consumed_values(circuit):
@@ -1190,7 +1215,7 @@ def _consumed_values(circuit):
     }
 
 
-def _one_particle_from_gates(params, n_orb, spin=0):
+def _one_particle_from_gates(simulator, params, n_orb, spin=0):
     """The one-particle matrix the emitted rotation gates actually realize.
 
     Reads it off the circuit rather than a model of it: the gates are applied to
@@ -1199,14 +1224,16 @@ def _one_particle_from_gates(params, n_orb, spin=0):
     """
     circuit = QuantumCircuit(2 * n_orb)
     _emit_rotation_block(circuit, list(params), n_orb, spin)
-    unitary = Operator(circuit).data
+    matrix = unitary(simulator, circuit)
 
     occupied = [1 << (2 * p + spin) for p in range(n_orb)]
-    return np.array([[unitary[row, column] for column in occupied] for row in occupied])
+    return np.array([[matrix[row, column] for column in occupied] for row in occupied])
 
 
 @pytest.mark.parametrize("n_orb", [2, 3, 4, 5])
-def test_rotation_angles_reproduce_a_target_orbital_rotation(n_orb):
+def test_rotation_angles_reproduce_a_target_orbital_rotation(
+    default_test_simulator, n_orb
+):
     """Seeding needs the inverse of the rotation block: given a unitary, the
     parameters whose gates realize it.
 
@@ -1225,7 +1252,9 @@ def test_rotation_angles_reproduce_a_target_orbital_rotation(n_orb):
     np.testing.assert_allclose(_rotation_one_particle(params, n_orb), target, atol=1e-6)
     for spin in (0, 1):
         np.testing.assert_allclose(
-            _one_particle_from_gates(params, n_orb, spin), target, atol=1e-6
+            _one_particle_from_gates(default_test_simulator, params, n_orb, spin),
+            target,
+            atol=1e-6,
         )
 
 

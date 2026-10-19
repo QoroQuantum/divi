@@ -12,10 +12,9 @@ from warnings import warn
 import numpy as np
 from pyscf import ao2mo, cc, gto, scf
 from pyscf.cc import addons as cc_addons
-from qiskit.quantum_info import Statevector
 from scipy.linalg import expm
 
-from divi.backends import CircuitRunner
+from divi.backends import CircuitRunner, MaestroConfig, MaestroSimulator
 from divi.qprog.algorithms import LUCJAnsatz, UCCSDAnsatz
 from divi.qprog.algorithms._ansatze import (
     Ansatz,
@@ -44,8 +43,8 @@ _SEED_ACCEPTANCE_MARGIN = 1e-4
 # fragments are small enough that the extra cycles cost nothing.
 _SEED_CC_MAX_CYCLE = 500
 
-# Widest fragment whose seed is checked exactly. 20 qubits is 16 MB of amplitudes
-# and covers a ten-orbital fragment, the largest either SQD paper runs.
+# Widest fragment whose seed is checked exactly, on a 16 MB statevector; it covers
+# a ten-orbital fragment, the largest either SQD paper runs.
 _SEED_CHECK_MAX_QUBITS = 20
 
 
@@ -414,12 +413,20 @@ def _seed_energy_gain(
     if n_qubits > _SEED_CHECK_MAX_QUBITS:
         return None
 
-    def energy(params: np.ndarray) -> float:
-        circuit = ansatz.build(params, n_qubits, n_layers, **build_kwargs)
-        state = Statevector.from_instruction(circuit)
-        return float(np.real(state.expectation_value(hamiltonian)))
-
-    return energy(np.zeros_like(seed)) - energy(seed)
+    # Exact and in double precision, whatever backend the run itself uses.
+    simulator = MaestroSimulator(
+        maestro_config=MaestroConfig(simulation_type="Statevector")
+    )
+    try:
+        reference, seeded = (
+            simulator.expectation_value(
+                ansatz.build(params, n_qubits, n_layers, **build_kwargs), hamiltonian
+            )
+            for params in (np.zeros_like(seed), seed)
+        )
+    finally:
+        simulator.close()
+    return reference - seeded
 
 
 def _ccsd_seed_params(

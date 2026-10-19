@@ -13,8 +13,12 @@ from threading import Event, Lock
 from typing import Any
 
 import maestro
+import numpy as np
 from pydantic import BaseModel, ConfigDict, SkipValidation, model_validator
+from qiskit import QuantumCircuit, transpile
+from qiskit.quantum_info import SparsePauliOp
 
+from divi.circuits._conversions import _QISKIT_TO_QASM2, _sparse_pauli_op_to_ham_string
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.qasm import count_qubits
@@ -536,4 +540,68 @@ class MaestroSimulator(CircuitRunner):
         return ExecutionResult(
             results=results,
             run_time=sum(entry["metadata"]["time_taken"] for entry in results),
+        )
+
+    def statevector(
+        self, circuit: str | QuantumCircuit, include_idle_qubits: bool = True
+    ) -> np.ndarray:
+        """Output amplitudes of ``circuit``, ignoring its final measurements, with
+        qubit 0 the least-significant bit of the basis index.
+
+        Args:
+            circuit: OpenQASM 2.0 string or Qiskit circuit.
+            include_idle_qubits: Span every qubit of the register. ``False`` keeps
+                only the qubits a gate acts on, in ascending index order, so the
+                vector is ``2**n_active`` long.
+
+        Raises:
+            ValueError: If the configuration has a noise model, which a state
+                vector cannot carry.
+        """
+        if self.maestro_config.noise_model is not None:
+            raise ValueError(
+                "statevector cannot apply the configured noise model; use "
+                "expectation_value, or a MaestroSimulator without noise_model."
+            )
+        source = (
+            QuantumCircuit.from_qasm_str(circuit)
+            if isinstance(circuit, str)
+            else circuit
+        )
+        # Lowered here, not only on export, so its decompositions' phase is kept.
+        lowered = transpile(
+            source, basis_gates=list(_QISKIT_TO_QASM2), optimization_level=0
+        )
+        if include_idle_qubits:
+            active = {
+                qubit
+                for instruction in lowered.data
+                if instruction.operation.name != "barrier"
+                for qubit in instruction.qubits
+            }
+            for qubit in lowered.qubits:
+                if qubit not in active:
+                    lowered.rz(0.0, qubit)
+        (qasm,) = bound_circuits([lowered]).values()
+        amplitudes = maestro.get_statevector(
+            maestro.QasmToCirc().parse_and_translate(qasm),
+            config=self.maestro_config._simulator_config(),
+        )
+        # OpenQASM 2 drops the global phase.
+        return np.exp(1j * float(lowered.global_phase)) * np.asarray(amplitudes)
+
+    def expectation_value(
+        self, circuit: str | QuantumCircuit, observable: SparsePauliOp
+    ) -> float:
+        """``<observable>`` in the output state of ``circuit``."""
+        terms = _sparse_pauli_op_to_ham_string(observable)
+        result = self.submit_circuits({"circuit": circuit}, ham_ops=terms)
+        if result.results is None:
+            raise RuntimeError("Backend returned no results")
+        expvals = result.results[0]["results"]
+        return float(
+            sum(
+                coeff.real * expvals[term]
+                for term, coeff in zip(terms.split(";"), observable.coeffs)
+            )
         )

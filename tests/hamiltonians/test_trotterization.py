@@ -9,13 +9,13 @@ import itertools
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 from scipy.linalg import expm
 
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.hamiltonians._term_ops import generate_empty_spo
-from tests._helpers import exact_match
+from tests._helpers import equal_up_to_phase, exact_match, unitary
 
 _KEEP_FRACTION_NO_OP = exact_match(
     "keep_fraction is 1.0 (no truncation); returning the full Hamiltonian."
@@ -605,8 +605,8 @@ def _synthesize(
     )
 
 
-def _evolution(generator: SparsePauliOp, time: float = _SYNTHESIS_TIME) -> Operator:
-    return Operator(expm(-1j * time * generator.to_matrix()))
+def _evolution(generator: SparsePauliOp, time: float = _SYNTHESIS_TIME) -> np.ndarray:
+    return expm(-1j * time * generator.to_matrix())
 
 
 @pytest.mark.parametrize(
@@ -615,13 +615,17 @@ def _evolution(generator: SparsePauliOp, time: float = _SYNTHESIS_TIME) -> Opera
     ids=["single-term", "multi-term"],
 )
 @pytest.mark.parametrize("order", [1, 2])
-def test_synthesized_evolution_is_exp_minus_i_t_h(hamiltonian, order):
+def test_synthesized_evolution_is_exp_minus_i_t_h(
+    default_test_simulator, hamiltonian, order
+):
     result = ExactTrotterization().process_hamiltonian(hamiltonian, n_steps=2)
     qc = _synthesize(result, n_steps=2, order=order, n_qubits=hamiltonian.num_qubits)
-    assert Operator(qc).equiv(_evolution(hamiltonian), atol=1e-8)
+    assert equal_up_to_phase(
+        unitary(default_test_simulator, qc), _evolution(hamiltonian), atol=1e-8
+    )
 
 
-def test_sampled_synthesis_applies_each_step_draw():
+def test_sampled_synthesis_applies_each_step_draw(default_test_simulator):
     """Seed 3 draws different terms per step, so replaying one draw would fail."""
     n_steps = 2
     result = QDrift(sampling_budget=4, seed=3).process_hamiltonian(
@@ -630,18 +634,26 @@ def test_sampled_synthesis_applies_each_step_draw():
     assert result.sampled_terms is not None
     assert result.sampled_terms[0] != result.sampled_terms[1]
     qc = _synthesize(result, n_steps=n_steps, order=1, n_qubits=2)
-    assert Operator(qc).equiv(
-        _evolution(sum(result.sampled_terms) / n_steps), atol=1e-8
+    assert equal_up_to_phase(
+        unitary(default_test_simulator, qc),
+        _evolution(sum(result.sampled_terms) / n_steps),
+        atol=1e-8,
     )
 
 
-def test_qdrift_without_sampling_budget_synthesizes_deterministically():
+def test_qdrift_without_sampling_budget_synthesizes_deterministically(
+    default_test_simulator,
+):
     with pytest.warns(UserWarning, match=_SAMPLING_BUDGET_NOT_SET):
         strategy = QDrift(keep_top_n=1)
     result = strategy.process_hamiltonian(_COMMUTING_YY_ZZ, n_steps=2)
     assert result.sampled_terms is None
     qc = _synthesize(result, n_steps=2, order=2, n_qubits=2)
-    assert Operator(qc).equiv(_evolution(SparsePauliOp("YY", 0.8)), atol=1e-8)
+    assert equal_up_to_phase(
+        unitary(default_test_simulator, qc),
+        _evolution(SparsePauliOp("YY", 0.8)),
+        atol=1e-8,
+    )
 
 
 def test_sampled_synthesis_rejects_higher_order():
@@ -659,7 +671,7 @@ def test_sampled_synthesis_rejects_higher_order():
     "pauli",
     ["".join(p) for k in (1, 2, 3, 4) for p in itertools.product("XYZ", repeat=k)],
 )
-def test_every_pauli_synthesizes_into_the_qasm_basis(pauli):
+def test_every_pauli_synthesizes_into_the_qasm_basis(default_test_simulator, pauli):
     hamiltonian = SparsePauliOp(pauli, 0.4)
     qc = _synthesize(
         ExactTrotterization().process_hamiltonian(hamiltonian),
@@ -668,7 +680,9 @@ def test_every_pauli_synthesizes_into_the_qasm_basis(pauli):
         n_qubits=len(pauli),
     )
     assert {inst.operation.name for inst in qc.data} <= set(_QISKIT_TO_QASM2)
-    assert Operator(qc).equiv(_evolution(hamiltonian), atol=1e-10)
+    assert equal_up_to_phase(
+        unitary(default_test_simulator, qc), _evolution(hamiltonian), atol=1e-10
+    )
 
 
 _NON_COMMUTING = SparsePauliOp(["IX", "ZZ", "XI", "YY"], [0.7, 0.4, -0.5, 0.3])
@@ -678,26 +692,27 @@ _NON_COMMUTING_TERMS = list(
 _EVOLUTION_TIME = 0.9
 
 
-def _synthesized(order: int, n_steps: int) -> Operator:
-    return Operator(
+def _synthesized(simulator, order: int, n_steps: int) -> np.ndarray:
+    return unitary(
+        simulator,
         _synthesize(
             ExactTrotterization().process_hamiltonian(_NON_COMMUTING),
             n_steps=n_steps,
             order=order,
             n_qubits=2,
             time=_EVOLUTION_TIME,
-        )
+        ),
     )
 
 
-def _ordered_product(sequence, n_steps: int) -> Operator:
+def _ordered_product(sequence, n_steps: int) -> np.ndarray:
     """``n_steps`` repetitions of ``exp(-i f dt c P)`` applied in ``sequence`` order."""
     dt = _EVOLUTION_TIME / n_steps
     step = np.eye(4, dtype=complex)
     for label, coeff, fraction in sequence:
         generator = coeff * SparsePauliOp(label).to_matrix()
         step = expm(-1j * fraction * dt * generator) @ step
-    return Operator(np.linalg.matrix_power(step, n_steps))
+    return np.linalg.matrix_power(step, n_steps)
 
 
 @pytest.mark.parametrize(
@@ -712,16 +727,24 @@ def _ordered_product(sequence, n_steps: int) -> Operator:
     ],
     ids=["lie_trotter", "suzuki_second_order"],
 )
-def test_product_formula_applies_terms_in_input_order(order, sequence):
-    assert _synthesized(order, n_steps=3).equiv(
-        _ordered_product(sequence, n_steps=3), atol=1e-8
+def test_product_formula_applies_terms_in_input_order(
+    default_test_simulator, order, sequence
+):
+    assert equal_up_to_phase(
+        _synthesized(default_test_simulator, order, n_steps=3),
+        _ordered_product(sequence, n_steps=3),
+        atol=1e-8,
     )
 
 
-def test_fourth_order_formula_is_more_accurate_than_second_order():
-    exact = _evolution(_NON_COMMUTING, _EVOLUTION_TIME).data
+def test_fourth_order_formula_is_more_accurate_than_second_order(
+    default_test_simulator,
+):
+    exact = _evolution(_NON_COMMUTING, _EVOLUTION_TIME)
     errors = {
-        order: np.linalg.norm(_synthesized(order, n_steps=3).data - exact)
+        order: np.linalg.norm(
+            _synthesized(default_test_simulator, order, n_steps=3) - exact
+        )
         for order in (2, 4)
     }
     assert errors[4] < errors[2] / 10

@@ -10,7 +10,7 @@ import networkx as nx
 import numpy as np
 import pytest
 import scipy.linalg
-from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import xy_mixer
@@ -132,7 +132,9 @@ class TestWState:
             WState(block_size, n_blocks)
 
     @pytest.mark.parametrize("block_size, n_blocks", [(1, 2), (2, 2), (3, 1), (4, 1)])
-    def test_prepares_a_product_of_w_states(self, block_size, n_blocks):
+    def test_prepares_a_product_of_w_states(
+        self, block_size, n_blocks, default_test_simulator
+    ):
         """Uniform positive amplitude on every basis state with exactly one
         excitation per block, and nothing elsewhere."""
         n = block_size * n_blocks
@@ -145,7 +147,9 @@ class TestWState:
             for index in range(2**n)
         ]
         expected = np.array(one_hot, dtype=float) / np.sqrt(block_size) ** n_blocks
-        state = Statevector(WState(block_size, n_blocks).build(range(n))).data
+        state = default_test_simulator.statevector(
+            WState(block_size, n_blocks).build(range(n))
+        )
         np.testing.assert_allclose(state, expected, atol=1e-12)
 
     def test_wrong_wire_count_raises(self):
@@ -158,9 +162,13 @@ class TestDickeState:
     @pytest.mark.parametrize(
         "n, k", [(n, k) for n in range(1, 6) for k in range(n + 1)]
     )
-    def test_prepares_the_dicke_state(self, n, k, explicit_width):
+    def test_prepares_the_dicke_state(
+        self, n, k, explicit_width, default_test_simulator
+    ):
         width = n if explicit_width else None
-        state = Statevector(DickeState(k, n_qubits=width).build(range(n))).data
+        state = default_test_simulator.statevector(
+            DickeState(k, n_qubits=width).build(range(n))
+        )
         dicke = np.array([bin(i).count("1") == k for i in range(2**n)], dtype=float)
         dicke /= np.sqrt(comb(n, k))
         assert abs(np.vdot(dicke, state)) ** 2 == pytest.approx(1.0, abs=1e-10)
@@ -169,18 +177,26 @@ class TestDickeState:
         qc = DickeState(3).build(range(6))
         assert set(gate_names(qc)) <= set(_QISKIT_TO_QASM2)
 
-    def test_trailing_wires_get_superposition(self):
-        probs = Statevector(DickeState(1, n_qubits=2).build(range(3))).probabilities()
+    def test_trailing_wires_get_superposition(self, default_test_simulator):
+        probs = (
+            np.abs(
+                default_test_simulator.statevector(
+                    DickeState(1, n_qubits=2).build(range(3))
+                )
+            )
+            ** 2
+        )
         # Weight 1 on qubits 0-1, qubit 2 uniform.
         expected = {0b001: 0.25, 0b010: 0.25, 0b101: 0.25, 0b110: 0.25}
         for idx, p in enumerate(probs):
             assert p == pytest.approx(expected.get(idx, 0.0), abs=1e-10)
 
-    def test_ring_xy_mixer_preserves_weight(self):
+    def test_ring_xy_mixer_preserves_weight(self, default_test_simulator):
         n, k = 5, 2
         mixer = xy_mixer(nx.cycle_graph(n))
-        U = Operator(scipy.linalg.expm(-1j * 0.7 * mixer.to_matrix()))
-        probs = Statevector(DickeState(k).build(range(n))).evolve(U).probabilities()
+        evolve = scipy.linalg.expm(-1j * 0.7 * mixer.to_matrix())
+        state = default_test_simulator.statevector(DickeState(k).build(range(n)))
+        probs = np.abs(evolve @ state) ** 2
         in_weight_k = sum(p for i, p in enumerate(probs) if i.bit_count() == k)
         assert in_weight_k == pytest.approx(1.0)
 
@@ -224,7 +240,9 @@ class TestBlockXYMixer:
             build_block_xy_mixer_graph(3, 2, [0, 1, 2])
 
     @pytest.mark.parametrize("block_size, n_blocks, t", [(3, 1, 1.5), (3, 2, 2.0)])
-    def test_preserves_one_hot_subspace(self, block_size, n_blocks, t):
+    def test_preserves_one_hot_subspace(
+        self, block_size, n_blocks, t, default_test_simulator
+    ):
         """The XY mixer evolving a W-state keeps all amplitude in the
         per-block one-hot subspace (each block has exactly one excitation).
         With ``n_blocks=1`` this is the plain single-block one-hot case."""
@@ -235,8 +253,8 @@ class TestBlockXYMixer:
         mixer = xy_mixer(xy_graph)
 
         qc = WState(block_size, n_blocks).build(wires)
-        U = Operator(scipy.linalg.expm(-1j * t * mixer.to_matrix()))
-        probs = Statevector(qc).evolve(U).probabilities()
+        evolve = scipy.linalg.expm(-1j * t * mixer.to_matrix())
+        probs = np.abs(evolve @ default_test_simulator.statevector(qc)) ** 2
 
         total_valid = sum(
             probs[idx]

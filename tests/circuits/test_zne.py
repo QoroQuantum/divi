@@ -12,7 +12,6 @@ import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag, dag_to_circuit
-from qiskit.quantum_info import Operator
 from qiskit.transpiler import PassManager
 
 from divi.circuits.zne import (
@@ -25,7 +24,7 @@ from divi.circuits.zne import (
     local_fold,
 )
 from divi.pipeline.abc import ResultFormat
-from tests._helpers import exact_match
+from tests._helpers import exact_match, same_unitary
 
 
 def _op_names(dag):
@@ -71,16 +70,16 @@ class TestGlobalFoldPass:
         qc.rz(0.5, 1)
         return qc
 
-    def test_scale_1_is_identity(self, two_qubit_qc):
+    def test_scale_1_is_identity(self, two_qubit_qc, default_test_simulator):
         out = PassManager([GlobalFoldPass(1.0)]).run(two_qubit_qc)
-        assert Operator(out).equiv(Operator(two_qubit_qc))
+        assert same_unitary(default_test_simulator, out, two_qubit_qc)
         assert out.size() == two_qubit_qc.size()
 
     def test_scale_3_triples_gate_count(self, two_qubit_qc):
         folded = PassManager([GlobalFoldPass(3.0)]).run(two_qubit_qc)
         assert folded.size() == 3 * two_qubit_qc.size()
 
-    def test_barriers_not_duplicated_in_fold(self):
+    def test_barriers_not_duplicated_in_fold(self, default_test_simulator):
         # Non-unitary instructions are excluded from the inverse and the tail;
         # the k-fold forward pass must exclude them too, or the barrier gets
         # re-applied inside every fold body.
@@ -97,19 +96,19 @@ class TestGlobalFoldPass:
         n_unitary = sum(1 for instr in folded.data if instr.operation.name != "barrier")
         assert n_barriers == 1
         assert n_unitary == 6  # two unitary gates folded to 3x
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
     @pytest.mark.parametrize("scale", [1.0, 3.0, 5.0, 7.0])
-    def test_folded_unitary_equals_original(self, scale):
+    def test_folded_unitary_equals_original(self, scale, default_test_simulator):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.rz(0.7, 0)
         qc.cx(0, 1)
         qc.ry(-0.3, 1)
         folded = PassManager([GlobalFoldPass(scale)]).run(qc)
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_parametric_circuit_preserves_unitary(self):
+    def test_parametric_circuit_preserves_unitary(self, default_test_simulator):
         theta = Parameter("theta")
         phi = Parameter("phi")
         qc = QuantumCircuit(2)
@@ -121,8 +120,10 @@ class TestGlobalFoldPass:
 
         assert {p.name for p in folded.parameters} == {"theta", "phi"}
         binding = {theta: 0.4, phi: 0.2}
-        assert Operator(folded.assign_parameters(binding)).equiv(
-            Operator(qc.assign_parameters(binding))
+        assert same_unitary(
+            default_test_simulator,
+            folded.assign_parameters(binding),
+            qc.assign_parameters(binding),
         )
 
     def test_rejects_below_one_scale(self):
@@ -159,16 +160,16 @@ class TestGlobalFoldPass:
         assert folded.size() == expected_size
 
     @pytest.mark.parametrize("scale", [1.25, 1.5, 2.0, 2.5, 3.5, 4.0])
-    def test_fractional_scale_preserves_unitary(self, scale):
+    def test_fractional_scale_preserves_unitary(self, scale, default_test_simulator):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.rx(0.4, 0)
         qc.cx(0, 1)
         qc.ry(-0.2, 1)
         folded = PassManager([GlobalFoldPass(scale)]).run(qc)
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_fractional_scale_folds_the_tail(self):
+    def test_fractional_scale_folds_the_tail(self, default_test_simulator):
         qc = QuantumCircuit(1)
         qc.h(0)
         qc.rz(0.5, 0)
@@ -177,9 +178,11 @@ class TestGlobalFoldPass:
         folded = PassManager([GlobalFoldPass(1.5)]).run(qc)
         names = [inst.operation.name for inst in folded.data]
         assert names == ["h", "rz", "rx", "ry", "ry", "ry"]
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_fractional_parametric_circuit_preserves_unitary(self):
+    def test_fractional_parametric_circuit_preserves_unitary(
+        self, default_test_simulator
+    ):
         theta = Parameter("theta")
         phi = Parameter("phi")
         qc = QuantumCircuit(2)
@@ -191,8 +194,10 @@ class TestGlobalFoldPass:
 
         assert {p.name for p in folded.parameters} == {"theta", "phi"}
         binding = {theta: 0.4, phi: 0.2}
-        assert Operator(folded.assign_parameters(binding)).equiv(
-            Operator(qc.assign_parameters(binding))
+        assert same_unitary(
+            default_test_simulator,
+            folded.assign_parameters(binding),
+            qc.assign_parameters(binding),
         )
 
 
@@ -208,10 +213,10 @@ class TestLocalFoldPass:
         qc.ry(-0.3, 0)
         return qc
 
-    def test_scale_1_is_identity(self, four_gate_qc):
+    def test_scale_1_is_identity(self, four_gate_qc, default_test_simulator):
         out = PassManager([LocalFoldPass(1.0)]).run(four_gate_qc)
         assert out.size() == four_gate_qc.size()
-        assert Operator(out).equiv(Operator(four_gate_qc))
+        assert same_unitary(default_test_simulator, out, four_gate_qc)
 
     @pytest.mark.parametrize("scale,expected_mult", [(3.0, 3), (5.0, 5), (7.0, 7)])
     def test_odd_integer_scale_multiplies_gate_count(
@@ -221,10 +226,12 @@ class TestLocalFoldPass:
         assert folded.size() == expected_mult * four_gate_qc.size()
 
     @pytest.mark.parametrize("scale", [1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0])
-    def test_folded_unitary_equals_original(self, four_gate_qc, scale):
+    def test_folded_unitary_equals_original(
+        self, four_gate_qc, scale, default_test_simulator
+    ):
         rng = random.Random(0)
         folded = PassManager([LocalFoldPass(scale, rng=rng)]).run(four_gate_qc)
-        assert Operator(folded).equiv(Operator(four_gate_qc))
+        assert same_unitary(default_test_simulator, folded, four_gate_qc)
 
     @pytest.mark.parametrize(
         "scale,d,expected_size",
@@ -245,7 +252,7 @@ class TestLocalFoldPass:
         folded = PassManager([LocalFoldPass(scale, rng=random.Random(0))]).run(qc)
         assert folded.size() == expected_size
 
-    def test_parametric_circuit_preserves_unitary(self):
+    def test_parametric_circuit_preserves_unitary(self, default_test_simulator):
         theta = Parameter("theta")
         phi = Parameter("phi")
         qc = QuantumCircuit(2)
@@ -257,8 +264,10 @@ class TestLocalFoldPass:
 
         assert {p.name for p in folded.parameters} == {"theta", "phi"}
         binding = {theta: 0.4, phi: 0.2}
-        assert Operator(folded.assign_parameters(binding)).equiv(
-            Operator(qc.assign_parameters(binding))
+        assert same_unitary(
+            default_test_simulator,
+            folded.assign_parameters(binding),
+            qc.assign_parameters(binding),
         )
 
     def test_non_unitary_ops_are_skipped(self):
@@ -291,12 +300,14 @@ class TestLocalFoldPass:
             LocalFoldPass(2.0, selection="middle")
 
     @pytest.mark.parametrize("selection", ["from_left", "from_right", "random"])
-    def test_selection_preserves_unitary_and_size(self, four_gate_qc, selection):
+    def test_selection_preserves_unitary_and_size(
+        self, four_gate_qc, selection, default_test_simulator
+    ):
         folded = PassManager(
             [LocalFoldPass(2.0, selection=selection, rng=random.Random(0))]
         ).run(four_gate_qc)
         assert folded.size() == 8
-        assert Operator(folded).equiv(Operator(four_gate_qc))
+        assert same_unitary(default_test_simulator, folded, four_gate_qc)
 
     def test_from_left_folds_prefix(self):
         qc = QuantumCircuit(1)
@@ -318,7 +329,7 @@ class TestLocalFoldPass:
         names = [inst.operation.name for inst in folded.data]
         assert names == ["h", "x", "cx", "rz", "rz", "rz"]
 
-    def test_exclude_by_name_leaves_gates_untouched(self):
+    def test_exclude_by_name_leaves_gates_untouched(self, default_test_simulator):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.cx(0, 1)
@@ -329,9 +340,9 @@ class TestLocalFoldPass:
         assert counts["cx"] == 2
         assert counts["h"] == 3
         assert counts["rz"] == 3
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_exclude_by_arity_shorthand(self):
+    def test_exclude_by_arity_shorthand(self, default_test_simulator):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.cx(0, 1)
@@ -343,9 +354,9 @@ class TestLocalFoldPass:
         assert counts["cz"] == 1
         assert counts["h"] == 3
         assert counts["rz"] == 3
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_exclude_affects_effective_scale(self):
+    def test_exclude_affects_effective_scale(self, default_test_simulator):
         qc = QuantumCircuit(2)
         qc.h(0)
         qc.cx(0, 1)
@@ -355,21 +366,25 @@ class TestLocalFoldPass:
             [LocalFoldPass(2.0, exclude={"cx"}, rng=random.Random(0))]
         ).run(qc)
         assert folded.size() == 6
-        assert Operator(folded).equiv(Operator(qc))
+        assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_exclude_unknown_name_is_harmless(self, four_gate_qc):
+    def test_exclude_unknown_name_is_harmless(
+        self, four_gate_qc, default_test_simulator
+    ):
         folded = PassManager([LocalFoldPass(3.0, exclude={"nonexistent_gate"})]).run(
             four_gate_qc
         )
         assert folded.size() == 3 * four_gate_qc.size()
-        assert Operator(folded).equiv(Operator(four_gate_qc))
+        assert same_unitary(default_test_simulator, folded, four_gate_qc)
 
-    def test_exclude_all_gates_returns_untouched(self, four_gate_qc):
+    def test_exclude_all_gates_returns_untouched(
+        self, four_gate_qc, default_test_simulator
+    ):
         folded = PassManager([LocalFoldPass(3.0, exclude={"single", "double"})]).run(
             four_gate_qc
         )
         assert folded.size() == four_gate_qc.size()
-        assert Operator(folded).equiv(Operator(four_gate_qc))
+        assert same_unitary(default_test_simulator, folded, four_gate_qc)
 
     def test_deterministic_selections_ignore_rng(self, four_gate_qc):
         for selection in ("from_left", "from_right"):
@@ -527,7 +542,9 @@ class TestZNE:
             ["h", "cx", "cx", "h", "h", "cx", "cx", "h", "h", "cx"],
         ]
 
-    def test_expand_leaves_the_callers_dag_untouched(self, bell_dag):
+    def test_expand_leaves_the_callers_dag_untouched(
+        self, bell_dag, default_test_simulator
+    ):
         """``expand`` receives a DAG it does not own — a program's seed circuit,
         reused by every pipeline built from it and by every later call. Folding it
         in place leaves it permanently scaled: sibling pipelines that mitigation
@@ -537,19 +554,19 @@ class TestZNE:
 
         first, _ = zne.expand(bell_dag)
         assert bell_dag.size() == before
-        assert Operator(dag_to_circuit(bell_dag)).equiv(
-            Operator(dag_to_circuit(first[0]))
+        assert same_unitary(
+            default_test_simulator, dag_to_circuit(bell_dag), dag_to_circuit(first[0])
         )
 
         second, _ = zne.expand(bell_dag)
         assert [d.size() for d in second] == [d.size() for d in first]
 
-    def test_expand_preserves_unitary(self, bell_dag):
+    def test_expand_preserves_unitary(self, bell_dag, default_test_simulator):
         zne = ZNE(scale_factors=[1.0, 3.0, 5.0])
         dags, _ = zne.expand(bell_dag)
-        u_orig = Operator(dag_to_circuit(bell_dag))
+        original = dag_to_circuit(bell_dag)
         for d in dags:
-            assert Operator(dag_to_circuit(d)).equiv(u_orig)
+            assert same_unitary(default_test_simulator, dag_to_circuit(d), original)
 
     @pytest.mark.parametrize(
         "ctx",

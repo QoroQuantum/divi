@@ -13,7 +13,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 from qiskit import ClassicalRegister, QuantumCircuit
-from qiskit.quantum_info import Statevector
 
 ffsim = pytest.importorskip("ffsim")
 
@@ -92,9 +91,12 @@ def _identity_lucj_operator(norb):
     )
 
 
-def _reference_probabilities(circuit):
-    unmeasured = circuit.remove_final_measurements(inplace=False)
-    return Statevector.from_instruction(unmeasured).probabilities_dict()
+def _reference_probabilities(simulator, circuit):
+    probabilities = np.round(np.abs(simulator.statevector(circuit)) ** 2, 12)
+    return {
+        format(index, f"0{circuit.num_qubits}b"): float(probabilities[index])
+        for index in np.flatnonzero(probabilities)
+    }
 
 
 @pytest.mark.parametrize(
@@ -104,14 +106,16 @@ def _reference_probabilities(circuit):
         pytest.param((2, 1), "000111", id="beta-on-odd-wires"),
     ],
 )
-def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires(nelec, expected):
+def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires(
+    nelec, expected, default_test_simulator
+):
     """Qubit ``2p`` holds orbital ``p``'s alpha electron and ``2p + 1`` its beta
     one; the key is little-endian, so qubit 0 is the rightmost bit."""
     norb = 3
 
     circuit = build_lucj_circuit(_identity_lucj_operator(norb), norb, nelec)
 
-    assert _reference_probabilities(circuit) == {expected: 1.0}
+    assert _reference_probabilities(default_test_simulator, circuit) == {expected: 1.0}
     assert circuit.num_clbits == 2 * norb
     assert {instruction.operation.name for instruction in circuit.data} <= {
         "cx",

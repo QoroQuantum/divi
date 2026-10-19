@@ -10,7 +10,7 @@ from qiskit import QuantumCircuit, qasm2
 from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
-from qiskit.quantum_info import Operator, SparsePauliOp
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits.zne import ZNE
@@ -21,7 +21,7 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
-from tests._helpers import exact_match
+from tests._helpers import equal_up_to_phase, exact_match, same_unitary, unitary
 from tests.pipeline._helpers import DummySpecStage, stage_output
 
 
@@ -189,7 +189,9 @@ def test_param_count_mismatch_raises(dummy_pipeline_env, meta):
 class TestFastSlowEquivalence:
     """Spec: both paths produce semantically equivalent bound circuits."""
 
-    def test_operators_match(self, dummy_pipeline_env, meta, param_sets):
+    def test_operators_match(
+        self, dummy_pipeline_env, default_test_simulator, meta, param_sets
+    ):
         fast_pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=meta),
@@ -223,10 +225,15 @@ class TestFastSlowEquivalence:
             )
             fast_qc = qasm2.loads(qreg_header + fast_body)
             slow_qc = dag_to_circuit(slow_dag)
-            assert Operator(fast_qc).equiv(Operator(slow_qc))
+            assert same_unitary(default_test_simulator, fast_qc, slow_qc)
 
     def test_pauli_twirl_fast_and_structural_outputs_match(
-        self, dummy_pipeline_env, meta, param_sets, suppress_pipeline_perf_warnings
+        self,
+        dummy_pipeline_env,
+        default_test_simulator,
+        meta,
+        param_sets,
+        suppress_pipeline_perf_warnings,
     ):
         twirl_seed = 9
         n_twirls = 3
@@ -257,14 +264,14 @@ class TestFastSlowEquivalence:
 
         qreg_header = 'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
         fast_ops = {
-            tag: Operator(qasm2.loads(qreg_header + body))
+            tag: unitary(default_test_simulator, qasm2.loads(qreg_header + body))
             for tag, body in fast_twirl_meta.qasm_bodies
         }
         structural_ops = {
-            tag: Operator(dag_to_circuit(dag))
+            tag: unitary(default_test_simulator, dag_to_circuit(dag))
             for tag, dag in structural_twirl_meta.circuit_bodies
         }
 
         assert set(fast_ops.keys()) == set(structural_ops.keys())
         for tag in fast_ops:
-            assert fast_ops[tag].equiv(structural_ops[tag])
+            assert equal_up_to_phase(fast_ops[tag], structural_ops[tag])

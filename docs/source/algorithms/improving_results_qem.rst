@@ -61,7 +61,8 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    from divi.qprog import VQE
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import MolecularProblem
-   from divi.backends import QiskitSimulator
+   from divi.backends import MaestroConfig, MaestroSimulator
+   import maestro
    from pyscf import gto
 
    # Create a ZNE protocol with three noise scale factors.  The default
@@ -79,11 +80,24 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
        atom="H 0 0 -0.6614; H 0 0 0.6614", basis="sto-3g", unit="Bohr"
    )
 
+   problem = MolecularProblem.from_molecule(h2_molecule)
+
+   # Depolarising gate noise, simulated exactly as a density matrix
+   n_qubits = problem.hamiltonian.num_qubits
+   noise_model = maestro.NoiseModel()
+   noise_model.set_all_1q_gate_depolarizing(n_qubits, 0.005)
+   noise_model.set_all_2q_gate_depolarizing(n_qubits, 0.01)
+   backend = MaestroSimulator(
+       maestro_config=MaestroConfig(
+           simulation_type="DensityMatrix", noise_model=noise_model
+       )
+   )
+
    vqe = VQE(
-       MolecularProblem.from_molecule(h2_molecule),
+       problem,
        qem_protocol=zne_protocol,
        optimizer=MonteCarloOptimizer(),
-       backend=QiskitSimulator(qiskit_backend="auto"),
+       backend=backend,
        max_iterations=10,
    )
 

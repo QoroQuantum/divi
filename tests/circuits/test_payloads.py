@@ -5,7 +5,9 @@
 """Payload helpers around :class:`~divi.circuits.CircuitPayload`."""
 
 import pytest
+from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
+from qiskit.circuit.library import XXPlusYYGate
 
 from divi.circuits import CircuitPayload
 from divi.circuits._payloads import (
@@ -14,7 +16,7 @@ from divi.circuits._payloads import (
     bound_payloads,
     is_bound,
 )
-from tests._helpers import exact_match
+from tests._helpers import exact_match, same_unitary
 
 QASM_BELL = (
     'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[2];\ncreg c[2];\n'
@@ -35,6 +37,22 @@ def test_bound_payloads_makes_one_single_row_payload_per_circuit():
         (("b", ()),),
     ]
     assert all(payload.parameters == () for payload in payloads)
+
+
+def test_rzz_and_rxx_are_decomposed_on_export(default_test_simulator):
+    """Maestro cannot parse ``rzz`` or ``rxx``; other gates export as they are."""
+    circuit = QuantumCircuit(3)
+    circuit.h([0, 1, 2])
+    circuit.rzz(0.3, 0, 1)
+    circuit.rxx(0.7, 1, 2)
+    circuit.append(XXPlusYYGate(0.4), [0, 2])
+
+    (qasm,) = bound_circuits([circuit]).values()
+    exported = QuantumCircuit.from_qasm_str(qasm)
+
+    assert not {"rzz", "rxx"} & set(exported.count_ops())
+    assert "xx_plus_yy" in exported.count_ops()
+    assert same_unitary(default_test_simulator, circuit, exported)
 
 
 def test_bound_circuits_inverts_bound_payloads():

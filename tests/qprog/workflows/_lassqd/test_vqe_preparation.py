@@ -13,6 +13,7 @@ from pyscf.cc import addons as cc_addons
 from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.backends import MaestroSimulator
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog.algorithms import LUCJAnsatz, QCCAnsatz, UCCSDAnsatz
 from divi.qprog.algorithms._ansatze import (
@@ -135,7 +136,9 @@ def _h4_as_one_fragment(mean_field):
     return h_eff, g_frag
 
 
-def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(h4_chain_mean_field):
+def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(
+    h4_chain_mean_field, default_test_simulator
+):
     """The seed's exact-statevector energy must land near the fragment's own
     CCSD energy, and clearly beats a permutation of the same values.
 
@@ -163,9 +166,13 @@ def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(h4_chain_mean_
         coupled_cluster.e_tot - h4_chain_mean_field.mol.energy_nuc()
     )
 
-    seed_energy = ansatz_energy(seed, h_eff, g_frag, spec)
+    seed_energy = ansatz_energy(default_test_simulator, seed, h_eff, g_frag, spec)
     permuted_energy = ansatz_energy(
-        np.random.default_rng(0).permutation(seed), h_eff, g_frag, spec
+        default_test_simulator,
+        np.random.default_rng(0).permutation(seed),
+        h_eff,
+        g_frag,
+        spec,
     )
 
     assert seed_energy == pytest.approx(ccsd_electronic_energy, abs=1e-3)
@@ -178,7 +185,7 @@ def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(h4_chain_mean_
     ids=["uccsd", "lucj"],
 )
 def test_seed_beats_the_reference_determinant_in_a_localized_basis(
-    dummy_expval_backend, ansatz, min_recovered_fraction
+    dummy_expval_backend, default_test_simulator, ansatz, min_recovered_fraction
 ):
     """The seed must recover correlation in the basis the fragments actually use.
 
@@ -215,8 +222,10 @@ def test_seed_beats_the_reference_determinant_in_a_localized_basis(
         )
         assert seed is not None
 
-        reference = ansatz_energy(np.zeros(n_params), h_alpha, g_frag, spec, ansatz)
-        seeded = ansatz_energy(seed, h_alpha, g_frag, spec, ansatz)
+        reference, seeded = (
+            ansatz_energy(default_test_simulator, params, h_alpha, g_frag, spec, ansatz)
+            for params in (np.zeros(n_params), seed)
+        )
 
         assert seeded > exact - 1e-8
         assert (reference - seeded) / (reference - exact) > min_recovered_fraction
@@ -329,6 +338,25 @@ def test_seed_acceptance_checks_a_fragment_at_the_exact_check_width(mocker):
 
     assert gain == 0.0
     assert [call.args[1] for call in ansatz.build.call_args_list] == [n_qubits] * 2
+
+
+def test_the_seed_check_lowers_the_ansatz_before_simulating(mocker):
+    """An unlowered evolution gate is simulated as a dense full-register matrix,
+    64 GiB at 16 qubits."""
+    submit = mocker.spy(MaestroSimulator, "submit_circuits")
+    kwargs = {"n_electrons": 4, "n_alpha": 2, "n_beta": 2}
+    ansatz = UCCSDAnsatz()
+    n_params = ansatz.n_params_per_layer(8, **kwargs)
+
+    _vqe_preparation._seed_energy_gain(
+        np.full(n_params, 0.1), SparsePauliOp("Z" * 8), ansatz, 8, 1, kwargs
+    )
+
+    circuits = [
+        circuit for call in submit.call_args_list for circuit in call.args[1].values()
+    ]
+    assert len(circuits) == 2
+    assert not any("PauliEvolution" in circuit.count_ops() for circuit in circuits)
 
 
 def test_uccsd_seed_singles_match_the_ccsd_t1_amplitudes(h4_chain_mean_field):

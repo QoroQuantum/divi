@@ -14,7 +14,6 @@ import sympy as sp
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.converters import dag_to_circuit
-from qiskit.quantum_info import Operator
 
 # Precedes the divi import below, which imports PennyLane itself.
 qp = pytest.importorskip("pennylane")
@@ -39,7 +38,7 @@ from divi.circuits._pennylane import (
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv
 from divi.pipeline.stages import CircuitSpecStage, MeasurementStage
-from tests._helpers import exact_match
+from tests._helpers import equal_up_to_phase, exact_match, unitary
 
 CountsMP = qp.measurements.CountsMP
 ExpectationMP = qp.measurements.ExpectationMP
@@ -724,11 +723,17 @@ class TestQScriptToDag:
         ],
         ids=["one-qubit", "two-qubit"],
     )
-    def test_matrix_unitaries_keep_their_action(self, matrix, wires):
+    def test_matrix_unitaries_keep_their_action(
+        self, matrix, wires, default_test_simulator
+    ):
         dag, _ = _qscript_to_dag(_expval_script([qp.QubitUnitary(matrix, wires=wires)]))
         # PennyLane orders wire 0 as the most significant bit; Qiskit as the least.
-        expected = Operator(matrix).reverse_qargs()
-        assert Operator(dag_to_circuit(dag)).equiv(expected)
+        n = len(wires)
+        reversed_bits = [int(f"{i:0{n}b}"[::-1], 2) for i in range(2**n)]
+        expected = matrix[np.ix_(reversed_bits, reversed_bits)]
+        assert equal_up_to_phase(
+            unitary(default_test_simulator, dag_to_circuit(dag)), expected
+        )
 
     def test_adjacent_inverse_gates_are_kept(self):
         dag, _ = _qscript_to_dag(_expval_script([qp.Hadamard(0), qp.Hadamard(0)]))
@@ -739,14 +744,14 @@ class TestEndToEndEquivalence:
     """PennyLane conversion and QASM binding preserve circuit semantics."""
 
     @staticmethod
-    def _bound_unitary(body_qasm_with_preamble: str) -> np.ndarray:
-        return Operator(QuantumCircuit.from_qasm_str(body_qasm_with_preamble)).data
+    def _bound_unitary(simulator, body_qasm_with_preamble: str) -> np.ndarray:
+        return unitary(simulator, QuantumCircuit.from_qasm_str(body_qasm_with_preamble))
 
     @staticmethod
     def _preamble(n_qubits: int) -> str:
         return 'OPENQASM 2.0;\ninclude "qelib1.inc";\n' f"qreg q[{n_qubits}];\n"
 
-    def test_qaoa_3q_unitary_matches_numeric_conversion(self):
+    def test_qaoa_3q_unitary_matches_numeric_conversion(self, default_test_simulator):
         gamma, beta = sp.symbols("gamma beta")
         qscript = qp.tape.QuantumScript(
             ops=[
@@ -769,7 +774,9 @@ class TestEndToEndEquivalence:
         body = dag_to_qasm_body(dag, precision=8)
         template = build_template(body, tuple(param.name for param in params))
         bound_body = render_template(template, ("0.30000000", "1.10000000"))
-        actual = self._bound_unitary(self._preamble(3) + bound_body)
+        actual = self._bound_unitary(
+            default_test_simulator, self._preamble(3) + bound_body
+        )
 
         reference = qp.tape.QuantumScript(
             ops=[
@@ -790,11 +797,12 @@ class TestEndToEndEquivalence:
         )
         reference_dag, _ = _qscript_to_dag(reference)
         expected = self._bound_unitary(
-            self._preamble(3) + dag_to_qasm_body(reference_dag, precision=8)
+            default_test_simulator,
+            self._preamble(3) + dag_to_qasm_body(reference_dag, precision=8),
         )
         assert np.allclose(actual, expected, atol=1e-10)
 
-    def test_compound_expression_round_trip(self):
+    def test_compound_expression_round_trip(self, default_test_simulator):
         theta = sp.Symbol("theta")
         qscript = qp.tape.QuantumScript(
             ops=[qp.RX(2 * theta, 0), qp.RY(theta + 1, 0)],
@@ -805,11 +813,15 @@ class TestEndToEndEquivalence:
         assert "theta" in body
         template = build_template(body, (param.name,))
         bound_body = render_template(template, ("0.50000000",))
-        actual = self._bound_unitary(self._preamble(1) + bound_body)
+        actual = self._bound_unitary(
+            default_test_simulator, self._preamble(1) + bound_body
+        )
         reference = QuantumCircuit(1)
         reference.rx(1.0, 0)
         reference.ry(1.5, 0)
-        assert np.allclose(actual, Operator(reference).data, atol=1e-10)
+        assert np.allclose(
+            actual, unitary(default_test_simulator, reference), atol=1e-10
+        )
 
 
 class TestQscriptToMetaObservable:
