@@ -53,6 +53,8 @@ Basic Scans
 
 The standalone API is useful when you want to make the scan call explicit:
 
+.. dashboard-example: variational-landscape
+
 .. code-block:: python
 
    import numpy as np

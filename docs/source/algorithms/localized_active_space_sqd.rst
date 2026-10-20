@@ -51,6 +51,8 @@ reassembled RDM is then the fragment's own, with no product structure to it, so
 the energy is directly comparable to a full configuration interaction (FCI)
 calculation on the same active space:
 
+.. dashboard-example: lassqd-ground-state
+
 .. code-block:: python
 
    from pyscf import gto
@@ -284,6 +286,8 @@ Excited States
 ``SQDConfig(states=...)`` solves for several eigenstates at once, keyed by spin
 multiplicity ``2S + 1``. All come from one subspace on the same orbitals. A
 singlet–triplet gap:
+
+.. dashboard-example: lassqd-excited-states
 
 .. code-block:: python
 

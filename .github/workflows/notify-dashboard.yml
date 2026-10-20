@@ -1,21 +1,35 @@
-name: Notify dashboard of main updates
+name: Notify dashboard of divi updates
 
-# Lets qoro-dash's "latest" example snapshot (an unreleased preview of the
-# docs, distinct from the stable/tagged snapshot it also ships) refresh
-# itself within seconds of a real change, instead of qoro-dash polling on a
-# schedule. See qoro-dash's .github/workflows/sync-divi-latest.yml, which is
-# the repository_dispatch listener this triggers.
+# Keeps both qoro-dash example snapshots event-driven:
+# - pushes to main refresh the unreleased "latest" snapshot;
+# - published, non-prerelease releases advance the stable snapshot to the
+#   exact immutable tag carried in the dispatch payload.
 on:
   push:
     branches: [main]
+  release:
+    types: [published]
 
 jobs:
   notify:
     runs-on: ubuntu-latest
     steps:
-      - name: Dispatch to qoro-dash
+      - name: Dispatch main update to qoro-dash
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.QORO_DASH_DISPATCH_TOKEN }}
         run: |
           gh api repos/QoroQuantum/qoro-dash/dispatches \
             -f event_type=divi-main-updated
+
+      - name: Dispatch stable release to qoro-dash
+        if: github.event_name == 'release' && github.event.release.prerelease == false
+        env:
+          GH_TOKEN: ${{ secrets.QORO_DASH_DISPATCH_TOKEN }}
+          DIVI_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          jq -n \
+            --arg event_type "divi-release-published" \
+            --arg tag "$DIVI_TAG" \
+            '{event_type: $event_type, client_payload: {tag: $tag}}' \
+            | gh api --method POST repos/QoroQuantum/qoro-dash/dispatches --input -

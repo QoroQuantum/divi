@@ -34,6 +34,8 @@ Travelling Salesman Problem (TSP)
 Given a symmetric cost matrix, find the shortest tour visiting every city
 exactly once and returning to the start.
 
+.. dashboard-example: tsp
+
 .. code-block:: python
 
    import numpy as np
