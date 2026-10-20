@@ -722,6 +722,22 @@ class TestEnsembleDryRunFormatting:
         assert output.count("\\x1b") == 2
         assert output.count("\\n") == 2
 
+    @pytest.mark.parametrize(
+        "value, rendered",
+        [
+            pytest.param(0.123456, "ratio: 0.1235", id="float"),
+            pytest.param(np.float32(0.123456), "ratio: 0.1235", id="float32"),
+            pytest.param(np.float64(0.123456), "ratio: 0.1235", id="float64"),
+            pytest.param(3, "ratio: 3", id="int"),
+            pytest.param(np.int64(3), "ratio: 3", id="int64"),
+            pytest.param(True, "ratio: True", id="bool"),
+        ],
+    )
+    def test_stage_metadata_formats_any_real_number_alike(self, value, rendered):
+        report = _hand_report([_stage("S", 1.0, ratio=value)], 1, 1)
+
+        assert rendered in "\n".join(_render_lines({"cost": report}))
+
     def test_width_is_threaded_into_the_console(self):
         """``width`` only matters if it reaches the console — a narrow one has to
         actually wrap."""

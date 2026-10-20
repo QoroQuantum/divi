@@ -9,6 +9,7 @@ import math
 from fractions import Fraction
 
 import maestro
+import numpy as np
 import pytest
 
 from divi.backends import MaestroConfig, MaestroSimulator
@@ -77,6 +78,33 @@ def test_maestro_names_and_enum_codes():
 
 def test_only_set_options_are_sent():
     assert maestro_config_to_payload(MaestroConfig()) == {}
+
+
+def test_numpy_options_are_held_and_sent_as_plain_python():
+    config = MaestroConfig(
+        max_bond_dimension=np.int64(32),
+        seed=np.uint32(7),
+        singular_value_threshold=np.float32(0.5),
+        noise_seed=np.int64(2**60 + 1),
+        noise_realizations=np.int64(3),
+    )
+
+    payload = maestro_config_to_payload(config)
+
+    assert json.loads(json.dumps(payload)) == {
+        "max_bond_dimension": 32,
+        "seed": 7,
+        "singular_value_threshold": 0.5,
+        "noise_seed": 2**60 + 1,
+        "noise_realizations": 3,
+    }
+    assert {type(value) for value in payload.values()} == {int, float}
+
+
+def test_numpy_options_survive_a_copy_with_changes():
+    config = MaestroConfig(max_bond_dimension=np.int64(32)).override(seed=np.int64(5))
+
+    assert maestro_config_to_payload(config) == {"max_bond_dimension": 32, "seed": 5}
 
 
 def test_round_trip():

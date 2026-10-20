@@ -8,6 +8,7 @@ import copy
 import functools
 import random
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
@@ -20,6 +21,7 @@ from divi.circuits.zne import (
     LinearExtrapolator,
     LocalFoldPass,
     RichardsonExtrapolator,
+    _warn_on_collapsed_scales,
     global_fold,
     local_fold,
 )
@@ -493,6 +495,21 @@ class TestZNE:
         with pytest.raises(ValueError, match=r"^All scale factors must be ≥ 1\.0\.$"):
             ZNE(scale_factors=[0.5, 1.0])
 
+    @pytest.mark.parametrize(
+        "bad_scale, message",
+        [
+            pytest.param(
+                [1.0, float("nan")], "All scale factors must be ≥ 1.0.", id="nan"
+            ),
+            pytest.param(
+                [1.0, float("inf")], "All scale factors must be finite.", id="inf"
+            ),
+        ],
+    )
+    def test_rejects_non_finite_scale_factors(self, bad_scale, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            ZNE(scale_factors=bad_scale)
+
     @pytest.mark.parametrize("bad_scale", [[], [1.0]])
     def test_rejects_fewer_than_two_scale_factors(self, bad_scale):
         expected = (
@@ -597,6 +614,85 @@ class TestZNE:
         assert isinstance(out, list)
         assert out[0] == pytest.approx(2.0)
         assert out[1] == pytest.approx(4.0)
+
+
+@pytest.mark.parametrize(
+    "scale_factors",
+    [
+        pytest.param(np.array([1, 3, 5]), id="int64-array"),
+        pytest.param(np.array([1.0, 3.0, 5.0], dtype=np.float32), id="float32-array"),
+        pytest.param(list(np.arange(1, 6, 2)), id="list-of-int64"),
+        pytest.param((np.float32(1.0), np.int64(3), 5), id="mixed-tuple"),
+    ],
+)
+def test_zne_accepts_numpy_scale_factors_and_stores_plain_floats(scale_factors):
+    zne = ZNE(scale_factors=scale_factors)
+
+    assert zne.scale_factors == [1.0, 3.0, 5.0]
+    assert all(type(factor) is float for factor in zne.scale_factors)
+
+
+@pytest.mark.parametrize(
+    "scale_factors",
+    [
+        pytest.param([True, 3.0], id="bool-entry"),
+        pytest.param(np.array([True, False]), id="bool-array"),
+        pytest.param(np.array([1 + 0j, 3 + 0j]), id="complex-array"),
+        pytest.param(np.array([[1.0, 3.0]]), id="2d-array"),
+        pytest.param(np.array(2.0), id="0d-array"),
+        pytest.param(np.array(["1", "3"]), id="string-array"),
+        pytest.param([[1.0, 3.0]], id="nested-list"),
+        pytest.param(b"13", id="bytes"),
+    ],
+)
+def test_zne_rejects_non_real_scale_factors(scale_factors):
+    with pytest.raises(
+        ValueError, match=r"^scale_factors must be a sequence of real numbers\.$"
+    ):
+        ZNE(scale_factors=scale_factors)
+
+
+def test_zne_rejects_nan_scale_factor():
+    with pytest.raises(ValueError, match=r"^All scale factors must be ≥ 1\.0\.$"):
+        ZNE(scale_factors=[1.0, float("nan")])
+
+
+@pytest.mark.parametrize("fold_pass", [GlobalFoldPass, LocalFoldPass])
+def test_fold_passes_reject_nan_scale_factor(fold_pass):
+    with pytest.raises(ValueError, match=r"scale_factor must be >= 1, got nan\."):
+        fold_pass(float("nan"))
+
+
+def test_collapsed_scales_warning_formats_numpy_values_as_floats():
+    with pytest.warns(UserWarning) as caught:
+        _warn_on_collapsed_scales(
+            [np.float32(1.5), np.float32(1.75)], [np.float64(2.0), np.float64(2.0)]
+        )
+
+    message = str(caught[0].message)
+    assert "[1.5, 1.75]" in message
+    assert "[2.0, 2.0]" in message
+    assert "np." not in message
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param([np.array([1.0, 2.0]), np.array([-1.0, -2.0])], id="ndarray-rows"),
+        pytest.param([(1.0, 2.0), (-1.0, -2.0)], id="tuple-rows"),
+        pytest.param(np.array([[1.0, 2.0], [-1.0, -2.0]]), id="2d-array"),
+    ],
+)
+def test_zne_reduce_accepts_any_per_observable_row(rows):
+    zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
+
+    assert zne.reduce(rows, {}) == pytest.approx([2.0, 4.0])
+
+
+def test_zne_reduce_accepts_a_numpy_vector_of_scalars():
+    zne = ZNE(scale_factors=[1.0, 3.0], extrapolator=LinearExtrapolator())
+
+    assert zne.reduce(np.array([1.0, -1.0]), {}) == pytest.approx([2.0])
 
 
 class TestZNEDryExpand:

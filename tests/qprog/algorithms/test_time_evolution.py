@@ -5,6 +5,7 @@
 import math
 import warnings
 
+import numpy as np
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
@@ -146,10 +147,22 @@ class TestTimeEvolutionInitialization:
         "kwargs, message",
         [
             ({"n_steps": 0}, "n_steps must be a positive integer, got 0."),
+            ({"n_steps": True}, "n_steps must be a positive integer, got True."),
+            ({"n_steps": 1.5}, "n_steps must be a positive integer, got 1.5."),
             ({"order": 0}, "order must be 1 or an even integer >= 2, got 0."),
             ({"order": 3}, "order must be 1 or an even integer >= 2, got 3."),
+            ({"order": True}, "order must be 1 or an even integer >= 2, got True."),
+            ({"order": 2.0}, "order must be 1 or an even integer >= 2, got 2.0."),
         ],
-        ids=["zero-steps", "zero-order", "odd-order"],
+        ids=[
+            "zero-steps",
+            "bool-steps",
+            "float-steps",
+            "zero-order",
+            "odd-order",
+            "bool-order",
+            "float-order",
+        ],
     )
     def test_initialization_rejects_bad_trotter_settings(
         self, two_qubit_hamiltonian, dummy_simulator, kwargs, message
@@ -158,6 +171,34 @@ class TestTimeEvolutionInitialization:
             TimeEvolution(
                 hamiltonian=two_qubit_hamiltonian, backend=dummy_simulator, **kwargs
             )
+
+    @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint8])
+    def test_trotter_settings_accept_numpy_integers_as_plain_ints(
+        self, two_qubit_hamiltonian, dummy_simulator, dtype
+    ):
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=dummy_simulator,
+            n_steps=dtype(2),
+            order=dtype(2),
+        )
+
+        assert (te.n_steps, te.order) == (2, 2)
+        assert type(te.n_steps) is int and type(te.order) is int
+
+    def test_observables_accept_a_numpy_array(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        observables = np.empty(2, dtype=object)
+        observables[0], observables[1] = _Z0_2Q, _Z1_2Q
+
+        te = TimeEvolution(
+            hamiltonian=two_qubit_hamiltonian,
+            backend=dummy_simulator,
+            observable=observables,
+        )
+
+        assert te.observable == (_Z0_2Q, _Z1_2Q)
 
     def test_template_requires_its_parameter(
         self, two_qubit_hamiltonian, dummy_simulator

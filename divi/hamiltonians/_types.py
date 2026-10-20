@@ -6,13 +6,16 @@
 
 from collections.abc import Hashable, Mapping
 from dataclasses import dataclass
+from functools import cached_property
 
 import dimod
 import numpy as np
 import numpy.typing as npt
 import scipy.sparse as sps
 
-QUBOProblemTypes = list | np.ndarray | sps.spmatrix | dimod.BinaryQuadraticModel
+QUBOProblemTypes = (
+    list | np.ndarray | sps.spmatrix | sps.sparray | dimod.BinaryQuadraticModel
+)
 HUBOTerm = tuple[Hashable, ...]
 HUBOProblemTypes = Mapping[HUBOTerm, float] | dimod.BinaryPolynomial
 
@@ -32,7 +35,7 @@ class BinaryPolynomialProblem:
     variable_to_idx: dict[Hashable, int]
     constant: float
 
-    @property
+    @cached_property
     def terms(self) -> dict[HUBOTerm, float]:
         """Terms with tuple keys ordered by variable_order (derived from polynomial)."""
         result: dict[HUBOTerm, float] = {}

@@ -8,9 +8,10 @@ the orbital solves."""
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from itertools import accumulate, combinations, permutations, product
+from itertools import accumulate, combinations, pairwise, permutations, product
 from pathlib import Path
 from warnings import warn
 
@@ -110,7 +111,7 @@ class MOIntegrals:
 def fragment_blocks(specs: Sequence[FragmentSpec], offset: int = 0) -> list[slice]:
     """Each fragment's contiguous orbital span, starting at ``offset``."""
     bounds = list(accumulate((spec.n_orbitals for spec in specs), initial=offset))
-    return [slice(start, stop) for start, stop in zip(bounds, bounds[1:])]
+    return [slice(start, stop) for start, stop in pairwise(bounds)]
 
 
 def build_active_permutation(
@@ -135,7 +136,8 @@ def build_active_permutation(
         reorders the MO columns into ``[core | active | virtual]``.
     """
     active = [orbital for spec in specs for orbital in spec.orbitals]
-    remaining = [o for o in range(n_orbitals_total) if o not in set(active)]
+    used = set(active)
+    remaining = [o for o in range(n_orbitals_total) if o not in used]
     core, virtual = remaining[:n_core], remaining[n_core:]
     return np.array(core + active + virtual, dtype=int)
 
@@ -1317,19 +1319,15 @@ def state_averaged_orbital_solve(
         each state at the returned orbitals, in root order.
     """
     strings_alpha, strings_beta = strings
-    multiplicities = sorted({multiplicity for multiplicity, _ in weights})
-    roots = {
-        multiplicity: sum(1 for m, _ in weights if m == multiplicity)
-        for multiplicity in multiplicities
-    }
+    roots = dict(sorted(Counter(multiplicity for multiplicity, _ in weights).items()))
     solvers = [
         _SubspaceCI(strings_alpha, strings_beta, multiplicity, n_roots, lambda_penalty)
         for multiplicity, n_roots in roots.items()
     ]
     labels = [
         (multiplicity, index)
-        for multiplicity in multiplicities
-        for index in range(roots[multiplicity])
+        for multiplicity, n_roots in roots.items()
+        for index in range(n_roots)
     ]
     n_active = spec.n_orbitals
     nelec = (spec.n_alpha, spec.n_beta)
@@ -1346,13 +1344,14 @@ def state_averaged_orbital_solve(
         casscf, solvers, [weights[label] for label in labels]
     )
     started = time.monotonic()
-    macro_iterations = [0]
+    macro_iterations = 0
 
     def progress(envs):
-        macro_iterations[0] = envs["imacro"]
+        nonlocal macro_iterations
+        macro_iterations = envs["imacro"]
         if report is not None:
             report(
-                f"State-averaged orbital solve: iteration {macro_iterations[0]}, "
+                f"State-averaged orbital solve: iteration {macro_iterations}, "
                 f"energy {envs['e_tot']:.8f} Ha, |g| {2 * envs['norm_gorb']:.2e}, "
                 f"{time.monotonic() - started:.0f} s"
             )
@@ -1370,8 +1369,8 @@ def state_averaged_orbital_solve(
         energy,
         gradient,
         gradient_tol,
-        macro_iterations[0],
-        macro_iterations[0],
+        macro_iterations,
+        macro_iterations,
         len(pairs),
         "converged" if casscf.converged else "macro-iteration limit",
     )

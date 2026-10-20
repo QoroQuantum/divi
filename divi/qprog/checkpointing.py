@@ -248,8 +248,7 @@ def _atomic_write(path: Path, content: str) -> None:
         temp_file.replace(path)
         _fsync_directory(path.parent)
     except Exception as e:
-        if temp_file.exists():
-            temp_file.unlink()
+        temp_file.unlink(missing_ok=True)
         raise OSError(f"Failed to write checkpoint file {path}: {e}") from e
 
 
@@ -455,12 +454,13 @@ def _calculate_checkpoint_size(checkpoint_path: Path) -> int:
     Returns:
         int: Total size in bytes.
     """
-    total_size = 0
-    if checkpoint_path.exists():
-        for file_path in checkpoint_path.rglob("*"):
-            if file_path.is_file():
-                total_size += file_path.stat().st_size
-    return total_size
+    if not checkpoint_path.exists():
+        return 0
+    return sum(
+        file_path.stat().st_size
+        for file_path in checkpoint_path.rglob("*")
+        if file_path.is_file()
+    )
 
 
 def _is_checkpoint_valid(checkpoint_path: Path) -> bool:

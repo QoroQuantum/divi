@@ -5,7 +5,9 @@
 from __future__ import annotations
 
 import inspect
+import math
 from collections.abc import Mapping, Sequence
+from numbers import Integral
 from typing import TYPE_CHECKING, Any, cast
 from warnings import warn
 
@@ -108,8 +110,8 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         self,
         qscript: QuantumScript | QNode | QuantumCircuit,
         *,
-        param_shape: tuple[int, ...] | int | None = None,
-        data_param_indices: Sequence[int] | None = None,
+        param_shape: tuple[int, ...] | int | npt.NDArray[np.integer] | None = None,
+        data_param_indices: Sequence[int] | npt.NDArray[np.integer] | None = None,
         feature_batch: npt.ArrayLike | None = None,
         arg_shapes: Mapping[str, tuple[int, ...]] | None = None,
         data_arg: str | None = None,
@@ -431,10 +433,10 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
     def _configure_data_binding(
         self,
         *,
-        data_param_indices: Sequence[int] | None,
+        data_param_indices: Sequence[int] | npt.NDArray[np.integer] | None,
         feature_batch: npt.ArrayLike | None,
         loss_reduction: LossReductionFn,
-        param_shape: tuple[int, ...] | int | None,
+        param_shape: tuple[int, ...] | int | npt.NDArray[np.integer] | None,
         labels: npt.ArrayLike | None,
         loss_fn: SampleLossFn,
     ) -> None:
@@ -501,7 +503,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
 
     @staticmethod
     def _validate_data_indices(
-        data_param_indices: Sequence[int], n_params: int
+        data_param_indices: Sequence[int] | npt.NDArray[np.integer], n_params: int
     ) -> list[int]:
         raw = list(data_param_indices)
         if not raw:
@@ -526,26 +528,30 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
         return indices
 
     def _resolve_param_shape(
-        self, param_shape: tuple[int, ...] | int | None, n_params: int
+        self,
+        param_shape: tuple[int, ...] | int | npt.NDArray[np.integer] | None,
+        n_params: int,
     ) -> tuple[int, ...]:
         """Validate and normalize the parameter shape."""
         if param_shape is None:
             return (n_params,)
 
-        param_shape = (param_shape,) if isinstance(param_shape, int) else param_shape
+        dims = np.atleast_1d(np.asarray(param_shape, dtype=object)).tolist()
+        for dim in dims:
+            if isinstance(dim, bool) or not isinstance(dim, Integral):
+                raise TypeError(f"param_shape entries must be ints; got {dim!r}.")
+        shape = tuple(int(dim) for dim in dims)
 
-        if any(dim <= 0 for dim in param_shape):
-            raise ValueError(
-                f"param_shape entries must be positive, got {param_shape}."
-            )
+        if any(dim <= 0 for dim in shape):
+            raise ValueError(f"param_shape entries must be positive, got {shape}.")
 
-        if int(np.prod(param_shape)) != n_params:
+        if math.prod(shape) != n_params:
             raise ValueError(
                 f"param_shape does not match the number of trainable parameters. "
-                f"Expected product {n_params}, got {int(np.prod(param_shape))}."
+                f"Expected product {n_params}, got {math.prod(shape)}."
             )
 
-        return tuple(param_shape)
+        return shape
 
     def _create_cost_circuit(self) -> MetaCircuit:
         """Create the cost MetaCircuit for CustomVQA.

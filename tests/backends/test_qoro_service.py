@@ -2425,6 +2425,49 @@ def test_every_add_circuits_body_fits_the_payload_cap(
     assert max(sizes) <= cap
 
 
+def test_numpy_shot_groups_are_sent_as_plain_json(mocker, qoro_service_factory):
+    service = qoro_service_factory()
+    mock_request = _answer_every_request(mocker, service)
+    circuits = {f"c{i}": QASM_X_ON_FIRST_QUBIT for i in range(4)}
+
+    service.submit_circuits(
+        circuits, shot_groups=np.array([[0, 2, 100], [2, 4, 200]], dtype=np.int64)
+    )
+
+    (body,) = _add_circuits_bodies(mock_request)
+    assert json.loads(json.dumps(body))["shot_groups"] == [[0, 2, 100], [2, 4, 200]]
+
+
+def test_numpy_circuit_ham_map_is_sent_as_plain_json(mocker, qoro_service_factory):
+    service = qoro_service_factory()
+    mock_request = _answer_every_request(mocker, service)
+    circuits = {f"c{i}": QASM_X_ON_FIRST_QUBIT for i in range(4)}
+
+    service.submit_circuits(
+        circuits,
+        ham_ops="ZZ;XX|YY",
+        circuit_ham_map=[[np.int64(0), np.int32(2)], [np.int64(2), np.int64(4)]],
+    )
+
+    (body,) = _add_circuits_bodies(mock_request)
+    assert json.loads(json.dumps(body))["circuit_ham_map"] == [[0, 2], [2, 4]]
+
+
+def test_numpy_parameter_values_are_sent_as_plain_json(mocker, qoro_service_factory):
+    service = qoro_service_factory()
+    mock_request = _answer_every_request(mocker, service)
+    payload = replace(
+        make_qasm_payload(n_param_sets=1, n_params=2),
+        parameter_sets=(("iter_0", (np.float32(0.5), np.int64(2))),),
+    )
+
+    service.submit_circuits([payload])
+
+    (body,) = _add_circuits_bodies(mock_request)
+    (row,) = json.loads(json.dumps(body))["parameter_sets"]
+    assert row == {"label": "iter_0", "values": [0.5, 2.0]}
+
+
 @pytest.mark.parametrize(
     "job_config",
     [None, JobConfig(simulator_cluster=SimulatorCluster(name="qoro_maestro"))],

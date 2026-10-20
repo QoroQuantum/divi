@@ -6,6 +6,7 @@
 
 import itertools
 from collections.abc import Iterable, Sequence
+from numbers import Integral
 
 import networkx as nx
 from qiskit.quantum_info import SparsePauliOp
@@ -42,10 +43,34 @@ def multi_pauli_label(n_qubits: int, qubit_paulis: Sequence[tuple[int, str]]) ->
 def _validate_int_nodes(nodes: Iterable[int], builder: str) -> None:
     """Raise if any node is not a non-negative integer."""
     for node in nodes:
-        if not isinstance(node, int):
+        if not isinstance(node, Integral) or isinstance(node, bool):
             raise TypeError(f"{builder} requires integer qubit nodes.")
         if node < 0:
             raise ValueError(f"{builder} requires non-negative qubit nodes.")
+
+
+def _edges_nodes_and_width(
+    graph: nx.Graph | Iterable[tuple[int, int]],
+    n_qubits: int | None,
+    builder: str,
+) -> tuple[list[tuple[int, int]], set[int], int]:
+    """Return ``(edges, nodes, n_qubits)`` for a graph or edge iterable."""
+    nodes: set[int]
+    if isinstance(graph, nx.Graph):
+        edges = list(graph.edges())
+        nodes = set(graph.nodes())  # type: ignore[bad-assignment]
+    else:
+        edges = list(graph)
+        nodes = {n for edge in edges for n in edge}
+    _validate_int_nodes(nodes, builder)
+    edges = [(int(left), int(right)) for left, right in edges]
+    nodes = {int(node) for node in nodes}
+
+    inferred = max(nodes, default=-1) + 1
+    n_qubits = inferred if n_qubits is None else n_qubits
+    if n_qubits < inferred:
+        raise ValueError("n_qubits is smaller than the largest graph node.")
+    return edges, nodes, n_qubits
 
 
 def x_mixer(n_qubits: int) -> SparsePauliOp:
@@ -67,26 +92,14 @@ def xy_mixer(
     The graph nodes must be integer qubit indices. ``n_qubits`` may be
     provided to preserve isolated trailing qubits.
     """
-    nodes: set[int]
-    if isinstance(graph, nx.Graph):
-        edges = list(graph.edges())
-        nodes = set(graph.nodes())  # type: ignore[bad-assignment]
-    else:
-        edges = list(graph)
-        nodes = {n for edge in edges for n in edge}
-    _validate_int_nodes(nodes, "xy_mixer")
-
-    inferred = max(nodes, default=-1) + 1
-    n_qubits = inferred if n_qubits is None else n_qubits
-    if n_qubits < inferred:
-        raise ValueError("n_qubits is smaller than the largest graph node.")
+    edges, _, n_qubits = _edges_nodes_and_width(graph, n_qubits, "xy_mixer")
     if n_qubits == 0:
         return SparsePauliOp.from_list([("", 0.0)])
 
-    terms: list[tuple[str, float]] = []
-    for left, right in edges:
-        terms.append((two_pauli_label(n_qubits, left, right, "X"), 0.5))
-        terms.append((two_pauli_label(n_qubits, left, right, "Y"), 0.5))
+    terms: list[tuple[str, float]] = [
+        (two_pauli_label(n_qubits, left, right, pauli), 0.5)
+        for (left, right), pauli in itertools.product(edges, "XY")
+    ]
     if not terms:
         return SparsePauliOp.from_list([("I" * n_qubits, 0.0)])
     return SparsePauliOp.from_list(terms)
@@ -144,19 +157,7 @@ def edge_driver(
             "neither or both."
         )
 
-    nodes: set[int]
-    if isinstance(graph, nx.Graph):
-        edges = list(graph.edges())
-        nodes = set(graph.nodes())  # type: ignore[bad-assignment]
-    else:
-        edges = list(graph)
-        nodes = {n for edge in edges for n in edge}
-    _validate_int_nodes(nodes, "edge_driver")
-
-    inferred = max(nodes, default=-1) + 1
-    n_qubits = inferred if n_qubits is None else n_qubits
-    if n_qubits < inferred:
-        raise ValueError("n_qubits is smaller than the largest graph node.")
+    edges, nodes, n_qubits = _edges_nodes_and_width(graph, n_qubits, "edge_driver")
     if n_qubits == 0:
         return SparsePauliOp.from_list([("", 0.0)])
 
@@ -211,7 +212,7 @@ def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
     nodes = list(graph.nodes())
     _validate_int_nodes(nodes, "bit_flip_mixer")
 
-    n_qubits = (max(nodes) + 1) if nodes else 0
+    n_qubits = (int(max(nodes)) + 1) if nodes else 0
     if n_qubits == 0:
         return SparsePauliOp.from_list([("", 0.0)])
 
@@ -223,12 +224,12 @@ def bit_flip_mixer(graph: nx.Graph, b: int) -> SparsePauliOp:
         scale = 0.5**degree
         # Each neighbour contributes either I or sign*Z.
         for choice in itertools.product([(None, 1.0), ("Z", sign)], repeat=degree):
-            qubit_paulis: list[tuple[int, str]] = [(vertex, "X")]
+            qubit_paulis: list[tuple[int, str]] = [(int(vertex), "X")]
             coeff = scale
             for neighbour, (op, sgn) in zip(neighbours, choice):
                 coeff *= sgn
                 if op is not None:
-                    qubit_paulis.append((neighbour, op))
+                    qubit_paulis.append((int(neighbour), op))
             terms.append((multi_pauli_label(n_qubits, qubit_paulis), coeff))
 
     return SparsePauliOp.from_list(terms)

@@ -16,6 +16,7 @@ import inspect
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
+from itertools import combinations, pairwise, product
 from numbers import Integral
 from typing import Literal
 from warnings import warn
@@ -184,6 +185,7 @@ class GenericLayerAnsatz(Ansatz):
         entangling_layout: (
             Literal["linear", "brick", "circular", "all-to-all"]
             | Sequence[tuple[int, int]]
+            | npt.NDArray[np.integer]
             | None
         ) = None,
     ):
@@ -215,15 +217,21 @@ class GenericLayerAnsatz(Ansatz):
         self._gate_param_counts = [_gate_n_params(g) for g in self.gate_sequence]
         self.entangler = entangler
 
+        if isinstance(entangling_layout, np.ndarray):
+            if entangling_layout.ndim != 2 or entangling_layout.shape[1] != 2:
+                raise ValueError(
+                    "entangling_layout must be 'linear', 'brick', 'circular', "
+                    "'all-to-all', or a Sequence of tuples of integers."
+                )
+            entangling_layout = list(map(tuple, entangling_layout.tolist()))
+
         self.entangling_layout = entangling_layout
         if entangler is None and entangling_layout is not None:
             warn("`entangling_layout` provided but `entangler` is None.")
         match entangling_layout:
             case None | "linear":
                 self.entangling_layout = "linear"
-                self._layout_fn = lambda n_qubits: zip(
-                    range(n_qubits), range(1, n_qubits)
-                )
+                self._layout_fn = lambda n_qubits: pairwise(range(n_qubits))
             case "brick":
                 self._layout_fn = lambda n_qubits: [
                     (i, i + 1) for r in range(2) for i in range(r, n_qubits - 1, 2)
@@ -235,22 +243,23 @@ class GenericLayerAnsatz(Ansatz):
                     [(i + 1) % n_qubits for i in range(n_qubits)],
                 )
             case "all-to-all":
-                self._layout_fn = lambda n_qubits: (
-                    (i, j) for i in range(n_qubits) for j in range(i + 1, n_qubits)
-                )
+                self._layout_fn = lambda n_qubits: combinations(range(n_qubits), 2)
             case list() | tuple() as custom_layout:
                 if not all(
                     isinstance(ent, tuple)
                     and len(ent) == 2
-                    and isinstance(ent[0], int)
-                    and isinstance(ent[1], int)
+                    and all(
+                        isinstance(qubit, Integral) and not isinstance(qubit, bool)
+                        for qubit in ent
+                    )
                     for ent in custom_layout
                 ):
                     raise ValueError(
                         "entangling_layout must be 'linear', 'brick', 'circular', "
                         "'all-to-all', or a Sequence of tuples of integers."
                     )
-                self._layout_fn = lambda _: list(custom_layout)
+                pairs = [(int(first), int(second)) for first, second in custom_layout]
+                self._layout_fn = lambda _: list(pairs)
             case _:
                 raise ValueError(
                     f"Unknown entangling_layout: {entangling_layout!r}. "
@@ -273,7 +282,7 @@ class GenericLayerAnsatz(Ansatz):
 
         for layer_idx in range(n_layers):
             layer_params = params[layer_idx]
-            for q, qubit_params in zip(range(n_qubits), layer_params):
+            for q, qubit_params in enumerate(layer_params):
                 idx = 0
                 for gate_cls, n_p in zip(self.gate_sequence, gate_param_counts):
                     args = list(qubit_params[idx : idx + n_p])
@@ -700,17 +709,17 @@ def _rotation_one_particle(
     orbital_phases = np.zeros(n_orb)
     supplied = values[2 * n_gates :]
     orbital_phases[: len(supplied)] = supplied
+    angles = values[0 : 2 * n_gates : 2]
+    gate_phases = values[1 : 2 * n_gates : 2]
+    cosines, sines = np.cos(angles / 2), np.sin(angles / 2)
+    upper = -1j * sines * np.exp(-1j * gate_phases)
+    lower = -1j * sines * np.exp(1j * gate_phases)
     matrix = np.eye(n_orb, dtype=complex)
     for index, orbital in enumerate(schedule):
-        angle, phase = values[2 * index], values[2 * index + 1]
-        block = np.eye(n_orb, dtype=complex)
-        cosine, sine = np.cos(angle / 2), np.sin(angle / 2)
-        block[orbital, orbital] = cosine
-        block[orbital, orbital + 1] = -1j * sine * np.exp(-1j * phase)
-        block[orbital + 1, orbital] = -1j * sine * np.exp(1j * phase)
-        block[orbital + 1, orbital + 1] = cosine
-        matrix = block @ matrix
-    return np.diag(np.exp(1j * orbital_phases)) @ matrix
+        row_a, row_b = matrix[orbital].copy(), matrix[orbital + 1].copy()
+        matrix[orbital] = cosines[index] * row_a + upper[index] * row_b
+        matrix[orbital + 1] = lower[index] * row_a + cosines[index] * row_b
+    return np.exp(1j * orbital_phases)[:, None] * matrix
 
 
 def rotation_angles(
@@ -1139,18 +1148,15 @@ def _spin_conserving_excitations(
     """
     _validate_reference_counts(n_electrons, n_qubits, require_virtual=True)
     spin_up = [qubit % 2 == 0 for qubit in range(n_qubits)]
+    occupied = range(n_electrons)
+    virtual = range(n_electrons, n_qubits)
     singles = [
-        (r, p)
-        for r in range(n_electrons)
-        for p in range(n_electrons, n_qubits)
-        if spin_up[p] == spin_up[r]
+        (r, p) for r, p in product(occupied, virtual) if spin_up[p] == spin_up[r]
     ]
     doubles = [
         (s, r, q, p)
-        for s in range(n_electrons - 1)
-        for r in range(s + 1, n_electrons)
-        for q in range(n_electrons, n_qubits - 1)
-        for p in range(q + 1, n_qubits)
+        for s, r in combinations(occupied, 2)
+        for q, p in combinations(virtual, 2)
         if spin_up[p] + spin_up[q] == spin_up[r] + spin_up[s]
     ]
     return singles, doubles

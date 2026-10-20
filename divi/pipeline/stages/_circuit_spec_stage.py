@@ -4,8 +4,12 @@
 
 """Spec stage that wraps pre-built MetaCircuit(s) into a pipeline batch."""
 
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import Any
+
+import numpy as np
+import numpy.typing as npt
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._dry_run import _two_qubit_depth
@@ -20,7 +24,12 @@ from divi.pipeline.abc import (
 )
 
 #: Accepted input types for ``CircuitSpecStage.expand``.
-CircuitSpec = MetaCircuit | Sequence[MetaCircuit] | Mapping[str, MetaCircuit]
+CircuitSpec = (
+    MetaCircuit
+    | Sequence[MetaCircuit]
+    | npt.NDArray[np.object_]
+    | Mapping[str, MetaCircuit]
+)
 
 
 class CircuitSpecStage(SpecStage[CircuitSpec]):
@@ -56,7 +65,9 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
             raise TypeError(f"{expected}, got str")
         if isinstance(items, Mapping):
             return {key: convert(value) for key, value in items.items()}
-        if isinstance(items, Sequence):
+        if isinstance(items, Sequence) or (
+            isinstance(items, np.ndarray) and items.ndim == 1
+        ):
             return [convert(value) for value in items]
         raise TypeError(f"{expected}, got {type(items).__name__}")
 
@@ -70,7 +81,9 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
         elif isinstance(batch, Mapping):
             out = {(("circuit", name),): meta for name, meta in batch.items()}
             fmt = "mapping"
-        elif isinstance(batch, Sequence):
+        elif isinstance(batch, Sequence) or (
+            isinstance(batch, np.ndarray) and batch.ndim == 1
+        ):
             out = {(("circuit", i),): meta for i, meta in enumerate(batch)}
             fmt = "sequence"
         else:
@@ -89,13 +102,12 @@ class CircuitSpecStage(SpecStage[CircuitSpec]):
         # Use the first body variant — QEM/twirl expansions share qubit
         # layout and gate count with the original.
         _, dag = meta.circuit_bodies[0]
-        n_1q = sum(1 for node in dag.op_nodes() if len(node.qargs) == 1)
-        n_2q = sum(1 for node in dag.op_nodes() if len(node.qargs) == 2)
+        arity = Counter(len(node.qargs) for node in dag.op_nodes())
         return {
             "n_qubits": meta.n_qubits,
             "n_gates": dag.size(),
-            "n_1q_gates": n_1q,
-            "n_2q_gates": n_2q,
+            "n_1q_gates": arity[1],
+            "n_2q_gates": arity[2],
             "depth": dag.depth(),
             "depth_2q": _two_qubit_depth(dag),
         }

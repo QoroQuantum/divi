@@ -1728,8 +1728,25 @@ def test_settings_the_fragment_cannot_hold_fail_at_construction(
             ValueError,
             "energy_tol must be a positive finite number; got inf.",
         ),
+        (
+            {"seed": 1.5},
+            ValueError,
+            "seed must be an integer or None; got 1.5.",
+        ),
+        (
+            {"seed": True},
+            ValueError,
+            "seed must be an integer or None; got True.",
+        ),
     ],
-    ids=["fragmentation-as-list", "sqd-as-dict", "nan-energy-tol", "inf-energy-tol"],
+    ids=[
+        "fragmentation-as-list",
+        "sqd-as-dict",
+        "nan-energy-tol",
+        "inf-energy-tol",
+        "float-seed",
+        "bool-seed",
+    ],
 )
 def test_lassqd_rejects_invalid_arguments(
     dummy_expval_backend, arguments, error, message
@@ -1743,6 +1760,14 @@ def test_lassqd_rejects_invalid_arguments(
                 | arguments
             ),
         )
+
+
+@pytest.mark.parametrize("seed", [np.uint64(2**63 + 5), np.int64(2**60 + 1)])
+def test_lassqd_keeps_every_digit_of_a_numpy_seed(dummy_expval_backend, seed):
+    program = _lassqd(dummy_expval_backend, seed=seed)
+
+    assert program._seed == int(seed)
+    assert type(program._seed) is int
 
 
 def test_an_unconverged_mean_field_warns(dummy_expval_backend):

@@ -194,14 +194,18 @@ def _rejected(label: str, spec: Spec, typed: str) -> str:
 def _merge(by_vendor: Mapping[str, Mapping[str, Any]]) -> Spec:
     """One spec for an option several vendors accept: every choice, the tightest bounds."""
     specs = list(by_vendor.values())
-    mins = [one["min"] for one in specs if one.get("min") is not None]
-    maxes = [one["max"] for one in specs if one.get("max") is not None]
     spec = dict(specs[0]) | {
         "choices": list(
             dict.fromkeys(str(c) for one in specs for c in one.get("choices") or ())
         ),
-        "min": max(mins) if mins else None,
-        "max": min(maxes) if maxes else None,
+        "min": max(
+            (bound for one in specs if (bound := one.get("min")) is not None),
+            default=None,
+        ),
+        "max": min(
+            (bound for one in specs if (bound := one.get("max")) is not None),
+            default=None,
+        ),
         "common": any(one.get("ui_editable") for one in specs),
         "description": next(
             (text for one in specs if (text := one.get("description"))), None

@@ -81,6 +81,33 @@ class TestParameterBindingStage:
         ):
             _validate_param_sets(env)
 
+    def test_rejects_complex_param_sets_with_an_imaginary_part(self):
+        env = PipelineEnv(backend=None, param_sets=np.array([[1.0, 1j]]))
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "env.param_sets must be real; got complex values with a non-zero "
+                "imaginary part."
+            ),
+        ):
+            _validate_param_sets(env)
+
+    @pytest.mark.parametrize(
+        "param_sets",
+        [
+            pytest.param(np.array([[1 + 0j, 2]]), id="zero-imaginary-complex"),
+            pytest.param(np.array([[1, 2]]), id="integer-array"),
+            pytest.param(np.array([[1, 2]], dtype=np.float32), id="float32-array"),
+        ],
+    )
+    def test_casts_real_valued_param_sets_to_float64(self, param_sets):
+        env = PipelineEnv(backend=None, param_sets=param_sets)
+
+        validated = _validate_param_sets(env)
+
+        assert validated.dtype == np.float64
+        np.testing.assert_array_equal(validated, [[1.0, 2.0]])
+
     def test_passthrough_when_no_symbols(self, dummy_pipeline_env):
         trace = run_binding_pipeline(
             two_group_meta(),

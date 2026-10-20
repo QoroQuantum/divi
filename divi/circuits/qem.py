@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
@@ -159,6 +160,6 @@ class _NoMitigation(QEMProtocol):
         if len(quantum_results) > 1:
             raise RuntimeError("NoMitigation class received multiple partial results.")
         only = quantum_results[0]
-        if isinstance(only, list):
+        if np.ndim(only) > 0:
             return [float(v) for v in only]
         return [float(only)]

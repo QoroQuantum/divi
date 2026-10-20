@@ -4,6 +4,7 @@
 
 from collections.abc import Sequence
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
@@ -44,6 +45,23 @@ class TestCircuitRunner:
             match=exact_match(f"Shots must be a positive integer. Got {shots}."),
         ):
             ConcreteCircuitRunner(shots=shots)
+
+
+@pytest.mark.parametrize("shots", [1000, np.int64(1000), np.uint16(1000)])
+def test_shots_are_held_as_a_plain_int(shots):
+    runner = ConcreteCircuitRunner(shots=shots)
+
+    assert runner.shots == 1000
+    assert type(runner.shots) is int
+
+
+@pytest.mark.parametrize("shots", [100.0, 2.5, np.float32(10), True, "100", None])
+def test_shots_that_are_not_integers_are_rejected(shots):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(f"Shots must be a positive integer. Got {shots}."),
+    ):
+        ConcreteCircuitRunner(shots=shots)
 
 
 QASM_MINIMAL = (

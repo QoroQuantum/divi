@@ -19,6 +19,7 @@ from divi.circuits._conversions import (
     _bind_op_params,
     _format_bound_param,
     _format_gate_param,
+    _real_float_array,
     _sparse_pauli_op_to_ham_string,
     _sympy_to_qiskit,
     bind_parameters_in_dag,
@@ -148,6 +149,57 @@ def test_bind_parameters_in_dag_binds_only_substituted_params_and_keeps_wiring()
         ("ry", ["b"], [1], []),
         ("measure", [], [1], [1]),
     ]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.float32(0.5), np.int64(1), np.array(0.5), np.float64(0.5)],
+    ids=["float32", "int64", "zero-dimensional-array", "float64"],
+)
+def test_bind_parameters_in_dag_accepts_numpy_values(value):
+    theta = Parameter("theta")
+    qc = QuantumCircuit(1)
+    qc.rx(theta, 0)
+
+    out = dag_to_circuit(bind_parameters_in_dag(circuit_to_dag(qc), {theta: value}))
+
+    assert float(out.data[0].operation.params[0]) == float(value)
+
+
+class TestRealFloatArray:
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param([[1, 2], [3, 4]], id="int-lists"),
+            pytest.param(np.array([[1, 2], [3, 4]], dtype=np.float32), id="float32"),
+            pytest.param(np.array([[1 + 0j, 2], [3, 4]]), id="zero-imaginary-complex"),
+            pytest.param(np.array([[1 + 0j, 2], [3, 4]], dtype=np.complex64), id="c64"),
+            pytest.param([[1 + 0j, 2], [3, 4]], id="complex-lists"),
+        ],
+    )
+    def test_casts_to_float64(self, values):
+        out = _real_float_array(values, source="env.param_sets")
+
+        assert out.dtype == np.float64
+        np.testing.assert_array_equal(out, [[1.0, 2.0], [3.0, 4.0]])
+
+    @pytest.mark.parametrize(
+        "values",
+        [
+            pytest.param(np.array([[1 + 1j, 2], [3, 4]]), id="complex-array"),
+            pytest.param(np.array([[1j, 2], [3, 4]], dtype=np.complex64), id="c64"),
+            pytest.param([[1 + 1j, 2], [3, 4]], id="complex-lists"),
+        ],
+    )
+    def test_rejects_a_non_zero_imaginary_part(self, values):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "env.param_sets must be real; got complex values with a non-zero "
+                "imaginary part."
+            ),
+        ):
+            _real_float_array(values, source="env.param_sets")
 
 
 def test_bind_op_params_returns_the_original_op_for_unrelated_bindings():

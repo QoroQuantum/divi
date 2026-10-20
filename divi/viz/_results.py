@@ -66,8 +66,7 @@ def _plot_2d_contourf(
     xx, yy = np.meshgrid(x_offsets, y_offsets, indexing="xy")
     # corner_mask=True (matplotlib default) leaves triangular holes on rectilinear
     # grids; they read as white patches and often sit near overlay markers.
-    cf_kwargs = {"corner_mask": False}
-    cf_kwargs.update(contour_kwargs)
+    cf_kwargs = {"corner_mask": False} | contour_kwargs
     contour = ax.contourf(xx, yy, values, levels=levels, **cf_kwargs)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -169,9 +168,7 @@ def _overlay_gradients(
         "alpha": 0.7,
         "scale": None,
         "zorder": 3,
-    }
-    if gradient_kwargs is not None:
-        defaults.update(gradient_kwargs)
+    } | (gradient_kwargs or {})
     ax.quiver(xx, yy, grad_x, grad_y, **defaults)
 
 
@@ -191,8 +188,7 @@ def _plot_3d_surface(
     fig, ax = _resolve_axes(ax, projection="3d")
 
     xx, yy = np.meshgrid(x_offsets, y_offsets, indexing="xy")
-    defaults = {"cmap": "viridis", "edgecolor": "none"}
-    defaults.update(surface_kwargs)
+    defaults = {"cmap": "viridis", "edgecolor": "none"} | surface_kwargs
     ax.plot_surface(xx, yy, values, **defaults)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -416,9 +412,7 @@ class PCAScanResult:
                 "facecolors": "none",
                 "edgecolors": "0.15",
                 "linewidths": 1.2,
-            }
-            if sample_kwargs is not None:
-                scatter_kwargs.update(sample_kwargs)
+            } | (sample_kwargs or {})
             ax.scatter(
                 self.projected_samples[:, 0],
                 self.projected_samples[:, 1],
@@ -431,9 +425,7 @@ class PCAScanResult:
                 "linewidth": 1.5,
                 "alpha": 0.8,
                 "zorder": 3,
-            }
-            if trajectory_kwargs is not None:
-                traj_defaults.update(trajectory_kwargs)
+            } | (trajectory_kwargs or {})
             xs = self.projected_samples[:, 0]
             ys = self.projected_samples[:, 1]
             ax.plot(xs, ys, **traj_defaults)
@@ -612,8 +604,7 @@ class NEBResult:
         """
         fig, ax = _resolve_axes(ax)
 
-        defaults = {"marker": "o", "markersize": 4}
-        defaults.update(plot_kwargs)
+        defaults = {"marker": "o", "markersize": 4} | plot_kwargs
         ax.plot(self.path_distances, self.energies, **defaults)
         ax.set_xlabel("Normalised path distance")
         ax.set_ylabel("Objective")

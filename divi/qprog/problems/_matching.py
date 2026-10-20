@@ -105,7 +105,15 @@ def _bitstring_to_matching(bitstring: str, edges: Sequence[tuple]) -> list[tuple
     """Edges selected by a measurement bitstring, in qubit order.
 
     Uses left-to-right qubit ordering: ``bitstring[i]`` selects ``edges[i]``.
+
+    Raises:
+        ValueError: If ``bitstring`` does not hold one bit per edge.
     """
+    if len(bitstring) != len(edges):
+        raise ValueError(
+            f"Expected a bitstring of {len(edges)} bits, one per edge, "
+            f"got {len(bitstring)}."
+        )
     return [edge for edge, bit in zip(edges, bitstring) if bit == "1"]
 
 

@@ -8,6 +8,7 @@ import warnings
 import networkx as nx
 import numpy as np
 import pytest
+from qiskit.circuit import ParameterExpression
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.zne import ZNE, LinearExtrapolator
@@ -236,7 +237,21 @@ class TestGeneralQAOA:
 
         assert qaoa.max_shift_evaluations_per_parameter == 1
 
-    @pytest.mark.parametrize("limit", [0, -1, True, 1.5])
+    @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint8])
+    def test_qaoa_stores_a_numpy_shift_limit_as_a_plain_int(
+        self, dtype, gradient_free_optimizer, dummy_simulator
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(2)),
+            optimizer=gradient_free_optimizer,
+            backend=dummy_simulator,
+            max_shift_evaluations_per_parameter=dtype(7),
+        )
+
+        assert qaoa.max_shift_evaluations_per_parameter == 7
+        assert type(qaoa.max_shift_evaluations_per_parameter) is int
+
+    @pytest.mark.parametrize("limit", [0, -1, True, np.True_, 1.5, np.float64(2.0)])
     def test_qaoa_rejects_invalid_shift_evaluation_limit(
         self,
         limit,
@@ -675,6 +690,29 @@ def test_qaoa_rejects_a_non_initial_state(dummy_simulator, default_optimizer):
         ),
     ):
         _path_qaoa(dummy_simulator, default_optimizer, initial_state="zeros")
+
+
+def test_cost_layers_use_gamma_and_mixer_layers_use_beta(
+    dummy_simulator, default_optimizer
+):
+    qaoa = _path_qaoa(dummy_simulator, default_optimizer, n_layers=2)
+
+    assert [param.name for param in qaoa._params.flatten()] == [
+        "γ[0]",
+        "β[0]",
+        "γ[1]",
+        "β[1]",
+    ]
+
+    circuit = qaoa._build_qaoa_qiskit_circuit(qaoa.cost_hamiltonian)
+    driving_names: dict[str, set[str]] = {}
+    for instruction in circuit.data:
+        for angle in instruction.operation.params:
+            if isinstance(angle, ParameterExpression):
+                driving_names.setdefault(instruction.operation.name, set()).update(
+                    parameter.name.split("[")[0] for parameter in angle.parameters
+                )
+    assert driving_names == {"rz": {"γ"}, "rx": {"β"}}
 
 
 def test_cost_pipeline_circuits_render_at_the_program_precision(

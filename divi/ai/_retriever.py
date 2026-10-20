@@ -112,10 +112,7 @@ class SearchStack:
     @cached_property
     def vocab(self) -> frozenset[str]:
         """Set of all tokens (post-tokenization) that appear in any chunk."""
-        v: set[str] = set()
-        for c in self.chunks:
-            v.update(tokenize(c.text))
-        return frozenset(v)
+        return frozenset(tok for c in self.chunks for tok in tokenize(c.text))
 
     @cached_property
     def raw_text(self) -> str:

@@ -4,6 +4,7 @@
 
 """Hamiltonian problems: qubit Hamiltonians and molecular integrals."""
 
+from functools import cached_property
 from typing import Self
 
 import numpy as np
@@ -212,17 +213,18 @@ class MolecularProblem(HamiltonianProblem):
         molecule: MoleculeLike | None,
     ) -> None:
         self._integrals = None if integrals is None else _read_only(integrals)
-        self._n_electrons, self._n_alpha, self._n_beta = _electron_counts(
-            None, n_alpha, n_beta
-        )
+        _electron_counts(None, n_alpha, n_beta)
+        self._alpha, self._beta = n_alpha, n_beta
         self._molecule = molecule
-        self._qubit_hamiltonian: SparsePauliOp | None = None
 
     def _loaded_integrals(
         self,
     ) -> tuple[np.ndarray, np.ndarray, float, np.ndarray | None]:
         if self._integrals is None:
-            assert self._molecule is not None
+            if self._molecule is None:
+                raise RuntimeError(
+                    "MolecularProblem holds neither integrals nor a molecule."
+                )
             self._integrals = _read_only((*molecule_integrals(self._molecule), None))
         return self._integrals
 
@@ -231,37 +233,31 @@ class MolecularProblem(HamiltonianProblem):
         """The molecule given to :meth:`from_molecule`, or ``None``."""
         return self._molecule
 
-    @property
+    @cached_property
     def hamiltonian(self) -> SparsePauliOp:
         """The Jordan-Wigner qubit Hamiltonian, including its constant term."""
-        if self._qubit_hamiltonian is None:
-            if is_pennylane_molecule(self._molecule):
-                # PennyLane's own mapping, so it needs no OpenFermion.
-                self._qubit_hamiltonian, _ = molecular_hamiltonian(self._molecule)
-            else:
-                one_body, two_body, constant, one_body_beta = self._loaded_integrals()
-                self._qubit_hamiltonian = _spo_from_integrals(
-                    one_body, two_body, constant, one_body_beta=one_body_beta
-                )
-        return self._qubit_hamiltonian
+        if is_pennylane_molecule(self._molecule):
+            # PennyLane's own mapping, so it needs no OpenFermion.
+            return molecular_hamiltonian(self._molecule)[0]
+        one_body, two_body, constant, one_body_beta = self._loaded_integrals()
+        return _spo_from_integrals(
+            one_body, two_body, constant, one_body_beta=one_body_beta
+        )
 
     @property
     def n_electrons(self) -> int:
         """Total electrons, ``n_alpha + n_beta``."""
-        assert self._n_electrons is not None
-        return self._n_electrons
+        return self._alpha + self._beta
 
     @property
     def n_alpha(self) -> int:
         """Alpha electrons."""
-        assert self._n_alpha is not None
-        return self._n_alpha
+        return self._alpha
 
     @property
     def n_beta(self) -> int:
         """Beta electrons."""
-        assert self._n_beta is not None
-        return self._n_beta
+        return self._beta
 
     @property
     def one_body(self) -> np.ndarray:

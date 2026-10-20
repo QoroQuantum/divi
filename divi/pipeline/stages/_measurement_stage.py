@@ -49,9 +49,7 @@ PROBS_MEAS_AXIS = "meas"
 
 def _split_identity_offset(observable: SparsePauliOp) -> tuple[SparsePauliOp, float]:
     """Remove identity terms and return their exact real-valued contribution."""
-    identity = np.asarray(
-        [set(label) <= {"I"} for label in observable.paulis.to_labels()], dtype=bool
-    )
+    identity = ~(observable.paulis.x | observable.paulis.z).any(axis=1)
     offset = float(np.asarray(observable.coeffs).real[identity].sum())
     sampled_indices = np.flatnonzero(~identity)
     if not len(sampled_indices):
@@ -117,7 +115,7 @@ def _plan_group_shots(
             return _GroupShotPlan(list(range(n_groups)), None)
         return _GroupShotPlan(
             surviving_indices=list(range(n_groups)),
-            shots_by_group={i: env.shots_override for i in range(n_groups)},
+            shots_by_group=dict.fromkeys(range(n_groups), env.effective_shots),
         )
 
     effective_shots = env.effective_shots if total_shots is None else total_shots
@@ -130,17 +128,14 @@ def _plan_group_shots(
         rng=env.rng,
     )
 
-    surviving_indices: list[int] = []
-    dropped_indices: list[int] = []
-    surviving_shots: dict[int, int] = {}
-    for idx, shots in enumerate(per_group_shots):
-        if shots > 0:
-            surviving_indices.append(idx)
-            surviving_shots[idx] = shots
-        else:
-            dropped_indices.append(idx)
+    surviving_shots: dict[int, int] = {
+        idx: shots for idx, shots in enumerate(per_group_shots) if shots > 0
+    }
+    surviving_indices: list[int] = list(surviving_shots)
+    dropped_indices: list[int] = [
+        idx for idx, shots in enumerate(per_group_shots) if shots <= 0
+    ]
 
-    missing_group_results: dict[int, object] = {}
     if dropped_indices and shot_distribution != "weighted_random":
         # |bias| <= L1 norm of the dropped groups, since |<h_i>| <= 1.
         dropped_norm = sum(group_norms[i] for i in dropped_indices)
@@ -160,11 +155,11 @@ def _plan_group_shots(
             UserWarning,
             stacklevel=2,
         )
-    for idx in dropped_indices:
-        # Zero per observable in the group (an absent draw for weighted_random).
-        missing_group_results[idx] = {
-            j: 0.0 for j in range(len(measurement_groups[idx]))
-        }
+    # Zero per observable in the group (an absent draw for weighted_random).
+    missing_group_results: dict[int, object] = {
+        idx: dict.fromkeys(range(len(measurement_groups[idx])), 0.0)
+        for idx in dropped_indices
+    }
 
     scales_by_group: dict[int, float] = {}
     probabilities_by_group: dict[int, float] = {}
@@ -574,8 +569,11 @@ class MeasurementStage(BundleStage):
                 )
             # MetaCircuit.__post_init__ normalises a bare SparsePauliOp to a
             # 1-tuple via object.__setattr__, which type checkers can't track.
-            assert isinstance(meta.observable, tuple)
-            observable = meta.observable
+            observable = (
+                meta.observable
+                if isinstance(meta.observable, tuple)
+                else (meta.observable,)
+            )
             constant_offset = 0.0
             if sample_budgets is not None:
                 if len(observable) != 1:
@@ -654,11 +652,9 @@ class MeasurementStage(BundleStage):
                 if shot_plan.shots_by_group is not None and strategy != BACKEND_EXPVAL:
                     new_meta = new_meta.set_group_shots(shot_plan.shots_by_group)
             result[key] = new_meta
-            for plan_key in plans:
-                postprocess_fn_by_spec[plan_key] = postprocessing_fn
+            postprocess_fn_by_spec.update(dict.fromkeys(plans, postprocessing_fn))
             if sample_budgets is not None:
-                for plan_key in plans:
-                    constant_offsets_by_spec[plan_key] = constant_offset
+                constant_offsets_by_spec.update(dict.fromkeys(plans, constant_offset))
 
         if strategy == BACKEND_EXPVAL and sample_union is not None:
             ham_ops = _sparse_pauli_op_to_ham_string(sample_union)
@@ -730,8 +726,10 @@ class MeasurementStage(BundleStage):
 
         spec_pgs = next((m.group_shots for m in batch.values() if m.group_shots), None)
         if spec_pgs:
-            values = sorted(spec_pgs.values())
-            info["shots_per_group_range"] = [values[0], values[-1]]
+            info["shots_per_group_range"] = [
+                min(spec_pgs.values()),
+                max(spec_pgs.values()),
+            ]
             # Zero-shot groups are dropped, so fewer than n_groups may be submitted.
             if len(spec_pgs) != len(groups):
                 info["n_groups_submitted"] = len(spec_pgs)

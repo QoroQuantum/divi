@@ -6,6 +6,7 @@
 
 import json
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -81,7 +82,34 @@ class TestProgramIdEncoding:
     def test_encodes_scalars_with_their_kind(self, value, encoded):
         assert _encode_program_id(value) == encoded
 
-    @pytest.mark.parametrize("value", [float("nan"), float("inf"), object()])
+    @pytest.mark.parametrize(
+        "value, encoded",
+        [
+            (np.int64(3), {"kind": "int", "value": 3}),
+            (np.uint8(3), {"kind": "int", "value": 3}),
+            (np.bool_(True), {"kind": "bool", "value": True}),
+            (np.float32(1.5), {"kind": "float", "value": 1.5}),
+            (np.float64(0.25), {"kind": "float", "value": 0.25}),
+            (np.str_("a"), {"kind": "str", "value": "a"}),
+        ],
+        ids=["int64", "uint8", "bool", "float32", "float64", "str"],
+    )
+    def test_encodes_numpy_scalars_as_their_plain_python_kind(self, value, encoded):
+        result = _encode_program_id(value)
+
+        assert result == encoded
+        assert type(result["value"]) is type(encoded["value"])
+
+    def test_encodes_numpy_scalars_inside_tuples(self):
+        assert _encode_program_id((np.int64(1), "x")) == {
+            "kind": "tuple",
+            "items": [{"kind": "int", "value": 1}, {"kind": "str", "value": "x"}],
+        }
+
+    @pytest.mark.parametrize(
+        "value",
+        [float("nan"), float("inf"), np.float32("nan"), np.float64("inf"), object()],
+    )
     def test_rejects_values_without_stable_json_identity(self, value):
         with pytest.raises(TypeError, match="checkpoint program ID"):
             _encode_program_id(value)

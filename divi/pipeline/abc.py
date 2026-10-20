@@ -67,9 +67,11 @@ class _EstimatorSamplePlan:
     @classmethod
     def from_value(
         cls,
-        value: int | Sequence[int],
+        value: int | Sequence[int] | npt.NDArray[np.integer],
         n_param_sets: int,
     ) -> "_EstimatorSamplePlan":
+        if isinstance(value, np.ndarray):
+            value = value.item() if value.ndim == 0 else value.tolist()
         if isinstance(value, bool):
             raise ValueError("estimator_samples must be a positive integer.")
         if isinstance(value, (int, np.integer)):
@@ -150,7 +152,7 @@ class PipelineResult(dict):
                 f"Use result[key] to access specific results."
             )
         raw = next(iter(self.values()))
-        if self._squeeze and isinstance(raw, list) and len(raw) == 1:
+        if self._squeeze and np.ndim(raw) > 0 and len(raw) == 1:
             return raw[0]
         return raw
 
@@ -208,7 +210,9 @@ class PipelineEnv:
     backend: CircuitRunner
     """Backend used to run circuits (e.g. simulator or cloud service)."""
 
-    param_sets: Sequence[Sequence[float]] | npt.NDArray[np.floating] = ((),)
+    param_sets: (
+        Sequence[Sequence[float]] | npt.NDArray[np.floating] | npt.NDArray[np.integer]
+    ) = ((),)
     """Parameter sets for binding — strictly 2D (list-of-lists or 2D ndarray).
 
     Defaults to one set with no free parameters, which is the shape a
@@ -291,7 +295,7 @@ class PipelineEnv:
         Returns :attr:`shots_override` when set, otherwise the backend's
         configured ``shots``.
         """
-        return (
+        return int(
             self.shots_override
             if self.shots_override is not None
             else self.backend.shots

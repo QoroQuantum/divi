@@ -122,6 +122,45 @@ class TestGridSearchOptimizer:
                 **kwargs,
             )
 
+    @pytest.mark.parametrize(
+        "losses, expected_x",
+        [
+            ([np.nan, 1.0, 0.5], 2.0),
+            ([1.0, -np.inf, 0.5], 2.0),
+            ([np.inf, 3.0, np.nan], 1.0),
+        ],
+        ids=["nan-skipped", "neg-inf-skipped", "inf-and-nan-skipped"],
+    )
+    def test_non_finite_losses_are_never_selected_as_best(self, losses, expected_x):
+        grid = GridSearchOptimizer(param_grid=[[0.0], [1.0], [2.0]])
+
+        result = grid.optimize(lambda population: np.array(losses))
+
+        np.testing.assert_array_equal(result.x, [expected_x])
+        assert np.isfinite(result.fun)
+
+    @pytest.mark.parametrize(
+        "losses",
+        [[np.nan] * 3, [np.inf, np.nan, -np.inf]],
+        ids=["all-nan", "no-finite-loss"],
+    )
+    def test_no_finite_loss_reports_failure_and_still_calls_back(self, losses):
+        grid = GridSearchOptimizer(param_grid=[[0.0], [1.0], [2.0]])
+        callbacks = []
+
+        result = grid.optimize(
+            lambda population: np.array(losses), callback_fn=callbacks.append
+        )
+
+        np.testing.assert_array_equal(result.x, [0.0])
+        assert result.fun == np.inf
+        assert result.success is False
+        assert result.message == "No grid point produced a finite loss."
+        assert len(callbacks) == 1
+        np.testing.assert_array_equal(callbacks[0].fun, losses)
+        assert grid._best_params is None
+        assert grid._best_loss is None
+
     # -- State management --
 
     def test_reset_clears_state(self):
@@ -153,6 +192,17 @@ class TestGridSearchOptimizer:
         np.testing.assert_array_almost_equal(loaded._best_params, grid._best_params)
         assert loaded._best_loss == pytest.approx(grid._best_loss)
         np.testing.assert_array_equal(loaded._all_losses, grid._all_losses)
+
+    def test_checkpoint_after_a_failed_sweep_reloads(self, tmp_path):
+        grid = GridSearchOptimizer(param_grid=[[0.0], [1.0]])
+        grid.optimize(lambda population: np.array([np.nan, np.inf]))
+
+        grid.save_state(tmp_path)
+        loaded = GridSearchOptimizer.load_state(tmp_path)
+
+        np.testing.assert_array_equal(loaded._all_losses, [np.nan, np.inf])
+        assert loaded._best_params is None
+        assert loaded._best_loss is None
 
     def test_save_before_optimize_stores_none(self, tmp_path):
         grid = GridSearchOptimizer(param_ranges=[(0, 1)], grid_points=5)

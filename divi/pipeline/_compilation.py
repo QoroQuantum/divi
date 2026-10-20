@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from divi.circuits import MetaCircuit, dag_to_qasm_body
+from divi.circuits._conversions import _real_float_array
 from divi.circuits._payloads import CircuitPayload
 from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
 from divi.pipeline.abc import BranchKey, ContractViolation
@@ -145,7 +146,7 @@ def _compile_batch(
     variant: the rendered template text with measurement appended.  Bound
     batches fall out as single-row payloads.
     """
-    param_array = np.asarray(param_sets, dtype=float)
+    param_array = _real_float_array(param_sets, source="param_sets")
     if param_array.ndim != 2:
         raise ValueError(
             f"_compile_batch expects 2D param_sets; got shape {param_array.shape}."
@@ -174,7 +175,7 @@ def _compile_batch(
                 batch_key, body_tag, meas_tag, node, len(param_array)
             ):
                 label = _branch_label(branch_key)
-                values = () if i is None else tuple(float(v) for v in param_array[i])
+                values = () if i is None else tuple(param_array[i].tolist())
                 param_set_rows.append((label, values))
                 lineage_by_label[label] = branch_key
 

@@ -4,6 +4,9 @@
 
 """Unit tests for :mod:`divi.backends._config`."""
 
+import json
+
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
@@ -250,3 +253,46 @@ class TestDeviceConfig:
 )
 def test_model_copy_without_update_is_an_equal_copy(config):
     assert config.model_copy() == config
+
+
+@pytest.mark.parametrize("field", ["use_circuit_packing", "force_sampling"])
+@pytest.mark.parametrize("flag", [np.True_, np.False_])
+def test_job_config_flags_accept_numpy_booleans_as_plain_bool(field, flag):
+    value = getattr(JobConfig(**{field: flag}), field)
+
+    assert value is bool(flag)
+
+
+@pytest.mark.parametrize("field", ["use_circuit_packing", "force_sampling"])
+@pytest.mark.parametrize("value", [1, 0, "true", np.int64(1), np.float64(1.0)])
+def test_job_config_flags_still_reject_non_booleans(field, value):
+    with pytest.raises(ValidationError, match="valid boolean"):
+        JobConfig(**{field: value})
+
+
+def test_device_config_options_are_held_and_sent_as_plain_python():
+    config = DeviceConfig(
+        transpile_optimization_level=np.int64(3),
+        use_mitigation=np.True_,
+        shots_grid=np.array([1, 2]),
+        noise_scale=np.float32(0.5),
+    )
+
+    payload = config.to_payload()
+
+    assert json.loads(json.dumps(payload)) == {
+        "TRANSPILE_OPTIMIZATION_LEVEL": 3,
+        "USE_MITIGATION": True,
+        "SHOTS_GRID": [1, 2],
+        "NOISE_SCALE": 0.5,
+    }
+    assert type(payload["TRANSPILE_OPTIMIZATION_LEVEL"]) is int
+    assert payload["USE_MITIGATION"] is True
+
+
+def test_device_config_changes_keep_numpy_options_plain():
+    config = DeviceConfig(use_mitigation=True).override(
+        transpile_optimization_level=np.int64(2)
+    )
+
+    assert type(config.to_payload()["TRANSPILE_OPTIMIZATION_LEVEL"]) is int

@@ -226,6 +226,89 @@ def test_truncating_a_constant_only_hamiltonian_raises(strategy):
         strategy.process_hamiltonian(5.0 * SparsePauliOp("I"))
 
 
+@pytest.mark.parametrize(
+    "build, field, value",
+    [
+        (lambda v: ExactTrotterization(keep_top_n=v), "keep_top_n", np.int64(3)),
+        (
+            lambda v: ExactTrotterization(keep_fraction=v),
+            "keep_fraction",
+            np.float32(0.5),
+        ),
+        (
+            lambda v: QDrift(sampling_budget=v, seed=0),
+            "sampling_budget",
+            np.int64(2),
+        ),
+        (lambda v: QDrift(sampling_budget=2, seed=v), "seed", np.uint64(2**63 + 5)),
+        (
+            lambda v: QDrift(sampling_budget=2, seed=0, n_hamiltonians_per_iteration=v),
+            "n_hamiltonians_per_iteration",
+            np.int64(4),
+        ),
+    ],
+    ids=[
+        "keep_top_n",
+        "keep_fraction",
+        "sampling_budget",
+        "seed",
+        "n_hamiltonians_per_iteration",
+    ],
+)
+def test_strategies_accept_numpy_scalars_and_store_plain_python(build, field, value):
+    stored = getattr(build(value), field)
+
+    assert stored == value
+    assert type(stored) is (float if field == "keep_fraction" else int)
+
+
+@pytest.mark.parametrize(
+    "build, message",
+    [
+        (
+            lambda: ExactTrotterization(keep_top_n=True),
+            "keep_top_n must be a positive integer (>= 1), got True",
+        ),
+        (
+            lambda: ExactTrotterization(keep_fraction=float("nan")),
+            "keep_fraction must be in (0, 1], got nan",
+        ),
+        (
+            lambda: QDrift(sampling_budget=True),
+            "sampling_budget must be a positive integer (>= 1), got True",
+        ),
+        (
+            lambda: QDrift(sampling_budget=2, seed=True),
+            "seed must be an integer, got True",
+        ),
+        (
+            lambda: QDrift(sampling_budget=2, seed=-1),
+            "seed must be non-negative, got -1",
+        ),
+        (
+            lambda: QDrift(sampling_budget=2, n_hamiltonians_per_iteration=True),
+            "n_hamiltonians_per_iteration must be an integer, got True",
+        ),
+        (
+            lambda: QDrift(sampling_budget=2, n_hamiltonians_per_iteration=2.5),
+            "n_hamiltonians_per_iteration must be an integer, got 2.5",
+        ),
+    ],
+    ids=[
+        "keep_top_n_bool",
+        "keep_fraction_nan",
+        "sampling_budget_bool",
+        "seed_bool",
+        "seed_negative",
+        "n_hamiltonians_bool",
+        "n_hamiltonians_float",
+    ],
+)
+def test_strategies_reject_invalid_scalars(build, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        build()
+
+
 class TestQDrift:
     """Tests for QDrift strategy (public API and specified behavior)."""
 

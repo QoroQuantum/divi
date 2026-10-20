@@ -9,7 +9,7 @@ import shutil
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Container, Hashable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from numbers import Integral
@@ -386,19 +386,28 @@ def _resolve_worker_count(batch_config: BatchConfig, n_programs: int) -> int:
     )
 
 
+def _sampling_type_error(
+    action: str, prog_id: Any, program: QuantumProgram
+) -> TypeError:
+    return TypeError(
+        f"{action} requires variational solution-sampling sub-programs "
+        f"(VariationalQuantumAlgorithm + SolutionSamplingMixin); program "
+        f"{prog_id!r} is {type(program).__name__}."
+    )
+
+
 def _validate_sampling_programs(
     programs: dict[Any, QuantumProgram], *, action: str
-) -> None:
+) -> dict[Any, VariationalQuantumAlgorithm]:
     """Require variational programs that expose solution sampling."""
+    validated: dict[Any, VariationalQuantumAlgorithm] = {}
     for prog_id, program in programs.items():
         if not isinstance(program, VariationalQuantumAlgorithm) or not isinstance(
             program, SolutionSamplingMixin
         ):
-            raise TypeError(
-                f"{action} requires variational solution-sampling sub-programs "
-                f"(VariationalQuantumAlgorithm + SolutionSamplingMixin); program "
-                f"{prog_id!r} is {type(program).__name__}."
-            )
+            raise _sampling_type_error(action, prog_id, program)
+        validated[prog_id] = program
+    return validated
 
 
 def _resolve_sampling_params(
@@ -424,7 +433,7 @@ def _resolve_sampling_params(
     if len(programs) == 0:
         raise RuntimeError("No programs to sample.")
 
-    _validate_sampling_programs(programs, action="sample_solution")
+    sampling_programs = _validate_sampling_programs(programs, action="sample_solution")
 
     if params_per_program is not None:
         unknown = set(params_per_program) - set(programs)
@@ -437,8 +446,7 @@ def _resolve_sampling_params(
 
     resolved: dict[Any, npt.NDArray[np.float64]] = {}
     fallbacks: list[Any] = []
-    for prog_id, program in programs.items():
-        assert isinstance(program, VariationalQuantumAlgorithm)
+    for prog_id, program in sampling_programs.items():
         if params_per_program is not None and prog_id in params_per_program:
             arr = np.asarray(params_per_program[prog_id], dtype=np.float64)
         else:
@@ -1593,7 +1601,10 @@ class ProgramEnsemble(ABC):
             # A completion file written before sampling holds no samples.
             if program in completed_programs and "best_probs" in program._results:
                 return program
-            assert isinstance(program, SolutionSamplingMixin)
+            if not isinstance(program, SolutionSamplingMixin):
+                raise _sampling_type_error(
+                    "sample_solution", program_to_id[program], program
+                )
             result = program.sample_solution(
                 resolved[program_to_id[program]], backend=program.backend
             )
@@ -2025,15 +2036,9 @@ class ProgramEnsemble(ABC):
         )
         # One panel per distinct cause: a shared backend error fails every child.
         causes: dict[tuple[type, str], tuple[BaseException, list]] = {}
+        key_by_program = {program: key for key, program in self._programs.items()}
         for program, exc in failures:
-            map_key = next(
-                (
-                    key
-                    for key, candidate in self._programs.items()
-                    if candidate is program
-                ),
-                None,
-            )
+            map_key = key_by_program.get(program)
             _, keys = causes.setdefault((type(exc), str(exc)), (exc, []))
             if map_key is not None:
                 keys.append(map_key)
@@ -2164,10 +2169,8 @@ class ProgramEnsemble(ABC):
                 self._teardown_progress_session()
 
         # After successful cleanup, try to unregister the hook.
-        try:
+        with suppress(TypeError):
             atexit.unregister(self._atexit_cleanup_hook)
-        except TypeError:
-            pass
 
     def _check_ready_for_aggregation(self):
         """Validate that programs exist, are complete, and results are ready."""

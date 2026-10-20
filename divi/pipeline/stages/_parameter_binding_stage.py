@@ -13,7 +13,11 @@ from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 
 from divi.circuits import MetaCircuit, render_template
-from divi.circuits._conversions import _assert_finite, _format_bound_param
+from divi.circuits._conversions import (
+    _assert_finite,
+    _format_bound_param,
+    _real_float_array,
+)
 from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
 from divi.pipeline.abc import (
     BundleStage,
@@ -35,7 +39,7 @@ def _validate_param_sets(env: PipelineEnv, *, assert_finite: bool = True) -> np.
     ``assert_finite`` is turned off by the dry/analytic path, which uses only
     the param-set count and never renders the values into circuits.
     """
-    param_sets = np.asarray(env.param_sets, dtype=float)
+    param_sets = _real_float_array(env.param_sets, source="env.param_sets")
     if param_sets.ndim != 2:
         raise ValueError("ParameterBindingStage expects env.param_sets to be 2D.")
     if assert_finite:
@@ -48,13 +52,16 @@ def _iterate_bodies_over_param_sets(
     param_sets: np.ndarray,
     *,
     prepare: Callable[[MetaCircuit, tuple, DAGCircuit], Any],
-    emit: Callable[[MetaCircuit, Any, np.ndarray], Any],
+    emit: Callable[[MetaCircuit, Any, Any], Any],
+    convert: Callable[[MetaCircuit, np.ndarray], Any] = lambda node, values: values,
 ) -> list[tuple[tuple, Any]]:
     """Shared parametric loop for the real (non-dry) paths.
 
     Walks ``node.circuit_bodies`` once to precompute per-variant state via
     ``prepare``, then iterates ``param_sets`` producing one ``((*body_tag,
     (PARAM_SET_AXIS, param_set_idx)), emit(...))`` entry per (body, param set).
+    ``convert`` turns each parameter set into what ``emit`` consumes once, not
+    once per body.
     Both the fast (QASM-template) and slow (DAG assign) paths plug into this
     helper via different ``prepare`` / ``emit`` callables.
 
@@ -81,11 +88,12 @@ def _iterate_bodies_over_param_sets(
                 f"got {len(param_values)} in param set {param_set_idx}."
             )
         param_set_tag = (PARAM_SET_AXIS, param_set_idx)
+        converted = convert(node, param_values)
         for body_tag, prepared_item in prepared:
             bound.append(
                 (
                     (*body_tag, param_set_tag),
-                    emit(node, prepared_item, param_values),
+                    emit(node, prepared_item, converted),
                 )
             )
     return bound
@@ -104,7 +112,7 @@ PrefixIndex = tuple[dict[tuple, str], tuple[int, ...]]
 def _build_prefix_index(
     qasm_bodies: tuple[tuple[tuple, str], ...],
 ) -> PrefixIndex:
-    index = {stored_tag: body for stored_tag, body in qasm_bodies}
+    index = dict(qasm_bodies)
     lengths = tuple(sorted({len(tag) for tag in index}, reverse=True))
     return index, lengths
 
@@ -174,9 +182,13 @@ def _fast_prepare(
     return _template_cached(body, param_names)
 
 
-def _fast_emit(node: MetaCircuit, template, values: np.ndarray) -> str:
-    """Render a concrete QASM string from a template + parameter values."""
-    formatted = tuple(_format_bound_param(v, node.precision) for v in values)
+def _fast_convert(node: MetaCircuit, values: np.ndarray) -> tuple[str, ...]:
+    """Format one parameter set as QASM angle strings."""
+    return tuple(_format_bound_param(v, node.precision) for v in values)
+
+
+def _fast_emit(node: MetaCircuit, template, formatted: tuple[str, ...]) -> str:
+    """Render a concrete QASM string from a template + formatted parameters."""
     return render_template(template, formatted)
 
 
@@ -248,8 +260,8 @@ class ParameterBindingStage(BundleStage):
         super().__init__(name=type(self).__name__)
 
     def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
-        self._fast_path = not any(
-            not isinstance(s, BundleStage) or s.consumes_dag_bodies for s in after
+        self._fast_path = all(
+            isinstance(s, BundleStage) and not s.consumes_dag_bodies for s in after
         )
 
         if any(
@@ -314,6 +326,7 @@ class ParameterBindingStage(BundleStage):
                 param_sets,
                 prepare=functools.partial(_fast_prepare, prefix_index=prefix_index),
                 emit=_fast_emit,
+                convert=_fast_convert,
             )
             # Fully bound: clear parameters so compile routes this to the bound
             # path (empty parameters == bound).
@@ -396,7 +409,7 @@ class ParameterBindingStage(BundleStage):
     def introspect(
         self, batch: MetaCircuitBatch, env: PipelineEnv, token: StageToken
     ) -> dict[str, Any]:
-        param_sets = np.asarray(env.param_sets, dtype=float)
+        param_sets = _real_float_array(env.param_sets, source="env.param_sets")
         # Read the width off the values being bound, not off the batch: the real
         # path consumes ``meta.parameters`` while the analytic path leaves it
         # intact, so reporting from the batch would give a different answer per

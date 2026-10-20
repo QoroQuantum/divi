@@ -139,13 +139,12 @@ def _lex(src: str, parameters: Collection[str] = ()) -> list[Tok]:
                 i = m.end()
                 continue
         m = TOKEN_REGEX.match(src, i)
-        if not m:
+        if m is None or m.lastgroup is None:
             snippet = src[i : i + 20].replace("\n", "\\n")
             raise SyntaxError(
                 f"Illegal character at {line}:{i-line_start+1}: {snippet!r}"
             )
         kind = m.lastgroup
-        assert kind is not None
         val = m.group(kind)
         col = i - line_start + 1
         if kind == "ID" and val in KEYWORDS:

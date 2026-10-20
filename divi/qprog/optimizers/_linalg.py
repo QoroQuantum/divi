@@ -35,7 +35,7 @@ def _regularized_solve(
     lam = regularization
     if scale_regularization:
         lam *= max(1.0, float(np.mean(np.diag(metric))))
-    damped = metric + lam * np.eye(metric.shape[0])
+    damped = metric + lam * np.eye(metric.shape[0]) if lam else metric
     try:
         return _solve_linear_system(damped, grad, assume_a="pos")
     except np.linalg.LinAlgError as exc:

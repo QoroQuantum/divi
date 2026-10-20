@@ -128,9 +128,9 @@ def _least_squares_refit(u, q, angles):
     return angles(coeffs, p + 1)
 
 
-def _interleave(betas, gammas):
-    params = np.empty(2 * len(betas))
-    params[0::2], params[1::2] = betas, gammas
+def _interleave(gammas, betas):
+    params = np.empty(2 * len(gammas))
+    params[0::2], params[1::2] = gammas, betas
     return params
 
 
@@ -201,41 +201,37 @@ class TestInterpolateQaoaParams:
         assert len(result) == 6  # depth=3 → 2*3=6
 
     def test_deinterleave_reinterleave(self):
-        """Verify beta/gamma are handled independently."""
-        betas = np.array([1.0, 2.0])
-        gammas = np.array([10.0, 20.0])
-        params = np.empty(4)
-        params[0::2] = betas
-        params[1::2] = gammas
+        """Verify gamma/beta are handled independently."""
+        gammas = np.array([1.0, 2.0])
+        betas = np.array([10.0, 20.0])
 
-        result = interpolate_qaoa_params(params, 2, InterpolationStrategy.INTERP)
+        result = interpolate_qaoa_params(
+            _interleave(gammas, betas), 2, InterpolationStrategy.INTERP
+        )
 
-        # Check that betas and gammas were interpolated independently
-        result_betas = result[0::2]
-        result_gammas = result[1::2]
-        np.testing.assert_allclose(result_betas, _interp(betas))
-        np.testing.assert_allclose(result_gammas, _interp(gammas))
+        np.testing.assert_allclose(result[0::2], _interp(gammas))
+        np.testing.assert_allclose(result[1::2], _interp(betas))
 
-    def test_fourier_uses_cosine_for_betas_and_sine_for_gammas(self):
-        beta_coeffs, gamma_coeffs = [0.3, -0.05], [0.4, 0.1]
+    def test_fourier_uses_sine_for_gammas_and_cosine_for_betas(self):
+        gamma_coeffs, beta_coeffs = [0.4, 0.1], [0.3, -0.05]
 
         result = interpolate_qaoa_params(
             _interleave(
-                _zhou_angles(beta_coeffs, 2, np.cos),
                 _zhou_angles(gamma_coeffs, 2, np.sin),
+                _zhou_angles(beta_coeffs, 2, np.cos),
             ),
             2,
             InterpolationStrategy.FOURIER,
         )
 
-        np.testing.assert_allclose(result[0::2], _zhou_angles(beta_coeffs, 3, np.cos))
-        np.testing.assert_allclose(result[1::2], _zhou_angles(gamma_coeffs, 3, np.sin))
+        np.testing.assert_allclose(result[0::2], _zhou_angles(gamma_coeffs, 3, np.sin))
+        np.testing.assert_allclose(result[1::2], _zhou_angles(beta_coeffs, 3, np.cos))
 
     def test_one_basis_term_fourier_projects_onto_the_lowest_mode(self):
-        betas, gammas = np.array([1.0, 2.0, 4.0]), np.array([10.0, 20.0, 40.0])
+        gammas, betas = np.array([1.0, 2.0, 4.0]), np.array([10.0, 20.0, 40.0])
 
         result = interpolate_qaoa_params(
-            _interleave(betas, gammas),
+            _interleave(gammas, betas),
             3,
             InterpolationStrategy.FOURIER,
             n_basis_terms=1,
@@ -243,11 +239,11 @@ class TestInterpolateQaoaParams:
 
         np.testing.assert_allclose(
             result[0::2],
-            _least_squares_refit(betas, 1, lambda c, p: _zhou_angles(c, p, np.cos)),
+            _least_squares_refit(gammas, 1, lambda c, p: _zhou_angles(c, p, np.sin)),
         )
         np.testing.assert_allclose(
             result[1::2],
-            _least_squares_refit(gammas, 1, lambda c, p: _zhou_angles(c, p, np.sin)),
+            _least_squares_refit(betas, 1, lambda c, p: _zhou_angles(c, p, np.cos)),
         )
 
     def test_one_basis_term_chebyshev_flattens_both_sequences_to_their_mean(self):

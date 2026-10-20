@@ -107,6 +107,23 @@ def _format_gate_param(
     return _format_bound_param(value, precision)
 
 
+def _real_float_array(values, *, source: str) -> np.ndarray:
+    """``values`` as a float64 array, rejecting a non-zero imaginary part.
+
+    A complex array whose imaginary part is zero is accepted and cast; anything
+    else complex raises rather than being silently truncated to its real part.
+    """
+    array = np.asarray(values)
+    if np.iscomplexobj(array):
+        if np.any(array.imag != 0):
+            raise ValueError(
+                f"{source} must be real; got complex values with a non-zero "
+                "imaginary part."
+            )
+        array = array.real
+    return array.astype(np.float64, copy=False)
+
+
 def _assert_finite(values: np.ndarray, *, source: str) -> None:
     """Reject NaN/Inf gate parameters at the value-ingestion boundary.
 
@@ -158,7 +175,7 @@ def _bind_op_params(op, substitution: dict):
         if isinstance(param, ParameterExpression):
             shared = substitution.keys() & set(param.parameters)
             if shared:
-                param = param.bind({k: substitution[k] for k in shared})
+                param = param.bind({k: float(substitution[k]) for k in shared})
                 changed = True
         new_params.append(param)
     if not changed:
@@ -286,35 +303,41 @@ def measurement_qasms_from_groups(
             measure and should not reach this function in the normal pipeline.
     """
     qasms: list[str] = []
+    measure_all_qasm = "".join(f"measure q[{q}] -> c[{q}];\n" for q in range(n_qubits))
     for group in measurement_groups:
-        # Determine per-qubit basis from labels. QWC guarantees each qubit
-        # has at most one non-I Pauli across all labels in the group.
-        active_basis: dict[int, str] = {}
         for label in group:
             if len(label) > n_qubits:
                 raise ValueError(
                     f"Pauli label {label!r} spans {len(label)} qubits but the "
                     f"register has only {n_qubits}."
                 )
-            for q, char in enumerate(label):
-                if char != "I":
-                    active_basis[q] = char
 
-        # Emit diagonalising gates.
+        # Per-qubit basis from the last non-I Pauli on that qubit; QWC guarantees
+        # each qubit has at most one non-I Pauli across the group's labels.
+        active = np.empty(0, dtype=np.intp)
+        basis = np.empty(0, dtype=np.uint8)
+        if group:
+            chars = np.frombuffer(
+                "".join(label.ljust(n_qubits, "I") for label in group).encode(),
+                dtype=np.uint8,
+            ).reshape(len(group), n_qubits)
+            non_identity = chars != ord("I")
+            active = np.flatnonzero(non_identity.any(axis=0))
+            last_row = len(group) - 1 - np.argmax(non_identity[::-1], axis=0)
+            basis = chars[last_row[active], active]
+
+        # Emit diagonalising gates; Z and I need no rotation.
         diag_parts: list[str] = []
-        active = sorted(active_basis)
-        for q in active:
-            b = active_basis[q]
-            if b == "X":
+        for q, b in zip(active.tolist(), basis.tolist()):
+            if b == ord("X"):
                 diag_parts.append(f"h q[{q}];\n")
-            elif b == "Y":
+            elif b == ord("Y"):
                 diag_parts.append(f"sdg q[{q}];\nh q[{q}];\n")
-            # Z and I: no rotation needed.
         diag_qasm = "".join(diag_parts)
 
         if measure_all:
-            measured = range(n_qubits)
-        elif not active:
+            measure_qasm = measure_all_qasm
+        elif not len(active):
             # Constants are stripped upstream, so this only happens on a direct
             # misuse (a constant-only group).
             raise ValueError(
@@ -322,8 +345,8 @@ def measurement_qasms_from_groups(
                 "measure; pass measure_all=True or drop the constant term."
             )
         else:
-            measured = active
-
-        measure_qasm = "".join(f"measure q[{q}] -> c[{q}];\n" for q in measured)
+            measure_qasm = "".join(
+                f"measure q[{q}] -> c[{q}];\n" for q in active.tolist()
+            )
         qasms.append(diag_qasm + measure_qasm)
     return qasms

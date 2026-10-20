@@ -5,6 +5,7 @@
 """Stateless trotterization strategies for Hamiltonian simulation."""
 
 from dataclasses import dataclass
+from numbers import Integral
 from typing import Literal, Protocol
 from warnings import warn
 
@@ -173,19 +174,23 @@ class ExactTrotterization(TrotterizationStrategy):
                 "At most one of keep_fraction or keep_top_n may be provided."
             )
 
-        if self.keep_fraction is not None and (
-            self.keep_fraction <= 0 or self.keep_fraction > 1
-        ):
-            raise ValueError(
-                f"keep_fraction must be in (0, 1], got {self.keep_fraction}"
-            )
+        if self.keep_fraction is not None:
+            if not 0 < self.keep_fraction <= 1:
+                raise ValueError(
+                    f"keep_fraction must be in (0, 1], got {self.keep_fraction}"
+                )
+            object.__setattr__(self, "keep_fraction", float(self.keep_fraction))
 
-        if self.keep_top_n is not None and (
-            not isinstance(self.keep_top_n, int) or self.keep_top_n <= 0
-        ):
-            raise ValueError(
-                f"keep_top_n must be a positive integer (>= 1), got {self.keep_top_n}"
-            )
+        if self.keep_top_n is not None:
+            if (
+                not isinstance(self.keep_top_n, Integral)
+                or isinstance(self.keep_top_n, bool)
+                or self.keep_top_n <= 0
+            ):
+                raise ValueError(
+                    f"keep_top_n must be a positive integer (>= 1), got {self.keep_top_n}"
+                )
+            object.__setattr__(self, "keep_top_n", int(self.keep_top_n))
 
     def process_hamiltonian(
         self,
@@ -287,21 +292,41 @@ class QDrift(TrotterizationStrategy):
                 f"Invalid sampling_strategy: {self.sampling_strategy}. Must be 'uniform' or 'weighted'."
             )
 
-        if self.seed is not None and not isinstance(self.seed, int):
-            raise ValueError(f"seed must be an integer, got {self.seed}")
+        if self.seed is not None:
+            if not isinstance(self.seed, Integral) or isinstance(self.seed, bool):
+                raise ValueError(f"seed must be an integer, got {self.seed}")
+            if self.seed < 0:
+                raise ValueError(f"seed must be non-negative, got {self.seed}")
+            object.__setattr__(self, "seed", int(self.seed))
 
-        if self.sampling_budget is not None and (
-            not isinstance(self.sampling_budget, int) or self.sampling_budget < 1
+        if self.sampling_budget is not None:
+            if (
+                not isinstance(self.sampling_budget, Integral)
+                or isinstance(self.sampling_budget, bool)
+                or self.sampling_budget < 1
+            ):
+                raise ValueError(
+                    f"sampling_budget must be a positive integer (>= 1), "
+                    f"got {self.sampling_budget}"
+                )
+            object.__setattr__(self, "sampling_budget", int(self.sampling_budget))
+
+        if not isinstance(self.n_hamiltonians_per_iteration, Integral) or isinstance(
+            self.n_hamiltonians_per_iteration, bool
         ):
             raise ValueError(
-                f"sampling_budget must be a positive integer (>= 1), "
-                f"got {self.sampling_budget}"
+                f"n_hamiltonians_per_iteration must be an integer, got "
+                f"{self.n_hamiltonians_per_iteration}"
             )
-
         if self.n_hamiltonians_per_iteration < 1:
             raise ValueError(
                 f"n_hamiltonians_per_iteration must be >= 1, got {self.n_hamiltonians_per_iteration}"
             )
+        object.__setattr__(
+            self,
+            "n_hamiltonians_per_iteration",
+            int(self.n_hamiltonians_per_iteration),
+        )
 
     def process_hamiltonian(
         self,

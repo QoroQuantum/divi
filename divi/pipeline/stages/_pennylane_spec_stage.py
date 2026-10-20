@@ -6,12 +6,12 @@
 
 from collections.abc import Mapping, Sequence
 
-import numpy as np
 import pennylane as qp
 from pennylane.measurements import CountsMP, ExpectationMP, ProbabilityMP
 from pennylane.workflow.qnode import QNode
 
 from divi.circuits import MetaCircuit
+from divi.circuits._conversions import _real_float_array
 from divi.circuits._pennylane import (
     _qnode_to_symbolic_qscript,
     _validate_single_measurement,
@@ -74,7 +74,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
         parameter sets instead of binding them — producing a parameter-
         independent result. Mark the slots trainable, or pass parametric gates.
         """
-        param_sets = np.asarray(env.param_sets, dtype=float)
+        param_sets = _real_float_array(env.param_sets, source="env.param_sets")
         n_columns = param_sets.shape[1] if param_sets.ndim == 2 else 0
         if n_columns == 0:
             return

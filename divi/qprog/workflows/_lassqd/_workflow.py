@@ -11,7 +11,9 @@ import tempfile
 import time
 from collections.abc import Hashable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
+from functools import cached_property
 from math import isfinite
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal
 from warnings import warn
@@ -471,6 +473,10 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
             raise ValueError(
                 f"energy_tol must be a positive finite number; got {energy_tol}."
             )
+        if seed is not None and (
+            isinstance(seed, bool) or not isinstance(seed, Integral)
+        ):
+            raise ValueError(f"seed must be an integer or None; got {seed!r}.")
         if "backend" not in kwargs:
             raise TypeError(
                 "LASSQD.__init__ missing required keyword-only argument: 'backend'."
@@ -553,8 +559,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
             self._check_fragments(fragmentation.active_spaces)
         self._preparation = preparation
         self._energy_tol = energy_tol
-        self._seed = seed
-        self._rng = np.random.default_rng(seed)
+        self._seed = None if seed is None else int(seed)
+        self._rng = np.random.default_rng(self._seed)
         self._extra_kwargs = kwargs
 
         self._state: LASSQDState | None = None
@@ -562,8 +568,6 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         self._energy_history: list[float] = []
         self._round_reports: list[LASSQDRoundReport] = []
         self._warned: set[Hashable] = set()
-        self._ao_eri: np.ndarray | None = None
-        self._h_ao: np.ndarray | None = None
 
     def _check_fragments(self, specs: Sequence[FragmentSpec]) -> None:
         """Reject ``SQDConfig`` settings the fragments cannot carry, and warn
@@ -705,8 +709,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
                 active_orbitals=config.active_orbitals,
                 fragment_atoms=config.fragment_atoms,
                 local_spins=config.local_spins,
-                ao_eri=self._cached_mol_integrals()[0],
-                h_ao=self._core_hamiltonian(),
+                ao_eri=self._ao_eri,
+                h_ao=self._h_ao,
             )
             mo_coeff = mo_coeff.copy()
             mo_coeff[:, active_positions] = localized
@@ -887,8 +891,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 os.fsync(handle.fileno())
             os.replace(temporary_path, round_dir / artifact)
         finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
         return {
             "artifact": artifact,
@@ -1134,21 +1138,21 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         round's :func:`optimize_orbitals` call, which itself evaluates
         :func:`_total_energy` many times per round.
         """
-        if self._ao_eri is None:
-            self._ao_eri = cached_ao_eri(self._mol)
-        return self._ao_eri, self._core_hamiltonian()
+        return self._ao_eri, self._h_ao
 
-    def _core_hamiltonian(self) -> np.ndarray:
+    @cached_property
+    def _ao_eri(self) -> np.ndarray:
+        """This run's AO two-electron integrals, computed once."""
+        return cached_ao_eri(self._mol)
+
+    @cached_property
+    def _h_ao(self) -> np.ndarray:
         """This run's AO core Hamiltonian, computed once: the mean field's when
         one is held, so a relativistic or otherwise modified one carries
         through, else built from ``mol``."""
-        if self._h_ao is None:
-            self._h_ao = (
-                cached_h_ao(self._mol)
-                if self._mean_field is None
-                else np.asarray(self._mean_field.get_hcore())
-            )
-        return self._h_ao
+        if self._mean_field is None:
+            return cached_h_ao(self._mol)
+        return np.asarray(self._mean_field.get_hcore())
 
     def _n_core(self, state: LASSQDState) -> int:
         """This state's frozen-core count."""

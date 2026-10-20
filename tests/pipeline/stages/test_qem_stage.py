@@ -114,6 +114,7 @@ def _symbolic_quepp_context() -> dict:
         ],
         "symbolic": True,
         "weight_symbols": [theta],
+        "parameter_order": (theta,),
         "target_idx": 0,
         "ensemble_start": 1,
         "n_rotations": 1,
@@ -386,6 +387,57 @@ class TestQEMStage:
         assert bound_weights[0] == pytest.approx(1.0)
         assert bound_weights[1] == pytest.approx(0.0)
         assert contexts[bound_key] == {"n_rotations": 0}
+
+
+def test_symbolic_weights_bind_by_parameter_identity_not_name_order(
+    dummy_pipeline_env,
+):
+    """Weights bind to the circuit's own parameter order, which need not be the
+    alphabetical order of the symbol names."""
+    first, second = Parameter("b"), Parameter("a")
+    key = (("spec", "circ"),)
+    contexts = {
+        key: {
+            "per_obs": [
+                _ObservableCPT(
+                    weights=np.array([second * 1.0, first * 1.0], dtype=object),
+                    classical_values=np.array([1.0, 1.0]),
+                    dag_indices=[0, 1, 2],
+                    entry_slots=[0, 0],
+                    target_slots=[0],
+                )
+            ],
+            "symbolic": True,
+            "weight_symbols": sorted([first, second], key=lambda p: p.name),
+            "parameter_order": (first, second),
+        }
+    }
+    dummy_pipeline_env.param_sets = np.array([[10.0, 20.0]])
+
+    QEMStage(QuEPP(truncation_order=1, n_twirls=0))._bind_symbolic_weights(
+        contexts, (("param_set", 0),), dummy_pipeline_env
+    )
+
+    np.testing.assert_allclose(contexts[key]["per_obs"][0].weights, [20.0, 10.0])
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_expand_records_the_parameter_order_of_symbolic_contexts(dummy_pipeline_env):
+    first, second = Parameter("b"), Parameter("a")
+    qc = QuantumCircuit(2)
+    qc.rx(first, 0)
+    qc.rx(second, 1)
+    meta = MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=(first, second),
+        observable=SparsePauliOp("ZI"),
+    )
+    stage = QEMStage(QuEPP(sampling="exhaustive", truncation_order=1, n_twirls=0))
+
+    output = stage.expand({_BASE_KEY: meta}, dummy_pipeline_env)
+
+    (context,) = output.token.values()
+    assert context["parameter_order"] == (first, second)
 
 
 class TestPipelineOutputMetaCircuitWithQEM:

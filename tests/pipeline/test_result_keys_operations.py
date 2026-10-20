@@ -103,6 +103,17 @@ class TestReduceMean:
         assert out[("a",)] == pytest.approx([2.0, 6.0])
         assert out[("b",)] == pytest.approx([3.0, 2.0, 0.0])
 
+    @pytest.mark.parametrize(
+        "rows",
+        [
+            pytest.param([np.array([1.0, 5.0]), np.array([3.0, 7.0])], id="ndarray"),
+            pytest.param([(1.0, 5.0), (3.0, 7.0)], id="tuple"),
+        ],
+    )
+    def test_averages_any_per_observable_row_elementwise(self, rows):
+        out = reduce_mean({("a",): rows})
+        assert out[("a",)] == pytest.approx([2.0, 6.0])
+
     def test_mixed_keys_dispatch_independently(self):
         """Per-key dispatch: scalar key averaged scalar-wise, list key elementwise."""
         grouped = {

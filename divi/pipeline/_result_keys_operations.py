@@ -12,6 +12,7 @@ obs_group, param_set, ...) and the code that consumes finished results both
 build on this shared vocabulary.
 """
 
+from collections import defaultdict
 from collections.abc import Callable
 from typing import Any
 
@@ -138,16 +139,13 @@ def average_by_param_set(
     convert: Callable[[Any], np.ndarray],
 ) -> dict[int, np.ndarray]:
     """Average preserved pipeline results over every axis except ``param_set``."""
-    grouped: dict[int, list[np.ndarray]] = {}
+    grouped: defaultdict[int, list[np.ndarray]] = defaultdict(list)
     for key, value in result.items():
         idx = extract_param_set_idx(key, default=0)
-        grouped.setdefault(idx, []).append(convert(value))
+        grouped[idx].append(convert(value))
     if not grouped:
         raise RuntimeError("Pipeline returned no results.")
-    return {
-        idx: np.mean(values, axis=0)
-        for idx, values in sorted(grouped.items(), key=lambda item: item[0])
-    }
+    return {idx: np.mean(values, axis=0) for idx, values in sorted(grouped.items())}
 
 
 def group_by_branch_and_param_set(
@@ -203,7 +201,7 @@ def reduce_mean(
                 "histogram. Use reduce_merge_histograms for probability/counts "
                 "results."
             )
-        if values and isinstance(values[0], list):
+        if values and np.ndim(values[0]) > 0:
             n = len(values)
             n_obs = len(values[0])
             out[base_key] = [sum(v[i] for v in values) / n for i in range(n_obs)]
@@ -306,14 +304,11 @@ def _collapse_to_parent_results(
         >>> _collapse_to_parent_results(raw_by_label, lineage_by_label)
         {(('circuit', 0),): 0.42}
     """
-    regrouped: ChildResults = {}
-    for label, value in raw_by_label.items():
-        branch_key = lineage_by_label.get(label)
-        if branch_key is None:
-            continue
-        regrouped[branch_key] = value
-
-    return regrouped
+    return {
+        lineage_by_label[label]: value
+        for label, value in raw_by_label.items()
+        if label in lineage_by_label
+    }
 
 
 def _find_batch_key(branch_key: tuple, batch_keys: set[tuple]) -> tuple:

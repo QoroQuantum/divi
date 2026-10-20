@@ -6,6 +6,7 @@
 
 import itertools
 import sys
+from types import MappingProxyType
 
 import numpy as np
 import pytest
@@ -443,6 +444,50 @@ def test_to_spo_from_pennylane(qp, simple_spo):
     """A PennyLane Hamiltonian converts to the equivalent native operator."""
     observable = (1.0 * qp.Z(0) + 2.0 * qp.Z(1) + 3.0 * (qp.Z(0) @ qp.Z(1))).simplify()
     assert to_spo(observable).simplify() == simple_spo.simplify()
+
+
+def test_to_spo_accepts_any_mapping_with_numpy_coefficients():
+    terms = MappingProxyType({"XI": np.float32(1.0), "IZ": np.complex64(0.5 + 0j)})
+
+    assert (
+        to_spo(terms).simplify()
+        == SparsePauliOp.from_list([("IX", 1.0), ("ZI", 0.5)]).simplify()
+    )
+
+
+def test_to_spo_rejects_a_complex64_coefficient_with_an_imaginary_part():
+    with pytest.raises(
+        ValueError,
+        match=exact_match("to_spo: coefficient for 'Z' must be real, got (1+2j)."),
+    ):
+        to_spo({"Z": np.complex64(1 + 2j)})
+
+
+@pytest.mark.parametrize("scale", [1.0, 1e3, 1e6])
+def test_to_spo_accepts_the_round_off_of_a_hermitian_product_at_any_scale(scale):
+    hamiltonian = SparsePauliOp(["XI", "YZ", "ZX"], scale * np.array([0.7, -1.3, 0.4]))
+
+    assert to_spo(hamiltonian @ hamiltonian) is not None
+    assert to_spo((hamiltonian @ hamiltonian).simplify()) is not None
+
+
+@pytest.mark.parametrize(
+    "terms, accepted",
+    [
+        pytest.param({"Z": 1e3 + 1e-9j}, True, id="negligible-next-to-the-scale"),
+        pytest.param({"Z": 1.0 + 1e-6j}, False, id="relative-1e-6"),
+        pytest.param({"Z": 1.0, "X": 1e-12j}, True, id="tiny-term-beside-a-large-one"),
+        pytest.param({"Z": 1e-30 + 1e-31j}, False, id="same-ratio-at-a-tiny-scale"),
+    ],
+)
+def test_to_spo_dict_imaginary_tolerance_is_relative_to_the_largest_coefficient(
+    terms, accepted
+):
+    if accepted:
+        assert to_spo(terms) is not None
+    else:
+        with pytest.raises(ValueError, match="must be real"):
+            to_spo(terms)
 
 
 def test_to_spo_does_not_treat_a_foreign_qubit_operator_as_openfermion(monkeypatch):

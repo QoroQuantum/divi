@@ -391,14 +391,12 @@ def _extract_python_units(text: str, source_file: str) -> list[ChunkMeta]:
     module_doc = ast.get_docstring(tree)
     if module_doc:
         # Collect top-level public names to make the chunk more specific
-        symbols = []
-        for node in tree.body:
-            if isinstance(node, ast.ClassDef) and not node.name.startswith("_"):
-                symbols.append(node.name)
-            elif isinstance(
-                node, ast.FunctionDef | ast.AsyncFunctionDef
-            ) and not node.name.startswith("_"):
-                symbols.append(node.name)
+        symbols = [
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and not node.name.startswith("_")
+        ]
 
         chunk_text = f"[Module: {module_path}]\n{module_doc}"
         if symbols:
@@ -413,12 +411,18 @@ def _extract_python_units(text: str, source_file: str) -> list[ChunkMeta]:
             )
         )
 
+    method_nodes = {
+        child
+        for cls_node in ast.walk(tree)
+        if isinstance(cls_node, ast.ClassDef)
+        for child in cls_node.body
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
             _extract_class(node, module_path, source_file, chunks)
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
             # Only top-level functions (methods are handled inside _extract_class)
-            if not _is_method(node, tree):
+            if node not in method_nodes:
                 _extract_function(node, module_path, source_file, chunks)
 
     # Capture `if __name__ == "__main__"` blocks — these contain runnable
@@ -586,14 +590,6 @@ def _name_of(node: ast.expr) -> str:
     return "..."
 
 
-def _is_method(node: ast.FunctionDef | ast.AsyncFunctionDef, tree: ast.Module) -> bool:
-    """Check whether *node* is a method inside a class (not top-level)."""
-    for cls_node in ast.walk(tree):
-        if isinstance(cls_node, ast.ClassDef) and node in cls_node.body:
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Chunking — Test files (.py under tests/)
 # ---------------------------------------------------------------------------
@@ -630,11 +626,7 @@ def _extract_import_block(lines: list[str]) -> str:
             in_docstring = marker
             continue
 
-        if (
-            stripped.startswith(("import ", "from "))
-            or stripped.startswith("#")
-            or stripped == ""
-        ):
+        if stripped.startswith(("import ", "from ", "#")) or stripped == "":
             import_lines.append(line)
         else:
             break
@@ -927,7 +919,7 @@ def build_index(
                 if not has_example:
                     new_chunks.append(
                         ChunkMeta(
-                            text=f"[Example: {str(fpath).split('divi/', 1)[-1]}]\n{text.strip()}",
+                            text=f"[Example: {display_path(str(fpath))}]\n{text.strip()}",
                             source_file=str(fpath),
                             start_line=1,
                             end_line=len(text.splitlines()),
@@ -1183,7 +1175,7 @@ def _scan_init_imports(package_dir: Path) -> dict[str, list[str]]:
     for init_file in sorted(package_dir.rglob("__init__.py")):
         # Derive module path: divi/qprog/__init__.py -> divi.qprog
         rel = init_file.relative_to(package_dir.parent)
-        module = str(rel.parent).replace("/", ".")
+        module = ".".join(rel.parent.parts)
 
         try:
             tree = ast.parse(init_file.read_text(encoding="utf-8"))

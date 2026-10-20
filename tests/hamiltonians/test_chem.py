@@ -17,8 +17,18 @@ QubitOperator = openfermion.QubitOperator
 get_sparse_operator = openfermion.get_sparse_operator
 
 
+class RenamedQubitOperator(QubitOperator):
+    """A ``QubitOperator`` subclass whose class name differs from OpenFermion's."""
+
+
 def _two_qubit_qubit_operator():
     return QubitOperator("Z0 Z1", 1.0) + QubitOperator("X0", 0.3)
+
+
+def test_to_spo_recognises_a_qubit_operator_subclass():
+    operator = RenamedQubitOperator("Z0 Z1", 1.0) + RenamedQubitOperator("X0", 0.3)
+
+    assert to_spo(operator).equiv(to_spo(_two_qubit_qubit_operator()))
 
 
 def test_qubit_operator_to_spo_preserves_qubit_indices():

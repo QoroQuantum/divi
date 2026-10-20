@@ -5,6 +5,7 @@
 import logging
 from fractions import Fraction
 from math import gcd, lcm
+from numbers import Integral
 from typing import Any, Literal, Self
 
 import numpy as np
@@ -149,12 +150,16 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             )
         if max_shift_evaluations_per_parameter is not None and (
             isinstance(max_shift_evaluations_per_parameter, bool)
-            or not isinstance(max_shift_evaluations_per_parameter, int)
+            or not isinstance(max_shift_evaluations_per_parameter, Integral)
             or max_shift_evaluations_per_parameter < 1
         ):
             raise ValueError(
                 "max_shift_evaluations_per_parameter must be a positive integer "
                 "or None."
+            )
+        if max_shift_evaluations_per_parameter is not None:
+            max_shift_evaluations_per_parameter = int(
+                max_shift_evaluations_per_parameter
             )
 
         super().__init__(**kwargs)
@@ -193,9 +198,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.current_iteration = 0
         self.trotterization_strategy = trotterization_strategy or ExactTrotterization()
         # Circuit parameters — Qiskit ParameterVector, no sympy.
-        betas = ParameterVector("β", self.n_layers)
         gammas = ParameterVector("γ", self.n_layers)
-        self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
+        betas = ParameterVector("β", self.n_layers)
+        self._params = np.array([[g, b] for g, b in zip(gammas, betas)], dtype=object)
 
     @property
     def n_params_per_layer(self) -> int:

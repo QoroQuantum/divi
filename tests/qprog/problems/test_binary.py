@@ -34,6 +34,7 @@ from divi.qprog.problems import (
 )
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
 from divi.qprog.workflows import PartitioningProgramEnsemble
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import verify_cost_circuit
 from tests.qprog.problems._helpers import (
     HUBO_CUBIC,
@@ -212,8 +213,26 @@ class TestSanitizeProblemInput:
 
     @pytest.mark.parametrize(
         "fmt",
-        [sps.coo_matrix, sps.csr_matrix, sps.csc_matrix, sps.lil_matrix],
-        ids=["COO", "CSR", "CSC", "LIL"],
+        [
+            sps.coo_matrix,
+            sps.csr_matrix,
+            sps.csc_matrix,
+            sps.lil_matrix,
+            sps.coo_array,
+            sps.csr_array,
+            sps.csc_array,
+            sps.lil_array,
+        ],
+        ids=[
+            "COO",
+            "CSR",
+            "CSC",
+            "LIL",
+            "COO-array",
+            "CSR-array",
+            "CSC-array",
+            "LIL-array",
+        ],
     )
     def test_with_sparse_matrix(self, sample_qubo_matrix, fmt):
         sparse_matrix = fmt(sample_qubo_matrix)
@@ -221,6 +240,11 @@ class TestSanitizeProblemInput:
         assert orig is sparse_matrix
         assert isinstance(bqm, dimod.BinaryQuadraticModel)
         assert len(bqm.variables) == 4
+        assert {type(variable) for variable in bqm.variables} == {int}
+
+    def test_non_square_sparse_array_is_rejected(self):
+        with pytest.raises(ValueError, match="Only square matrices"):
+            _sanitize_problem_input(sps.csr_array(np.ones((2, 3))))
 
     def test_raises_on_non_square_matrix(self):
         non_square = np.array([[1, 2, 3], [4, 5, 6]])
@@ -254,6 +278,17 @@ class TestEvaluateSolution:
     def test_energy(self, make_qubo, solution, expected):
         problem = make_decomposed_problem(make_qubo())
         assert problem.evaluate_global_solution(solution) == pytest.approx(expected)
+
+    @pytest.mark.parametrize("solution", [[1, 1, 0], [1, 1, 0, 0, 0]])
+    def test_wrong_length_solution_raises(self, solution):
+        problem = make_decomposed_problem(make_known_qubo_bqm())
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                f"Expected a solution of shape (4,), got shape ({len(solution)},)."
+            ),
+        ):
+            problem.evaluate_global_solution(solution)
 
     def test_lower_energy_is_better(self):
         """Verify that optimal solution has lowest energy."""
@@ -466,8 +501,10 @@ QUBO_FORMATS_TO_TEST = {
         sps.csr_matrix(QUBO_MATRIX),
         sps.coo_matrix(QUBO_MATRIX),
         sps.lil_matrix(QUBO_MATRIX),
+        sps.csr_array(QUBO_MATRIX),
+        sps.coo_array(QUBO_MATRIX),
     ],
-    "ids": ["List", "Numpy", "CSC", "CSR", "COO", "LIL"],
+    "ids": ["List", "Numpy", "CSC", "CSR", "COO", "LIL", "CSR-array", "COO-array"],
 }
 
 

@@ -21,12 +21,13 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits._conversions import _QISKIT_TO_QASM2, _sparse_pauli_op_to_ham_string
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
+from divi.hamiltonians._term_ops import _assert_hermitian_spo
 from divi.qasm import count_qubits
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
 from .._config import describe_unknown, reject_unknown_reset
-from .._pauli_serde import ham_ops_terms_for_circuit, pad_ham_ops
+from .._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
 from .._shot_allocation import per_circuit_or_none
 
 
@@ -150,7 +151,8 @@ class MaestroConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _normalise_options(cls, data: Any) -> Any:
-        """Reject unknown option names and resolve enum names to members."""
+        """Reject unknown option names, resolve enum names to members and
+        hold numpy values as plain Python."""
         if not isinstance(data, Mapping):
             return data
         if unknown := describe_unknown(
@@ -166,7 +168,12 @@ class MaestroConfig(BaseModel):
                 f"MaestroConfig got unknown options {unknown}.{hint} Simulator "
                 f"options are maestro.SimulatorConfig's: {sorted(_SIMULATOR_OPTIONS)}."
             )
-        data = dict(data)
+        data = {
+            name: (
+                value.tolist() if isinstance(value, np.ndarray | np.generic) else value
+            )
+            for name, value in data.items()
+        }
         for name, enum in _ENUMS.items():
             value = data.get(name)
             if isinstance(value, str):
@@ -477,6 +484,10 @@ class MaestroSimulator(CircuitRunner):
 
         base_config = config._simulator_config()
         per_circuit_shots = per_circuit_or_none(shot_groups, len(circuit_labels))
+        if ham_ops is not None:
+            per_circuit_terms = ham_ops_terms_per_circuit(
+                len(circuit_labels), ham_ops, circuit_ham_map
+            )
 
         def _run(item):
             i, label, qasm = item
@@ -512,7 +523,7 @@ class MaestroSimulator(CircuitRunner):
                 counts = {bits[::-1]: n for bits, n in raw["counts"].items()}
                 return _result_entry(label, counts, raw, "counts")
 
-            terms = ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
+            terms = per_circuit_terms[i]
             observables = ";".join(terms)
             raw = (
                 maestro.simple_estimate(
@@ -593,7 +604,13 @@ class MaestroSimulator(CircuitRunner):
     def expectation_value(
         self, circuit: str | QuantumCircuit, observable: SparsePauliOp
     ) -> float:
-        """``<observable>`` in the output state of ``circuit``."""
+        """``<observable>`` in the output state of ``circuit``.
+
+        Raises:
+            ValueError: If ``observable`` has a non-real coefficient, so is not
+                Hermitian and has no real expectation value.
+        """
+        _assert_hermitian_spo(observable)
         terms = _sparse_pauli_op_to_ham_string(observable)
         result = self.submit_circuits({"circuit": circuit}, ham_ops=terms)
         if result.results is None:

@@ -1696,12 +1696,43 @@ _N_SAMPLES_ERROR = "n_samples must be a positive integer for montecarlo sampling
             dict(sampling="sobol"),
             "sampling must be 'auto', 'exhaustive' or 'montecarlo', got 'sobol'",
         ),
+        (dict(n_samples=2.5), _N_SAMPLES_ERROR),
+        (dict(n_samples=True), _N_SAMPLES_ERROR),
+        (dict(truncation_order=1.5), "truncation_order must be an integer."),
+        (dict(truncation_order=True), "truncation_order must be an integer."),
+        (dict(n_twirls=-1), "n_twirls must be a non-negative integer."),
+        (dict(n_twirls=2.5), "n_twirls must be a non-negative integer."),
+        (dict(n_twirls=True), "n_twirls must be a non-negative integer."),
     ],
-    ids=["zero_samples", "no_samples", "negative_order", "unknown_sampling"],
+    ids=[
+        "zero_samples",
+        "no_samples",
+        "negative_order",
+        "unknown_sampling",
+        "float_samples",
+        "bool_samples",
+        "float_order",
+        "bool_order",
+        "negative_twirls",
+        "float_twirls",
+        "bool_twirls",
+    ],
 )
 def test_rejects_invalid_options(kwargs, message):
     with pytest.raises(ValueError, match=exact_match(message)):
         QuEPP(**kwargs)
+
+
+def test_numpy_integer_options_are_stored_as_plain_ints():
+    protocol = QuEPP(
+        truncation_order=np.int64(1), n_samples=np.int64(10), n_twirls=np.int64(5)
+    )
+
+    assert (protocol._K_T, protocol._n_samples, protocol.n_twirls) == (1, 10, 5)
+    assert all(
+        type(value) is int
+        for value in (protocol._K_T, protocol._n_samples, protocol.n_twirls)
+    )
 
 
 def _montecarlo_weights(seed: int) -> np.ndarray:

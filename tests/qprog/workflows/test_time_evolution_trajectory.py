@@ -7,6 +7,7 @@ import math
 import warnings
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 from qiskit.circuit import ParameterExpression
 from qiskit.converters import dag_to_circuit
@@ -21,6 +22,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import BatchConfig, BatchMode
 from divi.qprog.initial_states import SuperpositionState
 from divi.qprog.workflows import _time_evolution_trajectory as workflow
+from tests._helpers import exact_match
 
 _PROB_TOL = 0.05
 
@@ -59,6 +61,57 @@ class TestTimeEvolutionTrajectoryInit:
                 time_points=[0.5, 1.0, 0.5],
                 backend=dummy_simulator,
             )
+
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            ({"n_steps": 0}, "n_steps must be a positive integer, got 0."),
+            ({"n_steps": True}, "n_steps must be a positive integer, got True."),
+            ({"order": 3}, "order must be 1 or an even integer >= 2, got 3."),
+            ({"order": True}, "order must be 1 or an even integer >= 2, got True."),
+        ],
+        ids=["zero-steps", "bool-steps", "odd-order", "bool-order"],
+    )
+    def test_bad_trotter_settings_fail_at_construction(
+        self, two_qubit_hamiltonian, dummy_simulator, kwargs, message
+    ):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            TimeEvolutionTrajectory(
+                hamiltonian=two_qubit_hamiltonian,
+                time_points=[0.5],
+                backend=dummy_simulator,
+                **kwargs,
+            )
+
+    def test_numpy_trotter_settings_reach_every_program_as_plain_ints(
+        self, two_qubit_hamiltonian, dummy_simulator
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=[0.5],
+            backend=dummy_simulator,
+            n_steps=np.int64(2),
+            order=np.int32(2),
+        )
+        traj.create_programs()
+
+        (program,) = traj.programs.values()
+        assert (program.n_steps, program.order) == (2, 2)
+        assert type(program.n_steps) is int and type(program.order) is int
+
+    @pytest.mark.parametrize("dtype", [np.float32, np.float64, np.int64])
+    def test_aggregated_results_are_keyed_by_plain_floats(
+        self, two_qubit_hamiltonian, default_test_simulator, dtype
+    ):
+        traj = TimeEvolutionTrajectory(
+            hamiltonian=two_qubit_hamiltonian,
+            time_points=np.array([1, 2], dtype=dtype),
+            backend=default_test_simulator,
+        )
+        traj.create_programs()
+        traj.run()
+
+        assert [type(t) for t in traj.aggregate_results()] == [float, float]
 
 
 class TestTimeEvolutionTrajectoryKwargForwarding:

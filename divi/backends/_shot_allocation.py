@@ -12,7 +12,8 @@ can ask for the shape it needs without reimplementing iteration and
 validation each time.
 """
 
-from typing import NamedTuple
+from numbers import Integral
+from typing import Any, NamedTuple
 
 
 class ShotRange(NamedTuple):
@@ -115,6 +116,16 @@ def to_wire(ranges: list[ShotRange]) -> list[list[int]]:
     return [[r.start, r.end, r.shots] for r in ranges]
 
 
+def _plain_int(value: Any) -> Any:
+    """Integral values, numpy's included, as ``int``; anything else unchanged."""
+    if isinstance(value, Integral) and not isinstance(value, bool):
+        return int(value)
+    return value
+
+
 def from_wire(wire: list[list[int]] | list[ShotRange]) -> list[ShotRange]:
-    """Normalise a mix of raw triples and ShotRange values into ShotRanges."""
-    return [r if isinstance(r, ShotRange) else ShotRange(*r) for r in wire]
+    """Normalise a mix of raw triples and ShotRange values into ShotRanges.
+
+    Numpy integers become ``int``, so the result serialises to JSON.
+    """
+    return [ShotRange(*map(_plain_int, r)) for r in wire]

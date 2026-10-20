@@ -39,7 +39,6 @@ from divi.qprog.optimizers import (
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
-    _argmin_finite,
     _compute_parameter_shift_rule,
 )
 from divi.reporting._events import ProgressEvent, TerminalStatus
@@ -1136,6 +1135,132 @@ class TestRunIntegration(BaseVariationalQuantumAlgorithmTest):
         assert min_losses1 == min_losses2
         assert min_losses1 is not min_losses2
 
+    @staticmethod
+    def _set_history(program, losses_per_iteration):
+        """Row ``j`` of iteration ``i`` is ``[2j + 10i, 2j + 10i + 1]``."""
+        program._losses_history = [
+            {str(j): loss for j, loss in enumerate(losses)}
+            for losses in losses_per_iteration
+        ]
+        program._param_history = [
+            10.0 * i + np.arange(2.0 * len(losses)).reshape(len(losses), 2)
+            for i, losses in enumerate(losses_per_iteration)
+        ]
+
+    @pytest.mark.parametrize(
+        "losses, expected_row",
+        [
+            ([np.nan, 1.0, 0.5], 2),
+            ([1.0, np.nan, 0.5], 2),
+            ([-np.inf, 1.0], 1),
+            ([np.inf, 2.0], 1),
+            ([0.5, 0.5, 1.0], 0),
+        ],
+        ids=[
+            "leading-nan",
+            "middle-nan",
+            "neg-inf-excluded",
+            "pos-inf-excluded",
+            "tie-takes-first",
+        ],
+    )
+    def test_history_views_pick_the_smallest_finite_loss(
+        self, mocker, losses, expected_row
+    ):
+        program = self._create_program_with_mock_optimizer(mocker)
+        self._set_history(program, [losses])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            best = program.param_history(mode="best_per_iteration")
+            mins = program.min_losses_per_iteration
+
+        np.testing.assert_array_equal(
+            best[0], program._param_history[0][[expected_row]]
+        )
+        assert mins == [losses[expected_row]]
+
+    @pytest.mark.parametrize(
+        "losses",
+        [
+            [np.nan, np.nan],
+            [np.inf, np.nan],
+            [np.nan, np.inf],
+            [np.inf, np.inf],
+        ],
+        ids=["all-nan", "inf-nan", "nan-inf", "all-inf"],
+    )
+    def test_iteration_without_finite_loss_warns_and_falls_back(self, mocker, losses):
+        program = self._create_program_with_mock_optimizer(mocker)
+        self._set_history(program, [[0.2, 0.1], losses, [0.3, 0.4]])
+        warning = r"1 iteration\(s\) had no finite loss \(losses_history indices 1\)"
+
+        with pytest.warns(UserWarning, match=warning) as record:
+            best = program.param_history(mode="best_per_iteration")
+        assert len(record) == 1
+        for iteration, row in enumerate([1, 0, 0]):
+            np.testing.assert_array_equal(
+                best[iteration], program._param_history[iteration][[row]]
+            )
+
+        with pytest.warns(UserWarning, match=warning) as record:
+            mins = program.min_losses_per_iteration
+        assert len(record) == 1
+        assert mins == [0.1, np.inf, 0.3]
+        assert len(best) == len(mins) == len(program.losses_history)
+
+    def test_non_finite_warning_names_each_iteration_and_points_at_the_caller(
+        self, mocker
+    ):
+        program = self._create_program_with_mock_optimizer(mocker)
+        self._set_history(program, [[np.nan], [1.0], [np.inf]])
+        warning = r"2 iteration\(s\).*indices 0, 2"
+
+        with pytest.warns(UserWarning, match=warning) as record:
+            program.param_history(mode="best_per_iteration")
+        assert len(record) == 1
+        assert record[0].filename == __file__
+
+        with pytest.warns(UserWarning, match=warning) as record:
+            program.min_losses_per_iteration
+        assert len(record) == 1
+        assert record[0].filename == __file__
+
+    def test_non_finite_warning_truncates_long_index_lists(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        self._set_history(program, [[np.nan]] * 12)
+
+        with pytest.warns(
+            UserWarning,
+            match=r"12 iteration\(s\).*indices 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, \.\.\.\)",
+        ):
+            program.min_losses_per_iteration
+
+    def test_grid_search_with_no_finite_loss_keeps_its_history(self, mocker):
+        program = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=self._make_backend(1000),
+            optimizer=GridSearchOptimizer(param_grid=np.zeros((2, 4))),
+        )
+        program.max_iterations = 1
+        mocker.patch.object(
+            program, "_evaluate_cost_param_sets", return_value={0: np.nan, 1: np.nan}
+        )
+
+        program.run(perform_final_computation=False)
+
+        assert program.optimize_result.success is False
+        assert len(program.losses_history) == 1
+        with pytest.raises(RuntimeError, match="best_loss is still infinite"):
+            program.best_loss
+
+    def test_min_losses_per_iteration_returns_python_floats(self, mocker):
+        program = self._create_program_with_mock_optimizer(mocker)
+        self._set_history(program, [[np.float32(0.5), np.float64(0.25)]])
+
+        assert [type(loss) for loss in program.min_losses_per_iteration] == [float]
+
     def test_best_probs_returns_copy(self, mocker):
         """Test that best_probs returns a copy, not a reference."""
         program = self._setup_program_with_probs(mocker, {"00": 0.5, "01": 0.5})
@@ -1761,6 +1886,33 @@ class TestCheckpointing:
         VQACheckpoint.from_program(sample_program, kind="iteration").restore(fresh)
 
         assert fresh.stop_reason is None
+
+    def test_non_finite_losses_survive_the_json_round_trip(
+        self, sample_program, mock_backend, default_optimizer, mocker
+    ):
+        """A non-finite loss and an unset best loss reach disk as null and reload."""
+        sample_program.optimizer.optimize = mocker.Mock(
+            side_effect=self._create_mock_optimize(sample_program, n_iterations=1)
+        )
+        sample_program.run(max_iterations=1)
+        sample_program._losses_history = [{"0": np.nan, "1": -np.inf, "2": 0.5}]
+        sample_program._best_loss = np.inf
+        text = VQACheckpoint.from_program(
+            sample_program, kind="iteration"
+        ).model_dump_json()
+        fresh = SampleVQAProgram(
+            circ_count=0,
+            run_time=0.0,
+            backend=mock_backend,
+            optimizer=default_optimizer,
+        )
+
+        VQACheckpoint.model_validate_json(text).restore(fresh)
+
+        history = fresh._losses_history[0]
+        assert np.isnan(history["0"]) and np.isnan(history["1"])
+        assert history["2"] == 0.5
+        assert fresh._best_loss == np.inf
 
     def test_save_state_raises_error_before_optimization(
         self, sample_program, tmp_path
@@ -2700,6 +2852,18 @@ class TestSpinMomentsAPI(BaseVariationalQuantumAlgorithmTest):
             getattr(program, method)()
 
     @pytest.mark.parametrize("method", ["get_correlations", "get_magnetisations"])
+    def test_empty_sampled_distribution_raises(self, mocker, method):
+        """A sample that measured nothing has no wires to take moments over."""
+        program = self._create_program_with_mock_optimizer(mocker)
+        program._results["best_probs"] = {0: {}}
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match("The distribution is empty: no bitstring was measured."),
+        ):
+            getattr(program, method)()
+
+    @pytest.mark.parametrize("method", ["get_correlations", "get_magnetisations"])
     def test_warns_and_uses_first_of_multiple_param_sets(self, mocker, method):
         """With several sampled sets, the first is used and a warning is emitted."""
         program = self._setup_program_with_probs(mocker, {"00": 1.0})
@@ -3413,8 +3577,3 @@ def test_resources_used_count_each_run_alone(mocker, mock_backend):
             result.device_shots_used,
             result.backend_jobs_used,
         ) == (3, 300, 2)
-
-
-def test_argmin_finite_skips_non_finite_entries():
-    assert _argmin_finite(np.array([np.nan, 2.0, 1.0])) == 2
-    assert _argmin_finite(np.array([np.nan, np.inf])) is None

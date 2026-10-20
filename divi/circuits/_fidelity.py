@@ -59,7 +59,7 @@ def build_overlap_meta(cost_circuit: MetaCircuit) -> MetaCircuit:
 
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(overlap)),),
-        parameters=(*fwd_params, *tuple(bwd_params)),
+        parameters=(*fwd_params, *bwd_params),
         observable=None,
         measured_wires=tuple(range(n_qubits)),
     )

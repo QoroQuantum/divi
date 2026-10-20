@@ -10,6 +10,7 @@ import threading
 from collections.abc import Sequence
 from functools import partial
 from multiprocessing import Pool, current_process
+from numbers import Integral
 from threading import Event
 from typing import Literal
 from warnings import warn
@@ -29,7 +30,7 @@ from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
-from .._pauli_serde import ham_ops_terms_for_circuit, pad_ham_ops
+from .._pauli_serde import ham_ops_terms_per_circuit, pad_ham_ops
 from .._shot_allocation import (
     ShotRange,
     bucket_by_shots,
@@ -205,11 +206,9 @@ class QiskitSimulator(CircuitRunner):
                 " `noise_model` will be ignored and the model from the backend will be used instead."
             )
 
-        if n_processes is None:
-            n_processes = _default_n_processes()
-        elif n_processes < 1:
-            raise ValueError(f"n_processes must be >= 1, got {n_processes}")
-        self._n_processes = n_processes
+        self.n_processes = (
+            _default_n_processes() if n_processes is None else n_processes
+        )
         self.simulation_seed = simulation_seed
         self.qiskit_backend = qiskit_backend
         self.noise_model = noise_model
@@ -245,9 +244,11 @@ class QiskitSimulator(CircuitRunner):
         - OpenMP thread limit
         - Circuit/Shot parallelism (auto-selected based on workload)
         """
+        if not isinstance(value, Integral) or isinstance(value, bool):
+            raise TypeError(f"n_processes must be an integer, got {value!r}.")
         if value < 1:
             raise ValueError(f"n_processes must be >= 1, got {value}")
-        self._n_processes = value
+        self._n_processes = int(value)
 
     @property
     def supports_expval(self) -> bool:
@@ -399,10 +400,9 @@ class QiskitSimulator(CircuitRunner):
             ham_ops = pad_ham_ops(
                 ham_ops, circuit_ham_map, [qc.num_qubits for qc in qiskit_circuits]
             )
-            per_circuit_ops = [
-                ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
-                for i in range(n_circuits)
-            ]
+            per_circuit_ops = ham_ops_terms_per_circuit(
+                n_circuits, ham_ops, circuit_ham_map
+            )
             qiskit_circuits = [
                 self._prepare_expval_circuit(qc, circuit_ops)
                 for qc, circuit_ops in zip(qiskit_circuits, per_circuit_ops)
@@ -460,7 +460,7 @@ class QiskitSimulator(CircuitRunner):
             if self._deterministic_execution:
                 simulator = self._create_simulator(resolved_backend)
                 if self.simulation_seed is not None:
-                    seed = self.simulation_seed + indices[0]
+                    seed = int(self.simulation_seed) + indices[0]
                     simulator.set_options(seed_simulator=seed)
             batch = [transpiled[i] for i in indices]
             result = simulator.run(batch, shots=shots).result()

@@ -6,6 +6,7 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit, qasm2
 
@@ -947,6 +948,38 @@ def test_deterministic_path_honors_per_group_shots():
     result = sim.submit_circuits(circuits, shot_groups=[[0, 1, 50], [1, 3, 200]])
     per_circuit_totals = [sum(r["results"].values()) for r in result.results]
     assert per_circuit_totals == [50, 200, 200]
+
+
+def test_a_numpy_seed_does_not_wrap_around_in_deterministic_mode():
+    sim = QiskitSimulator(
+        shots=10, simulation_seed=np.uint32(2**32 - 1), _deterministic_execution=True
+    )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "error", message="overflow encountered", category=RuntimeWarning
+        )
+        sim.submit_circuits({"c0": _IDENTITY_QASM, "c1": _IDENTITY_QASM})
+
+
+@pytest.mark.parametrize("n_processes", [np.int64(2), np.uint8(2)])
+def test_n_processes_is_held_as_a_plain_int(n_processes):
+    sim = QiskitSimulator(n_processes=n_processes)
+
+    assert type(sim.n_processes) is int
+    sim.n_processes = n_processes
+    assert sim.n_processes == 2
+    assert type(sim.n_processes) is int
+
+
+@pytest.mark.parametrize("n_processes", [2.0, True, "2"])
+def test_n_processes_rejects_non_integers(n_processes):
+    message = exact_match(f"n_processes must be an integer, got {n_processes!r}.")
+
+    with pytest.raises(TypeError, match=message):
+        QiskitSimulator(n_processes=n_processes)
+    with pytest.raises(TypeError, match=message):
+        QiskitSimulator().n_processes = n_processes
 
 
 def test_returned_counts_sum_matches_per_group_shots():

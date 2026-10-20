@@ -21,6 +21,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from heapq import nsmallest
+from operator import itemgetter
 from typing import Any
 
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
@@ -33,6 +34,8 @@ __all__ = [
 
 ExtendFn = Callable[[list[int], Any, SolutionEntry], list[int]]
 EvaluateFn = Callable[[list[int]], float]
+
+_score = itemgetter(0)
 
 
 class AggregationStrategy(ABC):
@@ -151,9 +154,9 @@ class BeamSearchStrategy(AggregationStrategy):
                         yield evaluate_fn(extended), extended
 
             if beam_width is None:
-                beam = sorted(extensions(), key=lambda entry: entry[0])
+                beam = sorted(extensions(), key=_score)
             else:
-                beam = nsmallest(beam_width, extensions(), key=lambda entry: entry[0])
+                beam = nsmallest(beam_width, extensions(), key=_score)
 
         return beam[:top_n]
 
@@ -282,7 +285,7 @@ class HierarchicalStrategy(AggregationStrategy):
                             selections + [(pid, candidate)],
                         )
 
-            return nsmallest(cap, extensions(), key=lambda entry: entry[0])
+            return nsmallest(cap, extensions(), key=_score)
 
         # Solve each group independently with a beam of width `search_cap`. When a
         # single group produces the final result (no merges), its last step keeps
@@ -322,9 +325,7 @@ class HierarchicalStrategy(AggregationStrategy):
                                 combined = extend_fn(combined, pid, candidate)
                             yield evaluate_fn(combined), combined, sel_a + sel_b
 
-                next_level.append(
-                    nsmallest(out_cap, merged_entries(), key=lambda entry: entry[0])
-                )
+                next_level.append(nsmallest(out_cap, merged_entries(), key=_score))
 
             group_pools = next_level
 

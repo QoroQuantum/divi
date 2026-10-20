@@ -6,7 +6,8 @@ import difflib
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+import numpy as np
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ._systems import QPUSystem, SimulatorCluster
 
@@ -17,7 +18,13 @@ _DEVICE_SELECTION_KEYS = frozenset({"IBM_DEVICE", "IQM_DEVICE_URL"})
 
 
 def _lowercased(options: Mapping[Any, Any]) -> dict[str, Any]:
-    return {str(key).lower(): value for key, value in options.items()}
+    """``options`` keyed in lower case, numpy values held as plain Python."""
+    return {
+        str(key).lower(): (
+            value.tolist() if isinstance(value, np.ndarray | np.generic) else value
+        )
+        for key, value in options.items()
+    }
 
 
 def describe_unknown(names: Iterable[str], known: Iterable[str]) -> str:
@@ -155,6 +162,11 @@ class JobConfig(BaseModel):
 
     force_sampling: bool = Field(default=False, strict=True)
     """Whether to force sampling instead of expectation value measurements."""
+
+    @field_validator("use_circuit_packing", "force_sampling", mode="before")
+    @classmethod
+    def _plain_bool(cls, value: Any) -> Any:
+        return bool(value) if isinstance(value, np.bool_) else value
 
     def _set_fields(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in self.model_fields_set}

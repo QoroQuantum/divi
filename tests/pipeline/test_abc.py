@@ -5,10 +5,12 @@
 """Tests for divi.pipeline.abc: PipelineEnv, PipelineTrace, ExpansionResult."""
 
 import numpy as np
+import pytest
 
 from divi.pipeline import CircuitPipeline, PipelineEnv, StageOutput
-from divi.pipeline.abc import BundleStage
+from divi.pipeline.abc import BundleStage, PipelineResult, _EstimatorSamplePlan
 from divi.pipeline.stages import MeasurementStage
+from tests._helpers import exact_match
 
 from ._helpers import (
     DummySpecStage,
@@ -43,6 +45,83 @@ class TestPipelineTypes:
         assert len(trace.stage_expansions) == len(trace.stage_tokens) - 1
         assert trace.stage_expansions[0].stage_name == "MeasurementStage"
         assert set(trace.stage_expansions[0].batch.keys()) == {spec_circ_key}
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        pytest.param(np.int64(5), (5, 5, 5), id="numpy-integer"),
+        pytest.param(np.array(5), (5, 5, 5), id="zero-dimensional-array"),
+        pytest.param(np.array([4, 5, 6]), (4, 5, 6), id="integer-array"),
+        pytest.param(np.array([4, 5, 6], dtype=np.uint8), (4, 5, 6), id="uint8-array"),
+        pytest.param((np.int64(4), 5, 6), (4, 5, 6), id="mixed-tuple"),
+    ],
+)
+def test_estimator_sample_plan_accepts_numpy_budgets(value, expected):
+    plan = _EstimatorSamplePlan.from_value(value, 3)
+
+    assert plan.by_param_set == expected
+    assert all(type(budget) is int for budget in plan.by_param_set)
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        pytest.param(
+            np.array([True, True, True]),
+            "estimator_samples values must be positive integers.",
+            id="bool-array",
+        ),
+        pytest.param(
+            np.array([1.0, 2.0, 3.0]),
+            "estimator_samples values must be positive integers.",
+            id="float-array",
+        ),
+        pytest.param(
+            np.array([1, 0, 3]),
+            "estimator_samples values must be positive integers.",
+            id="non-positive-array",
+        ),
+        pytest.param(
+            np.array([1, 2]),
+            "estimator_samples must contain one value per parameter set.",
+            id="wrong-length-array",
+        ),
+        pytest.param(
+            np.array(True),
+            "estimator_samples must be a positive integer.",
+            id="bool-0d",
+        ),
+    ],
+)
+def test_estimator_sample_plan_rejects_invalid_arrays(value, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _EstimatorSamplePlan.from_value(value, 3)
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        pytest.param([0.5], 0.5, id="list"),
+        pytest.param(np.array([0.5]), 0.5, id="array"),
+        pytest.param((0.5,), 0.5, id="tuple"),
+    ],
+)
+def test_pipeline_result_value_squeezes_a_single_observable(raw, expected):
+    assert PipelineResult({(): raw}).value == expected
+
+
+def test_pipeline_result_value_leaves_probability_dicts_alone():
+    histogram = {"00": 0.5, "11": 0.5}
+
+    assert PipelineResult({(): histogram}).value is histogram
+
+
+def test_effective_shots_is_a_plain_int_for_a_numpy_override(dummy_expval_backend):
+    env = PipelineEnv(backend=dummy_expval_backend, shots_override=np.int64(7))
+
+    assert env.effective_shots == 7
+    assert type(env.effective_shots) is int
 
 
 def test_plain_bundle_stages_pass():

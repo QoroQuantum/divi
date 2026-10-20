@@ -9,10 +9,12 @@ Turns the :class:`~divi.pipeline.DryRunReport` objects produced by
 ensemble's, collapsed into compact rows or grouped by shape when there are many.
 """
 
+import math
 import re
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import replace
+from numbers import Integral, Real
 from typing import Any, TextIO, cast
 from warnings import warn
 
@@ -81,7 +83,7 @@ def _format_factor(factor: float) -> tuple[str, str, str | None]:
         return f"[bold yellow]×{token}[/bold yellow]", token, "×"
     reciprocal = 1.0 / factor if factor else 0.0
     if reciprocal and abs(reciprocal - round(reciprocal)) < 1e-9:
-        token = f"{int(round(reciprocal))}"
+        token = f"{round(reciprocal)}"
     else:
         token = f"{reciprocal:.3g}"
     return f"[bold green]÷{token}[/bold green]", token, "÷"
@@ -95,9 +97,7 @@ def _factor_token(factor: float) -> str:
 
 def _expression_reconciles(report: DryRunReport) -> bool:
     """Whether the per-stage factors multiply out to the reported circuit count."""
-    product = 1.0
-    for stage in report.stages:
-        product *= stage.factor or 1.0
+    product = math.prod((stage.factor or 1.0 for stage in report.stages), start=1.0)
     return round(product) == report.total_circuits
 
 
@@ -143,7 +143,7 @@ def _populate_pipeline_node(
                     f"[green]{label}: {_safe_text(val[0])} .. "
                     f"{_safe_text(val[1])}[/green]"
                 )
-            elif isinstance(val, float):
+            elif isinstance(val, Real) and not isinstance(val, (bool, Integral)):
                 stage_node.add(f"[green]{label}: {val:.4f}[/green]")
             else:
                 stage_node.add(f"[green]{label}: {_safe_text(val)}[/green]")
@@ -218,7 +218,7 @@ def _ensemble_max_stat(nested: EnsembleReports, key: str) -> float | None:
         for reports in nested.values()
         if (v := _program_max_stat(reports, key)) is not None
     ]
-    return max(values) if values else None
+    return max(values, default=None)
 
 
 def _cadence_totals(
@@ -336,7 +336,7 @@ def _program_signature(reports: dict[str, DryRunReport]) -> tuple:
 def _program_max_stat(reports: dict[str, DryRunReport], key: str) -> float | None:
     """The largest ``key`` across one program's pipelines."""
     values = [r.circuit_stats[key] for r in reports.values() if r.circuit_stats]
-    return max(values) if values else None
+    return max(values, default=None)
 
 
 def _report_n_samples(reports: dict[str, DryRunReport]) -> float | None:

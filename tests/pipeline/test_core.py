@@ -11,6 +11,7 @@ from dataclasses import replace
 from inspect import signature
 from threading import Event
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
@@ -1701,6 +1702,19 @@ class TestBuildShotGroupsPure:
     def test_builds_shot_ranges(self, lineage, per_group, expected):
         circuits = dict.fromkeys(lineage, "x")
         assert _build_shot_groups(circuits, lineage, per_group) == expected
+
+    def test_numpy_shot_counts_become_plain_ints(self):
+        circuits = {"a": "x", "b": "x"}
+        lineage = {
+            "a": (("circuit", 0), ("obs_group", 0)),
+            "b": (("circuit", 0), ("obs_group", 1)),
+        }
+        per_group = {(("circuit", 0),): {0: np.int64(100), 1: np.int64(200)}}
+
+        shot_groups = _build_shot_groups(circuits, lineage, per_group)
+
+        assert shot_groups == [[0, 1, 100], [1, 2, 200]]
+        assert all(type(value) is int for group in shot_groups for value in group)
 
     def test_missing_obs_group_for_a_circuit_raises(self):
         circuits = {"a": "x", "b": "x"}

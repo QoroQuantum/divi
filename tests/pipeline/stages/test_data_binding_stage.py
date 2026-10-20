@@ -151,6 +151,22 @@ def test_expand_rejects_non_finite_feature_batch(composed, bad):
         )
 
 
+def test_expand_rejects_a_complex_feature_batch_with_an_imaginary_part(composed):
+    qc, data_params, weight_params = composed
+    stage = DataBindingStage(data_params=data_params, loss_reduction=_mean)
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "env.feature_batch must be real; got complex values with a non-zero "
+            "imaginary part."
+        ),
+    ):
+        stage.expand(
+            {(): _make_meta(qc, data_params, weight_params)},
+            env=_env(feature_batch=np.array([[0.1, 0.2j]])),
+        )
+
+
 def test_supervised_pairs_label_by_axis_index_not_arrival_order(composed):
     """reduce realigns predictions to the DATA_AXIS index before pairing labels.
 

@@ -152,6 +152,8 @@ class QEMStage(BundleStage):
         for parent_key, meta in batch.items():
             bodies, ctxs = self._expand_bodies(meta, protocol_fn)
             for (tag, _), ctx in zip(meta.circuit_bodies, ctxs):
+                if ctx.get("symbolic"):
+                    ctx["parameter_order"] = meta.parameters
                 contexts[parent_key + tag] = ctx
             new_meta = meta.set_circuit_bodies(bodies)
             override = self._resolve_observable_override(ctxs)
@@ -276,9 +278,10 @@ class QEMStage(BundleStage):
         """Evaluate symbolic QuEPP weights using bound parameter values.
 
         When QuEPP runs before ParameterBindingStage, weights are stored
-        as sympy expressions.  This method substitutes the concrete
+        as symbolic expressions.  This method substitutes the concrete
         parameter values for the current param_set group, iterating over
-        each ``per_obs`` slot.
+        each ``per_obs`` slot.  Values are matched to symbols by parameter
+        identity through the circuit's own parameter order.
         """
         param_idx = next((v for k, v in foreign_key if k == "param_set"), None)
         if param_idx is None:
@@ -291,12 +294,14 @@ class QEMStage(BundleStage):
             # Shallow-copy so different param_set groups don't share state.
             new_ctx = dict(ctx)
             symbols = new_ctx.get("weight_symbols", [])
+            value_by_parameter = dict(zip(new_ctx["parameter_order"], param_values))
+            symbol_values = [value_by_parameter[symbol] for symbol in symbols]
             per_obs = new_ctx.get("per_obs")
             if per_obs:
                 new_per_obs = []
                 for entry in per_obs:
                     new_entry = replace(entry)
-                    QuEPP.evaluate_symbolic_weights(new_entry, symbols, param_values)
+                    QuEPP.evaluate_symbolic_weights(new_entry, symbols, symbol_values)
                     new_per_obs.append(new_entry)
                 new_ctx["per_obs"] = new_per_obs
             new_ctx["symbolic"] = False

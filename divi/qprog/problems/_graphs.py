@@ -13,6 +13,7 @@ from warnings import warn
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
+import scipy.sparse as sps
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
@@ -217,37 +218,36 @@ class _GraphProblemBase(QAOAProblem):
         return _qubit_edges(self._graph)[1]
 
     @cached_property
-    def _diagonal_terms(self) -> list[tuple[float, tuple[int, ...]]]:
-        """``(coeff, z_qubit_indices)`` per cost-Hamiltonian term.
+    def _diagonal_terms(self) -> tuple[np.ndarray, sps.csr_matrix]:
+        """``(coeffs, z_masks)`` of the cost Hamiltonian's terms.
 
-        Computed once from the (immutable) cost Hamiltonian so
-        :meth:`evaluate_global_solution` need not rebuild Pauli labels on every
-        call. Validates the Hamiltonian is diagonal (Z/I only) up front.
+        ``z_masks[t, q]`` is 1 when term ``t`` has a Z on qubit ``q``. Computed
+        once from the (immutable) cost Hamiltonian. Validates the Hamiltonian is
+        diagonal (Z/I only) up front.
         """
         spo: SparsePauliOp = self.cost_hamiltonian
-        terms: list[tuple[float, tuple[int, ...]]] = []
-        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-            z_qubits = []
-            for qubit, char in enumerate(reversed(label)):
-                if char == "I":
-                    continue
-                if char != "Z":
-                    raise ValueError(
-                        f"Cost Hamiltonian contains non-diagonal term {label!r}; "
-                        f"evaluate_global_solution requires Z-only operators."
-                    )
-                z_qubits.append(qubit)
-            terms.append((float(np.real(coeff)), tuple(z_qubits)))
-        return terms
+        non_diagonal = np.flatnonzero(spo.paulis.x.any(axis=1))
+        if non_diagonal.size:
+            label = spo.paulis.to_labels()[non_diagonal[0]]
+            raise ValueError(
+                f"Cost Hamiltonian contains non-diagonal term {label!r}; "
+                f"evaluate_global_solution requires Z-only operators."
+            )
+        return (
+            np.real(spo.coeffs).astype(np.float64),
+            sps.csr_matrix(spo.paulis.z.astype(np.int64)),
+        )
 
     def evaluate_global_solution(self, solution: list[int]) -> float:
-        energy = self.loss_constant
-        for coeff, z_qubits in self._diagonal_terms:
-            eigenvalue = 1.0
-            for qubit in z_qubits:
-                eigenvalue *= 1 - 2 * solution[qubit]
-            energy += coeff * eigenvalue
-        return energy
+        coeffs, z_masks = self._diagonal_terms
+        x = np.asarray(solution, dtype=np.int64)
+        if x.shape != (z_masks.shape[1],):
+            raise ValueError(
+                f"Expected a solution of shape ({z_masks.shape[1]},), "
+                f"got shape {x.shape}."
+            )
+        parities = (z_masks @ x) & 1
+        return float(self.loss_constant + coeffs @ (1 - 2 * parities))
 
     def postprocess_candidates(
         self, candidates: list[tuple[float, list[int]]], *, strict: bool = False

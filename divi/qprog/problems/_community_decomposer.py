@@ -4,6 +4,8 @@
 
 """``hybrid`` decomposer that partitions a QUBO by community structure."""
 
+from collections.abc import Iterator
+
 from hybrid import traits
 from hybrid.core import Runnable
 from hybrid.exceptions import EndOfStream
@@ -62,7 +64,7 @@ class CommunityDecomposer(traits.ProblemDecomposer, traits.SISO, Runnable):
         self.config = config
         self.silent_rewind = silent_rewind
         self._rolling_bqm = None
-        self._iter_clusters = None
+        self._iter_clusters: Iterator[list] = iter(())
 
     def __repr__(self):
         return f"{self}(config={self.config!r}, silent_rewind={self.silent_rewind!r})"
@@ -90,7 +92,6 @@ class CommunityDecomposer(traits.ProblemDecomposer, traits.SISO, Runnable):
         if bqm != self._rolling_bqm:
             self._rolling_bqm = bqm
             self._iter_clusters = self._get_iter_clusters(bqm)
-        assert self._iter_clusters is not None  # set above or on a prior call
         try:
             cluster = next(self._iter_clusters)
         except StopIteration:

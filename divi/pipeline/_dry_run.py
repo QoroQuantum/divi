@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from statistics import mean, pstdev
 from typing import Any, TypeAlias
 
+import numpy as np
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
@@ -405,10 +406,14 @@ def _objective_fingerprint(
         for mc in trace.final_batch.values()
         if mc.observable is not None
     )
+    plain_metadata = {
+        key: value.item() if isinstance(value, np.generic) else value
+        for key, value in terminal_metadata.items()
+    }
     settings = tuple(
         sorted(
             (k, v)
-            for k, v in terminal_metadata.items()
+            for k, v in plain_metadata.items()
             if isinstance(v, (str, int, float, bool, tuple, type(None)))
         )
     )

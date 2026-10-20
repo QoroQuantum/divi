@@ -6,6 +6,7 @@
 
 import json
 from collections.abc import Callable
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -112,8 +113,9 @@ def _fit_shots_to_budget(
     remainder = capacity - int(allocated @ evaluation_counts)
     if remainder > 0:
         fractional_order = np.argsort(-(scaled - allocated), kind="stable")
+        costs = evaluation_counts.tolist()
         for index in fractional_order:
-            evaluation_cost = int(evaluation_counts[index])
+            evaluation_cost = costs[index]
             if evaluation_cost <= remainder:
                 allocated[index] += 1
                 remainder -= evaluation_cost
@@ -212,7 +214,7 @@ class RosalinOptimizer(Optimizer):
     ):
         if learning_rate <= 0:
             raise ValueError(f"learning_rate must be positive, got {learning_rate}.")
-        if isinstance(total_shots, bool) or not isinstance(total_shots, int):
+        if isinstance(total_shots, bool) or not isinstance(total_shots, Integral):
             raise TypeError("total_shots must be an integer.")
         if total_shots < 1:
             raise ValueError(f"total_shots must be positive, got {total_shots}.")
@@ -222,7 +224,7 @@ class RosalinOptimizer(Optimizer):
             raise ValueError(
                 "learning_rate must be strictly smaller than 2 / lipschitz."
             )
-        if isinstance(min_shots, bool) or not isinstance(min_shots, int):
+        if isinstance(min_shots, bool) or not isinstance(min_shots, Integral):
             raise TypeError("min_shots must be an integer.")
         if min_shots < 2:
             raise ValueError(f"min_shots must be >= 2, got {min_shots}.")
@@ -238,9 +240,9 @@ class RosalinOptimizer(Optimizer):
             )
 
         self.learning_rate = float(learning_rate)
-        self.total_shots = total_shots
+        self.total_shots = int(total_shots)
         self.lipschitz = float(lipschitz)
-        self.min_shots = min_shots
+        self.min_shots = int(min_shots)
         self.ema_decay = float(ema_decay)
         self.bias = float(bias)
         self.allocation = allocation
@@ -308,6 +310,8 @@ class RosalinOptimizer(Optimizer):
         shifts, weights, owners, evaluation_counts = _shift_rule_layout(
             rule_shifts, rule_weights, n_params
         )
+        uses = weights != 0
+        squared_weights = np.square(weights)
         minimum_iteration_cost = self.min_shots * (1 + int(np.sum(evaluation_counts)))
         if self.total_shots < minimum_iteration_cost:
             raise ValueError(
@@ -379,10 +383,9 @@ class RosalinOptimizer(Optimizer):
             # Mask before summing so one bad evaluation only invalidates the
             # coordinates whose shift rule uses it.
             evaluations, eval_variances = values[1:], variances[1:]
-            uses = weights != 0
             gradient = weights @ np.where(np.isfinite(evaluations), evaluations, 0.0)
             gradient[uses @ ~np.isfinite(evaluations)] = np.nan
-            single_shot_variance = np.square(weights) @ np.where(
+            single_shot_variance = squared_weights @ np.where(
                 np.isfinite(eval_variances), evaluation_samples * eval_variances, 0.0
             )
             single_shot_variance[uses @ ~np.isfinite(eval_variances)] = np.nan

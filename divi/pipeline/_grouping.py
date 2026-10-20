@@ -12,6 +12,7 @@ backends and :func:`~divi.pipeline._postprocessing._batched_expectation`.
 
 from collections import defaultdict, deque
 from collections.abc import Callable
+from operator import itemgetter
 from typing import Literal
 
 import numpy as np
@@ -75,16 +76,23 @@ def _create_postprocessing_fn(
     measurement group) and returns a ``list[float]`` of per-observable
     expectation values.
     """
-    reverse_lookup: dict[int, tuple[int, int]] = {}
-    for group_idx, indices in enumerate(partition_indices):
-        for pos, orig_idx in enumerate(indices):
-            reverse_lookup[orig_idx] = (group_idx, pos)
-
-    reverse_map: list[tuple[int, int]] = [
-        reverse_lookup[i] for i in range(n_union_terms)
+    slots_by_group = [
+        np.asarray(indices, dtype=np.intp) for indices in partition_indices
     ]
-    n_obs = len(observables)
+    covered = np.zeros(n_union_terms, dtype=bool)
+    for slots in slots_by_group:
+        covered[slots] = True
+    if not covered.all():
+        raise ValueError("The partition does not cover every union term.")
+
+    getters = [
+        itemgetter(*range(len(slots))) if len(slots) else None
+        for slots in slots_by_group
+    ]
     obs_coeffs = [np.real(o.coeffs).astype(np.float64) for o in observables]
+    obs_indices = [
+        np.asarray(indices, dtype=np.intp) for indices in per_obs_term_indices
+    ]
 
     def postprocessing_fn(grouped_results):
         if len(grouped_results) != len(partition_indices):
@@ -93,15 +101,18 @@ def _create_postprocessing_fn(
                 f"got {len(grouped_results)}."
             )
         flat = np.zeros(n_union_terms, dtype=np.float64)
-        for orig_idx in range(n_union_terms):
-            g_idx, pos = reverse_map[orig_idx]
-            val = grouped_results[g_idx]
+        for slots, getter, val in zip(slots_by_group, getters, grouped_results):
+            if getter is None:
+                continue
             if isinstance(val, dict):
-                val = val[pos]
-            flat[orig_idx] = float(np.asarray(val).flat[0])
+                flat[slots] = np.asarray(getter(val), dtype=np.float64).reshape(
+                    len(slots), -1
+                )[:, 0]
+            else:
+                flat[slots] = float(np.asarray(val).flat[0])
         return [
-            float(np.dot(obs_coeffs[i], flat[per_obs_term_indices[i]]))
-            for i in range(n_obs)
+            float(np.dot(coeffs, flat[indices]))
+            for coeffs, indices in zip(obs_coeffs, obs_indices)
         ]
 
     return postprocessing_fn
@@ -156,9 +167,7 @@ def _compute_measurement_groups(
     n_union_terms = len(be_labels)
 
     # Pad labels to n_qubits if the union acts on fewer qubits.
-    if be_labels and len(be_labels[0]) < n_qubits:
-        pad = n_qubits - len(be_labels[0])
-        be_labels = [label + "I" * pad for label in be_labels]
+    be_labels = [label.ljust(n_qubits, "I") for label in be_labels]
 
     if strategy in ("qwc", "default"):
         grouped_ops = union.group_commuting(qubit_wise=True)
@@ -175,9 +184,7 @@ def _compute_measurement_groups(
             indices = []
             group_labels = []
             for gl in group_op.paulis.to_labels():
-                gl_be = gl[::-1]
-                if len(gl_be) < n_qubits:
-                    gl_be = gl_be + "I" * (n_qubits - len(gl_be))
+                gl_be = gl[::-1].ljust(n_qubits, "I")
                 queue = indices_by_label.get(gl_be)
                 if queue:
                     indices.append(queue.popleft())

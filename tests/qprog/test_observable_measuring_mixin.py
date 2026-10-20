@@ -6,6 +6,7 @@
 
 import warnings
 
+import numpy as np
 import pytest
 
 from divi.qprog import ObservableMeasuringMixin
@@ -113,7 +114,9 @@ class TestValidation:
                 backend=dummy_simulator, grouping_strategy=grouping_strategy
             )
 
-    @pytest.mark.parametrize("bad_value", ["true", 1, None, 0])
+    @pytest.mark.parametrize(
+        "bad_value", ["true", 1, None, 0, np.int64(1), np.float64(1.0)]
+    )
     def test_non_bool_measure_all_qubits_rejected(self, dummy_simulator, bad_value):
         """A non-bool measure_all_qubits (e.g. a typo'd string) would silently
         act as truthy; reject it instead of quietly forcing full measurement."""
@@ -121,6 +124,16 @@ class TestValidation:
             ConcreteObservableMeasuringProgram(
                 backend=dummy_simulator, measure_all_qubits=bad_value
             )
+
+    @pytest.mark.parametrize("value", [np.True_, np.False_])
+    def test_numpy_bool_measure_all_qubits_is_stored_as_a_plain_bool(
+        self, dummy_simulator, value
+    ):
+        program = ConcreteObservableMeasuringProgram(
+            backend=dummy_simulator, measure_all_qubits=value
+        )
+
+        assert program._measure_all_qubits is bool(value)
 
     @pytest.mark.parametrize(
         "grouping_strategy,shot_distribution",

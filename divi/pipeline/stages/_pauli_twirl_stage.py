@@ -36,8 +36,11 @@ Two output paths:
 
 import copy
 import random
+from collections import defaultdict
+from numbers import Integral
 from typing import Any
 
+import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import CXGate, CZGate, IGate, XGate, YGate, ZGate
@@ -160,11 +163,9 @@ def _parametrise_rotations(
 
 def _extract_rotation_values(dag: DAGCircuit) -> tuple[float, ...]:
     """Pull every rotation gate's concrete params off *dag* in topological order."""
-    values: list[float] = []
-    for node in dag.topological_op_nodes():
-        for p in node.op.params:
-            values.append(float(p))
-    return tuple(values)
+    return tuple(
+        float(p) for node in dag.topological_op_nodes() for p in node.op.params
+    )
 
 
 def _discover_twirl_plan(
@@ -231,8 +232,18 @@ class PauliTwirlStage(BundleStage):
 
     def __init__(self, n_twirls: int = 100, seed: int | None = None) -> None:
         super().__init__(name=type(self).__name__)
-        self._n_twirls = n_twirls
-        self._seed = seed
+        if (
+            not isinstance(n_twirls, Integral)
+            or isinstance(n_twirls, bool)
+            or n_twirls < 1
+        ):
+            raise ValueError(f"n_twirls must be a positive integer, got {n_twirls}.")
+        if seed is not None and (
+            not isinstance(seed, Integral) or isinstance(seed, bool)
+        ):
+            raise ValueError(f"seed must be an integer, got {seed}.")
+        self._n_twirls = int(n_twirls)
+        self._seed = None if seed is None else int(seed)
         # Conservative default — an un-validated stage uses structural path.
         self._fast_path = False
 
@@ -240,8 +251,8 @@ class PauliTwirlStage(BundleStage):
         # Parametric fast path preconditions: (a) nothing downstream
         # reads DAGs, and (b) ParameterBindingStage is upstream so the
         # K topologically-identical variants share a gate sequence.
-        no_dag_consumer_after = not any(
-            not isinstance(s, BundleStage) or s.consumes_dag_bodies for s in after
+        no_dag_consumer_after = all(
+            isinstance(s, BundleStage) and not s.consumes_dag_bodies for s in after
         )
         param_set_upstream = any(s.axis_name == PARAM_SET_AXIS for s in before)
         self._fast_path = no_dag_consumer_after and param_set_upstream
@@ -390,19 +401,16 @@ class PauliTwirlStage(BundleStage):
         precision = meta.precision
 
         # Group bodies by topology — tag with the param_set axis stripped.
-        topology_groups: dict[tuple, list[tuple[tuple, DAGCircuit]]] = {}
-        group_order: list[tuple] = []
+        topology_groups: defaultdict[tuple, list[tuple[tuple, DAGCircuit]]] = (
+            defaultdict(list)
+        )
         for tag, dag in meta.circuit_bodies:
             key = strip_axis_from_label(tag, PARAM_SET_AXIS)
-            if key not in topology_groups:
-                topology_groups[key] = []
-                group_order.append(key)
             topology_groups[key].append((tag, dag))
 
         bound_bodies: list[tuple[tuple, str]] = []
 
-        for topology_key in group_order:
-            variants = topology_groups[topology_key]
+        for variants in topology_groups.values():
             _, ref_dag = variants[0]
 
             parametric_dag, param_names = _parametrise_rotations(ref_dag)
@@ -463,7 +471,7 @@ class PauliTwirlStage(BundleStage):
                 reduced[base_key] = {
                     k: sum(v[k] for v in values) / len(values) for k in obs_keys
                 }
-            elif isinstance(values[0], list):
+            elif np.ndim(values[0]) > 0:
                 # Per-observable list[float] from MeasurementStage —
                 # average element-wise.
                 n = len(values)

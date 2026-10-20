@@ -4,6 +4,7 @@
 
 """Tests for divi.circuits.qem base protocols."""
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
@@ -81,6 +82,21 @@ class TestNoMitigation:
             RuntimeError, match=r"^NoMitigation received an empty results sequence\.$"
         ):
             _NoMitigation().reduce([], {})
+
+
+@pytest.mark.parametrize(
+    "row",
+    [
+        pytest.param(np.array([0.7, -0.3]), id="ndarray"),
+        pytest.param((0.7, -0.3), id="tuple"),
+    ],
+)
+def test_no_mitigation_reduce_accepts_any_per_observable_row(row):
+    assert _NoMitigation().reduce([row], {}) == [0.7, -0.3]
+
+
+def test_no_mitigation_reduce_accepts_a_numpy_scalar():
+    assert _NoMitigation().reduce([np.float32(0.5)], {}) == [0.5]
 
 
 class TestNoMitigationTupleObservable:

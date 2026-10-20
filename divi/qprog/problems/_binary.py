@@ -6,6 +6,7 @@
 
 import math
 from collections.abc import Callable, Hashable, Mapping, Sequence
+from functools import cached_property
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -57,7 +58,7 @@ def _sanitize_problem_input(qubo):
     if isinstance(qubo, BinaryQuadraticModel):
         return qubo, qubo
 
-    if isinstance(qubo, (np.ndarray, sps.spmatrix)):
+    if isinstance(qubo, np.ndarray) or sps.issparse(qubo):
         x, y = qubo.shape
         if x != y:
             raise ValueError("Only square matrices are supported.")
@@ -65,10 +66,15 @@ def _sanitize_problem_input(qubo):
     if isinstance(qubo, np.ndarray):
         return qubo, dimod.BinaryQuadraticModel(qubo, vartype=dimod.Vartype.BINARY)
 
-    if isinstance(qubo, sps.spmatrix):
+    if sps.issparse(qubo):
         coo = sps.coo_matrix(qubo)
         return qubo, dimod.BinaryQuadraticModel(
-            {(row, col): data for row, col, data in zip(coo.row, coo.col, coo.data)},
+            {
+                (row, col): data
+                for row, col, data in zip(
+                    coo.row.tolist(), coo.col.tolist(), coo.data.tolist()
+                )
+            },
             vartype=dimod.Vartype.BINARY,
         )
 
@@ -144,7 +150,7 @@ class BinaryOptimizationProblem(QAOAProblem):
     Accepted inputs (anything :class:`dimod.BinaryQuadraticModel` or
     :class:`dimod.BinaryPolynomial` accepts, plus matrices):
 
-    - ``np.ndarray`` / ``scipy.sparse.spmatrix`` — square QUBO matrix.
+    - ``np.ndarray`` / any ``scipy.sparse`` matrix or array — square QUBO matrix.
     - :class:`dimod.BinaryQuadraticModel` — quadratic form with named
       variables.
     - ``dict`` with tuple keys — HUBO terms, e.g.
@@ -303,7 +309,6 @@ class BinaryOptimizationProblem(QAOAProblem):
             hamiltonian_builder
         )
         self._quadratization_strength = quadratization_strength
-        self._ising_cache: IsingResult | None = None
         self._mixer_cache: SparsePauliOp | None = None
 
         # Decomposition support (optional)
@@ -398,16 +403,14 @@ class BinaryOptimizationProblem(QAOAProblem):
             for term, coeff in self._objective_canonical_problem.terms.items()
         )
 
-    @property
+    @cached_property
     def _ising(self) -> IsingResult:
         """Cached Ising conversion of the canonical polynomial."""
-        if self._ising_cache is None:
-            self._ising_cache = qubo_to_ising(
-                self._raw_problem,
-                hamiltonian_builder=self._hamiltonian_builder,
-                quadratization_strength=self._quadratization_strength,
-            )
-        return self._ising_cache
+        return qubo_to_ising(
+            self._raw_problem,
+            hamiltonian_builder=self._hamiltonian_builder,
+            quadratization_strength=self._quadratization_strength,
+        )
 
     @property
     def cost_hamiltonian(self) -> SparsePauliOp:
@@ -593,9 +596,13 @@ class BinaryOptimizationProblem(QAOAProblem):
                 "evaluate_global_solution requires a decomposer to have been "
                 "provided at construction."
             )
-        variables = list(self._bqm.variables)
-        sample = dict(zip(variables, solution))
-        return float(self._bqm.energy(sample))
+        h, j, _, _ = self._polish_fields()
+        x = np.asarray(solution, dtype=np.float64)
+        if x.shape != h.shape:
+            raise ValueError(
+                f"Expected a solution of shape {h.shape}, got shape {x.shape}."
+            )
+        return float(h @ x + 0.5 * (x @ (j @ x)) + self._bqm.offset)
 
     def postprocess_candidates(
         self, candidates: list[tuple[float, list[int]]], *, strict: bool = False

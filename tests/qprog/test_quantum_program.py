@@ -6,6 +6,7 @@ import logging
 from http import HTTPStatus
 from threading import Event
 
+import numpy as np
 import pytest
 import requests
 
@@ -381,7 +382,7 @@ class TestQuantumProgramBase:
         ):
             ConcreteQuantumProgram(backend=dummy_simulator, qem_protocol="zne")
 
-    @pytest.mark.parametrize("precision", [0, -1, 1.5, "8"])
+    @pytest.mark.parametrize("precision", [0, -1, 1.5, "8", True, np.True_])
     def test_precision_that_is_not_a_positive_integer_is_rejected(
         self, dummy_simulator, precision
     ):
@@ -390,6 +391,29 @@ class TestQuantumProgramBase:
         message = f"precision must be an integer of at least 1; got {precision!r}."
         with pytest.raises(ValueError, match=exact_match(message)):
             ConcreteQuantumProgram(backend=dummy_simulator, precision=precision)
+
+    @pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint8])
+    def test_numpy_precision_is_stored_as_a_plain_int(self, dummy_simulator, dtype):
+        program = ConcreteQuantumProgram(backend=dummy_simulator, precision=dtype(6))
+
+        assert program.precision == 6
+        assert type(program._precision) is int
+
+    @pytest.mark.parametrize(
+        "seed", [np.uint64(2**63 + 5), np.int64(2**60 + 1), 2**64 + 3]
+    )
+    def test_seed_keeps_every_digit_of_an_integer_seed(self, dummy_simulator, seed):
+        program = ConcreteQuantumProgram(backend=dummy_simulator, seed=seed)
+
+        assert program._seed == int(seed)
+        assert type(program._seed) is int
+        assert program._base_seed == int(seed)
+
+    @pytest.mark.parametrize("seed", [1.5, "7", True, np.True_, np.float64(3.0)])
+    def test_seed_that_is_not_an_integer_is_rejected(self, dummy_simulator, seed):
+        message = f"seed must be an integer or None; got {seed!r}."
+        with pytest.raises(ValueError, match=exact_match(message)):
+            ConcreteQuantumProgram(backend=dummy_simulator, seed=seed)
 
     def test_unseeded_base_seed_is_one_stable_int(self, dummy_simulator):
         program = ConcreteQuantumProgram(backend=dummy_simulator)

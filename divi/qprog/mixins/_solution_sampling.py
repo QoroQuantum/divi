@@ -29,6 +29,7 @@ their ``sample_solution`` overrides to validate explicit params before decoding.
 """
 
 from collections.abc import Callable
+from heapq import nsmallest
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 from warnings import warn
 
@@ -238,7 +239,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         Raises:
             RuntimeError: If no distribution is available because optimisation
                 has not been run or final computation was not performed.
-            ValueError: If the distribution mixes bitstring widths.
+            ValueError: If the distribution is empty or mixes bitstring widths.
 
         Note:
             Probabilities are used as measured. If several parameter sets were
@@ -268,7 +269,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         Raises:
             RuntimeError: If no distribution is available because optimisation
                 has not been run or final computation was not performed.
-            ValueError: If the distribution mixes bitstring widths.
+            ValueError: If the distribution is empty or mixes bitstring widths.
 
         Note:
             Probabilities are used as measured. If several parameter sets were
@@ -360,12 +361,11 @@ class SolutionSamplingMixin(_SamplingMixinBase):
 
         # Filter by minimum probability and get top n sorted by probability (descending),
         # then bitstring (ascending) for deterministic tie-breaking
-        top_items = sorted(
-            filter(
-                lambda bitstring_prob: bitstring_prob[1] >= min_prob, probs_dict.items()
-            ),
+        top_items = nsmallest(
+            n,
+            (item for item in probs_dict.items() if item[1] >= min_prob),
             key=lambda bitstring_prob: (-bitstring_prob[1], bitstring_prob[0]),
-        )[:n]
+        )
 
         # Build result list (decode on demand)
         return [
@@ -473,9 +473,11 @@ def _spin_moments(
         The magnetisation vector and the correlation matrix, in that order.
 
     Raises:
-        ValueError: If the distribution mixes bitstring widths.
+        ValueError: If the distribution is empty or mixes bitstring widths.
     """
     bitstrings = list(probs_dict)
+    if not bitstrings:
+        raise ValueError("The distribution is empty: no bitstring was measured.")
     widths = {len(bitstring) for bitstring in bitstrings}
     if len(widths) > 1:
         raise ValueError(

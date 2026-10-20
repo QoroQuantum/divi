@@ -85,7 +85,7 @@ class ProgramCheckpoint(BaseModel):
 
 
 def _to_jsonable(value: Any) -> Any:
-    """Coerce numpy scalars and arrays to their plain-Python equivalents.
+    """Coerce numpy scalars and arrays, including mapping keys, to plain Python.
 
     :attr:`SubclassState.data` is untyped, so a subclass storing numpy — a
     problem's ``decode_fn`` may return an array of bits, or a
@@ -97,7 +97,10 @@ def _to_jsonable(value: Any) -> Any:
     if isinstance(value, np.generic):
         return value.item()
     if isinstance(value, dict):
-        return {key: _to_jsonable(item) for key, item in value.items()}
+        return {
+            (key.item() if isinstance(key, np.generic) else key): _to_jsonable(item)
+            for key, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
         return [_to_jsonable(item) for item in value]
     return value
@@ -191,6 +194,30 @@ class VQACheckpoint(ProgramCheckpoint):
         if not v:
             return []
         return [np.asarray(item, dtype=np.float64).tolist() for item in v]
+
+    @field_validator("losses_history", mode="before")
+    @classmethod
+    def restore_non_finite_losses(cls, v):
+        """JSON writes a non-finite loss as ``null``; it comes back as NaN."""
+        if not isinstance(v, list):
+            return v
+        return [
+            (
+                {
+                    key: float("nan") if loss is None else loss
+                    for key, loss in entry.items()
+                }
+                if isinstance(entry, dict)
+                else entry
+            )
+            for entry in v
+        ]
+
+    @field_validator("best_loss", mode="before")
+    @classmethod
+    def restore_unset_best_loss(cls, v):
+        """JSON writes an infinite ``best_loss`` (no finite loss yet) as ``null``."""
+        return float("inf") if v is None else v
 
     @field_serializer("best_params", "final_params")
     def serialize_arrays(self, v: npt.NDArray | list | None, _info):

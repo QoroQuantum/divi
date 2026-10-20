@@ -95,6 +95,15 @@ class TestComputeShotDistributionWeighted:
         assert sum(result) == 1000
         assert result[0] > result[1]
 
+    @pytest.mark.parametrize("strategy", ["weighted", "weighted_random"])
+    @pytest.mark.parametrize("norms", [[-0.5, -0.5, 2.0], [1.0, float("nan")]])
+    def test_negative_and_nan_norms_are_rejected(self, strategy, norms):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(f"group_norms must be non-negative, got {norms}."),
+        ):
+            _compute_shot_distribution(norms, 1, strategy)
+
 
 class TestComputeShotDistributionWeightedRandom:
     def test_total_preserved(self):

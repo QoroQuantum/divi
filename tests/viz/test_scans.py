@@ -22,7 +22,14 @@ from divi.qprog import (
 from divi.qprog.algorithms import InterpolationStrategy
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from divi.reporting._events import EventKind, ProgressEvent
-from divi.viz import scan_1d, scan_2d, scan_interp_1d, scan_interp_2d, scan_pca
+from divi.viz import (
+    compute_hessian,
+    scan_1d,
+    scan_2d,
+    scan_interp_1d,
+    scan_interp_2d,
+    scan_pca,
+)
 from divi.viz._api import (
     _evaluate_param_sets_reported,
     _require_supported_program,
@@ -923,8 +930,24 @@ def test_scan_pca_without_history_raises(vqe_program, mocker):
 
 @pytest.mark.parametrize(
     "offset, pad",
-    [((-0.5, 0.7), (-0.5, 0.7)), (0.3, (-0.3, 0.3)), (-0.3, (-0.3, 0.3))],
-    ids=["tuple", "scalar", "negative_scalar"],
+    [
+        ((-0.5, 0.7), (-0.5, 0.7)),
+        (0.3, (-0.3, 0.3)),
+        (-0.3, (-0.3, 0.3)),
+        ([-0.5, 0.7], (-0.5, 0.7)),
+        (np.array([-0.5, 0.7]), (-0.5, 0.7)),
+        (np.float32(0.25), (-0.25, 0.25)),
+        (np.array(-0.25), (-0.25, 0.25)),
+    ],
+    ids=[
+        "tuple",
+        "scalar",
+        "negative_scalar",
+        "list",
+        "array_pair",
+        "numpy_scalar",
+        "zero_dimensional_array",
+    ],
 )
 @pytest.mark.parametrize("scale", [1.0, 0.05], ids=["unit_cloud", "small_cloud"])
 @pytest.mark.parametrize(
@@ -950,6 +973,12 @@ def test_scan_pca_auto_span_pads_projected_extent(
     ):
         assert offsets[0] == pytest.approx(scores.min() + pad[0])
         assert offsets[-1] == pytest.approx(scores.max() + pad[1])
+
+
+@pytest.mark.parametrize("offset", [[1.0, 2.0, 3.0], np.zeros((2, 2)), []])
+def test_scan_pca_rejects_an_offset_that_is_not_a_scalar_or_pair(vqe_program, offset):
+    with pytest.raises(ValueError, match="offset must be a scalar or a pair"):
+        scan_pca(vqe_program, samples=_PCA_SAMPLES, grid_shape=(2, 2), offset=offset)
 
 
 def test_scan_pca_flat_component_gets_unit_span(vqe_program, mocker, mock_landscape):
@@ -986,3 +1015,46 @@ def test_scan_pca_symmetric_grid_is_centred_on_anchor(vqe_program, center):
     np.testing.assert_allclose(
         result.parameter_sets.reshape(3, 3, 2)[1, 1], anchor, atol=1e-12
     )
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [np.int64(7), np.random.SeedSequence(7), np.random.PCG64(7)],
+    ids=["numpy_integer", "seed_sequence", "bit_generator"],
+)
+def test_scan_2d_accepts_every_seed_numpy_does(vqe_program, seed):
+    scan = scan_2d(vqe_program, center=np.zeros(2), grid_shape=(2, 2), rng=seed)
+
+    assert scan.parameter_sets.shape == (4, 2)
+
+
+_COMPLEX_CENTER = np.array([1.0 + 0.5j, 2.0])
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda program: _resolve_center(program, _COMPLEX_CENTER),
+        lambda program: scan_1d(program, center=_COMPLEX_CENTER, n_points=2),
+        lambda program: scan_pca(
+            program, samples=_PCA_SAMPLES, center=_COMPLEX_CENTER, grid_shape=(2, 2)
+        ),
+        lambda program: compute_hessian(program, _COMPLEX_CENTER),
+        lambda program: program.viz.scan_pca(
+            samples=_PCA_SAMPLES, center=_COMPLEX_CENTER, grid_shape=(2, 2)
+        ),
+    ],
+    ids=["resolve_center", "scan_1d", "scan_pca", "compute_hessian", "viz_scan_pca"],
+)
+def test_a_complex_center_is_rejected(vqe_program, operation):
+    with pytest.raises(
+        ValueError, match="center must be real, got a non-zero imaginary part"
+    ):
+        operation(vqe_program)
+
+
+def test_a_center_with_no_imaginary_part_is_taken_as_real(vqe_program):
+    center = _resolve_center(vqe_program, np.array([1.0 + 0.0j, 2.0 + 0.0j]))
+
+    assert center.dtype == np.float64
+    np.testing.assert_array_equal(center, [1.0, 2.0])

@@ -8,11 +8,12 @@ OpenFermion lives behind the ``chem`` extra and is imported lazily, so
 importing this module never requires it.
 """
 
+from itertools import chain
 from types import ModuleType
 from typing import Any
 
 import numpy as np
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi._optional import import_optional
 
@@ -57,15 +58,20 @@ def qubit_operator_to_spo(
             f"n_qubits ({n_qubits}) is smaller than the operator's support ({support})."
         )
 
-    labels: list[str] = []
-    coeffs: list[complex] = []
-    for term, coeff in terms.items():
-        chars = ["I"] * n_qubits
-        for idx, pauli in term:
-            chars[idx] = pauli
-        labels.append("".join(chars[::-1]))
-        coeffs.append(complex(coeff))
-    return SparsePauliOp(labels, np.array(coeffs, dtype=complex)).simplify()
+    n_terms = len(terms)
+    lengths = np.fromiter(map(len, terms), dtype=np.intp, count=n_terms)
+    factors = tuple(chain.from_iterable(terms))
+    qubits = np.fromiter((idx for idx, _ in factors), dtype=np.intp, count=len(factors))
+    codes = np.fromiter(
+        (ord(pauli) for _, pauli in factors), dtype=np.uint8, count=len(factors)
+    )
+    rows = np.repeat(np.arange(n_terms), lengths)
+    x = np.zeros((n_terms, n_qubits), dtype=bool)
+    z = np.zeros((n_terms, n_qubits), dtype=bool)
+    x[rows, qubits] = codes != ord("Z")
+    z[rows, qubits] = codes != ord("X")
+    coeffs = np.fromiter(terms.values(), dtype=complex, count=n_terms)
+    return SparsePauliOp(PauliList.from_symplectic(z, x), coeffs).simplify()
 
 
 def _spo_from_integrals(

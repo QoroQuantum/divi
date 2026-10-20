@@ -6,6 +6,8 @@
 
 import warnings
 from collections.abc import Sequence
+from functools import cache
+from itertools import combinations
 
 import networkx as nx
 import numpy as np
@@ -340,10 +342,10 @@ def build_coupling_graph(
             f"{n_orb} orbitals; got {two_body.shape}."
         )
 
-    weights: dict[tuple[int, int], float] = {}
-    for p in range(n_orb):
-        for q in range(p + 1, n_orb):
-            weights[(p, q)] = abs(one_body[p, q]) + abs(two_body[p, q, q, p])
+    weights: dict[tuple[int, int], float] = {
+        (p, q): abs(one_body[p, q]) + abs(two_body[p, q, q, p])
+        for p, q in combinations(range(n_orb), 2)
+    }
 
     graph = nx.Graph()
     graph.add_nodes_from(range(n_orb))
@@ -415,15 +417,18 @@ def merge_clusters(
 
     clusters: list[tuple[int, ...]] = [(node,) for node in sorted(graph.nodes)]
 
+    @cache
+    def coupling(left: tuple[int, ...], right: tuple[int, ...]) -> float:
+        return _inter_cluster_weight(graph, left, right)
+
     def best_merge(candidates):
         best, best_weight = None, 0.0
-        for i in range(len(candidates)):
-            for j in range(i + 1, len(candidates)):
-                if len(candidates[i]) + len(candidates[j]) > max_orbitals_per_fragment:
-                    continue
-                weight = _inter_cluster_weight(graph, candidates[i], candidates[j])
-                if weight > best_weight:
-                    best, best_weight = (i, j), weight
+        for i, j in combinations(range(len(candidates)), 2):
+            if len(candidates[i]) + len(candidates[j]) > max_orbitals_per_fragment:
+                continue
+            weight = coupling(candidates[i], candidates[j])
+            if weight > best_weight:
+                best, best_weight = (i, j), weight
         return best
 
     while (pair := best_merge(clusters)) is not None:
@@ -459,17 +464,10 @@ def merge_clusters(
                 "Supply explicit fragments or raise the limit."
             )
 
-        coupled = [
-            other
-            for other in within_limit
-            if _inter_cluster_weight(graph, cluster, other) > 0.0
-        ]
+        coupled = [other for other in within_limit if coupling(cluster, other) > 0.0]
         partner = max(
             within_limit,
-            key=lambda other: (
-                _inter_cluster_weight(graph, cluster, other),
-                -len(other),
-            ),
+            key=lambda other: (coupling(cluster, other), -len(other)),
         )
         merged = tuple(sorted(cluster + partner))
         if not coupled:
@@ -624,11 +622,12 @@ def auto_fragment_specs(
         occupied_indices, virtual_indices = split_active_orbitals(
             active_orbitals, n_occupied, mo_coeff.shape[1]
         )
-    else:
-        assert n_active_orbitals is not None
+    elif n_active_orbitals is not None:
         occupied_indices, virtual_indices = select_frontier_orbitals(
             mo_coeff.shape[1], n_occupied, n_active_orbitals
         )
+    else:
+        raise ValueError("Pass either active_orbitals or n_active_orbitals.")
     localized_occ, localized_virt = localize_blocks(
         mol, mo_coeff, occupied_indices, virtual_indices, rng
     )

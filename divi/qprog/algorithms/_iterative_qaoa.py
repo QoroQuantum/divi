@@ -167,14 +167,15 @@ def interpolate_qaoa_params(
 ) -> npt.NDArray[np.float64]:
     """Interpolate QAOA parameters from depth p to depth p+1.
 
-    Deinterleaves the flat parameter array into beta and gamma sequences,
+    Deinterleaves the flat parameter array into gamma and beta sequences,
     applies the chosen interpolation strategy independently to each, then
     reinterleaves into the flat layout expected by QAOA. FOURIER expands
     gammas in the sine basis and betas in the cosine basis.
 
     Args:
         params: Flat 1D parameter array of length ``2 * current_depth``
-            with layout ``[beta_0, gamma_0, beta_1, gamma_1, ...]``.
+            with layout ``[gamma_0, beta_0, gamma_1, beta_1, ...]``, the cost
+            angle then the mixer angle of each layer.
         current_depth: Current circuit depth p.
         strategy: Interpolation strategy to use.
         n_basis_terms: Number of basis terms for FOURIER/CHEBYSHEV strategies.
@@ -183,24 +184,24 @@ def interpolate_qaoa_params(
     Returns:
         Flat 1D parameter array of length ``2 * (current_depth + 1)``.
     """
-    betas = params[0::2]
-    gammas = params[1::2]
+    gammas = params[0::2]
+    betas = params[1::2]
 
     if strategy == InterpolationStrategy.INTERP:
-        new_betas = _interp(betas)
         new_gammas = _interp(gammas)
+        new_betas = _interp(betas)
     elif strategy == InterpolationStrategy.FOURIER:
-        new_betas = _fourier(betas, np.cos, n_basis_terms)
         new_gammas = _fourier(gammas, np.sin, n_basis_terms)
+        new_betas = _fourier(betas, np.cos, n_basis_terms)
     elif strategy == InterpolationStrategy.CHEBYSHEV:
-        new_betas = _chebyshev(betas, n_basis_terms)
         new_gammas = _chebyshev(gammas, n_basis_terms)
+        new_betas = _chebyshev(betas, n_basis_terms)
     else:
         raise ValueError(f"Unknown interpolation strategy: {strategy}")
 
     new_params = np.empty(2 * (current_depth + 1), dtype=np.float64)
-    new_params[0::2] = new_betas
-    new_params[1::2] = new_gammas
+    new_params[0::2] = new_gammas
+    new_params[1::2] = new_betas
     return new_params
 
 
@@ -315,11 +316,11 @@ class IterativeQAOA(QAOA):
     def _rebuild_for_depth(self, depth: int) -> None:
         """Rebuild parameters for a new circuit depth and drop stale pipelines."""
         self.n_layers = depth
-        betas = ParameterVector("β", depth)
         gammas = ParameterVector("γ", depth)
+        betas = ParameterVector("β", depth)
         # Replaces the parent QAOA._params so the meta-circuit factories
         # pick up the new layer count.
-        self._params = np.array([[b, g] for b, g in zip(betas, gammas)], dtype=object)
+        self._params = np.array([[g, b] for g, b in zip(gammas, betas)], dtype=object)
         # Drop the memoized protocol pipelines (and their forward caches): the
         # ansatz changed shape, so the cost/sample circuits must be rebuilt.
         self._preprocessor_pipeline_cache.clear()
@@ -377,15 +378,12 @@ class IterativeQAOA(QAOA):
         """
         main_dir = Path(checkpoint_dir)
         if subdirectory is None and main_dir.is_dir():
-            depth_dirs = sorted(
-                (
-                    d
-                    for d in main_dir.iterdir()
-                    if _extract_depth_from_subdir(d) is not None
-                ),
-                key=lambda d: _extract_depth_from_subdir(d) or -1,
-                reverse=True,
-            )
+            depths = {
+                d: depth
+                for d in main_dir.iterdir()
+                if (depth := _extract_depth_from_subdir(d)) is not None
+            }
+            depth_dirs = sorted(depths, key=depths.__getitem__, reverse=True)
             for depth_dir in depth_dirs:
                 try:
                     _find_latest_checkpoint_subdir(depth_dir)

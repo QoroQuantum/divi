@@ -4,6 +4,7 @@
 
 """Pre-split QASM templates for fast parameter substitution."""
 
+from itertools import chain
 from typing import NamedTuple
 
 from divi.qasm import _param_regex
@@ -91,13 +92,6 @@ def render_template(template: QASMTemplate, formatted_values: tuple[str, ...]) -
     Returns:
         The fully-bound QASM body string.
     """
-    fragments = template.fragments
-    slot_indices = template.slot_indices
-
-    parts: list[str] = []
-    for i, slot_idx in enumerate(slot_indices):
-        parts.append(fragments[i])
-        parts.append(formatted_values[slot_idx])
-    parts.append(fragments[-1])
-
-    return "".join(parts)
+    values = (formatted_values[slot] for slot in template.slot_indices)
+    interleaved = chain.from_iterable(zip(template.fragments, values))
+    return "".join(interleaved) + template.fragments[-1]

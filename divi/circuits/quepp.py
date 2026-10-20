@@ -28,7 +28,8 @@ dramatically reduce path count.
 
 import warnings
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from numbers import Integral
 from typing import Any, Literal
 
 import numpy as np
@@ -257,9 +258,7 @@ def _obs_to_stim_terms(
     terms: list[tuple[float, stim.PauliString]] = []
     for label, coeff in zip(observable.paulis.to_labels(), observable.coeffs):
         # label has length `observable.num_qubits`; pad/align to n_qubits.
-        qiskit_label = label
-        if len(qiskit_label) < n_qubits:
-            qiskit_label = "I" * (n_qubits - len(qiskit_label)) + qiskit_label
+        qiskit_label = label.rjust(n_qubits, "I")
         big_endian = qiskit_label[::-1]
         terms.append((float(np.real(coeff)), stim.PauliString("+" + big_endian)))
     return terms
@@ -311,18 +310,18 @@ class _ObservableCPT:
             )
 
 
-def _read_slot(row: Any, slot: int) -> float:
-    """Read one declared observable's value out of a per-circuit result row.
+def _read_slots(results: np.ndarray, dag_idx: Any, slots: Any) -> np.ndarray:
+    """Read declared observables' values out of per-circuit result rows.
 
     Rows are per-observable sequences whenever the measurement stage
-    measured more than one observable; a bare scalar means there was only
-    one, so every slot reads it. Indexing anything else out of range still
-    raises, so a mismatched slot fails loudly rather than reading a
-    plausible wrong value.
+    measured more than one observable (a 2-D ``results``); a bare scalar
+    per row means there was only one, so every slot reads it. Indexing
+    anything else out of range still raises, so a mismatched slot fails
+    loudly rather than reading a plausible wrong value.
     """
-    if np.ndim(row) == 0:
-        return float(row)
-    return float(row[slot])
+    if results.ndim == 1:
+        return results[dag_idx]
+    return results[dag_idx, slots]
 
 
 def _split_into_single_terms(
@@ -342,11 +341,9 @@ def _split_into_single_terms(
     declared: list[SparsePauliOp] = []
     slots_per_obs: list[list[int]] = []
     for obs in observables:
-        slots = []
-        for term_idx in range(len(obs.paulis)):
-            slots.append(len(declared))
-            declared.append(obs[term_idx])
-        slots_per_obs.append(slots)
+        start = len(declared)
+        declared.extend(obs[term_idx] for term_idx in range(len(obs.paulis)))
+        slots_per_obs.append(list(range(start, len(declared))))
     return tuple(declared), slots_per_obs
 
 
@@ -416,7 +413,7 @@ def _normalize_angle(theta: float) -> tuple[int, float]:
 
     Returns ``(n, theta_prime)``.
     """
-    n = int(round(theta / _HALF_PI))
+    n = round(theta / _HALF_PI)
     theta_prime = theta - n * _HALF_PI
     return n, theta_prime
 
@@ -639,12 +636,7 @@ def _merge_paths_by_branch(paths: Iterable[_PauliPath]) -> list[_PauliPath]:
         key = (p.term_idx, p.branches)
         if key in merged:
             old = merged[key]
-            merged[key] = _PauliPath(
-                branches=p.branches,
-                weight=old.weight + p.weight,
-                order=old.order,
-                term_idx=p.term_idx,
-            )
+            merged[key] = replace(old, weight=old.weight + p.weight)
         else:
             merged[key] = p
     return list(merged.values())
@@ -1068,6 +1060,10 @@ class QuEPP(QEMProtocol):
         seed: int | None = None,
         n_twirls: int = 10,
     ) -> None:
+        if not isinstance(truncation_order, Integral) or isinstance(
+            truncation_order, bool
+        ):
+            raise ValueError("truncation_order must be an integer.")
         if truncation_order < 0:
             raise ValueError("truncation_order must be non-negative.")
         if sampling not in ("auto", "exhaustive", "montecarlo"):
@@ -1075,18 +1071,30 @@ class QuEPP(QEMProtocol):
                 "sampling must be 'auto', 'exhaustive' or 'montecarlo', "
                 f"got {sampling!r}"
             )
-        if sampling != "exhaustive" and (n_samples is None or n_samples < 1):
-            raise ValueError(
-                "n_samples must be a positive integer for montecarlo sampling."
-            )
-        self._K_T = truncation_order
+        if sampling != "exhaustive":
+            if (
+                not isinstance(n_samples, Integral)
+                or isinstance(n_samples, bool)
+                or n_samples < 1
+            ):
+                raise ValueError(
+                    "n_samples must be a positive integer for montecarlo sampling."
+                )
+            n_samples = int(n_samples)
+        if (
+            not isinstance(n_twirls, Integral)
+            or isinstance(n_twirls, bool)
+            or n_twirls < 0
+        ):
+            raise ValueError("n_twirls must be a non-negative integer.")
+        self._K_T = int(truncation_order)
         self._coeff_threshold = (
             0.0 if coefficient_threshold is None else coefficient_threshold
         )
         self._sampling = sampling
         self._n_samples = n_samples
         self._rng = np.random.default_rng(seed)
-        self.n_twirls = n_twirls
+        self.n_twirls = int(n_twirls)
         self.requires_bound_params = sampling == "exhaustive"
 
     @property
@@ -1137,15 +1145,16 @@ class QuEPP(QEMProtocol):
         # ----- Path-DAG dedup across observables ------------------------- #
         working_dag = circuit_to_dag(working)
         rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
-        branch_to_dag_idx: dict[tuple[int, ...], int] = {}
-        merged_path_dags: list[DAGCircuit] = []
-        for paths in obs_paths_list:
-            for p in paths:
-                if p.branches not in branch_to_dag_idx:
-                    branch_to_dag_idx[p.branches] = len(merged_path_dags)
-                    merged_path_dags.append(
-                        _build_path_dag(working_dag, rotation_positions, p.branches)
-                    )
+        unique_branches = dict.fromkeys(
+            p.branches for paths in obs_paths_list for p in paths
+        )
+        branch_to_dag_idx: dict[tuple[int, ...], int] = {
+            branches: idx for idx, branches in enumerate(unique_branches)
+        }
+        merged_path_dags: list[DAGCircuit] = [
+            _build_path_dag(working_dag, rotation_positions, branches)
+            for branches in unique_branches
+        ]
 
         merged_dags = (dag,) + tuple(merged_path_dags)
 
@@ -1432,7 +1441,7 @@ class QuEPP(QEMProtocol):
     def evaluate_symbolic_weights(
         per_obs_entry: "_ObservableCPT",
         symbols: Sequence[Parameter],
-        param_values: np.ndarray,
+        param_values: Sequence[float] | np.ndarray,
     ) -> None:
         """Substitute concrete parameter values into symbolic weight expressions.
 
@@ -1490,24 +1499,21 @@ class QuEPP(QEMProtocol):
         ensemble_start = context["ensemble_start"]
         n_rotations = context["n_rotations"]
 
+        results = np.asarray(quantum_results, dtype=float)
+
         out: list[float] = []
         for entry in per_obs:
             # Cached traces reuse entries, so clear the previous evaluation's flags.
             entry.eta_rejection = None
             entry.eta_amplifying = None
             dag_indices = entry.dag_indices
-            target_noisy = sum(
-                _read_slot(quantum_results[dag_indices[target_idx]], slot)
-                for slot in entry.target_slots
-            )
-            ensemble_noisy = np.array(
-                [
-                    _read_slot(quantum_results[dag_idx], slot)
-                    for dag_idx, slot in zip(
-                        dag_indices[ensemble_start:], entry.entry_slots
-                    )
-                ],
-                dtype=float,
+            target_slots = np.asarray(entry.target_slots, dtype=np.intp)
+            target_rows = np.full(len(target_slots), dag_indices[target_idx])
+            target_noisy = sum(_read_slots(results, target_rows, target_slots).tolist())
+            ensemble_noisy = _read_slots(
+                results,
+                np.asarray(dag_indices[ensemble_start:], dtype=np.intp),
+                np.asarray(entry.entry_slots, dtype=np.intp),
             )
             classical_values = entry.classical_values
             weights = entry.weights

@@ -9,6 +9,7 @@ import os
 import sys
 import warnings
 from collections.abc import Callable, Mapping, Sequence
+from numbers import Integral
 from typing import Any, cast
 
 import numpy as np
@@ -230,28 +231,22 @@ def _qscript_to_dag(
 ) -> tuple[DAGCircuit, tuple[Parameter, ...]]:
     """Convert a PennyLane QuantumScript into a Qiskit DAGCircuit."""
     qscript = _collapse_broadcast_of_one(qscript)
-    ordered_qiskit_params: list[Parameter] = []
-    ordered_sympy_symbols: list[sp.Symbol] = []
-    seen_qiskit: set[Parameter] = set()
-    seen_sympy: set[sp.Symbol] = set()
+    ordered_qiskit_params: dict[Parameter, None] = {}
+    ordered_sympy_symbols: dict[sp.Symbol, None] = {}
     for operation in qscript.operations:
         for parameter in operation.data:
             if isinstance(parameter, ParameterExpression):
                 parameter_expression = cast(ParameterExpression, parameter)
-                for qiskit_parameter in parameter_expression.parameters:
-                    if qiskit_parameter not in seen_qiskit:
-                        seen_qiskit.add(qiskit_parameter)
-                        ordered_qiskit_params.append(qiskit_parameter)
+                ordered_qiskit_params.update(
+                    dict.fromkeys(parameter_expression.parameters)
+                )
             elif isinstance(parameter, sp.Expr):
-                for symbol in parameter.free_symbols:
-                    if symbol not in seen_sympy:
-                        seen_sympy.add(symbol)
-                        ordered_sympy_symbols.append(symbol)
+                ordered_sympy_symbols.update(dict.fromkeys(parameter.free_symbols))
 
     parameter_map = {symbol: Parameter(str(symbol)) for symbol in ordered_sympy_symbols}
 
     wires = qscript.wires
-    needs_wire_map = any(not isinstance(wire, int) for wire in wires) or set(
+    needs_wire_map = any(not isinstance(wire, Integral) for wire in wires) or set(
         wires
     ) != set(range(len(wires)))
     if needs_wire_map:
@@ -549,8 +544,7 @@ def _batch_input_argnums(qnode: QNode) -> list[int]:
             argnum = args[0] if args else None
         if argnum is None:
             continue
-        indices = [argnum] if isinstance(argnum, int) else list(argnum)
-        argnums.extend(int(i) for i in indices)
+        argnums.extend(int(i) for i in np.atleast_1d(argnum).tolist())
     return argnums
 
 

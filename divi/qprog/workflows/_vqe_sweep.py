@@ -7,7 +7,8 @@ from collections import deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from functools import partial
-from itertools import product
+from itertools import cycle, pairwise, product
+from numbers import Real
 from typing import Any, Literal, NamedTuple
 
 import matplotlib.pyplot as plt
@@ -152,9 +153,10 @@ def _cartesian_to_zmatrix(
         neighbours[j].add(i)
 
     entries = {order[0]: _ZMatrixEntry(None, None, None, None, None, None)}
-    for k, atom in enumerate(order[1:], start=1):
-        parent = parents[atom]
-        assert parent is not None
+    children = [
+        (atom, parent) for atom, parent in parents.items() if parent is not None
+    ]
+    for k, (atom, parent) in enumerate(children, start=1):
         bond_len = float(np.linalg.norm(coords[atom] - coords[parent]))
         if k == 1:
             entries[atom] = _ZMatrixEntry(parent, None, None, bond_len, None, None)
@@ -368,7 +370,7 @@ class MoleculeTransformer:
     """
 
     base_molecule: Any
-    bond_modifiers: Sequence[float]
+    bond_modifiers: Sequence[float] | npt.NDArray[np.floating]
     atom_connectivity: Sequence[tuple[int, int]] | None = None
     bonds_to_transform: Sequence[tuple[int, int]] | None = None
     alignment_atoms: Sequence[int] | None = None
@@ -388,7 +390,20 @@ class MoleculeTransformer:
                 "or a PySCF `gto.Mole` instance."
             )
 
-        if not all(isinstance(x, (float, int)) for x in self.bond_modifiers):
+        if isinstance(self.bond_modifiers, np.ndarray) or any(
+            isinstance(x, np.generic) for x in self.bond_modifiers
+        ):
+            object.__setattr__(
+                self,
+                "bond_modifiers",
+                [
+                    x.item() if isinstance(x, np.generic) else x
+                    for x in self.bond_modifiers
+                ],
+            )
+        if not all(
+            isinstance(x, Real) and not isinstance(x, bool) for x in self.bond_modifiers
+        ):
             raise ValueError("`bond_modifiers` should be a sequence of floats.")
         if len(set(self.bond_modifiers)) < len(self.bond_modifiers):
             raise ValueError("`bond_modifiers` contains duplicate values.")
@@ -401,7 +416,7 @@ class MoleculeTransformer:
         n_symbols = _atom_count(self.base_molecule)
         atom_connectivity: Sequence[tuple[int, int]]
         if self.atom_connectivity is None:
-            atom_connectivity = tuple(zip(range(n_symbols), range(1, n_symbols)))
+            atom_connectivity = tuple(pairwise(range(n_symbols)))
             object.__setattr__(self, "atom_connectivity", atom_connectivity)
         else:
             atom_connectivity = self.atom_connectivity
@@ -608,7 +623,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
 
         all_energies = {key: prog.best_loss for key, prog in self.programs.items()}
 
-        smallest_key = min(all_energies, key=lambda k: all_energies[k])
+        smallest_key = min(all_energies, key=all_energies.__getitem__)
         smallest_value = all_energies[smallest_key]
 
         return smallest_key, smallest_value
@@ -635,9 +650,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         unique_ansatze = self.ansatze
 
         colors = ["blue", "g", "r", "c", "m", "y", "k"]
-        color_map = {
-            ansatz: colors[i % len(colors)] for i, ansatz in enumerate(unique_ansatze)
-        }
+        color_map = dict(zip(unique_ansatze, cycle(colors)))
 
         if graph_type == "scatter":
             for ansatz in unique_ansatze:

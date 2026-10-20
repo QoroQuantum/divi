@@ -9,12 +9,14 @@ import logging
 import re
 import warnings
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from numbers import Integral
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 import numpy as np
 import requests
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictBool,
@@ -225,7 +227,7 @@ def _factored_truncated(
         n, payload["k"]
     )
     signs = np.asarray(payload["signs"], dtype=np.float64)
-    Q_recon = F @ np.diag(signs) @ F.T + np.diag(residual)
+    Q_recon = (F * signs) @ F.T + np.diag(residual)
     rel_err = float(np.abs(Q_recon - Q).max()) / float(np.abs(Q).max())
     if rel_err > _TRUNCATED_REL_ERROR_MAX:
         return None
@@ -269,9 +271,8 @@ def _serialize_qubo_factored(canonical) -> dict:
     if cand_c is not None:
         candidates.append((cand_c, True))
 
-    # Sort by (payload size, lossy?) so ties favour lossless candidates.
-    candidates.sort(key=lambda item: (_payload_size(item[0]), 1 if item[1] else 0))
-    return candidates[0][0]
+    # Smallest (payload size, lossy?) so ties favour lossless candidates.
+    return min(candidates, key=lambda item: (_payload_size(item[0]), item[1]))[0]
 
 
 def _payload_size(payload) -> int:
@@ -1076,13 +1077,32 @@ class CharacterizationResult:
         return self.html
 
 
+def _plain_integer(value: Any) -> Any:
+    """Integral values, numpy's included, as ``int``; ``bool`` stays for the strict check."""
+    if isinstance(value, Integral) and not isinstance(value, bool):
+        return int(value)
+    return value
+
+
+def _plain_boolean(value: Any) -> Any:
+    return bool(value) if isinstance(value, np.bool_) else value
+
+
+def _plain_list(value: Any) -> Any:
+    return value.tolist() if isinstance(value, np.ndarray) else value
+
+
+_Int = Annotated[StrictInt, BeforeValidator(_plain_integer)]
+_Bool = Annotated[StrictBool, BeforeValidator(_plain_boolean)]
+
+
 class _Ansatz(BaseModel):
     """QAOA ansatz-shape controls (:attr:`CharacterizationOptions.ansatz`)."""
 
     model_config = ConfigDict(extra="forbid")
 
     mixer: Literal["x", "xy", "I"] | None = None
-    layers: StrictInt | None = Field(default=None, gt=0)
+    layers: _Int | None = Field(default=None, gt=0)
 
 
 class _Subspace(BaseModel):
@@ -1090,12 +1110,16 @@ class _Subspace(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    auto_warmstart: StrictBool | None = None
+    auto_warmstart: _Bool | None = None
     solver: str | None = None
-    max_variable_qubits: StrictInt | None = Field(default=None, gt=0)
-    restarts: StrictInt | None = Field(default=None, gt=0)
+    max_variable_qubits: _Int | None = Field(default=None, gt=0)
+    restarts: _Int | None = Field(default=None, gt=0)
     base_bitstring: str | None = None
-    variable_qubits: list[Annotated[StrictInt, Field(ge=0)]] | None = None
+    variable_qubits: list[Annotated[_Int, Field(ge=0)]] | None = None
+
+    _plain_variable_qubits = field_validator("variable_qubits", mode="before")(
+        _plain_list
+    )
 
     @field_validator("base_bitstring")
     @classmethod
@@ -1152,10 +1176,10 @@ class _Constraint(BaseModel):
         "equality",
     ]
     bound: StrictFloat | StrictInt
-    qubits: list[Annotated[StrictInt, Field(ge=0)]] | None = None
-    weights: dict[Annotated[StrictInt, Field(ge=0)], StrictFloat | StrictInt] | None = (
-        None
-    )
+    qubits: list[Annotated[_Int, Field(ge=0)]] | None = None
+    weights: dict[Annotated[_Int, Field(ge=0)], StrictFloat | StrictInt] | None = None
+
+    _plain_qubits = field_validator("qubits", mode="before")(_plain_list)
 
     @field_validator("weights", mode="before")
     @classmethod
@@ -1352,6 +1376,11 @@ class CharacterizationOptions(BaseModel):
     problem on 5 variables where variable 4 is unconstrained. When ``None``,
     the qubit count is inferred from the QUBO. Must be a positive integer.
     """
+
+    _plain_n_qubits = field_validator("n_qubits", mode="before")(_plain_integer)
+    _plain_flags = field_validator(
+        "structural_sensitivity", "parameter_sweep", "penalty_tuning", mode="before"
+    )(_plain_boolean)
 
     @model_validator(mode="after")
     def _check_options(self) -> Self:
@@ -1809,7 +1838,7 @@ def _validate_reference_states(
         )
     expected_n = n_qubits or inferred_n
 
-    if not reference_states:
+    if len(reference_states) == 0:
         raise ValueError(
             "reference_states must contain at least one candidate solution "
             "bitstring."
@@ -1891,6 +1920,7 @@ def characterize_and_validate(
         Credit cost scales with QUBO size.
     """
     options = options or CharacterizationOptions()
+    reference_states = list(reference_states)
     _validate_reference_states(problem, reference_states, options.n_qubits)
 
     wire_qubo = _serialize_qubo_for_wire(problem)

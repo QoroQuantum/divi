@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import itertools
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import replace
 from functools import cached_property
@@ -40,10 +41,9 @@ def _aggregate_param_group(
     param_group: list[tuple[str, dict[str, int]]],
 ) -> tuple[list[str], npt.NDArray[np.float64], float]:
     """Aggregate a parameter group into states, counts, and total shots."""
-    shots_dict: dict[str, int] = {}
+    shots_dict: Counter[str] = Counter()
     for _, histogram in param_group:
-        for bitstring, count in histogram.items():
-            shots_dict[bitstring] = shots_dict.get(bitstring, 0) + count
+        shots_dict.update(histogram)
     state_strings = list(shots_dict.keys())
     counts = np.array(list(shots_dict.values()), dtype=float)
     total_shots = counts.sum()
@@ -118,7 +118,8 @@ def _decode_parities(
     """Decode bitstring parities using the precomputed variable masks.
 
     Handles both the 1-D uint64 masks (``n_qubits <= 64``) and the 2-D limb
-    masks (wider registers); the limb path XORs the per-limb parities.
+    masks (wider registers); the limb path XORs the per-limb overlaps, since the
+    parity of a XOR is the XOR of the parities.
     """
     if not state_strings:
         return np.zeros((variable_masks_u64.shape[0], 0), dtype=np.uint8)
@@ -129,9 +130,10 @@ def _decode_parities(
         return _fast_popcount_parity(overlaps)
 
     states = _states_to_limbs(state_strings, variable_masks_u64.shape[1])
-    overlaps = variable_masks_u64[:, None, :] & states[None, :, :]
-    per_limb = _fast_popcount_parity(overlaps)  # (n_vars, n_states, n_limbs)
-    return np.bitwise_xor.reduce(per_limb, axis=-1).astype(np.uint8)
+    overlaps = np.bitwise_xor.reduce(
+        variable_masks_u64[:, None, :] & states[None, :, :], axis=-1
+    )
+    return _fast_popcount_parity(overlaps)
 
 
 def _setup_dense_encoding(
@@ -193,11 +195,7 @@ def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int)
     terms = []
     for mask in variable_masks_u64:
         m = _mask_to_int(mask)
-        paulis = ["I"] * n_qubits
-        for i in range(n_qubits):
-            if (m >> i) & 1:
-                paulis[i] = "Z"
-        terms.append("".join(paulis))
+        terms.append("".join("Z" if (m >> i) & 1 else "I" for i in range(n_qubits)))
     return ";".join(terms)
 
 
@@ -440,25 +438,25 @@ class PCE(VQE):
             )[:limit]
 
         compute_energy = sort_by == "energy"
-        result = []
-        for (encoded_bitstring, prob), decoded_solution in zip(
-            filtered, decoded_qubo_solutions
-        ):
-            decoded_bitstring = "".join(str(int(x)) for x in decoded_solution)
-            energy = (
-                float(
-                    _evaluate_binary_polynomial(
-                        decoded_solution.astype(float),
-                        self._polynomial,
-                        _compiled=self._compiled_problem,
-                    )
+        energies = (
+            np.asarray(
+                _evaluate_binary_polynomial(
+                    decoded_qubo_solutions.T.astype(float),
+                    self._polynomial,
+                    _compiled=self._compiled_problem,
                 )
-                if compute_energy
-                else None
-            )
+            ).tolist()
+            if compute_energy
+            else [None] * len(filtered)
+        )
+        digits = np.ascontiguousarray(decoded_qubo_solutions.astype(np.uint8) + 48)
+        result = []
+        for (_, prob), decoded_solution, row, energy in zip(
+            filtered, decoded_qubo_solutions, digits, energies
+        ):
             result.append(
                 SolutionEntry(
-                    bitstring=decoded_bitstring,
+                    bitstring=row.tobytes().decode("ascii"),
                     prob=prob,
                     decoded=(
                         self._decode_assignment(decoded_solution.astype(np.int32))

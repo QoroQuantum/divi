@@ -13,7 +13,7 @@ import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
 from divi.qprog.checkpointing import OPTIMIZER_STATE_FILE, _atomic_write
-from divi.qprog.optimizers._base import Optimizer
+from divi.qprog.optimizers._base import Optimizer, _argmin_finite
 
 
 class GridSearchOptimizer(Optimizer):
@@ -94,7 +94,9 @@ class GridSearchOptimizer(Optimizer):
             **kwargs: Accepts but ignores ``max_iterations`` and ``rng``.
 
         Returns:
-            OptimizeResult with the best parameters.
+            OptimizeResult with the parameters of the smallest finite loss. If no
+            grid point has a finite loss, the result holds the first grid point,
+            ``fun=inf`` and ``success=False``.
         """
         max_iterations = kwargs.pop("max_iterations", 1)
         if max_iterations > 1:
@@ -108,18 +110,26 @@ class GridSearchOptimizer(Optimizer):
 
         self._all_losses = np.atleast_1d(cost_fn(self._param_grid)).astype(np.float64)
 
-        best_idx = np.nanargmin(self._all_losses)
-        self._best_params = self._param_grid[best_idx].copy()
-        self._best_loss = float(self._all_losses[best_idx])
+        best_idx = _argmin_finite(self._all_losses)
+        if best_idx is None:
+            self._best_params = None
+            self._best_loss = None
+            result = OptimizeResult(
+                x=self._param_grid[0].copy(),
+                fun=np.inf,
+                nit=1,
+                success=False,
+                message="No grid point produced a finite loss.",
+            )
+        else:
+            self._best_params = self._param_grid[best_idx].copy()
+            self._best_loss = float(self._all_losses[best_idx])
+            result = OptimizeResult(x=self._best_params, fun=self._best_loss, nit=1)
 
         if callback_fn:
             callback_fn(OptimizeResult(x=self._param_grid, fun=self._all_losses))
 
-        return OptimizeResult(
-            x=self._best_params,
-            fun=self._best_loss,
-            nit=1,
-        )
+        return result
 
     def get_config(self) -> dict[str, Any]:
         """Get optimizer configuration."""

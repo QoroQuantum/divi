@@ -6,6 +6,7 @@
 
 import copy
 from collections.abc import Mapping
+from contextlib import closing
 from typing import Any
 from warnings import warn
 
@@ -404,18 +405,15 @@ def _seed_energy_gain(
         return None
 
     # Exact and in double precision, whatever backend the run itself uses.
-    simulator = MaestroSimulator(
-        maestro_config=MaestroConfig(simulation_type="Statevector")
-    )
-    try:
+    with closing(
+        MaestroSimulator(maestro_config=MaestroConfig(simulation_type="Statevector"))
+    ) as simulator:
         reference, seeded = (
             simulator.expectation_value(
                 ansatz.build(params, n_qubits, n_layers, **build_kwargs), hamiltonian
             )
             for params in (np.zeros_like(seed), seed)
         )
-    finally:
-        simulator.close()
     return reference - seeded
 
 

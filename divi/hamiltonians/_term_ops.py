@@ -7,10 +7,12 @@
 import math
 import numbers
 import warnings
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 import numpy as np
+import numpy.typing as npt
 from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter
@@ -26,20 +28,34 @@ else:
     _QubitOperator = Any
 
 #: Every observable representation :func:`to_spo` normalises.
-ObservableLike = _PennyLaneOperator | SparsePauliOp | dict[str, float] | _QubitOperator
+ObservableLike = (
+    _PennyLaneOperator | SparsePauliOp | Mapping[str, float] | _QubitOperator
+)
 
 
-def _assert_hermitian_spo(spo: SparsePauliOp, atol: float = 1e-10) -> None:
+#: Largest imaginary part tolerated in an operator's coefficients, relative to
+#: its largest coefficient magnitude.
+_IMAGINARY_RTOL = 1e-10
+
+
+def _imaginary_tolerance(coefficients: npt.ArrayLike) -> float:
+    """Absolute imaginary-part tolerance for ``coefficients``."""
+    magnitudes = np.abs(np.asarray(coefficients, dtype=complex))
+    return _IMAGINARY_RTOL * float(np.max(magnitudes, initial=0.0))
+
+
+def _assert_hermitian_spo(spo: SparsePauliOp) -> None:
     """Validate that a Pauli-basis observable has real coefficients.
 
-    Checks each coefficient's imaginary part directly. Pathological cases
-    where individually non-Hermitian Pauli terms cancel after summation
-    (e.g. ``+i X`` and ``-i X``) are not caught — callers that may produce
-    such inputs should pass an already-simplified ``SparsePauliOp``.
+    Equal Pauli terms are merged first, so ``+i X`` and ``-i X`` cancel rather
+    than being rejected term by term. The imaginary parts are then compared with
+    a tolerance relative to the largest coefficient, which absorbs the round-off
+    left by products of Hermitian operators at any scale.
     """
     if spo.size == 0:
         return
-    if np.any(np.abs(np.imag(spo.coeffs)) > atol):
+    coefficients = spo.simplify(atol=0.0, rtol=0.0).coeffs
+    if np.any(np.abs(coefficients.imag) > _imaginary_tolerance(coefficients)):
         raise ValueError(
             "SparsePauliOp observables must be Hermitian; Pauli coefficients "
             "must be real."
@@ -63,7 +79,7 @@ def generate_empty_spo(num_qubits: int) -> SparsePauliOp:
 _PAULI_CHARS = frozenset("IXYZ")
 
 
-def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
+def _spo_from_pauli_dict(terms: Mapping[str, float]) -> SparsePauliOp:
     """Build a ``SparsePauliOp`` from a ``{pauli_string: coefficient}`` mapping.
 
     Pauli strings are read in divi convention: the **leftmost** character is
@@ -76,11 +92,8 @@ def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
     the qubit indices the user specified.
 
     Validates that every key is a non-empty string of equal length composed
-    only of ``I``, ``X``, ``Y``, ``Z`` and that every coefficient is real.
-    Dict keys are unique by construction, so the cancellation gap noted on
-    :func:`_assert_hermitian_spo` (where ``+i X`` and ``-i X`` could cancel to a
-    hermitian sum despite individually being non-hermitian) cannot arise on this
-    path.
+    only of ``I``, ``X``, ``Y``, ``Z`` and that every coefficient is real, to the
+    tolerance :func:`_assert_hermitian_spo` applies.
     """
     if not terms:
         raise ValueError(
@@ -88,6 +101,9 @@ def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
             "qubit count is undefined."
         )
 
+    imaginary_tolerance = _imaginary_tolerance(
+        [coeff for coeff in terms.values() if isinstance(coeff, numbers.Complex)]
+    )
     first_len: int | None = None
     items: list[tuple[str, float]] = []
     for key, coeff in terms.items():
@@ -106,9 +122,12 @@ def _spo_from_pauli_dict(terms: dict[str, float]) -> SparsePauliOp:
                 f"to_spo: all Pauli-string keys must share a length; "
                 f"got {first_len} and {len(key)}."
             )
-        if isinstance(coeff, complex) and coeff.imag != 0:
+        if (
+            isinstance(coeff, numbers.Complex)
+            and abs(complex(coeff).imag) > imaginary_tolerance
+        ):
             raise ValueError(
-                f"to_spo: coefficient for {key!r} must be real, got {coeff!r}."
+                f"to_spo: coefficient for {key!r} must be real, got {complex(coeff)!r}."
             )
         # Reverse: divi convention puts qubit 0 leftmost; Qiskit's parser
         # puts qubit 0 rightmost.
@@ -127,8 +146,9 @@ def _observable_to_sparse_pauli_op(
     by resolving through the provided *wires* register.
 
     Coefficients are stored as real floats.  A warning is emitted if any
-    coefficient has a non-negligible imaginary part (>1e-10), which would
-    indicate a non-Hermitian observable.
+    coefficient has a non-negligible imaginary part (see
+    :func:`_assert_hermitian_spo`), which would indicate a non-Hermitian
+    observable.
     """
     pauli_rep = obs.pauli_rep
     if pauli_rep is None:
@@ -140,10 +160,11 @@ def _observable_to_sparse_pauli_op(
     wire_indices = {wire: index for index, wire in enumerate(wire_list)}
     num_qubits = len(wire_list)
 
+    imaginary_tolerance = _imaginary_tolerance(list(pauli_rep.values()))
     sparse: list[tuple[str, list[int], float]] = []
     for pauli_word, coeff in pauli_rep.items():
         c = complex(coeff)
-        if abs(c.imag) > 1e-10:
+        if abs(c.imag) > imaginary_tolerance:
             warnings.warn(
                 f"Observable coefficient {c} has non-negligible imaginary "
                 f"part ({c.imag:.2e}); dropping it. This may indicate a "
@@ -210,7 +231,7 @@ def to_spo(
     if isinstance(op, SparsePauliOp):
         _assert_hermitian_spo(op)
         return op
-    if isinstance(op, dict):
+    if isinstance(op, Mapping):
         spo = _spo_from_pauli_dict(op)
         _assert_hermitian_spo(spo)
         return spo
@@ -228,13 +249,8 @@ def to_spo(
 
 def _is_openfermion_qubit_operator(op) -> bool:
     """True if ``op`` is an OpenFermion ``QubitOperator`` (import-free fast path)."""
-    if type(op).__name__ != "QubitOperator":
-        return False
     openfermion = module_if_imported("openfermion")
-    if openfermion is None:
-        return False
-    QubitOperator = openfermion.QubitOperator
-    return isinstance(op, QubitOperator)
+    return openfermion is not None and isinstance(op, openfermion.QubitOperator)
 
 
 def _spo_wires(op: _PennyLaneOperator | SparsePauliOp) -> tuple:
@@ -380,12 +396,11 @@ def _spo_to_qiskit_basis_gates_symbolic(
                 qc.rx(_HALF_PI, q)
 
         active_qubits = [q for q, _ in active]
-        n = len(active_qubits)
-        for j in range(n - 1, 0, -1):
-            qc.cx(active_qubits[j], active_qubits[j - 1])
+        for control, target in pairwise(reversed(active_qubits)):
+            qc.cx(control, target)
         qc.rz(theta, active_qubits[0])
-        for j in range(1, n):
-            qc.cx(active_qubits[j], active_qubits[j - 1])
+        for target, control in pairwise(active_qubits):
+            qc.cx(control, target)
 
         for q, ch in active:
             if ch == "X":

@@ -10,7 +10,9 @@ variance. Operating on result *keys* (parsing, grouping, routing) lives in
 :mod:`divi.pipeline._result_keys_operations`.
 """
 
+from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from itertools import chain
 from typing import Any
 
 import numpy as np
@@ -51,8 +53,7 @@ def _bitstring_eigenvalues(
         "".join(bitstrings).encode("ascii"), dtype=np.uint8
     ).reshape(n_states, n_qubits) - np.uint8(ord("0"))
 
-    eigenvalues = np.zeros((len(pauli_labels), n_states))
-    for obs_idx, label in enumerate(pauli_labels):
+    for label in pauli_labels:
         if len(label) != n_qubits:
             raise ValueError(
                 f"Expected a {n_qubits}-character Pauli label, got {len(label)}."
@@ -60,16 +61,13 @@ def _bitstring_eigenvalues(
         if not set(label) <= _PAULI_CHARS:
             raise ValueError(f"Pauli label {label!r} contains characters outside IXYZ.")
 
-        active_positions = [i for i, pauli in enumerate(label) if pauli != "I"]
-        if not active_positions:
-            eigenvalues[obs_idx, :] = 1.0
-            continue
-
-        bits = state_bits[:, np.array(active_positions, dtype=np.uint32)]
-        parity = bits.sum(axis=1, dtype=np.int64) & 1
-        eigenvalues[obs_idx, :] = 1 - 2 * parity
-
-    return eigenvalues
+    label_chars = np.frombuffer(
+        "".join(pauli_labels).encode("ascii"), dtype=np.uint8
+    ).reshape(len(pauli_labels), n_qubits)
+    # Active-qubit counts are integers far below float32's exact limit of 2**24.
+    active = (label_chars != ord("I")).astype(np.float32)
+    parity = (active @ state_bits.T.astype(np.float32)) % 2
+    return 1.0 - 2.0 * parity.astype(np.float64)
 
 
 def _batched_expectation(
@@ -91,11 +89,7 @@ def _batched_expectation(
     n_histograms = len(shots_dicts)
 
     # 1. Aggregate unique measured states.
-    all_measured_bitstrings: set[str] = set()
-    for sd in shots_dicts:
-        all_measured_bitstrings.update(sd.keys())
-
-    unique_bitstrings = sorted(all_measured_bitstrings)
+    unique_bitstrings = sorted(set(chain.from_iterable(shots_dicts)))
     n_unique_states = len(unique_bitstrings)
     bitstring_to_idx_map = {bs: i for i, bs in enumerate(unique_bitstrings)}
     eigenvalues = _bitstring_eigenvalues(unique_bitstrings, pauli_labels, n_qubits)
@@ -200,22 +194,31 @@ def _counts_to_expvals(
     """
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
 
-    out: ChildResults = {}
+    members_by_group: defaultdict[
+        tuple[tuple[str, ...], int], list[tuple[tuple, dict[str, int]]]
+    ] = defaultdict(list)
     for branch_key, counts in raw.items():
         _bk, group_labels, n_qubits = _resolve_group(
             branch_key, batch_keys, labels_by_bk, nq_by_bk
         )
+        group = (tuple(map(str, group_labels)), n_qubits)
+        members_by_group[group].append(
+            (branch_key, _big_endian_histogram(branch_key, counts))
+        )
 
-        counts = _big_endian_histogram(branch_key, counts)
+    values: ChildResults = {}
+    for (labels, n_qubits), members in members_by_group.items():
         expvals = _batched_expectation(
-            [counts], [str(p) for p in group_labels], n_qubits
+            [counts for _, counts in members], labels, n_qubits
         )
-        col = expvals[:, 0]
-        out[branch_key] = (
-            float(col[0]) if len(col) == 1 else {i: float(v) for i, v in enumerate(col)}
-        )
+        for (branch_key, _), col in zip(members, expvals.T):
+            values[branch_key] = (
+                float(col[0])
+                if len(col) == 1
+                else {i: float(v) for i, v in enumerate(col)}
+            )
 
-    return out
+    return {branch_key: values[branch_key] for branch_key in raw}
 
 
 def _observable_coeff_map(
@@ -412,7 +415,7 @@ def _counts_to_probs(
     out: ChildResults = {}
 
     for branch_key, counts in raw.items():
-        if not isinstance(counts, dict):
+        if not isinstance(counts, Mapping):
             out[branch_key] = counts
             continue
         out[branch_key] = {

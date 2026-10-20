@@ -4,6 +4,7 @@
 
 """Tests for CircuitSpecStage: single, sequence, and mapping inputs."""
 
+import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.converters import circuit_to_dag
@@ -77,6 +78,36 @@ class TestCircuitSpecStageExpand:
             "got int$",
         ):
             stage.expand(42, env)
+
+
+def test_expand_accepts_a_one_dimensional_array_of_meta_circuits(dummy_expval_backend):
+    metas = np.empty(2, dtype=object)
+    metas[:] = [_make_meta(1), _make_meta(2)]
+    env = PipelineEnv(backend=dummy_expval_backend)
+
+    batch, token = CircuitSpecStage().expand(metas, env)
+
+    assert batch == {(("circuit", 0),): metas[0], (("circuit", 1),): metas[1]}
+    assert token == "sequence"
+
+
+def test_expand_rejects_a_multi_dimensional_array(dummy_expval_backend):
+    env = PipelineEnv(backend=dummy_expval_backend)
+
+    with pytest.raises(
+        TypeError,
+        match="^CircuitSpecStage expects a MetaCircuit, sequence, or mapping, "
+        "got ndarray$",
+    ):
+        CircuitSpecStage().expand(np.empty((2, 2), dtype=object), env)
+
+
+def test_convert_by_shape_maps_over_a_one_dimensional_array():
+    out = CircuitSpecStage._convert_by_shape(
+        np.array(["a", "b"]), str.upper, single_type=bytes, expected="Expected a string"
+    )
+
+    assert out == ["A", "B"]
 
 
 def test_stage_is_named_after_its_class():

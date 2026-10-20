@@ -10,7 +10,7 @@ and the ``PCECostStage`` pipeline stage.
 """
 
 import numbers
-from collections.abc import Hashable
+from collections.abc import Hashable, Mapping
 from typing import Any
 
 import dimod
@@ -28,18 +28,33 @@ from ._types import (
 )
 
 
-def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix:
+def _real_qubo_matrix(matrix):
+    """Return ``matrix`` as a real matrix, rejecting a non-zero imaginary part."""
+    if not np.iscomplexobj(matrix):
+        return matrix
+    values = matrix.tocoo().data if sps.issparse(matrix) else matrix
+    if np.any(values.imag != 0):
+        raise ValueError(
+            "QUBO matrix must be real; got a complex matrix with a non-zero "
+            "imaginary part."
+        )
+    return matrix.real
+
+
+def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix | sps.sparray:
     """Convert supported QUBO inputs to a square matrix.
 
     Args:
-        qubo: QUBO input as list, ndarray, sparse matrix, or BinaryQuadraticModel.
+        qubo: QUBO input as list, ndarray, sparse matrix or array, or
+            BinaryQuadraticModel.
 
     Returns:
         Square QUBO matrix as a dense ndarray or sparse matrix.
 
     Raises:
-        ValueError: If the input cannot be converted to a square matrix or the
-            BinaryQuadraticModel is not binary.
+        ValueError: If the input cannot be converted to a square matrix, is
+            complex with a non-zero imaginary part, or is a
+            BinaryQuadraticModel that is not binary.
     """
     if isinstance(qubo, dimod.BinaryQuadraticModel):
         if qubo.vartype != dimod.Vartype.BINARY:
@@ -48,7 +63,9 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix:
             )
         variables = list(qubo.variables)
         var_to_idx = {v: i for i, v in enumerate(variables)}
-        matrix = np.diag([qubo.linear.get(v, 0) for v in variables])
+        matrix = np.diag(
+            np.array([qubo.linear.get(v, 0) for v in variables], dtype=float)
+        )
         for (u, v), coeff in qubo.quadratic.items():
             i, j = var_to_idx[u], var_to_idx[v]
             matrix[i, j] = matrix[j, i] = coeff / 2
@@ -64,16 +81,17 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix:
                 f" Got array of shape {qubo.shape}."
                 " Must be a square matrix."
             )
-        return qubo
+        return _real_qubo_matrix(qubo)
 
-    if sps.isspmatrix(qubo):
-        if qubo.shape[0] != qubo.shape[1]:
+    if sps.issparse(qubo):
+        shape = qubo.shape  # type: ignore[missing-attribute]
+        if shape[0] != shape[1]:
             raise ValueError(
                 "Invalid QUBO matrix."
-                f" Got sparse matrix of shape {qubo.shape}."
+                f" Got sparse matrix of shape {shape}."
                 " Must be a square matrix."
             )
-        return qubo
+        return _real_qubo_matrix(qubo)
 
     raise ValueError(f"Unsupported QUBO type: {type(qubo)}")
 
@@ -120,7 +138,7 @@ def hubo_to_binary_polynomial(hubo: HUBOProblemTypes) -> dimod.BinaryPolynomial:
             )
         return hubo
 
-    if isinstance(hubo, dict):
+    if isinstance(hubo, Mapping):
         poly_terms: dict[frozenset[Hashable], float] = {}
         for raw_term, coeff in hubo.items():
             term = _normalize_hubo_term_key(raw_term)
@@ -153,7 +171,7 @@ def qubo_to_binary_polynomial(qubo: QUBOProblemTypes) -> dimod.BinaryPolynomial:
     matrix = qubo_to_matrix(qubo)
     coo = sps.coo_matrix(matrix)
     rows, cols, values = coo.row, coo.col, coo.data
-    n_vars = matrix.shape[0]
+    n_vars = coo.shape[0]
 
     poly_terms: dict[frozenset[Hashable], float] = {}
     for i, j, coeff in zip(rows, cols, values):
@@ -240,17 +258,9 @@ def compile_problem(
         offsets.append(len(all_indices))
         all_coeffs.append(c)
 
-    term_indices = (
-        np.array(all_indices, dtype=np.int32)
-        if all_indices
-        else np.empty(0, dtype=np.int32)
-    )
+    term_indices = np.array(all_indices, dtype=np.int32)
     term_offsets = np.array(offsets, dtype=np.int32)
-    coeffs = (
-        np.array(all_coeffs, dtype=np.float64)
-        if all_coeffs
-        else np.empty(0, dtype=np.float64)
-    )
+    coeffs = np.array(all_coeffs, dtype=np.float64)
     return term_indices, term_offsets, coeffs, constant
 
 
@@ -373,7 +383,6 @@ def _compute_hard_cvar_energy_jit(
         alpha_cvar: CVaR tail fraction.
         term_indices, term_offsets, coeffs, constant: compiled problem arrays.
     """
-    len(coeffs)
     n_states = x_vals.shape[1]
 
     energies = _eval_poly_2d_jit(x_vals, term_indices, term_offsets, coeffs, constant)

@@ -6,9 +6,11 @@
 
 import copy
 import functools
+import math
 import random
 import warnings
 from collections.abc import Callable, Sequence
+from numbers import Real
 from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
@@ -59,8 +61,9 @@ def _warn_on_collapsed_scales(
     if len(set(effective)) == len(effective):
         return
     warnings.warn(
-        f"ZNE: requested scale factors {list(requested)} collapse to effective "
-        f"scales {list(effective)} — the foldable gate count is too small for "
+        f"ZNE: requested scale factors {[float(s) for s in requested]} collapse to "
+        f"effective scales {[float(s) for s in effective]} — the foldable gate "
+        f"count is too small for "
         f"the requested granularity. Extrapolation may fail or be biased; "
         f"consider fewer scale factors, integer scales only, or a circuit with "
         f"more foldable gates.",
@@ -106,7 +109,7 @@ class GlobalFoldPass(TransformationPass):
 
     def __init__(self, scale_factor: float):
         super().__init__()
-        if scale_factor < 1.0:
+        if not scale_factor >= 1.0:
             raise ValueError(
                 f"GlobalFoldPass: scale_factor must be >= 1, got {scale_factor}."
             )
@@ -182,7 +185,7 @@ class LocalFoldPass(TransformationPass):
         rng: random.Random | None = None,
     ):
         super().__init__()
-        if scale_factor < 1.0:
+        if not scale_factor >= 1.0:
             raise ValueError(
                 f"LocalFoldPass: scale_factor must be >= 1, got {scale_factor}."
             )
@@ -329,13 +332,11 @@ class RichardsonExtrapolator:
             )
         res = np.asarray(results, dtype=float)
         _validate_extrapolation_inputs("RichardsonExtrapolator", sfs, res)
-        weights = np.array(
-            [
-                np.prod([-s_j / (s_i - s_j) for j, s_j in enumerate(sfs) if j != i])
-                for i, s_i in enumerate(sfs)
-            ]
-        )
-        return float(np.dot(weights, res))
+        gaps = sfs[:, None] - sfs[None, :]
+        np.fill_diagonal(gaps, 1.0)
+        factors = -sfs[None, :] / gaps
+        np.fill_diagonal(factors, 1.0)
+        return float(np.dot(factors.prod(axis=1), res))
 
 
 #: Type for the folding callable — given a ``DAGCircuit`` and a requested
@@ -440,21 +441,31 @@ class ZNE(QEMProtocol):
         folding_fn: FoldingFn | None = None,
         extrapolator: ZNEExtrapolator | None = None,
     ):
-        if not isinstance(scale_factors, Sequence) or not all(
-            isinstance(e, (int, float)) for e in scale_factors
+        if isinstance(scale_factors, np.ndarray) and scale_factors.ndim == 1:
+            entries = scale_factors.tolist()
+        elif isinstance(scale_factors, Sequence) and not isinstance(
+            scale_factors, (str, bytes)
+        ):
+            entries = list(scale_factors)
+        else:
+            entries = None
+        if entries is None or not all(
+            isinstance(e, Real) and not isinstance(e, bool) for e in entries
         ):
             raise ValueError("scale_factors must be a sequence of real numbers.")
+        scale_factors = [float(e) for e in entries]
         if len(scale_factors) < 2:
             raise ValueError(
                 "scale_factors must contain at least two points to extrapolate "
-                f"to the zero-noise limit; got {list(scale_factors)}."
+                f"to the zero-noise limit; got {scale_factors}."
             )
         if not all(e >= 1.0 for e in scale_factors):
             raise ValueError("All scale factors must be ≥ 1.0.")
+        if not all(math.isfinite(e) for e in scale_factors):
+            raise ValueError("All scale factors must be finite.")
         if len(set(scale_factors)) != len(scale_factors):
             raise ValueError(
-                "scale_factors must be unique; got duplicates in "
-                f"{list(scale_factors)}."
+                f"scale_factors must be unique; got duplicates in {scale_factors}."
             )
 
         if extrapolator is not None and not isinstance(extrapolator, ZNEExtrapolator):
@@ -531,7 +542,7 @@ class ZNE(QEMProtocol):
 
         _warn_on_collapsed_scales(scales, effective_scales)
 
-        return tuple(dag for _ in scales), {"effective_scales": effective_scales}
+        return (dag,) * len(scales), {"effective_scales": effective_scales}
 
     def reduce(
         self,
@@ -550,7 +561,7 @@ class ZNE(QEMProtocol):
         if not selected:
             raise RuntimeError("ZNE received an empty results sequence.")
 
-        if not isinstance(selected[0], (list, tuple)):
+        if np.ndim(selected[0]) == 0:
             selected = [[v] for v in selected]
         n_obs = len(selected[0])
         return [

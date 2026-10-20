@@ -10,6 +10,7 @@ improving backend utilization.
 """
 
 import logging
+from collections import defaultdict
 from collections.abc import Hashable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -564,7 +565,7 @@ class _BatchCoordinator:
             return merged, merged_kw
 
         # Group by ham_ops so circuits with the same observable are contiguous.
-        ham_to_programs: dict[str, list[Hashable]] = {}
+        ham_to_programs: defaultdict[str, list[Hashable]] = defaultdict(list)
         for prog_key, entry in batch.items():
             ham = entry.kwargs.get("ham_ops")
             if ham is None:
@@ -573,7 +574,7 @@ class _BatchCoordinator:
                     f"differ from other programs in the sub-batch. "
                     f"Cannot merge programs with incompatible submit kwargs."
                 )
-            ham_to_programs.setdefault(ham, []).append(prog_key)
+            ham_to_programs[ham].append(prog_key)
         _require_kwargs_match_except(all_kwargs, "ham_ops")
 
         merged = {}
@@ -713,7 +714,7 @@ class _BatchCoordinator:
             # declaring the batch successful. Future resolution stays after
             # the finish event so a waiting ensemble cannot close the session
             # before it observes the terminal batch lifecycle.
-            program_results: dict[Hashable, list[dict]] = {}
+            program_results: defaultdict[Hashable, list[dict]] = defaultdict(list)
             for item in results_list:
                 backend_label = item["label"]
                 try:
@@ -722,9 +723,7 @@ class _BatchCoordinator:
                     raise ValueError(
                         f"Backend returned unknown circuit label {backend_label!r}."
                     ) from exc
-                program_results.setdefault(program_key, []).append(
-                    item | {"label": original_label}
-                )
+                program_results[program_key].append(item | {"label": original_label})
 
             per_program_runtime = runtime / n_programs
         except ExecutionCancelledError as exc:

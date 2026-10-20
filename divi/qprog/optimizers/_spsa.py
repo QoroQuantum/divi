@@ -39,6 +39,8 @@ _TARGET_STEP_MAGNITUDE = 2 * np.pi / 10
 #: Below this, the measured directional derivative is treated as no signal.
 _CALIBRATION_FLOOR = 1e-10
 
+_SIGNS = np.array([-1.0, 1.0])
+
 
 def _spsa_gain_a(k: int, a: float, A: float, alpha: float) -> float:
     """SPSA learning-rate gain ``a_k = a / (A + k + 1)**alpha``."""
@@ -66,11 +68,7 @@ def _spsa_gradient(
     Returns ``(ghat, h, f_plus, f_minus)``; the caller can reuse the perturbed
     values as a loss proxy without a third evaluation.
     """
-    h = (
-        direction
-        if direction is not None
-        else rng.choice([-1.0, 1.0], size=theta.shape[0])
-    )
+    h = direction if direction is not None else rng.choice(_SIGNS, size=theta.shape[0])
     batch = np.vstack([theta + c_k * h, theta - c_k * h])
     values = np.asarray(cost_fn(batch), dtype=np.float64).reshape(-1)
     if values.size < 2:
@@ -97,7 +95,7 @@ def _fidelity_metric_sample(
     difference of the fidelity ``F(theta, theta + perturbation)`` along ``h1``
     and ``h2``, giving ``-(δF / 8 c_k²)(h1 h2ᵀ + h2 h1ᵀ)``.
     """
-    h2 = rng.choice([-1.0, 1.0], size=theta.shape[0])
+    h2 = rng.choice(_SIGNS, size=theta.shape[0])
     fidelities = fidelity_fn(
         theta,
         [
@@ -108,7 +106,8 @@ def _fidelity_metric_sample(
         ],
     )
     delta_f = fidelities[0] - fidelities[1] - fidelities[2] + fidelities[3]
-    return -(delta_f / (8.0 * c_k * c_k)) * (np.outer(h1, h2) + np.outer(h2, h1))
+    outer = np.outer(h1, h2)
+    return -(delta_f / (8.0 * c_k * c_k)) * (outer + outer.T)
 
 
 class _SPSAConfigMixin:

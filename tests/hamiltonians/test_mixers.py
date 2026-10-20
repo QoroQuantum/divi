@@ -100,6 +100,41 @@ def test_xy_mixer_requires_integer_nodes(graph_factory):
         xy_mixer(graph_factory())
 
 
+def _numpy_labelled(graph: nx.Graph) -> nx.Graph:
+    return nx.relabel_nodes(graph, {node: np.int64(node) for node in graph.nodes()})
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        lambda graph: xy_mixer(graph),
+        lambda graph: edge_driver(graph, ["11"]),
+        lambda graph: bit_flip_mixer(graph, b=0),
+    ],
+    ids=["xy_mixer", "edge_driver", "bit_flip_mixer"],
+)
+def test_graph_builders_accept_numpy_integer_nodes(build):
+    graph = nx.path_graph(4)
+
+    _assert_spo_equivalent(build(_numpy_labelled(graph)), build(graph))
+
+
+@pytest.mark.parametrize(
+    "build, builder_name",
+    [
+        (lambda graph: xy_mixer(graph), "xy_mixer"),
+        (lambda graph: edge_driver(graph, ["11"]), "edge_driver"),
+        (lambda graph: bit_flip_mixer(graph, b=0), "bit_flip_mixer"),
+    ],
+    ids=["xy_mixer", "edge_driver", "bit_flip_mixer"],
+)
+def test_graph_builders_reject_boolean_nodes(build, builder_name):
+    with pytest.raises(
+        TypeError, match=exact_match(f"{builder_name} requires integer qubit nodes.")
+    ):
+        build(nx.Graph([(False, True)]))
+
+
 @pytest.mark.parametrize("b", [0, 1])
 def test_bit_driver_rewards_qubits_sitting_at_b(b):
     """``b=1`` scores ``+sum_i Z_i`` and ``b=0`` its negation, so the diagonal

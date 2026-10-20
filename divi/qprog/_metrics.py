@@ -16,6 +16,7 @@ which metric is in play.
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from itertools import islice
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -23,7 +24,7 @@ import numpy.typing as npt
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits import MetaCircuit, build_overlap_meta
 from divi.pipeline import CircuitPreprocessor, ResultFormat
@@ -581,8 +582,7 @@ class _PrefixOpsView(Sequence[tuple]):
         return self.stop
 
     def __iter__(self):
-        for index in range(self.stop):
-            yield self.operations[index]
+        yield from islice(self.operations, self.stop)
 
     def __getitem__(self, index):
         if isinstance(index, slice):
@@ -676,38 +676,24 @@ def _fs_block_covariance(
         program, full_params, theta, block_id
     )
 
-    def spo_exp(spo: SparsePauliOp, exp: dict[str, float]) -> float:
-        total = 0.0
-        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-            if abs(coeff) <= 1e-12:
-                continue
-            total += float(np.real(coeff)) * (
-                1.0 if set(label) == {"I"} else exp[label]
-            )
-        return total
-
     blocks: dict[tuple, tuple[tuple[int, ...], npt.NDArray[np.float64]]] = {}
     for branch_key, exp in exp_by_branch.items():
         indices, generators = branch_data[branch_key]
-        k = len(generators)
-        anticommutators = [
-            [
-                (
-                    generators[i] @ generators[j] + generators[j] @ generators[i]
-                ).simplify()
-                for j in range(k)
-            ]
-            for i in range(k)
-        ]
-        single = np.array([spo_exp(generator, exp) for generator in generators])
-        block = np.empty((k, k))
-        for i in range(k):
-            for j in range(k):
-                block[i, j] = (
-                    0.5 * spo_exp(anticommutators[i][j], exp) - single[i] * single[j]
-                )
-        blocks[branch_key] = (indices, block)
+        blocks[branch_key] = (indices, _fs_block_from_expectations(generators, exp))
     return blocks
+
+
+def _fs_block_from_expectations(
+    generators: tuple[SparsePauliOp, ...], exp: dict[str, float]
+) -> npt.NDArray[np.float64]:
+    """Block metric ``0.25 * (<P_i P_j> - <P_i><P_j>)`` for generators ``0.5 * P``."""
+    single_labels, pair_labels, (rows, cols) = _fs_generator_labels(generators)
+    single = np.array([exp[label] for label in single_labels])
+    correlation = np.ones((len(generators),) * 2)
+    correlation[rows, cols] = correlation[cols, rows] = [
+        exp[label] for label in pair_labels
+    ]
+    return 0.25 * (correlation - np.outer(single, single))
 
 
 def _measure_prefix_paulis(
@@ -785,20 +771,29 @@ def _fs_prefix_params(
     return tuple(p for p in full_params if p in prefix.parameters)
 
 
+def _fs_generator_labels(
+    generators: tuple[SparsePauliOp, ...],
+) -> tuple[list[str], list[str], tuple[np.ndarray, np.ndarray]]:
+    """Labels of each generator's Pauli and of every pairwise product.
+
+    A block's generators are ``0.5 * P`` on disjoint wires, so they commute,
+    ``{K_i, K_j} = 2 K_i K_j`` and the product Pauli of ``i < j`` is the merge of
+    the two supports. Returns ``(single_labels, pair_labels, (rows, cols))`` with
+    ``pair_labels[n]`` belonging to the pair ``(rows[n], cols[n])``.
+    """
+    x = np.concatenate([generator.paulis.x for generator in generators])
+    z = np.concatenate([generator.paulis.z for generator in generators])
+    rows, cols = np.triu_indices(len(generators), k=1)
+    single_labels = list(PauliList.from_symplectic(z, x).to_labels())
+    pair_labels = list(
+        PauliList.from_symplectic(z[rows] | z[cols], x[rows] | x[cols]).to_labels()
+    )
+    return single_labels, pair_labels, (rows, cols)
+
+
 def _fs_needed_labels(generators: tuple[SparsePauliOp, ...]) -> tuple[str, ...]:
-    needed: set[str] = set()
-
-    def collect(spo: SparsePauliOp) -> None:
-        for label, coeff in zip(spo.paulis.to_labels(), spo.coeffs):
-            if abs(coeff) > 1e-12 and set(label) != {"I"}:
-                needed.add(label)
-
-    for generator in generators:
-        collect(generator)
-    for i, left in enumerate(generators):
-        for right in generators[i:]:
-            collect((left @ right + right @ left).simplify())
-    return tuple(sorted(needed))
+    single_labels, pair_labels, _ = _fs_generator_labels(generators)
+    return tuple(sorted({*single_labels, *pair_labels}))
 
 
 def _fs_block_prefix(

@@ -9,6 +9,7 @@ import networkx as nx
 import numpy as np
 import pytest
 import rustworkx as rx
+from qiskit.quantum_info import SparsePauliOp
 
 from divi.qprog import (
     QAOA,
@@ -28,6 +29,7 @@ from divi.qprog.problems import (
     MinVertexCoverProblem,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
+from tests._helpers import exact_match
 from tests.qprog._program_contracts import verify_cost_circuit
 from tests.qprog.problems._helpers import (
     make_bull_graph,
@@ -122,6 +124,34 @@ class TestEvaluateSolution:
         partial_cut = problem.evaluate_global_solution([1, 1, 0, 0])
         perfect_cut = problem.evaluate_global_solution([1, 0, 1, 0])
         assert no_cut > partial_cut > perfect_cut
+
+    @pytest.mark.parametrize("solution", [[1, 0, 1], [1, 0, 1, 0, 1]])
+    def test_wrong_length_solution_raises(self, solution):
+        problem = self._make_problem(nx.cycle_graph(4))
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                f"Expected a solution of shape (4,), got shape ({len(solution)},)."
+            ),
+        ):
+            problem.evaluate_global_solution(solution)
+
+    def test_non_diagonal_hamiltonian_raises(self, mocker):
+        problem = self._make_problem(nx.cycle_graph(2))
+        mocker.patch.object(
+            type(problem),
+            "cost_hamiltonian",
+            new_callable=mocker.PropertyMock,
+            return_value=SparsePauliOp(["ZZ", "XZ"]),
+        )
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Cost Hamiltonian contains non-diagonal term 'XZ'; "
+                "evaluate_global_solution requires Z-only operators."
+            ),
+        ):
+            problem.evaluate_global_solution([0, 1])
 
 
 def _string_label_graph():

@@ -192,8 +192,28 @@ class TestGenericLayerAnsatz:
 
     @pytest.mark.parametrize(
         "layout",
-        [[(0.5, 1)], [(0, "1")], [(0, 1, 2)], [[0, 1]]],
-        ids=["float", "string", "triple", "list-pair"],
+        [
+            [(0.5, 1)],
+            [(0, "1")],
+            [(0, 1, 2)],
+            [[0, 1]],
+            [(True, 1)],
+            [(np.bool_(True), 1)],
+            np.array([0, 1, 2]),
+            np.zeros((2, 3), dtype=int),
+            np.array([[True, False]]),
+        ],
+        ids=[
+            "float",
+            "string",
+            "triple",
+            "list-pair",
+            "bool",
+            "numpy-bool",
+            "flat-array",
+            "triple-array",
+            "bool-array",
+        ],
     )
     def test_initialization_rejects_malformed_custom_layout(self, layout):
         message = (
@@ -204,6 +224,25 @@ class TestGenericLayerAnsatz:
             GenericLayerAnsatz(
                 gate_sequence=[RXGate], entangler=CXGate, entangling_layout=layout
             )
+
+    @pytest.mark.parametrize(
+        "layout",
+        [
+            [(np.int64(0), np.int64(1)), (np.int32(1), 2)],
+            np.array([[0, 1], [1, 2]]),
+            np.array([[0, 1], [1, 2]], dtype=np.uint8),
+        ],
+        ids=["numpy-scalars", "int-array", "uint8-array"],
+    )
+    def test_custom_layout_accepts_numpy_integers_as_plain_pairs(self, layout):
+        ansatz = GenericLayerAnsatz(
+            gate_sequence=[RXGate], entangler=CXGate, entangling_layout=layout
+        )
+
+        pairs = list(ansatz._layout_fn(3))
+
+        assert pairs == [(0, 1), (1, 2)]
+        assert {type(qubit) for pair in pairs for qubit in pair} == {int}
 
     def test_initialization_warns_on_layout_without_entangler(self):
         message = "`entangling_layout` provided but `entangler` is None."

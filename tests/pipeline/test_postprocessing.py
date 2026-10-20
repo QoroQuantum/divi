@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from types import MappingProxyType
+
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -530,6 +532,11 @@ class TestCountsToProbs:
         result = _counts_to_probs(raw, shots=10)
         assert result[("a",)] == 0.42
         assert result[("b",)] == {"011": 0.5, "100": 0.5}
+
+    def test_normalises_any_mapping(self):
+        raw = {("obs",): MappingProxyType({"100": 30, "010": 70})}
+        result = _counts_to_probs(raw, shots=100)
+        assert result[("obs",)] == {"001": 0.3, "010": 0.7}
 
     def test_empty_input(self):
         assert _counts_to_probs({}, shots=100) == {}

@@ -1361,3 +1361,40 @@ def test_expectation_value_weights_each_term_in_qiskit_order(default_test_simula
     assert default_test_simulator.expectation_value(
         circuit, observable
     ) == pytest.approx(-1.0 + 2.0 + 0.5)
+
+
+def test_expectation_value_rejects_a_non_hermitian_observable(default_test_simulator):
+    observable = SparsePauliOp(["Z", "X"], [1.0, 1j])
+    message = (
+        "SparsePauliOp observables must be Hermitian; Pauli coefficients must be real."
+    )
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        default_test_simulator.expectation_value(QuantumCircuit(1), observable)
+
+
+def test_expectation_value_accepts_an_unsimplified_hermitian_product(
+    default_test_simulator,
+):
+    """``H @ H`` is Hermitian, but its unsimplified terms carry +-i parts that
+    only cancel once equal Paulis are merged."""
+    hamiltonian = SparsePauliOp(["XI", "YZ", "ZX"], [0.7, -1.3, 0.4])
+    square = hamiltonian @ hamiltonian
+    circuit = QuantumCircuit(2)
+    circuit.h(0)
+
+    assert default_test_simulator.expectation_value(circuit, square) == pytest.approx(
+        default_test_simulator.expectation_value(circuit, square.simplify())
+    )
+
+
+def test_expectation_value_accepts_real_coefficients_stored_as_complex(
+    default_test_simulator,
+):
+    circuit = QuantumCircuit(1)
+    circuit.x(0)
+    observable = SparsePauliOp(["Z"], np.array([2.0 + 0.0j], dtype=np.complex64))
+
+    assert default_test_simulator.expectation_value(
+        circuit, observable
+    ) == pytest.approx(-2.0)

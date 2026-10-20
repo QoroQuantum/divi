@@ -14,7 +14,7 @@ import io
 import json
 import logging
 import sys
-from contextlib import redirect_stderr
+from contextlib import nullcontext, redirect_stderr
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -352,7 +352,7 @@ def select_model_interactive() -> str:
     default = (
         DEFAULT_MODEL_SIZE
         if not recommended or DEFAULT_MODEL_SIZE in recommended
-        else max(recommended, key=lambda k: model_keys.index(k))
+        else max(recommended, key=model_keys.index)
     )
     current = model_keys.index(default)
 
@@ -438,14 +438,7 @@ def load_llm(model_path: Path, *, n_ctx: int = 8192, debug: bool = False) -> Lla
     cpu_threads = detect_cpu_threads()
     if debug:
         _console.print(f"[dim]Loading model from {model_path} …[/dim]")
-        return Llama(
-            model_path=str(model_path),
-            n_ctx=n_ctx,
-            n_threads=cpu_threads,
-            n_threads_batch=cpu_threads,
-            verbose=False,
-        )
-    with redirect_stderr(io.StringIO()):
+    with nullcontext() if debug else redirect_stderr(io.StringIO()):
         return Llama(
             model_path=str(model_path),
             n_ctx=n_ctx,

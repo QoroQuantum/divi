@@ -820,7 +820,7 @@ class DiviAIApp(App):
                     "success-msg",
                 )
             else:
-                short_err = err.split("\n")[-1] if "\n" in err else err
+                short_err = err.rpartition("\n")[2]
                 self.call_from_thread(
                     self._append_message,
                     f"[#ff5555]  {label}: syntax error - {_safe_display(short_err)}[/#ff5555]",

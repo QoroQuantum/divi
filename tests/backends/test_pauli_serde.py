@@ -14,6 +14,7 @@ from divi.backends._pauli_serde import (
     compress_ham_ops,
     encode_ham_ops,
     ham_ops_terms_for_circuit,
+    ham_ops_terms_per_circuit,
     pad_ham_ops,
 )
 from tests._helpers import exact_match
@@ -49,6 +50,34 @@ def test_ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map, expe
     assert (
         ham_ops_terms_for_circuit(circuit_index, ham_ops, circuit_ham_map) == expected
     )
+
+
+@pytest.mark.parametrize(
+    "n_circuits, ham_ops, circuit_ham_map",
+    [
+        (3, "ZI;IZ;XX", None),
+        (2, "ZI;IZ|XX;YY", None),
+        (5, "ZI;IZ|XX;YY", [[0, 3], [3, 5]]),
+        (8, "ZI;IZ|XX;YY", [[0, 3], [3, 5]]),
+        (4, "ZI|XX|YY", [[2, 3], [0, 2], [3, 4]]),
+        (0, "ZI|XX", [[0, 2], [2, 4]]),
+    ],
+    ids=[
+        "no-map-flat",
+        "no-map-pipe-delimited",
+        "map-covers-every-circuit",
+        "circuits-outside-every-range",
+        "unsorted-map",
+        "no-circuits",
+    ],
+)
+def test_ham_ops_terms_per_circuit_matches_per_circuit_lookup(
+    n_circuits, ham_ops, circuit_ham_map
+):
+    assert ham_ops_terms_per_circuit(n_circuits, ham_ops, circuit_ham_map) == [
+        ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
+        for i in range(n_circuits)
+    ]
 
 
 class TestPadHamOps:

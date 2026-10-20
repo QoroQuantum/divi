@@ -4,15 +4,9 @@
 
 """Data models for Quantum Processing Units (QPUs), QPUSystems, and SimulatorClusters."""
 
-from __future__ import annotations
-
 from threading import RLock
 
 from pydantic import BaseModel, ConfigDict, Field
-
-_AVAILABLE_QPU_SYSTEMS: dict[str, QPUSystem] = {}
-_AVAILABLE_SIMULATOR_CLUSTERS: dict[str, SimulatorCluster] = {}
-_CACHE_LOCK = RLock()
 
 
 class _Target(BaseModel):
@@ -69,6 +63,11 @@ class SimulatorCluster(_Target):
 
     supports_expval: bool = True
     """Whether the cluster supports expectation value jobs."""
+
+
+_AVAILABLE_QPU_SYSTEMS: dict[str, QPUSystem] = {}
+_AVAILABLE_SIMULATOR_CLUSTERS: dict[str, SimulatorCluster] = {}
+_CACHE_LOCK = RLock()
 
 
 def parse_qpu_systems(json_data: list) -> list[QPUSystem]:

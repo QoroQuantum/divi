@@ -17,7 +17,7 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     PauliTwirlStage,
 )
-from tests._helpers import equal_up_to_phase, unitary
+from tests._helpers import equal_up_to_phase, exact_match, unitary
 from tests.pipeline._helpers import (
     DummySpecStage,
     meta_from_circuit,
@@ -132,6 +132,11 @@ def test_bodies_share_twirl_labels_for_each_twirl_index(dummy_pipeline_env):
         pytest.param([1.0, 2.0, 6.0], 3.0, id="scalar"),
         pytest.param([[1.0, 4.0], [2.0, 5.0], [6.0, 9.0]], [3.0, 6.0], id="list"),
         pytest.param(
+            [np.array([1.0, 4.0]), np.array([2.0, 5.0]), np.array([6.0, 9.0])],
+            [3.0, 6.0],
+            id="ndarray",
+        ),
+        pytest.param(
             [{0: 1.0, 1: 4.0}, {0: 2.0, 1: 5.0}, {0: 6.0, 1: 9.0}],
             {0: 3.0, 1: 6.0},
             id="dict",
@@ -143,6 +148,43 @@ def test_reduce_averages_twirls_per_base_key(dummy_pipeline_env, values, expecte
         _twirl_results(values), dummy_pipeline_env, token=None
     )
     assert reduced == {_BASE_KEY: pytest.approx(expected)}
+
+
+def test_constructor_accepts_numpy_integers_and_stores_plain_ints():
+    stage = PauliTwirlStage(n_twirls=np.int64(4), seed=np.uint32(7))
+
+    assert (stage._n_twirls, stage._seed) == (4, 7)
+    assert type(stage._n_twirls) is int
+    assert type(stage._seed) is int
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        pytest.param(
+            {"n_twirls": 0}, "n_twirls must be a positive integer, got 0.", id="zero"
+        ),
+        pytest.param(
+            {"n_twirls": 2.5},
+            "n_twirls must be a positive integer, got 2.5.",
+            id="float",
+        ),
+        pytest.param(
+            {"n_twirls": True},
+            "n_twirls must be a positive integer, got True.",
+            id="bool",
+        ),
+        pytest.param(
+            {"seed": 1.5}, "seed must be an integer, got 1.5.", id="float-seed"
+        ),
+        pytest.param(
+            {"seed": True}, "seed must be an integer, got True.", id="bool-seed"
+        ),
+    ],
+)
+def test_constructor_rejects_invalid_arguments(kwargs, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        PauliTwirlStage(**kwargs)
 
 
 def test_structural_twirl_puts_real_paulis_on_every_two_qubit_gate(

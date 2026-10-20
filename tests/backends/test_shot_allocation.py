@@ -4,6 +4,9 @@
 
 """Tests for divi.backends._shot_allocation."""
 
+import json
+
+import numpy as np
 import pytest
 
 from divi.backends._shot_allocation import (
@@ -145,3 +148,16 @@ class TestWireFormat:
     def test_roundtrip(self):
         ranges = [ShotRange(0, 2, 100), ShotRange(2, 5, 200)]
         assert from_wire(to_wire(ranges)) == ranges
+
+
+def test_wire_triples_hold_numpy_integers_as_plain_ints():
+    ranges = from_wire(
+        [
+            np.array([0, 2, 100]),
+            [np.int64(2), np.int64(4), np.uint32(50)],
+            ShotRange(np.int64(4), 5, np.int32(10)),
+        ]
+    )
+
+    assert json.dumps(to_wire(ranges)) == "[[0, 2, 100], [2, 4, 50], [4, 5, 10]]"
+    assert {type(value) for triple in ranges for value in triple} == {int}

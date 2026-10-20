@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal, Self
 
+import numpy as np
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .checkpointing import (
@@ -104,6 +105,8 @@ def _program_checkpoint_path(round_path: Path, slot: int) -> Path:
 
 def _encode_program_id(value: Any) -> dict[str, Any]:
     """Encode supported hashable program IDs without losing their Python type."""
+    if isinstance(value, np.generic):
+        value = value.item()
     if value is None:
         return {"kind": "none"}
     if isinstance(value, bool):

@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
+from divi.qprog._program_checkpoint import OptimizerConfig
 from divi.qprog.checkpointing import OPTIMIZER_STATE_FILE
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
@@ -53,6 +54,42 @@ class _CustomMonteCarloOptimizer(MonteCarloOptimizer):
 def test_copy_preserves_subclass_type():
     optimizer = _CustomMonteCarloOptimizer(population_size=5, n_best_sets=2)
     assert type(optimizer.copy()) is _CustomMonteCarloOptimizer
+
+
+def test_numpy_settings_are_stored_as_plain_python_for_checkpointing():
+    optimizer = MonteCarloOptimizer(
+        population_size=np.int64(10), n_best_sets=np.int32(3), keep_best_params=np.True_
+    )
+
+    config = optimizer.get_config()
+
+    assert config == {
+        "type": "MonteCarloOptimizer",
+        "population_size": 10,
+        "n_best_sets": 3,
+        "keep_best_params": True,
+    }
+    assert [type(config[key]) for key in config] == [str, int, int, bool]
+    assert json.loads(json.dumps(config)) == config
+    assert OptimizerConfig(type=config["type"], config=config).model_dump_json()
+    assert type(optimizer.population_size) is int
+    assert type(optimizer.n_param_sets) is int
+    assert type(optimizer.n_best_sets) is int
+
+
+@pytest.mark.parametrize(
+    "kwargs, name",
+    [
+        ({"population_size": 10.0}, "population_size"),
+        ({"population_size": True}, "population_size"),
+        ({"population_size": np.float64(10)}, "population_size"),
+        ({"n_best_sets": 2.5}, "n_best_sets"),
+        ({"n_best_sets": True}, "n_best_sets"),
+    ],
+)
+def test_sizes_that_are_not_integers_are_rejected(kwargs, name):
+    with pytest.raises(TypeError, match=exact_match(f"{name} must be an integer.")):
+        MonteCarloOptimizer(**kwargs)
 
 
 class TestMonteCarloOptimizer:
@@ -525,6 +562,36 @@ def test_non_finite_loss_is_never_selected_as_best():
 
     assert result.fun == 1.0
     np.testing.assert_array_equal(result.x, [4.0, 5.0])
+
+
+@pytest.mark.parametrize(
+    ("keep_best_params", "expected"),
+    [
+        (False, [0.1] * 3 + [0.2] * 2 + [0.3] * 2),
+        (True, [0.1, 0.2, 0.3, 0.1, 0.1, 0.2, 0.3]),
+    ],
+    ids=["resample", "keep-best"],
+)
+def test_remainder_samples_go_to_the_best_sets_first(
+    mocker, keep_best_params, expected
+):
+    """With 7 sets seeded by 3, one extra sample goes to the best, not a random one."""
+    optimizer = MonteCarloOptimizer(
+        population_size=7, n_best_sets=3, keep_best_params=keep_best_params
+    )
+    populations = []
+
+    def cost_fn(population):
+        populations.append(population.copy())
+        return population[:, 0]
+
+    rng = mocker.Mock()
+    rng.normal.side_effect = lambda loc, scale: loc
+    initial = np.array([[0.5], [0.1], [0.9], [0.3], [0.7], [0.2], [0.8]])
+
+    optimizer.optimize(cost_fn, initial, max_iterations=2, rng=rng)
+
+    np.testing.assert_array_equal(populations[1][:, 0], expected)
 
 
 def test_tied_losses_keep_the_first_best_iterate():

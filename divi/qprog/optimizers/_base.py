@@ -17,6 +17,18 @@ if TYPE_CHECKING:
     from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
+def _argmin_finite(values: npt.ArrayLike) -> int | None:
+    """Index of the smallest finite entry, or ``None`` if every entry is non-finite.
+
+    Keeps a NaN/inf loss from being selected as the best parameter set.
+    """
+    arr = np.asarray(values, dtype=np.float64).ravel()
+    finite = np.isfinite(arr)
+    if not finite.any():
+        return None
+    return int(np.argmin(np.where(finite, arr, np.inf)))
+
+
 class Optimizer(ABC):
     """
     Abstract base class for all optimizers.

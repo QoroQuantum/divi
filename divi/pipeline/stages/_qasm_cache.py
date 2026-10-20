@@ -13,10 +13,11 @@ cache shared by both stages.
 
 import threading
 from collections import OrderedDict
+from functools import lru_cache
 
 from qiskit.dagcircuit import DAGCircuit
 
-from divi.circuits import QASMTemplate, build_template, dag_to_qasm_body
+from divi.circuits import build_template, dag_to_qasm_body
 
 # Bounded LRU memo for ``dag_to_qasm_body``. Keyed on ``id(dag)`` because
 # ``DAGCircuit`` is unhashable; the tuple's DAG ref pins the object so
@@ -24,13 +25,6 @@ from divi.circuits import QASMTemplate, build_template, dag_to_qasm_body
 _FAST_QASM_CACHE_MAXSIZE = 256
 _FAST_QASM_CACHE: OrderedDict[tuple[int, int], tuple[DAGCircuit, str]] = OrderedDict()
 _FAST_QASM_CACHE_LOCK = threading.Lock()
-
-# Bounded LRU memo for ``build_template``. Keyed on the (body QASM, symbol
-# names) pair — both hashable and the only inputs ``build_template`` depends
-# on — so it is safe to reuse across stages and optimizer iterations.
-_TEMPLATE_CACHE_MAXSIZE = 256
-_TEMPLATE_CACHE: OrderedDict[tuple[str, tuple[str, ...]], QASMTemplate] = OrderedDict()
-_TEMPLATE_CACHE_LOCK = threading.Lock()
 
 
 def _qasm_body_cached(dag: DAGCircuit, precision: int) -> str:
@@ -50,23 +44,6 @@ def _qasm_body_cached(dag: DAGCircuit, precision: int) -> str:
     return body
 
 
-def _template_cached(body_qasm: str, symbol_names: tuple[str, ...]) -> QASMTemplate:
-    """Memoise :func:`~divi.circuits.build_template`.
-
-    The parametric body, its symbol names, and precision are static across an
-    optimizer loop, so the regex split that ``build_template`` performs is the
-    same every cost evaluation. Both binding stages render values into a cached
-    template instead of rebuilding it per iteration.
-    """
-    key = (body_qasm, symbol_names)
-    with _TEMPLATE_CACHE_LOCK:
-        cached = _TEMPLATE_CACHE.get(key)
-        if cached is not None:
-            _TEMPLATE_CACHE.move_to_end(key)
-            return cached
-    template = build_template(body_qasm, symbol_names)
-    with _TEMPLATE_CACHE_LOCK:
-        _TEMPLATE_CACHE[key] = template
-        if len(_TEMPLATE_CACHE) > _TEMPLATE_CACHE_MAXSIZE:
-            _TEMPLATE_CACHE.popitem(last=False)
-    return template
+# The body and symbol names are static across an optimizer loop, so the regex
+# split in ``build_template`` is reused across stages and iterations.
+_template_cached = lru_cache(maxsize=256)(build_template)

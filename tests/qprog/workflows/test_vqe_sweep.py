@@ -110,6 +110,44 @@ class TestMoleculeTransformerValidation:
         with pytest.raises(ValueError, match="should be a sequence of floats"):
             MoleculeTransformer(base_molecule=h2_molecule, bond_modifiers=[1.0, "a"])
 
+    @pytest.mark.parametrize(
+        "bond_modifiers",
+        [
+            [1.0, True],
+            [1.0, np.True_],
+            np.array([[1.0, 1.1]]),
+            np.array([True, False]),
+        ],
+        ids=["bool", "numpy-bool", "matrix", "bool-array"],
+    )
+    def test_bond_modifiers_reject_bools_and_non_vectors(
+        self, h2_molecule, bond_modifiers
+    ):
+        with pytest.raises(ValueError, match="should be a sequence of floats"):
+            MoleculeTransformer(
+                base_molecule=h2_molecule, bond_modifiers=bond_modifiers
+            )
+
+    @pytest.mark.parametrize(
+        "bond_modifiers",
+        [
+            np.array([0.9, 1.1], dtype=np.float32),
+            np.arange(1, 3),
+            [np.float32(0.9), np.int64(2)],
+        ],
+        ids=["float32-array", "int-array", "numpy-scalars"],
+    )
+    def test_numpy_bond_modifiers_are_stored_as_plain_numbers(
+        self, h2_molecule, bond_modifiers
+    ):
+        transformer = MoleculeTransformer(
+            base_molecule=h2_molecule, bond_modifiers=bond_modifiers
+        )
+
+        assert len(transformer.bond_modifiers) == 2
+        assert all(type(value) in (int, float) for value in transformer.bond_modifiers)
+        assert transformer._mode == "scale"
+
     def test_duplicate_bond_modifiers(self, h2_molecule):
         """Test ValueError for duplicate values in bond_modifiers."""
         with pytest.raises(ValueError, match="contains duplicate values"):

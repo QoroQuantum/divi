@@ -8,7 +8,9 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cache
 from heapq import heappop, heappush
+from itertools import combinations, pairwise, product
 from pathlib import Path
 from typing import Any, Literal
 
@@ -98,9 +100,7 @@ def create_tsp_qubo(
 
     # --- Objective: consecutive timeslot costs ---
     W_reduced = cost_matrix[np.ix_(cities, cities)]
-    S = np.zeros((m, m))
-    for t in range(m - 1):
-        S[t, t + 1] = 1.0
+    S = np.eye(m, k=1)
     Q += objective_weight * np.kron(W_reduced, S)
 
     # --- Depot edges (linear terms) ---
@@ -184,8 +184,8 @@ def tour_cost(
         Total tour cost.
     """
     total = 0.0
-    for i in range(len(tour) - 1):
-        total += cost_matrix[tour[i], tour[i + 1]]
+    for src, dst in pairwise(tour):
+        total += cost_matrix[src, dst]
     return float(total)
 
 
@@ -739,7 +739,6 @@ def create_cvrp_hubo_binary(
     hubo: dict[tuple[int, ...], float] = {}
 
     def _add(key: tuple[int, ...], val: float) -> None:
-        key = tuple(sorted(key))
         hubo[key] = hubo.get(key, 0.0) + val
 
     # Helper: build the "indicator" polynomial for slot s == customer j
@@ -751,6 +750,7 @@ def create_cvrp_hubo_binary(
     # This is a multilinear polynomial of degree B in the slot's bits.
     # We expand it into a dict of {frozen_set_of_variables: coefficient}.
 
+    @cache
     def indicator_terms(
         slot_idx: int, customer_val: int
     ) -> dict[frozenset[int], float]:
@@ -789,12 +789,7 @@ def create_cvrp_hubo_binary(
     for cust_idx in range(n_cust):
         cust_val = cust_idx + 1  # binary value (0 is "empty")
 
-        slot_indicators = []
-        for v in range(n_vehicles):
-            for t in range(config.max_steps):
-                s = vehicle_slot(v, t)
-                ind = indicator_terms(s, cust_val)
-                slot_indicators.append(ind)
+        slot_indicators = [indicator_terms(s, cust_val) for s in range(config.n_slots)]
 
         # -2 * sum_s I(s==j)  (linear part of (sum-1)^2)
         for ind in slot_indicators:
@@ -812,15 +807,15 @@ def create_cvrp_hubo_binary(
                 _add(tuple(sorted(vars_set)), penalty_weight * coeff)
 
         # Cross terms: 2 * sum_{s<s'} I(s==j) * I(s'==j)
-        for i in range(len(slot_indicators)):
-            for j_idx in range(i + 1, len(slot_indicators)):
-                for vars_i, coeff_i in slot_indicators[i].items():
-                    for vars_j, coeff_j in slot_indicators[j_idx].items():
-                        combined = vars_i | vars_j
-                        _add(
-                            tuple(sorted(combined)),
-                            2.0 * penalty_weight * coeff_i * coeff_j,
-                        )
+        for ind_a, ind_b in combinations(slot_indicators, 2):
+            for (vars_i, coeff_i), (vars_j, coeff_j) in product(
+                ind_a.items(), ind_b.items()
+            ):
+                combined = vars_i | vars_j
+                _add(
+                    tuple(sorted(combined)),
+                    2.0 * penalty_weight * coeff_i * coeff_j,
+                )
 
     # --- Objective: travel distance ---
     # For each vehicle v:
@@ -868,13 +863,14 @@ def create_cvrp_hubo_binary(
                         if abs(weight) < 1e-15:
                             continue
                         ind_j = indicator_terms(s_next, cj_val)
-                        for vars_i, coeff_i in ind_i.items():
-                            for vars_j, coeff_j in ind_j.items():
-                                combined = vars_i | vars_j
-                                _add(
-                                    tuple(sorted(combined)),
-                                    objective_weight * weight * coeff_i * coeff_j,
-                                )
+                        for (vars_i, coeff_i), (vars_j, coeff_j) in product(
+                            ind_i.items(), ind_j.items()
+                        ):
+                            combined = vars_i | vars_j
+                            _add(
+                                tuple(sorted(combined)),
+                                objective_weight * weight * coeff_i * coeff_j,
+                            )
 
     # --- Capacity constraints ---
     # For each vehicle v: (sum_{t,j} demand_j * I(slot(v,t)==j) - C)^2
@@ -913,18 +909,14 @@ def create_cvrp_hubo_binary(
             # Cross terms
             for j_idx in range(i + 1, len(demand_terms)):
                 ind_j, d_j = demand_terms[j_idx]
-                for vars_i, coeff_i in ind_i.items():
-                    for vars_j, coeff_j in ind_j.items():
-                        combined = vars_i | vars_j
-                        _add(
-                            tuple(sorted(combined)),
-                            2.0
-                            * capacity_penalty_weight
-                            * d_i
-                            * d_j
-                            * coeff_i
-                            * coeff_j,
-                        )
+                for (vars_i, coeff_i), (vars_j, coeff_j) in product(
+                    ind_i.items(), ind_j.items()
+                ):
+                    combined = vars_i | vars_j
+                    _add(
+                        tuple(sorted(combined)),
+                        2.0 * capacity_penalty_weight * d_i * d_j * coeff_i * coeff_j,
+                    )
 
     return hubo, config
 
@@ -1067,7 +1059,7 @@ def decode_binary_cvrp_solution(
             start = slot_idx * B
             slot_bits = bitstring[start : start + B]
             # Convert binary to integer (little-endian: bit 0 is LSB)
-            val = sum(int(slot_bits[b]) * (2**b) for b in range(B))
+            val = int(slot_bits[::-1], 2)
             if 1 <= val <= config.n_customers:
                 route.append(customers[val - 1])
         route.append(depot)
@@ -1116,7 +1108,7 @@ def is_valid_binary_cvrp(
             slot_idx = v * config.max_steps + t
             start = slot_idx * B
             slot_bits = bitstring[start : start + B]
-            val = sum(int(slot_bits[b]) * (2**b) for b in range(B))
+            val = int(slot_bits[::-1], 2)
 
             if val == 0:
                 continue  # empty slot
@@ -1134,11 +1126,7 @@ def is_valid_binary_cvrp(
         return False
 
     # Capacity check
-    for v in range(config.n_vehicles):
-        if vehicle_demands[v] > capacity + 1e-9:
-            return False
-
-    return True
+    return not any(d > capacity + 1e-9 for d in vehicle_demands)
 
 
 # --- VRP file parser ---

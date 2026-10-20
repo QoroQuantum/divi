@@ -240,6 +240,9 @@ class TestInitialization:
             (2, (2,)),
             ((2,), (2,)),
             ((1, 2), (1, 2)),
+            (np.int64(2), (2,)),
+            ((np.int64(1), np.int32(2)), (1, 2)),
+            (np.array([1, 2]), (1, 2)),
         ],
     )
     def test_param_shape_variations(self, param_shape, expected_shape, make_custom_vqa):
@@ -247,7 +250,19 @@ class TestInitialization:
         program = make_custom_vqa(param_shape=param_shape)
 
         assert program.param_shape == expected_shape
+        assert all(type(dim) is int for dim in program.param_shape)
         assert program.n_params_per_layer == 2
+
+    @pytest.mark.parametrize(
+        "param_shape",
+        [True, (True, 2), (2.0,), np.float64(2.0), np.array([1.0, 2.0])],
+        ids=["bool", "bool-entry", "float-entry", "numpy-float", "float-array"],
+    )
+    def test_param_shape_rejects_non_integer_entries(
+        self, param_shape, make_custom_vqa
+    ):
+        with pytest.raises(TypeError, match="param_shape entries must be ints"):
+            make_custom_vqa(param_shape=param_shape)
 
     def test_qnode_input_is_converted_to_quantum_script(self, qp, make_custom_vqa):
         """QNode inputs are accepted and converted via PennyLaneSpecStage."""

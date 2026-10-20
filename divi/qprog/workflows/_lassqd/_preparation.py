@@ -192,8 +192,8 @@ class LUCJFragmentProgram(QuantumProgram):
             os.replace(temporary_path, checkpoint_dir / artifact)
             _fsync_directory(checkpoint_dir)
         finally:
-            if temporary_path is not None and temporary_path.exists():
-                temporary_path.unlink()
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
         return _LUCJFragmentCheckpoint.model_validate(
             {
                 "program_type": type(self).__name__,
@@ -289,7 +289,7 @@ def paper_lucj_interaction_pairs(
     list[tuple[int, int]],
 ]:
     """Return the spin-unbalanced local interaction graph used in the paper."""
-    same_spin = [(p, p + 1) for p in range(n_orbitals - 1)]
+    same_spin = list(itertools.pairwise(range(n_orbitals)))
     opposite_spin = [(p, p) for p in range(0, n_orbitals, 4)]
     return same_spin, opposite_spin, same_spin.copy()
 

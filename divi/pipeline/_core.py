@@ -7,6 +7,8 @@ import warnings
 from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Sequence
 from contextlib import contextmanager
+from itertools import groupby
+from operator import itemgetter
 from threading import Event
 from typing import Any
 
@@ -198,20 +200,14 @@ def _build_shot_groups(
 
     # Collapse consecutive identical shot counts into [start, end, shots] ranges.
     shot_groups: list[list[int]] = []
-    n = len(per_circuit_shots)
-    i = 0
-    while i < n:
-        shots = per_circuit_shots[i]
+    for shots, run in groupby(enumerate(per_circuit_shots), key=itemgetter(1)):
+        positions = [i for i, _ in run]
         if shots is None:
             raise ValueError(
-                f"Circuit at position {i} has no per-group shot allocation; "
+                f"Circuit at position {positions[0]} has no per-group shot allocation; "
                 "per_group_shots must cover every submitted circuit."
             )
-        j = i + 1
-        while j < n and per_circuit_shots[j] == shots:
-            j += 1
-        shot_groups.append([i, j, shots])
-        i = j
+        shot_groups.append([positions[0], positions[-1] + 1, int(shots)])
 
     return shot_groups
 
@@ -663,7 +659,7 @@ class CircuitPipeline:
                 initial_batch=initial_batch_snapshot,
                 final_batch=final_batch,
                 stage_expansions=tuple(expansions),
-                stage_tokens=tuple([spec_token, *bundle_tokens]),
+                stage_tokens=(spec_token, *bundle_tokens),
                 env_artifacts=_measurement_artifacts(final_batch),
             )
             if not dry:
@@ -688,8 +684,8 @@ class CircuitPipeline:
         trace = PipelineTrace(
             initial_batch=cached.initial_batch,
             final_batch=final_batch,
-            stage_expansions=tuple([*prefix_expansions, *rerun_expansions]),
-            stage_tokens=tuple([*prefix_tokens, *rerun_tokens]),
+            stage_expansions=(*prefix_expansions, *rerun_expansions),
+            stage_tokens=(*prefix_tokens, *rerun_tokens),
             env_artifacts=_measurement_artifacts(final_batch),
         )
 

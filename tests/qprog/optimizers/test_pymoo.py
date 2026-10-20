@@ -2,11 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 
 import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
+from divi.qprog._program_checkpoint import OptimizerConfig
 from divi.qprog.optimizers import (
     PymooMethod,
     PymooOptimizer,
@@ -59,6 +61,37 @@ class _CustomPymooOptimizer(PymooOptimizer):
 def test_copy_preserves_subclass_type():
     optimizer = _CustomPymooOptimizer(method=PymooMethod.CMAES, population_size=5)
     assert type(optimizer.copy()) is _CustomPymooOptimizer
+
+
+def test_numpy_settings_are_stored_as_plain_python_for_checkpointing():
+    optimizer = PymooOptimizer(
+        method=PymooMethod.CMAES,
+        population_size=np.int64(8),
+        popsize=np.int32(6),
+        sigma0=np.float32(0.5),
+        CMA_stds=np.array([1.0, 2.0]),
+    )
+
+    config = optimizer.get_config()
+
+    assert config["population_size"] == 8
+    assert config["popsize"] == 6
+    assert config["sigma0"] == pytest.approx(0.5)
+    assert config["CMA_stds"] == [1.0, 2.0]
+    assert type(config["population_size"]) is int
+    assert type(config["popsize"]) is int
+    assert type(config["sigma0"]) is float
+    assert type(optimizer.n_param_sets) is int
+    assert json.loads(json.dumps(config)) == config
+    assert OptimizerConfig(type=config["type"], config=config).model_dump_json()
+
+
+@pytest.mark.parametrize("population_size", [5.0, True, np.True_, np.float64(5)])
+def test_population_size_that_is_not_an_integer_is_rejected(population_size):
+    with pytest.raises(
+        TypeError, match=exact_match("population_size must be an integer.")
+    ):
+        PymooOptimizer(method=PymooMethod.DE, population_size=population_size)
 
 
 class TestPymooOptimizer:

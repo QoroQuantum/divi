@@ -2390,6 +2390,20 @@ def test_spatial_rdms_exact_is_independent_of_the_row_block(monkeypatch, block_r
         np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
 
 
+@pytest.mark.parametrize("terms_per_pass", [1, 7])
+def test_spatial_rdms_exact_is_independent_of_the_term_budget(
+    monkeypatch, terms_per_pass
+):
+    """Spectator terms accumulate in passes, which must not drop or repeat any."""
+    state = _random_sector_state(5, 3, 2, seed=5)
+    expected = _spatial_rdms_exact(*state, 5)
+
+    monkeypatch.setattr(sqd_module, "_RDM_TERMS_PER_PASS", terms_per_pass)
+
+    for got, want in zip(_spatial_rdms_exact(*state, 5), expected):
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
+
+
 def test_wide_fragments_reconstruct_rdms_off_the_exact_path(mocker, monkeypatch):
     """Past PySCF's 64-bit CI strings the reconstruction must switch kernels and
     still give PySCF's answer."""

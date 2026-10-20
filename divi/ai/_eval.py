@@ -11,6 +11,7 @@ saves results to JSON for before/after comparison across iterations.
 import json
 import time
 from datetime import datetime, timezone
+from itertools import zip_longest
 from pathlib import Path
 
 from rich.console import Console
@@ -127,8 +128,7 @@ def _find_latest_result(label: str) -> Path | None:
     """Find the most recent result file for a given label."""
     if not RESULTS_DIR.is_dir():
         return None
-    candidates = sorted(RESULTS_DIR.glob(f"{label}_*.json"), reverse=True)
-    return candidates[0] if candidates else None
+    return max(RESULTS_DIR.glob(f"{label}_*.json"), default=None)
 
 
 # ---------------------------------------------------------------------------
@@ -363,16 +363,14 @@ def compare_evals(label_a: str, label_b: str) -> None:
 
     if multi_a or multi_b:
         console.print("\n[bold]Multi-Turn Sequences:[/bold]")
-        for seq_id in dict.fromkeys(list(multi_a) + list(multi_b)):
+        for seq_id in multi_a | multi_b:
             console.print(f"\n  [cyan]{seq_id}[/cyan]")
             sa = multi_a.get(seq_id, {}).get("turns", [])
             sb = multi_b.get(seq_id, {}).get("turns", [])
 
-            for i in range(max(len(sa), len(sb))):
-                ta = sa[i] if i < len(sa) else None
-                tb = sb[i] if i < len(sb) else None
+            for i, (ta, tb) in enumerate(zip_longest(sa, sb), 1):
                 query = (ta or tb)["query"]
-                console.print(f"    [bold]Turn {i + 1}:[/bold] {query}")
+                console.print(f"    [bold]Turn {i}:[/bold] {query}")
                 if ta:
                     console.print(f"      {label_a}: {ta['response'][:150]}...")
                 if tb:

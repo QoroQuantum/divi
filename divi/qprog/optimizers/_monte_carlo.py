@@ -5,6 +5,7 @@
 import base64
 import pickle
 from collections.abc import Callable
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Self
 
@@ -74,6 +75,15 @@ class MonteCarloOptimizer(Optimizer):
             ValueError: If keep_best_params is True and n_best_sets equals population_size.
         """
         super().__init__()
+
+        for name, value in (
+            ("population_size", population_size),
+            ("n_best_sets", n_best_sets),
+        ):
+            if isinstance(value, bool) or not isinstance(value, Integral):
+                raise TypeError(f"{name} must be an integer.")
+        population_size, n_best_sets = int(population_size), int(n_best_sets)
+        keep_best_params = bool(keep_best_params)
 
         if n_best_sets > population_size:
             raise ValueError(
@@ -172,12 +182,12 @@ class MonteCarloOptimizer(Optimizer):
         if self._keep_best_params:
             n_new_samples = self._population_size - self._n_best_sets
             # Calculate repeat counts for new samples only
-            samples_per_best = n_new_samples // self._n_best_sets
-            remainder = n_new_samples % self._n_best_sets
+            samples_per_best, remainder = divmod(n_new_samples, self._n_best_sets)
         else:
             # Calculate repeat counts for the entire population
-            samples_per_best = self._population_size // self._n_best_sets
-            remainder = self._population_size % self._n_best_sets
+            samples_per_best, remainder = divmod(
+                self._population_size, self._n_best_sets
+            )
 
         repeat_counts = np.full(self._n_best_sets, samples_per_best)
         repeat_counts[:remainder] += 1
@@ -276,10 +286,8 @@ class MonteCarloOptimizer(Optimizer):
             safe_losses = np.where(
                 np.isfinite(self._curr_losses), self._curr_losses, np.inf
             )
-            # Find the indices of the best-performing parameter sets
-            best_indices = np.argpartition(safe_losses, self.n_best_sets - 1)[
-                : self.n_best_sets
-            ]
+            # Best first, so the remainder samples go to the best sets.
+            best_indices = np.argsort(safe_losses, kind="stable")[: self.n_best_sets]
 
             # Generate the next generation of parameters (uses RNG, so capture state after)
             self._curr_population = self._compute_new_parameters(

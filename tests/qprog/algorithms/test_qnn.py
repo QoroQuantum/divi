@@ -285,6 +285,23 @@ class TestConstructionValidation:
         with pytest.raises(ValueError, match="labels has 2 entries but feature_batch"):
             make_qnn(labels=[0.0, 1.0])
 
+    @pytest.mark.parametrize("bad_label", [np.nan, np.inf, -np.inf])
+    def test_non_finite_labels_rejected(self, make_qnn, bad_label):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "labels must be finite; 1 of 4 entries are NaN or infinite."
+            ),
+        ):
+            make_qnn(labels=[0.0, bad_label, 1.0, 0.0])
+
+    def test_dry_run_rejects_non_finite_labels_assigned_later(self, make_qnn):
+        program = make_qnn(labels=[0.0, 1.0, 0.0, 1.0])
+        program.labels = np.array([0.0, np.nan, 0.0, 1.0])
+
+        with pytest.raises(ValueError, match="labels must be finite"):
+            program.dry_run()
+
     def test_dry_run_rejects_a_batch_that_no_longer_matches_the_labels(self, make_qnn):
         """``feature_batch`` is public, so swapping in a split after construction
         outruns the constructor's check. A preview that passes here is followed by a
@@ -966,6 +983,33 @@ def test_predict_thresholds_scores_at_zero(mocker, make_qnn, fit_bias, bias):
     np.testing.assert_array_equal(
         program.predict(features, return_scores=True), scores + bias
     )
+
+
+def test_predict_gives_nan_rows_no_class_and_warns(mocker, make_qnn):
+    program = _trained(make_qnn())
+    scores = np.array([-0.5, np.nan, 0.5, np.inf, -np.inf])
+    mocker.patch.object(program, "_scores", return_value=scores)
+    message = (
+        "1 of 5 scores are NaN, so those rows have no class and their labels are "
+        "NaN. Pass return_scores=True to inspect the scores."
+    )
+
+    with pytest.warns(UserWarning, match=exact_match(message)):
+        labels = program.predict(np.zeros((5, 2)))
+
+    np.testing.assert_array_equal(labels, [-1.0, np.nan, 1.0, 1.0, -1.0])
+
+
+def test_predict_returns_nan_scores_without_warning(mocker, make_qnn):
+    program = _trained(make_qnn())
+    scores = np.array([0.5, np.nan])
+    mocker.patch.object(program, "_scores", return_value=scores)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        returned = program.predict(np.zeros((2, 2)), return_scores=True)
+
+    np.testing.assert_array_equal(returned, scores)
 
 
 @pytest.mark.parametrize(

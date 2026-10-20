@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Sequence
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Self
 
@@ -40,6 +41,17 @@ from divi.reporting._events import ProgressEvent, TerminalStatus
 
 class _TimeEvolutionCheckpoint(ProgramCheckpoint):
     results: dict[str, float] | float | list[float]
+
+
+def _validate_trotter_settings(n_steps: int, order: int) -> tuple[int, int]:
+    """Check the Trotter step count and order, returning them as plain ``int``."""
+    if isinstance(n_steps, bool) or not isinstance(n_steps, Integral) or n_steps < 1:
+        raise ValueError(f"n_steps must be a positive integer, got {n_steps!r}.")
+    if isinstance(order, bool) or not isinstance(order, Integral):
+        raise ValueError(f"order must be 1 or an even integer >= 2, got {order!r}.")
+    if order != 1 and (order < 2 or order % 2 != 0):
+        raise ValueError(f"order must be 1 or an even integer >= 2, got {order!r}.")
+    return int(n_steps), int(order)
 
 
 class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
@@ -113,10 +125,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         """
         super().__init__(**kwargs)
 
-        if not isinstance(n_steps, int) or n_steps < 1:
-            raise ValueError(f"n_steps must be a positive integer, got {n_steps!r}.")
-        if order != 1 and (not isinstance(order, int) or order < 2 or order % 2 != 0):
-            raise ValueError(f"order must be 1 or an even integer >= 2, got {order!r}.")
+        n_steps, order = _validate_trotter_settings(n_steps, order)
 
         if trotterization_strategy is None:
             trotterization_strategy = ExactTrotterization()
@@ -131,7 +140,9 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         self.time = time
         self.n_steps = n_steps
         self.order = order
-        if isinstance(observable, Sequence) and not isinstance(observable, tuple):
+        if isinstance(observable, (Sequence, np.ndarray)) and not isinstance(
+            observable, tuple
+        ):
             observable = tuple(observable)
         self.n_qubits = _require_qiskit_num_qubits(hamiltonian_clean.num_qubits)
         self._circuit_wires = tuple(range(self.n_qubits))

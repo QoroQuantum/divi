@@ -28,6 +28,7 @@ from divi.pipeline import (
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline._dry_run import (
     _aggregate_circuit_stats,
+    _objective_fingerprint,
     _two_qubit_depth,
 )
 from divi.pipeline._preprocessor import sample_preprocessor
@@ -95,6 +96,19 @@ def _observable_fingerprint_of(env, observable):
         [DummySpecStage(meta=meta_with_observable(observable)), MeasurementStage()],
         env,
     )[1].objective_fingerprint
+
+
+def test_objective_fingerprint_keeps_numpy_scalar_settings(mocker):
+    """A numpy-typed setting (e.g. ``shots`` read off a numpy array) must reach the
+    fingerprint as its plain value rather than be dropped, or two different
+    objectives would share one."""
+    fingerprint = _objective_fingerprint(
+        mocker.Mock(final_batch={}),
+        [],
+        {"shots": np.int64(100), "flag": np.bool_(True), "ratio": np.float32(0.5)},
+    )
+
+    assert fingerprint == ((), (), (("flag", True), ("ratio", 0.5), ("shots", 100)))
 
 
 class TestDryRunPipeline:

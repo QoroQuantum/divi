@@ -7,6 +7,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
+from numbers import Integral
 from threading import Event
 from typing import Any, Protocol, Self, runtime_checkable
 
@@ -107,10 +108,10 @@ class CircuitRunner(ABC):
     """
 
     def __init__(self, shots: int, track_depth: bool = False):
-        if shots <= 0:
+        if not isinstance(shots, Integral) or isinstance(shots, bool) or shots <= 0:
             raise ValueError(f"Shots must be a positive integer. Got {shots}.")
 
-        self._shots = shots
+        self._shots = int(shots)
         self.track_depth = track_depth
         self._depth_history: list[list[int]] = []
 

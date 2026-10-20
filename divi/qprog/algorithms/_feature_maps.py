@@ -17,6 +17,7 @@ encoding with variational layers.
 
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from itertools import combinations, pairwise
 from typing import Literal
 
 import numpy as np
@@ -153,13 +154,13 @@ class ZZFeatureMap(FeatureMap):
 
     def _pair_iter(self, n_qubits: int) -> list[tuple[int, int]]:
         if self.entangling_layout == "linear":
-            return [(i, i + 1) for i in range(n_qubits - 1)]
+            return list(pairwise(range(n_qubits)))
         if self.entangling_layout == "circular":
             pairs = [(i, i + 1) for i in range(n_qubits - 1)]
             if n_qubits > 2:
                 pairs.append((n_qubits - 1, 0))
             return pairs
-        return [(i, j) for i in range(n_qubits) for j in range(i + 1, n_qubits)]
+        return list(combinations(range(n_qubits), 2))
 
     def build(self, features, n_qubits: int, **kwargs) -> QuantumCircuit:
         self._require_min_qubits(n_qubits)

@@ -667,6 +667,8 @@ def test_rosalin_vqe_checkpoint_loads_and_resumes(
         ({"total_shots": 0}, ValueError, "total_shots must be positive, got 0."),
         ({"total_shots": 10.0}, TypeError, "total_shots must be an integer."),
         ({"total_shots": True}, TypeError, "total_shots must be an integer."),
+        ({"total_shots": np.True_}, TypeError, "total_shots must be an integer."),
+        ({"total_shots": np.float64(10)}, TypeError, "total_shots must be an integer."),
         ({"lipschitz": 0.0}, ValueError, "lipschitz must be positive, got 0.0."),
         (
             {"learning_rate": 1.0, "lipschitz": 2.0},
@@ -675,6 +677,7 @@ def test_rosalin_vqe_checkpoint_loads_and_resumes(
         ),
         ({"min_shots": 1}, ValueError, "min_shots must be >= 2, got 1."),
         ({"min_shots": 2.0}, TypeError, "min_shots must be an integer."),
+        ({"min_shots": True}, TypeError, "min_shots must be an integer."),
         (
             {"ema_decay": 1.0},
             ValueError,
@@ -698,6 +701,15 @@ def test_rosalin_constructor_rejects_invalid_settings_with_exact_messages(
 def test_rosalin_defaults_to_two_minimum_shots_and_accepts_a_one_shot_budget():
     assert _rosalin().min_shots == 2
     assert _rosalin(total_shots=1).total_shots == 1
+
+
+@pytest.mark.parametrize("dtype", [np.int32, np.int64, np.uint16])
+def test_rosalin_stores_numpy_shot_counts_as_plain_ints(dtype):
+    optimizer = _rosalin(total_shots=dtype(500), min_shots=dtype(4))
+
+    assert (optimizer.total_shots, optimizer.min_shots) == (500, 4)
+    assert type(optimizer.total_shots) is int
+    assert type(optimizer.min_shots) is int
 
 
 @pytest.mark.parametrize(

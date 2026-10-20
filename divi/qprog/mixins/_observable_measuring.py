@@ -14,6 +14,8 @@ kwargs become silent no-ops.
 
 from warnings import warn
 
+import numpy as np
+
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
 from divi.pipeline.stages import MeasurementStage
 
@@ -125,11 +127,12 @@ class ObservableMeasuringMixin:
                 f"Choose 'qwc', 'wires', 'default', or None."
             )
 
-        if not isinstance(measure_all_qubits, bool):
+        if not isinstance(measure_all_qubits, (bool, np.bool_)):
             raise TypeError(
                 f"measure_all_qubits must be a bool, got "
                 f"{type(measure_all_qubits).__name__}."
             )
+        measure_all_qubits = bool(measure_all_qubits)
 
         if (
             grouping_strategy not in (_UNSET, None)

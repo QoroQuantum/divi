@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Hashable, Sequence
 from contextlib import contextmanager
@@ -172,14 +173,22 @@ class QuantumProgram(ABC):
         """
         if backend is None:
             raise ValueError("QuantumProgram requires a backend.")
-        if not isinstance(precision, Integral) or precision < 1:
+        if (
+            isinstance(precision, bool)
+            or not isinstance(precision, Integral)
+            or precision < 1
+        ):
             raise ValueError(
                 f"precision must be an integer of at least 1; got {precision!r}."
             )
+        if seed is not None and (
+            isinstance(seed, bool) or not isinstance(seed, Integral)
+        ):
+            raise ValueError(f"seed must be an integer or None; got {seed!r}.")
 
         self.backend = backend
-        self._seed = seed
-        self._precision = precision
+        self._seed = None if seed is None else int(seed)
+        self._precision = int(precision)
         self._suppress_performance_warnings = suppress_performance_warnings
 
         qem_protocol = kwargs.pop("qem_protocol", None)
@@ -484,9 +493,9 @@ class QuantumProgram(ABC):
             key = preprocessor.name
             if key in reports:
                 # The name is the report key, so a duplicate would hide a routine.
-                suffix = 2
-                while f"{key}#{suffix}" in reports:
-                    suffix += 1
+                suffix = next(
+                    n for n in itertools.count(2) if f"{key}#{n}" not in reports
+                )
                 warn(
                     f"Two routines on {type(self).__name__} are both named "
                     f"{preprocessor.name!r}; reporting the second as "

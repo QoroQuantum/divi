@@ -18,6 +18,7 @@ case (a plain ``CustomVQA``) reads as an ordinary attribute access rather than
 a defaulted lookup.
 """
 
+import warnings
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -253,7 +254,17 @@ class DataBindingMixin(_MixinBase):
                 f"labels has {arr.shape[0]} entries but feature_batch has "
                 f"{n_samples} samples."
             )
+        self._require_finite_labels(arr)
         return arr, resolve_sample_loss(loss_fn)
+
+    @staticmethod
+    def _require_finite_labels(labels: np.ndarray) -> None:
+        n_bad = int(np.count_nonzero(~np.isfinite(labels)))
+        if n_bad:
+            raise ValueError(
+                f"labels must be finite; {n_bad} of {labels.size} entries are NaN "
+                "or infinite."
+            )
 
     def _validate_state(self) -> None:
         """Re-validate the data axis before previewing or training on it.
@@ -311,6 +322,7 @@ class DataBindingMixin(_MixinBase):
                 f"fit_bias requires at least 2 samples, but {n_labels} is now "
                 "assigned."
             )
+        self._require_finite_labels(np.asarray(labels, dtype=np.float64).reshape(-1))
 
     @staticmethod
     def _validate_feature_batch(
@@ -393,7 +405,9 @@ class DataBindingMixin(_MixinBase):
         Returns:
             numpy.ndarray: Shape ``(n_samples,)`` — class labels in
                 ``{-1.0, +1.0}`` by default, or continuous scores when
-                ``return_scores`` is ``True``.
+                ``return_scores`` is ``True``. A row whose score is NaN has no
+                class: its label is NaN, and a ``UserWarning`` reports how many
+                rows are affected.
 
         Raises:
             RuntimeError: If the program has no data axis, or if it has not
@@ -405,7 +419,16 @@ class DataBindingMixin(_MixinBase):
         scores = self._scores(features, params) + bias
         if return_scores:
             return scores
-        return np.where(scores >= 0.0, 1.0, -1.0)
+        undefined = np.isnan(scores)
+        if undefined.any():
+            warnings.warn(
+                f"{int(undefined.sum())} of {scores.size} scores are NaN, so those "
+                "rows have no class and their labels are NaN. Pass "
+                "return_scores=True to inspect the scores.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return np.where(undefined, np.nan, np.where(scores >= 0.0, 1.0, -1.0))
 
     def _scores(
         self, features: npt.ArrayLike, params: npt.NDArray[np.float64] | None

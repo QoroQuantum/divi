@@ -463,6 +463,24 @@ class TestDetectBatchInput:
         assert _batch_input_argnums(qp.batch_input(circuit, 1)) == [1]
 
 
+@pytest.mark.parametrize(
+    "argnum, expected",
+    [
+        pytest.param(np.int64(1), [1], id="numpy-integer"),
+        pytest.param(np.array(1), [1], id="zero-dimensional-array"),
+        pytest.param(np.array([0, 1]), [0, 1], id="array"),
+    ],
+)
+def test_detects_numpy_argnum(argnum, expected):
+    @qp.qnode(qp.device("default.qubit", wires=2))
+    def circuit(inputs, weights):
+        qp.RX(inputs, wires=0)
+        qp.RY(weights, wires=0)
+        return qp.expval(qp.Z(0))
+
+    assert _batch_input_argnums(qp.batch_input(circuit, argnum)) == expected
+
+
 class TestValidateSingleMeasurement:
     @pytest.fixture
     def expval_script(self):

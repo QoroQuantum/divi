@@ -12,6 +12,8 @@ Covers:
   (``_eval_poly_1d_jit``, ``_eval_poly_2d_jit``, ``_compute_hard_cvar_energy_jit``).
 """
 
+from types import MappingProxyType
+
 import dimod
 import numpy as np
 import pytest
@@ -99,6 +101,15 @@ class TestQuboToMatrixBQM:
         # Q[i,j] = Q[j,i] = J_ij/2 so that x^T Q x = BQM energy - offset)
         assert result[idx_a, idx_b] == pytest.approx(0.25)
         assert result[idx_b, idx_a] == pytest.approx(0.25)
+
+    def test_integer_biased_object_bqm_keeps_half_integer_couplings(self):
+        """Integer biases must not make the matrix integer-typed and truncate J/2."""
+        bqm = dimod.BinaryQuadraticModel(
+            {0: 1, 1: 2}, {(0, 1): 3}, 0, dimod.BINARY, dtype=object
+        )
+        result = qubo_to_matrix(bqm)
+        assert result.dtype == np.float64
+        np.testing.assert_array_equal(result, [[1.0, 1.5], [1.5, 2.0]])
 
     def test_non_binary_bqm_raises(self):
         """A non-BINARY (SPIN) BQM should raise ValueError."""
@@ -487,3 +498,54 @@ class TestComputeHardCvarEnergyJit:
         )
         # 25% tail should be <= 75% tail (CVaR picks lower energies)
         assert e_25 <= e_75
+
+
+@pytest.mark.parametrize(
+    "build",
+    [sps.csr_array, sps.coo_array, sps.csr_matrix],
+    ids=["csr_array", "coo_array", "csr_matrix"],
+)
+def test_qubo_to_matrix_accepts_every_sparse_container(build):
+    sparse_qubo = build(np.array([[1.0, -2.0], [0.0, 3.0]]))
+
+    assert qubo_to_matrix(sparse_qubo) is sparse_qubo
+    assert normalize_binary_polynomial_problem(sparse_qubo).n_vars == 2
+
+
+@pytest.mark.parametrize(
+    "build",
+    [np.asarray, sps.csr_array, sps.csr_matrix],
+    ids=["dense", "csr_array", "csr_matrix"],
+)
+def test_qubo_to_matrix_casts_a_complex_matrix_with_zero_imaginary_part(build):
+    matrix = qubo_to_matrix(build(np.array([[1 + 0j, -2], [0, 3]])))
+
+    assert not np.iscomplexobj(matrix)
+    expected = np.array([[1.0, -2.0], [0.0, 3.0]])
+    np.testing.assert_array_equal(
+        matrix.toarray() if sps.issparse(matrix) else matrix, expected
+    )
+
+
+@pytest.mark.parametrize(
+    "build",
+    [np.asarray, sps.csr_array, sps.csr_matrix],
+    ids=["dense", "csr_array", "csr_matrix"],
+)
+def test_qubo_to_matrix_rejects_a_complex_matrix_with_an_imaginary_part(build):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "QUBO matrix must be real; got a complex matrix with a non-zero "
+            "imaginary part."
+        ),
+    ):
+        qubo_to_matrix(build(np.array([[1 + 0j, -2j], [0, 3]])))
+
+
+def test_hubo_to_binary_polynomial_accepts_any_mapping():
+    polynomial = hubo_to_binary_polynomial(
+        MappingProxyType({(0,): 1.0, (0, 1): np.float32(-2.0)})
+    )
+
+    assert polynomial[frozenset({0, 1})] == -2.0

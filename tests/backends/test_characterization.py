@@ -13,6 +13,7 @@ Tests cover:
 
 import dataclasses
 import io
+import json
 import logging
 import re
 import warnings
@@ -22,6 +23,7 @@ import dimod
 import numpy as np
 import pytest
 import requests
+from pydantic import ValidationError
 from rich.console import Console
 
 from divi.backends import (
@@ -1788,6 +1790,151 @@ class TestTopLevelCharacterize:
 def test_job_type_characterize_has_validate_wire_value():
     # Wire value must remain ``"VALIDATE"`` — server compatibility.
     assert JobType.CHARACTERIZE.value == "VALIDATE"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"n_qubits": np.int64(5)}, id="n-qubits"),
+        pytest.param(
+            {"parameter_sweep": np.bool_(True), "penalty_tuning": np.True_},
+            id="flags",
+        ),
+        pytest.param({"structural_sensitivity": np.bool_(False)}, id="flag-false"),
+        pytest.param({"ansatz": {"layers": np.int32(2)}}, id="ansatz-layers"),
+        pytest.param(
+            {
+                "subspace": {
+                    "auto_warmstart": np.bool_(True),
+                    "max_variable_qubits": np.uint8(4),
+                    "restarts": np.int64(3),
+                }
+            },
+            id="subspace-auto",
+        ),
+        pytest.param(
+            {
+                "subspace": {
+                    "auto_warmstart": np.bool_(False),
+                    "base_bitstring": "01",
+                    "variable_qubits": np.array([0, 1]),
+                }
+            },
+            id="subspace-manual-array",
+        ),
+        pytest.param(
+            {
+                "constraints": [
+                    {"type": "max_cardinality", "bound": 3, "qubits": np.arange(3)}
+                ]
+            },
+            id="constraint-qubit-array",
+        ),
+        pytest.param(
+            {
+                "constraints": [
+                    {
+                        "type": "inequality",
+                        "bound": np.int64(10),
+                        "weights": {np.int64(0): np.float64(4.0), np.int32(1): 5},
+                    }
+                ]
+            },
+            id="constraint-numpy-weight-keys",
+        ),
+    ],
+)
+def test_options_accept_numpy_scalars_and_serialise_to_json(kwargs):
+    wire = CharacterizationOptions(**kwargs)._to_wire()
+
+    assert wire is not None
+    json.dumps(wire)
+
+
+def test_options_hold_numpy_scalars_as_builtin_types():
+    options = CharacterizationOptions(
+        n_qubits=np.uint64(2**63 + 5), parameter_sweep=np.bool_(True)
+    )
+
+    assert options.n_qubits == 2**63 + 5
+    assert type(options.n_qubits) is int
+    assert options.parameter_sweep is True
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        pytest.param({"n_qubits": True}, "valid integer", id="bool-as-int"),
+        pytest.param({"n_qubits": 2.0}, "valid integer", id="float-as-int"),
+        pytest.param({"n_qubits": np.float64(2.0)}, "valid integer", id="np-float"),
+        pytest.param({"parameter_sweep": 1}, "valid boolean", id="int-as-bool"),
+        pytest.param({"parameter_sweep": np.int64(1)}, "valid boolean", id="np-int"),
+        pytest.param({"penalty_tuning": "true"}, "valid boolean", id="string-as-bool"),
+        pytest.param(
+            {"ansatz": {"layers": True}}, "valid integer", id="bool-as-layers"
+        ),
+        pytest.param(
+            {"subspace": {"auto_warmstart": 0}},
+            "valid boolean",
+            id="int-auto-warmstart",
+        ),
+        pytest.param(
+            {
+                "constraints": [
+                    {"type": "max_cardinality", "bound": 3, "qubits": [True]}
+                ]
+            },
+            "valid integer",
+            id="bool-qubit",
+        ),
+        pytest.param(
+            {"constraints": [{"type": "equality", "bound": 3, "weights": {True: 1}}]},
+            "valid integer",
+            id="bool-weight-key",
+        ),
+    ],
+)
+def test_options_still_reject_non_integers_and_non_booleans(kwargs, message):
+    with pytest.raises(ValidationError, match=message):
+        CharacterizationOptions(**kwargs)
+
+
+def test_reference_states_may_be_an_array(mocker, qoro_service_factory):
+    service = qoro_service_factory()
+    mock_req = _mock_characterization_requests(mocker, service, "array-states")
+
+    characterize_and_validate(
+        BinaryOptimizationProblem(np.eye(2)),
+        reference_states=np.array(["01", "10"]),
+        service=service,
+    )
+
+    submit_json = mock_req.call_args_list[1].kwargs["json"]
+    assert submit_json["reference_states"] == ["01", "10"]
+    json.dumps(submit_json)
+
+
+def test_an_empty_reference_state_array_is_rejected_before_submission(mocker):
+    service = mocker.MagicMock()
+
+    with pytest.raises(ValueError, match="at least one"):
+        characterize_and_validate(
+            BinaryOptimizationProblem(np.eye(2)),
+            reference_states=np.array([], dtype=str),
+            service=service,
+        )
+
+    service.characterize_and_validate.assert_not_called()
+
+
+@pytest.mark.parametrize("reference_states", [np.array([], dtype=str), ()])
+def test_the_service_requires_a_reference_state_in_any_empty_container(
+    qoro_service_factory, reference_states
+):
+    with pytest.raises(ValueError, match="reference state"):
+        qoro_service_factory().characterize_and_validate(
+            qubo={"0,0": -1.0}, reference_states=reference_states
+        )
 
 
 # Report/hardness matching the redesigned canonical composer-service schema.

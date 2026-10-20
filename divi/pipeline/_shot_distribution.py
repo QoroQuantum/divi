@@ -12,6 +12,7 @@ L1 norm of each group's coefficients, or via a user-defined callable.
 
 import warnings
 from collections.abc import Callable, Sequence
+from heapq import nlargest
 from typing import Literal
 
 import numpy as np
@@ -85,13 +86,18 @@ def _compute_shot_distribution(
         Per-group shot counts.
 
     Raises:
-        ValueError: If ``total_shots`` is negative or ``group_norms`` is empty.
+        ValueError: If ``total_shots`` is negative, ``group_norms`` is empty, or
+            a weighted strategy is given a negative or NaN norm.
     """
     n_groups = len(group_norms)
     if n_groups == 0:
         raise ValueError("group_norms must contain at least one entry.")
     if total_shots < 0:
         raise ValueError(f"total_shots must be non-negative, got {total_shots}.")
+    if strategy in ("weighted", "weighted_random") and not all(
+        norm >= 0 for norm in group_norms
+    ):
+        raise ValueError(f"group_norms must be non-negative, got {list(group_norms)}.")
 
     if callable(strategy):
         result = list(strategy(list(group_norms), total_shots))
@@ -150,12 +156,10 @@ def _weighted_distribution(group_norms: Sequence[float], total_shots: int) -> li
     leftover = total_shots - allocated
 
     # Distribute leftover to groups with the largest fractional remainders.
-    remainders = sorted(
-        ((exact[i] - floors[i], i) for i in range(len(group_norms))),
-        key=lambda t: (-t[0], t[1]),
-    )
-    for k in range(leftover):
-        floors[remainders[k][1]] += 1
+    for i in nlargest(
+        leftover, range(len(group_norms)), key=lambda i: exact[i] - floors[i]
+    ):
+        floors[i] += 1
     return floors
 
 

@@ -36,6 +36,7 @@ from divi.circuits import MetaCircuit, QASMTemplate, render_template
 from divi.circuits._conversions import (
     _assert_finite,
     _format_bound_param,
+    _real_float_array,
     bind_parameters_in_dag,
 )
 from divi.pipeline._result_keys_operations import (
@@ -189,7 +190,7 @@ class DataBindingStage(BundleStage):
         """
         if env.feature_batch is None:
             raise ValueError("DataBindingStage requires env.feature_batch to be set.")
-        arr = np.asarray(env.feature_batch, dtype=np.float64)
+        arr = _real_float_array(env.feature_batch, source="env.feature_batch")
         if arr.ndim != 2:
             raise ValueError(f"feature_batch must be 2D; got shape {arr.shape}.")
         if arr.shape[1] != len(self.data_params):
@@ -375,7 +376,8 @@ class DataBindingStage(BundleStage):
         # and take the scalar branch.
         first = samples[0]
         if np.ndim(first) > 0:
-            n_obs = len(first)
+            values = np.asarray(samples, dtype=np.float64)
+            n_obs = values.shape[1]
             # Defensive stage-level invariant: QNN/CustomVQA always target a
             # single cost observable, so this never fires through their public
             # APIs — it only guards direct DataBindingStage use with a
@@ -388,16 +390,12 @@ class DataBindingStage(BundleStage):
             return [
                 float(
                     self.loss_reduction(
-                        self._per_sample_loss(
-                            np.asarray([float(s[i]) for s in samples], dtype=np.float64)
-                            + const,
-                            labels,
-                        )
+                        self._per_sample_loss(values[:, i] + const, labels)
                     )
                 )
                 for i in range(n_obs)
             ]
-        predictions = np.asarray([float(s) for s in samples], dtype=np.float64) + const
+        predictions = np.asarray(samples, dtype=np.float64) + const
         return float(self.loss_reduction(self._per_sample_loss(predictions, labels)))
 
     def _per_sample_loss(
@@ -425,6 +423,8 @@ class DataBindingStage(BundleStage):
         if self.fit_bias:
             predictions = predictions + float(np.mean(labels - predictions))
         sample_loss = self.sample_loss
+        if sample_loss is _squared_error:
+            return (predictions - np.asarray(labels, dtype=np.float64)) ** 2
         return np.asarray(
             [
                 sample_loss(float(pred), float(label))

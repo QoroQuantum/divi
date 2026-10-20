@@ -103,6 +103,26 @@ def ham_ops_terms_for_circuit(
     return group.replace("|", ";").split(";")
 
 
+def ham_ops_terms_per_circuit(
+    n_circuits: int,
+    ham_ops: str,
+    circuit_ham_map: list[list[int]] | None,
+) -> list[list[str]]:
+    """:func:`ham_ops_terms_for_circuit` for every circuit, parsing *ham_ops* once.
+
+    Circuits in the same group share one term list; treat the lists as read-only.
+    """
+    group_terms = [group.split(";") for group in ham_ops.split("|")]
+    all_terms = ham_ops.replace("|", ";").split(";")
+    per_circuit = []
+    for i in range(n_circuits):
+        group_index = _group_index(i, circuit_ham_map)
+        per_circuit.append(
+            all_terms if group_index is None else group_terms[group_index]
+        )
+    return per_circuit
+
+
 def _dense_to_sparse(term: str) -> str:
     """Convert a dense Pauli string to sparse notation.
 
@@ -116,11 +136,7 @@ def _dense_to_sparse(term: str) -> str:
         >>> _dense_to_sparse("IIIIIIII")
         'I'
     """
-    parts = []
-    for i, ch in enumerate(term):
-        if ch != "I":
-            parts.append(f"{ch}{i}")
-    return "".join(parts) if parts else "I"
+    return "".join(f"{ch}{i}" for i, ch in enumerate(term) if ch != "I") or "I"
 
 
 def encode_ham_ops(dense_ham_ops: str) -> str:

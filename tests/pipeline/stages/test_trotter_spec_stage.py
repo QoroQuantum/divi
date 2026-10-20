@@ -4,6 +4,7 @@
 
 """Tests for divi.pipeline.stages._trotter_spec_stage."""
 
+import numpy as np
 import pytest
 from qiskit.quantum_info import SparsePauliOp
 
@@ -40,6 +41,26 @@ def _meta_factory(result, ham_id):
     """Test factory: the single-``Z(0)`` MetaCircuit shape TrotterSpecStage would
     otherwise emit on its own."""
     return meta_with_observable(_Z0)
+
+
+def test_n_steps_accepts_a_numpy_integer_and_stores_a_plain_int():
+    stage = TrotterSpecStage(
+        ExactTrotterization(), meta_circuit_factory=_meta_factory, n_steps=np.int64(3)
+    )
+
+    assert stage._n_steps == 3
+    assert type(stage._n_steps) is int
+
+
+@pytest.mark.parametrize("n_steps", [0, -1, 2.5, True])
+def test_n_steps_must_be_a_positive_integer(n_steps):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(f"n_steps must be a positive integer, got {n_steps}."),
+    ):
+        TrotterSpecStage(
+            ExactTrotterization(), meta_circuit_factory=_meta_factory, n_steps=n_steps
+        )
 
 
 class TestExpand:

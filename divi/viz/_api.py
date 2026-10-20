@@ -26,7 +26,7 @@ default to :math:`(-\\pi, \\pi)`, omitted directions are drawn at random
 plane scans.
 """
 
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from functools import wraps
@@ -65,7 +65,14 @@ from ._results import (
 # orqviz-style 1D/2D scans use scalar endpoints in (-pi, pi) along the direction vector.
 _DEFAULT_SCAN_SPAN: tuple[float, float] = (-np.pi, np.pi)
 
-VizRng: TypeAlias = np.random.Generator | int | None
+VizRng: TypeAlias = (
+    np.random.Generator
+    | np.random.BitGenerator
+    | np.random.SeedSequence
+    | int
+    | np.integer
+    | None
+)
 OptionalArray: TypeAlias = npt.ArrayLike | None
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -189,6 +196,16 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
         )
 
 
+def _real_float_array(values: npt.ArrayLike, name: str) -> npt.NDArray[np.float64]:
+    """*values* as a float64 array, rejecting a non-zero imaginary part."""
+    array = np.asarray(values)
+    if np.iscomplexobj(array):
+        if np.any(array.imag != 0):
+            raise ValueError(f"{name} must be real, got a non-zero imaginary part.")
+        array = array.real
+    return array.astype(np.float64, copy=False)
+
+
 def _resolve_center(
     program: _SupportsVizScan,
     center: OptionalArray,
@@ -204,7 +221,7 @@ def _resolve_center(
             )
         center_arr = np.asarray(program._best_params, dtype=np.float64).reshape(-1)
     else:
-        center_arr = np.asarray(center, dtype=np.float64).reshape(-1)
+        center_arr = _real_float_array(center, "center").reshape(-1)
 
     if center_arr.shape != (n_params,):
         raise ValueError(
@@ -216,11 +233,7 @@ def _resolve_center(
 
 def _resolve_viz_rng(rng: VizRng) -> np.random.Generator:
     """Normalise *rng* to a :class:`numpy.random.Generator`."""
-    if rng is None:
-        return np.random.default_rng()
-    if isinstance(rng, int):
-        return np.random.default_rng(rng)
-    return rng
+    return np.random.default_rng(rng)
 
 
 def _random_gaussian_direction(
@@ -392,13 +405,19 @@ def _resolve_samples(
 
 
 def _normalize_pca_offset(
-    offset: float | tuple[float, float],
+    offset: float | Sequence[float] | npt.NDArray[np.floating],
 ) -> tuple[float, float]:
     """Match orqviz: scalar offset expands to (-|a|, |a|) padding on min/max."""
-    if isinstance(offset, tuple):
-        return (float(offset[0]), float(offset[1]))
-    a = float(abs(offset))
-    return (-a, a)
+    array = np.asarray(offset, dtype=np.float64)
+    if array.ndim == 0:
+        a = abs(float(array))
+        return (-a, a)
+    if array.shape != (2,):
+        raise ValueError(
+            "offset must be a scalar or a pair (low, high), got shape "
+            f"{array.shape}."
+        )
+    return (float(array[0]), float(array[1]))
 
 
 def _pca_scan_endpoints(
@@ -632,7 +651,7 @@ def scan_pca(
     center: OptionalArray = None,
     grid_shape: tuple[int, int] = (41, 41),
     components_ids: tuple[int, int] = (0, 1),
-    offset: float | tuple[float, float] = (-1.0, 1.0),
+    offset: float | Sequence[float] | npt.NDArray[np.floating] = (-1.0, 1.0),
     span_x: tuple[float, float] | None = None,
     span_y: tuple[float, float] | None = None,
 ) -> PCAScanResult:
@@ -717,7 +736,7 @@ def scan_pca(
     if center is None:
         anchor = mean.astype(np.float64, copy=True)
     else:
-        anchor = np.asarray(center, dtype=np.float64).reshape(-1)
+        anchor = _real_float_array(center, "center").reshape(-1)
         if anchor.shape != (n_params,):
             raise ValueError(
                 f"center must have shape ({n_params},), got {anchor.shape}"
@@ -1006,7 +1025,7 @@ def compute_hessian(
         raise ValueError(f"eps must be positive, got {eps}")
 
     n_params = _n_program_params(program)
-    c = np.asarray(center, dtype=np.float64).reshape(-1)
+    c = _real_float_array(center, "center").reshape(-1)
     if c.shape != (n_params,):
         raise ValueError(f"center must have shape ({n_params},), got {c.shape}")
 
@@ -1027,19 +1046,16 @@ def compute_hessian(
     eye_cross = cross_shift * np.eye(n)
 
     # Layout: [center, +e0, -e0, ..., +ei+ej, +ei-ej, -ei+ej, -ei-ej, ...]
-    diag_probes = np.empty((2 * n, n))
-    for i in range(n):
-        diag_probes[2 * i] = c + eye_diag[i]
-        diag_probes[2 * i + 1] = c - eye_diag[i]
+    diag_probes = (c + np.stack([eye_diag, -eye_diag], axis=1)).reshape(2 * n, n)
 
     ii, jj = np.triu_indices(n, k=1)
     n_pairs = len(ii)
-    cross_probes = np.empty((4 * n_pairs, n))
-    for k, (i, j) in enumerate(zip(ii, jj)):
-        cross_probes[4 * k] = c + eye_cross[i] + eye_cross[j]
-        cross_probes[4 * k + 1] = c + eye_cross[i] - eye_cross[j]
-        cross_probes[4 * k + 2] = c - eye_cross[i] + eye_cross[j]
-        cross_probes[4 * k + 3] = c - eye_cross[i] - eye_cross[j]
+    signs = np.array([[1.0, 1.0], [1.0, -1.0], [-1.0, 1.0], [-1.0, -1.0]])
+    cross_probes = (
+        c
+        + signs[:, :1] * eye_cross[ii][:, None, :]
+        + signs[:, 1:] * eye_cross[jj][:, None, :]
+    ).reshape(4 * n_pairs, n)
 
     param_sets = np.concatenate([[c], diag_probes, cross_probes])
     vals = _evaluate_param_sets_reported(program, param_sets, scan_label="Hessian")
@@ -1284,7 +1300,7 @@ class ProgramViz:
                 # offsets the projected cloud from the heatmap in score space.
                 center = kwargs.get("center")
                 if center is not None:
-                    ref = np.asarray(center, dtype=np.float64).reshape(-1)
+                    ref = _real_float_array(center, "center").reshape(-1)
                     delta = periodic_wrap(samples[-1], reference=ref) - samples[-1]
                     samples = samples + delta
             kwargs["samples"] = samples

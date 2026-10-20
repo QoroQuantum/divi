@@ -192,9 +192,8 @@ def get_hardware_redirect_response(user_query: str) -> str | None:
     q = user_query.lower().strip()
     if not q:
         return None
-    for kw in _HARDWARE_REDIRECT_KEYWORDS:
-        if kw in q:
-            return HARDWARE_REDIRECT_MESSAGE
+    if any(kw in q for kw in _HARDWARE_REDIRECT_KEYWORDS):
+        return HARDWARE_REDIRECT_MESSAGE
     return None
 
 
@@ -202,22 +201,23 @@ def get_hardware_redirect_response(user_query: str) -> str | None:
 # Prompt building
 # ---------------------------------------------------------------------------
 
+_OVERVIEW_QUERY_RE = re.compile(
+    r"what\s+(quantum\s+)?algorithms"
+    r"|what\s+algorithms\s+does\s+divi"
+    r"|which\s+algorithms"
+    r"|what\s+features\s+does\s+divi"
+    r"|what\s+does\s+divi\s+support"
+    r"|list\s+(the\s+)?(algorithms|features|backends|optimizers)"
+    r"|which\s+(features|backends|optimizers)"
+)
+
 
 def _is_overview_query(query: str) -> bool:
     """True if the user is asking for a high-level list (algorithms, features, etc.)."""
     q = query.lower().strip()
     if not q:
         return False
-    patterns = [
-        r"what\s+(quantum\s+)?algorithms",
-        r"what\s+algorithms\s+does\s+divi",
-        r"which\s+algorithms",
-        r"what\s+features\s+does\s+divi",
-        r"what\s+does\s+divi\s+support",
-        r"list\s+(the\s+)?(algorithms|features|backends|optimizers)",
-        r"which\s+(features|backends|optimizers)",
-    ]
-    return any(re.search(p, q) for p in patterns)
+    return _OVERVIEW_QUERY_RE.search(q) is not None
 
 
 def _filter_chunks_for_overview(chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:

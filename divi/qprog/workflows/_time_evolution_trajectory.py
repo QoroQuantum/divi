@@ -9,6 +9,7 @@ from dataclasses import replace
 
 import matplotlib.pyplot as plt
 import numpy as np
+import numpy.typing as npt
 from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 
@@ -21,6 +22,7 @@ from divi.hamiltonians import (
     to_spo,
 )
 from divi.qprog.algorithms import TimeEvolution
+from divi.qprog.algorithms._time_evolution import _validate_trotter_settings
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
 from divi.qprog.initial_states import InitialState
 
@@ -64,7 +66,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
     def __init__(
         self,
         hamiltonian: SparsePauliOp,
-        time_points: Sequence[float],
+        time_points: Sequence[float] | npt.NDArray[np.floating],
         *,
         backend: CircuitRunner,
         trotterization_strategy: TrotterizationStrategy | None = None,
@@ -115,6 +117,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             raise ValueError("time_points must not be empty.")
         if len(set(time_points)) != len(time_points):
             raise ValueError("time_points must not contain duplicates.")
+        n_steps, order = _validate_trotter_settings(n_steps, order)
 
         self._hamiltonian = hamiltonian
         self._time_points = time_points
@@ -224,7 +227,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
             ``list[float]`` with one value per observable for a sequence.
         """
         self._check_ready_for_aggregation()
-        return {t: self._programs[f"t={t}"].results for t in self._time_points}
+        return {float(t): self._programs[f"t={t}"].results for t in self._time_points}
 
     def visualize_results(self):
         """Plot the expectation-value trajectory over time.

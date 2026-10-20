@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from collections.abc import Callable, Hashable
+from numbers import Integral
 from typing import Any
 
 import numpy as np
@@ -70,9 +71,15 @@ class TrotterSpecStage(SpecStage[SparsePauliOp]):
         """
         super().__init__(name=type(self).__name__)
 
+        if (
+            not isinstance(n_steps, Integral)
+            or isinstance(n_steps, bool)
+            or n_steps < 1
+        ):
+            raise ValueError(f"n_steps must be a positive integer, got {n_steps}.")
         self._trotterization_strategy = trotterization_strategy
         self._meta_circuit_factory = meta_circuit_factory
-        self._n_steps = n_steps
+        self._n_steps = int(n_steps)
 
     def _prepare(
         self, items: SparsePauliOp

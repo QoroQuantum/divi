@@ -4,6 +4,7 @@
 
 """Tests for the Quantum Natural Gradient optimizer and its pullback metric."""
 
+import itertools
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -27,8 +28,10 @@ from divi.qprog._metrics import (
     PullbackMetricEstimator,
     StochasticFidelityMetricEstimator,
     _all_terms_preprocessor,
+    _fs_block_from_expectations,
     _fs_block_prefix,
     _fs_blocks,
+    _fs_needed_labels,
     _fs_prefix_labels_preprocessor,
     _measure_prefix_paulis,
     _PrefixOpsView,
@@ -856,6 +859,53 @@ def test_fubini_study_metric_sums_shared_parameters_and_averages_branches(
     )
     metric = FubiniStudyMetricEstimator().bind(program)["metric_fn"](np.array([0.3]))
     np.testing.assert_allclose(metric, [[5.0]])
+
+
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_fs_block_closed_form_matches_anticommutator_algebra(seed):
+    """For disjoint-wire generators ``0.5 * P`` the block and its measured labels
+    equal the ones the full Pauli algebra gives on a random state."""
+    rng = np.random.default_rng(seed)
+    n_qubits = 4
+    generators = tuple(
+        SparsePauliOp.from_sparse_list(
+            [("XYZ"[int(rng.integers(3))], [wire], 0.5)], num_qubits=n_qubits
+        )
+        for wire in range(n_qubits)
+    )
+    state = rng.normal(size=2**n_qubits) + 1j * rng.normal(size=2**n_qubits)
+    state /= np.linalg.norm(state)
+
+    def expectation(operator: SparsePauliOp) -> float:
+        return float(np.real(state.conj() @ operator.to_matrix() @ state))
+
+    anticommutators = {
+        (i, j): (generators[i] @ generators[j] + generators[j] @ generators[i])
+        for i, j in itertools.product(range(n_qubits), repeat=2)
+    }
+    single = [expectation(generator) for generator in generators]
+    reference = np.array(
+        [
+            [
+                0.5 * expectation(anticommutators[i, j]) - single[i] * single[j]
+                for j in range(n_qubits)
+            ]
+            for i in range(n_qubits)
+        ]
+    )
+    reference_labels = {
+        label
+        for spo in (*generators, *(op.simplify() for op in anticommutators.values()))
+        for label in spo.paulis.to_labels()
+        if set(label) != {"I"}
+    }
+
+    labels = _fs_needed_labels(generators)
+    assert set(labels) == reference_labels
+    exp = {label: expectation(SparsePauliOp(label)) for label in labels}
+    np.testing.assert_allclose(
+        _fs_block_from_expectations(generators, exp), reference, atol=1e-12
+    )
 
 
 def _single_rx_program(source_batch):

@@ -33,6 +33,7 @@ from divi.qprog.problems._matching import (
     _spectral_bisect,
 )
 from divi.qprog.workflows import PartitioningProgramEnsemble
+from tests._helpers import exact_match
 from tests.qprog.problems._helpers import nx_twin
 
 
@@ -195,6 +196,17 @@ def test_is_valid_matching(matching, expected):
 def test_bitstring_to_matching(bitstring, expected):
     """Qubit 0 = leftmost bit (left-to-right ordering)."""
     assert _bitstring_to_matching(bitstring, [(0, 1), (2, 3)]) == expected
+
+
+@pytest.mark.parametrize("bitstring", ["1", "101"], ids=["too_short", "too_long"])
+def test_bitstring_to_matching_rejects_the_wrong_width(bitstring):
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            f"Expected a bitstring of 2 bits, one per edge, got {len(bitstring)}."
+        ),
+    ):
+        _bitstring_to_matching(bitstring, [(0, 1), (2, 3)])
 
 
 _TRIANGLE_ADJACENCY = [[0, 1, 1], [1, 0, 1], [1, 1, 0]]

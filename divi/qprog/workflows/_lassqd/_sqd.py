@@ -13,6 +13,7 @@ density-matrix reconstruction.
 import bisect
 import itertools
 import warnings
+from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from math import comb, isqrt
@@ -33,6 +34,9 @@ from ._types import exact_ints
 #: memory independent of how large the subspace grows; only the returned
 #: matrices scale with its square.
 _PAIR_BLOCK_ROWS = 512
+
+#: Determinant-pair terms accumulated per pass in :func:`_spatial_rdms_exact`.
+_RDM_TERMS_PER_PASS = 1 << 20
 
 # Carryover retention threshold, relative to the winning batch's largest
 # coefficient (arXiv:2512.14936 converges from 1e-3 down).
@@ -155,8 +159,8 @@ def slater_condon(det_i, det_j, h_spin, g_spin) -> float:
     set_i = set(det_i)
     set_j = set(det_j)
 
-    diff_i = sorted(list(set_i - set_j))
-    diff_j = sorted(list(set_j - set_i))
+    diff_i = sorted(set_i - set_j)
+    diff_j = sorted(set_j - set_i)
 
     if len(diff_i) > 2:
         return 0.0
@@ -211,8 +215,8 @@ def spin_to_spatial_occupations(
     spin_occ, n_orb: int
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Split a spin-orbital occupation tuple back into (alpha_occ, beta_occ)."""
-    alpha_occ = tuple(sorted([p for p in spin_occ if p < n_orb]))
-    beta_occ = tuple(sorted([p - n_orb for p in spin_occ if p >= n_orb]))
+    alpha_occ = tuple(sorted(p for p in spin_occ if p < n_orb))
+    beta_occ = tuple(sorted(p - n_orb for p in spin_occ if p >= n_orb))
     return alpha_occ, beta_occ
 
 
@@ -297,11 +301,9 @@ def projected_matrices(
     The saving is that Slater-Condon vanishes past a double excitation, and the
     fraction of pairs that survive falls as the subspace grows.
 
-    ``S^2``'s off-diagonal is handled differently. It is non-zero only between
-    determinants related by exchanging spins across two spatial orbitals, a
-    small fraction of pairs, so those are located by array operations and then
-    evaluated by the scalar routine -- keeping its ladder-operator signs as the
-    single source of truth for a negligible cost.
+    ``S^2``'s off-diagonal is non-zero only between determinants related by
+    exchanging spins across two spatial orbitals, where it is +-1 with the sign
+    of the ladder-operator parity.
 
     Rows are processed in blocks so the pair arrays stay bounded rather than
     scaling with the square of the subspace, and both matrices are returned
@@ -336,6 +338,10 @@ def projected_matrices(
     occupation = np.zeros((m, n_spin))
     for row, spin_occ in enumerate(dets_spin):
         occupation[row, list(spin_occ)] = 1.0
+
+    occupied = occupation.astype(bool)
+    # 0/1 overlap counts are exact in single precision.
+    occupation_f32 = occupation.astype(np.float32)
 
     n_electrons = int(round(float(occupation[0].sum())))
     # Occupied orbitals strictly below an index: the parity that signs an
@@ -372,21 +378,23 @@ def projected_matrices(
         stop = min(start + _PAIR_BLOCK_ROWS, m)
         # Every determinant holds n_electrons, so the count of orbitals in i
         # absent from j is the excitation rank connecting them.
-        rank = (n_electrons - np.rint(occupation[start:stop] @ occupation.T)).astype(
-            np.int16
-        )
+        overlap = occupation_f32[start:stop] @ occupation_f32.T
+        connected_local, connected_cols = np.nonzero(overlap >= n_electrons - 2)
+        connected_rank = n_electrons - overlap[connected_local, connected_cols]
 
-        local, cols = np.nonzero(rank == 0)
+        keep = connected_rank == 0
+        local, cols = connected_local[keep], connected_cols[keep]
         rows = local + start
         h_entries.append((rows, cols, diagonal[rows]))
         s2_entries.append((rows, cols, s2_diagonal[rows]))
 
         # --- Single excitations: q in j replaced by p in i ---
-        local, cols = np.nonzero(rank == 1)
+        keep = connected_rank == 1
+        local, cols = connected_local[keep], connected_cols[keep]
         if local.size:
             rows = local + start
-            created = (occupation[rows] * (1.0 - occupation[cols])).argmax(axis=1)
-            annihilated = (occupation[cols] * (1.0 - occupation[rows])).argmax(axis=1)
+            created = (occupied[rows] & ~occupied[cols]).argmax(axis=1)
+            annihilated = (occupied[cols] & ~occupied[rows]).argmax(axis=1)
             # Annihilating q then creating p, the intermediate occupation losing
             # one orbital below p exactly when q < p.
             exponent = (
@@ -406,15 +414,14 @@ def projected_matrices(
             )
 
         # --- Double excitations: q, s in j replaced by p, r in i ---
-        local, cols = np.nonzero(rank == 2)
+        keep = connected_rank == 2
+        local, cols = connected_local[keep], connected_cols[keep]
         if local.size:
             rows = local + start
             # np.nonzero walks row-major and each row holds exactly two entries,
             # so every pair contributes its differing orbitals in ascending order.
-            _, created_pair = np.nonzero(occupation[rows] * (1.0 - occupation[cols]))
-            _, annihilated_pair = np.nonzero(
-                occupation[cols] * (1.0 - occupation[rows])
-            )
+            _, created_pair = np.nonzero(occupied[rows] & ~occupied[cols])
+            _, annihilated_pair = np.nonzero(occupied[cols] & ~occupied[rows])
             lower_created, upper_created = created_pair[0::2], created_pair[1::2]
             lower_annihilated = annihilated_pair[0::2]
             upper_annihilated = annihilated_pair[1::2]
@@ -448,9 +455,7 @@ def projected_matrices(
             )
 
             # S^2 connects only spin-exchange pairs: i gains alpha at one spatial
-            # orbital and beta at another, losing exactly the opposite pair. The
-            # predicate is a superset -- a pair that satisfies it but carries no
-            # S^2 weight simply gets assigned zero.
+            # orbital and beta at another, losing exactly the opposite pair.
             spin_exchange = (
                 (lower_created < n_orb)
                 & (upper_created >= n_orb)
@@ -459,18 +464,21 @@ def projected_matrices(
                 & (lower_created == upper_annihilated - n_orb)
                 & (lower_annihilated == upper_created - n_orb)
             )
-            exchange_rows, exchange_cols = rows[spin_exchange], cols[spin_exchange]
+            exchange_cols = cols[spin_exchange]
+            gained = lower_created[spin_exchange]
+            lost = lower_annihilated[spin_exchange]
+            # Every exchange pair has weight +-1: the ladder parity at both orbitals.
+            ladder_parity = (
+                below[exchange_cols, gained]
+                + below[exchange_cols, n_orb + gained]
+                + below[exchange_cols, lost]
+                + below[exchange_cols, n_orb + lost]
+            )
             s2_entries.append(
                 (
-                    exchange_rows,
+                    rows[spin_exchange],
                     exchange_cols,
-                    np.array(
-                        [
-                            s2_matrix_element(dets[row], dets[col])
-                            for row, col in zip(exchange_rows, exchange_cols)
-                        ],
-                        dtype=float,
-                    ),
+                    1.0 - 2.0 * (ladder_parity.astype(np.int64) % 2),
                 )
             )
 
@@ -701,7 +709,7 @@ def subspace_determinants(
     # Occupations decoded once per sector string, not once per determinant.
     alpha_occs = _occupations_from_bit_matrix(_bit_matrix(strings_alpha, n_orb))
     beta_occs = _occupations_from_bit_matrix(_bit_matrix(strings_beta, n_orb))
-    dets = [(alpha, beta) for alpha in alpha_occs for beta in beta_occs]
+    dets = list(itertools.product(alpha_occs, beta_occs))
     dets_spin = [
         spatial_to_spin_occupations(alpha, beta, n_orb) for alpha, beta in dets
     ]
@@ -715,14 +723,16 @@ def string_hops(string: str, rank: int) -> list[str]:
     empty = [index for index, bit in enumerate(string) if bit == "0"]
     hops = []
     for moved in range(1, rank + 1):
-        for vacated in itertools.combinations(occupied, moved):
-            for filled in itertools.combinations(empty, moved):
-                bits = list(string)
-                for index in vacated:
-                    bits[index] = "0"
-                for index in filled:
-                    bits[index] = "1"
-                hops.append("".join(bits))
+        for vacated, filled in itertools.product(
+            itertools.combinations(occupied, moved),
+            itertools.combinations(empty, moved),
+        ):
+            bits = list(string)
+            for index in vacated:
+                bits[index] = "0"
+            for index in filled:
+                bits[index] = "1"
+            hops.append("".join(bits))
     return hops
 
 
@@ -759,7 +769,9 @@ def _occupations_from_bit_matrix(bits: np.ndarray) -> list[tuple[int, ...]]:
     """Occupied-orbital tuple for each row of a binary indicator matrix."""
     rows, cols = np.nonzero(bits)
     bounds = np.searchsorted(rows, np.arange(len(bits) + 1))
-    return [tuple(cols[bounds[i] : bounds[i + 1]].tolist()) for i in range(len(bits))]
+    return [
+        tuple(cols[start:stop].tolist()) for start, stop in itertools.pairwise(bounds)
+    ]
 
 
 @config_dataclass(frozen=True)
@@ -1133,7 +1145,7 @@ def filter_symmetry(bitstrings, n_orb: int, n_alpha: int, n_beta: int) -> list[s
     keep = (bits[:, :n_orb].sum(axis=1, dtype=np.int64) == n_alpha) & (
         bits[:, n_orb:].sum(axis=1, dtype=np.int64) == n_beta
     )
-    return [half for half, keeping in zip(bitstrings, keep) if keeping]
+    return list(itertools.compress(bitstrings, keep))
 
 
 def _modified_relu(distance: float, threshold: float, delta: float) -> float:
@@ -1402,7 +1414,7 @@ class SQDSolver:
             one_body, two_body, self.n_orb, one_body_beta
         )
 
-        best: SQDResult | None = None
+        winners: list[SQDResult] = []
 
         # Re-read each iteration, not accumulated: weights from differently
         # normalised eigenvectors are not comparable, and a carried string is
@@ -1424,8 +1436,7 @@ class SQDSolver:
                 )
             ]
             winner, occupancies = min(results, key=lambda pair: pair[0].objective)
-            if best is None or winner.objective < best.objective:
-                best = winner
+            winners.append(winner)
 
             occupancy = np.mean([occ for _, occ in results], axis=0)
             converged = (
@@ -1442,7 +1453,7 @@ class SQDSolver:
 
             carried_alpha, carried_beta = self.carried_strings(winner)
 
-        assert best is not None
+        best = min(winners, key=lambda result: result.objective)
         # Carried from before the extension, which would otherwise seed every
         # batch of the next solve with the whole extended subspace.
         extended = (
@@ -1478,8 +1489,8 @@ class SQDSolver:
         )
         existing_alpha, existing_beta = result.strings_alpha, result.strings_beta
         if self.symmetrize_spin:
-            for half, weight in beta_weights.items():
-                alpha_weights[half] = alpha_weights.get(half, 0.0) + weight
+            alpha_weights = Counter(alpha_weights)
+            alpha_weights.update(beta_weights)
             beta_weights = alpha_weights
             existing_alpha = existing_beta = tuple(
                 sorted({*existing_alpha, *existing_beta}, key=ci_string_to_int)
@@ -1554,7 +1565,7 @@ class SQDSolver:
                 )
             }
         else:
-            weights = {}
+            weights = defaultdict(float)
             for bits in ordered:
                 corrected = bit_flip_correction(
                     bits,
@@ -1564,7 +1575,7 @@ class SQDSolver:
                     self.occupancy,
                     self._rng,
                 )
-                weights[corrected] = weights.get(corrected, 0.0) + probs[bits]
+                weights[corrected] += probs[bits]
 
         if not weights:
             raise ValueError(
@@ -1590,6 +1601,7 @@ class SQDSolver:
         of configurations carrying positive probability.
         """
         strings = sorted(candidates)
+        string_array = np.array(strings)
         probabilities = np.array([candidates[bits] for bits in strings])
         size = min(self.batch_size, int(np.count_nonzero(probabilities)))
         # Split once per candidate rather than once per draw per batch.
@@ -1598,20 +1610,18 @@ class SQDSolver:
         batches = []
         for _ in range(self.n_batches):
             sampled = self._rng.choice(
-                strings, size=size, replace=False, p=probabilities
+                string_array, size=size, replace=False, p=probabilities
             )
-            alpha_counts: dict[str, int] = {}
-            beta_counts: dict[str, int] = {}
+            alpha_counts: Counter[str] = Counter()
+            beta_counts: Counter[str] = Counter()
             for bits in sampled:
                 alpha, beta = halves[bits]
-                alpha_counts[alpha] = alpha_counts.get(alpha, 0) + 1
-                beta_counts[beta] = beta_counts.get(beta, 0) + 1
+                alpha_counts[alpha] += 1
+                beta_counts[beta] += 1
 
             if self.symmetrize_spin:
-                merged: dict[str, int] = dict(alpha_counts)
-                for half, count in beta_counts.items():
-                    merged[half] = merged.get(half, 0) + count
-                alpha_counts = beta_counts = merged
+                alpha_counts.update(beta_counts)
+                beta_counts = alpha_counts
                 carried_alpha = carried_beta = sorted({*carried_alpha, *carried_beta})
 
             batches.append(
@@ -1651,11 +1661,12 @@ class SQDSolver:
         sampled = sorted(counts, key=lambda half: (-counts[half], half))
         priority = ([reference] if self.include_reference else []) + list(carried)
 
-        kept: dict[str, None] = {}
-        for half in priority + sampled:
-            if half.count("1") == target:
-                kept.setdefault(half, None)
-        selected = list(kept)[:max_dim] if max_dim is not None else list(kept)
+        kept = dict.fromkeys(
+            half
+            for half in itertools.chain(priority, sampled)
+            if half.count("1") == target
+        )
+        selected = list(kept)[:max_dim]
         return tuple(sorted(selected, key=ci_string_to_int))
 
     def _diagonalize(
@@ -1789,56 +1800,159 @@ def _spatial_rdms_exact(
     """
     alpha_bits = _bit_matrix(strings_alpha, n_orb)
     beta_bits = _bit_matrix(strings_beta, n_orb)
-    occupation = np.concatenate(
+    occupied = np.concatenate(
         [
             np.repeat(alpha_bits, len(strings_beta), axis=0),
             np.tile(beta_bits, (len(strings_alpha), 1)),
         ],
         axis=1,
-    ).astype(float)
-    dets = _occupations_from_bit_matrix(occupation)
-    det_sets = [frozenset(det) for det in dets]
+    ).astype(bool)
+    occupation = occupied.astype(np.float32)
+    n_dets = len(occupied)
+    n_electrons = int(occupied[0].sum())
+    occupied_orbitals = np.nonzero(occupied)[1].reshape(n_dets, n_electrons)
+    below = np.cumsum(occupied, axis=1, dtype=np.int32) - occupied
     coefficients = np.asarray(amplitudes, dtype=float).ravel()
-    n_electrons = len(dets[0])
 
     rdm1s = np.zeros((2, n_orb, n_orb))
     rdm2 = np.zeros((n_orb,) * 4)
-    for start in range(0, len(dets), _PAIR_BLOCK_ROWS):
-        stop = min(start + _PAIR_BLOCK_ROWS, len(dets))
-        rank = n_electrons - np.rint(occupation[start:stop] @ occupation.T)
-        for local, j in zip(*np.nonzero(rank <= 2)):
-            i = int(local) + start
-            weight = coefficients[i] * coefficients[j]
-            det_j = dets[j]
-            created = tuple(sorted(det_sets[i] - det_sets[j]))
-            annihilated = tuple(sorted(det_sets[j] - det_sets[i]))
-            common = sorted(det_sets[i] & det_sets[j])
+    for start in range(0, n_dets, _PAIR_BLOCK_ROWS):
+        stop = min(start + _PAIR_BLOCK_ROWS, n_dets)
+        overlap = occupation[start:stop] @ occupation.T
+        local, cols = np.nonzero(overlap >= n_electrons - 2)
+        rank = n_electrons - overlap[local, cols]
+        rows = local + start
+        weight = coefficients[rows] * coefficients[cols]
 
-            if not created:
-                for p in det_j:
-                    rdm1s[p // n_orb, p % n_orb, p % n_orb] += weight
-                spectators = list(itertools.combinations(common, 2))
-            elif len(created) == 1:
-                (p,), (q,) = created, annihilated
-                sign_q, occupied = _annihilation_sign(det_j, q)
-                sign_p, _ = _creation_sign(occupied, p)
-                rdm1s[p // n_orb, p % n_orb, q % n_orb] += weight * sign_p * sign_q
-                spectators = [(t,) for t in common]
-            else:
-                spectators = [()]
+        keep = rank == 0
+        pair_cols, pair_weight = cols[keep], weight[keep]
+        if pair_cols.size:
+            orbitals = occupied_orbitals[pair_cols]
+            np.add.at(
+                rdm1s,
+                (orbitals // n_orb, orbitals % n_orb, orbitals % n_orb),
+                np.broadcast_to(pair_weight[:, None], orbitals.shape),
+            )
+            first, second = np.triu_indices(n_electrons, 1)
+            for chunk in _spectator_chunks(len(first), pair_cols.size):
+                lower = orbitals[:, first[chunk]]
+                width = lower.shape[1]
+                pair = np.stack(
+                    [lower.ravel(), orbitals[:, second[chunk]].ravel()], axis=1
+                )
+                _accumulate_two_body(
+                    rdm2,
+                    below,
+                    n_orb,
+                    np.repeat(pair_cols, width),
+                    np.repeat(pair_weight, width),
+                    pair,
+                    pair,
+                )
 
-            for spectator in spectators:
-                for q, s in itertools.permutations(annihilated + spectator):
-                    sign_q, occ_1 = _annihilation_sign(det_j, q)
-                    sign_s, occ_2 = _annihilation_sign(occ_1, s)
-                    for p, r in itertools.permutations(created + spectator):
-                        if p // n_orb != q // n_orb:
-                            continue
-                        sign_r, occ_3 = _creation_sign(occ_2, r)
-                        sign_p, _ = _creation_sign(occ_3, p)
-                        rdm2[p % n_orb, q % n_orb, r % n_orb, s % n_orb] += (
-                            weight * sign_q * sign_s * sign_r * sign_p
-                        )
+        keep = rank == 1
+        pair_rows, pair_cols, pair_weight = rows[keep], cols[keep], weight[keep]
+        if pair_cols.size:
+            created = np.nonzero(occupied[pair_rows] & ~occupied[pair_cols])[1]
+            annihilated = np.nonzero(occupied[pair_cols] & ~occupied[pair_rows])[1]
+            exponent = (
+                below[pair_cols, annihilated]
+                + below[pair_cols, created]
+                - (annihilated < created)
+            )
+            np.add.at(
+                rdm1s,
+                (created // n_orb, created % n_orb, annihilated % n_orb),
+                pair_weight * (1.0 - 2.0 * (exponent % 2)),
+            )
+            spectators = np.nonzero(occupied[pair_rows] & occupied[pair_cols])[1]
+            spectators = spectators.reshape(pair_cols.size, n_electrons - 1)
+            for chunk in _spectator_chunks(n_electrons - 1, pair_cols.size):
+                width = spectators[:, chunk].shape[1]
+                spectator = spectators[:, chunk].ravel()
+                _accumulate_two_body(
+                    rdm2,
+                    below,
+                    n_orb,
+                    np.repeat(pair_cols, width),
+                    np.repeat(pair_weight, width),
+                    np.stack([np.repeat(annihilated, width), spectator], axis=1),
+                    np.stack([np.repeat(created, width), spectator], axis=1),
+                )
+
+        keep = rank == 2
+        pair_rows, pair_cols = rows[keep], cols[keep]
+        if pair_cols.size:
+            _accumulate_two_body(
+                rdm2,
+                below,
+                n_orb,
+                pair_cols,
+                weight[keep],
+                np.nonzero(occupied[pair_cols] & ~occupied[pair_rows])[1].reshape(
+                    -1, 2
+                ),
+                np.nonzero(occupied[pair_rows] & ~occupied[pair_cols])[1].reshape(
+                    -1, 2
+                ),
+            )
 
     rdm1_alpha, rdm1_beta = rdm1s
     return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta
+
+
+def _spectator_chunks(n_spectators: int, n_pairs: int) -> list[slice]:
+    """Slices of the spectator axis that keep a pass at ``_RDM_TERMS_PER_PASS``
+    determinant-pair terms, at least one spectator each."""
+    width = max(1, _RDM_TERMS_PER_PASS // max(n_pairs, 1))
+    return [
+        slice(lo, min(lo + width, n_spectators)) for lo in range(0, n_spectators, width)
+    ]
+
+
+def _accumulate_two_body(
+    rdm2: np.ndarray,
+    below: np.ndarray,
+    n_orb: int,
+    cols: np.ndarray,
+    weight: np.ndarray,
+    annihilated: np.ndarray,
+    created: np.ndarray,
+) -> None:
+    """Add every ``a+_p a+_r a_s a_q`` term of the right-hand determinants
+    ``cols`` into ``rdm2``, with ``(q, s)`` the orderings of each row of
+    ``annihilated`` and ``(p, r)`` those of ``created``, keeping those where
+    ``p`` and ``q`` share a spin.
+
+    Signs come from the occupation parity below each orbital, corrected for the
+    orbitals already annihilated or created.
+    """
+    for first_q, first_s in ((0, 1), (1, 0)):
+        for first_p, first_r in ((0, 1), (1, 0)):
+            q, s = annihilated[:, first_q], annihilated[:, first_s]
+            p, r = created[:, first_p], created[:, first_r]
+            same_spin = p // n_orb == q // n_orb
+            c, q, s, p, r = (
+                cols[same_spin],
+                q[same_spin],
+                s[same_spin],
+                p[same_spin],
+                r[same_spin],
+            )
+            exponent = (
+                below[c, q]
+                + below[c, s]
+                - (q < s)
+                + below[c, r]
+                - (q < r)
+                - (s < r)
+                + below[c, p]
+                - (q < p)
+                - (s < p)
+                + (r < p)
+            )
+            np.add.at(
+                rdm2,
+                (p % n_orb, q % n_orb, r % n_orb, s % n_orb),
+                weight[same_spin] * (1.0 - 2.0 * (exponent % 2)),
+            )

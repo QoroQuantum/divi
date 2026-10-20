@@ -6,6 +6,7 @@ import base64
 import time
 from collections.abc import Callable
 from enum import Enum
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Self, cast
 
@@ -48,6 +49,15 @@ class PymooMethod(Enum):
     DE = "DE"
 
 
+def _plain_python(value: Any) -> Any:
+    """A numpy scalar or array as its plain-Python equivalent; others unchanged."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
 class PymooOptimizer(Optimizer):
     """
     Optimizer wrapper for pymoo optimisation algorithms and CMA-ES.
@@ -68,9 +78,16 @@ class PymooOptimizer(Optimizer):
         """
         super().__init__()
 
+        if isinstance(population_size, bool) or not isinstance(
+            population_size, Integral
+        ):
+            raise TypeError("population_size must be an integer.")
+
         self.method = method
-        self.population_size = population_size
-        self.algorithm_kwargs = kwargs
+        self.population_size = int(population_size)
+        self.algorithm_kwargs = {
+            key: _plain_python(value) for key, value in kwargs.items()
+        }
 
         # Optimisation state (updated during optimize(), used for checkpointing)
         self._curr_algorithm_obj: Any | None = None

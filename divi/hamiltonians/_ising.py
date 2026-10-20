@@ -8,7 +8,7 @@ import math
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import chain, combinations
 from typing import Any, Literal, Protocol
 from warnings import warn
 
@@ -113,13 +113,15 @@ class NativeIsingConverter(BinaryToIsingConverter):
             term_indices = tuple(problem.variable_to_idx[var] for var in term)
             scale = float(coeff) / (2 ** len(term_indices))
 
-            for subset_size in range(len(term_indices) + 1):
-                for subset in combinations(term_indices, subset_size):
-                    contribution = scale if subset_size % 2 == 0 else -scale
-                    if subset_size == 0:
-                        constant_parts.append(contribution)
-                        continue
-                    z_term_parts[subset].append(contribution)
+            for subset in chain.from_iterable(
+                combinations(term_indices, subset_size)
+                for subset_size in range(len(term_indices) + 1)
+            ):
+                contribution = scale if len(subset) % 2 == 0 else -scale
+                if not subset:
+                    constant_parts.append(contribution)
+                    continue
+                z_term_parts[subset].append(contribution)
 
         constant = math.fsum(constant_parts)
         z_term_weights = {k: math.fsum(parts) for k, parts in z_term_parts.items()}

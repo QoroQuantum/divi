@@ -65,20 +65,6 @@ def _normalize_properties(properties: dict[str, Any]) -> dict[str, Any]:
     # (nested structures are rebuilt below to ensure no mutation)
     normalized = properties.copy()
 
-    # Add missing gates field
-    if "gates" not in normalized:
-        normalized["gates"] = []
-
-    # Add missing qubits field
-    if "qubits" not in normalized:
-        normalized["qubits"] = []
-
-    # Normalise qubits (list of lists of Nduv objects)
-    normalized["qubits"] = [
-        [_normalize_nduv(param) for param in qubit_params]
-        for qubit_params in normalized["qubits"]
-    ]
-
     # Normalise gates (list of gate dicts with parameters)
     normalized["gates"] = [
         {
@@ -87,7 +73,13 @@ def _normalize_properties(properties: dict[str, Any]) -> dict[str, Any]:
                 _normalize_nduv(param) for param in gate.get("parameters", [])
             ],
         }
-        for gate in normalized["gates"]
+        for gate in normalized.get("gates", [])
+    ]
+
+    # Normalise qubits (list of lists of Nduv objects)
+    normalized["qubits"] = [
+        [_normalize_nduv(param) for param in qubit_params]
+        for qubit_params in normalized.get("qubits", [])
     ]
 
     return normalized

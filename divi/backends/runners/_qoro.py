@@ -7,6 +7,7 @@ import gzip
 import itertools
 import json
 import logging
+import operator
 import os
 import platform
 import warnings
@@ -356,7 +357,10 @@ class QoroService(CircuitRunner):
     @staticmethod
     def _resolved_target(job_config: JobConfig) -> SimulatorCluster | QPUSystem:
         target = job_config.simulator_cluster or job_config.qpu_system
-        assert isinstance(target, (SimulatorCluster, QPUSystem))
+        if not isinstance(target, (SimulatorCluster, QPUSystem)):
+            raise TypeError(
+                f"The job target must be a SimulatorCluster or QPUSystem; got {target!r}."
+            )
         return target
 
     @property
@@ -678,7 +682,10 @@ class QoroService(CircuitRunner):
         if ham_ops is not None:
             envelope["observables"] = compress_ham_ops(ham_ops)
             if circuit_ham_map is not None:
-                envelope["circuit_ham_map"] = circuit_ham_map
+                envelope["circuit_ham_map"] = [
+                    [operator.index(bound) for bound in group]
+                    for group in circuit_ham_map
+                ]
         elif shot_groups is None:
             envelope["shots"] = shots
         return envelope
@@ -740,7 +747,7 @@ class QoroService(CircuitRunner):
         ham_ops_length = len(terms[0])
         if not all(len(term) == ham_ops_length for term in terms):
             raise ValueError("All Hamiltonian operators must have the same length.")
-        if not all(all(c in valid_paulis for c in term) for term in terms):
+        if not valid_paulis.issuperset("".join(terms)):
             raise ValueError(
                 "Hamiltonian operators must contain only I, X, Y, Z characters."
             )
@@ -890,9 +897,14 @@ class QoroService(CircuitRunner):
                     f"circuit_ham_map length ({len(circuit_ham_map)}) must match "
                     f"number of ham_ops groups ({len(ham_groups)})."
                 )
-            widths: list[int] = []
-            for payload in payloads:
-                widths += [count_qubits(payload.circuit)] * len(payload.parameter_sets)
+            widths = list(
+                itertools.chain.from_iterable(
+                    itertools.repeat(
+                        count_qubits(payload.circuit), len(payload.parameter_sets)
+                    )
+                    for payload in payloads
+                )
+            )
             ham_ops = pad_ham_ops(ham_ops, circuit_ham_map, widths)
 
         job_config = (
@@ -1008,7 +1020,8 @@ class QoroService(CircuitRunner):
         def row_size(row: tuple[str, tuple[float, ...]]) -> int:
             label, values = row
             # The row's JSON plus the ", " separating it from the next.
-            return len(json.dumps({"label": label, "values": list(values)})) + 2
+            wire_values = [float(value) for value in values]
+            return len(json.dumps({"label": label, "values": wire_values})) + 2
 
         return _greedy_size_chunks(
             parameter_sets, row_size, fixed_overhead, max_payload_bytes
@@ -1071,7 +1084,7 @@ class QoroService(CircuitRunner):
                         "circuit_template": compressed,
                         "parameter_names": list(payload.parameter_names),
                         "parameter_sets": [
-                            {"label": label, "values": list(values)}
+                            {"label": label, "values": [float(v) for v in values]}
                             for label, values in chunk
                         ],
                     }
@@ -1449,7 +1462,7 @@ class QoroService(CircuitRunner):
                     "characterize_and_validate() requires either 'qubo' (to submit a "
                     "new job) or 'job_id' (to fetch an existing result)."
                 )
-            if not reference_states:
+            if reference_states is None or len(reference_states) == 0:
                 raise ValueError(
                     "characterize_and_validate() requires at least one reference "
                     "state when submitting a new job."
@@ -1475,7 +1488,7 @@ class QoroService(CircuitRunner):
 
             submit_payload: dict = {
                 "qubo": qubo,
-                "reference_states": reference_states,
+                "reference_states": [str(state) for state in reference_states],
             }
             if options:
                 submit_payload["options"] = options
@@ -1495,7 +1508,6 @@ class QoroService(CircuitRunner):
                     job_id, exc, phase="submission"
                 ) from exc
 
-        assert job_id is not None
         try:
             result_resp = self._make_request(
                 "get",

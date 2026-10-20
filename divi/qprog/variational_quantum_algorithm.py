@@ -60,6 +60,7 @@ from divi.qprog.optimizers import (
     ScipyMethod,
     ScipyOptimizer,
 )
+from divi.qprog.optimizers._base import _argmin_finite
 from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
 from divi.reporting._events import (
     ProgressEvent,
@@ -150,16 +151,16 @@ def _compute_parameter_shift_rule(
     return shifts_out, weights_out
 
 
-def _argmin_finite(values: npt.NDArray[np.float64]) -> int | None:
-    """Index of the smallest finite entry, or ``None`` if every entry is non-finite.
-
-    Keeps a NaN/inf loss from being selected as the best parameter set.
-    """
-    arr = np.asarray(values, dtype=np.float64).ravel()
-    finite = np.isfinite(arr)
-    if not finite.any():
-        return None
-    return int(np.argmin(np.where(finite, arr, np.inf)))
+def _warn_non_finite_iterations(source: str, indices: list[int], fallback: str) -> None:
+    """Warn that the iterations at ``indices`` of ``losses_history`` had no finite loss."""
+    shown = ", ".join(map(str, indices[:10])) + (", ..." if len(indices) > 10 else "")
+    warn(
+        f"{source}: {len(indices)} iteration(s) had no finite loss "
+        f"(losses_history indices {shown}); {fallback}. "
+        "losses_history holds the raw values.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
@@ -418,7 +419,9 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                   ``(n_param_sets, n_params)`` per iteration (mirrors
                   :attr:`losses_history` population layout).
                 * ``"best_per_iteration"`` — single best member by loss for
-                  that iteration, shape ``(1, n_params)`` per iteration.
+                  that iteration, shape ``(1, n_params)`` per iteration. An
+                  iteration with no finite loss returns its first row and
+                  emits a :class:`UserWarning`.
 
         Returns:
             list[npt.NDArray[np.float64]]: One array per completed callback.
@@ -446,24 +449,31 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
 
         best_blocks: list[npt.NDArray[np.float64]] = []
-        for loss_dict, block in zip(
-            self._losses_history, self._param_history, strict=True
+        non_finite: list[int] = []
+        for i, (loss_dict, block) in enumerate(
+            zip(self._losses_history, self._param_history, strict=True)
         ):
             arr = np.atleast_2d(np.asarray(block, dtype=np.float64))
-            n_rows = arr.shape[0]
-            best_idx = min(
-                range(n_rows),
-                key=lambda j: float(loss_dict[str(j)]),
-            )
+            best_idx = _argmin_finite([loss_dict[str(j)] for j in range(arr.shape[0])])
+            if best_idx is None:
+                non_finite.append(i)
+                best_idx = 0
             best_blocks.append(arr[best_idx : best_idx + 1].copy())
+        if non_finite:
+            _warn_non_finite_iterations(
+                "param_history(mode='best_per_iteration')",
+                non_finite,
+                "their first evaluated parameter set is returned",
+            )
         return best_blocks
 
     @property
     def min_losses_per_iteration(self) -> list[float]:
         """Get the minimum loss value for each iteration.
 
-        Returns a list where each element is the minimum (best) loss value
-        across all parameter sets for that iteration.
+        Returns a list where each element is the minimum (best) finite loss
+        value across all parameter sets for that iteration. An iteration with no
+        finite loss reports ``inf`` and emits a :class:`UserWarning`.
 
         Returns:
             list[float]: List of minimum loss values, one per iteration.
@@ -475,14 +485,33 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 UserWarning,
                 stacklevel=2,
             )
-        return [min(loss_dict.values()) for loss_dict in self._losses_history]
+        mins: list[float] = []
+        non_finite: list[int] = []
+        for i, loss_dict in enumerate(self._losses_history):
+            values = list(loss_dict.values())
+            best_idx = _argmin_finite(values)
+            if best_idx is None:
+                non_finite.append(i)
+                mins.append(float("inf"))
+            else:
+                mins.append(float(values[best_idx]))
+        if non_finite:
+            _warn_non_finite_iterations(
+                "min_losses_per_iteration", non_finite, "their entry is inf"
+            )
+        return mins
 
     @property
     def final_params(self) -> npt.NDArray[np.float64]:
         """Get a copy of the parameters where the optimiser stopped.
 
-        For a population optimiser, the best member of the last iterate. They
-        can differ from :attr:`best_params`, e.g. after early stopping or
+        After a normal finish, the point the optimiser reports as its result:
+        the best point seen for
+        :class:`~divi.qprog.optimizers.MonteCarloOptimizer` and
+        :class:`~divi.qprog.optimizers.PymooOptimizer`, the last iterate for
+        :class:`~divi.qprog.optimizers.RosalinOptimizer`. After early stopping
+        or cancellation, the best member of the last completed iterate. They can
+        differ from :attr:`best_params`, e.g. after early stopping or
         cancellation. :class:`~divi.qprog.algorithms.IterativeQAOA` sets them to
         the best depth's ``best_params``.
 
@@ -1419,10 +1448,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 current_loss = float("nan")
             else:
                 current_loss = float(fun[best_idx])
-                if intermediate_result.get("track_best", True) is False:
-                    self._best_loss = current_loss
-                    self._best_params = intermediate_result.x[best_idx].copy()
-                elif current_loss < self._best_loss:
+                if (
+                    intermediate_result.get("track_best", True) is False
+                    or current_loss < self._best_loss
+                ):
                     self._best_loss = current_loss
                     self._best_params = intermediate_result.x[best_idx].copy()
 
