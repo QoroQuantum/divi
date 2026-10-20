@@ -334,14 +334,21 @@ def _maestro_value(key: str, value: Any) -> Any:
     return MaestroConfig(**{key: value})._simulator_options()[key]
 
 
+def _python_value(value: Any) -> str:
+    if isinstance(value, Enum):
+        return repr(value.name)
+    if isinstance(value, maestro.NoiseModel):
+        return f"<noise model: {len(value._call_log)} set_* calls>"
+    return repr(value)
+
+
 def _python(*plan: Mapping[str, Any]) -> str:
     """``QoroService(...)`` with the configs a plan saves."""
     arguments = []
     for (name, config_type), fields in zip(_CONFIG_TYPES.items(), plan):
         if fields:
             call = ", ".join(
-                f"{key.lower()}={value.name if isinstance(value, Enum) else value!r}"
-                for key, value in fields.items()
+                f"{key.lower()}={_python_value(value)}" for key, value in fields.items()
             )
             arguments.append(f"{name}={config_type.__name__}({call})")
     return f"QoroService({', '.join(arguments)})"

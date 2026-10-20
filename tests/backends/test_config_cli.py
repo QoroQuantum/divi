@@ -343,6 +343,19 @@ def test_the_python_form_shows_every_saved_defaults():
     )
 
 
+def test_the_python_form_summarises_a_saved_noise_model():
+    noise_model = maestro.NoiseModel()
+    noise_model.set_all_depolarizing(2, 0.01)
+    noise_model.set_readout_error(0, 0.02, 0.05)
+
+    python = _python({}, MaestroConfig(noise_model=noise_model)._set_fields(), {})
+
+    assert python == (
+        "QoroService(maestro_config=MaestroConfig("
+        "noise_model=<noise model: 2 set_* calls>))"
+    )
+
+
 def test_the_review_lists_each_kind_of_change_the_warnings_and_the_python_form():
     out = _render(
         _review(
