@@ -1810,7 +1810,11 @@ def test_excited_states_on_ground_state_orbitals_warn_once(
             orbital_update=orbital_update,
         ).initial_state()
 
-    assert [str(warning.message) for warning in record] == [message]
+    assert [
+        str(warning.message)
+        for warning in record
+        if not issubclass(warning.category, ResourceWarning)
+    ] == [message]
 
 
 @pytest.mark.parametrize("states", [{1: 1}, {3: 1}], ids=["ground", "triplet"])
