@@ -23,7 +23,8 @@ uniform return type for decoded solutions.
    :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
    :skip: LASSQD, FragmentSpec, FragmentState, LASSQDRoundReport, LASSQDState
    :skip: FragmentationConfig, SQDConfig, CCSDPreparation, LinearMethodPreparation, VQEPreparation
-   :skip: SecondOrderOrbitalSolve, FullOrbitalSolve
+   :skip: SecondOrderOrbitalUpdate, StateAveragedOrbitalUpdate, LBFGSOrbitalUpdate, FixedOrbitals, ElectronicState
+   :skip: OrbitalUpdate, Preparation
    :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
    :skip: ParamHistoryMode
 

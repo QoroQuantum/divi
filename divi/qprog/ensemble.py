@@ -1050,7 +1050,8 @@ class ProgramEnsemble(ABC):
         Args:
             max_rounds: Stop after this many rounds even if
                 :meth:`is_complete` is still false. ``None`` runs until
-                convergence.
+                convergence. Rounds restored by :meth:`restore_state` count
+                toward it, so it is a cumulative limit.
             batch_config: Forwarded to each round's dispatch.
             checkpoint_config: Checkpoint directory and child VQA checkpoint
                 interval. The ensemble writes workflow state at every round

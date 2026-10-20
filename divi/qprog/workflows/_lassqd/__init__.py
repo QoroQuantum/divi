@@ -6,27 +6,36 @@
 
 from ._config import (
     CCSDPreparation,
+    FixedOrbitals,
     FragmentationConfig,
-    FullOrbitalSolve,
+    LBFGSOrbitalUpdate,
     LinearMethodPreparation,
-    SecondOrderOrbitalSolve,
+    OrbitalUpdate,
+    Preparation,
+    SecondOrderOrbitalUpdate,
+    StateAveragedOrbitalUpdate,
     VQEPreparation,
 )
 from ._sqd import SQDConfig
-from ._state import FragmentSpec, FragmentState, LASSQDState
+from ._state import ElectronicState, FragmentSpec, FragmentState, LASSQDState
 from ._workflow import LASSQD, LASSQDRoundReport
 
 __all__ = [
     "CCSDPreparation",
+    "ElectronicState",
+    "FixedOrbitals",
     "FragmentationConfig",
     "FragmentSpec",
     "FragmentState",
-    "FullOrbitalSolve",
     "LASSQD",
     "LASSQDRoundReport",
     "LASSQDState",
+    "LBFGSOrbitalUpdate",
     "LinearMethodPreparation",
-    "SecondOrderOrbitalSolve",
+    "OrbitalUpdate",
+    "Preparation",
+    "SecondOrderOrbitalUpdate",
     "SQDConfig",
+    "StateAveragedOrbitalUpdate",
     "VQEPreparation",
 ]

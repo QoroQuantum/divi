@@ -6,6 +6,7 @@
 
 import functools
 import itertools
+from operator import attrgetter
 
 import numpy as np
 import pytest
@@ -15,7 +16,9 @@ from pyscf import fci, scf
 import divi.qprog.workflows._lassqd._sqd as sqd_module
 from divi.qprog.workflows._lassqd._sqd import (
     SQDConfig,
+    SQDResult,
     SQDSolver,
+    SQDState,
     _annihilation_sign,
     _bit_matrix,
     _correct_spin_part,
@@ -39,10 +42,14 @@ from divi.qprog.workflows._lassqd._sqd import (
     spatial_to_spin_occupations,
     spin_orbital_integrals,
     spin_to_spatial_occupations,
+    string_hops,
 )
 from tests._helpers import exact_match
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+    UNBOUNDED_ADVICE,
+    assert_roots_match,
     dense_fci_energy,
+    fci_roots_by_multiplicity,
     h2_molecule,
     h4_chain,
     mo_integrals,
@@ -75,12 +82,12 @@ def _h4_integrals():
 
 def _solver(n_orb, n_alpha, n_beta, *, rng=None, recovery=True, **config):
     """An ``SQDSolver`` on ``SQDConfig``'s defaults, seeded, and conventional SQD
-    unless ``carryover_cutoff`` is overridden."""
+    unless ``carryover_cutoff`` or ``extension`` is overridden."""
     return SQDSolver(
         n_orb,
         n_alpha,
         n_beta,
-        SQDConfig(**({"carryover_cutoff": None} | config)),
+        SQDConfig(**({"carryover_cutoff": None, "extension": None} | config)),
         rng=np.random.default_rng(0) if rng is None else rng,
         recovery=recovery,
     )
@@ -459,11 +466,13 @@ def _penalized_dense(h_proj, deviation, lambda_penalty):
     return (h_proj + lambda_penalty * (deviation @ deviation)).toarray()
 
 
-def test_ground_root_iterative_branch_matches_the_dense_solve(monkeypatch):
+@pytest.mark.parametrize("n_roots", [1, 3])
+def test_lowest_roots_iterative_branch_matches_the_dense_solve(monkeypatch, n_roots):
     """Above the threshold the penalty is applied as an operator instead of being
-    squared into a dense matrix, and the root comes from Lanczos rather than
-    LAPACK. Both must land on the same eigenpair, so the threshold is forced down
-    onto a subspace small enough to diagonalize densely for the comparison."""
+    squared into a dense matrix, and the roots come from Lanczos rather than
+    LAPACK. Both must land on the same eigenpairs, so the threshold is forced
+    down onto a subspace small enough to diagonalize densely for the
+    comparison."""
     h_proj, deviation = _penalized_subspace()
     lambda_penalty = 0.2
     expected_values, expected_vectors = np.linalg.eigh(
@@ -471,14 +480,32 @@ def test_ground_root_iterative_branch_matches_the_dense_solve(monkeypatch):
     )
 
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
-    energy, vector = sqd_module.ground_root(h_proj, deviation, lambda_penalty)
+    values, vectors = sqd_module.lowest_roots(
+        h_proj, deviation, lambda_penalty, n_roots
+    )
 
-    assert energy == pytest.approx(expected_values[0], abs=1e-10)
+    np.testing.assert_allclose(values, expected_values[:n_roots], atol=1e-10)
     # The sign of an eigenvector is arbitrary in either solver.
-    assert abs(float(vector @ expected_vectors[:, 0])) == pytest.approx(1.0, abs=1e-8)
+    np.testing.assert_allclose(
+        np.abs(np.sum(vectors * expected_vectors[:, :n_roots], axis=0)),
+        1.0,
+        atol=1e-8,
+    )
 
 
-def test_ground_root_iterative_branch_lets_the_penalty_choose_the_root(
+def test_lowest_roots_rejects_more_roots_than_determinants():
+    h_proj, deviation = _penalized_subspace()
+    dimension = h_proj.shape[0]
+    message = (
+        f"A {dimension}-determinant subspace is too small for {dimension + 1} "
+        "roots. Raise batch_size, n_recovery_iterations or max_dim, or request "
+        "fewer roots in SQDConfig.states."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
+        sqd_module.lowest_roots(h_proj, deviation, 0.2, dimension + 1)
+
+
+def test_lowest_roots_iterative_branch_lets_the_penalty_choose_the_root(
     mocker, monkeypatch
 ):
     """With the penalty applied as an operator, the iterative branch must still
@@ -493,16 +520,49 @@ def test_ground_root_iterative_branch_lets_the_penalty_choose_the_root(
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
     dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
 
-    triplet, _ = sqd_module.ground_root(h_proj, deviation, 0.0)
-    singlet, vector = sqd_module.ground_root(h_proj, deviation, 20.0)
+    (triplet,), _ = sqd_module.lowest_roots(h_proj, deviation, 0.0)
+    (singlet,), vectors = sqd_module.lowest_roots(h_proj, deviation, 20.0)
 
     dense.assert_not_called()
     assert triplet == pytest.approx(-0.3, abs=1e-8)
     assert singlet == pytest.approx(0.3, abs=1e-8)
+    vector = vectors[:, 0]
     assert float(vector @ (deviation @ vector)) == pytest.approx(0.0, abs=1e-8)
 
 
-def test_ground_root_falls_back_when_the_iterative_root_is_not_the_lowest(
+def test_lowest_roots_iterative_branch_skips_a_root_of_another_spin(
+    mocker, monkeypatch
+):
+    """Without a penalty a triplet is the lowest root; a singlet target must
+    widen the iterative solve past it, still without the dense fallback."""
+    # The lowest root a triplet (<S^2> = 2), the rest alternating singlets first.
+    spin_squares = np.r_[2.0, np.tile([0.0, 2.0], 29), 0.0]
+    h_proj, deviation = _rotated_spectrum(np.arange(-1.0, 59.0), spin_squares)
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
+
+    (singlet,), vectors = sqd_module.lowest_roots(h_proj, deviation, 0.0, spin=0.0)
+
+    dense.assert_not_called()
+    assert singlet == pytest.approx(0.0, abs=1e-8)
+    vector = vectors[:, 0]
+    assert float(vector @ (deviation @ vector)) == pytest.approx(0.0, abs=1e-8)
+
+
+def test_lowest_roots_iterative_branch_fills_in_when_no_root_has_the_spin(
+    monkeypatch,
+):
+    """A subspace with no state of the target spin still returns the lowest
+    roots, for the caller to report as off-spin."""
+    h_proj, deviation = _rotated_spectrum(np.arange(60.0), np.full(60, 2.0))
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+
+    values, _ = sqd_module.lowest_roots(h_proj, deviation, 0.0, 2, spin=0.0)
+
+    np.testing.assert_allclose(values, [0.0, 1.0], atol=1e-8)
+
+
+def test_lowest_roots_falls_back_when_the_iterative_root_is_not_the_lowest(
     mocker, monkeypatch
 ):
     """Lanczos can converge on an interior root, which the dense solve cannot.
@@ -528,12 +588,12 @@ def test_ground_root_falls_back_when_the_iterative_root_is_not_the_lowest(
         ),
     )
 
-    energy, _ = sqd_module.ground_root(h_proj, deviation, lambda_penalty)
+    (energy,), _ = sqd_module.lowest_roots(h_proj, deviation, lambda_penalty)
 
     assert energy == pytest.approx(expected, abs=1e-12)
 
 
-def test_ground_root_falls_back_when_the_iterative_solve_fails(mocker, monkeypatch):
+def test_lowest_roots_falls_back_when_the_iterative_solve_fails(mocker, monkeypatch):
     """Lanczos can exhaust its budget on a subspace whose lowest roots are nearly
     degenerate, which must cost accuracy rather than the solve."""
     h_proj, deviation = _penalized_subspace()
@@ -549,14 +609,114 @@ def test_ground_root_falls_back_when_the_iterative_solve_fails(mocker, monkeypat
         side_effect=sqd_module.scipy.sparse.linalg.ArpackError(-1),
     )
 
-    energy, vector = sqd_module.ground_root(h_proj, deviation, lambda_penalty)
+    (energy,), vectors = sqd_module.lowest_roots(h_proj, deviation, lambda_penalty)
 
     failing.assert_called_once()
     assert energy == pytest.approx(expected, abs=1e-12)
-    assert vector.shape == (h_proj.shape[0],)
+    assert vectors.shape == (h_proj.shape[0], 1)
 
 
-def test_ground_root_iterative_branch_repeats_bitwise(mocker, monkeypatch):
+def test_lowest_roots_refuses_a_dense_fallback_past_the_memory_cap(mocker, monkeypatch):
+    """A failed iterative solve on a large subspace would silently allocate
+    gigabytes in the dense fallback; it must stop and name the cap instead."""
+    h_proj, deviation = _penalized_subspace()
+    dimension = h_proj.shape[0]
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    monkeypatch.setattr(sqd_module, "_DENSE_MAX_DIM", dimension - 1)
+    mocker.patch.object(
+        sqd_module.scipy.sparse.linalg,
+        "eigsh",
+        side_effect=sqd_module.scipy.sparse.linalg.ArpackError(-1),
+    )
+
+    message = (
+        f"The iterative eigensolver failed on a {dimension}-determinant subspace, "
+        "and a dense solve would need 0.0 GiB per matrix. Set SQDConfig.max_dim "
+        "to bound the subspace."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
+        sqd_module.lowest_roots(h_proj, deviation, 0.2)
+
+
+def _rotated_spectrum(eigenvalues, spin_squares=None, seed=3):
+    """A dense symmetric matrix with exactly ``eigenvalues``, as sparse, and the
+    ``S^2`` deviation from a singlet that gives each eigenvector its entry of
+    ``spin_squares`` (default: all singlets)."""
+    dimension = len(eigenvalues)
+    rotation, _ = np.linalg.qr(
+        np.random.default_rng(seed).standard_normal((dimension, dimension))
+    )
+
+    def rotated(diagonal):
+        matrix = rotation @ np.diag(diagonal) @ rotation.T
+        return scipy.sparse.csr_array((matrix + matrix.T) / 2)
+
+    if spin_squares is None:
+        return rotated(eigenvalues), scipy.sparse.csr_array((dimension, dimension))
+    return rotated(eigenvalues), rotated(spin_squares)
+
+
+def test_the_block_solve_returns_every_copy_of_a_degenerate_root(monkeypatch):
+    """A single-vector Lanczos solve sees one vector per eigenspace, so it would
+    skip the second copy of a degenerate root and return the next root instead."""
+    h_proj, deviation = _rotated_spectrum(np.r_[0.0, 1.0, 1.0, np.arange(2.0, 49.0)])
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+
+    values, _ = sqd_module.lowest_roots(h_proj, deviation, 0.0, 3)
+
+    np.testing.assert_allclose(values, [0.0, 1.0, 1.0], atol=1e-10)
+
+
+def test_the_block_solve_leaves_the_lowest_determinants_sector(monkeypatch):
+    """The lowest root can lie in a block of the operator that the
+    lowest-diagonal determinant has no overlap with, as a spin target other than
+    the reference's does; the block solve must still find it."""
+    reference_block = scipy.sparse.diags_array(np.r_[-3.0, np.arange(1.0, 20.0)])
+    other_block, _ = _rotated_spectrum(np.r_[-10.0, np.arange(0.0, 19.0)])
+    h_proj = scipy.sparse.csr_array(
+        scipy.sparse.block_diag([reference_block, other_block])
+    )
+    deviation = scipy.sparse.csr_array(h_proj.shape)
+    assert int(np.argmin(h_proj.diagonal())) == 0
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+
+    (block,), _ = sqd_module.lowest_roots(h_proj, deviation, 0.0, block=True)
+
+    assert block == pytest.approx(-10.0, abs=1e-8)
+
+
+def test_an_unconverged_block_solve_falls_back_to_the_dense_one(mocker, monkeypatch):
+    h_proj, deviation = _penalized_subspace()
+    expected = np.linalg.eigvalsh(_penalized_dense(h_proj, deviation, 0.2))[:2]
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    dimension = h_proj.shape[0]
+    mocker.patch.object(
+        sqd_module.scipy.sparse.linalg,
+        "lobpcg",
+        return_value=(np.arange(6.0), np.eye(dimension, 6)),
+    )
+
+    values, vectors = sqd_module.lowest_roots(h_proj, deviation, 0.2, 2)
+
+    np.testing.assert_allclose(values, expected, atol=1e-12)
+    assert vectors.shape == (dimension, 2)
+
+
+def test_a_block_too_wide_for_the_subspace_is_solved_densely(mocker, monkeypatch):
+    """LOBPCG needs the subspace to exceed five times its block, so a request
+    whose block does not fit goes straight to the dense solve."""
+    h_proj, deviation = _penalized_subspace()
+    monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
+    block = mocker.spy(sqd_module.scipy.sparse.linalg, "lobpcg")
+    n_roots = h_proj.shape[0] // 5
+
+    values, _ = sqd_module.lowest_roots(h_proj, deviation, 0.2, n_roots)
+
+    block.assert_not_called()
+    assert values.shape == (n_roots,)
+
+
+def test_lowest_roots_iterative_branch_repeats_bitwise(mocker, monkeypatch):
     """Lanczos starts from a fixed vector, so a repeated solve returns the same
     eigenpair to the last bit; a random start would differ there and could move
     the carryover ranking between runs."""
@@ -564,12 +724,12 @@ def test_ground_root_iterative_branch_repeats_bitwise(mocker, monkeypatch):
     monkeypatch.setattr(sqd_module, "_ITERATIVE_SUBSPACE_MIN", 1)
     dense = mocker.spy(sqd_module.scipy.linalg, "eigh")
 
-    first_energy, first_vector = sqd_module.ground_root(h_proj, deviation, 0.2)
-    second_energy, second_vector = sqd_module.ground_root(h_proj, deviation, 0.2)
+    first_values, first_vectors = sqd_module.lowest_roots(h_proj, deviation, 0.2, 2)
+    second_values, second_vectors = sqd_module.lowest_roots(h_proj, deviation, 0.2, 2)
 
     dense.assert_not_called()
-    assert first_energy == second_energy
-    np.testing.assert_array_equal(first_vector, second_vector)
+    np.testing.assert_array_equal(first_values, second_values)
+    np.testing.assert_array_equal(first_vectors, second_vectors)
 
 
 def test_projected_matrices_handles_an_empty_subspace():
@@ -781,39 +941,27 @@ def _degenerate_orbital_integrals(exchange, coulomb=1.0):
     return one_body, two_body, n_orb
 
 
-def test_spin_penalty_suppresses_the_triplet_ground_state():
-    """Without the S^2 penalty the unpenalized projected ground state is the
-    Sz=0 triplet component (S^2 = 2); a large lambda_penalty must push it
-    above the singlets (S^2 = 0) so the solver returns the singlet energy
-    instead."""
+@pytest.mark.parametrize("lambda_penalty", [0.0, 0.2, 20.0])
+def test_the_singlet_solve_skips_a_lower_triplet(lambda_penalty):
+    """The lowest projected root is the Sz=0 triplet component (S^2 = 2, energy
+    -0.3). The singlet solve must return the singlet (energy 0.3) whatever the
+    penalty, including one too small to lift the triplet above it."""
     one_body, two_body, n_orb = _degenerate_orbital_integrals(exchange=0.3)
-    probs = uniform_full_space_probs(n_orb, 1, 1)
-
-    unpenalized = _solver(
+    solver = _solver(
         n_orb,
         1,
         1,
         n_batches=4,
         batch_size=256,
         n_recovery_iterations=1,
-        lambda_penalty=0.0,
+        lambda_penalty=lambda_penalty,
         rng=np.random.default_rng(0),
     )
-    triplet_energy = unpenalized.solve(probs, one_body, two_body).energy
-    assert triplet_energy == pytest.approx(-0.3, abs=1e-8)
 
-    penalized = _solver(
-        n_orb,
-        1,
-        1,
-        n_batches=4,
-        batch_size=256,
-        n_recovery_iterations=1,
-        lambda_penalty=20.0,
-        rng=np.random.default_rng(0),
-    )
-    singlet_energy = penalized.solve(probs, one_body, two_body).energy
-    assert singlet_energy == pytest.approx(0.3, abs=1e-8)
+    result = solver.solve(uniform_full_space_probs(n_orb, 1, 1), one_body, two_body)
+
+    assert result.energy == pytest.approx(0.3, abs=1e-8)
+    assert result.states[0].spin_square == pytest.approx(0.0, abs=1e-8)
 
 
 def test_spin_penalty_targets_a_polarised_sector_s_squared():
@@ -1048,6 +1196,31 @@ def test_carryover_can_recover_the_full_determinant_space():
     assert plain.energy > exact + 0.02
     assert len(set(carried.subspace)) == full_space
     assert carried.energy == pytest.approx(exact, abs=1e-9)
+
+
+def test_carryover_keeps_what_it_would_without_the_extension():
+    """Carrying the extended strings would seed every batch of the next solve
+    with the whole extended subspace, which compounds round over round."""
+    one_body, two_body, n_orb, _ = _h4_integrals()
+    plain, extended = (
+        _solver(
+            n_orb,
+            2,
+            2,
+            n_batches=1,
+            batch_size=2,
+            n_recovery_iterations=3,
+            carryover_cutoff=1e-2,
+            recovery=False,
+            include_reference=False,
+            extension=extension,
+        ).solve(uniform_full_space_probs(n_orb, 2, 2), one_body, two_body)
+        for extension in (None, "singles")
+    )
+
+    assert plain.carried != ((), ())
+    assert extended.carried == plain.carried
+    assert len(set(extended.subspace)) > len(set(plain.subspace))
 
 
 def test_the_convergence_break_can_stop_carryover_short():
@@ -1651,7 +1824,10 @@ def test_solver_raises_when_no_configuration_has_valid_symmetry():
     solver = _solver(n_orb, 1, 1, n_recovery_iterations=1, rng=np.random.default_rng(0))
     with pytest.raises(
         ValueError,
-        match=exact_match("No valid configurations found matching particle symmetry!"),
+        match=exact_match(
+            "No valid configurations found matching particle symmetry! Increase "
+            "the backend shot count or n_recovery_iterations."
+        ),
     ):
         solver.solve({"1100": 1.0}, one_body, two_body)
 
@@ -1701,7 +1877,7 @@ def test_batch_occupancy_is_the_eigenvector_weighted_occupation():
     sectors = (("1110", "1101", "1011"), ("1000", "0100", "0001"))
 
     result, occupancy = _solver(n_orb, 3, 1)._diagonalize(
-        sectors, h_spin, g_spin, target_s=1.0, constant=0.0
+        sectors, h_spin, g_spin, constant=0.0
     )
 
     weights = result.eigenvector**2
@@ -1709,6 +1885,284 @@ def test_batch_occupancy_is_the_eigenvector_weighted_occupation():
     bits = _bit_matrix(result.subspace, 2 * n_orb)
     expected = np.stack([weights @ bits[:, :n_orb], weights @ bits[:, n_orb:]])
     np.testing.assert_allclose(occupancy, expected, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta, states",
+    [
+        pytest.param(2, 2, {1: 2, 3: 2, 5: 1}, id="closed-shell"),
+        pytest.param(3, 1, {3: 2, 5: 1}, id="open-shell"),
+    ],
+)
+def test_requested_states_reproduce_fci_per_multiplicity_on_a_complete_subspace(
+    n_alpha, n_beta, states
+):
+    """With every determinant in the subspace, each multiplicity's roots are the
+    exact FCI roots of that spin, in one solve over one subspace."""
+    one_body, two_body, n_orb, constant = _h4_integrals()
+    expected = fci_roots_by_multiplicity(one_body, two_body, n_alpha, n_beta, constant)
+
+    result = _solver(
+        n_orb,
+        n_alpha,
+        n_beta,
+        n_batches=1,
+        batch_size=64,
+        n_recovery_iterations=1,
+        states=states,
+        lambda_penalty=1.0,
+    ).solve(
+        uniform_full_space_probs(n_orb, n_alpha, n_beta),
+        one_body,
+        two_body,
+        constant=constant,
+    )
+
+    assert_roots_match(
+        result.states, expected, states, energy=attrgetter("penalised_energy")
+    )
+
+
+@pytest.mark.parametrize(
+    "n_orb, n_alpha, n_beta, config, message",
+    [
+        (
+            4,
+            2,
+            2,
+            {"states": {2: 1}},
+            "SQDConfig.states asks for multiplicity 2, which 4 electrons cannot "
+            "reach: a multiplicity and its electron count have opposite parity.",
+        ),
+        (
+            4,
+            3,
+            1,
+            {"states": {1: 1}},
+            "SQDConfig.states asks for multiplicity 1, below this fragment's "
+            "lowest, 3: S cannot be below |Sz| with n_alpha=3, n_beta=1.",
+        ),
+        (
+            3,
+            2,
+            2,
+            {"states": {5: 1}},
+            "SQDConfig.states asks for 1 of multiplicity 5, but 4 electrons in 3 "
+            "orbitals have only 0 of that multiplicity.",
+        ),
+        (
+            2,
+            1,
+            1,
+            {"states": {1: 4}},
+            "SQDConfig.states asks for 4 of multiplicity 1, but 2 electrons in 2 "
+            "orbitals have only 3 of that multiplicity.",
+        ),
+        (
+            4,
+            2,
+            2,
+            {"states": {1: 2}, "lambda_penalty": 0.0},
+            "SQDConfig.states asks for more than the lowest state, which needs "
+            "lambda_penalty > 0: the S^2 penalty is what targets each "
+            "multiplicity.",
+        ),
+        (
+            10,
+            5,
+            5,
+            {"extension": "singles"},
+            "SQDConfig.extension='singles' can grow this fragment's subspace to "
+            f"its full 63504 determinants, {UNBOUNDED_ADVICE}",
+        ),
+        (
+            10,
+            5,
+            5,
+            {"extension": "auto"},
+            "SQDConfig.extension='auto' can grow this fragment's subspace to its "
+            f"full 63504 determinants, {UNBOUNDED_ADVICE}",
+        ),
+    ],
+    ids=[
+        "parity",
+        "below-sz",
+        "above-maximum",
+        "too-many-roots",
+        "excited-without-penalty",
+        "unbounded-extension",
+        "unbounded-default-extension",
+    ],
+)
+def test_the_solver_rejects_settings_the_fragment_cannot_hold(
+    n_orb, n_alpha, n_beta, config, message
+):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _solver(n_orb, n_alpha, n_beta, **config)
+
+
+def test_a_capped_extension_is_accepted_on_a_large_fragment():
+    assert _solver(10, 5, 5, extension="singles", max_dim=50).extension == "singles"
+
+
+def test_the_lowest_state_alone_needs_no_penalty():
+    assert _solver(4, 2, 2, states={1: 1}, lambda_penalty=0.0).states == {1: 1}
+
+
+@pytest.mark.parametrize(
+    "n_alpha, n_beta, states, symmetrized",
+    [(2, 2, {1: 2}, True), (2, 2, None, False), (3, 1, {3: 2}, False)],
+    ids=["closed-shell-states", "ground-state-default", "open-shell"],
+)
+def test_requesting_states_symmetrises_spin(n_alpha, n_beta, states, symmetrized):
+    assert _solver(4, n_alpha, n_beta, states=states).symmetrize_spin is symmetrized
+
+
+@pytest.mark.parametrize(
+    "states, extension, resolved",
+    [
+        (None, "auto", "singles"),
+        ({1: 2}, "auto", "singles"),
+        ({1: 2}, None, None),
+        (None, "doubles", "doubles"),
+    ],
+)
+def test_auto_extension_means_singles(states, extension, resolved):
+    assert _solver(4, 2, 2, states=states, extension=extension).extension == resolved
+
+
+def test_carryover_weights_pool_eligibility_and_sum_weight_over_states():
+    """A string any state needs is kept, and its weight adds over the states, so
+    an excited state's determinants survive beside the ground state's."""
+    ground = np.array([[1.0, 0.0], [0.0, 0.0]])
+    excited = np.array([[0.0, 0.0], [0.0, 1.0]])
+
+    alpha_weights, beta_weights = carryover_weights(
+        ("10", "01"), ("10", "01"), np.stack([ground, excited]), cutoff=0.5
+    )
+
+    assert alpha_weights == {"10": 1.0, "01": 1.0}
+    assert beta_weights == {"10": 1.0, "01": 1.0}
+
+
+@pytest.mark.parametrize(
+    "rank, expected",
+    [
+        (1, ["0110", "0101", "1010", "1001"]),
+        (2, ["0110", "0101", "1010", "1001", "0011"]),
+    ],
+)
+def test_string_hops_move_up_to_rank_electrons(rank, expected):
+    assert string_hops("1100", rank) == expected
+
+
+def _hartree_fock_only_solver(extension, **config):
+    """H4 sampled on its reference determinant alone, closed-shell, solving the
+    two lowest singlets and the lowest triplet."""
+    return _solver(
+        4,
+        2,
+        2,
+        n_batches=1,
+        n_recovery_iterations=1,
+        states={1: 2, 3: 1},
+        lambda_penalty=1.0,
+        extension=extension,
+        **config,
+    )
+
+
+def test_double_hops_from_one_determinant_recover_every_fci_root():
+    """Sampling only the reference leaves one determinant; moving up to two
+    electrons in each sector reaches all six strings, so the extended subspace is
+    the whole space and every requested root is exact."""
+    one_body, two_body, n_orb, constant = _h4_integrals()
+    states = {1: 2, 3: 1}
+    expected = fci_roots_by_multiplicity(one_body, two_body, 2, 2, constant)
+
+    result = _hartree_fock_only_solver("doubles").solve(
+        {"11001100": 1.0}, one_body, two_body, constant=constant
+    )
+
+    assert result.amplitudes.size == 36
+    assert_roots_match(
+        result.states, expected, states, energy=attrgetter("penalised_energy")
+    )
+
+
+def test_single_hops_extend_less_than_double_hops():
+    one_body, two_body, _, constant = _h4_integrals()
+
+    result = _hartree_fock_only_solver("singles").solve(
+        {"11001100": 1.0}, one_body, two_body, constant=constant
+    )
+
+    assert (len(result.strings_alpha), len(result.strings_beta)) == (5, 5)
+
+
+def test_the_extension_keeps_max_dim_as_a_hard_cap():
+    one_body, two_body, _, constant = _h4_integrals()
+
+    result = _hartree_fock_only_solver("doubles", max_dim=3).solve(
+        {"11001100": 1.0}, one_body, two_body, constant=constant
+    )
+
+    assert result.amplitudes.shape == (3, 3)
+    assert "1100" in result.strings_alpha
+
+
+def test_the_extension_never_raises_an_energy():
+    """The recovered strings stay in the extended subspace, so no state can rise."""
+    one_body, two_body, n_orb, constant = _h4_integrals()
+    probs = uniform_full_space_probs(n_orb, 2, 2)
+
+    def solve(extension):
+        return _hartree_fock_only_solver(extension, batch_size=4).solve(
+            probs, one_body, two_body, constant=constant
+        )
+
+    raw, extended = solve(None), solve("singles")
+
+    assert set(raw.strings_alpha) <= set(extended.strings_alpha)
+    for before, after in zip(raw.states, extended.states):
+        assert after.penalised_energy <= before.penalised_energy + 1e-12
+
+
+def test_carryover_weights_treat_one_stacked_state_as_that_state():
+    amplitudes = np.array([[0.8, 0.0], [0.0, 0.6]])
+    strings = (("10", "01"), ("10", "01"))
+
+    assert carryover_weights(
+        *strings, amplitudes[np.newaxis], cutoff=0.5
+    ) == carryover_weights(*strings, amplitudes, cutoff=0.5)
+    assert carryover_weights(*strings, np.zeros((2, 2, 2)), cutoff=0.5) == ({}, {})
+
+
+def test_batches_are_ranked_on_the_sum_over_states(mocker):
+    """A batch with the lowest ground state but a poor excited state loses to one
+    better for both together, so every state comes from one subspace."""
+    solver = _solver(2, 1, 1, n_recovery_iterations=1, states={1: 2}, extension=None)
+
+    def result(energies):
+        return (
+            SQDResult(
+                states=tuple(
+                    SQDState(1, index, energy, 0.0, np.array([[1.0]]))
+                    for index, energy in enumerate(energies)
+                ),
+                strings_alpha=("10",),
+                strings_beta=("10",),
+            ),
+            np.zeros((2, 2)),
+        )
+
+    ground_only, balanced = result((-2.0, 3.0)), result((-1.0, 0.0))
+    mocker.patch.object(solver, "_draw_batches", return_value=[(), ()])
+    mocker.patch.object(solver, "_diagonalize", side_effect=[ground_only, balanced])
+
+    best = solver.solve({"1010": 1.0}, np.zeros((2, 2)), np.zeros((2, 2, 2, 2)))
+
+    assert [state.penalised_energy for state in best.states] == [-1.0, 0.0]
 
 
 def _rdms_from(result, n_orb):

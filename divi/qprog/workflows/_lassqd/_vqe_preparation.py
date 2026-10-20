@@ -86,19 +86,9 @@ class _FragmentVQE(VQE):
         return np.tile(self._seed_params, (self.optimizer.n_param_sets, 1))
 
     @property
-    def h_alpha(self) -> np.ndarray:
-        """Alpha one-body integrals the fragment was sampled under."""
-        return self._fragment_problem.one_body
-
-    @property
-    def h_beta(self) -> np.ndarray:
-        """Beta one-body integrals the fragment was sampled under."""
-        return self._fragment_problem.one_body_beta
-
-    @property
-    def two_body(self) -> np.ndarray:
-        """Two-body integrals the fragment was sampled under."""
-        return self._fragment_problem.two_body
+    def sampled_problem(self) -> MolecularProblem:
+        """The fragment's Hamiltonian in the basis it was sampled in."""
+        return self._fragment_problem
 
     @property
     def orbital_rotation(self) -> np.ndarray:

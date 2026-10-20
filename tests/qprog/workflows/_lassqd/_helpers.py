@@ -7,6 +7,8 @@
 import itertools
 from dataclasses import fields
 from functools import partial
+from math import isqrt
+from operator import attrgetter
 from typing import Self
 
 import numpy as np
@@ -28,7 +30,7 @@ from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.workflows._lassqd._active_space import localize_blocks
-from divi.qprog.workflows._lassqd._config import SecondOrderOrbitalSolve
+from divi.qprog.workflows._lassqd._config import SecondOrderOrbitalUpdate
 from divi.qprog.workflows._lassqd._integrals import (
     assemble_active_rdms,
     build_active_permutation,
@@ -39,12 +41,26 @@ from divi.qprog.workflows._lassqd._integrals import (
     optimize_orbitals,
     transform_integrals,
 )
-from divi.qprog.workflows._lassqd._sqd import ci_string_to_int, compute_spatial_rdms
+from divi.qprog.workflows._lassqd._sqd import (
+    _DENSE_MAX_DIM,
+    ci_string_to_int,
+    compute_spatial_rdms,
+    spin_square_of,
+)
 from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
 from divi.qprog.workflows._lassqd._workflow import _compute_n_core
 
 _FRAGMENTATION_FIELDS = {field.name for field in fields(FragmentationConfig)}
 _SQD_FIELDS = {field.name for field in fields(SQDConfig)}
+
+#: The tail of the error for an extension that could outgrow the solver.
+UNBOUNDED_ADVICE = (
+    f"past the {_DENSE_MAX_DIM} the solver handles unbounded. Set "
+    "SQDConfig.max_dim to cap each spin sector "
+    f"(max_dim={isqrt(_DENSE_MAX_DIM)} keeps it within {_DENSE_MAX_DIM}), or "
+    "extension=None for plain SQD, which misses the determinants the circuit "
+    "under-samples."
+)
 
 
 def lassqd_kwargs(**overrides):
@@ -166,11 +182,7 @@ def vqe_preparation(**overrides):
 def h8_frontier_lassqd(backend, **overrides):
     """H8 split into two frontier-selected 4-orbital fragments, prepared by
     :func:`vqe_preparation`."""
-    kwargs = dict(
-        n_active_orbitals=8,
-        max_orbitals_per_fragment=4,
-        seed=0,
-    )
+    kwargs = dict(n_active_orbitals=8, seed=0)
     kwargs.update(overrides)
     return LASSQD(
         MolecularProblem.from_molecule(h8_chain()),
@@ -301,9 +313,9 @@ def orbital_rotation_case():
     )
 
 
-#: ``ciah_orbital_solve`` under ``SecondOrderOrbitalSolve``'s default cap.
+#: ``ciah_orbital_solve`` under ``SecondOrderOrbitalUpdate``'s default cap.
 capped_ciah_orbital_solve = partial(
-    ciah_orbital_solve, max_iterations=SecondOrderOrbitalSolve().max_iterations
+    ciah_orbital_solve, max_iterations=SecondOrderOrbitalUpdate().max_iterations
 )
 
 
@@ -379,11 +391,53 @@ def dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant=0.0):
     return energy + constant
 
 
+def fci_roots_by_multiplicity(one_body, two_body, n_alpha, n_beta, constant=0.0):
+    """Every FCI eigenvalue of one ``(n_alpha, n_beta)`` sector, grouped by spin
+    multiplicity ``2S + 1`` and ascending within each."""
+    n_orb = one_body.shape[0]
+    nelec = (n_alpha, n_beta)
+    dimension = len(_sector_strings(n_orb, n_alpha)) * len(
+        _sector_strings(n_orb, n_beta)
+    )
+    energies, vectors = fci.direct_spin1.kernel(
+        one_body, two_body, n_orb, nelec, nroots=dimension
+    )
+    roots: dict[int, list[float]] = {}
+    for energy, vector in zip(energies, vectors):
+        _, multiplicity = fci.spin_op.spin_square0(vector, n_orb, nelec)
+        roots.setdefault(int(round(multiplicity)), []).append(energy + constant)
+    return {multiplicity: sorted(values) for multiplicity, values in roots.items()}
+
+
+def assert_roots_match(found, expected, states, energy=attrgetter("energy")):
+    """Each requested multiplicity's roots in ``found`` (anything carrying
+    ``multiplicity``, ``index`` and ``spin_square``, with ``energy`` reading its
+    energy) equal ``expected``'s, with pure spin, in index order."""
+    found = list(found)
+    assert [energy(state) for state in found] == sorted(map(energy, found))
+    for multiplicity, n_roots in states.items():
+        roots = sorted(
+            (state for state in found if state.multiplicity == multiplicity),
+            key=lambda state: state.index,
+        )
+        assert [state.index for state in roots] == list(range(n_roots))
+        np.testing.assert_allclose(
+            [energy(state) for state in roots],
+            expected[multiplicity][:n_roots],
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            [state.spin_square for state in roots],
+            spin_square_of(multiplicity),
+            atol=1e-6,
+        )
+
+
 #: Energy and MO-coefficient trace of ``exact_sampler_lassqd`` over 4
 #: macro-cycles. The trace fingerprints which of several equivalent orbital
 #: solutions the optimizer reached, so it can move while the energy does not.
 PRODUCT_STATE_ENERGY = -2.221584055981204
-PRODUCT_STATE_MO_TRACE = -0.0028071851266455727
+PRODUCT_STATE_MO_TRACE = -0.004904570749965531
 
 #: Stand-in for a converged VQE's parameters.
 _STUB_BEST_PARAMS = np.array([0.11, 0.22, 0.33])
@@ -397,7 +451,7 @@ class ExactSamplerVQE(QuantumProgram):
     alpha/beta particle-number sector, and squares the ground-state amplitudes
     into a probability distribution: a deterministic, noise-free oracle using
     the same Jordan-Wigner convention as a real fragment VQE. Like a fragment
-    VQE, it exposes its problem's integrals and an identity orbital rotation.
+    VQE, it exposes its problem as sampled and an identity orbital rotation.
     """
 
     def __init__(
@@ -422,16 +476,8 @@ class ExactSamplerVQE(QuantumProgram):
         return self._best_params
 
     @property
-    def h_alpha(self) -> np.ndarray:
-        return self._problem.one_body
-
-    @property
-    def h_beta(self) -> np.ndarray:
-        return self._problem.one_body_beta
-
-    @property
-    def two_body(self) -> np.ndarray:
-        return self._problem.two_body
+    def sampled_problem(self) -> MolecularProblem:
+        return self._problem
 
     @property
     def orbital_rotation(self) -> np.ndarray:

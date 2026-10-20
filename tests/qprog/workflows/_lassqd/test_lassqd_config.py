@@ -4,21 +4,24 @@
 
 """Tests for the LASSQD configuration objects' validation and normalisation."""
 
+import re
 from functools import partial
 
+import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from divi.qprog.algorithms import UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.workflows._lassqd._config import (
     FragmentationConfig,
-    FullOrbitalSolve,
-    SecondOrderOrbitalSolve,
+    LBFGSOrbitalUpdate,
+    SecondOrderOrbitalUpdate,
+    StateAveragedOrbitalUpdate,
     VQEPreparation,
 )
 from divi.qprog.workflows._lassqd._sqd import SQDConfig
 from divi.qprog.workflows._lassqd._state import FragmentSpec
-from tests._helpers import exact_match
 
 _SPECS = (
     FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
@@ -89,17 +92,70 @@ def test_fragmentation_config_stores_sequences_as_hashable_tuples(kwargs, normal
         ),
         (
             {"n_active_orbitals": 1},
-            "n_active_orbitals must be at least 2, one occupied and one virtual; "
-            "got 1.",
+            "n_active_orbitals\n  Input should be greater than or equal to 2",
         ),
         (
             {"n_active_orbitals": 4, "max_orbitals_per_fragment": 1},
-            "max_orbitals_per_fragment must be at least 2, since a fragment needs "
-            "an occupied and a virtual orbital; got 1.",
+            "max_orbitals_per_fragment\n  Input should be greater than or equal to 2",
+        ),
+        (
+            {"n_active_orbitals": 4, "max_orbitals_per_fragment": float("inf")},
+            "max_orbitals_per_fragment\n  Input should be a finite number",
         ),
         (
             {"n_active_orbitals": 4, "coupling_threshold": -0.1},
-            "coupling_threshold must be non-negative; got -0.1.",
+            "coupling_threshold\n  Input should be greater than or equal to 0",
+        ),
+        (
+            {"n_active_orbitals": 4, "coupling_threshold": float("nan")},
+            "coupling_threshold\n  Input should be a finite number",
+        ),
+        (
+            {"n_active_orbitals": 4, "coupling_threshold": 1.5},
+            "coupling_threshold\n  Input should be less than or equal to 1",
+        ),
+        (
+            {"active_orbitals": (0.9, 1.9)},
+            "active_orbitals.0\n  Input should be a valid integer, got a number "
+            "with a fractional part",
+        ),
+        (
+            {
+                "n_active_orbitals": 4,
+                "fragment_atoms": [[0], [1]],
+                "local_spins": [2, 2],
+            },
+            "local_spins must sum to 0, since the closed-shell reference has "
+            "Sz = 0; got [2, 2], summing to 4.",
+        ),
+        (
+            {
+                "n_active_orbitals": 4,
+                "fragment_atoms": [[0], [1]],
+                "local_spins": [1, -1],
+            },
+            "local_spins entries must be even: each fragment holds an even number "
+            "of electrons, since its occupied orbitals are doubly occupied; got "
+            "[1, -1].",
+        ),
+        (
+            {"active_spaces": ["0,1"]},
+            "active_spaces.0\n  Input should be a dictionary or an instance of "
+            "FragmentSpec",
+        ),
+        (
+            {"active_spaces": _SPECS, "max_orbitals_per_fragment": 4},
+            "max_orbitals_per_fragment shapes coupling-graph fragments only; "
+            "active_spaces already fixes the fragment layout.",
+        ),
+        (
+            {
+                "n_active_orbitals": 4,
+                "fragment_atoms": [[0], [1]],
+                "coupling_threshold": 1e-3,
+            },
+            "coupling_threshold shapes coupling-graph fragments only; "
+            "fragment_atoms already fixes the fragment layout.",
         ),
     ],
     ids=[
@@ -110,60 +166,131 @@ def test_fragmentation_config_stores_sequences_as_hashable_tuples(kwargs, normal
         "spins-length",
         "too-few-active-orbitals",
         "too-small-fragments",
+        "infinite-fragment-cap",
         "negative-threshold",
+        "nan-threshold",
+        "threshold-above-one",
+        "fractional-orbital-index",
+        "spins-not-summing-to-zero",
+        "odd-spins",
+        "non-spec-active-space",
+        "fragment-cap-with-layout",
+        "threshold-with-atoms",
     ],
 )
 def test_fragmentation_config_rejects_invalid_settings(kwargs, message):
-    with pytest.raises(ValueError, match=exact_match(message)):
+    with pytest.raises(ValidationError, match=re.escape(message)):
         FragmentationConfig(**kwargs)
 
 
 @pytest.mark.parametrize(
     "kwargs, message",
     [
-        ({"n_batches": 0}, "n_batches must be at least 1; got 0."),
-        ({"batch_size": 0}, "batch_size must be at least 1; got 0."),
+        ({"n_batches": 0}, "n_batches\n  Input should be greater than or equal to 1"),
+        (
+            {"batch_size": 0},
+            "batch_size\n  Input should be greater than or equal to 1",
+        ),
+        (
+            {"batch_size": 1.5},
+            "batch_size\n  Input should be a valid integer, got a number with a "
+            "fractional part",
+        ),
         (
             {"n_recovery_iterations": 0},
-            "n_recovery_iterations must be at least 1; got 0.",
+            "n_recovery_iterations\n  Input should be greater than or equal to 1",
         ),
-        ({"lambda_penalty": -1.0}, "lambda_penalty must be non-negative; got -1.0."),
-        ({"carryover_cutoff": 0.0}, "carryover_cutoff must be positive; got 0.0."),
         (
-            {"carryover_cutoff": 1.0},
-            "carryover_cutoff must be below 1: it is a fraction of the largest "
-            "coefficient, which none exceeds, so 1.0 would retain nothing. Use "
-            "None to turn carryover off.",
+            {"lambda_penalty": -1.0},
+            "lambda_penalty\n  Input should be greater than or equal to 0",
         ),
+        (
+            {"lambda_penalty": float("nan")},
+            "lambda_penalty\n  Input should be a finite number",
+        ),
+        (
+            {"lambda_penalty": float("inf")},
+            "lambda_penalty\n  Input should be a finite number",
+        ),
+        (
+            {"carryover_cutoff": 0.0},
+            "carryover_cutoff\n  Input should be greater than 0",
+        ),
+        ({"carryover_cutoff": 1.0}, "carryover_cutoff\n  Input should be less than 1"),
         (
             {"carryover_mapping": "nearest"},
-            "carryover_mapping must be 'assignment' or 'argmax'; got 'nearest'.",
+            "carryover_mapping\n  Input should be 'assignment' or 'argmax'",
         ),
         (
             {"max_carryover": 5, "carryover_cutoff": None},
             "max_carryover caps what carryover retains, so it needs "
             "carryover_cutoff to be set.",
         ),
-        ({"max_carryover": 0}, "max_carryover must be at least 1; got 0."),
+        (
+            {"max_carryover": 0},
+            "max_carryover\n  Input should be greater than or equal to 1",
+        ),
         (
             {"max_dim": (1, 2, 3)},
-            "max_dim takes one integer or an (alpha, beta) pair; got 3 entries.",
+            "Tuple should have at most 2 items after validation, not 3",
         ),
-        ({"max_dim": 0}, "max_dim entries must be at least 1; got 0."),
+        ({"max_dim": 0}, "max_dim must be at least 1; got 0."),
         (
             {"recovery_energy_tol": -1.0},
-            "recovery_energy_tol must be non-negative; got -1.0.",
+            "recovery_energy_tol\n  Input should be greater than or equal to 0",
         ),
         (
             {"recovery_occupancies_tol": -1.0},
-            "recovery_occupancies_tol must be non-negative; got -1.0.",
+            "recovery_occupancies_tol\n  Input should be greater than or equal to 0",
+        ),
+        (
+            {"recovery_energy_tol": float("nan")},
+            "recovery_energy_tol\n  Input should be a finite number",
+        ),
+        ({"states": {}}, "states must request at least one state."),
+        (
+            {"states": {0: 1}},
+            "states multiplicities and root counts must be at least 1; got {0: 1}.",
+        ),
+        (
+            {"states": {1: 0}},
+            "states multiplicities and root counts must be at least 1; got {1: 0}.",
+        ),
+        (
+            {"states": {1: 1.5}},
+            "states.1\n  Input should be a valid integer, got a number with a "
+            "fractional part",
+        ),
+        ({"states": [(1, 2)]}, "states\n  Input should be a valid dictionary"),
+        (
+            {"extension": "triples"},
+            "extension\n  Input should be 'auto', 'singles' or 'doubles'",
+        ),
+        ({"extension_cutoff": 1.0}, "extension_cutoff\n  Input should be less than 1"),
+        (
+            {"carryover_cutoff": None, "carryover_mapping": "argmax"},
+            "carryover_mapping maps the strings carryover retains, so it needs "
+            "carryover_cutoff to be set.",
+        ),
+        (
+            {"extension": None, "extension_cutoff": 1e-2},
+            "extension_cutoff picks the strings the extension grows from, so it "
+            "needs extension to be set.",
+        ),
+        (
+            {"states": {1: 2}, "symmetrize_spin": False},
+            "symmetrize_spin=False contradicts states, which always pools the "
+            "alpha and beta halves. Leave symmetrize_spin unset.",
         ),
     ],
     ids=[
         "n-batches",
         "batch-size",
+        "fractional-batch-size",
         "recovery-iterations",
         "lambda-penalty",
+        "nan-lambda-penalty",
+        "infinite-lambda-penalty",
         "cutoff-zero",
         "cutoff-one",
         "mapping",
@@ -173,37 +300,147 @@ def test_fragmentation_config_rejects_invalid_settings(kwargs, message):
         "max-dim-zero",
         "energy-tol",
         "occupancies-tol",
+        "nan-energy-tol",
+        "states-empty",
+        "states-multiplicity-zero",
+        "states-count-zero",
+        "states-fractional-count",
+        "states-not-a-mapping",
+        "extension-unknown",
+        "extension-cutoff",
+        "mapping-without-carryover",
+        "extension-cutoff-without-extension",
+        "unsymmetrized-states",
     ],
 )
 def test_sqd_config_rejects_invalid_settings(kwargs, message):
-    with pytest.raises(ValueError, match=exact_match(message)):
+    with pytest.raises(ValidationError, match=re.escape(message)):
         SQDConfig(**kwargs)
+
+
+def test_fragment_spec_rejects_a_set_of_orbitals():
+    """A set's iteration order would decide which orbitals count as occupied."""
+    with pytest.raises(
+        ValidationError,
+        match=re.escape(
+            "orbitals must be an ordered sequence; a set loses the occupied-first "
+            "order."
+        ),
+    ):
+        FragmentSpec(orbitals={0, 1}, n_alpha=1, n_beta=1)
+
+
+def test_sqd_config_stores_a_max_dim_pair_as_an_int_tuple():
+    max_dim = SQDConfig(max_dim=[np.int64(4), 5]).max_dim
+
+    assert max_dim == (4, 5)
+    assert all(type(dim) is int for dim in max_dim)
+
+
+def test_numpy_integers_keep_every_digit():
+    """pydantic's own int validation rounds a large numpy integer through a
+    float."""
+    assert SQDConfig(batch_size=np.int64(2**62 + 1)).batch_size == 2**62 + 1
+
+
+def test_sqd_config_resolves_unset_options_to_their_defaults():
+    config = SQDConfig()
+
+    assert config.resolved_carryover_mapping == "assignment"
+    assert config.resolved_extension_cutoff == 1e-3
+    assert SQDConfig(carryover_mapping="argmax").resolved_carryover_mapping == "argmax"
+    assert SQDConfig(extension_cutoff=1e-2).resolved_extension_cutoff == 1e-2
+
+
+def test_sqd_config_stores_states_sorted_by_multiplicity():
+    assert list(SQDConfig(states={3: 1, 1: 2}).states.items()) == [(1, 2), (3, 1)]
 
 
 @pytest.mark.parametrize(
     "build",
     [
         partial(VQEPreparation, ScipyOptimizer(ScipyMethod.COBYLA)),
-        FullOrbitalSolve,
-        SecondOrderOrbitalSolve,
+        LBFGSOrbitalUpdate,
+        SecondOrderOrbitalUpdate,
+        StateAveragedOrbitalUpdate,
     ],
-    ids=["vqe-preparation", "full-orbital-solve", "second-order-orbital-solve"],
+    ids=[
+        "vqe-preparation",
+        "full-orbital-solve",
+        "second-order-orbital-solve",
+        "state-averaged-orbital-solve",
+    ],
 )
-def test_iteration_caps_accept_one_and_reject_zero(build):
+def test_iteration_caps_must_be_positive(build):
     assert build(max_iterations=1).max_iterations == 1
 
     with pytest.raises(
-        ValueError, match=exact_match("max_iterations must be at least 1; got 0.")
+        ValidationError,
+        match=re.escape("max_iterations\n  Input should be greater than or equal to 1"),
     ):
         build(max_iterations=0)
 
 
-def test_vqe_preparation_names_a_non_ansatz_by_type():
-    with pytest.raises(
-        TypeError,
-        match=exact_match("ansatz must be an Ansatz instance; got str."),
-    ):
-        VQEPreparation(ScipyOptimizer(ScipyMethod.COBYLA), ansatz="uccsd")
+@pytest.mark.parametrize(
+    "weights, message",
+    [
+        (
+            {(1, 0): 1.5, (1, 1): -0.5},
+            "weights must be finite and non-negative; got {(1, 0): 1.5, (1, 1): -0.5}.",
+        ),
+        (
+            {(1, 0): float("inf")},
+            "weights must be finite and non-negative; got {(1, 0): inf}.",
+        ),
+        ({(1, 0): 0.5, (1, 1): 0.4}, "weights must sum to 1; got 0.9."),
+    ],
+    ids=["negative", "infinite", "not-normalised"],
+)
+def test_state_averaged_solve_rejects_invalid_weights(weights, message):
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        StateAveragedOrbitalUpdate(weights=weights)
+
+
+def test_state_averaged_solve_accepts_weights_rounded_off_their_sum():
+    weights = {(1, 0): 0.4999999999, (1, 1): 0.5}
+
+    assert StateAveragedOrbitalUpdate(weights=weights).weights == weights
+
+
+def test_state_averaged_solve_records_weights_independently_of_key_order():
+    """The checkpoint compares settings by their repr, so the same weights given
+    in another order must not read as a different configuration."""
+    forward = StateAveragedOrbitalUpdate(weights={(1, 0): 0.5, (3, 0): 0.5})
+    backward = StateAveragedOrbitalUpdate(weights={(3, 0): 0.5, (1, 0): 0.5})
+
+    assert repr(forward) == repr(backward)
+
+
+def test_state_averaged_solve_weights_states_equally_by_default():
+    assert StateAveragedOrbitalUpdate()._weights_for({1: 2, 3: 1}) == {
+        (1, 0): pytest.approx(1 / 3),
+        (1, 1): pytest.approx(1 / 3),
+        (3, 0): pytest.approx(1 / 3),
+    }
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        (
+            {"optimizer": ScipyOptimizer(ScipyMethod.COBYLA), "ansatz": "uccsd"},
+            "ansatz\n  Input should be an instance of Ansatz",
+        ),
+        (
+            {"optimizer": ScipyOptimizer},
+            "optimizer\n  Input should be an instance of Optimizer",
+        ),
+    ],
+    ids=["ansatz", "optimizer-class"],
+)
+def test_vqe_preparation_rejects_components_of_the_wrong_kind(kwargs, message):
+    with pytest.raises(ValidationError, match=re.escape(message)):
+        VQEPreparation(**kwargs)
 
 
 def test_vqe_preparation_checkpoint_record_names_its_component_classes():

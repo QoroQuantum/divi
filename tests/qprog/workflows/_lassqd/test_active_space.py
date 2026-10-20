@@ -38,15 +38,13 @@ _N_ORBITALS = 6
     [
         pytest.param(3, 4, (1, 2), (3, 4), id="even_splits_evenly"),
         pytest.param(3, 3, (1, 2), (3,), id="odd_favours_occupied"),
-        pytest.param(3, 12, (0, 1, 2), (3, 4, 5), id="clamps_at_register_edges"),
-        pytest.param(1, 6, (0,), (1, 2, 3), id="asymmetric_clamps_occupied_only"),
+        pytest.param(3, 6, (0, 1, 2), (3, 4, 5), id="whole_register"),
     ],
 )
 def test_select_frontier_orbitals(
     n_occupied, n_active, expected_occupied, expected_virtual
 ):
-    """ceil(k/2) occupied, floor(k/2) virtual, each side clamped independently at
-    the register edges."""
+    """ceil(k/2) occupied, floor(k/2) virtual."""
     occupied, virtual = select_frontier_orbitals(_N_ORBITALS, n_occupied, n_active)
     assert occupied == expected_occupied
     assert virtual == expected_virtual
@@ -55,9 +53,29 @@ def test_select_frontier_orbitals(
 @pytest.mark.parametrize(
     "n_occupied, n_active, match",
     [
-        # An all-occupied register leaves no virtual orbital to select.
-        pytest.param(_N_ORBITALS, 2, "at least one occupied", id="all-occupied"),
+        pytest.param(
+            _N_ORBITALS,
+            2,
+            "takes 1 occupied and 1 virtual orbitals, but the molecule has 6 "
+            "occupied and 0 virtual",
+            id="all-occupied",
+        ),
+        pytest.param(3, 1, "takes no virtual", id="single-orbital"),
         pytest.param(3, 0, "n_active_orbitals", id="non-positive"),
+        pytest.param(
+            3,
+            12,
+            "takes 6 occupied and 6 virtual orbitals, but the molecule has 3 "
+            "occupied and 3 virtual",
+            id="beyond-the-register",
+        ),
+        pytest.param(
+            1,
+            6,
+            "takes 3 occupied and 3 virtual orbitals, but the molecule has 1 "
+            "occupied and 5 virtual",
+            id="beyond-the-occupied-orbitals",
+        ),
     ],
 )
 def test_select_frontier_orbitals_rejects(n_occupied, n_active, match):
@@ -198,18 +216,34 @@ def test_merge_clusters_respects_the_size_limit():
     ]
 
 
+_UNCOUPLED_MERGE = "join orbitals with no coupling above coupling_threshold"
+
+
 def test_merge_clusters_absorbs_all_occupied_clusters():
     """A cluster with no virtual orbital captures no correlation."""
     one_body, two_body = _two_block_integrals()
     graph = build_coupling_graph(one_body, two_body)
     # Make {0,1} both occupied and {2,3} both virtual so neither is mixed.
-    with pytest.warns(UserWarning, match="no positive coupling"):
+    with pytest.warns(UserWarning, match=_UNCOUPLED_MERGE):
         clusters = merge_clusters(
             graph, [True, True, False, False], max_orbitals_per_fragment=4
         )
 
     assert len(clusters) == 1
     assert clusters[0] == (0, 1, 2, 3)
+
+
+def test_merge_clusters_warns_once_naming_every_uncoupled_fragment():
+    """Each fragment is built from uncoupled merges; one warning names both
+    by the index the returned list, and so LASSQD, gives them."""
+    graph = _weighted_graph(4, [])
+    with pytest.warns(UserWarning) as caught:
+        clusters = merge_clusters(
+            graph, _ALTERNATING_OCCUPATION[:4], max_orbitals_per_fragment=2
+        )
+
+    assert len(clusters) == 2
+    assert [str(warning.message)[:16] for warning in caught] == ["Fragments [0, 1]"]
 
 
 def test_merge_clusters_diagnostic_when_size_limit_blocks_the_fix():
@@ -227,7 +261,7 @@ def test_merge_clusters_returns_disjoint_complete_clusters():
     graph.add_edge(0, 2, weight=0.765)
     graph.add_edge(0, 4, weight=0.786)
 
-    with pytest.warns(UserWarning, match="no positive coupling"):
+    with pytest.warns(UserWarning, match=_UNCOUPLED_MERGE):
         clusters = merge_clusters(
             graph, [True, True, False, False, True], max_orbitals_per_fragment=4
         )
@@ -283,7 +317,7 @@ def test_merge_clusters_fix_up_ties_go_to_the_smallest_partner():
     the smaller, virtual ``(3,)`` mixes it, where absorbing ``(1, 2)`` would leave
     ``(3,)`` with no room."""
     graph = _weighted_graph(4, [(1, 2, 1.0)])
-    with pytest.warns(UserWarning, match="no positive coupling"):
+    with pytest.warns(UserWarning, match=_UNCOUPLED_MERGE):
         clusters = merge_clusters(
             graph, [True, True, False, False], max_orbitals_per_fragment=3
         )
@@ -330,8 +364,8 @@ def test_assign_orbitals_to_atoms_groups_columns_by_dominant_atom():
 @pytest.mark.parametrize(
     "columns, fragment_atoms, match",
     [
-        ([0, 1], ([0],), "which no fragment claims"),
-        ([0, 1], ([0, 1], [2, 3]), "got no active orbitals"),
+        ([0, 1], ([0],), "which fragment_atoms does not list"),
+        ([0, 1], ([0, 1], [2, 3]), r"fragment_atoms\[1\] \(\[2, 3\]\) got no active"),
     ],
 )
 def test_assign_orbitals_to_atoms_rejects(columns, fragment_atoms, match):

@@ -56,22 +56,18 @@ _pinned_pyscf_threads = 0
 
 @dataclass(frozen=True)
 class LUCJPreparation:
-    """Optimized fragment circuit and its working-basis Hamiltonian."""
+    """Optimized fragment circuit and its Hamiltonian in the sampled basis."""
 
     circuit: QuantumCircuit
     params: np.ndarray
-    h_alpha: np.ndarray
-    h_beta: np.ndarray
-    two_body: np.ndarray
+    problem: MolecularProblem
     orbital_rotation: np.ndarray
 
 
 @dataclass(frozen=True)
 class _PreparedFragment:
     params: np.ndarray
-    h_alpha: np.ndarray
-    h_beta: np.ndarray
-    two_body: np.ndarray
+    problem: MolecularProblem
     orbital_rotation: np.ndarray
 
 
@@ -118,9 +114,7 @@ class LUCJFragmentProgram(QuantumProgram):
         """Prepare the fragment classically, then sample its final circuit."""
         reject_unclaimed_run_kwargs(self, kwargs)
         self._preparation = prepare_lucj_fragment(
-            self.problem.one_body,
-            self.problem.one_body_beta,
-            self.problem.two_body,
+            self.problem,
             self.spec,
             report=self._show_progress,
             on_iteration=lambda energy: self._progress_emitter(
@@ -130,9 +124,7 @@ class LUCJFragmentProgram(QuantumProgram):
         )
         self._terminal_result = _PreparedFragment(
             params=self._preparation.params,
-            h_alpha=self._preparation.h_alpha,
-            h_beta=self._preparation.h_beta,
-            two_body=self._preparation.two_body,
+            problem=self._preparation.problem,
             orbital_rotation=self._preparation.orbital_rotation,
         )
         self._show_progress("Sampling the prepared circuit")
@@ -164,19 +156,9 @@ class LUCJFragmentProgram(QuantumProgram):
         return self._results.get("best_probs", {}).copy()
 
     @property
-    def h_alpha(self) -> np.ndarray:
-        """Alpha one-body integrals in the sampled determinant basis."""
-        return self._require_terminal_result().h_alpha
-
-    @property
-    def h_beta(self) -> np.ndarray:
-        """Beta one-body integrals in the sampled determinant basis."""
-        return self._require_terminal_result().h_beta
-
-    @property
-    def two_body(self) -> np.ndarray:
-        """Two-body integrals in the sampled determinant basis."""
-        return self._require_terminal_result().two_body
+    def sampled_problem(self) -> MolecularProblem:
+        """The fragment's Hamiltonian in the sampled determinant basis."""
+        return self._require_terminal_result().problem
 
     @property
     def orbital_rotation(self) -> np.ndarray:
@@ -198,9 +180,9 @@ class LUCJFragmentProgram(QuantumProgram):
                 np.savez(
                     handle,
                     params=result.params,
-                    h_alpha=result.h_alpha,
-                    h_beta=result.h_beta,
-                    two_body=result.two_body,
+                    h_alpha=result.problem.one_body,
+                    h_beta=result.problem.one_body_beta,
+                    two_body=result.problem.two_body,
                     orbital_rotation=result.orbital_rotation,
                 )
                 handle.flush()
@@ -267,8 +249,18 @@ class LUCJFragmentProgram(QuantumProgram):
             arrays["orbital_rotation"], "Completed fragment state orbital_rotation"
         )
 
-        result = _PreparedFragment(**arrays)
-        self._terminal_result = result
+        self._terminal_result = _PreparedFragment(
+            params=arrays["params"],
+            problem=MolecularProblem(
+                arrays["h_alpha"],
+                arrays["two_body"],
+                n_alpha=self.problem.n_alpha,
+                n_beta=self.problem.n_beta,
+                constant=self.problem.constant,
+                one_body_beta=arrays["h_beta"],
+            ),
+            orbital_rotation=arrays["orbital_rotation"],
+        )
         self._results["best_probs"] = checkpoint.best_probs
         return True
 
@@ -462,12 +454,12 @@ def _rohf_starts(one_body: np.ndarray, spec: FragmentSpec) -> list[np.ndarray]:
             for doubles in itertools.combinations(singles, n_minority)
         ]
     else:
-        ranks = [
-            0,
-            *sorted(Random(0).sample(range(1, n_occupations), _ROHF_STARTS - 1)),
-        ]
+        generator = Random(0)
+        ranks = {0}
+        while len(ranks) < _ROHF_STARTS:
+            ranks.add(generator.randrange(1, n_occupations))
         occupations = []
-        for rank in ranks:
+        for rank in sorted(ranks):
             majority_rank, minority_rank = divmod(rank, minority_per_majority)
             singles = _unrank_combination(range(n_orbitals), n_majority, majority_rank)
             doubles = _unrank_combination(singles, n_minority, minority_rank)
@@ -601,9 +593,7 @@ def _single_threaded_numerics():
 
 @_single_threaded_numerics()
 def prepare_lucj_fragment(
-    h_alpha: np.ndarray,
-    h_beta: np.ndarray,
-    two_body: np.ndarray,
+    problem: MolecularProblem,
     spec: FragmentSpec,
     report: Callable[[str], None] | None = None,
     on_iteration: Callable[[float], None] | None = None,
@@ -612,8 +602,8 @@ def prepare_lucj_fragment(
     """Build the paper's one-repetition fragment LUCJ circuit from CCSD.
 
     The sampled state uses the paper's alpha-channel preparation Hamiltonian.
-    Both physical-spin one-body tensors are returned in that sampled orbital
-    basis for the subsequent SQD diagonalisation.
+    ``problem`` is returned rotated into that sampled orbital basis, both spin
+    channels included, for the subsequent SQD diagonalisation.
 
     With ``run_linear_method``, ffsim's linear method optimises the CCSD seed
     on the exact fragment statevector; without it, the seed is the circuit.
@@ -625,10 +615,12 @@ def prepare_lucj_fragment(
     report_iteration = on_iteration if on_iteration is not None else (lambda _: None)
 
     announce("Fragment ROHF")
-    mean_field = _fragment_rohf(h_alpha, two_body, spec)
+    mean_field = _fragment_rohf(problem.one_body, problem.two_body, spec)
     orbital_rotation = np.asarray(mean_field.mo_coeff)
-    h_alpha_mo, two_body_mo = _rotate_integrals(h_alpha, two_body, orbital_rotation)
-    h_beta_mo = _rotate_one_body(h_beta, orbital_rotation)
+    h_alpha_mo, two_body_mo = _rotate_integrals(
+        problem.one_body, problem.two_body, orbital_rotation
+    )
+    h_beta_mo = _rotate_one_body(problem.one_body_beta, orbital_rotation)
 
     announce("CCSD seed")
     coupled_cluster = _fragment_ccsd(mean_field, spec)
@@ -700,8 +692,13 @@ def prepare_lucj_fragment(
     return LUCJPreparation(
         circuit=circuit,
         params=params,
-        h_alpha=h_alpha_mo,
-        h_beta=h_beta_mo,
-        two_body=two_body_mo,
+        problem=MolecularProblem(
+            h_alpha_mo,
+            two_body_mo,
+            n_alpha=problem.n_alpha,
+            n_beta=problem.n_beta,
+            constant=problem.constant,
+            one_body_beta=h_beta_mo,
+        ),
         orbital_rotation=orbital_rotation,
     )

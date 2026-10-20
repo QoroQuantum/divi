@@ -4,10 +4,15 @@
 
 """Immutable state carried through the LASSQD workflow."""
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
+from pydantic import field_validator
+from pydantic.dataclasses import dataclass as config_dataclass
+
+from ._types import exact_ints
 
 # Largest deviation of a checkpointed orbital overlap from the identity. Orbital
 # rotations keep it near machine precision; a scaled or edited array does not.
@@ -28,7 +33,7 @@ def require_orthonormal(
         )
 
 
-@dataclass(frozen=True)
+@config_dataclass(frozen=True)
 class FragmentSpec:
     """A single active-space fragment.
 
@@ -41,20 +46,30 @@ class FragmentSpec:
         n_beta: Beta electrons assigned to the fragment.
 
     Raises:
-        ValueError: If ``orbitals`` is empty or contains duplicates, or if
-            ``n_alpha``/``n_beta`` fall outside ``[0, n_orbitals]``. Whether the
-            spin counts leave an excitation available is checked separately,
-            during fragment validation.
+        ValueError: If ``orbitals`` is a set, empty or contains duplicates, if
+            ``n_alpha``/``n_beta`` fall outside ``[0, n_orbitals]``, or if any
+            field is not an integer. Whether the spin counts leave an excitation
+            available is checked separately, during fragment validation.
     """
 
     orbitals: tuple[int, ...]
     n_alpha: int
     n_beta: int
 
-    def __post_init__(self):
-        orbitals = tuple(int(o) for o in self.orbitals)
-        object.__setattr__(self, "orbitals", orbitals)
+    @field_validator("orbitals", mode="before")
+    @classmethod
+    def _ordered_exact_orbitals(cls, value: Any) -> Any:
+        if isinstance(value, (set, frozenset)):
+            raise ValueError(
+                "orbitals must be an ordered sequence; a set loses the "
+                "occupied-first order."
+            )
+        return exact_ints(value)
 
+    _exact_counts = field_validator("n_alpha", "n_beta", mode="before")(exact_ints)
+
+    def __post_init__(self):
+        orbitals = self.orbitals
         if not orbitals:
             raise ValueError("A fragment must contain at least one orbital.")
         if len(set(orbitals)) != len(orbitals):
@@ -160,9 +175,12 @@ class LASSQDState:
             into ``[core | fragment blocks | virtual]`` order.
         fragments: Per-fragment state, in the same order as the fragment
             blocks in ``mo_coeff``.
-        energy: Total energy for this state, or ``inf`` if not yet computed.
-        previous_energy: Total energy from the previous macro-cycle, or
-            ``inf`` for the initial state.
+        energy: The energy the macro-cycle converges on, or ``inf`` if not yet
+            computed: the total energy, or under
+            :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` the
+            weighted average over the requested states.
+        previous_energy: The previous macro-cycle's ``energy``, or ``inf`` for
+            the initial state.
         orbitals_converged: Whether the orbital optimisation that produced
             ``mo_coeff`` converged. ``True`` for an initial state, which has no
             solve behind it.
@@ -173,6 +191,53 @@ class LASSQDState:
     energy: float = float("inf")
     previous_energy: float = float("inf")
     orbitals_converged: bool = True
+
+
+@dataclass(frozen=True, order=True)
+class ElectronicState:
+    """One eigenstate requested through ``SQDConfig.states``, after a round.
+
+    Orders by ``(multiplicity, index)``, its root order.
+
+    Attributes:
+        multiplicity: Spin multiplicity ``2S + 1`` the state was solved for.
+        index: Position among that multiplicity's roots, ``0`` the lowest.
+        energy: Total energy of the state at the round's orbitals, from its
+            own RDMs.
+        spin_square: ``<S^2>`` of the state.
+    """
+
+    multiplicity: int
+    index: int
+    energy: float
+    spin_square: float
+
+
+@dataclass(frozen=True)
+class _SampledSubspace:
+    """Fragment 0's SQD subspace, for an update that re-solves its CI."""
+
+    mo_coeff: np.ndarray  # the round's orbitals, fragment 0 in its sampled basis
+    strings: tuple[Sequence[str], Sequence[str]]
+    states: Mapping[int, int]
+    lambda_penalty: float
+
+
+@dataclass(frozen=True)
+class _OrbitalRound:
+    """What a round hands its orbital update."""
+
+    mol: Any
+    mo_coeff: np.ndarray
+    n_core: int
+    specs: Sequence[FragmentSpec]
+    rdm1_active: np.ndarray
+    rdm2_active: np.ndarray
+    ao_eri: np.ndarray
+    h_ao: np.ndarray
+    gradient_tol: float
+    report: Callable[[str], None] | None = None
+    subspace: _SampledSubspace | None = None
 
 
 def validate_fragment_specs(

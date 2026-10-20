@@ -60,6 +60,8 @@ def load_defaults(path: Path | None = None) -> SavedDefaults:
         ValueError: If the file cannot be read or is not valid, naming the file.
     """
     path = path or defaults_path()
+    if path.is_dir():
+        raise ValueError(f"{path}: is a directory, not a file.")
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:

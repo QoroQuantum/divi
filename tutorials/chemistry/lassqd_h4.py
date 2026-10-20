@@ -114,9 +114,7 @@ def main() -> None:
     print(
         "Both energies are upper bounds, so both sit above CASCI. The gap is the "
         "inter-fragment correlation each split discards -- which is why cutting "
-        "along a weak interaction beats cutting through a bond. The occupancy "
-        "split also warns that a fragment collapsed to one determinant, which is "
-        "the same problem showing up in the sampling."
+        "along a weak interaction beats cutting through a bond."
     )
 
 

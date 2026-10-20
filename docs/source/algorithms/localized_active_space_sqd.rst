@@ -1,7 +1,8 @@
 Localised Active-Space SQD (LASSQD)
 ====================================
 
-:class:`~divi.qprog.workflows.LASSQD` estimates the ground-state energy of a
+:class:`~divi.qprog.workflows.LASSQD` estimates the ground-state energy, and
+optionally low-lying excited states (:ref:`lassqd-excited-states`), of a
 molecule whose active space is too large for one circuit. It first partitions
 the active space. Each macro-cycle then:
 
@@ -32,7 +33,9 @@ runs (or reuses) the RHF calculation from that input. Because each macro-cycle
 re-optimises the molecular orbitals in the atomic-orbital basis, LASSQD rejects
 a :class:`~divi.qprog.problems.MolecularProblem` built from a PennyLane
 ``qchem.Molecule`` or from bare integrals — both carry no atomic-orbital basis
-to re-optimise into. Only closed-shell (RHF) molecules are supported.
+to re-optimise into. Only closed-shell (RHF) molecules are supported. A
+restricted DFT object (``dft.RKS``) supplies starting orbitals only; its
+functional enters no energy.
 
 Because :class:`~divi.qprog.workflows.LASSQD` subclasses
 :class:`~divi.qprog.ensemble.ProgramEnsemble`, its multi-round execution
@@ -144,6 +147,12 @@ configured strategy is available as ``ensemble.preparation``.
    default; setting it to ``None`` gives conventional SQD, whose energies
    oscillate rather than converge (:ref:`lassqd-carryover`).
 
+   The circuit alone under-samples, so ``extension`` defaults to ``"auto"``,
+   which runs ``"singles"`` (Ext-SQD, arXiv:2411.00468): every significant string gains those one
+   electron move away, once per round. Fragments over 16384 determinants must
+   then set ``max_dim``, checked before any circuit runs; ``extension=None``
+   gives plain SQD.
+
    ``stop_reason == COMPLETE`` means the energy stopped *changing*, not that it
    is accurate. An energy equal to the mean field means the subspace held only
    the reference determinant; the workflow warns when that happens.
@@ -196,7 +205,7 @@ through :class:`~divi.qprog.workflows.FragmentationConfig`.
 **Partitioning.** The default localises orbitals and merges them by coupling,
 capped by ``max_orbitals_per_fragment`` (default 4); ``coupling_threshold``
 (default ``1e-3``) prunes weak edges. ``fragment_atoms`` instead assigns each
-localised orbital to an atom-defined fragment.
+localised orbital to an atom-defined fragment, and rejects both knobs.
 
 **Spin.** ``local_spins`` supplies signed ``2S`` values per atom-defined
 fragment while preserving electron counts. These values must sum to zero,
@@ -222,8 +231,9 @@ reassembles the RDM, and optimises the orbitals. ``run(max_rounds=N)`` caps
 macro-cycles; ``None`` runs until consecutive energies differ by less than
 ``energy_tol`` (default ``1e-6`` Ha) and that round's orbital solve converged,
 meaning its orbital-gradient norm is at most ``sqrt(energy_tol)``
-(:attr:`~divi.qprog.workflows.LASSQDRoundReport.orbital_converged`). Key
-results are:
+(:attr:`~divi.qprog.workflows.LASSQDRoundReport.orbital_converged`). Before
+stopping, the lowest-state orbital updates check the orbital Hessian and, at a
+saddle point, step off it and continue. Key results are:
 
 - ``ensemble.energy`` — the converged (or latest) total energy.
 - ``ensemble.workflow_state`` — orbitals, fragment states, and current/previous
@@ -246,18 +256,87 @@ Orbital Update
 Each macro-cycle ends by re-optimising the molecular orbitals against the
 reassembled active-space RDM. ``orbital_update`` selects the solver:
 
-- :class:`~divi.qprog.workflows.SecondOrderOrbitalSolve` (default) takes PySCF
+- :class:`~divi.qprog.workflows.SecondOrderOrbitalUpdate` (default) takes PySCF
   CIAH augmented-Hessian steps, with Hessian-vector products from finite
   differences of the analytic orbital gradient. ``max_iterations`` (default 50)
   caps the steps per macro-cycle.
-- :class:`~divi.qprog.workflows.FullOrbitalSolve` minimises with SciPy's
+- :class:`~divi.qprog.workflows.LBFGSOrbitalUpdate` minimises with SciPy's
   L-BFGS-B. ``max_iterations`` defaults to ``None``, which leaves SciPy's own
   cap.
+- :class:`~divi.qprog.workflows.FixedOrbitals` keeps the orbitals as they are,
+  so each round's energy is that of the recovered state on fixed orbitals, as in
+  CASCI.
+- :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` optimises the
+  orbitals and the states together for a weighted average of the states
+  ``SQDConfig.states`` requests, as state-averaged CASSCF does
+  (:ref:`lassqd-excited-states`).
 
 A capped solve returns its best orbitals and reports the round as not
 converged, which blocks completion. Each round's iteration count, gradient
 norm and convergence flag are in ``ensemble.round_reports``; the configured
 solver is ``ensemble.orbital_update``.
+
+.. _lassqd-excited-states:
+
+Excited States
+----------------
+
+``SQDConfig(states=...)`` solves for several eigenstates at once, keyed by spin
+multiplicity ``2S + 1``. All come from one subspace on the same orbitals. A
+singlet–triplet gap:
+
+.. code-block:: python
+
+   from pyscf import gto
+   from divi.backends import MaestroSimulator
+   from divi.qprog import (
+       LASSQD,
+       FragmentationConfig,
+       FragmentSpec,
+       SQDConfig,
+       StateAveragedOrbitalUpdate,
+   )
+   from divi.qprog.problems import MolecularProblem
+
+   mol = gto.M(atom="H 0 0 0; H 0 0 1.5", basis="sto-3g", verbose=0)
+
+   ensemble = LASSQD(
+       MolecularProblem.from_molecule(mol),
+       fragmentation=FragmentationConfig(
+           active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+       ),
+       sqd=SQDConfig(states={1: 2, 3: 1}),
+       orbital_update=StateAveragedOrbitalUpdate(),
+       seed=0,
+       backend=MaestroSimulator(shots=2000),
+   )
+   ensemble.run(max_rounds=3)
+   states = ensemble.electronic_states
+   gap = states[(3, 0)].energy - states[(1, 0)].energy
+   print(f"T1 - S0: {gap * 27.2114:.3f} eV")
+
+- **Labels.** ``electronic_states`` maps ``(multiplicity, index)`` to an
+  :class:`~divi.qprog.workflows.ElectronicState`, ordered by energy. ``index``
+  counts within one spin from 0: S0 is ``(1, 0)``, S1 ``(1, 1)``, T1
+  ``(3, 0)``.
+- **Orbitals decide the gap.**
+  :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` relaxes the orbitals
+  for a weighted average of the states (default: each root equally, a triplet
+  counting once), as SA-CASSCF does; the weights shift every gap.
+  :class:`~divi.qprog.workflows.FixedOrbitals` keeps the input orbitals, for
+  comparison with CASCI. The other updates relax for the lowest state only and
+  warn.
+- **Energies.** ``energy`` is always the lowest state's. Under state averaging
+  the macro-cycle converges on the average, reported as each round's
+  ``averaged_energy``.
+- **Coverage.** The circuit samples the ground state, so excited states rely on
+  the default extension, ``"auto"`` (singles); ``"doubles"`` reaches further and grows
+  the subspace far more.
+- **Spin** is targeted by ``lambda_penalty``, and roots nearer another spin are
+  skipped. A sampled subspace may hold no pure state of a spin, so each state
+  reports its ``spin_square``, and a warning names any that misses.
+- **One fragment only**: a product of fragment states cannot describe an
+  excitation spread over several fragments.
 
 .. _lassqd-accuracy-characteristics:
 
@@ -339,8 +418,9 @@ descending weight, then this batch's halves by descending sample count.
 
    Leaving both caps unset lets the retained set grow every iteration, and the
    subspace with it, quadratically — the relative cutoff prunes little on its
-   own. The projected matrices are dense, so a fragment with a large determinant
-   space can exhaust memory. Set ``max_dim`` there.
+   own. Past 16384 determinants an eigenvalue solve that fails has no dense
+   fallback, so a fragment with a large determinant space should set
+   ``max_dim``.
 
 This helps where sampling reaches a small fraction of a fragment's determinant
 space. Where sampling already covers that space — small fragments, or a generous

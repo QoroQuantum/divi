@@ -91,15 +91,20 @@ if TYPE_CHECKING:
     from .workflows import (
         LASSQD,
         CCSDPreparation,
+        ElectronicState,
+        FixedOrbitals,
         FragmentationConfig,
         FragmentSpec,
         FragmentState,
-        FullOrbitalSolve,
         LASSQDRoundReport,
         LASSQDState,
+        LBFGSOrbitalUpdate,
         LinearMethodPreparation,
-        SecondOrderOrbitalSolve,
+        OrbitalUpdate,
+        Preparation,
+        SecondOrderOrbitalUpdate,
         SQDConfig,
+        StateAveragedOrbitalUpdate,
         VQEPreparation,
     )
 

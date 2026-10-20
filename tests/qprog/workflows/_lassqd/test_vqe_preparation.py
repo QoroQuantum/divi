@@ -63,25 +63,27 @@ def test_fragment_vqe_rejects_mismatched_seed_params_length(dummy_expval_backend
         )
 
 
-def test_fragment_vqe_exposes_its_problem_integrals_in_its_own_basis(
+def test_fragment_vqe_samples_its_own_problem_in_its_own_basis(
     dummy_expval_backend,
 ):
-    """SQD reduces every fragment program through the same four attributes; a
-    VQE samples in the fragment's own orbitals, so its rotation is the identity."""
+    """SQD reduces every fragment program through ``sampled_problem`` and
+    ``orbital_rotation``; a VQE samples in the fragment's own orbitals, so its
+    rotation is the identity."""
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
-    h_alpha = np.array([[-1.0, 0.1], [0.1, 0.5]])
-    h_beta = np.array([[-0.9, 0.2], [0.2, 0.4]])
-    two_body = np.full((2,) * 4, 0.05)
+    problem = fragment_problem(
+        np.array([[-1.0, 0.1], [0.1, 0.5]]),
+        np.array([[-0.9, 0.2], [0.2, 0.4]]),
+        np.full((2,) * 4, 0.05),
+        spec,
+    )
     program = _vqe_preparation._FragmentVQE(
-        fragment_problem(h_alpha, h_beta, two_body, spec),
+        problem,
         ansatz=UCCSDAnsatz(),
         optimizer=cobyla(),
         backend=dummy_expval_backend,
     )
 
-    np.testing.assert_array_equal(program.h_alpha, h_alpha)
-    np.testing.assert_array_equal(program.h_beta, h_beta)
-    np.testing.assert_array_equal(program.two_body, two_body)
+    assert program.sampled_problem is problem
     np.testing.assert_array_equal(program.orbital_rotation, np.eye(2))
 
 

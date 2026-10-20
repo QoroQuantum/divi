@@ -9,8 +9,8 @@ import pytest
 
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows._lassqd._config import (
-    FullOrbitalSolve,
-    SecondOrderOrbitalSolve,
+    LBFGSOrbitalUpdate,
+    SecondOrderOrbitalUpdate,
 )
 from divi.qprog.workflows._lassqd._preparation import (
     LUCJFragmentProgram,
@@ -52,9 +52,7 @@ def test_lucj_preparation_reports_each_stage_and_iteration_energy():
     stages, energies = [], []
 
     prepare_lucj_fragment(
-        one_body,
-        one_body,
-        two_body,
+        MolecularProblem(one_body, two_body, n_alpha=spec.n_alpha, n_beta=spec.n_beta),
         spec,
         report=stages.append,
         on_iteration=energies.append,
@@ -89,7 +87,7 @@ def test_a_lucj_fragment_program_reports_through_its_progress_row(dummy_simulato
 
 @pytest.mark.parametrize(
     "orbital_update",
-    [FullOrbitalSolve(), SecondOrderOrbitalSolve()],
+    [LBFGSOrbitalUpdate(), SecondOrderOrbitalUpdate()],
     ids=["full", "second-order"],
 )
 def test_update_state_reports_each_fragment_and_the_orbital_solve(

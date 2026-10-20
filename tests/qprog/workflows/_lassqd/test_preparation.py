@@ -6,8 +6,6 @@
 
 import hashlib
 import itertools
-import tracemalloc
-from operator import attrgetter, methodcaller
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +28,7 @@ from divi.qprog.workflows._lassqd._preparation import (
 )
 from divi.qprog.workflows._lassqd._state import FragmentSpec
 from tests._helpers import exact_match
+from tests.qprog.workflows._lassqd._helpers import fragment_problem
 
 _PREPARATION = "divi.qprog.workflows._lassqd._preparation"
 
@@ -63,6 +62,13 @@ def _one_pair_amplitudes(mixed_double=0.0):
         np.zeros((1, 1, 1, 1)),
     )
     return t1, t2
+
+
+def _two_orbital_problem(spec):
+    """A two-orbital fragment problem with distinct alpha and beta one-body terms."""
+    return fragment_problem(
+        np.diag([-1.0, 0.5]), np.diag([-0.8, 0.7]), np.zeros((2, 2, 2, 2)), spec
+    )
 
 
 def test_paper_lucj_interaction_pairs_match_the_reference_topology():
@@ -126,15 +132,12 @@ def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires(
 
 
 def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
-    h_alpha = np.diag([-1.0, 0.5])
-    h_beta = np.diag([-0.8, 0.7])
-    two_body = np.zeros((2, 2, 2, 2))
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
     minimize = _patch_linear_method(mocker, lambda x0: x0)
     from_amplitudes = mocker.spy(ffsim.UCJOpSpinUnbalanced, "from_t_amplitudes")
 
-    result = prepare_lucj_fragment(h_alpha, h_beta, two_body, spec)
+    result = prepare_lucj_fragment(_two_orbital_problem(spec), spec)
 
     assert from_amplitudes.call_count == 1
     call = from_amplitudes.call_args
@@ -147,10 +150,9 @@ def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
     np.testing.assert_allclose(result.params, minimize.call_args.kwargs["x0"])
     assert result.circuit.num_qubits == 4
     assert result.orbital_rotation.shape == (2, 2)
-    assert result.h_alpha.shape == (2, 2)
-    assert result.h_beta.shape == (2, 2)
-    np.testing.assert_allclose(result.h_beta, np.diag([-0.8, 0.7]))
-    assert result.two_body.shape == (2, 2, 2, 2)
+    assert result.problem.one_body.shape == (2, 2)
+    np.testing.assert_allclose(result.problem.one_body_beta, np.diag([-0.8, 0.7]))
+    assert result.problem.two_body.shape == (2, 2, 2, 2)
 
 
 def test_prepare_lucj_fragment_samples_the_ccsd_seed_without_the_linear_method(
@@ -159,12 +161,11 @@ def test_prepare_lucj_fragment_samples_the_ccsd_seed_without_the_linear_method(
     minimize = _patch_linear_method(mocker, lambda x0: x0 + 1.0)
     seed = mocker.spy(ffsim.UCJOpSpinUnbalanced, "to_parameters")
     stages = []
+    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
     result = prepare_lucj_fragment(
-        np.diag([-1.0, 0.5]),
-        np.diag([-0.8, 0.7]),
-        np.zeros((2, 2, 2, 2)),
-        FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+        _two_orbital_problem(spec),
+        spec,
         report=stages.append,
         run_linear_method=False,
     )
@@ -196,9 +197,7 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
     _patch_linear_method(mocker, lambda x0: x0)
 
     result = prepare_lucj_fragment(
-        np.zeros((4, 4)),
-        np.zeros((4, 4)),
-        np.zeros((4, 4, 4, 4)),
+        fragment_problem(np.zeros((4, 4)), np.zeros((4, 4)), np.zeros((4,) * 4), spec),
         spec,
     )
 
@@ -211,14 +210,9 @@ def test_prepare_lucj_fragment_rotates_real_beta_integrals_for_sqd(mocker):
     _patch_linear_method(mocker, lambda x0: x0)
     spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
 
-    result = prepare_lucj_fragment(
-        np.diag([-1.0, 0.5]),
-        np.diag([-0.8, 0.7]),
-        np.zeros((2, 2, 2, 2)),
-        spec,
-    )
+    result = prepare_lucj_fragment(_two_orbital_problem(spec), spec)
 
-    np.testing.assert_allclose(result.h_beta, np.diag([0.7, -0.8]))
+    np.testing.assert_allclose(result.problem.one_body_beta, np.diag([0.7, -0.8]))
 
 
 def test_fragment_rohf_reaches_the_ground_state_of_a_spin_polarised_iron_fragment():
@@ -321,17 +315,36 @@ def test_capped_rohf_starts_can_select_the_first_non_aufbau_occupation():
     assert any(np.array_equal(start, expected) for start in starts)
 
 
-def test_capped_rohf_starts_do_not_store_every_occupation():
-    spec = FragmentSpec(orbitals=tuple(range(14)), n_alpha=7, n_beta=3)
-    tracemalloc.start()
-    try:
-        starts = preparation._rohf_starts(np.diag(np.arange(14.0)), spec)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
+@pytest.mark.parametrize(
+    "n_orbitals, n_alpha, n_beta",
+    [(40, 20, 18), (70, 35, 35)],
+    ids=["beyond-enumeration", "beyond-ssize_t"],
+)
+def test_capped_rohf_starts_sample_a_space_too_large_to_enumerate(
+    n_orbitals, n_alpha, n_beta
+):
+    """Sizes with about 2.6e13 and 3.9e21 occupations: finishing at all shows
+    the sample never enumerates them."""
+    spec = FragmentSpec(
+        orbitals=tuple(range(n_orbitals)), n_alpha=n_alpha, n_beta=n_beta
+    )
+
+    starts = preparation._rohf_starts(np.diag(np.arange(float(n_orbitals))), spec)
 
     assert len(starts) == preparation._ROHF_STARTS
-    assert peak < 8_000_000
+    assert len({start.tobytes() for start in starts}) == len(starts)
+    np.testing.assert_allclose(
+        np.abs(starts[0]),
+        [
+            np.diag(np.arange(n_orbitals) < n_alpha).astype(float),
+            np.diag(np.arange(n_orbitals) < n_beta).astype(float),
+        ],
+    )
+    for singles, doubles in starts:
+        np.testing.assert_allclose(singles @ singles, singles, atol=1e-12)
+        np.testing.assert_allclose(doubles @ doubles, doubles, atol=1e-12)
+        assert np.trace(singles) == pytest.approx(n_alpha)
+        assert np.trace(doubles) == pytest.approx(n_beta)
 
 
 def test_a_capped_rohf_sample_is_distinct_and_keeps_aufbau_first():
@@ -437,12 +450,7 @@ def test_non_finite_ccsd_amplitudes_fail_before_factorization(mocker):
     _patch_mean_field_and_ccsd(mocker, np.eye(2), *_one_pair_amplitudes(np.nan))
 
     with pytest.raises(RuntimeError, match=r"fragment \(3, 4\).*non-finite CCSD"):
-        prepare_lucj_fragment(
-            np.diag([-1.0, 0.5]),
-            np.diag([-0.8, 0.7]),
-            np.zeros((2, 2, 2, 2)),
-            spec,
-        )
+        prepare_lucj_fragment(_two_orbital_problem(spec), spec)
 
 
 def test_non_finite_linear_method_result_fails_before_circuit_construction(mocker):
@@ -452,12 +460,7 @@ def test_non_finite_linear_method_result_fails_before_circuit_construction(mocke
     with pytest.raises(
         RuntimeError, match=r"fragment \(0, 1\).*non-finite linear-method"
     ):
-        prepare_lucj_fragment(
-            np.diag([-1.0, 0.5]),
-            np.diag([-0.8, 0.7]),
-            np.zeros((2, 2, 2, 2)),
-            spec,
-        )
+        prepare_lucj_fragment(_two_orbital_problem(spec), spec)
 
 
 def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
@@ -489,9 +492,6 @@ def _two_orbital_program(backend, **kwargs):
     )
 
 
-_PREPARED_FIELDS = ("h_alpha", "h_beta", "two_body", "orbital_rotation")
-
-
 def _measured_x0_preparation():
     circuit = QuantumCircuit(4)
     circuit.x(0)
@@ -502,9 +502,13 @@ def _measured_x0_preparation():
     return LUCJPreparation(
         circuit=circuit,
         params=np.array([0.1, -0.2]),
-        h_alpha=np.eye(2),
-        h_beta=2 * np.eye(2),
-        two_body=np.zeros((2, 2, 2, 2)),
+        problem=MolecularProblem(
+            np.eye(2),
+            np.zeros((2, 2, 2, 2)),
+            n_alpha=1,
+            n_beta=1,
+            one_body_beta=2 * np.eye(2),
+        ),
         orbital_rotation=np.eye(2),
     )
 
@@ -536,8 +540,8 @@ def test_lucj_fragment_program_prepares_classically_then_samples_once(
     assert program.has_results()
     assert set(program.best_probs) == {0}
     np.testing.assert_allclose(program.best_params, preparation.params)
-    for name in _PREPARED_FIELDS:
-        np.testing.assert_allclose(getattr(program, name), getattr(preparation, name))
+    assert program.sampled_problem is preparation.problem
+    assert program.orbital_rotation is preparation.orbital_rotation
 
 
 def test_lucj_fragment_program_rejects_an_unclaimed_run_keyword(
@@ -573,8 +577,12 @@ def test_lucj_fragment_checkpoint_restores_without_preparing_or_sampling(
     submit.assert_not_called()
     assert restored.best_probs == program.best_probs
     np.testing.assert_allclose(restored.best_params, program.best_params)
-    for name in _PREPARED_FIELDS:
-        np.testing.assert_allclose(getattr(restored, name), getattr(program, name))
+    np.testing.assert_allclose(restored.orbital_rotation, program.orbital_rotation)
+    restored_problem, problem = restored.sampled_problem, program.sampled_problem
+    np.testing.assert_allclose(restored_problem.one_body, problem.one_body)
+    np.testing.assert_allclose(restored_problem.one_body_beta, problem.one_body_beta)
+    np.testing.assert_allclose(restored_problem.two_body, problem.two_body)
+    assert (restored_problem.n_alpha, restored_problem.n_beta) == (1, 1)
 
 
 def test_lucj_fragment_checkpoint_rejects_a_mismatched_digest(
@@ -749,10 +757,12 @@ def test_completed_fragment_state_refuses_an_object_array(dummy_simulator, tmp_p
 @pytest.mark.parametrize(
     "read",
     [
-        *(attrgetter(name) for name in ("best_params", *_PREPARED_FIELDS)),
-        methodcaller("_initial_spec"),
+        lambda program: program.best_params,
+        lambda program: program.sampled_problem,
+        lambda program: program.orbital_rotation,
+        lambda program: program._initial_spec(),
     ],
-    ids=["best_params", *_PREPARED_FIELDS, "initial_spec"],
+    ids=["best_params", "sampled_problem", "orbital_rotation", "initial_spec"],
 )
 def test_lucj_fragment_results_are_unavailable_before_run(dummy_simulator, read):
     program = _two_orbital_program(dummy_simulator)

@@ -17,8 +17,8 @@ from divi.hamiltonians import molecular_hamiltonian_from_pyscf
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog.workflows._lassqd import _integrals as _integrals_module
 from divi.qprog.workflows._lassqd._config import (
-    FullOrbitalSolve,
-    SecondOrderOrbitalSolve,
+    LBFGSOrbitalUpdate,
+    SecondOrderOrbitalUpdate,
 )
 from divi.qprog.workflows._lassqd._integrals import (
     MOIntegrals,
@@ -28,12 +28,18 @@ from divi.qprog.workflows._lassqd._integrals import (
     cached_ao_eri,
     cached_h_ao,
     ciah_orbital_solve,
+    escape_orbital_saddle,
     fragment_effective_integrals,
     optimize_orbitals,
     rotation_energy_gradient_fn,
     transform_integrals,
 )
-from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
+from divi.qprog.workflows._lassqd._state import (
+    FragmentSpec,
+    FragmentState,
+    _OrbitalRound,
+)
+from divi.qprog.workflows._lassqd._workflow import _diagonal_rdm_guess
 from tests._helpers import exact_match
 from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     build_energy_rdms,
@@ -155,7 +161,7 @@ def test_single_fragment_effective_integrals_are_the_bare_block(h2_mean_field):
         integrals, [_idle_fragment((0, 1))], 0
     )
 
-    np.testing.assert_allclose(h_eff, integrals.h_act, atol=1e-12)
+    np.testing.assert_allclose(h_eff, integrals.h_eff, atol=1e-12)
     np.testing.assert_allclose(g_frag, integrals.g_act, atol=1e-12)
 
 
@@ -310,13 +316,22 @@ def test_an_orbital_solve_reports_whether_it_converged(
     assert starved_solve.energy >= converged_solve.energy - 1e-12
 
 
+def _round_solve(update):
+    """``update``'s solve on a round carrying the case's arguments."""
+
+    def solve(*case, gradient_tol):
+        return update._solve(_OrbitalRound(*case, gradient_tol=gradient_tol))[0]
+
+    return solve
+
+
 @pytest.mark.parametrize(
     "capped_solve",
     [
         partial(optimize_orbitals, max_iterations=1),
         partial(ciah_orbital_solve, max_iterations=1),
-        FullOrbitalSolve(max_iterations=1)._solve,
-        SecondOrderOrbitalSolve(max_iterations=1)._solve,
+        _round_solve(LBFGSOrbitalUpdate(max_iterations=1)),
+        _round_solve(SecondOrderOrbitalUpdate(max_iterations=1)),
     ],
     ids=["l-bfgs-b", "ciah", "full-orbital-solve", "second-order-orbital-solve"],
 )
@@ -433,11 +448,19 @@ def test_a_second_order_solve_with_no_step_left_reports_a_stall(
     assert steps.call_count == 1
 
 
+def _gradient_step(case, scale):
+    """The rotation ``scale`` times the orbital gradient at ``case``'s orbitals:
+    downhill when negative, uphill when positive."""
+    hessian = _integrals_module._LASOrbitalHessian(*case)
+    _, gradient = hessian.energy_and_gradient_at(np.eye(case[1].shape[1]))
+    return scipy.linalg.expm(hessian.unpack_uniq_var(scale * gradient))
+
+
 def test_a_zero_step_restarts_the_second_order_solve(orbital_rotation_case, mocker):
     """pyscf seeds each augmented-Hessian solve with the previous step, so a
     vanishing step would repeat forever; a fresh solve seeds from the gradient."""
     n_orbitals = orbital_rotation_case[1].shape[1]
-    step = _random_rotation(n_orbitals, 1e-3, 3)
+    step = _gradient_step(orbital_rotation_case, -1e-4)
     steps = _scripted_steps(mocker, [step, np.eye(n_orbitals)], [step])
 
     with pytest.warns(UserWarning, match="without converging"):
@@ -447,6 +470,26 @@ def test_a_zero_step_restarts_the_second_order_solve(orbital_rotation_case, mock
 
     assert solve.n_iterations == 2
     assert steps.call_count == 2
+
+
+def test_an_uphill_second_order_step_hands_over_to_the_descent_solve(
+    orbital_rotation_case, mocker
+):
+    """An augmented-Hessian step can climb towards a saddle; the rest of the
+    budget goes to L-BFGS-B, which only descends."""
+    _scripted_steps(mocker, [_gradient_step(orbital_rotation_case, 1e-3)])
+    descent = mocker.spy(_integrals_module, "optimize_orbitals")
+    mol, mo_coeff, n_core, _, rdm1, rdm2, ao_eri, h_ao = orbital_rotation_case
+    start = _total_energy(mol, mo_coeff, n_core, rdm1, rdm2, ao_eri, h_ao)
+
+    # The capped budget leaves L-BFGS-B unconverged.
+    with pytest.warns(UserWarning, match="without converging"):
+        solve = capped_ciah_orbital_solve(
+            *orbital_rotation_case, gradient_tol=_GRADIENT_TOL
+        )
+
+    assert descent.call_count == 1
+    assert solve.energy < start
 
 
 def test_the_second_order_solve_prefers_a_converged_point_level_with_its_best(
@@ -785,7 +828,7 @@ def test_fragment_effective_integrals_honors_noncontiguous_permutation(
     # Oracle built directly from the unpermuted MO integrals, indexed at the
     # caller's requested orbitals (0, 3) and (1, 2), not at positions 0..3.
     unpermuted = transform_integrals(mol, mo_coeff, n_core=0, n_act=4)
-    h_mo, g_mo = unpermuted.h_act, unpermuted.g_act
+    h_mo, g_mo = unpermuted.h_eff, unpermuted.g_act
     target_orbitals = (0, 3)
     other_orbitals = (1, 2)
 
@@ -811,12 +854,7 @@ def test_fragment_effective_integrals_rejects_mismatched_active_space():
     """Fragments covering a different orbital count than the integrals span
     means the two were built from different specs -- which would otherwise
     silently read the wrong block."""
-    integrals = MOIntegrals(
-        h_act=np.zeros((2, 2)),
-        g_act=np.zeros((2, 2, 2, 2)),
-        j_core=np.zeros((2, 2)),
-        k_core=np.zeros((2, 2)),
-    )
+    integrals = MOIntegrals(h_eff=np.zeros((2, 2)), g_act=np.zeros((2, 2, 2, 2)))
     states = [_idle_fragment((0, 1))] * 2
 
     with pytest.raises(
@@ -1011,8 +1049,8 @@ def test_transform_integrals_reuses_a_supplied_ao_eri(mocker, h4_chain_mean_fiel
     reused = transform_integrals(mol, mo_coeff, n_core=1, n_act=2, ao_eri=ao_eri)
 
     spy.assert_not_called()
-    for name in ("h_act", "g_act", "j_core", "k_core"):
-        np.testing.assert_array_equal(getattr(reused, name), getattr(built, name))
+    np.testing.assert_array_equal(reused.h_eff, built.h_eff)
+    np.testing.assert_array_equal(reused.g_act, built.g_act)
     np.testing.assert_allclose(
         cached_h_ao(mol), h4_chain_mean_field.get_hcore(), atol=1e-14
     )
@@ -1244,3 +1282,73 @@ def test_the_hessian_vector_product_is_linear(orbital_hessian):
     np.testing.assert_allclose(
         hessian_vector(2.0 * vector), 2.0 * hessian_vector(vector), rtol=1e-9
     )
+
+
+def _h4_split_by_occupation():
+    """``optimize_orbitals`` arguments for H4 with the occupied and the virtual
+    orbitals in separate fragments: a doubly excited reference, whose orbital
+    Hessian has a negative mode."""
+    mol = gto.M(
+        atom="H 0 0 0; H 0 0 0.74; H 0 0 2.5; H 0 0 3.24", basis="sto-3g", verbose=0
+    )
+    specs = [FragmentSpec((0, 1), 1, 1), FragmentSpec((2, 3), 1, 1)]
+    fragments = []
+    for spec in specs:
+        rdm1, rdm2, rdm1_alpha, rdm1_beta = _diagonal_rdm_guess(spec)
+        fragments.append(
+            FragmentState(
+                spec=spec,
+                rdm1=rdm1,
+                rdm2=rdm2,
+                rdm1_alpha=rdm1_alpha,
+                rdm1_beta=rdm1_beta,
+            )
+        )
+    return (
+        mol,
+        np.asarray(scf.RHF(mol).run().mo_coeff),
+        0,
+        specs,
+        *assemble_active_rdms(fragments),
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+    )
+
+
+def test_a_negative_orbital_mode_is_escaped():
+    case = _h4_split_by_occupation()
+    mol, mo_coeff, n_core, _, rdm1, rdm2, ao_eri, h_ao = case
+    start = _total_energy(mol, mo_coeff, n_core, rdm1, rdm2, ao_eri, h_ao)
+
+    escape, conclusive = escape_orbital_saddle(*case, min_energy_drop=1e-5)
+
+    assert conclusive
+    assert escape is not None
+    escaped_mo_coeff, energy = escape
+    assert energy < start - 1e-5
+    assert energy == pytest.approx(
+        _total_energy(mol, escaped_mo_coeff, n_core, rdm1, rdm2, ao_eri, h_ao),
+        abs=1e-10,
+    )
+
+
+def test_a_minimum_is_not_escaped(orbital_rotation_case):
+    mol, _, *rest = orbital_rotation_case
+    minimum = optimize_orbitals(*orbital_rotation_case, gradient_tol=1e-4)
+
+    assert minimum.converged
+    assert escape_orbital_saddle(
+        mol, minimum.mo_coeff, *rest, min_energy_drop=1e-5
+    ) == (None, True)
+
+
+def test_an_unconverged_saddle_check_is_inconclusive(
+    orbital_rotation_case, monkeypatch
+):
+    mol, _, *rest = orbital_rotation_case
+    minimum = optimize_orbitals(*orbital_rotation_case, gradient_tol=1e-4)
+    monkeypatch.setattr("divi.qprog.workflows._lassqd._integrals._DAVIDSON_TOL", 0.0)
+
+    assert escape_orbital_saddle(
+        mol, minimum.mo_coeff, *rest, min_energy_drop=1e-5
+    ) == (None, False)

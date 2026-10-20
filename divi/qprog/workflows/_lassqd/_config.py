@@ -5,22 +5,46 @@
 """Configuration objects for the LASSQD workflow."""
 
 import hashlib
+import math
 import pickle
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
+from dataclasses import field
+from enum import Enum
 from typing import Any, ClassVar
 
-import numpy as np
+from pydantic import Field, field_validator
+from pydantic.dataclasses import dataclass as config_dataclass
 
 from divi.backends import CircuitRunner
 from divi.qprog.algorithms import Ansatz, UCCSDAnsatz
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import MolecularProblem
+from divi.qprog.quantum_program import QuantumProgram
 
-from ._integrals import OrbitalSolve, ciah_orbital_solve, optimize_orbitals
+from ._integrals import (
+    OrbitalSolution,
+    _total_energy,
+    ciah_orbital_solve,
+    optimize_orbitals,
+    state_averaged_orbital_solve,
+)
 from ._preparation import LUCJFragmentProgram
-from ._state import FragmentSpec, FragmentState
+from ._state import ElectronicState, FragmentSpec, FragmentState, _OrbitalRound
+from ._types import CONFIG, exact_ints
 from ._vqe_preparation import _FragmentVQE, build_fragment_vqe
+
+#: How far state-averaging weights may sum from 1, absorbing rounding in
+#: hand-typed decimals.
+_WEIGHT_SUM_ATOL = 1e-8
+
+
+class _OrbitalTarget(Enum):
+    """What an orbital update relaxes the orbitals for."""
+
+    NOTHING = "nothing"
+    LOWEST_STATE = "lowest state"
+    AVERAGE = "average"
 
 
 def _checkpoint_digest(value: object) -> str:
@@ -36,8 +60,44 @@ _LUCJ_PROGRAM_OPTIONS = (
 )
 
 
-@dataclass(frozen=True)
-class _LUCJPreparation:
+class Preparation(ABC):
+    """How each fragment's circuit is prepared before it is sampled.
+
+    Pass one of :class:`CCSDPreparation`, :class:`LinearMethodPreparation` or
+    :class:`VQEPreparation` as ``LASSQD``'s ``preparation``.
+    """
+
+    @abstractmethod
+    def _check_options(self, options: Mapping[str, Any]) -> None:
+        """Reject program options LASSQD received that this preparation's
+        fragment programs do not take."""
+
+    def _ensemble_sampling_backend(
+        self, sampling_backend: CircuitRunner | None
+    ) -> CircuitRunner | None:
+        """The sampling backend the ensemble itself should run with."""
+        return sampling_backend
+
+    @abstractmethod
+    def _build_program(
+        self,
+        problem: MolecularProblem,
+        fragment: FragmentState,
+        *,
+        backend: CircuitRunner,
+        sampling_backend: CircuitRunner | None,
+        seed: int,
+        options: Mapping[str, Any],
+    ) -> QuantumProgram:
+        """One fragment's program for this round."""
+
+    @abstractmethod
+    def _checkpoint_record(self) -> object:
+        """What a checkpoint compares to tell whether this preparation changed."""
+
+
+@config_dataclass(frozen=True)
+class _LUCJPreparation(Preparation):
     """Shared behaviour of the preparations that build a CCSD-seeded LUCJ
     circuit classically and submit only its sample."""
 
@@ -82,7 +142,7 @@ class _LUCJPreparation:
         return self
 
 
-@dataclass(frozen=True)
+@config_dataclass(frozen=True)
 class CCSDPreparation(_LUCJPreparation):
     """Sample each fragment's CCSD-seeded LUCJ circuit as it is.
 
@@ -94,7 +154,7 @@ class CCSDPreparation(_LUCJPreparation):
     _run_linear_method: ClassVar[bool] = False
 
 
-@dataclass(frozen=True)
+@config_dataclass(frozen=True)
 class LinearMethodPreparation(_LUCJPreparation):
     """Optimise the CCSD-seeded LUCJ circuit with ffsim's linear method first.
 
@@ -106,8 +166,8 @@ class LinearMethodPreparation(_LUCJPreparation):
     _run_linear_method: ClassVar[bool] = True
 
 
-@dataclass(frozen=True)
-class VQEPreparation:
+@config_dataclass(frozen=True, config=CONFIG)
+class VQEPreparation(Preparation):
     """Optimise a fragment ansatz against backend-estimated energies.
 
     Args:
@@ -116,31 +176,32 @@ class VQEPreparation:
         max_iterations: Optimisation iterations per fragment and round.
 
     Raises:
-        TypeError: If ``ansatz`` is not an :class:`~divi.qprog.algorithms.Ansatz`.
-        ValueError: If ``max_iterations`` is below 1.
+        ValueError: If ``optimizer`` is not an
+            :class:`~divi.qprog.optimizers.Optimizer`, ``ansatz`` is not an
+            :class:`~divi.qprog.algorithms.Ansatz`, or ``max_iterations`` is not
+            an integer of at least 1.
     """
 
     optimizer: Optimizer
     ansatz: Ansatz = field(default_factory=UCCSDAnsatz)
-    max_iterations: int = 10
+    max_iterations: int = Field(default=10, ge=1)
 
-    def __post_init__(self):
-        if not isinstance(self.ansatz, Ansatz):
-            raise TypeError(
-                f"ansatz must be an Ansatz instance; got {type(self.ansatz).__name__}."
-            )
-        if self.max_iterations < 1:
-            raise ValueError(
-                f"max_iterations must be at least 1; got {self.max_iterations}."
-            )
+    _exact_ints = field_validator("max_iterations", mode="before")(exact_ints)
 
     def _check_options(self, options: Mapping[str, Any]) -> None:
-        pass
-
-    def _ensemble_sampling_backend(
-        self, sampling_backend: CircuitRunner | None
-    ) -> CircuitRunner | None:
-        return sampling_backend
+        reserved = set(options) & {
+            "ansatz",
+            "optimizer",
+            "max_iterations",
+            "seed_params",
+        }
+        if reserved:
+            raise TypeError(
+                f"{', '.join(sorted(reserved))} cannot be passed to LASSQD with "
+                "VQEPreparation: ansatz, optimizer and max_iterations are set on "
+                "VQEPreparation itself, and seed_params comes from each fragment's "
+                "CCSD seed."
+            )
 
     def _build_program(
         self,
@@ -174,11 +235,55 @@ class VQEPreparation:
         )
 
 
-Preparation = CCSDPreparation | LinearMethodPreparation | VQEPreparation
+class OrbitalUpdate(ABC):
+    """How each macro-cycle updates the orbitals.
+
+    Pass one of :class:`SecondOrderOrbitalUpdate`, :class:`LBFGSOrbitalUpdate`,
+    :class:`StateAveragedOrbitalUpdate` or :class:`FixedOrbitals` as
+    ``LASSQD``'s ``orbital_update``.
+    """
+
+    #: The state the update relaxes the orbitals for.
+    _relaxes: ClassVar[_OrbitalTarget]
+
+    @abstractmethod
+    def _solve(
+        self, round_: _OrbitalRound
+    ) -> tuple[OrbitalSolution, tuple[ElectronicState, ...] | None]:
+        """The round's new orbitals, and each requested state when the update
+        re-solves the CI with them."""
 
 
-@dataclass(frozen=True)
-class FullOrbitalSolve:
+@config_dataclass(frozen=True)
+class _LowestStateOrbitalUpdate(OrbitalUpdate):
+    """Shared behaviour of the updates that optimise the orbitals for the
+    round's assembled RDMs."""
+
+    max_iterations: int | None
+    _relaxes: ClassVar[_OrbitalTarget] = _OrbitalTarget.LOWEST_STATE
+    _solver: ClassVar[Callable[..., OrbitalSolution]]
+
+    _exact_ints = field_validator("max_iterations", mode="before")(exact_ints)
+
+    def _solve(self, round_: _OrbitalRound) -> tuple[OrbitalSolution, None]:
+        solution = self._solver(
+            round_.mol,
+            round_.mo_coeff,
+            round_.n_core,
+            round_.specs,
+            round_.rdm1_active,
+            round_.rdm2_active,
+            round_.ao_eri,
+            round_.h_ao,
+            gradient_tol=round_.gradient_tol,
+            max_iterations=self.max_iterations,
+            report=round_.report,
+        )
+        return solution, None
+
+
+@config_dataclass(frozen=True)
+class LBFGSOrbitalUpdate(_LowestStateOrbitalUpdate):
     """Re-optimise the orbitals to convergence every macro-cycle with L-BFGS-B.
 
     Args:
@@ -187,48 +292,16 @@ class FullOrbitalSolve:
             orbitals and reports as not converged.
 
     Raises:
-        ValueError: If ``max_iterations`` is given and below 1.
+        ValueError: If ``max_iterations`` is given and is not an integer of at
+            least 1.
     """
 
-    max_iterations: int | None = None
-
-    def __post_init__(self):
-        if self.max_iterations is not None and self.max_iterations < 1:
-            raise ValueError(
-                f"max_iterations must be at least 1; got {self.max_iterations}."
-            )
-
-    def _solve(
-        self,
-        mol,
-        mo_coeff: np.ndarray,
-        n_core: int,
-        fragment_specs: Sequence[FragmentSpec],
-        rdm1_active: np.ndarray,
-        rdm2_active: np.ndarray,
-        ao_eri: np.ndarray,
-        h_ao: np.ndarray,
-        *,
-        gradient_tol: float,
-        report: Callable[[str], None] | None = None,
-    ) -> OrbitalSolve:
-        return optimize_orbitals(
-            mol,
-            mo_coeff,
-            n_core,
-            fragment_specs,
-            rdm1_active,
-            rdm2_active,
-            ao_eri,
-            h_ao,
-            gradient_tol=gradient_tol,
-            max_iterations=self.max_iterations,
-            report=report,
-        )
+    max_iterations: int | None = Field(default=None, ge=1)
+    _solver = staticmethod(optimize_orbitals)
 
 
-@dataclass(frozen=True)
-class SecondOrderOrbitalSolve:
+@config_dataclass(frozen=True)
+class SecondOrderOrbitalUpdate(_LowestStateOrbitalUpdate):
     """Re-optimise the orbitals every macro-cycle with PySCF's CIAH solver.
 
     Each iteration takes an augmented-Hessian step, with Hessian-vector
@@ -240,50 +313,136 @@ class SecondOrderOrbitalSolve:
             converged.
 
     Raises:
-        ValueError: If ``max_iterations`` is below 1.
+        ValueError: If ``max_iterations`` is not an integer of at least 1.
     """
 
-    max_iterations: int = 50
+    max_iterations: int = Field(default=50, ge=1)
+    _solver = staticmethod(ciah_orbital_solve)
+
+
+@config_dataclass(frozen=True)
+class StateAveragedOrbitalUpdate(OrbitalUpdate):
+    """Re-optimise the orbitals for a weighted average of the states
+    ``SQDConfig.states`` requests: state-averaged CASSCF with its CI confined
+    to the round's SQD subspace.
+
+    Orbitals and CI vectors are optimised together (PySCF's one-step solver),
+    since alternating them can stall at a saddle point of the averaged energy.
+    Each round's ``energy`` is still the lowest state's; the average is its
+    report's ``averaged_energy``, and every state's own energy is in
+    ``LASSQD.electronic_states``. Needs a single fragment.
+
+    Args:
+        max_iterations: Cap on SA-CASSCF iterations in each LASSQD round.
+        weights: Weight per state, keyed ``(multiplicity, index)``, covering
+            every requested state and summing to 1. ``None`` (the default)
+            weights each requested root equally, so a triplet counts once, not
+            once per spin component. The weights shape the shared orbitals,
+            and so every gap computed from them.
+
+    Raises:
+        ValueError: If ``max_iterations`` is not an integer of at least 1, or a
+            weight is negative or non-finite, or the weights do not sum to 1.
+    """
+
+    max_iterations: int = Field(default=50, ge=1)
+    weights: Mapping[tuple[int, int], float] | None = field(default=None, hash=False)
+    _relaxes: ClassVar[_OrbitalTarget] = _OrbitalTarget.AVERAGE
+
+    _exact_ints = field_validator("max_iterations", "weights", mode="before")(
+        exact_ints
+    )
 
     def __post_init__(self):
-        if self.max_iterations < 1:
+        if self.weights is None:
+            return
+        if not all(0 <= weight < math.inf for weight in self.weights.values()):
             raise ValueError(
-                f"max_iterations must be at least 1; got {self.max_iterations}."
+                "weights must be finite and non-negative; got " f"{dict(self.weights)}."
             )
+        total = sum(self.weights.values())
+        if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=_WEIGHT_SUM_ATOL):
+            raise ValueError(f"weights must sum to 1; got {total}.")
+        object.__setattr__(self, "weights", dict(sorted(self.weights.items())))
+
+    def _weights_for(self, states: Mapping[int, int]) -> dict[tuple[int, int], float]:
+        """Each requested state's weight, keyed ``(multiplicity, index)``.
+
+        Raises:
+            ValueError: If ``weights`` does not name exactly the requested
+                states.
+        """
+        labels = [
+            (multiplicity, index)
+            for multiplicity, n_roots in states.items()
+            for index in range(n_roots)
+        ]
+        if self.weights is None:
+            return {label: 1.0 / len(labels) for label in labels}
+        if set(self.weights) != set(labels):
+            raise ValueError(
+                "StateAveragedOrbitalUpdate.weights must name exactly the states "
+                f"SQDConfig.states requests, {sorted(labels)}; got "
+                f"{sorted(self.weights)}."
+            )
+        return dict(self.weights)
 
     def _solve(
-        self,
-        mol,
-        mo_coeff: np.ndarray,
-        n_core: int,
-        fragment_specs: Sequence[FragmentSpec],
-        rdm1_active: np.ndarray,
-        rdm2_active: np.ndarray,
-        ao_eri: np.ndarray,
-        h_ao: np.ndarray,
-        *,
-        gradient_tol: float,
-        report: Callable[[str], None] | None = None,
-    ) -> OrbitalSolve:
-        return ciah_orbital_solve(
-            mol,
-            mo_coeff,
-            n_core,
-            fragment_specs,
-            rdm1_active,
-            rdm2_active,
-            ao_eri,
-            h_ao,
-            gradient_tol=gradient_tol,
+        self, round_: _OrbitalRound
+    ) -> tuple[OrbitalSolution, tuple[ElectronicState, ...]]:
+        subspace = round_.subspace
+        if subspace is None:
+            raise RuntimeError("StateAveragedOrbitalUpdate needs SQDConfig.states.")
+        return state_averaged_orbital_solve(
+            round_.mol,
+            subspace.mo_coeff,
+            round_.n_core,
+            round_.specs[0],
+            subspace.strings,
+            self._weights_for(subspace.states),
+            subspace.lambda_penalty,
+            round_.ao_eri,
+            round_.h_ao,
+            gradient_tol=round_.gradient_tol,
             max_iterations=self.max_iterations,
-            report=report,
+            report=round_.report,
         )
 
 
-OrbitalUpdate = SecondOrderOrbitalSolve | FullOrbitalSolve
+@config_dataclass(frozen=True)
+class FixedOrbitals(OrbitalUpdate):
+    """Keep the orbitals each round starts from, with no optimisation.
+
+    Each round's energy is then that of the recovered state on fixed orbitals,
+    as a CASCI calculation would give. The orbital gradient is not computed, so
+    round reports carry it as ``nan``.
+    """
+
+    _relaxes: ClassVar[_OrbitalTarget] = _OrbitalTarget.NOTHING
+
+    def _solve(self, round_: _OrbitalRound) -> tuple[OrbitalSolution, None]:
+        energy = _total_energy(
+            round_.mol,
+            round_.mo_coeff,
+            round_.n_core,
+            round_.rdm1_active,
+            round_.rdm2_active,
+            round_.ao_eri,
+            round_.h_ao,
+        )
+        solution = OrbitalSolution(
+            mo_coeff=round_.mo_coeff,
+            energy=energy,
+            converged=True,
+            n_iterations=0,
+            n_evaluations=1,
+            gradient_norm=float("nan"),
+            n_rotation_pairs=0,
+        )
+        return solution, None
 
 
-@dataclass(frozen=True)
+@config_dataclass(frozen=True)
 class FragmentationConfig:
     """How the active space is chosen and split into fragments.
 
@@ -306,12 +465,13 @@ class FragmentationConfig:
             no frontier count reaches them. Pair it with a mean field whose
             orbitals already carry that character, e.g. from PySCF's AVAS, and
             with ``fragment_atoms`` to say which centre each belongs to.
-        max_orbitals_per_fragment: Maximum spatial orbitals per automatically
-            built fragment. Ignored when ``active_spaces`` or ``fragment_atoms``
-            is given.
+        max_orbitals_per_fragment: Maximum spatial orbitals per coupling-graph
+            fragment; ``None`` means 4. Rejected with ``active_spaces`` or
+            ``fragment_atoms``, which fix the layout themselves.
         coupling_threshold: Relative edge-pruning threshold for the orbital
-            coupling graph. Ignored when ``active_spaces`` or ``fragment_atoms``
-            is given.
+            coupling graph, as a fraction of the strongest edge weight in
+            ``[0, 1]``; ``None`` means ``1e-3``. Rejected with
+            ``active_spaces`` or ``fragment_atoms``.
         fragment_atoms: One sequence of atom indices per fragment. Assigns each
             localised active orbital to the fragment owning the atom it sits on,
             replacing the coupling-graph clustering -- one fragment per metal
@@ -324,40 +484,38 @@ class FragmentationConfig:
             must still sum to ``Sz = 0``.
 
     Raises:
-        ValueError: If not exactly one active-space selector is given; if
+        ValueError: If a field has the wrong type or is out of range:
+            ``n_active_orbitals`` or ``max_orbitals_per_fragment`` below 2, a
+            ``coupling_threshold`` outside ``[0, 1]``, an ``active_spaces``
+            entry that is not a ``FragmentSpec``, or an odd ``local_spins``
+            entry. Also if not exactly one active-space selector is given; if
             ``fragment_atoms`` or ``local_spins`` is combined with
-            ``active_spaces``; if ``local_spins`` is given without
-            ``fragment_atoms`` or does not match its length; if
-            ``n_active_orbitals`` or ``max_orbitals_per_fragment`` is below 2;
-            or if ``coupling_threshold`` is negative.
+            ``active_spaces``; if ``max_orbitals_per_fragment`` or
+            ``coupling_threshold`` is combined with ``active_spaces`` or
+            ``fragment_atoms``; or if ``local_spins`` is given without
+            ``fragment_atoms``, does not match its length or does not sum to 0.
     """
 
-    active_spaces: Sequence[FragmentSpec] | None = None
-    n_active_orbitals: int | None = None
-    active_orbitals: Sequence[int] | None = None
-    max_orbitals_per_fragment: int = 4
-    coupling_threshold: float = 1e-3
-    fragment_atoms: Sequence[Sequence[int]] | None = None
-    local_spins: Sequence[int] | None = None
+    active_spaces: tuple[FragmentSpec, ...] | None = None
+    n_active_orbitals: int | None = Field(default=None, ge=2)
+    active_orbitals: tuple[int, ...] | None = None
+    max_orbitals_per_fragment: int | None = Field(default=None, ge=2)
+    coupling_threshold: float | None = Field(
+        default=None, ge=0, le=1, allow_inf_nan=False
+    )
+    fragment_atoms: tuple[tuple[int, ...], ...] | None = None
+    local_spins: tuple[int, ...] | None = None
+
+    _exact_ints = field_validator(
+        "n_active_orbitals",
+        "active_orbitals",
+        "max_orbitals_per_fragment",
+        "fragment_atoms",
+        "local_spins",
+        mode="before",
+    )(exact_ints)
 
     def __post_init__(self):
-        if self.active_spaces is not None:
-            object.__setattr__(self, "active_spaces", tuple(self.active_spaces))
-        if self.active_orbitals is not None:
-            object.__setattr__(
-                self, "active_orbitals", tuple(int(o) for o in self.active_orbitals)
-            )
-        if self.fragment_atoms is not None:
-            object.__setattr__(
-                self,
-                "fragment_atoms",
-                tuple(tuple(int(a) for a in atoms) for atoms in self.fragment_atoms),
-            )
-        if self.local_spins is not None:
-            object.__setattr__(
-                self, "local_spins", tuple(int(s) for s in self.local_spins)
-            )
-
         selectors = (self.active_spaces, self.n_active_orbitals, self.active_orbitals)
         if sum(selector is not None for selector in selectors) != 1:
             raise ValueError(
@@ -387,19 +545,28 @@ class FragmentationConfig:
                     f"local_spins has {len(self.local_spins)} entries but "
                     f"fragment_atoms names {len(self.fragment_atoms)} fragments."
                 )
-        if self.n_active_orbitals is not None and self.n_active_orbitals < 2:
-            raise ValueError(
-                "n_active_orbitals must be at least 2, one occupied and one "
-                f"virtual; got {self.n_active_orbitals}."
+            if sum(self.local_spins) != 0:
+                raise ValueError(
+                    f"local_spins must sum to 0, since the closed-shell reference "
+                    f"has Sz = 0; got {list(self.local_spins)}, summing to "
+                    f"{sum(self.local_spins)}."
+                )
+            if any(spin % 2 for spin in self.local_spins):
+                raise ValueError(
+                    "local_spins entries must be even: each fragment holds an even "
+                    "number of electrons, since its occupied orbitals are doubly "
+                    f"occupied; got {list(self.local_spins)}."
+                )
+        if self.active_spaces is not None or self.fragment_atoms is not None:
+            layout = (
+                "active_spaces" if self.active_spaces is not None else "fragment_atoms"
             )
-        if self.max_orbitals_per_fragment < 2:
-            raise ValueError(
-                "max_orbitals_per_fragment must be at least 2, since a fragment "
-                "needs an occupied and a virtual orbital; got "
-                f"{self.max_orbitals_per_fragment}."
-            )
-        if self.coupling_threshold < 0:
-            raise ValueError(
-                "coupling_threshold must be non-negative; got "
-                f"{self.coupling_threshold}."
-            )
+            for name, value in (
+                ("max_orbitals_per_fragment", self.max_orbitals_per_fragment),
+                ("coupling_threshold", self.coupling_threshold),
+            ):
+                if value is not None:
+                    raise ValueError(
+                        f"{name} shapes coupling-graph fragments only; {layout} "
+                        "already fixes the fragment layout."
+                    )

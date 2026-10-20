@@ -17,7 +17,9 @@ reliably captured.
 import copy
 import dataclasses
 import logging
+import re
 import time
+import warnings
 
 import numpy as np
 import pytest
@@ -27,12 +29,15 @@ from pyscf.fci import cistring
 from divi.qprog import (
     LASSQD,
     CCSDPreparation,
+    ElectronicState,
+    FixedOrbitals,
     FragmentationConfig,
-    FullOrbitalSolve,
+    LBFGSOrbitalUpdate,
     LinearMethodPreparation,
     ReportingLevel,
-    SecondOrderOrbitalSolve,
+    SecondOrderOrbitalUpdate,
     SQDConfig,
+    StateAveragedOrbitalUpdate,
     VQEPreparation,
     WorkflowStatus,
 )
@@ -41,24 +46,32 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows._lassqd import (
-    _config,
     _preparation,
     _vqe_preparation,
     _workflow,
 )
-from divi.qprog.workflows._lassqd._integrals import OrbitalSolve, fragment_blocks
+from divi.qprog.workflows._lassqd._integrals import (
+    OrbitalSolution,
+    _total_energy,
+    cached_ao_eri,
+    cached_h_ao,
+    fragment_blocks,
+    state_averaged_orbital_solve,
+)
 from divi.qprog.workflows._lassqd._preparation import (
     LUCJFragmentProgram,
 )
 from divi.qprog.workflows._lassqd._sqd import (
     SQDResult,
     SQDSolver,
+    SQDState,
     map_carried_strings,
 )
 from divi.qprog.workflows._lassqd._state import (
     FragmentSpec,
     FragmentState,
     LASSQDState,
+    _OrbitalRound,
     validate_fragment_specs,
 )
 from tests._helpers import exact_match
@@ -67,20 +80,25 @@ from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
     H8_HALF_CHAINS,
     PRODUCT_STATE_ENERGY,
     PRODUCT_STATE_MO_TRACE,
+    UNBOUNDED_ADVICE,
+    assert_roots_match,
     build_exact_sampler_lassqd,
     cobyla,
     dense_fci_energy,
     exact_sampler_lassqd,
+    fci_roots_by_multiplicity,
     fragment_integrals,
     fragment_problem,
     h2_mean_field,
     h2_molecule,
+    h2o_molecule,
     h4_chain,
     h4_chain_mean_field,
     h8_chain,
     h8_frontier_lassqd,
     lassqd_kwargs,
     mo_integrals,
+    orbital_rotation_case,
     uniform_full_space_probs,
     vqe_preparation,
 )
@@ -245,7 +263,7 @@ def test_defaults_are_the_scalable_combination(dummy_expval_backend):
     ensemble = _raw_lassqd(dummy_expval_backend)
 
     assert ensemble.preparation == CCSDPreparation()
-    assert ensemble.orbital_update == SecondOrderOrbitalSolve()
+    assert ensemble.orbital_update == SecondOrderOrbitalUpdate()
 
 
 def test_reporting_level_reaches_the_ensemble(dummy_expval_backend):
@@ -263,8 +281,8 @@ def test_rejects_an_unknown_preparation(dummy_expval_backend):
 
 def test_rejects_an_unknown_orbital_update(dummy_expval_backend):
     message = (
-        "orbital_update must be SecondOrderOrbitalSolve or FullOrbitalSolve; "
-        "got str."
+        "orbital_update must be SecondOrderOrbitalUpdate, StateAveragedOrbitalUpdate, "
+        "LBFGSOrbitalUpdate or FixedOrbitals; got str."
     )
     with pytest.raises(TypeError, match=exact_match(message)):
         _raw_lassqd(dummy_expval_backend, orbital_update="ciah")
@@ -275,16 +293,6 @@ def test_vqe_preparation_defaults_to_uccsd():
 
     assert isinstance(preparation.ansatz, UCCSDAnsatz)
     assert preparation.max_iterations == 10
-
-
-def test_vqe_preparation_rejects_a_non_ansatz():
-    with pytest.raises(TypeError, match="ansatz must be an Ansatz"):
-        vqe_preparation(ansatz="uccsd")
-
-
-def test_vqe_preparation_rejects_a_non_positive_iteration_budget():
-    with pytest.raises(ValueError, match="max_iterations must be at least 1"):
-        vqe_preparation(max_iterations=0)
 
 
 def test_every_vqe_fragment_gets_its_own_optimizer(dummy_expval_backend):
@@ -308,7 +316,7 @@ def test_requires_exactly_one_fragment_specification(dummy_expval_backend, overr
         "n_active_orbitals (frontier selection), or active_orbitals "
         "(explicit MO indices)."
     )
-    with pytest.raises(ValueError, match=exact_match(message)):
+    with pytest.raises(ValueError, match=re.escape(message)):
         _lassqd(dummy_expval_backend, **override)
 
 
@@ -330,19 +338,23 @@ def test_rejects_overlapping_fragments(dummy_expval_backend):
         ({"batch_size": 0}, "batch_size"),
         ({"n_recovery_iterations": 0}, "n_recovery_iterations"),
         ({"energy_tol": 0.0}, "energy_tol"),
-        ({"coupling_threshold": -1e-3}, "coupling_threshold"),
         ({"lambda_penalty": -0.1}, "lambda_penalty"),
-        ({"carryover_cutoff": 0.0}, "carryover_cutoff must be positive"),
-        ({"carryover_cutoff": 1.0}, "carryover_cutoff must be below 1"),
+        (
+            {"carryover_cutoff": 0.0},
+            "carryover_cutoff\n  Input should be greater than 0",
+        ),
+        ({"carryover_cutoff": 1.0}, "carryover_cutoff\n  Input should be less than 1"),
         ({"carryover_cutoff": None, "max_carryover": 4}, "needs carryover_cutoff"),
-        ({"max_carryover": 0}, "max_carryover must be at least 1"),
-        ({"carryover_mapping": "nearest"}, "carryover_mapping must be"),
-        ({"max_dim": 0}, "max_dim entries must be at least 1"),
-        ({"max_dim": (2, 0)}, "max_dim entries must be at least 1"),
-        ({"max_dim": (1, 2, 3)}, "got 3 entries"),
+        (
+            {"max_carryover": 0},
+            "max_carryover\n  Input should be greater than or equal to 1",
+        ),
+        ({"carryover_mapping": "nearest"}, "Input should be 'assignment' or 'argmax'"),
+        ({"max_dim": 0}, "max_dim must be at least 1"),
+        ({"max_dim": (2, 0)}, "max_dim must be at least 1"),
+        ({"max_dim": (1, 2, 3)}, "at most 2 items after validation, not 3"),
         ({"recovery_energy_tol": -1.0}, "recovery_energy_tol"),
         ({"recovery_occupancies_tol": -1.0}, "recovery_occupancies_tol"),
-        ({"max_orbitals_per_fragment": 0}, "max_orbitals_per_fragment"),
     ],
 )
 def test_rejects_invalid_sqd_sizing_arguments(dummy_expval_backend, override, match):
@@ -361,10 +373,17 @@ def test_rejects_invalid_sqd_sizing_arguments(dummy_expval_backend, override, ma
     [
         ({"n_active_orbitals": 0}, "n_active_orbitals"),
         ({"n_active_orbitals": -2}, "n_active_orbitals"),
-        ({"n_active_orbitals": 1}, "n_active_orbitals must be at least 2"),
+        (
+            {"n_active_orbitals": 1},
+            "n_active_orbitals\n  Input should be greater than or equal to 2",
+        ),
         (
             {"n_active_orbitals": 4, "max_orbitals_per_fragment": 1},
-            "max_orbitals_per_fragment must be at least 2",
+            "max_orbitals_per_fragment\n  Input should be greater than or equal to 2",
+        ),
+        (
+            {"n_active_orbitals": 4, "coupling_threshold": -1e-3},
+            "coupling_threshold\n  Input should be greater than or equal to 0",
         ),
         ({"active_orbitals": [0, 0, 1]}, "duplicates"),
         ({"active_orbitals": [0, 999]}, "out of range"),
@@ -459,6 +478,96 @@ def test_initial_state_seeds_diagonal_rdms(dummy_expval_backend):
     assert state.energy == float("inf")
 
 
+def _initial_orbital_deviation(backend, mean_field, orbital_update):
+    """Largest change ``initial_state`` makes to ``mean_field``'s orbitals;
+    ``_H4_FRAGMENTS`` keeps the register in its input order."""
+    ensemble = _lassqd(
+        backend,
+        problem=MolecularProblem.from_molecule(mean_field),
+        orbital_update=orbital_update,
+    )
+    return np.abs(ensemble.initial_state().mo_coeff - mean_field.mo_coeff).max()
+
+
+def test_initial_state_nudges_optimised_orbitals(
+    dummy_expval_backend, h4_chain_mean_field
+):
+    deviation = _initial_orbital_deviation(
+        dummy_expval_backend, h4_chain_mean_field, SecondOrderOrbitalUpdate()
+    )
+
+    assert 0 < deviation < 10 * _workflow._ORBITAL_NUDGE
+
+
+def test_initial_state_keeps_fixed_orbitals_exactly(
+    dummy_expval_backend, h4_chain_mean_field
+):
+    """For comparison with CASCI on the input orbitals."""
+    deviation = _initial_orbital_deviation(
+        dummy_expval_backend, h4_chain_mean_field, FixedOrbitals()
+    )
+
+    assert deviation == 0
+
+
+@pytest.mark.e2e
+def test_a_symmetric_molecule_leaves_the_symmetric_saddle_point(
+    default_test_simulator,
+):
+    """H2O's symmetric RHF orbitals sit at a saddle of the CASSCF(8,8) energy,
+    tens of mHa above its minimum, where every symmetry-mixing rotation has zero
+    gradient. The starting-orbital nudge is what lets the macro-cycle leave."""
+    mean_field = scf.RHF(h2o_molecule()).run()
+    minimum = mcscf.CASSCF(mean_field, 8, 8).run().e_tot
+    ensemble = LASSQD(
+        MolecularProblem.from_molecule(mean_field),
+        fragmentation=FragmentationConfig(
+            active_spaces=[
+                FragmentSpec(orbitals=tuple(range(1, 9)), n_alpha=4, n_beta=4)
+            ]
+        ),
+        seed=0,
+        backend=default_test_simulator,
+        reporting_level=ReportingLevel.OFF,
+    )
+
+    ensemble.run(max_rounds=25)
+
+    assert ensemble.energy - minimum < 1e-3
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize("seed", [0, 5])
+def test_the_default_orbital_solve_does_not_stop_on_a_saddle(
+    default_test_simulator, seed
+):
+    """With occupied and virtual orbitals in separate fragments, the second-order
+    solve could stop on saddles of the orbital energy, up to 1.3 Ha above RHF,
+    for these seeds. It must end where the descent-only solve does."""
+    mol = gto.M(
+        atom="H 0 0 0; H 0 0 0.74; H 0 0 2.5; H 0 0 3.24", basis="sto-3g", verbose=0
+    )
+
+    def best_energy(orbital_update):
+        ensemble = LASSQD(
+            MolecularProblem.from_molecule(scf.RHF(mol).run()),
+            fragmentation=FragmentationConfig(
+                active_spaces=[FragmentSpec((0, 1), 1, 1), FragmentSpec((2, 3), 1, 1)]
+            ),
+            sqd=SQDConfig(n_batches=6, batch_size=32, n_recovery_iterations=3),
+            orbital_update=orbital_update,
+            seed=seed,
+            backend=default_test_simulator,
+            reporting_level=ReportingLevel.OFF,
+        )
+        ensemble.run(max_rounds=20)
+        return ensemble.best_energy
+
+    assert best_energy(SecondOrderOrbitalUpdate()) == pytest.approx(
+        best_energy(LBFGSOrbitalUpdate()), abs=1e-5
+    )
+
+
 @pytest.mark.parametrize(
     "n_alpha, n_beta", [(2, 2), (2, 1)], ids=["closed-shell", "polarized"]
 )
@@ -529,23 +638,25 @@ def test_initial_state_forwards_the_fragmentation_settings_to_auto_fragment_spec
         dummy_expval_backend,
         n_active_orbitals=None,
         active_orbitals=active_orbitals,
-        fragment_atoms=H8_HALF_CHAINS,
+        max_orbitals_per_fragment=2,
         coupling_threshold=0.05,
     )
     spy = mocker.spy(_workflow, "auto_fragment_specs")
 
     state = ensemble.initial_state()
 
-    config = ensemble._fragmentation
     assert {
         name: spy.call_args.kwargs[name]
-        for name in ("active_orbitals", "fragment_atoms", "coupling_threshold")
+        for name in (
+            "active_orbitals",
+            "max_orbitals_per_fragment",
+            "coupling_threshold",
+        )
     } == {
         "active_orbitals": active_orbitals,
-        "fragment_atoms": config.fragment_atoms,
+        "max_orbitals_per_fragment": 2,
         "coupling_threshold": 0.05,
     }
-    assert config.fragment_atoms is not None
     assert sorted(
         orbital for fragment in state.fragments for orbital in fragment.spec.orbitals
     ) == list(active_orbitals)
@@ -753,6 +864,7 @@ def test_fragment_integrals_use_the_mean_field_core_hamiltonian(
         problem=MolecularProblem.from_molecule(mean_field),
         preparation=LinearMethodPreparation(),
         active_spaces=[FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1)],
+        orbital_update=FixedOrbitals(),
     )
 
     ensemble.create_programs(ensemble.initial_state())
@@ -794,6 +906,55 @@ def test_missing_backend_raises_type_error():
                 active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)]
             ),
         )
+
+
+@pytest.mark.parametrize(
+    "name, owner",
+    [
+        ("max_rounds", "run()"),
+        ("batch_config", "run()"),
+        ("checkpoint_config", "run()"),
+        ("shots", "the backend"),
+    ],
+)
+@pytest.mark.parametrize(
+    "preparation",
+    [CCSDPreparation(), vqe_preparation()],
+    ids=["ccsd", "vqe"],
+)
+def test_options_of_run_or_the_backend_are_rejected_by_name(
+    dummy_expval_backend, preparation, name, owner
+):
+    """Whatever the preparation, the error names where the option belongs."""
+    with pytest.raises(
+        TypeError, match=exact_match(f"{name} belongs to {owner}, not to LASSQD.")
+    ):
+        _raw_lassqd(dummy_expval_backend, preparation=preparation, **{name: 3})
+
+
+@pytest.mark.parametrize(
+    "name", ["ansatz", "optimizer", "max_iterations", "seed_params"]
+)
+def test_vqe_preparation_rejects_options_it_sets_itself(dummy_expval_backend, name):
+    """Each would otherwise reach the fragment VQE twice and fail at
+    create_programs with Python's "multiple values" error."""
+    message = (
+        f"{name} cannot be passed to LASSQD with VQEPreparation: ansatz, optimizer "
+        "and max_iterations are set on VQEPreparation itself, and seed_params "
+        "comes from each fragment's CCSD seed."
+    )
+    with pytest.raises(TypeError, match=exact_match(message)):
+        _raw_lassqd(dummy_expval_backend, preparation=vqe_preparation(), **{name: None})
+
+
+def test_default_preparation_rejects_a_sampling_backend_that_is_not_a_circuit_runner(
+    dummy_simulator,
+):
+    """The default preparation keeps sampling_backend from the base class, so
+    LASSQD checks it itself."""
+    message = "sampling_backend must be a CircuitRunner or None; got str."
+    with pytest.raises(TypeError, match=exact_match(message)):
+        _raw_lassqd(dummy_simulator, sampling_backend="maestro")
 
 
 def test_settings_are_forwarded_to_each_fragment_vqe(dummy_expval_backend):
@@ -970,13 +1131,18 @@ def test_update_state_populates_rdms_and_energy(exact_sampler_lassqd):
         np.testing.assert_allclose(fragment.params, [0.11, 0.22, 0.33])
 
 
-def test_update_state_warns_when_a_fragment_collapses_to_one_determinant(
-    exact_sampler_lassqd, mocker
-):
-    """``stop_reason`` reads ``COMPLETE`` whether a round converged or simply
-    captured no correlation for a fragment. A recovered subspace of exactly
-    one determinant is the recognizable signature of the latter, so it must
-    surface as a warning rather than pass silently."""
+_ONE_DETERMINANT_WARNING = (
+    "{fragment}'s recovered subspace contains only one determinant: this round "
+    "captured no correlation energy for this fragment. Use a larger sampling "
+    "budget (the backend's shots, SQDConfig's batch_size){extension} or a more "
+    "expressive preparation."
+)
+
+
+@pytest.fixture
+def collapsed_round(exact_sampler_lassqd, mocker):
+    """A round whose every fragment recovers only its reference determinant,
+    ready for ``update_state``."""
     ensemble, state = exact_sampler_lassqd
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)
@@ -988,40 +1154,102 @@ def test_update_state_warns_when_a_fragment_collapses_to_one_determinant(
     mocker.patch(
         "divi.qprog.workflows._lassqd._workflow.SQDSolver.solve",
         return_value=SQDResult(
-            energy=0.0,
-            amplitudes=np.array([[1.0]]),
+            states=(
+                SQDState(
+                    multiplicity=abs(spec.n_alpha - spec.n_beta) + 1,
+                    index=0,
+                    penalised_energy=0.0,
+                    spin_square=0.0,
+                    amplitudes=np.array([[1.0]]),
+                ),
+            ),
             strings_alpha=(alpha_part,),
             strings_beta=(beta_part,),
         ),
     )
+    return ensemble, state
+
+
+def test_update_state_warns_when_a_fragment_collapses_to_one_determinant(
+    collapsed_round,
+):
+    """``stop_reason`` reads ``COMPLETE`` whether a round converged or simply
+    captured no correlation for a fragment. A recovered subspace of exactly
+    one determinant is the recognizable signature of the latter, so it must
+    surface as a warning rather than pass silently."""
+    ensemble, state = collapsed_round
 
     with pytest.warns(UserWarning) as record:
         ensemble.update_state(state)
 
     assert [str(warning.message) for warning in record] == [
-        f"fragment_{index}'s recovered subspace contains only one determinant: "
-        "this round captured no correlation energy for this fragment. Use a "
-        "larger sampling budget (n_batches, batch_size) or a more expressive "
-        "ansatz."
+        _ONE_DETERMINANT_WARNING.format(fragment=f"fragment_{index}", extension="")
         for index in range(2)
     ]
 
 
-def test_symmetry_failure_names_the_fragment(exact_sampler_lassqd, mocker):
+def test_a_fragment_stuck_at_one_determinant_warns_once_per_run(collapsed_round):
+    ensemble, state = collapsed_round
+    with pytest.warns(UserWarning, match="contains only one determinant"):
+        ensemble.update_state(state)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ensemble.update_state(state)
+
+
+@pytest.mark.parametrize(
+    "overrides, advice",
+    [
+        (
+            {},
+            "Use a larger sampling budget (the backend's shots, SQDConfig's "
+            "batch_size) or a more expressive preparation.",
+        ),
+        (
+            {"max_dim": 1},
+            "SQDConfig.max_dim caps each spin sector at one string; raise it.",
+        ),
+    ],
+    ids=["sampling", "max-dim"],
+)
+def test_convergence_with_no_correlation_captured_warns(
+    dummy_expval_backend, mocker, overrides, advice
+):
+    """Every fragment at one determinant is a genuine fixed point, the mean-field
+    one, so it completes; but it must say no correlation was captured."""
+    ensemble, state = build_exact_sampler_lassqd(
+        dummy_expval_backend, mocker, **overrides
+    )
+    ensemble._round_reports = [
+        dataclasses.replace(_round_report(1, None), subspace_sizes=(1, 1))
+    ]
+    converged = dataclasses.replace(
+        state, energy=-1.0, previous_energy=-1.0, orbitals_converged=True
+    )
+    message = (
+        "The macro-cycle converged with every fragment's subspace a single "
+        "determinant: the mean-field fixed point, with no correlation energy "
+        f"captured. {advice}"
+    )
+
+    with pytest.warns(UserWarning, match=exact_match(message)):
+        assert ensemble.is_complete(converged)
+
+
+def test_an_sqd_failure_names_the_fragment_and_keeps_its_own_advice(
+    exact_sampler_lassqd, mocker
+):
+    """The solver's message carries the fix for its own failure; the workflow
+    only adds which fragment failed."""
     ensemble, state = exact_sampler_lassqd
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)
     mocker.patch(
         "divi.qprog.workflows._lassqd._workflow.SQDSolver.solve",
-        side_effect=ValueError(
-            "No valid configurations found matching particle symmetry!"
-        ),
+        side_effect=ValueError("The subspace holds 3 determinants."),
     )
-    message = (
-        "SQD failed for fragment_0: No valid configurations found matching "
-        "particle symmetry! Increase the backend shot count or "
-        "n_recovery_iterations."
-    )
+    message = "SQD failed for fragment_0: The subspace holds 3 determinants."
     with pytest.raises(ValueError, match=exact_match(message)):
         ensemble.update_state(state)
 
@@ -1114,7 +1342,6 @@ def test_aggregate_results_matches_energy_after_one_round(exact_sampler_lassqd):
     the one that built the round's programs, so after a single round its energy
     is the round's finite energy rather than the initial state's ``inf``."""
     ensemble, _ = exact_sampler_lassqd
-    assert ensemble.energy == float("inf")
     ensemble.run(max_rounds=1)
 
     result = ensemble.aggregate_results()
@@ -1161,18 +1388,6 @@ def test_local_spins_set_the_automatically_built_fragment_spins(
         coeff = state.mo_coeff[:, block]
         population = np.sum(coeff * (overlap @ coeff), axis=1)
         assert population[atoms].sum() > 0.9 * population.sum()
-
-
-def test_local_spins_must_sum_to_zero_sz(dummy_expval_backend):
-    """A per-fragment override can break the global Sz = 0 invariant, which
-    ``auto_fragment_specs`` cannot see on its own since it checks each
-    fragment's electron count independently."""
-    ensemble = h8_frontier_lassqd(
-        dummy_expval_backend, fragment_atoms=H8_HALF_CHAINS, local_spins=[2, 2]
-    )
-
-    with pytest.raises(ValueError, match="total Sz"):
-        ensemble.initial_state()
 
 
 POLARIZED_SPECS = [
@@ -1276,10 +1491,14 @@ def test_a_stalled_orbital_optimizer_is_not_reported_as_converged(
     message = (
         "The macro-cycle energy change is below energy_tol but the orbital "
         "optimisation did not converge, so this is not a fixed point. Continuing; "
-        "raise orbital_update's max_iterations or loosen energy_tol if this repeats."
+        "raise orbital_update's max_iterations or loosen energy_tol if the run "
+        "hits max_rounds."
     )
-    with pytest.warns(UserWarning, match=exact_match(message)):
+    with pytest.warns(UserWarning, match=exact_match(message)) as caught:
         assert not ensemble.is_complete(stalled)
+        assert not ensemble.is_complete(stalled)
+
+    assert len(caught) == 1, "warned again in a later round of the same run"
 
 
 @pytest.mark.filterwarnings("ignore::scipy.sparse.SparseEfficiencyWarning")
@@ -1437,6 +1656,530 @@ def test_round_reports_are_cleared_by_a_workflow_reset(exact_sampler_lassqd):
     assert ensemble.round_reports == ()
 
 
+def test_states_need_a_single_fragment(dummy_expval_backend):
+    message = (
+        "SQDConfig.states needs a single fragment; got 2. A product of fragment "
+        "states cannot represent an excitation spread over several fragments. "
+        "Put the whole active space in one FragmentSpec."
+    )
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _lassqd(dummy_expval_backend, states={1: 2})
+
+
+def test_automatic_fragmentation_into_several_fragments_rejects_states(
+    dummy_expval_backend,
+):
+    ensemble = h8_frontier_lassqd(dummy_expval_backend, states={1: 2})
+    with pytest.raises(ValueError, match="needs a single fragment; got 2"):
+        ensemble.initial_state()
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        (
+            {"states": {2: 1}},
+            "SQDConfig.states asks for multiplicity 2, which 4 electrons cannot "
+            "reach: a multiplicity and its electron count have opposite parity.",
+        ),
+        (
+            {
+                "problem": MolecularProblem.from_molecule(h2o_molecule()),
+                "active_spaces": [
+                    FragmentSpec(orbitals=tuple(range(10)), n_alpha=5, n_beta=5)
+                ],
+            },
+            "SQDConfig.extension='auto' can grow this fragment's subspace to its "
+            f"full 63504 determinants, {UNBOUNDED_ADVICE}",
+        ),
+    ],
+    ids=["unreachable-spin", "unbounded-default-extension"],
+)
+def test_settings_the_fragment_cannot_hold_fail_at_construction(
+    dummy_expval_backend, overrides, message
+):
+    """Caught before any circuit runs, so no round's samples are lost."""
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _lassqd(
+            dummy_expval_backend, **({"active_spaces": [H4_WHOLE_SPACE]} | overrides)
+        )
+
+
+@pytest.mark.parametrize(
+    "arguments, error, message",
+    [
+        (
+            {"fragmentation": list(_H4_FRAGMENTS)},
+            TypeError,
+            "fragmentation must be a FragmentationConfig; got list.",
+        ),
+        (
+            {"sqd": {"n_batches": 2}},
+            TypeError,
+            "sqd must be an SQDConfig; got dict.",
+        ),
+        (
+            {"energy_tol": float("nan")},
+            ValueError,
+            "energy_tol must be a positive finite number; got nan.",
+        ),
+        (
+            {"energy_tol": float("inf")},
+            ValueError,
+            "energy_tol must be a positive finite number; got inf.",
+        ),
+    ],
+    ids=["fragmentation-as-list", "sqd-as-dict", "nan-energy-tol", "inf-energy-tol"],
+)
+def test_lassqd_rejects_invalid_arguments(
+    dummy_expval_backend, arguments, error, message
+):
+    with pytest.raises(error, match=exact_match(message)):
+        LASSQD(
+            MolecularProblem.from_molecule(h4_chain()),
+            backend=dummy_expval_backend,
+            **(
+                {"fragmentation": FragmentationConfig(active_spaces=_H4_FRAGMENTS)}
+                | arguments
+            ),
+        )
+
+
+def test_an_unconverged_mean_field_warns(dummy_expval_backend):
+    mean_field = scf.RHF(h4_chain())
+    mean_field.max_cycle = 1
+    mean_field.run()
+    assert not mean_field.converged
+
+    with pytest.warns(
+        UserWarning,
+        match=exact_match(
+            "The mean-field object passed in did not converge, so the orbitals "
+            "the macro-cycle starts from are not its stationary point. Converge "
+            "it first unless those orbitals are intended."
+        ),
+    ):
+        _lassqd(
+            dummy_expval_backend, problem=MolecularProblem.from_molecule(mean_field)
+        )
+
+
+@pytest.mark.parametrize(
+    "orbital_update", [SecondOrderOrbitalUpdate(), LBFGSOrbitalUpdate()]
+)
+def test_excited_states_on_ground_state_orbitals_warn_once(
+    dummy_expval_backend, orbital_update
+):
+    message = (
+        f"{type(orbital_update).__name__} optimises the orbitals for the lowest "
+        "state only, so the others miss their orbital relaxation and gaps to "
+        "them come out too large. Use StateAveragedOrbitalUpdate, or FixedOrbitals "
+        "to compare with CASCI on the same orbitals."
+    )
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        _lassqd(
+            dummy_expval_backend,
+            active_spaces=[H4_WHOLE_SPACE],
+            states={1: 2},
+            orbital_update=orbital_update,
+        ).initial_state()
+
+    assert [str(warning.message) for warning in record] == [message]
+
+
+@pytest.mark.parametrize("states", [{1: 1}, {3: 1}], ids=["ground", "triplet"])
+def test_a_single_state_does_not_warn_about_orbital_bias(dummy_expval_backend, states):
+    """Orbitals optimised for the one requested state are its own, whichever
+    state that is."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _lassqd(dummy_expval_backend, active_spaces=[H4_WHOLE_SPACE], states=states)
+
+
+def test_fixed_orbitals_keep_the_orbitals_and_report_their_energy(
+    orbital_rotation_case,
+):
+    mol, mo_coeff, n_core, specs, rdm1, rdm2, ao_eri, h_ao = orbital_rotation_case
+
+    solve, states = FixedOrbitals()._solve(
+        _OrbitalRound(
+            mol, mo_coeff, n_core, specs, rdm1, rdm2, ao_eri, h_ao, gradient_tol=1e-3
+        )
+    )
+
+    assert states is None
+    assert solve.mo_coeff is mo_coeff
+    assert solve.energy == _total_energy(
+        mol, mo_coeff, n_core, rdm1, rdm2, ao_eri, h_ao
+    )
+    assert (solve.converged, solve.n_iterations, solve.n_rotation_pairs) == (
+        True,
+        0,
+        0,
+    )
+    assert np.isnan(solve.gradient_norm)
+
+
+def _states_lassqd(backend, mocker, states, **overrides):
+    """Exact-sampled H4 in one fragment on fixed orbitals, solving for
+    ``states``."""
+    return build_exact_sampler_lassqd(
+        backend,
+        mocker,
+        active_spaces=[H4_WHOLE_SPACE],
+        states=states,
+        orbital_update=FixedOrbitals(),
+        **overrides,
+    )
+
+
+def test_requested_states_match_fci_on_a_complete_subspace(
+    dummy_expval_backend, mocker, h4_chain_mean_field
+):
+    """Each state's total energy is the exact FCI root of its multiplicity once
+    the subspace holds every determinant, and the orbitals do not move."""
+    states = {1: 2, 3: 1}
+    ensemble, state = _states_lassqd(
+        dummy_expval_backend,
+        mocker,
+        states,
+        lambda_penalty=1.0,
+        n_batches=1,
+        batch_size=64,
+        n_recovery_iterations=1,
+    )
+    one_body, two_body, _, constant = mo_integrals(h4_chain_mean_field)
+    expected = fci_roots_by_multiplicity(one_body, two_body, 2, 2, constant)
+
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        new_state = ensemble.update_state(state)
+
+    report = ensemble.round_reports[-1]
+    assert report.subspace_sizes == (36,)
+    np.testing.assert_array_equal(new_state.mo_coeff, state.mo_coeff)
+    assert report.orbital_converged and np.isnan(report.orbital_gradient_norm)
+    assert "orbitals: none rotated;" in report.summary()
+    reported = ensemble.electronic_states
+    assert list(reported.values()) == list(report.states)
+    assert list(reported) == [(1, 0), (3, 0), (1, 1)]
+    assert new_state.energy == report.energy
+    assert reported[(1, 0)].energy == pytest.approx(report.energy, abs=1e-10)
+    assert report.averaged_energy is None
+    assert_roots_match(reported.values(), expected, states)
+
+
+def test_a_root_of_another_spin_is_not_labelled_as_the_requested_one(
+    dummy_expval_backend, mocker, h4_chain_mean_field
+):
+    """At the default penalty the singlet ground state lies below several
+    triplets once penalised; on a complete subspace every reported triplet must
+    still be one."""
+    states = {3: 6}
+    ensemble, state = _states_lassqd(
+        dummy_expval_backend,
+        mocker,
+        states,
+        n_batches=1,
+        batch_size=64,
+        n_recovery_iterations=1,
+    )
+    one_body, two_body, _, constant = mo_integrals(h4_chain_mean_field)
+    expected = fci_roots_by_multiplicity(one_body, two_body, 2, 2, constant)
+
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        ensemble.update_state(state)
+
+    assert ensemble.round_reports[-1].subspace_sizes == (36,)
+    assert_roots_match(ensemble.electronic_states.values(), expected, states)
+
+
+@pytest.mark.parametrize(
+    "triplets, split", [(2, True), (3, False)], ids=["half-pair", "whole-pair"]
+)
+def test_requesting_part_of_a_degenerate_set_warns(
+    dummy_expval_backend, mocker, triplets, split
+):
+    """N2's second and third triplets are a degenerate pair; state averaging
+    over one of them breaks its symmetry."""
+    mol = gto.M(atom="N 0 0 0; N 0 0 1.2", basis="6-31g", verbose=0)
+    ensemble, state = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(scf.RHF(mol).run()),
+        active_spaces=[FragmentSpec(orbitals=(4, 5, 6, 7, 8, 9), n_alpha=3, n_beta=3)],
+        states={1: 1, 3: triplets},
+        orbital_update=StateAveragedOrbitalUpdate(),
+        n_batches=1,
+        batch_size=64,
+        n_recovery_iterations=1,
+    )
+
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        ensemble.update_state(state)
+
+    assert (
+        any(
+            text.startswith("State (3, 1) lies within")
+            and "of (3, 2), which SQDConfig.states does not request" in text
+            for text in map(str, (warning.message for warning in record))
+        )
+        is split
+    )
+
+
+def test_requested_states_are_eigenstates_at_the_rotated_orbitals(
+    dummy_expval_backend, mocker, h4_chain_mean_field
+):
+    """The CI is solved before the orbital update moves the orbitals; every
+    state must still be reported as an eigenstate at the orbitals the round
+    returns, not its pre-rotation CI evaluated there."""
+    states = {1: 2, 3: 1}
+    with pytest.warns(UserWarning, match="optimises the orbitals for the lowest"):
+        ensemble, state = build_exact_sampler_lassqd(
+            dummy_expval_backend,
+            mocker,
+            active_spaces=[FragmentSpec(orbitals=(1, 2), n_alpha=1, n_beta=1)],
+            states=states,
+            lambda_penalty=1.0,
+        )
+
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    new_state = ensemble.update_state(state)
+
+    assert not np.allclose(new_state.mo_coeff, state.mo_coeff)
+    casci = mcscf.CASCI(h4_chain_mean_field, 2, (1, 1))
+    casci.ncore = 1
+    one_body, constant = casci.get_h1eff(new_state.mo_coeff)
+    expected = fci_roots_by_multiplicity(
+        one_body, casci.get_h2eff(new_state.mo_coeff), 1, 1, constant
+    )
+    assert_roots_match(ensemble.electronic_states.values(), expected, states)
+
+
+@pytest.fixture
+def unresolved_state_warnings(dummy_expval_backend, mocker):
+    """The warnings a round raises whose one-determinant subspace holds two
+    singlets, the second off its spin and degenerate with the first."""
+    ensemble, state = _states_lassqd(
+        dummy_expval_backend, mocker, {1: 2}, extension=None
+    )
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    reference = "1100"
+    mocker.patch(
+        "divi.qprog.workflows._lassqd._workflow.SQDSolver.solve",
+        return_value=SQDResult(
+            states=tuple(
+                SQDState(
+                    multiplicity=1,
+                    index=index,
+                    penalised_energy=0.0,
+                    spin_square=spin_square,
+                    amplitudes=np.array([[1.0]]),
+                )
+                for index, spin_square in enumerate((0.0, 0.5))
+            ),
+            strings_alpha=(reference,),
+            strings_beta=(reference,),
+        ),
+    )
+    mocker.patch(
+        "divi.qprog.workflows._lassqd._workflow.subspace_states_at",
+        return_value=(
+            ElectronicState(multiplicity=1, index=0, energy=0.0, spin_square=0.0),
+            ElectronicState(multiplicity=1, index=1, energy=0.0, spin_square=0.5),
+        ),
+    )
+
+    with pytest.warns(UserWarning) as record:
+        ensemble.update_state(state)
+    return [str(warning.message) for warning in record]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        _ONE_DETERMINANT_WARNING.format(
+            fragment="fragment_0", extension=", SQDConfig.extension='singles',"
+        ),
+        "fragment_0's subspace holds 1 of 36 determinants. The circuit samples "
+        "the ground state, so excited states in an incomplete subspace come out "
+        "too high. Set SQDConfig.extension to add the determinants it misses.",
+        "State (1, 1) has <S^2> = 0.5000, not 0.0000: the subspace does not "
+        "resolve it as that spin. Raise lambda_penalty or the sampling budget "
+        "(batch_size, n_recovery_iterations).",
+        "States (1, 0) and (1, 1) lie within 0.0e+00 Ha of each other, so their "
+        "order can swap between rounds.",
+    ],
+    ids=["one-determinant", "incomplete-subspace", "off-spin", "degenerate"],
+)
+def test_unresolved_states_warn(unresolved_state_warnings, message):
+    """Each must be reported, not passed silently."""
+    assert message in unresolved_state_warnings
+
+
+def test_near_degenerate_states_keep_their_root_order():
+    """Float noise below the degeneracy tolerance must not reorder states."""
+    states = [
+        ElectronicState(multiplicity=1, index=0, energy=-2.0, spin_square=0.0),
+        ElectronicState(multiplicity=3, index=0, energy=-1.0 - 1e-14, spin_square=2.0),
+        ElectronicState(multiplicity=1, index=1, energy=-1.0, spin_square=0.0),
+    ]
+
+    ordered = _workflow._in_energy_order(states)
+
+    assert [(state.multiplicity, state.index) for state in ordered] == [
+        (1, 0),
+        (1, 1),
+        (3, 0),
+    ]
+
+
+@pytest.mark.parametrize(
+    "states, weights, message",
+    [
+        (
+            None,
+            None,
+            "StateAveragedOrbitalUpdate averages over SQDConfig.states, which is "
+            "unset. Request the states to average, e.g. SQDConfig(states={1: 2}).",
+        ),
+        (
+            {1: 2},
+            {(1, 0): 0.5, (3, 0): 0.5},
+            "StateAveragedOrbitalUpdate.weights must name exactly the states "
+            "SQDConfig.states requests, [(1, 0), (1, 1)]; got [(1, 0), (3, 0)].",
+        ),
+    ],
+    ids=["no-states", "weights-mismatch"],
+)
+def test_state_averaging_needs_matching_states(
+    dummy_expval_backend, states, weights, message
+):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        _lassqd(
+            dummy_expval_backend,
+            active_spaces=[H4_WHOLE_SPACE],
+            states=states,
+            orbital_update=StateAveragedOrbitalUpdate(weights=weights),
+        )
+
+
+@pytest.mark.e2e
+@pytest.mark.parametrize(
+    "weights, density_fitted",
+    [(None, False), ({(1, 0): 0.7, (1, 1): 0.3}, False), (None, True)],
+    ids=["equal-weights", "unequal-weights", "density-fitted-mean-field"],
+)
+def test_state_averaged_orbitals_reproduce_sa_casscf(
+    dummy_expval_backend, mocker, weights, density_fitted
+):
+    """With a complete subspace every round, state-averaged LASSQD on one
+    fragment is exact-integral SA-CASSCF from the same start: the same average
+    and per-state energies, not a saddle point above them, even when the mean
+    field supplied was density-fitted."""
+    mean_field = scf.RHF(h2o_molecule()).run(verbose=0)
+    supplied = mean_field.density_fit().run(verbose=0) if density_fitted else mean_field
+    spec = FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2)
+    orbital_update = StateAveragedOrbitalUpdate(weights=weights)
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(supplied),
+        active_spaces=[spec],
+        states={1: 2},
+        extension="doubles",
+        lambda_penalty=1.0,
+        n_batches=1,
+        n_recovery_iterations=1,
+        orbital_update=orbital_update,
+        energy_tol=1e-10,
+    )
+    ensemble.run(max_rounds=30)
+
+    reference = mcscf.CASSCF(mean_field, 4, 4)
+    reference.conv_tol = 1e-11
+    # Dense singlet CI: a Davidson start can miss a root of another symmetry.
+    reference.fcisolver = fci.direct_spin0.FCI()
+    reference.fcisolver.davidson_only = False
+    average = orbital_update._weights_for({1: 2})
+    reference.state_average_([average[(1, 0)], average[(1, 1)]])
+    reference.kernel()
+
+    report = ensemble.round_reports[-1]
+    states = ensemble.electronic_states
+    assert ensemble.stop_reason.name == "COMPLETE"
+    assert report.averaged_energy == pytest.approx(reference.e_tot, abs=1e-7)
+    assert ensemble.workflow_state.energy == report.averaged_energy
+    # Only the average is stationary, so each state carries first-order
+    # residual orbital error.
+    np.testing.assert_allclose(
+        [state.energy for state in states.values()],
+        sorted(reference.e_states),
+        rtol=0.0,
+        atol=1e-6,
+    )
+    assert ensemble.energy == report.energy == states[(1, 0)].energy
+
+
+def test_state_averaging_over_half_a_degenerate_pair_warns():
+    """CAS(6,6) N2 averaged over S0 and one member of the degenerate S1 pair:
+    the average is flat along the rotation mixing the pair, so the solve never
+    settles although its gradient is small."""
+    mean_field = scf.RHF(
+        gto.M(atom="N 0 0 0; N 0 0 1.1", basis="sto-3g", verbose=0)
+    ).run()
+    strings = tuple(
+        format(string, "06b")[::-1] for string in cistring.make_strings(range(6), 3)
+    )
+    message = (
+        "The state-averaged solve used all 3 iterations without settling, "
+        "though its orbital gradient is below tolerance. This usually means a "
+        "requested state is degenerate with one left out, such as one component "
+        "of a degenerate pair, so the averaged energy has a flat direction. "
+        "Request every component of the degenerate set."
+    )
+    with pytest.warns(UserWarning, match=exact_match(message)):
+        solve, _ = state_averaged_orbital_solve(
+            mean_field.mol,
+            mean_field.mo_coeff,
+            4,
+            FragmentSpec(orbitals=(4, 5, 6, 7, 8, 9), n_alpha=3, n_beta=3),
+            (strings, strings),
+            {(1, 0): 0.5, (1, 1): 0.5},
+            1.0,
+            cached_ao_eri(mean_field.mol),
+            cached_h_ao(mean_field.mol),
+            gradient_tol=1e-3,
+            max_iterations=3,
+        )
+
+    assert solve.converged
+    assert solve.n_iterations == 3
+
+
+def test_electronic_states_are_empty_without_states(exact_sampler_lassqd):
+    ensemble, state = exact_sampler_lassqd
+    ensemble.create_programs(state)
+    ensemble.run_one_round(blocking=True)
+    ensemble.update_state(state)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert ensemble.electronic_states == {}
+
+
 _REDUCTION_STAGES = (
     "Recovering fragment subspaces (SQD)",
     "Assembling active-space RDMs",
@@ -1566,6 +2309,7 @@ def test_converged_energy_is_pinned_and_above_fci(
 
 
 @pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
+@pytest.mark.filterwarnings("error:Orbital optimisation ended without converging")
 def test_polarized_fragments_run_the_full_macro_cycle(
     default_test_simulator, mocker, h4_chain_mean_field
 ):
@@ -1573,7 +2317,9 @@ def test_polarized_fragments_run_the_full_macro_cycle(
     ``Sz = 0``, covering the macro-cycle end to end rather than the pieces.
 
     The assembled RDM stays N-representable regardless of polarization, so the
-    energy remains a variational upper bound on full-space FCI.
+    energy remains a variational upper bound on full-space FCI. Round 2's
+    second-order step lands on a stationary point above its starting energy,
+    from which the solve must keep descending rather than end unconverged.
     """
     ensemble, _ = build_exact_sampler_lassqd(
         default_test_simulator, mocker, active_spaces=POLARIZED_SPECS
@@ -1602,7 +2348,7 @@ def test_macro_cycle_uses_separate_optimization_and_sampling_backends(
         default_test_simulator,
         sampling_backend=sampling_test_simulator,
         preparation=vqe_preparation(max_iterations=1),
-        orbital_update=FullOrbitalSolve(max_iterations=1),
+        orbital_update=LBFGSOrbitalUpdate(max_iterations=1),
         n_batches=1,
         n_recovery_iterations=1,
     )
@@ -1694,9 +2440,23 @@ def test_best_energy_tracks_the_lowest_round_not_the_last(exact_sampler_lassqd, 
     assert ensemble.best_energy == pytest.approx(-2.5)
 
 
-def test_best_energy_is_infinite_before_the_first_round(exact_sampler_lassqd):
+@pytest.mark.parametrize(
+    "name, placeholder",
+    [
+        ("energy", float("inf")),
+        ("best_energy", float("inf")),
+        ("electronic_states", {}),
+    ],
+)
+def test_results_before_the_first_round_warn(exact_sampler_lassqd, name, placeholder):
     ensemble, _ = exact_sampler_lassqd
-    assert ensemble.best_energy == float("inf")
+    message = (
+        f"{name} is not available: no LASSQD round has completed yet. Call run() "
+        "first."
+    )
+
+    with pytest.warns(UserWarning, match=exact_match(message)):
+        assert getattr(ensemble, name) == placeholder
     assert ensemble.energy_history == ()
 
 
@@ -1934,7 +2694,21 @@ def test_two_fragment_h4_lands_on_the_product_state_energy(
     assert ensemble.energy <= h4_chain_mean_field.e_tot + 1e-5
 
 
-def _round_report(number, energy_change, orbital_converged=False):
+#: Two requested states, as a round report records them.
+_REPORTED_STATES = (
+    ElectronicState(multiplicity=1, index=0, energy=-1.25, spin_square=0.0),
+    ElectronicState(multiplicity=3, index=0, energy=-1.0, spin_square=2.0),
+)
+
+
+def _round_report(
+    number,
+    energy_change,
+    orbital_converged=False,
+    states=(),
+    averaged_energy=None,
+    saddle_check=None,
+):
     return _workflow.LASSQDRoundReport(
         number=number,
         energy=-1.25,
@@ -1947,6 +2721,9 @@ def _round_report(number, energy_change, orbital_converged=False):
         rotation_pairs=5,
         recovery_seconds=0.2,
         orbital_seconds=0.3,
+        states=states,
+        averaged_energy=averaged_energy,
+        saddle_check=saddle_check,
     )
 
 
@@ -1961,6 +2738,20 @@ def test_round_summary_reads_every_stage_output(energy_change, change):
         "orbitals: 3 iterations over 5 pairs, |g| 1.00e-02, converged=False; "
         "SQD 0.2s, orbitals 0.3s"
     )
+
+
+def test_round_summary_lists_each_requested_state_and_the_average():
+    report = _round_report(2, None, states=_REPORTED_STATES, averaged_energy=-1.125)
+    assert report.summary().endswith(
+        "orbitals 0.3s; state (1, 0) -1.25000000 Ha, <S^2> 0.000; "
+        "state (3, 0) -1.00000000 Ha, <S^2> 2.000; "
+        "state-averaged -1.12500000 Ha"
+    )
+
+
+def test_round_summary_reports_the_saddle_check():
+    report = _round_report(2, -1e-7, saddle_check="inconclusive")
+    assert report.summary().endswith("orbitals 0.3s; saddle check inconclusive")
 
 
 def _checkpoint_state(state, *, orbitals_converged=False):
@@ -1998,7 +2789,14 @@ def _save_checkpoint(ensemble, state, directory):
     ensemble._energy_history = [-1.0, -1.25]
     ensemble._round_reports = [
         _round_report(1, None),
-        _round_report(2, -0.25, orbital_converged=state.orbitals_converged),
+        _round_report(
+            2,
+            -0.25,
+            orbital_converged=state.orbitals_converged,
+            states=_REPORTED_STATES,
+            averaged_energy=-1.125,
+            saddle_check="passed",
+        ),
     ]
     ensemble._solver_for(0, state.fragments[0].spec)
     return ensemble._save_workflow_checkpoint_state(state, directory, "output_state")
@@ -2164,10 +2962,14 @@ def test_workflow_checkpoint_state_round_trips_npz(
 def test_resuming_from_a_checkpoint_reproduces_an_uninterrupted_run(
     dummy_expval_backend, mocker, tmp_path
 ):
-    """The batch is far smaller than the 36-determinant sector, so the second
-    round's subspace depends on where each generator was left."""
+    """The batch is far smaller than the 36-determinant sector, and no extension
+    fills it in, so the second round's subspace depends on where each generator
+    was left."""
     settings = dict(
-        active_spaces=[H4_WHOLE_SPACE], batch_size=3, n_recovery_iterations=1
+        active_spaces=[H4_WHOLE_SPACE],
+        batch_size=3,
+        n_recovery_iterations=1,
+        extension=None,
     )
     straight, _ = build_exact_sampler_lassqd(dummy_expval_backend, mocker, **settings)
     straight.run(max_rounds=2)
@@ -2385,8 +3187,8 @@ _DIFFERENT_MOLECULE = (
         {"preparation": vqe_preparation(optimizer=MonteCarloOptimizer())},
         {"preparation": vqe_preparation(ansatz=LUCJAnsatz())},
         {"preparation": vqe_preparation(max_iterations=3)},
-        {"orbital_update": FullOrbitalSolve(max_iterations=7)},
-        {"orbital_update": SecondOrderOrbitalSolve(max_iterations=7)},
+        {"orbital_update": LBFGSOrbitalUpdate(max_iterations=7)},
+        {"orbital_update": SecondOrderOrbitalUpdate(max_iterations=7)},
     ],
     ids=[
         "preparation",
@@ -2408,7 +3210,7 @@ def test_a_checkpoint_resumes_only_under_the_same_configuration(
         other._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
 
 
-@pytest.mark.parametrize("strategy", [FullOrbitalSolve, SecondOrderOrbitalSolve])
+@pytest.mark.parametrize("strategy", [LBFGSOrbitalUpdate, SecondOrderOrbitalUpdate])
 def test_an_orbital_update_respects_its_iteration_cap(
     dummy_expval_backend, mocker, strategy
 ):
@@ -2422,12 +3224,6 @@ def test_an_orbital_update_respects_its_iteration_cap(
         ensemble.update_state(state)
 
     assert ensemble.round_reports[-1].orbital_iterations == 1
-
-
-@pytest.mark.parametrize("strategy", [FullOrbitalSolve, SecondOrderOrbitalSolve])
-def test_an_orbital_update_rejects_a_non_positive_cap(strategy):
-    with pytest.raises(ValueError, match="max_iterations must be at least 1"):
-        strategy(max_iterations=0)
 
 
 def test_workflow_checkpoint_refuses_to_unpickle_an_object_array(
@@ -2555,7 +3351,7 @@ def test_a_restored_completed_round_reduces_against_its_input_state(
 def test_rejects_a_frontier_selection_with_no_virtual_orbital(dummy_expval_backend):
     """Helium in STO-3G has one orbital, occupied, so no frontier selection can
     reach a virtual -- caught before any mean field is computed."""
-    with pytest.raises(ValueError, match="at least one occupied and one virtual"):
+    with pytest.raises(ValueError, match="the molecule has 1 occupied and 0 virtual"):
         LASSQD(
             MolecularProblem.from_molecule(
                 gto.M(atom="He 0 0 0", basis="sto-3g", verbose=0)
@@ -2736,6 +3532,7 @@ def test_frozen_core_and_virtual_orbitals_bracket_the_active_space(
             FragmentSpec(orbitals=(1, 3), n_alpha=1, n_beta=1),
             FragmentSpec(orbitals=(2, 4), n_alpha=1, n_beta=1),
         ],
+        orbital_update=FixedOrbitals(),
     )
 
     ensemble.run(max_rounds=1)
@@ -2766,7 +3563,7 @@ def test_a_frozen_core_round_embeds_and_samples_past_the_core(
 
     h_alpha, _, _ = fragment_integrals(ensemble, state.mo_coeff, state.fragments, 0)
     np.testing.assert_allclose(
-        ensemble.programs["fragment_0"].h_alpha, h_alpha, atol=1e-12
+        ensemble.programs["fragment_0"].sampled_problem.one_body, h_alpha, atol=1e-12
     )
     np.testing.assert_array_equal(
         new_state.fragments[0].sampled_orbitals, state.mo_coeff[:, 3:5]
@@ -2802,8 +3599,8 @@ def test_sqd_receives_each_program_s_spin_integrals(
     ):
         h_alpha = call.args[2]
         h_beta = call.kwargs["one_body_beta"]
-        assert h_alpha is program.h_alpha
-        assert h_beta is program.h_beta
+        assert h_alpha is program.sampled_problem.one_body
+        assert h_beta is program.sampled_problem.one_body_beta
         assert not np.allclose(h_alpha, h_beta)
 
 
@@ -2812,7 +3609,7 @@ def test_update_state_reports_the_orbital_solve_it_received(
 ):
     ensemble, state = exact_sampler_lassqd
     solves = [
-        OrbitalSolve(
+        OrbitalSolution(
             mo_coeff=state.mo_coeff.copy(),
             energy=-2.0 - 0.1 * index,
             converged=False,
@@ -2823,7 +3620,7 @@ def test_update_state_reports_the_orbital_solve_it_received(
         )
         for index in range(2)
     ]
-    mocker.patch.object(_config, "ciah_orbital_solve", side_effect=solves)
+    mocker.patch.object(SecondOrderOrbitalUpdate, "_solver", side_effect=solves)
 
     for solve in solves:
         ensemble.create_programs(state)
@@ -2864,7 +3661,7 @@ def test_orbital_solves_converge_at_the_square_root_of_the_energy_tolerance(
     ensemble, _ = build_exact_sampler_lassqd(
         dummy_expval_backend, mocker, energy_tol=1e-4
     )
-    spy = mocker.spy(_config, "ciah_orbital_solve")
+    spy = mocker.spy(SecondOrderOrbitalUpdate, "_solver")
 
     ensemble.run(max_rounds=1)
 
@@ -2876,9 +3673,9 @@ def test_a_non_finite_round_energy_fails_the_round(exact_sampler_lassqd, mocker)
     every remaining round on a meaningless state."""
     ensemble, state = exact_sampler_lassqd
     mocker.patch.object(
-        _config,
-        "ciah_orbital_solve",
-        return_value=OrbitalSolve(
+        SecondOrderOrbitalUpdate,
+        "_solver",
+        return_value=OrbitalSolution(
             mo_coeff=state.mo_coeff.copy(),
             energy=float("nan"),
             converged=False,
@@ -2920,12 +3717,40 @@ def test_aggregate_results_raises_before_a_round_is_reduced(
         ensemble.aggregate_results()
 
 
+def test_aggregate_results_keeps_the_last_completed_round_after_a_failure(
+    exact_sampler_lassqd, mocker
+):
+    """The failed round leaves its programs without results, but the round
+    before it was reduced and is still the workflow's answer."""
+    ensemble, _ = exact_sampler_lassqd
+    original = SecondOrderOrbitalUpdate._solver
+
+    def fail_after_one_round(*args, **kwargs):
+        if solve.call_count > 1:
+            raise RuntimeError("orbital solve failed")
+        return original(*args, **kwargs)
+
+    solve = mocker.patch.object(
+        SecondOrderOrbitalUpdate, "_solver", side_effect=fail_after_one_round
+    )
+    with pytest.raises(RuntimeError, match="orbital solve failed"):
+        ensemble.run(max_rounds=3)
+
+    assert ensemble.stop_reason is WorkflowStatus.FAILED
+    assert len(ensemble.energy_history) == 1
+    assert ensemble.aggregate_results() is ensemble.workflow_state
+
+
 @pytest.mark.parametrize(
     "local_spins, match",
     [
-        pytest.param([1, -1], "wrong parity", id="odd"),
+        pytest.param([1, -1], "local_spins entries must be even", id="odd"),
         pytest.param([6, -6], "cannot supply", id="above-electron-count"),
-        pytest.param([4, -4], "no excitation available", id="at-electron-count"),
+        pytest.param(
+            [4, -4],
+            r"local_spins\[0\] asks for 2S=4, .* leaves no spin channel partly filled",
+            id="at-electron-count",
+        ),
     ],
 )
 def test_local_spins_are_bounded_by_parity_and_electron_count(
@@ -2950,6 +3775,7 @@ def test_a_supplied_mean_field_is_used_without_rerunning_scf(
         MolecularProblem.from_molecule(h4_chain_mean_field),
         backend=dummy_expval_backend,
         reporting_level=ReportingLevel.OFF,
+        orbital_update=FixedOrbitals(),
         **lassqd_kwargs(active_spaces=list(_H4_FRAGMENTS)),
     )
 
