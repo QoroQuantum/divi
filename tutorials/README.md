@@ -65,6 +65,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 - **`vqe_upccd_lih.py`** — `UpCCDAnsatz` against `UCCSDAnsatz` on LiH: parameter counts, energy and fidelity against the seniority-zero floor, and a start from CCSD pair amplitudes
 - **`vqe_qcc_entanglers_h2.py`** — Choosing `QCCAnsatz` entanglers on H2: the default excitation entanglers, a pool of Pauli words ranked by energy gradient, and a single chosen entangler
 - **`vqe_hyperparameter_sweep.py`** — Hyperparameter sweeps across multiple molecules
+- **`qsci_lih.py`** — `QSCI` on LiH (12 qubits): qDRIFT-sampled seed subspace, then expansion by second-order contribution, checked against exact FCI with the PT2 correction and its extrapolation to zero
 - **`lassqd_h4.py`** — `LASSQD` on a stretched H4 chain: compares an automatic fragmentation against an occupancy-based one to show how much the choice of split costs in correlation energy
 - **`lassqd_ethylene_uvvis.py`** — Ethylene's π→π* excitation with single-fragment `LASSQD`: active orbitals by symmetry, state-averaged excitation energy and oscillator strength against PySCF, and NEVPT2
 
