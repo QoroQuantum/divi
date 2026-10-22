@@ -9,6 +9,7 @@ import itertools
 import os
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Hashable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from functools import cached_property
@@ -57,7 +58,9 @@ from ._integrals import (
     escape_orbital_saddle,
     fragment_blocks,
     fragment_effective_integrals,
+    state_transitions,
     subspace_states_at,
+    subspace_wavefunctions,
     transform_integrals,
 )
 from ._preparation import rotate_rdms_to_fragment_basis
@@ -78,6 +81,8 @@ from ._state import (
     FragmentSpec,
     FragmentState,
     LASSQDState,
+    StateTransition,
+    StateWavefunction,
     _OrbitalRound,
     _SampledSubspace,
     require_orthonormal,
@@ -568,6 +573,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         self._energy_history: list[float] = []
         self._round_reports: list[LASSQDRoundReport] = []
         self._warned: set[Hashable] = set()
+        self._final_subspace: _SampledSubspace | None = None
 
     def _check_fragments(self, specs: Sequence[FragmentSpec]) -> None:
         """Reject ``SQDConfig`` settings the fragments cannot carry, and warn
@@ -826,6 +832,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._energy_history.clear()
         self._round_reports.clear()
         self._warned.clear()
+        self._final_subspace = None
 
     def _save_workflow_checkpoint_state(
         self, state: Any, round_dir: Path, stem: str
@@ -878,6 +885,14 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             {"index": index, "rng_state": solver._rng.bit_generator.state}
             for index, solver in sorted(self._solvers.items())
         ]
+        final_strings = None
+        if self._final_subspace is not None:
+            arrays["final_orbitals"] = self._final_subspace.mo_coeff
+            strings_alpha, strings_beta = self._final_subspace.strings
+            final_strings = {
+                "strings_alpha": list(strings_alpha),
+                "strings_beta": list(strings_beta),
+            }
 
         artifact = f"{stem}.npz"
         temporary_path: Path | None = None
@@ -902,6 +917,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             "rng_state": self._rng.bit_generator.state,
             "solvers": solvers,
             "round_reports": [asdict(report) for report in self._round_reports],
+            "final_strings": final_strings,
         }
 
     def _load_workflow_checkpoint_state(
@@ -1010,12 +1026,36 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             energy_history = _stored_array(stored, "energy_history")
             if energy_history.ndim != 1:
                 raise ValueError("LASSQD checkpoint energy history is not 1-D.")
+            final_strings = payload.get("final_strings")
+            final_subspace = None
+            if final_strings is not None:
+                if not isinstance(final_strings, dict) or self._sqd.states is None:
+                    raise ValueError(
+                        "LASSQD checkpoint final_strings must be an object, saved "
+                        "only with SQDConfig.states."
+                    )
+                final_subspace = _SampledSubspace(
+                    _stored_array(
+                        stored, "final_orbitals", (self._mol.nao_nr(), n_orbitals_total)
+                    ),
+                    (
+                        _carried_strings_from_metadata(
+                            final_strings, "strings_alpha", fragments[0].spec, 0
+                        ),
+                        _carried_strings_from_metadata(
+                            final_strings, "strings_beta", fragments[0].spec, 0
+                        ),
+                    ),
+                    self._sqd.states,
+                    self._sqd.lambda_penalty,
+                )
 
-        require_orthonormal(
-            mo_coeff,
-            "LASSQD checkpoint mo_coeff",
-            self._mol.intor_symmetric("int1e_ovlp"),
-        )
+        overlap = self._mol.intor_symmetric("int1e_ovlp")
+        require_orthonormal(mo_coeff, "LASSQD checkpoint mo_coeff", overlap)
+        if final_subspace is not None:
+            require_orthonormal(
+                final_subspace.mo_coeff, "LASSQD checkpoint final_orbitals", overlap
+            )
         specs = [fragment.spec for fragment in fragments]
         validate_fragment_specs(specs, n_orbitals_total, self._mol.nelectron // 2)
         state = LASSQDState(
@@ -1089,6 +1129,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._rng.bit_generator.state = rng_state
         self._energy_history = energy_history.astype(float).tolist()
         self._round_reports = reports
+        self._final_subspace = final_subspace
         # Rebuilt programs keep the state they were built from.
         if not self._programs:
             self._state = state
@@ -1206,9 +1247,10 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 determinant — this round captured no correlation energy for
                 that fragment, indistinguishable from convergence by
                 ``stop_reason`` alone. With ``SQDConfig.states`` set, also if
-                excited states come from an incomplete subspace, if a state's
-                ``<S^2>`` misses its multiplicity, or if two roots of one
-                multiplicity are near-degenerate.
+                excited states come from an incomplete subspace, if the
+                subspace resolves fewer states of a multiplicity than requested,
+                if a state's ``<S^2>`` misses its multiplicity, or if two roots
+                of one multiplicity are near-degenerate.
 
         Raises:
             RuntimeError: If ``state`` is not the state ``create_programs``
@@ -1328,7 +1370,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             self._warn_if_a_degenerate_set_is_split(
                 in_sampled_basis(state.mo_coeff),
                 n_core,
-                new_fragments[0].spec,
                 results[0],
                 states,
                 ao_eri,
@@ -1370,24 +1411,31 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         electronic_states: tuple[ElectronicState, ...] = ()
         if states is not None:
             result, spec = results[0], new_fragments[0].spec
+            # A state-averaged solve returns its orbitals in the sampled basis.
+            final_subspace = _SampledSubspace(
+                (
+                    in_sampled_basis(solution.mo_coeff)
+                    if relaxed_states is None
+                    else solution.mo_coeff
+                ),
+                (result.strings_alpha, result.strings_beta),
+                states,
+                self._sqd.lambda_penalty,
+            )
             if relaxed_states is None:
-                # Re-solve the CI at the round's orbitals.
                 relaxed_states = subspace_states_at(
-                    self._mol,
-                    in_sampled_basis(solution.mo_coeff),
-                    n_core,
-                    spec,
-                    (result.strings_alpha, result.strings_beta),
-                    states,
-                    self._sqd.lambda_penalty,
-                    ao_eri,
-                    h_ao,
+                    self._mol, final_subspace, n_core, ao_eri, h_ao
                 )
+            self._final_subspace = final_subspace
             electronic_states = self._electronic_states(
                 "fragment_0", result, spec, relaxed_states
             )
         # A state-averaged solve's energy is the average, not the lowest state's.
-        energy = electronic_states[0].energy if averaged else solution.energy
+        energy = (
+            electronic_states[0].energy
+            if averaged and electronic_states
+            else solution.energy
+        )
         previous = self._energy_history[-1] if self._energy_history else None
         self._energy_history.append(energy)
 
@@ -1481,6 +1529,17 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 f"too high.{hint}",
             )
 
+        resolved = Counter(state.multiplicity for state in states)
+        for multiplicity, n_roots in (self._sqd.states or {}).items():
+            if resolved[multiplicity] < n_roots:
+                self._warn_once(
+                    ("unresolved", program_id, multiplicity),
+                    f"{program_id}'s subspace resolves {resolved[multiplicity]} of "
+                    f"the {n_roots} requested states of multiplicity "
+                    f"{multiplicity}; the rest are left out. Raise the sampling "
+                    "budget (batch_size, n_recovery_iterations) or "
+                    "SQDConfig.extension.",
+                )
         for key, message in _state_warnings(states):
             self._warn_once(key, message)
         return _in_energy_order(states)
@@ -1495,7 +1554,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self,
         mo_coeff: np.ndarray,
         n_core: int,
-        spec: FragmentSpec,
         result: SQDResult,
         requested: Mapping[int, int],
         ao_eri: np.ndarray,
@@ -1510,12 +1568,13 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         }
         solved = subspace_states_at(
             self._mol,
-            mo_coeff,
+            _SampledSubspace(
+                mo_coeff,
+                (result.strings_alpha, result.strings_beta),
+                probe,
+                self._sqd.lambda_penalty,
+            ),
             n_core,
-            spec,
-            (result.strings_alpha, result.strings_beta),
-            probe,
-            self._sqd.lambda_penalty,
             ao_eri,
             h_ao,
         )
@@ -1598,7 +1657,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         Each is an eigenstate of the subspace at the round's final orbitals.
         After a lowest-state orbital update, the lowest state's energy can
         therefore sit slightly off :attr:`energy`, which keeps the CI the
-        orbitals were optimised for.
+        orbitals were optimised for. A root whose ``<S^2>`` lies nearer another
+        multiplicity is left out, so a subspace short of states of one spin
+        yields fewer than were requested.
 
         Warns:
             UserWarning: If no round has completed yet.
@@ -1610,6 +1671,76 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             (state.multiplicity, state.index): state
             for state in self._round_reports[-1].states
         }
+
+    def state_wavefunctions(self) -> dict[tuple[int, int], StateWavefunction]:
+        """Each state ``SQDConfig.states`` requested, with its CI vector and
+        RDMs, from the last completed round, keyed ``(multiplicity, index)``
+        and ordered as :attr:`electronic_states`.
+
+        The subspace is re-diagonalised at the round's final orbitals on each
+        call, so the states match :attr:`electronic_states` to solver precision.
+
+        Raises:
+            RuntimeError: If no round has completed with ``SQDConfig.states``
+                set.
+        """
+        wavefunctions = self._final_wavefunctions("state_wavefunctions")
+        by_label = {
+            (wavefunction.state.multiplicity, wavefunction.state.index): wavefunction
+            for wavefunction in wavefunctions
+        }
+        return {
+            (state.multiplicity, state.index): by_label[
+                (state.multiplicity, state.index)
+            ]
+            for state in _in_energy_order(
+                [wavefunction.state for wavefunction in wavefunctions]
+            )
+        }
+
+    def transition_properties(
+        self,
+    ) -> dict[tuple[tuple[int, int], tuple[int, int]], StateTransition]:
+        """The one-electron transition between every pair of requested states
+        of one multiplicity, from the last completed round, keyed
+        ``(initial, final)`` labels with the lower state first.
+
+        Pairs of different multiplicity are left out: their spin-free
+        transition dipole vanishes. With one state of each multiplicity there
+        is no pair, and the result is empty.
+
+        Raises:
+            RuntimeError: If no round has completed with ``SQDConfig.states``
+                set.
+        """
+        return {
+            (
+                (transition.initial.multiplicity, transition.initial.index),
+                (transition.final.multiplicity, transition.final.index),
+            ): transition
+            for transition in state_transitions(
+                self._mol, self._final_wavefunctions("transition_properties")
+            )
+        }
+
+    def _final_wavefunctions(self, name: str) -> tuple[StateWavefunction, ...]:
+        """The last completed round's requested states at its final orbitals,
+        for the method ``name``."""
+        subspace = self._final_subspace
+        if subspace is None:
+            raise RuntimeError(
+                f"{name} needs a completed LASSQD round with SQDConfig.states "
+                "set. Request the states, e.g. SQDConfig(states={1: 2}), and "
+                "call run() first."
+            )
+        strings_alpha, strings_beta = subspace.strings
+        n_core = (
+            self._mol.nelectron
+            - strings_alpha[0].count("1")
+            - strings_beta[0].count("1")
+        ) // 2
+        ao_eri, h_ao = self._cached_mol_integrals()
+        return subspace_wavefunctions(self._mol, subspace, n_core, ao_eri, h_ao)
 
     @property
     def energy_history(self) -> tuple[float, ...]:

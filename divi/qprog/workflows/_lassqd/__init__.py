@@ -17,7 +17,14 @@ from ._config import (
     VQEPreparation,
 )
 from ._sqd import SQDConfig
-from ._state import ElectronicState, FragmentSpec, FragmentState, LASSQDState
+from ._state import (
+    ElectronicState,
+    FragmentSpec,
+    FragmentState,
+    LASSQDState,
+    StateTransition,
+    StateWavefunction,
+)
 from ._workflow import LASSQD, LASSQDRoundReport
 
 __all__ = [
@@ -37,5 +44,7 @@ __all__ = [
     "SecondOrderOrbitalUpdate",
     "SQDConfig",
     "StateAveragedOrbitalUpdate",
+    "StateTransition",
+    "StateWavefunction",
     "VQEPreparation",
 ]

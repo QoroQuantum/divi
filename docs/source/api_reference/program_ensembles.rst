@@ -38,7 +38,10 @@ configured by a :class:`~divi.qprog.workflows.Preparation`
 :class:`~divi.qprog.workflows.LBFGSOrbitalUpdate` or
 :class:`~divi.qprog.workflows.FixedOrbitals`),
 :class:`~divi.qprog.workflows.FragmentationConfig`, and
-:class:`~divi.qprog.workflows.SQDConfig`.
+:class:`~divi.qprog.workflows.SQDConfig`. Requested excited states come back as
+:class:`~divi.qprog.workflows.ElectronicState` records, with their wave functions
+as :class:`~divi.qprog.workflows.StateWavefunction` and the transitions between
+them as :class:`~divi.qprog.workflows.StateTransition`.
 
 .. automodapi:: divi.qprog.workflows
    :no-heading:

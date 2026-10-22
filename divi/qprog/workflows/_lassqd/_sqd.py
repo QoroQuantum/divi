@@ -634,8 +634,18 @@ def _nearest_spin(
     spin_square = np.einsum("ij,ij->j", vectors, deviation @ vectors) + spin * (
         spin + 1.0
     )
-    estimate = 0.5 * (np.sqrt(1.0 + 4.0 * np.maximum(spin_square, 0.0)) - 1.0)
-    return spin + np.round(estimate - spin)
+    return spin + np.round(_spin_of(spin_square) - spin)
+
+
+def resolves_spin(multiplicity: int, spin_square: float) -> bool:
+    """Whether ``<S^2>`` lies nearer ``multiplicity``'s ``S(S+1)`` than the
+    spins one step either side, as :func:`lowest_roots` judges a root."""
+    return round(float(_spin_of(spin_square)) - 0.5 * (multiplicity - 1)) == 0
+
+
+def _spin_of(spin_square):
+    """The ``S`` with ``S(S+1) = <S^2>``, negative ``<S^2>`` read as 0."""
+    return 0.5 * (np.sqrt(1.0 + 4.0 * np.maximum(spin_square, 0.0)) - 1.0)
 
 
 def _lanczos_root(
@@ -1744,6 +1754,19 @@ class SQDSolver:
 _MAX_PYSCF_ORBITALS = 63
 
 
+def sci_vector(
+    strings_alpha: Sequence[str], strings_beta: Sequence[str], amplitudes: np.ndarray
+) -> np.ndarray:
+    """``amplitudes`` as a PySCF selected-CI vector over the two string lists."""
+    ci_strings = (
+        np.array([ci_string_to_int(half) for half in strings_alpha], dtype=np.int64),
+        np.array([ci_string_to_int(half) for half in strings_beta], dtype=np.int64),
+    )
+    return selected_ci._as_SCIvector(
+        np.ascontiguousarray(amplitudes, dtype=float), ci_strings
+    )
+
+
 def compute_spatial_rdms(
     strings_alpha: Sequence[str],
     strings_beta: Sequence[str],
@@ -1770,14 +1793,8 @@ def compute_spatial_rdms(
     if n_orb > _MAX_PYSCF_ORBITALS:
         return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)
 
-    ci_strings = (
-        np.array([ci_string_to_int(half) for half in strings_alpha], dtype=np.int64),
-        np.array([ci_string_to_int(half) for half in strings_beta], dtype=np.int64),
-    )
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    civec = selected_ci._as_SCIvector(
-        np.ascontiguousarray(amplitudes, dtype=float), ci_strings
-    )
+    civec = sci_vector(strings_alpha, strings_beta, amplitudes)
     rdm1_alpha, rdm1_beta = selected_ci.make_rdm1s(civec, n_orb, nelec)
     rdm2 = selected_ci.make_rdm2(civec, n_orb, nelec)
     return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta

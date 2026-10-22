@@ -23,7 +23,7 @@ import warnings
 
 import numpy as np
 import pytest
-from pyscf import fci, gto, mcscf, scf
+from pyscf import ao2mo, fci, gto, mcscf, scf
 from pyscf.fci import cistring
 
 from divi.qprog import (
@@ -38,6 +38,7 @@ from divi.qprog import (
     SecondOrderOrbitalUpdate,
     SQDConfig,
     StateAveragedOrbitalUpdate,
+    StateWavefunction,
     VQEPreparation,
     WorkflowStatus,
 )
@@ -47,6 +48,7 @@ from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimiz
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows._lassqd import (
     _preparation,
+    _sqd,
     _vqe_preparation,
     _workflow,
 )
@@ -2196,6 +2198,267 @@ def test_state_averaging_over_half_a_degenerate_pair_warns():
 
     assert solve.converged
     assert solve.n_iterations == 3
+
+
+_EXPORT_STATES = {1: 2, 3: 1}
+
+
+def _h2o_states_lassqd(backend, mocker, orbital_update):
+    """H2O CAS(4,4) with every determinant in the subspace, three states
+    requested, and the mean field it was built from."""
+    mean_field = scf.RHF(h2o_molecule()).run(verbose=0)
+    ensemble, _ = build_exact_sampler_lassqd(
+        backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(mean_field),
+        active_spaces=[FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2)],
+        states=_EXPORT_STATES,
+        extension="doubles",
+        lambda_penalty=1.0,
+        n_batches=1,
+        n_recovery_iterations=1,
+        orbital_update=orbital_update,
+    )
+    return ensemble, mean_field
+
+
+def _dense_casci_states(mean_field, mo_coeff):
+    """Every CAS(4,4) root at ``mo_coeff`` from a dense diagonalisation, keyed
+    ``(multiplicity, index)``, as ``(energy, CI vector)``."""
+    casci = mcscf.CASCI(mean_field, 4, 4)
+    h1, energy_core = casci.get_h1eff(mo_coeff)
+    h2 = ao2mo.restore(1, casci.get_h2eff(mo_coeff), 4)
+    energies, vectors = fci.direct_spin1.kernel(h1, h2, 4, (2, 2), nroots=36)
+    roots: dict[tuple[int, int], tuple[float, np.ndarray]] = {}
+    for energy, vector in sorted(
+        zip(energies, vectors), key=lambda root: float(root[0])
+    ):
+        _, multiplicity = fci.spin_op.spin_square0(vector, 4, (2, 2))
+        multiplicity = int(round(multiplicity))
+        index = sum(1 for label in roots if label[0] == multiplicity)
+        roots[(multiplicity, index)] = (float(energy) + energy_core, vector)
+    return roots
+
+
+@pytest.fixture(
+    params=[FixedOrbitals(), StateAveragedOrbitalUpdate()],
+    ids=["fixed", "state-averaged"],
+)
+def exported_h2o_states(request, dummy_expval_backend, mocker):
+    """One round of the H2O ensemble under each orbital update, with the dense
+    CASCI roots at its final orbitals."""
+    ensemble, mean_field = _h2o_states_lassqd(
+        dummy_expval_backend, mocker, request.param
+    )
+    ensemble.run(max_rounds=1)
+    return ensemble, _dense_casci_states(mean_field, ensemble.workflow_state.mo_coeff)
+
+
+def test_state_wavefunctions_reproduce_dense_casci(exported_h2o_states):
+    """On a complete subspace each exported state is the exact CASCI root at the
+    round's final orbitals: energy, spin and both RDMs."""
+    ensemble, reference = exported_h2o_states
+
+    wavefunctions = ensemble.state_wavefunctions()
+
+    assert list(wavefunctions) == list(ensemble.electronic_states)
+    for label, wavefunction in wavefunctions.items():
+        energy, vector = reference[label]
+        rdm1, rdm2 = fci.direct_spin1.make_rdm12(vector, 4, (2, 2))
+        np.testing.assert_allclose(
+            np.hstack([wavefunction.core_orbitals, wavefunction.active_orbitals]),
+            ensemble.workflow_state.mo_coeff[:, :7],
+            atol=1e-12,
+        )
+        assert wavefunction.state.energy == pytest.approx(energy, abs=1e-8)
+        assert wavefunction.state.spin_square == pytest.approx(
+            0.25 * (label[0] ** 2 - 1), abs=1e-8
+        )
+        np.testing.assert_allclose(wavefunction.rdm1, rdm1, atol=1e-8)
+        np.testing.assert_allclose(wavefunction.rdm2, rdm2, atol=1e-8)
+
+
+def test_transition_properties_reproduce_dense_casci(exported_h2o_states):
+    """Only the singlet pair is reported; its oscillator strength, dipole
+    length and natural-transition-orbital weights match the dense CASCI
+    transition density. Phases are arbitrary, so the dipole's sign is not
+    compared."""
+    ensemble, reference = exported_h2o_states
+    orbitals = ensemble.workflow_state.mo_coeff[:, 3:7]
+    (energy_0, vector_0), (energy_1, vector_1) = reference[(1, 0)], reference[(1, 1)]
+    expected_rdm1 = fci.direct_spin1.trans_rdm1(vector_1, vector_0, 4, (2, 2))
+    dipole_mo = np.einsum(
+        "xab,ap,bq->xpq",
+        ensemble._mol.intor_symmetric("int1e_r"),
+        orbitals,
+        orbitals,
+    )
+    expected_dipole = np.linalg.norm(np.einsum("xpq,pq->x", dipole_mo, expected_rdm1))
+    singular_values = np.linalg.svd(expected_rdm1, compute_uv=False)
+
+    transitions = ensemble.transition_properties()
+
+    assert list(transitions) == [((1, 0), (1, 1))]
+    transition = transitions[((1, 0), (1, 1))]
+    assert np.linalg.norm(transition.transition_dipole) == pytest.approx(
+        expected_dipole, abs=1e-8
+    )
+    assert transition.oscillator_strength == pytest.approx(
+        2.0 / 3.0 * (energy_1 - energy_0) * expected_dipole**2, abs=1e-8
+    )
+    np.testing.assert_allclose(
+        transition.nto_weights,
+        singular_values**2 / np.sum(singular_values**2),
+        atol=1e-8,
+    )
+
+
+def test_natural_transition_orbitals_rebuild_the_transition_density(
+    exported_h2o_states,
+):
+    """``sum_k s_k |particle_k><hole_k|`` over the active orbitals is the
+    transition 1-RDM, and each set of orbitals is orthonormal."""
+    ensemble, _ = exported_h2o_states
+    transition = ensemble.transition_properties()[((1, 0), (1, 1))]
+    overlap = ensemble._mol.intor_symmetric("int1e_ovlp")
+    orbitals = ensemble.workflow_state.mo_coeff[:, 3:7]
+    particles = orbitals.T @ overlap @ transition.particle_orbitals
+    holes = orbitals.T @ overlap @ transition.hole_orbitals
+    scale = np.sqrt(transition.nto_weights * np.sum(transition.transition_rdm1**2))
+
+    np.testing.assert_allclose(
+        particles @ np.diag(scale) @ holes.T, transition.transition_rdm1, atol=1e-10
+    )
+    for set_ in (particles, holes):
+        np.testing.assert_allclose(set_.T @ set_, np.eye(4), atol=1e-10)
+
+
+@pytest.mark.parametrize("method", ["state_wavefunctions", "transition_properties"])
+def test_state_exports_need_a_completed_states_round(
+    dummy_expval_backend, mocker, method
+):
+    ensemble, _ = _h2o_states_lassqd(dummy_expval_backend, mocker, FixedOrbitals())
+    message = (
+        f"{method} needs a completed LASSQD round with SQDConfig.states set. "
+        "Request the states, e.g. SQDConfig(states={1: 2}), and call run() first."
+    )
+
+    with pytest.raises(RuntimeError, match=exact_match(message)):
+        getattr(ensemble, method)()
+
+
+def test_state_wavefunctions_survive_a_checkpoint(
+    dummy_expval_backend, mocker, tmp_path
+):
+    ensemble, _ = _h2o_states_lassqd(dummy_expval_backend, mocker, FixedOrbitals())
+    ensemble.run(max_rounds=1)
+    payload = ensemble._save_workflow_checkpoint_state(
+        ensemble.workflow_state, tmp_path, "output_state"
+    )
+    resumed, _ = _h2o_states_lassqd(dummy_expval_backend, mocker, FixedOrbitals())
+
+    resumed._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
+
+    for saved, loaded in zip(
+        ensemble.state_wavefunctions().values(),
+        resumed.state_wavefunctions().values(),
+        strict=True,
+    ):
+        assert loaded.state == saved.state
+        np.testing.assert_allclose(loaded.rdm1, saved.rdm1, atol=1e-12)
+
+
+@pytest.fixture
+def two_orbital_wavefunction():
+    return StateWavefunction(
+        state=ElectronicState(multiplicity=1, index=0, energy=0.0, spin_square=0.0),
+        core_orbitals=np.zeros((2, 0)),
+        active_orbitals=np.eye(2),
+        strings_alpha=("10", "01"),
+        strings_beta=("10", "01"),
+        amplitudes=np.array([[0.1, -0.7], [0.7, 0.0]]),
+        rdm1=np.zeros((2, 2)),
+        rdm2=np.zeros((2,) * 4),
+    )
+
+
+def test_leading_determinants_rank_by_weight(two_orbital_wavefunction):
+    assert two_orbital_wavefunction.leading_determinants(2) == (
+        ("10", "01", -0.7),
+        ("01", "10", 0.7),
+    )
+    assert len(two_orbital_wavefunction.leading_determinants(10)) == 4
+
+
+@pytest.mark.parametrize("count", [0, -1])
+def test_leading_determinants_reject_a_count_below_one(two_orbital_wavefunction, count):
+    with pytest.raises(
+        ValueError, match=exact_match(f"count must be at least 1; got {count}.")
+    ):
+        two_orbital_wavefunction.leading_determinants(count)
+
+
+def test_state_averaging_works_on_a_symmetry_adapted_molecule(
+    dummy_expval_backend, mocker
+):
+    """The starting-orbital nudge breaks point-group symmetry, which PySCF's
+    symmetry-adapted CASSCF would reject."""
+    mol = gto.M(
+        atom="C 0 0 0.667; C 0 0 -0.667; H 0 0.923 1.237; H 0 -0.923 1.237; "
+        "H 0 0.923 -1.237; H 0 -0.923 -1.237",
+        basis="sto-3g",
+        symmetry=True,
+        verbose=0,
+    )
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(scf.RHF(mol).run(verbose=0)),
+        active_spaces=[FragmentSpec(orbitals=(7, 8), n_alpha=1, n_beta=1)],
+        states={1: 2, 3: 1},
+        orbital_update=StateAveragedOrbitalUpdate(),
+    )
+
+    ensemble.run(max_rounds=1)
+
+    assert set(ensemble.electronic_states) == {(1, 0), (1, 1), (3, 0)}
+
+
+def test_a_subspace_short_of_one_spin_leaves_the_missing_states_out(
+    dummy_expval_backend, mocker
+):
+    """A root of another spin is not reported in the requested one's place, so
+    no state appears twice and no transition crosses spins."""
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        active_spaces=[H4_WHOLE_SPACE],
+        states={1: 4, 3: 2},
+        n_batches=1,
+        batch_size=2,
+        n_recovery_iterations=1,
+        extension=None,
+        carryover_cutoff=None,
+        orbital_update=FixedOrbitals(),
+    )
+
+    with pytest.warns(UserWarning) as record:
+        ensemble.run(max_rounds=1)
+
+    states = ensemble.electronic_states.values()
+    resolved = {
+        multiplicity: sorted(s.index for s in states if s.multiplicity == multiplicity)
+        for multiplicity in (1, 3)
+    }
+    assert sum(map(len, resolved.values())) < 6
+    assert all(indices == list(range(len(indices))) for indices in resolved.values())
+    assert all(_sqd.resolves_spin(s.multiplicity, s.spin_square) for s in states)
+    assert any(
+        "requested states of multiplicity" in str(warning.message) for warning in record
+    )
+    assert all(
+        initial[0] == final[0] for initial, final in ensemble.transition_properties()
+    )
 
 
 def test_electronic_states_are_empty_without_states(exact_sampler_lassqd):

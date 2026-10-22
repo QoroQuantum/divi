@@ -28,6 +28,8 @@ if TYPE_CHECKING:
         SecondOrderOrbitalUpdate,
         SQDConfig,
         StateAveragedOrbitalUpdate,
+        StateTransition,
+        StateWavefunction,
         VQEPreparation,
     )
 
@@ -48,6 +50,8 @@ _LASSQD_EXPORTS = (
     "SecondOrderOrbitalUpdate",
     "SQDConfig",
     "StateAveragedOrbitalUpdate",
+    "StateTransition",
+    "StateWavefunction",
     "VQEPreparation",
 )
 

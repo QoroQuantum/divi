@@ -213,6 +213,99 @@ class ElectronicState:
     spin_square: float
 
 
+@dataclass(frozen=True, eq=False)
+class StateWavefunction:
+    """One requested state's wave function at the final round's orbitals.
+
+    Compares by identity, not value: the numpy fields make a value-based
+    ``__eq__`` raise.
+
+    Attributes:
+        state: The state's label, energy and ``<S^2>``.
+        core_orbitals: ``(nao, n_core)`` AO coefficients of the doubly
+            occupied orbitals outside the active space.
+        active_orbitals: ``(nao, n_act)`` AO coefficients of the active
+            orbitals the strings, amplitudes and RDMs refer to.
+        strings_alpha: Alpha occupation strings indexing ``amplitudes``' rows;
+            character ``p`` is orbital ``p``'s occupation.
+        strings_beta: Beta occupation strings indexing its columns.
+        amplitudes: CI coefficients over the product of the two string lists,
+            with PySCF's determinant phase: reading character ``p`` as bit
+            ``p``, ``pyscf.fci.cistring.str2addr`` places each amplitude in a
+            full-space PySCF FCI vector. A state of higher spin is its
+            ``M_S = (n_alpha - n_beta) / 2`` component.
+        rdm1: ``(n_act, n_act)`` spin-traced 1-RDM, in PySCF's convention.
+        rdm2: ``(n_act,) * 4`` spin-traced 2-RDM, in PySCF's chemist-order
+            convention.
+    """
+
+    state: ElectronicState
+    core_orbitals: np.ndarray
+    active_orbitals: np.ndarray
+    strings_alpha: tuple[str, ...]
+    strings_beta: tuple[str, ...]
+    amplitudes: np.ndarray
+    rdm1: np.ndarray
+    rdm2: np.ndarray
+
+    def leading_determinants(
+        self, count: int = 5
+    ) -> tuple[tuple[str, str, float], ...]:
+        """The ``count`` determinants of largest weight, as ``(alpha, beta,
+        coefficient)``, by descending ``coefficient ** 2``; all of them when
+        ``count`` exceeds the subspace.
+
+        Raises:
+            ValueError: If ``count`` is below 1.
+        """
+        if count < 1:
+            raise ValueError(f"count must be at least 1; got {count}.")
+        order = np.argsort(-np.abs(self.amplitudes), axis=None, kind="stable")[:count]
+        return tuple(
+            (
+                self.strings_alpha[row],
+                self.strings_beta[column],
+                float(self.amplitudes[row, column]),
+            )
+            for row, column in zip(*np.unravel_index(order, self.amplitudes.shape))
+        )
+
+
+@dataclass(frozen=True, eq=False)
+class StateTransition:
+    """The one-electron transition between two requested states of one spin.
+
+    Compares by identity, not value: the numpy fields make a value-based
+    ``__eq__`` raise.
+
+    Attributes:
+        initial: The lower state.
+        final: The higher state.
+        transition_rdm1: ``(n_act, n_act)`` spin-traced transition 1-RDM,
+            ``<final| a_p^+ a_q |initial>``, over the same active orbitals as
+            the states' :class:`StateWavefunction`.
+        transition_dipole: Electronic transition dipole, in atomic units. Its
+            sign follows the states' arbitrary phases.
+        oscillator_strength: ``2/3 * (E_final - E_initial) * |dipole|^2``.
+        hole_orbitals: ``(nao, n_act)`` natural transition orbitals the
+            electron leaves, ordered as ``nto_weights``.
+        particle_orbitals: ``(nao, n_act)`` natural transition orbitals the
+            electron enters, paired column by column with ``hole_orbitals``.
+        nto_weights: Each natural-transition-orbital pair's share of the
+            transition, descending and summing to 1; all zero when no
+            one-electron move connects the states.
+    """
+
+    initial: ElectronicState
+    final: ElectronicState
+    transition_rdm1: np.ndarray
+    transition_dipole: np.ndarray
+    oscillator_strength: float
+    hole_orbitals: np.ndarray
+    particle_orbitals: np.ndarray
+    nto_weights: np.ndarray
+
+
 @dataclass(frozen=True)
 class _SampledSubspace:
     """Fragment 0's SQD subspace, for an update that re-solves its CI."""

@@ -330,17 +330,57 @@ singlet–triplet gap:
   :class:`~divi.qprog.workflows.FixedOrbitals` keeps the input orbitals, for
   comparison with CASCI. The other updates relax for the lowest state only and
   warn.
-- **Energies.** ``energy`` is always the lowest state's. Under state averaging
-  the macro-cycle converges on the average, reported as each round's
-  ``averaged_energy``.
+- **Energies.** ``energy`` is always the lowest requested state's, of whichever
+  spin. Under state averaging the macro-cycle converges on the average,
+  reported as each round's ``averaged_energy``.
 - **Coverage.** The circuit samples the ground state, so excited states rely on
   the default extension, ``"auto"`` (singles); ``"doubles"`` reaches further and grows
-  the subspace far more.
-- **Spin** is targeted by ``lambda_penalty``, and roots nearer another spin are
-  skipped. A sampled subspace may hold no pure state of a spin, so each state
+  the subspace far more. An incomplete subspace raises excited states unevenly,
+  so it can reorder them: a dark state may then carry the label a bright one
+  has in the full space, and a triplet may fall below S0.
+- **Spin** is targeted by ``lambda_penalty``. A root nearer another spin is left
+  out, with a warning, so a subspace short of states of one spin returns fewer
+  than were requested. A state can still be partly contaminated, so each
   reports its ``spin_square``, and a warning names any that misses.
 - **One fragment only**: a product of fragment states cannot describe an
   excitation spread over several fragments.
+
+Wave Functions and Transitions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Each state's wave function, and the transitions between states, come from the
+last completed round:
+
+.. code-block:: python
+
+   for label, wavefunction in ensemble.state_wavefunctions().items():
+       print(label, wavefunction.leading_determinants(2))
+
+   transition = ensemble.transition_properties()[((1, 0), (1, 1))]
+   print(f"S0 -> S1: f = {transition.oscillator_strength:.3f}")
+
+- **States.** :meth:`~divi.qprog.workflows.LASSQD.state_wavefunctions` returns
+  a :class:`~divi.qprog.workflows.StateWavefunction` per state, in the order of
+  ``electronic_states``: its CI amplitudes over the subspace's alpha and beta
+  strings, and its spin-traced 1- and 2-RDMs in PySCF's convention. All refer
+  to the wave function's ``active_orbitals``, which are the orbitals the strings
+  were sampled in, so hand those on together with the RDMs; ``core_orbitals``
+  holds the doubly occupied orbitals outside the active space. The amplitudes
+  follow PySCF's determinant phase, so ``pyscf.fci.cistring.str2addr``, reading
+  string character ``p`` as bit ``p``, maps them into a full-space PySCF CI
+  vector, and a triplet is its ``M_S = 0`` component when the fragment has
+  ``n_alpha == n_beta``.
+- **Transitions.** :meth:`~divi.qprog.workflows.LASSQD.transition_properties`
+  returns a :class:`~divi.qprog.workflows.StateTransition` for every pair of
+  states of one multiplicity, keyed ``(initial, final)`` with the lower state
+  first: the transition 1-RDM, the transition dipole, the oscillator strength
+  ``2/3 ΔE |μ|²`` and the natural transition orbitals. A pair of different
+  multiplicities has no spin-free transition and is left out, so one state per
+  multiplicity gives no transitions. The dipole's sign follows the states'
+  arbitrary phases; its length does not.
+- **Cost.** Both solve the final subspace again at the final orbitals on each
+  call. The subspace is saved with the workflow checkpoint, so both also work
+  after :meth:`~divi.qprog.ensemble.ProgramEnsemble.restore_state`.
 
 .. _lassqd-accuracy-characteristics:
 

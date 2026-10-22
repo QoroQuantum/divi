@@ -9,7 +9,7 @@ import os
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import accumulate, combinations, pairwise, permutations, product
 from pathlib import Path
@@ -26,12 +26,22 @@ from scipy.optimize import minimize
 
 from ._sqd import (
     ci_string_to_int,
+    compute_spatial_rdms,
     lowest_roots,
     projected_matrices,
+    resolves_spin,
+    sci_vector,
     spin_orbital_integrals,
     subspace_determinants,
 )
-from ._state import ElectronicState, FragmentSpec, FragmentState
+from ._state import (
+    ElectronicState,
+    FragmentSpec,
+    FragmentState,
+    StateTransition,
+    StateWavefunction,
+    _SampledSubspace,
+)
 
 # L-BFGS-B ftol is relative, so a tol=1e-6 shorthand halts around 1e-6 * |E|,
 # coarser than LASSQD's energy_tol. Tighter than this terminates ABNORMAL.
@@ -172,7 +182,7 @@ def transform_integrals(
     if h_ao is None:
         h_ao = cached_h_ao(mol)
 
-    casci = mcscf.CASCI(
+    casci = mcscf.casci.CASCI(
         _exact_mean_field(mol, ao_eri, h_ao), n_act, mol.nelectron - 2 * n_core
     )
     casci.ncore = n_core
@@ -1238,7 +1248,9 @@ class _SubspaceCI(selected_ci.SelectedCI):
 
 def _exact_mean_field(mol, ao_eri: np.ndarray, h_ao: np.ndarray) -> hf.RHF:
     """An RHF object whose integrals are ``ao_eri`` and ``h_ao``, for PySCF
-    CASCI and CASSCF to build their Hamiltonians from."""
+    CASCI and CASSCF to build their Hamiltonians from, with the
+    non-symmetry-adapted classes, since LASSQD's orbitals break point-group
+    symmetry."""
     mean_field = hf.RHF(mol)
     mean_field._chkfile.close()
     mean_field.chkfile = None
@@ -1249,37 +1261,134 @@ def _exact_mean_field(mol, ao_eri: np.ndarray, h_ao: np.ndarray) -> hf.RHF:
 
 def subspace_states_at(
     mol,
-    mo_coeff: np.ndarray,
+    subspace: _SampledSubspace,
     n_core: int,
-    spec: FragmentSpec,
-    strings: tuple[Sequence[str], Sequence[str]],
-    states: Mapping[int, int],
-    lambda_penalty: float,
     ao_eri: np.ndarray,
     h_ao: np.ndarray,
 ) -> tuple[ElectronicState, ...]:
     """Each requested state with the subspace re-diagonalised at fixed
     orbitals, as CASCI would, in root order.
 
-    ``mo_coeff``'s active block must be the basis ``strings`` refer to.
-    Energies are the unpenalised ``<H>``.
+    ``subspace.mo_coeff``'s active block must be the basis its strings refer
+    to. Energies are the unpenalised ``<H>``.
     """
-    n_active = spec.n_orbitals
-    nelec = (spec.n_alpha, spec.n_beta)
-    casci = mcscf.CASCI(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
+    return tuple(
+        state for state, _ in _subspace_roots(mol, subspace, n_core, ao_eri, h_ao)
+    )
+
+
+def _subspace_roots(
+    mol,
+    subspace: _SampledSubspace,
+    n_core: int,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+) -> Iterator[tuple[ElectronicState, np.ndarray]]:
+    """Each requested state of ``subspace`` at its orbitals, with its CI
+    vector, in root order."""
+    strings_alpha, strings_beta = subspace.strings
+    n_active = len(strings_alpha[0])
+    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
+    casci = mcscf.casci.CASCI(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
     casci.ncore = n_core
-    h1e, energy_core = casci.get_h1eff(mo_coeff)
-    eri = casci.get_h2eff(mo_coeff)
-    solved = []
-    for multiplicity, n_roots in sorted(states.items()):
-        solver = _SubspaceCI(*strings, multiplicity, n_roots, lambda_penalty)
+    h1e, energy_core = casci.get_h1eff(subspace.mo_coeff)
+    eri = casci.get_h2eff(subspace.mo_coeff)
+    for multiplicity, n_roots in sorted(subspace.states.items()):
+        solver = _SubspaceCI(
+            strings_alpha, strings_beta, multiplicity, n_roots, subspace.lambda_penalty
+        )
         energies, civecs = solver.roots(h1e, eri, n_active, energy_core)
-        for index, (energy, civec) in enumerate(zip(energies, civecs)):
+        index = 0
+        for energy, civec in zip(energies, civecs):
             spin_square, _ = solver.spin_square(civec, n_active, nelec)
-            solved.append(
-                ElectronicState(multiplicity, index, float(energy), float(spin_square))
+            if not resolves_spin(multiplicity, spin_square):
+                continue
+            state = ElectronicState(
+                multiplicity, index, float(energy), float(spin_square)
             )
-    return tuple(solved)
+            yield state, np.asarray(civec)
+            index += 1
+
+
+def subspace_wavefunctions(
+    mol,
+    subspace: _SampledSubspace,
+    n_core: int,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+) -> tuple[StateWavefunction, ...]:
+    """Each requested state of ``subspace`` at its orbitals, with its CI vector
+    and RDMs, in root order."""
+    strings_alpha, strings_beta = (tuple(half) for half in subspace.strings)
+    n_active = len(strings_alpha[0])
+    core_orbitals = subspace.mo_coeff[:, :n_core]
+    active_orbitals = subspace.mo_coeff[:, n_core : n_core + n_active]
+    wavefunctions = []
+    for state, amplitudes in _subspace_roots(mol, subspace, n_core, ao_eri, h_ao):
+        rdm1, rdm2, _, _ = compute_spatial_rdms(
+            strings_alpha, strings_beta, amplitudes, n_active
+        )
+        wavefunctions.append(
+            StateWavefunction(
+                state=state,
+                core_orbitals=core_orbitals,
+                active_orbitals=active_orbitals,
+                strings_alpha=strings_alpha,
+                strings_beta=strings_beta,
+                amplitudes=amplitudes,
+                rdm1=rdm1,
+                rdm2=rdm2,
+            )
+        )
+    return tuple(wavefunctions)
+
+
+def state_transitions(
+    mol, wavefunctions: Sequence[StateWavefunction]
+) -> tuple[StateTransition, ...]:
+    """Every pair of same-multiplicity states' one-electron transition, lower
+    state first, in the order of ``wavefunctions``."""
+    if not wavefunctions:
+        return ()
+    orbitals = wavefunctions[0].active_orbitals
+    n_active = orbitals.shape[1]
+    dipole_mo = np.einsum(
+        "xab,ap,bq->xpq", mol.intor_symmetric("int1e_r"), orbitals, orbitals
+    )
+    transitions = []
+    for lower, upper in combinations(wavefunctions, 2):
+        if lower.state.multiplicity != upper.state.multiplicity:
+            continue
+        if upper.state.energy < lower.state.energy:
+            lower, upper = upper, lower
+        nelec = (lower.strings_alpha[0].count("1"), lower.strings_beta[0].count("1"))
+        transition_rdm1 = selected_ci.trans_rdm1(
+            sci_vector(upper.strings_alpha, upper.strings_beta, upper.amplitudes),
+            sci_vector(lower.strings_alpha, lower.strings_beta, lower.amplitudes),
+            n_active,
+            nelec,
+        )
+        dipole = -np.einsum("xpq,pq->x", dipole_mo, transition_rdm1)
+        gap = upper.state.energy - lower.state.energy
+        particles, singular_values, holes = np.linalg.svd(transition_rdm1)
+        total = float(np.sum(singular_values**2))
+        transitions.append(
+            StateTransition(
+                initial=lower.state,
+                final=upper.state,
+                transition_rdm1=transition_rdm1,
+                transition_dipole=dipole,
+                oscillator_strength=float(2.0 / 3.0 * gap * dipole @ dipole),
+                hole_orbitals=orbitals @ holes.T,
+                particle_orbitals=orbitals @ particles,
+                nto_weights=(
+                    singular_values**2 / total
+                    if total > 0
+                    else np.zeros_like(singular_values)
+                ),
+            )
+        )
+    return tuple(transitions)
 
 
 def state_averaged_orbital_solve(
@@ -1332,7 +1441,7 @@ def state_averaged_orbital_solve(
     n_active = spec.n_orbitals
     nelec = (spec.n_alpha, spec.n_beta)
 
-    casscf = mcscf.CASSCF(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
+    casscf = mcscf.mc1step.CASSCF(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
     casscf.ncore = n_core
     casscf.verbose = 0
     casscf.canonicalization = False
@@ -1386,10 +1495,15 @@ def state_averaged_orbital_solve(
             stacklevel=_outside_divi_stacklevel(),
         )
     spin_squares = casscf.fcisolver.states_spin_square(casscf.ci, n_active, nelec)[0]
-    states = tuple(
-        ElectronicState(multiplicity, index, float(state_energy), float(spin_square))
-        for (multiplicity, index), state_energy, spin_square in zip(
-            labels, casscf.e_states, spin_squares
-        )
-    )
-    return solve, states
+    states: list[ElectronicState] = []
+    for (multiplicity, _), state_energy, spin_square in zip(
+        labels, casscf.e_states, spin_squares
+    ):
+        if resolves_spin(multiplicity, spin_square):
+            index = sum(1 for state in states if state.multiplicity == multiplicity)
+            states.append(
+                ElectronicState(
+                    multiplicity, index, float(state_energy), float(spin_square)
+                )
+            )
+    return solve, tuple(states)

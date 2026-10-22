@@ -105,6 +105,8 @@ if TYPE_CHECKING:
         SecondOrderOrbitalUpdate,
         SQDConfig,
         StateAveragedOrbitalUpdate,
+        StateTransition,
+        StateWavefunction,
         VQEPreparation,
     )
 
