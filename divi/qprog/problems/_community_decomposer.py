@@ -58,8 +58,7 @@ class CommunityDecomposer(traits.ProblemDecomposer, traits.SISO, Runnable):
         super().__init__(**runopts)
         if not isinstance(config, QUBOPartitioningConfig):
             raise TypeError(
-                "config must be a QUBOPartitioningConfig, got "
-                f"{type(config).__name__}."
+                f"config must be a QUBOPartitioningConfig, got {type(config).__name__}."
             )
         self.config = config
         self.silent_rewind = silent_rewind

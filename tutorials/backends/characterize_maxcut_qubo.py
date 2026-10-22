@@ -220,8 +220,7 @@ def main() -> None:
         problem, backend, G, sweep_result.qaoa_initial_params(layers=1)
     )
     console.print(
-        f"      seeded  →  cut={seeded['cut']:>5.2f}  "
-        f"({seeded['circuits']} circuits)\n"
+        f"      seeded  →  cut={seeded['cut']:>5.2f}  ({seeded['circuits']} circuits)\n"
     )
 
     console.print(
@@ -364,8 +363,8 @@ def _comparison_table(
     )
     cmp.add_row(
         "Approx. Ratio",
-        f"{blind_mean/best_cut:.3f} ± {blind_std/best_cut:.3f}",
-        f"{seeded_cut/best_cut:.3f}",
+        f"{blind_mean / best_cut:.3f} ± {blind_std / best_cut:.3f}",
+        f"{seeded_cut / best_cut:.3f}",
     )
     cmp.add_row(
         "Total Circuits",

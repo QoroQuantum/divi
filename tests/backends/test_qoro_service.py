@@ -2836,16 +2836,16 @@ class TestQoroServiceWithApiKey:
         assert result.job_id is not None, "Job ID should be present"
 
         cancel_response = qoro_service.cancel_job(result)
-        assert (
-            cancel_response.status_code == HTTPStatus.OK
-        ), "Cancel should be successful"
+        assert cancel_response.status_code == HTTPStatus.OK, (
+            "Cancel should be successful"
+        )
         cancel_result = cancel_response.json()
         assert isinstance(cancel_result, dict), "Cancel result should be a dict"
         assert cancel_result["status"] == "cancelled", "Status should be cancelled"
         assert cancel_result["job_id"] == result.job_id, "Job ID should match"
-        assert (
-            "circuits_cancelled" in cancel_result
-        ), "Should include circuits_cancelled"
+        assert "circuits_cancelled" in cancel_result, (
+            "Should include circuits_cancelled"
+        )
 
     def test_cancel_completed_job_fails(self, qoro_service, circuits):
         """Tests that cancelling a completed job fails with 409 Conflict."""
@@ -2862,9 +2862,9 @@ class TestQoroServiceWithApiKey:
             qoro_service.cancel_job(result)
 
         # Should be 409 Conflict
-        assert (
-            exc_info.value.response.status_code == HTTPStatus.CONFLICT
-        ), "Cancelling completed job should return 409 Conflict"
+        assert exc_info.value.response.status_code == HTTPStatus.CONFLICT, (
+            "Cancelling completed job should return 409 Conflict"
+        )
 
     def test_cancel_nonexistent_job_fails(self, qoro_service):
         """Tests that cancelling a non-existent job fails."""
@@ -2982,9 +2982,9 @@ class TestQoroServiceWithApiKey:
         assert len(exp_values) == len(ham_terms)
         assert set(exp_values.keys()) == set(ham_terms)
         # Values should be numeric (float or int)
-        assert all(
-            isinstance(val, (float, int)) for val in exp_values.values()
-        ), "Expectation values should be numeric"
+        assert all(isinstance(val, (float, int)) for val in exp_values.values()), (
+            "Expectation values should be numeric"
+        )
 
     def test_get_job_results_wide_register(self, qoro_service):
         """Regression test: circuits with >64 qubits must return properly
@@ -3036,9 +3036,9 @@ class TestQoroServiceWithApiKey:
 
         for key, count in hist.items():
             assert isinstance(key, str)
-            assert (
-                len(key) == n_qubits
-            ), f"Bitstring width mismatch: got {len(key)}, expected {n_qubits}"
+            assert len(key) == n_qubits, (
+                f"Bitstring width mismatch: got {len(key)}, expected {n_qubits}"
+            )
             assert set(key) <= {
                 "0",
                 "1",
@@ -3082,9 +3082,9 @@ class TestQoroServiceWithApiKey:
         assert isinstance(hist, dict) and hist
 
         for key, count in hist.items():
-            assert (
-                len(key) == n_qubits
-            ), f"expected full-width {n_qubits}-bit keys, got {key!r}"
+            assert len(key) == n_qubits, (
+                f"expected full-width {n_qubits}-bit keys, got {key!r}"
+            )
             assert set(key) <= {"0", "1"}
             assert isinstance(count, int) and count > 0
             # Endianness-agnostic: measured q0,q2 = 1, unmeasured c1 = 0.
@@ -3247,6 +3247,6 @@ class TestQoroServiceWithApiKey:
         """Tests that cancelling a failed job returns 409 Conflict."""
         with pytest.raises(requests.exceptions.HTTPError) as exc_info:
             qoro_service.cancel_job(failed_job)
-        assert (
-            exc_info.value.response.status_code == HTTPStatus.CONFLICT
-        ), "Cancelling a failed job should return 409 Conflict"
+        assert exc_info.value.response.status_code == HTTPStatus.CONFLICT, (
+            "Cancelling a failed job should return 409 Conflict"
+        )

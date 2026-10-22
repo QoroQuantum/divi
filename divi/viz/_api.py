@@ -414,8 +414,7 @@ def _normalize_pca_offset(
         return (-a, a)
     if array.shape != (2,):
         raise ValueError(
-            "offset must be a scalar or a pair (low, high), got shape "
-            f"{array.shape}."
+            f"offset must be a scalar or a pair (low, high), got shape {array.shape}."
         )
     return (float(array[0]), float(array[1]))
 

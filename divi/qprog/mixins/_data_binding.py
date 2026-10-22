@@ -319,8 +319,7 @@ class DataBindingMixin(_MixinBase):
             )
         if self._fit_bias and n_labels < 2:
             raise ValueError(
-                f"fit_bias requires at least 2 samples, but {n_labels} is now "
-                "assigned."
+                f"fit_bias requires at least 2 samples, but {n_labels} is now assigned."
             )
         self._require_finite_labels(np.asarray(labels, dtype=np.float64).reshape(-1))
 

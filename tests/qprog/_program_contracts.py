@@ -55,9 +55,9 @@ def verify_load_state_rejects_missing_state_key(
 
 
 def verify_cost_circuit(obj: QuantumProgram) -> None:
-    assert isinstance(
-        obj.cost_circuit, MetaCircuit
-    ), "cost_circuit must be a MetaCircuit"
+    assert isinstance(obj.cost_circuit, MetaCircuit), (
+        "cost_circuit must be a MetaCircuit"
+    )
 
 
 def _get_n_obs_groups(meta: MetaCircuit, supports_expval: bool) -> int:

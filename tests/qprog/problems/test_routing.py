@@ -19,10 +19,11 @@ from divi.qprog.problems import (
     binary_block_config,
     cvrp_block_structure,
     is_valid_tsp_tour,
+    parse_tsplib_file,
+    parse_vrp_solution,
+    tour_cost,
 )
-from divi.qprog.problems import parse_tsplib_file
 from divi.qprog.problems import parse_tsplib_file as parse_tsplib_file_public
-from divi.qprog.problems import parse_vrp_solution, tour_cost
 from divi.qprog.problems._routing import (
     _nint,
     _unpack_explicit,

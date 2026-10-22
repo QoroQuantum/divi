@@ -387,8 +387,7 @@ class CheckpointConfig:
             object.__setattr__(self, "checkpoint_dir", Path(self.checkpoint_dir))
         if self.checkpoint_interval is not None and self.checkpoint_interval < 1:
             raise ValueError(
-                "checkpoint_interval must be positive; "
-                f"got {self.checkpoint_interval}."
+                f"checkpoint_interval must be positive; got {self.checkpoint_interval}."
             )
 
     @classmethod

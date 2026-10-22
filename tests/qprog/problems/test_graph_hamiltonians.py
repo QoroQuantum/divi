@@ -134,9 +134,10 @@ def test_min_vertex_cover_unconstrained_penalises_uncovered_edges(name, factory)
 
     assert_diagonal_scores(
         cost,
-        lambda bits: 3
-        * sum(not bits[left] and not bits[right] for left, right in graph.edges())
-        + 2 * _selected(bits),
+        lambda bits: (
+            3 * sum(not bits[left] and not bits[right] for left, right in graph.edges())
+            + 2 * _selected(bits)
+        ),
     )
     assert_transitions(mixer, single_flip_transitions(graph.number_of_nodes()))
 
@@ -168,8 +169,9 @@ def test_max_clique_unconstrained_penalises_non_adjacent_selections(name, factor
 
     assert_diagonal_scores(
         cost,
-        lambda bits: 3 * _both_endpoints_selected(complement, bits)
-        - 2 * _selected(bits),
+        lambda bits: (
+            3 * _both_endpoints_selected(complement, bits) - 2 * _selected(bits)
+        ),
     )
     assert_transitions(mixer, single_flip_transitions(graph.number_of_nodes()))
 
@@ -393,12 +395,12 @@ def test_rustworkx_pydigraph_matches_nx_for_max_weight_cycle():
         rx_cost, rx_mixer, rx_map = max_weight_cycle_hamiltonians(
             rx_graph, constrained=constrained
         )
-        assert _spo_equal(
-            rx_cost, nx_cost
-        ), f"cost SPO mismatch constrained={constrained}"
-        assert _spo_equal(
-            rx_mixer, nx_mixer
-        ), f"mixer SPO mismatch constrained={constrained}"
+        assert _spo_equal(rx_cost, nx_cost), (
+            f"cost SPO mismatch constrained={constrained}"
+        )
+        assert _spo_equal(rx_mixer, nx_mixer), (
+            f"mixer SPO mismatch constrained={constrained}"
+        )
         assert rx_map == nx_map, f"wire→edge map mismatch constrained={constrained}"
 
 

@@ -79,7 +79,9 @@ def format_pipeline_tree(trace: PipelineTrace) -> None:
         return
     children = _path_children(keys)
     roots = children.get("", [])
-    s = lambda p: p.split("/")[-1]
+
+    def s(p: str) -> str:
+        return p.split("/")[-1]
 
     def add(tree: Tree, path: str) -> None:
         for c in children.get(path, []):
@@ -767,7 +769,6 @@ class CircuitPipeline:
 
         # Reduce in reverse expand order (bottom-up).
         for stage, token in reversed(list(zip(bundle_stages, bundle_tokens))):
-
             # Axes from ALL OTHER bundle stages — both upstream and downstream.
             # Branch keys include tag axes from _compile_batch that may come from
             # stages on either side of this one.

@@ -313,8 +313,7 @@ def build_block_xy_mixer_graph(
     expected = block_size * n_blocks
     if len(wires) != expected:
         raise ValueError(
-            f"Expected {expected} wires ({block_size} × {n_blocks}), "
-            f"got {len(wires)}."
+            f"Expected {expected} wires ({block_size} × {n_blocks}), got {len(wires)}."
         )
 
     g = nx.Graph()

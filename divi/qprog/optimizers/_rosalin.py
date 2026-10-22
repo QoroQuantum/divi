@@ -236,7 +236,7 @@ class RosalinOptimizer(Optimizer):
             raise ValueError(f"bias must be positive, got {bias}.")
         if allocation not in ("icans", "gcans"):
             raise ValueError(
-                "allocation must be either 'icans' or 'gcans', " f"got {allocation!r}."
+                f"allocation must be either 'icans' or 'gcans', got {allocation!r}."
             )
 
         self.learning_rate = float(learning_rate)

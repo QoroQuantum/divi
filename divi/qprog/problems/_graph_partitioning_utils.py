@@ -433,8 +433,9 @@ def _node_partition_graph(
 
         subgraphs = _bisect_with_predicate(
             subgraphs,
-            lambda _, subgraphs: len(subgraphs)
-            < partitioning_config.minimum_n_clusters - 1,
+            lambda _, subgraphs: (
+                len(subgraphs) < partitioning_config.minimum_n_clusters - 1
+            ),
             partitioning_config,
         )
 

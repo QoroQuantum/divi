@@ -3081,8 +3081,7 @@ def test_best_energy_tracks_the_lowest_round_not_the_last(exact_sampler_lassqd, 
 def test_results_before_the_first_round_warn(exact_sampler_lassqd, name, placeholder):
     ensemble, _ = exact_sampler_lassqd
     message = (
-        f"{name} is not available: no LASSQD round has completed yet. Call run() "
-        "first."
+        f"{name} is not available: no LASSQD round has completed yet. Call run() first."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):

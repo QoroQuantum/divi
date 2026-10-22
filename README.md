@@ -10,7 +10,7 @@
   <a href="https://pypi.org/project/qoro-divi/"><img src="https://img.shields.io/pypi/pyversions/qoro-divi" alt="Python"></a>
   <a href="https://divi.readthedocs.io"><img src="https://img.shields.io/badge/docs-readthedocs-blue" alt="Docs"></a>
   <a href="LICENSES/Apache-2.0.txt"><img src="https://img.shields.io/badge/license-Apache%202.0-green" alt="License"></a>
-  <a href="https://github.com/psf/black"><img src="https://img.shields.io/badge/code%20style-black-000000" alt="Code style: black"></a>
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json" alt="Ruff"></a>
   <a href="https://github.com/facebook/pyrefly"><img src="https://img.shields.io/endpoint?url=https://pyrefly.org/badge.json" alt="Checked with pyrefly"></a>
 </p>
 

@@ -109,7 +109,10 @@ class TestScipyOptimizer:
         monkeypatch.setattr("divi.qprog.optimizers._scipy.minimize", fake_minimize)
 
         optimizer = ScipyOptimizer(method=method)
-        jac_fn = lambda x: x
+
+        def jac_fn(x):
+            return x
+
         initial_params = self.rng.random((1, self.n_params)) * 0.1
 
         optimizer.optimize(

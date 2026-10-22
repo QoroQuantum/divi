@@ -638,14 +638,14 @@ class TestCacheStructuralInvariant:
                 # A param that's zero at t=1 must also be zero at t=2; a
                 # non-zero t=2 value would imply a constant offset, which
                 # the cache cannot represent as ``coef * t``.
-                assert (
-                    abs(x2) < 1e-12
-                ), f"Param zero at t=1 but {x2} at t=2 — non-linear scaling"
+                assert abs(x2) < 1e-12, (
+                    f"Param zero at t=1 but {x2} at t=2 — non-linear scaling"
+                )
                 continue
             ratio = x2 / x1
-            assert (
-                abs(ratio - 1.0) < 1e-9 or abs(ratio - 2.0) < 1e-9
-            ), f"Non-linear param scaling: t1={x1}, t2={x2}, ratio={ratio}"
+            assert abs(ratio - 1.0) < 1e-9 or abs(ratio - 2.0) < 1e-9, (
+                f"Non-linear param scaling: t1={x1}, t2={x2}, ratio={ratio}"
+            )
 
 
 class TestParametricTemplate:

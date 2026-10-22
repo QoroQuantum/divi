@@ -233,8 +233,7 @@ def _qiskit_clifford_to_stim(qc_or_dag: QuantumCircuit | DAGCircuit) -> stim.Cir
                 sc.append(stim_rot, [qubit_idx[q] for q in qargs], ())
             continue
         raise ValueError(
-            f"Gate {name!r} is not recognised as Clifford by QuEPP's stim "
-            f"converter."
+            f"Gate {name!r} is not recognised as Clifford by QuEPP's stim converter."
         )
     return sc
 

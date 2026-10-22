@@ -254,8 +254,7 @@ def _check_routing_inputs(
         raise ValueError(f"cost_matrix must be square, got shape {cost_matrix.shape}.")
     if demands is not None and len(demands) != n_nodes:
         raise ValueError(
-            f"demands length ({len(demands)}) must match "
-            f"cost_matrix size ({n_nodes})."
+            f"demands length ({len(demands)}) must match cost_matrix size ({n_nodes})."
         )
     return n_nodes
 

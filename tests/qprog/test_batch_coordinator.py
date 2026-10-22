@@ -975,9 +975,9 @@ class TestFlushWithSyncBackend:
             merged_values = list(backend.submitted[0].values())
             p1_pos = merged_values.index("qasm_p1")
             p2_pos = merged_values.index("qasm_p2")
-            assert (
-                p1_pos < p2_pos
-            ), f"Expected p1 before p2 (sorted), got order: {merged_values}"
+            assert p1_pos < p2_pos, (
+                f"Expected p1 before p2 (sorted), got order: {merged_values}"
+            )
 
     @pytest.mark.parametrize(
         ("sort_programs", "expected_order"),

@@ -61,8 +61,7 @@ def deinterleave_spin_bitstring(bitstring: str, n_orb: int) -> str:
     """
     if len(bitstring) != 2 * n_orb:
         raise ValueError(
-            f"bitstring width {len(bitstring)} does not match 2 * n_orb "
-            f"({2 * n_orb})."
+            f"bitstring width {len(bitstring)} does not match 2 * n_orb ({2 * n_orb})."
         )
     alpha = bitstring[0::2]
     beta = bitstring[1::2]

@@ -455,8 +455,7 @@ class TestAnalyticDryRun:
         real_meas = real_meta.measurement_qasms
         assert real_meas, "real measurement_qasms must be populated"
         assert all("measure" in qasm for _tag, qasm in real_meas), (
-            "real run produced placeholder measurement QASMs — "
-            "cache leaked dry state"
+            "real run produced placeholder measurement QASMs — cache leaked dry state"
         )
 
 

@@ -1455,9 +1455,9 @@ class TestMeasurementStageTupleObservable:
         per_group_shots = trace.env_artifacts["per_group_shots"]
         spec_key = (("spec", "circ"),)
         shots = per_group_shots[spec_key]
-        assert all(
-            n > 0 for n in shots.values()
-        ), f"sign-canceling observables zeroed out shot allocation: {shots}"
+        assert all(n > 0 for n in shots.values()), (
+            f"sign-canceling observables zeroed out shot allocation: {shots}"
+        )
 
     def test_sign_canceling_observables_full_reduce_preserves_signs(
         self, default_test_simulator

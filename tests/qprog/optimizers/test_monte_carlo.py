@@ -194,14 +194,14 @@ class TestMonteCarloOptimizer:
 
         if keep_best_params:
             # If we keep the best params, all of them should be present.
-            assert all(
-                is_present
-            ), "Not all best parameters were kept when keep_best_params=True"
+            assert all(is_present), (
+                "Not all best parameters were kept when keep_best_params=True"
+            )
         else:
             # If we don't, none of them should be present as exact copies.
-            assert not any(
-                is_present
-            ), "A best parameter was kept as an exact copy when keep_best_params=False"
+            assert not any(is_present), (
+                "A best parameter was kept as an exact copy when keep_best_params=False"
+            )
 
     def test_save_state_creates_checkpoint_file(self, tmp_path):
         """Test that save_state() creates the expected checkpoint file."""

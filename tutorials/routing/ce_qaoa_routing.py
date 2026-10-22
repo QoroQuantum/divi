@@ -296,9 +296,9 @@ def run_tsp_walkthrough(backend) -> None:
     )
     print(f"Feasible probability mass: {prob_feas:.2%}")
     print(
-        f"Hilbert space: 2^{(TSP_N_CITIES-1)**2} = "
-        f"{2**((TSP_N_CITIES-1)**2)} states, "
-        f"feasible: {TSP_N_CITIES-1}! = {problem.feasible_dimension}"
+        f"Hilbert space: 2^{(TSP_N_CITIES - 1) ** 2} = "
+        f"{2 ** ((TSP_N_CITIES - 1) ** 2)} states, "
+        f"feasible: {TSP_N_CITIES - 1}! = {problem.feasible_dimension}"
     )
 
     # ── 5) Repair + top solutions ─────────────────────────────────────
@@ -361,8 +361,7 @@ def run_cvrp_walkthrough(backend) -> None:
 
     cfg = problem_bin.binary_config
     print(
-        f"Qubits: {ce_bin.n_qubits}  "
-        f"({cfg.n_slots} slots × {cfg.bits_per_slot} bits)"
+        f"Qubits: {ce_bin.n_qubits}  ({cfg.n_slots} slots × {cfg.bits_per_slot} bits)"
     )
     print(f"Circuits: {ce_bin.total_circuit_count}")
     print(f"Best loss: {ce_bin.best_loss:.4f}")

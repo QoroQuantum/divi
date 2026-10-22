@@ -442,9 +442,9 @@ class TestParallelExecution:
 
         first_thread = Thread(target=sim.submit_circuits, args=({"c0": QASM_DEPTH_2},))
         first_thread.start()
-        assert worker_started.wait(
-            timeout=5
-        ), "first submission did not reach the worker"
+        assert worker_started.wait(timeout=5), (
+            "first submission did not reach the worker"
+        )
         first_pool = sim._executor
 
         # close() will block in shutdown(wait=True) waiting for the slow
@@ -463,9 +463,9 @@ class TestParallelExecution:
 
         new_submit_thread = Thread(target=_fast_submit)
         new_submit_thread.start()
-        assert submit_done.wait(
-            timeout=2
-        ), "concurrent submit was blocked by close()'s drain"
+        assert submit_done.wait(timeout=2), (
+            "concurrent submit was blocked by close()'s drain"
+        )
 
         drain_release.set()
         first_thread.join(timeout=5)

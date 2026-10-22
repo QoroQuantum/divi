@@ -281,12 +281,12 @@ class TestParameterBindingStageDeferredBinding:
         )
 
         for node in trace.final_batch.values():
-            assert (
-                node.qasm_bodies
-            ), "qasm_bodies should be populated when the backend resolves parameters."
-            assert (
-                node.parameters
-            ), "Parameters must remain unbound so compile emits a parametric CircuitPayload."
+            assert node.qasm_bodies, (
+                "qasm_bodies should be populated when the backend resolves parameters."
+            )
+            assert node.parameters, (
+                "Parameters must remain unbound so compile emits a parametric CircuitPayload."
+            )
             # Symbols survive: substitution is deferred to the backend.
             for _tag, body in node.qasm_bodies:
                 assert "theta" in body

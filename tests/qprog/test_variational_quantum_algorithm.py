@@ -3274,7 +3274,7 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         for i in range(n_params):
             diff_pos = shifted[2 * i] - initial_params.squeeze()
             nonzero = np.nonzero(np.abs(diff_pos) > 1e-10)[0]
-            assert len(nonzero) == 1, f"Row {2*i} shifts {len(nonzero)} params"
+            assert len(nonzero) == 1, f"Row {2 * i} shifts {len(nonzero)} params"
             assert nonzero[0] == i
             np.testing.assert_allclose(np.abs(diff_pos[nonzero[0]]), np.pi / 2)
 

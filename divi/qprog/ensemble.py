@@ -1349,8 +1349,7 @@ class ProgramEnsemble(ABC):
         expected_type = _qualified_type(self)
         if checkpoint.ensemble_type != expected_type:
             raise ValueError(
-                f"Checkpoint contains {checkpoint.ensemble_type}, "
-                f"not {expected_type}."
+                f"Checkpoint contains {checkpoint.ensemble_type}, not {expected_type}."
             )
         if checkpoint.kind == "round_completion":
             round_history_data, total_circuit_count, total_run_time = (

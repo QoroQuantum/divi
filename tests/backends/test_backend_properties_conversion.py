@@ -438,9 +438,9 @@ class TestNoiseModelRoundtrip:
         # Aer derives noise channels for every gate it found a non-zero
         # error on. Our user-specified gates must all show up.
         noisy = set(nm.noise_instructions)
-        assert {"sx", "cx"}.issubset(
-            noisy
-        ), f"Noise model missed user-specified gates: got {sorted(noisy)}"
+        assert {"sx", "cx"}.issubset(noisy), (
+            f"Noise model missed user-specified gates: got {sorted(noisy)}"
+        )
 
     def test_user_calibration_drives_simulation_outcomes(self):
         """End-to-end: a backend built from a high-error properties dict
@@ -584,9 +584,9 @@ class TestNoiseModelRoundtrip:
         )
         # Sanity check on the short-T1 side — must be far from full
         # excitation, demonstrating the user's T1 actually drove the noise.
-        assert (
-            short_t1_pop < 0.4
-        ), f"Short-T1 backend showed no decoherence: pop={short_t1_pop:.3f}"
+        assert short_t1_pop < 0.4, (
+            f"Short-T1 backend showed no decoherence: pop={short_t1_pop:.3f}"
+        )
         # And it must be near the analytic expectation. exp(-2) ≈ 0.135;
         # accept anything in [0.05, 0.30] to give a wide margin for shot
         # noise and aer's depolarizing-channel approximation.

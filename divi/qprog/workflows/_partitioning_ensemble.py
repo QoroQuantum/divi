@@ -114,8 +114,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         """Validate that all programs have computed final probabilities."""
         if any(len(program.best_probs) == 0 for program in self.programs.values()):
             raise RuntimeError(
-                "Not all final probabilities computed yet. "
-                "Please call `run()` first."
+                "Not all final probabilities computed yet. Please call `run()` first."
             )
 
     # ------------------------------------------------------------------

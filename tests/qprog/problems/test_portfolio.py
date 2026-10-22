@@ -505,8 +505,8 @@ class TestPortfolioAllocation:
     @pytest.mark.parametrize(
         "encoding, bitstring, weights",
         [
-            ("log", "10" "01" "00", [1 / 3, 2 / 3, 0]),
-            ("domain_wall", "100" "110" "000", [1 / 3, 2 / 3, 0]),
+            ("log", "100100", [1 / 3, 2 / 3, 0]),
+            ("domain_wall", "100110000", [1 / 3, 2 / 3, 0]),
         ],
     )
     def test_decode_returns_weights(self, encoding, bitstring, weights):

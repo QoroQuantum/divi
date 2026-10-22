@@ -471,7 +471,8 @@ class TestGraphPartitioningConfig:
         initial = [(-G.number_of_nodes(), 0, G, list(G.nodes()))]
 
         # Predicate always False, so no splitting
-        predicate = lambda _, __: False
+        def predicate(_, __):
+            return False
 
         result = _bisect_with_predicate(initial, predicate, partitioning_config=None)
 

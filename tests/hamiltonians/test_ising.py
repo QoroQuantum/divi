@@ -230,9 +230,9 @@ class TestQuboToIsingConversion:
             qubo_energy = float(x @ Q_sym @ x)
             # x_i = (1-σ_i)/2 → σ_i=+1 when x_i=0, σ_i=-1 when x_i=1
             ising_energy = _spo_z_basis_energy(spo, bits) + constant
-            assert ising_energy == pytest.approx(
-                qubo_energy
-            ), f"x={list(bits)}: ising={ising_energy}, qubo={qubo_energy}"
+            assert ising_energy == pytest.approx(qubo_energy), (
+                f"x={list(bits)}: ising={ising_energy}, qubo={qubo_energy}"
+            )
 
 
 class TestBinaryToIsingConverters:
@@ -359,9 +359,9 @@ class TestBinaryToIsingConverters:
             assignment = {"x0": x0, "x1": x1, "x2": x2}
             poly_energy = self._eval_polynomial_energy(problem, assignment)
             best_ising = min(energies_by_assignment[(x0, x1, x2)])
-            assert best_ising == pytest.approx(
-                poly_energy
-            ), f"x={[x0, x1, x2]}: best_ising={best_ising}, poly={poly_energy}"
+            assert best_ising == pytest.approx(poly_energy), (
+                f"x={[x0, x1, x2]}: best_ising={best_ising}, poly={poly_energy}"
+            )
 
     def test_native_and_quadratized_agree_on_feasible_subspace(self):
         """Native and quadratized converters must agree on every original-variable
@@ -415,9 +415,9 @@ class TestBinaryToIsingConverters:
                 problem.variable_to_idx,
             )
             quad_min = min(quad_energies_by_assignment[x])
-            assert quad_min == pytest.approx(
-                native_energy
-            ), f"x={x}: native={native_energy} vs quadratized_min={quad_min}"
+            assert quad_min == pytest.approx(native_energy), (
+                f"x={x}: native={native_energy} vs quadratized_min={quad_min}"
+            )
 
     def test_quadratized_adaptive_strength_scales_with_input(self):
         """``strength=None`` picks an adaptive penalty from coefficient magnitudes.
@@ -544,9 +544,11 @@ def test_small_but_real_weight_survives(build):
 @pytest.mark.parametrize(
     "build",
     [
-        lambda: _native_operator(
-            {(0,): 300.3, (0, 1): -600.6000000000001, (1,): 1000.0}
-        ).operator,
+        lambda: (
+            _native_operator(
+                {(0,): 300.3, (0, 1): -600.6000000000001, (1,): 1000.0}
+            ).operator
+        ),
         lambda: _convert_qubo_matrix_to_ising_spo(
             np.array([[300.3, -600.6000000000001], [0.0, 1000.0]])
         )[0],
@@ -674,9 +676,9 @@ class TestQuboToSpo:
             qubo_energy = sum(
                 coeff for term, coeff in qubo.items() if all(bits[i] == 1 for i in term)
             )
-            assert np.isclose(
-                energy, qubo_energy
-            ), f"state {bits}: SPO={energy}, QUBO={qubo_energy}"
+            assert np.isclose(energy, qubo_energy), (
+                f"state {bits}: SPO={energy}, QUBO={qubo_energy}"
+            )
 
     def test_bakes_loss_constant_as_identity_term(self):
         """The Ising-encoding loss constant appears as a pure-identity row."""

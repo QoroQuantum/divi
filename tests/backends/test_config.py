@@ -17,8 +17,7 @@ from tests.backends._helpers import reset_unknown_message, validation_error_mess
 
 def _device_selection_message(key: str) -> str:
     return (
-        f"['{key}'] would choose the device, which the job's QPU system "
-        "already does."
+        f"['{key}'] would choose the device, which the job's QPU system already does."
     )
 
 

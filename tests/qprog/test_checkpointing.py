@@ -213,9 +213,9 @@ class TestCheckpointConfig:
         assert config_with_interval.checkpoint_interval == 5
 
     def test_timestamped_dir_resolves_below_a_second(self, mocker):
-        mocker.patch.object(checkpointing_module, "datetime").now.return_value = (
-            datetime(2026, 9, 30, 12, 0, 0, 123456)
-        )
+        mocker.patch.object(
+            checkpointing_module, "datetime"
+        ).now.return_value = datetime(2026, 9, 30, 12, 0, 0, 123456)
 
         config = CheckpointConfig.with_timestamped_dir()
 

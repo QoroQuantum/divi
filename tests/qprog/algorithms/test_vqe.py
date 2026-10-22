@@ -184,9 +184,9 @@ def test_vqe_clean_hamiltonian_logic(
     # accumulates them into ``loss_constant``; verify no surviving identity
     # row remains.
     labels = vqe_problem.cost_hamiltonian.paulis.to_labels()
-    assert not any(
-        set(label) == {"I"} for label in labels
-    ), "Identity operator should have been removed"
+    assert not any(set(label) == {"I"} for label in labels), (
+        "Identity operator should have been removed"
+    )
 
 
 def test_vqe_fail_with_constant_only_hamiltonian(dummy_simulator, default_optimizer):

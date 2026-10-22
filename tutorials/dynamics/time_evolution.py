@@ -84,7 +84,7 @@ if __name__ == "__main__":
     )
     te_probs.run()
     _print_sorted_probs("Example 1 — Probability mode", te_probs.probabilities())
-    print(f"  Analytical: |11⟩ with probability 1.0")
+    print("  Analytical: |11⟩ with probability 1.0")
     print(f"  Circuits executed: {te_probs.total_circuit_count}")
 
     # ── Example 2: Observable estimation vs. exact ───────────────────

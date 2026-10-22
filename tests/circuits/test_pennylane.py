@@ -767,7 +767,7 @@ class TestEndToEndEquivalence:
 
     @staticmethod
     def _preamble(n_qubits: int) -> str:
-        return 'OPENQASM 2.0;\ninclude "qelib1.inc";\n' f"qreg q[{n_qubits}];\n"
+        return f'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[{n_qubits}];\n'
 
     def test_qaoa_3q_unitary_matches_numeric_conversion(self, default_test_simulator):
         gamma, beta = sp.symbols("gamma beta")

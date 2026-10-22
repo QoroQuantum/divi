@@ -82,7 +82,7 @@ if __name__ == "__main__":
         latest = get_latest_checkpoint(checkpoint_dir)
         if latest:
             info = get_checkpoint_info(latest)
-            print(f"\nLatest checkpoint details:")
+            print("\nLatest checkpoint details:")
             print(f"  Iteration: {info.iteration}")
             print(f"  Path: {info.path.name}")
             print(f"  Size: {info.size_bytes / 1024:.2f} KB")

@@ -40,8 +40,7 @@ def test_molecular_hamiltonian_rejects_unknown_input():
     with pytest.raises(
         TypeError,
         match=exact_match(
-            "Expected a PennyLane Molecule or PySCF Mole/mean-field object, "
-            "got object."
+            "Expected a PennyLane Molecule or PySCF Mole/mean-field object, got object."
         ),
     ):
         molecular_hamiltonian(object())

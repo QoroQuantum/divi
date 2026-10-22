@@ -100,13 +100,13 @@ def test_template_path_renders_partial_bodies_with_data_substituted(composed):
     assert len(out_meta.qasm_bodies) == feature_batch.shape[0]
     for _, partial_body in out_meta.qasm_bodies:
         for d in data_params:
-            assert (
-                d.name not in partial_body
-            ), f"data placeholder {d.name!r} leaked into partial body"
+            assert d.name not in partial_body, (
+                f"data placeholder {d.name!r} leaked into partial body"
+            )
         for w in weight_params:
-            assert (
-                w.name in partial_body
-            ), f"weight placeholder {w.name!r} missing from partial body"
+            assert w.name in partial_body, (
+                f"weight placeholder {w.name!r} missing from partial body"
+            )
 
 
 def test_template_tags_map_each_sample_to_its_row_index(composed):
@@ -564,7 +564,9 @@ def test_introspect_reports_supervision(composed):
     env = _env(feature_batch=np.array([[0.1, 0.2]]))
     meta = _make_meta(qc, data_params, weight_params)
     supervised = DataBindingStage(
-        data_params=data_params, loss_reduction=_mean, sample_loss=lambda p, l: p - l
+        data_params=data_params,
+        loss_reduction=_mean,
+        sample_loss=lambda p, label: p - label,
     )
     assert supervised.introspect({(): meta}, env=env, token=None)["supervised"] is True
 

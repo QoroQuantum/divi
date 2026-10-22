@@ -16,9 +16,10 @@ from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxWeightMatchingProblem,
+    check_matching_matrix,
+    is_valid_matching,
 )
 from divi.qprog.problems import _matching as _matching_module
-from divi.qprog.problems import check_matching_matrix, is_valid_matching
 from divi.qprog.problems._matching import (
     _bitstring_to_matching,
     _classical_cleanup,

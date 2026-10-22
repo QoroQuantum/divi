@@ -88,9 +88,9 @@ def test_spo_from_integrals_ground_state_matches_fci(h2_mean_field):
     # The operator spans every particle-number sector, so only assert the
     # FCI energy is somewhere in the spectrum, not that it is the minimum.
     eigenvalues = np.linalg.eigvalsh(spo.to_matrix())
-    assert np.any(
-        np.isclose(eigenvalues, expected, atol=1e-8)
-    ), f"FCI energy {expected} not found in the operator's spectrum"
+    assert np.any(np.isclose(eigenvalues, expected, atol=1e-8)), (
+        f"FCI energy {expected} not found in the operator's spectrum"
+    )
 
 
 @pytest.mark.parametrize(
@@ -234,9 +234,9 @@ def test_spo_beta_one_body_touches_only_beta_spin_orbitals():
         acted_on.update(np.flatnonzero(pauli.x | pauli.z).tolist())
     # Only the beta channel changed, and it did change.
     assert acted_on, "supplying one_body_beta changed nothing"
-    assert all(
-        qubit % 2 == 1 for qubit in acted_on
-    ), f"beta one-body reached qubits {sorted(acted_on)}; even qubits are alpha"
+    assert all(qubit % 2 == 1 for qubit in acted_on), (
+        f"beta one-body reached qubits {sorted(acted_on)}; even qubits are alpha"
+    )
 
 
 # sqrt of LASSQD's default energy_tol, the convergence threshold it passes.

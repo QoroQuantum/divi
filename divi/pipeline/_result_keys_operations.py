@@ -319,6 +319,5 @@ def _find_batch_key(branch_key: tuple, batch_keys: set[tuple]) -> tuple:
             return bk
 
     raise KeyError(
-        f"No batch key matches branch key {branch_key}; "
-        f"known batch keys: {batch_keys}"
+        f"No batch key matches branch key {branch_key}; known batch keys: {batch_keys}"
     )

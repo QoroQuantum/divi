@@ -297,9 +297,9 @@ def assert_same_fanout(report_a, report_b):
     """Two reports agree on total circuit count and per-stage fan-out factor."""
     assert report_a.total_circuits == report_b.total_circuits
     for stage_a, stage_b in zip(report_a.stages, report_b.stages):
-        assert (
-            stage_a.factor == stage_b.factor
-        ), f"{stage_a.name}: {stage_a.factor} != {stage_b.factor}"
+        assert stage_a.factor == stage_b.factor, (
+            f"{stage_a.name}: {stage_a.factor} != {stage_b.factor}"
+        )
 
 
 def assert_report_dicts_match(reports_a, reports_b):

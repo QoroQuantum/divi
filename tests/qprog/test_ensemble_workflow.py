@@ -1658,9 +1658,9 @@ class TestReportingLevels:
             ensemble.run()
 
         program_keys = self._scope_targets(ensemble, ProgressScope.PROGRAM)
-        assert any(
-            target.visible for target in program_keys
-        ), "a failed program row must be revealed even in COMPACT"
+        assert any(target.visible for target in program_keys), (
+            "a failed program row must be revealed even in COMPACT"
+        )
 
     def test_workflow_and_preparation_use_typed_target_lifecycles(
         self, lifecycle_ensemble, mocker

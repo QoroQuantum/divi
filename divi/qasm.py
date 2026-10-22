@@ -142,7 +142,7 @@ def _lex(src: str, parameters: Collection[str] = ()) -> list[Tok]:
         if m is None or m.lastgroup is None:
             snippet = src[i : i + 20].replace("\n", "\\n")
             raise SyntaxError(
-                f"Illegal character at {line}:{i-line_start+1}: {snippet!r}"
+                f"Illegal character at {line}:{i - line_start + 1}: {snippet!r}"
             )
         kind = m.lastgroup
         val = m.group(kind)
@@ -387,8 +387,9 @@ class Parser:
         if gname in BUILTINS:
             param_count, arity = BUILTINS[gname]
         elif gname in self.user_gates:
-            param_count, arity = len(self.user_gates[gname][0]), len(
-                self.user_gates[gname][1]
+            param_count, arity = (
+                len(self.user_gates[gname][0]),
+                len(self.user_gates[gname][1]),
             )
         else:
             self._unknown_gate(name_tok)
@@ -421,8 +422,9 @@ class Parser:
         if gname in BUILTINS:
             param_count, arity = BUILTINS[gname]
         elif gname in self.user_gates:
-            param_count, arity = len(self.user_gates[gname][0]), len(
-                self.user_gates[gname][1]
+            param_count, arity = (
+                len(self.user_gates[gname][0]),
+                len(self.user_gates[gname][1]),
             )
         else:
             self._unknown_gate(name_tok)

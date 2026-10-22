@@ -1067,9 +1067,9 @@ class TestProgramEnsemble:
             for call in spy.call_args_list
             if call.kwargs.get("final_status") is TerminalStatus.FAILED
         ]
-        assert any(
-            call.args[0] == progs[0]._progress_key for call in failed_calls
-        ), "the failed program's row was not emitted with final_status=Failed"
+        assert any(call.args[0] == progs[0]._progress_key for call in failed_calls), (
+            "the failed program's row was not emitted with final_status=Failed"
+        )
 
     @pytest.mark.parametrize("async_backend", [True, False], ids=["async", "local"])
     def test_handle_failure_non_batched_cancels_jobs(
@@ -1525,9 +1525,9 @@ def test_cancellation_event_is_shared_with_coordinator(dummy_simulator):
     ensemble.create_programs()
     try:
         ensemble.run_one_round(blocking=False)
-        assert (
-            ensemble._coordinator is not None
-        ), "expected coordinator under default BatchMode.MERGED"
+        assert ensemble._coordinator is not None, (
+            "expected coordinator under default BatchMode.MERGED"
+        )
         # Same identity, not just same value.
         assert ensemble._cancellation_event is ensemble._coordinator._cancelled
         # Setting the ensemble side propagates to the coordinator.

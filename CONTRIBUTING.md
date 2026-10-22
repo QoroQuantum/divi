@@ -75,15 +75,13 @@ pre-commit run -a
 
 We use the following tools for formatting:
 
-- **[Black](https://github.com/psf/black)** for code formatting
-- **[isort](https://pycqa.github.io/isort/)** for import sorting (configured with the Black profile)
-- **[autoflake](https://github.com/PyCQA/autoflake)** for removing unused imports (runs via pre-commit)
+- **[Ruff](https://github.com/astral-sh/ruff)** for code formatting, import sorting and linting
 
-Run all formatters before committing:
+Run the formatter and linter before committing:
 
 ```bash
-uv run black .
-uv run isort .
+uv run ruff format .
+uv run ruff check --fix .
 ```
 
 ### Optional Dependencies

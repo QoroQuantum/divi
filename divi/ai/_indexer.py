@@ -338,7 +338,7 @@ def _split_long_section(
                 overlap_chars += len(buf[overlap_start])
 
             buf = buf[overlap_start:]
-            buf_chars = sum(len(l) for l in buf)
+            buf_chars = sum(len(line) for line in buf)
             start_line = base_line + i - len(buf) + 1
 
     if buf:

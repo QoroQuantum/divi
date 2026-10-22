@@ -823,9 +823,9 @@ class TestBoundVersusTemplatedNumericalEquivalence:
         real property and not a no-op."""
         # Round-trip-clean: equality holds.
         for v in (1.5, -0.25, 0.5, 0.125):
-            assert _format_bound_param(v, 8) == str(
-                float(v)
-            ), f"Test premise broken: {v!r} should round-trip identically."
+            assert _format_bound_param(v, 8) == str(float(v)), (
+                f"Test premise broken: {v!r} should round-trip identically."
+            )
 
         # Integer-valued float: equality must fail (proves divergence exists).
         assert _format_bound_param(2.0, 8) != str(2.0), (
@@ -951,14 +951,14 @@ class TestFormatPipelineTree:
         plan = pipeline.run_forward_pass(initial_spec="ignored", env=dummy_pipeline_env)
 
         format_pipeline_tree(plan)
-        lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
 
         assert lines[0] == "spec:circ"
         # Two fold branches, each with one obs_group leaf
         # (_backend_expval puts all observables in a single group).
-        assert sum("fold:0" in l for l in lines) == 1
-        assert sum("fold:1" in l for l in lines) == 1
-        assert sum("obs_group:0" in l for l in lines) == 2
+        assert sum("fold:0" in ln for ln in lines) == 1
+        assert sum("fold:1" in ln for ln in lines) == 1
+        assert sum("obs_group:0" in ln for ln in lines) == 2
         # 5 lines total: root + 2 folds + 2 obs_groups
         assert len(lines) == 5
 
@@ -976,7 +976,7 @@ class TestFormatPipelineTree:
         assert node.parameters, "precondition: binding was deferred"
 
         format_pipeline_tree(trace)
-        lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
 
         assert [line.lstrip("│├└─ ") for line in lines if "param_set" in line] == [
             "param_set:0"
@@ -1021,7 +1021,7 @@ class TestFormatPipelineTree:
         )
 
         format_pipeline_tree(pipeline.run_forward_pass("x", dummy_pipeline_env))
-        lines = [l for l in capsys.readouterr().out.splitlines() if l.strip()]
+        lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.strip()]
 
         assert lines[0].startswith("├── ")
         assert [line.lstrip("│├└─ ") for line in lines] == [

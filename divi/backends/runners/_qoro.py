@@ -1353,7 +1353,11 @@ class QoroService(CircuitRunner):
 
             update_fn = update_polling_status
         else:
-            update_fn = lambda _, __: None
+
+            def ignore_status(retry_count, job_status):
+                pass
+
+            update_fn = ignore_status
 
         try:
             with scope as cancellation_event:

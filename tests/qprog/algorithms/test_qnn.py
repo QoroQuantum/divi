@@ -221,7 +221,10 @@ class TestConstructionValidation:
     @pytest.mark.parametrize(
         "kwargs",
         [
-            {"labels": [1.0, -1.0, 1.0, -1.0], "loss_fn": lambda p, l: abs(p - l)},
+            {
+                "labels": [1.0, -1.0, 1.0, -1.0],
+                "loss_fn": lambda p, label: abs(p - label),
+            },
             {"observable": None, "labels": [1.0, -1.0, 1.0, -1.0]},
             {"observable": None, "labels": [1.0, -1.0, 1.0, -1.0], "fit_bias": True},
             {

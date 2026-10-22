@@ -366,7 +366,7 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
             return
         if not all(0 <= weight < math.inf for weight in self.weights.values()):
             raise ValueError(
-                "weights must be finite and non-negative; got " f"{dict(self.weights)}."
+                f"weights must be finite and non-negative; got {dict(self.weights)}."
             )
         total = sum(self.weights.values())
         if not math.isclose(total, 1.0, rel_tol=0.0, abs_tol=_WEIGHT_SUM_ATOL):

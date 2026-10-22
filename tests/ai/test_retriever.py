@@ -251,9 +251,7 @@ class TestEnrichChunks:
 
     def test_enriches_docstring_only_chunk_from_disk(self, tmp_path):
         source = tmp_path / "mod.py"
-        source.write_text(
-            "def func():\n" '    """The docstring."""\n' "    return 42\n"
-        )
+        source.write_text('def func():\n    """The docstring."""\n    return 42\n')
         chunk = self._make_chunk(
             '[Function: mod.func]\ndef func():\n    """The docstring."""',
             str(source),
@@ -272,7 +270,7 @@ class TestEnrichChunks:
         for i in range(10):
             source = tmp_path / f"f{i}.py"
             source.write_text(
-                f"def f{i}():\n" '    """Doc."""\n' f"    return {i}\n",
+                f'def f{i}():\n    """Doc."""\n    return {i}\n',
                 encoding="utf-8",
             )
             chunks.append(

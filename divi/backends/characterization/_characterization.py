@@ -1047,7 +1047,7 @@ class CharacterizationResult:
             )
         if self.penalty_lambda_safe is not None:
             lines.append(
-                "  Guaranteed Penalty Threshold: " f"λ ≥ {self.penalty_lambda_safe:.2f}"
+                f"  Guaranteed Penalty Threshold: λ ≥ {self.penalty_lambda_safe:.2f}"
             )
         if self.constraint_diagnostics:
             lines.append(
@@ -1797,8 +1797,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
         raise CharacterizationFailedError(
             job_id,
             status,
-            "the job completed but carried no report — every field would "
-            "read as None.",
+            "the job completed but carried no report — every field would read as None.",
         )
 
     try:
@@ -1840,8 +1839,7 @@ def _validate_reference_states(
 
     if len(reference_states) == 0:
         raise ValueError(
-            "reference_states must contain at least one candidate solution "
-            "bitstring."
+            "reference_states must contain at least one candidate solution bitstring."
         )
     for index, state in enumerate(reference_states):
         if not isinstance(state, str) or re.fullmatch(r"[01]+", state) is None:

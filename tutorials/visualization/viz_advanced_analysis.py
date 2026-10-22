@@ -86,7 +86,7 @@ if __name__ == "__main__":
     # GradientMethod.PARAMETER_SHIFT (default) gives exact derivatives for
     # standard quantum gates; use FINITE_DIFFERENCE as a universal fallback.
     hess = compute_hessian(qaoa, center=best)
-    print(f"\nHessian at best_params (parameter-shift):")
+    print("\nHessian at best_params (parameter-shift):")
     print(f"  Eigenvalues: {hess.eigenvalues}")
     ratio = (
         hess.eigenvalues[0] / hess.eigenvalues[-1] if hess.eigenvalues[-1] != 0 else 0
@@ -100,7 +100,7 @@ if __name__ == "__main__":
         gradient_method=GradientMethod.FINITE_DIFFERENCE,
         eps=1e-3,
     )
-    print(f"\nHessian at best_params (finite-difference):")
+    print("\nHessian at best_params (finite-difference):")
     print(f"  Eigenvalues: {hess_fd.eigenvalues}")
 
     # Use steepest-curvature eigenvectors as scan directions.

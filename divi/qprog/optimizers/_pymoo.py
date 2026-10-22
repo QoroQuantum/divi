@@ -15,7 +15,7 @@ import dill
 import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel
-from pymoo.algorithms.soo.nonconvex.de import DE  # type: ignore
+from pymoo.algorithms.soo.nonconvex.de import DE  # type: ignore  # noqa: F401
 from pymoo.core.evaluator import Evaluator
 from pymoo.core.individual import Individual
 from pymoo.core.population import Population

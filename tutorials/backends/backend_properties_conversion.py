@@ -176,13 +176,13 @@ if __name__ == "__main__":
     conv_durations = conv_target.durations()
     if "sx" in conv_target.operation_names:
         sx_dur = conv_durations.get("sx", (0,), unit="s")
-        print(f"  SX duration: {sx_dur*1e9:.1f}ns")
+        print(f"  SX duration: {sx_dur * 1e9:.1f}ns")
     if "cx" in conv_target.operation_names:
         cx_dur = conv_durations.get("cx", (0, 1), unit="s")
-        print(f"  CX duration: {cx_dur*1e9:.1f}ns")
+        print(f"  CX duration: {cx_dur * 1e9:.1f}ns")
 
     conv_props = conv_target.qubit_properties
     if conv_props and conv_props[0]:
         print(
-            f"  Qubit 0: T1={conv_props[0].t1*1e6:.1f}μs, T2={conv_props[0].t2*1e6:.1f}μs"
+            f"  Qubit 0: T1={conv_props[0].t1 * 1e6:.1f}μs, T2={conv_props[0].t2 * 1e6:.1f}μs"
         )

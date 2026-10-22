@@ -10,7 +10,7 @@
 
 ## Code style and formatting
 
-- Use `black` and `isort` for formatting; `isort` must use the Black profile; `autoflake` is used to remove unused imports.
+- Use `ruff` for formatting, import sorting and linting.
 - Do NOT run `pre-commit run -a` — it modifies unrelated files. Let pre-commit fire on commit.
 - New/updated `.py` files (outside `docs/`) should include the license header from `LICENSES/.license-header` (pre-commit enforces this).
 - Hook configuration lives in `/.pre-commit-config.yaml`; keep any new files compatible with these hooks.
