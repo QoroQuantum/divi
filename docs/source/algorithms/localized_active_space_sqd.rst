@@ -321,12 +321,17 @@ singlet–triplet gap:
 
 - **Labels.** ``electronic_states`` maps ``(multiplicity, index)`` to an
   :class:`~divi.qprog.workflows.ElectronicState`, ordered by energy. ``index``
-  counts within one spin from 0: S0 is ``(1, 0)``, S1 ``(1, 1)``, T1
-  ``(3, 0)``.
+  counts within one spin from 0, in energy order at the end of the first round,
+  after its orbital update rather than at the input orbitals: S0 is ``(1, 0)``,
+  S1 ``(1, 1)``, T1 ``(3, 0)``. Later rounds keep each label with the same
+  state, matched by CI-vector overlap, so when two states cross the labels and
+  any state-averaging weights follow the states rather than the energy order.
 - **Orbitals decide the gap.**
   :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` relaxes the orbitals
   for a weighted average of the states (default: each root equally, a triplet
-  counting once), as SA-CASSCF does; the weights shift every gap.
+  counting once), as SA-CASSCF does; the weights shift every gap. Unequal
+  weights can also break the molecule's spatial symmetry, mixing states that
+  are close in energy.
   :class:`~divi.qprog.workflows.FixedOrbitals` keeps the input orbitals, for
   comparison with CASCI. The other updates relax for the lowest state only and
   warn.
@@ -372,8 +377,8 @@ last completed round:
   ``n_alpha == n_beta``.
 - **Transitions.** :meth:`~divi.qprog.workflows.LASSQD.transition_properties`
   returns a :class:`~divi.qprog.workflows.StateTransition` for every pair of
-  states of one multiplicity, keyed ``(initial, final)`` with the lower state
-  first: the transition 1-RDM, the transition dipole, the oscillator strength
+  states of one multiplicity, keyed ``(initial, final)`` with the state lower in
+  energy first, so a crossing reorders the key: the transition 1-RDM, the transition dipole, the oscillator strength
   ``2/3 ΔE |μ|²`` and the natural transition orbitals. A pair of different
   multiplicities has no spin-free transition and is left out, so one state per
   multiplicity gives no transitions. The dipole's sign follows the states'

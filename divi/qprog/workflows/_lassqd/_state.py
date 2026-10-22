@@ -197,11 +197,14 @@ class LASSQDState:
 class ElectronicState:
     """One eigenstate requested through ``SQDConfig.states``, after a round.
 
-    Orders by ``(multiplicity, index)``, its root order.
+    Orders by ``(multiplicity, index)``.
 
     Attributes:
         multiplicity: Spin multiplicity ``2S + 1`` the state was solved for.
-        index: Position among that multiplicity's roots, ``0`` the lowest.
+        index: Position among that multiplicity's roots in energy order at the
+            end of the first round, ``0`` the lowest. Later rounds keep it with
+            the same state, matched by CI-vector overlap, so after two states
+            cross it no longer follows energy order.
         energy: Total energy of the state at the round's orbitals, from its
             own RDMs.
         spin_square: ``<S^2>`` of the state.
@@ -314,6 +317,8 @@ class _SampledSubspace:
     strings: tuple[Sequence[str], Sequence[str]]
     states: Mapping[int, int]
     lambda_penalty: float
+    # Each root's tracked label, (multiplicity, root index) -> (multiplicity, index).
+    labels: Mapping[tuple[int, int], tuple[int, int]] | None = None
 
 
 @dataclass(frozen=True)

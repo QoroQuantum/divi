@@ -45,11 +45,13 @@ from ._config import (
     Preparation,
     SecondOrderOrbitalUpdate,
     StateAveragedOrbitalUpdate,
+    _by_root,
     _checkpoint_digest,
     _OrbitalTarget,
 )
 from ._integrals import (
     MOIntegrals,
+    OrbitalSolution,
     _outside_divi_stacklevel,
     assemble_active_rdms,
     build_active_permutation,
@@ -61,6 +63,7 @@ from ._integrals import (
     state_transitions,
     subspace_states_at,
     subspace_wavefunctions,
+    track_states,
     transform_integrals,
 )
 from ._preparation import rotate_rdms_to_fragment_basis
@@ -153,7 +156,9 @@ def _state_warnings(
                 "resolve it as that spin. Raise lambda_penalty or the sampling "
                 "budget (batch_size, n_recovery_iterations).",
             )
-    for lower, upper in itertools.pairwise(sorted(states)):
+    for lower, upper in itertools.pairwise(
+        sorted(states, key=lambda state: (state.multiplicity, state.energy))
+    ):
         gap = abs(upper.energy - lower.energy)
         if lower.multiplicity == upper.multiplicity and gap < _DEGENERACY_TOL:
             yield (
@@ -320,6 +325,29 @@ def _carried_strings_from_metadata(
             f"{spec.n_orbitals}-character 0/1 strings."
         )
     return tuple(strings)
+
+
+def _labels_from_metadata(entries: Any) -> dict[tuple[int, int], tuple[int, int]]:
+    """Tracked state labels from checkpoint metadata.
+
+    Raises:
+        ValueError: If an entry is not ``[multiplicity, root, index]`` of
+            integers.
+    """
+    if not isinstance(entries, list) or any(
+        not isinstance(entry, list)
+        or len(entry) != 3
+        or not all(isinstance(value, int) for value in entry)
+        for entry in entries
+    ):
+        raise ValueError(
+            "LASSQD checkpoint labels must be a list of [multiplicity, root, "
+            "index] integer triples."
+        )
+    return {
+        (multiplicity, root): (multiplicity, label)
+        for multiplicity, root, label in entries
+    }
 
 
 def _molecule_fingerprint(mol) -> str:
@@ -892,6 +920,12 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             final_strings = {
                 "strings_alpha": list(strings_alpha),
                 "strings_beta": list(strings_beta),
+                "labels": [
+                    [multiplicity, root, label]
+                    for (multiplicity, root), (_, label) in (
+                        self._final_subspace.labels or {}
+                    ).items()
+                ],
             }
 
         artifact = f"{stem}.npz"
@@ -1048,6 +1082,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     ),
                     self._sqd.states,
                     self._sqd.lambda_penalty,
+                    labels=_labels_from_metadata(final_strings.get("labels", [])),
                 )
 
         overlap = self._mol.intor_symmetric("int1e_ovlp")
@@ -1394,12 +1429,27 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     (results[0].strings_alpha, results[0].strings_beta),
                     states,
                     self._sqd.lambda_penalty,
+                    labels=(
+                        None
+                        if self._final_subspace is None
+                        else self._final_subspace.labels
+                    ),
                 )
             ),
         )
         self._emit_workflow_stage("Re-optimising orbitals")
         orbital_started = time.perf_counter()
         solution, relaxed_states = self._orbital_update._solve(orbital_round)
+        if (
+            isinstance(self._orbital_update, StateAveragedOrbitalUpdate)
+            and self._final_subspace is not None
+        ):
+            solution, relaxed_states = self._follow_swapped_states(
+                self._orbital_update,
+                orbital_round,
+                solution,
+                relaxed_states,
+            )
         averaged = self._orbital_update._relaxes is _OrbitalTarget.AVERAGE
         orbital_seconds = time.perf_counter() - orbital_started
         if not np.isfinite(solution.energy):
@@ -1422,9 +1472,33 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 states,
                 self._sqd.lambda_penalty,
             )
+            if self._final_subspace is not None:
+                final_subspace = replace(
+                    final_subspace,
+                    labels=track_states(
+                        self._final_subspace,
+                        final_subspace,
+                        n_core,
+                        self._mol,
+                        ao_eri,
+                        h_ao,
+                    ),
+                )
+            labels = final_subspace.labels or {}
             if relaxed_states is None:
                 relaxed_states = subspace_states_at(
                     self._mol, final_subspace, n_core, ao_eri, h_ao
+                )
+            else:
+                relaxed_states = tuple(
+                    replace(
+                        state,
+                        index=labels.get(
+                            (state.multiplicity, state.index),
+                            (state.multiplicity, state.index),
+                        )[1],
+                    )
+                    for state in relaxed_states
                 )
             self._final_subspace = final_subspace
             electronic_states = self._electronic_states(
@@ -1503,6 +1577,55 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 orbitals_converged=False,
             )
         return next_state
+
+    def _follow_swapped_states(
+        self,
+        orbital_update: StateAveragedOrbitalUpdate,
+        orbital_round: _OrbitalRound,
+        solution: OrbitalSolution,
+        relaxed_states: tuple[ElectronicState, ...] | None,
+    ) -> tuple[OrbitalSolution, tuple[ElectronicState, ...] | None]:
+        """Re-solve once if the tracked states swapped during the
+        state-averaged solve, which weights roots by energy rank, so the
+        weights move to where the states ended up.
+
+        Warns:
+            UserWarning: If they swap again in the re-solve.
+        """
+        subspace = orbital_round.subspace
+        if subspace is None or self._final_subspace is None:
+            return solution, relaxed_states
+        weights = orbital_update._weights_for(subspace.states)
+        used = subspace.labels or {}
+        for attempt in range(2):
+            landed = track_states(
+                self._final_subspace,
+                replace(subspace, mo_coeff=solution.mo_coeff, labels=None),
+                orbital_round.n_core,
+                self._mol,
+                orbital_round.ao_eri,
+                orbital_round.h_ao,
+            )
+            if _by_root(weights, landed) == _by_root(weights, used):
+                return solution, relaxed_states
+            if attempt:
+                self._warn_once(
+                    ("weights not followed", len(self._energy_history) + 1),
+                    f"Round {len(self._energy_history) + 1}'s requested states "
+                    "swapped order during the state-averaged solve, twice, so its "
+                    "weights may sit on the other states this round.",
+                )
+                return solution, relaxed_states
+            used = landed
+            solution, relaxed_states = orbital_update._solve(
+                replace(
+                    orbital_round,
+                    subspace=replace(
+                        subspace, mo_coeff=solution.mo_coeff, labels=landed
+                    ),
+                )
+            )
+        return solution, relaxed_states
 
     def _electronic_states(
         self,

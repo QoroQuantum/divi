@@ -2090,6 +2090,20 @@ def test_double_hops_from_one_determinant_recover_every_fci_root():
     )
 
 
+def test_a_subspace_smaller_than_the_requested_roots_returns_those_it_holds():
+    """A sampled subspace that shrinks below the root count mid-run reports what
+    it holds rather than aborting the run."""
+    one_body, two_body, _, constant = _h4_integrals()
+
+    result = _hartree_fock_only_solver(None).solve(
+        {"11001100": 1.0}, one_body, two_body, constant=constant
+    )
+
+    assert result.amplitudes.size == 1
+    assert {state.multiplicity for state in result.states} == {1, 3}
+    assert all(state.index == 0 for state in result.states)
+
+
 def test_single_hops_extend_less_than_double_hops():
     one_body, two_body, _, constant = _h4_integrals()
 

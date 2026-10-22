@@ -47,6 +47,7 @@ from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows._lassqd import (
+    _config,
     _preparation,
     _sqd,
     _vqe_preparation,
@@ -54,11 +55,13 @@ from divi.qprog.workflows._lassqd import (
 )
 from divi.qprog.workflows._lassqd._integrals import (
     OrbitalSolution,
+    _root_overlaps,
     _total_energy,
     cached_ao_eri,
     cached_h_ao,
     fragment_blocks,
     state_averaged_orbital_solve,
+    track_states,
 )
 from divi.qprog.workflows._lassqd._preparation import (
     LUCJFragmentProgram,
@@ -74,6 +77,7 @@ from divi.qprog.workflows._lassqd._state import (
     FragmentState,
     LASSQDState,
     _OrbitalRound,
+    _SampledSubspace,
     validate_fragment_specs,
 )
 from tests._helpers import exact_match
@@ -2175,11 +2179,12 @@ def test_state_averaging_over_half_a_degenerate_pair_warns():
         format(string, "06b")[::-1] for string in cistring.make_strings(range(6), 3)
     )
     message = (
-        "The state-averaged solve used all 3 iterations without settling, "
-        "though its orbital gradient is below tolerance. This usually means a "
-        "requested state is degenerate with one left out, such as one component "
-        "of a degenerate pair, so the averaged energy has a flat direction. "
-        "Request every component of the degenerate set."
+        "The state-averaged solve stopped at max_iterations=3 before settling, "
+        "though its orbital gradient is below tolerance. Unless that cap is "
+        "deliberately low, this usually means a requested state is degenerate "
+        "with one left out, such as one component of a degenerate pair, so the "
+        "averaged energy has a flat direction. Request every component of the "
+        "degenerate set."
     )
     with pytest.warns(UserWarning, match=exact_match(message)):
         solve, _ = state_averaged_orbital_solve(
@@ -2422,6 +2427,114 @@ def test_state_averaging_works_on_a_symmetry_adapted_molecule(
     ensemble.run(max_rounds=1)
 
     assert set(ensemble.electronic_states) == {(1, 0), (1, 1), (3, 0)}
+
+
+def _h4_full_subspace(mo_coeff, labels=None):
+    """H4's whole 36-determinant space over ``mo_coeff``, three states."""
+    strings = tuple(
+        format(string, "04b")[::-1] for string in cistring.make_strings(range(4), 2)
+    )
+    return _SampledSubspace(
+        mo_coeff, (strings, strings), {1: 2, 3: 1}, 1.0, labels=labels
+    )
+
+
+@pytest.mark.parametrize(
+    "rotation",
+    [np.eye(4), np.eye(4)[[2, 0, 3, 1]] * np.array([1.0, -1.0, -1.0, 1.0])],
+    ids=["same-orbitals", "permuted-and-sign-flipped"],
+)
+def test_tracking_keeps_each_state_its_previous_label(h4_chain_mean_field, rotation):
+    """A previous round that labelled its two singlets the other way round
+    passes those labels on, however the active orbitals were reordered or
+    rephased in between."""
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    swapped = {(1, 0): (1, 1), (1, 1): (1, 0), (3, 0): (3, 0)}
+
+    labels = track_states(
+        _h4_full_subspace(mo_coeff, swapped),
+        _h4_full_subspace(mo_coeff @ rotation),
+        0,
+        mol,
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+    )
+
+    assert labels == swapped
+
+
+def test_carried_ci_vectors_overlap_their_own_states_fully(h4_chain_mean_field):
+    """Reordering and rephasing the active orbitals changes nothing physical,
+    so each state overlaps itself with modulus 1 and the others not at all,
+    which needs each carried determinant's sign right."""
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    rotation = np.eye(4)[[2, 0, 3, 1]] * np.array([1.0, -1.0, -1.0, 1.0])
+
+    for _, _, now, overlaps in _root_overlaps(
+        _h4_full_subspace(mo_coeff),
+        _h4_full_subspace(mo_coeff @ rotation),
+        0,
+        mol,
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+    ):
+        np.testing.assert_allclose(overlaps, np.eye(len(now)), atol=1e-8)
+
+
+@pytest.mark.filterwarnings("ignore:Orbital optimisation ended without converging")
+def test_state_averaged_energy_keeps_its_weights_through_a_crossing(
+    dummy_expval_backend, mocker
+):
+    """Rectangular H4's two upper singlets swap order as the orbitals relax.
+    The solve weights roots by energy rank, so each round's average must still
+    be the label-weighted sum of that round's states."""
+    weights = {(1, 0): 0.05, (1, 1): 0.05, (1, 2): 0.9}
+    mean_field = scf.RHF(
+        gto.M(
+            atom="H 0 0 0; H 0 0 1.1; H 1.0 0 0; H 1.0 0 1.1",
+            basis="6-31g",
+            verbose=0,
+        )
+    ).run(verbose=0)
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(mean_field),
+        active_spaces=[FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)],
+        states={1: 3},
+        n_batches=1,
+        batch_size=16,
+        n_recovery_iterations=1,
+        orbital_update=StateAveragedOrbitalUpdate(weights=weights),
+    )
+
+    ensemble.run(max_rounds=3)
+
+    orders = [
+        [state.index for state in report.states] for report in ensemble.round_reports
+    ]
+    assert [0, 1, 2] in orders and [0, 2, 1] in orders
+    for report in ensemble.round_reports:
+        assert report.averaged_energy == pytest.approx(
+            sum(
+                weights[(state.multiplicity, state.index)] * state.energy
+                for state in report.states
+            ),
+            abs=1e-10,
+        )
+
+
+def test_state_averaging_weights_follow_the_tracked_states():
+    weights = {(1, 0): 0.7, (1, 1): 0.3}
+
+    assert _config._by_root(weights, {(1, 0): (1, 1), (1, 1): (1, 0)}) == {
+        (1, 0): 0.3,
+        (1, 1): 0.7,
+    }
+    assert _config._by_root(weights, {(1, 0): (1, 1)}) == {(1, 0): 0.3, (1, 1): 0.7}
+    assert _config._by_root(weights, {}) == weights
 
 
 def test_a_subspace_short_of_one_spin_leaves_the_missing_states_out(

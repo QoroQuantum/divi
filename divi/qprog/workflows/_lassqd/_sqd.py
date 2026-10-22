@@ -1707,6 +1707,8 @@ class SQDSolver:
         identity = scipy.sparse.eye_array(len(dets), format="csr")
         solved = []
         for multiplicity, n_roots in states.items():
+            # A subspace too small for every root reports those it holds.
+            n_roots = min(n_roots, len(strings_alpha) * len(strings_beta))
             deviation = s2_proj - spin_square_of(multiplicity) * identity
             values, vectors = lowest_roots(
                 h_proj,

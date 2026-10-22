@@ -399,7 +399,7 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
             round_.n_core,
             round_.specs[0],
             subspace.strings,
-            self._weights_for(subspace.states),
+            _by_root(self._weights_for(subspace.states), subspace.labels or {}),
             subspace.lambda_penalty,
             round_.ao_eri,
             round_.h_ao,
@@ -407,6 +407,30 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
             max_iterations=self.max_iterations,
             report=round_.report,
         )
+
+
+def _by_root(
+    weights: Mapping[tuple[int, int], float],
+    labels: Mapping[tuple[int, int], tuple[int, int]],
+) -> dict[tuple[int, int], float]:
+    """``weights``, keyed by tracked label, rekeyed by root: each tracked root
+    takes its state's weight, and the rest pair with the unused labels in
+    order."""
+    by_root = {}
+    for multiplicity in {multiplicity for multiplicity, _ in weights}:
+        indices = sorted(index for m, index in weights if m == multiplicity)
+        label_of = {
+            root: label for (m, root), (_, label) in labels.items() if m == multiplicity
+        }
+        label_of.update(
+            zip(
+                [index for index in indices if index not in label_of],
+                [index for index in indices if index not in label_of.values()],
+            )
+        )
+        for root, label in label_of.items():
+            by_root[(multiplicity, root)] = weights[(multiplicity, label)]
+    return by_root
 
 
 @config_dataclass(frozen=True)

@@ -17,6 +17,7 @@ from warnings import warn
 
 import numpy as np
 import scipy.linalg
+import scipy.optimize
 import scipy.sparse
 from pyscf import ao2mo, lib, mcscf
 from pyscf.fci import selected_ci
@@ -1285,7 +1286,7 @@ def _subspace_roots(
     h_ao: np.ndarray,
 ) -> Iterator[tuple[ElectronicState, np.ndarray]]:
     """Each requested state of ``subspace`` at its orbitals, with its CI
-    vector, in root order."""
+    vector, in root order, labelled by ``subspace.labels`` when set."""
     strings_alpha, strings_beta = subspace.strings
     n_active = len(strings_alpha[0])
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
@@ -1295,7 +1296,11 @@ def _subspace_roots(
     eri = casci.get_h2eff(subspace.mo_coeff)
     for multiplicity, n_roots in sorted(subspace.states.items()):
         solver = _SubspaceCI(
-            strings_alpha, strings_beta, multiplicity, n_roots, subspace.lambda_penalty
+            strings_alpha,
+            strings_beta,
+            multiplicity,
+            min(n_roots, len(strings_alpha) * len(strings_beta)),
+            subspace.lambda_penalty,
         )
         energies, civecs = solver.roots(h1e, eri, n_active, energy_core)
         index = 0
@@ -1303,8 +1308,11 @@ def _subspace_roots(
             spin_square, _ = solver.spin_square(civec, n_active, nelec)
             if not resolves_spin(multiplicity, spin_square):
                 continue
+            _, label = (subspace.labels or {}).get(
+                (multiplicity, index), (multiplicity, index)
+            )
             state = ElectronicState(
-                multiplicity, index, float(energy), float(spin_square)
+                multiplicity, label, float(energy), float(spin_square)
             )
             yield state, np.asarray(civec)
             index += 1
@@ -1341,6 +1349,115 @@ def subspace_wavefunctions(
             )
         )
     return tuple(wavefunctions)
+
+
+def track_states(
+    previous: _SampledSubspace,
+    current: _SampledSubspace,
+    n_core: int,
+    mol,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+) -> dict[tuple[int, int], tuple[int, int]]:
+    """Each of ``current``'s roots' label, ``(multiplicity, root index)`` to
+    ``(multiplicity, index)``: that of the previous state of its multiplicity
+    whose CI vector it overlaps most, or else the lowest unused index."""
+    labels = {}
+    for multiplicity, before, now, overlaps in _root_overlaps(
+        previous, current, n_core, mol, ao_eri, h_ao
+    ):
+        matched: dict[int, int] = {}
+        if before:
+            for i, j in zip(*scipy.optimize.linear_sum_assignment(-overlaps)):
+                matched[int(i)] = before[j].index
+        free = (
+            index
+            for index in range(len(now) + len(before))
+            if index not in matched.values()
+        )
+        for i, state in enumerate(now):
+            labels[(multiplicity, state.index)] = (
+                multiplicity,
+                matched[i] if i in matched else next(free),
+            )
+    return labels
+
+
+def _root_overlaps(
+    previous: _SampledSubspace,
+    current: _SampledSubspace,
+    n_core: int,
+    mol,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+) -> Iterator[tuple[int, list[ElectronicState], list[ElectronicState], np.ndarray]]:
+    """Per multiplicity, the previous and current (root-order) states and
+    ``|<previous_j|current_i>|`` as rows ``i``, columns ``j``.
+
+    The previous determinants are carried into the current orbitals by the
+    one-to-one orbital assignment carryover uses, with the orbitals' phases and
+    the reordering's sign.
+    """
+    n_active = len(current.strings[0][0])
+    active = slice(n_core, n_core + n_active)
+    overlap = (
+        current.mo_coeff[:, active].T
+        @ mol.intor_symmetric("int1e_ovlp")
+        @ previous.mo_coeff[:, active]
+    )
+    _, source = scipy.optimize.linear_sum_assignment(np.abs(overlap), maximize=True)
+    target = np.argsort(source)
+    phases = np.sign(overlap[np.arange(n_active), source])
+
+    def carried(strings, positions):
+        """Each previous string's row in the current string list (-1 where it
+        has none) and sign."""
+        rows, signs = [], []
+        for string in strings:
+            occupied = [int(target[q]) for q, bit in enumerate(string) if bit == "1"]
+            inversions = sum(1 for a, b in combinations(occupied, 2) if a > b)
+            mapped = "".join("1" if p in occupied else "0" for p in range(n_active))
+            rows.append(positions.get(mapped, -1))
+            signs.append((-1) ** inversions * np.prod(phases[occupied]))
+        return np.array(rows), np.array(signs)
+
+    rows, row_signs = carried(
+        previous.strings[0], {s: i for i, s in enumerate(current.strings[0])}
+    )
+    columns, column_signs = carried(
+        previous.strings[1], {s: j for j, s in enumerate(current.strings[1])}
+    )
+    kept_rows, kept_columns = rows >= 0, columns >= 0
+
+    def projected(amplitudes):
+        """A previous CI vector over the current determinants."""
+        signed = amplitudes * np.outer(row_signs, column_signs)
+        vector = np.zeros((len(current.strings[0]), len(current.strings[1])))
+        vector[np.ix_(rows[kept_rows], columns[kept_columns])] = signed[
+            np.ix_(kept_rows, kept_columns)
+        ]
+        return vector
+
+    previous_roots = list(_subspace_roots(mol, previous, n_core, ao_eri, h_ao))
+    current_roots = list(
+        _subspace_roots(mol, replace(current, labels=None), n_core, ao_eri, h_ao)
+    )
+    for multiplicity in sorted({state.multiplicity for state, _ in current_roots}):
+        now = [root for root in current_roots if root[0].multiplicity == multiplicity]
+        before = [
+            (state, projected(amplitudes))
+            for state, amplitudes in previous_roots
+            if state.multiplicity == multiplicity
+        ]
+        overlaps = np.array(
+            [[abs(np.sum(old * new)) for _, old in before] for _, new in now]
+        ).reshape(len(now), len(before))
+        yield (
+            multiplicity,
+            [state for state, _ in before],
+            [state for state, _ in now],
+            overlaps,
+        )
 
 
 def state_transitions(
@@ -1485,12 +1602,12 @@ def state_averaged_orbital_solve(
     )
     if solve.converged and not casscf.converged:
         warn(
-            f"The state-averaged solve used all {max_iterations} iterations "
-            "without settling, though its orbital gradient is below tolerance. "
-            "This usually means a requested state is degenerate with one left "
-            "out, such as one component of a degenerate pair, so the averaged "
-            "energy has a flat direction. Request every component of the "
-            "degenerate set.",
+            f"The state-averaged solve stopped at max_iterations={max_iterations} "
+            "before settling, though its orbital gradient is below tolerance. "
+            "Unless that cap is deliberately low, this usually means a requested "
+            "state is degenerate with one left out, such as one component of a "
+            "degenerate pair, so the averaged energy has a flat direction. "
+            "Request every component of the degenerate set.",
             UserWarning,
             stacklevel=_outside_divi_stacklevel(),
         )
