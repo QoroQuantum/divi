@@ -80,10 +80,14 @@ from .variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
 )
 from .workflows import (
+    QSCI,
+    ExpansionRecord,
     MoleculeTransformer,
     PartitioningProgramEnsemble,
+    QSCIState,
     TimeEvolutionTrajectory,
     VQEHyperparameterSweep,
+    extrapolate_pt2_to_zero,
 )
 from .workflows import _LASSQD_EXPORTS
 
@@ -123,6 +127,7 @@ __all__ = [
     "CustomVQA",
     "DataBindingMixin",
     "EarlyStopping",
+    "ExpansionRecord",
     "FeatureMap",
     "FubiniStudyMetricEstimator",
     "GenericLayerAnsatz",
@@ -150,6 +155,8 @@ __all__ = [
     "QNGOptimizer",
     "QNN",
     "QNSPSAOptimizer",
+    "QSCI",
+    "QSCIState",
     "QUIVEROptimizer",
     "QuantumProgram",
     "ReportingLevel",
@@ -172,6 +179,7 @@ __all__ = [
     "WorkflowStatus",
     "ZZFeatureMap",
     "ZerosState",
+    "extrapolate_pt2_to_zero",
 ]
 
 

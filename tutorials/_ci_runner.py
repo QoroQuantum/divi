@@ -56,6 +56,7 @@ NO_PATCHES = [
     "advanced/standalone_pipeline.py",
     "visualization/viz_qaoa_pce_comparison.py",
     "chemistry/vqe_h2_molecule.py",
+    "chemistry/qsci_lih.py",
 ]
 
 TUTORIALS: dict[str, dict] = {

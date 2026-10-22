@@ -61,6 +61,7 @@ Two scaling axes: solver choice (QAOA vs PCE) and problem size (single program v
 
 - **`vqe_h2_molecule.py`** — VQE on H2: basic run plus grouping-strategy and shot-allocation comparisons
 - **`vqe_hyperparameter_sweep.py`** — Hyperparameter sweeps across multiple molecules
+- **`qsci_lih.py`** — `QSCI` on LiH (12 qubits): qDRIFT-sampled seed subspace, then expansion by second-order contribution, checked against exact FCI with the PT2 correction and its extrapolation to zero
 - **`lassqd_h4.py`** — `LASSQD` on a stretched H4 chain: compares an automatic fragmentation against an occupancy-based one to show how much the choice of split costs in correlation energy
 
 ### `dynamics/`

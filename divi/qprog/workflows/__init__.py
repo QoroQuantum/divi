@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from divi._optional import import_optional
 
 from ._partitioning_ensemble import PartitioningProgramEnsemble
+from ._qsci import QSCI, ExpansionRecord, QSCIState, extrapolate_pt2_to_zero
 from ._time_evolution_trajectory import TimeEvolutionTrajectory
 from ._vqe_sweep import MoleculeTransformer, VQEHyperparameterSweep
 
@@ -57,10 +58,14 @@ _LASSQD_EXPORTS = (
 
 __all__ = [
     *_LASSQD_EXPORTS,
+    "ExpansionRecord",
     "MoleculeTransformer",
     "PartitioningProgramEnsemble",
+    "QSCI",
+    "QSCIState",
     "TimeEvolutionTrajectory",
     "VQEHyperparameterSweep",
+    "extrapolate_pt2_to_zero",
 ]
 
 
