@@ -219,12 +219,17 @@ def test_from_molecule_rejects_a_non_restricted_mean_field(pyscf_h2, method, sol
         MolecularProblem.from_molecule(mean_field)
 
 
-def test_from_molecule_rejects_an_open_shell_pyscf_molecule():
+def test_an_open_shell_pyscf_problem_counts_its_spins_but_builds_no_integrals():
+    """LASSQD builds its own integrals; every other consumer reads these and
+    must fail loudly rather than get an RHF solve of an open-shell molecule."""
     gto = pytest.importorskip("pyscf.gto")
     doublet = gto.M(atom="H 0 0 0", basis="sto-3g", spin=1, verbose=0)
 
+    problem = MolecularProblem.from_molecule(doublet)
+
+    assert (problem.n_alpha, problem.n_beta) == (1, 0)
     with pytest.raises(NotImplementedError, match="closed-shell"):
-        MolecularProblem.from_molecule(doublet)
+        problem.hamiltonian
 
 
 def test_from_molecule_rejects_an_open_shell_pennylane_molecule(qp, pennylane_h2):

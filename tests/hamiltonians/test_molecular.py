@@ -112,8 +112,8 @@ def test_molecular_hamiltonian_from_pyscf_rejects_open_shell():
     with pytest.raises(
         NotImplementedError,
         match=exact_match(
-            "Only closed-shell (RHF) systems are supported; got an open-shell "
-            "molecule with spin=1."
+            "Only closed-shell (RHF) systems are supported here; got an "
+            "open-shell molecule with spin=1. LASSQD accepts open-shell molecules."
         ),
     ):
         molecular_hamiltonian_from_pyscf(mol)

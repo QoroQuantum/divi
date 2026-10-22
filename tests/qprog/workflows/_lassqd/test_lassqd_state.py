@@ -95,16 +95,15 @@ def test_fragment_state_rejects_inconsistent_fields(kwargs, message):
             ],
             5,
             2,
-            "Fragments declare 4 electrons but cover 1 occupied orbitals, which "
-            "hold 2.",
+            "Fragments declare 4 electrons but cover occupied orbitals holding 2.",
         ),
         (
             [FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=3, n_beta=1)],
             4,
             2,
-            "Fragments declare 3 alpha and 1 beta electrons, a total Sz of 1.0. "
-            "Only closed-shell molecules are supported, so the fragments must sum "
-            "to Sz = 0 even where individual fragments are polarised.",
+            "Fragments declare 3 alpha and 1 beta electrons, a total Sz of 1.0, "
+            "but the molecule's is 0.0. Individual fragments may be polarised; "
+            "their total must match.",
         ),
     ],
     ids=[
@@ -122,3 +121,33 @@ def test_validate_fragment_specs_rejects_invalid_layouts(
 ):
     with pytest.raises(ValueError, match=exact_match(message)):
         validate_fragment_specs(specs, n_orbitals_total, n_occupied)
+
+
+@pytest.mark.parametrize(
+    "specs, message",
+    [
+        (
+            [FragmentSpec(orbitals=(0, 2), n_alpha=1, n_beta=1)],
+            "Singly occupied orbitals [1] are in no fragment. The core must be "
+            "closed-shell, so every singly occupied orbital has to be active.",
+        ),
+        (
+            [FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=2)],
+            "Fragments declare 1 alpha and 2 beta electrons, a total Sz of -0.5, "
+            "but the molecule's is 0.5. Individual fragments may be polarised; "
+            "their total must match.",
+        ),
+    ],
+    ids=["singly-occupied-left-out", "wrong-net-spin"],
+)
+def test_an_open_shell_layout_must_hold_every_unpaired_electron(specs, message):
+    """Two occupied orbitals with spin 1: orbital 0 doubly, orbital 1 singly
+    occupied."""
+    with pytest.raises(ValueError, match=exact_match(message)):
+        validate_fragment_specs(specs, 4, 2, spin=1)
+
+
+def test_an_open_shell_layout_counts_one_electron_per_singly_occupied_orbital():
+    validate_fragment_specs(
+        [FragmentSpec(orbitals=(0, 1, 2), n_alpha=2, n_beta=1)], 4, 2, spin=1
+    )

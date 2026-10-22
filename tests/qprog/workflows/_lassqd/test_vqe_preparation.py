@@ -103,16 +103,6 @@ _FALLBACK = "Falling back to the optimizer's own initialisation."
             f"between CCSD amplitudes and QCCAnsatz's parameters. {_FALLBACK}",
             id="qcc",
         ),
-        # Restricted CCSD cannot represent a polarized fragment, which is
-        # reachable whenever the fragments together still sum to Sz = 0.
-        pytest.param(
-            0,
-            4,
-            UCCSDAnsatz(),
-            "CCSD seeding skipped for fragment (0, 1): restricted CCSD requires "
-            f"equal alpha/beta electron counts, got n_alpha=1, n_beta=0. {_FALLBACK}",
-            id="spin-imbalanced",
-        ),
     ],
 )
 def test_ccsd_seed_params_warns_and_skips(n_beta, n_params, ansatz, message):
@@ -179,6 +169,52 @@ def test_ccsd_seed_params_uses_amplitude_correspondence_for_uccsd(
 
     assert seed_energy == pytest.approx(ccsd_electronic_energy, abs=1e-3)
     assert seed_energy < permuted_energy - 0.05
+
+
+def test_unrestricted_seed_equals_the_restricted_one_on_a_closed_shell(
+    h4_chain_mean_field,
+):
+    """Both read-offs index the same excitation list, so on a closed-shell
+    fragment, where UCCSD and RCCSD amplitudes coincide, the seeds must too."""
+    spec = H4_WHOLE_SPACE
+    h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
+    n_params = UCCSDAnsatz.n_params_per_layer(
+        2 * spec.n_orbitals, n_electrons=spec.n_alpha + spec.n_beta
+    )
+    restricted = _vqe_preparation._ccsd_seed_params(
+        h_eff, g_frag, spec, n_params, UCCSDAnsatz()
+    )
+
+    unrestricted = _vqe_preparation._unrestricted_uccsd_amplitude_seed(
+        _vqe_preparation._unrestricted_ccsd(h_eff, g_frag, spec), spec, n_params
+    )
+
+    np.testing.assert_allclose(unrestricted, restricted, atol=1e-7)
+
+
+def test_a_spin_polarised_uccsd_seed_recovers_correlation(
+    h4_chain_mean_field, default_test_simulator
+):
+    """Three alpha and one beta electron in H4's four orbitals: the seed from
+    unrestricted CCSD must recover most of the sector's correlation energy."""
+    spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=3, n_beta=1)
+    h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
+    n_params = UCCSDAnsatz.n_params_per_layer(
+        8, n_electrons=4, n_alpha=spec.n_alpha, n_beta=spec.n_beta
+    )
+
+    seed = _vqe_preparation._ccsd_seed_params(
+        h_eff, g_frag, spec, n_params, UCCSDAnsatz()
+    )
+
+    assert seed is not None
+    exact = fci.direct_spin1.kernel(h_eff, g_frag, 4, (3, 1))[0]
+    reference, seeded = (
+        ansatz_energy(default_test_simulator, params, h_eff, g_frag, spec)
+        for params in (np.zeros(n_params), seed)
+    )
+    assert seeded > exact - 1e-8
+    assert (reference - seeded) / (reference - exact) > 0.9
 
 
 @pytest.mark.parametrize(

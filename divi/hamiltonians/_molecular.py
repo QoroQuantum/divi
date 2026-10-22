@@ -46,15 +46,20 @@ def is_pennylane_molecule(molecule: object) -> TypeGuard[_PennyLaneMolecule]:
 
 
 def split_pyscf_input(
-    molecule: _PySCFInput,
+    molecule: _PySCFInput, *, open_shell: bool = False
 ) -> tuple[_PySCFMole, _PySCFMeanField | None]:
     """Validate a PySCF input and return ``(mol, mean_field or None)``.
 
+    Args:
+        molecule: A ``gto.Mole`` or mean-field object.
+        open_shell: Accept a non-zero ``mol.spin``, with a restricted
+            open-shell (ROHF/ROKS) mean field.
+
     Raises:
         TypeError: If ``molecule`` is neither a ``Mole`` nor a mean-field.
-        NotImplementedError: If the system is open-shell (non-zero spin) or the
-            mean-field is not restricted (e.g. UHF, UKS or GHF), whether or not
-            it has been run.
+        NotImplementedError: If the system is open-shell (non-zero spin)
+            without ``open_shell``, or the mean-field is not restricted (e.g.
+            UHF, UKS or GHF), whether or not it has been run.
     """
     if is_pyscf_mole(molecule):
         mean_field = None
@@ -68,10 +73,11 @@ def split_pyscf_input(
             f"got {type(molecule).__name__}."
         )
 
-    if mol.spin != 0:
+    if mol.spin != 0 and not open_shell:
         raise NotImplementedError(
-            "Only closed-shell (RHF) systems are supported; got an open-shell "
-            f"molecule with spin={mol.spin}."
+            "Only closed-shell (RHF) systems are supported here; got an "
+            f"open-shell molecule with spin={mol.spin}. LASSQD accepts "
+            "open-shell molecules."
         )
 
     if mean_field is not None:
@@ -79,7 +85,8 @@ def split_pyscf_input(
 
         if not isinstance(mean_field, hf.RHF):
             raise NotImplementedError(
-                "Only restricted (closed-shell) mean-fields are supported; got "
+                "Only restricted mean-fields (RHF/RKS, or ROHF/ROKS for an "
+                f"open-shell molecule) are supported; got "
                 f"{type(mean_field).__name__}."
             )
     return mol, mean_field
@@ -179,6 +186,24 @@ def molecular_hamiltonian(molecule: MoleculeLike) -> tuple[SparsePauliOp, int]:
         return to_spo(hamiltonian), int(molecule.n_electrons)
 
     raise _unsupported_molecule(molecule)
+
+
+def molecule_spin_counts(molecule: MoleculeLike) -> tuple[int, int]:
+    """``(n_alpha, n_beta)`` of a molecule, validated without solving it.
+
+    PySCF inputs may be open-shell; PennyLane molecules must be closed-shell.
+
+    Raises:
+        TypeError: If ``molecule`` is neither a PennyLane nor a PySCF input.
+        NotImplementedError: If a PennyLane molecule is open-shell, or a PySCF
+            mean field is not restricted.
+    """
+    if is_pyscf_input(molecule):
+        mol, _ = split_pyscf_input(molecule, open_shell=True)
+        n_alpha, n_beta = mol.nelec
+        return int(n_alpha), int(n_beta)
+    n_electrons = molecule_electron_count(molecule)
+    return n_electrons // 2, n_electrons // 2
 
 
 def molecule_electron_count(molecule: MoleculeLike) -> int:

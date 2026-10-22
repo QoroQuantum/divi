@@ -22,23 +22,31 @@ DEFAULT_COUPLING_THRESHOLD = 1e-3
 
 
 def select_frontier_orbitals(
-    n_orbitals_total: int, n_occupied: int, n_active_orbitals: int
+    n_orbitals_total: int,
+    n_occupied: int,
+    n_active_orbitals: int,
+    *,
+    spin: int = 0,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Choose active orbitals around the HOMO-LUMO gap.
 
     Args:
         n_orbitals_total: Size of the MO register.
-        n_occupied: Number of occupied spatial orbitals.
+        n_occupied: Number of occupied spatial orbitals, doubly and singly
+            occupied together.
         n_active_orbitals: Take the ``ceil(k / 2)`` highest occupied and
             ``floor(k / 2)`` lowest virtual orbitals.
+        spin: The molecule's ``2S``; its ``|spin|`` singly occupied orbitals,
+            the highest occupied, must all be taken.
 
     Returns:
         ``(occupied_indices, virtual_indices)``, each ascending.
 
     Raises:
         ValueError: If ``n_active_orbitals`` is not positive, asks for more
-            occupied or virtual orbitals than the register holds, or takes no
-            virtual orbital.
+            occupied or virtual orbitals than the register holds, takes no
+            virtual orbital, or takes fewer occupied orbitals than there are
+            singly occupied ones.
     """
     if n_active_orbitals <= 0:
         raise ValueError(
@@ -46,6 +54,13 @@ def select_frontier_orbitals(
         )
     n_occ_take = (n_active_orbitals + 1) // 2
     n_virt_take = n_active_orbitals // 2
+    if n_occ_take < abs(spin):
+        raise ValueError(
+            f"n_active_orbitals={n_active_orbitals} takes {n_occ_take} occupied "
+            f"orbitals, fewer than the molecule's {abs(spin)} singly occupied "
+            f"ones, which must all be active. Raise it to at least "
+            f"{2 * abs(spin) - 1}."
+        )
     n_virtual = n_orbitals_total - n_occupied
     if n_occ_take > n_occupied or n_virt_take > n_virtual:
         raise ValueError(
@@ -94,19 +109,26 @@ def _canonicalize_columns(mol, block: np.ndarray) -> np.ndarray:
 
 
 def split_active_orbitals(
-    active_orbitals: Sequence[int], n_occupied: int, n_orbitals_total: int
+    active_orbitals: Sequence[int],
+    n_occupied: int,
+    n_orbitals_total: int,
+    *,
+    spin: int = 0,
 ) -> tuple[tuple[int, ...], tuple[int, ...]]:
     """Split explicit active MO indices into occupied and virtual, ascending.
 
     Args:
         active_orbitals: MO column indices forming the active space.
-        n_occupied: Number of occupied spatial orbitals; an index below this is
-            occupied.
+        n_occupied: Number of occupied spatial orbitals, doubly and singly
+            occupied together; an index below this is occupied.
         n_orbitals_total: Size of the MO register.
+        spin: The molecule's ``2S``; its ``|spin|`` singly occupied orbitals,
+            the highest occupied, must all be active.
 
     Raises:
         ValueError: If ``active_orbitals`` is empty, contains duplicates or
-            out-of-range indices, or has no occupied or no virtual orbital.
+            out-of-range indices, has no occupied or no virtual orbital, or
+            leaves out a singly occupied orbital.
     """
     indices = tuple(int(orbital) for orbital in active_orbitals)
     if not indices:
@@ -127,6 +149,13 @@ def split_active_orbitals(
             "The active space must contain at least one occupied and one virtual "
             f"orbital; got {len(occupied)} occupied and {len(virtual)} virtual "
             f"from active_orbitals={indices} with n_occupied={n_occupied}."
+        )
+    missing = [o for o in range(n_occupied - abs(spin), n_occupied) if o not in indices]
+    if missing:
+        raise ValueError(
+            f"active_orbitals leaves out singly occupied orbitals {missing}. The "
+            "core must be closed-shell, so every singly occupied orbital has to "
+            "be active."
         )
     return occupied, virtual
 
@@ -270,32 +299,37 @@ def localize_blocks(
         runs.
     """
 
+    return (
+        _localize_block(mol, mo_coeff[:, list(occupied_indices)], rng),
+        _localize_block(mol, mo_coeff[:, list(virtual_indices)], rng),
+    )
+
+
+def _localize_block(mol, block: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """One block of :func:`localize_blocks`; a block of at most one orbital is
+    returned unchanged."""
     n_restarts = 8
-    localized = []
-    for indices in (list(occupied_indices), list(virtual_indices)):
-        block = mo_coeff[:, indices]
-        n = block.shape[1]
-        if n == 1:
-            localized.append(block.copy())
-            continue
+    n = block.shape[1]
+    if n <= 1:
+        return block.copy()
 
-        unrotated_start = lo.PipekMezey(mol, block)
-        best_result = unrotated_start.kernel()
-        best_cost = unrotated_cost = unrotated_start.cost_function()
+    unrotated_start = lo.PipekMezey(mol, block)
+    best_result = unrotated_start.kernel()
+    best_cost = unrotated_cost = unrotated_start.cost_function()
 
-        escape_tolerance = 1e-6
-        for _ in range(n_restarts):
-            orthogonal, _ = np.linalg.qr(rng.standard_normal((n, n)))
-            perturbed_start = lo.PipekMezey(mol, block @ orthogonal)
-            perturbed_result = perturbed_start.kernel()
-            perturbed_cost = perturbed_start.cost_function()
-            if perturbed_cost > best_cost:
-                best_result, best_cost = perturbed_result, perturbed_cost
-            if best_cost > unrotated_cost * (1.0 + escape_tolerance):
-                break
+    escape_tolerance = 1e-6
+    for _ in range(n_restarts):
+        orthogonal, _ = np.linalg.qr(rng.standard_normal((n, n)))
+        perturbed_start = lo.PipekMezey(mol, block @ orthogonal)
+        # Passed explicitly: PySCF's atomic guess would undo the rotation.
+        perturbed_result = perturbed_start.kernel(block @ orthogonal)
+        perturbed_cost = perturbed_start.cost_function()
+        if perturbed_cost > best_cost:
+            best_result, best_cost = perturbed_result, perturbed_cost
+        if best_cost > unrotated_cost * (1.0 + escape_tolerance):
+            break
 
-        localized.append(_canonicalize_columns(mol, best_result))
-    return localized[0], localized[1]
+    return _canonicalize_columns(mol, best_result)
 
 
 def build_coupling_graph(
@@ -551,6 +585,7 @@ def auto_fragment_specs(
     local_spins: Sequence[int] | None = None,
     ao_eri: np.ndarray | None = None,
     h_ao: np.ndarray | None = None,
+    spin: int = 0,
 ) -> tuple[list[FragmentSpec], np.ndarray, tuple[int, ...]]:
     """Automatically fragment an active space from orbital coupling.
 
@@ -565,7 +600,8 @@ def auto_fragment_specs(
     Args:
         mol: A PySCF ``gto.Mole``.
         mo_coeff: ``(nao, n_orb)`` MO coefficients.
-        n_occupied: Number of occupied spatial orbitals.
+        n_occupied: Number of occupied spatial orbitals, doubly and singly
+            occupied together.
         rng: Random number generator, forwarded to :func:`localize_blocks`.
             Required rather than created internally, so that fragmentation
             stays reproducible under a caller-supplied seed.
@@ -588,7 +624,8 @@ def auto_fragment_specs(
             clustering. This is how a localised active space is normally
             specified -- one fragment per metal centre.
         local_spins: Per-fragment ``2S``, in the order ``fragment_atoms`` names
-            them, overriding the closed-shell default of ``S = 0``. The
+            them, overriding the default of one unpaired spin per singly
+            occupied orbital (``S = 0`` for a closed-shell fragment). The
             fragment's electron count is fixed by its occupied orbitals, so this
             sets only the spin: ``n_alpha - n_beta = 2S``. Requires
             ``fragment_atoms``, whose order is the caller's -- coupling-graph
@@ -601,6 +638,9 @@ def auto_fragment_specs(
         h_ao: AO-basis core Hamiltonian for the coupling-graph integrals;
             ``None`` builds it from ``mol``. Ignored when ``fragment_atoms``
             is given.
+        spin: The molecule's non-negative ``2S``; its ``spin`` highest
+            occupied orbitals are singly occupied, localised apart from the
+            doubly occupied ones.
 
     The selector and ``local_spins`` combinations are those
     ``FragmentationConfig`` accepts; they are not re-validated here.
@@ -613,26 +653,33 @@ def auto_fragment_specs(
 
     Raises:
         ImportError: If the ``chem`` extra is not installed.
-        ValueError: If a requested ``2S`` exceeds a fragment's electron count,
-            or leaves it no partly filled spin channel. Also propagated from
+        ValueError: If a requested ``2S`` has the wrong parity for a fragment's
+            electron count, exceeds it, or leaves it no partly filled spin
+            channel. Also propagated from
             :func:`select_frontier_orbitals`, :func:`split_active_orbitals`,
             :func:`assign_orbitals_to_atoms`, or :func:`merge_clusters`.
     """
     if active_orbitals is not None:
         occupied_indices, virtual_indices = split_active_orbitals(
-            active_orbitals, n_occupied, mo_coeff.shape[1]
+            active_orbitals, n_occupied, mo_coeff.shape[1], spin=spin
         )
     elif n_active_orbitals is not None:
         occupied_indices, virtual_indices = select_frontier_orbitals(
-            mo_coeff.shape[1], n_occupied, n_active_orbitals
+            mo_coeff.shape[1], n_occupied, n_active_orbitals, spin=spin
         )
     else:
         raise ValueError("Pass either active_orbitals or n_active_orbitals.")
-    localized_occ, localized_virt = localize_blocks(
-        mol, mo_coeff, occupied_indices, virtual_indices, rng
+    # Singly occupied orbitals localise apart, so each keeps its occupation.
+    doubly = tuple(o for o in occupied_indices if o < n_occupied - abs(spin))
+    singly = tuple(o for o in occupied_indices if o >= n_occupied - abs(spin))
+    localized_doubly, localized_virt = localize_blocks(
+        mol, mo_coeff, doubly, virtual_indices, rng
     )
-    localized = np.hstack([localized_occ, localized_virt])
-    is_occupied = [True] * localized_occ.shape[1] + [False] * localized_virt.shape[1]
+    localized_singly = _localize_block(mol, mo_coeff[:, list(singly)], rng)
+    localized = np.hstack([localized_doubly, localized_singly, localized_virt])
+    occupation = [2] * len(doubly) + [1] * len(singly) + [0] * localized_virt.shape[1]
+    is_occupied = [count > 0 for count in occupation]
+    occupied_indices = doubly + singly
 
     if fragment_atoms is not None:
         clusters = assign_orbitals_to_atoms(mol, localized, fragment_atoms)
@@ -652,13 +699,22 @@ def auto_fragment_specs(
     active_positions = tuple(occupied_indices) + tuple(virtual_indices)
     specs = []
     for index, cluster in enumerate(clusters):
-        n_electrons = 2 * sum(is_occupied[orbital] for orbital in cluster)
-        two_s = 0 if local_spins is None else int(local_spins[index])
+        n_electrons = sum(occupation[orbital] for orbital in cluster)
+        if local_spins is None:
+            two_s = sum(occupation[orbital] == 1 for orbital in cluster)
+            source = f"Fragment {index}'s singly occupied orbitals give it"
+        else:
+            two_s = int(local_spins[index])
+            source = f"local_spins[{index}] asks for"
+        if (n_electrons + two_s) % 2:
+            raise ValueError(
+                f"{source} 2S={two_s} on a fragment holding {n_electrons} "
+                "electrons; 2S must have the parity of the electron count."
+            )
         if abs(two_s) > n_electrons:
             raise ValueError(
-                f"local_spins[{index}] asks for 2S={two_s} on a fragment "
-                f"holding {n_electrons} electrons, which cannot supply that "
-                "many unpaired spins."
+                f"{source} 2S={two_s} on a fragment holding {n_electrons} "
+                "electrons, which cannot supply that many unpaired spins."
             )
         n_alpha = (n_electrons + two_s) // 2
         n_beta = n_electrons - n_alpha
@@ -667,10 +723,9 @@ def auto_fragment_specs(
             and any(0 < count < len(cluster) for count in (n_alpha, n_beta))
         ):
             raise ValueError(
-                f"local_spins[{index}] asks for 2S={two_s}, giving fragment "
-                f"{index} n_alpha={n_alpha} and n_beta={n_beta} over "
-                f"{len(cluster)} orbitals, which leaves no spin channel partly "
-                "filled to excite."
+                f"{source} 2S={two_s}, giving fragment {index} n_alpha={n_alpha} "
+                f"and n_beta={n_beta} over {len(cluster)} orbitals, which leaves "
+                "no spin channel partly filled to excite."
             )
         specs.append(
             FragmentSpec(

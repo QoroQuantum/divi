@@ -47,6 +47,9 @@ _CC_MAX_CYCLE = 500
 _STABILITY_RESTARTS = 3
 # Starting occupations tried per fragment ROHF.
 _ROHF_STARTS = 64
+# Energy drop (Ha) below which following a reported ROHF instability finds a
+# flat direction rather than a lower solution.
+_FLAT_DIRECTION_TOL = 1e-9
 
 _PINNING_LOCK = threading.Lock()
 _pinned_users = 0
@@ -532,12 +535,15 @@ def _fragment_rohf(
             mo_coeff, stable = stability.rohf_internal(
                 mean_field, with_symmetry=False, return_status=True
             )
-            if stable:
+            if stable or attempt == _STABILITY_RESTARTS:
                 break
-            if attempt == _STABILITY_RESTARTS:
-                break
+            previous = mean_field.e_tot
             mean_field.kernel(dm0=mean_field.make_rdm1(mo_coeff, mean_field.mo_occ))
             if not mean_field.converged:
+                break
+            # A direction that lowers nothing is flat, as in a degenerate pair.
+            if mean_field.e_tot > previous - _FLAT_DIRECTION_TOL:
+                stable = True
                 break
         if not mean_field.converged or not stable:
             continue

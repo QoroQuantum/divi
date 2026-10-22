@@ -28,14 +28,50 @@ a chemistry-grade energy.
 
 LASSQD requires the ``chem`` extra: ``pip install qoro-divi[chem]``. Build its
 input with :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`, passed
-a PySCF ``gto.Mole`` or restricted (closed-shell) mean-field object; LASSQD
-runs (or reuses) the RHF calculation from that input. Because each macro-cycle
-re-optimises the molecular orbitals in the atomic-orbital basis, LASSQD rejects
-a :class:`~divi.qprog.problems.MolecularProblem` built from a PennyLane
+a PySCF ``gto.Mole`` or restricted mean-field object; LASSQD runs (or reuses)
+the RHF calculation from that input, or ROHF for an open-shell molecule
+(``spin`` set on the ``gto.Mole``). Because each macro-cycle re-optimises the
+molecular orbitals in the atomic-orbital basis, LASSQD rejects a
+:class:`~divi.qprog.problems.MolecularProblem` built from a PennyLane
 ``qchem.Molecule`` or from bare integrals — both carry no atomic-orbital basis
-to re-optimise into. Only closed-shell (RHF) molecules are supported. A
-restricted DFT object (``dft.RKS``) supplies starting orbitals only; its
-functional enters no energy.
+to re-optimise into. A restricted DFT object (``dft.RKS``, ``dft.ROKS``)
+supplies starting orbitals only; its functional enters no energy.
+
+**Open-shell molecules** (radicals, ions, high-spin ground states) take a
+closed-shell core: the ``2S`` singly occupied orbitals, the highest occupied
+ones in ROHF order, must all be active, and the fragments' ``n_alpha - n_beta``
+must sum to ``spin``. Automatic fragmentation localises the singly occupied
+orbitals apart from the doubly occupied ones and gives each fragment one
+unpaired electron per singly occupied orbital it holds, unless ``local_spins``
+sets otherwise. ``n_active_orbitals`` takes as many occupied orbitals as
+virtual ones, so when the natural active space is mostly singly occupied
+orbitals, name it with ``active_orbitals``. Build the molecule with a
+non-negative ``spin``; Unrestricted mean fields (UHF, UKS) are rejected. A
+molecule's states all share its ``S_z``, so lower-spin states of a high-spin
+ground state (the singlets of triplet O2, say) need the molecule built with the
+lower ``spin``.
+
+.. code-block:: python
+
+   from pyscf import gto
+   from divi.backends import MaestroSimulator
+   from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec
+   from divi.qprog.problems import MolecularProblem
+
+   # NH2, a doublet: orbitals 0-3 doubly occupied, 4 singly occupied in ROHF.
+   mol = gto.M(
+       atom="N 0 0 0; H 0 0.8 0.6; H 0 -0.8 0.6", basis="sto-3g", spin=1, verbose=0
+   )
+   ensemble = LASSQD(
+       MolecularProblem.from_molecule(mol),
+       fragmentation=FragmentationConfig(
+           active_spaces=[FragmentSpec(orbitals=(3, 4, 5), n_alpha=2, n_beta=1)],
+       ),
+       seed=0,
+       backend=MaestroSimulator(shots=2000),
+   )
+   ensemble.run(max_rounds=3)
+   print(ensemble.energy)
 
 Because :class:`~divi.qprog.workflows.LASSQD` subclasses
 :class:`~divi.qprog.ensemble.ProgramEnsemble`, its multi-round execution
@@ -169,7 +205,8 @@ Explicit Fragment Specification
 
 :class:`~divi.qprog.workflows.FragmentSpec` names one fragment: which spatial
 orbitals belong to it and how many alpha and beta electrons are assigned to
-it. Indices refer to canonical RHF molecular orbitals, not spatial positions.
+it. Indices refer to the mean field's canonical molecular orbitals (RHF, or ROHF
+for an open-shell molecule), not spatial positions.
 Fragments must be disjoint, carry valid electron counts, and list their
 occupied orbitals before their virtual ones, since each fragment's reference
 determinant fills its orbitals in the order given. Pass known splits through
@@ -210,9 +247,14 @@ capped by ``max_orbitals_per_fragment`` (default 4); ``coupling_threshold``
 localised orbital to an atom-defined fragment, and rejects both knobs.
 
 **Spin.** ``local_spins`` supplies signed ``2S`` values per atom-defined
-fragment while preserving electron counts. These values must sum to zero,
-corresponding to total ``S_z=0``. It requires ``fragment_atoms`` because
-automatic graph-fragment order is unstable.
+fragment while preserving electron counts. These values must sum to the
+molecule's ``spin``, so zero for a closed-shell molecule. It requires
+``fragment_atoms`` because automatic graph-fragment order is unstable. Each
+fragment's electron count comes from the localised orbitals it receives, so
+``local_spins`` cannot move an electron between fragments; for a
+broken-symmetry state of an open-shell singlet, or to choose which fragment
+carries a charge, give the layout with explicit
+:class:`~divi.qprog.workflows.FragmentSpec` entries instead.
 
 .. code-block:: python
 

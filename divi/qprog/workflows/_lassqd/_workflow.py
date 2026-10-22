@@ -357,6 +357,8 @@ def _molecule_fingerprint(mol) -> str:
     for array in (mol._atm, mol._bas, mol._env[gto.PTR_ENV_START :], mol._ecpbas):
         digest.update(np.ascontiguousarray(array).tobytes())
     digest.update(f"{mol.cart}:{mol.nelectron}".encode())
+    if mol.spin:
+        digest.update(f":{mol.spin}".encode())
     return digest.hexdigest()
 
 
@@ -420,12 +422,14 @@ class LASSQD(ProgramEnsemble):
     Args:
         problem: An :class:`~divi.qprog.problems.MolecularProblem`
             built by :meth:`~divi.qprog.problems.MolecularProblem.\
-from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
-            lazily, in :meth:`initial_state`) or a restricted mean-field
-            object — not from a PennyLane ``qchem.Molecule`` or from bare
-            integrals, since the orbital optimisation needs the atomic-orbital
-            basis. Closed-shell (RHF) only. A restricted DFT object supplies
-            starting orbitals only; its functional enters no energy.
+from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
+            a non-zero ``spin``, is run on it lazily, in :meth:`initial_state`)
+            or a restricted (RHF, ROHF) mean-field object — not from a
+            PennyLane ``qchem.Molecule`` or from bare integrals, since the
+            orbital optimisation needs the atomic-orbital basis. An open-shell
+            molecule keeps a closed-shell core: its singly occupied orbitals
+            must all be active. A restricted DFT object supplies starting
+            orbitals only; its functional enters no energy.
         fragmentation: Which orbitals are active and how they split into
             fragments, as a
             :class:`~divi.qprog.workflows.FragmentationConfig`.
@@ -456,8 +460,10 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
             selects no occupied or no virtual orbital of this molecule; if its
             ``fragment_atoms`` names an out-of-range atom or shares one between
             fragments; if ``energy_tol`` is not positive and finite; or if any fragment leaves no
-            excitation available, fragments overlap, or the fragments do not
-            sum to ``Sz = 0``; if ``sqd.states`` is set with more than one
+            excitation available, fragments overlap, a singly occupied orbital
+            is left out, or the fragments do not sum to the molecule's ``Sz``;
+            if the molecule's ``spin`` is negative; if ``local_spins`` does
+            not sum to ``spin``; if ``sqd.states`` is set with more than one
             fragment or asks for a state the fragment cannot hold; or if
             ``sqd.extension`` could outgrow the solver with ``max_dim`` unset.
             The configuration objects validate their own fields on
@@ -543,7 +549,17 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
                 "LASSQD needs a problem built from a pyscf Mole or restricted "
                 f"mean-field object, got {type(molecule).__name__}."
             )
-        self._mol, self._mean_field = split_pyscf_input(molecule)
+        self._mol, self._mean_field = split_pyscf_input(molecule, open_shell=True)
+        if self._mol.spin < 0:
+            raise ValueError(
+                f"LASSQD needs a non-negative spin; got spin={self._mol.spin}. "
+                f"Build the molecule with spin={-self._mol.spin}: the energies do "
+                "not depend on the sign of Sz, and PySCF's ROHF does not converge "
+                "with more beta than alpha electrons."
+            )
+        # ROHF ordering: the spin highest occupied orbitals are singly occupied.
+        self._spin = int(self._mol.spin)
+        self._n_occupied = int(self._mol.nelec[0])
         if (
             self._mean_field is not None
             and self._mean_field.mo_coeff is not None
@@ -561,18 +577,30 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         # rather than in ``initial_state``, so an out-of-range index fails at
         # construction.
         n_orbitals_total = self._register_size()
-        n_occupied = self._mol.nelectron // 2
+        n_occupied, spin = self._n_occupied, self._spin
         if fragmentation.active_spaces is not None:
             validate_fragment_specs(
-                fragmentation.active_spaces, n_orbitals_total, n_occupied
+                fragmentation.active_spaces, n_orbitals_total, n_occupied, spin=spin
             )
         if fragmentation.n_active_orbitals is not None:
             select_frontier_orbitals(
-                n_orbitals_total, n_occupied, fragmentation.n_active_orbitals
+                n_orbitals_total,
+                n_occupied,
+                fragmentation.n_active_orbitals,
+                spin=spin,
             )
         if fragmentation.active_orbitals is not None:
             split_active_orbitals(
-                fragmentation.active_orbitals, n_occupied, n_orbitals_total
+                fragmentation.active_orbitals, n_occupied, n_orbitals_total, spin=spin
+            )
+        if (
+            fragmentation.local_spins is not None
+            and sum(fragmentation.local_spins) != spin
+        ):
+            raise ValueError(
+                f"local_spins must sum to the molecule's 2S, mol.spin={spin}; got "
+                f"{list(fragmentation.local_spins)}, summing to "
+                f"{sum(fragmentation.local_spins)}."
             )
         if fragmentation.fragment_atoms is not None:
             _validate_fragment_atoms(fragmentation.fragment_atoms, self._mol.natm)
@@ -695,7 +723,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
 
         mean_field = self._mean_field
         if mean_field is None or mean_field.mo_coeff is None:
-            mean_field = scf.RHF(self._mol) if mean_field is None else mean_field
+            if mean_field is None:
+                mean_field = scf.ROHF(self._mol) if self._spin else scf.RHF(self._mol)
             mean_field.run(verbose=0)
             if not mean_field.converged:
                 raise RuntimeError(
@@ -709,7 +738,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
         mo_coeff = np.asarray(mean_field.mo_coeff)
         mo_energy = np.asarray(mean_field.mo_energy)
         n_orbitals_total = mo_coeff.shape[1]
-        n_occupied = self._mol.nelectron // 2
+        n_occupied = self._n_occupied
         # Only the frontier path reads orbital energies. Checking this on the
         # other paths would test a stale array anyway: a caller who reorders
         # ``mo_coeff`` (as AVAS does) leaves ``mo_energy`` describing the old
@@ -745,11 +774,12 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation is run on it
                 local_spins=config.local_spins,
                 ao_eri=self._ao_eri,
                 h_ao=self._h_ao,
+                spin=self._spin,
             )
             mo_coeff = mo_coeff.copy()
             mo_coeff[:, active_positions] = localized
 
-        validate_fragment_specs(specs, n_orbitals_total, n_occupied)
+        validate_fragment_specs(specs, n_orbitals_total, n_occupied, spin=self._spin)
         if config.active_spaces is None:
             # Explicit layouts were checked, and warned about, at construction.
             self._check_fragments(specs)
@@ -969,7 +999,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         if molecule != _molecule_fingerprint(self._mol):
             raise ValueError(
                 "LASSQD checkpoint was written for a different molecule: its "
-                "geometry, basis or electron count differs from this one's."
+                "geometry, basis, electron count or spin differs from this one's."
             )
         configuration = payload.get("configuration")
         if not isinstance(configuration, str):
@@ -1092,7 +1122,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 final_subspace.mo_coeff, "LASSQD checkpoint final_orbitals", overlap
             )
         specs = [fragment.spec for fragment in fragments]
-        validate_fragment_specs(specs, n_orbitals_total, self._mol.nelectron // 2)
+        validate_fragment_specs(
+            specs, n_orbitals_total, self._n_occupied, spin=self._spin
+        )
         state = LASSQDState(
             mo_coeff=mo_coeff,
             fragments=tuple(fragments),
@@ -1233,7 +1265,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def _n_core(self, state: LASSQDState) -> int:
         """This state's frozen-core count."""
         return _compute_n_core(
-            [fragment.spec for fragment in state.fragments], self._mol.nelectron // 2
+            [fragment.spec for fragment in state.fragments], self._n_occupied
         )
 
     def _active_space_integrals(self, state: LASSQDState) -> tuple[MOIntegrals, int]:

@@ -3581,7 +3581,7 @@ _DIFFERENT_CONFIGURATION = (
 
 _DIFFERENT_MOLECULE = (
     "LASSQD checkpoint was written for a different molecule: its geometry, "
-    "basis or electron count differs from this one's."
+    "basis, electron count or spin differs from this one's."
 )
 
 
@@ -4146,10 +4146,101 @@ def test_aggregate_results_keeps_the_last_completed_round_after_a_failure(
     assert ensemble.aggregate_results() is ensemble.workflow_state
 
 
+@pytest.fixture
+def nh2_radical():
+    """NH2, a doublet, with its ROHF reference: orbital 4 singly occupied."""
+    return scf.ROHF(
+        gto.M(
+            atom="N 0 0 0; H 0 0.8 0.6; H 0 -0.8 0.6",
+            basis="sto-3g",
+            spin=1,
+            verbose=0,
+        )
+    ).run(verbose=0)
+
+
+def test_an_open_shell_molecule_converges_to_its_casscf(
+    nh2_radical, dummy_expval_backend, mocker
+):
+    """A fragment holding the singly occupied orbital reaches a CASSCF
+    stationary point of the doublet: CASCI at its orbitals reproduces its
+    energy, and CASSCF started there does not move."""
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(nh2_radical),
+        active_spaces=[FragmentSpec(orbitals=(3, 4, 5), n_alpha=2, n_beta=1)],
+        n_batches=1,
+        batch_size=8,
+        n_recovery_iterations=1,
+        energy_tol=1e-8,
+    )
+
+    ensemble.run(max_rounds=20)
+
+    mo_coeff = ensemble.workflow_state.mo_coeff
+    casci = mcscf.CASCI(nh2_radical, 3, (2, 1))
+    casci.kernel(mo_coeff)
+    casscf = mcscf.CASSCF(nh2_radical, 3, (2, 1))
+    casscf.kernel(mo_coeff)
+    assert ensemble.stop_reason is WorkflowStatus.COMPLETE
+    assert ensemble.energy == pytest.approx(casci.e_tot, abs=1e-8)
+    assert ensemble.energy == pytest.approx(casscf.e_tot, abs=1e-6)
+
+
+def test_automatic_fragmentation_gives_the_unpaired_electron_to_its_fragment(
+    nh2_radical, dummy_expval_backend
+):
+    ensemble = LASSQD(
+        MolecularProblem.from_molecule(nh2_radical),
+        backend=dummy_expval_backend,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(active_spaces=None, n_active_orbitals=4, seed=0),
+    )
+
+    specs = [fragment.spec for fragment in ensemble.initial_state().fragments]
+
+    assert specs == [FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=1)]
+
+
+def test_a_negative_spin_is_rejected(dummy_expval_backend):
+    mol = gto.M(atom="O 0 0 0; H 0 0 0.97", basis="sto-3g", spin=-1, verbose=0)
+    message = (
+        "LASSQD needs a non-negative spin; got spin=-1. Build the molecule with "
+        "spin=1: the energies do not depend on the sign of Sz, and PySCF's ROHF "
+        "does not converge with more beta than alpha electrons."
+    )
+
+    with pytest.raises(ValueError, match=exact_match(message)):
+        LASSQD(
+            MolecularProblem.from_molecule(mol),
+            backend=dummy_expval_backend,
+            **lassqd_kwargs(
+                active_spaces=[FragmentSpec(orbitals=(3, 4, 5), n_alpha=1, n_beta=2)]
+            ),
+        )
+
+
+def test_an_open_shell_molecule_without_lassqd_builds_no_integrals(nh2_radical):
+    """Other consumers would otherwise read an RHF solve of a doublet."""
+    with pytest.raises(NotImplementedError, match="LASSQD accepts open-shell"):
+        MolecularProblem.from_molecule(nh2_radical).hamiltonian
+
+
 @pytest.mark.parametrize(
     "local_spins, match",
     [
-        pytest.param([1, -1], "local_spins entries must be even", id="odd"),
+        pytest.param(
+            [1, -1],
+            r"local_spins\[0\] asks for 2S=1 on a fragment holding 4 electrons; "
+            "2S must have the parity of the electron count",
+            id="odd",
+        ),
+        pytest.param(
+            [2, 2],
+            r"local_spins must sum to the molecule's 2S, mol.spin=0; got \[2, 2\]",
+            id="not-summing-to-the-molecule",
+        ),
         pytest.param([6, -6], "cannot supply", id="above-electron-count"),
         pytest.param(
             [4, -4],

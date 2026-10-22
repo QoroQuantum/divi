@@ -504,20 +504,19 @@ class FragmentationConfig:
             them. The fragment's electron count comes from its occupied
             orbitals, so this sets spin alone: ``n_alpha - n_beta = 2S``. Use it
             for spin-polarised fragments, e.g. ``[2, -2]`` for an
-            antiferromagnetically coupled dimer of local triplets. The fragments
-            must still sum to ``Sz = 0``.
+            antiferromagnetically coupled dimer of local triplets. They must
+            sum to the molecule's ``2S`` (``mol.spin``), checked by ``LASSQD``.
 
     Raises:
         ValueError: If a field has the wrong type or is out of range:
             ``n_active_orbitals`` or ``max_orbitals_per_fragment`` below 2, a
-            ``coupling_threshold`` outside ``[0, 1]``, an ``active_spaces``
-            entry that is not a ``FragmentSpec``, or an odd ``local_spins``
-            entry. Also if not exactly one active-space selector is given; if
-            ``fragment_atoms`` or ``local_spins`` is combined with
-            ``active_spaces``; if ``max_orbitals_per_fragment`` or
-            ``coupling_threshold`` is combined with ``active_spaces`` or
-            ``fragment_atoms``; or if ``local_spins`` is given without
-            ``fragment_atoms``, does not match its length or does not sum to 0.
+            ``coupling_threshold`` outside ``[0, 1]``, or an ``active_spaces``
+            entry that is not a ``FragmentSpec``. Also if not exactly one
+            active-space selector is given; if ``fragment_atoms`` or
+            ``local_spins`` is combined with ``active_spaces``; if
+            ``max_orbitals_per_fragment`` or ``coupling_threshold`` is combined
+            with ``active_spaces`` or ``fragment_atoms``; or if ``local_spins``
+            is given without ``fragment_atoms`` or does not match its length.
     """
 
     active_spaces: tuple[FragmentSpec, ...] | None = None
@@ -568,18 +567,6 @@ class FragmentationConfig:
                 raise ValueError(
                     f"local_spins has {len(self.local_spins)} entries but "
                     f"fragment_atoms names {len(self.fragment_atoms)} fragments."
-                )
-            if sum(self.local_spins) != 0:
-                raise ValueError(
-                    f"local_spins must sum to 0, since the closed-shell reference "
-                    f"has Sz = 0; got {list(self.local_spins)}, summing to "
-                    f"{sum(self.local_spins)}."
-                )
-            if any(spin % 2 for spin in self.local_spins):
-                raise ValueError(
-                    "local_spins entries must be even: each fragment holds an even "
-                    "number of electrons, since its occupied orbitals are doubly "
-                    f"occupied; got {list(self.local_spins)}."
                 )
         if self.active_spaces is not None or self.fragment_atoms is not None:
             layout = (

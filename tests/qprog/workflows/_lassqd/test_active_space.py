@@ -7,7 +7,7 @@
 import networkx as nx
 import numpy as np
 import pytest
-from pyscf import mcscf, scf
+from pyscf import gto, mcscf, scf
 
 from divi.qprog.workflows._lassqd import _active_space as _active_space_module
 from divi.qprog.workflows._lassqd._active_space import (
@@ -81,6 +81,45 @@ def test_select_frontier_orbitals(
 def test_select_frontier_orbitals_rejects(n_occupied, n_active, match):
     with pytest.raises(ValueError, match=match):
         select_frontier_orbitals(_N_ORBITALS, n_occupied, n_active)
+
+
+def test_frontier_selection_must_take_every_singly_occupied_orbital():
+    with pytest.raises(
+        ValueError,
+        match=r"takes 1 occupied orbitals, fewer than the molecule's 2 singly "
+        r"occupied ones, which must all be active\. Raise it to at least 3\.",
+    ):
+        select_frontier_orbitals(_N_ORBITALS, 3, 2, spin=2)
+
+
+def test_localisation_keeps_orbitals_already_on_separate_fragments_apart():
+    """H3's and H2's doubly occupied orbitals are each on one fragment already;
+    PySCF's atomic starting guess lands on a 50/50 mixture of them, which the
+    restarts must leave."""
+    mol = gto.M(
+        atom="H 0 0 0; H 0 0 0.9; H 0 0 1.8; H 5 0 0; H 5 0 0.74",
+        basis="sto-3g",
+        spin=1,
+        verbose=0,
+    )
+    mean_field = scf.ROHF(mol).run()
+
+    specs, _, _ = auto_fragment_specs(
+        mol,
+        mean_field.mo_coeff,
+        3,
+        np.random.default_rng(0),
+        active_orbitals=[0, 1, 2, 3, 4],
+        fragment_atoms=[[0, 1, 2], [3, 4]],
+        spin=1,
+    )
+
+    assert [(spec.n_alpha, spec.n_beta) for spec in specs] == [(2, 1), (1, 1)]
+
+
+def test_explicit_active_orbitals_must_include_every_singly_occupied_orbital():
+    with pytest.raises(ValueError, match=r"leaves out singly occupied orbitals \[2\]"):
+        split_active_orbitals((1, 3), 3, _N_ORBITALS, spin=1)
 
 
 def test_localization_preserves_the_occupied_subspace(
@@ -383,8 +422,8 @@ class _ScriptedPipekMezey:
         self._block = block
         type(self).starts.append(block)
 
-    def kernel(self):
-        return self._block
+    def kernel(self, mo_coeff=None):
+        return self._block if mo_coeff is None else mo_coeff
 
     def cost_function(self):
         return type(self).costs.pop(0)

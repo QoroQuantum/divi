@@ -15,8 +15,8 @@ from divi.hamiltonians._molecular import (
     MoleculeLike,
     is_pennylane_molecule,
     molecular_hamiltonian,
-    molecule_electron_count,
     molecule_integrals,
+    molecule_spin_counts,
 )
 from divi.hamiltonians._term_ops import ObservableLike, to_spo
 
@@ -121,8 +121,9 @@ class MolecularProblem(HamiltonianProblem):
 
     Construct it from integrals directly, or from a molecule with
     :meth:`from_molecule`. The electron counts may differ, as for a
-    spin-polarised fragment; :meth:`from_molecule` itself accepts closed-shell
-    molecules only.
+    spin-polarised fragment; :meth:`from_molecule` builds integrals for
+    closed-shell molecules only, and keeps an open-shell PySCF molecule for
+    :class:`~divi.qprog.workflows.LASSQD`.
 
     Args:
         one_body: ``(n_orbitals, n_orbitals)`` one-electron integrals. The
@@ -182,7 +183,7 @@ class MolecularProblem(HamiltonianProblem):
 
     @classmethod
     def from_molecule(cls, molecule: MoleculeLike) -> Self:
-        """Build the problem from a closed-shell molecule.
+        """Build the problem from a molecule.
 
         The integrals and the Hamiltonian are computed on first access, so a
         consumer that reads neither (e.g. :class:`~divi.qprog.workflows.LASSQD`,
@@ -192,16 +193,20 @@ class MolecularProblem(HamiltonianProblem):
             molecule: A PennyLane ``qp.qchem.Molecule``, or a PySCF ``gto.Mole``
                 or restricted mean-field object (requires the ``chem`` extra).
                 Integrals come from a Hartree-Fock solve: PennyLane's own
-                differentiable one, or PySCF's RHF.
+                differentiable one, or PySCF's RHF. An open-shell PySCF input
+                (non-zero ``spin``, ROHF/ROKS mean field) is accepted for
+                :class:`~divi.qprog.workflows.LASSQD`, which builds its own
+                integrals; reading this problem's integrals or Hamiltonian then
+                raises ``NotImplementedError``.
 
         Raises:
             TypeError: If ``molecule`` is neither a PennyLane nor a PySCF input.
-            NotImplementedError: If the molecule is open-shell, or a PySCF
-                mean-field is not restricted.
+            NotImplementedError: If a PennyLane molecule is open-shell, or a
+                PySCF mean-field is not restricted.
         """
-        n_electrons = molecule_electron_count(molecule)
+        n_alpha, n_beta = molecule_spin_counts(molecule)
         problem = cls.__new__(cls)
-        problem._assign(None, n_electrons // 2, n_electrons // 2, molecule=molecule)
+        problem._assign(None, n_alpha, n_beta, molecule=molecule)
         return problem
 
     def _assign(

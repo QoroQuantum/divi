@@ -120,25 +120,6 @@ def test_fragmentation_config_stores_sequences_as_hashable_tuples(kwargs, normal
             "with a fractional part",
         ),
         (
-            {
-                "n_active_orbitals": 4,
-                "fragment_atoms": [[0], [1]],
-                "local_spins": [2, 2],
-            },
-            "local_spins must sum to 0, since the closed-shell reference has "
-            "Sz = 0; got [2, 2], summing to 4.",
-        ),
-        (
-            {
-                "n_active_orbitals": 4,
-                "fragment_atoms": [[0], [1]],
-                "local_spins": [1, -1],
-            },
-            "local_spins entries must be even: each fragment holds an even number "
-            "of electrons, since its occupied orbitals are doubly occupied; got "
-            "[1, -1].",
-        ),
-        (
             {"active_spaces": ["0,1"]},
             "active_spaces.0\n  Input should be a dictionary or an instance of "
             "FragmentSpec",
@@ -171,8 +152,6 @@ def test_fragmentation_config_stores_sequences_as_hashable_tuples(kwargs, normal
         "nan-threshold",
         "threshold-above-one",
         "fractional-orbital-index",
-        "spins-not-summing-to-zero",
-        "odd-spins",
         "non-spec-active-space",
         "fragment-cap-with-layout",
         "threshold-with-atoms",

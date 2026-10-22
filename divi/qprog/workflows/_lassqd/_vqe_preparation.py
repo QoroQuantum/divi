@@ -148,6 +148,94 @@ def _uccsd_amplitude_seed(
     return seed
 
 
+def _unrestricted_uccsd_amplitude_seed(
+    coupled_cluster, spec: FragmentSpec, n_params: int
+) -> np.ndarray:
+    """:func:`_uccsd_amplitude_seed` for unrestricted CCSD, so a spin-polarised
+    fragment's ``t1``/``t2`` blocks map onto its own excitation list.
+
+    The blocks are laid out as antisymmetric spin-orbital tensors over the
+    whole blocked register (alpha orbitals first, then beta), indexed directly
+    by the excitations.
+    """
+    n_spatial = spec.n_orbitals
+    n_alpha, n_beta = spec.n_alpha, spec.n_beta
+    t1_alpha, t1_beta = coupled_cluster.t1
+    t2_alpha, t2_mixed, t2_beta = coupled_cluster.t2
+    n_spin = 2 * n_spatial
+    t1 = np.zeros((n_spin, n_spin))
+    t2 = np.zeros((n_spin,) * 4)
+    occ_alpha, vir_alpha = np.arange(n_alpha), np.arange(n_alpha, n_spatial)
+    occ_beta = n_spatial + np.arange(n_beta)
+    vir_beta = n_spatial + np.arange(n_beta, n_spatial)
+    t1[np.ix_(occ_alpha, vir_alpha)] = t1_alpha
+    t1[np.ix_(occ_beta, vir_beta)] = t1_beta
+    t2[np.ix_(occ_alpha, occ_alpha, vir_alpha, vir_alpha)] = t2_alpha
+    t2[np.ix_(occ_beta, occ_beta, vir_beta, vir_beta)] = t2_beta
+    t2[np.ix_(occ_alpha, occ_beta, vir_alpha, vir_beta)] = t2_mixed
+    t2[np.ix_(occ_beta, occ_alpha, vir_beta, vir_alpha)] = t2_mixed.transpose(
+        1, 0, 3, 2
+    )
+    t2[np.ix_(occ_alpha, occ_beta, vir_beta, vir_alpha)] = -t2_mixed.transpose(
+        0, 1, 3, 2
+    )
+    t2[np.ix_(occ_beta, occ_alpha, vir_alpha, vir_beta)] = -t2_mixed.transpose(
+        1, 0, 2, 3
+    )
+
+    first_layer = [
+        (
+            -t1[occupied[0], unoccupied[0]]
+            if len(occupied) == 1
+            else t2[(*occupied, *unoccupied)]
+        )
+        for occupied, unoccupied in _uccsd_excitations(n_spatial, (n_alpha, n_beta))
+    ]
+    seed = np.zeros(n_params)
+    take = min(n_params, len(first_layer))
+    seed[:take] = first_layer[:take]
+    return seed
+
+
+def _unrestricted_ccsd(h_eff: np.ndarray, g_frag: np.ndarray, spec: FragmentSpec):
+    """Unrestricted CCSD on the fragment's reference determinant, or ``None``
+    (with a ``UserWarning``) if it raises; non-convergence only warns."""
+    try:
+        n_orb = spec.n_orbitals
+        occupations = np.zeros((2, n_orb))
+        occupations[0, : spec.n_alpha] = 1.0
+        occupations[1, : spec.n_beta] = 1.0
+        mean_field = _embedded_mean_field(
+            h_eff,
+            g_frag,
+            spec,
+            np.array([np.eye(n_orb), np.eye(n_orb)]),
+            occupations,
+            unrestricted=True,
+        )
+
+        coupled_cluster = cc.UCCSD(mean_field)
+        coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
+        coupled_cluster.kernel()
+        if not coupled_cluster.converged:
+            warn(
+                f"UCCSD did not converge for fragment {spec.orbitals}; seeding "
+                "from its amplitudes anyway, since the seed is accepted on the "
+                "energy it delivers rather than on the solver's own criterion.",
+                UserWarning,
+                stacklevel=3,
+            )
+    except Exception as exc:
+        warn(
+            f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
+            "Falling back to the optimizer's own initialisation.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+    return coupled_cluster
+
+
 def _one_body_from_excitations(
     block: np.ndarray, n_orb: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -341,40 +429,9 @@ def _lucj_seed_params(
     one-body potential is still spin-averaged, so the reference is polarised only
     through its occupations.
     """
-    try:
-        n_orb = spec.n_orbitals
-        occupations = np.zeros((2, n_orb))
-        occupations[0, : spec.n_alpha] = 1.0
-        occupations[1, : spec.n_beta] = 1.0
-        mean_field = _embedded_mean_field(
-            h_eff,
-            g_frag,
-            spec,
-            np.array([np.eye(n_orb), np.eye(n_orb)]),
-            occupations,
-            unrestricted=True,
-        )
-
-        coupled_cluster = cc.UCCSD(mean_field)
-        coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
-        coupled_cluster.kernel()
-        if not coupled_cluster.converged:
-            warn(
-                f"UCCSD did not converge for fragment {spec.orbitals}; seeding "
-                "from its amplitudes anyway, since the seed is accepted on the "
-                "energy it delivers rather than on the solver's own criterion.",
-                UserWarning,
-                stacklevel=2,
-            )
-    except Exception as exc:
-        warn(
-            f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimizer's own initialisation.",
-            UserWarning,
-            stacklevel=2,
-        )
+    coupled_cluster = _unrestricted_ccsd(h_eff, g_frag, spec)
+    if coupled_cluster is None:
         return None
-
     return _lucj_amplitude_seed(coupled_cluster, spec, n_params, ansatz_kwargs)
 
 
@@ -468,10 +525,8 @@ def _ccsd_seed_params(
         A length-``n_params`` vector, or ``None`` (with a ``UserWarning``) if
         ``ansatz`` is neither a ``UCCSDAnsatz`` nor a ``LUCJAnsatz``, or if
         the coupled-cluster calculation raises. Non-convergence only warns, since
-        the seed is judged on the energy it delivers. Restricted
-        CCSD additionally cannot represent a spin-imbalanced fragment
-        (``n_alpha != n_beta``), so ``UCCSDAnsatz`` also returns ``None`` there;
-        the LUCJ path uses unrestricted CCSD and has no such limit.
+        the seed is judged on the energy it delivers. A spin-imbalanced
+        fragment (``n_alpha != n_beta``) is seeded from unrestricted CCSD.
     """
     if not isinstance(ansatz, (UCCSDAnsatz, LUCJAnsatz)):
         warn(
@@ -488,15 +543,10 @@ def _ccsd_seed_params(
         return _lucj_seed_params(h_eff, g_frag, spec, n_params, ansatz_kwargs or {})
 
     if spec.n_alpha != spec.n_beta:
-        warn(
-            f"CCSD seeding skipped for fragment {spec.orbitals}: restricted "
-            f"CCSD requires equal alpha/beta electron counts, got n_alpha="
-            f"{spec.n_alpha}, n_beta={spec.n_beta}. Falling back to the "
-            "optimizer's own initialisation.",
-            UserWarning,
-            stacklevel=2,
-        )
-        return None
+        coupled_cluster = _unrestricted_ccsd(h_eff, g_frag, spec)
+        if coupled_cluster is None:
+            return None
+        return _unrestricted_uccsd_amplitude_seed(coupled_cluster, spec, n_params)
 
     try:
         n_orb = spec.n_orbitals

@@ -339,7 +339,11 @@ class _OrbitalRound:
 
 
 def validate_fragment_specs(
-    specs: Sequence[FragmentSpec], n_orbitals_total: int, n_occupied: int
+    specs: Sequence[FragmentSpec],
+    n_orbitals_total: int,
+    n_occupied: int,
+    *,
+    spin: int = 0,
 ) -> None:
     """Reject fragments that overlap or index outside the orbital register.
 
@@ -347,15 +351,18 @@ def validate_fragment_specs(
     mean-field contribution of every *other* fragment, so shared orbitals
     would be double-counted.
 
-    The fragments' electron counts must also add up to twice the number of
-    active orbitals below ``n_occupied``. A mismatch is not caught downstream;
-    it yields an energy for the wrong number of electrons.
+    The fragments' electron counts must also add up to those of the active
+    orbitals below ``n_occupied``: two per doubly occupied orbital, one per
+    singly occupied one. A mismatch is not caught downstream; it yields an
+    energy for the wrong number of electrons.
 
     Args:
         specs: The fragment specifications to validate.
         n_orbitals_total: Size of the molecule's orbital register.
-        n_occupied: Number of doubly occupied orbitals in the reference
-            determinant (``mol.nelectron // 2``).
+        n_occupied: Number of occupied orbitals in the reference determinant,
+            doubly and singly occupied together.
+        spin: The molecule's ``2S`` (``n_alpha - n_beta``); its ``|spin|``
+            highest occupied orbitals are singly occupied, as in ROHF.
 
     Each fragment must list its occupied orbitals before its virtual ones: the
     reference determinant and the initial density fill a fragment's orbitals in
@@ -366,9 +373,10 @@ def validate_fragment_specs(
             fragments, if ``specs`` is empty, if a fragment leaves every spin
             channel empty or full (no excitation available, so no correlation to
             capture), if a fragment lists a virtual orbital before an occupied
-            one, if the fragments' total electron count does not match the
-            orbitals they cover, or if the fragments do not sum to ``Sz = 0``.
-            Per-fragment spin-count bounds are enforced by
+            one, if a singly occupied orbital is left out of every fragment, if
+            the fragments' total electron count does not match the orbitals
+            they cover, or if the fragments do not sum to the molecule's
+            ``Sz``. Per-fragment spin-count bounds are enforced by
             :class:`FragmentSpec` itself.
     """
     if not specs:
@@ -411,21 +419,32 @@ def validate_fragment_specs(
                     "orbitals first: its reference determinant fills them in order."
                 )
 
-    n_active_occupied = sum(1 for orbital in seen if orbital < n_occupied)
-    n_declared = sum(spec.n_alpha + spec.n_beta for spec in specs)
-    if n_declared != 2 * n_active_occupied:
+    n_doubly = n_occupied - abs(spin)
+    missing = [
+        orbital for orbital in range(n_doubly, n_occupied) if orbital not in seen
+    ]
+    if missing:
         raise ValueError(
-            f"Fragments declare {n_declared} electrons but cover "
-            f"{n_active_occupied} occupied orbitals, which hold "
-            f"{2 * n_active_occupied}."
+            f"Singly occupied orbitals {missing} are in no fragment. The core "
+            "must be closed-shell, so every singly occupied orbital has to be "
+            "active."
+        )
+    n_held = sum(
+        2 if orbital < n_doubly else 1 for orbital in seen if orbital < n_occupied
+    )
+    n_declared = sum(spec.n_alpha + spec.n_beta for spec in specs)
+    if n_declared != n_held:
+        raise ValueError(
+            f"Fragments declare {n_declared} electrons but cover occupied "
+            f"orbitals holding {n_held}."
         )
 
     total_alpha = sum(spec.n_alpha for spec in specs)
     total_beta = sum(spec.n_beta for spec in specs)
-    if total_alpha != total_beta:
+    if total_alpha - total_beta != spin:
         raise ValueError(
             f"Fragments declare {total_alpha} alpha and {total_beta} beta "
-            f"electrons, a total Sz of {(total_alpha - total_beta) / 2}. Only "
-            "closed-shell molecules are supported, so the fragments must sum "
-            "to Sz = 0 even where individual fragments are polarised."
+            f"electrons, a total Sz of {(total_alpha - total_beta) / 2}, but the "
+            f"molecule's is {spin / 2}. Individual fragments may be polarised; "
+            "their total must match."
         )

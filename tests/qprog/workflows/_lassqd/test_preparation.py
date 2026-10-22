@@ -375,8 +375,19 @@ def test_fragment_rohf_keeps_the_lowest_converged_solution(mocker):
     assert _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec) is low
 
 
+def _descending_solver(mocker):
+    """A converged ROHF mock whose every ``kernel`` call lowers its energy."""
+    solver = mocker.Mock(converged=True, e_tot=0.0, mo_occ=np.array([2.0, 0.0]))
+
+    def kernel(*args, **kwargs):
+        solver.e_tot -= 1.0
+
+    solver.kernel.side_effect = kernel
+    return solver
+
+
 def test_fragment_rohf_reoptimises_from_an_unstable_solution(mocker):
-    solver = mocker.Mock(converged=True, mo_occ=np.array([2.0, 0.0]))
+    solver = _descending_solver(mocker)
     mocker.patch("pyscf.scf.ROHF", return_value=solver)
     rotated = np.array([[0.0, 1.0], [1.0, 0.0]])
     _patch_rohf_starts(mocker, stability=[(rotated, False), (rotated, True)])
@@ -392,9 +403,11 @@ def test_fragment_rohf_reoptimises_from_an_unstable_solution(mocker):
 def test_fragment_rohf_rejects_an_unstable_or_unconverged_restart(
     mocker, restart_converges
 ):
-    solver = mocker.Mock(converged=True, mo_occ=np.array([2.0, 0.0]))
+    solver = _descending_solver(mocker)
+    lower_energy = solver.kernel.side_effect
 
     def kernel(*args, **kwargs):
+        lower_energy()
         if solver.kernel.call_count > 1:
             solver.converged = restart_converges
 
@@ -405,6 +418,17 @@ def test_fragment_rohf_rejects_an_unstable_or_unconverged_restart(
 
     with pytest.raises(RuntimeError, match="ROHF did not converge"):
         _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec)
+
+
+def test_fragment_rohf_accepts_an_instability_that_lowers_nothing(mocker):
+    """A degenerate pair's flat direction keeps being reported as unstable."""
+    solver = mocker.Mock(converged=True, e_tot=-1.0, mo_occ=np.array([2.0, 0.0]))
+    mocker.patch("pyscf.scf.ROHF", return_value=solver)
+    _patch_rohf_starts(mocker, stability=lambda mean_field, **_: (np.eye(2), False))
+    spec = FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)
+
+    assert _fragment_rohf(np.diag([-1.0, 0.5]), np.zeros((2, 2, 2, 2)), spec) is solver
+    assert solver.kernel.call_count == 2
 
 
 def test_fragment_rohf_uses_positive_local_spin_for_beta_majority(mocker):
