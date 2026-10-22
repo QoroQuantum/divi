@@ -244,11 +244,12 @@ def h4_localized_blocks_seed0(h4_chain_mean_field):
     return localize_blocks(mol, mo_coeff, (0, 1), (2, 3), np.random.default_rng(0))
 
 
-def h2o_molecule(basis="6-31g"):
+def h2o_molecule(basis="6-31g", symmetry=False):
     """Closed-shell water at its experimental geometry."""
     return gto.M(
         atom="O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587",
         basis=basis,
+        symmetry=symmetry,
         verbose=0,
     )
 

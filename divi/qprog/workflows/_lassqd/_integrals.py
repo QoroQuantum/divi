@@ -5,6 +5,7 @@
 """Effective per-fragment integrals, the LASSQD total-energy functional, and
 the orbital solves."""
 
+import math
 import os
 import sys
 import time
@@ -19,9 +20,9 @@ import numpy as np
 import scipy.linalg
 import scipy.optimize
 import scipy.sparse
-from pyscf import ao2mo, lib, mcscf
+from pyscf import ao2mo, lib, mcscf, mrpt
 from pyscf.fci import selected_ci
-from pyscf.scf import hf
+from pyscf.scf import hf, hf_symm
 from pyscf.soscf import ciah
 from scipy.optimize import minimize
 
@@ -54,6 +55,9 @@ _MAX_RESTARTS = 10
 _HESSIAN_STEP = 1e-4
 # Largest element-wise deviation from the identity that still counts as no step.
 _STALLED_STEP = 1e-14
+# Largest deviation of a space's irrep projection from a projector that still
+# counts as symmetry-adapted; converged solves leave ~2e-5, broken ones >0.2.
+_SYMMETRY_TOL = 1e-3
 # A converged point this far above the best one seen still replaces it.
 _ENERGY_ROUNDING = 1e-10
 # Lowest orbital-Hessian eigenvalue below which a saddle is escaped, about 100x
@@ -1247,6 +1251,65 @@ class _SubspaceCI(selected_ci.SelectedCI):
     approx_kernel = kernel
 
 
+def abelian_molecule(mol):
+    """``mol``, or for a linear molecule a copy that works in D2h or C2v.
+
+    PySCF pairs a linear molecule's degenerate orbitals by their energies,
+    which a rotation within an irrep separates.
+    """
+    subgroup = {"Dooh": "D2h", "Coov": "C2v"}.get(mol.groupname)
+    if subgroup is None:
+        return mol
+    abelian = mol.copy()
+    abelian.symmetry_subgroup = subgroup
+    abelian.build(dump_input=False, parse_arg=False)
+    return abelian
+
+
+def orbital_irreps(mol, mo_coeff: np.ndarray) -> np.ndarray | None:
+    """Each orbital's irrep under the abelian point group ``mol`` works in, or
+    ``None`` when ``mol`` has no symmetry or an orbital mixes irreps."""
+    if not mol.symmetry:
+        return None
+    try:
+        return hf_symm.get_orbsym(
+            abelian_molecule(mol), mo_coeff, mol.intor_symmetric("int1e_ovlp"), True
+        )
+    except ValueError:
+        return None
+
+
+def _broken_symmetry(
+    mol, mo_coeff: np.ndarray, n_core: int, n_active: int
+) -> str | None:
+    """``mol``'s point group, detected even when ``mol`` was built without
+    symmetry, when the core, active or virtual space of ``mo_coeff`` mixes its
+    irreps; ``None`` when all three are symmetry-adapted.
+
+    Each space's projection onto an irrep is a projector exactly when the space
+    is symmetry-adapted, whatever rotation mixes orbitals within it.
+    """
+    symmetric = mol
+    if not mol.symmetry:
+        symmetric = mol.copy()
+        symmetric.symmetry = True
+        symmetric.build(dump_input=False, parse_arg=False)
+    overlap = mol.intor_symmetric("int1e_ovlp")
+    bounds = (0, n_core, n_core + n_active, mo_coeff.shape[1])
+    for start, stop in pairwise(bounds):
+        if start == stop:
+            continue
+        projected = overlap @ mo_coeff[:, start:stop]
+        for irrep_basis in symmetric.symm_orb:
+            component = irrep_basis.T @ projected
+            weight = component.T @ scipy.linalg.solve(
+                irrep_basis.T @ overlap @ irrep_basis, component, assume_a="pos"
+            )
+            if np.abs(weight @ weight - weight).max() > _SYMMETRY_TOL:
+                return symmetric.groupname
+    return None
+
+
 def _exact_mean_field(mol, ao_eri: np.ndarray, h_ao: np.ndarray) -> hf.RHF:
     """An RHF object whose integrals are ``ao_eri`` and ``h_ao``, for PySCF
     CASCI and CASSCF to build their Hamiltonians from, with the
@@ -1349,6 +1412,42 @@ def subspace_wavefunctions(
             )
         )
     return tuple(wavefunctions)
+
+
+def subspace_nevpt2(
+    mol,
+    subspace: _SampledSubspace,
+    n_core: int,
+    ao_eri: np.ndarray,
+    h_ao: np.ndarray,
+) -> tuple[tuple[ElectronicState, float], ...]:
+    """Each requested state of ``subspace`` at its orbitals with its strongly
+    contracted NEVPT2 correction, in root order.
+
+    Raises:
+        MemoryError: If one full-space CI vector exceeds ``mol.max_memory``.
+    """
+    strings_alpha, strings_beta = subspace.strings
+    n_active = len(strings_alpha[0])
+    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
+    n_bytes = 8 * math.comb(n_active, nelec[0]) * math.comb(n_active, nelec[1])
+    if n_bytes > mol.max_memory * 1e6:
+        raise MemoryError(
+            f"NEVPT2 needs the full-space CI vector of CAS({sum(nelec)},{n_active}), "
+            f"{n_bytes / 1e6:g} MB, above mol.max_memory={mol.max_memory:g} MB. "
+            "Raise mol.max_memory if the machine has room."
+        )
+    corrections = []
+    for state, amplitudes in _subspace_roots(mol, subspace, n_core, ao_eri, h_ao):
+        casci = mcscf.casci.CASCI(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
+        casci.ncore = n_core
+        casci.verbose = 0
+        casci.mo_coeff = subspace.mo_coeff
+        casci.ci = selected_ci.to_fci(
+            sci_vector(strings_alpha, strings_beta, amplitudes), n_active, nelec
+        )
+        corrections.append((state, float(mrpt.NEVPT(casci).kernel())))
+    return tuple(corrections)
 
 
 def track_states(
@@ -1463,8 +1562,8 @@ def _root_overlaps(
 def state_transitions(
     mol, wavefunctions: Sequence[StateWavefunction]
 ) -> tuple[StateTransition, ...]:
-    """Every pair of same-multiplicity states' one-electron transition, lower
-    state first, in the order of ``wavefunctions``."""
+    """Every pair of same-multiplicity states' one-electron transition, the
+    earlier state of ``wavefunctions`` first."""
     if not wavefunctions:
         return ()
     orbitals = wavefunctions[0].active_orbitals
@@ -1476,8 +1575,6 @@ def state_transitions(
     for lower, upper in combinations(wavefunctions, 2):
         if lower.state.multiplicity != upper.state.multiplicity:
             continue
-        if upper.state.energy < lower.state.energy:
-            lower, upper = upper, lower
         nelec = (lower.strings_alpha[0].count("1"), lower.strings_beta[0].count("1"))
         transition_rdm1 = selected_ci.trans_rdm1(
             sci_vector(upper.strings_alpha, upper.strings_beta, upper.amplitudes),
@@ -1558,7 +1655,15 @@ def state_averaged_orbital_solve(
     n_active = spec.n_orbitals
     nelec = (spec.n_alpha, spec.n_beta)
 
-    casscf = mcscf.mc1step.CASSCF(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
+    keeps_symmetry = orbital_irreps(mol, mo_coeff) is not None
+    if keeps_symmetry:
+        casscf = mcscf.mc1step_symm.SymAdaptedCASSCF(
+            _exact_mean_field(abelian_molecule(mol), ao_eri, h_ao), n_active, nelec
+        )
+    else:
+        casscf = mcscf.mc1step.CASSCF(
+            _exact_mean_field(mol, ao_eri, h_ao), n_active, nelec
+        )
     casscf.ncore = n_core
     casscf.verbose = 0
     casscf.canonicalization = False
@@ -1584,6 +1689,24 @@ def state_averaged_orbital_solve(
 
     casscf.callback = progress
     casscf.kernel(mo_coeff)
+    group = (
+        None
+        if keeps_symmetry
+        else _broken_symmetry(mol, casscf.mo_coeff, n_core, n_active)
+    )
+    if group is not None:
+        remedy = (
+            "Pass a mean field with symmetry-adapted orbitals"
+            if mol.symmetry
+            else "Build the molecule with symmetry=True"
+        )
+        warn(
+            f"The state-averaged solve broke the molecule's {group} symmetry, "
+            "mixing states of different symmetry; which such solution a run "
+            f"reaches depends on rounding. {remedy} to keep the symmetry.",
+            UserWarning,
+            stacklevel=_outside_divi_stacklevel(),
+        )
 
     rdm1, rdm2 = casscf.fcisolver.make_rdm12(casscf.ci, n_active, nelec)
     pairs, energy_and_gradient = rotation_energy_gradient_fn(

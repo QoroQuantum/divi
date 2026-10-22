@@ -332,6 +332,11 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
     report's ``averaged_energy``, and every state's own energy is in
     ``LASSQD.electronic_states``. Needs a single fragment.
 
+    A molecule built with ``symmetry=True``, from symmetry-adapted orbitals,
+    keeps the abelian point group PySCF works in (D2h or C2v for a linear
+    molecule), as in symmetry-adapted SA-CASSCF; otherwise the average can
+    fall by breaking the symmetry, to a solution that depends on rounding.
+
     Args:
         max_iterations: Cap on SA-CASSCF iterations in each LASSQD round.
         weights: Weight per state, keyed ``(multiplicity, index)``, covering
@@ -343,6 +348,9 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
     Raises:
         ValueError: If ``max_iterations`` is not an integer of at least 1, or a
             weight is negative or non-finite, or the weights do not sum to 1.
+
+    Warns:
+        UserWarning: If a solve breaks the molecule's abelian point group.
     """
 
     max_iterations: int = Field(default=50, ge=1)

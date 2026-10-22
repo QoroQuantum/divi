@@ -17,13 +17,14 @@ reliably captured.
 import copy
 import dataclasses
 import logging
+import math
 import re
 import time
 import warnings
 
 import numpy as np
 import pytest
-from pyscf import ao2mo, fci, gto, mcscf, scf
+from pyscf import ao2mo, fci, gto, mcscf, mrpt, scf
 from pyscf.fci import cistring
 
 from divi.qprog import (
@@ -60,6 +61,7 @@ from divi.qprog.workflows._lassqd._integrals import (
     cached_ao_eri,
     cached_h_ao,
     fragment_blocks,
+    orbital_irreps,
     state_averaged_orbital_solve,
     track_states,
 )
@@ -2121,10 +2123,10 @@ def test_state_averaged_orbitals_reproduce_sa_casscf(
     dummy_expval_backend, mocker, weights, density_fitted
 ):
     """With a complete subspace every round, state-averaged LASSQD on one
-    fragment is exact-integral SA-CASSCF from the same start: the same average
-    and per-state energies, not a saddle point above them, even when the mean
-    field supplied was density-fitted."""
-    mean_field = scf.RHF(h2o_molecule()).run(verbose=0)
+    fragment of a symmetric molecule is exact-integral symmetry-adapted
+    SA-CASSCF: the same average and per-state energies, not a saddle point above
+    them, even when the mean field supplied was density-fitted."""
+    mean_field = scf.RHF(h2o_molecule(symmetry=True)).run(verbose=0)
     supplied = mean_field.density_fit().run(verbose=0) if density_fitted else mean_field
     spec = FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2)
     orbital_update = StateAveragedOrbitalUpdate(weights=weights)
@@ -2205,13 +2207,115 @@ def test_state_averaging_over_half_a_degenerate_pair_warns():
     assert solve.n_iterations == 3
 
 
+def _h2o_state_averaged_solve(symmetry):
+    """H2O CAS(4,4) averaged over S0 and S1 from its RHF orbitals, whose
+    symmetric point is a saddle of the average."""
+    mol = h2o_molecule(symmetry=symmetry)
+    mean_field = scf.RHF(mol).run(verbose=0)
+    strings = tuple(
+        format(string, "04b")[::-1] for string in cistring.make_strings(range(4), 2)
+    )
+    solve, _ = state_averaged_orbital_solve(
+        mol,
+        mean_field.mo_coeff,
+        3,
+        FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2),
+        (strings, strings),
+        {(1, 0): 0.5, (1, 1): 0.5},
+        1.0,
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+        gradient_tol=1e-5,
+        max_iterations=50,
+    )
+    return mol, solve
+
+
+def test_a_state_averaged_solve_keeps_a_symmetric_molecules_symmetry():
+    mol, solve = _h2o_state_averaged_solve(symmetry=True)
+
+    assert orbital_irreps(mol, solve.mo_coeff) is not None
+
+
+def test_a_state_averaged_solve_that_breaks_symmetry_warns():
+    message = (
+        "The state-averaged solve broke the molecule's C2v symmetry, mixing states "
+        "of different symmetry; which such solution a run reaches depends on "
+        "rounding. Build the molecule with symmetry=True to keep the symmetry."
+    )
+
+    with pytest.warns(UserWarning, match=exact_match(message)):
+        _h2o_state_averaged_solve(symmetry=False)
+
+
+def test_a_linear_molecule_keeps_its_symmetry_through_a_nudged_solve():
+    """N2's 6-31G pi orbitals, nudged within each irrep, are no longer paired
+    by energy, which PySCF's linear groups need."""
+    mol = gto.M(atom="N 0 0 0; N 0 0 1.098", basis="6-31g", symmetry=True, verbose=0)
+    mo_coeff = scf.RHF(mol).run(verbose=0).mo_coeff
+    nudged = mo_coeff @ _workflow._orbital_nudge(
+        mo_coeff.shape[1], 0, orbital_irreps(mol, mo_coeff)
+    )
+    strings = tuple(
+        format(string, "06b")[::-1] for string in cistring.make_strings(range(6), 3)
+    )
+
+    solve, _ = state_averaged_orbital_solve(
+        mol,
+        nudged,
+        4,
+        FragmentSpec(orbitals=(4, 5, 6, 7, 8, 9), n_alpha=3, n_beta=3),
+        (strings, strings),
+        {(1, 0): 1 / 3, (1, 1): 1 / 3, (1, 2): 1 / 3},
+        1.0,
+        cached_ao_eri(mol),
+        cached_h_ao(mol),
+        gradient_tol=1e-5,
+        max_iterations=50,
+    )
+
+    assert orbital_irreps(mol, solve.mo_coeff) is not None
+
+
+def _degenerate_pair(lower_index):
+    """States (1, 1) and (1, 2), 1e-14 Ha apart, ``lower_index`` the lower."""
+    return [
+        ElectronicState(
+            multiplicity=1,
+            index=index,
+            energy=-1.0 + (0.0 if index == lower_index else 1e-14),
+            spin_square=0.0,
+        )
+        for index in (1, 2)
+    ]
+
+
+def test_degenerate_states_are_warned_about_once_whatever_their_energy_order():
+    forward = dict(_workflow._state_warnings(_degenerate_pair(1)))
+    backward = dict(_workflow._state_warnings(_degenerate_pair(2)))
+
+    assert forward.keys() == backward.keys()
+    assert all("States (1, 1) and (1, 2)" in message for message in forward.values())
+
+
+def test_a_symmetric_orbital_nudge_keeps_every_orbitals_irrep():
+    mol = h2o_molecule(symmetry=True)
+    mo_coeff = scf.RHF(mol).run(verbose=0).mo_coeff
+    irreps = orbital_irreps(mol, mo_coeff)
+
+    nudged = mo_coeff @ _workflow._orbital_nudge(mo_coeff.shape[1], 0, irreps)
+
+    np.testing.assert_array_equal(orbital_irreps(mol, nudged), irreps)
+    assert not np.allclose(nudged, mo_coeff)
+
+
 _EXPORT_STATES = {1: 2, 3: 1}
 
 
 def _h2o_states_lassqd(backend, mocker, orbital_update):
-    """H2O CAS(4,4) with every determinant in the subspace, three states
-    requested, and the mean field it was built from."""
-    mean_field = scf.RHF(h2o_molecule()).run(verbose=0)
+    """Symmetric H2O CAS(4,4) with every determinant in the subspace, three
+    states requested, and the mean field it was built from."""
+    mean_field = scf.RHF(h2o_molecule(symmetry=True)).run(verbose=0)
     ensemble, _ = build_exact_sampler_lassqd(
         backend,
         mocker,
@@ -2227,18 +2331,24 @@ def _h2o_states_lassqd(backend, mocker, orbital_update):
     return ensemble, mean_field
 
 
-def _dense_casci_states(mean_field, mo_coeff):
-    """Every CAS(4,4) root at ``mo_coeff`` from a dense diagonalisation, keyed
-    ``(multiplicity, index)``, as ``(energy, CI vector)``."""
-    casci = mcscf.CASCI(mean_field, 4, 4)
+def _dense_casci_states(mean_field, mo_coeff, n_active=4, nelec=(2, 2)):
+    """Every active-space root at ``mo_coeff`` from a dense diagonalisation,
+    keyed ``(multiplicity, index)``, as ``(energy, CI vector)``."""
+    casci = mcscf.CASCI(mean_field, n_active, nelec)
     h1, energy_core = casci.get_h1eff(mo_coeff)
-    h2 = ao2mo.restore(1, casci.get_h2eff(mo_coeff), 4)
-    energies, vectors = fci.direct_spin1.kernel(h1, h2, 4, (2, 2), nroots=36)
+    h2 = ao2mo.restore(1, casci.get_h2eff(mo_coeff), n_active)
+    energies, vectors = fci.direct_spin1.kernel(
+        h1,
+        h2,
+        n_active,
+        nelec,
+        nroots=math.comb(n_active, nelec[0]) * math.comb(n_active, nelec[1]),
+    )
     roots: dict[tuple[int, int], tuple[float, np.ndarray]] = {}
     for energy, vector in sorted(
         zip(energies, vectors), key=lambda root: float(root[0])
     ):
-        _, multiplicity = fci.spin_op.spin_square0(vector, 4, (2, 2))
+        _, multiplicity = fci.spin_op.spin_square0(vector, n_active, nelec)
         multiplicity = int(round(multiplicity))
         index = sum(1 for label in roots if label[0] == multiplicity)
         roots[(multiplicity, index)] = (float(energy) + energy_core, vector)
@@ -2318,6 +2428,34 @@ def test_transition_properties_reproduce_dense_casci(exported_h2o_states):
     )
 
 
+def test_a_degenerate_pair_transition_puts_the_lower_label_first(
+    dummy_expval_backend, mocker
+):
+    """N2's two pi_g components are exactly degenerate at its symmetric RHF
+    orbitals, so energy cannot order them."""
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(
+            gto.M(atom="N 0 0 0; N 0 0 1.1", basis="sto-3g", symmetry=True, verbose=0)
+        ),
+        active_spaces=[FragmentSpec(orbitals=(4, 5, 6, 7, 8, 9), n_alpha=3, n_beta=3)],
+        states={1: 3},
+        extension="doubles",
+        n_batches=1,
+        n_recovery_iterations=1,
+        orbital_update=FixedOrbitals(),
+    )
+    with pytest.warns(UserWarning, match="States \\(1, 1\\) and \\(1, 2\\) lie within"):
+        ensemble.run(max_rounds=1)
+    states = ensemble.electronic_states
+
+    transitions = ensemble.transition_properties()
+
+    assert states[(1, 1)].energy == pytest.approx(states[(1, 2)].energy, abs=1e-12)
+    assert list(transitions) == [((1, 0), (1, 1)), ((1, 0), (1, 2)), ((1, 1), (1, 2))]
+
+
 def test_natural_transition_orbitals_rebuild_the_transition_density(
     exported_h2o_states,
 ):
@@ -2338,7 +2476,92 @@ def test_natural_transition_orbitals_rebuild_the_transition_density(
         np.testing.assert_allclose(set_.T @ set_, np.eye(4), atol=1e-10)
 
 
-@pytest.mark.parametrize("method", ["state_wavefunctions", "transition_properties"])
+def _pyscf_nevpt2(mean_field, mo_coeff, n_active, nelec, vector):
+    """PySCF's NEVPT2 correction for a dense active-space CI vector."""
+    casci = mcscf.CASCI(mean_field, n_active, nelec)
+    casci.verbose = 0
+    casci.mo_coeff = mo_coeff
+    casci.ci = vector
+    return mrpt.NEVPT(casci).kernel()
+
+
+def test_nevpt2_matches_pyscf_on_each_dense_casci_root(exported_h2o_states):
+    ensemble, reference = exported_h2o_states
+    mo_coeff = ensemble.workflow_state.mo_coeff
+
+    corrections = ensemble.nevpt2()
+
+    assert list(corrections) == list(ensemble.electronic_states)
+    for label, correction in corrections.items():
+        assert correction == pytest.approx(
+            _pyscf_nevpt2(
+                scf.RHF(ensemble._mol), mo_coeff, 4, (2, 2), reference[label][1]
+            ),
+            abs=1e-8,
+        )
+
+
+def test_nevpt2_corrects_the_doublets_of_an_open_shell_molecule(
+    nh2_radical, dummy_expval_backend, mocker
+):
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(nh2_radical),
+        active_spaces=[FragmentSpec(orbitals=(3, 4, 5), n_alpha=2, n_beta=1)],
+        states={2: 2},
+        n_batches=1,
+        batch_size=8,
+        n_recovery_iterations=1,
+        orbital_update=FixedOrbitals(),
+    )
+    ensemble.run(max_rounds=1)
+    mo_coeff = ensemble.workflow_state.mo_coeff
+    reference = _dense_casci_states(nh2_radical, mo_coeff, 3, (2, 1))
+
+    corrections = ensemble.nevpt2()
+
+    assert list(corrections) == [(2, 0), (2, 1)]
+    for label, correction in corrections.items():
+        assert correction == pytest.approx(
+            _pyscf_nevpt2(nh2_radical, mo_coeff, 3, (2, 1), reference[label][1]),
+            abs=1e-8,
+        )
+
+
+def test_a_state_export_before_a_run_suggests_states_of_the_molecules_spin(
+    nh2_radical, dummy_expval_backend, mocker
+):
+    ensemble, _ = build_exact_sampler_lassqd(
+        dummy_expval_backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(nh2_radical),
+        active_spaces=[FragmentSpec(orbitals=(3, 4, 5), n_alpha=2, n_beta=1)],
+    )
+    message = (
+        "nevpt2 needs a completed LASSQD round with SQDConfig.states set. Request "
+        "the states, e.g. SQDConfig(states={2: 2}), and call run() first."
+    )
+
+    with pytest.raises(RuntimeError, match=exact_match(message)):
+        ensemble.nevpt2()
+
+
+def test_nevpt2_refuses_a_full_space_vector_beyond_max_memory(exported_h2o_states):
+    ensemble, _ = exported_h2o_states
+    ensemble._mol.max_memory = 1e-4
+    message = (
+        "NEVPT2 needs the full-space CI vector of CAS(4,4), 0.000288 MB, above "
+        "mol.max_memory=0.0001 MB. Raise mol.max_memory if the machine has room."
+    )
+
+    with pytest.raises(MemoryError, match=exact_match(message)):
+        ensemble.nevpt2()
+
+
+@pytest.mark.parametrize(
+    "method", ["state_wavefunctions", "transition_properties", "nevpt2"]
+)
 def test_state_exports_need_a_completed_states_round(
     dummy_expval_backend, mocker, method
 ):
@@ -2487,7 +2710,8 @@ def test_carried_ci_vectors_overlap_their_own_states_fully(h4_chain_mean_field):
 def test_state_averaged_energy_keeps_its_weights_through_a_crossing(
     dummy_expval_backend, mocker
 ):
-    """Rectangular H4's two upper singlets swap order as the orbitals relax.
+    """Symmetric rectangular H4's two upper singlets swap order as the
+    orbitals relax, three solve iterations a round.
     The solve weights roots by energy rank, so each round's average must still
     be the label-weighted sum of that round's states."""
     weights = {(1, 0): 0.05, (1, 1): 0.05, (1, 2): 0.9}
@@ -2495,6 +2719,7 @@ def test_state_averaged_energy_keeps_its_weights_through_a_crossing(
         gto.M(
             atom="H 0 0 0; H 0 0 1.1; H 1.0 0 0; H 1.0 0 1.1",
             basis="6-31g",
+            symmetry=True,
             verbose=0,
         )
     ).run(verbose=0)
@@ -2507,7 +2732,7 @@ def test_state_averaged_energy_keeps_its_weights_through_a_crossing(
         n_batches=1,
         batch_size=16,
         n_recovery_iterations=1,
-        orbital_update=StateAveragedOrbitalUpdate(weights=weights),
+        orbital_update=StateAveragedOrbitalUpdate(weights=weights, max_iterations=3),
     )
 
     ensemble.run(max_rounds=3)

@@ -371,12 +371,20 @@ singlet–triplet gap:
 - **Orbitals decide the gap.**
   :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` relaxes the orbitals
   for a weighted average of the states (default: each root equally, a triplet
-  counting once), as SA-CASSCF does; the weights shift every gap. Unequal
-  weights can also break the molecule's spatial symmetry, mixing states that
-  are close in energy.
+  counting once), as SA-CASSCF does; the weights shift every gap.
   :class:`~divi.qprog.workflows.FixedOrbitals` keeps the input orbitals, for
   comparison with CASCI. The other updates relax for the lowest state only and
   warn.
+- **Keep the symmetry.** Averaging over states of different spatial symmetry
+  can lower the average by breaking the molecule's symmetry and mixing those
+  states, often with several such solutions, which one a run reaches
+  depending on rounding. Build the molecule with ``symmetry=True``, and pass any
+  mean field with symmetry-adapted orbitals, and the state-averaged orbitals
+  keep the abelian point group PySCF works in, as symmetry-adapted SA-CASSCF
+  does: the molecule's own group when it is abelian, D2h or C2v for a linear
+  molecule, and otherwise the largest abelian subgroup, so NH3 keeps Cs, not
+  C3v. Request every component of a degenerate set, so the average does not
+  favour one. Otherwise a solve that breaks the abelian group warns.
 - **Energies.** ``energy`` is always the lowest requested state's, of whichever
   spin. Under state averaging the macro-cycle converges on the average,
   reported as each round's ``averaged_energy``.
@@ -428,6 +436,41 @@ last completed round:
 - **Cost.** Both solve the final subspace again at the final orbitals on each
   call. The subspace is saved with the workflow checkpoint, so both also work
   after :meth:`~divi.qprog.ensemble.ProgramEnsemble.restore_state`.
+
+Dynamic Correlation
+~~~~~~~~~~~~~~~~~~~
+
+The states are CASSCF-quality: they miss the correlation of electrons outside
+the active space, which shifts excitation energies and can reorder close
+states.
+:meth:`~divi.qprog.workflows.LASSQD.nevpt2` adds it to second order, with
+PySCF's strongly contracted NEVPT2 on each state at the final orbitals:
+
+.. code-block:: python
+
+   corrections = ensemble.nevpt2()
+   corrected = {
+       label: state.energy + corrections[label]
+       for label, state in ensemble.electronic_states.items()
+   }
+
+- **State-specific.** Each state is corrected on its own, as PySCF's
+  ``mrpt.NEVPT`` does. States close in energy can mix under the correction,
+  which a multi-state treatment would capture and this one does not.
+- **Order.** The correction can reorder states, a bright state dropping below
+  a dark one, while the keys keep the uncorrected labels and order; sort the
+  corrected energies to rank the states.
+- **Degenerate sets.** Each component of an exactly degenerate set is an
+  arbitrary mixture of the set, and the state-specific correction depends on
+  the mixture; average the components' corrections.
+- **Cost.** Like the other exports, it solves the final subspace again on each
+  call and works after
+  :meth:`~divi.qprog.ensemble.ProgramEnsemble.restore_state`.
+- **Classical active-space sizes.** PySCF needs each state's CI vector over the
+  whole active space, which grows as the product of the alpha and beta string
+  counts: about 1.3 GB for CAS(16,16) and 19 GB for CAS(18,18). The method raises
+  ``MemoryError`` when one vector exceeds ``mol.max_memory``.
+- **Open shells** are corrected in the same way, from the ROHF-based states.
 
 .. _lassqd-accuracy-characteristics:
 

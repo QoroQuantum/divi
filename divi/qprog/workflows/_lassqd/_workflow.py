@@ -60,7 +60,9 @@ from ._integrals import (
     escape_orbital_saddle,
     fragment_blocks,
     fragment_effective_integrals,
+    orbital_irreps,
     state_transitions,
+    subspace_nevpt2,
     subspace_states_at,
     subspace_wavefunctions,
     track_states,
@@ -117,14 +119,19 @@ _MISPLACED_OPTIONS = {
 }
 
 
-def _orbital_nudge(n_orbitals: int, seed: int | None) -> np.ndarray:
-    """A small seeded rotation of the MO register.
+def _orbital_nudge(
+    n_orbitals: int, seed: int | None, irreps: np.ndarray | None = None
+) -> np.ndarray:
+    """A small seeded rotation of the MO register, mixing only orbitals of one
+    irrep when ``irreps`` labels them.
 
     Point-group-symmetric orbitals have an exactly zero gradient along every
     rotation that mixes symmetries, so the macro-cycle cannot leave a symmetric
     saddle point of the orbital-CI energy without one.
     """
     generator = np.random.default_rng(seed).standard_normal((n_orbitals, n_orbitals))
+    if irreps is not None:
+        generator *= irreps[:, None] == irreps[None, :]
     return scipy.linalg.expm(_ORBITAL_NUDGE * (generator - generator.T))
 
 
@@ -161,10 +168,11 @@ def _state_warnings(
     ):
         gap = abs(upper.energy - lower.energy)
         if lower.multiplicity == upper.multiplicity and gap < _DEGENERACY_TOL:
+            first, second = sorted((lower.index, upper.index))
             yield (
-                ("degenerate", lower.multiplicity, lower.index),
-                f"States ({lower.multiplicity}, {lower.index}) and "
-                f"({upper.multiplicity}, {upper.index}) lie within {gap:.1e} Ha "
+                ("degenerate", lower.multiplicity, first, second),
+                f"States ({lower.multiplicity}, {first}) and "
+                f"({lower.multiplicity}, {second}) lie within {gap:.1e} Ha "
                 "of each other, so their order can swap between rounds.",
             )
 
@@ -785,8 +793,15 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             self._check_fragments(specs)
 
         n_core = _compute_n_core(specs, n_occupied)
-        if self._orbital_update._relaxes is not _OrbitalTarget.NOTHING:
-            mo_coeff = mo_coeff @ _orbital_nudge(n_orbitals_total, self._seed)
+        relaxes = self._orbital_update._relaxes
+        if relaxes is not _OrbitalTarget.NOTHING:
+            # A state-averaged solve keeps a symmetric molecule's symmetry.
+            irreps = (
+                orbital_irreps(self._mol, mo_coeff)
+                if relaxes is _OrbitalTarget.AVERAGE
+                else None
+            )
+            mo_coeff = mo_coeff @ _orbital_nudge(n_orbitals_total, self._seed, irreps)
 
         permutation = build_active_permutation(specs, n_core, n_orbitals_total)
         mo_coeff = mo_coeff[:, permutation]
@@ -1744,7 +1759,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 and gap < _SPLIT_SET_TOL
             ):
                 warn(
-                    f"State ({multiplicity}, {n_roots - 1}) lies within {gap:.1e} "
+                    f"State ({multiplicity}, {n_roots - 1}) lies within "
+                    f"{abs(gap):.1e} "
                     f"Ha of ({multiplicity}, {n_roots}), which SQDConfig.states "
                     "does not request: it splits a degenerate set, so the state "
                     "reported is an arbitrary member, and state averaging over "
@@ -1839,26 +1855,34 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             RuntimeError: If no round has completed with ``SQDConfig.states``
                 set.
         """
-        wavefunctions = self._final_wavefunctions("state_wavefunctions")
-        by_label = {
-            (wavefunction.state.multiplicity, wavefunction.state.index): wavefunction
-            for wavefunction in wavefunctions
-        }
         return {
-            (state.multiplicity, state.index): by_label[
-                (state.multiplicity, state.index)
-            ]
+            (wavefunction.state.multiplicity, wavefunction.state.index): wavefunction
+            for wavefunction in self._wavefunctions_in_energy_order(
+                "state_wavefunctions"
+            )
+        }
+
+    def _wavefunctions_in_energy_order(
+        self, name: str
+    ) -> tuple[StateWavefunction, ...]:
+        """The final wave functions for the method ``name``, ordered as
+        :attr:`electronic_states`."""
+        wavefunctions = self._final_wavefunctions(name)
+        by_state = {wavefunction.state: wavefunction for wavefunction in wavefunctions}
+        return tuple(
+            by_state[state]
             for state in _in_energy_order(
                 [wavefunction.state for wavefunction in wavefunctions]
             )
-        }
+        )
 
     def transition_properties(
         self,
     ) -> dict[tuple[tuple[int, int], tuple[int, int]], StateTransition]:
         """The one-electron transition between every pair of requested states
         of one multiplicity, from the last completed round, keyed
-        ``(initial, final)`` labels with the lower state first.
+        ``(initial, final)`` labels with the lower state first, or for a
+        degenerate pair the lower label.
 
         Pairs of different multiplicity are left out: their spin-free
         transition dipole vanishes. With one state of each multiplicity there
@@ -1874,19 +1898,47 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 (transition.final.multiplicity, transition.final.index),
             ): transition
             for transition in state_transitions(
-                self._mol, self._final_wavefunctions("transition_properties")
+                self._mol,
+                list(self._wavefunctions_in_energy_order("transition_properties")),
             )
         }
 
-    def _final_wavefunctions(self, name: str) -> tuple[StateWavefunction, ...]:
-        """The last completed round's requested states at its final orbitals,
-        for the method ``name``."""
+    def nevpt2(self) -> dict[tuple[int, int], float]:
+        """Each requested state's strongly contracted NEVPT2 correction, from
+        the last completed round, keyed ``(multiplicity, index)`` and ordered
+        as :attr:`electronic_states`.
+
+        Each correction is PySCF's state-specific NEVPT2 on the state's CI
+        vector at the round's final orbitals; add it to the state's energy.
+        The correction can reorder states, so the keys keep the uncorrected
+        order. PySCF needs the CI vector over the whole active space, so the
+        active space is bounded by memory as in classical CASCI. The subspace is
+        re-diagonalised on each call, so repeat calls agree to solver precision.
+
+        Raises:
+            RuntimeError: If no round has completed with ``SQDConfig.states``
+                set.
+            MemoryError: If one full-space CI vector exceeds the molecule's
+                ``max_memory``.
+        """
+        subspace, n_core = self._final_subspace_and_core("nevpt2")
+        corrections = dict(
+            subspace_nevpt2(self._mol, subspace, n_core, *self._cached_mol_integrals())
+        )
+        return {
+            (state.multiplicity, state.index): corrections[state]
+            for state in _in_energy_order(list(corrections))
+        }
+
+    def _final_subspace_and_core(self, name: str) -> tuple[_SampledSubspace, int]:
+        """The last completed round's subspace and frozen-core count, for the
+        method ``name``."""
         subspace = self._final_subspace
         if subspace is None:
             raise RuntimeError(
                 f"{name} needs a completed LASSQD round with SQDConfig.states "
-                "set. Request the states, e.g. SQDConfig(states={1: 2}), and "
-                "call run() first."
+                "set. Request the states, e.g. "
+                f"SQDConfig(states={{{self._spin + 1}: 2}}), and call run() first."
             )
         strings_alpha, strings_beta = subspace.strings
         n_core = (
@@ -1894,8 +1946,15 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             - strings_alpha[0].count("1")
             - strings_beta[0].count("1")
         ) // 2
-        ao_eri, h_ao = self._cached_mol_integrals()
-        return subspace_wavefunctions(self._mol, subspace, n_core, ao_eri, h_ao)
+        return subspace, n_core
+
+    def _final_wavefunctions(self, name: str) -> tuple[StateWavefunction, ...]:
+        """The last completed round's requested states at its final orbitals,
+        for the method ``name``."""
+        subspace, n_core = self._final_subspace_and_core(name)
+        return subspace_wavefunctions(
+            self._mol, subspace, n_core, *self._cached_mol_integrals()
+        )
 
     @property
     def energy_history(self) -> tuple[float, ...]:
