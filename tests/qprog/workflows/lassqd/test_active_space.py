@@ -11,7 +11,6 @@ from pyscf import gto, mcscf, scf
 
 from divi.qprog.workflows.lassqd import _active_space as _active_space_module
 from divi.qprog.workflows.lassqd._active_space import (
-    _canonicalize_columns,
     _localized_active_space_integrals,
     assign_orbitals_to_atoms,
     auto_fragment_specs,
@@ -26,7 +25,7 @@ from divi.qprog.workflows.lassqd._integrals import AOIntegrals, cached_ao_eri
 from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     h4_chain,
     h4_chain_mean_field,
-    h4_localized_blocks_seed0,
+    h4_localized_blocks,
     h8_chain,
 )
 
@@ -96,7 +95,7 @@ def test_frontier_selection_must_take_every_singly_occupied_orbital():
 def test_localisation_keeps_orbitals_already_on_separate_fragments_apart():
     """H3's and H2's doubly occupied orbitals are each on one fragment already;
     PySCF's atomic starting guess lands on a 50/50 mixture of them, which the
-    restarts must leave."""
+    stability check must leave."""
     mol = gto.M(
         atom="H 0 0 0; H 0 0 0.9; H 0 0 1.8; H 5 0 0; H 5 0 0.74",
         basis="sto-3g",
@@ -109,7 +108,6 @@ def test_localisation_keeps_orbitals_already_on_separate_fragments_apart():
         AOIntegrals.of(mol),
         mean_field.mo_coeff,
         3,
-        np.random.default_rng(0),
         active_orbitals=[0, 1, 2, 3, 4],
         fragment_atoms=[[0, 1, 2], [3, 4]],
         spin=1,
@@ -124,7 +122,7 @@ def test_explicit_active_orbitals_must_include_every_singly_occupied_orbital():
 
 
 def test_localization_preserves_the_occupied_subspace(
-    h4_chain_mean_field, h4_localized_blocks_seed0
+    h4_chain_mean_field, h4_localized_blocks
 ):
     """Localizing occupied and virtual separately must not mix them."""
     mol = h4_chain_mean_field.mol
@@ -132,7 +130,7 @@ def test_localization_preserves_the_occupied_subspace(
     overlap = mol.intor("int1e_ovlp")
 
     occupied_indices = (0, 1)
-    localized_occ, localized_virt = h4_localized_blocks_seed0
+    localized_occ, localized_virt = h4_localized_blocks
 
     original_occ = mo_coeff[:, list(occupied_indices)]
     # Projector onto the original occupied space must leave the localized
@@ -145,13 +143,11 @@ def test_localization_preserves_the_occupied_subspace(
     )
 
 
-def test_localized_blocks_stay_orthonormal(
-    h4_chain_mean_field, h4_localized_blocks_seed0
-):
+def test_localized_blocks_stay_orthonormal(h4_chain_mean_field, h4_localized_blocks):
     mol = h4_chain_mean_field.mol
     overlap = mol.intor("int1e_ovlp")
 
-    localized_occ, localized_virt = h4_localized_blocks_seed0
+    localized_occ, localized_virt = h4_localized_blocks
     np.testing.assert_allclose(
         localized_occ.T @ overlap @ localized_occ, np.eye(2), atol=1e-8
     )
@@ -175,21 +171,15 @@ def _max_single_unit_population(mol, mo_coeff):
     return np.maximum(unit_one, unit_two)
 
 
-@pytest.mark.parametrize("seed", [0, 7, 11, 12])
 def test_localize_blocks_finds_atom_localized_orbitals_despite_symmetry(
-    seed, h4_chain_mean_field
+    h4_chain_mean_field,
 ):
     """The canonical H4 chain is a Pipek-Mezey stationary point at the
-    identity rotation. Seeds 7, 11, and 12 are the specific regression
-    cases: with a single perturbed restart, each converges back to that same
-    symmetric stationary point instead of escaping it. Seed 0 is a control
-    that already passed before the multi-restart fix."""
+    identity rotation, which the stability check must escape."""
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
 
-    localized_occ, localized_virt = localize_blocks(
-        mol, mo_coeff, (0, 1), (2, 3), np.random.default_rng(seed)
-    )
+    localized_occ, localized_virt = localize_blocks(mol, mo_coeff, (0, 1), (2, 3))
 
     assert np.all(_max_single_unit_population(mol, localized_occ) > 0.9)
     assert np.all(_max_single_unit_population(mol, localized_virt) > 0.9)
@@ -413,74 +403,13 @@ def test_assign_orbitals_to_atoms_rejects(columns, fragment_atoms, match):
         assign_orbitals_to_atoms(h4_chain(), _ATOM_COLUMNS[:, columns], fragment_atoms)
 
 
-class _ScriptedPipekMezey:
-    """Stand-in whose ``kernel`` returns its start and whose cost is scripted."""
-
-    costs: list[float] = []
-    starts: list[np.ndarray] = []
-
-    def __init__(self, mol, block):
-        self._block = block
-        type(self).starts.append(block)
-
-    def kernel(self, mo_coeff=None):
-        return self._block if mo_coeff is None else mo_coeff
-
-    def cost_function(self):
-        return type(self).costs.pop(0)
-
-
-def _localize_with_scripted_costs(mocker, mean_field, costs):
-    mocker.patch.object(_ScriptedPipekMezey, "costs", list(costs))
-    mocker.patch.object(_ScriptedPipekMezey, "starts", [])
-    mocker.patch.object(_active_space_module.lo, "PipekMezey", _ScriptedPipekMezey)
-    return localize_blocks(
-        mean_field.mol,
-        np.asarray(mean_field.mo_coeff),
-        (0, 1),
-        (2, 3),
-        np.random.default_rng(0),
-    )
-
-
-@pytest.mark.parametrize(
-    "occupied_costs, kept_start",
-    [
-        pytest.param([1.0] * 9, 0, id="never_escapes_runs_every_restart"),
-        pytest.param([1.0, 2.0], 1, id="escape_stops_restarts"),
-        pytest.param(
-            [1.0, 1.0 + 1e-8, 1.0 + 1e-9] + [1.0] * 6,
-            1,
-            id="sub_tolerance_gain_kept_without_stopping",
-        ),
-    ],
-)
-def test_localize_blocks_restart_policy(
-    mocker, h4_chain_mean_field, occupied_costs, kept_start
-):
-    """Up to eight random restarts follow the canonical start; the
-    highest-cost run is kept, and a gain beyond the relative tolerance stops
-    the restarts early."""
-    virtual_costs = [1.0, 2.0]
-    localized_occ, _ = _localize_with_scripted_costs(
-        mocker, h4_chain_mean_field, occupied_costs + virtual_costs
-    )
-
-    starts = _ScriptedPipekMezey.starts
-    assert len(starts) == len(occupied_costs) + len(virtual_costs)
-    np.testing.assert_array_equal(
-        localized_occ,
-        _canonicalize_columns(h4_chain_mean_field.mol, starts[kept_start]),
-    )
-
-
 def test_localize_blocks_passes_a_single_orbital_block_through(
     mocker, h4_chain_mean_field
 ):
     spy = mocker.patch.object(_active_space_module.lo, "PipekMezey")
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     localized_occ, localized_virt = localize_blocks(
-        h4_chain_mean_field.mol, mo_coeff, (1,), (2,), np.random.default_rng(0)
+        h4_chain_mean_field.mol, mo_coeff, (1,), (2,)
     )
     spy.assert_not_called()
     np.testing.assert_array_equal(localized_occ, mo_coeff[:, [1]])
@@ -492,7 +421,6 @@ def test_auto_fragment_specs_on_h4_finds_two_fragments(h4_chain_mean_field):
         AOIntegrals.of(h4_chain_mean_field.mol),
         np.asarray(h4_chain_mean_field.mo_coeff),
         n_occupied=2,
-        rng=np.random.default_rng(0),
         n_active_orbitals=4,
         max_orbitals_per_fragment=2,
     )
@@ -520,7 +448,6 @@ def _h8_auto_specs(**overrides):
     mean_field = scf.RHF(mol).run(verbose=0)
     kwargs = dict(
         n_occupied=4,
-        rng=np.random.default_rng(0),
         n_active_orbitals=8,
         fragment_atoms=([0, 1, 2, 3], [4, 5, 6, 7]),
     )
@@ -548,12 +475,11 @@ def test_auto_fragment_specs_rejects_unreachable_local_spin():
         _h8_auto_specs(local_spins=[8, -8])
 
 
-def _canonical_partition_key(ao, mo_coeff, seed, **selector):
+def _canonical_partition_key(ao, mo_coeff, **selector):
     specs, _, _ = auto_fragment_specs(
         ao,
         mo_coeff,
         n_occupied=2,
-        rng=np.random.default_rng(seed),
         max_orbitals_per_fragment=2,
         **(selector or {"n_active_orbitals": 4}),
     )
@@ -567,24 +493,8 @@ def test_auto_fragment_specs_explicit_active_orbitals_match_frontier_selection(
     ao = AOIntegrals.of(h4_chain_mean_field.mol)
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     assert _canonical_partition_key(
-        ao, mo_coeff, 0, active_orbitals=(0, 1, 2, 3)
-    ) == _canonical_partition_key(ao, mo_coeff, 0)
-
-
-def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
-    """Different seeds must converge to the same fragment partition.
-
-    Different random restarts can localize to the same physical orbitals in
-    a different column order (Pipek-Mezey's cost is order-independent), so
-    without column canonicalization the resulting fragment partition (which
-    orbitals end up clustered together) can differ across seeds even though
-    the underlying physical solution, and its energy, does not.
-    """
-    ao = AOIntegrals.of(h4_chain_mean_field.mol)
-    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
-
-    partitions = {_canonical_partition_key(ao, mo_coeff, seed) for seed in range(8)}
-    assert len(partitions) == 1
+        ao, mo_coeff, active_orbitals=(0, 1, 2, 3)
+    ) == _canonical_partition_key(ao, mo_coeff)
 
 
 @pytest.mark.parametrize("relativistic", [False, True], ids=["rhf", "sfx2c1e"])
@@ -611,12 +521,14 @@ def test_auto_fragment_specs_active_integrals_include_frozen_core(
         mo_coeff.shape[1], 2, 2
     )
     localized_occ, localized_virt = localize_blocks(
-        mol, mo_coeff, occupied_indices, virtual_indices, np.random.default_rng(0)
+        mol, mo_coeff, occupied_indices, virtual_indices
     )
     localized = np.hstack([localized_occ, localized_virt])
 
     one_body, _ = _localized_active_space_integrals(
-        AOIntegrals(mol, cached_ao_eri(mol), mean_field.get_hcore()),
+        AOIntegrals(
+            mol, cached_ao_eri(mol), mean_field.get_hcore(), mean_field.energy_nuc()
+        ),
         mo_coeff,
         occupied_indices,
         n_occupied=2,

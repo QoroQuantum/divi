@@ -20,6 +20,10 @@ from ._state import FragmentSpec
 DEFAULT_MAX_ORBITALS_PER_FRAGMENT = 4
 DEFAULT_COUPLING_THRESHOLD = 1e-3
 
+#: Jacobi stability checks, each followed by a re-localisation from the
+#: rotated orbitals, before a Pipek-Mezey block is kept as it is.
+_MAX_STABILITY_SWEEPS = 10
+
 
 def select_frontier_orbitals(
     n_orbitals_total: int,
@@ -239,17 +243,15 @@ def localize_blocks(
     mo_coeff: np.ndarray,
     occupied_indices,
     virtual_indices,
-    rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pipek-Mezey localise the occupied and virtual blocks independently, so
     every localised orbital is unambiguously occupied or virtual.
 
-    Each block is localised from PySCF's atomic guess and from up to eight
-    randomly rotated copies of its columns, and the run with the highest
-    Pipek-Mezey cost is kept. This never does worse than the unrotated run and
-    can escape a stationary point of a symmetric molecule, but escape is not
-    guaranteed. Restarts stop early once a cost exceeds the unrotated run's by
-    a small relative tolerance.
+    Each block is localised from PySCF's atomic guess, then checked with
+    PySCF's Jacobi-sweep stability analysis; while a pairwise rotation still
+    raises the Pipek-Mezey cost, the block is re-localised from the rotated
+    orbitals. This can escape a stationary point of a symmetric molecule, and
+    is deterministic.
 
     Args:
         mol: A PySCF ``gto.Mole``.
@@ -258,45 +260,32 @@ def localize_blocks(
             block.
         virtual_indices: Column indices of ``mo_coeff`` forming the virtual
             block.
-        rng: Source of the random rotations.
 
     Returns:
         ``(localized_occupied, localized_virtual)`` AO-basis coefficient
         blocks, columns ordered as in :func:`_canonicalize_columns`. A
         single-orbital block is returned unchanged.
     """
-
     return (
-        _localize_block(mol, mo_coeff[:, list(occupied_indices)], rng),
-        _localize_block(mol, mo_coeff[:, list(virtual_indices)], rng),
+        _localize_block(mol, mo_coeff[:, list(occupied_indices)]),
+        _localize_block(mol, mo_coeff[:, list(virtual_indices)]),
     )
 
 
-def _localize_block(mol, block: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+def _localize_block(mol, block: np.ndarray) -> np.ndarray:
     """One block of :func:`localize_blocks`; a block of at most one orbital is
     returned unchanged."""
-    n_restarts = 8
-    n = block.shape[1]
-    if n <= 1:
+    if block.shape[1] <= 1:
         return block.copy()
 
-    unrotated_start = lo.PipekMezey(mol, block)
-    best_result = unrotated_start.kernel()
-    best_cost = unrotated_cost = unrotated_start.cost_function()
-
-    escape_tolerance = 1e-6
-    for _ in range(n_restarts):
-        orthogonal, _ = np.linalg.qr(rng.standard_normal((n, n)))
-        perturbed_start = lo.PipekMezey(mol, block @ orthogonal)
-        # Passed explicitly: PySCF's atomic guess would undo the rotation.
-        perturbed_result = perturbed_start.kernel(block @ orthogonal)
-        perturbed_cost = perturbed_start.cost_function()
-        if perturbed_cost > best_cost:
-            best_result, best_cost = perturbed_result, perturbed_cost
-        if best_cost > unrotated_cost * (1.0 + escape_tolerance):
+    localizer = lo.PipekMezey(mol, block)
+    localized = localizer.kernel()
+    for _ in range(_MAX_STABILITY_SWEEPS):
+        localized, stable = localizer.stability_jacobi(return_status=True)
+        if stable:
             break
-
-    return _canonicalize_columns(mol, best_result)
+        localized = localizer.kernel(localized)
+    return _canonicalize_columns(mol, localized)
 
 
 def build_coupling_graph(
@@ -520,7 +509,6 @@ def auto_fragment_specs(
     ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_occupied: int,
-    rng: np.random.Generator,
     *,
     n_active_orbitals: int | None = None,
     max_orbitals_per_fragment: int | None = None,
@@ -547,7 +535,6 @@ def auto_fragment_specs(
         mo_coeff: ``(nao, n_orb)`` MO coefficients.
         n_occupied: Number of occupied spatial orbitals, doubly and singly
             occupied together.
-        rng: Random number generator, forwarded to :func:`localize_blocks`.
         n_active_orbitals: See :func:`select_frontier_orbitals`. Mutually
             exclusive with ``active_orbitals``.
         max_orbitals_per_fragment: See :func:`merge_clusters`; ``None`` means
@@ -600,9 +587,9 @@ def auto_fragment_specs(
     doubly = tuple(o for o in occupied_indices if o < n_occupied - abs(spin))
     singly = tuple(o for o in occupied_indices if o >= n_occupied - abs(spin))
     localized_doubly, localized_virt = localize_blocks(
-        mol, mo_coeff, doubly, virtual_indices, rng
+        mol, mo_coeff, doubly, virtual_indices
     )
-    localized_singly = _localize_block(mol, mo_coeff[:, list(singly)], rng)
+    localized_singly = _localize_block(mol, mo_coeff[:, list(singly)])
     localized = np.hstack([localized_doubly, localized_singly, localized_virt])
     occupation = [2] * len(doubly) + [1] * len(singly) + [0] * localized_virt.shape[1]
     is_occupied = [count > 0 for count in occupation]

@@ -126,20 +126,24 @@ def _pyscf_integrals(
     Returns:
         ``(one_body, two_body, constant)``: the ``(n, n)`` one-electron
         integrals, the ``(n,) * 4`` two-electron integrals in chemist order
-        ``(pq|rs)``, and the nuclear repulsion energy.
+        ``(pq|rs)``, and the mean field's nuclear repulsion energy, which
+        includes any external charges its core Hamiltonian sees.
     """
     from pyscf import ao2mo, scf
 
     if mean_field is None:
         mean_field = without_chkfile(scf.RHF(mol)).run(verbose=0)
-    elif mean_field.mo_coeff is None:
+    elif not mean_field.converged:
+        # A copy, so the caller's object, settings and checkpoint file stay as given.
+        mean_field = mean_field.copy()
+        mean_field.chkfile = None
         mean_field.run(verbose=0)
 
     mo_coeff = np.asarray(mean_field.mo_coeff)
     n_orbitals = mo_coeff.shape[1]
     one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
     two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orbitals)
-    return one_body, two_body, float(mol.energy_nuc())
+    return one_body, two_body, float(mean_field.energy_nuc())
 
 
 def molecular_hamiltonian_from_pyscf(

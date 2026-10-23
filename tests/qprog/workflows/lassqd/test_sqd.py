@@ -11,7 +11,8 @@ from operator import attrgetter
 import numpy as np
 import pytest
 import scipy.sparse
-from pyscf import fci, scf
+from pyscf import ao2mo, fci, scf
+from pyscf.fci import cistring, direct_spin1, selected_ci
 
 import divi.qprog.workflows.lassqd._sqd as sqd_module
 from divi.qprog.workflows.lassqd._sqd import (
@@ -19,29 +20,25 @@ from divi.qprog.workflows.lassqd._sqd import (
     SQDResult,
     SQDSolver,
     SQDState,
-    _annihilation_sign,
     _bit_matrix,
     _correct_spin_part,
-    _creation_sign,
     _heaviest_strings,
     _modified_relu,
     _occupations_from_bit_matrix,
     _spatial_rdms_exact,
     bit_flip_correction,
-    bitstring_to_spatial_det,
     carryover_weights,
     ci_string_to_int,
+    compute_spatial_rdm1,
     compute_spatial_rdms,
     deinterleave_spin_bitstring,
     filter_symmetry,
     interleave_spin_bitstring,
     map_carried_strings,
     projected_matrices,
-    s2_matrix_element,
-    slater_condon,
+    sci_vector,
     spatial_to_spin_occupations,
     spin_orbital_integrals,
-    spin_to_spatial_occupations,
     string_hops,
 )
 from tests._helpers import exact_match
@@ -159,20 +156,6 @@ def test_spatial_to_spin_occupations_uses_blocked_indexing():
     assert spatial_to_spin_occupations((1,), (), n_orb=2) == (1,)
 
 
-def test_spin_to_spatial_round_trips():
-    for n_orb in (2, 3):
-        for alpha in itertools.combinations(range(n_orb), 1):
-            for beta in itertools.combinations(range(n_orb), 1):
-                spin = spatial_to_spin_occupations(alpha, beta, n_orb)
-                assert spin_to_spatial_occupations(spin, n_orb) == (alpha, beta)
-
-
-def test_bitstring_to_spatial_det():
-    """Blocked SQD bitstring '1001' on 2 orbitals: alpha {0}, beta {1}."""
-    assert bitstring_to_spatial_det("1001", n_orb=2) == ((0,), (1,))
-    assert bitstring_to_spatial_det("1010", n_orb=2) == ((0,), (0,))
-
-
 @pytest.mark.parametrize("n_orb", [2, 70])
 def test_sector_occupations_matches_per_string_decode(n_orb):
     """A sector's occupations equal decoding each string on its own.
@@ -186,7 +169,7 @@ def test_sector_occupations_matches_per_string_decode(n_orb):
     strings.append("1" * n_orb)
 
     expected = [
-        bitstring_to_spatial_det(half + "0" * n_orb, n_orb)[0] for half in strings
+        tuple(p for p, bit in enumerate(half) if bit == "1") for half in strings
     ]
     assert _sector_occupations(strings, n_orb) == expected
 
@@ -227,20 +210,6 @@ def test_non_binary_sector_string_is_rejected():
         _sector_occupations(["1200"], n_orb=4)
 
 
-def test_slater_condon_vanishes_beyond_double_excitation():
-    # Only 2 spatial orbitals available in H2/STO-3G, so build a 3-orbital toy instead.
-    # Integrals are non-zero so dropping the beyond-double guard would surface
-    # as a non-zero element (or a failed unpacking) here.
-    n = 3
-    h3 = np.zeros((n, n))
-    g3 = np.arange(1, n**4 + 1, dtype=float).reshape((n,) * 4) * 0.01
-    h3[np.diag_indices(n)] = [1.0, 2.0, 3.0]
-    hs, gs = spin_orbital_integrals(h3, g3, n)
-    det_i = spatial_to_spin_occupations((0, 1), (0, 1), n)
-    det_j = spatial_to_spin_occupations((2,), (2,), n)  # quadruple excitation
-    assert slater_condon(det_i, det_j, hs, gs) == pytest.approx(0.0)
-
-
 @pytest.mark.parametrize(
     "integrals_fn, n_alpha, n_beta",
     [
@@ -252,18 +221,19 @@ def test_slater_condon_vanishes_beyond_double_excitation():
     ],
 )
 def test_full_subspace_diagonalization_reproduces_fci(integrals_fn, n_alpha, n_beta):
-    """The strongest single check: Slater-Condon over the COMPLETE determinant
-    space is symmetric and gives exactly the FCI energy."""
+    """The strongest single check: the projected Hamiltonian over the COMPLETE
+    determinant space is symmetric and gives exactly the FCI energy."""
     one_body, two_body, n_orb, constant = integrals_fn()
     h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
-    dets = [
-        spatial_to_spin_occupations(a, b, n_orb)
+    space = [
+        (a, b)
         for a in itertools.combinations(range(n_orb), n_alpha)
         for b in itertools.combinations(range(n_orb), n_beta)
     ]
-    hamiltonian = np.array(
-        [[slater_condon(d_i, d_j, h_spin, g_spin) for d_j in dets] for d_i in dets]
-    )
+    dets_spin = [spatial_to_spin_occupations(a, b, n_orb) for a, b in space]
+    hamiltonian = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)[
+        0
+    ].toarray()
 
     np.testing.assert_allclose(hamiltonian, hamiltonian.T, atol=1e-12)
     lowest = float(np.min(np.linalg.eigvalsh(hamiltonian))) + constant
@@ -325,33 +295,66 @@ def test_spin_orbital_integrals_match_the_elementwise_definition(n_orb, polarize
     np.testing.assert_array_equal(g_spin, expected_g)
 
 
-def _scalar_projected_matrices(dets, dets_spin, h_spin, g_spin):
-    """The double loop ``projected_matrices`` replaced, kept as the reference."""
-    dim = len(dets)
-    h_proj = np.zeros((dim, dim))
-    s2_proj = np.zeros((dim, dim))
-    for i in range(dim):
-        for j in range(dim):
-            h_proj[i, j] = slater_condon(dets_spin[i], dets_spin[j], h_spin, g_spin)
-            s2_proj[i, j] = s2_matrix_element(dets[i], dets[j])
-    return h_proj, s2_proj
+def _pyscf_matrix(contract, n_orb, nelec):
+    """The dense matrix of PySCF's ``contract`` over every determinant of the
+    ``nelec`` sector, in PySCF's address order."""
+    strings = tuple(cistring.make_strings(range(n_orb), count) for count in nelec)
+    shape = tuple(len(half) for half in strings)
+    return np.column_stack(
+        [
+            contract(selected_ci._as_SCIvector(column.reshape(shape), strings)).ravel()
+            for column in np.eye(shape[0] * shape[1])
+        ]
+    )
 
 
-def _full_space_problem(n_orb, n_alpha, n_beta, seed, symmetrize):
-    """``(space, dets_spin, h_spin, g_spin)`` for random integrals over every
-    determinant of the sector, with or without the ``(pq|rs)`` symmetries."""
+def _pyscf_projected_matrices(space, n_orb, nelec, seed):
+    """``(H, S^2)`` over ``space`` from PySCF's FCI and selected-CI contractions,
+    on the integrals ``_full_space_problem`` draws for ``seed``."""
+    one_body, two_body = _random_integrals(n_orb, seed)
+    absorbed = direct_spin1.absorb_h1e(
+        one_body, ao2mo.restore(1, two_body, n_orb), n_orb, nelec, 0.5
+    )
+    hamiltonian = _pyscf_matrix(
+        lambda civec: direct_spin1.contract_2e(absorbed, civec, n_orb, nelec),
+        n_orb,
+        nelec,
+    )
+    spin_square = _pyscf_matrix(
+        lambda civec: selected_ci.contract_ss(civec, n_orb, nelec), n_orb, nelec
+    )
+    strings = [
+        list(map(int, cistring.make_strings(range(n_orb), count))) for count in nelec
+    ]
+    addresses = [
+        strings[0].index(sum(1 << p for p in alpha)) * len(strings[1])
+        + strings[1].index(sum(1 << p for p in beta))
+        for alpha, beta in space
+    ]
+    rows = np.ix_(addresses, addresses)
+    return hamiltonian[rows], spin_square[rows]
+
+
+def _random_integrals(n_orb, seed):
+    """Random ``(one_body, two_body)`` with the 8-fold symmetry of physical
+    integrals."""
     rng = np.random.default_rng(seed)
     one_body = rng.normal(size=(n_orb, n_orb))
     one_body = 0.5 * (one_body + one_body.T)
     two_body = rng.normal(size=(n_orb,) * 4)
-    if symmetrize:
-        two_body = 0.25 * (
-            two_body
-            + two_body.transpose(1, 0, 2, 3)
-            + two_body.transpose(0, 1, 3, 2)
-            + two_body.transpose(1, 0, 3, 2)
-        )
-        two_body = 0.5 * (two_body + two_body.transpose(2, 3, 0, 1))
+    two_body = 0.25 * (
+        two_body
+        + two_body.transpose(1, 0, 2, 3)
+        + two_body.transpose(0, 1, 3, 2)
+        + two_body.transpose(1, 0, 3, 2)
+    )
+    return one_body, 0.5 * (two_body + two_body.transpose(2, 3, 0, 1))
+
+
+def _full_space_problem(n_orb, n_alpha, n_beta, seed):
+    """``(space, dets_spin, h_spin, g_spin)`` for random symmetric integrals over
+    every determinant of the sector."""
+    one_body, two_body = _random_integrals(n_orb, seed)
     h_spin, g_spin = spin_orbital_integrals(one_body, two_body, n_orb)
 
     space = [
@@ -381,28 +384,22 @@ def _full_space_problem(n_orb, n_alpha, n_beta, seed, symmetrize):
         (1, 1, 1),
     ],
 )
-@pytest.mark.parametrize("symmetrize", [True, False])
-def test_projected_matrices_match_the_scalar_rules(n_orb, n_alpha, n_beta, symmetrize):
-    """The vectorized build must agree element-wise with Slater-Condon.
+def test_projected_matrices_match_pyscf(n_orb, n_alpha, n_beta):
+    """The vectorized build must agree element-wise with PySCF's FCI
+    ``contract_2e`` and selected-CI ``contract_ss``.
 
-    It reproduces the double loop by gathering each excitation rank at once,
-    which means it re-derives the fermionic signs from cumulative occupations
-    rather than from sequential annihilation and creation. A sign convention off
-    by one still yields a symmetric matrix with plausible eigenvalues, so
-    compare against the scalar routines directly over a complete determinant
-    space -- every rank, both spin sectors, and both matrices.
-
-    Run with and without the ``(pq|rs)`` permutation symmetries. Physical
-    integrals always carry them, which lets a pair sum over ``p < q`` be written
-    as half the sum over all pairs -- correct in production and wrong in
-    general, so the asymmetric case is what catches that shortcut.
+    It gathers each excitation rank at once, which means it derives the
+    fermionic signs from cumulative occupations. A sign convention off by one
+    still yields a symmetric matrix with plausible eigenvalues, so compare
+    against PySCF directly over a complete determinant space -- every rank, both
+    spin sectors, and both matrices.
     """
     space, dets_spin, h_spin, g_spin = _full_space_problem(
-        n_orb, n_alpha, n_beta, seed=2024, symmetrize=symmetrize
+        n_orb, n_alpha, n_beta, seed=2024
     )
 
-    expected_h, expected_s2 = _scalar_projected_matrices(
-        space, dets_spin, h_spin, g_spin
+    expected_h, expected_s2 = _pyscf_projected_matrices(
+        space, n_orb, (n_alpha, n_beta), seed=2024
     )
     h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
 
@@ -414,9 +411,7 @@ def test_projected_matrices_store_only_connected_pairs():
     """The projected matrices are sparse, holding only the pairs Slater-Condon
     and ``S^2`` connect."""
     n_orb = 6
-    space, dets_spin, h_spin, g_spin = _full_space_problem(
-        n_orb, 3, 3, seed=3, symmetrize=False
-    )
+    space, dets_spin, h_spin, g_spin = _full_space_problem(n_orb, 3, 3, seed=3)
 
     h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
 
@@ -431,12 +426,8 @@ def test_projected_matrices_are_independent_of_the_row_block(monkeypatch, block_
     the result: a block boundary falling inside a rank class would drop the pairs
     that straddle it. Forced small so the boundary is crossed repeatedly."""
     n_orb = 4
-    space, dets_spin, h_spin, g_spin = _full_space_problem(
-        n_orb, 2, 2, seed=7, symmetrize=False
-    )
-    expected_h, expected_s2 = _scalar_projected_matrices(
-        space, dets_spin, h_spin, g_spin
-    )
+    space, dets_spin, h_spin, g_spin = _full_space_problem(n_orb, 2, 2, seed=7)
+    expected_h, expected_s2 = _pyscf_projected_matrices(space, n_orb, (2, 2), seed=7)
 
     monkeypatch.setattr(sqd_module, "_PAIR_BLOCK_ROWS", block_rows)
     h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
@@ -451,7 +442,7 @@ def _penalized_subspace(n_orb=4, n_alpha=2, n_beta=2, seed=17):
     The integrals are symmetrised so the projected Hamiltonian is symmetric.
     """
     space, dets_spin, h_spin, g_spin = _full_space_problem(
-        n_orb, n_alpha, n_beta, seed=seed, symmetrize=True
+        n_orb, n_alpha, n_beta, seed=seed
     )
     h_proj, s2_proj = projected_matrices(space, dets_spin, h_spin, g_spin, n_orb)
     target_s = 0.5 * abs(n_alpha - n_beta)
@@ -740,32 +731,28 @@ def test_projected_matrices_handles_an_empty_subspace():
     assert s2_proj.shape == (0, 0)
 
 
-def _s2_eigenvalues(dets):
-    dim = len(dets)
-    matrix = np.array(
-        [[s2_matrix_element(dets[i], dets[j]) for j in range(dim)] for i in range(dim)]
-    )
-    return np.linalg.eigvalsh(matrix), matrix
+def _projected_s2(space, n_orb):
+    return projected_matrices(
+        space,
+        [spatial_to_spin_occupations(a, b, n_orb) for a, b in space],
+        np.zeros((2 * n_orb,) * 2),
+        np.zeros((2 * n_orb,) * 4),
+        n_orb,
+    )[1].toarray()
 
 
 def test_s2_eigenvalues_are_singlet_and_triplet():
     """Two electrons in two orbitals span one triplet (S^2 = 2) and singlets (0)."""
-    dets = [
-        ((0,), (0,)),
-        ((0,), (1,)),
-        ((1,), (0,)),
-        ((1,), (1,)),
-    ]
-    eigenvalues, matrix = _s2_eigenvalues(dets)
+    space = [((a,), (b,)) for a in range(2) for b in range(2)]
+    matrix = _projected_s2(space, 2)
     np.testing.assert_allclose(matrix, matrix.T, atol=1e-12)
-    rounded = np.round(eigenvalues, 9)
+    rounded = np.round(np.linalg.eigvalsh(matrix), 9)
     assert sorted(rounded) == pytest.approx([0.0, 0.0, 0.0, 2.0], abs=1e-8)
 
 
 def test_s2_of_high_spin_determinant_is_maximal():
     """Both electrons alpha: S = 1, so S^2 = 2 exactly and diagonally."""
-    det = ((0, 1), ())
-    assert s2_matrix_element(det, det) == pytest.approx(2.0, abs=1e-9)
+    np.testing.assert_allclose(_projected_s2([((0, 1), ())], 2), [[2.0]], atol=1e-9)
 
 
 @pytest.mark.parametrize(
@@ -2309,46 +2296,14 @@ def test_spatial_spin_rdm1s_match_pyscf_for_a_polarized_sector():
     assert np.trace(rdm1_beta) == pytest.approx(n_beta, abs=1e-12)
 
 
-def _spin_orbital_reference_rdms(strings_alpha, strings_beta, amplitudes, n_orb):
-    """The spin-orbital formulation ``_spatial_rdms_exact`` replaced: every pair
-    of determinants, every ``a+_p a+_r a_s a_q``, into a ``(2 n_orb) ** 4`` array
-    spin-traced at the end. Kept as the reference definition."""
-    dets = [
-        spatial_to_spin_occupations(alpha, beta, n_orb)
-        for alpha in _sector_occupations(strings_alpha, n_orb)
-        for beta in _sector_occupations(strings_beta, n_orb)
-    ]
-    coefficients = np.asarray(amplitudes, dtype=float).ravel()
-    n_spin = 2 * n_orb
-    rdm1 = np.zeros((n_spin, n_spin))
-    rdm2 = np.zeros((n_spin,) * 4)
-    for det_i, c_i in zip(dets, coefficients):
-        for det_j, c_j in zip(dets, coefficients):
-            for q in det_j:
-                sign_q, occ_1 = _annihilation_sign(det_j, q)
-                for p in set(range(n_spin)) - set(occ_1):
-                    sign_p, occ = _creation_sign(occ_1, p)
-                    if occ == det_i:
-                        rdm1[p, q] += c_i * c_j * sign_p * sign_q
-                for s in occ_1:
-                    sign_s, occ_2 = _annihilation_sign(occ_1, s)
-                    for r in set(range(n_spin)) - set(occ_2):
-                        sign_r, occ_3 = _creation_sign(occ_2, r)
-                        for p in set(range(n_spin)) - set(occ_3):
-                            sign_p, occ = _creation_sign(occ_3, p)
-                            if occ == det_i:
-                                rdm2[p, q, r, s] += (
-                                    c_i * c_j * sign_q * sign_s * sign_r * sign_p
-                                )
-    alpha, beta = slice(None, n_orb), slice(n_orb, None)
-    rdm1_alpha, rdm1_beta = rdm1[alpha, alpha], rdm1[beta, beta]
-    spatial_rdm2 = (
-        rdm2[alpha, alpha, alpha, alpha]
-        + rdm2[alpha, alpha, beta, beta]
-        + rdm2[beta, beta, alpha, alpha]
-        + rdm2[beta, beta, beta, beta]
-    )
-    return rdm1_alpha + rdm1_beta, spatial_rdm2, rdm1_alpha, rdm1_beta
+def _pyscf_rdms(strings_alpha, strings_beta, amplitudes, n_orb):
+    """``(rdm1, rdm2, rdm1_alpha, rdm1_beta)`` from PySCF's separate 1- and
+    2-RDM passes."""
+    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
+    civec = sci_vector(strings_alpha, strings_beta, amplitudes)
+    rdm1_alpha, rdm1_beta = selected_ci.make_rdm1s(civec, n_orb, nelec)
+    rdm2 = selected_ci.make_rdm2(civec, n_orb, nelec)
+    return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta
 
 
 def _random_sector_state(n_orb, n_alpha, n_beta, seed):
@@ -2374,20 +2329,44 @@ def _random_sector_state(n_orb, n_alpha, n_beta, seed):
     "n_orb, n_alpha, n_beta",
     [(2, 1, 1), (4, 2, 2), (4, 3, 1), (5, 2, 3), (4, 3, 0), (3, 0, 2)],
 )
-def test_spatial_rdms_exact_matches_the_spin_orbital_definition_and_pyscf(
-    n_orb, n_alpha, n_beta
-):
-    """Accumulating straight into the spatial blocks must reproduce the
-    spin-orbital formulation to rounding, and PySCF's contractions too."""
+def test_spatial_rdms_exact_matches_pyscf(n_orb, n_alpha, n_beta):
+    """Accumulating straight into the spatial blocks must reproduce PySCF's
+    contractions to rounding."""
     state = _random_sector_state(n_orb, n_alpha, n_beta, seed=n_orb + 7 * n_alpha)
 
-    exact = _spatial_rdms_exact(*state, n_orb)
-    reference = _spin_orbital_reference_rdms(*state, n_orb)
-    from_pyscf = compute_spatial_rdms(*state, n_orb)
-
-    for got, want, pyscf_block in zip(exact, reference, from_pyscf):
+    for got, want in zip(
+        _spatial_rdms_exact(*state, n_orb), _pyscf_rdms(*state, n_orb)
+    ):
         np.testing.assert_allclose(got, want, rtol=0, atol=1e-12)
-        np.testing.assert_allclose(got, pyscf_block, rtol=0, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    "n_orb, n_alpha, n_beta",
+    [(2, 1, 1), (4, 2, 2), (4, 3, 1), (5, 2, 3), (4, 3, 0), (3, 0, 2)],
+)
+def test_one_pyscf_pass_gives_the_separate_1_and_2_rdm_passes(n_orb, n_alpha, n_beta):
+    state = _random_sector_state(n_orb, n_alpha, n_beta, seed=n_orb + 7 * n_alpha)
+
+    for got, want in zip(
+        compute_spatial_rdms(*state, n_orb), _pyscf_rdms(*state, n_orb)
+    ):
+        np.testing.assert_allclose(got, want, rtol=0, atol=1e-14)
+
+
+@pytest.mark.parametrize("wide", [False, True])
+def test_spatial_rdm1_is_the_full_reconstructions_without_the_2_rdm(
+    mocker, monkeypatch, wide
+):
+    state = _random_sector_state(5, 3, 2, seed=2)
+    expected = _pyscf_rdms(*state, 5)[0]
+    if wide:
+        monkeypatch.setattr(sqd_module, "_MAX_PYSCF_ORBITALS", 1)
+    pair_pass = mocker.spy(sqd_module.selected_ci, "make_rdm2s")
+
+    np.testing.assert_allclose(
+        compute_spatial_rdm1(*state, 5), expected, rtol=0, atol=1e-12
+    )
+    pair_pass.assert_not_called()
 
 
 @pytest.mark.parametrize("block_rows", [1, 5])
@@ -2425,7 +2404,7 @@ def test_wide_fragments_reconstruct_rdms_off_the_exact_path(mocker, monkeypatch)
 
     monkeypatch.setattr(sqd_module, "_MAX_PYSCF_ORBITALS", 1)
     exact = mocker.spy(sqd_module, "_spatial_rdms_exact")
-    pyscf_rdm2 = mocker.spy(sqd_module.selected_ci, "make_rdm2")
+    pyscf_rdm2 = mocker.spy(sqd_module.selected_ci, "make_rdm2s")
     wide = compute_spatial_rdms(*state, 4)
 
     exact.assert_called_once()

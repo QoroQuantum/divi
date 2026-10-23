@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 import scipy.linalg
 from pyscf import ao2mo, fci, gto, mcscf, scf
-from pyscf.fci import cistring
+from pyscf.fci import addons, cistring
 
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.workflows.lassqd import (
@@ -368,7 +368,7 @@ def test_degenerate_states_across_fragments_do_not_warn_about_their_order(
 
 
 @pytest.mark.parametrize(
-    "max_memory, held",
+    "headroom, held",
     [
         (0.01, "The state interaction holds 34 product states densely"),
         (1e-5, "a 2-orbital fragment's multiplets"),
@@ -376,10 +376,14 @@ def test_degenerate_states_across_fragments_do_not_warn_about_their_order(
     ids=["products", "fragment"],
 )
 def test_the_state_interaction_refuses_to_outgrow_max_memory(
-    dummy_expval_backend, mocker, max_memory, held
+    dummy_expval_backend, mocker, headroom, held
 ):
+    """``mol.max_memory`` less the process's current use is what the products
+    and fragment multiplets may take."""
+    in_use = 100.0
+    mocker.patch.object(_lassi.lib, "current_memory", return_value=(in_use, 0.0))
     mean_field = _h2_dimer_mean_field(6.0)
-    mean_field.mol.max_memory = max_memory
+    mean_field.mol.max_memory = in_use + headroom
     ensemble = _two_fragment_lassqd(
         dummy_expval_backend,
         mocker,
@@ -525,3 +529,28 @@ def test_states_across_two_fragments_are_checked_against_the_whole_active_space(
     ensemble.run(max_rounds=1)
 
     assert [key for key in ensemble.electronic_states] == [(3, 0), (3, 1), (3, 2)]
+
+
+@pytest.mark.parametrize(
+    "spin, dagger, ladder",
+    [
+        (0, True, addons.cre_a),
+        (0, False, addons.des_a),
+        (1, True, addons.cre_b),
+        (1, False, addons.des_b),
+    ],
+)
+def test_the_operators_act_as_pyscfs_ladder_functions(spin, dagger, ladder):
+    n_orbitals, sector = 4, (2, 1)
+    operators = _lassi._Operators(n_orbitals)
+    vector = np.random.default_rng(0).standard_normal(
+        _lassi._dimension(n_orbitals, sector)
+    )
+
+    for orbital in range(n_orbitals):
+        np.testing.assert_allclose(
+            operators(sector, orbital, spin, dagger) @ vector,
+            ladder(vector, n_orbitals, sector, orbital).ravel(),
+            rtol=0,
+            atol=1e-14,
+        )

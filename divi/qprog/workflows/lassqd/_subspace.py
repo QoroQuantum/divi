@@ -14,7 +14,7 @@ from itertools import combinations
 import numpy as np
 import scipy.optimize
 import scipy.sparse
-from pyscf import ao2mo, mcscf, mrpt
+from pyscf import ao2mo, lib, mcscf, mrpt
 from pyscf.fci import selected_ci
 
 from ._integrals import AOIntegrals, _exact_mean_field
@@ -89,7 +89,7 @@ class _SubspaceCI(selected_ci.SelectedCI):
         energies, civecs = self.roots(h1e, eri, norb, ecore)
         if self.nroots == 1:
             return energies[0], civecs[0]
-        return energies, civecs
+        return np.array(energies), civecs
 
     def roots(
         self, h1e, eri, norb: int, ecore: float = 0.0
@@ -126,9 +126,9 @@ def _subspace_casci(
     """A CASCI over ``subspace``'s active space, on the exact integrals."""
     strings_alpha, strings_beta = subspace.strings
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    casci = mcscf.casci.CASCI(_exact_mean_field(ao), len(strings_alpha[0]), nelec)
-    casci.ncore = n_core
-    return casci
+    return mcscf.casci.CASCI(
+        _exact_mean_field(ao), len(strings_alpha[0]), nelec, ncore=n_core
+    )
 
 
 def subspace_states_at(
@@ -155,8 +155,6 @@ def _subspace_roots(
     strings_alpha, strings_beta = subspace.strings
     casci = _subspace_casci(ao, subspace, n_core)
     n_active, nelec = casci.ncas, casci.nelecas
-    h1e, energy_core = casci.get_h1eff(subspace.mo_coeff)
-    eri = casci.get_h2eff(subspace.mo_coeff)
     for multiplicity, n_roots in sorted(subspace.states.items()):
         solver = _SubspaceCI(
             strings_alpha,
@@ -165,7 +163,10 @@ def _subspace_roots(
             min(n_roots, len(strings_alpha) * len(strings_beta)),
             subspace.lambda_penalty,
         )
-        energies, civecs = solver.roots(h1e, eri, n_active, energy_core)
+        casci.fcisolver = solver
+        energies, _, civecs = mcscf.casci.kernel(casci, subspace.mo_coeff, verbose=0)
+        if solver.nroots == 1:
+            energies, civecs = [energies], [civecs]
         index = 0
         for energy, civec in zip(energies, civecs):
             spin_square, _ = solver.spin_square(civec, n_active, nelec)
@@ -224,7 +225,7 @@ def subspace_nevpt2(
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
     n_bytes = 8 * math.comb(n_active, nelec[0]) * math.comb(n_active, nelec[1])
     max_memory = ao.mol.max_memory
-    if n_bytes > max_memory * 1e6:
+    if n_bytes > (max_memory - lib.current_memory()[0]) * 1e6:
         raise MemoryError(
             f"NEVPT2 needs the full-space CI vector of CAS({sum(nelec)},{n_active}), "
             f"{n_bytes / 1e6:g} MB, above mol.max_memory={max_memory:g} MB. "
@@ -369,7 +370,8 @@ def state_transitions(
         )
         dipole = -np.einsum("xpq,pq->x", dipole_mo, transition_rdm1)
         gap = upper.state.energy - lower.state.energy
-        particles, singular_values, holes = np.linalg.svd(transition_rdm1)
+        # Rows index the orbital the electron leaves, columns the one it enters.
+        holes, singular_values, particles = np.linalg.svd(transition_rdm1)
         total = float(np.sum(singular_values**2))
         transitions.append(
             StateTransition(
@@ -378,8 +380,8 @@ def state_transitions(
                 transition_rdm1=transition_rdm1,
                 transition_dipole=dipole,
                 oscillator_strength=float(2.0 / 3.0 * gap * dipole @ dipole),
-                hole_orbitals=orbitals @ holes.T,
-                particle_orbitals=orbitals @ particles,
+                hole_orbitals=orbitals @ holes,
+                particle_orbitals=orbitals @ particles.T,
                 nto_weights=(
                     singular_values**2 / total
                     if total > 0

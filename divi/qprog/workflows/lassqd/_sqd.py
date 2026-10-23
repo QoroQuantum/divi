@@ -10,7 +10,6 @@ construction, spin-penalised projected diagonalisation, and reduced
 density-matrix reconstruction.
 """
 
-import bisect
 import itertools
 import warnings
 from collections import Counter, defaultdict
@@ -131,154 +130,12 @@ def spin_orbital_integrals(
     return h_spin, g_spin
 
 
-def _annihilation_sign(occ, p):
-    """Return the sign and remaining occupation from annihilating spin-orbital p,
-    which must be occupied in ``occ``."""
-    occ_tup = tuple(occ)
-    idx = occ_tup.index(p)
-    sign = (-1) ** idx
-    new_occ = occ_tup[:idx] + occ_tup[idx + 1 :]
-    return sign, new_occ
-
-
-def _creation_sign(occ, p):
-    """Return the sign and updated occupation from creating spin-orbital p,
-    which must be empty in ``occ``."""
-    occ_tup = tuple(occ)
-    idx = bisect.bisect_left(occ_tup, p)
-    sign = (-1) ** idx
-    new_occ = occ_tup[:idx] + (p,) + occ_tup[idx:]
-    return sign, new_occ
-
-
-def slater_condon(det_i, det_j, h_spin, g_spin) -> float:
-    """Compute the Hamiltonian matrix element between two Slater determinants."""
-    set_i = set(det_i)
-    set_j = set(det_j)
-
-    diff_i = sorted(set_i - set_j)
-    diff_j = sorted(set_j - set_i)
-
-    if len(diff_i) > 2:
-        return 0.0
-
-    if len(diff_i) == 0:  # Identical
-        val = 0.0
-        for p in det_i:
-            val += h_spin[p, p]
-            for q in det_i:
-                if p < q:
-                    val += g_spin[p, q, p, q]
-        return val
-
-    if len(diff_i) == 1:  # Differ by 1
-        p = diff_i[0]
-        q = diff_j[0]
-        # We compute <det_i | H | det_j> where det_i = det_j - {q} + {p}
-        # Annihilate q in det_j, create p in det_j
-        sign_ann, occ_mid = _annihilation_sign(det_j, q)
-        sign_cre, _ = _creation_sign(occ_mid, p)
-        sign = sign_ann * sign_cre
-
-        val = h_spin[p, q]
-        for r in det_j:
-            if r != q:
-                val += g_spin[p, r, q, r]
-        return sign * val
-
-    # Differ by 2
-    p, r = diff_i
-    q, s = diff_j
-    # We compute <det_i | H | det_j> where det_i = det_j - {q, s} + {p, r}
-    # Annihilate q in det_j, then s in remaining, then create r, then p
-    sign_q, occ_1 = _annihilation_sign(det_j, q)
-    sign_s, occ_2 = _annihilation_sign(occ_1, s)
-    sign_r, occ_3 = _creation_sign(occ_2, r)
-    sign_p, _ = _creation_sign(occ_3, p)
-    sign = sign_q * sign_s * sign_r * sign_p
-
-    return sign * g_spin[p, r, q, s]
-
-
 def spatial_to_spin_occupations(
     alpha_occ: tuple[int, ...], beta_occ: tuple[int, ...], n_orb: int
 ) -> tuple[int, ...]:
     """Combine alpha/beta spatial occupations into a sorted, blocked spin-orbital
     tuple: alpha keeps its spatial index, beta is offset by ``n_orb``."""
     return tuple(sorted(list(alpha_occ) + [p + n_orb for p in beta_occ]))
-
-
-def spin_to_spatial_occupations(
-    spin_occ, n_orb: int
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Split a spin-orbital occupation tuple back into (alpha_occ, beta_occ)."""
-    alpha_occ = tuple(sorted(p for p in spin_occ if p < n_orb))
-    beta_occ = tuple(sorted(p - n_orb for p in spin_occ if p >= n_orb))
-    return alpha_occ, beta_occ
-
-
-def bitstring_to_spatial_det(
-    sqd_bitstring: str, n_orb: int
-) -> tuple[tuple[int, ...], tuple[int, ...]]:
-    """Split a blocked ``alpha + beta`` bitstring into occupied-orbital tuples."""
-    alpha_part = sqd_bitstring[:n_orb]
-    beta_part = sqd_bitstring[n_orb:]
-    alpha_occ = tuple(i for i, c in enumerate(alpha_part) if c == "1")
-    beta_occ = tuple(i for i, c in enumerate(beta_part) if c == "1")
-    return alpha_occ, beta_occ
-
-
-def _apply_s_plus(det):
-    """Apply the S+ ladder operator to a spatial (alpha_occ, beta_occ) determinant."""
-    alpha_occ, beta_occ = det
-    results = []
-    for idx_beta, p in enumerate(beta_occ):
-        if p in alpha_occ:
-            continue
-        idx_alpha = bisect.bisect_left(alpha_occ, p)
-        sign = (-1) ** (idx_beta + idx_alpha)
-        new_alpha = alpha_occ[:idx_alpha] + (p,) + alpha_occ[idx_alpha:]
-        new_beta = beta_occ[:idx_beta] + beta_occ[idx_beta + 1 :]
-        results.append((sign, (new_alpha, new_beta)))
-    return results
-
-
-def _apply_s_minus(det):
-    """Apply the S- ladder operator to a spatial (alpha_occ, beta_occ) determinant."""
-    alpha_occ, beta_occ = det
-    results = []
-    for idx_alpha, p in enumerate(alpha_occ):
-        if p in beta_occ:
-            continue
-        idx_beta = bisect.bisect_left(beta_occ, p)
-        sign = (-1) ** (idx_alpha + idx_beta)
-        new_beta = beta_occ[:idx_beta] + (p,) + beta_occ[idx_beta:]
-        new_alpha = alpha_occ[:idx_alpha] + alpha_occ[idx_alpha + 1 :]
-        results.append((sign, (new_alpha, new_beta)))
-    return results
-
-
-def s2_matrix_element(det_i, det_j) -> float:
-    """Compute <det_i | S^2 | det_j> via S^2 = S_z(S_z + 1) + S_- S_+.
-
-    ``det_i`` and ``det_j`` are ``(alpha_occ, beta_occ)`` spatial-orbital pairs.
-    """
-    alpha_j, beta_j = det_j
-    sz_j = 0.5 * (len(alpha_j) - len(beta_j))
-
-    diag = 0.0
-    if det_i == det_j:
-        diag = sz_j * (sz_j + 1.0)
-
-    s_plus_results = _apply_s_plus(det_j)
-    coeff_ij = 0.0
-    for sign_p, det_p in s_plus_results:
-        s_minus_results = _apply_s_minus(det_p)
-        for sign_m, det_m in s_minus_results:
-            if det_m == det_i:
-                coeff_ij += sign_p * sign_m
-
-    return diag + coeff_ij
 
 
 def projected_matrices(
@@ -290,10 +147,10 @@ def projected_matrices(
 ) -> tuple[scipy.sparse.csr_array, scipy.sparse.csr_array]:
     """Project the Hamiltonian and ``S^2`` onto the span of ``dets``.
 
-    Gives the entries :func:`slater_condon` and :func:`s2_matrix_element`
-    define, by array operations: excitation ranks from one matrix product, then
-    each rank's elements in one pass. Rows run in blocks to bound memory, and
-    both matrices are sparse, holding only connected pairs.
+    Gives the Slater-Condon and ``S^2 = S_z (S_z + 1) + S_- S_+`` matrix
+    elements, by array operations: excitation ranks from one matrix product,
+    then each rank's elements in one pass. Rows run in blocks to bound memory,
+    and both matrices are sparse, holding only connected pairs.
 
     Args:
         dets: ``(alpha_occ, beta_occ)`` spatial occupations per determinant.
@@ -330,14 +187,13 @@ def projected_matrices(
 
     n_electrons = int(round(float(occupation[0].sum())))
     # Occupied orbitals strictly below an index: the parity that signs an
-    # annihilation or creation there, matching _annihilation_sign's use of the
-    # position within the sorted occupation tuple.
+    # annihilation or creation there.
     below = np.cumsum(occupation, axis=1) - occupation
     index = np.arange(n_spin)
 
     # --- Diagonal (identical determinants) ---
-    # Strictly upper-triangular so the pair sum runs over p < q, matching
-    # slater_condon without assuming g[p, q, p, q] == g[q, p, q, p].
+    # Strictly upper-triangular so the pair sum runs over p < q, without
+    # assuming g[p, q, p, q] == g[q, p, q, p].
     coulomb = g_spin[index[:, None], index[None, :], index[:, None], index[None, :]]
     coulomb = np.triu(coulomb, k=1)
     diagonal = occupation @ np.diag(h_spin) + np.einsum(
@@ -388,9 +244,8 @@ def projected_matrices(
                 - (annihilated < created)
             )
             sign = 1.0 - 2.0 * (exponent.astype(np.int64) % 2)
-            # The r == q term the reference excludes contributes g[p, q, q, q],
-            # which antisymmetry makes identically zero, so no exclusion is
-            # needed here.
+            # The r == q term contributes g[p, q, q, q], which antisymmetry makes
+            # identically zero, so it needs no exclusion.
             summed = np.einsum(
                 "kr,kr->k", exchange[created, annihilated], occupation[cols]
             )
@@ -1763,9 +1618,26 @@ def compute_spatial_rdms(
 
     nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
     civec = sci_vector(strings_alpha, strings_beta, amplitudes)
-    rdm1_alpha, rdm1_beta = selected_ci.make_rdm1s(civec, n_orb, nelec)
-    rdm2 = selected_ci.make_rdm2(civec, n_orb, nelec)
+    (rdm1_alpha, rdm1_beta), (rdm2_aa, rdm2_ab, rdm2_bb) = (
+        selected_ci.SelectedCI().make_rdm12s(civec, n_orb, nelec)
+    )
+    rdm2 = rdm2_aa + rdm2_bb + rdm2_ab + rdm2_ab.transpose(2, 3, 0, 1)
     return rdm1_alpha + rdm1_beta, rdm2, rdm1_alpha, rdm1_beta
+
+
+def compute_spatial_rdm1(
+    strings_alpha: Sequence[str],
+    strings_beta: Sequence[str],
+    amplitudes: np.ndarray,
+    n_orb: int,
+) -> np.ndarray:
+    """The spin-traced spatial 1-RDM of an SQD state, as
+    :func:`compute_spatial_rdms` gives it, without building the 2-RDM."""
+    if n_orb > _MAX_PYSCF_ORBITALS:
+        return _spatial_rdms_exact(strings_alpha, strings_beta, amplitudes, n_orb)[0]
+    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
+    civec = sci_vector(strings_alpha, strings_beta, amplitudes)
+    return selected_ci.make_rdm1(civec, n_orb, nelec)
 
 
 def _spatial_rdms_exact(

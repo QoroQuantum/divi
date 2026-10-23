@@ -528,13 +528,14 @@ from_molecule` from a PySCF ``gto.Mole`` (RHF, or ROHF for a non-zero ``spin``,
 
         mean_field = self._mean_field
         if mean_field is None or mean_field.mo_coeff is None:
-            mean_field = (
-                without_chkfile(
+            if mean_field is None:
+                mean_field = without_chkfile(
                     scf.ROHF(self._mol) if self._spin else scf.RHF(self._mol)
                 )
-                if mean_field is None
-                else mean_field.copy()
-            )
+            else:
+                # The copy shares the caller's checkpoint file; write to none.
+                mean_field = mean_field.copy()
+                mean_field.chkfile = None
             mean_field.run(verbose=0)
             if not mean_field.converged:
                 raise RuntimeError(
@@ -571,7 +572,6 @@ from_molecule` from a PySCF ``gto.Mole`` (RHF, or ROHF for a non-zero ``spin``,
                 self._ao_integrals(),
                 mo_coeff,
                 n_occupied,
-                self._rng,
                 n_active_orbitals=config.n_active_orbitals,
                 max_orbitals_per_fragment=config.max_orbitals_per_fragment,
                 coupling_threshold=config.coupling_threshold,
@@ -812,9 +812,10 @@ ProgramEnsemble.workflow_state` holds it.
     def _ao_integrals(self) -> AOIntegrals:
         """The molecule with this run's AO integrals, its core Hamiltonian
         carrying the solvent's current reaction field."""
-        if self._solvent is None or self._solvent.field is None:
-            return AOIntegrals(self._mol, self._ao_eri, self._h_ao)
-        return AOIntegrals(self._mol, self._ao_eri, self._h_ao + self._solvent.field[1])
+        h_core = self._h_ao
+        if self._solvent is not None and self._solvent.field is not None:
+            h_core = h_core + self._solvent.field[1]
+        return AOIntegrals(self._mol, self._ao_eri, h_core, self._energy_nuc)
 
     @cached_property
     def _ao_eri(self) -> np.ndarray:
@@ -828,6 +829,13 @@ ProgramEnsemble.workflow_state` holds it.
         if self._mean_field is None:
             return cached_h_ao(self._mol)
         return np.asarray(self._mean_field.get_hcore())
+
+    @cached_property
+    def _energy_nuc(self) -> float:
+        """Nuclear repulsion: the mean field's if held, which includes any
+        external charges its core Hamiltonian sees, else ``mol``'s."""
+        source = self._mol if self._mean_field is None else self._mean_field
+        return float(source.energy_nuc())
 
     def _n_core(self, state: LASSQDState) -> int:
         """This state's frozen-core count."""

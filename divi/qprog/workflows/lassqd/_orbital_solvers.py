@@ -796,11 +796,13 @@ def state_averaged_orbital_solve(
     keeps_symmetry = orbital_irreps(mol, mo_coeff) is not None
     if keeps_symmetry:
         casscf = mcscf.mc1step_symm.SymAdaptedCASSCF(
-            _exact_mean_field(replace(ao, mol=abelian_molecule(mol))), n_active, nelec
+            _exact_mean_field(replace(ao, mol=abelian_molecule(mol))),
+            n_active,
+            nelec,
+            n_core,
         )
     else:
-        casscf = mcscf.mc1step.CASSCF(_exact_mean_field(ao), n_active, nelec)
-    casscf.ncore = n_core
+        casscf = mcscf.mc1step.CASSCF(_exact_mean_field(ao), n_active, nelec, n_core)
     casscf.verbose = 0
     casscf.canonicalization = False
     casscf.max_cycle_macro = max_iterations
@@ -815,6 +817,10 @@ def state_averaged_orbital_solve(
 
     def progress(envs):
         nonlocal macro_iterations
+        # PySCF also calls back after each micro-iteration, while its orbital
+        # rotation generator is still open; it is closed by the macro callback.
+        if envs.get("rota") is not None:
+            return
         macro_iterations = envs["imacro"]
         if report is not None:
             report(

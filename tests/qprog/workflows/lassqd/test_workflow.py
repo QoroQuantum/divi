@@ -23,7 +23,7 @@ import warnings
 
 import numpy as np
 import pytest
-from pyscf import fci, gto, mcscf, scf
+from pyscf import fci, gto, mcscf, qmmm, scf
 from pyscf.fci import cistring
 
 from divi.qprog import LASSQD, ReportingLevel, WorkflowStatus
@@ -430,23 +430,6 @@ def test_diagonal_rdm_guess_is_the_reference_determinant(n_alpha, n_beta):
         _workflow._diagonal_rdm_guess(spec), expected, strict=True
     ):
         np.testing.assert_allclose(actual, reference, atol=1e-12)
-
-
-def test_initial_state_forwards_the_workflow_rng_to_auto_fragment_specs(
-    dummy_expval_backend, mocker
-):
-    ensemble = _lassqd(
-        dummy_expval_backend,
-        active_spaces=None,
-        n_active_orbitals=4,
-        max_orbitals_per_fragment=2,
-    )
-    spy = mocker.spy(_workflow, "auto_fragment_specs")
-
-    state = ensemble.initial_state()
-
-    assert spy.call_args.args[3] is ensemble._rng
-    assert state.mo_coeff.shape[1] == 4
 
 
 def test_initial_state_forwards_the_mean_field_core_hamiltonian_to_auto_fragment_specs(
@@ -2840,3 +2823,30 @@ def test_orbital_indices_are_validated_against_the_mean_field_register(
             problem=MolecularProblem.from_molecule(mean_field),
             active_spaces=[FragmentSpec(orbitals=(0, 5), n_alpha=1, n_beta=1)],
         )
+
+
+def test_a_qmmm_mean_fields_point_charges_reach_the_energy(
+    dummy_expval_backend, mocker
+):
+    """The point charges act on both the electrons and the nuclei, so the
+    whole-space energy on fixed orbitals is the QM/MM CASCI one."""
+    mean_field = qmmm.mm_charge(
+        scf.RHF(gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)),
+        [[0.0, 0.0, 3.0]],
+        [0.5],
+    ).run(verbose=0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ensemble, _ = build_exact_sampler_lassqd(
+            dummy_expval_backend,
+            mocker,
+            problem=MolecularProblem.from_molecule(mean_field),
+            active_spaces=[FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1)],
+            orbital_update=FixedOrbitals(),
+        )
+
+    ensemble.run(max_rounds=1)
+
+    assert ensemble.energy == pytest.approx(
+        mcscf.CASCI(mean_field, 2, 2).kernel()[0], abs=1e-10
+    )

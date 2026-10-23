@@ -489,7 +489,7 @@ def test_non_finite_linear_method_result_fails_before_circuit_construction(mocke
 
 def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
     coupled_cluster = mocker.Mock(converged=False)
-    ccsd = mocker.patch("pyscf.cc.CCSD", return_value=coupled_cluster)
+    ccsd = mocker.patch("pyscf.cc.UCCSD", return_value=coupled_cluster)
     mean_field = mocker.Mock()
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
     message = (

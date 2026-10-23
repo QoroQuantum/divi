@@ -494,6 +494,35 @@ def _unrank_combination(items, size: int, rank: int) -> tuple[int, ...]:
     return tuple(selected)
 
 
+def fragment_mean_field(
+    method: Callable,
+    one_body: np.ndarray,
+    two_body: np.ndarray,
+    spec: FragmentSpec,
+):
+    """A pyscf mean field (``scf.RHF``, ``scf.UHF`` or ``scf.ROHF``) over a
+    fragment's own orthonormal orbitals and integrals.
+
+    The molecule is a shell carrying the electron count and spin; the integrals
+    are the fragment's, and the overlap is the identity. ROHF takes the spin as
+    a magnitude, with the majority spin first.
+    """
+    n_orbitals = spec.n_orbitals
+    molecule = gto.M(verbose=0)
+    molecule.nelectron = spec.n_alpha + spec.n_beta
+    molecule.spin = spec.n_alpha - spec.n_beta
+    if method is scf.ROHF:
+        molecule.spin = abs(molecule.spin)
+    molecule.nao = n_orbitals
+    molecule.incore_anyway = True
+
+    mean_field: Any = without_chkfile(method(molecule))
+    mean_field.get_hcore = lambda *args: one_body
+    mean_field.get_ovlp = lambda *args: np.eye(n_orbitals)
+    mean_field._eri = ao2mo.restore(8, two_body, n_orbitals)
+    return mean_field
+
+
 def _fragment_rohf(
     one_body: np.ndarray,
     two_body: np.ndarray,
@@ -508,22 +537,9 @@ def _fragment_rohf(
         RuntimeError: If no start converges.
     """
 
-    n_orbitals = spec.n_orbitals
-    molecule = gto.M(verbose=0)
-    molecule.nelectron = spec.n_alpha + spec.n_beta
-    # PySCF's ROHF convention puts the majority-spin amplitudes first;
-    # ``_physical_spin_amplitudes`` restores physical alpha/beta tuple order.
-    molecule.spin = abs(spec.n_alpha - spec.n_beta)
-    molecule.nao = n_orbitals
-    molecule.incore_anyway = True
-    eri = ao2mo.restore(8, two_body, n_orbitals)
-
     best = None
     for start in _rohf_starts(one_body, spec):
-        mean_field = without_chkfile(scf.ROHF(molecule))
-        mean_field.get_hcore = lambda *args: one_body
-        mean_field.get_ovlp = lambda *args: np.eye(n_orbitals)
-        mean_field._eri = eri
+        mean_field = fragment_mean_field(scf.ROHF, one_body, two_body, spec)
         mean_field.kernel(dm0=start)
         if not mean_field.converged:
             mean_field = mean_field.newton()
@@ -556,7 +572,7 @@ def _fragment_rohf(
 def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
     """Compute the paper's CCSD seed, retaining best amplitudes at the limit."""
 
-    coupled_cluster = cc.CCSD(mean_field)
+    coupled_cluster = cc.UCCSD(mean_field)
     coupled_cluster.max_cycle = _CC_MAX_CYCLE
     coupled_cluster.kernel()
     if not coupled_cluster.converged:

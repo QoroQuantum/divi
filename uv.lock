@@ -4197,7 +4197,7 @@ requires-dist = [
     { name = "pymetis", marker = "sys_platform != 'win32'", specifier = ">=2025.1.1,<2026.0.0" },
     { name = "pymoo", specifier = ">=0.6,<0.7" },
     { name = "pyperclip", marker = "extra == 'ai'", specifier = ">=1.11.0,<2.0.0" },
-    { name = "pyscf", marker = "sys_platform != 'win32' and extra == 'chem'", specifier = ">=2.0,<3.0" },
+    { name = "pyscf", marker = "sys_platform != 'win32' and extra == 'chem'", specifier = ">=2.14,<3.0" },
     { name = "python-dotenv", specifier = ">=1.1.1,<2.0" },
     { name = "qiskit", specifier = ">=2.5" },
     { name = "qiskit-aer", marker = "extra == 'aer'" },

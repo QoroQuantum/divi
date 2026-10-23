@@ -247,11 +247,11 @@ def mo_integrals(mean_field):
 
 
 @pytest.fixture(scope="session")
-def h4_localized_blocks_seed0(h4_chain_mean_field):
-    """``localize_blocks`` on ``h4_chain_mean_field`` under seed 0."""
+def h4_localized_blocks(h4_chain_mean_field):
+    """``localize_blocks`` on ``h4_chain_mean_field``."""
     mol = h4_chain_mean_field.mol
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
-    return localize_blocks(mol, mo_coeff, (0, 1), (2, 3), np.random.default_rng(0))
+    return localize_blocks(mol, mo_coeff, (0, 1), (2, 3))
 
 
 def h2o_molecule(basis="6-31g", symmetry=False):

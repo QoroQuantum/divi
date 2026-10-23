@@ -14,15 +14,15 @@ from dataclasses import dataclass
 
 import numpy as np
 import scipy.sparse
-from pyscf import ao2mo, mcscf
-from pyscf.fci import addons, cistring, direct_spin1
+from pyscf import ao2mo, lib, mcscf
+from pyscf.fci import cistring, direct_spin1
 
 from ._integrals import AOIntegrals, _exact_mean_field
 from ._sqd import (
     _DENSE_MAX_DIM,
     SQDResult,
     ci_string_to_int,
-    compute_spatial_rdms,
+    compute_spatial_rdm1,
     projected_matrices,
     resolves_spin,
     spatial_to_spin_occupations,
@@ -110,18 +110,17 @@ def lassi_states(
     n_a, n_b = spec_a.n_orbitals, spec_b.n_orbitals
     n_active = n_a + n_b
     nelec = (spec_a.n_alpha + spec_b.n_alpha, spec_a.n_beta + spec_b.n_beta)
-    casci = mcscf.casci.CASCI(_exact_mean_field(ao), n_active, nelec)
-    casci.ncore = n_core
+    casci = mcscf.casci.CASCI(_exact_mean_field(ao), n_active, nelec, ncore=n_core)
     h1, energy_core = casci.get_h1eff(mo_coeff)
     h2 = ao2mo.restore(1, casci.get_h2eff(mo_coeff), n_active)
     blocks = (slice(0, n_a), slice(n_a, n_active))
     densities = [
-        compute_spatial_rdms(
+        compute_spatial_rdm1(
             result.strings_alpha,
             result.strings_beta,
             result.amplitudes,
             spec.n_orbitals,
-        )[0]
+        )
         for spec, result in zip(specs, results)
     ]
     references = (
@@ -192,7 +191,7 @@ def lassi_states(
         if held < full:
             incomplete[index] = (held, full)
     n_bytes = 4 * 8 * products(limit) ** 2
-    if n_bytes > ao.mol.max_memory * 1e6:
+    if n_bytes > (ao.mol.max_memory - lib.current_memory()[0]) * 1e6:
         raise MemoryError(
             f"The state interaction holds {products(limit)} product states "
             f"densely, {n_bytes / 1e6:g} MB, above mol.max_memory="
@@ -272,7 +271,7 @@ def fragment_multiplets(
         )
         + 3 * 8 * max(len(determinants) for determinants in spaces.values()) ** 2
     )
-    if n_bytes > max_memory * 1e6:
+    if n_bytes > (max_memory - lib.current_memory()[0]) * 1e6:
         raise MemoryError(
             f"The state interaction holds a {n_orbitals}-orbital fragment's "
             f"multiplets densely, {n_bytes / 1e6:g} MB, above mol.max_memory="
@@ -338,14 +337,21 @@ def _spin_closed(
         for up in itertools.combinations(open_shells, n_up):
             alpha_open = sum(1 << p for p in up)
             out.add((doubly | alpha_open, doubly | (singly ^ alpha_open)))
-    n_beta_strings = cistring.num_strings(n_orbitals, sector[1])
-    return sorted(
-        out,
-        key=lambda det: (
-            cistring.str2addr(n_orbitals, sector[0], det[0]) * n_beta_strings
-            + cistring.str2addr(n_orbitals, sector[1], det[1])
-        ),
+    ordered = list(out)
+    return [ordered[i] for i in np.argsort(_addresses(ordered, sector, n_orbitals))]
+
+
+def _addresses(
+    determinants: Sequence[tuple[int, int]], sector: _Sector, n_orbitals: int
+) -> np.ndarray:
+    """Each determinant's address in the sector's dense FCI vector."""
+    alpha, beta = (
+        cistring.strs2addr(
+            n_orbitals, count, np.array([det[spin] for det in determinants], np.int64)
+        ).astype(np.int64)
+        for spin, count in enumerate(sector)
     )
+    return alpha * cistring.num_strings(n_orbitals, sector[1]) + beta
 
 
 def _multiplets_in(
@@ -371,14 +377,7 @@ def _multiplets_in(
         n_orbitals,
     )
     values, vectors = np.linalg.eigh((h_proj + _SPIN_SPLIT * s2_proj).toarray())
-    n_beta_strings = cistring.num_strings(n_orbitals, sector[1])
-    addresses = np.array(
-        [
-            cistring.str2addr(n_orbitals, sector[0], alpha) * n_beta_strings
-            + cistring.str2addr(n_orbitals, sector[1], beta)
-            for alpha, beta in determinants
-        ]
-    )
+    addresses = _addresses(determinants, sector, n_orbitals)
     dimension = _dimension(n_orbitals, sector)
     multiplets = []
     for value, vector in zip(values, vectors.T):
@@ -412,16 +411,23 @@ def _components(
             yield sector, current
 
 
-def _apply_h(h1, h2, sector, vector):
+def _apply_h(h1, h2, sector, vectors):
+    """``H`` applied to each column of ``vectors``, dense FCI vectors of
+    ``sector``."""
     n_orbitals = h1.shape[0]
     shape = (
         cistring.num_strings(n_orbitals, sector[0]),
         cistring.num_strings(n_orbitals, sector[1]),
     )
     absorbed = direct_spin1.absorb_h1e(h1, h2, n_orbitals, sector, 0.5)
-    return direct_spin1.contract_2e(
-        absorbed, vector.reshape(shape), n_orbitals, sector
-    ).ravel()
+    return np.column_stack(
+        [
+            direct_spin1.contract_2e(
+                absorbed, vector.reshape(shape), n_orbitals, sector
+            ).ravel()
+            for vector in vectors.T
+        ]
+    )
 
 
 def _basis(
@@ -486,13 +492,6 @@ class _Operators:
     """One fragment's sparse creation, annihilation and spin operators between
     sectors, built on first use and kept for one state interaction."""
 
-    _APPLY = {
-        (_ALPHA, True): addons.cre_a,
-        (_ALPHA, False): addons.des_a,
-        (_BETA, True): addons.cre_b,
-        (_BETA, False): addons.des_b,
-    }
-
     def __init__(self, n_orbitals: int):
         self.n_orbitals = n_orbitals
         self._cache: dict = {}
@@ -524,18 +523,34 @@ class _Operators:
         n_alpha, n_beta = (
             cistring.num_strings(self.n_orbitals, count) for count in sector
         )
-        apply = self._APPLY[(spin, dagger)]
+        links = self._links(sector[spin], dagger)
+        sources, entries = np.nonzero(links[:, :, 1 - dagger] == orbital)
+        signs = links[sources, entries, 3].astype(float)
+        if spin == _BETA and sector[0] % 2:
+            signs = -signs
+        one_spin = scipy.sparse.csr_array(
+            (signs, (links[sources, entries, 2], sources)),
+            shape=(
+                cistring.num_strings(self.n_orbitals, target[spin]),
+                links.shape[0],
+            ),
+        )
         if spin == _ALPHA:
-            one_spin = np.asarray(
-                apply(np.eye(n_alpha), self.n_orbitals, sector, orbital)
-            )
             return scipy.sparse.csr_array(
                 scipy.sparse.kron(one_spin, scipy.sparse.identity(n_beta))
             )
-        one_spin = np.asarray(apply(np.eye(n_beta), self.n_orbitals, sector, orbital)).T
         return scipy.sparse.csr_array(
             scipy.sparse.kron(scipy.sparse.identity(n_alpha), one_spin)
         )
+
+    def _links(self, count: int, dagger: bool) -> np.ndarray:
+        """The ``(string, entry, [creator, annihilator, target, sign])`` link
+        table of one spin's ``count``-electron strings."""
+        key = ("links", count, dagger)
+        if key not in self._cache:
+            make = cistring.gen_cre_str_index if dagger else cistring.gen_des_str_index
+            self._cache[key] = make(range(self.n_orbitals), count)
+        return self._cache[key]
 
     def ladder(self, sector: _Sector, direction: int):
         """``S+`` (``direction`` 1) or ``S-`` (-1) from ``sector``; ``None``
@@ -653,8 +668,7 @@ def _fragment_hamiltonians(
 ) -> dict[_Sector, np.ndarray]:
     """Each sector's ``<a'|H_fragment|a>`` over its model states."""
     return {
-        sector: vectors.T
-        @ np.column_stack([_apply_h(h1, h2, sector, vector) for vector in vectors.T])
+        sector: vectors.T @ _apply_h(h1, h2, sector, vectors)
         for sector, vectors in basis.states.items()
     }
 

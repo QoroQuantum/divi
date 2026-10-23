@@ -44,16 +44,18 @@ class AOIntegrals:
         mol: The PySCF ``gto.Mole``.
         eri: Its 8-fold symmetry-packed two-electron integrals.
         h_core: Its core Hamiltonian, plus any external potential.
+        energy_nuc: Its nuclear repulsion, plus that of any external charges.
     """
 
     mol: Any
     eri: np.ndarray
     h_core: np.ndarray
+    energy_nuc: float
 
     @classmethod
     def of(cls, mol) -> "AOIntegrals":
         """``mol`` with its bare integrals."""
-        return cls(mol, cached_ao_eri(mol), cached_h_ao(mol))
+        return cls(mol, cached_ao_eri(mol), cached_h_ao(mol), float(mol.energy_nuc()))
 
 
 def fragment_blocks(specs: Sequence[FragmentSpec], offset: int = 0) -> list[slice]:
@@ -109,9 +111,8 @@ def transform_integrals(
         n_act: Number of active orbitals.
     """
     casci = mcscf.casci.CASCI(
-        _exact_mean_field(ao), n_act, ao.mol.nelectron - 2 * n_core
+        _exact_mean_field(ao), n_act, ao.mol.nelectron - 2 * n_core, n_core
     )
-    casci.ncore = n_core
     h_eff, _ = casci.get_h1eff(mo_coeff)
     return MOIntegrals(
         h_eff=h_eff,
@@ -247,6 +248,7 @@ def _exact_mean_field(ao: AOIntegrals) -> hf.RHF:
     mean_field = without_chkfile(hf.RHF(ao.mol))
     mean_field._eri = ao.eri
     mean_field.get_hcore = lambda mol=None: ao.h_core
+    mean_field.energy_nuc = lambda: ao.energy_nuc
     return mean_field
 
 
@@ -365,7 +367,7 @@ def _energy_fock_and_potentials(
     e_act = float(np.sum(rdm1_active * embedded_h)) + 0.5 * float(
         np.einsum("pqrs,pqrs->", rdm2_active, g_gaaa[active], optimize=True)
     )
-    energy = float(ao.mol.energy_nuc()) + e_core + e_act
+    energy = ao.energy_nuc + e_core + e_act
 
     fock = np.zeros((n_orb, n_orb))
     fock[:, :n_core] = (

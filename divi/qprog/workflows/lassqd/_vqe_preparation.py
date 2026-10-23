@@ -11,7 +11,7 @@ from typing import Any
 from warnings import warn
 
 import numpy as np
-from pyscf import ao2mo, cc, gto, scf
+from pyscf import cc, scf
 from pyscf.cc import addons as cc_addons
 from scipy.linalg import expm
 
@@ -28,6 +28,7 @@ from divi.qprog.algorithms._vqe import VQE
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import MolecularProblem
 
+from ._preparation import fragment_mean_field
 from ._state import FragmentSpec, FragmentState
 
 # Below this the embedding potential's spin channels are the same to seeding precision.
@@ -38,6 +39,10 @@ _SEED_ACCEPTANCE_MARGIN = 1e-4
 
 # Coupled-cluster iterations allowed on a fragment.
 _SEED_CC_MAX_CYCLE = 500
+
+# What a coupled-cluster solve raises on a fragment it cannot handle;
+# ``numpy.linalg.LinAlgError`` is a ``ValueError``.
+_CC_FAILURES = (ArithmeticError, RuntimeError, ValueError)
 
 # Widest fragment whose seed is checked exactly (ten orbitals).
 _SEED_CHECK_MAX_QUBITS = 20
@@ -134,42 +139,34 @@ def _unrestricted_uccsd_amplitude_seed(
     """:func:`_uccsd_amplitude_seed` for unrestricted CCSD, for a spin-polarised
     fragment.
 
-    The blocks are assembled into antisymmetric spin-orbital tensors over the
-    blocked register (alpha orbitals first, then beta).
+    The blocks become antisymmetric spin-orbital tensors, occupied spin orbitals
+    before virtual ones, which are read back through the blocked register
+    (alpha orbitals first, then beta).
     """
     n_spatial = spec.n_orbitals
     n_alpha, n_beta = spec.n_alpha, spec.n_beta
-    t1_alpha, t1_beta = coupled_cluster.t1
-    t2_alpha, t2_mixed, t2_beta = coupled_cluster.t2
-    n_spin = 2 * n_spatial
-    t1 = np.zeros((n_spin, n_spin))
-    t2 = np.zeros((n_spin,) * 4)
-    occ_alpha, vir_alpha = np.arange(n_alpha), np.arange(n_alpha, n_spatial)
-    occ_beta = n_spatial + np.arange(n_beta)
-    vir_beta = n_spatial + np.arange(n_beta, n_spatial)
-    t1[np.ix_(occ_alpha, vir_alpha)] = t1_alpha
-    t1[np.ix_(occ_beta, vir_beta)] = t1_beta
-    t2[np.ix_(occ_alpha, occ_alpha, vir_alpha, vir_alpha)] = t2_alpha
-    t2[np.ix_(occ_beta, occ_beta, vir_beta, vir_beta)] = t2_beta
-    t2[np.ix_(occ_alpha, occ_beta, vir_alpha, vir_beta)] = t2_mixed
-    t2[np.ix_(occ_beta, occ_alpha, vir_beta, vir_alpha)] = t2_mixed.transpose(
-        1, 0, 3, 2
-    )
-    t2[np.ix_(occ_alpha, occ_beta, vir_beta, vir_alpha)] = -t2_mixed.transpose(
-        0, 1, 3, 2
-    )
-    t2[np.ix_(occ_beta, occ_alpha, vir_alpha, vir_beta)] = -t2_mixed.transpose(
-        1, 0, 2, 3
-    )
+    n_occupied = (n_alpha, n_beta)
+    n_virtual = (n_spatial - n_alpha, n_spatial - n_beta)
+    orbspin = np.repeat([0, 1, 0, 1], (*n_occupied, *n_virtual))
+    t1 = cc_addons.spatial2spin(coupled_cluster.t1, orbspin)
+    t2 = cc_addons.spatial2spin(coupled_cluster.t2, orbspin)
 
-    first_layer = [
-        (
-            -t1[occupied[0], unoccupied[0]]
-            if len(occupied) == 1
-            else t2[(*occupied, *unoccupied)]
-        )
-        for occupied, unoccupied in _uccsd_excitations(n_spatial, (n_alpha, n_beta))
-    ]
+    def occupied_index(blocked: int) -> int:
+        spin, spatial = divmod(blocked, n_spatial)
+        return spatial + spin * n_alpha
+
+    def virtual_index(blocked: int) -> int:
+        spin, spatial = divmod(blocked, n_spatial)
+        return spatial - n_occupied[spin] + spin * n_virtual[0]
+
+    first_layer = []
+    for occupied, unoccupied in _uccsd_excitations(n_spatial, (n_alpha, n_beta)):
+        occupied_indices = [occupied_index(index) for index in occupied]
+        virtual_indices = [virtual_index(index) for index in unoccupied]
+        if len(occupied) == 1:
+            first_layer.append(-t1[occupied_indices[0], virtual_indices[0]])
+        else:
+            first_layer.append(t2[tuple(occupied_indices + virtual_indices)])
     seed = np.zeros(n_params)
     take = min(n_params, len(first_layer))
     seed[:take] = first_layer[:take]
@@ -178,39 +175,46 @@ def _unrestricted_uccsd_amplitude_seed(
 
 def _unrestricted_ccsd(h_eff: np.ndarray, g_frag: np.ndarray, spec: FragmentSpec):
     """Unrestricted CCSD on the fragment's reference determinant, or ``None``
-    (with a ``UserWarning``) if it raises; non-convergence only warns."""
-    try:
-        n_orb = spec.n_orbitals
-        occupations = np.zeros((2, n_orb))
-        occupations[0, : spec.n_alpha] = 1.0
-        occupations[1, : spec.n_beta] = 1.0
-        mean_field = _embedded_mean_field(
-            h_eff,
-            g_frag,
-            spec,
-            np.array([np.eye(n_orb), np.eye(n_orb)]),
-            occupations,
-            unrestricted=True,
-        )
+    (with a ``UserWarning``) if PySCF fails; non-convergence only warns."""
+    n_orb = spec.n_orbitals
+    occupations = np.zeros((2, n_orb))
+    occupations[0, : spec.n_alpha] = 1.0
+    occupations[1, : spec.n_beta] = 1.0
+    mean_field = _embedded_mean_field(
+        h_eff,
+        g_frag,
+        spec,
+        np.array([np.eye(n_orb), np.eye(n_orb)]),
+        occupations,
+        unrestricted=True,
+    )
+    return _coupled_cluster(cc.UCCSD, "UCCSD", mean_field, spec, stacklevel=4)
 
-        coupled_cluster = cc.UCCSD(mean_field)
+
+def _coupled_cluster(
+    solver, name: str, mean_field, spec: FragmentSpec, stacklevel: int
+):
+    """``solver`` run on ``mean_field``, or ``None`` (with a ``UserWarning``) if
+    PySCF raises a numerical or runtime error; non-convergence only warns."""
+    try:
+        coupled_cluster = solver(mean_field)
         coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
         coupled_cluster.kernel()
-        if not coupled_cluster.converged:
-            warn(
-                f"UCCSD did not converge for fragment {spec.orbitals}; seeding "
-                "from its amplitudes anyway, as the seed is judged on its energy.",
-                UserWarning,
-                stacklevel=3,
-            )
-    except Exception as exc:
+    except _CC_FAILURES as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
             "Falling back to the optimiser's own initialisation.",
             UserWarning,
-            stacklevel=3,
+            stacklevel=stacklevel,
         )
         return None
+    if not coupled_cluster.converged:
+        warn(
+            f"{name} did not converge for fragment {spec.orbitals}; seeding "
+            "from its amplitudes anyway, as the seed is judged on its energy.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
     return coupled_cluster
 
 
@@ -354,19 +358,13 @@ def _embedded_mean_field(
 ):
     """A pyscf mean field carrying the fragment's integrals and reference.
 
-    ``unrestricted`` selects UHF over RHF. The molecule is a shell whose only
-    real input is the spin; no orbital energies or SCF energy are set, since
-    coupled cluster builds its Fock matrix from ``mo_coeff`` and ``mo_occ``.
+    ``unrestricted`` selects UHF over RHF. No orbital energies or SCF energy are
+    set, since coupled cluster builds its Fock matrix from ``mo_coeff`` and
+    ``mo_occ``.
     """
-
-    n_orb = spec.n_orbitals
-    fake_mol = gto.M(verbose=0)
-    fake_mol.spin = spec.n_alpha - spec.n_beta
-    fake_mol.incore_anyway = True
-
-    mean_field: Any = (scf.UHF if unrestricted else scf.RHF)(fake_mol)
-    mean_field.get_hcore = lambda *args: h_eff
-    mean_field._eri = ao2mo.restore(8, g_frag, n_orb)
+    mean_field = fragment_mean_field(
+        scf.UHF if unrestricted else scf.RHF, h_eff, g_frag, spec
+    )
     mean_field.mo_coeff = mo_coeff
     mean_field.mo_occ = occupations
     return mean_field
@@ -484,33 +482,15 @@ def _ccsd_seed_params(
             return None
         return _unrestricted_uccsd_amplitude_seed(coupled_cluster, spec, n_params)
 
-    try:
-        n_orb = spec.n_orbitals
-        occupations = np.zeros(n_orb)
-        occupations[: spec.n_alpha] = 2.0
-        mean_field = _embedded_mean_field(
-            h_eff, g_frag, spec, np.eye(n_orb), occupations, unrestricted=False
-        )
-
-        coupled_cluster = cc.CCSD(mean_field)
-        coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
-        coupled_cluster.kernel()
-        if not coupled_cluster.converged:
-            warn(
-                f"CCSD did not converge for fragment {spec.orbitals}; seeding "
-                "from its amplitudes anyway, as the seed is judged on its energy.",
-                UserWarning,
-                stacklevel=2,
-            )
-    except Exception as exc:
-        warn(
-            f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimiser's own initialisation.",
-            UserWarning,
-            stacklevel=2,
-        )
+    n_orb = spec.n_orbitals
+    occupations = np.zeros(n_orb)
+    occupations[: spec.n_alpha] = 2.0
+    mean_field = _embedded_mean_field(
+        h_eff, g_frag, spec, np.eye(n_orb), occupations, unrestricted=False
+    )
+    coupled_cluster = _coupled_cluster(cc.CCSD, "CCSD", mean_field, spec, stacklevel=3)
+    if coupled_cluster is None:
         return None
-
     return _uccsd_amplitude_seed(coupled_cluster, spec, n_params)
 
 

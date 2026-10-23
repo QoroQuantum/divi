@@ -543,7 +543,7 @@ def test_transform_integrals_reuses_a_supplied_ao_eri(mocker, h4_chain_mean_fiel
 
     spy = mocker.spy(_integrals_module, "cached_ao_eri")
     reused = transform_integrals(
-        AOIntegrals(mol, ao.eri, ao.h_core), mo_coeff, n_core=1, n_act=2
+        AOIntegrals(mol, ao.eri, ao.h_core, ao.energy_nuc), mo_coeff, n_core=1, n_act=2
     )
 
     spy.assert_not_called()

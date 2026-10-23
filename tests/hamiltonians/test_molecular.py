@@ -104,6 +104,44 @@ def test_molecular_hamiltonian_from_pyscf_runs_unconverged_mean_field(
     assert _ground_energy(spo) == pytest.approx(-1.1372838, abs=1e-5)
 
 
+def test_molecular_hamiltonian_from_pyscf_leaves_the_callers_mean_field_as_given(
+    pyscf_h2, openfermion
+):
+    """A mean field stopped short is converged on a copy, leaving the caller's
+    object, its settings and its orbitals untouched."""
+    scf = pytest.importorskip("pyscf.scf")
+    mean_field = scf.RHF(pyscf_h2)
+    mean_field.verbose = 3
+    mean_field.max_cycle = 1
+    mean_field.run()
+    orbitals = mean_field.mo_coeff.copy()
+
+    spo, _ = molecular_hamiltonian_from_pyscf(mean_field)
+
+    assert _ground_energy(spo) == pytest.approx(-1.1372838, abs=1e-5)
+    assert mean_field.verbose == 3
+    assert not mean_field.converged
+    np.testing.assert_array_equal(mean_field.mo_coeff, orbitals)
+
+
+def test_molecular_hamiltonian_from_pyscf_includes_external_charges(
+    pyscf_h2, openfermion
+):
+    """A QM/MM mean field's point charges reach both the one-body integrals
+    and the nuclear repulsion, so the ground energy is its CASCI one."""
+    scf = pytest.importorskip("pyscf.scf")
+    qmmm = pytest.importorskip("pyscf.qmmm")
+    mcscf = pytest.importorskip("pyscf.mcscf")
+    mean_field = qmmm.mm_charge(scf.RHF(pyscf_h2), [[0.0, 0.0, 3.0]], [0.5])
+    mean_field.run(verbose=0)
+
+    spo, _ = molecular_hamiltonian_from_pyscf(mean_field)
+
+    assert _ground_energy(spo) == pytest.approx(
+        mcscf.CASCI(mean_field, 2, 2).kernel()[0], abs=1e-8
+    )
+
+
 def test_molecular_hamiltonian_from_pyscf_rejects_open_shell():
     gto = pytest.importorskip("pyscf.gto")
 

@@ -32,6 +32,7 @@ from divi.qprog.workflows.lassqd._orbital_solvers import (
 )
 from divi.qprog.workflows.lassqd._sqd import SQDResult, SQDState
 from divi.qprog.workflows.lassqd._state import FragmentSpec
+from divi.qprog.workflows.lassqd._subspace import state_transitions
 from tests._helpers import exact_match
 from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     _ONE_DETERMINANT_WARNING,
@@ -465,7 +466,7 @@ def test_state_averaging_over_half_a_degenerate_pair_warns():
     assert solve.n_iterations == 3
 
 
-def _h2o_state_averaged_solve(symmetry):
+def _h2o_state_averaged_solve(symmetry, report=None):
     """H2O CAS(4,4) averaged over S0 and S1 from its RHF orbitals, whose
     symmetric point is a saddle of the average."""
     mol = h2o_molecule(symmetry=symmetry)
@@ -483,6 +484,7 @@ def _h2o_state_averaged_solve(symmetry):
         1.0,
         gradient_tol=1e-5,
         max_iterations=50,
+        report=report,
     )
     return mol, solve
 
@@ -491,6 +493,17 @@ def test_a_state_averaged_solve_keeps_a_symmetric_molecules_symmetry():
     mol, solve = _h2o_state_averaged_solve(symmetry=True)
 
     assert orbital_irreps(mol, solve.mo_coeff) is not None
+
+
+def test_a_state_averaged_solve_reports_once_per_macro_iteration():
+    lines = []
+
+    _, solve = _h2o_state_averaged_solve(symmetry=True, report=lines.append)
+
+    assert [line.split(",")[0] for line in lines] == [
+        f"State-averaged orbital solve: iteration {number}"
+        for number in range(1, solve.n_iterations + 1)
+    ]
 
 
 def test_a_state_averaged_solve_that_breaks_symmetry_warns():
@@ -654,7 +667,7 @@ def test_a_degenerate_pair_transition_puts_the_lower_label_first(
 def test_natural_transition_orbitals_rebuild_the_transition_density(
     exported_h2o_states,
 ):
-    """``sum_k s_k |particle_k><hole_k|`` over the active orbitals is the
+    """``sum_k s_k |hole_k><particle_k|`` over the active orbitals is the
     transition 1-RDM, and each set of orbitals is orthonormal."""
     ensemble, _ = exported_h2o_states
     transition = ensemble.transition_properties()[((1, 0), (1, 1))]
@@ -665,10 +678,38 @@ def test_natural_transition_orbitals_rebuild_the_transition_density(
     scale = np.sqrt(transition.nto_weights * np.sum(transition.transition_rdm1**2))
 
     np.testing.assert_allclose(
-        particles @ np.diag(scale) @ holes.T, transition.transition_rdm1, atol=1e-10
+        holes @ np.diag(scale) @ particles.T, transition.transition_rdm1, atol=1e-10
     )
     for set_ in (particles, holes):
         np.testing.assert_allclose(set_.T @ set_, np.eye(4), atol=1e-10)
+
+
+def test_the_hole_is_the_orbital_the_electron_leaves():
+    """From both electrons in orbital 0 to the singlet with one in orbital 1,
+    the hole is orbital 0 and the particle orbital 1."""
+    mol = gto.M(atom="H 0 0 0; H 0 0 1.5", basis="sto-3g", verbose=0)
+    orbitals = np.eye(2)
+    strings = ("10", "01")
+
+    def wavefunction(index, amplitudes):
+        return StateWavefunction(
+            state=ElectronicState(1, index, float(index), 0.0),
+            core_orbitals=np.zeros((2, 0)),
+            active_orbitals=orbitals,
+            strings_alpha=strings,
+            strings_beta=strings,
+            amplitudes=np.asarray(amplitudes),
+            rdm1=np.zeros((2, 2)),
+            rdm2=np.zeros((2,) * 4),
+        )
+
+    ground = wavefunction(0, [[1.0, 0.0], [0.0, 0.0]])
+    excited = wavefunction(1, np.array([[0.0, 1.0], [1.0, 0.0]]) / np.sqrt(2))
+
+    (transition,) = state_transitions(mol, [ground, excited])
+
+    np.testing.assert_allclose(abs(transition.hole_orbitals[:, 0]), [1.0, 0.0])
+    np.testing.assert_allclose(abs(transition.particle_orbitals[:, 0]), [0.0, 1.0])
 
 
 def _pyscf_nevpt2(mean_field, mo_coeff, n_active, nelec, vector):

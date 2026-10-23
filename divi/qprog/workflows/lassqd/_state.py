@@ -287,7 +287,7 @@ class StateTransition:
         initial: The lower state.
         final: The higher state.
         transition_rdm1: ``(n_act, n_act)`` spin-traced transition 1-RDM,
-            ``<final| a_p^+ a_q |initial>``, over the same active orbitals as
+            ``<final| a_q^+ a_p |initial>``, over the same active orbitals as
             the states' :class:`StateWavefunction`.
         transition_dipole: Electronic transition dipole, in atomic units. Its
             sign follows the states' arbitrary phases.
