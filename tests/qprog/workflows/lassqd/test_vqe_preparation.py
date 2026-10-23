@@ -88,7 +88,7 @@ def test_fragment_vqe_samples_its_own_problem_in_its_own_basis(
     np.testing.assert_array_equal(program.orbital_rotation, np.eye(2))
 
 
-_FALLBACK = "Falling back to the optimizer's own initialisation."
+_FALLBACK = "Falling back to the optimiser's own initialisation."
 
 
 @pytest.mark.parametrize(
@@ -100,8 +100,8 @@ _FALLBACK = "Falling back to the optimizer's own initialisation."
             1,
             6,
             QCCAnsatz(),
-            "CCSD seeding skipped for fragment (0, 1): no correspondence is defined "
-            f"between CCSD amplitudes and QCCAnsatz's parameters. {_FALLBACK}",
+            "CCSD seeding skipped for fragment (0, 1): no CCSD correspondence is "
+            f"defined for QCCAnsatz. {_FALLBACK}",
             id="qcc",
         ),
     ],
@@ -464,8 +464,7 @@ def test_an_unconverged_seed_calculation_warns_but_still_seeds(
     n_params = type(ansatz).n_params_per_layer(8, n_electrons=4, n_alpha=2, n_beta=2)
     message = (
         f"{solver} did not converge for fragment (0, 1, 2, 3); seeding from its "
-        "amplitudes anyway, since the seed is accepted on the energy it delivers "
-        "rather than on the solver's own criterion."
+        "amplitudes anyway, as the seed is judged on its energy."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
@@ -526,7 +525,7 @@ def _one_pair_coupled_cluster(mocker, double, single=0.0):
 def _trailing_rotation_warning(orbitals):
     """Exact pattern of the warning for an unrealizable trailing rotation."""
     return exact_match(
-        f"CCSD seeding for fragment {orbitals} could not realize the trailing "
+        f"CCSD seeding for fragment {orbitals} could not realise the trailing "
         "rotation; seeding the rest and leaving it at the identity."
     )
 
@@ -746,11 +745,10 @@ def test_seed_averages_an_asymmetric_embedding_and_warns(
     h_alpha, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
     h_beta = h_alpha + np.diag([0.0, 2e-3, 0.0, 0.0])
     message = (
-        "CCSD seeding for fragment (0, 1, 2, 3) averages an embedding potential "
-        "whose spin channels differ by 2.000e-03 Hartree, because seeding takes a "
-        "single one-body matrix. The seed may sit in a different basin than the "
-        "symmetry-broken solution; the Hamiltonian being optimised keeps both "
-        "channels."
+        "CCSD seeding for fragment (0, 1, 2, 3) averages embedding-potential spin "
+        "channels that differ by 2.000e-03 Hartree. The seed may sit in a "
+        "different basin than the symmetry-broken solution; the optimised "
+        "Hamiltonian keeps both channels."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
@@ -777,9 +775,9 @@ def test_a_seed_above_the_reference_is_rejected(
     mocker.patch.object(_vqe_preparation, "_seed_energy_gain", return_value=-2e-3)
     h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
     message = (
-        "CCSD seeding rejected for fragment (0, 1, 2, 3): the seed sits +2.000e-03 "
-        "Hartree relative to the reference determinant, so it carries no "
-        f"correlation energy. {_FALLBACK}"
+        "CCSD seeding rejected for fragment (0, 1, 2, 3): the seed gains "
+        "-2.000e-03 Hartree over the reference determinant, below the 0.0001 "
+        f"required. {_FALLBACK}"
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):

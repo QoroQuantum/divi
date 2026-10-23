@@ -185,9 +185,8 @@ def test_lassqd_rejects_an_unusable_solvent(
         ),
         (
             100.0,
-            "optical_eps=100.0 exceeds the solvent's static eps=78.3553: the fast "
-            "response cannot outweigh the full one. Use the solvent's refractive "
-            "index squared.",
+            "optical_eps=100.0 exceeds the solvent's static eps=78.3553. Use the "
+            "solvent's refractive index squared.",
         ),
     ],
     ids=["bool", "string", "above-static"],

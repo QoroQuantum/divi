@@ -14,6 +14,8 @@ import numpy as np
 from pyscf import ao2mo, mcscf
 from pyscf.scf import hf
 
+from divi.hamiltonians._molecular import without_chkfile
+
 from ._state import FragmentSpec, FragmentState
 
 
@@ -21,11 +23,8 @@ from ._state import FragmentSpec, FragmentState
 class MOIntegrals:
     """One round's active-space integrals.
 
-    Every array is indexed over the active space alone, in the fragment-block
-    order of the ``mo_coeff`` passed to :func:`transform_integrals`. The core
-    and virtual blocks are not stored: the only consumer,
-    :func:`fragment_effective_integrals`, reads neither, and materialising the
-    full register costs ``n_orb ** 4``.
+    Arrays cover the active space alone, in the fragment-block order of the
+    ``mo_coeff`` passed to :func:`transform_integrals`.
 
     Attributes:
         h_eff: ``(n_act, n_act)`` one-electron integrals with the frozen-core
@@ -125,20 +124,15 @@ def fragment_effective_integrals(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build one fragment's effective one- and two-body integrals.
 
-    The frozen core contributes a spin-free mean-field potential
-    (``2 * J_core - K_core``) -- a doubly occupied core carries no spin density
-    -- and every *other* fragment contributes its own mean-field Coulomb and
-    exchange term. Coulomb sees the other fragment's total density; exchange is
-    same-spin, so it contracts that fragment's alpha or beta density and the
-    resulting one-body potential differs between the two spin channels:
+    The frozen core contributes the spin-free potential ``2 J_core - K_core``,
+    and every other fragment its mean-field Coulomb term from its total density
+    and exchange term from its alpha or beta density, so the one-body potential
+    differs between spin channels:
 
     ``h_sigma[p,q] = h[p,q] + 2 J_core - K_core
     + sum_B ( gamma_B[r,s] (pq|rs) - gamma_B^sigma[r,s] (pr|sq) )``
 
-    The two channels coincide only when every other fragment is closed-shell.
-    Spin-averaging them would erase the ``K_alpha - K_beta`` asymmetry that
-    generates inter-fragment magnetic coupling, leaving each fragment's solver
-    blind to the sign of its neighbours' local moments.
+    The channels coincide only when every other fragment is closed-shell.
 
     Args:
         integrals: Active-space integrals for the current round.
@@ -151,8 +145,7 @@ def fragment_effective_integrals(
 
     Raises:
         ValueError: If the fragments cover a different number of orbitals than
-            ``integrals`` spans, meaning the two were built from different
-            fragment specs.
+            ``integrals`` spans.
     """
     blocks = fragment_blocks([fragment.spec for fragment in fragments])
     running = blocks[-1].stop
@@ -167,9 +160,7 @@ def fragment_effective_integrals(
 
     target = blocks[index]
     core_embedded = integrals.h_eff[target, target].copy()
-    # Separate arrays even with one fragment, where the loop below never rebinds
-    # them: two names for one array would make any later in-place edit corrupt
-    # both channels, and only in that configuration.
+    # Separate arrays even with one fragment, so an in-place edit hits one channel.
     h_alpha = core_embedded
     h_beta = core_embedded.copy()
 
@@ -252,10 +243,8 @@ def cached_h_ao(mol) -> np.ndarray:
 def _exact_mean_field(ao: AOIntegrals) -> hf.RHF:
     """An RHF object on ``ao``'s integrals, for PySCF CASCI and CASSCF to
     build their Hamiltonians from, with the non-symmetry-adapted classes,
-    since LASSQD's orbitals break point-group symmetry."""
-    mean_field = hf.RHF(ao.mol)
-    mean_field._chkfile.close()
-    mean_field.chkfile = None
+    since LASSQD's orbitals can break point-group symmetry."""
+    mean_field = without_chkfile(hf.RHF(ao.mol))
     mean_field._eri = ao.eri
     mean_field.get_hcore = lambda mol=None: ao.h_core
     return mean_field
@@ -268,12 +257,8 @@ def _total_energy(
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
 ) -> float:
-    """Compute the total molecular energy for a given set of MO coefficients.
-
-    The four-index MO transform runs in-core from the pre-computed AO
-    integrals rather than calling ``ao2mo.kernel(mol, mo_coeff)`` again on
-    every evaluation, the dominant cost of a gradient-free orbital-rotation
-    optimisation.
+    """Total molecular energy for ``mo_coeff``, transforming in-core from the
+    stored AO integrals.
 
     Args:
         ao: The molecule and its AO integrals.
@@ -298,15 +283,12 @@ def energy_and_generalized_fock(
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
 ) -> tuple[float, np.ndarray]:
-    """Energy and generalized Fock matrix without a full four-index transform.
+    """Energy and generalised Fock matrix without a full four-index transform.
 
-    Equivalent to contracting the dense full-register 1- and 2-particle
-    densities (doubly occupied core, the active RDMs, empty virtuals) against
-    the full MO integrals, but built from the blocks those densities actually
-    reach. The two-particle density vanishes whenever any index is virtual and
-    is diagonal within the core, so the contraction reduces to Coulomb/exchange
-    builds from the core and active densities plus one ``(all|act,act,act)``
-    transform -- ``n_orb * n_act ** 3`` elements rather than ``n_orb ** 4``.
+    Equals contracting the full-register densities (doubly occupied core, the
+    active RDMs, empty virtuals) against the full MO integrals, from Coulomb and
+    exchange builds plus one ``(all|act,act,act)`` transform of ``n_orb * n_act
+    ** 3`` elements.
 
     Args:
         ao: The molecule and its AO integrals.

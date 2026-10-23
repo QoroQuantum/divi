@@ -78,13 +78,13 @@ _CAP_REASON = {
 def _unconverged_warnings(record, solve, reason, gradient_tol):
     """Assert ``record`` holds exactly the non-convergence warning for ``solve``."""
     expected = (
-        "Orbital optimisation ended without converging after "
+        "Orbital optimisation stopped after "
         f"{solve.n_iterations} iterations and {solve.n_evaluations} evaluations "
-        f"({reason}): its orbital-gradient norm {solve.gradient_norm:.2e} "
-        f"exceeds {gradient_tol:.2e}. The returned orbitals are the best seen, so "
-        "the energy is still an upper bound, but this round is not a stationary "
-        "point -- a small round-to-round energy change here means the optimizer "
-        "gave up, not that the macro-cycle converged."
+        f"({reason}) with orbital-gradient norm {solve.gradient_norm:.2e} "
+        f"above {gradient_tol:.2e}. The energy remains an upper bound, but "
+        "this round is not a stationary point, so a small energy change from "
+        "the last round may mean the optimiser stopped rather than that the "
+        "macro-cycle converged."
     )
     assert [str(warning.message) for warning in record] == [expected]
 
@@ -144,7 +144,7 @@ def _round_solve(update):
 def test_the_non_convergence_warning_points_at_the_caller(
     orbital_rotation_case, capped_solve
 ):
-    with pytest.warns(UserWarning, match="ended without converging") as record:
+    with pytest.warns(UserWarning, match="stopped after") as record:
         capped_solve(*orbital_rotation_case, gradient_tol=_GRADIENT_TOL)
 
     assert [warning.filename for warning in record] == [__file__]
@@ -182,7 +182,7 @@ def test_the_second_order_solve_never_ends_above_its_start(orbital_rotation_case
     case = (ao, mo_coeff @ _random_rotation(mo_coeff.shape[1], 0.6, 5), *rest)
     start_energy, _ = _energy_and_gradient_at(case, case[1])
 
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         solve = ciah_orbital_solve(*case, gradient_tol=1e-12, max_iterations=1)
 
     assert solve.energy < start_energy
@@ -223,7 +223,7 @@ def test_a_capped_second_order_solve_builds_no_step_it_discards(
 ):
     hessian_builds = mocker.spy(_orbital_solvers_module._LASOrbitalHessian, "gen_g_hop")
 
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         ciah_orbital_solve(*orbital_rotation_case, gradient_tol=1e-12, max_iterations=1)
 
     assert hessian_builds.call_count == 1
@@ -273,7 +273,7 @@ def test_a_zero_step_restarts_the_second_order_solve(orbital_rotation_case, mock
     step = _gradient_step(orbital_rotation_case, -1e-4)
     steps = _scripted_steps(mocker, [step, np.eye(n_orbitals)], [step])
 
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         solve = ciah_orbital_solve(
             *orbital_rotation_case, gradient_tol=1e-12, max_iterations=2
         )
@@ -293,7 +293,7 @@ def test_an_uphill_second_order_step_hands_over_to_the_descent_solve(
     start = _total_energy(ao, mo_coeff, n_core, rdm1, rdm2)
 
     # The capped budget leaves L-BFGS-B unconverged.
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         solve = capped_ciah_orbital_solve(
             *orbital_rotation_case, gradient_tol=_GRADIENT_TOL
         )
@@ -344,7 +344,7 @@ def test_the_second_order_solve_keeps_the_lower_of_two_unconverged_points(
         ],
     )
 
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         solve = ciah_orbital_solve(
             *orbital_rotation_case, gradient_tol=_GRADIENT_TOL, max_iterations=2
         )
@@ -456,7 +456,7 @@ def test_an_orbital_solve_reports_the_real_energy_with_no_rotation_freedom(
     assert solve.gradient_norm == 0.0
 
 
-@pytest.mark.filterwarnings("ignore:Orbital optimisation ended without converging")
+@pytest.mark.filterwarnings("ignore:Orbital optimisation stopped after")
 @pytest.mark.parametrize(
     "energy_offset, accepted",
     [(1.0, False), (0.0, False), (-1.0, True)],
@@ -656,7 +656,7 @@ def test_optimize_orbitals_spends_one_iteration_budget_across_restarts(
 
     mocker.patch.object(_orbital_solvers_module, "minimize", side_effect=two_iterations)
 
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         solve = optimize_orbitals(
             *orbital_rotation_case, gradient_tol=1e-12, max_iterations=5
         )

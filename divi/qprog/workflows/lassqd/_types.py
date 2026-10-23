@@ -24,5 +24,5 @@ def exact_ints(value: Any) -> Any:
     return int(value) if isinstance(value, np.integer) else value
 
 
-#: Lets fields hold divi objects such as optimizers, checked by ``isinstance``.
+#: Lets fields hold divi objects such as optimisers, checked by ``isinstance``.
 CONFIG = ConfigDict(arbitrary_types_allowed=True)

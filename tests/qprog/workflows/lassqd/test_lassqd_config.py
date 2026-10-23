@@ -82,9 +82,7 @@ def test_fragmentation_config_stores_sequences_as_hashable_tuples(kwargs, normal
         (
             {"n_active_orbitals": 4, "local_spins": [0, 0]},
             "local_spins requires fragment_atoms: coupling-graph fragment order "
-            "depends on max_orbitals_per_fragment, coupling_threshold and the "
-            "localisation RNG, so a positional spin list would not name a stable "
-            "fragment.",
+            "is not stable, so a positional spin list would not name a fragment.",
         ),
         (
             {"n_active_orbitals": 4, "fragment_atoms": [[0], [1]], "local_spins": [2]},
@@ -202,8 +200,7 @@ def test_fragmentation_config_rejects_invalid_settings(kwargs, message):
         ),
         (
             {"max_carryover": 5, "carryover_cutoff": None},
-            "max_carryover caps what carryover retains, so it needs "
-            "carryover_cutoff to be set.",
+            "max_carryover needs carryover_cutoff to be set.",
         ),
         (
             {"max_carryover": 0},
@@ -248,13 +245,11 @@ def test_fragmentation_config_rejects_invalid_settings(kwargs, message):
         ({"extension_cutoff": 1.0}, "extension_cutoff\n  Input should be less than 1"),
         (
             {"carryover_cutoff": None, "carryover_mapping": "argmax"},
-            "carryover_mapping maps the strings carryover retains, so it needs "
-            "carryover_cutoff to be set.",
+            "carryover_mapping needs carryover_cutoff to be set.",
         ),
         (
             {"extension": None, "extension_cutoff": 1e-2},
-            "extension_cutoff picks the strings the extension grows from, so it "
-            "needs extension to be set.",
+            "extension_cutoff needs extension to be set.",
         ),
         (
             {"states": {1: 2}, "symmetrize_spin": False},

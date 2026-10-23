@@ -23,6 +23,9 @@ for _blas_threads_var in (
 ):
     os.environ.setdefault(_blas_threads_var, "1")
 
+# PySCF reads its configuration once, on first import.
+os.environ["PYSCF_CONFIG_FILE"] = str(Path(__file__).with_name("pyscf_conf.py"))
+
 import matplotlib
 import platformdirs
 

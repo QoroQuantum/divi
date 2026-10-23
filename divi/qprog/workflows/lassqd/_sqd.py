@@ -29,10 +29,8 @@ from pyscf.fci import selected_ci
 
 from ._types import exact_ints
 
-#: Determinant rows per pass in :func:`projected_matrices`. The pair arrays it
-#: builds scale with this times the subspace size, so a fixed block keeps peak
-#: memory independent of how large the subspace grows; only the returned
-#: matrices scale with its square.
+#: Determinant rows per pass in :func:`projected_matrices`, bounding the pair
+#: arrays' memory.
 _PAIR_BLOCK_ROWS = 512
 
 #: Determinant-pair terms accumulated per pass in :func:`_spatial_rdms_exact`.
@@ -292,27 +290,15 @@ def projected_matrices(
 ) -> tuple[scipy.sparse.csr_array, scipy.sparse.csr_array]:
     """Project the Hamiltonian and ``S^2`` onto the span of ``dets``.
 
-    Returns what filling every entry with :func:`slater_condon` and
-    :func:`s2_matrix_element` would -- those remain the reference definitions --
-    computed by array operations instead of a double loop. Excitation ranks come
-    from one matrix product, then each rank's elements are gathered in one pass.
-
-    The saving is that Slater-Condon vanishes past a double excitation, and the
-    fraction of pairs that survive falls as the subspace grows.
-
-    ``S^2``'s off-diagonal is non-zero only between determinants related by
-    exchanging spins across two spatial orbitals, where it is +-1 with the sign
-    of the ladder-operator parity.
-
-    Rows are processed in blocks so the pair arrays stay bounded rather than
-    scaling with the square of the subspace, and both matrices are returned
-    sparse, holding only the connected pairs.
+    Gives the entries :func:`slater_condon` and :func:`s2_matrix_element`
+    define, by array operations: excitation ranks from one matrix product, then
+    each rank's elements in one pass. Rows run in blocks to bound memory, and
+    both matrices are sparse, holding only connected pairs.
 
     Args:
         dets: ``(alpha_occ, beta_occ)`` spatial occupations per determinant.
         dets_spin: The same determinants as sorted spin-orbital tuples, all
-            holding the same electron count -- the excitation rank is derived
-            from that assumption.
+            with the same electron count.
         h_spin: One-body integrals over spin-orbitals.
         g_spin: Two-body integrals over spin-orbitals.
         n_orb: Spatial orbitals in the fragment.
@@ -518,20 +504,19 @@ def lowest_roots(
     """Lowest eigenpairs of the spin-penalised projected Hamiltonian.
 
     ``H + lambda * deviation ** 2`` is diagonalised densely below
-    ``_ITERATIVE_SUBSPACE_MIN`` determinants and iteratively above, with the
-    penalty applied as an operator. The iterative lowest root is checked against
-    the smallest diagonal entry, an upper bound on the true one; a root above it,
-    or a solve that does not converge, falls back to the dense form.
+    ``_ITERATIVE_SUBSPACE_MIN`` determinants and iteratively above. The
+    iterative lowest root must not exceed the smallest diagonal entry; a root
+    above it, or a solve that does not converge, falls back to the dense form.
 
     With ``spin`` given, roots whose ``<S^2>`` lies nearer another spin's
-    ``S(S+1)`` are skipped, since a penalty smaller than a gap lets them
-    outrank the target spin's roots. The iterative solve widens until enough
-    remain; when the subspace holds too few, the lowest skipped roots fill in.
+    ``S(S+1)`` are skipped while ``n_roots`` of the target spin remain, and the
+    iterative solve widens until they do. If the subspace holds too few, the
+    lowest skipped roots fill in, off-spin.
 
-    Iterative solves start from a fixed vector, so repeats agree to the last bit.
     The single-root solve is Lanczos from the lowest-diagonal determinant. A
     block solve (LOBPCG from a fixed-seed random block wider than ``n_roots``)
-    reaches degenerate roots and spin sectors that determinant never touches.
+    also reaches degenerate roots and spin sectors that determinant misses.
+    Repeats agree up to floating-point noise from threaded BLAS.
 
     Args:
         h_proj: The projected Hamiltonian.
@@ -791,88 +776,93 @@ class SQDConfig:
         n_batches: Subspaces diagonalised per recovery iteration; the lowest
             energy wins.
         batch_size: Configurations sampled per batch, so the subspace holds up
-            to ``batch_size ** 2`` determinants. The accuracy knob; a
+            to ``batch_size ** 2`` determinants. The main accuracy knob; a
             one-determinant subspace is the mean field.
-        n_recovery_iterations: Configuration-recovery passes per fragment solve.
-            Each pass reweights the next one's sampling from the orbital
-            occupancies the previous pass recovered, so these are
-            self-consistent passes over the sampled distribution, not optimizer
-            steps.
+        n_recovery_iterations: Configuration-recovery passes per fragment solve,
+            each weighting the next pass's sampling by the orbital
+            occupancies the previous one recovered.
         lambda_penalty: Weight of the ``S^2`` spin-contamination penalty added
-            to the projected Hamiltonian before diagonalisation.
+            to the projected Hamiltonian.
         carryover_cutoff: Carryover SQD's retention threshold
             (arXiv:2512.14936), on by default. Each recovery iteration retains
-            the determinants whose coefficient exceeds this fraction of the
-            largest coefficient in the winning batch, and extends later
-            iterations' subspaces with them. The strings retained from a
-            fragment's best result also seed the first recovery iteration of
-            its next macro-cycle, mapped into that round's orbital basis by
-            ``carryover_mapping``. ``None`` reverts to conventional SQD.
-        carryover_mapping: How strings carried between macro-cycles follow the
-            orbitals. ``'assignment'`` (what ``None``, the default, means)
-            pairs old and new orbitals one-to-one by maximum total overlap, so
-            every string keeps its electron count; ``'argmax'`` gives each new
-            orbital the occupation of the old orbital it overlaps most, as the
-            reference implementation does, and drops strings whose electron
-            count that changes. Rejected without ``carryover_cutoff``.
-        max_carryover: Caps the alpha and beta strings carryover retains, *per
-            spin sector*. Carried strings join each batch's own sampled halves
-            rather than replacing them, so a cap of ``k`` bounds a batch's
-            subspace at ``(k + batch_size) ** 2`` determinants. ``None`` leaves
-            it uncapped, and since the cutoff is relative it prunes little: the
-            retained set then grows every recovery iteration and the subspace
-            with it, quadratically. ``max_dim`` bounds the sector outright rather
-            than only the carried part.
+            the strings of determinants whose coefficient exceeds this fraction
+            of the largest in the winning batch and adds them to later
+            iterations' subspaces. A fragment's best retained strings also seed
+            its next macro-cycle's first recovery iteration, mapped into that
+            round's orbitals by ``carryover_mapping``. ``None`` reverts to
+            conventional SQD.
+        carryover_mapping: How carried strings follow the orbitals between
+            macro-cycles. ``'assignment'`` (``None`` means this) pairs old and
+            new orbitals one-to-one by maximum total overlap, so every string
+            keeps its electron count; ``'argmax'`` gives each new orbital the
+            occupation of the old orbital it overlaps most and drops strings
+            whose electron count changes.
+        max_carryover: Caps the strings carryover retains per spin sector.
+            Carried strings join each batch's sampled halves, so a cap of ``k``
+            bounds a batch's subspace at ``(k + batch_size) ** 2`` determinants.
+            ``None`` is uncapped; the cutoff is relative and can prune little,
+            so the retained set and the subspace can grow quadratically each
+            recovery iteration. ``max_dim`` bounds the sector outright.
         max_dim: Caps each spin sector, as one integer or an ``(alpha, beta)``
             pair (any two-item sequence, stored as a tuple), so the subspace
-            never exceeds their product. When it binds,
-            strings are kept in priority order: reference, then carried, then
-            sampled by descending sample count.
+            never exceeds their product. When it binds, strings are kept in the
+            order reference, carried, then sampled by descending sample count.
         include_reference: Keep the aufbau reference determinant in every batch,
             bounding the fragment's energy by its reference.
-        symmetrize_spin: Pool the alpha and beta halves together for a
-            spin-exchange invariant subspace. Inactive unless
-            ``n_alpha == n_beta``. ``None`` (the default) turns it on exactly
-            when ``states`` is set, which ``False`` cannot be combined with.
+        symmetrize_spin: Pool the alpha and beta halves for a spin-exchange
+            invariant subspace. Inactive unless ``n_alpha == n_beta``. ``None``
+            (the default) turns it on exactly when ``states`` is set, which
+            ``False`` cannot be combined with.
         recovery_energy_tol: Ends a fragment's recovery once the winning energy
-            moves less than this between iterations and the occupancies have also
-            settled. ``0.0`` (the default) spends every iteration, since a
-            settled iteration does not mean carryover had nothing left to add.
-            Not ``LASSQD``'s ``energy_tol``, which ends the macro-cycle.
+            moves less than this between iterations and the occupancies have
+            also settled. ``0.0`` (the default) spends every iteration. Not
+            ``LASSQD``'s ``energy_tol``, which ends the macro-cycle.
         recovery_occupancies_tol: The occupancy half of that test, on the largest
             change in any orbital's average occupancy.
         states: Eigenstates to solve for, as a mapping from spin multiplicity
             ``2S + 1`` to a number of roots: ``{1: 2, 3: 1}`` asks for the two
-            lowest singlets and the lowest triplet. All come from one subspace.
+            lowest singlets and the lowest triplet, all from one subspace.
             ``None`` (the default) solves for the lowest state of the
-            fragment's own ``Sz``. Each multiplicity is targeted by the
-            ``lambda_penalty`` term, and roots whose ``<S^2>`` is nearer
-            another spin are skipped. A sampled subspace may hold no pure state
-            of a spin; its nearest roots are then reported, off-spin.
+            fragment's own ``Sz``. The ``lambda_penalty`` term targets each
+            multiplicity. A root whose ``<S^2>`` is nearer another spin is
+            skipped while enough roots of the target spin remain; if the
+            subspace holds too few, the lowest skipped roots fill in, off-spin.
+            Re-solves at the final orbitals and the state interaction drop such
+            roots instead, so they can return fewer states than requested.
         extension: Ext-SQD (arXiv:2411.00468). Recovery then solves for the
             lowest state only; its winning subspace gains every string its
-            significant strings reach by moving one electron (``'singles'``)
-            or one or two (``'doubles'``), per spin sector, and is diagonalised
-            for ``states``. Recovers determinants the circuit under-samples,
-            which leave even ground-state energies mHa high without it.
-            ``'auto'`` (the default) means ``'singles'``, and an extension on
-            a fragment above 16384 determinants needs ``max_dim``, since it can
-            grow to the whole space. ``None`` gives plain SQD.
+            significant strings reach by moving one electron (``'singles'``) or
+            one or two (``'doubles'``), per spin sector, and is diagonalised for
+            ``states``. Without it, determinants the circuit under-samples can
+            leave even ground-state energies noticeably high. ``'auto'`` (the
+            default) means ``'singles'``; on a fragment above 16384
+            determinants an extension needs ``max_dim``, since it can grow to
+            the whole space. ``None`` gives plain SQD.
         extension_cutoff: A string is significant when some determinant
             containing it has ``abs(coefficient)`` above this fraction of the
             largest, in any requested state. ``None`` (the default) means
-            ``1e-3``. Rejected with ``extension=None``.
+            ``1e-3``.
+        fragment_roots: With ``states`` over two fragments, how many of each
+            fragment's lowest spin multiplets, per electron count, the state
+            interaction mixes, each with all its spin projections. ``None``
+            (the default) takes every multiplet the fragment's subspace holds,
+            fewer if the products would exceed a few thousand. Leaving any out
+            can raise the states, the lowest included, and warns.
+        fragment_hops: With ``states`` over two fragments, how many electrons
+            may move between them: ``1`` (the default) or ``2``, which adds
+            the doubly charge-transferred products close contact can need.
+            One hop warns when the lowest state has noticeable
+            charge-transfer weight.
 
     Raises:
         ValueError: If a field has the wrong type or is out of range: a count
             below 1, a negative or non-finite tolerance or penalty, a cutoff
             outside ``(0, 1)``, an unknown ``carryover_mapping`` or
-            ``extension``, or a ``max_dim`` that is neither one positive integer
-            nor a pair of them. Also if ``carryover_mapping`` or
-            ``max_carryover`` is given without a cutoff; if
-            ``extension_cutoff`` is given with ``extension=None``; if
-            ``symmetrize_spin`` is ``False`` with ``states`` set; or if
-            ``states`` is empty.
+            ``extension``, or a ``max_dim`` that is not one positive integer or
+            a pair of them. Also if ``carryover_mapping`` or ``max_carryover``
+            is set without ``carryover_cutoff``; ``extension_cutoff`` with
+            ``extension=None``; ``symmetrize_spin=False`` with ``states`` set;
+            or an empty ``states``.
     """
 
     n_batches: int = Field(default=15, ge=1)
@@ -894,6 +884,8 @@ class SQDConfig:
     extension_cutoff: float | None = Field(
         default=None, gt=0, lt=1, allow_inf_nan=False
     )
+    fragment_roots: int | None = Field(default=None, ge=1)
+    fragment_hops: int = Field(default=1, ge=1, le=2)
 
     _exact_ints = field_validator(
         "n_batches",
@@ -902,6 +894,8 @@ class SQDConfig:
         "max_carryover",
         "max_dim",
         "states",
+        "fragment_roots",
+        "fragment_hops",
         mode="before",
     )(exact_ints)
 
@@ -909,20 +903,11 @@ class SQDConfig:
         if any(dim is not None and dim < 1 for dim in self.resolved_max_dim):
             raise ValueError(f"max_dim must be at least 1; got {self.max_dim}.")
         if self.carryover_mapping is not None and self.carryover_cutoff is None:
-            raise ValueError(
-                "carryover_mapping maps the strings carryover retains, so it "
-                "needs carryover_cutoff to be set."
-            )
+            raise ValueError("carryover_mapping needs carryover_cutoff to be set.")
         if self.max_carryover is not None and self.carryover_cutoff is None:
-            raise ValueError(
-                "max_carryover caps what carryover retains, so it needs "
-                "carryover_cutoff to be set."
-            )
+            raise ValueError("max_carryover needs carryover_cutoff to be set.")
         if self.extension_cutoff is not None and self.extension is None:
-            raise ValueError(
-                "extension_cutoff picks the strings the extension grows from, "
-                "so it needs extension to be set."
-            )
+            raise ValueError("extension_cutoff needs extension to be set.")
         if self.states is None:
             return
         if self.symmetrize_spin is False:
@@ -1004,8 +989,7 @@ def validate_sqd_for_fragment(
             f"{_DENSE_MAX_DIM} the solver handles unbounded. Set "
             f"SQDConfig.max_dim to cap each spin sector (max_dim="
             f"{isqrt(_DENSE_MAX_DIM)} keeps it within {_DENSE_MAX_DIM}), "
-            "or extension=None for plain SQD, which misses the determinants "
-            "the circuit under-samples."
+            "or extension=None for plain SQD."
         )
     if config.states is not None:
         _validate_states(config.states, n_orb, n_alpha, n_beta, config.lambda_penalty)
@@ -1055,8 +1039,7 @@ def _validate_states(
     if lambda_penalty == 0 and dict(states) != default_states(n_alpha, n_beta):
         raise ValueError(
             "SQDConfig.states asks for more than the lowest state, which needs "
-            "lambda_penalty > 0: the S^2 penalty is what targets each "
-            "multiplicity."
+            "lambda_penalty > 0 to target each multiplicity."
         )
 
 
@@ -1069,11 +1052,7 @@ def carryover_weights(
     """Weigh the alpha and beta strings worth carrying to the next iteration.
 
     A string is eligible when some determinant containing it clears the cutoff;
-    eligible strings are ranked by their marginal weight over the whole subspace.
-
-    The threshold is relative to the largest coefficient because the eigenvector
-    is normalised: its typical component falls as ``1 / sqrt(m)``, so a fixed
-    threshold would prune almost nothing at large subspace sizes.
+    eligible strings are ranked by their marginal weight over the subspace.
 
     Args:
         strings_alpha: Alpha sector strings indexing ``amplitudes``' rows.
@@ -1122,13 +1101,11 @@ def map_carried_strings(
     """Carry occupation strings into a new orbital basis, order kept, duplicates
     dropped.
 
-    A determinant in one basis is a superposition in another, so this keeps the
-    nearest determinant: each new orbital takes the occupation of one old
-    orbital. ``'assignment'`` pairs old and new orbitals one-to-one by maximum
-    total ``|overlap|``, so every string keeps its electron count.
-    ``'argmax'`` gives each new orbital the old orbital it overlaps most, as
-    the reference implementation does; two new orbitals can then share an old
-    one and change a string's electron count, and the solver drops such strings.
+    Each new orbital takes the occupation of one old orbital. ``'assignment'``
+    pairs them one-to-one by maximum total ``|overlap|``, keeping every string's
+    electron count. ``'argmax'`` takes the old orbital each new one overlaps
+    most; two new orbitals can share one, changing a string's electron count,
+    and the solver drops such strings.
 
     Args:
         strings: Occupation strings in the old basis, character ``p`` for
@@ -1323,12 +1300,9 @@ class SQDResult:
 class SQDSolver:
     """Self-consistent configuration recovery over sampled determinants.
 
-    Implements arXiv:2405.05068. ``occupancy`` holds the running per-spin
-    orbital occupancy estimate consumed by the self-consistent recovery step;
-    it is refreshed at the end of every iteration from that iteration's batch
-    results.
-
-    Its settings come from an :class:`SQDConfig`, which validates them.
+    Implements arXiv:2405.05068. ``occupancy`` is the running per-spin orbital
+    occupancy the recovery step uses, refreshed after every iteration from that
+    iteration's batches. Settings come from an :class:`SQDConfig`.
     """
 
     def __init__(
@@ -1425,9 +1399,8 @@ class SQDSolver:
 
         winners: list[SQDResult] = []
 
-        # Re-read each iteration, not accumulated: weights from differently
-        # normalised eigenvectors are not comparable, and a carried string is
-        # present in the current subspace anyway.
+        # Replaced each iteration, not accumulated: carried strings are already
+        # in the winning subspace.
         carried_alpha, carried_beta = carried
 
         previous_objective: float | None = None
@@ -1463,8 +1436,8 @@ class SQDSolver:
             carried_alpha, carried_beta = self.carried_strings(winner)
 
         best = min(winners, key=lambda result: result.objective)
-        # Carried from before the extension, which would otherwise seed every
-        # batch of the next solve with the whole extended subspace.
+        # Carried from before the extension, which would seed every batch with
+        # the whole extended subspace.
         extended = (
             best
             if self.extension is None
@@ -1479,15 +1452,12 @@ class SQDSolver:
         g_spin: np.ndarray,
         constant: float,
     ) -> SQDResult:
-        """Ext-SQD (arXiv:2411.00468): enlarge ``result``'s subspace with the
-        strings its significant strings reach by moving electrons, and
-        diagonalise once more.
+        """Ext-SQD (arXiv:2411.00468): add the strings ``result``'s significant
+        strings reach by moving electrons, and diagonalise once more.
 
-        ``result``'s own strings stay in, so the subspace only grows. Strings are
-        kept in priority order -- reference, significant by weight, the rest of
-        ``result``'s, then hops from the heaviest parents first -- so
-        ``max_dim`` stays a hard cap; :func:`validate_sqd_for_fragment` has
-        already required it wherever the full space is too large to grow into.
+        Strings are kept in the order reference, significant by weight, the rest
+        of ``result``'s, then hops from the heaviest parents, so ``max_dim`` is
+        a hard cap.
         """
         rank = 1 if self.extension == "singles" else 2
         alpha_weights, beta_weights = carryover_weights(
@@ -1555,15 +1525,13 @@ class SQDSolver:
         """The distribution this iteration samples its batches from.
 
         Iteration zero, and every iteration when ``recovery`` is off, postselects
-        on particle number. Otherwise each bitstring is bit-flip corrected and its
-        probability added to whatever the correction produced, so several samples
-        collapsing onto one determinant leave it correspondingly heavier.
+        on particle number. Otherwise each bitstring is bit-flip corrected and
+        its probability added to the corrected bitstring's.
 
         Raises:
             ValueError: If no sampled bitstring survives postselection.
         """
-        # Sorted, not insertion-ordered: a dict built in a different order would
-        # otherwise draw a different subspace from the same seed.
+        # Sorted so the same seed draws the same subspace.
         ordered = sorted(probs)
         weights: dict[str, float]
         if iteration == 0 or not self.recovery:
@@ -1588,8 +1556,8 @@ class SQDSolver:
 
         if not weights:
             raise ValueError(
-                "No valid configurations found matching particle symmetry! "
-                "Increase the backend shot count or n_recovery_iterations."
+                "No sampled bitstring matches the particle symmetry. Increase the "
+                "backend shot count or n_recovery_iterations."
             )
 
         total = sum(weights.values())
@@ -1687,11 +1655,10 @@ class SQDSolver:
         states: Mapping[int, int] | None = None,
     ) -> tuple[SQDResult, np.ndarray]:
         """Diagonalise one subspace for ``states`` (default: the requested
-        ones), returning its result and occupancy.
+        ones), returning its result and the occupancy averaged over the states.
 
-        Each multiplicity is a separate solve of the same projected Hamiltonian,
-        penalised toward its own ``S(S+1)``. The occupancy is averaged over the
-        states.
+        Each multiplicity is a separate solve, penalised toward its own
+        ``S(S+1)``.
         """
         states = self.states if states is None else states
         block = states != default_states(self.n_alpha, self.n_beta)
@@ -1706,7 +1673,7 @@ class SQDSolver:
         identity = scipy.sparse.eye_array(len(dets), format="csr")
         solved = []
         for multiplicity, n_roots in states.items():
-            # A subspace too small for every root reports those it holds.
+            # A subspace too small for every root reports the roots it holds.
             n_roots = min(n_roots, len(strings_alpha) * len(strings_beta))
             deviation = s2_proj - spin_square_of(multiplicity) * identity
             values, vectors = lowest_roots(
@@ -1809,12 +1776,10 @@ def _spatial_rdms_exact(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Reconstruct both RDMs from the second-quantised definitions directly.
 
-    Only determinant pairs within a double excitation of each other are
-    visited, located by one occupation product per block of rows, and every
-    ``a+_p a+_r a_s a_q`` term connecting them is accumulated straight into
-    the spatial blocks. Memory therefore scales with ``n_orb ** 4`` rather
-    than the spin-orbital ``(2 n_orb) ** 4``. Still far slower than
-    :func:`compute_spatial_rdms`'s usual path.
+    Visits only determinant pairs within a double excitation and accumulates
+    every ``a+_p a+_r a_s a_q`` term into the spatial blocks, so memory scales
+    with ``n_orb ** 4``. Far slower than :func:`compute_spatial_rdms`'s usual
+    path.
     """
     alpha_bits = _bit_matrix(strings_alpha, n_orb)
     beta_bits = _bit_matrix(strings_beta, n_orb)

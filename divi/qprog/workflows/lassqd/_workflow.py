@@ -20,7 +20,11 @@ from pyscf import scf
 from pyscf.solvent import ddcosmo, pcm
 
 from divi.backends import CircuitRunner
-from divi.hamiltonians._molecular import is_pyscf_input, split_pyscf_input
+from divi.hamiltonians._molecular import (
+    is_pyscf_input,
+    split_pyscf_input,
+    without_chkfile,
+)
 from divi.qprog.ensemble import (
     ProgramEnsemble,
     ReportingLevel,
@@ -57,12 +61,14 @@ from ._integrals import (
     fragment_effective_integrals,
     transform_integrals,
 )
+from ._lassi import lassi_states
 from ._orbital_solvers import escape_orbital_saddle, orbital_irreps
 from ._preparation import rotate_rdms_to_fragment_basis
 from ._solvent import _SolventField
 from ._sqd import (
     SQDConfig,
     SQDSolver,
+    _validate_states,
     compute_spatial_rdms,
     map_carried_strings,
     probs_to_sqd_bitstrings,
@@ -159,34 +165,31 @@ def _diagonal_rdm_guess(
 class LASSQD(ProgramEnsemble):
     """Localised active-space sample-based quantum diagonalisation.
 
-    Partitions a molecule's active space into fragments, prepares one circuit
-    per fragment, and recovers each fragment state via sample-based quantum
-    diagonalisation. Fragment preparation is chosen by ``preparation``:
+    Partitions a molecule's active space into fragments, prepares and samples
+    one circuit per fragment, and recovers each fragment state with SQD.
+    ``preparation`` chooses how fragments are prepared:
     :class:`~divi.qprog.workflows.lassqd.CCSDPreparation` (the default) samples a
-    one-repetition LUCJ operator seeded from CCSD, whose classical cost is the
-    fragment's CCSD, so it never builds the fragment statevector;
-    :class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` first optimises it
-    with ffsim's exact linear method; :class:`~divi.qprog.workflows.lassqd.VQEPreparation`
-    optimises an ansatz against backend-estimated energies.
+    one-repetition LUCJ operator seeded from CCSD and never builds the fragment
+    statevector;
+    :class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` first optimises
+    it with ffsim's exact linear method;
+    :class:`~divi.qprog.workflows.lassqd.VQEPreparation` optimises an ansatz
+    against backend-estimated energies.
 
-    :attr:`energy` is a variational upper bound -- the assembled RDM is that of
-    a product of fragment states, so the energy is a genuine expectation value
-    (in gas phase; a ``solvent`` adds a solvation energy that is no bound).
-    Fragmenting nonetheless costs accuracy, and the cost grows with how
-    strongly the fragments interact; see
-    :ref:`lassqd-accuracy-characteristics` in the LASSQD guide.
+    Fragmenting costs accuracy; see :ref:`lassqd-accuracy-characteristics` in
+    the LASSQD guide, which also covers when :attr:`energy` is an upper bound.
 
     Args:
-        problem: An :class:`~divi.qprog.problems.MolecularProblem`
-            built by :meth:`~divi.qprog.problems.MolecularProblem.\
-from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
-            a non-zero ``spin``, is run on it lazily, in :meth:`initial_state`)
-            or a restricted (RHF, ROHF) mean-field object — not from a
-            PennyLane ``qchem.Molecule`` or from bare integrals, since the
-            orbital optimisation needs the atomic-orbital basis. An open-shell
-            molecule keeps a closed-shell core: its singly occupied orbitals
-            must all be active. A restricted DFT object supplies starting
-            orbitals only; its functional enters no energy.
+        problem: A :class:`~divi.qprog.problems.MolecularProblem` built by
+            :meth:`~divi.qprog.problems.MolecularProblem.\
+from_molecule` from a PySCF ``gto.Mole`` (RHF, or ROHF for a non-zero ``spin``,
+            runs on it in :meth:`initial_state`) or a restricted (RHF, ROHF)
+            mean-field object. PennyLane ``qchem.Molecule`` and bare integrals
+            are rejected, as the orbital optimisation needs the atomic-orbital
+            basis. An open-shell molecule keeps a closed-shell core, so its
+            singly occupied orbitals must all be active. A restricted DFT
+            object supplies starting orbitals only; its functional enters no
+            energy.
         fragmentation: Which orbitals are active and how they split into
             fragments, as a
             :class:`~divi.qprog.workflows.lassqd.FragmentationConfig`.
@@ -195,56 +198,50 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             ``SQDConfig()``.
         preparation: Fragment-circuit preparation strategy.
         orbital_update: How each macro-cycle updates the orbitals.
-        energy_tol: Macro-cycle stops once consecutive rounds' total energies
-            differ by less than this (Hartree) and the round's orbital solve
-            converged, meaning its orbital-gradient L2 norm is at most
-            ``sqrt(energy_tol)``. The gradient is ``2 (F_pq - F_qp)`` over the
-            generalised Fock matrix, twice PySCF CASSCF's, so this is twice
-            as tight as CASSCF's ``sqrt``-of-energy-tolerance rule.
+        energy_tol: The macro-cycle stops once consecutive rounds' total
+            energies differ by less than this (Hartree) and the round's orbital
+            solve converged, meaning its orbital-gradient L2 norm is at most
+            ``sqrt(energy_tol)``.
         seed: Seed for fragmentation, localisation, and SQD subsampling.
-        solvent: A PySCF continuum solvent model built on the molecule —
-            ``pyscf.solvent.ddCOSMO(mol)``, ``ddPCM``, ``PCM`` or ``SMD`` —
-            with its ``eps`` set, or for SMD its ``solvent``; ``None`` (the
-            default) runs in gas phase. LASSQD works on a copy. Each round adds
-            the reaction field of the lowest requested state's density from the
-            round before, so the macro-cycle converges it self-consistently,
-            and every energy includes the solvation energy. Excited states sit
-            in that equilibrium field; :meth:`nonequilibrium_corrections` adds
-            the fast response to each.
-        **kwargs: ``backend`` (required), ``sampling_backend``, and
-            ``reporting_level`` are consumed here; ``sampling_backend`` runs
-            each fragment's final sample. Other keywords are
-            forwarded to each fragment program. ``precision``,
+        solvent: A PySCF ``ddCOSMO``, ``ddPCM``, ``PCM`` or ``SMD`` model
+            built on the molecule with ``eps`` (for SMD, ``solvent``) set;
+            ``None`` runs in gas phase. LASSQD works on a copy. See the
+            Solvent section of the LASSQD guide.
+        **kwargs: ``backend`` (required), ``sampling_backend`` (runs each
+            fragment's final sample) and ``reporting_level`` are consumed here.
+            Other keywords go to each fragment program. ``precision``,
             ``qem_protocol`` and ``suppress_performance_warnings`` work with
             any preparation; VQE options such as ``n_layers``,
             ``ansatz_kwargs``, ``grouping_strategy`` and ``early_stopping``
             require :class:`~divi.qprog.workflows.lassqd.VQEPreparation`.
 
     Raises:
-        ValueError: If ``fragmentation``'s ``active_orbitals`` has out-of-range
-            indices; if its ``n_active_orbitals`` or ``active_orbitals``
-            selects no occupied or no virtual orbital of this molecule; if its
+        ValueError: If the fragmentation cannot be carried by this molecule:
+            ``active_orbitals`` has out-of-range indices; ``n_active_orbitals``
+            or ``active_orbitals`` selects no occupied or no virtual orbital;
             ``fragment_atoms`` names an out-of-range atom or shares one between
-            fragments; if ``energy_tol`` is not positive and finite; or if any fragment leaves no
-            excitation available, fragments overlap, a singly occupied orbital
-            is left out, or the fragments do not sum to the molecule's ``Sz``;
-            if the molecule's ``spin`` is negative; if ``local_spins`` does
-            not sum to ``spin``; if ``sqd.states`` is set with more than one
-            fragment or asks for a state the fragment cannot hold; or if
-            ``sqd.extension`` could outgrow the solver with ``max_dim`` unset;
-            or if ``solvent`` was built on a different molecule or its
-            dielectric constant is not a finite number of at least 1.
-            The configuration objects validate their own fields on
-            construction.
-        TypeError: If ``solvent`` is not a PySCF ddCOSMO, ddPCM, PCM or SMD
-            model, if
-            ``backend`` is missing or not a
-            :class:`~divi.backends.CircuitRunner`, if ``sampling_backend`` is
-            neither one nor ``None``, if ``problem`` was not built
-            from a PySCF ``Mole`` or mean-field, if ``preparation`` or
-            ``orbital_update`` is not one of its strategies, or if a preparation other than
-            :class:`~divi.qprog.workflows.lassqd.VQEPreparation` receives a keyword
-            its fragment programs do not take.
+            fragments; a fragment leaves no excitation available; fragments
+            overlap; a singly occupied orbital is left out; the fragments do
+            not sum to the molecule's ``Sz``; or ``local_spins`` does not sum
+            to ``spin``. Also if the sqd settings cannot be carried:
+            ``sqd.states`` is set with more than two fragments, with two
+            fragments and ``StateAveragedOrbitalUpdate``, or asks for a state
+            the active space cannot hold; ``sqd.fragment_roots`` or
+            ``sqd.fragment_hops`` is set without states across two fragments;
+            or ``sqd.extension`` could outgrow the solver with ``max_dim``
+            unset. Also if the molecule's ``spin`` is negative, if
+            ``energy_tol`` is not positive and finite, or if ``solvent`` was
+            built on a different molecule or its dielectric constant is not a
+            finite number of at least 1. The configuration objects validate
+            their own fields on construction.
+        TypeError: If ``backend`` is missing or not a
+            :class:`~divi.backends.CircuitRunner`; ``sampling_backend`` is
+            neither one nor ``None``; ``problem`` was not built from a PySCF
+            ``Mole`` or mean-field; ``preparation`` or ``orbital_update`` is
+            not one of its strategies; ``solvent`` is not a PySCF ddCOSMO,
+            ddPCM, PCM or SMD model; or a preparation other than
+            :class:`~divi.qprog.workflows.lassqd.VQEPreparation` receives a
+            keyword its fragment programs do not take.
         ImportError: If the ``chem`` extra is not installed.
     """
 
@@ -324,9 +321,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         if self._mol.spin < 0:
             raise ValueError(
                 f"LASSQD needs a non-negative spin; got spin={self._mol.spin}. "
-                f"Build the molecule with spin={-self._mol.spin}: the energies do "
-                "not depend on the sign of Sz, and PySCF's ROHF does not converge "
-                "with more beta than alpha electrons."
+                f"Build the molecule with spin={-self._mol.spin}; the energies "
+                "do not depend on the sign of Sz."
             )
         # ROHF ordering: the spin highest occupied orbitals are singly occupied.
         self._spin = int(self._mol.spin)
@@ -338,15 +334,13 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         ):
             warn(
                 "The mean-field object passed in did not converge, so the "
-                "orbitals the macro-cycle starts from are not its stationary "
-                "point. Converge it first unless those orbitals are intended.",
+                "starting orbitals are not its stationary point. Converge it "
+                "first unless those orbitals are intended.",
                 UserWarning,
                 stacklevel=2,
             )
 
-        # Validate the caller's orbital choices against this molecule here
-        # rather than in ``initial_state``, so an out-of-range index fails at
-        # construction.
+        # Validated here so an out-of-range index fails at construction.
         n_orbitals_total = self._register_size()
         n_occupied, spin = self._n_occupied, self._spin
         if fragmentation.active_spaces is not None:
@@ -398,6 +392,16 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
                 )
             orbital_update._weights_for(self._sqd.states)
         self._orbital_update = orbital_update
+        self._round_reports: list[LASSQDRoundReport] = []
+        self._warned: set[Hashable] = set()
+        self._excited = _ExcitedStates(
+            self._mol,
+            self._sqd,
+            self._spin,
+            self._ao_integrals,
+            self._warn_once,
+            lambda: bool(self._round_reports),
+        )
         if fragmentation.active_spaces is not None:
             self._check_fragments(fragmentation.active_spaces)
         self._preparation = preparation
@@ -409,56 +413,70 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         self._state: LASSQDState | None = None
         self._solvers: dict[int, SQDSolver] = {}
         self._energy_history: list[float] = []
-        self._round_reports: list[LASSQDRoundReport] = []
-        self._warned: set[Hashable] = set()
-        self._excited = _ExcitedStates(
-            self._mol,
-            self._sqd,
-            self._spin,
-            self._ao_integrals,
-            self._warn_once,
-            lambda: bool(self._round_reports),
-        )
 
     def _check_fragments(self, specs: Sequence[FragmentSpec]) -> None:
-        """Reject ``SQDConfig`` settings the fragments cannot carry, and warn
-        when excited states get orbitals optimised for the lowest state only.
+        """Reject ``SQDConfig`` settings the fragments cannot carry.
 
         Warns:
             UserWarning: If more than one state is requested with
                 :class:`SecondOrderOrbitalUpdate` or :class:`LBFGSOrbitalUpdate`.
         """
+        states = self._sqd.states
+        self._excited.across_fragments = states is not None and len(specs) == 2
+        if not self._excited.across_fragments and (
+            self._sqd.fragment_roots is not None or self._sqd.fragment_hops != 1
+        ):
+            raise ValueError(
+                "SQDConfig.fragment_roots and fragment_hops shape states across "
+                f"two fragments; this run has {len(specs)} fragment(s) and "
+                f"{'no ' if states is None else ''}SQDConfig.states."
+            )
         for spec in specs:
             validate_sqd_for_fragment(
-                self._sqd, spec.n_orbitals, spec.n_alpha, spec.n_beta
+                self._fragment_sqd(), spec.n_orbitals, spec.n_alpha, spec.n_beta
             )
-        states = self._sqd.states
         if states is None:
             return
-        if len(specs) != 1:
+        if len(specs) > 2:
             raise ValueError(
-                f"SQDConfig.states needs a single fragment; got {len(specs)}. A "
-                "product of fragment states cannot represent an excitation "
-                "spread over several fragments. Put the whole active space in "
-                "one FragmentSpec."
+                f"SQDConfig.states takes one or two fragments; got {len(specs)}. "
+                "Put the active space in one FragmentSpec, or split it in two."
+            )
+        if self._excited.across_fragments:
+            if self._orbital_update._relaxes is _OrbitalTarget.AVERAGE:
+                raise ValueError(
+                    "StateAveragedOrbitalUpdate averages over one fragment's "
+                    "states; states across two fragments use the lowest-state "
+                    "orbitals. Use SecondOrderOrbitalUpdate, LBFGSOrbitalUpdate "
+                    "or FixedOrbitals."
+                )
+            _validate_states(
+                states,
+                sum(spec.n_orbitals for spec in specs),
+                sum(spec.n_alpha for spec in specs),
+                sum(spec.n_beta for spec in specs),
+                self._sqd.lambda_penalty,
             )
         if (
             sum(states.values()) > 1
             and self._orbital_update._relaxes is _OrbitalTarget.LOWEST_STATE
         ):
+            remedy = (
+                "Use FixedOrbitals"
+                if self._excited.across_fragments
+                else "Use StateAveragedOrbitalUpdate, or FixedOrbitals"
+            )
             warn(
                 f"{type(self._orbital_update).__name__} optimises the orbitals "
                 "for the lowest state only, so the others miss their orbital "
-                "relaxation and gaps to them come out too large. Use "
-                "StateAveragedOrbitalUpdate, or FixedOrbitals to compare with "
-                "CASCI on the same orbitals.",
+                f"relaxation and gaps to them tend to come out too large. {remedy} "
+                "to compare with CASCI on the same orbitals.",
                 UserWarning,
                 stacklevel=_outside_divi_stacklevel(),
             )
 
     def _register_size(self) -> int:
-        """Molecular-orbital count: the supplied mean field's, which drops
-        linearly dependent basis functions, else the basis size."""
+        """Molecular-orbital count: the mean field's if supplied, else the basis size."""
         mean_field = self._mean_field
         if mean_field is not None and mean_field.mo_coeff is not None:
             return np.asarray(mean_field.mo_coeff).shape[1]
@@ -482,30 +500,28 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
     def initial_state(self) -> LASSQDState:
         """Resolve fragments and build the initial workflow state.
 
-        Runs RHF on the molecule if no mean-field has run yet, resolves the
-        fragments (validating explicit ``active_spaces``, or fragmenting
-        automatically), rotates the orbitals by a small seeded amount unless
-        the orbital update keeps them fixed (symmetric orbitals would otherwise
-        hold the macro-cycle at a saddle point), permutes the MO register into
-        ``[core | fragments | virtual]`` order, and seeds each fragment with
-        its reference determinant's RDMs.
+        Runs RHF (ROHF for an open-shell molecule) if no mean field has run,
+        resolves the fragments (validating explicit ``active_spaces``, or
+        fragmenting automatically), rotates the orbitals by a small seeded
+        amount unless the orbital update keeps them fixed, permutes the MO
+        register into ``[core | fragments | virtual]`` order, and seeds each
+        fragment with its reference determinant's RDMs.
 
         While a program map built by :meth:`create_programs` waits to run, this
-        returns the state those programs were built from instead, so the round
-        that runs them is reduced against the same orbitals.
+        returns the state those programs were built from.
 
         Returns:
-            A fresh :class:`~divi.qprog.workflows.lassqd.LASSQDState` with ``energy``
-            and ``previous_energy`` at their default (``inf``) values and
-            every fragment's ``params`` set to ``None``.
+            A fresh :class:`~divi.qprog.workflows.lassqd.LASSQDState` with
+            ``energy`` and ``previous_energy`` at ``inf`` and every fragment's
+            ``params`` ``None``.
 
         Raises:
             RuntimeError: If a mean field computed here does not converge.
 
         Warns:
-            UserWarning: If the mean-field reference is not aufbau, i.e. its
-                LUMO lies below its HOMO. Frontier selection assumes ascending
-                orbital energies, so the active space would be wrong.
+            UserWarning: If the mean-field reference is not aufbau (its LUMO
+                lies below its HOMO), so frontier selection may pick the wrong
+                active space.
         """
         if self._programs_pending and self._state is not None:
             return self._state
@@ -513,15 +529,16 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         mean_field = self._mean_field
         if mean_field is None or mean_field.mo_coeff is None:
             mean_field = (
-                (scf.ROHF(self._mol) if self._spin else scf.RHF(self._mol))
+                without_chkfile(
+                    scf.ROHF(self._mol) if self._spin else scf.RHF(self._mol)
+                )
                 if mean_field is None
                 else mean_field.copy()
             )
             mean_field.run(verbose=0)
             if not mean_field.converged:
                 raise RuntimeError(
-                    "The mean-field reference did not converge, so every orbital "
-                    "the macro-cycle starts from is meaningless. Converge it "
+                    "The mean-field reference did not converge. Converge it "
                     "yourself and pass the mean-field object instead of the "
                     "molecule."
                 )
@@ -531,10 +548,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         mo_energy = np.asarray(mean_field.mo_energy)
         n_orbitals_total = mo_coeff.shape[1]
         n_occupied = self._n_occupied
-        # Only the frontier path reads orbital energies. Checking this on the
-        # other paths would test a stale array anyway: a caller who reorders
-        # ``mo_coeff`` (as AVAS does) leaves ``mo_energy`` describing the old
-        # register.
+        # Only the frontier path reads orbital energies; a reordered ``mo_coeff``
+        # (as AVAS does) leaves ``mo_energy`` stale.
         if (
             self._fragmentation.n_active_orbitals is not None
             and mo_energy[n_occupied] < mo_energy[n_occupied - 1]
@@ -542,9 +557,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             warn(
                 f"The mean-field reference is not aufbau: the LUMO sits "
                 f"{(mo_energy[n_occupied - 1] - mo_energy[n_occupied]) * 1000:.1f} "
-                "mHa below the HOMO, so the occupied set is not the lowest "
-                "orbitals. Frontier selection assumes ascending orbital "
-                "energies and will pick the wrong active space.",
+                "mHa below the HOMO. Frontier selection assumes ascending "
+                "orbital energies and may pick the wrong active space.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -647,12 +661,9 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             )
 
     def aggregate_results(self) -> LASSQDState:
-        """Return the workflow's current state.
-
-        Returns the same object exposed by :attr:`~divi.qprog.ensemble.\
-ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
-        from the round that just ran, not the state that was used to build
-        that round's programs.
+        """Return the state :meth:`update_state` produced from the round that
+        just ran, as :attr:`~divi.qprog.ensemble.\
+ProgramEnsemble.workflow_state` holds it.
 
         Returns:
             The latest :class:`~divi.qprog.workflows.lassqd.LASSQDState`.
@@ -660,8 +671,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         Raises:
             RuntimeError: If no round has been reduced into
                 :attr:`~divi.qprog.ensemble.ProgramEnsemble.workflow_state` yet.
-                A round driven by hand is reduced by :meth:`update_state`, whose
-                return value is that round's state. A run that fails after a
+                A round driven by hand is reduced by :meth:`update_state`,
+                which returns that round's state. A run that fails after a
                 completed round keeps that round's state.
         """
         if self.workflow_state is None or not self._energy_history:
@@ -673,9 +684,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         return self.workflow_state
 
     def _reset_workflow_state(self) -> None:
-        """Clear per-workflow state, re-seed ``_rng`` and drop every fragment's
-        cached ``SQDSolver``, so a repeated ``run()`` reproduces the first. The
-        state of a program map the caller built and has not run is kept."""
+        """Clear per-workflow state, re-seed ``_rng`` and drop cached solvers, so
+        a repeated ``run()`` reproduces the first. The state of a program map
+        built and not yet run is kept."""
         super()._reset_workflow_state()
         if not self._programs_pending:
             self._state = None
@@ -691,7 +702,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def _save_workflow_checkpoint_state(
         self, state: Any, round_dir: Path, stem: str
     ) -> dict[str, Any]:
-        """Write an explicit, non-pickled snapshot of mutable LASSQD state."""
+        """Write a non-pickled snapshot of mutable LASSQD state."""
         if not isinstance(state, LASSQDState):
             raise TypeError(
                 f"LASSQD checkpoint state must be LASSQDState, got "
@@ -721,7 +732,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def _load_workflow_checkpoint_state(
         self, payload: dict[str, Any], round_dir: Path, stem: str
     ) -> LASSQDState:
-        """Load and validate an explicit LASSQD NPZ snapshot."""
+        """Load and validate a LASSQD NPZ snapshot."""
         snapshot = load_snapshot(
             payload,
             round_dir,
@@ -739,6 +750,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def _apply_snapshot(self, snapshot: _WorkflowSnapshot) -> None:
         """Make ``snapshot`` this workflow's state."""
         self._rng.bit_generator.state = snapshot.rng_state
+        self._excited.across_fragments = (
+            self._sqd.states is not None and len(snapshot.state.fragments) == 2
+        )
         self._solvers.clear()
         for index, solver_rng_state in snapshot.solver_rng_states.items():
             solver = self._solver_for(index, snapshot.state.fragments[index].spec)
@@ -754,8 +768,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             self._state = snapshot.state
 
     def _configuration_record(self) -> dict[str, str]:
-        """The settings a checkpoint must have been written with to resume
-        here, by name: those that decide which computation a round performs."""
+        """The settings, by name, that a checkpoint must have been written with
+        to resume here."""
         return {
             "fragmentation": repr(self._fragmentation),
             "sqd": repr(self._sqd),
@@ -772,14 +786,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def _solver_for(self, index: int, spec: FragmentSpec) -> SQDSolver:
         """Return this fragment's cached ``SQDSolver``, building it once.
 
-        Each fragment gets its own child generator spawned from the
-        workflow's seeded RNG, so distinct fragments never share a draw
-        sequence and repeated runs under the same ``seed`` stay reproducible.
-        Caching avoids rebuilding the solver every round; across rounds it
-        carries only its generator's position. Each ``solve`` call recovers its
-        occupancies from scratch. Carryover between rounds goes through
-        :class:`FragmentState`, since a retained determinant must first be
-        mapped into the round's new orbital basis.
+        Each fragment's solver gets its own generator spawned from the
+        workflow's seeded RNG. Across rounds a solver carries only its
+        generator's position; carryover goes through :class:`FragmentState`.
         """
         solver = self._solvers.get(index)
         if solver is None:
@@ -787,11 +796,18 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 spec.n_orbitals,
                 spec.n_alpha,
                 spec.n_beta,
-                self._sqd,
+                self._fragment_sqd(),
                 rng=self._rng.spawn(1)[0],
             )
             self._solvers[index] = solver
         return solver
+
+    def _fragment_sqd(self) -> SQDConfig:
+        """The settings of each fragment's SQD solve; with states across two
+        fragments, the lowest state of the fragment's own electron counts."""
+        if not self._excited.across_fragments:
+            return self._sqd
+        return replace(self._sqd, states=None, symmetrize_spin=True)
 
     def _ao_integrals(self) -> AOIntegrals:
         """The molecule with this run's AO integrals, its core Hamiltonian
@@ -807,9 +823,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
     @cached_property
     def _h_ao(self) -> np.ndarray:
-        """This run's AO core Hamiltonian, computed once: the mean field's when
-        one is held, so a relativistic or otherwise modified one carries
-        through, else built from ``mol``."""
+        """This run's AO core Hamiltonian, computed once: the mean field's if
+        held (so a modified one carries through), else built from ``mol``."""
         if self._mean_field is None:
             return cached_h_ao(self._mol)
         return np.asarray(self._mean_field.get_hcore())
@@ -836,52 +851,45 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def update_state(self, state: LASSQDState) -> LASSQDState:
         """Reduce this round's sampled distributions into the next state.
 
-        For every fragment, converts its program's sampled distribution to
-        the blocked SQD bitstring convention, recovers the ground state via
-        that fragment's ``SQDSolver``, and rebuilds its spatial RDMs
-        from the recovered subspace. The full active-space RDM is then
+        Converts each fragment's sampled distribution to the blocked SQD
+        bitstring convention, recovers its ground state with its ``SQDSolver``,
+        and rebuilds its spatial RDMs from the recovered subspace. The full
+        active-space RDM, with the cross-fragment 2-RDM blocks, is then
         reassembled and the molecular orbitals re-optimised against it.
-
-        The reassembled RDM includes the cross-fragment 2-RDM blocks, so it is
-        the RDM of a product of fragment states and the returned ``energy`` is a
-        variational upper bound. What fragmenting costs is the inter-fragment
-        *correlation* that a product state cannot represent.
+        Fragmenting costs the inter-fragment correlation a product state
+        cannot represent; see :ref:`lassqd-accuracy-characteristics` for when
+        the returned ``energy`` is an upper bound.
 
         Args:
-            state: The state whose fragments were used to build the
-                programs currently held by this ensemble.
+            state: The state whose fragments built the programs this ensemble
+                holds.
 
         Returns:
             A new :class:`~divi.qprog.workflows.lassqd.LASSQDState` with updated
-            ``mo_coeff``, per-fragment RDMs and parameters, ``energy`` (this
-            round's optimised total energy), ``previous_energy`` (set to
-            ``state.energy``), and ``orbitals_converged``. ``state`` itself is
-            left unmodified.
+            ``mo_coeff``, per-fragment RDMs and parameters, ``energy``,
+            ``previous_energy`` (``state.energy``) and ``orbitals_converged``.
+            ``state`` is left unmodified.
 
         Raises:
-            ValueError: If SQD recovery fails for some fragment (e.g. no
-                sampled bitstring can be brought into agreement with that
-                fragment's target particle symmetry); the message names the
-                failing fragment's program ID.
+            ValueError: If SQD recovery fails for a fragment (for example no
+                sampled bitstring matches its particle symmetry); the message
+                names the fragment's program ID.
             RuntimeError: If ``state`` is not the state ``create_programs``
-                built this round's circuits from, which would silently reduce
-                the fragment results against different orbitals.
+                built this round's circuits from.
 
         Warns:
-            UserWarning: If a fragment's recovered subspace contains only one
-                determinant — this round captured no correlation energy for
-                that fragment, indistinguishable from convergence by
-                ``stop_reason`` alone. With ``SQDConfig.states`` set, also if
-                excited states come from an incomplete subspace, if the
-                subspace resolves fewer states of a multiplicity than requested,
-                if a state's ``<S^2>`` misses its multiplicity, or if two roots
-                of one multiplicity are near-degenerate.
+            UserWarning: If a fragment's recovered subspace holds one
+                determinant, so the round captured no correlation energy for
+                it. With ``SQDConfig.states`` set, also if excited states come
+                from an incomplete subspace, the subspace resolves fewer states
+                of a multiplicity than requested, a state's ``<S^2>`` misses
+                its multiplicity, or two roots of one multiplicity are
+                near-degenerate.
         """
         if self._state is not None and state is not self._state:
             raise RuntimeError(
                 "update_state received a different state than create_programs "
-                "built this round's circuits from; the reduction would use "
-                "different orbitals than the fragment circuits were prepared in."
+                "built this round's circuits from."
             )
 
         n_core = self._n_core(state)
@@ -895,12 +903,13 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         programs = self.programs
 
         def in_sampled_basis(mo_coeff: np.ndarray) -> np.ndarray:
-            """``mo_coeff`` with fragment 0's block in the basis its strings
-            were sampled in; ``states`` admits a single fragment only."""
+            """``mo_coeff`` with each fragment's block in the basis its strings
+            were sampled in."""
             rotated = mo_coeff.copy()
-            rotated[:, blocks[0]] = (
-                mo_coeff[:, blocks[0]] @ programs["fragment_0"].orbital_rotation
-            )
+            for index, block in enumerate(blocks):
+                rotated[:, block] = (
+                    mo_coeff[:, block] @ programs[f"fragment_{index}"].orbital_rotation
+                )
             return rotated
 
         new_fragments = []
@@ -950,8 +959,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 self._warn_once(
                     ("single determinant", program_id),
                     f"{program_id}'s recovered subspace contains only one "
-                    "determinant: this round captured no correlation energy "
-                    f"for this fragment. {self._single_determinant_advice()}",
+                    "determinant, so this round captured no correlation energy "
+                    f"for it. {self._single_determinant_advice()}",
                 )
 
             results.append(result)
@@ -985,7 +994,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
         ao = self._ao_integrals()
         states = self._sqd.states
-        if states is not None and not self._round_reports:
+        across = self._excited.across_fragments
+        if states is not None and not across and not self._round_reports:
             # Once per run, before an orbital update can lift the degeneracy.
             self._excited.warn_if_a_degenerate_set_is_split(
                 ao,
@@ -1005,7 +1015,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             report=self._emit_workflow_stage,
             subspace=(
                 None
-                if states is None
+                if states is None or across
                 else _SampledSubspace(
                     in_sampled_basis(state.mo_coeff),
                     (results[0].strings_alpha, results[0].strings_beta),
@@ -1042,7 +1052,22 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 "another round."
             )
         electronic_states: tuple[ElectronicState, ...] = ()
-        if states is not None:
+        if across and states is not None:
+            specs = [fragment.spec for fragment in new_fragments]
+            interaction, kept, incomplete = lassi_states(
+                ao,
+                in_sampled_basis(solution.mo_coeff),
+                n_core,
+                specs,
+                results,
+                states,
+                self._sqd.fragment_roots,
+                self._sqd.fragment_hops,
+            )
+            electronic_states = self._excited.record_interaction(
+                interaction, kept, incomplete
+            )
+        elif states is not None:
             electronic_states = self._excited.record_round(
                 ao,
                 n_core,
@@ -1175,10 +1200,10 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         if not state.orbitals_converged:
             self._warn_once(
                 "unconverged orbitals",
-                "The macro-cycle energy change is below energy_tol but the "
-                "orbital optimisation did not converge, so this is not a fixed "
-                "point. Continuing; raise orbital_update's max_iterations or "
-                "loosen energy_tol if the run hits max_rounds.",
+                "The energy change is below energy_tol but the orbital "
+                "optimisation did not converge, so this is not a fixed point. "
+                "Continuing; raise orbital_update's max_iterations or loosen "
+                "energy_tol if the run hits max_rounds.",
             )
             return False
         if self._round_reports and all(
@@ -1186,8 +1211,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         ):
             warn(
                 "The macro-cycle converged with every fragment's subspace a "
-                "single determinant: the mean-field fixed point, with no "
-                f"correlation energy captured. {self._single_determinant_advice()}",
+                "single determinant, the mean-field fixed point. "
+                f"{self._single_determinant_advice()}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -1217,18 +1242,18 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def electronic_states(self) -> dict[tuple[int, int], ElectronicState]:
         """The states ``SQDConfig.states`` requested, from the last completed
         round, keyed ``(multiplicity, index)`` and ordered by ascending energy;
-        empty before the first or without ``states``.
+        empty before the first round or without ``states``.
 
-        ``index`` counts within one multiplicity from 0, so with ``{1: 2,
-        3: 1}`` the first excited singlet is ``(1, 1)`` and the lowest triplet
+        ``index`` counts within one multiplicity from 0: with ``{1: 2, 3: 1}``
+        the first excited singlet is ``(1, 1)`` and the lowest triplet
         ``(3, 0)``.
 
-        Each is an eigenstate of the subspace at the round's final orbitals.
-        After a lowest-state orbital update, the lowest state's energy can
-        therefore sit slightly off :attr:`energy`, which keeps the CI the
-        orbitals were optimised for. A root whose ``<S^2>`` lies nearer another
-        multiplicity is left out, so a subspace short of states of one spin
-        yields fewer than were requested.
+        Each is an eigenstate of the subspace at the round's final orbitals,
+        so after a lowest-state orbital update the lowest state's energy can
+        sit slightly off :attr:`energy`, which keeps the CI the orbitals were
+        optimised for. A root whose ``<S^2>`` lies nearer another multiplicity
+        is left out, so a subspace short of states of one spin yields fewer
+        than requested.
 
         Warns:
             UserWarning: If no round has completed yet.
@@ -1247,7 +1272,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         and ordered as :attr:`electronic_states`.
 
         The subspace is re-diagonalised at the round's final orbitals on each
-        call, so the states match :attr:`electronic_states` to solver precision.
+        call, so the states match :attr:`electronic_states` to solver
+        precision.
 
         Raises:
             RuntimeError: If no round has completed with ``SQDConfig.states``
@@ -1259,13 +1285,13 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self,
     ) -> dict[tuple[tuple[int, int], tuple[int, int]], StateTransition]:
         """The one-electron transition between every pair of requested states
-        of one multiplicity, from the last completed round, keyed
-        ``(initial, final)`` labels with the lower state first, or for a
-        degenerate pair the lower label.
+        of one multiplicity, from the last completed round, keyed ``(initial,
+        final)`` with the lower state first (the lower label for a degenerate
+        pair).
 
-        Pairs of different multiplicity are left out: their spin-free
-        transition dipole vanishes. With one state of each multiplicity there
-        is no pair, and the result is empty.
+        Pairs of different multiplicity are left out, as their spin-free
+        transition dipole vanishes; with one state of each multiplicity the
+        result is empty.
 
         Raises:
             RuntimeError: If no round has completed with ``SQDConfig.states``
@@ -1281,9 +1307,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         Each correction is PySCF's state-specific NEVPT2 on the state's CI
         vector at the round's final orbitals; add it to the state's energy.
         The correction can reorder states, so the keys keep the uncorrected
-        order. PySCF needs the CI vector over the whole active space, so the
-        active space is bounded by memory as in classical CASCI. The subspace is
-        re-diagonalised on each call, so repeat calls agree to solver precision.
+        order. PySCF needs the CI vector over the whole active space, so
+        memory bounds it as in classical CASCI. The subspace is
+        re-diagonalised on each call.
 
         Raises:
             RuntimeError: If no round has completed with ``SQDConfig.states``
@@ -1300,20 +1326,18 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         last completed round, keyed ``(multiplicity, index)`` and ordered as
         :attr:`electronic_states`.
 
-        A vertical excitation is too fast for the solvent's slow, orientational
-        part to follow, so each state keeps the lowest state's equilibrium
-        field, which :attr:`electronic_states` already holds, and only the
-        fast, electronic part responds to its density change. The correction
-        is that response's energy, ``1/2 tr(dD v_fast[dD])``, with ``dD`` the
-        state's density less the lowest state's and ``v_fast`` the solvent
-        model's response at ``optical_eps``; add it to the state's energy. It
-        is first order: the state does not relax in the response.
+        Only the solvent's fast, electronic part follows a vertical
+        excitation; each state keeps the lowest state's equilibrium field,
+        which :attr:`electronic_states` already holds. The correction is that
+        response's energy, ``1/2 tr(dD v_fast[dD])``, with ``dD`` the state's
+        density less the lowest state's and ``v_fast`` the solvent model's
+        response at ``optical_eps``; add it to the state's energy. It is first
+        order: the state does not relax in the response.
 
         Args:
-            optical_eps: The solvent's optical dielectric constant, its
-                refractive index squared. The default, 1.78, is PySCF's and
-                suits water or acetonitrile; set about 2 to 3 for an organic
-                host.
+            optical_eps: The solvent's optical dielectric constant (refractive
+                index squared). The default, 1.78, suits water or acetonitrile;
+                use about 2 to 3 for an organic host.
 
         Raises:
             RuntimeError: If LASSQD was built without a ``solvent``, or no
@@ -1359,14 +1383,13 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
     def best_energy(self) -> float:
         """Lowest energy over all completed rounds, or ``inf`` before the first.
 
-        Every round's energy is a variational upper bound, so the lowest is the
-        tightest one this run established. With a ``solvent`` it is no bound,
-        and earlier rounds sit in a field not yet consistent with their
-        density, so this is the last round's energy, as :attr:`energy`.
+        In gas phase each round's energy is an upper bound (see
+        :ref:`lassqd-accuracy-characteristics`), so the lowest is the tightest.
+        With a ``solvent`` earlier rounds sit in a not yet self-consistent
+        field, so this is the last round's energy, as :attr:`energy`.
 
-        Note that ``workflow_state`` still holds the *last* round's orbitals,
-        which are not the ones that produced this energy unless the two
-        coincide.
+        ``workflow_state`` still holds the *last* round's orbitals, which
+        produced this energy only if the two coincide.
 
         Warns:
             UserWarning: If no round has completed yet.
@@ -1383,18 +1406,16 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         """Total energy of the lowest state in the last completed round, or
         ``inf`` before the first.
 
-        A variational upper bound: the assembled RDM is that of a product of
-        fragment states, so this is a genuine expectation value and cannot fall
-        below CASSCF with the same active-space size. Fragmenting still
-        costs accuracy -- see :ref:`lassqd-accuracy-characteristics`. With a
-        ``solvent`` it includes the solvation energy and is no bound.
+        In gas phase a variational upper bound (see
+        :ref:`lassqd-accuracy-characteristics`); with a ``solvent`` it includes
+        the solvation energy and is no bound.
 
-        The macro-cycle is not guaranteed monotone, so a later round can report
-        a higher energy than an earlier one; ``energy_history`` records each, and
+        The macro-cycle is not guaranteed monotone: a later round can report a
+        higher energy than an earlier one. ``energy_history`` records each and
         ``best_energy`` gives the lowest. Under
         :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` the
-        macro-cycle converges on the weighted average instead, which each
-        round report carries as ``averaged_energy``.
+        macro-cycle converges on the weighted average, which each round report
+        carries as ``averaged_energy``.
 
         Warns:
             UserWarning: If no round has completed yet.

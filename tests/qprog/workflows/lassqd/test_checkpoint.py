@@ -75,7 +75,7 @@ def test_vqe_checkpoint_rejects_changed_optimizer_or_ansatz_options(
         n_layers=n_layers,
     )
 
-    with pytest.raises(ValueError, match="different LASSQD configuration"):
+    with pytest.raises(ValueError, match="different configuration"):
         target._load_workflow_checkpoint_state(payload, tmp_path, "output_state")
 
 
@@ -590,14 +590,14 @@ def test_a_checkpoint_resumes_under_an_identically_configured_preparation(
 def _different_configuration(field):
     """The checkpoint-mismatch message naming one differing ``field``."""
     return (
-        "LASSQD checkpoint was written with a different LASSQD configuration: "
-        f"its {field} differs from this run's."
+        "LASSQD checkpoint was written with a different configuration: "
+        f"{field} differs from this run's."
     )
 
 
 _DIFFERENT_MOLECULE = (
     "LASSQD checkpoint was written for a different molecule: its geometry, "
-    "basis, electron count or spin differs from this one's."
+    "basis, electron count or spin differs."
 )
 
 
@@ -726,8 +726,7 @@ def test_a_closed_shell_fragment_without_spin_rdms_round_trips(
 
 _MISMATCHED_STATE = (
     "update_state received a different state than create_programs built this "
-    "round's circuits from; the reduction would use different orbitals than the "
-    "fragment circuits were prepared in."
+    "round's circuits from."
 )
 
 

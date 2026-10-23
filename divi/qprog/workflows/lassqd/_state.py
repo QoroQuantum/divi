@@ -5,7 +5,7 @@
 """Immutable state carried through the LASSQD workflow."""
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -41,9 +41,9 @@ class FragmentSpec:
     """A single active-space fragment.
 
     Args:
-        orbitals: Canonical RHF molecular-orbital indices, in energy order —
-            not the caller's own arbitrary numbering. Occupied orbitals come
-            first, since the reference determinant fills them in order.
+        orbitals: Indices into the mean field's molecular orbitals (RHF or
+            ROHF, or those supplied with it). Occupied orbitals come first, as
+            the reference determinant fills them in order.
         n_alpha: Alpha electrons assigned to the fragment. May differ from
             ``n_beta`` for a spin-polarised fragment.
         n_beta: Beta electrons assigned to the fragment.
@@ -101,29 +101,25 @@ class FragmentSpec:
 class FragmentState:
     """Per-fragment results carried between LASSQD rounds.
 
-    Compares by identity, not value: the numpy fields make a value-based
-    ``__eq__`` raise.
+    Compares by identity.
 
     Attributes:
         spec: The fragment's active-space specification.
-        rdm1: ``(n_orb, n_orb)`` fragment 1-RDM, in the fragment's own local
-            orbital ordering.
-        rdm2: ``(n_orb,) * 4`` fragment 2-RDM, in the same ordering as
-            ``rdm1``.
-        params: The fragment preparation's parameters from the previous
-            round, or ``None`` for a fragment that has not been optimised
-            yet (e.g. a freshly built initial state).
-        rdm1_alpha: Alpha-spin half of ``rdm1``, or ``None`` to assume the
-            closed-shell split ``rdm1 / 2``, which only a fragment with equal
-            spin counts may do. Needed for the cross-fragment exchange term,
-            which contracts same-spin densities.
+        rdm1: ``(n_orb, n_orb)`` fragment 1-RDM, in the fragment's own orbital
+            ordering.
+        rdm2: ``(n_orb,) * 4`` fragment 2-RDM, in the same ordering.
+        params: The preparation's parameters from the previous round, or
+            ``None`` for a fragment not yet optimised.
+        rdm1_alpha: Alpha-spin half of ``rdm1``. ``None`` assumes the
+            closed-shell split ``rdm1 / 2``, allowed only for equal spin
+            counts.
         rdm1_beta: Beta-spin half of ``rdm1``, under the same convention.
-        carried_alpha: Alpha strings carryover retained from the previous
-            round's SQD solve, in the basis of ``sampled_orbitals``.
+        carried_alpha: Alpha strings carried over from the previous round's
+            SQD solve, in the basis of ``sampled_orbitals``.
         carried_beta: Beta strings, likewise.
-        sampled_orbitals: ``(nao, n_orb)`` AO coefficients of the orbital basis
-            the previous round sampled and diagonalised in, which the carried
-            strings refer to; ``None`` when nothing is carried.
+        sampled_orbitals: ``(nao, n_orb)`` AO coefficients of the basis the
+            previous round sampled in, which the carried strings refer to;
+            ``None`` when nothing is carried.
 
     Raises:
         ValueError: If exactly one of ``rdm1_alpha`` and ``rdm1_beta`` is given,
@@ -170,23 +166,21 @@ class FragmentState:
 class LASSQDState:
     """Workflow state for one LASSQD macro-cycle.
 
-    Compares by identity, not value: the numpy fields make a value-based
-    ``__eq__`` raise.
+    Compares by identity.
 
     Attributes:
         mo_coeff: ``(nao, n_orb)`` molecular-orbital coefficients, permuted
             into ``[core | fragment blocks | virtual]`` order.
-        fragments: Per-fragment state, in the same order as the fragment
-            blocks in ``mo_coeff``.
-        energy: The energy the macro-cycle converges on, or ``inf`` if not yet
+        fragments: Per-fragment state, in the order of the fragment blocks in
+            ``mo_coeff``.
+        energy: The energy the macro-cycle converges on, ``inf`` until
             computed: the total energy, or under
             :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` the
             weighted average over the requested states.
-        previous_energy: The previous macro-cycle's ``energy``, or ``inf`` for
+        previous_energy: The previous macro-cycle's ``energy``, ``inf`` for
             the initial state.
         orbitals_converged: Whether the orbital optimisation that produced
-            ``mo_coeff`` converged. ``True`` for an initial state, which has no
-            solve behind it.
+            ``mo_coeff`` converged; ``True`` for an initial state.
     """
 
     mo_coeff: np.ndarray
@@ -206,25 +200,31 @@ class ElectronicState:
         multiplicity: Spin multiplicity ``2S + 1`` the state was solved for.
         index: Position among that multiplicity's roots in energy order at the
             end of the first round, ``0`` the lowest. Later rounds keep it with
-            the same state, matched by CI-vector overlap, so after two states
-            cross it no longer follows energy order.
-        energy: Total energy of the state at the round's orbitals, from its
-            own RDMs.
+            the same state, matched by CI-vector overlap, so it no longer
+            follows energy order after two states cross. States across two
+            fragments are not matched: their index is each round's energy
+            order.
+        energy: Total energy of the state at the round's orbitals.
         spin_square: ``<S^2>`` of the state.
+        charge_transfer: With states across two fragments, the state's weight
+            on products in which an electron has moved between the fragments:
+            near 0 for a local state, near 1 for a charge-transfer state.
+            Either direction counts, and between bonded fragments so does
+            covalent sharing. ``None`` for a single fragment's states.
     """
 
     multiplicity: int
     index: int
     energy: float
     spin_square: float
+    charge_transfer: float | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, eq=False)
 class StateWavefunction:
     """One requested state's wave function at the final round's orbitals.
 
-    Compares by identity, not value: the numpy fields make a value-based
-    ``__eq__`` raise.
+    Compares by identity.
 
     Attributes:
         state: The state's label, energy and ``<S^2>``.
@@ -281,8 +281,7 @@ class StateWavefunction:
 class StateTransition:
     """The one-electron transition between two requested states of one spin.
 
-    Compares by identity, not value: the numpy fields make a value-based
-    ``__eq__`` raise.
+    Compares by identity.
 
     Attributes:
         initial: The lower state.
@@ -324,11 +323,12 @@ class LASSQDRoundReport:
 
     Attributes:
         number: Round number, counting from 1.
-        energy: This round's total energy of the lowest state, a variational
-            upper bound in gas phase; with a solvent it includes the solvation
-            energy, the first round's in no field yet.
-        energy_change: Signed change from the previous round's ``energy``, or
-            ``None`` for the first round, which has no predecessor.
+        energy: This round's total energy of the lowest state. In gas phase an
+            upper bound (see :ref:`lassqd-accuracy-characteristics`); with a
+            solvent it includes the solvation energy, the first round's in no
+            field yet.
+        energy_change: Signed change from the previous round's ``energy``,
+            ``None`` for the first round.
         subspace_sizes: Distinct determinants each fragment's SQD recovery
             spanned, in fragment order. A one-determinant entry means that
             fragment captured no correlation.
@@ -351,7 +351,7 @@ class LASSQDRoundReport:
             converges on; ``None`` under any other orbital update.
         saddle_check: Outcome of the orbital-Hessian check run when a
             lowest-state round would end the macro-cycle: ``'escaped'`` (a
-            saddle point was left and the macro-cycle continues), ``'passed'``
+            saddle point was left; the macro-cycle continues), ``'passed'``
             or ``'inconclusive'`` (the eigensolver stopped unconverged, so the
             orbitals may still be a saddle point). ``None`` when it did not run.
     """
@@ -445,16 +445,16 @@ def validate_fragment_specs(
     *,
     spin: int = 0,
 ) -> None:
-    """Reject fragments that overlap or index outside the orbital register.
+    """Reject fragments that overlap, index outside the orbital register, or
+    carry the wrong electron count.
 
-    Non-overlap matters beyond hygiene: effective fragment integrals sum the
-    mean-field contribution of every *other* fragment, so shared orbitals
-    would be double-counted.
-
-    The fragments' electron counts must also add up to those of the active
-    orbitals below ``n_occupied``: two per doubly occupied orbital, one per
-    singly occupied one. A mismatch is not caught downstream; it yields an
-    energy for the wrong number of electrons.
+    Fragments must be disjoint because effective fragment integrals sum every
+    *other* fragment's mean-field contribution. Their electron counts must add
+    up to those of the active orbitals below ``n_occupied`` (two per doubly
+    occupied orbital, one per singly occupied one), as a mismatch yields an
+    energy for the wrong number of electrons. Each fragment must list its
+    occupied orbitals before its virtual ones, as the reference determinant and
+    initial density fill its orbitals in the order given.
 
     Args:
         specs: The fragment specifications to validate.
@@ -463,10 +463,6 @@ def validate_fragment_specs(
             doubly and singly occupied together.
         spin: The molecule's ``2S`` (``n_alpha - n_beta``); its ``|spin|``
             highest occupied orbitals are singly occupied, as in ROHF.
-
-    Each fragment must list its occupied orbitals before its virtual ones: the
-    reference determinant and the initial density fill a fragment's orbitals in
-    the order given.
 
     Raises:
         ValueError: If any orbital index is out of range or shared between
@@ -491,8 +487,7 @@ def validate_fragment_specs(
                 f"Fragment {index} (orbitals {spec.orbitals}) has no excitation "
                 f"available: n_alpha={spec.n_alpha}, n_beta={spec.n_beta} leave "
                 f"every spin channel of its {spec.n_orbitals} orbitals either "
-                "empty or full, so there is no correlation for this fragment to "
-                "capture."
+                "empty or full."
             )
         for orbital in spec.orbitals:
             if not 0 <= orbital < n_orbitals_total:
@@ -525,9 +520,8 @@ def validate_fragment_specs(
     ]
     if missing:
         raise ValueError(
-            f"Singly occupied orbitals {missing} are in no fragment. The core "
-            "must be closed-shell, so every singly occupied orbital has to be "
-            "active."
+            f"Singly occupied orbitals {missing} are in no fragment; the core "
+            "must be closed-shell, so all of them must be active."
         )
     n_held = sum(
         2 if orbital < n_doubly else 1 for orbital in seen if orbital < n_occupied

@@ -41,8 +41,8 @@ class _SubspaceCI(selected_ci.SelectedCI):
     solving for ``nroots`` states of one spin multiplicity.
 
     Diagonalises the spin-penalised projected Hamiltonian as SQD does; the
-    returned energies are the unpenalised ``<H>``. PySCF's selected-CI
-    routines supply the RDMs and ``<S^2>``.
+    returned energies are the unpenalised ``<H>``. Roots nearer another spin
+    than ``multiplicity`` can still appear when the set holds too few.
     """
 
     def __init__(
@@ -135,7 +135,7 @@ def subspace_states_at(
     ao: AOIntegrals, subspace: _SampledSubspace, n_core: int
 ) -> tuple[ElectronicState, ...]:
     """Each requested state with the subspace re-diagonalised at fixed
-    orbitals, as CASCI would, in root order.
+    orbitals, in root order; see :func:`_subspace_roots`.
 
     ``subspace.mo_coeff``'s active block must be the basis its strings refer
     to. Energies are the unpenalised ``<H>``.
@@ -146,8 +146,12 @@ def subspace_states_at(
 def _subspace_roots(
     ao: AOIntegrals, subspace: _SampledSubspace, n_core: int
 ) -> Iterator[tuple[ElectronicState, np.ndarray]]:
-    """Each requested state of ``subspace`` at its orbitals, with its CI
-    vector, in root order, labelled by ``subspace.labels`` when set."""
+    """Each requested state of ``subspace`` at its orbitals, with its CI vector,
+    in root order, labelled by ``subspace.labels`` when set.
+
+    A root whose ``<S^2>`` is nearer another spin is dropped, not replaced, so a
+    multiplicity can yield fewer roots than requested; indices count only the
+    kept ones."""
     strings_alpha, strings_beta = subspace.strings
     casci = _subspace_casci(ao, subspace, n_core)
     n_active, nelec = casci.ncas, casci.nelecas
@@ -224,7 +228,7 @@ def subspace_nevpt2(
         raise MemoryError(
             f"NEVPT2 needs the full-space CI vector of CAS({sum(nelec)},{n_active}), "
             f"{n_bytes / 1e6:g} MB, above mol.max_memory={max_memory:g} MB. "
-            "Raise mol.max_memory if the machine has room."
+            "Raise mol.max_memory."
         )
     corrections = []
     for state, amplitudes in _subspace_roots(ao, subspace, n_core):
@@ -277,9 +281,8 @@ def _root_overlaps(
     """Per multiplicity, the previous and current (root-order) states and
     ``|<previous_j|current_i>|`` as rows ``i``, columns ``j``.
 
-    The previous determinants are carried into the current orbitals by the
-    one-to-one orbital assignment carryover uses, with the orbitals' phases and
-    the reordering's sign.
+    Previous determinants are carried into the current orbitals by carryover's
+    one-to-one orbital assignment, with orbital phases and reordering sign.
     """
     n_active = len(current.strings[0][0])
     active = slice(n_core, n_core + n_active)

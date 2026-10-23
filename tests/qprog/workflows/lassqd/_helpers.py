@@ -66,8 +66,7 @@ UNBOUNDED_ADVICE = (
     f"past the {_DENSE_MAX_DIM} the solver handles unbounded. Set "
     "SQDConfig.max_dim to cap each spin sector "
     f"(max_dim={isqrt(_DENSE_MAX_DIM)} keeps it within {_DENSE_MAX_DIM}), or "
-    "extension=None for plain SQD, which misses the determinants the circuit "
-    "under-samples."
+    "extension=None for plain SQD."
 )
 
 
@@ -634,10 +633,10 @@ def _raw_lassqd(backend, **kwargs):
 
 
 _ONE_DETERMINANT_WARNING = (
-    "{fragment}'s recovered subspace contains only one determinant: this round "
-    "captured no correlation energy for this fragment. Use a larger sampling "
-    "budget (the backend's shots, SQDConfig's batch_size){extension} or a more "
-    "expressive preparation."
+    "{fragment}'s recovered subspace contains only one determinant, so this round "
+    "captured no correlation energy for it. Use a larger sampling budget (the "
+    "backend's shots, SQDConfig's batch_size){extension} or a more expressive "
+    "preparation."
 )
 
 

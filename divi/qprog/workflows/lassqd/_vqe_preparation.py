@@ -30,30 +30,23 @@ from divi.qprog.problems import MolecularProblem
 
 from ._state import FragmentSpec, FragmentState
 
-# Below this the two spin channels of an embedding potential are the same matrix
-# to seeding precision, so averaging them for the seed costs nothing.
+# Below this the embedding potential's spin channels are the same to seeding precision.
 _SEED_SPIN_ASYMMETRY_TOL = 1e-6
 
-# A seed must beat the reference determinant by at least this much, in Hartree, to
-# be worth using. Accepted seeds clear it by ~1e-2; a seed built in the wrong
-# orbital basis lands ~3e-3 above the reference, so zero is not a safe boundary.
+# Minimum energy gain over the reference determinant, in Hartree, for a seed to be used.
 _SEED_ACCEPTANCE_MARGIN = 1e-4
 
-# Coupled-cluster iterations allowed on a fragment. pyscf's default of 50 leaves
-# a localised fragment short of convergence where a few hundred reach it, and the
-# fragments are small enough that the extra cycles cost nothing.
+# Coupled-cluster iterations allowed on a fragment.
 _SEED_CC_MAX_CYCLE = 500
 
-# Widest fragment whose seed is checked exactly, on a 16 MB statevector; it covers
-# a ten-orbital fragment, the largest either SQD paper runs.
+# Widest fragment whose seed is checked exactly (ten orbitals).
 _SEED_CHECK_MAX_QUBITS = 20
 
 
 class _FragmentVQE(VQE):
     """A fragment VQE whose fresh parameters can be supplied by the workflow.
 
-    Accepts an explicit ``seed_params`` vector and returns it from
-    ``_initialize_param_sets`` instead of the optimizer's own random
+    An explicit ``seed_params`` vector replaces the optimiser's own random
     initialisation.
 
     Raises:
@@ -100,26 +93,13 @@ class _FragmentVQE(VQE):
 def _uccsd_amplitude_seed(
     coupled_cluster, spec: FragmentSpec, n_params: int
 ) -> np.ndarray:
-    """Map CCSD ``t1``/``t2`` onto :class:`~divi.qprog.algorithms.UCCSDAnsatz`'s
-    first layer by direct amplitude correspondence.
+    """Map restricted CCSD ``t1``/``t2`` onto the first layer of
+    :class:`~divi.qprog.algorithms.UCCSDAnsatz`.
 
-    ``pyscf.cc.addons.spatial2spin`` expands the restricted ``t1``/``t2`` into
-    interleaved spin-orbital tensors (even index alpha, odd beta), indexed
-    separately within the occupied and virtual blocks. ``qiskit_nature``'s
-    excitation list uses blocked indices over the whole register, so each is
-    remapped through its ``(spatial orbital, spin)`` pair.
-
-    The correspondence is positional, so ``coupled_cluster`` must have been
-    solved in the same orbital basis the ansatz excites in -- the fragment's own
-    orbitals, not a rotated set of them.
-
-    The angles are ``theta_single = -t1`` and ``theta_double = +t2``: a unique
-    excitation carries the amplitude itself, with no antisymmetrization factor
-    and no same-spin/mixed-spin distinction.
-
-    Requires a spin-balanced fragment -- one occupied count serves both spins.
-    Only the first layer is seeded; further layers have no corresponding CCSD
-    amplitude and stay at zero.
+    Each excitation takes its own amplitude: ``-t1`` for singles, ``+t2`` for
+    doubles. The correspondence is positional, so ``coupled_cluster`` must be
+    solved in the fragment's own orbitals, not a rotated set. Requires a
+    spin-balanced fragment. Further layers stay at zero.
     """
     t1_full = cc_addons.spatial2spin(coupled_cluster.t1)
     t2_full = cc_addons.spatial2spin(coupled_cluster.t2)
@@ -151,12 +131,11 @@ def _uccsd_amplitude_seed(
 def _unrestricted_uccsd_amplitude_seed(
     coupled_cluster, spec: FragmentSpec, n_params: int
 ) -> np.ndarray:
-    """:func:`_uccsd_amplitude_seed` for unrestricted CCSD, so a spin-polarised
-    fragment's ``t1``/``t2`` blocks map onto its own excitation list.
+    """:func:`_uccsd_amplitude_seed` for unrestricted CCSD, for a spin-polarised
+    fragment.
 
-    The blocks are laid out as antisymmetric spin-orbital tensors over the
-    whole blocked register (alpha orbitals first, then beta), indexed directly
-    by the excitations.
+    The blocks are assembled into antisymmetric spin-orbital tensors over the
+    blocked register (alpha orbitals first, then beta).
     """
     n_spatial = spec.n_orbitals
     n_alpha, n_beta = spec.n_alpha, spec.n_beta
@@ -220,15 +199,14 @@ def _unrestricted_ccsd(h_eff: np.ndarray, g_frag: np.ndarray, spec: FragmentSpec
         if not coupled_cluster.converged:
             warn(
                 f"UCCSD did not converge for fragment {spec.orbitals}; seeding "
-                "from its amplitudes anyway, since the seed is accepted on the "
-                "energy it delivers rather than on the solver's own criterion.",
+                "from its amplitudes anyway, as the seed is judged on its energy.",
                 UserWarning,
                 stacklevel=3,
             )
     except Exception as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimizer's own initialisation.",
+            "Falling back to the optimiser's own initialisation.",
             UserWarning,
             stacklevel=3,
         )
@@ -254,37 +232,30 @@ def _one_body_from_excitations(
 def _lucj_amplitude_seed(
     coupled_cluster, spec: FragmentSpec, n_params: int, ansatz_kwargs: Mapping
 ) -> np.ndarray | None:
-    """Map unrestricted CCSD amplitudes onto :class:`LUCJAnsatz`'s parameters.
+    """Map unrestricted CCSD amplitudes onto :class:`LUCJAnsatz`'s parameters
+    through a double factorisation.
 
-    LUCJ's parameters are rotation and Coulomb angles, not amplitudes, so the
-    correspondence runs through the double factorization. The opposite-spin
-    doubles carry it: reshaped over ``(occupied, virtual)`` pairs, their leading
-    singular triplet gives one one-body operator per spin, and the square of a
-    one-body operator is a diagonal Coulomb operator in the basis that
-    diagonalises it -- exactly ``exp(K) exp(iJ) exp(-K)``'s content. So each
-    spin's eigenbasis is its rotation and the eigenvalues give
-    ``J_pq = sigma * d_p * d_q``. ``t1`` supplies the trailing rotation.
+    The leading singular triplet of the opposite-spin doubles, reshaped over
+    ``(occupied, virtual)`` pairs, gives one one-body operator per spin. Each
+    spin's eigenbasis is its rotation, the eigenvalues give
+    ``J_pq = sigma * d_p * d_q``, and ``t1`` supplies the trailing rotation.
+    Opposite-spin doubles are used because a fragment with one electron of a
+    spin has no same-spin doubles; same-spin Coulomb weights stay at zero.
 
-    Opposite-spin rather than same-spin because that is what the layer's on-site
-    Coulomb term represents, and because a fragment holding one electron of a
-    given spin has no same-spin double excitation at all -- its ``t2`` block is
-    identically zero and would seed a bare Hartree-Fock determinant.
+    The seed is a starting point, not an encoding of CCSD: one Jastrow layer
+    holds only the leading factorisation term, ``J`` is projected onto the
+    layer's pair pattern, and the ``RZZ`` gates omit the one-body remainder of
+    ``exp(i J n_p n_q)``.
 
-    Approximate in three ways, all of which leave it a starting point rather than
-    an encoding of CCSD: one Jastrow layer holds only the leading factorization
-    term; ``J`` is projected onto the layer's own pair pattern; and the emitted
-    ``RZZ`` gates carry the pair term of ``exp(i J n_p n_q)`` but not its
-    one-body remainder.
-
-    Returns ``None`` if either spin sector's rotation cannot be realized, or if
-    the ansatz ties the two sectors together (``shared_spin_params``), which a
-    factorisation giving each its own rotation has nothing to say about.
+    Returns ``None`` if a spin sector's rotation cannot be realised, if the
+    opposite-spin doubles block is empty, or if the ansatz sets
+    ``shared_spin_params``.
     """
     if ansatz_kwargs.get("shared_spin_params"):
         warn(
             f"CCSD seeding skipped for fragment {spec.orbitals}: the double "
             "factorisation gives each spin sector its own rotation, which "
-            "shared_spin_params cannot hold. Falling back to the optimizer's own "
+            "shared_spin_params cannot hold. Falling back to the optimiser's own "
             "initialisation.",
             UserWarning,
             stacklevel=2,
@@ -305,13 +276,10 @@ def _lucj_amplitude_seed(
         t2_opposite.shape
     )
     if min(t2_opposite.shape) == 0:
-        # All-zero parameters are an exactly stationary point -- the Jastrow
-        # generators annihilate the reference and the rotations cancel -- so a
-        # gradient optimizer seeded there could not move. Random beats it.
+        # All-zero parameters are a stationary point a gradient optimiser cannot leave.
         return None
 
-    # Rectangular whenever the spin sectors differ in size, so a singular value
-    # decomposition rather than an eigendecomposition.
+    # Rectangular when the spin sectors differ in size.
     matrix = t2_opposite.transpose(0, 2, 1, 3).reshape(
         n_occupied_alpha * n_virtual_alpha, n_occupied_beta * n_virtual_beta
     )
@@ -324,10 +292,7 @@ def _lucj_amplitude_seed(
     rotation_beta, diagonal_beta = _one_body_from_excitations(
         right[0, :].reshape(n_occupied_beta, n_virtual_beta), n_orb
     )
-    # A real doubles amplitude needs the Jastrow's factor of i absorbed into a
-    # rotation, or the first-order energy correction is imaginary and cancels.
-    # One sector taking the anti-Hermitian embedding supplies it: the same
-    # rotation times -i on its virtual orbitals.
+    # The beta rotation takes -i on its virtual orbitals to absorb the Jastrow's factor of i.
     phase = np.ones(n_orb, dtype=complex)
     phase[n_occupied_beta:] = -1j
     rotation_beta = rotation_beta.astype(complex) * phase[:, None]
@@ -336,9 +301,8 @@ def _lucj_amplitude_seed(
     cursor = 0
     sandwiched = n_rotation_params(n_orb, orbital_phases=False, depth=depth)
     for rotation in (rotation_alpha, rotation_beta):
-        # The block runs first, in exp(-K), so it realizes the eigenbasis's
-        # inverse. Conjugate transpose, not transpose: with the -i above, the two
-        # are not the same and each sign is only right alongside the other.
+        # The block runs first, in exp(-K), so it realises the inverse; the
+        # conjugate transpose, not the transpose, pairs with the -i above.
         angles = rotation_angles(rotation.conj().T, depth=depth)
         if angles is None:
             return None
@@ -351,8 +315,7 @@ def _lucj_amplitude_seed(
         seed[cursor] = -0.5 * scale * diagonal_alpha[p] * diagonal_beta[q]
         cursor += 1
 
-    # The factorisation holds only the cross term between the two sectors, so it
-    # says nothing about same-spin Coulomb weights; those stay at zero.
+    # Same-spin Coulomb weights stay at zero.
     cursor += 2 * len(same_pairs)
 
     if ansatz_kwargs.get("trailing_rotation"):
@@ -363,12 +326,9 @@ def _lucj_amplitude_seed(
             generator -= generator.T
             angles = rotation_angles(expm(generator), depth=depth)
             if angles is None:
-                # Only this block is lost. Returning None here would discard the
-                # rotations and Jastrow too, and the fit fails most often for a
-                # near-identity target -- exactly when t1 is small and the rest
-                # of the seed is at its most useful.
+                # Only this block is lost; the rest of the seed stays useful.
                 warn(
-                    f"CCSD seeding for fragment {spec.orbitals} could not realize "
+                    f"CCSD seeding for fragment {spec.orbitals} could not realise "
                     "the trailing rotation; seeding the rest and leaving it at "
                     "the identity.",
                     UserWarning,
@@ -394,12 +354,9 @@ def _embedded_mean_field(
 ):
     """A pyscf mean field carrying the fragment's integrals and reference.
 
-    ``unrestricted`` selects UHF over RHF.
-
-    The molecule is a shell -- the integrals are supplied directly, so the only
-    real input is the spin. Coupled cluster builds its own Fock matrix from
-    ``mo_coeff`` and ``mo_occ`` and is solved non-canonically, so no orbital
-    energies or SCF energy are set.
+    ``unrestricted`` selects UHF over RHF. The molecule is a shell whose only
+    real input is the spin; no orbital energies or SCF energy are set, since
+    coupled cluster builds its Fock matrix from ``mo_coeff`` and ``mo_occ``.
     """
 
     n_orb = spec.n_orbitals
@@ -422,12 +379,11 @@ def _lucj_seed_params(
     n_params: int,
     ansatz_kwargs: Mapping,
 ) -> np.ndarray | None:
-    """Run unrestricted CCSD on the fragment and factorize it onto LUCJ.
+    """Run unrestricted CCSD on the fragment and factorise it onto LUCJ.
 
-    Unrestricted rather than restricted because these fragments are routinely
-    spin-polarised, which a restricted reference cannot represent at all. The
-    one-body potential is still spin-averaged, so the reference is polarised only
-    through its occupations.
+    Unrestricted so spin-polarised fragments are representable. The one-body
+    potential is spin-averaged, so the reference is polarised only through its
+    occupations.
     """
     coupled_cluster = _unrestricted_ccsd(h_eff, g_frag, spec)
     if coupled_cluster is None:
@@ -446,17 +402,9 @@ def _seed_energy_gain(
     """How far below the reference determinant the seed sits, in Hartree.
 
     Positive means the seed is an improvement. ``None`` means the fragment is too
-    wide to check exactly, leaving the caller to accept the seed unchecked.
-
-    Replaces a Hartree-Fock stationarity precondition, which rejected even an
-    exact open-shell solution -- no single spatial basis makes both spin channels
-    of a polarised fragment stationary -- and could not catch a seed built in the
-    wrong orbital basis, since ``F_ov`` transforms as ``U_o^T F_ov U_v`` and so is
-    invariant under exactly the rotation that misattaches amplitudes. Such a seed
-    lands *above* the reference determinant, which this measures directly.
-
-    All-zero parameters realize the reference determinant exactly, so it is both
-    the baseline and what the caller falls back to.
+    wide to check exactly, so the caller accepts the seed unchecked. A seed built
+    in the wrong orbital basis can land above the reference determinant. All-zero
+    parameters realise the reference determinant exactly, so it is the baseline.
     """
     if n_qubits > _SEED_CHECK_MAX_QUBITS:
         return None
@@ -484,31 +432,20 @@ def _ccsd_seed_params(
 ) -> np.ndarray | None:
     """Map a fragment's CCSD amplitudes onto an ansatz parameter vector.
 
-    Optimisation started from random parameters converges poorly, and SQD's
-    subspace quality depends directly on the sampled distribution covering
-    the right determinants, so a fresh fragment's first round is seeded from
-    coupled-cluster amplitudes computed on that fragment's own effective
-    integrals, instead of starting from the optimizer's random initial guess.
+    A fresh fragment's first round is seeded from coupled-cluster amplitudes
+    computed on its own effective integrals instead of the optimiser's random
+    initial guess.
 
-    Two ansaetze have a correspondence, by different routes.
-    :class:`~divi.qprog.algorithms.UCCSDAnsatz`'s parameters *are*
-    singles-and-doubles amplitudes, so :func:`_uccsd_amplitude_seed` reads each
-    off the matching entry of ``t1``/``t2``.
-    :class:`~divi.qprog.algorithms.LUCJAnsatz`'s are rotation and Coulomb angles
-    instead, so :func:`_lucj_seed_params` goes through the doubles tensor's
-    double factorization. Any other ansatz warns and defers to the optimizer's
-    own initialisation.
+    :class:`~divi.qprog.algorithms.UCCSDAnsatz` reads each parameter off the
+    matching ``t1``/``t2`` entry (:func:`_uccsd_amplitude_seed`);
+    :class:`~divi.qprog.algorithms.LUCJAnsatz` goes through a double
+    factorisation of the doubles tensor (:func:`_lucj_seed_params`). Any other
+    ansatz warns and uses the optimiser's own initialisation.
 
-    The CCSD runs in the fragment's own orbital basis, on the determinant the
-    ansatz's Hartree-Fock reference prepares, rather than on a self-consistent
-    field's canonical orbitals. Fragment orbitals are localised, and an SCF
-    would rotate within the occupied and virtual blocks -- leaving the reference
-    determinant and its energy untouched while permuting which amplitude belongs
-    to which orbital pair, so the resulting seed would be attached to the wrong
-    excitations. That determinant need not be Hartree-Fock stationary -- coupled
-    cluster is solved non-canonically, so a non-stationary reference inflates
-    ``t1`` rather than misattaching anything. :func:`_seed_energy_gain` is what
-    rejects a seed that went wrong.
+    CCSD runs in the fragment's own orbitals on the ansatz's reference
+    determinant, not on SCF canonical orbitals, which would permute the
+    amplitudes onto the wrong excitations. :func:`_seed_energy_gain` rejects a
+    seed that still went wrong.
 
     Args:
         h_eff: Fragment's effective one-body integrals, shape
@@ -524,16 +461,15 @@ def _ccsd_seed_params(
     Returns:
         A length-``n_params`` vector, or ``None`` (with a ``UserWarning``) if
         ``ansatz`` is neither a ``UCCSDAnsatz`` nor a ``LUCJAnsatz``, or if
-        the coupled-cluster calculation raises. Non-convergence only warns, since
-        the seed is judged on the energy it delivers. A spin-imbalanced
-        fragment (``n_alpha != n_beta``) is seeded from unrestricted CCSD.
+        the coupled-cluster calculation raises. Non-convergence only warns. A
+        spin-imbalanced fragment (``n_alpha != n_beta``) is seeded from
+        unrestricted CCSD.
     """
     if not isinstance(ansatz, (UCCSDAnsatz, LUCJAnsatz)):
         warn(
-            f"CCSD seeding skipped for fragment {spec.orbitals}: no "
-            f"correspondence is defined between CCSD amplitudes and "
-            f"{type(ansatz).__name__}'s parameters. Falling back to the "
-            "optimizer's own initialisation.",
+            f"CCSD seeding skipped for fragment {spec.orbitals}: no CCSD "
+            f"correspondence is defined for {type(ansatz).__name__}. Falling "
+            "back to the optimiser's own initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -562,15 +498,14 @@ def _ccsd_seed_params(
         if not coupled_cluster.converged:
             warn(
                 f"CCSD did not converge for fragment {spec.orbitals}; seeding "
-                "from its amplitudes anyway, since the seed is accepted on the "
-                "energy it delivers rather than on the solver's own criterion.",
+                "from its amplitudes anyway, as the seed is judged on its energy.",
                 UserWarning,
                 stacklevel=2,
             )
     except Exception as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
-            "Falling back to the optimizer's own initialisation.",
+            "Falling back to the optimiser's own initialisation.",
             UserWarning,
             stacklevel=2,
         )
@@ -593,15 +528,13 @@ def build_fragment_vqe(
     """Build one fragment's VQE from its embedded problem.
 
     A fresh fragment (``fragment.params is None``) is seeded from its own CCSD
-    amplitudes via :func:`_ccsd_seed_params`; a fragment warm-started from a
-    previous round uses ``fragment.params`` directly and never calls CCSD.
+    amplitudes via :func:`_ccsd_seed_params`; a warm-started fragment uses
+    ``fragment.params`` and never calls CCSD.
 
-    Seeding takes a single one-body matrix, so it gets the spin-averaged
-    embedding potential. That only affects the optimizer's starting point, not
-    the Hamiltonian it optimises against, which carries both channels -- but a
-    spin-symmetric seed can still land a local optimizer in a different basin
-    than the symmetry-broken solution, so a materially asymmetric embedding is
-    warned about.
+    Seeding uses the spin-averaged embedding potential, which affects only the
+    starting point; the optimised Hamiltonian keeps both channels. A materially
+    asymmetric embedding is warned about, since the seed can land in a
+    different basin than the symmetry-broken solution.
     """
     h_alpha, h_beta = problem.one_body, problem.one_body_beta
     n_electrons = problem.n_electrons
@@ -623,11 +556,10 @@ def build_fragment_vqe(
         if spin_asymmetry > _SEED_SPIN_ASYMMETRY_TOL:
             warn(
                 f"CCSD seeding for fragment {fragment.spec.orbitals} averages "
-                f"an embedding potential whose spin channels differ by "
-                f"{spin_asymmetry:.3e} Hartree, because seeding takes a "
-                "single one-body matrix. The seed may sit in a different "
-                "basin than the symmetry-broken solution; the Hamiltonian "
-                "being optimised keeps both channels.",
+                f"embedding-potential spin channels that differ by "
+                f"{spin_asymmetry:.3e} Hartree. The seed may sit in a "
+                "different basin than the symmetry-broken solution; the "
+                "optimised Hamiltonian keeps both channels.",
                 UserWarning,
                 stacklevel=2,
             )
@@ -656,10 +588,10 @@ def build_fragment_vqe(
             if gain is not None and gain < _SEED_ACCEPTANCE_MARGIN:
                 warn(
                     f"CCSD seeding rejected for fragment "
-                    f"{fragment.spec.orbitals}: the seed sits "
-                    f"{-gain:+.3e} Hartree relative to the reference "
-                    "determinant, so it carries no correlation energy. "
-                    "Falling back to the optimizer's own initialisation.",
+                    f"{fragment.spec.orbitals}: the seed gains {gain:.3e} "
+                    "Hartree over the reference determinant, below the "
+                    f"{_SEED_ACCEPTANCE_MARGIN:g} required. Falling back to "
+                    "the optimiser's own initialisation.",
                     UserWarning,
                     stacklevel=2,
                 )

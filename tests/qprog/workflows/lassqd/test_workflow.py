@@ -777,9 +777,9 @@ def test_vqe_preparation_rejects_options_it_sets_itself(dummy_expval_backend, na
     """Each would otherwise reach the fragment VQE twice and fail at
     create_programs with Python's "multiple values" error."""
     message = (
-        f"{name} cannot be passed to LASSQD with VQEPreparation: ansatz, optimizer "
-        "and max_iterations are set on VQEPreparation itself, and seed_params "
-        "comes from each fragment's CCSD seed."
+        f"{name} cannot be passed to LASSQD with VQEPreparation: set ansatz, "
+        "optimizer and max_iterations on VQEPreparation; seed_params comes from "
+        "each fragment's CCSD seed."
     )
     with pytest.raises(TypeError, match=exact_match(message)):
         _raw_lassqd(dummy_expval_backend, preparation=vqe_preparation(), **{name: None})
@@ -1059,8 +1059,7 @@ def test_convergence_with_no_correlation_captured_warns(
     )
     message = (
         "The macro-cycle converged with every fragment's subspace a single "
-        "determinant: the mean-field fixed point, with no correlation energy "
-        f"captured. {advice}"
+        f"determinant, the mean-field fixed point. {advice}"
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
@@ -1311,10 +1310,10 @@ def test_a_stalled_orbital_optimizer_is_not_reported_as_converged(
 
     stalled = dataclasses.replace(converged, orbitals_converged=False)
     message = (
-        "The macro-cycle energy change is below energy_tol but the orbital "
-        "optimisation did not converge, so this is not a fixed point. Continuing; "
-        "raise orbital_update's max_iterations or loosen energy_tol if the run "
-        "hits max_rounds."
+        "The energy change is below energy_tol but the orbital optimisation did "
+        "not converge, so this is not a fixed point. Continuing; raise "
+        "orbital_update's max_iterations or loosen energy_tol if the run hits "
+        "max_rounds."
     )
     with pytest.warns(UserWarning, match=exact_match(message)) as caught:
         assert not ensemble.is_complete(stalled)
@@ -1345,7 +1344,7 @@ def test_seeding_warns_when_the_embedding_is_spin_asymmetric(default_test_simula
     h_alpha, h_beta, g_frag = fragment_integrals(ensemble, state.mo_coeff, fragments, 0)
     assert np.abs(h_alpha - h_beta).max() > 1e-6
 
-    with pytest.warns(UserWarning, match="spin channels differ"):
+    with pytest.warns(UserWarning, match="spin channels that differ"):
         _build_fragment_program(
             ensemble,
             fragments[0],
@@ -1583,9 +1582,9 @@ def test_an_unconverged_mean_field_warns(dummy_expval_backend):
     with pytest.warns(
         UserWarning,
         match=exact_match(
-            "The mean-field object passed in did not converge, so the orbitals "
-            "the macro-cycle starts from are not its stationary point. Converge "
-            "it first unless those orbitals are intended."
+            "The mean-field object passed in did not converge, so the starting "
+            "orbitals are not its stationary point. Converge it first unless those "
+            "orbitals are intended."
         ),
     ):
         _lassqd(
@@ -1807,7 +1806,7 @@ def test_macro_cycle_uses_separate_optimization_and_sampling_backends(
         n_recovery_iterations=1,
     )
 
-    with pytest.warns(UserWarning, match="Orbital optimisation ended without"):
+    with pytest.warns(UserWarning, match="Orbital optimisation stopped after"):
         ensemble.run(max_rounds=1)
 
     assert optimization_submit.call_count > 0
@@ -2184,7 +2183,7 @@ def test_an_orbital_update_respects_its_iteration_cap(
     ensemble.create_programs(state)
     ensemble.run_one_round(blocking=True)
 
-    with pytest.warns(UserWarning, match="without converging"):
+    with pytest.warns(UserWarning, match="stopped after"):
         ensemble.update_state(state)
 
     assert ensemble.round_reports[-1].orbital_iterations == 1
@@ -2668,8 +2667,7 @@ def test_a_negative_spin_is_rejected(dummy_expval_backend):
     mol = gto.M(atom="O 0 0 0; H 0 0 0.97", basis="sto-3g", spin=-1, verbose=0)
     message = (
         "LASSQD needs a non-negative spin; got spin=-1. Build the molecule with "
-        "spin=1: the energies do not depend on the sign of Sz, and PySCF's ROHF "
-        "does not converge with more beta than alpha electrons."
+        "spin=1; the energies do not depend on the sign of Sz."
     )
 
     with pytest.raises(ValueError, match=exact_match(message)):
@@ -2763,9 +2761,9 @@ def test_warns_when_frontier_selection_starts_from_a_non_aufbau_reference(
     ensemble = _frontier_h4_lassqd(dummy_expval_backend, h4_chain_mean_field, energies)
     message = (
         f"The mean-field reference is not aufbau: the LUMO sits "
-        f"{(energies[1] - energies[2]) * 1000:.1f} mHa below the HOMO, so the "
-        "occupied set is not the lowest orbitals. Frontier selection assumes "
-        "ascending orbital energies and will pick the wrong active space."
+        f"{(energies[1] - energies[2]) * 1000:.1f} mHa below the HOMO. Frontier "
+        "selection assumes ascending orbital energies and may pick the wrong "
+        "active space."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
@@ -2793,8 +2791,7 @@ def test_an_unconverged_mean_field_fails_initial_state(dummy_expval_backend):
         dummy_expval_backend, problem=MolecularProblem.from_molecule(mean_field)
     )
     message = (
-        "The mean-field reference did not converge, so every orbital the "
-        "macro-cycle starts from is meaningless. Converge it yourself and pass "
+        "The mean-field reference did not converge. Converge it yourself and pass "
         "the mean-field object instead of the molecule."
     )
 

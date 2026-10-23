@@ -43,7 +43,7 @@ _HESSIAN_STEP = 1e-4
 # Largest element-wise deviation from the identity that still counts as no step.
 _STALLED_STEP = 1e-14
 # Largest deviation of a space's irrep projection from a projector that still
-# counts as symmetry-adapted; converged solves leave ~2e-5, broken ones >0.2.
+# counts as symmetry-adapted.
 _SYMMETRY_TOL = 1e-3
 # A converged point this far above the best one seen still replaces it.
 _ENERGY_ROUNDING = 1e-10
@@ -69,9 +69,9 @@ class OrbitalSolution:
         mo_coeff: The rotated MO coefficients.
         energy: Total energy at the returned orbitals.
         converged: Whether ``gradient_norm`` is within the caller's tolerance.
-            A capped or stalled solve still returns its best point, so the
-            energy remains an upper bound, but not a stationary point.
-        n_iterations: Optimizer iterations taken.
+            A capped or stalled solve still returns its orbitals and energy,
+            an upper bound but not a stationary point.
+        n_iterations: Optimiser iterations taken.
         n_evaluations: Objective evaluations taken, each one four-index MO
             transform.
         gradient_norm: L2 norm of the orbital gradient over the rotation pairs
@@ -98,25 +98,15 @@ def rotation_energy_gradient_fn(
 ):
     """Build the orbital-rotation objective and its analytic gradient.
 
-    The returned callable evaluates :func:`_total_energy` at
-    ``mo_coeff @ expm(K(x))`` -- via
-    :func:`energy_and_generalized_fock` -- together with its exact derivative
-    with respect to the rotation angles ``x``, sharing the single four-index MO
-    transform between the two.
+    The returned callable evaluates the energy at ``mo_coeff @ expm(K(x))`` and
+    its derivative with respect to the rotation angles ``x``, sharing one
+    four-index MO transform.
 
-    The gradient follows from the generalized Fock matrix
-    ``F = h @ D.T + einsum("mqrs,nqrs->mn", g, d)``. Because the
-    parameterisation is global (``expm`` of the full generator, not a step
-    from the current point), the chain rule through the matrix exponential is
-    a Frechet pullback, ``M = expm_frechet(K.T, U @ 2F)``, and
-    ``dE/dx_i = M[p, q] - M[q, p]``. At ``x = 0`` this reduces to
-    ``2 * (F[p, q] - F[q, p])``.
-
-    The generalized Fock matrix collapses the four derivative terms of the
-    two-electron energy into one, so the gradient (not the energy) requires
-    the active RDMs to carry their physical permutation symmetry:
-    ``rdm1_active`` symmetric, and ``rdm2_active`` invariant under
-    ``pqrs -> rspq`` and ``pqrs -> qpsr``.
+    The gradient is the Frechet pullback ``M = expm_frechet(K.T, U @ 2F)`` of
+    the generalised Fock matrix ``F``, ``dE/dx_i = M[p, q] - M[q, p]``, which
+    is ``2 * (F[p, q] - F[q, p])`` at ``x = 0``. It requires ``rdm1_active``
+    symmetric and ``rdm2_active`` invariant under ``pqrs -> rspq`` and
+    ``pqrs -> qpsr``; the energy does not.
 
     Args:
         ao: The molecule and its AO integrals.
@@ -234,39 +224,27 @@ def optimize_orbitals(
 ) -> OrbitalSolution:
     """Optimise molecular orbitals against the current active-space RDMs.
 
-    Parameterizes an orbital rotation as the exponential of a skew-symmetric
-    generator over a fixed set of allowed rotation pairs -- core-active,
-    core-virtual, active-active across different fragments, and
-    active-virtual -- and minimises :func:`_total_energy` over those rotation
-    angles with L-BFGS-B. The objective and its analytic gradient come from
-    :func:`rotation_energy_gradient_fn`, so an iteration costs one four-index
-    MO transform rather than the ``n_rot + 1`` a finite-difference gradient
-    would need. Core-core rotations are excluded because :func:`_total_energy` has no
-    core-core degree of freedom to resolve; intra-fragment active rotations
-    are excluded not because they leave the energy unchanged (they do not)
-    but because each fragment's RDM is only valid in that fragment's current
-    orbital basis, and rotating within it would invalidate that RDM.
+    Minimises the energy with L-BFGS-B over the angles of an orbital rotation
+    on :func:`rotation_pairs` -- core-active, core-virtual, active-active across
+    fragments, and active-virtual -- using the analytic gradient of
+    :func:`rotation_energy_gradient_fn`, one four-index MO transform per
+    iteration. Rotations within a fragment are excluded because its RDM is only
+    valid in its current orbital basis.
 
-    The zero-rotation baseline (``mo_coeff`` unchanged) is always evaluated
-    and compared against ``scipy.optimize.minimize``'s result; whichever is
-    lower is returned. This makes the routine monotone by construction -- it
-    can never report an energy worse than not rotating at all -- and guards
-    against ``minimize`` reporting a spurious ``fun`` (e.g. L-BFGS-B returns
-    ``fun=0.0`` without evaluating the objective when there are zero rotation
-    parameters) instead of raising.
+    The unrotated orbitals are always evaluated and returned if the minimiser
+    does no better, so the energy never worsens. With no rotation pairs,
+    ``minimize`` is not called.
 
-    The first L-BFGS-B pass runs even when the starting gradient is already
-    within ``gradient_tol``. The angles are measured from the orbitals a solve
-    starts at, which turns them ill-conditioned after a large rotation, so
-    while the gradient at the current orbitals exceeds ``gradient_tol`` the
-    solve restarts from them, up
-    to ``_MAX_RESTARTS`` times and within ``max_iterations`` in total. ``gradient_norm`` is always taken at the returned orbitals.
+    The first pass runs even when the starting gradient is within
+    ``gradient_tol``. While the gradient at the current orbitals exceeds it, the
+    solve restarts from them, up to ``_MAX_RESTARTS`` times and ``max_iterations``
+    in total, since angles turn ill-conditioned after a large rotation.
+    ``gradient_norm`` is taken at the returned orbitals.
 
-    That monotonicity is also why the convergence flag matters: an optimizer
-    that gives up returns the baseline, so the round's energy barely moves and
-    looks exactly like a converged macro-cycle. The flag lets the caller tell
-    the two apart. It tests the orbital gradient itself, not L-BFGS-B's status,
-    which also reports success once the relative energy change stalls.
+    Convergence is judged on that gradient, not L-BFGS-B's status: a minimiser
+    that gives up returns the unrotated orbitals, which looks like a converged
+    macro-cycle, and the status also reports success once the relative energy
+    change stalls.
 
     Args:
         ao: The molecule and its AO integrals.
@@ -280,24 +258,18 @@ def optimize_orbitals(
         rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
         gradient_tol: The solve counts as converged when the L2 norm of the
             orbital gradient at the returned orbitals is at most this.
-        max_iterations: Cap on L-BFGS-B iterations for this orbital solve,
-            bounding the cost of one round at the price of returning before
-            convergence. ``None`` uses scipy's default.
-        report: Receives a progress line (iteration, energy, gradient norm,
-            elapsed time) after every iteration.
+        max_iterations: Cap on L-BFGS-B iterations; ``None`` uses scipy's
+            default.
+        report: Receives a progress line after every iteration.
 
     Returns:
-        An :class:`OrbitalSolution` carrying the rotated orbitals, the energy, and
-        the solve's own diagnostics -- iteration and evaluation counts, the
-        final gradient norm, and whether it converged.
+        The :class:`OrbitalSolution`.
 
     Raises:
-        ImportError: If the ``chem`` extra is not installed, propagated from
-            :func:`_total_energy`.
+        ImportError: If the ``chem`` extra is not installed.
 
     Warns:
-        UserWarning: If the solve ended without converging, naming the
-            iteration count, scipy's reason and the gradient norm.
+        UserWarning: If the solve ended without converging.
     """
     n_orb_total = mo_coeff.shape[1]
     fixed = (n_core, fragment_specs, rdm1_active, rdm2_active)
@@ -388,13 +360,12 @@ def _finished_solve(
     converged = gradient_norm <= gradient_tol
     if not converged:
         warn(
-            "Orbital optimisation ended without converging after "
-            f"{n_iterations} iterations and {n_evaluations} evaluations "
-            f"({stop_reason}): its orbital-gradient norm {gradient_norm:.2e} "
-            f"exceeds {gradient_tol:.2e}. The returned orbitals are the best "
-            "seen, so the energy is still an upper bound, but this round is not a "
-            "stationary point -- a small round-to-round energy change here means "
-            "the optimizer gave up, not that the macro-cycle converged.",
+            f"Orbital optimisation stopped after {n_iterations} iterations and "
+            f"{n_evaluations} evaluations ({stop_reason}) with orbital-gradient "
+            f"norm {gradient_norm:.2e} above {gradient_tol:.2e}. The energy "
+            "remains an upper bound, but this round is not a stationary point, "
+            "so a small energy change from the last round may mean the "
+            "optimiser stopped rather than that the macro-cycle converged.",
             UserWarning,
             stacklevel=_outside_divi_stacklevel(),
         )
@@ -549,14 +520,13 @@ def ciah_orbital_solve(
 ) -> OrbitalSolution:
     """Optimise the orbitals with pyscf's second-order CIAH solver.
 
-    Same objective, rotation pairs and result as :func:`optimize_orbitals`;
-    each macro-iteration takes an augmented-Hessian step and re-centres the
-    angles on the new orbitals, at least one even when the starting gradient is
-    already within tolerance. A vanishing step restarts the augmented-Hessian
-    solve; a restart that also gives no step ends the solve. A step that raises
-    the energy hands the rest of the budget to :func:`optimize_orbitals` from
-    the lowest point. The lowest-energy orbitals seen are returned, preferring a
-    converged point within rounding of them.
+    Same objective, rotation pairs and result as :func:`optimize_orbitals`.
+    Each macro-iteration takes an augmented-Hessian step, at least one even when
+    the starting gradient is within tolerance. A vanishing step restarts the
+    augmented-Hessian solve, and a restart that also gives none ends the solve.
+    A step that raises the energy hands the rest of the budget to
+    :func:`optimize_orbitals` from the lowest point. The lowest-energy orbitals
+    seen are returned, preferring a converged point within rounding of them.
 
     Args:
         max_iterations: Macro-iterations, each one gradient at new orbitals
@@ -669,7 +639,7 @@ def escape_orbital_saddle(
     preconditioned by the Hessian diagonal, as in pyscf's SCF stability
     analysis. Below ``_SADDLE_CURVATURE`` the orbitals are rotated along that
     mode in both directions, keeping the lowest energy. A negative eigenvalue
-    proves the coupled orbital-CI energy is also at a saddle; a positive one
+    indicates the coupled orbital-CI energy is also at a saddle; a positive one
     does not prove a minimum. The check is inconclusive when the solve stops
     unconverged above ``_SADDLE_CURVATURE``, since a lower mode may remain.
     """
@@ -792,13 +762,11 @@ def state_averaged_orbital_solve(
     """State-averaged CASSCF over one fragment, its CI confined to an SQD
     subspace.
 
-    Orbitals and CI vectors move together (PySCF's one-step SA-CASSCF), so the
-    solve leaves saddle points that alternating orbital and CI updates stall
-    at. ``mo_coeff``'s active block must be the basis ``strings`` refer to.
-    The Hamiltonian is built from ``ao``, the integrals every other LASSQD
-    energy uses, never a density-fitted approximation. Convergence
-    and the reported gradient use LASSQD's own gradient at the returned
-    orbitals and the averaged RDMs.
+    Orbitals and CI vectors move together (PySCF's one-step SA-CASSCF).
+    ``mo_coeff``'s active block must be the basis ``strings`` refer to. The
+    Hamiltonian is built from ``ao``, never a density-fitted approximation.
+    The reported gradient is LASSQD's own, at the returned orbitals and the
+    averaged RDMs.
 
     Args:
         strings: The subspace's alpha and beta occupation strings.
@@ -871,7 +839,8 @@ def state_averaged_orbital_solve(
         warn(
             f"The state-averaged solve broke the molecule's {group} symmetry, "
             "mixing states of different symmetry; which such solution a run "
-            f"reaches depends on rounding. {remedy} to keep the symmetry.",
+            f"reaches can depend on rounding and the starting orbitals. {remedy} "
+            "to keep it.",
             UserWarning,
             stacklevel=_outside_divi_stacklevel(),
         )
@@ -895,10 +864,10 @@ def state_averaged_orbital_solve(
         warn(
             f"The state-averaged solve stopped at max_iterations={max_iterations} "
             "before settling, though its orbital gradient is below tolerance. "
-            "Unless that cap is deliberately low, this usually means a requested "
-            "state is degenerate with one left out, such as one component of a "
-            "degenerate pair, so the averaged energy has a flat direction. "
-            "Request every component of the degenerate set.",
+            "Unless the cap is deliberately low, a common cause is a requested "
+            "state degenerate with one left out, which leaves the averaged "
+            "energy a flat direction. Request every component of the "
+            "degenerate set.",
             UserWarning,
             stacklevel=_outside_divi_stacklevel(),
         )

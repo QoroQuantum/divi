@@ -46,28 +46,43 @@ from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     fci_roots_by_multiplicity,
     h2o_molecule,
     h4_chain_mean_field,
+    h8_chain,
     h8_frontier_lassqd,
     mo_integrals,
     nh2_radical,
 )
 
 
-def test_states_need_a_single_fragment(dummy_expval_backend):
+def test_states_take_at_most_two_fragments(dummy_expval_backend):
     message = (
-        "SQDConfig.states needs a single fragment; got 2. A product of fragment "
-        "states cannot represent an excitation spread over several fragments. "
-        "Put the whole active space in one FragmentSpec."
+        "SQDConfig.states takes one or two fragments; got 3. Put the active "
+        "space in one FragmentSpec, or split it in two."
     )
     with pytest.raises(ValueError, match=exact_match(message)):
-        _lassqd(dummy_expval_backend, states={1: 2})
+        _lassqd(
+            dummy_expval_backend,
+            problem=MolecularProblem.from_molecule(h8_chain()),
+            active_spaces=[
+                FragmentSpec(orbitals=(0, 4), n_alpha=1, n_beta=1),
+                FragmentSpec(orbitals=(1, 5), n_alpha=1, n_beta=1),
+                FragmentSpec(orbitals=(2, 3, 6, 7), n_alpha=2, n_beta=2),
+            ],
+            states={1: 2},
+        )
 
 
-def test_automatic_fragmentation_into_several_fragments_rejects_states(
+def test_automatic_fragmentation_into_two_fragments_solves_each_for_its_lowest_state(
     dummy_expval_backend,
 ):
-    ensemble = h8_frontier_lassqd(dummy_expval_backend, states={1: 2})
-    with pytest.raises(ValueError, match="needs a single fragment; got 2"):
-        ensemble.initial_state()
+    """The requested states span both fragments, so each fragment's own SQD
+    solve targets its lowest state, not them."""
+    ensemble = h8_frontier_lassqd(
+        dummy_expval_backend, states={1: 2}, orbital_update=FixedOrbitals()
+    )
+
+    ensemble.initial_state()
+
+    assert ensemble._fragment_sqd().states is None
 
 
 @pytest.mark.parametrize(
@@ -79,7 +94,7 @@ def test_excited_states_on_ground_state_orbitals_warn_once(
     message = (
         f"{type(orbital_update).__name__} optimises the orbitals for the lowest "
         "state only, so the others miss their orbital relaxation and gaps to "
-        "them come out too large. Use StateAveragedOrbitalUpdate, or FixedOrbitals "
+        "them tend to come out too large. Use StateAveragedOrbitalUpdate, or FixedOrbitals "
         "to compare with CASCI on the same orbitals."
     )
     with warnings.catch_warnings(record=True) as record:
@@ -91,11 +106,7 @@ def test_excited_states_on_ground_state_orbitals_warn_once(
             orbital_update=orbital_update,
         ).initial_state()
 
-    assert [
-        str(warning.message)
-        for warning in record
-        if not issubclass(warning.category, ResourceWarning)
-    ] == [message]
+    assert [str(warning.message) for warning in record] == [message]
 
 
 @pytest.mark.parametrize("states", [{1: 1}, {3: 1}], ids=["ground", "triplet"])
@@ -300,9 +311,10 @@ def unresolved_state_warnings(dummy_expval_backend, mocker):
             fragment="fragment_0", extension=", SQDConfig.extension='singles',"
         ),
         "fragment_0's subspace holds 1 of 36 determinants. The circuit samples "
-        "the ground state, so excited states in an incomplete subspace come out "
-        "too high. Set SQDConfig.extension to add the determinants it misses.",
-        "State (1, 1) has <S^2> = 0.5000, not 0.0000: the subspace does not "
+        "the ground state, so excited states can come out too high in an "
+        "incomplete subspace. Set SQDConfig.extension to add the determinants it "
+        "misses.",
+        "State (1, 1) has <S^2> = 0.5000, not 0.0000, so the subspace does not "
         "resolve it as that spin. Raise lambda_penalty or the sampling budget "
         "(batch_size, n_recovery_iterations).",
         "States (1, 0) and (1, 1) lie within 0.0e+00 Ha of each other, so their "
@@ -431,11 +443,10 @@ def test_state_averaging_over_half_a_degenerate_pair_warns():
     )
     message = (
         "The state-averaged solve stopped at max_iterations=3 before settling, "
-        "though its orbital gradient is below tolerance. Unless that cap is "
-        "deliberately low, this usually means a requested state is degenerate "
-        "with one left out, such as one component of a degenerate pair, so the "
-        "averaged energy has a flat direction. Request every component of the "
-        "degenerate set."
+        "though its orbital gradient is below tolerance. Unless the cap is "
+        "deliberately low, a common cause is a requested state degenerate with "
+        "one left out, which leaves the averaged energy a flat direction. Request "
+        "every component of the degenerate set."
     )
     with pytest.warns(UserWarning, match=exact_match(message)):
         solve, _ = state_averaged_orbital_solve(
@@ -485,8 +496,9 @@ def test_a_state_averaged_solve_keeps_a_symmetric_molecules_symmetry():
 def test_a_state_averaged_solve_that_breaks_symmetry_warns():
     message = (
         "The state-averaged solve broke the molecule's C2v symmetry, mixing states "
-        "of different symmetry; which such solution a run reaches depends on "
-        "rounding. Build the molecule with symmetry=True to keep the symmetry."
+        "of different symmetry; which such solution a run reaches can depend on "
+        "rounding and the starting orbitals. Build the molecule with symmetry=True "
+        "to keep it."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
@@ -750,7 +762,7 @@ def test_nevpt2_refuses_a_full_space_vector_beyond_max_memory(exported_h2o_state
     ensemble._mol.max_memory = 1e-4
     message = (
         "NEVPT2 needs the full-space CI vector of CAS(4,4), 0.000288 MB, above "
-        "mol.max_memory=0.0001 MB. Raise mol.max_memory if the machine has room."
+        "mol.max_memory=0.0001 MB. Raise mol.max_memory."
     )
 
     with pytest.raises(MemoryError, match=exact_match(message)):
@@ -829,7 +841,7 @@ def test_state_averaging_works_on_a_symmetry_adapted_molecule(
     assert set(ensemble.electronic_states) == {(1, 0), (1, 1), (3, 0)}
 
 
-@pytest.mark.filterwarnings("ignore:Orbital optimisation ended without converging")
+@pytest.mark.filterwarnings("ignore:Orbital optimisation stopped after")
 def test_state_averaged_energy_keeps_its_weights_through_a_crossing(
     dummy_expval_backend, mocker
 ):

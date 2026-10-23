@@ -1825,8 +1825,8 @@ def test_solver_raises_when_no_configuration_has_valid_symmetry():
     with pytest.raises(
         ValueError,
         match=exact_match(
-            "No valid configurations found matching particle symmetry! Increase "
-            "the backend shot count or n_recovery_iterations."
+            "No sampled bitstring matches the particle symmetry. Increase the "
+            "backend shot count or n_recovery_iterations."
         ),
     ):
         solver.solve({"1100": 1.0}, one_body, two_body)
@@ -1964,8 +1964,7 @@ def test_requested_states_reproduce_fci_per_multiplicity_on_a_complete_subspace(
             2,
             {"states": {1: 2}, "lambda_penalty": 0.0},
             "SQDConfig.states asks for more than the lowest state, which needs "
-            "lambda_penalty > 0: the S^2 penalty is what targets each "
-            "multiplicity.",
+            "lambda_penalty > 0 to target each multiplicity.",
         ),
         (
             10,

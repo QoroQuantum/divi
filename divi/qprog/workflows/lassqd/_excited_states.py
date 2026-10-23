@@ -48,8 +48,12 @@ _SPIN_SQUARE_TOL = 1e-3
 _DEGENERACY_TOL = 1e-6
 
 #: Gap (Ha) under which an unrequested root counts as degenerate with the last
-#: requested one, above the ~3e-6 Ha the starting-orbital nudge splits a pair by.
+#: requested one, above the split the starting-orbital nudge can give a pair.
 _SPLIT_SET_TOL = 1e-4
+
+#: Charge-transfer weight of the lowest state above which a second electron
+#: hop between two fragments is suggested.
+_HOP_HINT_WEIGHT = 1e-3
 
 
 def _is_off_spin(multiplicity: int, spin_square: float) -> bool:
@@ -57,20 +61,22 @@ def _is_off_spin(multiplicity: int, spin_square: float) -> bool:
 
 
 def _state_warnings(
-    states: Sequence[ElectronicState],
+    states: Sequence[ElectronicState], track_order: bool = True
 ) -> Iterator[tuple[Hashable, str]]:
-    """``(key, message)`` for each state the subspace leaves off-spin and each
-    near-degenerate pair."""
+    """``(key, message)`` for each state the subspace leaves off-spin and,
+    when labels follow states across rounds, each near-degenerate pair."""
     for state in states:
         if _is_off_spin(state.multiplicity, state.spin_square):
             yield (
                 ("off-spin", state.multiplicity, state.index),
                 f"State ({state.multiplicity}, {state.index}) has <S^2> = "
                 f"{state.spin_square:.4f}, not "
-                f"{spin_square_of(state.multiplicity):.4f}: the subspace does not "
-                "resolve it as that spin. Raise lambda_penalty or the sampling "
-                "budget (batch_size, n_recovery_iterations).",
+                f"{spin_square_of(state.multiplicity):.4f}, so the subspace does "
+                "not resolve it as that spin. Raise lambda_penalty or the "
+                "sampling budget (batch_size, n_recovery_iterations).",
             )
+    if not track_order:
+        return
     for lower, upper in itertools.pairwise(
         sorted(states, key=lambda state: (state.multiplicity, state.energy))
     ):
@@ -122,9 +128,78 @@ class _ExcitedStates:
         self._warn_once = warn_once
         self._rounds_completed = rounds_completed
         self.final_subspace: _SampledSubspace | None = None
+        self.across_fragments = False
 
     def reset(self) -> None:
         self.final_subspace = None
+
+    def record_interaction(
+        self,
+        states: Sequence[ElectronicState],
+        kept: int | None,
+        incomplete: Mapping[int, tuple[int, int]],
+    ) -> tuple[ElectronicState, ...]:
+        """Take the round's states from the state interaction over two
+        fragments, and return them in energy order.
+
+        ``kept`` is the multiplets kept per electron count when that leaves
+        any out; ``incomplete`` the ``(held, full)`` determinant counts of
+        each fragment whose model space misses some.
+        """
+        self.final_subspace = None
+        for index, (held, full) in incomplete.items():
+            hint = (
+                ", or set SQDConfig.extension to add the determinants it misses"
+                if self._sqd.extension is None
+                else ""
+            )
+            self._warn_once(
+                ("incomplete subspace", f"fragment_{index}"),
+                f"fragment_{index}'s states for the interaction span {held} of "
+                f"{full} determinants. They grow from its ground-state samples, "
+                "so the states can come out too high, the lowest included. Raise "
+                f"the sampling budget (the backend's shots, batch_size){hint}.",
+            )
+        if kept is not None:
+            reason = (
+                f"SQDConfig.fragment_roots={kept} leaves out each fragment's "
+                "higher multiplets"
+                if self._sqd.fragment_roots is not None
+                else "To stay within its product-state budget, the state "
+                f"interaction keeps each fragment's {kept} lowest multiplets per "
+                "electron count"
+            )
+            self._warn_once(
+                "fewer fragment multiplets",
+                f"{reason}, which can raise the states, the lowest included. "
+                "Raise SQDConfig.fragment_roots to keep more.",
+            )
+        lowest = min(states, key=lambda state: state.energy, default=None)
+        if (
+            lowest is not None
+            and self._sqd.fragment_hops == 1
+            and (lowest.charge_transfer or 0.0) > _HOP_HINT_WEIGHT
+        ):
+            self._warn_once(
+                "two hops",
+                f"State ({lowest.multiplicity}, {lowest.index}) has a "
+                f"charge-transfer weight of {lowest.charge_transfer:.3f}, so "
+                "moving two electrons between the fragments may matter, which "
+                "one hop leaves out. Try SQDConfig.fragment_hops=2.",
+            )
+        resolved = Counter(state.multiplicity for state in states)
+        for multiplicity, n_roots in (self._sqd.states or {}).items():
+            if resolved[multiplicity] < n_roots:
+                self._warn_once(
+                    ("unresolved", "state interaction", multiplicity),
+                    f"The state interaction resolves {resolved[multiplicity]} of "
+                    f"the {n_roots} requested states of multiplicity "
+                    f"{multiplicity}. Raise SQDConfig.fragment_roots or the "
+                    "sampling budget.",
+                )
+        for key, message in _state_warnings(states, track_order=False):
+            self._warn_once(key, message)
+        return _in_energy_order(states)
 
     def record_round(
         self,
@@ -182,8 +257,7 @@ class _ExcitedStates:
         round_number: int,
     ) -> tuple[OrbitalSolution, tuple[ElectronicState, ...] | None]:
         """Re-solve once if the tracked states swapped during the
-        state-averaged solve, which weights roots by energy rank, so the
-        weights move to where the states ended up.
+        state-averaged solve, so the rank-based weights follow them.
 
         Warns:
             UserWarning: If they swap again in the re-solve.
@@ -205,9 +279,9 @@ class _ExcitedStates:
             if attempt:
                 self._warn_once(
                     ("weights not followed", round_number),
-                    f"Round {round_number}'s requested states "
-                    "swapped order during the state-averaged solve, twice, so its "
-                    "weights may sit on the other states this round.",
+                    f"Round {round_number}'s requested states swapped order "
+                    "during the state-averaged solve, twice, so its weights may "
+                    "sit on the other states.",
                 )
                 return solution, relaxed_states
             used = landed
@@ -242,8 +316,8 @@ class _ExcitedStates:
                 ("incomplete subspace", program_id),
                 f"{program_id}'s subspace holds {result.amplitudes.size} of "
                 f"{full_size} determinants. The circuit samples the ground "
-                "state, so excited states in an incomplete subspace come out "
-                f"too high.{hint}",
+                "state, so excited states can come out too high in an "
+                f"incomplete subspace.{hint}",
             )
 
         resolved = Counter(state.multiplicity for state in states)
@@ -253,9 +327,8 @@ class _ExcitedStates:
                     ("unresolved", program_id, multiplicity),
                     f"{program_id}'s subspace resolves {resolved[multiplicity]} of "
                     f"the {n_roots} requested states of multiplicity "
-                    f"{multiplicity}; the rest are left out. Raise the sampling "
-                    "budget (batch_size, n_recovery_iterations) or "
-                    "SQDConfig.extension.",
+                    f"{multiplicity}. Raise the sampling budget (batch_size, "
+                    "n_recovery_iterations) or set SQDConfig.extension.",
                 )
         for key, message in _state_warnings(states):
             self._warn_once(key, message)
@@ -298,12 +371,11 @@ class _ExcitedStates:
             ):
                 warn(
                     f"State ({multiplicity}, {n_roots - 1}) lies within "
-                    f"{abs(gap):.1e} "
-                    f"Ha of ({multiplicity}, {n_roots}), which SQDConfig.states "
-                    "does not request: it splits a degenerate set, so the state "
-                    "reported is an arbitrary member, and state averaging over "
-                    f"part of the set breaks its symmetry. Request {multiplicity}: "
-                    f"{n_roots + 1} or more.",
+                    f"{abs(gap):.1e} Ha of ({multiplicity}, {n_roots}), which "
+                    "SQDConfig.states does not request, so it may split a "
+                    "near-degenerate set: the state reported can be any member, "
+                    "and state averaging over part of the set can break its "
+                    f"symmetry. Request {multiplicity}: {n_roots + 1} or more.",
                     UserWarning,
                     stacklevel=_outside_divi_stacklevel(),
                 )
@@ -359,6 +431,11 @@ class _ExcitedStates:
     def _final_subspace_and_core(self, name: str) -> tuple[_SampledSubspace, int]:
         """The last completed round's subspace and frozen-core count, for the
         method ``name``."""
+        if self.across_fragments:
+            raise RuntimeError(
+                f"{name} needs the states of a single fragment; states across two "
+                "fragments give only their energies, in electronic_states."
+            )
         subspace = self.final_subspace
         if subspace is None:
             example = f"SQDConfig(states={{{self._spin + 1}: 2}})"

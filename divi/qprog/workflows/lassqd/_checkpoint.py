@@ -64,10 +64,9 @@ def _stored_array(
     """Copy one array out of a checkpoint archive, rejecting malformed data.
 
     Raises:
-        ValueError: If the array is missing, an object array (which an archive
-            opened with ``allow_pickle=False`` refuses to load), non-numeric,
-            of the wrong shape, NaN, or infinite where ``allow_infinite`` is
-            not set.
+        ValueError: If the array is missing, an object array, non-numeric, of
+            the wrong shape, NaN, or infinite where ``allow_infinite`` is not
+            set.
     """
     if name not in stored.files:
         raise ValueError(f"LASSQD checkpoint artifact is missing {name}.")
@@ -187,6 +186,7 @@ def _report_from_metadata(report: Any, index: int) -> LASSQDRoundReport:
                     index=int(entry["index"]),
                     energy=float(entry["energy"]),
                     spin_square=float(entry["spin_square"]),
+                    charge_transfer=optional(entry.get("charge_transfer")),
                 )
                 for entry in report["states"]
             ),
@@ -307,8 +307,8 @@ def load_snapshot(
     configuration: Mapping[str, str],
 ) -> _WorkflowSnapshot:
     """Load and validate the NPZ snapshot ``payload`` describes, against this
-    workflow's molecule, register and ``configuration``, without touching any
-    workflow object."""
+    workflow's molecule, register and ``configuration``, without touching the
+    workflow."""
     artifact = payload.get("artifact")
     if not isinstance(artifact, str):
         raise ValueError("LASSQD checkpoint is missing its NPZ artifact.")
@@ -320,7 +320,7 @@ def load_snapshot(
     if molecule != _molecule_fingerprint(mol):
         raise ValueError(
             "LASSQD checkpoint was written for a different molecule: its "
-            "geometry, basis, electron count or spin differs from this one's."
+            "geometry, basis, electron count or spin differs."
         )
     stored_configuration = payload.get("configuration")
     if not isinstance(stored_configuration, dict):
@@ -332,8 +332,8 @@ def load_snapshot(
     ]
     if differing:
         raise ValueError(
-            "LASSQD checkpoint was written with a different LASSQD "
-            f"configuration: its {', '.join(differing)} "
+            "LASSQD checkpoint was written with a different configuration: "
+            f"{', '.join(differing)} "
             f"{'differs' if len(differing) == 1 else 'differ'} from this run's."
         )
     fragment_metadata = payload.get("fragments")

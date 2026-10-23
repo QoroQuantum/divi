@@ -85,6 +85,7 @@ diagonalises
 diagonalising
 Dicke
 dicts
+dimers
 diiron
 dir
 divi
@@ -202,6 +203,8 @@ MSB
 msg
 multimodal
 multinomial
+multiplet
+multiplets
 namespace
 namespaced
 NaN

@@ -73,7 +73,7 @@ class _SolventField:
                 f"least 1; got {_static_eps(model)!r}. Set solvent.eps, or for "
                 "SMD its solvent, e.g. smd.solvent = 'water'."
             )
-        # kernel caches its last field on the model; keep the caller's clean.
+        # kernel caches its last field on the model.
         self._model = model.copy()
         self.field: tuple[float, np.ndarray] | None = None
 
@@ -83,8 +83,8 @@ class _SolventField:
 
     def energy_offset(self, density: np.ndarray) -> float:
         """What to add to an energy computed with the field in the core
-        Hamiltonian: trade the field's expectation for its solvation energy.
-        Zero before the first field."""
+        Hamiltonian to swap the field's expectation for its solvation energy;
+        zero before the first field."""
         if self.field is None:
             return 0.0
         field_energy, potential = self.field
@@ -128,8 +128,7 @@ class _SolventField:
         if optical_eps > static_eps:
             raise ValueError(
                 f"optical_eps={optical_eps} exceeds the solvent's static "
-                f"eps={static_eps}: the fast response cannot outweigh the full one. "
-                "Use the solvent's refractive index squared."
+                f"eps={static_eps}. Use the solvent's refractive index squared."
             )
         resolved = densities()
         fast = self._model.copy()

@@ -66,7 +66,7 @@ def test_fragment_state_rejects_inconsistent_fields(kwargs, message):
             2,
             "Fragment 0 (orbitals (0, 1)) has no excitation available: n_alpha=2, "
             "n_beta=2 leave every spin channel of its 2 orbitals either empty or "
-            "full, so there is no correlation for this fragment to capture.",
+            "full.",
         ),
         (
             [FragmentSpec(orbitals=(0, 5), n_alpha=1, n_beta=1)],
@@ -128,8 +128,8 @@ def test_validate_fragment_specs_rejects_invalid_layouts(
     [
         (
             [FragmentSpec(orbitals=(0, 2), n_alpha=1, n_beta=1)],
-            "Singly occupied orbitals [1] are in no fragment. The core must be "
-            "closed-shell, so every singly occupied orbital has to be active.",
+            "Singly occupied orbitals [1] are in no fragment; the core must be "
+            "closed-shell, so all of them must be active.",
         ),
         (
             [FragmentSpec(orbitals=(0, 1, 2), n_alpha=1, n_beta=2)],

@@ -29,6 +29,7 @@ from qiskit import ClassicalRegister, QuantumCircuit, transpile
 from threadpoolctl import threadpool_limits
 
 from divi.backends import CircuitRunner
+from divi.hamiltonians._molecular import without_chkfile
 from divi.pipeline import sample_preprocessor
 from divi.pipeline.stages import QiskitSpecStage
 from divi.qprog._program_checkpoint import ProgramCheckpoint
@@ -59,7 +60,7 @@ _pinned_pyscf_threads = 0
 
 @dataclass(frozen=True)
 class LUCJPreparation:
-    """Optimized fragment circuit and its Hamiltonian in the sampled basis."""
+    """Optimised fragment circuit and its Hamiltonian in the sampled basis."""
 
     circuit: QuantumCircuit
     params: np.ndarray
@@ -302,7 +303,7 @@ def build_lucj_circuit(
     n_orbitals: int,
     n_electrons: tuple[int, int],
 ) -> QuantumCircuit:
-    """Build the optimized ffsim circuit on Divi's interleaved spin wires."""
+    """Build the optimised ffsim circuit on Divi's interleaved spin wires."""
 
     circuit = QuantumCircuit(2 * n_orbitals)
     grouped_spin_wires = [
@@ -369,10 +370,8 @@ def _physical_spin_amplitudes(
 ]:
     """Relabel PySCF's majority/minority amplitudes as physical alpha/beta.
 
-    ROHF exposes the singly occupied majority channel first even when the
-    fragment's physical majority is beta. ffsim instead interprets tuple order
-    as alpha then beta, including the occupied and virtual axes of mixed-spin
-    doubles.
+    PySCF lists the majority channel first even when it is beta; ffsim reads
+    tuple order as alpha then beta, including the axes of mixed-spin doubles.
     """
     t1_majority, t1_minority = (
         np.asarray(amplitude) for amplitude in coupled_cluster.t1
@@ -502,7 +501,7 @@ def _fragment_rohf(
 ):
     """Solve the fragment ROHF problem whose orbitals define the LUCJ basis.
 
-    Open-shell fragments have several stable ROHF solutions, so ROHF runs from
+    Open-shell fragments can have several stable ROHF solutions, so ROHF runs from
     each representable occupation and the lowest stable solution is kept.
 
     Raises:
@@ -521,7 +520,7 @@ def _fragment_rohf(
 
     best = None
     for start in _rohf_starts(one_body, spec):
-        mean_field = scf.ROHF(molecule)
+        mean_field = without_chkfile(scf.ROHF(molecule))
         mean_field.get_hcore = lambda *args: one_body
         mean_field.get_ovlp = lambda *args: np.eye(n_orbitals)
         mean_field._eri = eri
@@ -563,8 +562,7 @@ def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
     if not coupled_cluster.converged:
         warn(
             f"CCSD seed did not converge for fragment {spec.orbitals} after "
-            f"{_CC_MAX_CYCLE} cycles; using its best available amplitudes, as "
-            "in the LASSQD reference implementation.",
+            f"{_CC_MAX_CYCLE} cycles; using its best available amplitudes.",
             UserWarning,
             stacklevel=2,
         )

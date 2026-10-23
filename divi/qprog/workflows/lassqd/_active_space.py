@@ -82,16 +82,12 @@ def select_frontier_orbitals(
 
 
 def _canonicalize_columns(mol, block: np.ndarray) -> np.ndarray:
-    """Reorder a localised block's columns into a deterministic order.
+    """Sort a localised block's columns by the index of the atom carrying their
+    largest Mulliken population, then by population-weighted centroid
+    coordinate; columns tied on both keep their input order.
 
-    Columns are sorted by the index of the atom carrying their largest
-    Mulliken population, tiebroken by the population-weighted centroid
-    coordinate; columns tied on both keep their input order. Pipek-Mezey's
-    cost function is invariant to the order of the localised columns it
-    returns, so two runs that converge to the same physical solution (same
-    cost) can still return it in a different column order, and the fragment
-    partition built from those columns would follow it. Sorting removes that
-    dependence wherever the keys differ.
+    Pipek-Mezey can return the same solution in different column orders, which
+    would change the fragment partition.
     """
     n_col = block.shape[1]
     atom_population = atomic_pops(mol, block, method="mulliken", mode="pop")
@@ -153,9 +149,8 @@ def split_active_orbitals(
     missing = [o for o in range(n_occupied - abs(spin), n_occupied) if o not in indices]
     if missing:
         raise ValueError(
-            f"active_orbitals leaves out singly occupied orbitals {missing}. The "
-            "core must be closed-shell, so every singly occupied orbital has to "
-            "be active."
+            f"active_orbitals leaves out singly occupied orbitals {missing}, "
+            "which must all be active."
         )
     return occupied, virtual
 
@@ -184,8 +179,8 @@ def validate_fragment_atoms(
                 )
             if atom in owner:
                 raise ValueError(
-                    f"Atom {atom} appears in both fragment {owner[atom]} and "
-                    f"fragment {index}. Fragments must be disjoint."
+                    f"Atom {atom} appears in fragments {owner[atom]} and "
+                    f"{index}; fragments must be disjoint."
                 )
             owner[atom] = index
     return owner
@@ -196,10 +191,8 @@ def assign_orbitals_to_atoms(
 ) -> list[tuple[int, ...]]:
     """Group localised columns into fragments by the atom they sit on.
 
-    Each column is assigned to whichever fragment owns the atom carrying its
-    largest Mulliken population. This is the fragmentation a localised active
-    space is usually defined by -- "these orbitals belong to this metal centre"
-    -- rather than one inferred from orbital coupling.
+    Each column goes to the fragment owning the atom carrying its largest
+    Mulliken population.
 
     Args:
         mol: A PySCF ``gto.Mole``.
@@ -212,8 +205,8 @@ def assign_orbitals_to_atoms(
 
     Raises:
         ValueError: If any column's dominant atom is not in ``fragment_atoms``,
-            or if a fragment ends up with no orbitals. Atom range and disjointness are
-            propagated from :func:`validate_fragment_atoms`.
+            or if a fragment ends up with no orbitals. Atom range and
+            disjointness errors come from :func:`validate_fragment_atoms`.
     """
     owner = validate_fragment_atoms(fragment_atoms, mol.natm)
     dominant_atom = np.argmax(
@@ -226,9 +219,8 @@ def assign_orbitals_to_atoms(
             raise ValueError(
                 f"Localised active orbital {column} sits mainly on atom {atom} "
                 f"({mol.atom_symbol(atom)}), which fragment_atoms does not list. "
-                "Every active orbital must belong to some fragment; add that "
-                "atom to one of them, or choose an active space localised on "
-                "the atoms you listed."
+                "Add it to a fragment, or choose an active space localised on "
+                "the listed atoms."
             )
         clusters[owner[atom]].append(column)
 
@@ -236,8 +228,8 @@ def assign_orbitals_to_atoms(
         if not cluster:
             raise ValueError(
                 f"fragment_atoms[{index}] ({list(fragment_atoms[index])}) got no "
-                "active orbitals. The localised active space puts none of its "
-                "orbitals on those atoms."
+                "active orbitals: the localised active space has none on those "
+                "atoms."
             )
     return [tuple(cluster) for cluster in clusters]
 
@@ -249,30 +241,15 @@ def localize_blocks(
     virtual_indices,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Pipek-Mezey localize the occupied and virtual blocks independently.
+    """Pipek-Mezey localise the occupied and virtual blocks independently, so
+    every localised orbital is unambiguously occupied or virtual.
 
-    Localising the two blocks separately keeps each localised orbital
-    unambiguously occupied or virtual, which makes fragment electron counts
-    exact rather than inferred from occupation thresholds. Localising them
-    jointly would mix occupied and virtual character across the resulting
-    orbitals and destroy that property.
-
-    PySCF starts each localisation from its atomic initial guess, the block's
-    columns rotated as close as possible to orthogonalised AOs. For a
-    symmetric molecule that run can stop at a stationary point of the
-    Pipek-Mezey cost rather than a maximum, and a single random restart can
-    land on the same one. To make escaping likely, each block is also
-    localised from several randomly rotated copies of its columns (each a
-    fresh random orthogonal rotation drawn from ``rng``), and whichever run
-    reaches the highest Pipek-Mezey cost is kept. This never does worse than
-    the unrotated run alone, but escaping a symmetric stationary point is not
-    guaranteed for every input.
-
-    Once a restart's cost exceeds the unrotated run's by more than a small
-    relative tolerance, the stationary point has been escaped and further
-    restarts stop early. A restart that lands back on that cost (or close to
-    it) keeps trying, up to the restart cap, which is exactly the case the
-    restarts exist for.
+    Each block is localised from PySCF's atomic guess and from up to eight
+    randomly rotated copies of its columns, and the run with the highest
+    Pipek-Mezey cost is kept. This never does worse than the unrotated run and
+    can escape a stationary point of a symmetric molecule, but escape is not
+    guaranteed. Restarts stop early once a cost exceeds the unrotated run's by
+    a small relative tolerance.
 
     Args:
         mol: A PySCF ``gto.Mole``.
@@ -281,22 +258,12 @@ def localize_blocks(
             block.
         virtual_indices: Column indices of ``mo_coeff`` forming the virtual
             block.
-        rng: Random number generator used to perturb the localisation's
-            starting point. Required so that fragmentation stays
-            reproducible under a caller-supplied seed rather than drawing
-            from unseeded global randomness.
+        rng: Source of the random rotations.
 
     Returns:
         ``(localized_occupied, localized_virtual)`` AO-basis coefficient
-        blocks. A block with a single orbital is returned unchanged, since
-        Pipek-Mezey localisation on one orbital is a no-op. Each returned
-        block's columns are canonically ordered (see
-        :func:`_canonicalize_columns`): by the index of the atom carrying
-        their largest Mulliken population, tiebroken by the
-        population-weighted centroid coordinate. This makes the column order
-        reproducible under a fixed seed even when the optimizer reaches the
-        same physical solution via a different column order on different
-        runs.
+        blocks, columns ordered as in :func:`_canonicalize_columns`. A
+        single-orbital block is returned unchanged.
     """
 
     return (
@@ -340,16 +307,11 @@ def build_coupling_graph(
 ) -> nx.Graph:
     """Build the orbital coupling graph in the localised basis.
 
-    Edge weight is ``|h_pq| + |(pq|qp)|`` — the one-electron coupling plus
-    the exchange integral. ``coupling_threshold`` is relative: edges with
-    weight below ``coupling_threshold * max(w)`` are dropped, which keeps the
-    default scale-free across molecules and basis sets. In practice, for
-    genuinely localised orbitals the weakest surviving cross-fragment
-    coupling is typically tens of times larger than ``coupling_threshold``'s
-    default of ``1e-3`` would require to prune, so the default rarely drops
-    any edge for small active spaces; a caller who wants pruning to actually
-    happen should raise this value substantially rather than relying on the
-    default.
+    Edge weight is ``|h_pq| + |(pq|qp)|``, the one-electron coupling plus the
+    exchange integral. Edges with weight below ``coupling_threshold * max(w)``
+    are dropped, so the threshold is relative. The default of ``1e-3`` can
+    prune few edges for small localised active spaces; raise it to force
+    pruning.
 
     Args:
         one_body: ``(n_orb, n_orb)`` one-electron integrals in the localised
@@ -410,21 +372,13 @@ def merge_clusters(
     """Greedily merge coupled orbitals into fragments under a size limit.
 
     Starts from one singleton cluster per orbital and repeatedly merges the
-    most strongly coupled pair of clusters that stays within
-    ``max_orbitals_per_fragment``, using the total surviving edge weight
-    between clusters as the merge criterion. Ties are broken by scan order:
-    candidate pairs are visited in ascending ``(i, j)`` index-pair order
-    within the current cluster list, and a merge only replaces the running
-    best when its weight is strictly greater, so the earliest-scanned pair
-    among ties wins. A fix-up pass then absorbs any cluster holding only
-    occupied or only virtual orbitals into a neighbour, since such a fragment
-    captures no correlation between occupied and virtual character. A
-    neighbour with positive coupling is preferred; a neighbour with zero
-    coupling is used only when no coupled neighbour fits within
-    ``max_orbitals_per_fragment``, since an unmixed fragment is worse than a
-    zero-coupling merge. Ties in this pass favour the smallest partner, since
-    consuming a small cluster leaves more room for other clusters that still
-    need a fix.
+    pair with the largest total surviving edge weight between them that stays
+    within ``max_orbitals_per_fragment``; the earliest pair in ascending
+    index order wins ties. A fix-up pass then merges every cluster holding
+    only occupied or only virtual orbitals into a neighbour, preferring a
+    coupled neighbour and, among equals, the smallest. A zero-coupling
+    neighbour is used only when no coupled one fits; the caller is then
+    warned.
 
     Args:
         graph: The orbital coupling graph, as returned by
@@ -493,7 +447,7 @@ def merge_clusters(
             raise ValueError(
                 f"Orbitals {cluster} form an all-{character} fragment that "
                 "captures no correlation, and cannot be merged with any "
-                "neighbor without exceeding "
+                "neighbour without exceeding "
                 f"max_orbitals_per_fragment={max_orbitals_per_fragment}. "
                 "Supply explicit fragments or raise the limit."
             )
@@ -518,10 +472,9 @@ def merge_clusters(
     if uncoupled:
         warnings.warn(
             f"Fragments {uncoupled} join orbitals with no coupling above "
-            "coupling_threshold between them, to give each fragment occupied "
-            "and virtual orbitals, so their split does not follow the "
-            "molecule's couplings. Lower coupling_threshold, or set "
-            "fragment_atoms or active_spaces.",
+            "coupling_threshold, to give each fragment occupied and virtual "
+            "orbitals, so they do not follow the molecule's couplings. Lower "
+            "coupling_threshold, or set fragment_atoms or active_spaces.",
             UserWarning,
             stacklevel=2,
         )
@@ -537,10 +490,9 @@ def _localized_active_space_integrals(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build one- and two-body integrals for the localised active space.
 
-    The one-body term carries the frozen-core mean-field potential
-    ``2 * J_core - K_core`` contributed by any occupied orbital not selected
-    as active; the two-body term is the bare active-space integral. Both come
-    from :func:`~divi.qprog.workflows.lassqd._integrals.transform_integrals`.
+    The one-body term carries the frozen-core potential ``2 * J_core - K_core``
+    of every occupied orbital not selected as active; the two-body term is the
+    bare active-space integral.
 
     Args:
         ao: The molecule and its AO integrals.
@@ -578,72 +530,60 @@ def auto_fragment_specs(
     local_spins: Sequence[int] | None = None,
     spin: int = 0,
 ) -> tuple[list[FragmentSpec], np.ndarray, tuple[int, ...]]:
-    """Automatically fragment an active space from orbital coupling.
+    """Fragment an active space from orbital coupling.
 
     Selects active orbitals around the HOMO-LUMO gap
     (:func:`select_frontier_orbitals`), localises the occupied and virtual
-    blocks independently (:func:`localize_blocks`), builds the localised
-    coupling graph (:func:`build_coupling_graph`) from integrals that include
-    the frozen-core mean-field potential of any occupied orbital left out of
-    the active space, and greedily merges orbitals into fragments
-    (:func:`merge_clusters`).
+    blocks independently (:func:`localize_blocks`), builds the coupling graph
+    (:func:`build_coupling_graph`) from integrals that include the frozen-core
+    potential of any occupied orbital left out of the active space, and
+    greedily merges orbitals into fragments (:func:`merge_clusters`).
+
+    The selector and ``local_spins`` combinations are those
+    ``FragmentationConfig`` accepts; they are not re-validated here.
 
     Args:
-        ao: The molecule and its AO integrals, the latter for the
-            coupling-graph integrals.
+        ao: The molecule and its AO integrals.
         mo_coeff: ``(nao, n_orb)`` MO coefficients.
         n_occupied: Number of occupied spatial orbitals, doubly and singly
             occupied together.
         rng: Random number generator, forwarded to :func:`localize_blocks`.
-            Required rather than created internally, so that fragmentation
-            stays reproducible under a caller-supplied seed.
         n_active_orbitals: See :func:`select_frontier_orbitals`. Mutually
             exclusive with ``active_orbitals``.
-        max_orbitals_per_fragment: Maximum spatial orbitals per fragment;
-            ``None`` means ``DEFAULT_MAX_ORBITALS_PER_FRAGMENT``. Ignored when
+        max_orbitals_per_fragment: See :func:`merge_clusters`; ``None`` means
+            ``DEFAULT_MAX_ORBITALS_PER_FRAGMENT``. Ignored when
             ``fragment_atoms`` is given.
         coupling_threshold: See :func:`build_coupling_graph`; ``None`` means
             ``DEFAULT_COUPLING_THRESHOLD``. Ignored when ``fragment_atoms`` is
             given.
         active_orbitals: Explicit MO column indices forming the active space,
-            replacing the frontier selection. Use it when the active space is
-            defined by orbital character rather than energy -- a transition
-            metal's ``d`` manifold can sit well below the HOMO and its virtual
-            partners well above the LUMO, where no frontier count reaches them.
+            replacing the frontier selection.
         fragment_atoms: One sequence of atom indices per fragment. Assigns each
             localised active orbital to the fragment owning the atom it sits on
             (:func:`assign_orbitals_to_atoms`), replacing the coupling-graph
-            clustering. This is how a localised active space is normally
-            specified -- one fragment per metal centre.
-        local_spins: Per-fragment ``2S``, in the order ``fragment_atoms`` names
-            them, overriding the default of one unpaired spin per singly
-            occupied orbital (``S = 0`` for a closed-shell fragment). The
-            fragment's electron count is fixed by its occupied orbitals, so this
-            sets only the spin: ``n_alpha - n_beta = 2S``. Requires
-            ``fragment_atoms``, whose order is the caller's -- coupling-graph
-            fragment order depends on ``max_orbitals_per_fragment``,
-            ``coupling_threshold`` and the localisation RNG, so a positional
-            spin list would not name a stable fragment there.
+            clustering.
+        local_spins: Per-fragment ``2S``, in the order of ``fragment_atoms``,
+            overriding the default of one unpaired spin per singly occupied
+            orbital. It sets only the spin (``n_alpha - n_beta = 2S``); the
+            electron count is fixed by the occupied orbitals. Requires
+            ``fragment_atoms``.
         spin: The molecule's non-negative ``2S``; its ``spin`` highest
             occupied orbitals are singly occupied, localised apart from the
             doubly occupied ones.
 
-    The selector and ``local_spins`` combinations are those
-    ``FragmentationConfig`` accepts; they are not re-validated here.
-
     Returns:
         ``(specs, localized, active_positions)``: one ``FragmentSpec`` per
-        fragment with ``orbitals`` already in ``mo_coeff`` register indices, the
+        fragment with ``orbitals`` in ``mo_coeff`` register indices, the
         localised active-space AO-basis coefficients (occupied columns first),
-        and the register positions those columns belong to.
+        and the register positions of those columns.
 
     Raises:
         ImportError: If the ``chem`` extra is not installed.
         ValueError: If a requested ``2S`` has the wrong parity for a fragment's
             electron count, exceeds it, or leaves it no partly filled spin
-            channel. Also propagated from
-            :func:`select_frontier_orbitals`, :func:`split_active_orbitals`,
-            :func:`assign_orbitals_to_atoms`, or :func:`merge_clusters`.
+            channel. Also raised by :func:`select_frontier_orbitals`,
+            :func:`split_active_orbitals`, :func:`assign_orbitals_to_atoms`
+            and :func:`merge_clusters`.
     """
     mol = ao.mol
     if active_orbitals is not None:

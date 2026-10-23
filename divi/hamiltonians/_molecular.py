@@ -4,7 +4,7 @@
 
 """Molecule frontends (PySCF and PennyLane) and the dispatch across them."""
 
-from typing import TYPE_CHECKING, Any, TypeGuard
+from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
@@ -21,6 +21,7 @@ else:
     _PennyLaneMolecule = _PySCFMole = _PySCFMeanField = Any
 
 _PySCFInput = _PySCFMole | _PySCFMeanField
+_MeanField = TypeVar("_MeanField", bound=_PySCFMeanField)
 
 #: Every molecule representation :meth:`MolecularProblem.from_molecule` accepts.
 MoleculeLike = _PennyLaneMolecule | _PySCFInput
@@ -92,6 +93,15 @@ def split_pyscf_input(
     return mol, mean_field
 
 
+def without_chkfile(mean_field: _MeanField) -> _MeanField:
+    """``mean_field`` with the temporary checkpoint file PySCF holds open for
+    it closed and no longer written, for a solve nothing restarts from."""
+    if mean_field.chkfile is not None:
+        mean_field._chkfile.close()
+        mean_field.chkfile = None
+    return mean_field
+
+
 def pyscf_mole_at(mol: _PySCFMole, coordinates: np.ndarray) -> _PySCFMole:
     """A copy of ``mol`` at ``coordinates`` (Bohr), keeping ``mol``'s unit."""
     from pyscf.data.nist import BOHR
@@ -121,7 +131,7 @@ def _pyscf_integrals(
     from pyscf import ao2mo, scf
 
     if mean_field is None:
-        mean_field = scf.RHF(mol).run(verbose=0)
+        mean_field = without_chkfile(scf.RHF(mol)).run(verbose=0)
     elif mean_field.mo_coeff is None:
         mean_field.run(verbose=0)
 

@@ -494,7 +494,7 @@ def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
     message = (
         "CCSD seed did not converge for fragment (3, 4) after 500 cycles; using "
-        "its best available amplitudes, as in the LASSQD reference implementation."
+        "its best available amplitudes."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
