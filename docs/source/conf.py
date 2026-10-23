@@ -203,8 +203,11 @@ nitpick_ignore_regex = [
     # ``scipy.optimize.OptimizeResult`` — bare name from autodoc-typehints.
     (r"py:class", r"^OptimizeResult$"),
     # PySCF's API documentation does not publish an objects.inv; these are the
-    # two optional molecule-input classes exposed by VQE's type annotation.
-    (r"py:class", r"pyscf\.(gto\.mole\.Mole|scf\.hf\.SCF)"),
+    # molecule-input classes in VQE's annotation and LASSQD's solvent models.
+    (
+        r"py:class",
+        r"pyscf\.(gto\.mole\.Mole|scf\.hf\.SCF|solvent\.ddcosmo\.ddCOSMO|solvent\.pcm\.PCM)",
+    ),
 ]
 
 # ``sphinx-autodoc-typehints`` emits its own warning category for unresolved

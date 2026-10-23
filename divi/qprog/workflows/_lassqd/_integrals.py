@@ -668,9 +668,11 @@ def optimize_orbitals(
     ``fun=0.0`` without evaluating the objective when there are zero rotation
     parameters) instead of raising.
 
-    The angles are measured from the orbitals a solve starts at, which turns
-    them ill-conditioned after a large rotation, so while the gradient at the
-    current orbitals exceeds ``gradient_tol`` the solve restarts from them, up
+    The first L-BFGS-B pass runs even when the starting gradient is already
+    within ``gradient_tol``. The angles are measured from the orbitals a solve
+    starts at, which turns them ill-conditioned after a large rotation, so
+    while the gradient at the current orbitals exceeds ``gradient_tol`` the
+    solve restarts from them, up
     to ``_MAX_RESTARTS`` times and within ``max_iterations`` in total. ``gradient_norm`` is always taken at the returned orbitals.
 
     That monotonicity is also why the convergence flag matters: an optimizer
@@ -745,8 +747,10 @@ def optimize_orbitals(
                     f"{latest_gradient_norm:.2e}, {time.monotonic() - started:.0f} s"
                 )
 
-        for _ in range(_MAX_RESTARTS):
-            if np.linalg.norm(best_gradient) <= gradient_tol:
+        # The first pass runs even within tolerance, as ciah_orbital_solve's
+        # first step does.
+        for restart in range(_MAX_RESTARTS):
+            if restart and np.linalg.norm(best_gradient) <= gradient_tol:
                 break
             options = dict(ORBITAL_MINIMIZE_OPTIONS)
             if max_iterations is not None:
@@ -985,7 +989,8 @@ def ciah_orbital_solve(
 
     Same objective, rotation pairs and result as :func:`optimize_orbitals`;
     each macro-iteration takes an augmented-Hessian step and re-centres the
-    angles on the new orbitals. A vanishing step restarts the augmented-Hessian
+    angles on the new orbitals, at least one even when the starting gradient is
+    already within tolerance. A vanishing step restarts the augmented-Hessian
     solve; a restart that also gives no step ends the solve. A step that raises
     the energy hands the rest of the budget to :func:`optimize_orbitals` from
     the lowest point. The lowest-energy orbitals seen are returned, preferring a
@@ -1014,18 +1019,19 @@ def ciah_orbital_solve(
     rose = False
     if not hessian.pdim:
         stop_reason = "no rotation freedom"
-    elif np.linalg.norm(best_gradient) <= gradient_tol:
-        stop_reason = "converged"
     else:
         stop_reason = "macro-iteration limit"
         started = time.monotonic()
 
-        def start():
+        def start(tolerance: float = gradient_tol):
             # pyscf seeds a solve with its last step; a fresh one uses the gradient.
-            steps = ciah.rotate_orb_cc(hessian, rotation, gradient_tol, verbose=0)
+            steps = ciah.rotate_orb_cc(hessian, rotation, tolerance, verbose=0)
             return steps, next(steps)[0], True
 
-        steps, step, fresh = start()
+        # A gradient already under the tolerance still gets one tight step:
+        # stopping there can leave the macro-cycle short of the minimum.
+        already_small = np.linalg.norm(best_gradient) <= gradient_tol
+        steps, step, fresh = start(0.0 if already_small else gradient_tol)
         while n_iterations < max_iterations:
             if np.abs(step - identity).max() <= _STALLED_STEP:
                 if fresh:

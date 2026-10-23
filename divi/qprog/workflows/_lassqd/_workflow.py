@@ -14,7 +14,7 @@ from collections.abc import Hashable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from math import isfinite
-from numbers import Integral
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Literal
 from warnings import warn
@@ -22,6 +22,7 @@ from warnings import warn
 import numpy as np
 import scipy.linalg
 from pyscf import gto, scf
+from pyscf.solvent import ddcosmo, pcm, smd
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians._molecular import is_pyscf_input, split_pyscf_input
@@ -103,6 +104,18 @@ _DEGENERACY_TOL = 1e-6
 #: Gap (Ha) under which an unrequested root counts as degenerate with the last
 #: requested one, above the ~3e-6 Ha the starting-orbital nudge splits a pair by.
 _SPLIT_SET_TOL = 1e-4
+
+#: The PySCF solvent-model settings that change its reaction field.
+_SOLVENT_SETTINGS = (
+    "eps",
+    "method",
+    "lmax",
+    "lebedev_order",
+    "eta",
+    "radii_table",
+    "atom_radii",
+    "solvent",
+)
 
 #: Scale of the random rotation applied to the starting orbitals.
 _ORBITAL_NUDGE = 1e-3
@@ -201,7 +214,8 @@ class LASSQDRoundReport:
     Attributes:
         number: Round number, counting from 1.
         energy: This round's total energy of the lowest state, a variational
-            upper bound.
+            upper bound in gas phase; with a solvent it includes the solvation
+            energy, the first round's in no field yet.
         energy_change: Signed change from the previous round's ``energy``, or
             ``None`` for the first round, which has no predecessor.
         subspace_sizes: Distinct determinants each fragment's SQD recovery
@@ -382,6 +396,30 @@ def _compute_n_core(specs: Sequence[FragmentSpec], n_occupied: int) -> int:
     return n_occupied - sum(1 for orbital in active_orbitals if orbital < n_occupied)
 
 
+def _is_dielectric_constant(value: object) -> bool:
+    """Whether ``value`` is a finite real number of at least 1."""
+    return (
+        isinstance(value, Real)
+        and not isinstance(value, bool)
+        and isfinite(value)
+        and float(value) >= 1.0
+    )
+
+
+def _static_eps(model: ddcosmo.DDCOSMO | pcm.PCM) -> Any:
+    """A solvent model's static dielectric constant; SMD takes its solvent's
+    unless ``eps`` overrides it."""
+    if isinstance(model, smd.SMD) and model.eps is None:
+        return (model.solvent_descriptors or smd.solvent_db[model.solvent])[5]
+    return model.eps
+
+
+def _ao_density(wavefunction: StateWavefunction) -> np.ndarray:
+    """A state's spin-traced AO density matrix, core included."""
+    core, active = wavefunction.core_orbitals, wavefunction.active_orbitals
+    return 2.0 * core @ core.T + active @ wavefunction.rdm1 @ active.T
+
+
 def _diagonal_rdm_guess(
     spec: FragmentSpec,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -422,7 +460,8 @@ class LASSQD(ProgramEnsemble):
     optimises an ansatz against backend-estimated energies.
 
     :attr:`energy` is a variational upper bound -- the assembled RDM is that of
-    a product of fragment states, so the energy is a genuine expectation value.
+    a product of fragment states, so the energy is a genuine expectation value
+    (in gas phase; a ``solvent`` adds a solvation energy that is no bound).
     Fragmenting nonetheless costs accuracy, and the cost grows with how
     strongly the fragments interact; see
     :ref:`lassqd-accuracy-characteristics` in the LASSQD guide.
@@ -453,6 +492,15 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             generalised Fock matrix, twice PySCF CASSCF's, so this is twice
             as tight as CASSCF's ``sqrt``-of-energy-tolerance rule.
         seed: Seed for fragmentation, localisation, and SQD subsampling.
+        solvent: A PySCF continuum solvent model built on the molecule —
+            ``pyscf.solvent.ddCOSMO(mol)``, ``ddPCM``, ``PCM`` or ``SMD`` —
+            with its ``eps`` set, or for SMD its ``solvent``; ``None`` (the
+            default) runs in gas phase. LASSQD works on a copy. Each round adds
+            the reaction field of the lowest requested state's density from the
+            round before, so the macro-cycle converges it self-consistently,
+            and every energy includes the solvation energy. Excited states sit
+            in that equilibrium field; :meth:`nonequilibrium_corrections` adds
+            the fast response to each.
         **kwargs: ``backend`` (required), ``sampling_backend``, and
             ``reporting_level`` are consumed here; ``sampling_backend`` runs
             each fragment's final sample. Other keywords are
@@ -473,10 +521,14 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             if the molecule's ``spin`` is negative; if ``local_spins`` does
             not sum to ``spin``; if ``sqd.states`` is set with more than one
             fragment or asks for a state the fragment cannot hold; or if
-            ``sqd.extension`` could outgrow the solver with ``max_dim`` unset.
+            ``sqd.extension`` could outgrow the solver with ``max_dim`` unset;
+            or if ``solvent`` was built on a different molecule or its
+            dielectric constant is not a finite number of at least 1.
             The configuration objects validate their own fields on
             construction.
-        TypeError: If ``backend`` is missing or not a
+        TypeError: If ``solvent`` is not a PySCF ddCOSMO, ddPCM, PCM or SMD
+            model, if
+            ``backend`` is missing or not a
             :class:`~divi.backends.CircuitRunner`, if ``sampling_backend`` is
             neither one nor ``None``, if ``problem`` was not built
             from a PySCF ``Mole`` or mean-field, if ``preparation`` or
@@ -496,6 +548,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         orbital_update: OrbitalUpdate = SecondOrderOrbitalUpdate(),
         energy_tol: float = 1e-6,
         seed: int | None = None,
+        solvent: ddcosmo.DDCOSMO | pcm.PCM | None = None,
         **kwargs,
     ):
         if not isinstance(preparation, Preparation):
@@ -612,6 +665,34 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             )
         if fragmentation.fragment_atoms is not None:
             _validate_fragment_atoms(fragmentation.fragment_atoms, self._mol.natm)
+        if solvent is not None:
+            if not isinstance(solvent, (ddcosmo.DDCOSMO, pcm.PCM)):
+                raise TypeError(
+                    "solvent must be a PySCF ddCOSMO, ddPCM, PCM or SMD model, such "
+                    f"as pyscf.solvent.ddCOSMO(mol); got {type(solvent).__name__}."
+                )
+            if _molecule_fingerprint(solvent.mol) != _molecule_fingerprint(self._mol):
+                raise ValueError(
+                    "solvent was built on a different molecule; build it on the "
+                    "molecule the problem was made from."
+                )
+            if not _is_dielectric_constant(_static_eps(solvent)):
+                raise ValueError(
+                    "solvent's dielectric constant must be a finite number of at "
+                    f"least 1; got {_static_eps(solvent)!r}. Set solvent.eps, or for "
+                    "SMD its solvent, e.g. smd.solvent = 'water'."
+                )
+            # kernel caches its last field on the model; keep the caller's clean.
+            solvent = solvent.copy()
+        elif getattr(self._mean_field, "with_solvent", None) is not None:
+            warn(
+                "The mean field passed in was solved in a solvent, but LASSQD has "
+                "none, so it runs in gas phase from those orbitals. Pass "
+                "solvent=mean_field.with_solvent to solvate it.",
+                UserWarning,
+                stacklevel=2,
+            )
+        self._solvent = solvent
 
         self._fragmentation = fragmentation
         self._sqd = SQDConfig() if sqd is None else sqd
@@ -638,6 +719,8 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         self._round_reports: list[LASSQDRoundReport] = []
         self._warned: set[Hashable] = set()
         self._final_subspace: _SampledSubspace | None = None
+        # The solvent's (energy, AO potential) from the last round's density.
+        self._reaction_field: tuple[float, np.ndarray] | None = None
 
     def _check_fragments(self, specs: Sequence[FragmentSpec]) -> None:
         """Reject ``SQDConfig`` settings the fragments cannot carry, and warn
@@ -906,6 +989,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._round_reports.clear()
         self._warned.clear()
         self._final_subspace = None
+        self._reaction_field = None
 
     def _save_workflow_checkpoint_state(
         self, state: Any, round_dir: Path, stem: str
@@ -924,6 +1008,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             "orbitals_converged": np.asarray(state.orbitals_converged),
             "energy_history": np.asarray(self._energy_history, dtype=np.float64),
         }
+        if self._reaction_field is not None:
+            arrays["solvent_energy"] = np.asarray(self._reaction_field[0])
+            arrays["solvent_potential"] = self._reaction_field[1]
         fragments = []
         for index, fragment in enumerate(state.fragments):
             prefix = f"fragment_{index}"
@@ -1017,13 +1104,18 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 "geometry, basis, electron count or spin differs from this one's."
             )
         configuration = payload.get("configuration")
-        if not isinstance(configuration, str):
+        if not isinstance(configuration, dict):
             raise ValueError("LASSQD checkpoint is missing its configuration.")
-        if configuration != self._configuration_record():
+        differing = [
+            name
+            for name, record in self._configuration_record().items()
+            if configuration.get(name) != record
+        ]
+        if differing:
             raise ValueError(
                 "LASSQD checkpoint was written with a different LASSQD "
-                "configuration: fragmentation, sqd, preparation or "
-                "orbital_update differ."
+                f"configuration: its {', '.join(differing)} "
+                f"{'differs' if len(differing) == 1 else 'differ'} from this run's."
             )
         fragment_metadata = payload.get("fragments")
         if not isinstance(fragment_metadata, list) or not fragment_metadata:
@@ -1105,6 +1197,13 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             energy_history = _stored_array(stored, "energy_history")
             if energy_history.ndim != 1:
                 raise ValueError("LASSQD checkpoint energy history is not 1-D.")
+            reaction_field = None
+            if "solvent_potential" in stored.files:
+                n_ao = self._mol.nao_nr()
+                reaction_field = (
+                    float(_stored_array(stored, "solvent_energy", ())),
+                    _stored_array(stored, "solvent_potential", (n_ao, n_ao)),
+                )
             final_strings = payload.get("final_strings")
             final_subspace = None
             if final_strings is not None:
@@ -1164,7 +1263,12 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     ),
                     orbital_iterations=int(report["orbital_iterations"]),
                     orbital_evaluations=int(report["orbital_evaluations"]),
-                    orbital_gradient_norm=float(report["orbital_gradient_norm"]),
+                    # JSON stores the NaN a FixedOrbitals round reports as null.
+                    orbital_gradient_norm=(
+                        float("nan")
+                        if report["orbital_gradient_norm"] is None
+                        else float(report["orbital_gradient_norm"])
+                    ),
                     orbital_converged=bool(report["orbital_converged"]),
                     rotation_pairs=int(report["rotation_pairs"]),
                     recovery_seconds=float(report["recovery_seconds"]),
@@ -1212,23 +1316,37 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         self._energy_history = energy_history.astype(float).tolist()
         self._round_reports = reports
         self._final_subspace = final_subspace
+        self._reaction_field = reaction_field
         # Rebuilt programs keep the state they were built from.
         if not self._programs:
             self._state = state
         return state
 
-    def _configuration_record(self) -> str:
+    def _configuration_record(self) -> dict[str, str]:
         """The settings a checkpoint must have been written with to resume
-        here: those that decide which computation a round performs."""
-        return repr(
-            (
-                self._fragmentation,
-                self._sqd,
-                self._preparation._checkpoint_record(),
-                _checkpoint_digest(dict(sorted(self._extra_kwargs.items()))),
-                self._orbital_update,
-            )
-        )
+        here, by name: those that decide which computation a round performs."""
+        return {
+            "fragmentation": repr(self._fragmentation),
+            "sqd": repr(self._sqd),
+            "preparation": repr(self._preparation._checkpoint_record()),
+            "fragment program options": _checkpoint_digest(
+                dict(sorted(self._extra_kwargs.items()))
+            ),
+            "orbital_update": repr(self._orbital_update),
+            "solvent": (
+                "None"
+                if self._solvent is None
+                else _checkpoint_digest(
+                    (
+                        type(self._solvent).__name__,
+                        {
+                            name: getattr(self._solvent, name, None)
+                            for name in _SOLVENT_SETTINGS
+                        },
+                    )
+                )
+            ),
+        }
 
     def _solver_for(self, index: int, spec: FragmentSpec) -> SQDSolver:
         """Return this fragment's cached ``SQDSolver``, building it once.
@@ -1259,9 +1377,12 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
         Both are independent of ``mo_coeff`` and reused unchanged by every
         round's :func:`optimize_orbitals` call, which itself evaluates
-        :func:`_total_energy` many times per round.
+        :func:`_total_energy` many times per round. The core Hamiltonian
+        carries the solvent's current reaction field.
         """
-        return self._ao_eri, self._h_ao
+        if self._reaction_field is None:
+            return self._ao_eri, self._h_ao
+        return self._ao_eri, self._h_ao + self._reaction_field[1]
 
     @cached_property
     def _ao_eri(self) -> np.ndarray:
@@ -1551,6 +1672,25 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             electronic_states = self._electronic_states(
                 "fragment_0", result, spec, relaxed_states
             )
+        solvation_offset = 0.0
+        if self._solvent is not None:
+            density = self._lowest_state_density(
+                solution.mo_coeff, n_core, orbital_round.rdm1_active
+            )
+            if self._reaction_field is not None:
+                # The field sat in hcore: trade its expectation for E(solvent).
+                field_energy, potential = self._reaction_field
+                solvation_offset = field_energy - float(
+                    np.einsum("ij,ji->", potential, density)
+                )
+            solution = replace(solution, energy=solution.energy + solvation_offset)
+            electronic_states = tuple(
+                replace(state, energy=state.energy + solvation_offset)
+                for state in electronic_states
+            )
+            # pyrefly: ignore[bad-argument-type]  # PySCF's PCM reuses ddCOSMO.kernel
+            field_energy, potential = self._solvent.kernel(density)
+            self._reaction_field = (float(field_energy), np.asarray(potential))
         # A state-averaged solve's energy is the average, not the lowest state's.
         energy = (
             electronic_states[0].energy
@@ -1620,10 +1760,28 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             next_state = replace(
                 next_state,
                 mo_coeff=mo_coeff,
-                energy=escaped_energy,
+                energy=escaped_energy + solvation_offset,
                 orbitals_converged=False,
             )
         return next_state
+
+    def _lowest_state_density(
+        self, mo_coeff: np.ndarray, n_core: int, rdm1_active: np.ndarray
+    ) -> np.ndarray:
+        """AO density of the round's lowest state, which drives the reaction
+        field: the lowest requested state at the final orbitals, or else the
+        fragments' assembled RDM at ``mo_coeff``."""
+        if self._sqd.states is not None and self._final_subspace is not None:
+            ao_eri, h_ao = self._cached_mol_integrals()
+            wavefunctions = subspace_wavefunctions(
+                self._mol, self._final_subspace, n_core, ao_eri, h_ao
+            )
+            return _ao_density(
+                min(wavefunctions, key=lambda wavefunction: wavefunction.state.energy)
+            )
+        core = mo_coeff[:, :n_core]
+        active = mo_coeff[:, n_core : n_core + rdm1_active.shape[0]]
+        return 2.0 * core @ core.T + active @ rdm1_active @ active.T
 
     def _follow_swapped_states(
         self,
@@ -1930,15 +2088,81 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             for state in _in_energy_order(list(corrections))
         }
 
+    def nonequilibrium_corrections(
+        self, optical_eps: float = 1.78
+    ) -> dict[tuple[int, int], float]:
+        """Each requested state's non-equilibrium solvent correction, from the
+        last completed round, keyed ``(multiplicity, index)`` and ordered as
+        :attr:`electronic_states`.
+
+        A vertical excitation is too fast for the solvent's slow, orientational
+        part to follow, so each state keeps the lowest state's equilibrium
+        field, which :attr:`electronic_states` already holds, and only the
+        fast, electronic part responds to its density change. The correction
+        is that response's energy, ``1/2 tr(dD v_fast[dD])``, with ``dD`` the
+        state's density less the lowest state's and ``v_fast`` the solvent
+        model's response at ``optical_eps``; add it to the state's energy. It
+        is first order: the state does not relax in the response.
+
+        Args:
+            optical_eps: The solvent's optical dielectric constant, its
+                refractive index squared. The default, 1.78, is PySCF's and
+                suits water or acetonitrile; set about 2 to 3 for an organic
+                host.
+
+        Raises:
+            RuntimeError: If LASSQD was built without a ``solvent``, or no
+                round has completed with ``SQDConfig.states`` set.
+            ValueError: If ``optical_eps`` is not a finite number of at least
+                1, or exceeds the solvent's static dielectric constant.
+        """
+        if self._solvent is None:
+            raise RuntimeError(
+                "nonequilibrium_corrections needs LASSQD built with a solvent, "
+                "e.g. solvent=pyscf.solvent.ddCOSMO(mol)."
+            )
+        static_eps = _static_eps(self._solvent)
+        if not _is_dielectric_constant(optical_eps):
+            raise ValueError(
+                "optical_eps must be a finite number of at least 1; got "
+                f"{optical_eps!r}."
+            )
+        if optical_eps > static_eps:
+            raise ValueError(
+                f"optical_eps={optical_eps} exceeds the solvent's static "
+                f"eps={static_eps}: the fast response cannot outweigh the full one. "
+                "Use the solvent's refractive index squared."
+            )
+        wavefunctions = self._wavefunctions_in_energy_order(
+            "nonequilibrium_corrections"
+        )
+        fast = self._solvent.copy()
+        fast.reset()
+        fast.eps = optical_eps
+        fast.build()
+        reference = _ao_density(wavefunctions[0])
+        corrections = {}
+        for wavefunction in wavefunctions:
+            change = _ao_density(wavefunction) - reference
+            corrections[(wavefunction.state.multiplicity, wavefunction.state.index)] = (
+                float(0.5 * np.einsum("ij,ji->", fast._B_dot_x(change), change))
+            )
+        return corrections
+
     def _final_subspace_and_core(self, name: str) -> tuple[_SampledSubspace, int]:
         """The last completed round's subspace and frozen-core count, for the
         method ``name``."""
         subspace = self._final_subspace
         if subspace is None:
+            example = f"SQDConfig(states={{{self._spin + 1}: 2}})"
+            remedy = (
+                f"; this run requested none. Set them, e.g. {example}, and run again."
+                if self._round_reports
+                else f". Request the states, e.g. {example}, and call run() first."
+            )
             raise RuntimeError(
                 f"{name} needs a completed LASSQD round with SQDConfig.states "
-                "set. Request the states, e.g. "
-                f"SQDConfig(states={{{self._spin + 1}: 2}}), and call run() first."
+                f"set{remedy}"
             )
         strings_alpha, strings_beta = subspace.strings
         n_core = (
@@ -1966,7 +2190,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         """Lowest energy over all completed rounds, or ``inf`` before the first.
 
         Every round's energy is a variational upper bound, so the lowest is the
-        tightest one this run established.
+        tightest one this run established. With a ``solvent`` it is no bound,
+        and earlier rounds sit in a field not yet consistent with their
+        density, so this is the last round's energy, as :attr:`energy`.
 
         Note that ``workflow_state`` still holds the *last* round's orbitals,
         which are not the ones that produced this energy unless the two
@@ -1978,6 +2204,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         if not self._energy_history:
             _warn_no_round("best_energy")
             return float("inf")
+        if self._solvent is not None:
+            return self._energy_history[-1]
         return min(self._energy_history)
 
     @property
@@ -1988,7 +2216,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         A variational upper bound: the assembled RDM is that of a product of
         fragment states, so this is a genuine expectation value and cannot fall
         below CASSCF with the same active-space size. Fragmenting still
-        costs accuracy -- see :ref:`lassqd-accuracy-characteristics`.
+        costs accuracy -- see :ref:`lassqd-accuracy-characteristics`. With a
+        ``solvent`` it includes the solvation energy and is no bound.
 
         The macro-cycle is not guaranteed monotone, so a later round can report
         a higher energy than an earlier one; ``energy_history`` records each, and

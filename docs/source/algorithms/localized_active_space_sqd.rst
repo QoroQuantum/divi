@@ -472,6 +472,85 @@ PySCF's strongly contracted NEVPT2 on each state at the final orbitals:
   ``MemoryError`` when one vector exceeds ``mol.max_memory``.
 - **Open shells** are corrected in the same way, from the ROHF-based states.
 
+Solvent
+~~~~~~~
+
+``solvent`` places the molecule in a PySCF continuum model — ddCOSMO, ddPCM,
+PCM in any of its variants, or SMD — built on the same molecule with its
+dielectric constant set, or for SMD its solvent named:
+
+.. code-block:: python
+
+   from pyscf import gto, solvent
+   from divi.backends import MaestroSimulator
+   from divi.qprog import (
+       LASSQD,
+       FixedOrbitals,
+       FragmentationConfig,
+       FragmentSpec,
+       SQDConfig,
+   )
+   from divi.qprog.problems import MolecularProblem
+
+   mol = gto.M(
+       atom="O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587", basis="sto-3g", verbose=0
+   )
+   water = solvent.ddCOSMO(mol)
+   water.eps = 78.36
+
+   ensemble = LASSQD(
+       MolecularProblem.from_molecule(mol),
+       fragmentation=FragmentationConfig(
+           active_spaces=[FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2)],
+       ),
+       sqd=SQDConfig(states={1: 2}, extension="doubles"),
+       orbital_update=FixedOrbitals(),
+       solvent=water,
+       seed=0,
+       backend=MaestroSimulator(shots=2000),
+   )
+   ensemble.run(max_rounds=10)
+   corrections = ensemble.nonequilibrium_corrections()
+   vertical = {
+       label: state.energy + corrections[label]
+       for label, state in ensemble.electronic_states.items()
+   }
+
+- **Equilibrium field.** Each round adds the reaction field of the lowest
+  requested state's density from the round before to the one-electron
+  Hamiltonian, so the macro-cycle converges field, orbitals and CI together,
+  as ddCOSMO- or PCM-CASSCF iterated to self-consistency does. The first round
+  runs in no field yet, so the first entry of ``energy_history`` is the gas-phase
+  energy. Every energy includes the solvation energy, and the solvated energy
+  is no longer a variational bound; ``best_energy`` is then the last round's.
+- **Which density.** It is the lowest requested state's, under
+  :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` too, where PySCF's
+  state-averaged CASSCF uses the averaged density. Request the ground state
+  for vertical energies: without it, the lowest requested state sets the field
+  for all.
+- **Vertical excitations.** The excited states sit in the lowest state's
+  equilibrium field, which shifts a charge-transfer state by tenths of an eV
+  but misses its main stabilisation.
+  :meth:`~divi.qprog.workflows.LASSQD.nonequilibrium_corrections` adds it: the
+  solvent's fast, electronic part answering each state's density change at the
+  optical dielectric constant, ``optical_eps``. Its default, 1.78, suits water
+  or acetonitrile; an organic host needs its own refractive index squared,
+  about 2 to 3. The correction is first order, the state not relaxing in that
+  response. On an ethylene–tetrafluoroethylene pair 4 to 6 Å apart in
+  acetonitrile, it lowered charge-transfer states by 0.3 to 1.5 eV, growing
+  with their dipole, and local excitations by under 0.02 eV.
+- **What the model covers.** ddCOSMO and PCM are electrostatics only; SMD adds
+  its cavitation and dispersion term. :meth:`~divi.qprog.workflows.LASSQD.nevpt2`
+  corrects the states in the converged field without feeding its correlated
+  density back into it.
+- **Comparing with PySCF.** PySCF's own ddCOSMO- or PCM-CASSCF updates the
+  field from a density that lags its converged one, and reports up to about
+  1 mHa below the self-consistent energy of its wave function; compare with
+  CASSCF iterated to self-consistency with the field instead.
+- **Checkpoints** keep the field, so a resumed run continues from it; one
+  written with other solvent settings is refused. LASSQD works on a copy of
+  the solvent model, leaving the one passed in untouched.
+
 .. _lassqd-accuracy-characteristics:
 
 Accuracy Characteristics
@@ -482,7 +561,8 @@ RDMs reproduces the reduced density matrices of a product of fragment states,
 including the cross-fragment Coulomb and exchange blocks, so the reported
 ``energy`` is a genuine expectation value and cannot fall below CASSCF with the
 same active-space size, or FCI in the full basis. CASCI on fixed orbitals is
-not a bound, since LASSQD re-optimises the orbitals.
+not a bound, since LASSQD re-optimises the orbitals. In a ``solvent`` the
+energy adds a solvation energy and is no bound.
 
 **What fragmenting costs is inter-fragment correlation.** A product of fragment
 states cannot describe correlation *between* fragments, and the error grows with

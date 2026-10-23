@@ -1,5 +1,6 @@
 abelian
 accessor
+acetonitrile
 adaptivity
 Adjoint
 Aer
@@ -64,6 +65,8 @@ Ctrl
 CustomVQA
 CVaR
 cvrp
+ddCOSMO
+ddPCM
 decomposer
 decomposers
 deduped
@@ -101,8 +104,10 @@ endianness
 entangler
 entanglers
 env
+eps
 Eq
 et
+eV
 excitations
 exponentials
 exponentiates
@@ -223,6 +228,7 @@ optimizer
 optimizers
 orchestrator
 orchestrators
+orientational
 orqviz
 Ostermeier
 oversample
@@ -311,6 +317,8 @@ Sdg
 semidefinite
 Shanno
 shorthands
+solvated
+solvation
 Somma
 Spall
 spo
@@ -338,6 +346,7 @@ tanh
 teardown
 templated
 templating
+tetrafluoroethylene
 th
 thresholded
 Tikhonov

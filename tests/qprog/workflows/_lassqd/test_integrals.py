@@ -382,9 +382,11 @@ def test_the_second_order_solve_never_ends_above_its_start(orbital_rotation_case
     assert solve.energy < start_energy
 
 
-def test_the_second_order_solve_leaves_a_stationary_point_alone(
+def test_the_second_order_solve_takes_one_tight_step_from_within_tolerance(
     orbital_rotation_case, converged_orbital_solve
 ):
+    """A gradient already under the tolerance can still sit on a long, shallow
+    descent, so the solve steps once rather than stopping where it starts."""
     mol, _, *rest = orbital_rotation_case
 
     solve = capped_ciah_orbital_solve(
@@ -392,8 +394,9 @@ def test_the_second_order_solve_leaves_a_stationary_point_alone(
     )
 
     assert solve.converged
-    assert solve.n_iterations == 0
-    np.testing.assert_array_equal(solve.mo_coeff, converged_orbital_solve.mo_coeff)
+    assert solve.n_iterations == 1
+    assert solve.energy <= converged_orbital_solve.energy
+    assert solve.gradient_norm < converged_orbital_solve.gradient_norm
 
 
 def test_the_second_order_solve_counts_every_orbital_transform(
