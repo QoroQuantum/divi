@@ -7,6 +7,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0](https://github.com/QoroQuantum/divi/compare/v0.15.1...v0.16.0) (2026-10-23)
+
+
+### ✨ Added
+
+* **backends:** add divi-config-helper and saved Qoro Service defaults ([598a515](https://github.com/QoroQuantum/divi/commit/598a51548eedd0d6326e290a2218b100f6b3c893))
+* **backends:** add statevector and expectation_value to MaestroSimulator ([4e3a340](https://github.com/QoroQuantum/divi/commit/4e3a34096fd1f870fa532a5ca8e1ee5d4da0ad9f))
+* **qprog:** add continuum solvation to LASSQD ([7bd5a2a](https://github.com/QoroQuantum/divi/commit/7bd5a2a5080d2b1dedae82fb0a9e6c209ec70853))
+* **qprog:** add excited states across two fragments to LASSQD ([86d214a](https://github.com/QoroQuantum/divi/commit/86d214a774eecf701157721816f6ea7f6fa50d78))
+* **qprog:** add excited states and state-averaged orbitals to LASSQD ([9fa50b1](https://github.com/QoroQuantum/divi/commit/9fa50b12288afafd275d4333ab44f9e09883e8a9))
+* **qprog:** add NEVPT2 corrections and keep symmetry in state-averaged LASSQD ([6205d06](https://github.com/QoroQuantum/divi/commit/6205d0615464283c443f97f20a90d8d060d63bbd))
+* **qprog:** export LASSQD state wave functions and transition properties ([2b2c397](https://github.com/QoroQuantum/divi/commit/2b2c39765fd6bda1f7b52b786237dcd4a628c943))
+* **qprog:** support open-shell molecules in LASSQD ([ea2fefd](https://github.com/QoroQuantum/divi/commit/ea2fefd37fcf8e12fc453dbeadb0df540285f515))
+* **qprog:** track LASSQD excited states across rounds ([72aa039](https://github.com/QoroQuantum/divi/commit/72aa039c2f2fb909485cc29566b94a3864196ed3))
+* support Python 3.14 ([c631882](https://github.com/QoroQuantum/divi/commit/c631882b2ae22f94d18fc075abc980dbbbc41e71))
+
+
+### 🐛 Fixed
+
+* **backends:** summarise a saved noise model in divi-config-helper's Python preview ([80ce5e9](https://github.com/QoroQuantum/divi/commit/80ce5e9e0b96b5fac39f70b34b94cb3fce402055))
+* **qprog:** reject a backend that is not a CircuitRunner in ProgramEnsemble ([830958b](https://github.com/QoroQuantum/divi/commit/830958b376029aecf2f9df049f3941921f15714d))
+* **qprog:** take nuclear repulsion from the mean field and leave the caller's untouched ([2d295d2](https://github.com/QoroQuantum/divi/commit/2d295d25d02314564911c39066f9ea760e59cbd4))
+* **qprog:** validate max_rounds, batch_config, precision and qem_protocol up front ([5f2f8c8](https://github.com/QoroQuantum/divi/commit/5f2f8c8a6d7c77d1b283b2a98c00f18f0ea74cbc))
+
+
+### 🔄 Changed
+
+* **qprog:** apply LUCJ Jordan-Wigner signs once and layer the Jastrow gates ([74c739c](https://github.com/QoroQuantum/divi/commit/74c739c994960ab85f9b38b0087627564d6f5266))
+* **qprog:** split LASSQD into focused modules under workflows.lassqd ([303a1bc](https://github.com/QoroQuantum/divi/commit/303a1bc70f8f3b680520fe461eada1156dfe749d))
+* use stdlib and numpy idioms across divi, make type gates numpy-generic and fix latent edge-case bugs ([82a4c28](https://github.com/QoroQuantum/divi/commit/82a4c280f9cfd9eaff7733db57756847a5d061a1))
+
+
+### 🔧 Internal
+
+* notify dashboard when a stable release is published ([39c52c1](https://github.com/QoroQuantum/divi/commit/39c52c1a57422bbb53dd9017bf985215e7f90cfb))
+* replace black, isort and autoflake with ruff ([a1b1b52](https://github.com/QoroQuantum/divi/commit/a1b1b52058fe335a4c14302a5f3cd0dfb300a6ff))
+
 ## [0.15.1](https://github.com/QoroQuantum/divi/compare/v0.15.0...v0.15.1) (2026-10-16)
 
 ### 🐛 Fixed
