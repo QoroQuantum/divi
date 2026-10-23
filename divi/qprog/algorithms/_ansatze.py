@@ -14,11 +14,12 @@ Hartree-Fock reference against the interleaved ordering.
 
 import inspect
 from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cache
 from itertools import combinations, pairwise, product
 from numbers import Integral
-from typing import Literal
+from typing import Any, Literal
 from warnings import warn
 
 import numpy as np
@@ -774,17 +775,11 @@ def _emit_givens_rotation(
     mixing; at ``phase = -pi / 2`` the gate reduces to the real rotation
     ``exp(angle / 2 * (a+_j a_l - a+_l a_j))``.
 
-    Interleaved Jordan-Wigner leaves the opposite-spin partner between the two
-    hopped qubits, so the generator carries a ``Z`` there. ``CZ`` conjugation
-    supplies it, mapping ``X_l -> Z_k X_l`` and ``Y_l -> Z_k Y_l``; without it
-    the gate is a qubit XY exchange, not a fermionic rotation.
+    The Jordan-Wigner ``Z`` on the intervening opposite-spin qubit is not
+    emitted; :meth:`LUCJAnsatz.build` applies those signs once, at the end.
     """
     lower = 2 * orbital + spin
-    middle = lower + 1
-    upper = 2 * (orbital + 1) + spin
-    circuit.cz(middle, upper)
-    circuit.append(XXPlusYYGate(angle, phase), [lower, upper])
-    circuit.cz(middle, upper)
+    circuit.append(XXPlusYYGate(angle, phase), [lower, lower + 2])
 
 
 def _emit_rotation_block(
@@ -883,6 +878,47 @@ def _lucj_layout(
     return n_sectors, same, opposite, kwargs.get("rotation_depth")
 
 
+def _lucj_orbital_count(n_qubits: int) -> int:
+    if n_qubits % 2:
+        raise ValueError(
+            f"LUCJAnsatz needs an even qubit count (two spin-orbitals per "
+            f"spatial orbital); got {n_qubits}."
+        )
+    return n_qubits // 2
+
+
+def _emit_jordan_wigner_signs(circuit: QuantumCircuit, n_orb: int) -> None:
+    """Apply ``(-1)^(sum of n_beta[q] * n_alpha[p] over q < p)``.
+
+    A CNOT ladder keeps the parity of the beta occupations below orbital ``p`` on
+    beta qubit ``p - 1``, which a ``CZ`` then pairs with alpha qubit ``p``.
+    """
+    for p in range(1, n_orb):
+        if p > 1:
+            circuit.cx(2 * p - 3, 2 * p - 1)
+        circuit.cz(2 * p - 1, 2 * p)
+    for p in range(n_orb - 1, 1, -1):
+        circuit.cx(2 * p - 3, 2 * p - 1)
+
+
+def _layered(
+    couplings: Sequence[tuple[Any, tuple[int, int]]],
+) -> list[tuple[Any, tuple[int, int]]]:
+    """Reorder mutually commuting two-qubit gates so each layer touches every
+    qubit at most once. A gate takes the first layer free on both its qubits."""
+    taken: defaultdict[int, set[int]] = defaultdict(set)
+    layers: list[list[tuple[Any, tuple[int, int]]]] = []
+    for angle, wires in couplings:
+        busy = taken[wires[0]] | taken[wires[1]]
+        index = next(i for i in range(len(layers) + 1) if i not in busy)
+        if index == len(layers):
+            layers.append([])
+        layers[index].append((angle, wires))
+        taken[wires[0]].add(index)
+        taken[wires[1]].add(index)
+    return [coupling for layer in layers for coupling in layer]
+
+
 class LUCJAnsatz(Ansatz):
     """Local unitary cluster Jastrow ansatz.
 
@@ -906,6 +942,9 @@ class LUCJAnsatz(Ansatz):
     the alpha spin-orbital of spatial orbital ``p`` and ``2p + 1`` is its beta
     partner. The Hartree-Fock reference is embedded, so no separate initial
     state is needed.
+
+    The Jordan-Wigner signs of every hop are applied once, as a single parity
+    ladder after the last layer, instead of around each Givens rotation.
 
     ``n_electrons`` must be at most ``n_qubits``. Spin-imbalanced references
     are supported by passing ``n_alpha`` and ``n_beta``; without them the
@@ -931,12 +970,7 @@ class LUCJAnsatz(Ansatz):
         carrying one phase per orbital. ``rotation_depth`` and the Jastrow pair
         arguments shrink the count further; see :meth:`build`.
         """
-        if n_qubits % 2:
-            raise ValueError(
-                f"LUCJAnsatz needs an even qubit count (two spin-orbitals per "
-                f"spatial orbital); got {n_qubits}."
-            )
-        n_orb = n_qubits // 2
+        n_orb = _lucj_orbital_count(n_qubits)
         n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
         n_params = n_sectors * n_rotation_params(
             n_orb, orbital_phases=False, depth=depth
@@ -1069,17 +1103,21 @@ class LUCJAnsatz(Ansatz):
                     circuit, rotation_params[spin % n_sectors], n_orb, spin, depth=depth
                 )
 
-            for p, q in opposite_pairs:
-                circuit.append(RZZGate(flat[cursor]), [2 * p, 2 * q + 1])
-                cursor += 1
-
-            same_start = cursor
-            for spin in (0, 1):
-                offset = same_start + (spin % n_sectors) * len(same_pairs)
-                for index, (p, q) in enumerate(same_pairs):
-                    circuit.append(
-                        RZZGate(flat[offset + index]), [2 * p + spin, 2 * q + spin]
-                    )
+            opposite_start = cursor
+            same_start = opposite_start + len(opposite_pairs)
+            couplings = [
+                (
+                    flat[same_start + (spin % n_sectors) * len(same_pairs) + index],
+                    (2 * p + spin, 2 * q + spin),
+                )
+                for spin in (0, 1)
+                for index, (p, q) in enumerate(same_pairs)
+            ] + [
+                (flat[opposite_start + index], (2 * p, 2 * q + 1))
+                for index, (p, q) in enumerate(opposite_pairs)
+            ]
+            for angle, wires in _layered(couplings):
+                circuit.append(RZZGate(angle), wires)
             cursor = same_start + n_sectors * len(same_pairs)
 
             for spin in (1, 0):
@@ -1106,6 +1144,7 @@ class LUCJAnsatz(Ansatz):
                         depth=depth,
                     )
 
+        _emit_jordan_wigner_signs(circuit, n_orb)
         return circuit
 
 

@@ -22,7 +22,7 @@ from qiskit.circuit.library import (
     SwapGate,
     UGate,
 )
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.quantum_info import Operator, SparsePauliOp, Statevector
 from scipy.linalg import expm
 from scipy.stats import unitary_group
 
@@ -43,6 +43,7 @@ from divi.qprog.algorithms._ansatze import (
     _emit_single_excitation,
     _emit_two_qubit_pauli_rot,
     _hf_occupation,
+    _layered,
     _resolve_spin_counts,
     _rotation_one_particle,
     _rotation_schedule,
@@ -105,6 +106,30 @@ def _interleaved(blocked: int, n_spatial: int) -> int:
     """Interleaved qubit for a blocked spin-orbital index."""
     spin, spatial = divmod(blocked, n_spatial)
     return 2 * spatial + spin
+
+
+def _sign_network(n_orb: int) -> QuantumCircuit:
+    """A ``CZ`` from the beta qubit of each orbital to the alpha qubit of every
+    later orbital."""
+    network = QuantumCircuit(2 * n_orb)
+    for p in range(n_orb):
+        for q in range(p):
+            network.cz(2 * q + 1, 2 * p)
+    return network
+
+
+def _with_jordan_wigner_strings(circuit: QuantumCircuit) -> QuantumCircuit:
+    """``circuit`` with each hop wrapped in the ``CZ`` pair on its intervening qubit."""
+    wrapped = circuit.copy_empty_like()
+    for instruction in circuit.data:
+        hop = instruction.operation.name == "xx_plus_yy"
+        if hop:
+            lower, upper = (circuit.find_bit(q).index for q in instruction.qubits)
+            wrapped.cz(lower + 1, upper)
+        wrapped.append(instruction)
+        if hop:
+            wrapped.cz(lower + 1, upper)
+    return wrapped
 
 
 # --- Test GenericLayerAnsatz ---
@@ -622,80 +647,10 @@ def _embed(
     return _big_endian_operator(simulator, gate_qc)
 
 
-def test_hf_occupation_fills_the_lowest_spin_orbitals():
-    assert _hf_occupation(1, 4) == (1, 0, 0, 0)
-    assert _hf_occupation(2, 6) == (1, 1, 0, 0, 0, 0)
-    assert _hf_occupation(4, 6) == (1, 1, 1, 1, 0, 0)
-
-
 def test_two_qubit_pauli_rotation_rejects_other_words():
     message = "Unsupported two-qubit Pauli 'XY'; expected XX/YY/ZZ."
     with pytest.raises(ValueError, match=exact_match(message)):
         _emit_two_qubit_pauli_rot(QuantumCircuit(2), "XY", 0.37, 0, 1)
-
-
-@pytest.mark.parametrize(
-    "n_electrons, n_qubits, expected_singles, expected_doubles",
-    [
-        (2, 4, [(0, 2), (1, 3)], [(0, 1, 2, 3)]),
-        (
-            2,
-            6,
-            [(0, 2), (0, 4), (1, 3), (1, 5)],
-            [(0, 1, 2, 3), (0, 1, 2, 5), (0, 1, 3, 4), (0, 1, 4, 5)],
-        ),
-    ],
-)
-def test_spin_conserving_excitations_enumerate_occupied_to_virtual(
-    n_electrons, n_qubits, expected_singles, expected_doubles
-):
-    """Even qubits carry spin-up, odd spin-down; only excitations preserving the
-    total spin projection are kept."""
-    singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
-    assert singles == expected_singles
-    assert doubles == expected_doubles
-
-
-def test_emit_single_excitation_is_a_two_qubit_givens_rotation(
-    default_test_simulator,
-):
-    theta = 0.7137
-    qc = QuantumCircuit(2)
-    _emit_single_excitation(qc, theta, 0, 1)
-    assert np.allclose(
-        _big_endian_operator(default_test_simulator, qc),
-        _single_excitation_matrix(theta),
-    )
-
-
-def test_emit_double_excitation_is_a_four_qubit_givens_rotation(
-    default_test_simulator,
-):
-    theta = 0.7137
-    qc = QuantumCircuit(4)
-    _emit_double_excitation(qc, theta, 0, 1, 2, 3)
-    assert np.allclose(
-        _big_endian_operator(default_test_simulator, qc),
-        _double_excitation_matrix(theta),
-    )
-
-
-@pytest.mark.parametrize(
-    "emit, n_qubits, expected_cx",
-    [
-        (lambda qc, theta: _emit_single_excitation(qc, theta, 0, 1), 2, 2),
-        (lambda qc, theta: _emit_double_excitation(qc, theta, 0, 1, 2, 3), 4, 14),
-    ],
-    ids=["single", "double"],
-)
-def test_excitation_emitters_land_in_the_lowering_basis(emit, n_qubits, expected_cx):
-    """An excitation emitted outside ``{h, ry, cx}`` picks up extra single-qubit
-    depth when the circuit is lowered, for no change in entangling cost."""
-    qc = QuantumCircuit(n_qubits)
-    emit(qc, 0.7137)
-    names = gate_names(qc)
-    assert set(names) <= {"h", "ry", "cx"}
-    assert names.count("cx") == expected_cx
 
 
 class TestHartreeFockAnsatz:
@@ -802,6 +757,74 @@ class TestHartreeFockAnsatz:
         )
 
         assert np.allclose(actual, expected @ reference)
+
+    def test_hf_occupation_fills_the_lowest_spin_orbitals(self):
+        assert _hf_occupation(1, 4) == (1, 0, 0, 0)
+        assert _hf_occupation(2, 6) == (1, 1, 0, 0, 0, 0)
+        assert _hf_occupation(4, 6) == (1, 1, 1, 1, 0, 0)
+
+    @pytest.mark.parametrize(
+        "n_electrons, n_qubits, expected_singles, expected_doubles",
+        [
+            (2, 4, [(0, 2), (1, 3)], [(0, 1, 2, 3)]),
+            (
+                2,
+                6,
+                [(0, 2), (0, 4), (1, 3), (1, 5)],
+                [(0, 1, 2, 3), (0, 1, 2, 5), (0, 1, 3, 4), (0, 1, 4, 5)],
+            ),
+        ],
+    )
+    def test_spin_conserving_excitations_enumerate_occupied_to_virtual(
+        self, n_electrons, n_qubits, expected_singles, expected_doubles
+    ):
+        """Even qubits carry spin-up, odd spin-down; only excitations preserving
+        the total spin projection are kept."""
+        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
+        assert singles == expected_singles
+        assert doubles == expected_doubles
+
+    def test_emit_single_excitation_is_a_two_qubit_givens_rotation(
+        self, default_test_simulator
+    ):
+        theta = 0.7137
+        qc = QuantumCircuit(2)
+        _emit_single_excitation(qc, theta, 0, 1)
+        assert np.allclose(
+            _big_endian_operator(default_test_simulator, qc),
+            _single_excitation_matrix(theta),
+        )
+
+    def test_emit_double_excitation_is_a_four_qubit_givens_rotation(
+        self, default_test_simulator
+    ):
+        theta = 0.7137
+        qc = QuantumCircuit(4)
+        _emit_double_excitation(qc, theta, 0, 1, 2, 3)
+        assert np.allclose(
+            _big_endian_operator(default_test_simulator, qc),
+            _double_excitation_matrix(theta),
+        )
+
+    @pytest.mark.parametrize(
+        "emit, n_qubits, expected_cx",
+        [
+            (lambda qc, theta: _emit_single_excitation(qc, theta, 0, 1), 2, 2),
+            (lambda qc, theta: _emit_double_excitation(qc, theta, 0, 1, 2, 3), 4, 14),
+        ],
+        ids=["single", "double"],
+    )
+    def test_excitation_emitters_land_in_the_lowering_basis(
+        self, emit, n_qubits, expected_cx
+    ):
+        """An excitation emitted outside ``{h, ry, cx}`` picks up extra
+        single-qubit depth when the circuit is lowered, for no change in
+        entangling cost."""
+        qc = QuantumCircuit(n_qubits)
+        emit(qc, 0.7137)
+        names = gate_names(qc)
+        assert set(names) <= {"h", "ry", "cx"}
+        assert names.count("cx") == expected_cx
 
 
 # --- Test QCCAnsatz ---
@@ -1188,57 +1211,6 @@ def test_resolve_spin_counts_rejects(n_qubits, n_electrons, n_alpha, n_beta, mes
         _resolve_spin_counts(n_qubits, n_electrons, n_alpha, n_beta, "Ansatz")
 
 
-@pytest.mark.parametrize("n_orb", [2, 3, 4, 5, 8])
-def test_rotation_schedule_spans_the_rotation_group(n_orb):
-    """A general orbital rotation needs ``n_orb * (n_orb - 1) / 2`` Givens
-    rotations -- the dimension of the group. A single adjacent chain has only
-    ``n_orb - 1`` and cannot reach an arbitrary rotation, which is what confined
-    LUCJ to a fraction of its fragment correlation energy."""
-    schedule = _rotation_schedule(n_orb)
-    assert len(schedule) == n_orb * (n_orb - 1) // 2
-    # Every adjacent pair participates, and each half-layer is disjoint.
-    assert set(schedule) == set(range(n_orb - 1))
-
-
-@pytest.mark.parametrize("orbital, spin", [(0, 0), (0, 1), (1, 0), (2, 1)])
-def test_givens_rotation_is_a_fermionic_orbital_rotation(
-    default_test_simulator, orbital, spin
-):
-    """At ``phase = -pi / 2`` the gate must equal the Jordan-Wigner image of
-    ``exp(t (a+_j a_l - a+_l a_j))``.
-
-    Pins the ``Z`` that the intervening opposite-spin qubit contributes: dropping
-    it leaves a plain qubit XY exchange, which still conserves particle number
-    and Sz and so produces valid-looking energies while not being an orbital
-    rotation at all.
-    """
-    n_qubits = 8
-    angle = 0.7
-    circuit = QuantumCircuit(n_qubits)
-    _emit_givens_rotation(circuit, angle, -np.pi / 2, orbital, spin)
-
-    lower = 2 * orbital + spin
-    middle = lower + 1
-    upper = 2 * (orbital + 1) + spin
-
-    def label(paulis: dict[int, str]) -> str:
-        return "".join(paulis.get(q, "I") for q in reversed(range(n_qubits)))
-
-    # a+_j a_l - a+_l a_j under Jordan-Wigner, with the string on the qubit
-    # between the two hopped spin-orbitals.
-    generator = SparsePauliOp.from_list(
-        [
-            (label({lower: "X", middle: "Z", upper: "Y"}), 0.5j),
-            (label({lower: "Y", middle: "Z", upper: "X"}), -0.5j),
-        ]
-    )
-    expected = expm(0.5 * angle * generator.to_matrix())
-
-    np.testing.assert_allclose(
-        unitary(default_test_simulator, circuit), expected, atol=1e-12
-    )
-
-
 def _consumed_values(circuit):
     """Every parameter value any gate reads.
 
@@ -1269,86 +1241,51 @@ def _one_particle_from_gates(simulator, params, n_orb, spin=0):
     return np.array([[matrix[row, column] for column in occupied] for row in occupied])
 
 
-@pytest.mark.parametrize("n_orb", [2, 3, 4, 5])
-def test_rotation_angles_reproduce_a_target_orbital_rotation(
-    default_test_simulator, n_orb
-):
-    """Seeding needs the inverse of the rotation block: given a unitary, the
-    parameters whose gates realize it.
-
-    The target is a general unitary rather than a real rotation, because that is
-    what the block has to span -- a real rotation cannot supply the factor of
-    ``i`` the Jastrow needs. Checks both halves: that the solve hits the target,
-    and that the model it solves against is what the circuit emits. A fit can be
-    exact against the wrong convention.
-    """
-    target = unitary_group.rvs(n_orb, random_state=11)
-
-    params = rotation_angles(target)
-    assert params is not None
-    assert len(params) == n_rotation_params(n_orb, orbital_phases=True)
-
-    np.testing.assert_allclose(_rotation_one_particle(params, n_orb), target, atol=1e-6)
-    for spin in (0, 1):
-        np.testing.assert_allclose(
-            _one_particle_from_gates(default_test_simulator, params, n_orb, spin),
-            target,
-            atol=1e-6,
-        )
-
-
-@pytest.mark.parametrize("target", [np.eye(1), np.array([[1j]])], ids=["one", "phase"])
-def test_rotation_angles_handles_a_single_orbital(target):
-    """One orbital has no rotation to make, only a global phase, so the
-    parameter vector is empty."""
-    angles = rotation_angles(target)
-    assert angles is not None
-    assert len(angles) == 0
-
-
 def _near_identity_rotation(n_orb: int, seed: int) -> np.ndarray:
     generator = np.random.default_rng(seed).normal(size=(n_orb, n_orb)) * 1e-3
     return expm(generator - generator.T)
 
 
-@pytest.mark.parametrize(
-    "target",
-    [
-        -np.eye(2),
-        _near_identity_rotation(3, seed=0),
-        _near_identity_rotation(4, seed=1),
-    ],
-    ids=["minus-identity", "near-identity", "near-identity-random-start"],
-)
-def test_rotation_angles_realise_targets_beside_the_identity(target):
-    """``-I`` and near-identity targets are realised, and the fit is
-    reproducible."""
-    n_orb = target.shape[0]
-    angles = rotation_angles(target)
-    assert angles is not None
-    np.testing.assert_allclose(_rotation_one_particle(angles, n_orb), target, atol=1e-6)
-    np.testing.assert_array_equal(rotation_angles(target), angles)
+def _without_sign_ladder(circuit):
+    """``circuit`` minus its trailing run of CNOT and CZ gates."""
+    kept = list(circuit.data)
+    while kept and kept[-1].operation.name in ("cx", "cz"):
+        kept.pop()
+    stripped = circuit.copy_empty_like()
+    for instruction in kept:
+        stripped.append(instruction)
+    return stripped
 
 
-def test_rotation_angles_honour_a_truncated_depth():
-    """A shallower network takes fewer parameters, and the fit must solve
-    against that network rather than the full one."""
-    n_orb, depth = 3, 1
-    seeded = np.random.default_rng(4).uniform(
-        -1, 1, n_rotation_params(n_orb, orbital_phases=True, depth=depth)
+def _lucj_fidelities(n_layers, **build_kwargs):
+    """Overlap of a six-qubit LUCJ circuit with the same circuit built from
+    Jordan-Wigner-wrapped hops, and that overlap without the final sign ladder."""
+    n_qubits = 6
+    ansatz = LUCJAnsatz()
+    n_params = n_layers * ansatz.n_params_per_layer(n_qubits, **build_kwargs)
+    circuit = ansatz.build(
+        np.random.default_rng(5).uniform(-np.pi, np.pi, n_params),
+        n_qubits,
+        n_layers,
+        **build_kwargs,
     )
-    target = _rotation_one_particle(seeded, n_orb, depth)
-
-    angles = rotation_angles(target, depth=depth)
-
-    assert angles is not None
-    assert len(angles) == len(seeded)
-    np.testing.assert_allclose(
-        _rotation_one_particle(angles, n_orb, depth), target, atol=1e-6
+    stripped = _without_sign_ladder(circuit)
+    wrapped = Statevector(_with_jordan_wigner_strings(stripped))
+    return (
+        abs(wrapped.inner(Statevector(circuit))),
+        abs(wrapped.inner(Statevector(stripped))),
     )
+
+
+def _depth_in_order(couplings, n_qubits):
+    circuit = QuantumCircuit(n_qubits)
+    for angle, wires in couplings:
+        circuit.rzz(angle, *wires)
+    return circuit.depth()
 
 
 # --- Test LUCJAnsatz ---
+@_needs_openfermion
 class TestLUCJAnsatz:
     """LUCJ must conserve particle number and Sz for SQD sampling to work."""
 
@@ -1445,8 +1382,8 @@ class TestLUCJAnsatz:
         }
 
         # The trailing rotation closes the layer, so the tail is its per-orbital
-        # phases with no Jastrow gate after them.
-        names = [instr.operation.name for instr in circuit.data]
+        # phases, ahead of the sign ladder, with no Jastrow gate after them.
+        names = [instr.operation.name for instr in _without_sign_ladder(circuit).data]
         assert names[-n_orb:] == ["p"] * n_orb
 
     def test_trailing_rotation_params_are_independent_of_the_opening_rotation(self):
@@ -1748,52 +1685,6 @@ class TestLUCJAnsatz:
             assert lower % 2 == upper % 2
             assert abs(upper - lower) == 2
 
-    @pytest.mark.parametrize(
-        "ansatz_kwargs",
-        [{}, {"trailing_rotation": True}, {"shared_spin_params": True}],
-    )
-    def test_every_hop_is_cz_conjugated(self, ansatz_kwargs):
-        """Each hop must sit between two ``CZ`` gates on its intervening qubit.
-
-        Interleaved Jordan-Wigner puts the opposite-spin partner between the two
-        hopped qubits, so the fermionic generator carries a ``Z`` there and the
-        ``CZ`` conjugation supplies it. Dropping it leaves a qubit XY exchange
-        that still conserves particle number and Sz, still consumes the same
-        parameters, and still agrees with its own parameter-shift rule -- so the
-        statevector and gradient tests here cannot see it. The single-electron
-        probes elsewhere cannot either: they leave the intervening qubit empty,
-        where ``CZ`` acts trivially.
-        """
-        n_qubits, n_electrons = 6, 2
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **ansatz_kwargs)
-        circuit = LUCJAnsatz().build(
-            np.arange(1, n_params + 1, dtype=float),
-            n_qubits=n_qubits,
-            n_layers=1,
-            n_electrons=n_electrons,
-            **ansatz_kwargs,
-        )
-
-        instructions = list(circuit.data)
-        hop_positions = [
-            i
-            for i, instr in enumerate(instructions)
-            if instr.operation.name == "xx_plus_yy"
-        ]
-        assert hop_positions
-
-        def qubits_of(instr):
-            return tuple(circuit.find_bit(q).index for q in instr.qubits)
-
-        for position in hop_positions:
-            lower, upper = qubits_of(instructions[position])
-            before, after = instructions[position - 1], instructions[position + 1]
-            assert before.operation.name == "cz"
-            assert after.operation.name == "cz"
-            # The intervening opposite-spin qubit is the one between the pair.
-            assert qubits_of(before) == (lower + 1, upper)
-            assert qubits_of(after) == (lower + 1, upper)
-
     def test_conserves_particle_number_and_sz(
         self, default_test_simulator, default_optimizer
     ):
@@ -1827,3 +1718,328 @@ class TestLUCJAnsatz:
             beta = sum(int(bitstring[2 * p + 1]) for p in range(n_orb))
             assert alpha == n_electrons // 2
             assert beta == n_electrons // 2
+
+    @pytest.mark.parametrize(
+        "ansatz_kwargs",
+        [{}, {"trailing_rotation": True}, {"shared_spin_params": True}],
+    )
+    def test_state_matches_the_circuit_with_every_hop_sign_wrapped(self, ansatz_kwargs):
+        """One trailing sign ladder reproduces the state of the circuit with
+        every hop wrapped in its Jordan-Wigner string; without it the state
+        differs."""
+        fidelity, bare_fidelity = _lucj_fidelities(1, n_electrons=4, **ansatz_kwargs)
+
+        assert fidelity == pytest.approx(1.0, abs=1e-10)
+        assert bare_fidelity != pytest.approx(1.0, abs=1e-3)
+
+    @pytest.mark.parametrize(
+        "n_layers, build_kwargs",
+        [
+            pytest.param(2, {"n_electrons": 4}, id="two-layers"),
+            pytest.param(1, {"n_electrons": 3, "n_alpha": 2, "n_beta": 1}, id="2a-1b"),
+            pytest.param(1, {"n_electrons": 3, "n_alpha": 3, "n_beta": 0}, id="3a-0b"),
+            pytest.param(1, {"n_electrons": 4, "n_alpha": 1, "n_beta": 3}, id="1a-3b"),
+            pytest.param(
+                1,
+                {"n_electrons": 4, "rotation_depth": 1, "trailing_rotation": True},
+                id="shallow-rotation",
+            ),
+            pytest.param(
+                2,
+                {
+                    "n_electrons": 3,
+                    "n_alpha": 2,
+                    "n_beta": 1,
+                    "shared_spin_params": True,
+                    "trailing_rotation": True,
+                },
+                id="shared-trailing-imbalanced",
+            ),
+            pytest.param(
+                1,
+                {
+                    "n_electrons": 4,
+                    "same_spin_pairs": [(0, 2), (2, 0), (0, 1), (0, 1)],
+                    "opposite_spin_pairs": [(0, 2), (2, 1), (1, 1), (1, 1)],
+                },
+                id="repeated-and-reversed-pairs",
+            ),
+        ],
+    )
+    def test_state_matches_the_sign_wrapped_circuit_beyond_the_balanced_default(
+        self, n_layers, build_kwargs
+    ):
+        fidelity, _ = _lucj_fidelities(n_layers, **build_kwargs)
+
+        assert fidelity == pytest.approx(1.0, abs=1e-10)
+
+    @pytest.mark.parametrize("n_orb", [1, 2, 3, 5])
+    def test_signs_are_applied_by_one_ladder_after_the_last_layer(self, n_orb):
+        n_qubits = 2 * n_orb
+        circuit = LUCJAnsatz().build(
+            np.ones(LUCJAnsatz.n_params_per_layer(n_qubits)),
+            n_qubits,
+            1,
+            n_electrons=2,
+        )
+
+        counts = circuit.count_ops()
+        assert counts.get("cz", 0) == max(n_orb - 1, 0)
+        assert counts.get("cx", 0) == 2 * max(n_orb - 2, 0)
+        stripped = {
+            instruction.operation.name
+            for instruction in _without_sign_ladder(circuit).data
+        }
+        assert not stripped & {"cx", "cz"}
+
+    def test_vqe_energy_is_the_fermionic_energy(
+        self, default_test_simulator, default_optimizer
+    ):
+        n_qubits, n_electrons = 6, 4
+        hamiltonian = _particle_conserving_hamiltonian(n_qubits // 2)
+        vqe = VQE(
+            HamiltonianProblem(hamiltonian, n_electrons=n_electrons),
+            ansatz=LUCJAnsatz(),
+            backend=default_test_simulator,
+            optimizer=default_optimizer,
+        )
+        params = np.random.default_rng(6).uniform(-np.pi, np.pi, vqe.n_params)
+
+        energy = next(iter(vqe._evaluate_cost_param_sets(params).values()))
+
+        circuit = LUCJAnsatz().build(params, n_qubits, 1, n_electrons=n_electrons)
+        expected = (
+            Statevector(_with_jordan_wigner_strings(_without_sign_ladder(circuit)))
+            .expectation_value(hamiltonian)
+            .real
+        )
+        assert energy == pytest.approx(expected, abs=1e-6)
+
+    @pytest.mark.parametrize(
+        "pair_kwargs",
+        [
+            pytest.param({}, id="default"),
+            pytest.param(
+                {"same_spin_pairs": [(p, p + 1) for p in reversed(range(9))]},
+                id="reversed-chain",
+            ),
+        ],
+    )
+    def test_jastrow_gates_fall_into_few_layers_of_disjoint_wires(self, pair_kwargs):
+        n_qubits = 20
+        circuit = LUCJAnsatz().build(
+            np.ones(LUCJAnsatz.n_params_per_layer(n_qubits, **pair_kwargs)),
+            n_qubits,
+            1,
+            n_electrons=10,
+            **pair_kwargs,
+        )
+        jastrow = QuantumCircuit(n_qubits)
+        for instruction in circuit.data:
+            if instruction.operation.name == "rzz":
+                jastrow.append(
+                    instruction.operation,
+                    [circuit.find_bit(q).index for q in instruction.qubits],
+                )
+
+        assert jastrow.depth() <= 3
+
+    @pytest.mark.parametrize(
+        "pair_kwargs",
+        [
+            pytest.param({}, id="default"),
+            pytest.param(
+                {
+                    "same_spin_pairs": [(1, 2), (0, 2), (0, 1)],
+                    "opposite_spin_pairs": [(2, 2), (0, 1), (0, 0)],
+                },
+                id="shuffled-non-neighbour",
+            ),
+        ],
+    )
+    def test_jastrow_layering_preserves_the_unitary(self, pair_kwargs):
+        """With the rotations at zero the layer is the reference determinant
+        under ``exp(iJ)``, whatever order the commuting ``RZZ`` gates are
+        emitted in."""
+        n_orb, n_qubits = 3, 6
+        same_pairs, opposite_pairs = lucj_jastrow_pairs(n_orb, **pair_kwargs)
+        n_rotation = 2 * n_orb * (n_orb - 1)
+        angles = np.arange(
+            1, len(opposite_pairs) + 2 * len(same_pairs) + 1, dtype=float
+        )
+        circuit = LUCJAnsatz().build(
+            np.concatenate([np.zeros(n_rotation), angles]),
+            n_qubits,
+            1,
+            n_electrons=2,
+            **pair_kwargs,
+        )
+
+        expected = QuantumCircuit(n_qubits)
+        expected.x([0, 1])
+        cursor = iter(angles)
+        for p, q in opposite_pairs:
+            expected.rzz(next(cursor), 2 * p, 2 * q + 1)
+        for spin in (0, 1):
+            for p, q in same_pairs:
+                expected.rzz(next(cursor), 2 * p + spin, 2 * q + spin)
+
+        assert Operator(_without_sign_ladder(circuit)).equiv(Operator(expected))
+
+    @pytest.mark.parametrize(
+        "wires, depth",
+        [
+            pytest.param([], 0, id="empty"),
+            pytest.param([(0, 1), (2, 3), (4, 5)], 1, id="disjoint-share-a-layer"),
+            pytest.param([(0, 1), (1, 2), (2, 3), (3, 4)], 2, id="chain"),
+            pytest.param([(0, 1), (0, 1), (1, 0)], 3, id="repeated-wire-pair"),
+        ],
+    )
+    def test_layered_packs_gates_into_layers_of_disjoint_wires(self, wires, depth):
+        couplings = [(float(index), pair) for index, pair in enumerate(wires)]
+
+        assert _depth_in_order(_layered(couplings), 6) == depth
+
+    def test_layered_emits_a_chain_even_then_odd_and_keeps_every_gate(self):
+        couplings = [(1.0, (0, 1)), (2.0, (1, 2)), (3.0, (2, 3)), (4.0, (3, 4))]
+
+        assert _layered(couplings) == [
+            couplings[0],
+            couplings[2],
+            couplings[1],
+            couplings[3],
+        ]
+
+    def test_layered_keeps_input_order_within_a_layer(self):
+        couplings = [(1.0, (4, 5)), (2.0, (0, 1)), (3.0, (2, 3))]
+
+        assert _layered(couplings) == couplings
+
+    @pytest.mark.parametrize("n_orb", [2, 3, 4, 5, 8])
+    def test_rotation_schedule_spans_the_rotation_group(self, n_orb):
+        """A general orbital rotation needs ``n_orb * (n_orb - 1) / 2`` Givens
+        rotations -- the dimension of the group. A single adjacent chain has only
+        ``n_orb - 1`` and cannot reach an arbitrary rotation, which is what
+        confined LUCJ to a fraction of its fragment correlation energy."""
+        schedule = _rotation_schedule(n_orb)
+        assert len(schedule) == n_orb * (n_orb - 1) // 2
+        # Every adjacent pair participates, and each half-layer is disjoint.
+        assert set(schedule) == set(range(n_orb - 1))
+
+    @pytest.mark.parametrize("orbital, spin", [(0, 0), (0, 1), (1, 0), (2, 1)])
+    def test_givens_rotation_is_a_fermionic_orbital_rotation(
+        self, default_test_simulator, orbital, spin
+    ):
+        """At ``phase = -pi / 2`` the emitted gate, conjugated by the sign
+        network, must equal the Jordan-Wigner image of
+        ``exp(t (a+_j a_l - a+_l a_j))``.
+
+        Pins the ``Z`` that the intervening opposite-spin qubit contributes: the
+        plain qubit XY exchange conserves particle number and Sz and so produces
+        valid-looking energies while not being an orbital rotation at all.
+        """
+        n_qubits = 8
+        angle = 0.7
+        circuit = QuantumCircuit(n_qubits)
+        _emit_givens_rotation(circuit, angle, -np.pi / 2, orbital, spin)
+
+        lower = 2 * orbital + spin
+        middle = lower + 1
+        upper = 2 * (orbital + 1) + spin
+
+        def label(paulis: dict[int, str]) -> str:
+            return "".join(paulis.get(q, "I") for q in reversed(range(n_qubits)))
+
+        # a+_j a_l - a+_l a_j under Jordan-Wigner, with the string on the qubit
+        # between the two hopped spin-orbitals.
+        generator = SparsePauliOp.from_list(
+            [
+                (label({lower: "X", middle: "Z", upper: "Y"}), 0.5j),
+                (label({lower: "Y", middle: "Z", upper: "X"}), -0.5j),
+            ]
+        )
+        expected = expm(0.5 * angle * generator.to_matrix())
+
+        signs = _sign_network(n_qubits // 2)
+        sign_matrix = unitary(default_test_simulator, signs)
+        np.testing.assert_allclose(
+            sign_matrix @ unitary(default_test_simulator, circuit) @ sign_matrix,
+            expected,
+            atol=1e-12,
+        )
+
+    @pytest.mark.parametrize("n_orb", [2, 3, 4, 5])
+    def test_rotation_angles_reproduce_a_target_orbital_rotation(
+        self, default_test_simulator, n_orb
+    ):
+        """Seeding needs the inverse of the rotation block: given a unitary, the
+        parameters whose gates realize it.
+
+        The target is a general unitary rather than a real rotation, because that
+        is what the block has to span -- a real rotation cannot supply the factor
+        of ``i`` the Jastrow needs. Checks both halves: that the solve hits the
+        target, and that the model it solves against is what the circuit emits. A
+        fit can be exact against the wrong convention.
+        """
+        target = unitary_group.rvs(n_orb, random_state=11)
+
+        params = rotation_angles(target)
+        assert params is not None
+        assert len(params) == n_rotation_params(n_orb, orbital_phases=True)
+
+        np.testing.assert_allclose(
+            _rotation_one_particle(params, n_orb), target, atol=1e-6
+        )
+        for spin in (0, 1):
+            np.testing.assert_allclose(
+                _one_particle_from_gates(default_test_simulator, params, n_orb, spin),
+                target,
+                atol=1e-6,
+            )
+
+    @pytest.mark.parametrize(
+        "target", [np.eye(1), np.array([[1j]])], ids=["one", "phase"]
+    )
+    def test_rotation_angles_handles_a_single_orbital(self, target):
+        """One orbital has no rotation to make, only a global phase, so the
+        parameter vector is empty."""
+        angles = rotation_angles(target)
+        assert angles is not None
+        assert len(angles) == 0
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            -np.eye(2),
+            _near_identity_rotation(3, seed=0),
+            _near_identity_rotation(4, seed=1),
+        ],
+        ids=["minus-identity", "near-identity", "near-identity-random-start"],
+    )
+    def test_rotation_angles_realise_targets_beside_the_identity(self, target):
+        """``-I`` and near-identity targets are realised, and the fit is
+        reproducible."""
+        n_orb = target.shape[0]
+        angles = rotation_angles(target)
+        assert angles is not None
+        np.testing.assert_allclose(
+            _rotation_one_particle(angles, n_orb), target, atol=1e-6
+        )
+        np.testing.assert_array_equal(rotation_angles(target), angles)
+
+    def test_rotation_angles_honour_a_truncated_depth(self):
+        """A shallower network takes fewer parameters, and the fit must solve
+        against that network rather than the full one."""
+        n_orb, depth = 3, 1
+        seeded = np.random.default_rng(4).uniform(
+            -1, 1, n_rotation_params(n_orb, orbital_phases=True, depth=depth)
+        )
+        target = _rotation_one_particle(seeded, n_orb, depth)
+
+        angles = rotation_angles(target, depth=depth)
+
+        assert angles is not None
+        assert len(angles) == len(seeded)
+        np.testing.assert_allclose(
+            _rotation_one_particle(angles, n_orb, depth), target, atol=1e-6
+        )
