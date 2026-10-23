@@ -6,13 +6,16 @@
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 from pydantic import field_validator
 from pydantic.dataclasses import dataclass as config_dataclass
 
 from ._types import exact_ints
+
+if TYPE_CHECKING:
+    from ._integrals import AOIntegrals
 
 # Largest deviation of a checkpointed orbital overlap from the identity. Orbital
 # rotations keep it near machine precision; a scaled or edited array does not.
@@ -177,7 +180,7 @@ class LASSQDState:
             blocks in ``mo_coeff``.
         energy: The energy the macro-cycle converges on, or ``inf`` if not yet
             computed: the total energy, or under
-            :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` the
+            :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` the
             weighted average over the requested states.
         previous_energy: The previous macro-cycle's ``energy``, or ``inf`` for
             the initial state.
@@ -309,6 +312,105 @@ class StateTransition:
     nto_weights: np.ndarray
 
 
+_SaddleCheck = Literal["escaped", "passed", "inconclusive"]
+
+
+@dataclass(frozen=True)
+class LASSQDRoundReport:
+    """One macro-cycle round's stage outputs.
+
+    Appended to ``LASSQD.round_reports`` as the round completes, so an
+    interrupted run keeps every finished round's numbers.
+
+    Attributes:
+        number: Round number, counting from 1.
+        energy: This round's total energy of the lowest state, a variational
+            upper bound in gas phase; with a solvent it includes the solvation
+            energy, the first round's in no field yet.
+        energy_change: Signed change from the previous round's ``energy``, or
+            ``None`` for the first round, which has no predecessor.
+        subspace_sizes: Distinct determinants each fragment's SQD recovery
+            spanned, in fragment order. A one-determinant entry means that
+            fragment captured no correlation.
+        orbital_iterations: Iterations the orbital solve took.
+        orbital_evaluations: Objective evaluations the orbital solve took, each
+            one four-index MO transform.
+        orbital_gradient_norm: L2 norm of the orbital gradient at the returned
+            orbitals.
+        orbital_converged: Whether that norm is at most ``sqrt(energy_tol)``,
+            rather than the solve stopping on a budget or an energy-reduction
+            floor.
+        rotation_pairs: Orbital pairs the rotation spanned.
+        recovery_seconds: Wall-clock time in SQD recovery for all fragments.
+        orbital_seconds: Wall-clock time in the orbital re-optimisation.
+        states: The states ``SQDConfig.states`` requested, ascending in
+            energy, with states within 1e-6 Ha of each other in
+            ``(multiplicity, index)`` order; empty when it requested none.
+        averaged_energy: The weighted average over ``states`` that
+            :class:`StateAveragedOrbitalUpdate` minimised and the macro-cycle
+            converges on; ``None`` under any other orbital update.
+        saddle_check: Outcome of the orbital-Hessian check run when a
+            lowest-state round would end the macro-cycle: ``'escaped'`` (a
+            saddle point was left and the macro-cycle continues), ``'passed'``
+            or ``'inconclusive'`` (the eigensolver stopped unconverged, so the
+            orbitals may still be a saddle point). ``None`` when it did not run.
+    """
+
+    number: int
+    energy: float
+    energy_change: float | None
+    subspace_sizes: tuple[int, ...]
+    orbital_iterations: int
+    orbital_evaluations: int
+    orbital_gradient_norm: float
+    orbital_converged: bool
+    rotation_pairs: int
+    recovery_seconds: float
+    orbital_seconds: float
+    states: tuple[ElectronicState, ...] = ()
+    averaged_energy: float | None = None
+    saddle_check: _SaddleCheck | None = None
+
+    def summary(self) -> str:
+        """One-line human-readable digest of the round."""
+        change = (
+            "first round"
+            if self.energy_change is None
+            else f"change {self.energy_change:+.3e}"
+        )
+        parts = [
+            f"Round {self.number} done. Energy: {self.energy:.8f} Ha ({change})",
+            f"subspaces {list(self.subspace_sizes)}",
+            self._orbital_summary(),
+            f"SQD {self.recovery_seconds:.1f}s, orbitals {self.orbital_seconds:.1f}s",
+        ]
+        parts += [
+            f"state ({state.multiplicity}, {state.index}) {state.energy:.8f} Ha, "
+            f"<S^2> {state.spin_square:.3f}"
+            for state in self.states
+        ]
+        if self.averaged_energy is not None:
+            parts.append(f"state-averaged {self.averaged_energy:.8f} Ha")
+        if self.saddle_check is not None:
+            parts.append(f"saddle check {self.saddle_check}")
+        return "; ".join(parts)
+
+    def _orbital_summary(self) -> str:
+        if self.rotation_pairs == 0:
+            return "orbitals: none rotated"
+        return (
+            f"orbitals: {self.orbital_iterations} iterations over "
+            f"{self.rotation_pairs} pairs, |g| {self.orbital_gradient_norm:.2e}, "
+            f"converged={self.orbital_converged}"
+        )
+
+
+def _core_orbital_count(n_electrons: int, n_active_electrons: int) -> int:
+    """Doubly occupied core orbitals holding the electrons outside the active
+    space, which is closed-shell."""
+    return (n_electrons - n_active_electrons) // 2
+
+
 @dataclass(frozen=True)
 class _SampledSubspace:
     """Fragment 0's SQD subspace, for an update that re-solves its CI."""
@@ -325,14 +427,12 @@ class _SampledSubspace:
 class _OrbitalRound:
     """What a round hands its orbital update."""
 
-    mol: Any
+    ao: "AOIntegrals"
     mo_coeff: np.ndarray
     n_core: int
     specs: Sequence[FragmentSpec]
     rdm1_active: np.ndarray
     rdm2_active: np.ndarray
-    ao_eri: np.ndarray
-    h_ao: np.ndarray
     gradient_tol: float
     report: Callable[[str], None] | None = None
     subspace: _SampledSubspace | None = None

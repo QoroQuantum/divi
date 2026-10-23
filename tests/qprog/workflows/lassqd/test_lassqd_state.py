@@ -7,7 +7,7 @@
 import numpy as np
 import pytest
 
-from divi.qprog.workflows._lassqd._state import (
+from divi.qprog.workflows.lassqd._state import (
     FragmentSpec,
     FragmentState,
     validate_fragment_specs,
@@ -151,3 +151,79 @@ def test_an_open_shell_layout_counts_one_electron_per_singly_occupied_orbital():
     validate_fragment_specs(
         [FragmentSpec(orbitals=(0, 1, 2), n_alpha=2, n_beta=1)], 4, 2, spin=1
     )
+
+
+def test_fragment_spec_normalizes_orbitals_to_a_tuple():
+    spec = FragmentSpec(orbitals=[2, 3], n_alpha=1, n_beta=1)
+    assert spec.orbitals == (2, 3)
+    assert spec.n_orbitals == 2
+
+
+@pytest.mark.parametrize(
+    "orbitals, n_alpha, n_beta, match",
+    [
+        ((), 0, 0, "at least one orbital"),
+        ((0, 0), 1, 1, "duplicate"),
+        ((0, 1), 3, 1, "n_alpha"),
+        ((0, 1), 1, -1, "n_beta"),
+    ],
+)
+def test_fragment_spec_rejects_invalid_input(orbitals, n_alpha, n_beta, match):
+    with pytest.raises(ValueError, match=match):
+        FragmentSpec(orbitals=orbitals, n_alpha=n_alpha, n_beta=n_beta)
+
+
+@pytest.mark.parametrize(
+    "specs",
+    [
+        pytest.param([((0, 1), 1, 1), ((2, 3), 1, 1)], id="disjoint_in_range"),
+        pytest.param([((0, 3), 1, 1), ((1, 2), 1, 1)], id="consistent_electron_count"),
+        pytest.param([((0, 1), 1, 0), ((2, 3), 1, 2)], id="spin_imbalanced"),
+    ],
+)
+def test_validate_fragment_specs_accepts(specs):
+    """Spin-imbalanced fragments are the antiferromagnetic case a localised
+    active space exists to describe, so they must be accepted as long as the
+    fragments' electrons still add up and each keeps an excitation available in
+    at least one spin channel."""
+    validate_fragment_specs(
+        [FragmentSpec(orbitals=o, n_alpha=a, n_beta=b) for o, a, b in specs],
+        n_orbitals_total=4,
+        n_occupied=2,
+    )
+
+
+@pytest.mark.parametrize(
+    "specs, match",
+    [
+        pytest.param([((0, 9), 1, 1)], "out of range", id="out_of_range"),
+        pytest.param([((0, 4), 1, 1)], "out of range", id="one_past_the_end"),
+        pytest.param([((0, 1, 2), 1, 1)], "electron", id="electron_count_mismatch"),
+        pytest.param(
+            [((0, 1), 2, 0), ((2, 3), 0, 2)],
+            "no excitation available",
+            id="spin_saturated_fragment",
+        ),
+        pytest.param([((0, 1), 2, 1), ((2, 3), 1, 0)], "Sz", id="nonzero_total_sz"),
+        pytest.param([((0, 1), 1, 0)], "declare", id="inconsistent_electron_totals"),
+        pytest.param(
+            [((2, 0), 1, 1), ((1, 3), 1, 1)],
+            "lists virtual orbital 2 before occupied orbital 0",
+            id="virtual_listed_before_occupied",
+        ),
+    ],
+)
+def test_validate_fragment_specs_rejects(specs, match):
+    """Fragments must cover exactly the active electrons (a shortfall silently
+    yields an energy for the wrong electron count), sum to zero total Sz (an
+    Sz=1 split of a closed-shell molecule ran to ``COMPLETE`` in the wrong spin
+    sector), leave each fragment an excitation in some spin channel (a
+    saturated or fully occupied fragment gives UCCSD zero parameters), and list
+    occupied orbitals first (the reference determinant and the initial density
+    fill a fragment's orbitals in order, so a virtual listed first is filled)."""
+    with pytest.raises(ValueError, match=match):
+        validate_fragment_specs(
+            [FragmentSpec(orbitals=o, n_alpha=a, n_beta=b) for o, a, b in specs],
+            n_orbitals_total=4,
+            n_occupied=2,
+        )

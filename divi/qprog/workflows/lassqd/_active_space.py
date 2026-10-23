@@ -14,7 +14,7 @@ import numpy as np
 from pyscf import lo
 from pyscf.lo.pipek import atomic_pops
 
-from ._integrals import transform_integrals
+from ._integrals import AOIntegrals, transform_integrals
 from ._state import FragmentSpec
 
 DEFAULT_MAX_ORBITALS_PER_FRAGMENT = 4
@@ -529,50 +529,43 @@ def merge_clusters(
 
 
 def _localized_active_space_integrals(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     occupied_indices,
     n_occupied: int,
     localized: np.ndarray,
-    ao_eri: np.ndarray | None = None,
-    h_ao: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build one- and two-body integrals for the localised active space.
 
     The one-body term carries the frozen-core mean-field potential
     ``2 * J_core - K_core`` contributed by any occupied orbital not selected
     as active; the two-body term is the bare active-space integral. Both come
-    from :func:`~divi.qprog.workflows._lassqd._integrals.transform_integrals`.
+    from :func:`~divi.qprog.workflows.lassqd._integrals.transform_integrals`.
 
     Args:
-        mol: A PySCF ``gto.Mole``.
+        ao: The molecule and its AO integrals.
         mo_coeff: ``(nao, n_orb)`` MO coefficients.
         occupied_indices: Column indices of ``mo_coeff`` selected as the
             active occupied block.
         n_occupied: Number of occupied spatial orbitals in ``mo_coeff``.
         localized: ``(nao, n_act)`` localised active-space AO-basis
             coefficient matrix.
-        ao_eri: AO-basis electron-repulsion integral; ``None`` builds it.
-        h_ao: AO-basis core Hamiltonian; ``None`` uses
-            :func:`~divi.qprog.workflows._lassqd._integrals.cached_h_ao`.
 
     Returns:
         ``(one_body, two_body)`` in the localised active basis.
     """
     core_indices = sorted(set(range(n_occupied)) - set(occupied_indices))
     integrals = transform_integrals(
-        mol,
+        ao,
         np.hstack([mo_coeff[:, core_indices], localized]),
         len(core_indices),
         localized.shape[1],
-        ao_eri,
-        h_ao,
     )
     return integrals.h_eff, integrals.g_act
 
 
 def auto_fragment_specs(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_occupied: int,
     rng: np.random.Generator,
@@ -583,8 +576,6 @@ def auto_fragment_specs(
     active_orbitals: Sequence[int] | None = None,
     fragment_atoms: Sequence[Sequence[int]] | None = None,
     local_spins: Sequence[int] | None = None,
-    ao_eri: np.ndarray | None = None,
-    h_ao: np.ndarray | None = None,
     spin: int = 0,
 ) -> tuple[list[FragmentSpec], np.ndarray, tuple[int, ...]]:
     """Automatically fragment an active space from orbital coupling.
@@ -598,7 +589,8 @@ def auto_fragment_specs(
     (:func:`merge_clusters`).
 
     Args:
-        mol: A PySCF ``gto.Mole``.
+        ao: The molecule and its AO integrals, the latter for the
+            coupling-graph integrals.
         mo_coeff: ``(nao, n_orb)`` MO coefficients.
         n_occupied: Number of occupied spatial orbitals, doubly and singly
             occupied together.
@@ -632,12 +624,6 @@ def auto_fragment_specs(
             fragment order depends on ``max_orbitals_per_fragment``,
             ``coupling_threshold`` and the localisation RNG, so a positional
             spin list would not name a stable fragment there.
-        ao_eri: AO-basis electron-repulsion integral for the coupling-graph
-            integrals; ``None`` builds it from ``mol``. Ignored when
-            ``fragment_atoms`` is given.
-        h_ao: AO-basis core Hamiltonian for the coupling-graph integrals;
-            ``None`` builds it from ``mol``. Ignored when ``fragment_atoms``
-            is given.
         spin: The molecule's non-negative ``2S``; its ``spin`` highest
             occupied orbitals are singly occupied, localised apart from the
             doubly occupied ones.
@@ -659,6 +645,7 @@ def auto_fragment_specs(
             :func:`select_frontier_orbitals`, :func:`split_active_orbitals`,
             :func:`assign_orbitals_to_atoms`, or :func:`merge_clusters`.
     """
+    mol = ao.mol
     if active_orbitals is not None:
         occupied_indices, virtual_indices = split_active_orbitals(
             active_orbitals, n_occupied, mo_coeff.shape[1], spin=spin
@@ -685,7 +672,7 @@ def auto_fragment_specs(
         clusters = assign_orbitals_to_atoms(mol, localized, fragment_atoms)
     else:
         one_body, two_body = _localized_active_space_integrals(
-            mol, mo_coeff, occupied_indices, n_occupied, localized, ao_eri, h_ao
+            ao, mo_coeff, occupied_indices, n_occupied, localized
         )
         if coupling_threshold is None:
             coupling_threshold = DEFAULT_COUPLING_THRESHOLD

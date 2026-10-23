@@ -44,14 +44,9 @@ import time
 
 from pyscf import gto, mcscf, scf
 
-from divi.qprog import (
-    LASSQD,
-    FragmentationConfig,
-    FragmentSpec,
-    ReportingLevel,
-    SQDConfig,
-)
+from divi.qprog import LASSQD, ReportingLevel
 from divi.qprog.problems import MolecularProblem
+from divi.qprog.workflows.lassqd import FragmentationConfig, FragmentSpec, SQDConfig
 from tutorials._backend import get_backend
 
 

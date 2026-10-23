@@ -4,59 +4,15 @@
 
 from typing import TYPE_CHECKING, Any
 
-from divi._optional import import_optional
-
 from ._partitioning_ensemble import PartitioningProgramEnsemble
 from ._time_evolution_trajectory import TimeEvolutionTrajectory
 from ._vqe_sweep import MoleculeTransformer, VQEHyperparameterSweep
 
 if TYPE_CHECKING:
-    from ._lassqd import (
-        LASSQD,
-        CCSDPreparation,
-        ElectronicState,
-        FixedOrbitals,
-        FragmentationConfig,
-        FragmentSpec,
-        FragmentState,
-        LASSQDRoundReport,
-        LASSQDState,
-        LBFGSOrbitalUpdate,
-        LinearMethodPreparation,
-        OrbitalUpdate,
-        Preparation,
-        SecondOrderOrbitalUpdate,
-        SQDConfig,
-        StateAveragedOrbitalUpdate,
-        StateTransition,
-        StateWavefunction,
-        VQEPreparation,
-    )
-
-_LASSQD_EXPORTS = (
-    "CCSDPreparation",
-    "ElectronicState",
-    "FixedOrbitals",
-    "FragmentSpec",
-    "FragmentState",
-    "FragmentationConfig",
-    "LASSQD",
-    "LASSQDRoundReport",
-    "LASSQDState",
-    "LBFGSOrbitalUpdate",
-    "LinearMethodPreparation",
-    "OrbitalUpdate",
-    "Preparation",
-    "SecondOrderOrbitalUpdate",
-    "SQDConfig",
-    "StateAveragedOrbitalUpdate",
-    "StateTransition",
-    "StateWavefunction",
-    "VQEPreparation",
-)
+    from .lassqd import LASSQD
 
 __all__ = [
-    *_LASSQD_EXPORTS,
+    "LASSQD",
     "MoleculeTransformer",
     "PartitioningProgramEnsemble",
     "TimeEvolutionTrajectory",
@@ -65,13 +21,11 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve the LASSQD exports on first access."""
-    if name in _LASSQD_EXPORTS:
-        for module_name in ("pyscf", "ffsim"):
-            import_optional(module_name, extra="chem", capability="LASSQD")
-        from . import _lassqd
+    """Resolve ``LASSQD`` on first access."""
+    if name == "LASSQD":
+        from . import lassqd
 
-        value = getattr(_lassqd, name)
+        value = lassqd.LASSQD
         globals()[name] = value
         return value
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

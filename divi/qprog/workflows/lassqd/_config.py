@@ -22,9 +22,9 @@ from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import MolecularProblem
 from divi.qprog.quantum_program import QuantumProgram
 
-from ._integrals import (
+from ._integrals import _total_energy
+from ._orbital_solvers import (
     OrbitalSolution,
-    _total_energy,
     ciah_orbital_solve,
     optimize_orbitals,
     state_averaged_orbital_solve,
@@ -267,14 +267,12 @@ class _LowestStateOrbitalUpdate(OrbitalUpdate):
 
     def _solve(self, round_: _OrbitalRound) -> tuple[OrbitalSolution, None]:
         solution = self._solver(
-            round_.mol,
+            round_.ao,
             round_.mo_coeff,
             round_.n_core,
             round_.specs,
             round_.rdm1_active,
             round_.rdm2_active,
-            round_.ao_eri,
-            round_.h_ao,
             gradient_tol=round_.gradient_tol,
             max_iterations=self.max_iterations,
             report=round_.report,
@@ -402,15 +400,13 @@ class StateAveragedOrbitalUpdate(OrbitalUpdate):
         if subspace is None:
             raise RuntimeError("StateAveragedOrbitalUpdate needs SQDConfig.states.")
         return state_averaged_orbital_solve(
-            round_.mol,
+            round_.ao,
             subspace.mo_coeff,
             round_.n_core,
             round_.specs[0],
             subspace.strings,
             _by_root(self._weights_for(subspace.states), subspace.labels or {}),
             subspace.lambda_penalty,
-            round_.ao_eri,
-            round_.h_ao,
             gradient_tol=round_.gradient_tol,
             max_iterations=self.max_iterations,
             report=round_.report,
@@ -454,13 +450,11 @@ class FixedOrbitals(OrbitalUpdate):
 
     def _solve(self, round_: _OrbitalRound) -> tuple[OrbitalSolution, None]:
         energy = _total_energy(
-            round_.mol,
+            round_.ao,
             round_.mo_coeff,
             round_.n_core,
             round_.rdm1_active,
             round_.rdm2_active,
-            round_.ao_eri,
-            round_.h_ao,
         )
         solution = OrbitalSolution(
             mo_coeff=round_.mo_coeff,

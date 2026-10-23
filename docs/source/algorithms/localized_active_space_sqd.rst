@@ -8,7 +8,7 @@ the active space. Each macro-cycle then:
 
 1. prepares each fragment's LUCJ circuit classically from CCSD, without
    optimisation by default
-   (:class:`~divi.qprog.workflows.LinearMethodPreparation` optionally refines
+   (:class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` optionally refines
    it);
 2. samples each final circuit once on a quantum backend;
 3. recovers fragment states with sample-based quantum diagonalisation (SQD);
@@ -55,7 +55,8 @@ lower ``spin``.
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec
+   from divi.qprog import LASSQD
+   from divi.qprog.workflows.lassqd import FragmentationConfig, FragmentSpec
    from divi.qprog.problems import MolecularProblem
 
    # NH2, a doublet: orbitals 0-3 doubly occupied, 4 singly occupied in ROHF.
@@ -93,7 +94,8 @@ calculation on the same active space:
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import LASSQD, FragmentationConfig, FragmentSpec, SQDConfig
+   from divi.qprog import LASSQD
+   from divi.qprog.workflows.lassqd import FragmentationConfig, FragmentSpec, SQDConfig
    from divi.qprog.problems import MolecularProblem
 
    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
@@ -121,13 +123,13 @@ of arXiv:2512.14936, and send only the final computational-basis sample to
 ``backend``. Independent fragment preparations remain separate ensemble
 programs and can run in parallel.
 
-:class:`~divi.qprog.workflows.CCSDPreparation`, the default, samples the
+:class:`~divi.qprog.workflows.lassqd.CCSDPreparation`, the default, samples the
 CCSD-seeded operator as it is, with no optimisation and without building the
 fragment statevector: its classical cost is CCSD's and it submits one sampling
 job per fragment per round. Without the optimisation, the sampled state is CCSD's quality,
 and carryover across rounds (:ref:`lassqd-carryover`) does more of the work.
 
-:class:`~divi.qprog.workflows.LinearMethodPreparation` follows
+:class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` follows
 arXiv:2512.14936: ffsim optimises the CCSD-seeded operator classically with the
 linear method before the sample. The linear method works on the fragment's
 exact statevector, whose size grows combinatorially with the fragment, so it is
@@ -141,7 +143,7 @@ linear-method parameters raise ``RuntimeError`` with the affected fragment
 before a circuit is submitted.
 
 VQE preparation is available as an explicit alternative. Pass
-:class:`~divi.qprog.workflows.VQEPreparation` with an optimizer, and optionally
+:class:`~divi.qprog.workflows.lassqd.VQEPreparation` with an optimizer, and optionally
 another Divi ansatz and ``max_iterations`` (default 10). ``backend`` then runs
 the VQE expectation-value loop and ``sampling_backend`` can run the separate
 final SQD sample:
@@ -151,7 +153,8 @@ final SQD sample:
 .. code-block:: python
 
    from divi.backends import MaestroSimulator, QiskitSimulator
-   from divi.qprog import ScipyMethod, ScipyOptimizer, UCCSDAnsatz, VQEPreparation
+   from divi.qprog import ScipyMethod, ScipyOptimizer, UCCSDAnsatz
+   from divi.qprog.workflows.lassqd import VQEPreparation
 
    ensemble = LASSQD(
        ...,
@@ -167,13 +170,13 @@ If ``sampling_backend`` is omitted, VQE optimisation and final sampling both
 use ``backend``. With the LUCJ preparations, ``sampling_backend`` simply
 overrides ``backend`` for the one final sample.
 
-:class:`~divi.qprog.workflows.VQEPreparation` uses
+:class:`~divi.qprog.workflows.lassqd.VQEPreparation` uses
 :class:`~divi.qprog.algorithms.UCCSDAnsatz` when ``ansatz`` is omitted. The
 configured strategy is available as ``ensemble.preparation``.
 
 .. important::
 
-   Examples here run below :class:`~divi.qprog.workflows.SQDConfig`'s defaults
+   Examples here run below :class:`~divi.qprog.workflows.lassqd.SQDConfig`'s defaults
    (``n_batches=15``, ``batch_size=170``, ``n_recovery_iterations=6``) for
    speed.
 
@@ -203,7 +206,7 @@ mean-field energy instead.
 Explicit Fragment Specification
 --------------------------------
 
-:class:`~divi.qprog.workflows.FragmentSpec` names one fragment: which spatial
+:class:`~divi.qprog.workflows.lassqd.FragmentSpec` names one fragment: which spatial
 orbitals belong to it and how many alpha and beta electrons are assigned to
 it. Indices refer to the mean field's canonical molecular orbitals (RHF, or ROHF
 for an open-shell molecule), not spatial positions.
@@ -214,7 +217,7 @@ determinant fills its orbitals in the order given. Pass known splits through
 
 .. code-block:: python
 
-   from divi.qprog import FragmentationConfig, FragmentSpec
+   from divi.qprog.workflows.lassqd import FragmentationConfig, FragmentSpec
 
    fragmentation = FragmentationConfig(
        active_spaces=[
@@ -232,7 +235,7 @@ Automatic Fragmentation
 ------------------------
 
 Automatic fragmentation controls orbital selection, partitioning, and spin
-through :class:`~divi.qprog.workflows.FragmentationConfig`.
+through :class:`~divi.qprog.workflows.lassqd.FragmentationConfig`.
 
 **Which orbitals.** Pass exactly one of these (each also mutually exclusive with
 ``active_spaces``):
@@ -254,11 +257,11 @@ fragment's electron count comes from the localised orbitals it receives, so
 ``local_spins`` cannot move an electron between fragments; for a
 broken-symmetry state of an open-shell singlet, or to choose which fragment
 carries a charge, give the layout with explicit
-:class:`~divi.qprog.workflows.FragmentSpec` entries instead.
+:class:`~divi.qprog.workflows.lassqd.FragmentSpec` entries instead.
 
 .. code-block:: python
 
-   from divi.qprog import FragmentationConfig
+   from divi.qprog.workflows.lassqd import FragmentationConfig
 
    fragmentation = FragmentationConfig(
        n_active_orbitals=4,
@@ -275,7 +278,7 @@ reassembles the RDM, and optimises the orbitals. ``run(max_rounds=N)`` caps
 macro-cycles; ``None`` runs until consecutive energies differ by less than
 ``energy_tol`` (default ``1e-6`` Ha) and that round's orbital solve converged,
 meaning its orbital-gradient norm is at most ``sqrt(energy_tol)``
-(:attr:`~divi.qprog.workflows.LASSQDRoundReport.orbital_converged`). Before
+(:attr:`~divi.qprog.workflows.lassqd.LASSQDRoundReport.orbital_converged`). Before
 stopping, the lowest-state orbital updates check the orbital Hessian and, at a
 saddle point, step off it and continue. Key results are:
 
@@ -300,17 +303,17 @@ Orbital Update
 Each macro-cycle ends by re-optimising the molecular orbitals against the
 reassembled active-space RDM. ``orbital_update`` selects the solver:
 
-- :class:`~divi.qprog.workflows.SecondOrderOrbitalUpdate` (default) takes PySCF
+- :class:`~divi.qprog.workflows.lassqd.SecondOrderOrbitalUpdate` (default) takes PySCF
   CIAH augmented-Hessian steps, with Hessian-vector products from finite
   differences of the analytic orbital gradient. ``max_iterations`` (default 50)
   caps the steps per macro-cycle.
-- :class:`~divi.qprog.workflows.LBFGSOrbitalUpdate` minimises with SciPy's
+- :class:`~divi.qprog.workflows.lassqd.LBFGSOrbitalUpdate` minimises with SciPy's
   L-BFGS-B. ``max_iterations`` defaults to ``None``, which leaves SciPy's own
   cap.
-- :class:`~divi.qprog.workflows.FixedOrbitals` keeps the orbitals as they are,
+- :class:`~divi.qprog.workflows.lassqd.FixedOrbitals` keeps the orbitals as they are,
   so each round's energy is that of the recovered state on fixed orbitals, as in
   CASCI.
-- :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` optimises the
+- :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` optimises the
   orbitals and the states together for a weighted average of the states
   ``SQDConfig.states`` requests, as state-averaged CASSCF does
   (:ref:`lassqd-excited-states`).
@@ -335,8 +338,8 @@ singlet–triplet gap:
 
    from pyscf import gto
    from divi.backends import MaestroSimulator
-   from divi.qprog import (
-       LASSQD,
+   from divi.qprog import LASSQD
+   from divi.qprog.workflows.lassqd import (
        FragmentationConfig,
        FragmentSpec,
        SQDConfig,
@@ -362,17 +365,17 @@ singlet–triplet gap:
    print(f"T1 - S0: {gap * 27.2114:.3f} eV")
 
 - **Labels.** ``electronic_states`` maps ``(multiplicity, index)`` to an
-  :class:`~divi.qprog.workflows.ElectronicState`, ordered by energy. ``index``
+  :class:`~divi.qprog.workflows.lassqd.ElectronicState`, ordered by energy. ``index``
   counts within one spin from 0, in energy order at the end of the first round,
   after its orbital update rather than at the input orbitals: S0 is ``(1, 0)``,
   S1 ``(1, 1)``, T1 ``(3, 0)``. Later rounds keep each label with the same
   state, matched by CI-vector overlap, so when two states cross the labels and
   any state-averaging weights follow the states rather than the energy order.
 - **Orbitals decide the gap.**
-  :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` relaxes the orbitals
+  :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` relaxes the orbitals
   for a weighted average of the states (default: each root equally, a triplet
   counting once), as SA-CASSCF does; the weights shift every gap.
-  :class:`~divi.qprog.workflows.FixedOrbitals` keeps the input orbitals, for
+  :class:`~divi.qprog.workflows.lassqd.FixedOrbitals` keeps the input orbitals, for
   comparison with CASCI. The other updates relax for the lowest state only and
   warn.
 - **Keep the symmetry.** Averaging over states of different spatial symmetry
@@ -415,7 +418,7 @@ last completed round:
    print(f"S0 -> S1: f = {transition.oscillator_strength:.3f}")
 
 - **States.** :meth:`~divi.qprog.workflows.LASSQD.state_wavefunctions` returns
-  a :class:`~divi.qprog.workflows.StateWavefunction` per state, in the order of
+  a :class:`~divi.qprog.workflows.lassqd.StateWavefunction` per state, in the order of
   ``electronic_states``: its CI amplitudes over the subspace's alpha and beta
   strings, and its spin-traced 1- and 2-RDMs in PySCF's convention. All refer
   to the wave function's ``active_orbitals``, which are the orbitals the strings
@@ -426,7 +429,7 @@ last completed round:
   vector, and a triplet is its ``M_S = 0`` component when the fragment has
   ``n_alpha == n_beta``.
 - **Transitions.** :meth:`~divi.qprog.workflows.LASSQD.transition_properties`
-  returns a :class:`~divi.qprog.workflows.StateTransition` for every pair of
+  returns a :class:`~divi.qprog.workflows.lassqd.StateTransition` for every pair of
   states of one multiplicity, keyed ``(initial, final)`` with the state lower in
   energy first, so a crossing reorders the key: the transition 1-RDM, the transition dipole, the oscillator strength
   ``2/3 ΔE |μ|²`` and the natural transition orbitals. A pair of different
@@ -483,8 +486,8 @@ dielectric constant set, or for SMD its solvent named:
 
    from pyscf import gto, solvent
    from divi.backends import MaestroSimulator
-   from divi.qprog import (
-       LASSQD,
+   from divi.qprog import LASSQD
+   from divi.qprog.workflows.lassqd import (
        FixedOrbitals,
        FragmentationConfig,
        FragmentSpec,
@@ -524,7 +527,7 @@ dielectric constant set, or for SMD its solvent named:
   energy. Every energy includes the solvation energy, and the solvated energy
   is no longer a variational bound; ``best_energy`` is then the last round's.
 - **Which density.** It is the lowest requested state's, under
-  :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` too, where PySCF's
+  :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` too, where PySCF's
   state-averaged CASSCF uses the averaged density. Request the ground state
   for vertical energies: without it, the lowest requested state sets the field
   for all.
@@ -599,7 +602,7 @@ defaults to ``1e-5``; pass ``None`` for conventional SQD:
 
 .. code-block:: python
 
-   from divi.qprog import SQDConfig
+   from divi.qprog.workflows.lassqd import SQDConfig
 
    sqd = SQDConfig(
        n_batches=2,
@@ -639,7 +642,7 @@ descending weight, then this batch's halves by descending sample count.
 This helps where sampling reaches a small fraction of a fragment's determinant
 space. Where sampling already covers that space — small fragments, or a generous
 ``batch_size`` — there is nothing left to add and it changes nothing. Check
-:attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
+:attr:`~divi.qprog.workflows.lassqd.LASSQDRoundReport.subspace_sizes` against the
 fragment's full determinant count to see which regime you are in.
 
 Retention also crosses macro-cycles. The strings retained from a fragment's best
@@ -669,7 +672,7 @@ Setting ``carryover_cutoff=None`` turns retention off within and across rounds.
 Guaranteeing a Floor, and Stopping Early
 ------------------------------------------
 
-Three further knobs on :class:`~divi.qprog.workflows.SQDConfig` shape the
+Three further knobs on :class:`~divi.qprog.workflows.lassqd.SQDConfig` shape the
 subspace rather than its size.
 
 ``include_reference`` (on by default) keeps the fragment's aufbau reference
@@ -698,29 +701,29 @@ is ``LASSQD``'s own ``energy_tol``, which ends the macro-cycle.
 Choosing a Preparation
 ------------------------
 
-Choose :class:`~divi.qprog.workflows.LinearMethodPreparation` while the
+Choose :class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` while the
 fragments can be simulated classically, and
-:class:`~divi.qprog.workflows.CCSDPreparation` once they cannot. Of the three,
-only :class:`~divi.qprog.workflows.VQEPreparation` improves on the CCSD seed at
+:class:`~divi.qprog.workflows.lassqd.CCSDPreparation` once they cannot. Of the three,
+only :class:`~divi.qprog.workflows.lassqd.VQEPreparation` improves on the CCSD seed at
 that size, at the cost of a quantum optimisation loop. Optimising it on a
 :class:`~divi.backends.MaestroSimulator` configured for matrix-product-state
 simulation and passing the device as ``sampling_backend`` keeps the device to
 one job per fragment per round.
 
-Use :class:`~divi.qprog.workflows.VQEPreparation` to run a Divi ansatz in a
+Use :class:`~divi.qprog.workflows.lassqd.VQEPreparation` to run a Divi ansatz in a
 quantum optimisation loop. It defaults to
 :class:`~divi.qprog.algorithms.UCCSDAnsatz` and accepts
 :class:`~divi.qprog.algorithms.LUCJAnsatz` or another compatible ansatz.
 
 SQD needs coverage, not merely a low ansatz energy. An ansatz concentrated on
 one determinant starves recovery. Compare per-fragment subspace sizes in
-:attr:`~divi.qprog.workflows.LASSQDRoundReport.subspace_sizes` against the
+:attr:`~divi.qprog.workflows.lassqd.LASSQDRoundReport.subspace_sizes` against the
 full determinant count.
 
 The LUCJ preparations fix the paper's one-repetition topology, including its
 final orbital rotation and local interaction pairs. The ``n_layers`` and
 ``ansatz_kwargs`` keywords configure only
-:class:`~divi.qprog.workflows.VQEPreparation`, and ``LASSQD`` rejects them with
+:class:`~divi.qprog.workflows.lassqd.VQEPreparation`, and ``LASSQD`` rejects them with
 the other preparations at construction. Set the VQE iteration count with
 ``VQEPreparation(max_iterations=...)``.
 

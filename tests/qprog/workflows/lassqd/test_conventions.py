@@ -14,7 +14,7 @@ expects blocked ``alpha_bits + beta_bits`` (``sqd_core.py:228-229``).
 import numpy as np
 import pytest
 
-from divi.qprog.workflows._lassqd._sqd import (
+from divi.qprog.workflows.lassqd._sqd import (
     deinterleave_spin_bitstring,
     interleave_spin_bitstring,
     probs_to_sqd_bitstrings,

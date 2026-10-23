@@ -8,17 +8,17 @@ import numpy as np
 import pytest
 
 from divi.qprog.problems import MolecularProblem
-from divi.qprog.workflows._lassqd._config import (
+from divi.qprog.workflows.lassqd._config import (
     LBFGSOrbitalUpdate,
     SecondOrderOrbitalUpdate,
 )
-from divi.qprog.workflows._lassqd._preparation import (
+from divi.qprog.workflows.lassqd._preparation import (
     LUCJFragmentProgram,
     prepare_lucj_fragment,
 )
-from divi.qprog.workflows._lassqd._state import FragmentSpec
+from divi.qprog.workflows.lassqd._state import FragmentSpec
 from divi.reporting._events import EventKind
-from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     build_exact_sampler_lassqd,
     orbital_rotation_case,
     orbital_solver,

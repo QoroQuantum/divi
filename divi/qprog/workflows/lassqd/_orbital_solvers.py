@@ -2,48 +2,35 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Effective per-fragment integrals, the LASSQD total-energy functional, and
-the orbital solves."""
+"""Orbital re-optimisation: the L-BFGS-B, second-order (CIAH), saddle-escape and
+state-averaged CASSCF solves, with the orbital rotation parameterisation and the
+point-group symmetry checks they rely on."""
 
-import math
-import os
-import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
-from itertools import accumulate, combinations, pairwise, permutations, product
-from pathlib import Path
+from itertools import combinations, pairwise, product
 from warnings import warn
 
 import numpy as np
 import scipy.linalg
-import scipy.optimize
-import scipy.sparse
-from pyscf import ao2mo, lib, mcscf, mrpt
-from pyscf.fci import selected_ci
-from pyscf.scf import hf, hf_symm
+from pyscf import lib, mcscf
+from pyscf.scf import hf_symm
 from pyscf.soscf import ciah
 from scipy.optimize import minimize
 
-from ._sqd import (
-    ci_string_to_int,
-    compute_spatial_rdms,
-    lowest_roots,
-    projected_matrices,
-    resolves_spin,
-    sci_vector,
-    spin_orbital_integrals,
-    subspace_determinants,
+from ._integrals import (
+    AOIntegrals,
+    _energy_fock_and_potentials,
+    _exact_mean_field,
+    energy_and_generalized_fock,
+    fragment_blocks,
 )
-from ._state import (
-    ElectronicState,
-    FragmentSpec,
-    FragmentState,
-    StateTransition,
-    StateWavefunction,
-    _SampledSubspace,
-)
+from ._sqd import resolves_spin
+from ._state import ElectronicState, FragmentSpec
+from ._subspace import _SubspaceCI
+from ._warnings import _outside_divi_stacklevel
 
 # L-BFGS-B ftol is relative, so a tol=1e-6 shorthand halts around 1e-6 * |E|,
 # coarser than LASSQD's energy_tol. Tighter than this terminates ABNORMAL.
@@ -72,8 +59,6 @@ _DAVIDSON_SPACE = 30
 _PRECONDITIONER_FLOOR = 1e-2
 # First angle of the line search along a negative mode, doubled up to pi / 4.
 _ESCAPE_FIRST_ANGLE = 0.05
-# Frames under this prefix are divi's own, never the code a warning is for.
-_DIVI_PREFIX = os.path.join(Path(__file__).parents[3], "")
 
 
 @dataclass(frozen=True)
@@ -103,400 +88,13 @@ class OrbitalSolution:
     n_rotation_pairs: int
 
 
-@dataclass(frozen=True)
-class MOIntegrals:
-    """One round's active-space integrals.
-
-    Every array is indexed over the active space alone, in the fragment-block
-    order of the ``mo_coeff`` passed to :func:`transform_integrals`. The core
-    and virtual blocks are not stored: the only consumer,
-    :func:`fragment_effective_integrals`, reads neither, and materialising the
-    full register costs ``n_orb ** 4``.
-
-    Attributes:
-        h_eff: ``(n_act, n_act)`` one-electron integrals with the frozen-core
-            potential ``2 J_core - K_core`` folded in.
-        g_act: ``(n_act,) * 4`` two-electron integrals in chemist order.
-    """
-
-    h_eff: np.ndarray
-    g_act: np.ndarray
-
-
-def fragment_blocks(specs: Sequence[FragmentSpec], offset: int = 0) -> list[slice]:
-    """Each fragment's contiguous orbital span, starting at ``offset``."""
-    bounds = list(accumulate((spec.n_orbitals for spec in specs), initial=offset))
-    return [slice(start, stop) for start, stop in pairwise(bounds)]
-
-
-def build_active_permutation(
-    specs: Sequence[FragmentSpec], n_core: int, n_orbitals_total: int
-) -> np.ndarray:
-    """Order orbitals as ``[core | fragment blocks | virtual]``.
-
-    Downstream code assumes the active block is contiguous. This permutation
-    honours the caller's requested orbital indices (``FragmentSpec.orbitals``
-    is never sorted, so orbitals within a fragment, and fragments among
-    themselves, keep the caller's order) while still producing that
-    contiguous active block.
-
-    Args:
-        specs: Fragment specifications, in the order their blocks should
-            appear in the permuted register.
-        n_core: Number of frozen-core orbitals to place first.
-        n_orbitals_total: Total number of spatial orbitals in the molecule.
-
-    Returns:
-        A length-``n_orbitals_total`` index array; ``mo_coeff[:, permutation]``
-        reorders the MO columns into ``[core | active | virtual]``.
-    """
-    active = [orbital for spec in specs for orbital in spec.orbitals]
-    used = set(active)
-    remaining = [o for o in range(n_orbitals_total) if o not in used]
-    core, virtual = remaining[:n_core], remaining[n_core:]
-    return np.array(core + active + virtual, dtype=int)
-
-
-def transform_integrals(
-    mol,
-    mo_coeff: np.ndarray,
-    n_core: int,
-    n_act: int,
-    ao_eri: np.ndarray | None = None,
-    h_ao: np.ndarray | None = None,
-) -> MOIntegrals:
-    """Transform the active-space integrals, embedding the frozen core, with
-    PySCF's CASCI on the exact integrals.
-
-    Args:
-        mol: A PySCF ``gto.Mole``.
-        mo_coeff: ``(nao, n_orb)`` MO coefficients, already permuted so that
-            columns ``[0, n_core)`` are core, ``[n_core, n_core + n_act)``
-            are the active fragment blocks in spec order, and the rest are
-            virtual.
-        n_core: Number of frozen-core orbitals.
-        n_act: Number of active orbitals.
-        ao_eri: AO-basis electron-repulsion integral from :func:`cached_ao_eri`.
-            Supplying it avoids rebuilding the AO integrals every round;
-            ``None`` builds them here.
-        h_ao: AO-basis core Hamiltonian; ``None`` uses :func:`cached_h_ao`.
-    """
-
-    if ao_eri is None:
-        ao_eri = cached_ao_eri(mol)
-    if h_ao is None:
-        h_ao = cached_h_ao(mol)
-
-    casci = mcscf.casci.CASCI(
-        _exact_mean_field(mol, ao_eri, h_ao), n_act, mol.nelectron - 2 * n_core
-    )
-    casci.ncore = n_core
-    h_eff, _ = casci.get_h1eff(mo_coeff)
-    return MOIntegrals(
-        h_eff=h_eff,
-        g_act=ao2mo.restore(1, casci.get_h2eff(mo_coeff), n_act),
-    )
-
-
-def fragment_effective_integrals(
-    integrals: MOIntegrals, fragments: Sequence[FragmentState], index: int
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build one fragment's effective one- and two-body integrals.
-
-    The frozen core contributes a spin-free mean-field potential
-    (``2 * J_core - K_core``) -- a doubly occupied core carries no spin density
-    -- and every *other* fragment contributes its own mean-field Coulomb and
-    exchange term. Coulomb sees the other fragment's total density; exchange is
-    same-spin, so it contracts that fragment's alpha or beta density and the
-    resulting one-body potential differs between the two spin channels:
-
-    ``h_sigma[p,q] = h[p,q] + 2 J_core - K_core
-    + sum_B ( gamma_B[r,s] (pq|rs) - gamma_B^sigma[r,s] (pr|sq) )``
-
-    The two channels coincide only when every other fragment is closed-shell.
-    Spin-averaging them would erase the ``K_alpha - K_beta`` asymmetry that
-    generates inter-fragment magnetic coupling, leaving each fragment's solver
-    blind to the sign of its neighbours' local moments.
-
-    Args:
-        integrals: Active-space integrals for the current round.
-        fragments: Every fragment's current state, in permutation order.
-        index: Position of the target fragment within ``fragments``.
-
-    Returns:
-        ``(h_alpha, h_beta, g_frag)``: the fragment's effective one-body
-        integrals per spin channel, and its bare two-body integrals.
-
-    Raises:
-        ValueError: If the fragments cover a different number of orbitals than
-            ``integrals`` spans, meaning the two were built from different
-            fragment specs.
-    """
-    blocks = fragment_blocks([fragment.spec for fragment in fragments])
-    running = blocks[-1].stop
-
-    n_act = integrals.h_eff.shape[0]
-    if running != n_act:
-        raise ValueError(
-            f"Fragments cover {running} orbitals but the active-space integrals "
-            f"span {n_act}. `integrals` and `fragments` were built from "
-            "different fragment specs."
-        )
-
-    target = blocks[index]
-    core_embedded = integrals.h_eff[target, target].copy()
-    # Separate arrays even with one fragment, where the loop below never rebinds
-    # them: two names for one array would make any later in-place edit corrupt
-    # both channels, and only in that configuration.
-    h_alpha = core_embedded
-    h_beta = core_embedded.copy()
-
-    g_act = integrals.g_act
-    for other_index, other in enumerate(fragments):
-        if other_index == index:
-            continue
-        span = blocks[other_index]
-        exchange_block = g_act[target, span, span, target]
-        alpha_other, beta_other = other.spin_rdm1s()
-
-        coulomb = np.einsum(
-            "rs,pqrs->pq", other.rdm1, g_act[target, target, span, span]
-        )
-        h_alpha = (
-            h_alpha + coulomb - np.einsum("rs,prsq->pq", alpha_other, exchange_block)
-        )
-        h_beta = h_beta + coulomb - np.einsum("rs,prsq->pq", beta_other, exchange_block)
-
-    return h_alpha, h_beta, g_act[target, target, target, target].copy()
-
-
-def assemble_active_rdms(
-    fragments: Sequence[FragmentState],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Assemble the full active-space 1- and 2-RDM from per-fragment RDMs.
-
-    Fragments are placed block-diagonally in the order supplied, purely by
-    position (the running offset of ``spec.n_orbitals``). The 1-RDM has no
-    cross-fragment elements; the 2-RDM does. For a product state,
-
-    ``Gamma[p,q,r,s] = gamma[p,q] gamma[r,s] - sum_sigma gamma^sigma[p,s]
-    gamma^sigma[r,q]``
-
-    so with ``p, q`` in fragment A and ``r, s`` in fragment B only the direct
-    term survives, and with ``p, s`` in A and ``q, r`` in B only the exchange
-    term does. Both are filled for every ordered pair of distinct fragments.
-    """
-    n_act = sum(fragment.spec.n_orbitals for fragment in fragments)
-    rdm1 = np.zeros((n_act, n_act))
-    rdm2 = np.zeros((n_act, n_act, n_act, n_act))
-
-    spans = fragment_blocks([fragment.spec for fragment in fragments])
-    blocks = []
-    for span, fragment in zip(spans, fragments):
-        rdm1[span, span] = fragment.rdm1
-        rdm2[span, span, span, span] = fragment.rdm2
-        blocks.append((span, fragment.rdm1, *fragment.spin_rdm1s()))
-
-    for (span_a, rdm1_a, alpha_a, beta_a), (
-        span_b,
-        rdm1_b,
-        alpha_b,
-        beta_b,
-    ) in permutations(blocks, 2):
-        rdm2[span_a, span_a, span_b, span_b] += np.einsum("pq,rs->pqrs", rdm1_a, rdm1_b)
-        rdm2[span_a, span_b, span_b, span_a] -= np.einsum(
-            "ps,rq->pqrs", alpha_a, alpha_b
-        ) + np.einsum("ps,rq->pqrs", beta_a, beta_b)
-
-    return rdm1, rdm2
-
-
-def cached_ao_eri(mol) -> np.ndarray:
-    """Compute the AO-basis electron-repulsion integral once per run.
-
-    The returned array is the 8-fold symmetry-packed ``int2e`` integral,
-    suitable as the ``ao_eri`` argument to :func:`_total_energy` for every
-    orbital-rotation loss evaluation in a macro-cycle, avoiding a repeated
-    ``ao2mo.kernel`` AO integral recomputation.
-    """
-    return mol.intor("int2e", aosym="s8")
-
-
-def cached_h_ao(mol) -> np.ndarray:
-    """Compute the AO-basis core Hamiltonian of ``mol`` once per run.
-
-    Kinetic and nuclear-attraction integrals plus any effective core
-    potential. A mean field with its own core Hamiltonian, such as a
-    scalar-relativistic one, supplies it through ``get_hcore`` instead.
-
-    The returned array is suitable as the ``h_ao`` argument to
-    :func:`_total_energy` for every orbital-rotation loss evaluation in a
-    macro-cycle, avoiding repeated AO integral recomputation.
-    """
-    return hf.get_hcore(mol)
-
-
-def _total_energy(
-    mol,
-    mo_coeff: np.ndarray,
-    n_core: int,
-    rdm1_active: np.ndarray,
-    rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> float:
-    """Compute the total molecular energy for a given set of MO coefficients.
-
-    The four-index MO transform runs in-core from a pre-computed AO-basis
-    ``ao_eri`` (see :func:`cached_ao_eri`) via ``ao2mo.incore.full`` rather
-    than calling ``ao2mo.kernel(mol, mo_coeff)`` again on every evaluation.
-    This is the dominant cost of a gradient-free orbital-rotation
-    optimisation and must not be paid per loss evaluation.
-
-    Args:
-        mol: A PySCF ``gto.Mole``.
-        mo_coeff: ``(nao, n_orb)`` MO coefficients for this evaluation.
-        n_core: Number of frozen-core orbitals.
-        rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
-        rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
-        ao_eri: AO-basis electron-repulsion integral, as returned by
-            :func:`cached_ao_eri`.
-        h_ao: AO-basis one-electron integral, as returned by
-            :func:`cached_h_ao`.
-
-    Raises:
-        ImportError: If the ``chem`` extra is not installed.
-    """
-    energy, _ = energy_and_generalized_fock(
-        mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
-    )
-    return energy
-
-
-def energy_and_generalized_fock(
-    mol,
-    mo_coeff: np.ndarray,
-    n_core: int,
-    rdm1_active: np.ndarray,
-    rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> tuple[float, np.ndarray]:
-    """Energy and generalized Fock matrix without a full four-index transform.
-
-    Equivalent to contracting the dense full-register 1- and 2-particle
-    densities (doubly occupied core, the active RDMs, empty virtuals) against
-    the full MO integrals, but built from the blocks those densities actually
-    reach. The two-particle density vanishes whenever any index is virtual and
-    is diagonal within the core, so the contraction reduces to Coulomb/exchange
-    builds from the core and active densities plus one ``(all|act,act,act)``
-    transform -- ``n_orb * n_act ** 3`` elements rather than ``n_orb ** 4``.
-
-    Args:
-        mol: A PySCF ``gto.Mole``.
-        mo_coeff: ``(nao, n_orb)`` MO coefficients, permuted into
-            ``[core | fragment blocks | virtual]`` order.
-        n_core: Number of frozen-core orbitals.
-        rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
-        rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
-        ao_eri: AO-basis electron-repulsion integral from :func:`cached_ao_eri`.
-        h_ao: AO-basis one-electron integral from :func:`cached_h_ao`.
-
-    Returns:
-        ``(energy, fock)`` with ``fock`` shaped ``(n_orb, n_orb)``; its virtual
-        columns are zero, since the densities do not reach them.
-    """
-    energy, fock, _, _ = _energy_fock_and_potentials(
-        mol, mo_coeff, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
-    )
-    return energy, fock
-
-
-def _energy_fock_and_potentials(
-    mol,
-    mo_coeff: np.ndarray,
-    n_core: int,
-    rdm1_active: np.ndarray,
-    rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> tuple[float, np.ndarray, np.ndarray, np.ndarray]:
-    """:func:`energy_and_generalized_fock` plus the AO Coulomb and exchange
-    potentials ``vj`` and ``vk`` of the unit-occupation core and the active
-    density, each stacked ``[core, active]``."""
-    n_orb = mo_coeff.shape[1]
-    n_act = rdm1_active.shape[0]
-    active = slice(n_core, n_core + n_act)
-    core_coeff = mo_coeff[:, :n_core]
-    active_coeff = mo_coeff[:, active]
-
-    h_mo = mo_coeff.T @ h_ao @ mo_coeff
-
-    # Occupation-one core density, so vj/vk come out as sum_i (mn|ii) and
-    # sum_i (mi|in) directly. Both densities go in one call so the ERI is
-    # traversed once rather than twice.
-    dm_core = core_coeff @ core_coeff.T
-    dm_act = active_coeff @ rdm1_active @ active_coeff.T
-    vj, vk = hf.dot_eri_dm(ao_eri, np.stack([dm_core, dm_act]), hermi=1)
-
-    j_core = mo_coeff.T @ vj[0] @ mo_coeff
-    k_core = mo_coeff.T @ vk[0] @ mo_coeff
-    j_act = mo_coeff.T @ vj[1] @ mo_coeff
-    k_act = mo_coeff.T @ vk[1] @ mo_coeff
-
-    # Both small index sets go first: ``half_e1`` transforms the leading pair, so
-    # (act,act) costs n_act**2 pairs where (all,act) costs n_orb*n_act. Chemist
-    # symmetry recovers the wanted ordering, (m a | b c) = g_aaaA[b, c, a, m].
-    g_gaaa = (
-        ao2mo.incore.general(
-            ao_eri,
-            (active_coeff, active_coeff, active_coeff, mo_coeff),
-            compact=False,
-        )
-        .reshape(n_act, n_act, n_act, n_orb)
-        .transpose(3, 2, 0, 1)
-    )
-
-    core_diagonal = np.arange(n_core)
-    e_core = 2.0 * float(
-        np.sum(
-            h_mo[core_diagonal, core_diagonal]
-            + j_core[core_diagonal, core_diagonal]
-            - 0.5 * k_core[core_diagonal, core_diagonal]
-        )
-    )
-    embedded_h = (
-        h_mo[active, active] + 2.0 * j_core[active, active] - k_core[active, active]
-    )
-    e_act = float(np.sum(rdm1_active * embedded_h)) + 0.5 * float(
-        np.einsum("pqrs,pqrs->", rdm2_active, g_gaaa[active], optimize=True)
-    )
-    energy = float(mol.energy_nuc()) + e_core + e_act
-
-    fock = np.zeros((n_orb, n_orb))
-    fock[:, :n_core] = (
-        2.0 * h_mo[:, :n_core]
-        + 4.0 * j_core[:, :n_core]
-        - 2.0 * k_core[:, :n_core]
-        + 2.0 * j_act[:, :n_core]
-        - k_act[:, :n_core]
-    )
-    embedded_general = h_mo[:, active] + 2.0 * j_core[:, active] - k_core[:, active]
-    fock[:, active] = embedded_general @ rdm1_active.T + np.einsum(
-        "mqrs,pqrs->mp", g_gaaa, rdm2_active, optimize=True
-    )
-    return energy, fock, vj, vk
-
-
 def rotation_energy_gradient_fn(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
     fragment_specs: Sequence[FragmentSpec],
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
 ):
     """Build the orbital-rotation objective and its analytic gradient.
 
@@ -521,7 +119,7 @@ def rotation_energy_gradient_fn(
     ``pqrs -> rspq`` and ``pqrs -> qpsr``.
 
     Args:
-        mol: A PySCF ``gto.Mole``.
+        ao: The molecule and its AO integrals.
         mo_coeff: ``(nao, n_orb)`` MO coefficients, permuted into
             ``[core | fragment blocks | virtual]`` order.
         n_core: Number of frozen-core orbitals.
@@ -530,10 +128,6 @@ def rotation_energy_gradient_fn(
             count is used.
         rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
         rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
-        ao_eri: AO-basis electron-repulsion integral, as returned by
-            :func:`cached_ao_eri`.
-        h_ao: AO-basis one-electron integral, as returned by
-            :func:`cached_h_ao`.
 
     Returns:
         ``(rotation_pairs, energy_and_gradient)``: the ``(p, q)`` orbital
@@ -550,7 +144,7 @@ def rotation_energy_gradient_fn(
         rotation_params: np.ndarray,
     ) -> tuple[float, np.ndarray]:
         return _rotated_energy_and_gradient(
-            mol,
+            ao,
             mo_coeff,
             rows,
             cols,
@@ -558,15 +152,13 @@ def rotation_energy_gradient_fn(
             n_core,
             rdm1_active,
             rdm2_active,
-            ao_eri,
-            h_ao,
         )
 
     return pairs, energy_and_gradient
 
 
 def _rotated_energy_and_gradient(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     rows: np.ndarray,
     cols: np.ndarray,
@@ -574,14 +166,12 @@ def _rotated_energy_and_gradient(
     n_core: int,
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
 ) -> tuple[float, np.ndarray]:
     """Energy at ``mo_coeff @ expm(K(x))`` and its gradient in the angles ``x``."""
     generator = rotation_generator(rows, cols, rotation_params, mo_coeff.shape[1])
     unitary = scipy.linalg.expm(generator)
     energy, fock = energy_and_generalized_fock(
-        mol, mo_coeff @ unitary, n_core, rdm1_active, rdm2_active, ao_eri, h_ao
+        ao, mo_coeff @ unitary, n_core, rdm1_active, rdm2_active
     )
     pullback = np.asarray(
         scipy.linalg.expm_frechet(
@@ -631,14 +221,12 @@ def rotation_generator(
 
 
 def optimize_orbitals(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
     fragment_specs: Sequence[FragmentSpec],
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
     *,
     gradient_tol: float,
     max_iterations: int | None = None,
@@ -653,8 +241,7 @@ def optimize_orbitals(
     angles with L-BFGS-B. The objective and its analytic gradient come from
     :func:`rotation_energy_gradient_fn`, so an iteration costs one four-index
     MO transform rather than the ``n_rot + 1`` a finite-difference gradient
-    would need (both ``ao_eri`` and ``h_ao`` must still be cached before this
-    call). Core-core rotations are excluded because :func:`_total_energy` has no
+    would need. Core-core rotations are excluded because :func:`_total_energy` has no
     core-core degree of freedom to resolve; intra-fragment active rotations
     are excluded not because they leave the energy unchanged (they do not)
     but because each fragment's RDM is only valid in that fragment's current
@@ -682,7 +269,7 @@ def optimize_orbitals(
     which also reports success once the relative energy change stalls.
 
     Args:
-        mol: A PySCF ``gto.Mole``.
+        ao: The molecule and its AO integrals.
         mo_coeff: ``(nao, n_orb)`` MO coefficients, permuted into
             ``[core | fragment blocks | virtual]`` order.
         n_core: Number of frozen-core orbitals.
@@ -691,10 +278,6 @@ def optimize_orbitals(
             count is used.
         rdm1_active: ``(n_act, n_act)`` active-space 1-RDM.
         rdm2_active: ``(n_act,) * 4`` active-space 2-RDM.
-        ao_eri: AO-basis electron-repulsion integral, as returned by
-            :func:`cached_ao_eri`.
-        h_ao: AO-basis one-electron integral, as returned by
-            :func:`cached_h_ao`.
         gradient_tol: The solve counts as converged when the L2 norm of the
             orbital gradient at the returned orbitals is at most this.
         max_iterations: Cap on L-BFGS-B iterations for this orbital solve,
@@ -717,9 +300,9 @@ def optimize_orbitals(
             iteration count, scipy's reason and the gradient norm.
     """
     n_orb_total = mo_coeff.shape[1]
-    fixed = (n_core, fragment_specs, rdm1_active, rdm2_active, ao_eri, h_ao)
+    fixed = (n_core, fragment_specs, rdm1_active, rdm2_active)
 
-    pairs, energy_and_gradient = rotation_energy_gradient_fn(mol, mo_coeff, *fixed)
+    pairs, energy_and_gradient = rotation_energy_gradient_fn(ao, mo_coeff, *fixed)
     n_rot = len(pairs)
     best_energy, best_gradient = energy_and_gradient(np.zeros(n_rot))
     rotated_mo_coeff = mo_coeff
@@ -773,7 +356,7 @@ def optimize_orbitals(
                 rotation_generator(rows, cols, res.x, n_orb_total)
             )
             _, energy_and_gradient = rotation_energy_gradient_fn(
-                mol, rotated_mo_coeff, *fixed
+                ao, rotated_mo_coeff, *fixed
             )
             best_energy, best_gradient = energy_and_gradient(np.zeros(n_rot))
             n_evaluations += 1
@@ -826,17 +409,6 @@ def _finished_solve(
     )
 
 
-def _outside_divi_stacklevel() -> int:
-    """``stacklevel`` for a warning raised by this function's caller that names
-    the first frame outside divi, however deep the call path into divi is."""
-    frame = sys._getframe(1)
-    stacklevel = 1
-    while frame is not None and frame.f_code.co_filename.startswith(_DIVI_PREFIX):
-        frame = frame.f_back
-        stacklevel += 1
-    return stacklevel
-
-
 class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
     """pyscf's CIAH optimiser contract over LASSQD's rotation pairs.
 
@@ -855,23 +427,19 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
 
     def __init__(
         self,
-        mol,
+        ao: AOIntegrals,
         mo_coeff: np.ndarray,
         n_core: int,
         fragment_specs: Sequence[FragmentSpec],
         rdm1_active: np.ndarray,
         rdm2_active: np.ndarray,
-        ao_eri: np.ndarray,
-        h_ao: np.ndarray,
     ):
         super().__init__(mo_coeff.shape[1])
-        self._mol = mol
+        self._ao = ao
         self._mo_coeff = mo_coeff
         self._n_core = n_core
         self._rdm1_active = rdm1_active
         self._rdm2_active = rdm2_active
-        self._ao_eri = ao_eri
-        self._h_ao = h_ao
         self._rows, self._cols = pair_indices(
             rotation_pairs(self.norb, n_core, fragment_specs)
         )
@@ -894,13 +462,11 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
         if u is self._u:
             return
         self._energy, self._fock, self._vj, self._vk = _energy_fock_and_potentials(
-            self._mol,
+            self._ao,
             self._mo_coeff @ u,
             self._n_core,
             self._rdm1_active,
             self._rdm2_active,
-            self._ao_eri,
-            self._h_ao,
         )
         self.evaluations += 1
         rows, cols = self._rows, self._cols
@@ -923,7 +489,7 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
         def gradient_at(angles: np.ndarray) -> np.ndarray:
             self.evaluations += 1
             return _rotated_energy_and_gradient(
-                self._mol,
+                self._ao,
                 mo_coeff,
                 self._rows,
                 self._cols,
@@ -931,8 +497,6 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
                 self._n_core,
                 self._rdm1_active,
                 self._rdm2_active,
-                self._ao_eri,
-                self._h_ao,
             )[1]
 
         def hessian_vector(vector: np.ndarray) -> np.ndarray:
@@ -953,7 +517,7 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
         (j_core, j_act), (k_core, k_act) = self._vj, self._vk
         mean_field = (
             mo_coeff.T
-            @ (self._h_ao + 2.0 * j_core - k_core + j_act - 0.5 * k_act)
+            @ (self._ao.h_core + 2.0 * j_core - k_core + j_act - 0.5 * k_act)
             @ mo_coeff
         )
         fock = self._fock
@@ -972,14 +536,12 @@ class _LASOrbitalHessian(ciah.CIAHOptimizerMixin):
 
 
 def ciah_orbital_solve(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
     fragment_specs: Sequence[FragmentSpec],
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
     *,
     gradient_tol: float,
     max_iterations: int,
@@ -1002,14 +564,7 @@ def ciah_orbital_solve(
         report: Receives a progress line after every macro-iteration.
     """
     hessian = _LASOrbitalHessian(
-        mol,
-        mo_coeff,
-        n_core,
-        fragment_specs,
-        rdm1_active,
-        rdm2_active,
-        ao_eri,
-        h_ao,
+        ao, mo_coeff, n_core, fragment_specs, rdm1_active, rdm2_active
     )
     identity = np.eye(mo_coeff.shape[1])
     rotation = identity
@@ -1069,14 +624,12 @@ def ciah_orbital_solve(
         # The augmented-Hessian step can climb towards a saddle; L-BFGS-B only
         # descends.
         descent = optimize_orbitals(
-            mol,
+            ao,
             best_mo_coeff,
             n_core,
             fragment_specs,
             rdm1_active,
             rdm2_active,
-            ao_eri,
-            h_ao,
             gradient_tol=gradient_tol,
             max_iterations=max_iterations - n_iterations,
             report=report,
@@ -1099,14 +652,12 @@ def ciah_orbital_solve(
 
 
 def escape_orbital_saddle(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
     fragment_specs: Sequence[FragmentSpec],
     rdm1_active: np.ndarray,
     rdm2_active: np.ndarray,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
     *,
     min_energy_drop: float,
 ) -> tuple[tuple[np.ndarray, float] | None, bool]:
@@ -1123,14 +674,7 @@ def escape_orbital_saddle(
     unconverged above ``_SADDLE_CURVATURE``, since a lower mode may remain.
     """
     hessian = _LASOrbitalHessian(
-        mol,
-        mo_coeff,
-        n_core,
-        fragment_specs,
-        rdm1_active,
-        rdm2_active,
-        ao_eri,
-        h_ao,
+        ao, mo_coeff, n_core, fragment_specs, rdm1_active, rdm2_active
     )
     if not hessian.pdim:
         return None, True
@@ -1171,90 +715,6 @@ def escape_orbital_saddle(
     if not best_energy < energy - min_energy_drop:
         return None, True
     return (mo_coeff @ best_rotation, float(best_energy)), True
-
-
-class _SubspaceCI(selected_ci.SelectedCI):
-    """PySCF CI solver confined to a fixed alpha x beta determinant set,
-    solving for ``nroots`` states of one spin multiplicity.
-
-    Diagonalises the spin-penalised projected Hamiltonian as SQD does; the
-    returned energies are the unpenalised ``<H>``. PySCF's selected-CI
-    routines supply the RDMs and ``<S^2>``.
-    """
-
-    def __init__(
-        self,
-        strings_alpha: Sequence[str],
-        strings_beta: Sequence[str],
-        multiplicity: int,
-        nroots: int,
-        lambda_penalty: float,
-    ):
-        super().__init__()
-        self.verbose = 0
-        n_orb = len(strings_alpha[0])
-        self._strs = (
-            np.array(
-                [ci_string_to_int(half) for half in strings_alpha], dtype=np.int64
-            ),
-            np.array([ci_string_to_int(half) for half in strings_beta], dtype=np.int64),
-        )
-        self._shape = (len(strings_alpha), len(strings_beta))
-        self._dets = subspace_determinants(strings_alpha, strings_beta, n_orb)
-        self._spin = 0.5 * (multiplicity - 1)
-        self.nroots = nroots
-        self._lambda_penalty = lambda_penalty
-
-    def kernel(
-        self,
-        h1e,
-        eri,
-        norb,
-        nelec,
-        ci0=None,
-        tol=None,
-        lindep=None,
-        max_cycle=None,
-        max_space=None,
-        nroots=None,
-        davidson_only=None,
-        max_memory=None,
-        verbose=None,
-        ecore=0,
-        **kwargs,
-    ):
-        energies, civecs = self.roots(h1e, eri, norb, ecore)
-        if self.nroots == 1:
-            return energies[0], civecs[0]
-        return energies, civecs
-
-    def roots(
-        self, h1e, eri, norb: int, ecore: float = 0.0
-    ) -> tuple[list[float], list[np.ndarray]]:
-        """Every root's energy and CI vector, as lists whatever ``nroots``."""
-        h_spin, g_spin = spin_orbital_integrals(
-            np.asarray(h1e), ao2mo.restore(1, eri, norb), norb
-        )
-        h_proj, s2_proj = projected_matrices(*self._dets, h_spin, g_spin, norb)
-        deviation = s2_proj - self._spin * (self._spin + 1.0) * scipy.sparse.eye_array(
-            len(self._dets[0]), format="csr"
-        )
-        _, vectors = lowest_roots(
-            h_proj,
-            deviation,
-            self._lambda_penalty,
-            self.nroots,
-            spin=self._spin,
-            block=True,
-        )
-        energies = [float(v @ (h_proj @ v)) + ecore for v in vectors.T]
-        civecs = [
-            selected_ci._as_SCIvector(v.reshape(self._shape), self._strs)
-            for v in vectors.T
-        ]
-        return energies, civecs
-
-    approx_kernel = kernel
 
 
 def abelian_molecule(mol):
@@ -1316,311 +776,14 @@ def _broken_symmetry(
     return None
 
 
-def _exact_mean_field(mol, ao_eri: np.ndarray, h_ao: np.ndarray) -> hf.RHF:
-    """An RHF object whose integrals are ``ao_eri`` and ``h_ao``, for PySCF
-    CASCI and CASSCF to build their Hamiltonians from, with the
-    non-symmetry-adapted classes, since LASSQD's orbitals break point-group
-    symmetry."""
-    mean_field = hf.RHF(mol)
-    mean_field._chkfile.close()
-    mean_field.chkfile = None
-    mean_field._eri = ao_eri
-    mean_field.get_hcore = lambda mol=None: h_ao
-    return mean_field
-
-
-def subspace_states_at(
-    mol,
-    subspace: _SampledSubspace,
-    n_core: int,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> tuple[ElectronicState, ...]:
-    """Each requested state with the subspace re-diagonalised at fixed
-    orbitals, as CASCI would, in root order.
-
-    ``subspace.mo_coeff``'s active block must be the basis its strings refer
-    to. Energies are the unpenalised ``<H>``.
-    """
-    return tuple(
-        state for state, _ in _subspace_roots(mol, subspace, n_core, ao_eri, h_ao)
-    )
-
-
-def _subspace_roots(
-    mol,
-    subspace: _SampledSubspace,
-    n_core: int,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> Iterator[tuple[ElectronicState, np.ndarray]]:
-    """Each requested state of ``subspace`` at its orbitals, with its CI
-    vector, in root order, labelled by ``subspace.labels`` when set."""
-    strings_alpha, strings_beta = subspace.strings
-    n_active = len(strings_alpha[0])
-    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    casci = mcscf.casci.CASCI(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
-    casci.ncore = n_core
-    h1e, energy_core = casci.get_h1eff(subspace.mo_coeff)
-    eri = casci.get_h2eff(subspace.mo_coeff)
-    for multiplicity, n_roots in sorted(subspace.states.items()):
-        solver = _SubspaceCI(
-            strings_alpha,
-            strings_beta,
-            multiplicity,
-            min(n_roots, len(strings_alpha) * len(strings_beta)),
-            subspace.lambda_penalty,
-        )
-        energies, civecs = solver.roots(h1e, eri, n_active, energy_core)
-        index = 0
-        for energy, civec in zip(energies, civecs):
-            spin_square, _ = solver.spin_square(civec, n_active, nelec)
-            if not resolves_spin(multiplicity, spin_square):
-                continue
-            _, label = (subspace.labels or {}).get(
-                (multiplicity, index), (multiplicity, index)
-            )
-            state = ElectronicState(
-                multiplicity, label, float(energy), float(spin_square)
-            )
-            yield state, np.asarray(civec)
-            index += 1
-
-
-def subspace_wavefunctions(
-    mol,
-    subspace: _SampledSubspace,
-    n_core: int,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> tuple[StateWavefunction, ...]:
-    """Each requested state of ``subspace`` at its orbitals, with its CI vector
-    and RDMs, in root order."""
-    strings_alpha, strings_beta = (tuple(half) for half in subspace.strings)
-    n_active = len(strings_alpha[0])
-    core_orbitals = subspace.mo_coeff[:, :n_core]
-    active_orbitals = subspace.mo_coeff[:, n_core : n_core + n_active]
-    wavefunctions = []
-    for state, amplitudes in _subspace_roots(mol, subspace, n_core, ao_eri, h_ao):
-        rdm1, rdm2, _, _ = compute_spatial_rdms(
-            strings_alpha, strings_beta, amplitudes, n_active
-        )
-        wavefunctions.append(
-            StateWavefunction(
-                state=state,
-                core_orbitals=core_orbitals,
-                active_orbitals=active_orbitals,
-                strings_alpha=strings_alpha,
-                strings_beta=strings_beta,
-                amplitudes=amplitudes,
-                rdm1=rdm1,
-                rdm2=rdm2,
-            )
-        )
-    return tuple(wavefunctions)
-
-
-def subspace_nevpt2(
-    mol,
-    subspace: _SampledSubspace,
-    n_core: int,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> tuple[tuple[ElectronicState, float], ...]:
-    """Each requested state of ``subspace`` at its orbitals with its strongly
-    contracted NEVPT2 correction, in root order.
-
-    Raises:
-        MemoryError: If one full-space CI vector exceeds ``mol.max_memory``.
-    """
-    strings_alpha, strings_beta = subspace.strings
-    n_active = len(strings_alpha[0])
-    nelec = (strings_alpha[0].count("1"), strings_beta[0].count("1"))
-    n_bytes = 8 * math.comb(n_active, nelec[0]) * math.comb(n_active, nelec[1])
-    if n_bytes > mol.max_memory * 1e6:
-        raise MemoryError(
-            f"NEVPT2 needs the full-space CI vector of CAS({sum(nelec)},{n_active}), "
-            f"{n_bytes / 1e6:g} MB, above mol.max_memory={mol.max_memory:g} MB. "
-            "Raise mol.max_memory if the machine has room."
-        )
-    corrections = []
-    for state, amplitudes in _subspace_roots(mol, subspace, n_core, ao_eri, h_ao):
-        casci = mcscf.casci.CASCI(_exact_mean_field(mol, ao_eri, h_ao), n_active, nelec)
-        casci.ncore = n_core
-        casci.verbose = 0
-        casci.mo_coeff = subspace.mo_coeff
-        casci.ci = selected_ci.to_fci(
-            sci_vector(strings_alpha, strings_beta, amplitudes), n_active, nelec
-        )
-        corrections.append((state, float(mrpt.NEVPT(casci).kernel())))
-    return tuple(corrections)
-
-
-def track_states(
-    previous: _SampledSubspace,
-    current: _SampledSubspace,
-    n_core: int,
-    mol,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> dict[tuple[int, int], tuple[int, int]]:
-    """Each of ``current``'s roots' label, ``(multiplicity, root index)`` to
-    ``(multiplicity, index)``: that of the previous state of its multiplicity
-    whose CI vector it overlaps most, or else the lowest unused index."""
-    labels = {}
-    for multiplicity, before, now, overlaps in _root_overlaps(
-        previous, current, n_core, mol, ao_eri, h_ao
-    ):
-        matched: dict[int, int] = {}
-        if before:
-            for i, j in zip(*scipy.optimize.linear_sum_assignment(-overlaps)):
-                matched[int(i)] = before[j].index
-        free = (
-            index
-            for index in range(len(now) + len(before))
-            if index not in matched.values()
-        )
-        for i, state in enumerate(now):
-            labels[(multiplicity, state.index)] = (
-                multiplicity,
-                matched[i] if i in matched else next(free),
-            )
-    return labels
-
-
-def _root_overlaps(
-    previous: _SampledSubspace,
-    current: _SampledSubspace,
-    n_core: int,
-    mol,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
-) -> Iterator[tuple[int, list[ElectronicState], list[ElectronicState], np.ndarray]]:
-    """Per multiplicity, the previous and current (root-order) states and
-    ``|<previous_j|current_i>|`` as rows ``i``, columns ``j``.
-
-    The previous determinants are carried into the current orbitals by the
-    one-to-one orbital assignment carryover uses, with the orbitals' phases and
-    the reordering's sign.
-    """
-    n_active = len(current.strings[0][0])
-    active = slice(n_core, n_core + n_active)
-    overlap = (
-        current.mo_coeff[:, active].T
-        @ mol.intor_symmetric("int1e_ovlp")
-        @ previous.mo_coeff[:, active]
-    )
-    _, source = scipy.optimize.linear_sum_assignment(np.abs(overlap), maximize=True)
-    target = np.argsort(source)
-    phases = np.sign(overlap[np.arange(n_active), source])
-
-    def carried(strings, positions):
-        """Each previous string's row in the current string list (-1 where it
-        has none) and sign."""
-        rows, signs = [], []
-        for string in strings:
-            occupied = [int(target[q]) for q, bit in enumerate(string) if bit == "1"]
-            inversions = sum(1 for a, b in combinations(occupied, 2) if a > b)
-            mapped = "".join("1" if p in occupied else "0" for p in range(n_active))
-            rows.append(positions.get(mapped, -1))
-            signs.append((-1) ** inversions * np.prod(phases[occupied]))
-        return np.array(rows), np.array(signs)
-
-    rows, row_signs = carried(
-        previous.strings[0], {s: i for i, s in enumerate(current.strings[0])}
-    )
-    columns, column_signs = carried(
-        previous.strings[1], {s: j for j, s in enumerate(current.strings[1])}
-    )
-    kept_rows, kept_columns = rows >= 0, columns >= 0
-
-    def projected(amplitudes):
-        """A previous CI vector over the current determinants."""
-        signed = amplitudes * np.outer(row_signs, column_signs)
-        vector = np.zeros((len(current.strings[0]), len(current.strings[1])))
-        vector[np.ix_(rows[kept_rows], columns[kept_columns])] = signed[
-            np.ix_(kept_rows, kept_columns)
-        ]
-        return vector
-
-    previous_roots = list(_subspace_roots(mol, previous, n_core, ao_eri, h_ao))
-    current_roots = list(
-        _subspace_roots(mol, replace(current, labels=None), n_core, ao_eri, h_ao)
-    )
-    for multiplicity in sorted({state.multiplicity for state, _ in current_roots}):
-        now = [root for root in current_roots if root[0].multiplicity == multiplicity]
-        before = [
-            (state, projected(amplitudes))
-            for state, amplitudes in previous_roots
-            if state.multiplicity == multiplicity
-        ]
-        overlaps = np.array(
-            [[abs(np.sum(old * new)) for _, old in before] for _, new in now]
-        ).reshape(len(now), len(before))
-        yield (
-            multiplicity,
-            [state for state, _ in before],
-            [state for state, _ in now],
-            overlaps,
-        )
-
-
-def state_transitions(
-    mol, wavefunctions: Sequence[StateWavefunction]
-) -> tuple[StateTransition, ...]:
-    """Every pair of same-multiplicity states' one-electron transition, the
-    earlier state of ``wavefunctions`` first."""
-    if not wavefunctions:
-        return ()
-    orbitals = wavefunctions[0].active_orbitals
-    n_active = orbitals.shape[1]
-    dipole_mo = np.einsum(
-        "xab,ap,bq->xpq", mol.intor_symmetric("int1e_r"), orbitals, orbitals
-    )
-    transitions = []
-    for lower, upper in combinations(wavefunctions, 2):
-        if lower.state.multiplicity != upper.state.multiplicity:
-            continue
-        nelec = (lower.strings_alpha[0].count("1"), lower.strings_beta[0].count("1"))
-        transition_rdm1 = selected_ci.trans_rdm1(
-            sci_vector(upper.strings_alpha, upper.strings_beta, upper.amplitudes),
-            sci_vector(lower.strings_alpha, lower.strings_beta, lower.amplitudes),
-            n_active,
-            nelec,
-        )
-        dipole = -np.einsum("xpq,pq->x", dipole_mo, transition_rdm1)
-        gap = upper.state.energy - lower.state.energy
-        particles, singular_values, holes = np.linalg.svd(transition_rdm1)
-        total = float(np.sum(singular_values**2))
-        transitions.append(
-            StateTransition(
-                initial=lower.state,
-                final=upper.state,
-                transition_rdm1=transition_rdm1,
-                transition_dipole=dipole,
-                oscillator_strength=float(2.0 / 3.0 * gap * dipole @ dipole),
-                hole_orbitals=orbitals @ holes.T,
-                particle_orbitals=orbitals @ particles,
-                nto_weights=(
-                    singular_values**2 / total
-                    if total > 0
-                    else np.zeros_like(singular_values)
-                ),
-            )
-        )
-    return tuple(transitions)
-
-
 def state_averaged_orbital_solve(
-    mol,
+    ao: AOIntegrals,
     mo_coeff: np.ndarray,
     n_core: int,
     spec: FragmentSpec,
     strings: tuple[Sequence[str], Sequence[str]],
     weights: Mapping[tuple[int, int], float],
     lambda_penalty: float,
-    ao_eri: np.ndarray,
-    h_ao: np.ndarray,
     *,
     gradient_tol: float,
     max_iterations: int,
@@ -1632,8 +795,8 @@ def state_averaged_orbital_solve(
     Orbitals and CI vectors move together (PySCF's one-step SA-CASSCF), so the
     solve leaves saddle points that alternating orbital and CI updates stall
     at. ``mo_coeff``'s active block must be the basis ``strings`` refer to.
-    The Hamiltonian is built from ``ao_eri`` and ``h_ao``, the integrals every
-    other LASSQD energy uses, never a density-fitted approximation. Convergence
+    The Hamiltonian is built from ``ao``, the integrals every other LASSQD
+    energy uses, never a density-fitted approximation. Convergence
     and the reported gradient use LASSQD's own gradient at the returned
     orbitals and the averaged RDMs.
 
@@ -1661,15 +824,14 @@ def state_averaged_orbital_solve(
     n_active = spec.n_orbitals
     nelec = (spec.n_alpha, spec.n_beta)
 
+    mol = ao.mol
     keeps_symmetry = orbital_irreps(mol, mo_coeff) is not None
     if keeps_symmetry:
         casscf = mcscf.mc1step_symm.SymAdaptedCASSCF(
-            _exact_mean_field(abelian_molecule(mol), ao_eri, h_ao), n_active, nelec
+            _exact_mean_field(replace(ao, mol=abelian_molecule(mol))), n_active, nelec
         )
     else:
-        casscf = mcscf.mc1step.CASSCF(
-            _exact_mean_field(mol, ao_eri, h_ao), n_active, nelec
-        )
+        casscf = mcscf.mc1step.CASSCF(_exact_mean_field(ao), n_active, nelec)
     casscf.ncore = n_core
     casscf.verbose = 0
     casscf.canonicalization = False
@@ -1716,7 +878,7 @@ def state_averaged_orbital_solve(
 
     rdm1, rdm2 = casscf.fcisolver.make_rdm12(casscf.ci, n_active, nelec)
     pairs, energy_and_gradient = rotation_energy_gradient_fn(
-        mol, casscf.mo_coeff, n_core, [spec], rdm1, rdm2, ao_eri, h_ao
+        ao, casscf.mo_coeff, n_core, [spec], rdm1, rdm2
     )
     energy, gradient = energy_and_gradient(np.zeros(len(pairs)))
     solve = _finished_solve(

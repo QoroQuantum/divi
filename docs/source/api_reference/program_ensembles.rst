@@ -26,22 +26,9 @@ Concrete workflow classes build on :class:`~divi.qprog.ensemble.ProgramEnsemble`
 runs over a grid of inputs; :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
 decomposes a large graph, QUBO or portfolio problem into solvable sub-problems;
 :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs a sequence of time-evolution
-steps to build a trajectory; :class:`~divi.qprog.workflows.LASSQD` partitions a
-molecule's active space into fragments and prepares each fragment for SQD,
-configured by a :class:`~divi.qprog.workflows.Preparation`
-(:class:`~divi.qprog.workflows.CCSDPreparation`,
-:class:`~divi.qprog.workflows.LinearMethodPreparation` or
-:class:`~divi.qprog.workflows.VQEPreparation`), an
-:class:`~divi.qprog.workflows.OrbitalUpdate`
-(:class:`~divi.qprog.workflows.SecondOrderOrbitalUpdate`,
-:class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate`,
-:class:`~divi.qprog.workflows.LBFGSOrbitalUpdate` or
-:class:`~divi.qprog.workflows.FixedOrbitals`),
-:class:`~divi.qprog.workflows.FragmentationConfig`, and
-:class:`~divi.qprog.workflows.SQDConfig`. Requested excited states come back as
-:class:`~divi.qprog.workflows.ElectronicState` records, with their wave functions
-as :class:`~divi.qprog.workflows.StateWavefunction` and the transitions between
-them as :class:`~divi.qprog.workflows.StateTransition`.
+steps to build a trajectory; :class:`~divi.qprog.workflows.LASSQD` computes
+molecular energies and excited states fragment by fragment, with its
+configuration and result types on the :doc:`lassqd` page.
 
 .. automodapi:: divi.qprog.workflows
    :no-heading:

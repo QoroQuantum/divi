@@ -13,8 +13,8 @@ import pytest
 import scipy.sparse
 from pyscf import fci, scf
 
-import divi.qprog.workflows._lassqd._sqd as sqd_module
-from divi.qprog.workflows._lassqd._sqd import (
+import divi.qprog.workflows.lassqd._sqd as sqd_module
+from divi.qprog.workflows.lassqd._sqd import (
     SQDConfig,
     SQDResult,
     SQDSolver,
@@ -45,7 +45,7 @@ from divi.qprog.workflows._lassqd._sqd import (
     string_hops,
 )
 from tests._helpers import exact_match
-from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     UNBOUNDED_ADVICE,
     assert_roots_match,
     dense_fci_energy,

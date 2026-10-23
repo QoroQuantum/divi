@@ -4,25 +4,20 @@
 
 """The LASSQD program ensemble: construction and per-round program creation."""
 
-import hashlib
-import itertools
-import os
-import tempfile
 import time
-from collections import Counter
-from collections.abc import Hashable, Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from collections.abc import Hashable, Sequence
+from dataclasses import replace
 from functools import cached_property
 from math import isfinite
-from numbers import Integral, Real
+from numbers import Integral
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 from warnings import warn
 
 import numpy as np
 import scipy.linalg
-from pyscf import gto, scf
-from pyscf.solvent import ddcosmo, pcm, smd
+from pyscf import scf
+from pyscf.solvent import ddcosmo, pcm
 
 from divi.backends import CircuitRunner
 from divi.hamiltonians._molecular import is_pyscf_input, split_pyscf_input
@@ -39,6 +34,7 @@ from ._active_space import (
     split_active_orbitals,
 )
 from ._active_space import validate_fragment_atoms as _validate_fragment_atoms
+from ._checkpoint import _WorkflowSnapshot, load_snapshot, save_snapshot
 from ._config import (
     CCSDPreparation,
     FragmentationConfig,
@@ -46,76 +42,47 @@ from ._config import (
     Preparation,
     SecondOrderOrbitalUpdate,
     StateAveragedOrbitalUpdate,
-    _by_root,
     _checkpoint_digest,
     _OrbitalTarget,
 )
+from ._excited_states import _ExcitedStates
 from ._integrals import (
+    AOIntegrals,
     MOIntegrals,
-    OrbitalSolution,
-    _outside_divi_stacklevel,
     assemble_active_rdms,
     build_active_permutation,
     cached_ao_eri,
     cached_h_ao,
-    escape_orbital_saddle,
     fragment_blocks,
     fragment_effective_integrals,
-    orbital_irreps,
-    state_transitions,
-    subspace_nevpt2,
-    subspace_states_at,
-    subspace_wavefunctions,
-    track_states,
     transform_integrals,
 )
+from ._orbital_solvers import escape_orbital_saddle, orbital_irreps
 from ._preparation import rotate_rdms_to_fragment_basis
+from ._solvent import _SolventField
 from ._sqd import (
     SQDConfig,
-    SQDResult,
     SQDSolver,
     compute_spatial_rdms,
-    default_states,
-    full_space_size,
     map_carried_strings,
     probs_to_sqd_bitstrings,
-    spin_square_of,
     validate_sqd_for_fragment,
 )
 from ._state import (
     ElectronicState,
     FragmentSpec,
     FragmentState,
+    LASSQDRoundReport,
     LASSQDState,
     StateTransition,
     StateWavefunction,
+    _core_orbital_count,
     _OrbitalRound,
     _SampledSubspace,
-    require_orthonormal,
     validate_fragment_specs,
 )
-
-#: ``<S^2>`` deviation from a state's target above which it is reported unresolved.
-_SPIN_SQUARE_TOL = 1e-3
-
-#: Energy gap (Ha) between same-multiplicity roots reported as near-degenerate.
-_DEGENERACY_TOL = 1e-6
-
-#: Gap (Ha) under which an unrequested root counts as degenerate with the last
-#: requested one, above the ~3e-6 Ha the starting-orbital nudge splits a pair by.
-_SPLIT_SET_TOL = 1e-4
-
-#: The PySCF solvent-model settings that change its reaction field.
-_SOLVENT_SETTINGS = (
-    "eps",
-    "method",
-    "lmax",
-    "lebedev_order",
-    "eta",
-    "radii_table",
-    "atom_radii",
-    "solvent",
-)
+from ._subspace import subspace_wavefunctions
+from ._warnings import _outside_divi_stacklevel
 
 #: Scale of the random rotation applied to the starting orbitals.
 _ORBITAL_NUDGE = 1e-3
@@ -157,267 +124,10 @@ def _warn_no_round(name: str) -> None:
     )
 
 
-def _is_off_spin(multiplicity: int, spin_square: float) -> bool:
-    return abs(spin_square - spin_square_of(multiplicity)) > _SPIN_SQUARE_TOL
-
-
-def _state_warnings(
-    states: Sequence[ElectronicState],
-) -> Iterator[tuple[Hashable, str]]:
-    """``(key, message)`` for each state the subspace leaves off-spin and each
-    near-degenerate pair."""
-    for state in states:
-        if _is_off_spin(state.multiplicity, state.spin_square):
-            yield (
-                ("off-spin", state.multiplicity, state.index),
-                f"State ({state.multiplicity}, {state.index}) has <S^2> = "
-                f"{state.spin_square:.4f}, not "
-                f"{spin_square_of(state.multiplicity):.4f}: the subspace does not "
-                "resolve it as that spin. Raise lambda_penalty or the sampling "
-                "budget (batch_size, n_recovery_iterations).",
-            )
-    for lower, upper in itertools.pairwise(
-        sorted(states, key=lambda state: (state.multiplicity, state.energy))
-    ):
-        gap = abs(upper.energy - lower.energy)
-        if lower.multiplicity == upper.multiplicity and gap < _DEGENERACY_TOL:
-            first, second = sorted((lower.index, upper.index))
-            yield (
-                ("degenerate", lower.multiplicity, first, second),
-                f"States ({lower.multiplicity}, {first}) and "
-                f"({lower.multiplicity}, {second}) lie within {gap:.1e} Ha "
-                "of each other, so their order can swap between rounds.",
-            )
-
-
-def _in_energy_order(
-    states: Sequence[ElectronicState],
-) -> tuple[ElectronicState, ...]:
-    """Ascending in energy; states within ``_DEGENERACY_TOL`` of each other keep
-    root order, so float noise cannot reorder them."""
-    groups: list[list[ElectronicState]] = []
-    for state in sorted(states, key=lambda state: state.energy):
-        if groups and state.energy - groups[-1][0].energy < _DEGENERACY_TOL:
-            groups[-1].append(state)
-        else:
-            groups.append([state])
-    return tuple(state for group in groups for state in sorted(group))
-
-
-@dataclass(frozen=True)
-class LASSQDRoundReport:
-    """One macro-cycle round's stage outputs.
-
-    Appended to ``LASSQD.round_reports`` as the round completes, so an
-    interrupted run keeps every finished round's numbers.
-
-    Attributes:
-        number: Round number, counting from 1.
-        energy: This round's total energy of the lowest state, a variational
-            upper bound in gas phase; with a solvent it includes the solvation
-            energy, the first round's in no field yet.
-        energy_change: Signed change from the previous round's ``energy``, or
-            ``None`` for the first round, which has no predecessor.
-        subspace_sizes: Distinct determinants each fragment's SQD recovery
-            spanned, in fragment order. A one-determinant entry means that
-            fragment captured no correlation.
-        orbital_iterations: Iterations the orbital solve took.
-        orbital_evaluations: Objective evaluations the orbital solve took, each
-            one four-index MO transform.
-        orbital_gradient_norm: L2 norm of the orbital gradient at the returned
-            orbitals.
-        orbital_converged: Whether that norm is at most ``sqrt(energy_tol)``,
-            rather than the solve stopping on a budget or an energy-reduction
-            floor.
-        rotation_pairs: Orbital pairs the rotation spanned.
-        recovery_seconds: Wall-clock time in SQD recovery for all fragments.
-        orbital_seconds: Wall-clock time in the orbital re-optimisation.
-        states: The states ``SQDConfig.states`` requested, ascending in
-            energy, with states within 1e-6 Ha of each other in
-            ``(multiplicity, index)`` order; empty when it requested none.
-        averaged_energy: The weighted average over ``states`` that
-            :class:`StateAveragedOrbitalUpdate` minimised and the macro-cycle
-            converges on; ``None`` under any other orbital update.
-        saddle_check: Outcome of the orbital-Hessian check run when a
-            lowest-state round would end the macro-cycle: ``'escaped'`` (a
-            saddle point was left and the macro-cycle continues), ``'passed'``
-            or ``'inconclusive'`` (the eigensolver stopped unconverged, so the
-            orbitals may still be a saddle point). ``None`` when it did not run.
-    """
-
-    number: int
-    energy: float
-    energy_change: float | None
-    subspace_sizes: tuple[int, ...]
-    orbital_iterations: int
-    orbital_evaluations: int
-    orbital_gradient_norm: float
-    orbital_converged: bool
-    rotation_pairs: int
-    recovery_seconds: float
-    orbital_seconds: float
-    states: tuple[ElectronicState, ...] = ()
-    averaged_energy: float | None = None
-    saddle_check: Literal["escaped", "passed", "inconclusive"] | None = None
-
-    def summary(self) -> str:
-        """One-line human-readable digest of the round."""
-        change = (
-            "first round"
-            if self.energy_change is None
-            else f"change {self.energy_change:+.3e}"
-        )
-        parts = [
-            f"Round {self.number} done. Energy: {self.energy:.8f} Ha ({change})",
-            f"subspaces {list(self.subspace_sizes)}",
-            self._orbital_summary(),
-            f"SQD {self.recovery_seconds:.1f}s, orbitals {self.orbital_seconds:.1f}s",
-        ]
-        parts += [
-            f"state ({state.multiplicity}, {state.index}) {state.energy:.8f} Ha, "
-            f"<S^2> {state.spin_square:.3f}"
-            for state in self.states
-        ]
-        if self.averaged_energy is not None:
-            parts.append(f"state-averaged {self.averaged_energy:.8f} Ha")
-        if self.saddle_check is not None:
-            parts.append(f"saddle check {self.saddle_check}")
-        return "; ".join(parts)
-
-    def _orbital_summary(self) -> str:
-        if self.rotation_pairs == 0:
-            return "orbitals: none rotated"
-        return (
-            f"orbitals: {self.orbital_iterations} iterations over "
-            f"{self.rotation_pairs} pairs, |g| {self.orbital_gradient_norm:.2e}, "
-            f"converged={self.orbital_converged}"
-        )
-
-
-def _stored_array(
-    stored: Any,
-    name: str,
-    shape: tuple[int, ...] | None = None,
-    *,
-    allow_infinite: bool = False,
-) -> np.ndarray:
-    """Copy one array out of a checkpoint archive, rejecting malformed data.
-
-    Raises:
-        ValueError: If the array is missing, an object array (which an archive
-            opened with ``allow_pickle=False`` refuses to load), non-numeric,
-            of the wrong shape, NaN, or infinite where ``allow_infinite`` is
-            not set.
-    """
-    if name not in stored.files:
-        raise ValueError(f"LASSQD checkpoint artifact is missing {name}.")
-    array = np.asarray(stored[name])
-    if not (np.issubdtype(array.dtype, np.number) or array.dtype == np.bool_):
-        raise ValueError(
-            f"LASSQD checkpoint {name} has non-numeric dtype {array.dtype}."
-        )
-    if shape is not None and array.shape != shape:
-        raise ValueError(
-            f"LASSQD checkpoint {name} has shape {array.shape}; expected {shape}."
-        )
-    invalid = np.isnan(array) if allow_infinite else ~np.isfinite(array)
-    if np.any(invalid):
-        raise ValueError(f"LASSQD checkpoint {name} contains non-finite values.")
-    return array.copy()
-
-
-def _carried_strings_from_metadata(
-    metadata: Mapping[str, Any], name: str, spec: FragmentSpec, index: int
-) -> tuple[str, ...]:
-    """One sector's carried strings from checkpoint metadata, rejecting any that
-    is not a 0/1 string as wide as the fragment.
-
-    Raises:
-        ValueError: If the entry is not a list of such strings.
-    """
-    strings = metadata.get(name)
-    if not isinstance(strings, list) or any(
-        not isinstance(string, str)
-        or len(string) != spec.n_orbitals
-        or set(string) - {"0", "1"}
-        for string in strings
-    ):
-        raise ValueError(
-            f"LASSQD checkpoint fragment {index} {name} must be a list of "
-            f"{spec.n_orbitals}-character 0/1 strings."
-        )
-    return tuple(strings)
-
-
-def _labels_from_metadata(entries: Any) -> dict[tuple[int, int], tuple[int, int]]:
-    """Tracked state labels from checkpoint metadata.
-
-    Raises:
-        ValueError: If an entry is not ``[multiplicity, root, index]`` of
-            integers.
-    """
-    if not isinstance(entries, list) or any(
-        not isinstance(entry, list)
-        or len(entry) != 3
-        or not all(isinstance(value, int) for value in entry)
-        for entry in entries
-    ):
-        raise ValueError(
-            "LASSQD checkpoint labels must be a list of [multiplicity, root, "
-            "index] integer triples."
-        )
-    return {
-        (multiplicity, root): (multiplicity, label)
-        for multiplicity, root, label in entries
-    }
-
-
-def _molecule_fingerprint(mol) -> str:
-    """Digest of what fixes a molecule's integrals: atoms, geometry, basis,
-    effective core potentials and electron count."""
-    digest = hashlib.sha256()
-    for array in (mol._atm, mol._bas, mol._env[gto.PTR_ENV_START :], mol._ecpbas):
-        digest.update(np.ascontiguousarray(array).tobytes())
-    digest.update(f"{mol.cart}:{mol.nelectron}".encode())
-    if mol.spin:
-        digest.update(f":{mol.spin}".encode())
-    return digest.hexdigest()
-
-
-def _compute_n_core(specs: Sequence[FragmentSpec], n_occupied: int) -> int:
-    """Frozen occupied-orbital count implied by a fragment spec list.
-
-    ``FragmentSpec.orbitals`` always carries the molecule's original,
-    pre-permutation orbital indices, so this can be recomputed from any
-    fragment spec list together with the molecule's occupied-orbital count,
-    independent of whether ``mo_coeff`` has already been permuted.
-    """
-    active_orbitals = [orbital for spec in specs for orbital in spec.orbitals]
-    return n_occupied - sum(1 for orbital in active_orbitals if orbital < n_occupied)
-
-
-def _is_dielectric_constant(value: object) -> bool:
-    """Whether ``value`` is a finite real number of at least 1."""
-    return (
-        isinstance(value, Real)
-        and not isinstance(value, bool)
-        and isfinite(value)
-        and float(value) >= 1.0
-    )
-
-
-def _static_eps(model: ddcosmo.DDCOSMO | pcm.PCM) -> Any:
-    """A solvent model's static dielectric constant; SMD takes its solvent's
-    unless ``eps`` overrides it."""
-    if isinstance(model, smd.SMD) and model.eps is None:
-        return (model.solvent_descriptors or smd.solvent_db[model.solvent])[5]
-    return model.eps
-
-
-def _ao_density(wavefunction: StateWavefunction) -> np.ndarray:
-    """A state's spin-traced AO density matrix, core included."""
-    core, active = wavefunction.core_orbitals, wavefunction.active_orbitals
-    return 2.0 * core @ core.T + active @ wavefunction.rdm1 @ active.T
+def _ao_density(core: np.ndarray, active: np.ndarray, rdm1: np.ndarray) -> np.ndarray:
+    """The spin-traced AO density of doubly occupied ``core`` orbitals plus
+    ``active`` orbitals carrying ``rdm1``."""
+    return 2.0 * core @ core.T + active @ rdm1 @ active.T
 
 
 def _diagonal_rdm_guess(
@@ -452,11 +162,11 @@ class LASSQD(ProgramEnsemble):
     Partitions a molecule's active space into fragments, prepares one circuit
     per fragment, and recovers each fragment state via sample-based quantum
     diagonalisation. Fragment preparation is chosen by ``preparation``:
-    :class:`~divi.qprog.workflows.CCSDPreparation` (the default) samples a
+    :class:`~divi.qprog.workflows.lassqd.CCSDPreparation` (the default) samples a
     one-repetition LUCJ operator seeded from CCSD, whose classical cost is the
     fragment's CCSD, so it never builds the fragment statevector;
-    :class:`~divi.qprog.workflows.LinearMethodPreparation` first optimises it
-    with ffsim's exact linear method; :class:`~divi.qprog.workflows.VQEPreparation`
+    :class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` first optimises it
+    with ffsim's exact linear method; :class:`~divi.qprog.workflows.lassqd.VQEPreparation`
     optimises an ansatz against backend-estimated energies.
 
     :attr:`energy` is a variational upper bound -- the assembled RDM is that of
@@ -479,9 +189,9 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             orbitals only; its functional enters no energy.
         fragmentation: Which orbitals are active and how they split into
             fragments, as a
-            :class:`~divi.qprog.workflows.FragmentationConfig`.
+            :class:`~divi.qprog.workflows.lassqd.FragmentationConfig`.
         sqd: Sampling and diagonalisation budget per fragment solve, as an
-            :class:`~divi.qprog.workflows.SQDConfig`. Defaults to
+            :class:`~divi.qprog.workflows.lassqd.SQDConfig`. Defaults to
             ``SQDConfig()``.
         preparation: Fragment-circuit preparation strategy.
         orbital_update: How each macro-cycle updates the orbitals.
@@ -508,7 +218,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             ``qem_protocol`` and ``suppress_performance_warnings`` work with
             any preparation; VQE options such as ``n_layers``,
             ``ansatz_kwargs``, ``grouping_strategy`` and ``early_stopping``
-            require :class:`~divi.qprog.workflows.VQEPreparation`.
+            require :class:`~divi.qprog.workflows.lassqd.VQEPreparation`.
 
     Raises:
         ValueError: If ``fragmentation``'s ``active_orbitals`` has out-of-range
@@ -533,7 +243,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             neither one nor ``None``, if ``problem`` was not built
             from a PySCF ``Mole`` or mean-field, if ``preparation`` or
             ``orbital_update`` is not one of its strategies, or if a preparation other than
-            :class:`~divi.qprog.workflows.VQEPreparation` receives a keyword
+            :class:`~divi.qprog.workflows.lassqd.VQEPreparation` receives a keyword
             its fragment programs do not take.
         ImportError: If the ``chem`` extra is not installed.
     """
@@ -665,25 +375,9 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             )
         if fragmentation.fragment_atoms is not None:
             _validate_fragment_atoms(fragmentation.fragment_atoms, self._mol.natm)
+        self._solvent: _SolventField | None = None
         if solvent is not None:
-            if not isinstance(solvent, (ddcosmo.DDCOSMO, pcm.PCM)):
-                raise TypeError(
-                    "solvent must be a PySCF ddCOSMO, ddPCM, PCM or SMD model, such "
-                    f"as pyscf.solvent.ddCOSMO(mol); got {type(solvent).__name__}."
-                )
-            if _molecule_fingerprint(solvent.mol) != _molecule_fingerprint(self._mol):
-                raise ValueError(
-                    "solvent was built on a different molecule; build it on the "
-                    "molecule the problem was made from."
-                )
-            if not _is_dielectric_constant(_static_eps(solvent)):
-                raise ValueError(
-                    "solvent's dielectric constant must be a finite number of at "
-                    f"least 1; got {_static_eps(solvent)!r}. Set solvent.eps, or for "
-                    "SMD its solvent, e.g. smd.solvent = 'water'."
-                )
-            # kernel caches its last field on the model; keep the caller's clean.
-            solvent = solvent.copy()
+            self._solvent = _SolventField(solvent, self._mol)
         elif getattr(self._mean_field, "with_solvent", None) is not None:
             warn(
                 "The mean field passed in was solved in a solvent, but LASSQD has "
@@ -692,7 +386,6 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
                 UserWarning,
                 stacklevel=2,
             )
-        self._solvent = solvent
 
         self._fragmentation = fragmentation
         self._sqd = SQDConfig() if sqd is None else sqd
@@ -718,9 +411,14 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         self._energy_history: list[float] = []
         self._round_reports: list[LASSQDRoundReport] = []
         self._warned: set[Hashable] = set()
-        self._final_subspace: _SampledSubspace | None = None
-        # The solvent's (energy, AO potential) from the last round's density.
-        self._reaction_field: tuple[float, np.ndarray] | None = None
+        self._excited = _ExcitedStates(
+            self._mol,
+            self._sqd,
+            self._spin,
+            self._ao_integrals,
+            self._warn_once,
+            lambda: bool(self._round_reports),
+        )
 
     def _check_fragments(self, specs: Sequence[FragmentSpec]) -> None:
         """Reject ``SQDConfig`` settings the fragments cannot carry, and warn
@@ -797,7 +495,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
         that runs them is reduced against the same orbitals.
 
         Returns:
-            A fresh :class:`~divi.qprog.workflows.LASSQDState` with ``energy``
+            A fresh :class:`~divi.qprog.workflows.lassqd.LASSQDState` with ``energy``
             and ``previous_energy`` at their default (``inf``) values and
             every fragment's ``params`` set to ``None``.
 
@@ -814,8 +512,11 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
 
         mean_field = self._mean_field
         if mean_field is None or mean_field.mo_coeff is None:
-            if mean_field is None:
-                mean_field = scf.ROHF(self._mol) if self._spin else scf.RHF(self._mol)
+            mean_field = (
+                (scf.ROHF(self._mol) if self._spin else scf.RHF(self._mol))
+                if mean_field is None
+                else mean_field.copy()
+            )
             mean_field.run(verbose=0)
             if not mean_field.converged:
                 raise RuntimeError(
@@ -853,7 +554,7 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             specs = list(config.active_spaces)
         else:
             specs, localized, active_positions = auto_fragment_specs(
-                self._mol,
+                self._ao_integrals(),
                 mo_coeff,
                 n_occupied,
                 self._rng,
@@ -863,8 +564,6 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
                 active_orbitals=config.active_orbitals,
                 fragment_atoms=config.fragment_atoms,
                 local_spins=config.local_spins,
-                ao_eri=self._ao_eri,
-                h_ao=self._h_ao,
                 spin=self._spin,
             )
             mo_coeff = mo_coeff.copy()
@@ -875,7 +574,9 @@ from_molecule` from a PySCF ``gto.Mole`` (an RHF calculation, or ROHF for
             # Explicit layouts were checked, and warned about, at construction.
             self._check_fragments(specs)
 
-        n_core = _compute_n_core(specs, n_occupied)
+        n_core = _core_orbital_count(
+            self._mol.nelectron, sum(spec.n_alpha + spec.n_beta for spec in specs)
+        )
         relaxes = self._orbital_update._relaxes
         if relaxes is not _OrbitalTarget.NOTHING:
             # A state-averaged solve keeps a symmetric molecule's symmetry.
@@ -954,7 +655,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         that round's programs.
 
         Returns:
-            The latest :class:`~divi.qprog.workflows.LASSQDState`.
+            The latest :class:`~divi.qprog.workflows.lassqd.LASSQDState`.
 
         Raises:
             RuntimeError: If no round has been reduced into
@@ -972,24 +673,20 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         return self.workflow_state
 
     def _reset_workflow_state(self) -> None:
-        """Clear per-workflow state, also re-seeding ``_rng`` and dropping
-        every fragment's cached ``SQDSolver``.
-
-        ``run()`` calls this at the start of every invocation. Without
-        re-deriving ``_rng`` from the stored seed and clearing ``_solvers``
-        here, a second ``run()`` on the same instance would resume fragment
-        0's SQD stream mid-sequence, draw different fragment seeds, and (in
-        automatic mode) re-draw the localisation restarts from an advanced
-        generator instead of reproducing the first run.
-        """
+        """Clear per-workflow state, re-seed ``_rng`` and drop every fragment's
+        cached ``SQDSolver``, so a repeated ``run()`` reproduces the first. The
+        state of a program map the caller built and has not run is kept."""
         super()._reset_workflow_state()
+        if not self._programs_pending:
+            self._state = None
         self._rng = np.random.default_rng(self._seed)
         self._solvers.clear()
         self._energy_history.clear()
         self._round_reports.clear()
         self._warned.clear()
-        self._final_subspace = None
-        self._reaction_field = None
+        self._excited.reset()
+        if self._solvent is not None:
+            self._solvent.reset()
 
     def _save_workflow_checkpoint_state(
         self, state: Any, round_dir: Path, stem: str
@@ -1001,326 +698,60 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 f"{type(state).__name__}."
             )
 
-        arrays: dict[str, np.ndarray] = {
-            "mo_coeff": state.mo_coeff,
-            "energy": np.asarray(state.energy),
-            "previous_energy": np.asarray(state.previous_energy),
-            "orbitals_converged": np.asarray(state.orbitals_converged),
-            "energy_history": np.asarray(self._energy_history, dtype=np.float64),
-        }
-        if self._reaction_field is not None:
-            arrays["solvent_energy"] = np.asarray(self._reaction_field[0])
-            arrays["solvent_potential"] = self._reaction_field[1]
-        fragments = []
-        for index, fragment in enumerate(state.fragments):
-            prefix = f"fragment_{index}"
-            arrays[f"{prefix}_rdm1"] = fragment.rdm1
-            arrays[f"{prefix}_rdm2"] = fragment.rdm2
-            params_present = fragment.params is not None
-            alpha_present = fragment.rdm1_alpha is not None
-            beta_present = fragment.rdm1_beta is not None
-            if fragment.params is not None:
-                arrays[f"{prefix}_params"] = fragment.params
-            if fragment.rdm1_alpha is not None:
-                arrays[f"{prefix}_rdm1_alpha"] = fragment.rdm1_alpha
-            if fragment.rdm1_beta is not None:
-                arrays[f"{prefix}_rdm1_beta"] = fragment.rdm1_beta
-            if fragment.sampled_orbitals is not None:
-                arrays[f"{prefix}_sampled_orbitals"] = fragment.sampled_orbitals
-            fragments.append(
-                {
-                    "orbitals": list(fragment.spec.orbitals),
-                    "n_alpha": fragment.spec.n_alpha,
-                    "n_beta": fragment.spec.n_beta,
-                    "params": params_present,
-                    "rdm1_alpha": alpha_present,
-                    "rdm1_beta": beta_present,
-                    "sampled_orbitals": fragment.sampled_orbitals is not None,
-                    "carried_alpha": list(fragment.carried_alpha),
-                    "carried_beta": list(fragment.carried_beta),
-                }
-            )
-
-        solvers = [
-            {"index": index, "rng_state": solver._rng.bit_generator.state}
-            for index, solver in sorted(self._solvers.items())
-        ]
-        final_strings = None
-        if self._final_subspace is not None:
-            arrays["final_orbitals"] = self._final_subspace.mo_coeff
-            strings_alpha, strings_beta = self._final_subspace.strings
-            final_strings = {
-                "strings_alpha": list(strings_alpha),
-                "strings_beta": list(strings_beta),
-                "labels": [
-                    [multiplicity, root, label]
-                    for (multiplicity, root), (_, label) in (
-                        self._final_subspace.labels or {}
-                    ).items()
-                ],
-            }
-
-        artifact = f"{stem}.npz"
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                dir=round_dir, suffix=".npz", delete=False
-            ) as handle:
-                temporary_path = Path(handle.name)
-                np.savez(handle, **arrays)  # pyrefly: ignore[bad-argument-type]
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, round_dir / artifact)
-        finally:
-            if temporary_path is not None:
-                temporary_path.unlink(missing_ok=True)
-
-        return {
-            "artifact": artifact,
-            "molecule": _molecule_fingerprint(self._mol),
-            "configuration": self._configuration_record(),
-            "fragments": fragments,
-            "rng_state": self._rng.bit_generator.state,
-            "solvers": solvers,
-            "round_reports": [asdict(report) for report in self._round_reports],
-            "final_strings": final_strings,
-        }
+        snapshot = _WorkflowSnapshot(
+            state=state,
+            rng_state=self._rng.bit_generator.state,
+            solver_rng_states={
+                index: solver._rng.bit_generator.state
+                for index, solver in self._solvers.items()
+            },
+            energy_history=tuple(self._energy_history),
+            round_reports=tuple(self._round_reports),
+            final_subspace=self._excited.final_subspace,
+            reaction_field=None if self._solvent is None else self._solvent.field,
+        )
+        return save_snapshot(
+            snapshot,
+            round_dir,
+            stem,
+            mol=self._mol,
+            configuration=self._configuration_record(),
+        )
 
     def _load_workflow_checkpoint_state(
         self, payload: dict[str, Any], round_dir: Path, stem: str
     ) -> LASSQDState:
         """Load and validate an explicit LASSQD NPZ snapshot."""
-        artifact = payload.get("artifact")
-        if not isinstance(artifact, str):
-            raise ValueError("LASSQD checkpoint is missing its NPZ artifact.")
-        if artifact != f"{stem}.npz":
-            raise ValueError("LASSQD checkpoint references the wrong state artifact.")
-        molecule = payload.get("molecule")
-        if not isinstance(molecule, str):
-            raise ValueError("LASSQD checkpoint is missing its molecule fingerprint.")
-        if molecule != _molecule_fingerprint(self._mol):
-            raise ValueError(
-                "LASSQD checkpoint was written for a different molecule: its "
-                "geometry, basis, electron count or spin differs from this one's."
-            )
-        configuration = payload.get("configuration")
-        if not isinstance(configuration, dict):
-            raise ValueError("LASSQD checkpoint is missing its configuration.")
-        differing = [
-            name
-            for name, record in self._configuration_record().items()
-            if configuration.get(name) != record
-        ]
-        if differing:
-            raise ValueError(
-                "LASSQD checkpoint was written with a different LASSQD "
-                f"configuration: its {', '.join(differing)} "
-                f"{'differs' if len(differing) == 1 else 'differ'} from this run's."
-            )
-        fragment_metadata = payload.get("fragments")
-        if not isinstance(fragment_metadata, list) or not fragment_metadata:
-            raise ValueError("LASSQD checkpoint has no fragment metadata.")
-        rng_state = payload.get("rng_state")
-        if not isinstance(rng_state, dict):
-            raise ValueError("LASSQD checkpoint is missing RNG state.")
-        solver_metadata = payload.get("solvers")
-        if not isinstance(solver_metadata, list):
-            raise ValueError("LASSQD checkpoint solver metadata must be a list.")
-        report_payloads = payload.get("round_reports")
-        if not isinstance(report_payloads, list):
-            raise ValueError("LASSQD checkpoint round reports must be a list.")
-
-        n_orbitals_total = self._register_size()
-        with np.load(round_dir / artifact, allow_pickle=False) as stored:
-            fragments = []
-            for index, metadata in enumerate(fragment_metadata):
-                prefix = f"fragment_{index}"
-                spec = FragmentSpec(
-                    tuple(metadata["orbitals"]),
-                    metadata["n_alpha"],
-                    metadata["n_beta"],
-                )
-                rdm1_shape = (spec.n_orbitals,) * 2
-                params = (
-                    _stored_array(stored, f"{prefix}_params")
-                    if metadata.get("params")
-                    else None
-                )
-                if params is not None and params.ndim != 1:
-                    raise ValueError(
-                        f"LASSQD checkpoint fragment {index} parameters are not 1-D."
-                    )
-                rdm1_alpha, rdm1_beta = (
-                    (
-                        _stored_array(stored, f"{prefix}_{name}", rdm1_shape)
-                        if metadata.get(name)
-                        else None
-                    )
-                    for name in ("rdm1_alpha", "rdm1_beta")
-                )
-                sampled_orbitals = (
-                    _stored_array(
-                        stored,
-                        f"{prefix}_sampled_orbitals",
-                        (self._mol.nao_nr(), spec.n_orbitals),
-                    )
-                    if metadata.get("sampled_orbitals")
-                    else None
-                )
-                carried_alpha, carried_beta = (
-                    _carried_strings_from_metadata(metadata, name, spec, index)
-                    for name in ("carried_alpha", "carried_beta")
-                )
-                fragments.append(
-                    FragmentState(
-                        spec=spec,
-                        rdm1=_stored_array(stored, f"{prefix}_rdm1", rdm1_shape),
-                        rdm2=_stored_array(
-                            stored, f"{prefix}_rdm2", (spec.n_orbitals,) * 4
-                        ),
-                        params=params,
-                        rdm1_alpha=rdm1_alpha,
-                        rdm1_beta=rdm1_beta,
-                        carried_alpha=carried_alpha,
-                        carried_beta=carried_beta,
-                        sampled_orbitals=sampled_orbitals,
-                    )
-                )
-            mo_coeff = _stored_array(
-                stored, "mo_coeff", (self._mol.nao_nr(), n_orbitals_total)
-            )
-            energy = _stored_array(stored, "energy", (), allow_infinite=True)
-            previous_energy = _stored_array(
-                stored, "previous_energy", (), allow_infinite=True
-            )
-            orbitals_converged = _stored_array(stored, "orbitals_converged", ())
-            energy_history = _stored_array(stored, "energy_history")
-            if energy_history.ndim != 1:
-                raise ValueError("LASSQD checkpoint energy history is not 1-D.")
-            reaction_field = None
-            if "solvent_potential" in stored.files:
-                n_ao = self._mol.nao_nr()
-                reaction_field = (
-                    float(_stored_array(stored, "solvent_energy", ())),
-                    _stored_array(stored, "solvent_potential", (n_ao, n_ao)),
-                )
-            final_strings = payload.get("final_strings")
-            final_subspace = None
-            if final_strings is not None:
-                if not isinstance(final_strings, dict) or self._sqd.states is None:
-                    raise ValueError(
-                        "LASSQD checkpoint final_strings must be an object, saved "
-                        "only with SQDConfig.states."
-                    )
-                final_subspace = _SampledSubspace(
-                    _stored_array(
-                        stored, "final_orbitals", (self._mol.nao_nr(), n_orbitals_total)
-                    ),
-                    (
-                        _carried_strings_from_metadata(
-                            final_strings, "strings_alpha", fragments[0].spec, 0
-                        ),
-                        _carried_strings_from_metadata(
-                            final_strings, "strings_beta", fragments[0].spec, 0
-                        ),
-                    ),
-                    self._sqd.states,
-                    self._sqd.lambda_penalty,
-                    labels=_labels_from_metadata(final_strings.get("labels", [])),
-                )
-
-        overlap = self._mol.intor_symmetric("int1e_ovlp")
-        require_orthonormal(mo_coeff, "LASSQD checkpoint mo_coeff", overlap)
-        if final_subspace is not None:
-            require_orthonormal(
-                final_subspace.mo_coeff, "LASSQD checkpoint final_orbitals", overlap
-            )
-        specs = [fragment.spec for fragment in fragments]
-        validate_fragment_specs(
-            specs, n_orbitals_total, self._n_occupied, spin=self._spin
+        snapshot = load_snapshot(
+            payload,
+            round_dir,
+            stem,
+            mol=self._mol,
+            n_orbitals=self._register_size(),
+            n_occupied=self._n_occupied,
+            spin=self._spin,
+            sqd=self._sqd,
+            configuration=self._configuration_record(),
         )
-        state = LASSQDState(
-            mo_coeff=mo_coeff,
-            fragments=tuple(fragments),
-            energy=float(energy),
-            previous_energy=float(previous_energy),
-            orbitals_converged=bool(orbitals_converged),
-        )
+        self._apply_snapshot(snapshot)
+        return snapshot.state
 
-        reports = []
-        for report in report_payloads:
-            reports.append(
-                LASSQDRoundReport(
-                    number=int(report["number"]),
-                    energy=float(report["energy"]),
-                    energy_change=(
-                        None
-                        if report["energy_change"] is None
-                        else float(report["energy_change"])
-                    ),
-                    subspace_sizes=tuple(
-                        int(size) for size in report["subspace_sizes"]
-                    ),
-                    orbital_iterations=int(report["orbital_iterations"]),
-                    orbital_evaluations=int(report["orbital_evaluations"]),
-                    # JSON stores the NaN a FixedOrbitals round reports as null.
-                    orbital_gradient_norm=(
-                        float("nan")
-                        if report["orbital_gradient_norm"] is None
-                        else float(report["orbital_gradient_norm"])
-                    ),
-                    orbital_converged=bool(report["orbital_converged"]),
-                    rotation_pairs=int(report["rotation_pairs"]),
-                    recovery_seconds=float(report["recovery_seconds"]),
-                    orbital_seconds=float(report["orbital_seconds"]),
-                    states=tuple(
-                        ElectronicState(
-                            multiplicity=int(entry["multiplicity"]),
-                            index=int(entry["index"]),
-                            energy=float(entry["energy"]),
-                            spin_square=float(entry["spin_square"]),
-                        )
-                        for entry in report["states"]
-                    ),
-                    averaged_energy=(
-                        None
-                        if report["averaged_energy"] is None
-                        else float(report["averaged_energy"])
-                    ),
-                    saddle_check=report["saddle_check"],
-                )
-            )
-
-        solver_indices = [metadata.get("index") for metadata in solver_metadata]
-        if (
-            any(not isinstance(index, int) for index in solver_indices)
-            or len(set(solver_indices)) != len(solver_indices)
-            or any(not 0 <= index < len(state.fragments) for index in solver_indices)
-        ):
-            raise ValueError("LASSQD checkpoint has invalid solver fragment indices.")
-        validation_rng = np.random.default_rng()
-        validation_rng.bit_generator.state = rng_state
-        for metadata in solver_metadata:
-            solver_rng_state = metadata.get("rng_state")
-            if not isinstance(solver_rng_state, dict):
-                raise ValueError("LASSQD checkpoint is missing solver RNG state.")
-            validation_rng.bit_generator.state = solver_rng_state
-
-        self._rng.bit_generator.state = rng_state
+    def _apply_snapshot(self, snapshot: _WorkflowSnapshot) -> None:
+        """Make ``snapshot`` this workflow's state."""
+        self._rng.bit_generator.state = snapshot.rng_state
         self._solvers.clear()
-        for metadata in solver_metadata:
-            index = metadata["index"]
-            solver = self._solver_for(index, state.fragments[index].spec)
-            solver._rng.bit_generator.state = metadata["rng_state"]
-        self._rng.bit_generator.state = rng_state
-        self._energy_history = energy_history.astype(float).tolist()
-        self._round_reports = reports
-        self._final_subspace = final_subspace
-        self._reaction_field = reaction_field
+        for index, solver_rng_state in snapshot.solver_rng_states.items():
+            solver = self._solver_for(index, snapshot.state.fragments[index].spec)
+            solver._rng.bit_generator.state = solver_rng_state
+        self._rng.bit_generator.state = snapshot.rng_state
+        self._energy_history = list(snapshot.energy_history)
+        self._round_reports = list(snapshot.round_reports)
+        self._excited.final_subspace = snapshot.final_subspace
+        if self._solvent is not None:
+            self._solvent.field = snapshot.reaction_field
         # Rebuilt programs keep the state they were built from.
         if not self._programs:
-            self._state = state
-        return state
+            self._state = snapshot.state
 
     def _configuration_record(self) -> dict[str, str]:
         """The settings a checkpoint must have been written with to resume
@@ -1334,17 +765,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             ),
             "orbital_update": repr(self._orbital_update),
             "solvent": (
-                "None"
-                if self._solvent is None
-                else _checkpoint_digest(
-                    (
-                        type(self._solvent).__name__,
-                        {
-                            name: getattr(self._solvent, name, None)
-                            for name in _SOLVENT_SETTINGS
-                        },
-                    )
-                )
+                "None" if self._solvent is None else self._solvent.checkpoint_record()
             ),
         }
 
@@ -1372,17 +793,12 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             self._solvers[index] = solver
         return solver
 
-    def _cached_mol_integrals(self) -> tuple[np.ndarray, np.ndarray]:
-        """Return this run's AO-basis integrals, computing them once.
-
-        Both are independent of ``mo_coeff`` and reused unchanged by every
-        round's :func:`optimize_orbitals` call, which itself evaluates
-        :func:`_total_energy` many times per round. The core Hamiltonian
-        carries the solvent's current reaction field.
-        """
-        if self._reaction_field is None:
-            return self._ao_eri, self._h_ao
-        return self._ao_eri, self._h_ao + self._reaction_field[1]
+    def _ao_integrals(self) -> AOIntegrals:
+        """The molecule with this run's AO integrals, its core Hamiltonian
+        carrying the solvent's current reaction field."""
+        if self._solvent is None or self._solvent.field is None:
+            return AOIntegrals(self._mol, self._ao_eri, self._h_ao)
+        return AOIntegrals(self._mol, self._ao_eri, self._h_ao + self._solvent.field[1])
 
     @cached_property
     def _ao_eri(self) -> np.ndarray:
@@ -1400,17 +816,20 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
     def _n_core(self, state: LASSQDState) -> int:
         """This state's frozen-core count."""
-        return _compute_n_core(
-            [fragment.spec for fragment in state.fragments], self._n_occupied
+        return _core_orbital_count(
+            self._mol.nelectron,
+            sum(
+                fragment.spec.n_alpha + fragment.spec.n_beta
+                for fragment in state.fragments
+            ),
         )
 
     def _active_space_integrals(self, state: LASSQDState) -> tuple[MOIntegrals, int]:
         """This state's active-space integrals and its frozen-core count."""
         n_core = self._n_core(state)
-        ao_eri, h_ao = self._cached_mol_integrals()
         n_act = sum(fragment.spec.n_orbitals for fragment in state.fragments)
         integrals = transform_integrals(
-            self._mol, state.mo_coeff, n_core, n_act, ao_eri, h_ao
+            self._ao_integrals(), state.mo_coeff, n_core, n_act
         )
         return integrals, n_core
 
@@ -1433,7 +852,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 programs currently held by this ensemble.
 
         Returns:
-            A new :class:`~divi.qprog.workflows.LASSQDState` with updated
+            A new :class:`~divi.qprog.workflows.lassqd.LASSQDState` with updated
             ``mo_coeff``, per-fragment RDMs and parameters, ``energy`` (this
             round's optimised total energy), ``previous_energy`` (set to
             ``state.energy``), and ``orbitals_converged``. ``state`` itself is
@@ -1444,6 +863,9 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 sampled bitstring can be brought into agreement with that
                 fragment's target particle symmetry); the message names the
                 failing fragment's program ID.
+            RuntimeError: If ``state`` is not the state ``create_programs``
+                built this round's circuits from, which would silently reduce
+                the fragment results against different orbitals.
 
         Warns:
             UserWarning: If a fragment's recovered subspace contains only one
@@ -1454,11 +876,6 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 subspace resolves fewer states of a multiplicity than requested,
                 if a state's ``<S^2>`` misses its multiplicity, or if two roots
                 of one multiplicity are near-degenerate.
-
-        Raises:
-            RuntimeError: If ``state`` is not the state ``create_programs``
-                built this round's circuits from, which would silently reduce
-                the fragment results against different orbitals.
         """
         if self._state is not None and state is not self._state:
             raise RuntimeError(
@@ -1566,27 +983,24 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 )
             )
 
-        ao_eri, h_ao = self._cached_mol_integrals()
+        ao = self._ao_integrals()
         states = self._sqd.states
         if states is not None and not self._round_reports:
             # Once per run, before an orbital update can lift the degeneracy.
-            self._warn_if_a_degenerate_set_is_split(
+            self._excited.warn_if_a_degenerate_set_is_split(
+                ao,
                 in_sampled_basis(state.mo_coeff),
                 n_core,
                 results[0],
                 states,
-                ao_eri,
-                h_ao,
             )
         self._emit_workflow_stage("Assembling active-space RDMs")
         orbital_round = _OrbitalRound(
-            self._mol,
+            ao,
             state.mo_coeff,
             n_core,
             [fragment.spec for fragment in new_fragments],
             *assemble_active_rdms(new_fragments),
-            ao_eri,
-            h_ao,
             gradient_tol=float(np.sqrt(self._energy_tol)),
             report=self._emit_workflow_stage,
             subspace=(
@@ -1599,8 +1013,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                     self._sqd.lambda_penalty,
                     labels=(
                         None
-                        if self._final_subspace is None
-                        else self._final_subspace.labels
+                        if self._excited.final_subspace is None
+                        else self._excited.final_subspace.labels
                     ),
                 )
             ),
@@ -1610,13 +1024,14 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         solution, relaxed_states = self._orbital_update._solve(orbital_round)
         if (
             isinstance(self._orbital_update, StateAveragedOrbitalUpdate)
-            and self._final_subspace is not None
+            and self._excited.final_subspace is not None
         ):
-            solution, relaxed_states = self._follow_swapped_states(
+            solution, relaxed_states = self._excited.follow_swapped_states(
                 self._orbital_update,
                 orbital_round,
                 solution,
                 relaxed_states,
+                len(self._energy_history) + 1,
             )
         averaged = self._orbital_update._relaxes is _OrbitalTarget.AVERAGE
         orbital_seconds = time.perf_counter() - orbital_started
@@ -1628,69 +1043,28 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             )
         electronic_states: tuple[ElectronicState, ...] = ()
         if states is not None:
-            result, spec = results[0], new_fragments[0].spec
-            # A state-averaged solve returns its orbitals in the sampled basis.
-            final_subspace = _SampledSubspace(
-                (
-                    in_sampled_basis(solution.mo_coeff)
-                    if relaxed_states is None
-                    else solution.mo_coeff
-                ),
-                (result.strings_alpha, result.strings_beta),
+            electronic_states = self._excited.record_round(
+                ao,
+                n_core,
                 states,
-                self._sqd.lambda_penalty,
-            )
-            if self._final_subspace is not None:
-                final_subspace = replace(
-                    final_subspace,
-                    labels=track_states(
-                        self._final_subspace,
-                        final_subspace,
-                        n_core,
-                        self._mol,
-                        ao_eri,
-                        h_ao,
-                    ),
-                )
-            labels = final_subspace.labels or {}
-            if relaxed_states is None:
-                relaxed_states = subspace_states_at(
-                    self._mol, final_subspace, n_core, ao_eri, h_ao
-                )
-            else:
-                relaxed_states = tuple(
-                    replace(
-                        state,
-                        index=labels.get(
-                            (state.multiplicity, state.index),
-                            (state.multiplicity, state.index),
-                        )[1],
-                    )
-                    for state in relaxed_states
-                )
-            self._final_subspace = final_subspace
-            electronic_states = self._electronic_states(
-                "fragment_0", result, spec, relaxed_states
+                results[0],
+                new_fragments[0].spec,
+                solution,
+                relaxed_states,
+                in_sampled_basis,
             )
         solvation_offset = 0.0
         if self._solvent is not None:
             density = self._lowest_state_density(
                 solution.mo_coeff, n_core, orbital_round.rdm1_active
             )
-            if self._reaction_field is not None:
-                # The field sat in hcore: trade its expectation for E(solvent).
-                field_energy, potential = self._reaction_field
-                solvation_offset = field_energy - float(
-                    np.einsum("ij,ji->", potential, density)
-                )
+            solvation_offset = self._solvent.energy_offset(density)
             solution = replace(solution, energy=solution.energy + solvation_offset)
             electronic_states = tuple(
                 replace(state, energy=state.energy + solvation_offset)
                 for state in electronic_states
             )
-            # pyrefly: ignore[bad-argument-type]  # PySCF's PCM reuses ddCOSMO.kernel
-            field_energy, potential = self._solvent.kernel(density)
-            self._reaction_field = (float(field_energy), np.asarray(potential))
+            self._solvent.advance(density)
         # A state-averaged solve's energy is the average, not the lowest state's.
         energy = (
             electronic_states[0].energy
@@ -1708,14 +1082,12 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             and abs(energy - previous) < self._energy_tol
         ):
             escape, conclusive = escape_orbital_saddle(
-                self._mol,
+                ao,
                 solution.mo_coeff,
                 n_core,
                 orbital_round.specs,
                 orbital_round.rdm1_active,
                 orbital_round.rdm2_active,
-                ao_eri,
-                h_ao,
                 min_energy_drop=_SADDLE_ESCAPE_DROP * self._energy_tol,
             )
             if escape is not None:
@@ -1763,6 +1135,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 energy=escaped_energy + solvation_offset,
                 orbitals_converged=False,
             )
+        self._state = None
         return next_state
 
     def _lowest_state_density(
@@ -1771,162 +1144,28 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         """AO density of the round's lowest state, which drives the reaction
         field: the lowest requested state at the final orbitals, or else the
         fragments' assembled RDM at ``mo_coeff``."""
-        if self._sqd.states is not None and self._final_subspace is not None:
-            ao_eri, h_ao = self._cached_mol_integrals()
+        final_subspace = self._excited.final_subspace
+        if self._sqd.states is not None and final_subspace is not None:
             wavefunctions = subspace_wavefunctions(
-                self._mol, self._final_subspace, n_core, ao_eri, h_ao
+                self._ao_integrals(), final_subspace, n_core
+            )
+            lowest = min(
+                wavefunctions, key=lambda wavefunction: wavefunction.state.energy
             )
             return _ao_density(
-                min(wavefunctions, key=lambda wavefunction: wavefunction.state.energy)
+                lowest.core_orbitals, lowest.active_orbitals, lowest.rdm1
             )
-        core = mo_coeff[:, :n_core]
-        active = mo_coeff[:, n_core : n_core + rdm1_active.shape[0]]
-        return 2.0 * core @ core.T + active @ rdm1_active @ active.T
-
-    def _follow_swapped_states(
-        self,
-        orbital_update: StateAveragedOrbitalUpdate,
-        orbital_round: _OrbitalRound,
-        solution: OrbitalSolution,
-        relaxed_states: tuple[ElectronicState, ...] | None,
-    ) -> tuple[OrbitalSolution, tuple[ElectronicState, ...] | None]:
-        """Re-solve once if the tracked states swapped during the
-        state-averaged solve, which weights roots by energy rank, so the
-        weights move to where the states ended up.
-
-        Warns:
-            UserWarning: If they swap again in the re-solve.
-        """
-        subspace = orbital_round.subspace
-        if subspace is None or self._final_subspace is None:
-            return solution, relaxed_states
-        weights = orbital_update._weights_for(subspace.states)
-        used = subspace.labels or {}
-        for attempt in range(2):
-            landed = track_states(
-                self._final_subspace,
-                replace(subspace, mo_coeff=solution.mo_coeff, labels=None),
-                orbital_round.n_core,
-                self._mol,
-                orbital_round.ao_eri,
-                orbital_round.h_ao,
-            )
-            if _by_root(weights, landed) == _by_root(weights, used):
-                return solution, relaxed_states
-            if attempt:
-                self._warn_once(
-                    ("weights not followed", len(self._energy_history) + 1),
-                    f"Round {len(self._energy_history) + 1}'s requested states "
-                    "swapped order during the state-averaged solve, twice, so its "
-                    "weights may sit on the other states this round.",
-                )
-                return solution, relaxed_states
-            used = landed
-            solution, relaxed_states = orbital_update._solve(
-                replace(
-                    orbital_round,
-                    subspace=replace(
-                        subspace, mo_coeff=solution.mo_coeff, labels=landed
-                    ),
-                )
-            )
-        return solution, relaxed_states
-
-    def _electronic_states(
-        self,
-        program_id: str,
-        result: SQDResult,
-        spec: FragmentSpec,
-        states: Sequence[ElectronicState],
-    ) -> tuple[ElectronicState, ...]:
-        """``states``, the subspace's eigenstates at the round's orbitals, in
-        energy order, warning about any the subspace does not resolve."""
-        excited = self._sqd.states != default_states(spec.n_alpha, spec.n_beta)
-        full_size = full_space_size(spec.n_orbitals, spec.n_alpha, spec.n_beta)
-        if excited and result.amplitudes.size < full_size:
-            hint = (
-                " Set SQDConfig.extension to add the determinants it misses."
-                if self._sqd.extension is None
-                else ""
-            )
-            self._warn_once(
-                ("incomplete subspace", program_id),
-                f"{program_id}'s subspace holds {result.amplitudes.size} of "
-                f"{full_size} determinants. The circuit samples the ground "
-                "state, so excited states in an incomplete subspace come out "
-                f"too high.{hint}",
-            )
-
-        resolved = Counter(state.multiplicity for state in states)
-        for multiplicity, n_roots in (self._sqd.states or {}).items():
-            if resolved[multiplicity] < n_roots:
-                self._warn_once(
-                    ("unresolved", program_id, multiplicity),
-                    f"{program_id}'s subspace resolves {resolved[multiplicity]} of "
-                    f"the {n_roots} requested states of multiplicity "
-                    f"{multiplicity}; the rest are left out. Raise the sampling "
-                    "budget (batch_size, n_recovery_iterations) or "
-                    "SQDConfig.extension.",
-                )
-        for key, message in _state_warnings(states):
-            self._warn_once(key, message)
-        return _in_energy_order(states)
+        return _ao_density(
+            mo_coeff[:, :n_core],
+            mo_coeff[:, n_core : n_core + rdm1_active.shape[0]],
+            rdm1_active,
+        )
 
     def _warn_once(self, key: Hashable, message: str) -> None:
         """Warn the first time ``key`` comes up in this run."""
         if key not in self._warned:
             self._warned.add(key)
             warn(message, UserWarning, stacklevel=_outside_divi_stacklevel())
-
-    def _warn_if_a_degenerate_set_is_split(
-        self,
-        mo_coeff: np.ndarray,
-        n_core: int,
-        result: SQDResult,
-        requested: Mapping[int, int],
-        ao_eri: np.ndarray,
-        h_ao: np.ndarray,
-    ) -> None:
-        """Warn for each multiplicity whose last requested root is degenerate
-        with the next, unrequested one, solved at ``mo_coeff``."""
-        probe = {
-            multiplicity: n_roots + 1
-            for multiplicity, n_roots in requested.items()
-            if n_roots < result.amplitudes.size
-        }
-        solved = subspace_states_at(
-            self._mol,
-            _SampledSubspace(
-                mo_coeff,
-                (result.strings_alpha, result.strings_beta),
-                probe,
-                self._sqd.lambda_penalty,
-            ),
-            n_core,
-            ao_eri,
-            h_ao,
-        )
-        for multiplicity, n_roots in requested.items():
-            roots = [state for state in solved if state.multiplicity == multiplicity]
-            if len(roots) <= n_roots:
-                continue
-            last, unrequested = roots[n_roots - 1], roots[n_roots]
-            gap = unrequested.energy - last.energy
-            if (
-                not _is_off_spin(multiplicity, unrequested.spin_square)
-                and gap < _SPLIT_SET_TOL
-            ):
-                warn(
-                    f"State ({multiplicity}, {n_roots - 1}) lies within "
-                    f"{abs(gap):.1e} "
-                    f"Ha of ({multiplicity}, {n_roots}), which SQDConfig.states "
-                    "does not request: it splits a degenerate set, so the state "
-                    "reported is an arbitrary member, and state averaging over "
-                    f"part of the set breaks its symmetry. Request {multiplicity}: "
-                    f"{n_roots + 1} or more.",
-                    UserWarning,
-                    stacklevel=_outside_divi_stacklevel(),
-                )
 
     def is_complete(self, state: LASSQDState) -> bool:
         """Stop once the macro-cycle energy change is below ``energy_tol`` and
@@ -1968,7 +1207,8 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
 
     @property
     def round_reports(self) -> tuple[LASSQDRoundReport, ...]:
-        """Each completed round's :class:`LASSQDRoundReport`, in order. Cleared
+        """Each completed round's
+        :class:`~divi.qprog.workflows.lassqd.LASSQDRoundReport`, in order. Cleared
         at the start of every :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`
         that does not resume a checkpoint."""
         return tuple(self._round_reports)
@@ -2013,26 +1253,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             RuntimeError: If no round has completed with ``SQDConfig.states``
                 set.
         """
-        return {
-            (wavefunction.state.multiplicity, wavefunction.state.index): wavefunction
-            for wavefunction in self._wavefunctions_in_energy_order(
-                "state_wavefunctions"
-            )
-        }
-
-    def _wavefunctions_in_energy_order(
-        self, name: str
-    ) -> tuple[StateWavefunction, ...]:
-        """The final wave functions for the method ``name``, ordered as
-        :attr:`electronic_states`."""
-        wavefunctions = self._final_wavefunctions(name)
-        by_state = {wavefunction.state: wavefunction for wavefunction in wavefunctions}
-        return tuple(
-            by_state[state]
-            for state in _in_energy_order(
-                [wavefunction.state for wavefunction in wavefunctions]
-            )
-        )
+        return self._excited.state_wavefunctions()
 
     def transition_properties(
         self,
@@ -2050,16 +1271,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             RuntimeError: If no round has completed with ``SQDConfig.states``
                 set.
         """
-        return {
-            (
-                (transition.initial.multiplicity, transition.initial.index),
-                (transition.final.multiplicity, transition.final.index),
-            ): transition
-            for transition in state_transitions(
-                self._mol,
-                list(self._wavefunctions_in_energy_order("transition_properties")),
-            )
-        }
+        return self._excited.transition_properties()
 
     def nevpt2(self) -> dict[tuple[int, int], float]:
         """Each requested state's strongly contracted NEVPT2 correction, from
@@ -2079,14 +1291,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
             MemoryError: If one full-space CI vector exceeds the molecule's
                 ``max_memory``.
         """
-        subspace, n_core = self._final_subspace_and_core("nevpt2")
-        corrections = dict(
-            subspace_nevpt2(self._mol, subspace, n_core, *self._cached_mol_integrals())
-        )
-        return {
-            (state.multiplicity, state.index): corrections[state]
-            for state in _in_energy_order(list(corrections))
-        }
+        return self._excited.nevpt2()
 
     def nonequilibrium_corrections(
         self, optical_eps: float = 1.78
@@ -2121,64 +1326,29 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
                 "nonequilibrium_corrections needs LASSQD built with a solvent, "
                 "e.g. solvent=pyscf.solvent.ddCOSMO(mol)."
             )
-        static_eps = _static_eps(self._solvent)
-        if not _is_dielectric_constant(optical_eps):
-            raise ValueError(
-                "optical_eps must be a finite number of at least 1; got "
-                f"{optical_eps!r}."
-            )
-        if optical_eps > static_eps:
-            raise ValueError(
-                f"optical_eps={optical_eps} exceeds the solvent's static "
-                f"eps={static_eps}: the fast response cannot outweigh the full one. "
-                "Use the solvent's refractive index squared."
-            )
-        wavefunctions = self._wavefunctions_in_energy_order(
-            "nonequilibrium_corrections"
-        )
-        fast = self._solvent.copy()
-        fast.reset()
-        fast.eps = optical_eps
-        fast.build()
-        reference = _ao_density(wavefunctions[0])
-        corrections = {}
-        for wavefunction in wavefunctions:
-            change = _ao_density(wavefunction) - reference
-            corrections[(wavefunction.state.multiplicity, wavefunction.state.index)] = (
-                float(0.5 * np.einsum("ij,ji->", fast._B_dot_x(change), change))
-            )
-        return corrections
 
-    def _final_subspace_and_core(self, name: str) -> tuple[_SampledSubspace, int]:
-        """The last completed round's subspace and frozen-core count, for the
-        method ``name``."""
-        subspace = self._final_subspace
-        if subspace is None:
-            example = f"SQDConfig(states={{{self._spin + 1}: 2}})"
-            remedy = (
-                f"; this run requested none. Set them, e.g. {example}, and run again."
-                if self._round_reports
-                else f". Request the states, e.g. {example}, and call run() first."
-            )
-            raise RuntimeError(
-                f"{name} needs a completed LASSQD round with SQDConfig.states "
-                f"set{remedy}"
-            )
-        strings_alpha, strings_beta = subspace.strings
-        n_core = (
-            self._mol.nelectron
-            - strings_alpha[0].count("1")
-            - strings_beta[0].count("1")
-        ) // 2
-        return subspace, n_core
+        wavefunctions: list[StateWavefunction] = []
 
-    def _final_wavefunctions(self, name: str) -> tuple[StateWavefunction, ...]:
-        """The last completed round's requested states at its final orbitals,
-        for the method ``name``."""
-        subspace, n_core = self._final_subspace_and_core(name)
-        return subspace_wavefunctions(
-            self._mol, subspace, n_core, *self._cached_mol_integrals()
-        )
+        def densities() -> list[np.ndarray]:
+            wavefunctions.extend(
+                self._excited.wavefunctions_in_energy_order(
+                    "nonequilibrium_corrections"
+                )
+            )
+            return [
+                _ao_density(
+                    wavefunction.core_orbitals,
+                    wavefunction.active_orbitals,
+                    wavefunction.rdm1,
+                )
+                for wavefunction in wavefunctions
+            ]
+
+        corrections = self._solvent.nonequilibrium(densities, optical_eps)
+        return {
+            (wavefunction.state.multiplicity, wavefunction.state.index): correction
+            for wavefunction, correction in zip(wavefunctions, corrections)
+        }
 
     @property
     def energy_history(self) -> tuple[float, ...]:
@@ -2222,7 +1392,7 @@ ProgramEnsemble.workflow_state`: the state :meth:`update_state` produced
         The macro-cycle is not guaranteed monotone, so a later round can report
         a higher energy than an earlier one; ``energy_history`` records each, and
         ``best_energy`` gives the lowest. Under
-        :class:`~divi.qprog.workflows.StateAveragedOrbitalUpdate` the
+        :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` the
         macro-cycle converges on the weighted average instead, which each
         round report carries as ``averaged_energy``.
 

@@ -13,15 +13,15 @@ from pydantic import ValidationError
 
 from divi.qprog.algorithms import UCCSDAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
-from divi.qprog.workflows._lassqd._config import (
+from divi.qprog.workflows.lassqd._config import (
     FragmentationConfig,
     LBFGSOrbitalUpdate,
     SecondOrderOrbitalUpdate,
     StateAveragedOrbitalUpdate,
     VQEPreparation,
 )
-from divi.qprog.workflows._lassqd._sqd import SQDConfig
-from divi.qprog.workflows._lassqd._state import FragmentSpec
+from divi.qprog.workflows.lassqd._sqd import SQDConfig
+from divi.qprog.workflows.lassqd._state import FragmentSpec
 
 _SPECS = (
     FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),

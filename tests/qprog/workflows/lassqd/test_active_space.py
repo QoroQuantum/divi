@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 from pyscf import gto, mcscf, scf
 
-from divi.qprog.workflows._lassqd import _active_space as _active_space_module
-from divi.qprog.workflows._lassqd._active_space import (
+from divi.qprog.workflows.lassqd import _active_space as _active_space_module
+from divi.qprog.workflows.lassqd._active_space import (
     _canonicalize_columns,
     _localized_active_space_integrals,
     assign_orbitals_to_atoms,
@@ -22,7 +22,8 @@ from divi.qprog.workflows._lassqd._active_space import (
     split_active_orbitals,
     validate_fragment_atoms,
 )
-from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+from divi.qprog.workflows.lassqd._integrals import AOIntegrals, cached_ao_eri
+from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     h4_chain,
     h4_chain_mean_field,
     h4_localized_blocks_seed0,
@@ -105,7 +106,7 @@ def test_localisation_keeps_orbitals_already_on_separate_fragments_apart():
     mean_field = scf.ROHF(mol).run()
 
     specs, _, _ = auto_fragment_specs(
-        mol,
+        AOIntegrals.of(mol),
         mean_field.mo_coeff,
         3,
         np.random.default_rng(0),
@@ -488,7 +489,7 @@ def test_localize_blocks_passes_a_single_orbital_block_through(
 
 def test_auto_fragment_specs_on_h4_finds_two_fragments(h4_chain_mean_field):
     specs, localized, active_positions = auto_fragment_specs(
-        h4_chain_mean_field.mol,
+        AOIntegrals.of(h4_chain_mean_field.mol),
         np.asarray(h4_chain_mean_field.mo_coeff),
         n_occupied=2,
         rng=np.random.default_rng(0),
@@ -525,7 +526,7 @@ def _h8_auto_specs(**overrides):
     )
     kwargs.update(overrides)
     return auto_fragment_specs(
-        mol,
+        AOIntegrals.of(mol),
         np.asarray(mean_field.mo_coeff),
         **kwargs,
     )
@@ -547,9 +548,9 @@ def test_auto_fragment_specs_rejects_unreachable_local_spin():
         _h8_auto_specs(local_spins=[8, -8])
 
 
-def _canonical_partition_key(mol, mo_coeff, seed, **selector):
+def _canonical_partition_key(ao, mo_coeff, seed, **selector):
     specs, _, _ = auto_fragment_specs(
-        mol,
+        ao,
         mo_coeff,
         n_occupied=2,
         rng=np.random.default_rng(seed),
@@ -563,11 +564,11 @@ def test_auto_fragment_specs_explicit_active_orbitals_match_frontier_selection(
     h4_chain_mean_field,
 ):
     """Naming the four frontier orbitals explicitly gives the frontier partition."""
-    mol = h4_chain_mean_field.mol
+    ao = AOIntegrals.of(h4_chain_mean_field.mol)
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
     assert _canonical_partition_key(
-        mol, mo_coeff, 0, active_orbitals=(0, 1, 2, 3)
-    ) == _canonical_partition_key(mol, mo_coeff, 0)
+        ao, mo_coeff, 0, active_orbitals=(0, 1, 2, 3)
+    ) == _canonical_partition_key(ao, mo_coeff, 0)
 
 
 def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
@@ -579,10 +580,10 @@ def test_auto_fragment_specs_partition_is_seed_independent(h4_chain_mean_field):
     orbitals end up clustered together) can differ across seeds even though
     the underlying physical solution, and its energy, does not.
     """
-    mol = h4_chain_mean_field.mol
+    ao = AOIntegrals.of(h4_chain_mean_field.mol)
     mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
 
-    partitions = {_canonical_partition_key(mol, mo_coeff, seed) for seed in range(8)}
+    partitions = {_canonical_partition_key(ao, mo_coeff, seed) for seed in range(8)}
     assert len(partitions) == 1
 
 
@@ -615,12 +616,11 @@ def test_auto_fragment_specs_active_integrals_include_frozen_core(
     localized = np.hstack([localized_occ, localized_virt])
 
     one_body, _ = _localized_active_space_integrals(
-        mol,
+        AOIntegrals(mol, cached_ao_eri(mol), mean_field.get_hcore()),
         mo_coeff,
         occupied_indices,
         n_occupied=2,
         localized=localized,
-        h_ao=mean_field.get_hcore(),
     )
 
     mc = mcscf.CASCI(mean_field, 2, 2)

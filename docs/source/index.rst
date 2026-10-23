@@ -99,6 +99,7 @@ working without it.
 
    api_reference/qprog/index
    api_reference/program_ensembles
+   api_reference/lassqd
    api_reference/backends
    api_reference/circuits
    api_reference/pipeline

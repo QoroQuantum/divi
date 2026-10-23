@@ -15,8 +15,8 @@ from qiskit import ClassicalRegister, QuantumCircuit
 ffsim = pytest.importorskip("ffsim")
 
 from divi.qprog.problems import MolecularProblem
-from divi.qprog.workflows._lassqd import _preparation as preparation
-from divi.qprog.workflows._lassqd._preparation import (
+from divi.qprog.workflows.lassqd import _preparation as preparation
+from divi.qprog.workflows.lassqd._preparation import (
     LUCJFragmentProgram,
     LUCJPreparation,
     _fragment_ccsd,
@@ -26,11 +26,11 @@ from divi.qprog.workflows._lassqd._preparation import (
     prepare_lucj_fragment,
     rotate_rdms_to_fragment_basis,
 )
-from divi.qprog.workflows._lassqd._state import FragmentSpec
+from divi.qprog.workflows.lassqd._state import FragmentSpec
 from tests._helpers import exact_match
-from tests.qprog.workflows._lassqd._helpers import fragment_problem
+from tests.qprog.workflows.lassqd._helpers import fragment_problem
 
-_PREPARATION = "divi.qprog.workflows._lassqd._preparation"
+_PREPARATION = "divi.qprog.workflows.lassqd._preparation"
 
 
 def _patch_linear_method(mocker, optimum):

@@ -4,7 +4,12 @@
 
 """Localised active-space sample-based quantum diagonalisation."""
 
-from ._config import (
+from divi._optional import import_optional
+
+for _module_name in ("pyscf", "ffsim"):
+    import_optional(_module_name, extra="chem", capability="LASSQD")
+
+from ._config import (  # noqa: E402
     CCSDPreparation,
     FixedOrbitals,
     FragmentationConfig,
@@ -16,16 +21,17 @@ from ._config import (
     StateAveragedOrbitalUpdate,
     VQEPreparation,
 )
-from ._sqd import SQDConfig
-from ._state import (
+from ._sqd import SQDConfig  # noqa: E402
+from ._state import (  # noqa: E402
     ElectronicState,
     FragmentSpec,
     FragmentState,
+    LASSQDRoundReport,
     LASSQDState,
     StateTransition,
     StateWavefunction,
 )
-from ._workflow import LASSQD, LASSQDRoundReport
+from ._workflow import LASSQD  # noqa: E402
 
 __all__ = [
     "CCSDPreparation",

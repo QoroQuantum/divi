@@ -23,14 +23,15 @@ from divi.qprog.algorithms._ansatze import (
 )
 from divi.qprog.optimizers import GridSearchOptimizer
 from divi.qprog.problems import HamiltonianProblem
-from divi.qprog.workflows._lassqd import _vqe_preparation
-from divi.qprog.workflows._lassqd._integrals import (
+from divi.qprog.workflows.lassqd import _vqe_preparation
+from divi.qprog.workflows.lassqd._integrals import (
+    AOIntegrals,
     fragment_effective_integrals,
     transform_integrals,
 )
-from divi.qprog.workflows._lassqd._state import FragmentSpec, FragmentState
+from divi.qprog.workflows.lassqd._state import FragmentSpec, FragmentState
 from tests._helpers import exact_match
-from tests.qprog.workflows._lassqd._helpers import (  # noqa: F401
+from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     H4_WHOLE_SPACE,
     H8_HALF_CHAINS,
     ansatz_energy,
@@ -119,7 +120,10 @@ def test_ccsd_seed_params_warns_and_skips(n_beta, n_params, ansatz, message):
 def _h4_as_one_fragment(mean_field):
     """``(h_eff, g_frag)`` for H4's whole canonical-MO space as one fragment."""
     integrals = transform_integrals(
-        mean_field.mol, np.asarray(mean_field.mo_coeff), n_core=0, n_act=4
+        AOIntegrals.of(mean_field.mol),
+        np.asarray(mean_field.mo_coeff),
+        n_core=0,
+        n_act=4,
     )
     placeholder = FragmentState(
         spec=H4_WHOLE_SPACE, rdm1=np.zeros((4, 4)), rdm2=np.zeros((4, 4, 4, 4))

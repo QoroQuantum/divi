@@ -85,34 +85,13 @@ from .workflows import (
     TimeEvolutionTrajectory,
     VQEHyperparameterSweep,
 )
-from .workflows import _LASSQD_EXPORTS
 
 if TYPE_CHECKING:
-    from .workflows import (
-        LASSQD,
-        CCSDPreparation,
-        ElectronicState,
-        FixedOrbitals,
-        FragmentationConfig,
-        FragmentSpec,
-        FragmentState,
-        LASSQDRoundReport,
-        LASSQDState,
-        LBFGSOrbitalUpdate,
-        LinearMethodPreparation,
-        OrbitalUpdate,
-        Preparation,
-        SecondOrderOrbitalUpdate,
-        SQDConfig,
-        StateAveragedOrbitalUpdate,
-        StateTransition,
-        StateWavefunction,
-        VQEPreparation,
-    )
+    from .workflows import LASSQD
 
 
 __all__ = [
-    *_LASSQD_EXPORTS,
+    "LASSQD",
     "AggregationStrategy",
     "AngleEmbedding",
     "Ansatz",
@@ -176,9 +155,9 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve the LASSQD exports on first access."""
-    if name in _LASSQD_EXPORTS:
+    """Resolve ``LASSQD`` on first access."""
+    if name == "LASSQD":
         from . import workflows
 
-        return getattr(workflows, name)
+        return workflows.LASSQD
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
