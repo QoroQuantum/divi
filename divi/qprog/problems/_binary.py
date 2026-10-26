@@ -570,9 +570,9 @@ class BinaryOptimizationProblem(QAOAProblem):
 
     def extend_solution(
         self,
-        current_solution: list[int],
+        current_solution: Sequence[int],
         prog_id: Hashable,
-        candidate_decoded: list[int],
+        candidate_decoded: Sequence[int],
     ) -> list[int]:
         """Splice a sub-problem's decoded bits into the global solution.
 
@@ -587,7 +587,7 @@ class BinaryOptimizationProblem(QAOAProblem):
 
         return extended
 
-    def evaluate_global_solution(self, solution: list[int]) -> float:
+    def evaluate_global_solution(self, solution: Sequence[int]) -> float:
         """Energy of a global bit assignment under the underlying BQM.
 
         Raises:
@@ -607,7 +607,7 @@ class BinaryOptimizationProblem(QAOAProblem):
         return float(h @ x + 0.5 * (x @ (j @ x)) + self._bqm.offset)
 
     def postprocess_candidates(
-        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+        self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[np.ndarray, float]]:
         """Compose global candidate solutions into ``(solution, energy)`` pairs.
 

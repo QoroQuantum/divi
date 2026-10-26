@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
+from collections.abc import Mapping
 from fractions import Fraction
 from math import gcd, lcm
 from numbers import Integral
@@ -268,7 +269,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             state["solution_bitstring"] = self._results["solution_bitstring"]
         return state
 
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+    def _load_subclass_state(self, state: Mapping[str, Any]) -> None:
         """Load QAOA-specific state.
 
         Raises:

@@ -639,7 +639,7 @@ class QoroService(CircuitRunner):
         self,
         circuits: Mapping[str, str],
         envelope: Mapping[str, Any],
-        shot_ranges: list[ShotRange] | None,
+        shot_ranges: Sequence[ShotRange] | None,
     ) -> list[dict[str, str]]:
         """Compress circuits and chunk them so that each ``add_circuits/`` body,
         as ``json.dumps`` renders it, stays under :data:`_MAX_PAYLOAD_SIZE_MB`.
@@ -673,8 +673,8 @@ class QoroService(CircuitRunner):
     @staticmethod
     def _fragment_envelope(
         ham_ops: str | None,
-        circuit_ham_map: list[list[int]] | None,
-        shot_groups: list[list[int]] | None,
+        circuit_ham_map: Sequence[list[int]] | None,
+        shot_groups: Sequence[list[int]] | None,
         shots: int,
     ) -> dict[str, Any]:
         """The ``add_circuits/`` keys every fragment of a job carries."""
@@ -773,8 +773,8 @@ class QoroService(CircuitRunner):
         payloads: Sequence[CircuitPayload] | CircuitBatch,
         *,
         ham_ops: str | None = None,
-        circuit_ham_map: list[list[int]] | None = None,
-        shot_groups: list[list[int]] | None = None,
+        circuit_ham_map: Sequence[list[int]] | None = None,
+        shot_groups: Sequence[list[int]] | None = None,
         job_type: JobType | None = None,
         maestro_config: MaestroConfig | None = None,
         device_config: DeviceConfig | None = None,
@@ -940,7 +940,7 @@ class QoroService(CircuitRunner):
     def _bound_call_plan(
         self,
         payloads: Sequence[CircuitPayload],
-        shot_groups: list[list[int]] | None,
+        shot_groups: Sequence[list[int]] | None,
         envelope: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         """Chunk resolved circuits into ``add_circuits/`` payload fragments."""
@@ -984,8 +984,8 @@ class QoroService(CircuitRunner):
     @staticmethod
     def _split_payload_parameter_sets(
         compressed_template_b64: str,
-        parameter_names: tuple[str, ...],
-        parameter_sets: tuple[tuple[str, tuple[float, ...]], ...],
+        parameter_names: Sequence[str],
+        parameter_sets: Sequence[tuple[str, tuple[float, ...]]],
         envelope: Mapping[str, Any],
     ) -> list[list[tuple[str, tuple[float, ...]]]]:
         """Split a ``CircuitPayload``'s ``parameter_sets`` into chunks whose
@@ -1031,8 +1031,8 @@ class QoroService(CircuitRunner):
         self,
         payloads: Sequence[CircuitPayload],
         ham_ops: str | None,
-        circuit_ham_map: list[list[int]] | None,
-        shot_groups: list[list[int]] | None,
+        circuit_ham_map: Sequence[list[int]] | None,
+        shot_groups: Sequence[list[int]] | None,
         envelope: Mapping[str, Any],
     ) -> list[dict[str, Any]]:
         """Chunk parameter matrices into ``add_circuits/`` payload fragments.
@@ -1093,7 +1093,7 @@ class QoroService(CircuitRunner):
 
     def _dispatch_job(
         self,
-        call_plan: list[dict[str, Any]],
+        call_plan: Sequence[dict[str, Any]],
         *,
         job_config: JobConfig,
         maestro_config: MaestroConfig | None,
@@ -1406,7 +1406,7 @@ class QoroService(CircuitRunner):
         self,
         qubo: dict | None = None,
         *,
-        reference_states: list[str] | None = None,
+        reference_states: Sequence[str] | None = None,
         options: dict | None = None,
         job_id: str | None = None,
         tag: str = "divi-characterize",

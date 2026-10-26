@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Self
 from warnings import warn
 
@@ -287,7 +288,7 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             state["eigenstate"] = self._results["eigenstate"].tolist()
         return state
 
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+    def _load_subclass_state(self, state: Mapping[str, Any]) -> None:
         """Load VQE-specific state."""
         super()._load_subclass_state(state)
         if "eigenstate" in state:

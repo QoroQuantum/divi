@@ -6,7 +6,7 @@
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import cache
 from heapq import heappop, heappush
@@ -170,7 +170,7 @@ def decode_tsp_solution(
 
 
 def tour_cost(
-    tour: list[int],
+    tour: Sequence[int],
     cost_matrix: npt.NDArray[np.floating],
 ) -> float:
     """Compute the total travel cost of a tour.
@@ -1189,7 +1189,7 @@ def _nint(x: float) -> int:
     return int(x + 0.5) if x >= 0 else -int(-x + 0.5)
 
 
-def _euc2d_matrix(coords: list[tuple[float, float]]) -> npt.NDArray[np.float64]:
+def _euc2d_matrix(coords: Sequence[tuple[float, float]]) -> npt.NDArray[np.float64]:
     n = len(coords)
     cost = np.zeros((n, n), dtype=np.float64)
     for i in range(n):
@@ -1201,7 +1201,7 @@ def _euc2d_matrix(coords: list[tuple[float, float]]) -> npt.NDArray[np.float64]:
     return cost
 
 
-def _geo_matrix(coords: list[tuple[float, float]]) -> npt.NDArray[np.float64]:
+def _geo_matrix(coords: Sequence[tuple[float, float]]) -> npt.NDArray[np.float64]:
     """TSPLIB GEO: spherical distance using the radius from the reference spec.
 
     Mirrors the C reference exactly: ``PI = 3.141592``, the (1±q1)/(1∓q1)
@@ -1231,7 +1231,9 @@ def _geo_matrix(coords: list[tuple[float, float]]) -> npt.NDArray[np.float64]:
     return cost
 
 
-def _unpack_explicit(values: list[float], n: int, fmt: str) -> npt.NDArray[np.float64]:
+def _unpack_explicit(
+    values: Sequence[float], n: int, fmt: str
+) -> npt.NDArray[np.float64]:
     cost = np.zeros((n, n), dtype=np.float64)
     it = iter(values)
     if fmt == "LOWER_DIAG_ROW":

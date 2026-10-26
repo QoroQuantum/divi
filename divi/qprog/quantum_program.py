@@ -4,7 +4,7 @@
 
 import itertools
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Hashable, Sequence
+from collections.abc import Generator, Hashable, Mapping, Sequence
 from contextlib import contextmanager
 from numbers import Integral
 from pathlib import Path
@@ -54,7 +54,7 @@ from divi.reporting._session import ProgressSession, _environment_disables_progr
 from divi.reporting._state import ProgressState
 
 
-def reject_unclaimed_run_kwargs(program: object, kwargs: dict[str, Any]) -> None:
+def reject_unclaimed_run_kwargs(program: object, kwargs: Mapping[str, Any]) -> None:
     """Reject leftover ``run`` keywords, before anything is submitted.
 
     ``run`` forwards ``**kwargs`` through several layers, each popping what it
@@ -413,7 +413,7 @@ class QuantumProgram(ABC):
         terminal_stage: Stage,
         *,
         result_format: ResultFormat,
-        extra_stages: tuple[Stage, ...] = (),
+        extra_stages: Sequence[Stage] = (),
     ) -> CircuitPipeline:
         """Assemble one pipeline from this program's shared error-mitigation config.
 
@@ -676,7 +676,7 @@ class QuantumProgram(ABC):
         estimator_samples: int | Sequence[int] | None = None,
         return_variance: Literal[False] = False,
         preserve_keys: Literal[False] = False,
-        axes_to_preserve: tuple[str, ...] = (),
+        axes_to_preserve: Sequence[str] = (),
     ) -> dict[int, Any]: ...
 
     @overload
@@ -690,7 +690,7 @@ class QuantumProgram(ABC):
         estimator_samples: int | Sequence[int] | None = None,
         return_variance: Literal[True],
         preserve_keys: Literal[False] = False,
-        axes_to_preserve: tuple[str, ...] = (),
+        axes_to_preserve: Sequence[str] = (),
     ) -> tuple[dict[int, Any], dict[int, float]]: ...
 
     @overload
@@ -704,7 +704,7 @@ class QuantumProgram(ABC):
         estimator_samples: int | Sequence[int] | None = None,
         return_variance: Literal[False] = False,
         preserve_keys: Literal[True],
-        axes_to_preserve: tuple[str, ...] = (),
+        axes_to_preserve: Sequence[str] = (),
     ) -> PipelineResult: ...
 
     @overload
@@ -718,7 +718,7 @@ class QuantumProgram(ABC):
         estimator_samples: int | Sequence[int] | None = None,
         return_variance: bool = False,
         preserve_keys: bool = False,
-        axes_to_preserve: tuple[str, ...] = (),
+        axes_to_preserve: Sequence[str] = (),
     ) -> dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, float]]: ...
 
     def evaluate(
@@ -731,7 +731,7 @@ class QuantumProgram(ABC):
         estimator_samples: int | Sequence[int] | None = None,
         return_variance: bool = False,
         preserve_keys: bool = False,
-        axes_to_preserve: tuple[str, ...] = (),
+        axes_to_preserve: Sequence[str] = (),
     ) -> dict[int, Any] | PipelineResult | tuple[dict[int, Any], dict[int, float]]:
         """Measure this program's prepared state under ``preprocessor`` for ``params``.
 
@@ -848,7 +848,7 @@ class QuantumProgram(ABC):
             for param_idx, value in values.items()
         }
 
-    def _cost_shot_variances(self, values: dict[int, float]) -> dict[int, float]:
+    def _cost_shot_variances(self, values: Mapping[int, float]) -> dict[int, float]:
         """Map the last pipeline run's shot-noise variance to each param-set index.
 
         The variance is computed at the counts stage with only the obs_group axis

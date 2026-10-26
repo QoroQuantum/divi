@@ -272,7 +272,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         terminal_stage: Stage,
         *,
         result_format: ResultFormat,
-        extra_stages: tuple[Stage, ...] = (),
+        extra_stages: Sequence[Stage] = (),
     ) -> CircuitPipeline:
         # Parameter binding is needed only for the trajectory-template path
         # (binding the template's ``t`` to ``self.time``).

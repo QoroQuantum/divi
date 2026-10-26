@@ -13,6 +13,7 @@ for rustworkx.
 """
 
 from collections import defaultdict
+from collections.abc import Sequence
 from numbers import Real
 from typing import Any, TypeAlias
 
@@ -66,7 +67,7 @@ def _qubit_edges(graph: GraphLike) -> tuple[int, list[tuple[int, int]]]:
     return len(ids), [(source, target) for source, target, _ in edges]
 
 
-def _qubit_graph(n_qubits: int, edges: list[tuple[int, int]]) -> nx.Graph:
+def _qubit_graph(n_qubits: int, edges: Sequence[tuple[int, int]]) -> nx.Graph:
     """``networkx`` graph on nodes ``0..n_qubits-1`` holding ``edges``."""
     graph = nx.Graph()
     graph.add_nodes_from(range(n_qubits))
@@ -272,7 +273,7 @@ def cycle_mixer_spo(graph: DiGraphLike) -> SparsePauliOp:
     return SparsePauliOp.from_list(terms)
 
 
-def _out_wires(n_nodes: int, edges: list[tuple[int, int, Any]]) -> list[list[int]]:
+def _out_wires(n_nodes: int, edges: Sequence[tuple[int, int, Any]]) -> list[list[int]]:
     """Wires of the edges leaving each node, in wire order."""
     wires: list[list[int]] = [[] for _ in range(n_nodes)]
     for wire, (source, _target, _payload) in enumerate(edges):
@@ -281,7 +282,7 @@ def _out_wires(n_nodes: int, edges: list[tuple[int, int, Any]]) -> list[list[int
 
 
 def _in_wires(
-    graph: DiGraphLike, ids: list, edges: list[tuple[int, int, Any]]
+    graph: DiGraphLike, ids: list, edges: Sequence[tuple[int, int, Any]]
 ) -> list[list[int]]:
     """Wires of the edges entering each node, in edge insertion order.
 

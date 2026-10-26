@@ -10,6 +10,7 @@ import math
 import random
 import warnings
 from collections.abc import Callable, Sequence
+from collections.abc import Set as AbstractSet
 from numbers import Real
 from typing import Any, Literal, Protocol, runtime_checkable
 
@@ -41,8 +42,8 @@ _NON_UNITARY_OP_NAMES = frozenset(("measure", "reset", "barrier"))
 
 def _count_foldable_gates(
     dag: DAGCircuit,
-    exclude_names: frozenset[str] = frozenset(),
-    exclude_arities: frozenset[int] = frozenset(),
+    exclude_names: AbstractSet[str] = frozenset(),
+    exclude_arities: AbstractSet[int] = frozenset(),
 ) -> int:
     """Count unitary gates eligible for folding."""
     return sum(
@@ -181,7 +182,7 @@ class LocalFoldPass(TransformationPass):
         self,
         scale_factor: float,
         selection: Literal["random", "from_left", "from_right"] = "random",
-        exclude: set[str] | None = None,
+        exclude: AbstractSet[str] | None = None,
         rng: random.Random | None = None,
     ):
         super().__init__()
@@ -369,7 +370,7 @@ def local_fold(
     scale: float,
     *,
     selection: Literal["random", "from_left", "from_right"] = "random",
-    exclude: set[str] | None = None,
+    exclude: AbstractSet[str] | None = None,
     rng=None,
 ) -> tuple[DAGCircuit, float]:
     """Apply :class:`LocalFoldPass` and return ``(folded_dag, effective_scale)``.
@@ -501,7 +502,7 @@ class ZNE(QEMProtocol):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         scales = self._scale_factors
         # Every scale folds a copy, the last one included: ``folding_fn`` mutates
@@ -531,7 +532,7 @@ class ZNE(QEMProtocol):
     def dry_expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """One unfolded alias of ``dag`` per scale factor; never mutates the
         input (dry batches may alias one DAG across entries)."""

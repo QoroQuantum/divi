@@ -12,6 +12,7 @@ can ask for the shape it needs without reimplementing iteration and
 validation each time.
 """
 
+from collections.abc import Sequence
 from numbers import Integral
 from typing import Any, NamedTuple
 
@@ -28,7 +29,7 @@ class ShotRange(NamedTuple):
         return ShotRange(self.start + delta, self.end + delta, self.shots)
 
 
-def validate(ranges: list[ShotRange], n_circuits: int) -> None:
+def validate(ranges: Sequence[ShotRange], n_circuits: int) -> None:
     """Assert that ranges tile ``[0, n_circuits)`` exactly with positive shots.
 
     Raises :class:`ValueError` on partial coverage, overlap, empty/reversed
@@ -55,7 +56,7 @@ def validate(ranges: list[ShotRange], n_circuits: int) -> None:
         )
 
 
-def per_circuit(ranges: list[ShotRange], n_circuits: int) -> list[int]:
+def per_circuit(ranges: Sequence[ShotRange], n_circuits: int) -> list[int]:
     """Expand ranges into one shot count per circuit.
 
     Assumes ranges have already been validated; missing circuits yield ``0``.
@@ -68,7 +69,7 @@ def per_circuit(ranges: list[ShotRange], n_circuits: int) -> list[int]:
 
 
 def per_circuit_or_none(
-    shot_groups: list[list[int]] | None, n_circuits: int
+    shot_groups: Sequence[list[int]] | None, n_circuits: int
 ) -> list[int] | None:
     """Validate a wire-format allocation and expand it to one count per circuit.
 
@@ -81,7 +82,7 @@ def per_circuit_or_none(
     return per_circuit(ranges, n_circuits)
 
 
-def bucket_by_shots(ranges: list[ShotRange]) -> dict[int, list[int]]:
+def bucket_by_shots(ranges: Sequence[ShotRange]) -> dict[int, list[int]]:
     """Return ``{shots: indices}`` — circuits sharing a shot count.
 
     Useful for batched backends whose ``run(circuits, shots=N)`` applies a
@@ -94,7 +95,7 @@ def bucket_by_shots(ranges: list[ShotRange]) -> dict[int, list[int]]:
 
 
 def restrict_to_chunk(
-    ranges: list[ShotRange], offset: int, size: int
+    ranges: Sequence[ShotRange], offset: int, size: int
 ) -> list[ShotRange]:
     """Re-index ranges to chunk-local coordinates.
 
@@ -111,7 +112,7 @@ def restrict_to_chunk(
     return out
 
 
-def to_wire(ranges: list[ShotRange]) -> list[list[int]]:
+def to_wire(ranges: Sequence[ShotRange]) -> list[list[int]]:
     """Serialise to the ``list[list[int]]`` format accepted by the cloud API."""
     return [[r.start, r.end, r.shots] for r in ranges]
 
@@ -123,7 +124,7 @@ def _plain_int(value: Any) -> Any:
     return value
 
 
-def from_wire(wire: list[list[int]] | list[ShotRange]) -> list[ShotRange]:
+def from_wire(wire: Sequence[list[int]] | Sequence[ShotRange]) -> list[ShotRange]:
     """Normalise a mix of raw triples and ShotRange values into ShotRanges.
 
     Numpy integers become ``int``, so the result serialises to JSON.

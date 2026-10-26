@@ -19,7 +19,7 @@ a defaulted lookup.
 """
 
 import warnings
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -148,7 +148,7 @@ class DataBindingMixin(_MixinBase):
             state["fitted_bias"] = self._results["fitted_bias"]
         return state
 
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+    def _load_subclass_state(self, state: Mapping[str, Any]) -> None:
         super()._load_subclass_state(state)
         if state["fit_bias"] != self._fit_bias:
             raise ValueError(
@@ -204,7 +204,7 @@ class DataBindingMixin(_MixinBase):
         terminal_stage: Stage,
         *,
         result_format: ResultFormat,
-        extra_stages: tuple[Stage, ...] = (),
+        extra_stages: Sequence[Stage] = (),
     ) -> CircuitPipeline:
         """Insert :class:`DataBindingStage` ahead of mitigation when a data axis is
         active, so the data axis fans out before any stage that walks

@@ -225,7 +225,7 @@ def _fail_futures(batch: _Batch, exc: BaseException) -> None:
             entry.future.set_exception(exc)
 
 
-def _require_kwargs_match_except(all_kwargs: list[dict], varying_key: str) -> None:
+def _require_kwargs_match_except(all_kwargs: Sequence[dict], varying_key: str) -> None:
     """Raise unless every kwargs dict equals the first one outside *varying_key*."""
 
     def _without(kw: dict) -> dict:

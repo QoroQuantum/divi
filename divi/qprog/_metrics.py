@@ -14,7 +14,7 @@ which metric is in play.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from itertools import islice
 from typing import TYPE_CHECKING, Any
@@ -551,7 +551,7 @@ class StochasticFidelityMetricEstimator(MetricEstimator):
 
         def fidelity_fn(
             theta: npt.NDArray[np.float64],
-            perturbations: list[npt.NDArray[np.float64]],
+            perturbations: Sequence[npt.NDArray[np.float64]],
         ) -> npt.NDArray[np.float64]:
             """Fidelities ``F(theta, theta + p)`` for each ``p`` in ``perturbations``.
 
@@ -667,7 +667,7 @@ def _fs_blocks(
 
 def _fs_block_covariance(
     program: "VariationalQuantumAlgorithm",
-    full_params: list[Parameter],
+    full_params: Sequence[Parameter],
     theta: npt.NDArray[np.float64],
     block_id: int,
 ) -> dict[tuple, tuple[tuple[int, ...], npt.NDArray[np.float64]]]:
@@ -684,7 +684,7 @@ def _fs_block_covariance(
 
 
 def _fs_block_from_expectations(
-    generators: tuple[SparsePauliOp, ...], exp: dict[str, float]
+    generators: Sequence[SparsePauliOp], exp: Mapping[str, float]
 ) -> npt.NDArray[np.float64]:
     """Block metric ``0.25 * (<P_i P_j> - <P_i><P_j>)`` for generators ``0.5 * P``."""
     single_labels, pair_labels, (rows, cols) = _fs_generator_labels(generators)
@@ -698,7 +698,7 @@ def _fs_block_from_expectations(
 
 def _measure_prefix_paulis(
     program: "VariationalQuantumAlgorithm",
-    full_params: list[Parameter],
+    full_params: Sequence[Parameter],
     theta: npt.NDArray[np.float64],
     block_id: int,
 ) -> tuple[
@@ -762,7 +762,7 @@ def _measure_prefix_paulis(
 
 def _fs_prefix_params(
     prefix_ops: Sequence[tuple],
-    full_params: list[Parameter],
+    full_params: Sequence[Parameter],
     n_qubits: int,
 ) -> tuple[Parameter, ...]:
     prefix = QuantumCircuit(n_qubits)
@@ -772,7 +772,7 @@ def _fs_prefix_params(
 
 
 def _fs_generator_labels(
-    generators: tuple[SparsePauliOp, ...],
+    generators: Sequence[SparsePauliOp],
 ) -> tuple[list[str], list[str], tuple[np.ndarray, np.ndarray]]:
     """Labels of each generator's Pauli and of every pairwise product.
 
@@ -791,7 +791,7 @@ def _fs_generator_labels(
     return single_labels, pair_labels, (rows, cols)
 
 
-def _fs_needed_labels(generators: tuple[SparsePauliOp, ...]) -> tuple[str, ...]:
+def _fs_needed_labels(generators: Sequence[SparsePauliOp]) -> tuple[str, ...]:
     single_labels, pair_labels, _ = _fs_generator_labels(generators)
     return tuple(sorted({*single_labels, *pair_labels}))
 
@@ -799,7 +799,7 @@ def _fs_needed_labels(generators: tuple[SparsePauliOp, ...]) -> tuple[str, ...]:
 def _fs_block_prefix(
     meta: MetaCircuit,
     block_id: int,
-    reference_prefix_param_names: tuple[str, ...],
+    reference_prefix_param_names: Sequence[str],
 ) -> tuple[
     QuantumCircuit,
     tuple[Parameter, ...],
@@ -839,7 +839,7 @@ def _fs_block_prefix(
 
 def _fs_prefix_labels_preprocessor(
     block_id: int,
-    reference_prefix_param_names: tuple[str, ...],
+    reference_prefix_param_names: Sequence[str],
 ) -> CircuitPreprocessor:
     """Cacheable preprocessor measuring every Pauli label a Fubini-Study block
     needs on its pre-state in one multi-observable pass. Pure: the per-branch

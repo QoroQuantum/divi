@@ -10,6 +10,7 @@ import bisect
 import itertools
 from collections import Counter
 from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 import numpy as np
@@ -323,7 +324,7 @@ def _grown(
 
 
 def _spin_closed(
-    determinants: set[tuple[int, int]], sector: _Sector, n_orbitals: int
+    determinants: AbstractSet[tuple[int, int]], sector: _Sector, n_orbitals: int
 ) -> list[tuple[int, int]]:
     """Every determinant of ``sector`` sharing a doubly and singly occupied
     orbital pattern with one of ``determinants``, in address order."""
@@ -808,7 +809,7 @@ def si_matrices(
 
 def _contract(
     coefficients: np.ndarray,
-    fragments: tuple[int, ...],
+    fragments: Sequence[int],
     d_a: np.ndarray,
     d_b: np.ndarray,
 ) -> np.ndarray:

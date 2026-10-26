@@ -4,7 +4,7 @@
 
 import functools
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -110,7 +110,7 @@ PrefixIndex = tuple[dict[tuple, str], tuple[int, ...]]
 
 
 def _build_prefix_index(
-    qasm_bodies: tuple[tuple[tuple, str], ...],
+    qasm_bodies: Sequence[tuple[tuple, str]],
 ) -> PrefixIndex:
     index = dict(qasm_bodies)
     lengths = tuple(sorted({len(tag) for tag in index}, reverse=True))
@@ -187,7 +187,7 @@ def _fast_convert(node: MetaCircuit, values: np.ndarray) -> tuple[str, ...]:
     return tuple(_format_bound_param(v, node.precision) for v in values)
 
 
-def _fast_emit(node: MetaCircuit, template, formatted: tuple[str, ...]) -> str:
+def _fast_emit(node: MetaCircuit, template, formatted: Sequence[str]) -> str:
     """Render a concrete QASM string from a template + formatted parameters."""
     return render_template(template, formatted)
 
@@ -259,7 +259,7 @@ class ParameterBindingStage(BundleStage):
     def __init__(self) -> None:
         super().__init__(name=type(self).__name__)
 
-    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+    def validate(self, before: Sequence[Stage], after: Sequence[Stage]) -> None:
         self._fast_path = all(
             isinstance(s, BundleStage) and not s.consumes_dag_bodies for s in after
         )

@@ -215,7 +215,7 @@ def _place_atom(coords, entry: _ZMatrixEntry) -> npt.NDArray[np.float64]:
     )
 
 
-def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> npt.NDArray[np.float64]:
+def _zmatrix_to_cartesian(z_matrix: Sequence[_ZMatrixEntry]) -> npt.NDArray[np.float64]:
     """Cartesian coordinates of a Z-matrix, placing each atom after its references.
 
     The root sits at the origin, the atom with only a bond reference lies along
@@ -249,8 +249,8 @@ def _zmatrix_to_cartesian(z_matrix: list[_ZMatrixEntry]) -> npt.NDArray[np.float
 
 
 def _transform_bonds(
-    zmatrix: list[_ZMatrixEntry],
-    bonds_to_transform: list[tuple[int, int]],
+    zmatrix: Sequence[_ZMatrixEntry],
+    bonds_to_transform: Sequence[tuple[int, int]],
     value: float,
     transform_type: Literal["scale", "delta"],
 ) -> list[_ZMatrixEntry]:

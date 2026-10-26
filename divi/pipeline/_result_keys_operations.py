@@ -13,7 +13,8 @@ build on this shared vocabulary.
 """
 
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from typing import Any
 
 import numpy as np
@@ -33,7 +34,7 @@ PARAM_SET_AXIS = "param_set"
 
 
 def strip_axis_from_label(
-    child_label: tuple[Any, ...], axis_name: str
+    child_label: Sequence[Any], axis_name: str
 ) -> tuple[Any, ...]:
     """Remove the (axis_name, value) pair from a child label to get the base key.
 
@@ -135,7 +136,7 @@ def group_by_base_key(
 
 
 def average_by_param_set(
-    result: dict[tuple, Any],
+    result: Mapping[tuple, Any],
     convert: Callable[[Any], np.ndarray],
 ) -> dict[int, np.ndarray]:
     """Average preserved pipeline results over every axis except ``param_set``."""
@@ -149,7 +150,7 @@ def average_by_param_set(
 
 
 def group_by_branch_and_param_set(
-    result: dict[tuple, Any],
+    result: Mapping[tuple, Any],
     convert: Callable[[Any], np.ndarray],
 ) -> dict[tuple, dict[int, np.ndarray]]:
     """Group preserved pipeline results by non-param axes, then ``param_set``."""
@@ -169,7 +170,7 @@ def group_by_branch_and_param_set(
 
 
 def reduce_mean(
-    grouped: dict[tuple[Any, ...], list[Any]],
+    grouped: Mapping[tuple[Any, ...], list[Any]],
 ) -> ChildResults:
     """Reduce grouped values by averaging (e.g. Trotter ham samples).
 
@@ -211,9 +212,10 @@ def reduce_mean(
 
 
 def reduce_postprocess_ordered(
-    grouped: dict[tuple[Any, ...], dict[int, Any]],
+    grouped: Mapping[tuple[Any, ...], dict[int, Any]],
     postprocess_fn: (
-        Callable[[list[Any]], Any] | dict[tuple[Any, ...], Callable[[list[Any]], Any]]
+        Callable[[list[Any]], Any]
+        | Mapping[tuple[Any, ...], Callable[[list[Any]], Any]]
     ),
 ) -> ChildResults:
     """Reduce grouped index->value dicts by sorting by index and calling a postprocess function.
@@ -234,7 +236,7 @@ def reduce_postprocess_ordered(
         ordered = [v for _, v in sorted(values_by_index.items())]
         fn = (
             postprocess_fn[base_key]
-            if isinstance(postprocess_fn, dict)
+            if isinstance(postprocess_fn, Mapping)
             else postprocess_fn
         )
         reduced[base_key] = fn(ordered)
@@ -242,7 +244,7 @@ def reduce_postprocess_ordered(
 
 
 def reduce_merge_histograms(
-    grouped: dict[tuple[Any, ...], list[dict[str, float]]],
+    grouped: Mapping[tuple[Any, ...], list[dict[str, float]]],
 ) -> ChildResults:
     """Reduce grouped probability dicts by averaging across groups.
 
@@ -293,7 +295,7 @@ def reduce_merge_histograms(
 
 
 def _collapse_to_parent_results(
-    raw_by_label: ChildResults, lineage_by_label: dict[str, BranchKey]
+    raw_by_label: ChildResults, lineage_by_label: Mapping[str, BranchKey]
 ) -> ChildResults:
     """Map backend labels back to structured flat axis keys.
 
@@ -311,7 +313,7 @@ def _collapse_to_parent_results(
     }
 
 
-def _find_batch_key(branch_key: tuple, batch_keys: set[tuple]) -> tuple:
+def _find_batch_key(branch_key: tuple, batch_keys: AbstractSet[tuple]) -> tuple:
     """Find the batch key whose axis labels are a subset of *branch_key*."""
     branch_axes = set(branch_key)
     for bk in batch_keys:

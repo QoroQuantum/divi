@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Callable, Hashable, Iterable, Sequence
 from typing import Any, Literal
 
 from qiskit.quantum_info import SparsePauliOp
@@ -180,9 +180,9 @@ class QAOAProblem(ABC):
 
     def extend_solution(
         self,
-        current_solution: list[int],
+        current_solution: Sequence[int],
         prog_id: Hashable,
-        candidate_decoded: list[int],
+        candidate_decoded: Sequence[int],
     ) -> list[int]:
         """Map a sub-solution's decoded bits into the global solution vector.
 
@@ -193,7 +193,7 @@ class QAOAProblem(ABC):
             f"{type(self).__name__} does not implement extend_solution()."
         )
 
-    def evaluate_global_solution(self, solution: list[int]) -> float:
+    def evaluate_global_solution(self, solution: Sequence[int]) -> float:
         """Score a complete global solution for beam search.
 
         Lower scores are better. Problems with maximisation objectives should
@@ -205,7 +205,7 @@ class QAOAProblem(ABC):
         )
 
     def postprocess_candidates(
-        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+        self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[Any, float]]:
         """Post-process raw partition-aggregation candidates.
 

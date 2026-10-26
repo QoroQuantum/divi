@@ -5,7 +5,7 @@
 """The LASSQD program ensemble: construction and per-round program creation."""
 
 import time
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import replace
 from functools import cached_property
 from math import isfinite
@@ -730,7 +730,7 @@ ProgramEnsemble.workflow_state` holds it.
         )
 
     def _load_workflow_checkpoint_state(
-        self, payload: dict[str, Any], round_dir: Path, stem: str
+        self, payload: Mapping[str, Any], round_dir: Path, stem: str
     ) -> LASSQDState:
         """Load and validate a LASSQD NPZ snapshot."""
         snapshot = load_snapshot(

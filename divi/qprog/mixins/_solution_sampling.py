@@ -28,7 +28,7 @@ fallback to the trained ``_best_params``. VQE/QAOA/PCE additionally call it in
 their ``sample_solution`` overrides to validate explicit params before decoding.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from heapq import nsmallest
 from typing import TYPE_CHECKING, Any, NamedTuple, Self
 from warnings import warn
@@ -125,7 +125,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             state["best_probs"] = self._results["best_probs"]
         return state
 
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+    def _load_subclass_state(self, state: Mapping[str, Any]) -> None:
         super()._load_subclass_state(state)
         if "best_probs" in state:
             self._results["best_probs"] = {
@@ -461,7 +461,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
 
 
 def _spin_moments(
-    probs_dict: dict[str, float],
+    probs_dict: Mapping[str, float],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """First and second spin moments of a bitstring distribution.
 

@@ -11,6 +11,7 @@ and the ``PCECostStage`` pipeline stage.
 
 import numbers
 from collections.abc import Hashable, Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any
 
 import dimod
@@ -96,7 +97,7 @@ def qubo_to_matrix(qubo: QUBOProblemTypes) -> np.ndarray | sps.spmatrix | sps.sp
     raise ValueError(f"Unsupported QUBO type: {type(qubo)}")
 
 
-def _default_variable_order(variables: set[Hashable]) -> tuple[Hashable, ...]:
+def _default_variable_order(variables: AbstractSet[Hashable]) -> tuple[Hashable, ...]:
     """Build deterministic variable order for mixed, potentially incomparable labels.
 
     Sorts integers, including NumPy integers, numerically (0, 1, 2, ..., 10,

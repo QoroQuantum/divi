@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -55,7 +56,7 @@ class QEMStage(BundleStage):
         self._consumes_dag_bodies = not isinstance(self.protocol, _NoMitigation)
         super().__init__(name=type(self).__name__)
 
-    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+    def validate(self, before: Sequence[Stage], after: Sequence[Stage]) -> None:
         if not self.consumes_dag_bodies:
             return
 
@@ -114,7 +115,7 @@ class QEMStage(BundleStage):
         return tuple(bodies), ctxs
 
     def _resolve_observable_override(
-        self, ctxs: list[QEMContext]
+        self, ctxs: Sequence[QEMContext]
     ) -> tuple[SparsePauliOp, ...] | None:
         """The observable every context in one MetaCircuit agrees to measure.
 
@@ -199,8 +200,8 @@ class QEMStage(BundleStage):
 
     def _reduce_grouped(
         self,
-        grouped: dict[tuple, dict[int, Any]],
-        contexts: dict[tuple, QEMContext] | None,
+        grouped: Mapping[tuple, dict[int, Any]],
+        contexts: Mapping[tuple, QEMContext] | None,
         per_obs: bool,
     ) -> ChildResults:
         reduced: ChildResults = {}

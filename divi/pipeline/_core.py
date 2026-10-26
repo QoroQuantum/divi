@@ -5,7 +5,8 @@
 import logging
 import warnings
 from collections import Counter, defaultdict
-from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
 from itertools import groupby
 from operator import itemgetter
@@ -151,8 +152,8 @@ def _wait_for_async_result(backend, execution_result, env):
 def _shot_count_for_branch(
     branch_key: tuple,
     spec_keys: Sequence[tuple],
-    per_group_shots: dict[tuple, dict[int, int]],
-    per_param_group_shots: dict[tuple, dict[int, dict[int, int]]],
+    per_group_shots: Mapping[tuple, dict[int, int]],
+    per_param_group_shots: Mapping[tuple, dict[int, dict[int, int]]],
 ) -> int | None:
     """Resolve one compiled branch to its measurement-stage shot allocation."""
     branch_axes = set(branch_key)
@@ -171,10 +172,10 @@ def _shot_count_for_branch(
 
 
 def _build_shot_groups(
-    circuits: dict[str, str],
-    lineage_by_label: dict[str, tuple],
-    per_group_shots: dict[tuple, dict[int, int]] | None = None,
-    per_param_group_shots: dict[tuple, dict[int, dict[int, int]]] | None = None,
+    circuits: Mapping[str, str],
+    lineage_by_label: Mapping[str, tuple],
+    per_group_shots: Mapping[tuple, dict[int, int]] | None = None,
+    per_param_group_shots: Mapping[tuple, dict[int, dict[int, int]]] | None = None,
 ) -> list[list[int]] | None:
     """Translate measurement allocations into backend ``shot_groups``.
 
@@ -247,7 +248,7 @@ def _record_submission_resources(
     env: PipelineEnv,
     circuit_count: int,
     ham_ops: str | None,
-    shot_groups: list[list[int]] | None,
+    shot_groups: Sequence[list[int]] | None,
 ) -> None:
     """Record samples requested by one pending backend submission."""
     if ham_ops is not None:
@@ -789,7 +790,7 @@ class CircuitPipeline:
 def _scope_token(
     token: StageToken,
     foreign_key: tuple,
-    foreign_axes: set[str],
+    foreign_axes: AbstractSet[str],
 ) -> StageToken:
     """Scope a dict token to match a specific foreign-key group.
 
@@ -836,7 +837,7 @@ def _reduce_with_isolated_axes(
     results: ChildResults,
     env: PipelineEnv,
     token: StageToken,
-    foreign_axes: set[str],
+    foreign_axes: AbstractSet[str],
 ) -> ChildResults:
     """Group results by foreign axes, reduce each group, and re-attach foreign keys.
 

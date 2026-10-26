@@ -425,8 +425,8 @@ class MaestroSimulator(CircuitRunner):
         payloads: Sequence[CircuitPayload] | CircuitBatch,
         *,
         ham_ops: str | None = None,
-        circuit_ham_map: list[list[int]] | None = None,
-        shot_groups: list[list[int]] | None = None,
+        circuit_ham_map: Sequence[list[int]] | None = None,
+        shot_groups: Sequence[list[int]] | None = None,
         cancellation_event: Event | None = None,
         **kwargs,
     ) -> ExecutionResult:

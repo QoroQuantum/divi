@@ -324,7 +324,7 @@ def _read_slots(results: np.ndarray, dag_idx: Any, slots: Any) -> np.ndarray:
 
 
 def _split_into_single_terms(
-    observables: tuple[SparsePauliOp, ...],
+    observables: Sequence[SparsePauliOp],
 ) -> tuple[tuple[SparsePauliOp, ...], list[list[int]]]:
     """Split each observable into one single-term observable per Pauli.
 
@@ -565,7 +565,7 @@ def _extract_rotation_gates(qc: QuantumCircuit) -> list[_RotationGate]:
 
 def _build_clifford_tableaus(
     qc: QuantumCircuit,
-    rotations: list[_RotationGate],
+    rotations: Sequence[_RotationGate],
 ) -> list[stim.Tableau]:
     """Build stim Tableaus for the Clifford layers between rotations.
 
@@ -642,9 +642,9 @@ def _merge_paths_by_branch(paths: Iterable[_PauliPath]) -> list[_PauliPath]:
 
 
 def _enumerate_paths_dfs(
-    rotations: list[_RotationGate],
-    tableaus: list[stim.Tableau],
-    observable_terms: list[tuple[float, stim.PauliString]],
+    rotations: Sequence[_RotationGate],
+    tableaus: Sequence[stim.Tableau],
+    observable_terms: Sequence[tuple[float, stim.PauliString]],
     max_order: int,
     coefficient_threshold: float = 0.0,
 ) -> list[_PauliPath]:
@@ -759,9 +759,9 @@ def _enumerate_paths_dfs(
 
 
 def _all_cos_paths(
-    rotations: list[_RotationGate],
-    inv_tableaus: list[stim.Tableau],
-    observable_terms: list[tuple[float, stim.PauliString]],
+    rotations: Sequence[_RotationGate],
+    inv_tableaus: Sequence[stim.Tableau],
+    observable_terms: Sequence[tuple[float, stim.PauliString]],
 ) -> list[_PauliPath]:
     """The all-zero-branch (all-cos) CPT path, one per observable term.
 
@@ -798,9 +798,9 @@ def _all_cos_paths(
 
 
 def _sample_paths_montecarlo(
-    rotations: list[_RotationGate],
-    tableaus: list[stim.Tableau],
-    observable_terms: list[tuple[float, stim.PauliString]],
+    rotations: Sequence[_RotationGate],
+    tableaus: Sequence[stim.Tableau],
+    observable_terms: Sequence[tuple[float, stim.PauliString]],
     n_samples: int,
     rng: np.random.Generator,
 ) -> list[_PauliPath]:
@@ -954,8 +954,8 @@ def _warn_on_term_starvation(
 
 def _build_path_dag(
     base_dag: DAGCircuit,
-    rotation_positions: list[tuple[int, _RotationGate]],
-    branches: tuple[int, ...],
+    rotation_positions: Sequence[tuple[int, _RotationGate]],
+    branches: Sequence[int],
 ) -> DAGCircuit:
     """Build a Clifford DAG by replacing rotations according to branch choices.
 
@@ -1107,7 +1107,7 @@ class QuEPP(QEMProtocol):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Build path DAGs and per-observable classical context.
 
@@ -1217,7 +1217,7 @@ class QuEPP(QEMProtocol):
     def dry_expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic path: emit ``1 + n_paths`` placeholder DAGs, no Clifford sim.
 
@@ -1272,7 +1272,7 @@ class QuEPP(QEMProtocol):
 
     @staticmethod
     def _validate_observable_tuple(
-        observable: SparsePauliOp | tuple[SparsePauliOp, ...] | None,
+        observable: SparsePauliOp | Sequence[SparsePauliOp] | None,
     ) -> tuple[SparsePauliOp, ...]:
         if observable is None:
             raise ValueError(
@@ -1292,11 +1292,11 @@ class QuEPP(QEMProtocol):
                     f"QuEPP.expand observable tuple entries must be "
                     f"SparsePauliOp; got {type(obs).__name__}."
                 )
-        return observable
+        return tuple(observable)
 
     @staticmethod
     def _preprocess(
-        dag: DAGCircuit, observables: tuple[SparsePauliOp, ...]
+        dag: DAGCircuit, observables: Sequence[SparsePauliOp]
     ) -> list["_PreprocResult"]:
         """Decompose, normalise, extract rotations + tableaus once; obs terms per observable."""
         target_qc = dag_to_circuit(dag)
@@ -1374,7 +1374,7 @@ class QuEPP(QEMProtocol):
             )
 
     def _warn_no_diagonal_paths(
-        self, n_rotations: int, n_paths_per_obs: list[int]
+        self, n_rotations: int, n_paths_per_obs: Sequence[int]
     ) -> None:
         """Warn when one or more observables produce zero diagonal Pauli paths.
 

@@ -81,7 +81,7 @@ def interleave_spin_bitstring(sqd_bitstring: str, n_orb: int) -> str:
     return "".join(a + b for a, b in zip(alpha, beta))
 
 
-def probs_to_sqd_bitstrings(probs: dict[str, float], n_orb: int) -> dict[str, float]:
+def probs_to_sqd_bitstrings(probs: Mapping[str, float], n_orb: int) -> dict[str, float]:
     """Convert a measured distribution into the SQD bitstring convention.
 
     Raises:
@@ -131,7 +131,7 @@ def spin_orbital_integrals(
 
 
 def spatial_to_spin_occupations(
-    alpha_occ: tuple[int, ...], beta_occ: tuple[int, ...], n_orb: int
+    alpha_occ: Sequence[int], beta_occ: Sequence[int], n_orb: int
 ) -> tuple[int, ...]:
     """Combine alpha/beta spatial occupations into a sorted, blocked spin-orbital
     tuple: alpha keeps its spatial index, beta is offset by ``n_orb``."""
@@ -537,7 +537,9 @@ def _block_roots(
 _CARRYOVER_WEIGHT_PLACES = 12
 
 
-def _heaviest_strings(weights: dict[str, float], limit: int | None) -> tuple[str, ...]:
+def _heaviest_strings(
+    weights: Mapping[str, float], limit: int | None
+) -> tuple[str, ...]:
     """The ``limit`` heaviest strings, near-ties broken on the string so float
     noise cannot decide what is kept."""
     ordered = sorted(
@@ -1217,7 +1219,7 @@ class SQDSolver:
 
     def solve(
         self,
-        probs: dict[str, float],
+        probs: Mapping[str, float],
         one_body: np.ndarray,
         two_body: np.ndarray,
         constant: float = 0.0,
@@ -1372,7 +1374,7 @@ class SQDSolver:
         )
 
     def _recovered_distribution(
-        self, probs: dict[str, float], iteration: int
+        self, probs: Mapping[str, float], iteration: int
     ) -> dict[str, float]:
         """The distribution this iteration samples its batches from.
 
@@ -1420,7 +1422,7 @@ class SQDSolver:
 
     def _draw_batches(
         self,
-        candidates: dict[str, float],
+        candidates: Mapping[str, float],
         carried_alpha: Sequence[str],
         carried_beta: Sequence[str],
     ) -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
@@ -1475,7 +1477,7 @@ class SQDSolver:
 
     def _sector_strings(
         self,
-        counts: dict[str, int],
+        counts: Mapping[str, int],
         carried: Sequence[str],
         reference: str,
         target: int,

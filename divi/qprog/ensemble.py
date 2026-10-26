@@ -7,7 +7,7 @@ import logging
 import os
 import shutil
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Container, Hashable
+from collections.abc import Callable, Container, Hashable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from contextlib import ExitStack, suppress
 from dataclasses import asdict, dataclass, field, replace
@@ -126,8 +126,8 @@ class _RoundCheckpointSession:
         round_path: Path,
         ensemble_type: str,
         round_index: int,
-        ensemble_state: dict[str, Any],
-        programs: list[QuantumProgram],
+        ensemble_state: Mapping[str, Any],
+        programs: Sequence[QuantumProgram],
         child_recovery_states: list[ProgramRoundRecord],
         interrupted_checkpoint: RoundCheckpoint | None,
     ) -> Self:
@@ -175,7 +175,7 @@ class _RoundCheckpointSession:
     @staticmethod
     def _validate_structure(
         persisted_checkpoint: RoundCheckpoint,
-        child_recovery_states: list[ProgramRoundRecord],
+        child_recovery_states: Sequence[ProgramRoundRecord],
     ) -> None:
         persisted_states = persisted_checkpoint.round_start_data()
         if len(persisted_states) != len(child_recovery_states):
@@ -209,8 +209,8 @@ class _RoundCheckpointSession:
 
     def _recover(
         self,
-        programs: list[QuantumProgram],
-        recovery_state_by_program: dict[QuantumProgram, ProgramRoundRecord],
+        programs: Sequence[QuantumProgram],
+        recovery_state_by_program: Mapping[QuantumProgram, ProgramRoundRecord],
     ) -> None:
         circuits = 0
         runtime = 0.0
@@ -397,7 +397,7 @@ def _sampling_type_error(
 
 
 def _validate_sampling_programs(
-    programs: dict[Any, QuantumProgram], *, action: str
+    programs: Mapping[Any, QuantumProgram], *, action: str
 ) -> dict[Any, VariationalQuantumAlgorithm]:
     """Require variational programs that expose solution sampling."""
     validated: dict[Any, VariationalQuantumAlgorithm] = {}
@@ -411,8 +411,8 @@ def _validate_sampling_programs(
 
 
 def _resolve_sampling_params(
-    programs: dict[Any, QuantumProgram],
-    params_per_program: dict[Any, npt.NDArray[np.float64]] | None,
+    programs: Mapping[Any, QuantumProgram],
+    params_per_program: Mapping[Any, npt.NDArray[np.float64]] | None,
     *,
     suppress_strict_warning: bool,
 ) -> dict[Any, npt.NDArray[np.float64]]:
@@ -699,7 +699,7 @@ class ProgramEnsemble(ABC):
         return {}
 
     def _load_workflow_checkpoint_state(
-        self, payload: dict[str, Any], round_dir: Path, stem: str
+        self, payload: Mapping[str, Any], round_dir: Path, stem: str
     ) -> Any:
         """Deserialize mutable workflow state from an ensemble checkpoint."""
         if payload:
@@ -1280,7 +1280,7 @@ class ProgramEnsemble(ABC):
 
     @staticmethod
     def _serialize_round_history(
-        history: list[RoundRecord],
+        history: Sequence[RoundRecord],
     ) -> list[dict[str, Any]]:
         return [asdict(record) for record in history]
 
@@ -1288,7 +1288,7 @@ class ProgramEnsemble(ABC):
         self,
         checkpoint_root: Path,
         state: Any,
-        history: list[RoundRecord],
+        history: Sequence[RoundRecord],
     ) -> Path:
         root = _ensure_checkpoint_dir(checkpoint_root)
         round_path = _round_dir(root, self._round_index)
@@ -1313,7 +1313,7 @@ class ProgramEnsemble(ABC):
 
     @staticmethod
     def _deserialize_round_history(
-        history: list[dict[str, Any]],
+        history: Sequence[dict[str, Any]],
     ) -> list[RoundRecord]:
         return [
             RoundRecord(
@@ -1586,7 +1586,7 @@ class ProgramEnsemble(ABC):
 
     def _dispatch_sample_solution(
         self,
-        resolved: dict[Any, npt.NDArray[np.float64]],
+        resolved: Mapping[Any, npt.NDArray[np.float64]],
         *,
         backend: CircuitRunner | None,
         blocking: bool,
@@ -1620,7 +1620,7 @@ class ProgramEnsemble(ABC):
 
     def sample_solution(
         self,
-        params_per_program: dict[Any, npt.NDArray[np.float64]] | None = None,
+        params_per_program: Mapping[Any, npt.NDArray[np.float64]] | None = None,
         *,
         backend: CircuitRunner | None = None,
         blocking: bool = False,

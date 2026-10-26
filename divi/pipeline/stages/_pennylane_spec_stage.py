@@ -63,7 +63,7 @@ class PennyLaneSpecStage(CircuitSpecStage):
 
     @staticmethod
     def _reject_unbindable_param_sets(
-        converted: MetaCircuit | list[MetaCircuit] | dict[str, MetaCircuit],
+        converted: MetaCircuit | Sequence[MetaCircuit] | Mapping[str, MetaCircuit],
         env: PipelineEnv,
     ) -> None:
         """Raise when ``env.param_sets`` carries columns but a converted circuit

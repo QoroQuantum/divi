@@ -90,7 +90,7 @@ def _construct_matching_qubo(
     return terms
 
 
-def is_valid_matching(edges: list[tuple]) -> bool:
+def is_valid_matching(edges: Sequence[tuple]) -> bool:
     """Check that no node appears in more than one selected edge."""
     seen: set = set()
     for u, v in edges:
@@ -576,9 +576,9 @@ class MaxWeightMatchingProblem(QAOAProblem):
 
     def extend_solution(
         self,
-        current_solution: list[int],
+        current_solution: Sequence[int],
         prog_id: Hashable,
-        candidate_decoded: list[int],
+        candidate_decoded: Sequence[int],
     ) -> list[int]:
         extended = list(current_solution)
         global_indices = self._edge_index_maps[prog_id]
@@ -596,7 +596,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         """Edge weights as integers for the classical cleanup."""
         return _integer_weights(self._weights)
 
-    def evaluate_global_solution(self, solution: list[int]) -> float:
+    def evaluate_global_solution(self, solution: Sequence[int]) -> float:
         """Score a solution: negative (weight - conflict_penalty * conflicts).
 
         Lower is better for beam search.  Maximising weight while minimising
@@ -626,7 +626,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
         return self._matching_and_weight(selected)
 
     def postprocess_candidates(
-        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+        self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[list[tuple], float]]:
         """Post-process matching candidates, optionally hard-filtering invalid ones.
 

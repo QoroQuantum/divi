@@ -6,6 +6,7 @@
 
 import logging
 from collections.abc import Callable, Hashable
+from collections.abc import Set as AbstractSet
 from threading import Lock
 from typing import TypeAlias
 
@@ -203,7 +204,7 @@ def make_standalone_view(console: Console) -> tuple[RenderFn, CloseViewFn]:
     status = Status("", console=console, spinner="point")
     started = False
 
-    def render(state: ProgressState, affected: set[Hashable]) -> None:
+    def render(state: ProgressState, affected: AbstractSet[Hashable]) -> None:
         nonlocal started
         for target_id in affected:
             target = state.get(target_id)
@@ -243,7 +244,7 @@ def make_ensemble_view(
     active_renders = 0
     view_lock = Lock()
 
-    def render(state: ProgressState, affected: set[Hashable]) -> None:
+    def render(state: ProgressState, affected: AbstractSet[Hashable]) -> None:
         nonlocal active_renders, started
         with view_lock:
             if closed:

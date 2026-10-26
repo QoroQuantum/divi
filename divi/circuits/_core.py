@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 
 import numpy as np
@@ -17,7 +17,7 @@ from divi.hamiltonians._term_ops import _assert_hermitian_spo
 
 
 def flatten_observable_tuple(
-    observable: tuple[SparsePauliOp, ...],
+    observable: Sequence[SparsePauliOp],
 ) -> tuple[SparsePauliOp, list[list[int]]]:
     """Flatten a tuple of observables into a single union ``SparsePauliOp``.
 
@@ -201,7 +201,7 @@ class MetaCircuit:
         return dag.num_qubits()
 
     def set_circuit_bodies(
-        self, bodies: tuple[tuple[QASMTag, DAGCircuit], ...]
+        self, bodies: Sequence[tuple[QASMTag, DAGCircuit]]
     ) -> MetaCircuit:
         """Return a new MetaCircuit with updated circuit-body DAGs."""
         return replace(self, circuit_bodies=bodies)
@@ -218,17 +218,17 @@ class MetaCircuit:
         return replace(self, observable=observable)
 
     def set_measurement_bodies(
-        self, bodies: tuple[tuple[QASMTag, str], ...]
+        self, bodies: Sequence[tuple[QASMTag, str]]
     ) -> MetaCircuit:
         """Return a new MetaCircuit with updated measurement QASMs."""
         return replace(self, measurement_qasms=bodies)
 
-    def set_qasm_bodies(self, bodies: tuple[tuple[QASMTag, str], ...]) -> MetaCircuit:
+    def set_qasm_bodies(self, bodies: Sequence[tuple[QASMTag, str]]) -> MetaCircuit:
         """Return a new MetaCircuit with updated QASM body strings."""
         return replace(self, qasm_bodies=bodies)
 
     def set_measurement_groups(
-        self, measurement_groups: tuple[tuple[object, ...], ...]
+        self, measurement_groups: Sequence[tuple[object, ...]]
     ) -> MetaCircuit:
         """Return a new MetaCircuit with updated measurement groups."""
         return replace(self, measurement_groups=measurement_groups)

@@ -37,6 +37,7 @@ Two output paths:
 import copy
 import random
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from numbers import Integral
 from typing import Any
 
@@ -103,7 +104,9 @@ def _build_twirl_sub_dag(gate, pre_label: str, post_label: str) -> DAGCircuit:
     return circuit_to_dag(qc)
 
 
-def _precompute_twirl_dags(gate, twirl_table: dict[str, str]) -> dict[str, DAGCircuit]:
+def _precompute_twirl_dags(
+    gate, twirl_table: Mapping[str, str]
+) -> dict[str, DAGCircuit]:
     """Pre-build the substitution sub-DAG for every possible pre-label."""
     return {
         pre: _build_twirl_sub_dag(gate, pre, twirl_table[pre])
@@ -184,9 +187,9 @@ def _discover_twirl_plan(
 
 def _apply_twirl_substitute(
     dag: DAGCircuit,
-    label_indices: list[int],
-    twirl_positions: tuple[int, ...],
-    twirl_gate_names: tuple[str, ...],
+    label_indices: Sequence[int],
+    twirl_positions: Sequence[int],
+    twirl_gate_names: Sequence[str],
 ) -> DAGCircuit:
     """Produce a twirled copy of *dag* via ``deepcopy`` + targeted
     ``substitute_node_with_dag`` on each ``cx`` / ``cz``.
@@ -247,7 +250,7 @@ class PauliTwirlStage(BundleStage):
         # Conservative default — an un-validated stage uses structural path.
         self._fast_path = False
 
-    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+    def validate(self, before: Sequence[Stage], after: Sequence[Stage]) -> None:
         # Parametric fast path preconditions: (a) nothing downstream
         # reads DAGs, and (b) ParameterBindingStage is upstream so the
         # K topologically-identical variants share a gate sequence.
@@ -296,9 +299,9 @@ class PauliTwirlStage(BundleStage):
     def _apply_twirl_on_reference(
         self,
         dag: DAGCircuit,
-        label_indices: list[int],
-        twirl_positions: tuple[int, ...],
-        twirl_gate_names: tuple[str, ...],
+        label_indices: Sequence[int],
+        twirl_positions: Sequence[int],
+        twirl_gate_names: Sequence[str],
     ) -> DAGCircuit:
         """One-shot twirl used inside the parametric fast path. Same algo
         as :func:`_apply_twirl_substitute`; kept as a thin wrapper so the

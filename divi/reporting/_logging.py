@@ -8,6 +8,7 @@ import logging
 import sys
 import traceback
 from collections.abc import Hashable
+from collections.abc import Set as AbstractSet
 
 from rich.logging import RichHandler
 
@@ -92,7 +93,7 @@ def diagnose_reporting_failure(exc: Exception, *, include_traceback: bool) -> No
         traceback.print_exception(exc, file=sys.stderr)
 
 
-def log_progress_state(state: ProgressState, affected: set[Hashable]) -> None:
+def log_progress_state(state: ProgressState, affected: AbstractSet[Hashable]) -> None:
     """Render affected progress targets through logging."""
     for target_id in affected:
         target = state.get(target_id)

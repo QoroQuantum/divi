@@ -8,6 +8,7 @@ import json
 import logging
 import re
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from numbers import Integral
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
@@ -369,7 +370,7 @@ _CONFIDENCE_STYLES = {
 
 
 def _threshold_pick(
-    value: float, thresholds: tuple[tuple[float, str], ...], default: str
+    value: float, thresholds: Sequence[tuple[float, str]], default: str
 ) -> str:
     """Return the first label whose threshold ``value`` meets, else ``default``."""
     return next((label for cutoff, label in thresholds if value >= cutoff), default)
@@ -1825,7 +1826,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
 
 def _validate_reference_states(
     problem: "BinaryOptimizationProblem",
-    reference_states: list[str],
+    reference_states: Sequence[str],
     n_qubits: int | None,
 ) -> None:
     """Validate Composer's non-empty, fixed-width binary reference contract."""
@@ -1855,7 +1856,7 @@ def _validate_reference_states(
 
 def characterize_and_validate(
     problem: "BinaryOptimizationProblem",
-    reference_states: list[str],
+    reference_states: Sequence[str],
     *,
     service: QoroService,
     options: CharacterizationOptions | None = None,

@@ -4,7 +4,7 @@
 
 import itertools
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from functools import cached_property
 from typing import Any, Literal
@@ -38,7 +38,7 @@ def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.
 
 
 def _aggregate_param_group(
-    param_group: list[tuple[str, dict[str, int]]],
+    param_group: Sequence[tuple[str, dict[str, int]]],
 ) -> tuple[list[str], npt.NDArray[np.float64], float]:
     """Aggregate a parameter group into states, counts, and total shots."""
     shots_dict: Counter[str] = Counter()
@@ -54,7 +54,7 @@ _LIMB_BITS = 64
 _LIMB_MASK = (1 << _LIMB_BITS) - 1
 
 
-def _pack_masks(mask_ints: list[int], n_qubits: int) -> npt.NDArray[np.uint64]:
+def _pack_masks(mask_ints: Sequence[int], n_qubits: int) -> npt.NDArray[np.uint64]:
     """Pack per-variable bitmask integers into a uint64 representation.
 
     For ``n_qubits <= 64`` this is a 1-D ``(n_vars,)`` array (unchanged from the
@@ -80,7 +80,9 @@ def _mask_to_int(mask: npt.NDArray[np.uint64]) -> int:
     return sum(int(limb) << (_LIMB_BITS * j) for j, limb in enumerate(mask))
 
 
-def _states_to_limbs(state_strings: list[str], n_limbs: int) -> npt.NDArray[np.uint64]:
+def _states_to_limbs(
+    state_strings: Sequence[str], n_limbs: int
+) -> npt.NDArray[np.uint64]:
     """Unpack big-endian bitstrings into ``(n_states, n_limbs)`` little-endian limbs.
 
     Raises:
@@ -113,7 +115,7 @@ def _states_to_limbs(state_strings: list[str], n_limbs: int) -> npt.NDArray[np.u
 
 
 def _decode_parities(
-    state_strings: list[str], variable_masks_u64: npt.NDArray[np.uint64]
+    state_strings: Sequence[str], variable_masks_u64: npt.NDArray[np.uint64]
 ) -> npt.NDArray[np.uint8]:
     """Decode bitstring parities using the precomputed variable masks.
 

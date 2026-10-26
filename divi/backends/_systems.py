@@ -4,6 +4,7 @@
 
 """Data models for Quantum Processing Units (QPUs), QPUSystems, and SimulatorClusters."""
 
+from collections.abc import Sequence
 from threading import RLock
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -75,7 +76,7 @@ def parse_qpu_systems(json_data: list) -> list[QPUSystem]:
     return [QPUSystem.model_validate(system_data) for system_data in json_data]
 
 
-def update_qpu_systems_cache(systems: list[QPUSystem]):
+def update_qpu_systems_cache(systems: Sequence[QPUSystem]):
     """Updates the cache of available QPU systems."""
     with _CACHE_LOCK:
         _AVAILABLE_QPU_SYSTEMS.clear()
@@ -122,7 +123,7 @@ def parse_simulator_clusters(json_data: list) -> list[SimulatorCluster]:
     return [SimulatorCluster.model_validate(cluster_data) for cluster_data in json_data]
 
 
-def update_simulator_clusters_cache(clusters: list[SimulatorCluster]):
+def update_simulator_clusters_cache(clusters: Sequence[SimulatorCluster]):
     """Updates the cache of available simulator clusters."""
     with _CACHE_LOCK:
         _AVAILABLE_SIMULATOR_CLUSTERS.clear()

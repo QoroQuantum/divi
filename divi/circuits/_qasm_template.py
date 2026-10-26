@@ -4,6 +4,7 @@
 
 """Pre-split QASM templates for fast parameter substitution."""
 
+from collections.abc import Sequence
 from itertools import chain
 from typing import NamedTuple
 
@@ -42,7 +43,7 @@ class QASMTemplate(NamedTuple):
     slot_indices: tuple[int, ...]
 
 
-def build_template(qasm_body: str, symbol_names: tuple[str, ...]) -> QASMTemplate:
+def build_template(qasm_body: str, symbol_names: Sequence[str]) -> QASMTemplate:
     """Split a QASM string at symbol boundaries into a :class:`QASMTemplate`.
 
     Symbol names are matched longest-first to avoid partial-match issues
@@ -81,7 +82,7 @@ def build_template(qasm_body: str, symbol_names: tuple[str, ...]) -> QASMTemplat
     )
 
 
-def render_template(template: QASMTemplate, formatted_values: tuple[str, ...]) -> str:
+def render_template(template: QASMTemplate, formatted_values: Sequence[str]) -> str:
     """Render a :class:`QASMTemplate` with concrete parameter values.
 
     Args:

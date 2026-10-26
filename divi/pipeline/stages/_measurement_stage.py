@@ -3,7 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import warnings
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -96,8 +97,8 @@ def _apply_group_shot_plan(
 def _plan_group_shots(
     spec_key: object,
     observable,
-    measurement_groups: tuple[tuple[object, ...], ...],
-    partition_indices: list[list[int]],
+    measurement_groups: Sequence[tuple[object, ...]],
+    partition_indices: Sequence[list[int]],
     env: PipelineEnv,
     shot_distribution: ShotDistStrategy | None,
     *,
@@ -190,11 +191,11 @@ def _plan_group_shots(
 def _plans_for_spec(
     spec_key: tuple,
     observable: SparsePauliOp,
-    measurement_groups: tuple[tuple[object, ...], ...],
-    partition_indices: list[list[int]],
+    measurement_groups: Sequence[tuple[object, ...]],
+    partition_indices: Sequence[list[int]],
     env: PipelineEnv,
     shot_distribution: ShotDistStrategy | None,
-    sample_budgets: tuple[int, ...] | None,
+    sample_budgets: Sequence[int] | None,
 ) -> dict[tuple, _GroupShotPlan]:
     """Build the execution plans for one observable specification."""
     if sample_budgets is None:
@@ -249,7 +250,7 @@ class MeasurementToken:
     empty group)."""
 
     def scoped_to(
-        self, foreign_key: tuple, foreign_axes: set[str]
+        self, foreign_key: tuple, foreign_axes: AbstractSet[str]
     ) -> "MeasurementToken":
         """Select and strip metadata for one downstream-axis reduction group."""
         foreign_set = set(foreign_key)
@@ -377,18 +378,18 @@ class MeasurementStage(BundleStage):
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _build_wires_qasm(wires: tuple[int, ...]) -> str:
+    def _build_wires_qasm(wires: Sequence[int]) -> str:
         """Build the ``measure q[i] -> c[i];`` sequence for a probs circuit."""
         return "".join(f"measure q[{q}] -> c[{q}];\n" for q in wires)
 
     @staticmethod
-    def _dry_wires_qasm(wires: tuple[int, ...]) -> str:
+    def _dry_wires_qasm(wires: Sequence[int]) -> str:
         """Dry placeholder: probs measurement is always one tagged entry."""
         return ""
 
     @staticmethod
     def _dry_expval_qasms(
-        surviving_groups: tuple[tuple[object, ...], ...],
+        surviving_groups: Sequence[tuple[object, ...]],
         n_qubits: int,
         measure_all: bool = False,
     ) -> tuple[str, ...]:

@@ -11,7 +11,7 @@ import math
 import os
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from random import Random
@@ -393,7 +393,7 @@ def _physical_spin_amplitudes(
 
 
 def _require_finite_fragment_values(
-    values: tuple[np.ndarray, ...],
+    values: Sequence[np.ndarray],
     *,
     label: str,
     spec: FragmentSpec,

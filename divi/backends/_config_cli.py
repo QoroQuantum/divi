@@ -5,7 +5,7 @@
 """``divi-config-helper``: choose a default Qoro Service target and its options."""
 
 import argparse
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from enum import Enum
 from functools import partial
@@ -380,8 +380,8 @@ def _review(
     make_default: bool,
     before: Mapping[str, Any],
     after: Mapping[str, Any],
-    kept: list[str],
-    warnings: list[str],
+    kept: Sequence[str],
+    warnings: Sequence[str],
     python: str,
 ) -> Group:
     """What saving writes: the target, each option's change and the equivalent Python."""
@@ -673,7 +673,7 @@ class _OptionsScreen(Screen[None]):
         )
         self.query_one(".describe", Static).update(description or "")
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+    def check_action(self, action: str, parameters: Sequence[object]) -> bool | None:
         if action == "toggle_advanced":
             return bool(self.common and self.advanced)
         return True
@@ -849,7 +849,9 @@ class ConfigHelper(App[Path | None]):
     def _choose(self, _: None = None) -> None:
         self.push_screen(_TargetScreen(self.targets, self.previous), self._open)
 
-    def _plan(self, target: Target, make_default: bool, values: dict[str, Any]) -> Plan:
+    def _plan(
+        self, target: Target, make_default: bool, values: Mapping[str, Any]
+    ) -> Plan:
         """The keyword arguments of the job, Maestro and device configs saving would write."""
         job = _job_kwargs(self.job_config, target if make_default else None)
         saved_maestro = self.maestro_config._set_fields() if self.maestro_config else {}
@@ -861,9 +863,11 @@ class ConfigHelper(App[Path | None]):
             for name, value in saved_maestro.items()
             if name not in _SIMULATOR_OPTIONS
         }
-        return job, rest | values, saved_device
+        return job, rest | dict(values), saved_device
 
-    def _save(self, target: Target, make_default: bool, values: dict[str, Any]) -> None:
+    def _save(
+        self, target: Target, make_default: bool, values: Mapping[str, Any]
+    ) -> None:
         job, maestro_kwargs, device_kwargs = self._plan(target, make_default, values)
         save_defaults(
             self.path,
@@ -877,10 +881,10 @@ class ConfigHelper(App[Path | None]):
         self,
         target: Target,
         make_default: bool,
-        options: dict[str, Spec],
-        before: dict[str, Any],
-        kept: list[str],
-        values: dict[str, Any],
+        options: Mapping[str, Spec],
+        before: Mapping[str, Any],
+        kept: Sequence[str],
+        values: Mapping[str, Any],
     ) -> None:
         if values == before and (not make_default or target.name == self.previous):
             self.notify("No changes to save.")
@@ -965,7 +969,7 @@ def _load_saved(path: Path) -> SavedDefaults:
         return None, None, None
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``divi-config-helper`` console script."""
     parser = argparse.ArgumentParser(
         prog="divi-config-helper",

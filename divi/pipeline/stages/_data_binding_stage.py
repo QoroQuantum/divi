@@ -23,7 +23,7 @@ weight-only parametric DAG.
 
 import functools
 import hashlib
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
 from dataclasses import replace
 from typing import Any, Literal
 
@@ -211,7 +211,7 @@ class DataBindingStage(BundleStage):
         data_set = set(self.data_params)
         return tuple(p for p in mc.parameters if p not in data_set)
 
-    def validate(self, before: tuple[Stage, ...], after: tuple[Stage, ...]) -> None:
+    def validate(self, before: Sequence[Stage], after: Sequence[Stage]) -> None:
         """Use the template path unless a downstream stage consumes DAG bodies."""
         super().validate(before, after)
 
@@ -352,7 +352,7 @@ class DataBindingStage(BundleStage):
             grouped, functools.partial(self._reduce_one, labels=labels)
         )
 
-    def _reduce_one(self, samples: list[Any], labels: np.ndarray | None) -> Any:
+    def _reduce_one(self, samples: Sequence[Any], labels: np.ndarray | None) -> Any:
         """Apply ``loss_reduction`` to one base-key's per-sample values.
 
         :class:`~divi.pipeline.stages.MeasurementStage` returns a per-observable

@@ -345,7 +345,7 @@ def build_coupling_graph(
 
 
 def _inter_cluster_weight(
-    graph: nx.Graph, left: tuple[int, ...], right: tuple[int, ...]
+    graph: nx.Graph, left: Sequence[int], right: Sequence[int]
 ) -> float:
     """Total surviving edge weight spanning two clusters."""
     return sum(
@@ -395,7 +395,7 @@ def merge_clusters(
     clusters: list[tuple[int, ...]] = [(node,) for node in sorted(graph.nodes)]
 
     @cache
-    def coupling(left: tuple[int, ...], right: tuple[int, ...]) -> float:
+    def coupling(left: Sequence[int], right: Sequence[int]) -> float:
         return _inter_cluster_weight(graph, left, right)
 
     def best_merge(candidates):
@@ -414,7 +414,7 @@ def merge_clusters(
         clusters = [cluster for k, cluster in enumerate(clusters) if k not in (i, j)]
         clusters.append(merged)
 
-    def is_mixed(cluster: tuple[int, ...]) -> bool:
+    def is_mixed(cluster: Sequence[int]) -> bool:
         occupations = {bool(is_occupied[orbital]) for orbital in cluster}
         return len(occupations) == 2
 

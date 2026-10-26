@@ -9,6 +9,7 @@ import numbers
 import warnings
 from collections import defaultdict
 from collections.abc import Callable, Hashable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from types import MappingProxyType
@@ -329,7 +330,7 @@ def _encode_constraint(
 
 def _encode_constraints(
     constraints: Sequence[LinearConstraint],
-    variables: set[Hashable],
+    variables: AbstractSet[Hashable],
     penalty_terms: Mapping[tuple, float],
     activity_bounds: Callable[[Mapping[Hashable, float]], tuple[float, float]],
 ) -> tuple[tuple[_Slack, ...], dict[tuple, float]]:
@@ -361,7 +362,7 @@ def _encode_constraints(
                 next_int += width
             else:
                 labels = [("slack", index, j) for j in range(width)]
-                if variables.intersection(labels):
+                if not variables.isdisjoint(labels):
                     raise ValueError(
                         "Variable labels of the form ('slack', i, j) are "
                         "reserved for constraint slack."

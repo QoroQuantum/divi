@@ -284,14 +284,14 @@ def _qscript_to_dag(
 def qscript_to_meta(
     qscript: QuantumScript,
     precision: int = DEFAULT_PRECISION,
-    parameter_order: tuple[Parameter, ...] | None = None,
+    parameter_order: Sequence[Parameter] | None = None,
     was_multi_obs: bool | None = None,
 ) -> MetaCircuit:
     """Convert a PennyLane QuantumScript into a MetaCircuit."""
     measurements = list(qscript.measurements)
     qscript = _symbolize_trainable_subset(qscript)
     dag, inferred_params = _qscript_to_dag(qscript)
-    params = parameter_order if parameter_order is not None else inferred_params
+    params = tuple(parameter_order) if parameter_order is not None else inferred_params
 
     observable: tuple[SparsePauliOp, ...] | None = None
     measured_wires = None

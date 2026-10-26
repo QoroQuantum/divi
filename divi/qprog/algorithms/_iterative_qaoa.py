@@ -17,7 +17,7 @@ Three interpolation strategies are provided:
 - **CHEBYSHEV**: Shifted Chebyshev polynomial basis on the layer grid i/p
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import replace
 from enum import Enum
 from pathlib import Path
@@ -341,7 +341,7 @@ class IterativeQAOA(QAOA):
         )
         return state
 
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+    def _load_subclass_state(self, state: Mapping[str, Any]) -> None:
         """Restore the depths run so far and rebuild the ansatz at the saved depth."""
         super()._load_subclass_state(state)
 

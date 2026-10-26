@@ -125,7 +125,7 @@ def bit_driver(n_qubits: int, b: int) -> SparsePauliOp:
 
 def edge_driver(
     graph: nx.Graph | Iterable[tuple[int, int]],
-    reward: list[str],
+    reward: Sequence[str],
     *,
     n_qubits: int | None = None,
 ) -> SparsePauliOp:

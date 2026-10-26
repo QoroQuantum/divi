@@ -464,7 +464,7 @@ def _safe_introspect(
 def dry_run_pipeline(
     name: str,
     trace: PipelineTrace,
-    stages: tuple[Stage, ...],
+    stages: Sequence[Stage],
     env: PipelineEnv,
     cadence: PipelineCadence,
 ) -> DryRunReport:

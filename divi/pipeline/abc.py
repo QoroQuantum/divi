@@ -4,6 +4,7 @@
 
 from abc import ABC, abstractmethod
 from collections.abc import Hashable, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from threading import Event
 from typing import Any, Generic, NamedTuple, Protocol, TypeVar, runtime_checkable
@@ -45,7 +46,9 @@ StageToken = Any
 class _ScopedStageToken(Protocol):
     """Stage token that can isolate metadata for a downstream-axis group."""
 
-    def scoped_to(self, foreign_key: tuple, foreign_axes: set[str]) -> StageToken: ...
+    def scoped_to(
+        self, foreign_key: tuple, foreign_axes: AbstractSet[str]
+    ) -> StageToken: ...
 
 
 @dataclass(frozen=True)
@@ -356,7 +359,7 @@ class Stage(ABC, Generic[InT, OutT]):
         """
         return ()
 
-    def validate(self, before: tuple["Stage", ...], after: tuple["Stage", ...]) -> None:
+    def validate(self, before: Sequence["Stage"], after: Sequence["Stage"]) -> None:
         """Check this stage's position in the pipeline.
 
         Called by :class:`~divi.pipeline.CircuitPipeline` at construction

@@ -58,7 +58,7 @@ def _strip_measurements(qc: QuantumCircuit) -> QuantumCircuit:
     return stripped
 
 
-def _z_sum_observable(n_qubits: int, measured_wires: list[int]) -> SparsePauliOp:
+def _z_sum_observable(n_qubits: int, measured_wires: Sequence[int]) -> SparsePauliOp:
     """Sum of ``Z_i`` over the given wires, lifted to an ``n_qubits``-wire SPO."""
     return SparsePauliOp.from_list(
         [(single_pauli_label(n_qubits, wire, "Z"), 1.0) for wire in measured_wires]

@@ -15,10 +15,11 @@ which ``|``-group a given circuit was measured for.  Not an operator encoding
 import base64
 import gzip
 import warnings
+from collections.abc import Sequence
 
 
 def _group_index(
-    circuit_index: int, circuit_ham_map: list[list[int]] | None
+    circuit_index: int, circuit_ham_map: Sequence[list[int]] | None
 ) -> int | None:
     """Index of the ``|``-group covering *circuit_index*, or None when all apply."""
     if circuit_ham_map is None:
@@ -32,7 +33,7 @@ def _group_index(
 def ham_ops_group_for_circuit(
     circuit_index: int,
     ham_ops: str,
-    circuit_ham_map: list[list[int]] | None,
+    circuit_ham_map: Sequence[list[int]] | None,
 ) -> str:
     """The ``|``-group of *ham_ops* covering *circuit_index*, else all of it.
 
@@ -46,8 +47,8 @@ def ham_ops_group_for_circuit(
 
 def pad_ham_ops(
     ham_ops: str,
-    circuit_ham_map: list[list[int]] | None,
-    n_qubits: list[int],
+    circuit_ham_map: Sequence[list[int]] | None,
+    n_qubits: Sequence[int],
 ) -> str:
     """Pad terms shorter than their circuits onto the circuits' first qubits.
 
@@ -92,7 +93,7 @@ def pad_ham_ops(
 def ham_ops_terms_for_circuit(
     circuit_index: int,
     ham_ops: str,
-    circuit_ham_map: list[list[int]] | None,
+    circuit_ham_map: Sequence[list[int]] | None,
 ) -> list[str]:
     """The individual Pauli terms *circuit_index* was measured for.
 
@@ -106,7 +107,7 @@ def ham_ops_terms_for_circuit(
 def ham_ops_terms_per_circuit(
     n_circuits: int,
     ham_ops: str,
-    circuit_ham_map: list[list[int]] | None,
+    circuit_ham_map: Sequence[list[int]] | None,
 ) -> list[list[str]]:
     """:func:`ham_ops_terms_for_circuit` for every circuit, parsing *ham_ops* once.
 

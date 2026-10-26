@@ -209,7 +209,7 @@ class _ExcitedStates:
         result: SQDResult,
         spec: FragmentSpec,
         solution: OrbitalSolution,
-        relaxed_states: tuple[ElectronicState, ...] | None,
+        relaxed_states: Sequence[ElectronicState] | None,
         in_sampled_basis: Callable[[np.ndarray], np.ndarray],
     ) -> tuple[ElectronicState, ...]:
         """Make the round's subspace the final one, following each state's

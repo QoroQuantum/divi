@@ -4,7 +4,7 @@
 
 """Qiskit DAG conversion helpers and parametric QASM2 emission."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import cast
 
 import numpy as np
@@ -282,7 +282,7 @@ def _sparse_pauli_op_to_ham_string(op: SparsePauliOp) -> str:
 
 
 def measurement_qasms_from_groups(
-    measurement_groups: tuple[tuple[str, ...], ...],
+    measurement_groups: Sequence[tuple[str, ...]],
     n_qubits: int,
     measure_all: bool = True,
 ) -> list[str]:

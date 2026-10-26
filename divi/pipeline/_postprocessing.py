@@ -155,7 +155,7 @@ def _big_endian_histogram(branch_key: tuple, counts: Any) -> dict[str, int]:
 
 
 def _group_lookups(
-    batch: dict[Any, MetaCircuit],
+    batch: Mapping[Any, MetaCircuit],
 ) -> tuple[set, dict[tuple, dict[int, tuple[object, ...]]], dict[tuple, int]]:
     """Per-batch-key tables for resolving a branch key's measurement group."""
     labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]] = {}
@@ -169,8 +169,8 @@ def _group_lookups(
 def _resolve_group(
     branch_key: tuple,
     batch_keys: set,
-    labels_by_bk: dict[tuple, dict[int, tuple[object, ...]]],
-    nq_by_bk: dict[tuple, int],
+    labels_by_bk: Mapping[tuple, dict[int, tuple[object, ...]]],
+    nq_by_bk: Mapping[tuple, int],
 ) -> tuple[tuple, tuple[object, ...], int]:
     """Return ``(batch_key, group_labels, n_qubits)`` for one branch key."""
     bk = _find_batch_key(branch_key, batch_keys)
@@ -180,7 +180,7 @@ def _resolve_group(
 
 def _counts_to_expvals(
     raw: ChildResults,
-    batch: dict[Any, MetaCircuit],
+    batch: Mapping[Any, MetaCircuit],
 ) -> ChildResults:
     """Convert shot counts → numeric expectation values.
 
@@ -246,7 +246,7 @@ def _observable_coeff_map(
 
 def _counts_to_cost_variance(
     raw: ChildResults,
-    batch: dict[Any, MetaCircuit],
+    batch: Mapping[Any, MetaCircuit],
 ) -> dict[tuple, float]:
     """Estimate the shot-noise variance of each cost value from raw counts.
 
@@ -304,7 +304,7 @@ def _counts_to_cost_variance(
 
 def _counts_to_wrs_cost_variance(
     raw: ChildResults,
-    batch: dict[Any, MetaCircuit],
+    batch: Mapping[Any, MetaCircuit],
     probabilities_by_spec: Mapping[tuple, Mapping[int, float]],
 ) -> dict[tuple, float]:
     """Estimate the variance of a weighted-random-sampling cost estimator.

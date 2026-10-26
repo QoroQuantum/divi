@@ -427,7 +427,7 @@ class _PortfolioBase(BinaryOptimizationProblem):
         )
 
     def _cluster_shares(
-        self, clusters: list[np.ndarray], *, relaxed: bool
+        self, clusters: Sequence[np.ndarray], *, relaxed: bool
     ) -> np.ndarray:
         """Budget per cluster by largest remainder, from the relaxation or by size."""
         n, total, cap = self.n_assets, self._total, self._cap
@@ -486,14 +486,14 @@ class _PortfolioBase(BinaryOptimizationProblem):
                 offset += coeff
         return q, offset
 
-    def evaluate_global_solution(self, solution: list[int]) -> float:
+    def evaluate_global_solution(self, solution: Sequence[int]) -> float:
         """Penalised QUBO energy, with the slack that minimises it."""
         q, offset = self._penalised_qubo
         x = np.fromiter(map(int, self._global_bitstring(solution)), dtype=float)
         return float(x @ q @ x + offset)
 
     def postprocess_candidates(
-        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+        self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[Any, float]]:
         """Distinct feasible ``(decoded, objective)`` pairs, best first.
 
@@ -631,7 +631,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
         )
 
     def extend_solution(
-        self, current_solution: list[int], prog_id: Hashable, candidate_decoded: Any
+        self, current_solution: Sequence[int], prog_id: Hashable, candidate_decoded: Any
     ) -> list[int]:
         """Hold the cluster's chosen assets, one unit each."""
         assets, _ = self._clusters[prog_id]
@@ -802,7 +802,7 @@ class PortfolioAllocationProblem(_PortfolioBase):
         )
 
     def extend_solution(
-        self, current_solution: list[int], prog_id: Hashable, candidate_decoded: Any
+        self, current_solution: Sequence[int], prog_id: Hashable, candidate_decoded: Any
     ) -> list[int]:
         """Write the cluster's weights as units of the global solution."""
         assets, share = self._clusters[prog_id]

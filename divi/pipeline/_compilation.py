@@ -4,7 +4,7 @@
 
 """Batch compilation: lower MetaCircuit batches to executable QASM payloads."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from itertools import product
 from typing import Any
 
@@ -47,7 +47,9 @@ def _effective_bodies(mc: MetaCircuit) -> tuple:
     return mc.qasm_bodies or mc.circuit_bodies or ()
 
 
-def reject_colliding_body_tags(stage_name: str, batch: dict[Any, MetaCircuit]) -> None:
+def reject_colliding_body_tags(
+    stage_name: str, batch: Mapping[Any, MetaCircuit]
+) -> None:
     """Raise if a stage left two circuit bodies claiming the same tag.
 
     :func:`_compile_batch` keys each circuit by its tag, so duplicates overwrite
@@ -105,7 +107,7 @@ def _has_param_group_allocation(
     return allocation.get(param_idx, {}).get(group_idx, 0) > 0
 
 
-def batch_lineage(batch: dict[Any, MetaCircuit]) -> dict[str, BranchKey]:
+def batch_lineage(batch: Mapping[Any, MetaCircuit]) -> dict[str, BranchKey]:
     """The ``label -> branch key`` map the batch would submit under.
 
     Enumerates labels without rendering circuits or binding values, for
@@ -124,7 +126,7 @@ def batch_lineage(batch: dict[Any, MetaCircuit]) -> dict[str, BranchKey]:
     }
 
 
-def _batch_has_free_parameters(batch: dict[Any, MetaCircuit]) -> bool:
+def _batch_has_free_parameters(batch: Mapping[Any, MetaCircuit]) -> bool:
     """True when any MetaCircuit still carries free parameters to bind.
 
     After :class:`~divi.pipeline.stages.ParameterBindingStage`, free symbols
@@ -137,7 +139,7 @@ def _batch_has_free_parameters(batch: dict[Any, MetaCircuit]) -> bool:
 
 
 def _compile_batch(
-    batch: dict[Any, MetaCircuit],
+    batch: Mapping[Any, MetaCircuit],
     param_sets: Sequence[Sequence[float]] | np.ndarray,
 ) -> tuple[list[CircuitPayload], dict[str, BranchKey]]:
     """Lower a MetaCircuit batch to executable QASM payloads.

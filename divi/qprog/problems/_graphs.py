@@ -5,7 +5,7 @@
 """Graph problem classes for QAOA."""
 
 import itertools
-from collections.abc import Callable, Hashable
+from collections.abc import Callable, Hashable, Sequence
 from functools import cached_property
 from typing import Any
 from warnings import warn
@@ -191,9 +191,9 @@ class _GraphProblemBase(QAOAProblem):
 
     def extend_solution(
         self,
-        current_solution: list[int],
+        current_solution: Sequence[int],
         prog_id: Hashable,
-        candidate_decoded: list[int],
+        candidate_decoded: Sequence[int],
     ) -> list[int]:
         extended = list(current_solution)
         reverse_map = self._reverse_index_maps[prog_id]
@@ -238,7 +238,7 @@ class _GraphProblemBase(QAOAProblem):
             sps.csr_matrix(spo.paulis.z.astype(np.int64)),
         )
 
-    def evaluate_global_solution(self, solution: list[int]) -> float:
+    def evaluate_global_solution(self, solution: Sequence[int]) -> float:
         coeffs, z_masks = self._diagonal_terms
         x = np.asarray(solution, dtype=np.int64)
         if x.shape != (z_masks.shape[1],):
@@ -250,7 +250,7 @@ class _GraphProblemBase(QAOAProblem):
         return float(self.loss_constant + coeffs @ (1 - 2 * parities))
 
     def postprocess_candidates(
-        self, candidates: list[tuple[float, list[int]]], *, strict: bool = False
+        self, candidates: Sequence[tuple[float, list[int]]], *, strict: bool = False
     ) -> list[tuple[list[int], float]]:
         nodes = self._wire_labels
         return [

@@ -7,7 +7,7 @@
 import hashlib
 import os
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, get_args
@@ -57,7 +57,7 @@ def _molecule_fingerprint(mol) -> str:
 def _stored_array(
     stored: Any,
     name: str,
-    shape: tuple[int, ...] | None = None,
+    shape: Sequence[int] | None = None,
     *,
     allow_infinite: bool = False,
 ) -> np.ndarray:
@@ -295,7 +295,7 @@ def save_snapshot(
 
 
 def load_snapshot(
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
     round_dir: Path,
     stem: str,
     *,

@@ -11,7 +11,7 @@ backends and :func:`~divi.pipeline._postprocessing._batched_expectation`.
 """
 
 from collections import defaultdict, deque
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from operator import itemgetter
 from typing import Literal
 
@@ -33,7 +33,7 @@ GroupingStrategy = Literal["wires", "default", "qwc", "_backend_expval"] | None
 
 
 def _wire_grouping_from_labels(
-    labels: list[str],
+    labels: Sequence[str],
 ) -> list[list[int]]:
     """Group Pauli labels by non-overlapping active qubits (wire-disjoint).
 
@@ -65,9 +65,9 @@ def _wire_grouping_from_labels(
 
 
 def _create_postprocessing_fn(
-    observables: tuple[SparsePauliOp, ...],
-    per_obs_term_indices: list[list[int]],
-    partition_indices: list[list[int]],
+    observables: Sequence[SparsePauliOp],
+    per_obs_term_indices: Sequence[list[int]],
+    partition_indices: Sequence[list[int]],
     n_union_terms: int,
 ) -> Callable:
     """Build a callable that reassembles per-group results into per-observable expvals.
@@ -119,7 +119,7 @@ def _create_postprocessing_fn(
 
 
 def _compute_measurement_groups(
-    observable: tuple[SparsePauliOp, ...],
+    observable: Sequence[SparsePauliOp],
     strategy: GroupingStrategy,
     n_qubits: int,
 ) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], Callable, SparsePauliOp]:

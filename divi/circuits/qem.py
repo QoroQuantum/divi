@@ -68,7 +68,7 @@ class QEMProtocol(ABC):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Generate DAGs and classical context for error mitigation.
 
@@ -85,7 +85,7 @@ class QEMProtocol(ABC):
     def dry_expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic counterpart to :meth:`expand` used by dry-run pipelines.
 
@@ -146,7 +146,7 @@ class _NoMitigation(QEMProtocol):
     def expand(
         self,
         dag: DAGCircuit,
-        observable: tuple[SparsePauliOp, ...] | None = None,
+        observable: Sequence[SparsePauliOp] | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         return (dag,), {}
 

@@ -4,6 +4,7 @@
 
 """Utilities for working with Qiskit BackendProperties and BackendV2 conversion."""
 
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from qiskit.circuit.library.standard_gates import get_standard_gate_name_mapping
@@ -32,7 +33,7 @@ def _to_hertz(value: float, unit: str) -> float:
     return float(value) * factor
 
 
-def _normalize_properties(properties: dict[str, Any]) -> dict[str, Any]:
+def _normalize_properties(properties: Mapping[str, Any]) -> dict[str, Any]:
     """
     Preprocess an incomplete BackendProperties dictionary by filling in missing
     fields with sensible defaults.
@@ -63,7 +64,7 @@ def _normalize_properties(properties: dict[str, Any]) -> dict[str, Any]:
     """
     # Create a shallow copy to avoid mutating the input
     # (nested structures are rebuilt below to ensure no mutation)
-    normalized = properties.copy()
+    normalized = dict(properties)
 
     # Normalise gates (list of gate dicts with parameters)
     normalized["gates"] = [
@@ -120,7 +121,7 @@ def _normalize_nduv(nduv: dict[str, Any]) -> dict[str, Any]:
 
 
 def _qubit_calibration_from_nduv_list(
-    nduv_list: list[dict[str, Any]],
+    nduv_list: Sequence[dict[str, Any]],
 ) -> tuple[QubitProperties, float | None, float | None]:
     """Extract per-qubit calibration from a list of Nduv dicts.
 
@@ -150,7 +151,7 @@ def _qubit_calibration_from_nduv_list(
 
 
 def _gate_calibration_from_nduv_list(
-    nduv_list: list[dict[str, Any]],
+    nduv_list: Sequence[dict[str, Any]],
 ) -> tuple[float | None, float | None]:
     """Extract ``(duration_seconds, error)`` from gate parameter Nduv dicts.
 
@@ -170,7 +171,7 @@ def _gate_calibration_from_nduv_list(
 
 
 def _build_target_from_normalized(
-    normalized_properties: dict[str, Any], n_qubits: int
+    normalized_properties: Mapping[str, Any], n_qubits: int
 ) -> Target:
     """Build a :class:`~qiskit.transpiler.Target` from a normalised properties dict.
 
@@ -236,7 +237,7 @@ def _build_target_from_normalized(
 
 
 def create_backend_from_properties(
-    properties: dict[str, Any],
+    properties: Mapping[str, Any],
     n_qubits: int | None = None,
 ) -> GenericBackendV2:
     """

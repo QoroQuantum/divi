@@ -187,7 +187,7 @@ class WState(InitialState):
         return qc
 
     @staticmethod
-    def _w_state(qc: QuantumCircuit, qubits: list[int]) -> None:
+    def _w_state(qc: QuantumCircuit, qubits: Sequence[int]) -> None:
         """CRY + CNOT ladder for a single W-state on the given qubits."""
         n = len(qubits)
         qc.x(qubits[0])

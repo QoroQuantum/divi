@@ -151,7 +151,9 @@ def _compute_parameter_shift_rule(
     return shifts_out, weights_out
 
 
-def _warn_non_finite_iterations(source: str, indices: list[int], fallback: str) -> None:
+def _warn_non_finite_iterations(
+    source: str, indices: Sequence[int], fallback: str
+) -> None:
     """Warn that the iterations at ``indices`` of ``losses_history`` had no finite loss."""
     shown = ", ".join(map(str, indices[:10])) + (", ..." if len(indices) > 10 else "")
     warn(
@@ -660,7 +662,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         return {}
 
-    def _load_subclass_state(self, state: dict[str, Any]) -> None:
+    def _load_subclass_state(self, state: Mapping[str, Any]) -> None:
         """Hook method for subclasses to load additional state.
 
         Override to restore state variables from the checkpoint dictionary.
@@ -957,7 +959,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         terminal_stage: Stage,
         *,
         result_format: ResultFormat,
-        extra_stages: tuple[Stage, ...] = (),
+        extra_stages: Sequence[Stage] = (),
     ) -> CircuitPipeline:
         """Assemble a variational pipeline with parameter binding."""
         mitigation_stages = self._mitigation_stages(result_format)

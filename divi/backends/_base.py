@@ -85,7 +85,7 @@ class ExecutionResult:
         """
         return self.job_id is not None and self.results is None
 
-    def with_results(self, results: list[dict], run_time: float = 0.0) -> Self:
+    def with_results(self, results: Sequence[dict], run_time: float = 0.0) -> Self:
         """Create a new ExecutionResult with results populated.
 
         This method creates a new instance with results set, effectively converting

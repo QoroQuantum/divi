@@ -18,7 +18,7 @@ Two strategies are provided:
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from heapq import nsmallest
 from operator import itemgetter
@@ -49,7 +49,7 @@ class AggregationStrategy(ABC):
     @abstractmethod
     def aggregate(
         self,
-        programs: dict[Any, SolutionSamplingMixin],
+        programs: Mapping[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -115,7 +115,7 @@ class BeamSearchStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: dict[Any, SolutionSamplingMixin],
+        programs: Mapping[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,
@@ -235,7 +235,7 @@ class HierarchicalStrategy(AggregationStrategy):
 
     def aggregate(
         self,
-        programs: dict[Any, SolutionSamplingMixin],
+        programs: Mapping[Any, SolutionSamplingMixin],
         initial_solution: Sequence[int],
         extend_fn: ExtendFn,
         evaluate_fn: EvaluateFn,

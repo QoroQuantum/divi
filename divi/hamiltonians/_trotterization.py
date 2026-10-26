@@ -4,7 +4,7 @@
 
 """Stateless trotterization strategies for Hamiltonian simulation."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from numbers import Integral
 from typing import Literal, Protocol
@@ -48,8 +48,8 @@ class TrotterizationResult:
         time: float,
         n_steps: int,
         order: int,
-        qubits: list[int],
-        basis_gates: list[str],
+        qubits: Sequence[int],
+        basis_gates: Sequence[str],
     ) -> QuantumCircuit:
         """Append this result's time-evolution gates to ``qc``.
 
@@ -96,7 +96,7 @@ class TrotterizationResult:
 
         # ``optimization_level=0`` keeps lowering to a gate-by-gate substitution.
         try:
-            return transpile(qc, basis_gates=basis_gates, optimization_level=0)
+            return transpile(qc, basis_gates=list(basis_gates), optimization_level=0)
         except Exception as exc:
             raise RuntimeError(
                 "Failed to lower the Trotter-synthesised circuit to the "

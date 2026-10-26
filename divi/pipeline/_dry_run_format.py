@@ -12,7 +12,7 @@ ensemble's, collapsed into compact rows or grouped by shape when there are many.
 import math
 import re
 from collections import defaultdict
-from collections.abc import Hashable, Iterable, Mapping
+from collections.abc import Hashable, Iterable, Mapping, Sequence
 from dataclasses import replace
 from numbers import Integral, Real
 from typing import Any, TextIO, cast
@@ -191,7 +191,7 @@ def _populate_pipeline_node(
         node.add(f"[bold]{summary}[/bold]")
 
 
-def _render_reports(reports: dict[str, DryRunReport], console: Console) -> None:
+def _render_reports(reports: Mapping[str, DryRunReport], console: Console) -> None:
     """Print one rich tree per pipeline — the single-program layout."""
     for report in reports.values():
         tree = Tree(f"[bold]{_safe_text(report.pipeline_name)}[/bold]")
@@ -200,7 +200,7 @@ def _render_reports(reports: dict[str, DryRunReport], console: Console) -> None:
         console.print()
 
 
-def _populate_program_tree(root: Tree, reports: dict[str, DryRunReport]) -> None:
+def _populate_program_tree(root: Tree, reports: Mapping[str, DryRunReport]) -> None:
     """Attach one pipeline sub-tree per report to ``root``."""
     if not reports:
         root.add(_NO_PREPROCESSORS_ROW)
@@ -283,7 +283,7 @@ def _ensemble_total_line(nested: EnsembleReports) -> str:
     )
 
 
-def _ids_preview(ids: list[Hashable]) -> str:
+def _ids_preview(ids: Sequence[Hashable]) -> str:
     if len(ids) <= 3:
         return ", ".join(_safe_text(i) for i in ids)
     return f"{_safe_text(ids[0])} … {_safe_text(ids[-1])}"
@@ -303,7 +303,7 @@ def _declared_n_params(report: DryRunReport) -> int | None:
     return _stage_metadata_value_in(report.stages, *_PARAM_COUNT_KEYS)
 
 
-def _program_signature(reports: dict[str, DryRunReport]) -> tuple:
+def _program_signature(reports: Mapping[str, DryRunReport]) -> tuple:
     """Fingerprint used to bucket programs that traverse their pipelines alike.
 
     Keys on pipeline *shape* (the ordered stages and the axes they fan out over)
@@ -333,13 +333,13 @@ def _program_signature(reports: dict[str, DryRunReport]) -> tuple:
     )
 
 
-def _program_max_stat(reports: dict[str, DryRunReport], key: str) -> float | None:
+def _program_max_stat(reports: Mapping[str, DryRunReport], key: str) -> float | None:
     """The largest ``key`` across one program's pipelines."""
     values = [r.circuit_stats[key] for r in reports.values() if r.circuit_stats]
     return max(values, default=None)
 
 
-def _report_n_samples(reports: dict[str, DryRunReport]) -> float | None:
+def _report_n_samples(reports: Mapping[str, DryRunReport]) -> float | None:
     """Data-axis size, if any pipeline fans out over one."""
     values = (_stage_metadata_value_in(r.stages, "n_samples") for r in reports.values())
     return next((v for v in values if v is not None), None)
@@ -389,7 +389,7 @@ def _render_verbose(nested: EnsembleReports, console: Console) -> None:
     console.print(_ensemble_total_line(nested))
 
 
-def _aggregate_group_stats(reports: list[DryRunReport]) -> Mapping[str, float]:
+def _aggregate_group_stats(reports: Sequence[DryRunReport]) -> Mapping[str, float]:
     """Combine the per-program ``circuit_stats`` of one pipeline across a group.
 
     Members of a group share a pipeline shape but not circuit content, so a
@@ -456,7 +456,7 @@ def _has_sampled_count(report: DryRunReport) -> bool:
     )
 
 
-def _shared_metadata(metas: list[Mapping[str, Any]]) -> dict[str, Any]:
+def _shared_metadata(metas: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Merge group members' metadata, marking fields they disagree on.
 
     A field present and equal everywhere passes through unchanged. A field whose
@@ -482,7 +482,7 @@ def _shared_metadata(metas: list[Mapping[str, Any]]) -> dict[str, Any]:
     return merged
 
 
-def _merge_group_report(reports: list[DryRunReport]) -> DryRunReport:
+def _merge_group_report(reports: Sequence[DryRunReport]) -> DryRunReport:
     """Fold a group's per-pipeline reports into one representative report.
 
     Only metadata common to all members is kept, and the report carries no
@@ -529,7 +529,7 @@ _SIGNATURE_CONSEQUENCES = (
 
 
 def _differing_traits(
-    nested: EnsembleReports, traits: tuple[tuple[str, Any], ...]
+    nested: EnsembleReports, traits: Sequence[tuple[str, Any]]
 ) -> list[str]:
     # Over the routines every program has: differing routine *sets* would otherwise
     # make every trait differ at once.
