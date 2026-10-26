@@ -29,6 +29,7 @@ from rich.console import Console
 from divi.backends import (
     ExecutionResult,
     InsufficientCreditsError,
+    JobStatus,
     JobTimedOutError,
     JobType,
     QoroService,
@@ -61,6 +62,7 @@ from tests.backends._helpers import (
     http_response,
     make_mock_add_response,
     make_mock_init_response,
+    make_mock_status_response,
     patch_transport,
 )
 
@@ -128,9 +130,8 @@ SAMPLE_HARDNESS = {
     "cost_spectrum_estimated": False,
 }
 
-# Mirrors the structure produced by usher's ``build_recommendations`` —
-# top-level field on the response, list of dicts with ``level``/``metric``/
-# ``text``/``html`` keys.
+# Mirrors the server's recommendations — top-level field on the response, list
+# of dicts with ``level``/``metric``/``text``/``html`` keys.
 SAMPLE_RECOMMENDATIONS = [
     {
         "level": "info",
@@ -416,10 +417,10 @@ def _init_ok(mocker):
 
 
 def _mock_characterization_requests(mocker, service, job_id):
-    """Stub the init/submit/result request trio and return the request mock."""
+    """Stub the init/submit/status/result requests and return the request mock."""
     mock_init = mocker.MagicMock()
     mock_init.json.return_value = {"job_id": job_id}
-    mock_submit = mocker.MagicMock(status_code=HTTPStatus.OK)
+    mock_submit = mocker.MagicMock(status_code=HTTPStatus.ACCEPTED)
     mock_result = mocker.MagicMock()
     mock_result.json.return_value = SAMPLE_RESPONSE
 
@@ -427,7 +428,12 @@ def _mock_characterization_requests(mocker, service, job_id):
     return mocker.patch.object(
         service,
         "_make_request",
-        side_effect=[mock_init, mock_submit, mock_result],
+        side_effect=[
+            mock_init,
+            mock_submit,
+            make_mock_status_response(mocker, JobStatus.COMPLETED),
+            mock_result,
+        ],
     )
 
 
@@ -1092,11 +1098,10 @@ class TestCharacterizationResult:
         """Regression: ``display()`` reads the ``recommendations`` dataclass
         field, not ``self.report["recommendations"]``.
 
-        The ``report`` dict is opaque pass-through from Composer (the upstream
-        validation service); whatever Composer puts under any key name is
-        Composer's business. Usher exposes the structured user-facing
-        recommendations as a *separate* top-level response field, which divi
-        stores on the dedicated dataclass field.
+        The ``report`` dict is opaque pass-through from the server; whatever
+        it puts under any key name is the server's business. The structured
+        user-facing recommendations arrive as a *separate* top-level response
+        field, which divi stores on the dedicated dataclass field.
 
         Mechanism: the test plants a ``list[str]`` under
         ``report["recommendations"]``. If a future change re-introduces a
@@ -1112,8 +1117,8 @@ class TestCharacterizationResult:
             report={
                 "quality_score": 50.0,
                 "recommendations": [
-                    "Composer string 1",
-                    "Composer string 2",
+                    "Report string 1",
+                    "Report string 2",
                 ],
             },
             html="",
@@ -1166,10 +1171,11 @@ class TestQoroServiceCharacterize:
         assert result["report"]["reference_concentration_score"] == 78.5
         assert result["hardness"]["difficulty"] == "moderate"
 
-        # init → submit → result: three _make_request calls, all routed
-        # through the same wrapper (submit uses retry=False).
-        assert mock_req.call_count == 3
-        init_call, submit_call, _ = mock_req.call_args_list
+        # init → submit → status → result, all routed through the same
+        # wrapper (init and submit use retry=False).
+        init_call, submit_call, status_call, result_call = mock_req.call_args_list
+        assert status_call.args == ("get", "job/val-job-123/status/")
+        assert result_call.args == ("get", "job/val-job-123/validation_result/")
         assert init_call.args == ("post", "job/init/")
         assert init_call.kwargs["retry"] is False
         assert init_call.kwargs["json"]["job_type"] == "VALIDATE"
@@ -1263,6 +1269,94 @@ class TestQoroServiceCharacterize:
         assert mock_req.call_count == 1
         assert mock_req.call_args.args == ("get", "job/terminal-job-1/status/")
 
+    def test_submit_waits_through_running_then_surfaces_a_failed_job(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory(polling_interval=0.0)
+        mock_req = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker, "char-1"),
+                make_mock_add_response(mocker, HTTPStatus.ACCEPTED),
+                make_mock_status_response(mocker, JobStatus.RUNNING),
+                make_mock_status_response(mocker, JobStatus.FAILED),
+            ],
+        )
+
+        result = service.characterize_and_validate(
+            qubo={"0,0": -1.0}, reference_states=["0"]
+        )
+
+        assert result == {"job_id": "char-1", "status": "FAILED"}
+        assert mock_req.call_count == 4
+
+    def test_credit_rejection_at_submit_raises_insufficient_credits(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        patch_transport(
+            mocker,
+            plain=[
+                _init_ok(mocker),
+                http_response(
+                    mocker,
+                    HTTPStatus.PAYMENT_REQUIRED,
+                    body={"detail": "no credits"},
+                    reason="Payment Required",
+                ),
+            ],
+        )
+
+        with pytest.raises(InsufficientCreditsError) as exc:
+            service.characterize_and_validate(
+                qubo={"0,0": -1.0}, reference_states=["0"]
+            )
+
+        assert exc.value.job_id == "char-1"
+
+    def test_exhausted_polling_surfaces_the_job_id(self, mocker, qoro_service_factory):
+        service = qoro_service_factory(polling_interval=0.0, max_retries=2)
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker, "char-1"),
+                make_mock_add_response(mocker, HTTPStatus.ACCEPTED),
+                make_mock_status_response(mocker, JobStatus.RUNNING),
+                make_mock_status_response(mocker, JobStatus.RUNNING),
+            ],
+        )
+
+        with pytest.raises(CharacterizationSubmitError) as exc:
+            service.characterize_and_validate(
+                qubo={"0,0": -1.0}, reference_states=["0"]
+            )
+
+        assert (exc.value.job_id, exc.value.phase) == ("char-1", "status polling")
+
+    def test_interrupting_the_wait_does_not_cancel_the_job(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        cancel = mocker.patch.object(service, "cancel_job")
+        mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker, "char-1"),
+                make_mock_add_response(mocker, HTTPStatus.ACCEPTED),
+                KeyboardInterrupt,
+            ],
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            service.characterize_and_validate(
+                qubo={"0,0": -1.0}, reference_states=["0"]
+            )
+
+        cancel.assert_not_called()
+
     def test_requires_qubo_or_job_id(self, qoro_service_factory):
         service = qoro_service_factory()
         with pytest.raises(ValueError, match="qubo.*or.*job_id"):
@@ -1296,7 +1390,17 @@ class TestQoroServiceCharacterize:
             pytest.param(
                 True,
                 lambda m: [_init_ok(m), http_response(m, body={})],
-                lambda m: [requests.ReadTimeout("result fetch timed out")],
+                lambda m: [requests.ReadTimeout("status poll timed out")],
+                "status polling",
+                id="submit-then-status-polling-timeout",
+            ),
+            pytest.param(
+                True,
+                lambda m: [_init_ok(m), http_response(m, body={})],
+                lambda m: [
+                    http_response(m, body={"status": JobStatus.COMPLETED.value}),
+                    requests.ReadTimeout("result fetch timed out"),
+                ],
                 "result retrieval",
                 id="result-timeout",
             ),
@@ -1329,7 +1433,7 @@ class TestQoroServiceCharacterize:
             exc.value.__cause__, (requests.ReadTimeout, requests.HTTPError)
         )
 
-    def test_job_id_is_logged_before_the_blocking_submit(
+    def test_job_id_is_logged_before_the_submit(
         self, mocker, qoro_service_factory, caplog
     ):
         """The id must reach the user when it is created, not only on failure."""
@@ -1393,6 +1497,7 @@ class TestQoroServiceCharacterize:
             side_effect=[
                 make_mock_init_response(mocker, "char-1"),
                 make_mock_add_response(mocker),
+                make_mock_status_response(mocker, JobStatus.COMPLETED),
                 result,
             ],
         )
@@ -1937,7 +2042,7 @@ def test_the_service_requires_a_reference_state_in_any_empty_container(
         )
 
 
-# Report/hardness matching the redesigned canonical composer-service schema.
+# Report/hardness matching the redesigned canonical server schema.
 CANONICAL_REPORT = {
     "formulation_quality": 72.0,
     "reference_concentration_score": 61.0,
@@ -2326,7 +2431,7 @@ class TestNamedVariableBQMSerialization:
 class TestQoroServiceValidationHtmlE2E:
     """E2E regression tests for the prod ``validation_result`` endpoints.
 
-    Pins the wire contract between divi and usher / Composer for the QUBO
+    Pins the wire contract between divi and the Qoro API for the QUBO
     characterization feature against the real prod API. Every test reads
     from one of two class-scoped fixtures so the prod account sees at most
     two VALIDATE submissions per CI run.
@@ -2343,9 +2448,9 @@ class TestQoroServiceValidationHtmlE2E:
         ``test_qoro_service.py::test_initialization_with_deactivated_token``,
         which fails earlier at ``QoroService`` construction).
       - 402 insufficient credits (would need a quota-exhausted test account).
-      - 409 for RUNNING / FAILED VALIDATE jobs (would need a job mid-flight
-        on the deterministic synchronous Composer path).
-      - 502 Composer-down (can't trigger from outside).
+      - 409 for RUNNING / FAILED VALIDATE jobs (would need a job caught
+        mid-analysis).
+      - 500 when the job can't be queued (can't trigger from outside).
       - 403 cross-user access (would need a second test account's job ID).
     """
 
@@ -2361,7 +2466,7 @@ class TestQoroServiceValidationHtmlE2E:
         round-trip.
 
         The option set is deliberately maximal: every ``analysis``,
-        ``ansatz``, and ``subspace`` key divi can emit is present. Composer
+        ``ansatz``, and ``subspace`` key divi can emit is present. The server
         rejects unknown keys in those groups with a 400, so a submission
         that succeeds proves divi's wire vocabulary is still a subset of
         the server's. ``auto_warmstart`` is explicitly enabled because structural
@@ -2427,7 +2532,7 @@ class TestQoroServiceValidationHtmlE2E:
         """Every user-facing field on a sweep+structural_sensitivity result is the right
         shape and contains the keys downstream code reads.
 
-        This is the wire-contract regression test: if usher / Composer
+        This is the wire-contract regression test: if the API
         renames or reshapes any of the fields divi exposes through
         ``CharacterizationResult``, this test fails. Offline tests can't
         catch shape drift because their mocks were authored against the
@@ -2497,7 +2602,7 @@ class TestQoroServiceValidationHtmlE2E:
     def test_recommendations_have_structured_shape(self, completed_validation_job):
         """``result.recommendations`` is a list of structured dicts.
 
-        Regression for the divi/usher shape mismatch — usher returns
+        Regression for a client/server shape mismatch — the API returns
         ``recommendations`` as a top-level field with
         ``{level, metric, text, html}`` dicts; if ``_wrap_response`` ever
         drops it again or a property reads from ``self.report`` instead of
@@ -2636,8 +2741,8 @@ class TestQoroServiceValidationHtmlE2E:
 
         The negative half of the preset contract. Together with
         ``test_deep_preset_produces_the_hardness_derived_fields`` this pins
-        that ``preset`` reaches Composer and actually selects a tier — if
-        usher ever drops the key, both jobs would fall back to the same
+        that ``preset`` reaches the server and actually selects a tier — if
+        the API ever drops the key, both jobs would fall back to the same
         server default and one of the two tests would break.
         """
         _, result = fast_preset_job

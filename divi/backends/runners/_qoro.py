@@ -1413,15 +1413,16 @@ class QoroService(CircuitRunner):
     ) -> dict:
         """Submit a QUBO for characterisation, or fetch an existing result.
 
-        Submit mode performs init, synchronous analysis submission, and result
-        retrieval. Fetch mode waits for an existing job to reach a terminal
-        status before retrieving its stored result, without charging credits.
+        Submit mode initialises the job and queues the analysis, which runs
+        asynchronously on the server. Both modes then wait for the job to reach
+        a terminal status before retrieving its stored result. Fetching an
+        existing job does not charge credits.
 
         Args:
             qubo: Legacy comma-key QUBO/HUBO dict or a ``factored_v1``
                 envelope. Required in submit mode.
             reference_states: One or more binary reference bitstrings. Required
-                in submit mode by the Composer characterisation engine.
+                in submit mode by the characterisation engine.
             options: Optional server options, including ``preset``, ``analysis``,
                 ``ansatz``, ``subspace``, ``constraints``, and ``n_qubits``.
             job_id: Existing characterisation job to wait for and fetch. When
@@ -1436,31 +1437,22 @@ class QoroService(CircuitRunner):
         Raises:
             ValueError: If submit mode lacks a QUBO or reference state.
             ~divi.exceptions.CharacterizationSubmitError: If a request after
-                job creation fails ambiguously. The exception carries the
-                existing ``job_id`` and failed ``phase``.
+                job creation fails ambiguously, or polling exhausts
+                ``max_retries``. The exception carries the existing ``job_id``
+                and failed ``phase``.
+            ~divi.backends.InsufficientCreditsError: If the account lacks the
+                credits to run the job, at submission or while waiting.
             requests.exceptions.HTTPError: For definite client-side rejections
                 and failures before a recoverable job ID exists.
 
         .. note::
             Initialisation and submission deliberately disable HTTP retries
             because both mutate server state. Fetching by ``job_id`` is free.
+            Waiting shows polling progress and is bounded by the service's
+            ``max_retries`` (unbounded by default). Interrupting the wait does
+            not cancel the job; fetch it later by ``job_id``.
         """
-        if job_id is not None:
-            try:
-                self.poll_job_status(
-                    ExecutionResult(job_id=job_id),
-                    loop_until_complete=True,
-                    verbose=False,
-                )
-            except QoroJobError as exc:
-                return {"job_id": job_id, "status": exc.status}
-            except requests.RequestException as exc:
-                if not _is_recoverable_characterization_error(exc):
-                    raise
-                raise CharacterizationSubmitError(
-                    job_id, exc, phase="status polling"
-                ) from exc
-        else:
+        if job_id is None:
             if qubo is None:
                 raise ValueError(
                     "characterize_and_validate() requires either 'qubo' (to submit a "
@@ -1486,7 +1478,7 @@ class QoroService(CircuitRunner):
                 )
             logger.info(
                 "Characterisation job %s created. If this call does not return, "
-                "fetch the result with this id rather than resubmitting.",
+                "fetch the result with this id before resubmitting.",
                 job_id,
             )
 
@@ -1503,14 +1495,38 @@ class QoroService(CircuitRunner):
                     f"job/{job_id}/submit_qubo/",
                     retry=False,
                     json=submit_payload,
-                    timeout=300,
+                    timeout=100,
                 )
             except requests.RequestException as exc:
+                if (
+                    exc.response is not None
+                    and exc.response.status_code == HTTPStatus.PAYMENT_REQUIRED
+                ):
+                    raise InsufficientCreditsError(job_id) from exc
                 if not _is_recoverable_characterization_error(exc):
                     raise
                 raise CharacterizationSubmitError(
                     job_id, exc, phase="submission"
                 ) from exc
+
+        try:
+            self.poll_job_status(
+                ExecutionResult(job_id=job_id),
+                loop_until_complete=True,
+                cancellation_event=Event(),
+            )
+        except QoroJobError as exc:
+            return {"job_id": job_id, "status": exc.status}
+        except MaxRetriesReachedError as exc:
+            raise CharacterizationSubmitError(
+                job_id, exc, phase="status polling"
+            ) from exc
+        except requests.RequestException as exc:
+            if not _is_recoverable_characterization_error(exc):
+                raise
+            raise CharacterizationSubmitError(
+                job_id, exc, phase="status polling"
+            ) from exc
 
         try:
             result_resp = self._make_request(

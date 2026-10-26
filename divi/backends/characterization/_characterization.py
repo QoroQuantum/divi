@@ -318,7 +318,7 @@ def _serialize_qubo_for_wire(problem: "BinaryOptimizationProblem") -> dict:
 def _attach_penalty_tuning_components(
     wire_options: dict | None, problem: "BinaryOptimizationProblem"
 ) -> dict:
-    """Attach the cost/penalty split needed by composer-service tuning."""
+    """Attach the cost/penalty split needed by penalty tuning."""
     penalty_canonical = problem.penalty_canonical_problem
     if penalty_canonical is None:
         raise ValueError(
@@ -1772,9 +1772,6 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
     job_id = data["job_id"]
     recs = data.get("recommendations")
 
-    # The submit flow is synchronous today, so a completed job is expected on
-    # read. Guard against a future async server returning an incomplete result
-    # unnoticed: warn if the job is still pending/running when we read it.
     status = data["status"]
     if status == "FAILED":
         raise CharacterizationFailedError(
@@ -1829,7 +1826,7 @@ def _validate_reference_states(
     reference_states: Sequence[str],
     n_qubits: int | None,
 ) -> None:
-    """Validate Composer's non-empty, fixed-width binary reference contract."""
+    """Validate the non-empty, fixed-width binary reference contract."""
     inferred_n = problem.canonical_problem.n_vars
     if n_qubits is not None and n_qubits < inferred_n:
         raise ValueError(
@@ -1888,8 +1885,9 @@ def characterize_and_validate(
             width, or if ``options.n_qubits`` is too small for the problem.
         requests.exceptions.HTTPError: On definite API rejections.
         ~divi.exceptions.CharacterizationSubmitError: If a job was created but
-            submission, status polling, or result retrieval failed ambiguously.
-            Its ``job_id`` identifies the existing job to re-fetch.
+            submission, status polling (including exhausting the service's
+            ``max_retries``), or result retrieval failed ambiguously. Its
+            ``job_id`` identifies the existing job to re-fetch.
         ~divi.exceptions.CharacterizationFailedError: If the job failed or
             completed carrying no analysis.
         ~divi.exceptions.ExecutionCancelledError: If the job was cancelled.
@@ -1952,6 +1950,7 @@ def get_characterization_result(
     Polling and retrieval do not cost credits. The service waits through
     non-terminal statuses according to its polling configuration, then returns
     the completed report or raises the corresponding terminal-status error.
+    Interrupting the wait does not cancel the job.
 
     Args:
         job_id: Identifier of a previously submitted characterisation job.

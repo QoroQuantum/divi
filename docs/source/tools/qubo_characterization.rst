@@ -425,15 +425,24 @@ Job Lifecycle and Recovery
 --------------------------
 
 Jobs move through ``PENDING``, ``RUNNING``, and a terminal
-``COMPLETED``, ``FAILED``, or ``CANCELLED`` state. The convenience
-helper waits synchronously.
+``COMPLETED``, ``FAILED``, ``CANCELLED``, ``INSUFFICIENT_CREDITS``, or
+``TIMED_OUT`` state. Submission only queues the job; the analysis runs
+asynchronously on the server. The convenience helper then polls, showing
+progress, until the job is terminal and fetches the report. Polling is
+paced by the service's ``polling_interval`` and bounded by its
+``max_retries``, which is unbounded by default.
+
+Interrupting the wait with ``Ctrl-C`` does not cancel the job. Its id is
+logged when the job is created, and you can fetch it later.
 
 Initialisation and submission are not retried because both mutate server
-state. After job creation, an ambiguous submission, polling, or result-fetch
-failure raises :exc:`~divi.exceptions.CharacterizationSubmitError`. It
-preserves the existing ``job_id`` and identifies the failed ``phase``.
+state. After job creation, an ambiguous submission, polling (including
+exhausting ``max_retries``), or result-fetch failure raises
+:exc:`~divi.exceptions.CharacterizationSubmitError`. It preserves the existing
+``job_id`` and identifies the failed ``phase``.
 
-Recover that job instead of submitting another one:
+Recover that job first. Submit again only if fetching reports it as failed,
+for example when the server could not queue it:
 
 .. skip: next
 
@@ -454,7 +463,10 @@ Recover that job instead of submitting another one:
 
 Fetching waits through intermediate states and costs no credits.
 ``FAILED`` raises :exc:`~divi.exceptions.CharacterizationFailedError`;
-``CANCELLED`` raises :exc:`~divi.exceptions.ExecutionCancelledError`.
+``CANCELLED`` raises :exc:`~divi.exceptions.ExecutionCancelledError`;
+``INSUFFICIENT_CREDITS`` raises :exc:`~divi.backends.InsufficientCreditsError`,
+including when the account is rejected at submission; ``TIMED_OUT`` raises
+:exc:`~divi.backends.JobTimedOutError`.
 A completed job without a usable report also raises.
 
 .. _pricing:

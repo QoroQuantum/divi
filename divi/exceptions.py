@@ -37,22 +37,23 @@ class CharacterizationSubmitError(Exception):
     """A created characterisation job did not return a usable response.
 
     Carries the ``job_id`` and failed ``phase`` so callers can inspect or
-    re-fetch the existing job instead of creating a second billable submission.
-    The underlying transport or server error is chained as ``__cause__``.
+    re-fetch the existing job. A job that is still running must not be
+    submitted again; one that the server reports as failed can be. The
+    underlying transport or server error is chained as ``__cause__``.
     """
 
     job_id: str
     """Identifier of the job that existed before the failure."""
 
     phase: str
-    """Operation that failed, such as ``"submission"`` or result retrieval."""
+    """Operation that failed: ``"submission"``, ``"status polling"`` or ``"result retrieval"``."""
 
     def __init__(self, job_id: str, cause: Exception, *, phase: str = "submission"):
         super().__init__(
             f"Characterization job {job_id} was created, but {phase} did not "
-            f"return safely ({type(cause).__name__}: {cause}). Inspect or fetch "
-            f"that job with get_characterization_result({job_id!r}) rather than "
-            "submitting the QUBO again."
+            f"return safely ({type(cause).__name__}: {cause}). Fetch that job "
+            f"with get_characterization_result({job_id!r}); submit the QUBO "
+            "again only if it reports the job as failed."
         )
         self.job_id = job_id
         self.phase = phase

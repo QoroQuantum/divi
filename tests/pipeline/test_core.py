@@ -751,7 +751,7 @@ class TestBoundVersusTemplatedNumericalEquivalence:
 
     @staticmethod
     def _resolve_template_locally(entry):
-        """Mirror ``usher/qoro/utils.py::resolve_circuit`` — sort symbol
+        """Mirror the server's template resolution — sort symbol
         names longest-first to avoid prefix collisions, then string-replace
         each with its ``str(float(value))`` substitution."""
         ordered = sorted(
@@ -830,7 +830,7 @@ class TestBoundVersusTemplatedNumericalEquivalence:
         # Integer-valued float: equality must fail (proves divergence exists).
         assert _format_bound_param(2.0, 8) != str(2.0), (
             "Formatter divergence regression: 2.0 should differ between "
-            "bound ('2') and Usher ('2.0') paths."
+            "bound ('2') and server-resolved ('2.0') paths."
         )
 
 

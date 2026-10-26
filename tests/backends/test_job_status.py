@@ -23,7 +23,7 @@ def test_job_status_is_reexported_without_changing_identity():
     assert RunnerJobStatus is CanonicalJobStatus
 
 
-def test_job_status_matches_usher_contract():
+def test_job_status_matches_api_contract():
     assert issubclass(JobStatus, StrEnum)
     assert {status.value for status in JobStatus} == {
         "PENDING",

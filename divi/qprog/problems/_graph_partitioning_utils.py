@@ -22,7 +22,7 @@ from divi.qprog._types import GraphProblemTypes
 from divi.qprog.problems._graph_hamiltonians import _edge_weight, _wire_edges
 from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
 
-# TODO: Make this dynamic through an interaction with usher
+# TODO: Make this dynamic through an interaction with the Qoro API
 # once a proper endpoint is exposed
 _MAXIMUM_AVAILABLE_QUBITS = 30
 
