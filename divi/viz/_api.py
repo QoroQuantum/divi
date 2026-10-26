@@ -44,6 +44,7 @@ import numpy as np
 import numpy.typing as npt
 from sklearn.decomposition import PCA
 
+from divi.circuits._conversions import _real_float_array
 from divi.reporting._events import ProgressEmitter, ProgressEvent, TerminalStatus
 
 from ._gradients import GradientMethod, _compute_gradients
@@ -196,16 +197,6 @@ def _require_supported_program(program: _SupportsVizScan) -> None:
         )
 
 
-def _real_float_array(values: npt.ArrayLike, name: str) -> npt.NDArray[np.float64]:
-    """*values* as a float64 array, rejecting a non-zero imaginary part."""
-    array = np.asarray(values)
-    if np.iscomplexobj(array):
-        if np.any(array.imag != 0):
-            raise ValueError(f"{name} must be real, got a non-zero imaginary part.")
-        array = array.real
-    return array.astype(np.float64, copy=False)
-
-
 def _resolve_center(
     program: _SupportsVizScan,
     center: OptionalArray,
@@ -221,7 +212,7 @@ def _resolve_center(
             )
         center_arr = np.asarray(program._best_params, dtype=np.float64).reshape(-1)
     else:
-        center_arr = _real_float_array(center, "center").reshape(-1)
+        center_arr = _real_float_array(center, source="center").reshape(-1)
 
     if center_arr.shape != (n_params,):
         raise ValueError(
@@ -735,7 +726,7 @@ def scan_pca(
     if center is None:
         anchor = mean.astype(np.float64, copy=True)
     else:
-        anchor = _real_float_array(center, "center").reshape(-1)
+        anchor = _real_float_array(center, source="center").reshape(-1)
         if anchor.shape != (n_params,):
             raise ValueError(
                 f"center must have shape ({n_params},), got {anchor.shape}"
@@ -1024,7 +1015,7 @@ def compute_hessian(
         raise ValueError(f"eps must be positive, got {eps}")
 
     n_params = _n_program_params(program)
-    c = _real_float_array(center, "center").reshape(-1)
+    c = _real_float_array(center, source="center").reshape(-1)
     if c.shape != (n_params,):
         raise ValueError(f"center must have shape ({n_params},), got {c.shape}")
 
@@ -1299,7 +1290,7 @@ class ProgramViz:
                 # offsets the projected cloud from the heatmap in score space.
                 center = kwargs.get("center")
                 if center is not None:
-                    ref = _real_float_array(center, "center").reshape(-1)
+                    ref = _real_float_array(center, source="center").reshape(-1)
                     delta = periodic_wrap(samples[-1], reference=ref) - samples[-1]
                     samples = samples + delta
             kwargs["samples"] = samples

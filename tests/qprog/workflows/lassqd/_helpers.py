@@ -203,17 +203,22 @@ def h8_frontier_lassqd(backend, **overrides):
     )
 
 
+def h_chain(n_atoms: int, spacing: float = 1.0):
+    """Uniform linear hydrogen chain in STO-3G."""
+    return gto.M(
+        atom="; ".join(f"H 0 0 {index * spacing:.1f}" for index in range(n_atoms)),
+        basis="sto-3g",
+        verbose=0,
+    )
+
+
 def h8_chain():
     """Uniform linear H8 in STO-3G.
 
     8 spatial orbitals / 8 electrons, which automatic fragmentation splits into
     two 4-orbital fragments holding 4 electrons each.
     """
-    return gto.M(
-        atom="; ".join(f"H 0 0 {index * 1.0:.1f}" for index in range(8)),
-        basis="sto-3g",
-        verbose=0,
-    )
+    return h_chain(8)
 
 
 #: H4's whole active space as a single fragment.

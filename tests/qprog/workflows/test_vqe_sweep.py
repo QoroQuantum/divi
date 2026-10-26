@@ -1056,37 +1056,31 @@ class TestZMatrixConversion:
         np.testing.assert_array_almost_equal(coords[1], [1.0, 0.0, 0.0])
         # Atoms 2 and 3 should be placed using the 4+ atom logic
 
-    def test_zmatrix_to_cartesian_with_none_references(self):
-        """Test Z-matrix conversion with None references in 4+ atom case."""
-        # Test edge case where some references are None
+    @pytest.mark.parametrize(
+        "atom_2, atom_3",
+        [
+            (
+                _ZMatrixEntry(0, 1, None, 1.0, 90.0, None),
+                _ZMatrixEntry(None, None, None, 1.0, 90.0, 0.0),
+            ),
+            (
+                _ZMatrixEntry(0, 1, None, 1.0, 0.0, None),
+                _ZMatrixEntry(0, 1, 2, 1.0, 0.0, 0.0),
+            ),
+        ],
+        ids=["none_references", "zero_angles_and_dihedral"],
+    )
+    def test_zmatrix_to_cartesian_edge_cases_stay_finite(self, atom_2, atom_3):
+        """4+ atom placement tolerates None references and zero angles."""
         zmatrix = [
-            _ZMatrixEntry(None, None, None, None, None, None),  # Atom 0
-            _ZMatrixEntry(0, None, None, 1.0, None, None),  # Atom 1
-            _ZMatrixEntry(0, 1, None, 1.0, 90.0, None),  # Atom 2
-            _ZMatrixEntry(None, None, None, 1.0, 90.0, 0.0),  # Atom 3 with None refs
+            _ZMatrixEntry(None, None, None, None, None, None),
+            _ZMatrixEntry(0, None, None, 1.0, None, None),
+            atom_2,
+            atom_3,
         ]
 
         coords = _zmatrix_to_cartesian(zmatrix)
 
-        # Should handle None references gracefully
-        assert coords.shape == (4, 3)
-        assert np.all(np.isfinite(coords))
-
-    def test_zmatrix_to_cartesian_zero_angles(self):
-        """Test Z-matrix conversion with zero angles and dihedrals."""
-        # Test with zero angles and dihedrals
-        zmatrix = [
-            _ZMatrixEntry(None, None, None, None, None, None),  # Atom 0
-            _ZMatrixEntry(0, None, None, 1.0, None, None),  # Atom 1
-            _ZMatrixEntry(0, 1, None, 1.0, 0.0, None),  # Atom 2 with zero angle
-            _ZMatrixEntry(
-                0, 1, 2, 1.0, 0.0, 0.0
-            ),  # Atom 3 with zero angle and dihedral
-        ]
-
-        coords = _zmatrix_to_cartesian(zmatrix)
-
-        # Should handle zero angles correctly
         assert coords.shape == (4, 3)
         assert np.all(np.isfinite(coords))
 

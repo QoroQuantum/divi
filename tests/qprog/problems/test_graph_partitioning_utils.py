@@ -708,16 +708,41 @@ def _ids_containing(clusters, node):
     return next(sorted(ids) for _sub, ids in clusters if node in ids)
 
 
-def test_merge_edgeless_picks_most_connected_target():
-    # Node 4 is edgeless on its own; it has 2 edges into [2, 3] and 1 into [0, 1].
-    graph = nx.Graph([(0, 1), (2, 3), (4, 2), (4, 3), (4, 0)])
-    clusters = _clusters_from_ids(graph, [[0, 1], [2, 3], [4]])
+@pytest.mark.parametrize(
+    "edges, isolated_nodes, id_groups, orphan, expected_ids",
+    [
+        # Node 4 is edgeless on its own; it has 2 edges into [2, 3] and 1 into [0, 1].
+        (
+            [(0, 1), (2, 3), (4, 2), (4, 3), (4, 0)],
+            [],
+            [[0, 1], [2, 3], [4]],
+            4,
+            [2, 3, 4],
+        ),
+        # Node 5 has no edges anywhere, so every target scores zero and the
+        # tie-break by size decides.
+        (
+            [(0, 1), (1, 2), (3, 4)],
+            [5],
+            [[0, 1, 2], [3, 4], [5]],
+            5,
+            [3, 4, 5],
+        ),
+    ],
+    ids=["most_connected_target", "isolated_vertex_goes_to_smallest_cluster"],
+)
+def test_merge_edgeless_cluster_target(
+    edges, isolated_nodes, id_groups, orphan, expected_ids
+):
+    graph = nx.Graph(edges)
+    graph.add_nodes_from(isolated_nodes)
+    clusters = _clusters_from_ids(graph, id_groups)
     config = GraphPartitioningConfig(minimum_n_clusters=1)
 
     merged = _merge_edgeless_clusters(graph, clusters, config)
 
     assert len(merged) == 2
-    assert _ids_containing(merged, 4) == [2, 3, 4]
+    assert _ids_containing(merged, orphan) == expected_ids
     _assert_partitions_correct(graph, merged)
 
 
@@ -750,20 +775,6 @@ def test_merge_edgeless_raises_when_no_cluster_has_room():
         ),
     ):
         _merge_edgeless_clusters(graph, clusters, config)
-
-
-def test_merge_edgeless_isolated_vertex_goes_to_smallest_cluster():
-    # Node 5 has no edges anywhere, so every target scores zero and the
-    # tie-break by size decides.
-    graph = nx.Graph([(0, 1), (1, 2), (3, 4)])
-    graph.add_node(5)
-    clusters = _clusters_from_ids(graph, [[0, 1, 2], [3, 4], [5]])
-    config = GraphPartitioningConfig(minimum_n_clusters=1)
-
-    merged = _merge_edgeless_clusters(graph, clusters, config)
-
-    assert len(merged) == 2
-    assert _ids_containing(merged, 5) == [3, 4, 5]
 
 
 def test_merge_edgeless_warns_when_dropping_below_min_clusters():

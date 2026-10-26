@@ -129,35 +129,25 @@ class TestTimeEvolutionTrajectoryKwargForwarding:
         traj.create_programs()
         assert all(prog.precision == 4 for prog in traj.programs.values())
 
-    def test_grouping_strategy_forwarded_to_programs(
-        self, two_qubit_hamiltonian, dummy_simulator
+    @pytest.mark.parametrize(
+        "kwarg, value, attr",
+        [
+            ("grouping_strategy", "wires", "_grouping_strategy"),
+            ("shot_distribution", "weighted", "_shot_distribution"),
+        ],
+    )
+    def test_observable_kwarg_forwarded_to_programs(
+        self, two_qubit_hamiltonian, dummy_simulator, kwarg, value, attr
     ):
         traj = TimeEvolutionTrajectory(
             hamiltonian=two_qubit_hamiltonian,
             time_points=[0.1, 0.5, 1.0],
             backend=dummy_simulator,
             observable=two_qubit_hamiltonian,
-            grouping_strategy="wires",
+            **{kwarg: value},
         )
         traj.create_programs()
-        assert all(
-            prog._grouping_strategy == "wires" for prog in traj.programs.values()
-        )
-
-    def test_shot_distribution_forwarded_to_programs(
-        self, two_qubit_hamiltonian, dummy_simulator
-    ):
-        traj = TimeEvolutionTrajectory(
-            hamiltonian=two_qubit_hamiltonian,
-            time_points=[0.1, 0.5, 1.0],
-            backend=dummy_simulator,
-            observable=two_qubit_hamiltonian,
-            shot_distribution="weighted",
-        )
-        traj.create_programs()
-        assert all(
-            prog._shot_distribution == "weighted" for prog in traj.programs.values()
-        )
+        assert all(getattr(prog, attr) == value for prog in traj.programs.values())
 
     def test_trajectory_settings_reach_every_program(
         self, two_qubit_hamiltonian, dummy_simulator

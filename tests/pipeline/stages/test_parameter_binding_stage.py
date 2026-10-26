@@ -4,8 +4,6 @@
 
 """Tests for divi.pipeline.stages._parameter_binding_stage."""
 
-import warnings
-
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
@@ -33,6 +31,7 @@ from tests._helpers import exact_match
 from tests.pipeline._helpers import (
     DummySpecStage,
     FakeBackend,
+    assert_builds_without_performance_warning,
     run_binding_pipeline,
     stage_body_tags,
     two_group_meta,
@@ -411,9 +410,7 @@ class TestParamBindBeforeQEMWarning:
             QEMStage(),
             MeasurementStage(),
         ]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DiviPerformanceWarning)
-            CircuitPipeline(stages=stages)
+        assert_builds_without_performance_warning(stages)
 
     def test_suppress_performance_warnings_kwarg_silences_ordering(self):
         """``suppress_performance_warnings=True`` silences the ordering warning."""
@@ -430,9 +427,9 @@ class TestParamBindBeforeQEMWarning:
             PauliTwirlStage(n_twirls=1, seed=0),
             MeasurementStage(),
         ]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DiviPerformanceWarning)
-            CircuitPipeline(stages=stages, suppress_performance_warnings=True)
+        assert_builds_without_performance_warning(
+            stages, suppress_performance_warnings=True
+        )
 
 
 def _constant_angle_meta(*, parametric: bool, **kwargs) -> MetaCircuit:

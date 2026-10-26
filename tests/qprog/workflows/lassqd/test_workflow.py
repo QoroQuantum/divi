@@ -90,6 +90,7 @@ from tests.qprog.workflows.lassqd._helpers import (  # noqa: F401
     h4_chain_mean_field,
     h8_chain,
     h8_frontier_lassqd,
+    h_chain,
     lassqd_kwargs,
     nh2_radical,
     orbital_rotation_case,
@@ -2331,15 +2332,6 @@ def test_linear_method_rotates_fragment_rdms_back_to_the_workflow_basis(
     assert ensemble.best_energy == pytest.approx(exact, abs=1e-6)
 
 
-def _h6_chain():
-    """Linear H6 in STO-3G: 6 orbitals, 3 of them occupied."""
-    return gto.M(
-        atom="; ".join(f"H 0 0 {index * 0.9:.1f}" for index in range(6)),
-        basis="sto-3g",
-        verbose=0,
-    )
-
-
 @pytest.mark.filterwarnings("ignore:.*recovered subspace contains only one")
 def test_frozen_core_and_virtual_orbitals_bracket_the_active_space(
     dummy_expval_backend, mocker
@@ -2347,7 +2339,7 @@ def test_frozen_core_and_virtual_orbitals_bracket_the_active_space(
     """Orbital 0 stays a frozen core and orbital 5 a frozen virtual around two
     interleaved fragments, so the register reads core | (1, 3) | (2, 4) |
     virtual."""
-    mean_field = scf.RHF(_h6_chain()).run(verbose=0)
+    mean_field = scf.RHF(h_chain(6, 0.9)).run(verbose=0)
     ensemble, state = build_exact_sampler_lassqd(
         dummy_expval_backend,
         mocker,

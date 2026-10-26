@@ -87,11 +87,24 @@ class TestPadHamOps:
         assert pad_ham_ops("ZZI;IXX", None, [3, 3]) == "ZZI;IXX"
         assert not recwarn.list
 
-    def test_short_terms_act_on_first_qubits(self):
+    @pytest.mark.parametrize(
+        "ham_ops, widths, short, padded, expected",
+        [
+            ("ZZ;XX", [5], "ZZ", "ZZIII", "ZZIII;XXIII"),
+            ("ZZZ;Z", [3], "Z", "ZII", "ZZZ;ZII"),
+        ],
+        ids=[
+            "short_terms_act_on_first_qubits",
+            "warning_example_is_the_first_short_term",
+        ],
+    )
+    def test_short_terms_are_padded_with_one_warning(
+        self, ham_ops, widths, short, padded, expected
+    ):
         with pytest.warns(
-            UserWarning, match=exact_match(padding_warning("ZZ", "ZZIII"))
+            UserWarning, match=exact_match(padding_warning(short, padded))
         ):
-            assert pad_ham_ops("ZZ;XX", None, [5]) == "ZZIII;XXIII"
+            assert pad_ham_ops(ham_ops, None, widths) == expected
 
     def test_each_group_is_padded_to_its_own_circuits_in_one_warning(self):
         with pytest.warns(
@@ -100,10 +113,6 @@ class TestPadHamOps:
             padded = pad_ham_ops("Z|X", [[0, 1], [1, 2]], [2, 3])
         assert padded == "ZI|XII"
         assert len(record) == 1
-
-    def test_warning_example_is_the_first_short_term(self):
-        with pytest.warns(UserWarning, match=exact_match(padding_warning("Z", "ZII"))):
-            assert pad_ham_ops("ZZZ;Z", None, [3]) == "ZZZ;ZII"
 
     def test_short_group_on_circuits_of_different_widths_raises(self):
         with pytest.raises(ValueError, match=exact_match(_too_short("ZZ", [3, 5]))):

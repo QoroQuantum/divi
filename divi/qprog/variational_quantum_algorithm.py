@@ -503,6 +503,18 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             )
         return mins
 
+    def _params_copy(
+        self, name: str, params: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        if len(params) == 0 or not self._has_run_optimization():
+            warn(
+                f"{name} is not available. Optimisation has not been run yet. "
+                f"{_RUN_INSTRUCTION}",
+                UserWarning,
+                stacklevel=3,
+            )
+        return params.copy()
+
     @property
     def final_params(self) -> npt.NDArray[np.float64]:
         """Get a copy of the parameters where the optimiser stopped.
@@ -521,14 +533,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             npt.NDArray[np.float64]: Copy of the final parameters. Modifications to this array
                 will not affect the internal state.
         """
-        if len(self._final_params) == 0 or not self._has_run_optimization():
-            warn(
-                "final_params is not available. Optimisation has not been run yet. "
-                f"{_RUN_INSTRUCTION}",
-                UserWarning,
-                stacklevel=2,
-            )
-        return self._final_params.copy()
+        return self._params_copy("final_params", self._final_params)
 
     @property
     def best_params(self) -> npt.NDArray[np.float64]:
@@ -538,14 +543,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             npt.NDArray[np.float64]: Copy of the best parameters. Modifications to this array
                 will not affect the internal state.
         """
-        if len(self._best_params) == 0 or not self._has_run_optimization():
-            warn(
-                "best_params is not available. Optimisation has not been run yet. "
-                f"{_RUN_INSTRUCTION}",
-                UserWarning,
-                stacklevel=2,
-            )
-        return self._best_params.copy()
+        return self._params_copy("best_params", self._best_params)
 
     @property
     def best_loss(self) -> float:

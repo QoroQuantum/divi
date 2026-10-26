@@ -71,6 +71,7 @@ from ._helpers import (
     RecordingBackend,
     ShotsBackendSpy,
     StatefulFanoutStage,
+    assert_builds_without_performance_warning,
     meta_from_circuit,
     ones_execute_fn,
     run_binding_pipeline,
@@ -1780,10 +1781,9 @@ def test_perf_warning_stage_warns_without_suppression():
 def test_suppress_performance_warnings_kwarg_silences_warning():
     """``suppress_performance_warnings=True`` silences ``DiviPerformanceWarning``
     emitted by any stage during pipeline construction."""
-    stages = _perf_warning_stages()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DiviPerformanceWarning)
-        CircuitPipeline(stages=stages, suppress_performance_warnings=True)
+    assert_builds_without_performance_warning(
+        _perf_warning_stages(), suppress_performance_warnings=True
+    )
 
 
 def test_suppress_performance_warnings_keeps_other_warnings():

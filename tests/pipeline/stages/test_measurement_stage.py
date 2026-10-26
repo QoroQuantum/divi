@@ -652,15 +652,20 @@ def test_weighted_wires_e2e_yields_finite_energy(default_test_simulator):
     assert -11.2 <= energy[0] <= 11.2
 
 
-def _idle_qubit_meta() -> MetaCircuit:
-    """3-qubit circuit whose observable (Z0 + Z2) leaves qubit 1 idle."""
-    qc = QuantumCircuit(3)
-    for i in range(3):
+def _h_layer_meta(n_qubits: int, terms: list[tuple[str, float]]) -> MetaCircuit:
+    """``n_qubits``-wide Hadamard layer measured against the observable ``terms``."""
+    qc = QuantumCircuit(n_qubits)
+    for i in range(n_qubits):
         qc.h(i)
     return MetaCircuit(
         circuit_bodies=(((), circuit_to_dag(qc)),),
-        observable=SparsePauliOp.from_list([("IIZ", 1.0), ("ZII", 1.0)]),
+        observable=SparsePauliOp.from_list(terms),
     )
+
+
+def _idle_qubit_meta() -> MetaCircuit:
+    """3-qubit circuit whose observable (Z0 + Z2) leaves qubit 1 idle."""
+    return _h_layer_meta(3, [("IIZ", 1.0), ("ZII", 1.0)])
 
 
 class TestMeasureAllQubits:
@@ -772,15 +777,7 @@ class TestMeasureAllQubits:
 
 def _wide_term_meta() -> MetaCircuit:
     """4-qubit observable whose terms differ in support: ZIII, IZII, YXXY."""
-    qc = QuantumCircuit(4)
-    for i in range(4):
-        qc.h(i)
-    return MetaCircuit(
-        circuit_bodies=(((), circuit_to_dag(qc)),),
-        observable=SparsePauliOp.from_list(
-            [("ZIII", 1.0), ("IZII", 1.0), ("YXXY", 0.5)]
-        ),
-    )
+    return _h_layer_meta(4, [("ZIII", 1.0), ("IZII", 1.0), ("YXXY", 0.5)])
 
 
 def _introspect(stage, meta, backend, **run_kwargs):

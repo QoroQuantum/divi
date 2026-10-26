@@ -284,55 +284,45 @@ class Parser:
             raise SyntaxError(f"Unexpected token {tok.type} at {tok.line}:{tok.col}")
 
     # ---- declarations ----
-    def qreg_decl(self):
-        self.match("QREG")
+    def _register_decl(self, keyword: str, registers: dict[str, int]):
+        """``<keyword> name[n];``"""
+        self.match(keyword)
         name = self.match("ID").value
         self.match("LBRACKET")
         n = self.natural_number_tok()
         self.match("RBRACKET")
         self.match("SEMI")
+        self._add_register(registers, name, n)
+
+    def _typed_register_decl(self, keyword: str, registers: dict[str, int]):
+        """``<keyword>[n] name;`` or ``<keyword> name;``"""
+        self.match(keyword)
+        if self.accept("LBRACKET"):
+            n = self.natural_number_tok()
+            self.match("RBRACKET")
+            name = self.match("ID").value
+        else:
+            name = self.match("ID").value
+            n = 1
+        self.match("SEMI")
+        self._add_register(registers, name, n)
+
+    def _add_register(self, registers: dict[str, int], name: str, n: int):
         if name in self.qregs or name in self.cregs:
             self._dupe(name)
-        self.qregs[name] = n
+        registers[name] = n
+
+    def qreg_decl(self):
+        self._register_decl("QREG", self.qregs)
 
     def creg_decl(self):
-        self.match("CREG")
-        name = self.match("ID").value
-        self.match("LBRACKET")
-        n = self.natural_number_tok()
-        self.match("RBRACKET")
-        self.match("SEMI")
-        if name in self.qregs or name in self.cregs:
-            self._dupe(name)
-        self.cregs[name] = n
+        self._register_decl("CREG", self.cregs)
 
     def qubit_decl(self):
-        self.match("QUBIT")
-        if self.accept("LBRACKET"):
-            n = self.natural_number_tok()
-            self.match("RBRACKET")
-            name = self.match("ID").value
-        else:
-            name = self.match("ID").value
-            n = 1
-        self.match("SEMI")
-        if name in self.qregs or name in self.cregs:
-            self._dupe(name)
-        self.qregs[name] = n
+        self._typed_register_decl("QUBIT", self.qregs)
 
     def bit_decl(self):
-        self.match("BIT")
-        if self.accept("LBRACKET"):
-            n = self.natural_number_tok()
-            self.match("RBRACKET")
-            name = self.match("ID").value
-        else:
-            name = self.match("ID").value
-            n = 1
-        self.match("SEMI")
-        if name in self.qregs or name in self.cregs:
-            self._dupe(name)
-        self.cregs[name] = n
+        self._typed_register_decl("BIT", self.cregs)
 
     # ---- gate definitions ----
     def gate_def(self):
@@ -507,35 +497,28 @@ class Parser:
             )
         self.match("SEMI")
 
-    def _measure_qarg(self) -> tuple[str, int]:
+    def _measure_arg(
+        self, registers: dict[str, int], kind: str, element: str
+    ) -> tuple[str, int]:
         name_tok = self.match("ID")
         name = name_tok.value
-        if name not in self.qregs:
+        if name not in registers:
             raise SyntaxError(
-                f"Unknown qreg '{name}' at {name_tok.line}:{name_tok.col}"
+                f"Unknown {kind} '{name}' at {name_tok.line}:{name_tok.col}"
             )
         if self.accept("LBRACKET"):
             idx = self.natural_number_tok()
             self.match("RBRACKET")
-            if idx >= self.qregs[name]:
-                raise SyntaxError(f"Qubit index {idx} out of range for '{name}'")
+            if idx >= registers[name]:
+                raise SyntaxError(f"{element} index {idx} out of range for '{name}'")
             return (f"{name}[{idx}]", 1)
-        return (name, self.qregs[name])
+        return (name, registers[name])
+
+    def _measure_qarg(self) -> tuple[str, int]:
+        return self._measure_arg(self.qregs, "qreg", "Qubit")
 
     def _measure_carg(self) -> tuple[str, int]:
-        name_tok = self.match("ID")
-        name = name_tok.value
-        if name not in self.cregs:
-            raise SyntaxError(
-                f"Unknown creg '{name}' at {name_tok.line}:{name_tok.col}"
-            )
-        if self.accept("LBRACKET"):
-            idx = self.natural_number_tok()
-            self.match("RBRACKET")
-            if idx >= self.cregs[name]:
-                raise SyntaxError(f"Bit index {idx} out of range for '{name}'")
-            return (f"{name}[{idx}]", 1)
-        return (name, self.cregs[name])
+        return self._measure_arg(self.cregs, "creg", "Bit")
 
     def reset_stmt(self):
         self.match("RESET")

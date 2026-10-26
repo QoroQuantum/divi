@@ -142,19 +142,40 @@ def maxcut_hamiltonians(graph: GraphLike) -> tuple[SparsePauliOp, SparsePauliOp]
     return cost, x_mixer(n_qubits)
 
 
+def _vertex_subset_hamiltonians(
+    graph: nx.Graph,
+    n_qubits: int,
+    *,
+    constrained: bool,
+    cost_bit: int,
+    penalised_edge_states: Sequence[str],
+) -> tuple[SparsePauliOp, SparsePauliOp]:
+    """Cost and mixer for a vertex-subset problem on ``graph``.
+
+    Constrained: ``bit_driver`` cost with a ``bit_flip_mixer`` that preserves
+    feasibility. Otherwise: ``edge_driver`` penalty on ``penalised_edge_states``
+    plus ``bit_driver``, with an X mixer.
+    """
+    if constrained:
+        return bit_driver(n_qubits, b=cost_bit), bit_flip_mixer(graph, b=1 - cost_bit)
+    cost = 3.0 * edge_driver(
+        graph, penalised_edge_states, n_qubits=n_qubits
+    ) + bit_driver(n_qubits, b=cost_bit)
+    return cost, x_mixer(n_qubits)
+
+
 def max_independent_set_hamiltonians(
     graph: GraphLike, *, constrained: bool = True
 ) -> tuple[SparsePauliOp, SparsePauliOp]:
     """Cost and mixer for Maximum Independent Set."""
     n_qubits, edges = _qubit_edges(graph)
-    if constrained:
-        cost = bit_driver(n_qubits, b=1)
-        mixer = bit_flip_mixer(_qubit_graph(n_qubits, edges), b=0)
-        return cost, mixer
-    cost = 3.0 * edge_driver(edges, ["10", "01", "00"], n_qubits=n_qubits) + bit_driver(
-        n_qubits, b=1
+    return _vertex_subset_hamiltonians(
+        _qubit_graph(n_qubits, edges),
+        n_qubits,
+        constrained=constrained,
+        cost_bit=1,
+        penalised_edge_states=["10", "01", "00"],
     )
-    return cost, x_mixer(n_qubits)
 
 
 def min_vertex_cover_hamiltonians(
@@ -162,14 +183,13 @@ def min_vertex_cover_hamiltonians(
 ) -> tuple[SparsePauliOp, SparsePauliOp]:
     """Cost and mixer for Minimum Vertex Cover."""
     n_qubits, edges = _qubit_edges(graph)
-    if constrained:
-        cost = bit_driver(n_qubits, b=0)
-        mixer = bit_flip_mixer(_qubit_graph(n_qubits, edges), b=1)
-        return cost, mixer
-    cost = 3.0 * edge_driver(edges, ["11", "10", "01"], n_qubits=n_qubits) + bit_driver(
-        n_qubits, b=0
+    return _vertex_subset_hamiltonians(
+        _qubit_graph(n_qubits, edges),
+        n_qubits,
+        constrained=constrained,
+        cost_bit=0,
+        penalised_edge_states=["11", "10", "01"],
     )
-    return cost, x_mixer(n_qubits)
 
 
 def max_clique_hamiltonians(
@@ -177,15 +197,13 @@ def max_clique_hamiltonians(
 ) -> tuple[SparsePauliOp, SparsePauliOp]:
     """Cost and mixer for Maximum Clique. The mixer acts on the complement graph."""
     n_qubits, edges = _qubit_edges(graph)
-    complement = nx.complement(_qubit_graph(n_qubits, edges))
-    if constrained:
-        cost = bit_driver(n_qubits, b=1)
-        mixer = bit_flip_mixer(complement, b=0)
-        return cost, mixer
-    cost = 3.0 * edge_driver(
-        complement, ["10", "01", "00"], n_qubits=n_qubits
-    ) + bit_driver(n_qubits, b=1)
-    return cost, x_mixer(n_qubits)
+    return _vertex_subset_hamiltonians(
+        nx.complement(_qubit_graph(n_qubits, edges)),
+        n_qubits,
+        constrained=constrained,
+        cost_bit=1,
+        penalised_edge_states=["10", "01", "00"],
+    )
 
 
 # ---------------------------------------------------------------------------

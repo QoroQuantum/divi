@@ -110,7 +110,8 @@ class TestGlobalFoldPass:
         folded = PassManager([GlobalFoldPass(scale)]).run(qc)
         assert same_unitary(default_test_simulator, folded, qc)
 
-    def test_parametric_circuit_preserves_unitary(self, default_test_simulator):
+    @pytest.mark.parametrize("scale", [3.0, 2.5], ids=["integer", "fractional"])
+    def test_parametric_circuit_preserves_unitary(self, default_test_simulator, scale):
         theta = Parameter("theta")
         phi = Parameter("phi")
         qc = QuantumCircuit(2)
@@ -118,7 +119,7 @@ class TestGlobalFoldPass:
         qc.cx(0, 1)
         qc.rz(2 * phi, 1)
 
-        folded = PassManager([GlobalFoldPass(3.0)]).run(qc)
+        folded = PassManager([GlobalFoldPass(scale)]).run(qc)
 
         assert {p.name for p in folded.parameters} == {"theta", "phi"}
         binding = {theta: 0.4, phi: 0.2}
@@ -181,26 +182,6 @@ class TestGlobalFoldPass:
         names = [inst.operation.name for inst in folded.data]
         assert names == ["h", "rz", "rx", "ry", "ry", "ry"]
         assert same_unitary(default_test_simulator, folded, qc)
-
-    def test_fractional_parametric_circuit_preserves_unitary(
-        self, default_test_simulator
-    ):
-        theta = Parameter("theta")
-        phi = Parameter("phi")
-        qc = QuantumCircuit(2)
-        qc.rx(theta, 0)
-        qc.cx(0, 1)
-        qc.rz(2 * phi, 1)
-
-        folded = PassManager([GlobalFoldPass(2.5)]).run(qc)
-
-        assert {p.name for p in folded.parameters} == {"theta", "phi"}
-        binding = {theta: 0.4, phi: 0.2}
-        assert same_unitary(
-            default_test_simulator,
-            folded.assign_parameters(binding),
-            qc.assign_parameters(binding),
-        )
 
 
 class TestLocalFoldPass:

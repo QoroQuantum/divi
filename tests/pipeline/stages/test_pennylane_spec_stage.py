@@ -17,6 +17,11 @@ from divi.pipeline.stages import (
     PennyLaneSpecStage,
 )
 from tests._helpers import exact_match
+from tests.pipeline.stages._spec_stage_contracts import (
+    verify_bell_probs,
+    verify_expand_mapping,
+    verify_expand_sequence,
+)
 
 _UNBINDABLE_PARAM_COLUMNS_MESSAGE = exact_match(
     "env.param_sets has 2 parameter column(s) but a converted circuit exposes "
@@ -82,26 +87,20 @@ class TestPennyLaneSpecStageExpand:
         assert meta.measured_wires is None
 
     def test_sequence(self, dummy_pipeline_env):
-        stage = PennyLaneSpecStage()
-        scripts = [_bell_script(), _parametric_script()]
-
-        batch, _ = stage.expand(scripts, dummy_pipeline_env)
-
-        assert len(batch) == 2
-        assert (("circuit", 0),) in batch
-        assert (("circuit", 1),) in batch
-        assert len(batch[(("circuit", 0),)].parameters) == 0
-        assert len(batch[(("circuit", 1),)].parameters) == 2
+        verify_expand_sequence(
+            PennyLaneSpecStage(),
+            _bell_script(),
+            _parametric_script(),
+            dummy_pipeline_env,
+        )
 
     def test_mapping(self, dummy_pipeline_env):
-        stage = PennyLaneSpecStage()
-        scripts = {"bell": _bell_script(), "param": _parametric_script()}
-
-        batch, _ = stage.expand(scripts, dummy_pipeline_env)
-
-        assert len(batch) == 2
-        assert (("circuit", "bell"),) in batch
-        assert (("circuit", "param"),) in batch
+        verify_expand_mapping(
+            PennyLaneSpecStage(),
+            _bell_script(),
+            _parametric_script(),
+            dummy_pipeline_env,
+        )
 
     def test_invalid_input_raises(self, dummy_pipeline_env):
         stage = PennyLaneSpecStage()
@@ -318,17 +317,7 @@ class TestPennyLaneSpecStagePipeline:
     """Full pipeline: spec → measurement → execute → reduce."""
 
     def test_bell_probs(self, default_test_simulator):
-        """Non-parametric Bell state produces ~50/50 probabilities."""
-        pipeline = CircuitPipeline(stages=[PennyLaneSpecStage(), MeasurementStage()])
-        env = PipelineEnv(backend=default_test_simulator)
-        result = pipeline.run(initial_spec=_bell_script(), env=env)
-
-        probs = result[()]
-        assert "00" in probs
-        assert "11" in probs
-        assert probs["00"] + probs["11"] == pytest.approx(1.0, abs=1e-12)
-        # σ = sqrt(0.25 / 5000) ≈ 0.007 at the fixture's 5000 shots, so this is 5σ.
-        assert probs["00"] == pytest.approx(0.5, abs=0.035)
+        verify_bell_probs(PennyLaneSpecStage(), _bell_script(), default_test_simulator)
 
     def test_parametric_qnode_with_binding(self, default_test_simulator):
         """QNode with parameter binding produces expectation value."""

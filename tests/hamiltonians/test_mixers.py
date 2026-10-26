@@ -185,15 +185,25 @@ def test_edge_driver_penalises_each_unrewarded_edge_by_one(reward):
     )
 
 
-def test_edge_driver_rejects_unpaired_directed_bits():
-    with pytest.raises(
-        ValueError,
-        match=exact_match(
+@pytest.mark.parametrize(
+    "reward, message",
+    [
+        (
+            ["10"],
             "'reward' cannot contain either '10' or '01' alone; must contain "
-            "neither or both."
+            "neither or both.",
         ),
-    ):
-        edge_driver(nx.Graph([(0, 1)]), ["10"])
+        (
+            ["2x"],
+            "Encountered invalid entry in 'reward', expected 2-bit bitstrings; "
+            "got ['2x'].",
+        ),
+    ],
+    ids=["unpaired_directed_bits", "invalid_entries"],
+)
+def test_edge_driver_rejects_invalid_reward(reward, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        edge_driver(nx.Graph([(0, 1)]), reward)
 
 
 def _isolated_nodes() -> nx.Graph:
@@ -307,17 +317,6 @@ def test_graph_builders_reject_a_register_narrower_than_the_graph(build):
         match=exact_match("n_qubits is smaller than the largest graph node."),
     ):
         build(nx.Graph([(0, 3)]))
-
-
-def test_edge_driver_rejects_invalid_reward_entries():
-    with pytest.raises(
-        ValueError,
-        match=exact_match(
-            "Encountered invalid entry in 'reward', expected 2-bit bitstrings; "
-            "got ['2x']."
-        ),
-    ):
-        edge_driver(nx.Graph([(0, 1)]), ["2x"])
 
 
 def test_graph_builders_reject_negative_qubit_nodes():

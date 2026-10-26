@@ -2540,26 +2540,29 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
 
         assert result == "1010"
 
-    def test_get_top_solutions_basic_sorting(self, mocker):
-        """Test that get_top_solutions sorts by probability descending."""
-        probs = {
-            "00": 0.1,
-            "01": 0.5,
-            "10": 0.3,
-            "11": 0.1,
-        }
+    @pytest.mark.parametrize(
+        "probs, n, expected",
+        [
+            (
+                {"00": 0.1, "01": 0.5, "10": 0.3, "11": 0.1},
+                3,
+                [("01", 0.5), ("10", 0.3), ("00", 0.1)],
+            ),
+            (
+                {"111": 0.3, "000": 0.3, "101": 0.2, "010": 0.2},
+                4,
+                [("000", 0.3), ("111", 0.3), ("010", 0.2), ("101", 0.2)],
+            ),
+        ],
+        ids=["probability_descending", "lexicographic_tie_breaking"],
+    )
+    def test_get_top_solutions_order(self, mocker, probs, n, expected):
+        """Solutions sort by probability descending, ties lexicographically."""
         program = self._setup_program_with_probs(mocker, probs)
 
-        result = program.get_top_solutions(n=3)
+        result = program.get_top_solutions(n=n)
 
-        assert len(result) == 3
-        assert result[0].bitstring == "01"
-        assert result[0].prob == 0.5
-        assert result[1].bitstring == "10"
-        assert result[1].prob == 0.3
-        # For tied probabilities (0.1), lexicographic order: "00" < "11"
-        assert result[2].bitstring == "00"
-        assert result[2].prob == 0.1
+        assert [(s.bitstring, s.prob) for s in result] == expected
 
     def test_get_top_solutions_warns_and_uses_first_of_multiple_param_sets(
         self, mocker
@@ -2573,30 +2576,6 @@ class TestTopSolutionsAPI(BaseVariationalQuantumAlgorithmTest):
         with pytest.warns(UserWarning, match="only the first"):
             result = program.get_top_solutions(n=2)
         assert [s.bitstring for s in result] == ["00", "11"]
-
-    def test_get_top_solutions_deterministic_tie_breaking(self, mocker):
-        """Test that get_top_solutions uses lexicographic tie-breaking for equal probabilities."""
-        probs = {
-            "111": 0.3,
-            "000": 0.3,
-            "101": 0.2,
-            "010": 0.2,
-        }
-        program = self._setup_program_with_probs(mocker, probs)
-
-        result = program.get_top_solutions(n=4)
-
-        assert len(result) == 4
-        # Tied at 0.3: "000" < "111" lexicographically
-        assert result[0].bitstring == "000"
-        assert result[0].prob == 0.3
-        assert result[1].bitstring == "111"
-        assert result[1].prob == 0.3
-        # Tied at 0.2: "010" < "101" lexicographically
-        assert result[2].bitstring == "010"
-        assert result[2].prob == 0.2
-        assert result[3].bitstring == "101"
-        assert result[3].prob == 0.2
 
     def test_get_top_solutions_respects_n_parameter(self, mocker):
         """Test that get_top_solutions returns at most n solutions."""

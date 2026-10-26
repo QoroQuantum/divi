@@ -75,16 +75,15 @@ class TestZerosState:
         assert ZerosState().name == "ZerosState"
 
 
-def test_build_emits_x_per_qubit():
-    qc = OnesState().build([0, 1])
-    assert gate_names(qc) == ["x", "x"]
-    assert gate_qubits(qc) == [[0], [1]]
-
-
-def test_build_emits_hadamard_per_qubit():
-    qc = SuperpositionState().build([0, 1, 2])
-    assert gate_names(qc) == ["h", "h", "h"]
-    assert gate_qubits(qc) == [[0], [1], [2]]
+@pytest.mark.parametrize(
+    "state, wires, gate",
+    [(OnesState, [0, 1], "x"), (SuperpositionState, [0, 1, 2], "h")],
+    ids=["ones_emits_x", "superposition_emits_hadamard"],
+)
+def test_build_emits_one_gate_per_qubit(state, wires, gate):
+    qc = state().build(wires)
+    assert gate_names(qc) == [gate] * len(wires)
+    assert gate_qubits(qc) == [[wire] for wire in wires]
 
 
 class TestCustomPerQubitState:

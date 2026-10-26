@@ -610,20 +610,22 @@ class TestUCCSDAnsatz:
         assert probs[excited_label] == pytest.approx(np.sin(theta) ** 2, abs=0.02)
 
 
-def _single_excitation_matrix(theta: float) -> np.ndarray:
-    """Givens rotation on ``{|01>, |10>}``, qubit 0 most significant."""
-    matrix = np.eye(4)
-    matrix[1, 1] = matrix[2, 2] = np.cos(theta / 2)
-    matrix[1, 2], matrix[2, 1] = -np.sin(theta / 2), np.sin(theta / 2)
+def _givens_matrix(theta: float, dim: int, i: int, j: int) -> np.ndarray:
+    """Givens rotation on basis states ``{|i>, |j>}``, qubit 0 most significant."""
+    matrix = np.eye(dim)
+    matrix[i, i] = matrix[j, j] = np.cos(theta / 2)
+    matrix[i, j], matrix[j, i] = -np.sin(theta / 2), np.sin(theta / 2)
     return matrix
+
+
+def _single_excitation_matrix(theta: float) -> np.ndarray:
+    """Givens rotation on ``{|01>, |10>}``."""
+    return _givens_matrix(theta, 4, 1, 2)
 
 
 def _double_excitation_matrix(theta: float) -> np.ndarray:
-    """Givens rotation on ``{|0011>, |1100>}``, qubit 0 most significant."""
-    matrix = np.eye(16)
-    matrix[3, 3] = matrix[12, 12] = np.cos(theta / 2)
-    matrix[3, 12], matrix[12, 3] = -np.sin(theta / 2), np.sin(theta / 2)
-    return matrix
+    """Givens rotation on ``{|0011>, |1100>}``."""
+    return _givens_matrix(theta, 16, 3, 12)
 
 
 def _bit_reversal(n_qubits: int) -> list[int]:

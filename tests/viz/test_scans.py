@@ -1047,9 +1047,7 @@ _COMPLEX_CENTER = np.array([1.0 + 0.5j, 2.0])
     ids=["resolve_center", "scan_1d", "scan_pca", "compute_hessian", "viz_scan_pca"],
 )
 def test_a_complex_center_is_rejected(vqe_program, operation):
-    with pytest.raises(
-        ValueError, match="center must be real, got a non-zero imaginary part"
-    ):
+    with pytest.raises(ValueError, match="center must be real; got complex values"):
         operation(vqe_program)
 
 

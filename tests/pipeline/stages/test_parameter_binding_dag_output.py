@@ -60,36 +60,21 @@ class TestPathSelection:
     by whether any downstream stage declares ``consumes_dag_bodies=True``.
     """
 
-    def test_fast_path_when_param_binding_is_last_stage(
-        self, dummy_pipeline_env, meta, param_sets
+    @pytest.mark.parametrize(
+        "stage_order",
+        [
+            (MeasurementStage, ParameterBindingStage),
+            (ParameterBindingStage, MeasurementStage),
+        ],
+        ids=["param_binding_is_last", "only_measurement_follows"],
+    )
+    def test_fast_path_when_no_downstream_stage_consumes_dag_bodies(
+        self, dummy_pipeline_env, meta, param_sets, stage_order
     ):
-        """MeasurementStage placed before ParameterBindingStage leaves ParamBind with no
-        downstream consumers — fast path."""
+        """``MeasurementStage`` has ``consumes_dag_bodies=False``, so ParamBind
+        keeps the fast path whether it follows or precedes it."""
         pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(),
-                ParameterBindingStage(),
-            ]
-        )
-        env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=param_sets)
-        trace = pipeline.run_forward_pass("x", env)
-
-        node = _param_bind_output(trace)
-        assert len(node.qasm_bodies) == len(param_sets)
-        for _tag, body in node.qasm_bodies:
-            assert isinstance(body, str)
-
-    def test_fast_path_when_only_measurement_follows(
-        self, dummy_pipeline_env, meta, param_sets
-    ):
-        """MeasurementStage has ``consumes_dag_bodies=False`` — fast path preserved."""
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                ParameterBindingStage(),
-                MeasurementStage(),
-            ]
+            stages=[DummySpecStage(meta=meta), *(stage() for stage in stage_order)]
         )
         env = PipelineEnv(backend=dummy_pipeline_env.backend, param_sets=param_sets)
         trace = pipeline.run_forward_pass("x", env)

@@ -5,6 +5,7 @@
 """Shared test helpers for pipeline tests (stages, execute fn, meta circuit factory)."""
 
 import re
+import warnings
 from typing import cast
 
 from qiskit import QuantumCircuit
@@ -18,6 +19,7 @@ from divi.circuits import MetaCircuit
 from divi.circuits._payloads import CircuitPayload, bound_circuits
 from divi.pipeline import (
     CircuitPipeline,
+    DiviPerformanceWarning,
     PipelineCadence,
     PipelineEnv,
     PipelineTrace,
@@ -287,6 +289,14 @@ def dry_run_stages(
     trace = pipeline.run_forward_pass("ignored", env, dry=dry)
     report = dry_run_pipeline(name, trace, pipeline.stages, env, cadence)
     return trace, report
+
+
+def assert_builds_without_performance_warning(stages, **pipeline_kwargs):
+    """Construct a ``CircuitPipeline`` over ``stages``, failing on any
+    :class:`DiviPerformanceWarning`."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DiviPerformanceWarning)
+        CircuitPipeline(stages=stages, **pipeline_kwargs)
 
 
 def assert_same_fanout(report_a, report_b):

@@ -620,31 +620,23 @@ class TestOptimization:
         verify_correct_circuit_count(program)
 
     @pytest.mark.e2e
-    def test_e2e_optimization(self, default_test_simulator, make_custom_vqa):
+    @pytest.mark.parametrize(
+        "qscript_fixture",
+        [None, "qiskit_circuit_with_measurements"],
+        ids=["default_circuit", "qiskit_input"],
+    )
+    def test_e2e_optimization(
+        self, request, default_test_simulator, make_custom_vqa, qscript_fixture
+    ):
         """Test end-to-end optimization."""
         default_test_simulator.set_seed(1997)
-        program = make_custom_vqa(
-            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
-            max_iterations=5,
-            backend=default_test_simulator,
-            seed=1997,
+        qscript_kwargs = (
+            {}
+            if qscript_fixture is None
+            else {"qscript": request.getfixturevalue(qscript_fixture)}
         )
-
-        program.run(perform_final_computation=False)
-
-        assert len(program.losses_history) == 5
-        assert isinstance(program.best_loss, float)
-        assert isinstance(program.best_params, np.ndarray)
-        assert program.best_params.shape == (program.n_params_per_layer,)
-
-    @pytest.mark.e2e
-    def test_e2e_qiskit_optimization(
-        self, qiskit_circuit_with_measurements, default_test_simulator, make_custom_vqa
-    ):
-        """Test end-to-end optimization with Qiskit input."""
-        default_test_simulator.set_seed(1997)
         program = make_custom_vqa(
-            qscript=qiskit_circuit_with_measurements,
+            **qscript_kwargs,
             optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
             max_iterations=5,
             backend=default_test_simulator,

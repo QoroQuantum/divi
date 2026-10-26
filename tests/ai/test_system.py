@@ -48,25 +48,22 @@ class TestDetectRamGb:
 
 
 class TestDetectCpuThreads:
-    def test_uses_physical_core_count(self, mocker):
+    @pytest.mark.parametrize(
+        "n_affinity_cpus, expected",
+        [(32, 16), (8, 8)],
+        ids=["uses_physical_core_count", "respects_process_affinity"],
+    )
+    def test_physical_core_count_capped_by_affinity(
+        self, mocker, n_affinity_cpus, expected
+    ):
         mocker.patch(
             "divi.ai._system.psutil.cpu_count",
             side_effect=lambda logical: 32 if logical else 16,
         )
         process = mocker.patch("divi.ai._system.psutil.Process").return_value
-        process.cpu_affinity.return_value = list(range(32))
+        process.cpu_affinity.return_value = list(range(n_affinity_cpus))
 
-        assert detect_cpu_threads() == 16
-
-    def test_respects_process_affinity(self, mocker):
-        mocker.patch(
-            "divi.ai._system.psutil.cpu_count",
-            side_effect=lambda logical: 32 if logical else 16,
-        )
-        process = mocker.patch("divi.ai._system.psutil.Process").return_value
-        process.cpu_affinity.return_value = list(range(8))
-
-        assert detect_cpu_threads() == 8
+        assert detect_cpu_threads() == expected
 
     def test_falls_back_to_logical_count(self, mocker):
         mocker.patch(

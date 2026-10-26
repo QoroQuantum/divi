@@ -1005,25 +1005,25 @@ def test_partial_coverage_raises():
 class TestQiskitSimulatorShotGroupsBatching:
     """Spec: one Aer run per distinct shot count."""
 
-    def test_single_aer_run_when_all_shots_equal(self, mocker):
+    @pytest.mark.parametrize(
+        "shot_groups, expected_runs",
+        [
+            ([[0, 1, 50], [1, 2, 50], [2, 3, 50], [3, 4, 50]], 1),
+            ([[0, 1, 50], [1, 2, 100], [2, 3, 50]], 2),
+        ],
+        ids=[
+            "single_run_when_all_shots_equal",
+            "distinct_shot_counts_get_distinct_runs",
+        ],
+    )
+    def test_one_aer_run_per_distinct_shot_count(
+        self, mocker, shot_groups, expected_runs
+    ):
         sim = QiskitSimulator(shots=100)
-        circuits = {f"c{i}": _IDENTITY_QASM for i in range(4)}
+        circuits = {f"c{i}": _IDENTITY_QASM for i in range(len(shot_groups))}
         spy = mocker.spy(AerSimulator, "run")
-        sim.submit_circuits(
-            circuits,
-            shot_groups=[[0, 1, 50], [1, 2, 50], [2, 3, 50], [3, 4, 50]],
-        )
-        assert spy.call_count == 1
-
-    def test_distinct_shot_counts_get_distinct_runs(self, mocker):
-        sim = QiskitSimulator(shots=100)
-        circuits = {f"c{i}": _IDENTITY_QASM for i in range(3)}
-        spy = mocker.spy(AerSimulator, "run")
-        sim.submit_circuits(
-            circuits,
-            shot_groups=[[0, 1, 50], [1, 2, 100], [2, 3, 50]],
-        )
-        assert spy.call_count == 2
+        sim.submit_circuits(circuits, shot_groups=shot_groups)
+        assert spy.call_count == expected_runs
 
     def test_results_returned_in_original_circuit_order(self):
         sim = QiskitSimulator(shots=100)

@@ -36,6 +36,7 @@ from divi.pipeline.stages import (
 from tests._helpers import exact_match
 from tests.pipeline._helpers import (
     DummySpecStage,
+    assert_builds_without_performance_warning,
     ones_execute_fn,
     two_group_meta,
 )
@@ -754,9 +755,7 @@ class TestExhaustiveQuEPPWarning:
             ParameterBindingStage(),
             MeasurementStage(),
         ]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DiviPerformanceWarning)
-            CircuitPipeline(stages=stages)
+        assert_builds_without_performance_warning(stages)
 
     def test_suppress_performance_warnings_kwarg_silences_exhaustive(self):
         """``suppress_performance_warnings=True`` silences the exhaustive-sampling warning."""
@@ -773,9 +772,9 @@ class TestExhaustiveQuEPPWarning:
             ParameterBindingStage(),
             MeasurementStage(),
         ]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", DiviPerformanceWarning)
-            CircuitPipeline(stages=stages, suppress_performance_warnings=True)
+        assert_builds_without_performance_warning(
+            stages, suppress_performance_warnings=True
+        )
 
 
 def test_exhaustive_and_param_bind_before_qem_warns_both():

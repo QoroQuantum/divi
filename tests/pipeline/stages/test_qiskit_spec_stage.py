@@ -18,6 +18,11 @@ from divi.pipeline.stages import (
     QiskitSpecStage,
 )
 from tests._helpers import exact_match
+from tests.pipeline.stages._spec_stage_contracts import (
+    verify_bell_probs,
+    verify_expand_mapping,
+    verify_expand_sequence,
+)
 
 
 def _bell_qiskit():
@@ -115,26 +120,20 @@ class TestQiskitSpecStageExpand:
         assert {node.op.name for node in dag.op_nodes()} == {"h", "cx"}
 
     def test_sequence(self, dummy_pipeline_env):
-        stage = QiskitSpecStage()
-        circuits = [_bell_qiskit(), _parametric_qiskit()]
-
-        batch, _ = stage.expand(circuits, dummy_pipeline_env)
-
-        assert len(batch) == 2
-        assert (("circuit", 0),) in batch
-        assert (("circuit", 1),) in batch
-        assert len(batch[(("circuit", 0),)].parameters) == 0
-        assert len(batch[(("circuit", 1),)].parameters) == 2
+        verify_expand_sequence(
+            QiskitSpecStage(),
+            _bell_qiskit(),
+            _parametric_qiskit(),
+            dummy_pipeline_env,
+        )
 
     def test_mapping(self, dummy_pipeline_env):
-        stage = QiskitSpecStage()
-        circuits = {"bell": _bell_qiskit(), "param": _parametric_qiskit()}
-
-        batch, _ = stage.expand(circuits, dummy_pipeline_env)
-
-        assert len(batch) == 2
-        assert (("circuit", "bell"),) in batch
-        assert (("circuit", "param"),) in batch
+        verify_expand_mapping(
+            QiskitSpecStage(),
+            _bell_qiskit(),
+            _parametric_qiskit(),
+            dummy_pipeline_env,
+        )
 
     def test_invalid_input_raises(self, dummy_pipeline_env):
         stage = QiskitSpecStage()
@@ -231,17 +230,7 @@ class TestQiskitSpecStagePipeline:
     """Full pipeline: spec → measurement → execute → reduce."""
 
     def test_bell_probs(self, default_test_simulator):
-        """Non-parametric Bell circuit produces ~50/50 probabilities."""
-        pipeline = CircuitPipeline(stages=[QiskitSpecStage(), MeasurementStage()])
-        env = PipelineEnv(backend=default_test_simulator)
-        result = pipeline.run(initial_spec=_bell_qiskit(), env=env)
-
-        probs = result[()]
-        assert "00" in probs
-        assert "11" in probs
-        assert probs["00"] + probs["11"] == pytest.approx(1.0, abs=1e-12)
-        # σ = sqrt(0.25 / 5000) ≈ 0.007 at the fixture's 5000 shots, so this is 5σ.
-        assert probs["00"] == pytest.approx(0.5, abs=0.035)
+        verify_bell_probs(QiskitSpecStage(), _bell_qiskit(), default_test_simulator)
 
     def test_parametric_with_binding(self, default_test_simulator):
         """Parametric Qiskit circuit with parameter binding produces valid probs."""
