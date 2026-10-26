@@ -24,12 +24,16 @@ from concurrent.futures import Future
 import networkx as nx
 import numpy as np
 import pytest
+import requests
 from rich.console import Console
 
 import divi.qprog as qprog
 import divi.qprog.ensemble as ensemble_module
-from divi.backends import AsyncJobBackend, ExecutionResult
-from divi.exceptions import ExecutionCancelledError
+from divi.backends import ExecutionResult
+from divi.backends._cancellation import _cancel_job_on_abort
+from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
+from divi.pipeline import PipelineEnv
+from divi.pipeline._core import _wait_for_async_result
 from divi.qprog import QAOA
 from divi.qprog._batch_coordinator import _BatchCoordinator, _ProxyBackend
 from divi.qprog.checkpointing import (
@@ -147,6 +151,69 @@ class _NestedEmitterBlockingProgram(SimpleTestProgram):
                 raise RuntimeError("test did not release cancelled worker")
         self.finished.set()
         return self
+
+
+class _BlockingPollBackend:
+    """Async backend whose polling blocks until the cancellation event is set."""
+
+    shots = 100
+
+    def __init__(self):
+        self.polling = threading.Event()
+        self.event_seen = False
+        self.cancelled = []
+
+    def submit_circuits(self, payloads, **kwargs):
+        return ExecutionResult(job_id="job-1")
+
+    def poll_job_status(
+        self,
+        execution_result,
+        loop_until_complete=False,
+        verbose=True,
+        progress_callback=None,
+        cancellation_event=None,
+    ):
+        self.polling.set()
+        self.event_seen = cancellation_event.wait(timeout=5)
+        raise ExecutionCancelledError("Polling cancelled.")
+
+    def get_job_results(self, execution_result):
+        return ExecutionResult(results=[])
+
+    def cancel_job(self, execution_result):
+        self.cancelled.append(execution_result.job_id)
+
+
+class _JobBackendProgram(SimpleTestProgram):
+    def __init__(self, job_backend, *, backend):
+        super().__init__(1, 0.1, backend=backend)
+        self.job_backend = job_backend
+
+
+class _PollingProgram(_JobBackendProgram):
+    """Submit a job and poll it until the ensemble cancels."""
+
+    def run(self):
+        env = PipelineEnv(
+            backend=self.job_backend, cancellation_event=self._cancellation_event
+        )
+        job = self.job_backend.submit_circuits({})
+        with _cancel_job_on_abort(self.job_backend, job):
+            _wait_for_async_result(self.job_backend, job, env)
+
+
+class _FailingProgram(_JobBackendProgram):
+    """Raise ``error`` once its sibling's job is being polled."""
+
+    def __init__(self, job_backend, error, *, backend):
+        super().__init__(job_backend, backend=backend)
+        self.error = error
+
+    def run(self):
+        if not self.job_backend.polling.wait(timeout=5):
+            raise TimeoutError("sibling never polled")
+        raise self.error
 
 
 @pytest.fixture
@@ -897,6 +964,43 @@ class TestProgramEnsemble:
             call.kwargs["label"] for call in render_failure.call_args_list
         ] == labels
 
+    @pytest.mark.parametrize(
+        "keys, label",
+        [
+            pytest.param("abc", " (Programs a, b, c)", id="at-the-cap"),
+            pytest.param("abcd", " (Programs a, b, c and 1 more)", id="one-over"),
+            pytest.param("abcde", " (Programs a, b, c and 2 more)", id="two-over"),
+        ],
+    )
+    def test_failure_panel_collapses_programs_beyond_the_listing_cap(
+        self, dummy_simulator, mocker, keys, label
+    ):
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.programs = {
+            key: SimpleTestProgram(1, 0.1, backend=dummy_simulator) for key in keys
+        }
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
+        _fail_programs(ensemble, ValueError("shared"))
+
+        ensemble._report_failed_programs()
+
+        assert render_failure.call_args.kwargs["label"] == label
+
+    def test_chained_failure_panel_omits_its_traceback(self, dummy_simulator, mocker):
+        ensemble = SampleProgramEnsemble(backend=dummy_simulator)
+        ensemble.programs = {
+            key: SimpleTestProgram(1, 0.1, backend=dummy_simulator) for key in "ab"
+        }
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
+        chained, other = ValueError("first"), TypeError("second")
+        _settle_futures(ensemble, [chained, other])
+
+        ensemble._report_failed_programs(chained)
+
+        assert [
+            call.kwargs["show_traceback"] for call in render_failure.call_args_list
+        ] == [False, True]
+
     def test_base_ensemble_has_no_top_solutions(self, program_ensemble):
         with pytest.raises(
             NotImplementedError,
@@ -952,60 +1056,8 @@ class TestProgramEnsemble:
         assert render_failure.call_args.kwargs == {
             "label": " (Program prog1)",
             "console": session_console,
+            "show_traceback": True,
         }
-
-    def test_handle_cancellation_skips_job_cancel_on_a_local_backend(
-        self, program_ensemble, mocker
-    ):
-        """A running program on a local backend has no job to cancel."""
-        program_ensemble.create_programs()
-        program_ensemble._cancellation_event = mocker.MagicMock()
-
-        future = Future()
-        future.cancel = mocker.MagicMock(return_value=False)
-
-        program_ensemble.futures = [future]
-        program = program_ensemble.programs["prog1"]
-        program_ensemble._future_to_program = {future: program}
-
-        mock_cancel = mocker.patch.object(program, "cancel_unfinished_job")
-        # Mock as_completed to return the future so Phase 3 doesn't hang
-        mocker.patch("divi.qprog.ensemble.as_completed", return_value=[future])
-
-        program_ensemble._handle_cancellation()
-
-        mock_cancel.assert_not_called()
-
-    def test_handle_cancellation_delegates_to_backend_cancel_job(
-        self, program_ensemble, mocker
-    ):
-        """Test that _handle_cancellation delegates to backend.cancel_job via cancel_unfinished_job."""
-        program_ensemble.create_programs()
-        program_ensemble._cancellation_event = mocker.MagicMock()
-
-        future = Future()
-        future.cancel = mocker.MagicMock(return_value=False)
-
-        program_ensemble.futures = [future]
-        program = program_ensemble.programs["prog1"]
-        program_ensemble._future_to_program = {future: program}
-
-        # Set up program with execution result
-        execution_result = ExecutionResult(job_id="test_job_123")
-        program._current_execution_result = execution_result
-
-        # Mock backend cancel_job (spec'd to satisfy AsyncJobBackend protocol)
-        mock_backend = mocker.Mock(spec=AsyncJobBackend)
-        mock_backend.cancel_job = mocker.Mock()
-        program.backend = mock_backend
-
-        # Mock as_completed to return the future so Phase 3 doesn't hang
-        mocker.patch("divi.qprog.ensemble.as_completed", return_value=[future])
-
-        program_ensemble._handle_cancellation()
-
-        # Verify cancel_job was called on the backend
-        mock_backend.cancel_job.assert_called_once_with(execution_result)
 
     def test_handle_failure_sets_cancellation_event(self, program_ensemble, mocker):
         """Failure path should set _cancellation_event to stop VQA loops."""
@@ -1071,12 +1123,9 @@ class TestProgramEnsemble:
             "the failed program's row was not emitted with final_status=Failed"
         )
 
-    @pytest.mark.parametrize("async_backend", [True, False], ids=["async", "local"])
-    def test_handle_failure_non_batched_cancels_jobs(
-        self, program_ensemble, mocker, async_backend
+    def test_handle_failure_non_batched_counts_every_dispatched_program(
+        self, program_ensemble, mocker
     ):
-        """Without coordinator, failure cancels the backend jobs of running
-        programs; a local backend has no job to cancel."""
         program_ensemble.create_programs()
         program_ensemble.run_one_round(blocking=False)
         program_ensemble._coordinator = None
@@ -1098,10 +1147,6 @@ class TestProgramEnsemble:
             f_running: prog2,
         }
 
-        mock_cancel = mocker.patch.object(prog2, "cancel_unfinished_job")
-        if async_backend:
-            prog2.backend = mocker.Mock(spec=AsyncJobBackend)
-
         # Resolve f_running so _collect_completed_results can pick it up
         # once done() starts returning True.
         f_running.set_result(_FakeRunResult(3, 1.0))
@@ -1116,7 +1161,6 @@ class TestProgramEnsemble:
         with pytest.raises(RuntimeError, match="Ensemble execution failed"):
             program_ensemble.join()
 
-        assert mock_cancel.call_count == int(async_backend)
         _assert_counts_every_dispatched_program(program_ensemble)
 
     def test_stop_remaining_programs_called_on_failure(self, program_ensemble, mocker):
@@ -1355,6 +1399,35 @@ class TestProgramEnsemble:
         )
         assert program_ensemble.total_circuit_count == 15
         assert program_ensemble._coordinator is None
+
+    def test_too_wide_failure_aborts_the_ensemble_and_cancels_running_jobs(
+        self, program_ensemble, mocker
+    ):
+        render_failure = mocker.patch("divi.qprog.ensemble.render_failure")
+        too_wide = CircuitTooWideError(
+            "400 Bad Request: exceeds qubit limit 30.",
+            limit=30,
+            response=requests.Response(),
+        )
+        job_backend = _BlockingPollBackend()
+        program_ensemble.create_programs()
+        program_ensemble.programs = {
+            "failing": _FailingProgram(
+                job_backend, too_wide, backend=program_ensemble.backend
+            ),
+            "polling": _PollingProgram(job_backend, backend=program_ensemble.backend),
+        }
+
+        with pytest.raises(RuntimeError, match="Ensemble execution failed") as raised:
+            program_ensemble.run_one_round(
+                blocking=True, batch_config=BatchConfig(mode=BatchMode.OFF)
+            )
+
+        assert raised.value.__cause__ is too_wide
+        assert job_backend.event_seen
+        assert job_backend.cancelled == ["job-1"]
+        render_failure.assert_called_once()
+        assert render_failure.call_args.kwargs["show_traceback"] is False
 
 
 class TestRegistrationFailureCleanup:

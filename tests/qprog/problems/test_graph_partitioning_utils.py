@@ -173,11 +173,6 @@ def _assert_partitions_correct(
             assert set(clusters[i][1]).isdisjoint(set(clusters[j][1]))
 
 
-@pytest.fixture
-def _raise_qubit_ceiling(mocker):
-    mocker.patch.object(_graph_partitioning_utils, "_MAXIMUM_AVAILABLE_QUBITS", 10_000)
-
-
 class TestGraphPartitioningConfig:
     def test_invalid_no_constraints(self):
         with pytest.raises(
@@ -562,29 +557,12 @@ class TestGraphPartitioningConfig:
 
         assert _sorted_id_groups(clusters) == [[0, 1, 2, 3], [4, 5, 6, 7]]
 
-    def test_cluster_at_qubit_ceiling_does_not_warn(self, mocker):
-        mocker.patch.object(_graph_partitioning_utils, "_MAXIMUM_AVAILABLE_QUBITS", 4)
+    def test_partition_does_not_cap_cluster_size_without_a_constraint(self):
+        graph = nx.complete_graph(40)
         config = GraphPartitioningConfig(minimum_n_clusters=1)
 
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            clusters = _node_partition_graph(nx.path_graph(4), config)
-
-        assert len(clusters) == 1
-
-    def test_partition_warns_for_oversized_clusters(self, mocker):
-        mocker.patch.object(_graph_partitioning_utils, "_MAXIMUM_AVAILABLE_QUBITS", 20)
-
-        graph = nx.complete_graph(40)
-        config = GraphPartitioningConfig(minimum_n_clusters=1)
-
-        with pytest.warns(
-            UserWarning,
-            match=exact_match(
-                "At least one cluster has more nodes than what can be executed on "
-                "the available backends: 20 qubits."
-            ),
-        ):
             partitions = _node_partition_graph(graph, config)
 
         assert len(partitions) == 1
@@ -611,7 +589,6 @@ class TestGraphPartitioningConfig:
 
         _assert_partitions_correct(graph, result, expected_n_clusters=2)
 
-    @pytest.mark.usefixtures("_raise_qubit_ceiling")
     @pytest.mark.parametrize("graph_factories", GRAPH_FACTORIES)
     @pytest.mark.parametrize(
         "algorithm",
@@ -642,7 +619,6 @@ class TestGraphPartitioningConfig:
                 for entry in caught
             )
 
-    @pytest.mark.usefixtures("_raise_qubit_ceiling")
     @pytest.mark.parametrize("graph_factories", GRAPH_FACTORIES)
     @pytest.mark.parametrize(
         "algorithm",
@@ -666,7 +642,6 @@ class TestGraphPartitioningConfig:
         for sub, _ in partitions:
             assert _num_nodes(sub) <= max_nodes
 
-    @pytest.mark.usefixtures("_raise_qubit_ceiling")
     @pytest.mark.parametrize("graph_factories", GRAPH_FACTORIES)
     @pytest.mark.parametrize(
         "algorithm",
@@ -699,7 +674,6 @@ class TestGraphPartitioningConfig:
         _assert_partitions_correct(G, partitions)
 
 
-@pytest.mark.usefixtures("_raise_qubit_ceiling")
 def test_decompose_with_pygraph_input():
     """End-to-end: ``_GraphProblemBase.decompose`` honours rx.PyGraph input."""
     g = _make_pygraph_cycle(6)
@@ -862,7 +836,6 @@ def test_merge_edgeless_preserves_pygraph_type():
     _assert_partitions_correct(graph, merged)
 
 
-@pytest.mark.usefixtures("_raise_qubit_ceiling")
 @pytest.mark.parametrize("seed", [100, 101, 102, 103, 104])
 def test_decompose_survives_dense_graphs(seed):
     """Regression: dense graphs used to shed singleton clusters, whose
@@ -1098,7 +1071,6 @@ _GRAPH_CASES = [
 ] + [pytest.param(_rx_generator_graph, 38, 3, id="rx-generator-38-cap3")]
 
 
-@pytest.mark.usefixtures("_raise_qubit_ceiling")
 @pytest.mark.parametrize(("make_graph", "seed", "cap"), _GRAPH_CASES)
 @pytest.mark.parametrize("algorithm", _ALGORITHMS)
 def test_partition_subgraph_edges_map_to_original_edges(
@@ -1148,7 +1120,6 @@ def _partition_outcome(graph, config, node_ids) -> list[list] | str:
     return [[position[node] for node in ids] for _sub, ids in clusters]
 
 
-@pytest.mark.usefixtures("_raise_qubit_ceiling")
 @pytest.mark.parametrize("cap", [3, 4])
 @pytest.mark.parametrize("seed", _SEEDS)
 @pytest.mark.parametrize(
@@ -1183,7 +1154,6 @@ def _weighted_twin_pair(seed: int, *, weighted: bool, shuffled: bool):
     return graph, twin
 
 
-@pytest.mark.usefixtures("_raise_qubit_ceiling")
 @pytest.mark.parametrize(
     "shuffled", [False, True], ids=["same-order", "reversed-edges"]
 )
@@ -1237,7 +1207,6 @@ def test_relabeled_pygraph_subgraph_ids_follow_local_indices(cluster):
     )
 
 
-@pytest.mark.usefixtures("_raise_qubit_ceiling")
 def test_decompose_string_labelled_graph_extends_by_label():
     labels = "abcdef"
     graph = nx.relabel_nodes(nx.cycle_graph(6), dict(enumerate(labels)))

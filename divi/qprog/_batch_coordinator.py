@@ -24,6 +24,7 @@ from divi.backends import (
     CircuitRunner,
     ExecutionResult,
 )
+from divi.backends._cancellation import _cancel_job_on_abort, raise_if_cancelled
 from divi.backends._job_status import JobStatus, QoroJobError
 from divi.backends._shot_allocation import from_wire, to_wire
 from divi.circuits._payloads import (
@@ -693,18 +694,19 @@ class _BatchCoordinator:
             )
             flush_group.execution_result = execution_result
 
-            if self._cancelled.is_set():
-                raise ExecutionCancelledError("Batch coordinator has been cancelled.")
-
-            if (job_id := execution_result.job_id) is not None:
-                execution_result = self._poll_and_get_results(
-                    execution_result,
-                    job_id,
-                    batch_progress_key,
+            with _cancel_job_on_abort(self._real_backend, execution_result):
+                raise_if_cancelled(
+                    self._cancelled, "Batch coordinator has been cancelled."
                 )
-                final_job_status = JobStatus.COMPLETED
-            else:
-                final_job_status = None
+                if (job_id := execution_result.job_id) is not None:
+                    execution_result = self._poll_and_get_results(
+                        execution_result,
+                        job_id,
+                        batch_progress_key,
+                    )
+                    final_job_status = JobStatus.COMPLETED
+                else:
+                    final_job_status = None
             runtime = execution_result.run_time
             results_list = execution_result.results
             if results_list is None:

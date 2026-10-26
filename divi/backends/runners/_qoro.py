@@ -10,6 +10,7 @@ import logging
 import operator
 import os
 import platform
+import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import nullcontext
@@ -34,6 +35,7 @@ from divi.circuits._payloads import (
 )
 from divi.exceptions import (
     CharacterizationSubmitError,
+    CircuitTooWideError,
     ExecutionCancelledError,
 )
 from divi.qasm import (
@@ -43,7 +45,11 @@ from divi.qasm import (
 )
 
 from .._base import CircuitRunner, ExecutionResult
-from .._cancellation import _auto_cancellation_scope, raise_if_cancelled
+from .._cancellation import (
+    _auto_cancellation_scope,
+    _cancel_job_on_abort,
+    raise_if_cancelled,
+)
 from .._config import _TARGET_FIELDS, DeviceConfig, JobConfig
 from .._job_status import (
     InsufficientCreditsError,
@@ -168,6 +174,19 @@ def _is_recoverable_characterization_error(exc: Exception) -> bool:
         and exc.response is not None
         and exc.response.status_code >= HTTPStatus.INTERNAL_SERVER_ERROR
     )
+
+
+_QUBIT_LIMIT_PATTERN = re.compile(r"exceeds qubit limit (\d+)")
+
+
+def _circuit_too_wide(exc: requests.HTTPError) -> CircuitTooWideError | None:
+    """The typed error for a 400 refusing a circuit's width, else ``None``."""
+    response = exc.response
+    if response is None or response.status_code != HTTPStatus.BAD_REQUEST:
+        return None
+    if (match := _QUBIT_LIMIT_PATTERN.search(str(exc))) is None:
+        return None
+    return CircuitTooWideError(str(exc), limit=int(match[1]), response=response)
 
 
 def _greedy_size_chunks(
@@ -866,6 +885,8 @@ class QoroService(CircuitRunner):
                 expectation values, a config is aimed
                 at the other kind of target (``maestro_config`` on a
                 QPU job, or ``device_config`` on a simulator job).
+            ~divi.exceptions.CircuitTooWideError: If the API refuses a circuit
+                for exceeding the account's qubit limit.
             requests.exceptions.HTTPError: If any API request fails, including
                 ``job/init/`` refusing a ``device_config`` option or value.
 
@@ -1106,7 +1127,12 @@ class QoroService(CircuitRunner):
         The plan is complete before ``job/init/`` runs, so the last fragment
         is known up front and is the only one marked ``finalized``. Neither
         request is retried: a retry after a lost response would open a second
-        job or append the circuits twice.
+        job or append the circuits twice. A failed upload cancels the job it
+        opened.
+
+        Raises:
+            ~divi.exceptions.CircuitTooWideError: If the API refuses a circuit
+                for exceeding the account's qubit limit.
         """
         init_payload: dict[str, Any] = {
             "tag": job_config.tag,
@@ -1124,19 +1150,25 @@ class QoroService(CircuitRunner):
         )
         job_id = init_response.json()["job_id"]
 
-        for i, fragment in enumerate(call_plan):
-            payload = {
-                **fragment,
-                **envelope,
-                "finalized": "true" if i == len(call_plan) - 1 else "false",
-            }
-            self._make_request(
-                "post",
-                f"job/{job_id}/add_circuits/",
-                retry=False,
-                json=payload,
-                timeout=100,
-            )
+        with _cancel_job_on_abort(self, ExecutionResult(job_id=job_id)):
+            try:
+                for i, fragment in enumerate(call_plan):
+                    payload = {
+                        **fragment,
+                        **envelope,
+                        "finalized": "true" if i == len(call_plan) - 1 else "false",
+                    }
+                    self._make_request(
+                        "post",
+                        f"job/{job_id}/add_circuits/",
+                        retry=False,
+                        json=payload,
+                        timeout=100,
+                    )
+            except requests.HTTPError as exc:
+                if too_wide := _circuit_too_wide(exc):
+                    raise too_wide from exc
+                raise
 
         return ExecutionResult(job_id=job_id, backend_jobs=len(call_plan))
 

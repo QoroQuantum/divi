@@ -13,6 +13,7 @@ from threading import Event
 from divi.exceptions import ExecutionCancelledError
 
 from ._base import AsyncJobBackend
+from ._job_status import QoroJobError
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +75,18 @@ def _best_effort_cancel_job(backend, execution_result) -> None:
             execution_result.job_id,
             exc_info=True,
         )
+
+
+@contextmanager
+def _cancel_job_on_abort(backend, execution_result):
+    """Cancel the job if the block raises anything except a terminal ``QoroJobError``."""
+    try:
+        yield
+    except QoroJobError:
+        raise
+    except BaseException:
+        _best_effort_cancel_job(backend, execution_result)
+        raise
 
 
 @contextmanager

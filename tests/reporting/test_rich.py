@@ -238,6 +238,19 @@ def test_render_failure_prints_panel_and_traceback_to_the_supplied_console():
     assert "failure_from_backend" in rendered
 
 
+def test_render_failure_can_omit_the_traceback():
+    console, output = captured_console(force_terminal=False)
+
+    rich_module.render_failure(
+        failure_from_backend(), console=console, show_traceback=False
+    )
+
+    rendered = output.getvalue()
+    assert rendered.count("RuntimeError: backend exploded") == 1
+    assert "Traceback follows" not in rendered
+    assert "failure_from_backend" not in rendered
+
+
 def test_render_failure_defaults_to_standard_error(capsys):
     rich_module.render_failure(failure_from_backend())
 

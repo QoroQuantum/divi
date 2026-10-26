@@ -52,7 +52,7 @@ from divi.backends._systems import (
 from divi.backends.runners._maestro_payload import maestro_config_to_payload
 from divi.backends.runners._qoro import MaxRetriesReachedError
 from divi.circuits._payloads import CircuitPayload
-from divi.exceptions import ExecutionCancelledError
+from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
 from tests._helpers import exact_match
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
@@ -1390,6 +1390,113 @@ class TestQoroServiceMock:
 
         with pytest.raises(requests.exceptions.HTTPError, match="API Error: 500"):
             qoro_service_mock.submit_circuits({"c1": "qasm"})
+
+    def test_failed_upload_cancels_the_job_it_opened(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.validate_qasm")
+        make_request = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker, "job-9"),
+                requests.exceptions.HTTPError("API Error: 500"),
+                make_mock_add_response(mocker),
+            ],
+        )
+
+        with pytest.raises(requests.exceptions.HTTPError, match="API Error: 500"):
+            service.submit_circuits({"c1": "qasm"})
+
+        assert make_request.call_args_list[-1].args == ("post", "job/job-9/cancel/")
+
+    @pytest.mark.parametrize(
+        ("message", "limit"),
+        [
+            pytest.param(
+                "Circuit 'c1' exceeds qubit limit 156.", 156, id="circuit-text"
+            ),
+            pytest.param("Template exceeds qubit limit 30.", 30, id="template-text"),
+        ],
+    )
+    def test_qubit_limit_rejection_raises_circuit_too_wide(
+        self, mocker, qoro_service_factory, message, limit
+    ):
+        service = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.validate_qasm")
+        _, plain = patch_transport(
+            mocker,
+            plain=[
+                http_response(mocker, body={"job_id": "job-9"}),
+                http_response(
+                    mocker,
+                    HTTPStatus.BAD_REQUEST,
+                    body={"circuits": [message]},
+                    reason="Bad Request",
+                ),
+                http_response(mocker, body={}),
+            ],
+        )
+
+        with pytest.raises(CircuitTooWideError, match=re.escape(message)) as exc:
+            service.submit_circuits({"c1": "qasm"})
+
+        assert exc.value.limit == limit
+        assert exc.value.response.status_code == HTTPStatus.BAD_REQUEST
+        assert plain.call_args_list[-1].args == ("post", f"{_API}/job/job-9/cancel/")
+
+    def test_interrupted_upload_cancels_the_job_it_opened(
+        self, mocker, qoro_service_factory
+    ):
+        service = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.validate_qasm")
+        make_request = mocker.patch.object(
+            service,
+            "_make_request",
+            side_effect=[
+                make_mock_init_response(mocker, "job-9"),
+                KeyboardInterrupt,
+                make_mock_add_response(mocker),
+            ],
+        )
+
+        with pytest.raises(KeyboardInterrupt):
+            service.submit_circuits({"c1": "qasm"})
+
+        assert make_request.call_args_list[-1].args == ("post", "job/job-9/cancel/")
+
+    @pytest.mark.parametrize(
+        ("status", "message"),
+        [
+            pytest.param(HTTPStatus.BAD_REQUEST, "Payload too large.", id="other-400"),
+            pytest.param(
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "Circuit 'c1' exceeds qubit limit 30.",
+                id="matching-text-wrong-status",
+            ),
+        ],
+    )
+    def test_other_failures_stay_plain_http_errors(
+        self, mocker, qoro_service_factory, status, message
+    ):
+        service = qoro_service_factory()
+        mocker.patch(f"{_qoro_service.__name__}.validate_qasm")
+        patch_transport(
+            mocker,
+            plain=[
+                http_response(mocker, body={"job_id": "job-9"}),
+                http_response(
+                    mocker, status, body={"circuits": [message]}, reason=status.phrase
+                ),
+                http_response(mocker, body={}),
+            ],
+        )
+
+        with pytest.raises(requests.exceptions.HTTPError) as exc:
+            service.submit_circuits({"c1": "qasm"})
+
+        assert type(exc.value) is requests.exceptions.HTTPError
 
     # --- Tests for parametric CircuitPayload submission ---
 

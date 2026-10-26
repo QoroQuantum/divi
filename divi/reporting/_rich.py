@@ -51,18 +51,22 @@ def render_failure(
     *,
     label: str = "",
     console: Console | None = None,
+    show_traceback: bool = True,
 ) -> None:
-    """Render one execution failure and its traceback."""
+    """Render one execution failure and, unless suppressed, its traceback."""
     resolved_console = console if console is not None else Console(stderr=True)
     resolved_console.print(
         Panel(
             f"[bold]{type(exc).__name__}[/bold]: {exc}",
             title=f"[bold red]Program Failure{label}[/bold red]",
-            subtitle="[dim]Traceback follows[/dim]",
+            subtitle="[dim]Traceback follows[/dim]" if show_traceback else None,
             border_style="red",
         )
     )
-    resolved_console.print(Traceback.from_exception(type(exc), exc, exc.__traceback__))
+    if show_traceback:
+        resolved_console.print(
+            Traceback.from_exception(type(exc), exc, exc.__traceback__)
+        )
 
 
 class BatchIndicatorColumn(ProgressColumn):

@@ -16,7 +16,7 @@ from typing import Any
 from rich.console import Console
 from rich.tree import Tree
 
-from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
+from divi.backends._cancellation import _cancel_job_on_abort, _sigint_to_event
 from divi.backends._job_status import JobStatus
 from divi.circuits._payloads import bound_circuits, is_bound
 from divi.exceptions import ExecutionCancelledError
@@ -330,14 +330,9 @@ def _default_execute_fn(
     # Store for cancellation support (read by cancel_unfinished_job)
     env.artifacts["_current_execution_result"] = result
 
-    try:
+    with _cancel_job_on_abort(env.backend, result):
         if result.is_async():
             result = _wait_for_async_result(env.backend, result, env)
-    except (ExecutionCancelledError, KeyboardInterrupt):
-        # KeyboardInterrupt covers hosts where our SIGINT funnel cannot install
-        # (Jupyter, embedded). Without it the cloud job is orphaned.
-        _best_effort_cancel_job(env.backend, result)
-        raise
 
     if result.results is None:
         raise RuntimeError("Backend returned no results")

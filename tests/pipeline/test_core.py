@@ -25,6 +25,7 @@ from divi.backends import (
     JobFailedError,
     JobStatus,
 )
+from divi.backends.runners._qoro import MaxRetriesReachedError
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
 from divi.circuits._payloads import bound_circuits
@@ -1522,6 +1523,47 @@ def test_execute_accumulates_the_reported_run_time(
     _default_execute_fn(trace, env)
 
     assert env.artifacts["run_time"] == expected
+
+
+class _FailingPollBackend(_TimedAsyncBackend):
+    """``_TimedAsyncBackend`` whose polling raises, recording cancelled jobs."""
+
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+        self.cancelled = []
+
+    def poll_job_status(self, execution_result, **kwargs):
+        raise self.error
+
+    def cancel_job(self, execution_result):
+        self.cancelled.append(execution_result.job_id)
+
+
+@pytest.mark.parametrize(
+    ("error", "cancels"),
+    [
+        pytest.param(RuntimeError("poll failed"), True, id="poll-error"),
+        pytest.param(ExecutionCancelledError("stop"), True, id="cancelled"),
+        pytest.param(
+            MaxRetriesReachedError("job_timed", 3), True, id="retries-exhausted"
+        ),
+        pytest.param(KeyboardInterrupt(), True, id="interrupt"),
+        pytest.param(JobFailedError("job_timed"), False, id="terminal"),
+    ],
+)
+def test_execute_cancels_the_job_unless_it_already_ended(error, cancels):
+    backend = _FailingPollBackend(error)
+    param_sets = [[0.1, 0.2]]
+    trace = run_binding_pipeline(
+        _parametric_meta_one_body(), backend=backend, param_sets=param_sets
+    )
+    env = PipelineEnv(backend=backend, param_sets=param_sets)
+
+    with pytest.raises(type(error)):
+        _default_execute_fn(trace, env)
+
+    assert backend.cancelled == (["job_timed"] if cancels else [])
 
 
 def _noop_handler(signum, frame):

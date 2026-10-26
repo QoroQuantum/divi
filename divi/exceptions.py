@@ -2,15 +2,30 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import requests
+
 __all__ = [
     "CharacterizationFailedError",
     "CharacterizationSubmitError",
+    "CircuitTooWideError",
     "ExecutionCancelledError",
 ]
 
 
 class ExecutionCancelledError(Exception):
     """Signal that a running program, job, or batch was cooperatively cancelled."""
+
+
+class CircuitTooWideError(requests.HTTPError):
+    """The Qoro API refused a circuit for having more qubits than the account may run."""
+
+    limit: int
+    """Largest circuit width, in qubits, the account is allowed."""
+
+    def __init__(self, message: str, *, limit: int, response: requests.Response):
+        """Wrap the API's refusal ``message`` and ``response`` with the width ``limit``."""
+        super().__init__(message, response=response)
+        self.limit = limit
 
 
 class CharacterizationFailedError(Exception):

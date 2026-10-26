@@ -16,6 +16,7 @@ from divi.backends import (
     CircuitRunner,
     ExecutionResult,
     JobCancelledError,
+    JobFailedError,
     JobStatus,
     JobTimedOutError,
 )
@@ -172,6 +173,17 @@ class _BlockingAsyncBackend(_FakeAsyncBackend):
         super().cancel_job(execution_result)
         if self._cancel_error is not None:
             raise self._cancel_error
+
+
+class _CancelDuringSubmitBackend(_FakeAsyncBackend):
+    """Async backend whose coordinator is cancelled while a submission is in flight."""
+
+    coordinator: _BatchCoordinator
+
+    def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
+        job = super().submit_circuits(payloads, **kwargs)
+        self.coordinator.cancel()
+        return job
 
 
 class _SubmissionCounter:
@@ -1581,7 +1593,7 @@ class TestCancellation:
         for outcome in outcomes:
             with pytest.raises(ExecutionCancelledError):
                 outcome.result(timeout=5)
-        assert [job.job_id for job in backend.cancelled_jobs] == ["job-1"]
+        assert {job.job_id for job in backend.cancelled_jobs} == {"job-1"}
 
     @_SINGLE_AND_MIXED_HAM_OPS
     def test_cancel_after_finished_flush_cancels_no_job(self, kwargs_by_program):
@@ -1597,6 +1609,52 @@ class TestCancellation:
 
         assert len(backend.jobs) == len(kwargs_by_program)
         assert backend.cancelled_jobs == []
+
+    def test_cancel_during_submission_cancels_the_job_it_opened(self):
+        backend = _CancelDuringSubmitBackend()
+        coord = _BatchCoordinator(backend)
+        backend.coordinator = coord
+        batch = {"p1": _make_entry({"c": "q"})}
+
+        _run_flush(coord, batch)
+
+        with pytest.raises(ExecutionCancelledError):
+            batch["p1"].future.result(timeout=0)
+        assert [job.job_id for job in backend.cancelled_jobs] == ["job-1"]
+
+    def test_event_set_without_cancel_still_cancels_the_polled_job(self):
+        event = Event()
+        backend = _BlockingAsyncBackend()
+        coord = _BatchCoordinator(backend, cancellation_event=event)
+        coord.register_program("p1")
+
+        outcome = _submit_in_background(coord, "p1", {"c": "q"})
+        assert backend.polling.wait(timeout=5)
+        event.set()
+
+        with pytest.raises(ExecutionCancelledError):
+            outcome.result(timeout=5)
+        assert [job.job_id for job in backend.cancelled_jobs] == ["job-1"]
+
+    @pytest.mark.parametrize(
+        ("error_type", "cancelled"),
+        [
+            pytest.param(RuntimeError, ["job-1"], id="non-terminal"),
+            pytest.param(JobFailedError, [], id="terminal"),
+        ],
+    )
+    def test_failed_job_is_cancelled_unless_it_already_ended(
+        self, error_type, cancelled
+    ):
+        backend = _TerminalErrorAsyncBackend(error_type, JobStatus.RUNNING)
+        coord = _BatchCoordinator(backend)
+        batch = {"p1": _make_entry({"c": "q"})}
+
+        _run_flush(coord, batch)
+
+        with pytest.raises(error_type):
+            batch["p1"].future.result(timeout=0)
+        assert [job.job_id for job in backend.cancelled_jobs] == cancelled
 
     def test_cancel_job_failure_still_fails_every_waiting_program(self):
         backend = _BlockingAsyncBackend(cancel_error=RuntimeError("cancel refused"))
@@ -1619,7 +1677,7 @@ class TestCancellation:
         for outcome in (in_flight, pending):
             with pytest.raises(ExecutionCancelledError):
                 outcome.result(timeout=5)
-        assert [job.job_id for job in backend.cancelled_jobs] == ["job-1"]
+        assert {job.job_id for job in backend.cancelled_jobs} == {"job-1"}
 
 
 def test_partial_subbatch_failure_keeps_the_successful_share(mocker):

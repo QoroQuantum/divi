@@ -370,9 +370,6 @@ class QuantumProgram(ABC):
         This method attempts to cancel the job associated with the current
         ExecutionResult. It is best-effort and will log warnings for any errors
         (e.g., job already completed, permission denied) without raising exceptions.
-
-        This is typically called by ProgramEnsemble when handling cancellation
-        to ensure cloud jobs are cancelled before local threads terminate.
         """
         result = self._current_execution_result
 

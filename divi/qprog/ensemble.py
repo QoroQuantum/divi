@@ -21,7 +21,7 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 
-from divi.backends import AsyncJobBackend, CircuitRunner
+from divi.backends import CircuitRunner
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import EnsembleReports
 from divi.qprog._batch_coordinator import (
@@ -72,6 +72,19 @@ __all__ = [
     "RoundRecord",
     "WorkflowStatus",
 ]
+
+_MAX_PANEL_PROGRAMS = 3
+
+
+def _programs_label(keys: list) -> str:
+    """Failure-panel title suffix naming the programs, collapsing long lists."""
+    if not keys:
+        return ""
+    shown = ", ".join(map(str, keys[:_MAX_PANEL_PROGRAMS]))
+    if len(keys) > _MAX_PANEL_PROGRAMS:
+        shown += f" and {len(keys) - _MAX_PANEL_PROGRAMS} more"
+    return f" ({'Program' if len(keys) == 1 else 'Programs'} {shown})"
+
 
 logger = logging.getLogger(__name__)
 
@@ -1951,12 +1964,7 @@ class ProgramEnsemble(ABC):
             if cancel_result:
                 successfully_cancelled.append(program)
             else:
-                # Already running: without a coordinator, cancel the program's
-                # own backend job; a local backend runs none.
-                if self._coordinator is None and isinstance(
-                    program.backend, AsyncJobBackend
-                ):
-                    program.cancel_unfinished_job()
+                # A running program cancels its own job when it sees the event.
                 unstoppable_futures.append(future)
                 self._emit_progress_message(
                     program._progress_key,
@@ -1993,8 +2001,8 @@ class ProgramEnsemble(ABC):
            progress bar.
 
         Without the coordinator (``BatchMode.OFF``), we try
-        ``future.cancel()`` for pending tasks and ``cancel_unfinished_job()``
-        for running ones.
+        ``future.cancel()`` for pending tasks; running programs see the
+        cancellation event and cancel their own backend job.
         """
         self._stop_remaining_programs(
             pending_status=TerminalStatus.CANCELLED,
@@ -2004,7 +2012,7 @@ class ProgramEnsemble(ABC):
         )
         self._report_failed_programs()
 
-    def _report_failed_programs(self) -> None:
+    def _report_failed_programs(self, chained: BaseException | None = None) -> None:
         """Render a Rich panel + traceback for any future that finished with
         a non-cancellation exception.
 
@@ -2013,6 +2021,10 @@ class ProgramEnsemble(ABC):
         Failures that happened before the cancel was requested still get
         the same panel treatment the no-cancel failure path produces. Nothing
         is printed under ``ReportingLevel.OFF``; the failure still raises.
+
+        ``chained`` is the exception the caller re-raises as ``__cause__``;
+        the panel for its cause omits the traceback, which the raised error
+        already prints.
         """
         if self.reporting_level is ReportingLevel.OFF:
             return
@@ -2041,16 +2053,16 @@ class ProgramEnsemble(ABC):
             _, keys = causes.setdefault((type(exc), str(exc)), (exc, []))
             if map_key is not None:
                 keys.append(map_key)
-        for exc, keys in causes.values():
-            if not keys:
-                label = ""
-            elif len(keys) == 1:
-                label = f" (Program {keys[0]})"
-            else:
-                label = f" (Programs {', '.join(map(str, keys))})"
-            render_failure(exc, label=label, console=console)
+        chained_cause = None if chained is None else (type(chained), str(chained))
+        for cause, (exc, keys) in causes.items():
+            render_failure(
+                exc,
+                label=_programs_label(keys),
+                console=console,
+                show_traceback=cause != chained_cause,
+            )
 
-    def _handle_failure(self) -> None:
+    def _handle_failure(self, chained: BaseException | None = None) -> None:
         """Handle a program failure by stopping remaining programs.
 
         Stops every other running program using the same mechanism as
@@ -2063,7 +2075,7 @@ class ProgramEnsemble(ABC):
             running_message="Aborted due to failure",
         )
         # Every failure gets a panel, not just the one join() spotted first.
-        self._report_failed_programs()
+        self._report_failed_programs(chained)
 
     def join(self):
         """
@@ -2124,7 +2136,7 @@ class ProgramEnsemble(ABC):
                 if f.done() and not f.cancelled() and f.exception() is None
             )
 
-            self._handle_failure()
+            self._handle_failure(e)
             self._finish_workflow_progress(TerminalStatus.FAILED)
 
             n_total = len(self._programs)

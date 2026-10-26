@@ -22,11 +22,6 @@ from divi.qprog._types import GraphProblemTypes
 from divi.qprog.problems._graph_hamiltonians import _edge_weight, _wire_edges
 from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
 
-# TODO: Make this dynamic through an interaction with the Qoro API
-# once a proper endpoint is exposed
-_MAXIMUM_AVAILABLE_QUBITS = 30
-
-
 _WeightedEdge = tuple[int, int, float | None]
 
 
@@ -448,20 +443,11 @@ def _node_partition_graph(
             partitioning_config,
         )
 
-    # Repair before the budget check: merging changes cluster sizes.
-    clusters = _merge_edgeless_clusters(
+    return _merge_edgeless_clusters(
         graph,
         [(sub, ids) for (_, _, sub, ids) in subgraphs],
         partitioning_config,
     )
-
-    if any(len(sub) > _MAXIMUM_AVAILABLE_QUBITS for sub, _ids in clusters):
-        warn(
-            "At least one cluster has more nodes than what can be executed on "
-            f"the available backends: {_MAXIMUM_AVAILABLE_QUBITS} qubits."
-        )
-
-    return clusters
 
 
 def _drawable(graph: GraphProblemTypes) -> nx.Graph:
