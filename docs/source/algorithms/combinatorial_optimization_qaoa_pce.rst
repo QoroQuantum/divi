@@ -118,7 +118,7 @@ QDrift controls:
 - **keep_fraction**: Deterministically keep the top fraction of terms by coefficient magnitude
 - **sampling_budget**: Number of terms to sample from the remaining Hamiltonian
 - **n_hamiltonians_per_iteration**: Multiple samples per cost evaluation; losses are averaged
-- **sampling_strategy**: ``"uniform"`` or ``"weighted"`` (by coefficient magnitude)
+- **sampling_strategy**: ``"uniform"``, ``"weighted"`` (by coefficient magnitude), or a mapping from Pauli label to sampling probability covering exactly the terms left to sample
 
 Assuming ``QAOA`` is imported and ``problem`` is defined, pass it as
 ``trotterization_strategy``:

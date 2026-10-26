@@ -32,6 +32,10 @@ _SAMPLING_BUDGET_NOT_SET = exact_match(
 
 # Qiskit big-endian: rightmost char is qubit 0.
 _SIMPLE_HAMILTONIAN = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)])
+# ``simplify()`` merges the two IZ entries and reorders the terms.
+_MERGING_HAMILTONIAN = SparsePauliOp.from_list(
+    [("XX", 0.5), ("ZZ", 3.0), ("IZ", 0.25), ("ZI", -2.0), ("IZ", 0.75)]
+)
 
 
 @pytest.fixture
@@ -45,6 +49,34 @@ def _only_step(result) -> SparsePauliOp:
     assert result.sampled_terms is not None
     (step_terms,) = result.sampled_terms
     return step_terms
+
+
+def _scripted_rng(mocker, draw):
+    """Generator mock whose ``choice`` returns ``draw``."""
+    rng = mocker.Mock(spec=np.random.Generator)
+    rng.choice.return_value = np.array(draw)
+    return rng
+
+
+def _exact_expected_step(strategy, hamiltonian, mocker) -> SparsePauliOp:
+    """E[one step], enumerating every index tuple ``rng.choice`` can return,
+    weighted by the probabilities the strategy passes to it."""
+    budget = strategy.sampling_budget
+    probe = _scripted_rng(mocker, [0] * budget)
+    strategy.process_hamiltonian(hamiltonian, rng=probe)
+    (n_terms,), kwargs = probe.choice.call_args
+    probs = np.full(n_terms, 1 / n_terms) if kwargs["p"] is None else kwargs["p"]
+    return SparsePauliOp.sum(
+        [
+            np.prod(probs[list(draw)])
+            * _only_step(
+                strategy.process_hamiltonian(
+                    hamiltonian, rng=_scripted_rng(mocker, draw)
+                )
+            )
+            for draw in itertools.product(range(n_terms), repeat=budget)
+        ]
+    ).simplify()
 
 
 single_term_hamiltonians = pytest.mark.parametrize(
@@ -646,6 +678,145 @@ class TestQDrift:
         # Standard error of the 500-seed mean is at most 0.006, so this is ~4σ.
         assert sum_coeffs.real[0] / n_seeds == pytest.approx(0.4, abs=0.025)
         assert sum_coeffs.real[1] / n_seeds == pytest.approx(0.6, abs=0.025)
+
+    @pytest.mark.parametrize(
+        "hamiltonian, keep, distribution",
+        [
+            (_SIMPLE_HAMILTONIAN, {}, {"ZZ": 0.1, "IZ": 0.6, "ZI": 0.3}),
+            (
+                _MERGING_HAMILTONIAN,
+                {},
+                {"ZI": 0.4, "IZ": 0.1, "ZZ": 0.3, "XX": 0.2},
+            ),
+            (
+                _MERGING_HAMILTONIAN,
+                {"keep_top_n": 1},
+                {"ZI": 0.5, "IZ": 0.2, "XX": 0.3},
+            ),
+        ],
+        ids=["distinct_terms", "merged_by_simplify", "after_keep_top_n"],
+    )
+    def test_mapping_distribution_expected_value_matches_input_hamiltonian(
+        self, mocker, hamiltonian, keep, distribution
+    ):
+        """Any label-keyed distribution with q_j > 0 gives E[step] = H exactly,
+        however ``simplify()`` and the keep split reorder or merge terms."""
+        strategy = QDrift(**keep, sampling_budget=2, sampling_strategy=distribution)
+        expected = _exact_expected_step(strategy, hamiltonian, mocker)
+        np.testing.assert_allclose(
+            expected.to_matrix(), hamiltonian.to_matrix(), atol=1e-12
+        )
+
+    def test_weighted_distribution_mapping_matches_weighted_strategy(self, mocker):
+        simplified = _MERGING_HAMILTONIAN.simplify()
+        absolute = np.abs(simplified.coeffs)
+        distribution = dict(
+            zip(simplified.paulis.to_labels(), (absolute / absolute.sum()).tolist())
+        )
+        mapped = QDrift(sampling_budget=2, sampling_strategy=distribution)
+        weighted = QDrift(sampling_budget=2, sampling_strategy="weighted")
+        for draw in itertools.product(range(simplified.size), repeat=2):
+            mapped_step, weighted_step = (
+                _only_step(
+                    strategy.process_hamiltonian(
+                        _MERGING_HAMILTONIAN, rng=_scripted_rng(mocker, draw)
+                    )
+                )
+                for strategy in (mapped, weighted)
+            )
+            assert mapped_step.paulis == weighted_step.paulis
+            np.testing.assert_allclose(
+                mapped_step.coeffs, weighted_step.coeffs, rtol=1e-12
+            )
+        np.testing.assert_allclose(
+            _exact_expected_step(mapped, _MERGING_HAMILTONIAN, mocker).to_matrix(),
+            _exact_expected_step(weighted, _MERGING_HAMILTONIAN, mocker).to_matrix(),
+            atol=1e-12,
+        )
+
+    def test_mapping_strategy_is_copied_and_hashable(self):
+        distribution = {"IZ": 0.5, "ZI": 0.25, "ZZ": 0.25}
+        strategy = QDrift(sampling_budget=2, sampling_strategy=distribution)
+        distribution["IZ"] = 0.0
+        assert strategy.sampling_strategy == {"IZ": 0.5, "ZI": 0.25, "ZZ": 0.25}
+        assert hash(strategy) == hash(
+            QDrift(
+                sampling_budget=2, sampling_strategy=dict(strategy.sampling_strategy)
+            )
+        )
+
+    @pytest.mark.parametrize(
+        "distribution, message",
+        [
+            ({1: 1.0}, "sampling_strategy keys must be Pauli label strings, got [1]"),
+            (
+                {"Z": "a"},
+                "sampling_strategy probabilities must be real numbers, got ['a']",
+            ),
+            (
+                {"Z": 0.0, "X": 1.0},
+                "sampling_strategy probabilities must be finite and > 0, "
+                "got {'Z': 0.0, 'X': 1.0}",
+            ),
+            (
+                {"Z": -0.5, "X": 1.5},
+                "sampling_strategy probabilities must be finite and > 0, "
+                "got {'Z': -0.5, 'X': 1.5}",
+            ),
+            (
+                {"Z": float("nan"), "X": 1.0},
+                "sampling_strategy probabilities must be finite and > 0, "
+                "got {'Z': nan, 'X': 1.0}",
+            ),
+            (
+                {"Z": float("inf")},
+                "sampling_strategy probabilities must be finite and > 0, "
+                "got {'Z': inf}",
+            ),
+            (
+                {"Z": 0.5, "X": 0.4},
+                "sampling_strategy probabilities must sum to 1, got 0.9",
+            ),
+            ({}, "sampling_strategy probabilities must sum to 1, got 0.0"),
+        ],
+        ids=[
+            "non_string_label",
+            "non_numeric",
+            "zero",
+            "negative",
+            "nan",
+            "inf",
+            "unnormalised",
+            "empty",
+        ],
+    )
+    def test_invalid_mapping_strategy_raises(self, distribution, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            QDrift(sampling_budget=2, sampling_strategy=distribution)
+
+    @pytest.mark.parametrize(
+        "keep, distribution, message",
+        [
+            (
+                {},
+                {"ZZ": 0.5, "IZ": 0.5},
+                "sampling_strategy has no probability for the sampled terms ['ZI']",
+            ),
+            (
+                {"keep_top_n": 1},
+                {"ZZ": 0.2, "IZ": 0.4, "ZI": 0.4},
+                "sampling_strategy has probabilities for ['ZZ'], "
+                "which are not among the sampled terms ['IZ', 'ZI']",
+            ),
+        ],
+        ids=["missing_label", "kept_label"],
+    )
+    def test_mapping_must_cover_exactly_the_sampled_terms(
+        self, simple_hamiltonian, keep, distribution, message
+    ):
+        strategy = QDrift(**keep, sampling_budget=2, sampling_strategy=distribution)
+        with pytest.raises(ValueError, match=exact_match(message)):
+            strategy.process_hamiltonian(simple_hamiltonian)
 
     @pytest.mark.parametrize("strategy", ["uniform", "weighted"])
     def test_qdrift_wide_spo_narrow_truncation_no_index_error(self, strategy):

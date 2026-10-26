@@ -4,7 +4,8 @@
 
 """Stateless trotterization strategies for Hamiltonian simulation."""
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from numbers import Integral
 from typing import Literal, Protocol
 from warnings import warn
@@ -262,8 +263,10 @@ class QDrift(TrotterizationStrategy):
     """Number of top terms to keep deterministically by coefficient magnitude. Must be >= 1. If None, all terms go to the sampling pool. Mutually exclusive with keep_fraction."""
     sampling_budget: int | None = None
     """Number of terms to sample from the remaining Hamiltonian per Trotter step; each step draws its own terms independently. If None, only kept terms are applied (equivalent to ``ExactTrotterization``)."""
-    sampling_strategy: Literal["uniform", "weighted"] = "uniform"
-    """How to sample terms — ``"uniform"`` (equal probability) or ``"weighted"`` (by coefficient magnitude)."""
+    sampling_strategy: Literal["uniform", "weighted"] | Mapping[str, float] = field(
+        default="uniform", hash=False
+    )
+    """How to sample terms — ``"uniform"`` (equal probability), ``"weighted"`` (by coefficient magnitude), or a mapping from Pauli label to sampling probability. A mapping must cover exactly the terms left to sample (after ``simplify()`` and any ``keep_*`` split), with every probability finite and > 0 and the probabilities summing to 1."""
     seed: int | None = None
     """Random seed for reproducible sampling. If None, sampling is non-deterministic."""
     n_hamiltonians_per_iteration: int = 10
@@ -287,7 +290,34 @@ class QDrift(TrotterizationStrategy):
                 UserWarning,
             )
 
-        if self.sampling_strategy not in {"uniform", "weighted"}:
+        if isinstance(self.sampling_strategy, Mapping):
+            labels = list(self.sampling_strategy)
+            if not all(isinstance(label, str) for label in labels):
+                raise ValueError(
+                    f"sampling_strategy keys must be Pauli label strings, got {labels}"
+                )
+            try:
+                probs = np.array(
+                    [float(p) for p in self.sampling_strategy.values()], dtype=float
+                )
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    f"sampling_strategy probabilities must be real numbers, "
+                    f"got {list(self.sampling_strategy.values())}"
+                ) from exc
+            if not np.all(np.isfinite(probs) & (probs > 0)):
+                raise ValueError(
+                    f"sampling_strategy probabilities must be finite and > 0, "
+                    f"got {dict(zip(labels, probs.tolist()))}"
+                )
+            if not np.isclose(probs.sum(), 1.0, rtol=0.0, atol=1e-9):
+                raise ValueError(
+                    f"sampling_strategy probabilities must sum to 1, got {probs.sum()}"
+                )
+            object.__setattr__(
+                self, "sampling_strategy", dict(zip(labels, probs.tolist()))
+            )
+        elif self.sampling_strategy not in {"uniform", "weighted"}:
             raise ValueError(
                 f"Invalid sampling_strategy: {self.sampling_strategy}. Must be 'uniform' or 'weighted'."
             )
@@ -345,6 +375,11 @@ class QDrift(TrotterizationStrategy):
         Rescaling rules (L = sampling_budget, λ = Σ\|c_i\|, N = #terms):
           - Weighted: term_i → (λ / (L · \|c_i\|)) · c_i · P_i
           - Uniform:  term_i → (N / L) · c_i · P_i
+          - Mapping q: term_i → (1 / (L · q_i)) · c_i · P_i
+
+        Raises:
+            ValueError: If a mapping ``sampling_strategy`` does not cover
+                exactly the terms left to sample.
         """
         prepared = self._plan(hamiltonian)
         if isinstance(prepared, TrotterizationResult):
@@ -439,7 +474,21 @@ class QDrift(TrotterizationStrategy):
                     )
                 )
             return TrotterizationResult(keep_spo)
-        if self.sampling_strategy == "weighted":
+        if isinstance(self.sampling_strategy, Mapping):
+            labels = to_sample_spo.paulis.to_labels()
+            missing = sorted(set(labels) - self.sampling_strategy.keys())
+            if missing:
+                raise ValueError(
+                    f"sampling_strategy has no probability for the sampled terms {missing}"
+                )
+            unknown = sorted(self.sampling_strategy.keys() - set(labels))
+            if unknown:
+                raise ValueError(
+                    f"sampling_strategy has probabilities for {unknown}, "
+                    f"which are not among the sampled terms {sorted(labels)}"
+                )
+            probs = np.array([self.sampling_strategy[label] for label in labels])
+        elif self.sampling_strategy == "weighted":
             probs = absolute_coeffs / coeff_sum
         else:
             probs = None
@@ -479,9 +528,13 @@ class QDrift(TrotterizationStrategy):
         if self.sampling_strategy == "weighted":
             # p_i = |c_i|/λ → scale by λ / (L · |c_i|).
             scale = plan.coeff_sum / (budget * plan.absolute_coeffs[indices])
-        else:
+        elif self.sampling_strategy == "uniform":
             # p_i = 1/N → scale by N/L.
             scale = np.full(budget, to_sample_spo.size / budget)
+        elif plan.probs is not None:
+            scale = 1.0 / (budget * plan.probs[indices])
+        else:
+            raise RuntimeError("A mapping sampling_strategy requires plan.probs.")
         sampled_coeffs = scale * to_sample_spo.coeffs[indices]
         sampled_spo = SparsePauliOp(to_sample_spo.paulis[indices], sampled_coeffs)
         if plan.keep_spo is not None:
