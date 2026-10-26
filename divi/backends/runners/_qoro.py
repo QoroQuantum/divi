@@ -13,7 +13,7 @@ import platform
 import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import nullcontext
+from contextlib import ExitStack
 from enum import Enum
 from http import HTTPStatus
 from importlib import metadata
@@ -44,10 +44,10 @@ from divi.qasm import (
     validate_qasm,
 )
 
-from .._base import CircuitRunner, ExecutionResult
+from .._base import AsyncJobBackend, ExecutionResult
 from .._cancellation import (
-    _auto_cancellation_scope,
     _cancel_job_on_abort,
+    _sigint_to_event,
     raise_if_cancelled,
 )
 from .._config import _TARGET_FIELDS, DeviceConfig, JobConfig
@@ -256,7 +256,7 @@ _DEFAULT_JOB_CONFIG = JobConfig(
 )
 
 
-class QoroService(CircuitRunner):
+class QoroService(AsyncJobBackend):
     """A client for interacting with the Qoro Quantum Service API.
 
     This class provides methods to submit circuits, check job status,
@@ -335,8 +335,6 @@ class QoroService(CircuitRunner):
             )
 
         self.auth_token = "Bearer " + auth_token
-        self.polling_interval = polling_interval
-        self.max_retries = max_retries
 
         # Fetch available systems (needs auth_token to be set)
         self.fetch_qpu_systems()
@@ -363,7 +361,12 @@ class QoroService(CircuitRunner):
             device_config if device_config is not None else saved_device
         )
 
-        super().__init__(shots=self.job_config.shots, track_depth=track_depth)
+        super().__init__(
+            shots=self.job_config.shots,
+            track_depth=track_depth,
+            polling_interval=polling_interval,
+            max_retries=max_retries,
+        )
 
     @property
     def supports_expval(self) -> bool:
@@ -421,13 +424,6 @@ class QoroService(CircuitRunner):
         if value is not None:
             _require_device_config(value)
         self._device_config = value
-
-    @property
-    def is_async(self) -> bool:
-        """
-        Whether the backend executes circuits asynchronously.
-        """
-        return True
 
     @property
     def resolves_parameters(self) -> bool:
@@ -1324,9 +1320,10 @@ class QoroService(CircuitRunner):
     ) -> JobStatus:
         """Inspect a Qoro job once, or wait and raise on terminal failure.
 
-        Waiting callers without a ``cancellation_event`` get a SIGINT funnel
-        that best-effort cancels the remote job on Ctrl+C. Wrappers that pass
-        their own event retain cleanup ownership.
+        Waiting callers without a ``cancellation_event`` get a SIGINT funnel,
+        and the remote job is cancelled if the wait ends for any reason except
+        the job itself finishing. Wrappers that pass their own event retain
+        cleanup ownership.
 
         Args:
             execution_result: An ExecutionResult instance with a job_id to check.
@@ -1362,11 +1359,8 @@ class QoroService(CircuitRunner):
             response = self._make_request("get", f"job/{job_id}/status/", timeout=200)
             return JobStatus(response.json()["status"])
 
-        scope = (
-            _auto_cancellation_scope(self, execution_result)
-            if cancellation_event is None
-            else nullcontext(cancellation_event)
-        )
+        owns_event = cancellation_event is None
+        event = Event() if owns_event else cancellation_event
 
         polling_status = None
         if progress_callback:
@@ -1392,7 +1386,10 @@ class QoroService(CircuitRunner):
             update_fn = ignore_status
 
         try:
-            with scope as cancellation_event:
+            with ExitStack() as stack:
+                if owns_event:
+                    stack.enter_context(_sigint_to_event(event))
+                    stack.enter_context(_cancel_job_on_abort(self, execution_result))
                 terminal_errors = {
                     JobStatus.FAILED: JobFailedError,
                     JobStatus.CANCELLED: JobCancelledError,
@@ -1407,7 +1404,7 @@ class QoroService(CircuitRunner):
                 )
                 cancelled = f"Polling cancelled for job {job_id}."
                 for retry_count in attempts:
-                    raise_if_cancelled(cancellation_event, cancelled)
+                    raise_if_cancelled(event, cancelled)
 
                     response = self._make_request(
                         "get", f"job/{job_id}/status/", timeout=200
@@ -1416,13 +1413,13 @@ class QoroService(CircuitRunner):
 
                     if status is JobStatus.COMPLETED:
                         return status
-                    raise_if_cancelled(cancellation_event, cancelled)
+                    raise_if_cancelled(event, cancelled)
                     if error_type := terminal_errors.get(status):
                         raise error_type(job_id)
 
                     update_fn(retry_count, status.value)
 
-                    if cancellation_event.wait(self.polling_interval):
+                    if event.wait(self.polling_interval):
                         raise ExecutionCancelledError(cancelled)
 
                 raise MaxRetriesReachedError(job_id, self.max_retries)
@@ -1542,6 +1539,7 @@ class QoroService(CircuitRunner):
                 ) from exc
 
         try:
+            # Passing an event leaves the job running if the wait is interrupted.
             self.poll_job_status(
                 ExecutionResult(job_id=job_id),
                 loop_until_complete=True,

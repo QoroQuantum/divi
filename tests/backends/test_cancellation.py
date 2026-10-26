@@ -5,16 +5,17 @@
 """Tests for divi.backends._cancellation."""
 
 import logging
-from threading import Event
 
 import pytest
 
-from divi.backends import AsyncJobBackend, ExecutionResult
+from divi.backends import AsyncJobBackend, ExecutionResult, JobFailedError
 from divi.backends._cancellation import (
-    _auto_cancellation_scope,
     _best_effort_cancel_job,
+    _cancel_job_on_abort,
+    _require_async_backend,
 )
 from divi.exceptions import ExecutionCancelledError
+from tests._helpers import exact_match
 
 
 class TestBestEffortCancelJob:
@@ -50,34 +51,53 @@ class TestBestEffortCancelJob:
         assert record.exc_info[1] is error
 
 
-class TestAutoCancellationScope:
-    """Tests for ``_auto_cancellation_scope``: bundles the SIGINT funnel with
-    best-effort remote-job cleanup for direct callers of ``poll_job_status``."""
-
-    def test_cancels_backend_on_execution_cancelled(self, mocker):
+class TestCancelJobOnAbort:
+    @pytest.mark.parametrize(
+        "error",
+        [
+            pytest.param(RuntimeError("poll failed"), id="error"),
+            pytest.param(ExecutionCancelledError("stop"), id="cancelled"),
+            pytest.param(KeyboardInterrupt(), id="interrupt"),
+        ],
+    )
+    def test_cancels_the_job_on_a_non_terminal_exit(self, mocker, error):
         backend = mocker.Mock(spec=AsyncJobBackend)
         result = ExecutionResult(job_id="job_x")
 
-        with pytest.raises(ExecutionCancelledError):
-            with _auto_cancellation_scope(backend, result):
-                raise ExecutionCancelledError("polling cancelled")
+        with pytest.raises(type(error)):
+            with _cancel_job_on_abort(backend, result):
+                raise error
 
         backend.cancel_job.assert_called_once_with(result)
 
-    def test_does_not_cancel_on_unrelated_exceptions(self, mocker):
+    def test_leaves_a_terminal_job_error_alone(self, mocker):
         backend = mocker.Mock(spec=AsyncJobBackend)
-        result = ExecutionResult(job_id="job_x")
 
-        with pytest.raises(RuntimeError, match="not a cancellation"):
-            with _auto_cancellation_scope(backend, result):
-                raise RuntimeError("not a cancellation")
+        with pytest.raises(JobFailedError):
+            with _cancel_job_on_abort(backend, ExecutionResult(job_id="job_x")):
+                raise JobFailedError("job_x")
 
         backend.cancel_job.assert_not_called()
 
-    def test_yields_a_fresh_unset_event(self, mocker):
+    def test_does_not_cancel_when_the_block_succeeds(self, mocker):
         backend = mocker.Mock(spec=AsyncJobBackend)
-        with _auto_cancellation_scope(
-            backend, ExecutionResult(job_id="job_x")
-        ) as event:
-            assert isinstance(event, Event)
-            assert not event.is_set()
+
+        with _cancel_job_on_abort(backend, ExecutionResult(job_id="job_x")):
+            pass
+
+        backend.cancel_job.assert_not_called()
+
+
+class TestRequireAsyncBackend:
+    def test_returns_an_async_backend(self, async_backend):
+        assert _require_async_backend(async_backend) is async_backend
+
+    def test_rejects_a_backend_that_is_not_asynchronous(self, dummy_simulator):
+        with pytest.raises(
+            RuntimeError,
+            match=exact_match(
+                "Backend DummySimulator returned an ExecutionResult with a job_id "
+                "but is not an AsyncJobBackend."
+            ),
+        ):
+            _require_async_backend(dummy_simulator)

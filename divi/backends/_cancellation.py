@@ -12,10 +12,20 @@ from threading import Event
 
 from divi.exceptions import ExecutionCancelledError
 
-from ._base import AsyncJobBackend
+from ._base import AsyncJobBackend, CircuitRunner, ExecutionResult
 from ._job_status import QoroJobError
 
 logger = logging.getLogger(__name__)
+
+
+def _require_async_backend(backend: CircuitRunner) -> AsyncJobBackend:
+    """Return ``backend``, which returned a job handle and so must be asynchronous."""
+    if not isinstance(backend, AsyncJobBackend):
+        raise RuntimeError(
+            f"Backend {type(backend).__name__} returned an ExecutionResult "
+            "with a job_id but is not an AsyncJobBackend."
+        )
+    return backend
 
 
 def raise_if_cancelled(event: Event | None, message: str) -> None:
@@ -55,7 +65,9 @@ def _sigint_to_event(event: Event):
         signal.signal(signal.SIGINT, existing)
 
 
-def _best_effort_cancel_job(backend, execution_result) -> None:
+def _best_effort_cancel_job(
+    backend: CircuitRunner, execution_result: ExecutionResult | None
+) -> None:
     """Notify an async backend's scheduler that an in-flight job should stop.
 
     No-op when ``backend`` is not an :class:`AsyncJobBackend` or when
@@ -78,7 +90,9 @@ def _best_effort_cancel_job(backend, execution_result) -> None:
 
 
 @contextmanager
-def _cancel_job_on_abort(backend, execution_result):
+def _cancel_job_on_abort(
+    backend: CircuitRunner, execution_result: ExecutionResult | None
+):
     """Cancel the job if the block raises anything except a terminal ``QoroJobError``."""
     try:
         yield
@@ -87,24 +101,3 @@ def _cancel_job_on_abort(backend, execution_result):
     except BaseException:
         _best_effort_cancel_job(backend, execution_result)
         raise
-
-
-@contextmanager
-def _auto_cancellation_scope(backend, execution_result):
-    """SIGINT funnel + remote-job cleanup for direct callers of an
-    :class:`~divi.backends.AsyncJobBackend`'s long-running poll loop.
-
-    Yields a fresh :class:`threading.Event` that the wrapped poll loop should
-    honour. On cancellation, best-effort cancels the remote job before
-    re-raising. Implementers of :meth:`AsyncJobBackend.poll_job_status` should
-    open this scope when ``loop_until_complete`` is ``True`` and the caller
-    didn't supply their own cancellation event; when the caller did, they
-    own the cleanup contract and this helper must not be opened.
-    """
-    event = Event()
-    with _sigint_to_event(event):
-        try:
-            yield event
-        except ExecutionCancelledError:
-            _best_effort_cancel_job(backend, execution_result)
-            raise

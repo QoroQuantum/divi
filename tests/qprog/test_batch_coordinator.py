@@ -12,7 +12,6 @@ from threading import Barrier, Event, Lock, Thread
 import pytest
 
 from divi.backends import (
-    AsyncJobBackend,
     CircuitRunner,
     ExecutionResult,
     JobCancelledError,
@@ -40,7 +39,13 @@ from divi.reporting._events import (
     TerminalStatus,
 )
 from divi.reporting._state import ProgressState
-from tests._helpers import exact_match
+from tests._helpers import (
+    FakeAsyncBackend,
+    block_until_cancelled,
+    exact_match,
+    raise_after_running,
+    report_status,
+)
 
 
 class FakeSyncBackend(CircuitRunner):
@@ -54,10 +59,6 @@ class FakeSyncBackend(CircuitRunner):
     @property
     def resolves_parameters(self) -> bool:
         return self._resolves_parameters
-
-    @property
-    def is_async(self) -> bool:
-        return False
 
     @property
     def supports_expval(self) -> bool:
@@ -80,10 +81,6 @@ class FakeExpvalBackend(CircuitRunner):
         self.call_log: list[tuple[dict, dict]] = []
 
     @property
-    def is_async(self) -> bool:
-        return False
-
-    @property
     def supports_expval(self) -> bool:
         return True
 
@@ -94,88 +91,7 @@ class FakeExpvalBackend(CircuitRunner):
         return ExecutionResult(results=results)
 
 
-class _FakeAsyncBackend(FakeSyncBackend):
-    """Production-shaped async backend that records how it is driven."""
-
-    def __init__(self, max_retries: int | None = None):
-        super().__init__()
-        self.max_retries = max_retries
-        self._submitted_circuits: dict[str, str] = {}
-        self.jobs: list[ExecutionResult] = []
-        self.poll_calls: list[dict] = []
-        self.fetched: list[ExecutionResult] = []
-        self.cancelled_jobs: list[ExecutionResult] = []
-
-    @property
-    def is_async(self) -> bool:
-        return True
-
-    def submit_circuits(self, payloads, **kwargs) -> ExecutionResult:
-        self._submitted_circuits = bound_circuits(payloads)
-        job = ExecutionResult(results=None, job_id=f"job-{len(self.jobs) + 1}")
-        self.jobs.append(job)
-        return job
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        self.poll_calls.append(
-            {
-                "loop_until_complete": loop_until_complete,
-                "verbose": verbose,
-                "cancellation_event": cancellation_event,
-            }
-        )
-        if progress_callback is not None:
-            progress_callback(1, "RUNNING")
-        return JobStatus.COMPLETED
-
-    def get_job_results(self, execution_result) -> ExecutionResult:
-        self.fetched.append(execution_result)
-        return ExecutionResult(
-            results=[
-                {"label": label, "results": {"00": 100}}
-                for label in self._submitted_circuits
-            ],
-            run_time=2.5,
-        )
-
-    def cancel_job(self, execution_result):
-        self.cancelled_jobs.append(execution_result)
-
-
-class _BlockingAsyncBackend(_FakeAsyncBackend):
-    """Async backend whose polling blocks until the cancellation event is set."""
-
-    def __init__(self, cancel_error: Exception | None = None):
-        super().__init__()
-        self.polling = Event()
-        self._cancel_error = cancel_error
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        self.polling.set()
-        cancellation_event.wait(timeout=10)
-        raise ExecutionCancelledError("Polling interrupted.")
-
-    def cancel_job(self, execution_result):
-        super().cancel_job(execution_result)
-        if self._cancel_error is not None:
-            raise self._cancel_error
-
-
-class _CancelDuringSubmitBackend(_FakeAsyncBackend):
+class _CancelDuringSubmitBackend(FakeAsyncBackend):
     """Async backend whose coordinator is cancelled while a submission is in flight."""
 
     coordinator: _BatchCoordinator
@@ -201,44 +117,6 @@ class _SubmissionCounter:
                 self._count += 1
                 if self._count >= self._target:
                     self.reached.set()
-
-
-class _UnknownStatusAsyncBackend(_FakeAsyncBackend):
-    """Async backend that reports a valid backend-specific polling status."""
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        if progress_callback is not None:
-            progress_callback(2, "BACKEND_SPECIFIC_WAIT")
-        return JobStatus.COMPLETED
-
-
-class _TerminalErrorAsyncBackend(_FakeAsyncBackend):
-    """Async backend that polls once before raising a terminal job error."""
-
-    def __init__(self, error_type, status: JobStatus) -> None:
-        super().__init__()
-        self.error_type = error_type
-        self.status = status
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        del loop_until_complete, verbose, cancellation_event
-        if progress_callback is not None:
-            progress_callback(1, JobStatus.RUNNING.value)
-        raise self.error_type(execution_result.job_id)
 
 
 def _report_run_times(mocker, backend, outcomes):
@@ -1197,7 +1075,7 @@ class TestBatchProgress:
 
     @pytest.mark.parametrize(
         ("backend_cls", "job_status"),
-        [(FakeSyncBackend, None), (_FakeAsyncBackend, JobStatus.COMPLETED)],
+        [(FakeSyncBackend, None), (FakeAsyncBackend, JobStatus.COMPLETED)],
         ids=["sync", "async"],
     )
     def test_successful_batch_finish_reports_job_status(self, backend_cls, job_status):
@@ -1215,7 +1093,7 @@ class TestBatchProgress:
     def test_polling_reports_the_backend_retry_limit(self):
         emitted: list[ProgressEvent] = []
         coord = _BatchCoordinator(
-            _FakeAsyncBackend(max_retries=7), progress_emitter=emitted.append
+            FakeAsyncBackend(max_retries=7), progress_emitter=emitted.append
         )
         coord.register_program("p1")
 
@@ -1224,22 +1102,23 @@ class TestBatchProgress:
         polling = [event for event in emitted if event.kind is EventKind.POLLING]
         assert [event.max_retries for event in polling] == [7]
 
-    def test_polling_waits_quietly_and_cancellably_for_the_submitted_job(self):
+    def test_polling_waits_quietly_and_cancellably_for_the_submitted_job(
+        self, async_backend
+    ):
         cancellation_event = Event()
-        backend = _FakeAsyncBackend()
-        coord = _BatchCoordinator(backend, cancellation_event=cancellation_event)
+        coord = _BatchCoordinator(async_backend, cancellation_event=cancellation_event)
         coord.register_program("p1")
 
         coord.submit("p1", {"c1": "q"})
 
-        assert backend.poll_calls == [
+        assert async_backend.poll_calls == [
             {
                 "loop_until_complete": True,
                 "verbose": False,
                 "cancellation_event": cancellation_event,
             }
         ]
-        assert backend.fetched == backend.jobs
+        assert async_backend.fetched == async_backend.jobs
 
     def test_sequential_flushes_keep_distinct_batch_lifecycles(self):
         emitted: list[ProgressEvent] = []
@@ -1315,20 +1194,14 @@ class TestBatchProgress:
         ]
         assert prep_events == [ProgressEvent.advance("preparation")]
 
-    def test_polling_normalises_job_status_to_canonical_enum(self):
+    def test_polling_normalises_job_status_to_canonical_enum(self, async_backend):
         emitted: list[ProgressEvent] = []
-        backend = _FakeAsyncBackend()
-        backend.submit_circuits({"c1": "qasm"})
-        coord = _BatchCoordinator(backend, progress_emitter=emitted.append)
+        job = async_backend.submit_circuits({"c1": "qasm"})
+        coord = _BatchCoordinator(async_backend, progress_emitter=emitted.append)
 
-        completed = coord._poll_and_get_results(
-            ExecutionResult(results=None, job_id="job-123"),
-            job_id="job-123",
-            batch_progress_key="registered-batch",
-        )
+        completed = coord._poll_and_get_results(job, "registered-batch")
 
         event = emitted[-1]
-        assert isinstance(backend, AsyncJobBackend)
         assert completed.results[0]["label"] == "c1"
         assert completed.run_time == 2.5
         assert event.kind is EventKind.POLLING
@@ -1338,22 +1211,20 @@ class TestBatchProgress:
 
     def test_backend_specific_polling_status_is_reported_without_aborting(self):
         emitted: list[ProgressEvent] = []
-        backend = _UnknownStatusAsyncBackend()
-        backend.submit_circuits({"c1": "qasm"})
+        backend = FakeAsyncBackend(
+            poll=report_status("BACKEND_SPECIFIC_WAIT", attempt=2)
+        )
+        job = backend.submit_circuits({"c1": "qasm"})
         coord = _BatchCoordinator(backend, progress_emitter=emitted.append)
 
-        completed = coord._poll_and_get_results(
-            ExecutionResult(results=None, job_id="job-123"),
-            job_id="job-123",
-            batch_progress_key="registered-batch",
-        )
+        completed = coord._poll_and_get_results(job, "registered-batch")
 
         assert completed.results[0]["label"] == "c1"
         assert completed.run_time == 2.5
         assert emitted == [
             ProgressEvent.show(
                 "registered-batch",
-                "Backend status BACKEND_SPECIFIC_WAIT for job job-123 (attempt 2)",
+                "Backend status BACKEND_SPECIFIC_WAIT for job job-1 (attempt 2)",
             )
         ]
 
@@ -1431,7 +1302,7 @@ class TestBatchProgress:
         self, error_type, job_status, terminal_status
     ):
         emitted: list[ProgressEvent] = []
-        backend = _TerminalErrorAsyncBackend(error_type, job_status)
+        backend = FakeAsyncBackend(poll=raise_after_running(error_type))
         coord = _BatchCoordinator(backend, progress_emitter=emitted.append)
         coord.register_program("p1")
 
@@ -1453,6 +1324,7 @@ class TestBatchProgress:
         target = state.get(register.progress_key)
         assert target.terminal_status is terminal_status
         assert target.job_status is job_status
+        assert backend.fetched == []
 
     def test_cancellation_finishes_batch_as_cancelled(self, mocker):
         emitted: list[ProgressEvent] = []
@@ -1482,7 +1354,7 @@ class TestBatchProgress:
         assert finish.progress_key == register.progress_key
         assert finish.terminal_status is TerminalStatus.CANCELLED
 
-    def test_success_follows_parsing_but_precedes_future_release(self):
+    def test_success_follows_parsing_but_precedes_future_release(self, async_backend):
         entry = _make_entry({"c1": "qasm"})
         batch = {"p1": entry}
         future_done_at_success: list[bool] = []
@@ -1494,7 +1366,7 @@ class TestBatchProgress:
             ):
                 future_done_at_success.append(entry.future.done())
 
-        coord = _BatchCoordinator(_FakeAsyncBackend(), progress_emitter=_record)
+        coord = _BatchCoordinator(async_backend, progress_emitter=_record)
 
         coord._submit_sub_batch(batch, _flush_group_for(batch))
 
@@ -1578,7 +1450,7 @@ class TestCancellation:
 
     @_SINGLE_AND_MIXED_HAM_OPS
     def test_cancel_cancels_the_job_being_polled(self, kwargs_by_program):
-        backend = _BlockingAsyncBackend()
+        backend = FakeAsyncBackend(poll=block_until_cancelled)
         coord = _BatchCoordinator(backend)
         for key in kwargs_by_program:
             coord.register_program(key)
@@ -1596,9 +1468,10 @@ class TestCancellation:
         assert {job.job_id for job in backend.cancelled_jobs} == {"job-1"}
 
     @_SINGLE_AND_MIXED_HAM_OPS
-    def test_cancel_after_finished_flush_cancels_no_job(self, kwargs_by_program):
-        backend = _FakeAsyncBackend()
-        coord = _BatchCoordinator(backend)
+    def test_cancel_after_finished_flush_cancels_no_job(
+        self, async_backend, kwargs_by_program
+    ):
+        coord = _BatchCoordinator(async_backend)
         batch = {
             key: _make_entry({"c": "q"}, kwargs)
             for key, kwargs in kwargs_by_program.items()
@@ -1607,8 +1480,8 @@ class TestCancellation:
 
         coord.cancel()
 
-        assert len(backend.jobs) == len(kwargs_by_program)
-        assert backend.cancelled_jobs == []
+        assert len(async_backend.jobs) == len(kwargs_by_program)
+        assert async_backend.cancelled_jobs == []
 
     def test_cancel_during_submission_cancels_the_job_it_opened(self):
         backend = _CancelDuringSubmitBackend()
@@ -1624,7 +1497,7 @@ class TestCancellation:
 
     def test_event_set_without_cancel_still_cancels_the_polled_job(self):
         event = Event()
-        backend = _BlockingAsyncBackend()
+        backend = FakeAsyncBackend(poll=block_until_cancelled)
         coord = _BatchCoordinator(backend, cancellation_event=event)
         coord.register_program("p1")
 
@@ -1646,7 +1519,7 @@ class TestCancellation:
     def test_failed_job_is_cancelled_unless_it_already_ended(
         self, error_type, cancelled
     ):
-        backend = _TerminalErrorAsyncBackend(error_type, JobStatus.RUNNING)
+        backend = FakeAsyncBackend(poll=raise_after_running(error_type))
         coord = _BatchCoordinator(backend)
         batch = {"p1": _make_entry({"c": "q"})}
 
@@ -1657,7 +1530,9 @@ class TestCancellation:
         assert [job.job_id for job in backend.cancelled_jobs] == cancelled
 
     def test_cancel_job_failure_still_fails_every_waiting_program(self):
-        backend = _BlockingAsyncBackend(cancel_error=RuntimeError("cancel refused"))
+        backend = FakeAsyncBackend(
+            poll=block_until_cancelled, cancel_error=RuntimeError("cancel refused")
+        )
         both_submitted = _SubmissionCounter(2)
         coord = _BatchCoordinator(
             backend,
@@ -1706,8 +1581,6 @@ class TestProxyBackend:
 
         assert proxy.shots == 200
         assert proxy.supports_expval == real.supports_expval
-        assert proxy.is_async is False
-        assert proxy.max_retries == 0
 
     def test_never_defers_parameter_binding(self):
         """The proxy submits a bound label -> qasm mapping, so it must report
@@ -1782,14 +1655,6 @@ class TestProxyBackend:
             assert results[key].results == [
                 {"label": tags[key], "results": {"00": 100}}
             ]
-
-    def test_little_endian_bitstrings_delegated(self):
-        """little_endian_bitstrings is delegated to the real backend."""
-        real = FakeSyncBackend()
-        real.little_endian_bitstrings = True  # type: ignore[attr-defined]
-        coord = _BatchCoordinator(real)
-        proxy = _ProxyBackend(real, coord, "p")
-        assert proxy.little_endian_bitstrings is True
 
 
 class TestMaxBatchSize:

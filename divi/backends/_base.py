@@ -9,12 +9,13 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral
 from threading import Event
-from typing import Any, Protocol, Self, runtime_checkable
+from typing import Any, Self
 
 import numpy as np
 import requests
 from qiskit import QuantumCircuit
 
+from divi.backends._job_status import JobStatus
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 
@@ -134,19 +135,6 @@ class CircuitRunner(ABC):
         return False
 
     @property
-    @abstractmethod
-    def is_async(self) -> bool:
-        """
-        Whether the backend executes circuits asynchronously.
-
-        Returns:
-            bool: True if the backend returns a job ID and requires polling
-                  for results (e.g., QoroService). False if the backend
-                  returns results immediately (e.g., QiskitSimulator).
-        """
-        return False
-
-    @property
     def resolves_parameters(self) -> bool:
         """Whether the backend substitutes parameter values itself.
 
@@ -260,48 +248,36 @@ class CircuitRunner(ABC):
         self._depth_history.clear()
 
 
-@runtime_checkable
-class AsyncJobBackend(Protocol):
-    """Backend that runs circuits as an asynchronous remote job.
+class AsyncJobBackend(CircuitRunner):
+    """A :class:`CircuitRunner` that runs circuits as an asynchronous remote job.
 
     Implementations submit work to a scheduler (cloud HPC, hardware queue,
-    etc.) and return an :class:`~divi.backends.ExecutionResult` carrying a
-    ``job_id`` rather than circuit results. Callers inspect or wait for state
-    via :meth:`poll_job_status`, fetch outcomes with :meth:`get_job_results`,
-    and may :meth:`cancel_job` an in-flight handle.
+    etc.), so :meth:`~divi.backends.CircuitRunner.submit_circuits` returns an
+    :class:`~divi.backends.ExecutionResult` carrying a ``job_id`` rather than
+    circuit results. Callers inspect or wait for state via
+    :meth:`poll_job_status`, fetch outcomes with :meth:`get_job_results`, and
+    may :meth:`cancel_job` an in-flight handle.
     """
 
-    @property
-    def shots(self) -> int:
-        """Number of measurement shots applied to sampling-mode circuits."""
-        ...
+    polling_interval: float
+    """Seconds to wait between status polls."""
 
-    def submit_circuits(
+    max_retries: int | None
+    """Maximum number of status polls; ``None`` polls until the job ends."""
+
+    def __init__(
         self,
-        payloads: Sequence[CircuitPayload] | CircuitBatch,
+        shots: int,
+        track_depth: bool = False,
         *,
-        cancellation_event: Event | None = None,
-        **kwargs,
-    ) -> ExecutionResult:
-        """Submit a batch of circuits and return a handle.
+        polling_interval: float,
+        max_retries: int | None,
+    ):
+        super().__init__(shots=shots, track_depth=track_depth)
+        self.polling_interval = polling_interval
+        self.max_retries = max_retries
 
-        The returned :class:`~divi.backends.ExecutionResult` carries the
-        scheduler-side ``job_id`` but no circuit results; populate it via
-        :meth:`get_job_results` once polling reports a terminal status.
-
-        Args:
-            payloads: One :class:`~divi.circuits.CircuitPayload` per circuit
-                variant, or a ``{label: circuit}`` mapping of already-resolved
-                circuits.
-            cancellation_event: When set, the implementation should refuse
-                to dispatch (or short-circuit dispatch) and raise
-                :class:`~divi.exceptions.ExecutionCancelledError`. The same
-                event is honoured by :meth:`poll_job_status` to interrupt
-                an in-flight polling loop.
-            **kwargs: Backend-specific options (``ham_ops``, ``shot_groups``, …).
-        """
-        ...
-
+    @abstractmethod
     def poll_job_status(
         self,
         execution_result: ExecutionResult,
@@ -309,11 +285,12 @@ class AsyncJobBackend(Protocol):
         verbose: bool = True,
         progress_callback: Callable[[int, str], None] | None = None,
         cancellation_event: Event | None = None,
-    ):
+    ) -> JobStatus:
         """Inspect once, or wait for success and raise on terminal failure.
 
         Args:
-            execution_result: Handle returned by :meth:`submit_circuits`.
+            execution_result: Handle returned by
+                :meth:`~divi.backends.CircuitRunner.submit_circuits`.
             loop_until_complete: When ``False``, return the current status.
                 When ``True``, poll until completion or terminal failure.
             verbose: When ``True``, log per-poll status. Disable when
@@ -336,8 +313,8 @@ class AsyncJobBackend(Protocol):
                 terminal status while waiting. Other implementations may raise
                 their corresponding backend-specific terminal-job exception.
         """
-        ...
 
+    @abstractmethod
     def get_job_results(self, execution_result: ExecutionResult) -> ExecutionResult:
         """Fetch results for a completed job and return them populated, with
         the job's reported ``run_time``.
@@ -345,8 +322,8 @@ class AsyncJobBackend(Protocol):
         Must only be called after :meth:`poll_job_status` reports a
         ``COMPLETED`` :class:`~divi.backends.JobStatus`.
         """
-        ...
 
+    @abstractmethod
     def cancel_job(self, execution_result: ExecutionResult) -> requests.Response:
         """Request cancellation of an in-flight job.
 
@@ -355,4 +332,3 @@ class AsyncJobBackend(Protocol):
         is acceptable to either swallow or surface as a recognisable
         exception that callers can ignore).
         """
-        ...

@@ -16,7 +16,12 @@ from typing import Any
 from rich.console import Console
 from rich.tree import Tree
 
-from divi.backends._cancellation import _cancel_job_on_abort, _sigint_to_event
+from divi.backends._base import AsyncJobBackend, ExecutionResult
+from divi.backends._cancellation import (
+    _cancel_job_on_abort,
+    _require_async_backend,
+    _sigint_to_event,
+)
 from divi.backends._job_status import JobStatus
 from divi.circuits._payloads import bound_circuits, is_bound
 from divi.exceptions import ExecutionCancelledError
@@ -107,11 +112,10 @@ def _report_pipeline_stage(env: "PipelineEnv", stage_name: str | None) -> None:
     env._progress_emitter(ProgressEvent.show(env._progress_key, message))
 
 
-def _wait_for_async_result(backend, execution_result, env):
-    """Poll an async backend until job completes, then fetch results.
-
-    Faithful mirror of ``QuantumProgram._wait_for_qoro_job_completion``.
-    """
+def _wait_for_async_result(
+    backend: AsyncJobBackend, execution_result: ExecutionResult, env: "PipelineEnv"
+) -> ExecutionResult:
+    """Poll an async backend until job completes, then fetch results."""
     job_id = execution_result.job_id
     if job_id is None:
         raise ValueError("ExecutionResult must have a job_id for async completion")
@@ -129,7 +133,7 @@ def _wait_for_async_result(backend, execution_result, env):
                     job_id=job_id,
                     status=status,
                     attempt=n_polls,
-                    limit=getattr(backend, "max_retries", None),
+                    limit=backend.max_retries,
                 )
             )
 
@@ -327,12 +331,10 @@ def _default_execute_fn(
     )
     env.artifacts["backend_jobs"] = result.backend_jobs
 
-    # Store for cancellation support (read by cancel_unfinished_job)
-    env.artifacts["_current_execution_result"] = result
-
-    with _cancel_job_on_abort(env.backend, result):
-        if result.is_async():
-            result = _wait_for_async_result(env.backend, result, env)
+    if result.is_async():
+        backend = _require_async_backend(backend)
+        with _cancel_job_on_abort(backend, result):
+            result = _wait_for_async_result(backend, result, env)
 
     if result.results is None:
         raise RuntimeError("Backend returned no results")

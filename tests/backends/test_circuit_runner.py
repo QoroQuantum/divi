@@ -21,10 +21,6 @@ class ConcreteCircuitRunner(CircuitRunner):
     def supports_expval(self) -> bool:
         return False
 
-    @property
-    def is_async(self) -> bool:
-        return False
-
     def submit_circuits(self, payloads: Sequence[CircuitPayload], **kwargs):
         return ExecutionResult(results=[])
 

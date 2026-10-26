@@ -63,10 +63,6 @@ class FakeBackend(CircuitRunner):
         self.calls: list[tuple[list[CircuitPayload], dict]] = []
 
     @property
-    def is_async(self) -> bool:
-        return False
-
-    @property
     def supports_expval(self) -> bool:
         return self._supports_expval
 
@@ -400,10 +396,6 @@ class ExpvalBackendSpy(CircuitRunner):
         self.last_ham_ops: str | None = None
 
     @property
-    def is_async(self):
-        return False
-
-    @property
     def supports_expval(self):
         return True
 
@@ -420,10 +412,6 @@ class ExpvalBackendSpy(CircuitRunner):
 
 class ShotsBackendSpy(CircuitRunner):
     """Shots-based backend (supports_expval=False) for probs tests."""
-
-    @property
-    def is_async(self):
-        return False
 
     @property
     def supports_expval(self):
@@ -451,10 +439,6 @@ class RecordingBackend(CircuitRunner):
         self.backend_jobs = backend_jobs
         self.last_circuits: dict[str, str] | None = None
         self.last_kwargs: dict = {}
-
-    @property
-    def is_async(self) -> bool:
-        return False
 
     @property
     def supports_expval(self) -> bool:

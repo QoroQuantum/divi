@@ -31,7 +31,7 @@ from sybil.parsers.rest import PythonCodeBlockParser, SkipParser
 from sybil.region import Lexeme
 
 from divi.backends import (
-    CircuitRunner,
+    AsyncJobBackend,
     ExecutionResult,
     JobConfig,
     JobStatus,
@@ -127,7 +127,7 @@ def _bell_circuit() -> QuantumCircuit:
     return qc
 
 
-class DocStubQoroService(CircuitRunner):
+class DocStubQoroService(AsyncJobBackend):
     """Stand-in for :class:`~divi.backends.QoroService` — no network, deterministic."""
 
     def __init__(
@@ -144,7 +144,12 @@ class DocStubQoroService(CircuitRunner):
             jc = jc.model_copy(
                 update={"simulator_cluster": SimulatorCluster(name="qoro_maestro")}
             )
-        super().__init__(shots=jc.shots, track_depth=track_depth)
+        super().__init__(
+            shots=jc.shots,
+            track_depth=track_depth,
+            polling_interval=polling_interval,
+            max_retries=max_retries,
+        )
         self._job_config = jc
         self._maestro_config = maestro_config
         self._pending_circuits: dict[str, str] | None = None
@@ -169,10 +174,6 @@ class DocStubQoroService(CircuitRunner):
     @property
     def supports_expval(self) -> bool:
         return False
-
-    @property
-    def is_async(self) -> bool:
-        return True
 
     def submit_circuits(
         self,

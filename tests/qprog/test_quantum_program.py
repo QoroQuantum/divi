@@ -3,15 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-from http import HTTPStatus
 from threading import Event
 
 import numpy as np
 import pytest
-import requests
 
 from divi.backends import (
-    AsyncJobBackend,
     ExecutionResult,
     JobCancelledError,
     JobStatus,
@@ -29,44 +26,8 @@ from divi.reporting._events import (
     TerminalStatus,
 )
 from divi.reporting._logging import log_progress_event
-from tests._helpers import exact_match
+from tests._helpers import FakeAsyncBackend, exact_match, raise_after_running
 from tests.pipeline._helpers import DummySpecStage, two_group_meta
-
-
-class TerminalPollingBackend:
-    """Protocol-shaped backend that polls once before a terminal job error."""
-
-    def __init__(self, error_type, status: JobStatus) -> None:
-        self.error_type = error_type
-        self.status = status
-
-    @property
-    def shots(self) -> int:
-        return 100
-
-    def submit_circuits(self, payloads, *, cancellation_event=None, **kwargs):
-        del payloads, cancellation_event, kwargs
-        return ExecutionResult(job_id="job-terminal")
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        del loop_until_complete, verbose, cancellation_event
-        if progress_callback is not None:
-            progress_callback(1, JobStatus.RUNNING.value)
-        raise self.error_type(execution_result.job_id)
-
-    def get_job_results(self, execution_result):
-        raise AssertionError(f"results requested for terminal job {execution_result}")
-
-    def cancel_job(self, execution_result):
-        del execution_result
-        return None
 
 
 class ConcreteQuantumProgram(QuantumProgram):
@@ -288,8 +249,7 @@ class TestQuantumProgramBase:
         recording_direct_sessions,
     ):
         program = ConcreteQuantumProgram(backend=dummy_simulator)
-        backend = TerminalPollingBackend(error_type, job_status)
-        assert isinstance(backend, AsyncJobBackend)
+        backend = FakeAsyncBackend(poll=raise_after_running(error_type))
 
         with pytest.raises(error_type):
             with program._ensure_progress_session(label="Executing", total=None):
@@ -310,6 +270,7 @@ class TestQuantumProgramBase:
         assert terminal_events[0].terminal_status is terminal_status
         assert terminal_events[0].job_status is job_status
         assert session.state.get(program._progress_key).job_status is job_status
+        assert backend.fetched == []
 
     def test_initialization_with_unexpected_kwargs_raises(
         self, mocker, dummy_simulator
@@ -440,7 +401,6 @@ def test_execute_totals_start_at_zero_and_accumulate(dummy_simulator, mocker):
             device_shots=300,
             backend_jobs=2,
             run_time=0.5,
-            _current_execution_result=mocker.sentinel.result,
         )
         return {}
 
@@ -459,7 +419,6 @@ def test_execute_totals_start_at_zero_and_accumulate(dummy_simulator, mocker):
     program._execute(pipeline, "x")
 
     assert totals() == (6, 600, 4, 1.0)
-    assert program._current_execution_result is mocker.sentinel.result
 
 
 def test_pipeline_stage_events_carry_the_program_key(dummy_simulator):
@@ -477,87 +436,3 @@ def test_pipeline_stage_events_carry_the_program_key(dummy_simulator):
     ]
     assert stage_events
     assert {event.progress_key for event in stage_events} == {"program-key"}
-
-
-class TestQuantumProgramJobManagement:
-    """Tests for QuantumProgram job management and cancellation."""
-
-    def test_cancel_unfinished_job_no_execution_result(self, mocker, dummy_simulator):
-        """Test cancel_unfinished_job when _current_execution_result is None."""
-        program = ConcreteQuantumProgram(backend=dummy_simulator)
-
-        with pytest.warns(
-            UserWarning, match="Cannot cancel job: no current execution result"
-        ):
-            program.cancel_unfinished_job()
-
-    def test_cancel_unfinished_job_no_job_id(self, mocker, dummy_simulator):
-        """Test cancel_unfinished_job when execution result has no job_id."""
-        program = ConcreteQuantumProgram(backend=dummy_simulator)
-        program._current_execution_result = ExecutionResult(job_id=None)
-
-        with pytest.warns(
-            UserWarning, match="Cannot cancel job: execution result has no job_id"
-        ):
-            program.cancel_unfinished_job()
-
-    def test_cancel_unfinished_job_on_a_synchronous_backend_warns(
-        self, dummy_simulator
-    ):
-        assert not isinstance(dummy_simulator, AsyncJobBackend)
-        program = ConcreteQuantumProgram(backend=dummy_simulator)
-        program._current_execution_result = ExecutionResult(job_id="job_1")
-
-        with pytest.warns(UserWarning, match="does not implement the AsyncJobBackend"):
-            program.cancel_unfinished_job()
-
-    def test_cancel_unfinished_job_success(self, mocker):
-        """Test cancel_unfinished_job successfully cancels job."""
-        mock_backend = mocker.Mock(spec=AsyncJobBackend)
-        mock_backend.cancel_job = mocker.Mock()
-        program = ConcreteQuantumProgram(backend=mock_backend)
-        program._current_execution_result = ExecutionResult(job_id="test_job_123")
-
-        program.cancel_unfinished_job()
-
-        mock_backend.cancel_job.assert_called_once_with(
-            program._current_execution_result
-        )
-
-    def test_cancel_unfinished_job_targets_the_last_submitted_job(self, mocker):
-        backend = mocker.Mock(spec=AsyncJobBackend)
-        backend.supports_expval = False
-        backend.resolves_parameters = False
-        backend.shots = 100
-        backend.max_retries = 1
-        backend.submit_circuits.return_value = ExecutionResult(job_id="job_7")
-        backend.poll_job_status.return_value = JobStatus.COMPLETED
-        backend.get_job_results.return_value = ExecutionResult(results=[])
-        program = ConcreteQuantumProgram(backend=backend)
-
-        program._execute(_two_group_pipeline(), "x")
-        program.cancel_unfinished_job()
-
-        backend.cancel_job.assert_called_once_with(backend.submit_circuits.return_value)
-
-    @pytest.mark.parametrize("status_code", [HTTPStatus.CONFLICT, HTTPStatus.FORBIDDEN])
-    def test_cancel_unfinished_job_http_error_is_silently_swallowed(
-        self, mocker, status_code
-    ):
-        """An HTTP error while cancelling neither propagates nor emits progress."""
-        mock_backend = mocker.Mock(spec=AsyncJobBackend)
-        mock_response = mocker.Mock()
-        mock_response.status_code = status_code
-        mock_error = requests.exceptions.HTTPError(f"{status_code.value} error")
-        mock_error.response = mock_response
-        mock_backend.cancel_job = mocker.Mock(side_effect=mock_error)
-
-        program = ConcreteQuantumProgram(backend=mock_backend)
-        events = []
-        program._progress_emitter = events.append
-        program._current_execution_result = ExecutionResult(job_id="test_job_123")
-
-        program.cancel_unfinished_job()
-
-        mock_backend.cancel_job.assert_called_once()
-        assert events == []

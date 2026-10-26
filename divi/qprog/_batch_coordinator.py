@@ -19,12 +19,16 @@ from threading import Event, Lock, Thread
 from typing import NamedTuple
 
 from divi.backends import (
-    AsyncJobBackend,
     CircuitBatch,
     CircuitRunner,
     ExecutionResult,
 )
-from divi.backends._cancellation import _cancel_job_on_abort, raise_if_cancelled
+from divi.backends._cancellation import (
+    _best_effort_cancel_job,
+    _cancel_job_on_abort,
+    _require_async_backend,
+    raise_if_cancelled,
+)
 from divi.backends._job_status import JobStatus, QoroJobError
 from divi.backends._shot_allocation import from_wire, to_wire
 from divi.circuits._payloads import (
@@ -698,15 +702,12 @@ class _BatchCoordinator:
                 raise_if_cancelled(
                     self._cancelled, "Batch coordinator has been cancelled."
                 )
-                if (job_id := execution_result.job_id) is not None:
+                final_job_status = None
+                if execution_result.is_async():
                     execution_result = self._poll_and_get_results(
-                        execution_result,
-                        job_id,
-                        batch_progress_key,
+                        execution_result, batch_progress_key
                     )
                     final_job_status = JobStatus.COMPLETED
-                else:
-                    final_job_status = None
             runtime = execution_result.run_time
             results_list = execution_result.results
             if results_list is None:
@@ -776,18 +777,13 @@ class _BatchCoordinator:
     def _poll_and_get_results(
         self,
         execution_result: ExecutionResult,
-        job_id: str,
         batch_progress_key: Hashable,
     ) -> ExecutionResult:
         """Poll an async job to completion and return its fetched results."""
-        if not isinstance(self._real_backend, AsyncJobBackend):
-            raise RuntimeError(
-                f"Backend {type(self._real_backend).__name__} returned an "
-                "ExecutionResult with a job_id but does not implement the "
-                "AsyncJobBackend protocol (poll_job_status, get_job_results, "
-                "cancel_job)."
-            )
-        backend = self._real_backend
+        backend = _require_async_backend(self._real_backend)
+        job_id = execution_result.job_id
+        if job_id is None:
+            raise ValueError("Cannot poll an ExecutionResult without a job_id.")
 
         def _progress_callback(n_polls, job_status):
             self._progress_emitter(
@@ -796,13 +792,11 @@ class _BatchCoordinator:
                     job_id=job_id,
                     status=job_status,
                     attempt=n_polls,
-                    limit=getattr(self._real_backend, "max_retries", None),
+                    limit=backend.max_retries,
                 )
             )
 
-        # Pass the coordinator's cancellation Event to the backend so that
-        # cancel() interrupts the polling sleep promptly instead of waiting
-        # up to ``polling_interval`` seconds per attempt.
+        # The cancellation Event lets cancel() interrupt the polling sleep.
         status = backend.poll_job_status(
             execution_result,
             loop_until_complete=True,
@@ -853,18 +847,8 @@ class _BatchCoordinator:
         with self._in_flight_lock:
             in_flight_snapshot = list(self._in_flight)
 
-        if isinstance(self._real_backend, AsyncJobBackend):
-            for group in in_flight_snapshot:
-                if (
-                    group.execution_result is not None
-                    and group.execution_result.job_id is not None
-                ):
-                    try:
-                        self._real_backend.cancel_job(group.execution_result)
-                    except Exception:
-                        logger.debug(
-                            "Failed to cancel in-flight batch job", exc_info=True
-                        )
+        for group in in_flight_snapshot:
+            _best_effort_cancel_job(self._real_backend, group.execution_result)
 
         # Resolve any pending futures that haven't been flushed yet and
         # clear the active program set under the same lock so the barrier
@@ -921,23 +905,10 @@ class _ProxyBackend(CircuitRunner):
         return self._real.supports_expval
 
     @property
-    def is_async(self) -> bool:
-        # Results come back synchronously from the coordinator.
-        return False
-
-    @property
     def resolves_parameters(self) -> bool:
         # Merged submissions are always bound: submit() carries a label -> qasm
         # mapping, so parameters must be resolved before they reach the proxy.
         return False
-
-    @property
-    def little_endian_bitstrings(self) -> bool:
-        return getattr(self._real, "little_endian_bitstrings", False)
-
-    @property
-    def max_retries(self):
-        return getattr(self._real, "max_retries", 0)
 
     # --- Intercepted methods ---
 

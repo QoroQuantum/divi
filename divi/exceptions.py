@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from functools import partial
+
 import requests
 
 __all__ = [
@@ -26,6 +28,11 @@ class CircuitTooWideError(requests.HTTPError):
         """Wrap the API's refusal ``message`` and ``response`` with the width ``limit``."""
         super().__init__(message, response=response)
         self.limit = limit
+
+    def __reduce__(self):
+        return partial(type(self), limit=self.limit, response=self.response), (
+            str(self),
+        )
 
 
 class CharacterizationFailedError(Exception):

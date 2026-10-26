@@ -8,6 +8,7 @@ import signal
 import threading
 import warnings
 from dataclasses import replace
+from functools import partial
 from inspect import signature
 from threading import Event
 
@@ -25,7 +26,6 @@ from divi.backends import (
     JobFailedError,
     JobStatus,
 )
-from divi.backends.runners._qoro import MaxRetriesReachedError
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
 from divi.circuits._payloads import bound_circuits
@@ -60,7 +60,7 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
 )
 from divi.reporting._events import ProgressEvent
-from tests._helpers import exact_match
+from tests._helpers import FakeAsyncBackend, exact_match, raise_after_running
 
 from ._helpers import (
     DummySpecStage,
@@ -99,40 +99,6 @@ def _compile_bound(batch):
     """Lower an already-bound batch to ``{label: qasm}`` plus its lineage map."""
     payloads, lineage_by_label = _compile_batch(batch, [[]])
     return bound_circuits(payloads), lineage_by_label
-
-
-class ProtocolAsyncBackendWithoutMaxRetries:
-    """AsyncJobBackend implementation with no optional retry-limit attribute."""
-
-    @property
-    def shots(self) -> int:
-        return 100
-
-    def submit_circuits(self, payloads, *, cancellation_event=None, **kwargs):
-        del payloads, cancellation_event, kwargs
-        return ExecutionResult(job_id="job_poll")
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        del execution_result, loop_until_complete, verbose
-        del cancellation_event
-        if progress_callback is not None:
-            progress_callback(3, JobStatus.RUNNING.value)
-        return JobStatus.COMPLETED
-
-    def get_job_results(self, execution_result):
-        del execution_result
-        return ExecutionResult(results=[], job_id="job_poll")
-
-    def cancel_job(self, execution_result):
-        del execution_result
-        return None
 
 
 def _parametric_meta_one_body():
@@ -1344,15 +1310,15 @@ class TestWaitForAsyncResult:
             )
         ]
 
-    def test_polling_without_optional_max_retries_uses_unlimited_limit(self):
-        backend = ProtocolAsyncBackendWithoutMaxRetries()
+    def test_default_max_retries_reports_an_unlimited_limit(self, async_backend):
         events: list[ProgressEvent] = []
-        env = PipelineEnv(backend=backend)
+        env = PipelineEnv(backend=async_backend)
         env._bind_progress(events.append, "program")
 
-        _wait_for_async_result(backend, ExecutionResult(job_id="job_poll"), env)
+        job = async_backend.submit_circuits({})
 
-        assert isinstance(backend, AsyncJobBackend)
+        _wait_for_async_result(async_backend, job, env)
+
         assert events[0].job_status is JobStatus.RUNNING
         assert events[0].max_retries is None
 
@@ -1486,22 +1452,10 @@ class _TimedBackend(FakeBackend):
         return replace(super().submit_circuits(payloads, **kwargs), run_time=3.5)
 
 
-class _TimedAsyncBackend(_TimedBackend):
-    """``_TimedBackend`` behind a job id, reporting the time with its results."""
-
-    def submit_circuits(self, payloads, **kwargs):
-        self._completed = super().submit_circuits(payloads, **kwargs)
-        return ExecutionResult(job_id="job_timed")
-
-    def poll_job_status(self, execution_result, **kwargs):
-        return JobStatus.COMPLETED
-
-    def get_job_results(self, execution_result):
-        return self._completed
-
-
 @pytest.mark.parametrize(
-    "backend_type", [_TimedBackend, _TimedAsyncBackend], ids=["sync", "async"]
+    "backend_type",
+    [_TimedBackend, partial(FakeAsyncBackend, run_time=3.5)],
+    ids=["sync", "async"],
 )
 @pytest.mark.parametrize(
     ("prior_artifacts", "expected"),
@@ -1525,45 +1479,25 @@ def test_execute_accumulates_the_reported_run_time(
     assert env.artifacts["run_time"] == expected
 
 
-class _FailingPollBackend(_TimedAsyncBackend):
-    """``_TimedAsyncBackend`` whose polling raises, recording cancelled jobs."""
-
-    def __init__(self, error):
-        super().__init__()
-        self.error = error
-        self.cancelled = []
-
-    def poll_job_status(self, execution_result, **kwargs):
-        raise self.error
-
-    def cancel_job(self, execution_result):
-        self.cancelled.append(execution_result.job_id)
-
-
 @pytest.mark.parametrize(
-    ("error", "cancels"),
+    ("error_type", "cancelled"),
     [
-        pytest.param(RuntimeError("poll failed"), True, id="poll-error"),
-        pytest.param(ExecutionCancelledError("stop"), True, id="cancelled"),
-        pytest.param(
-            MaxRetriesReachedError("job_timed", 3), True, id="retries-exhausted"
-        ),
-        pytest.param(KeyboardInterrupt(), True, id="interrupt"),
-        pytest.param(JobFailedError("job_timed"), False, id="terminal"),
+        pytest.param(RuntimeError, ["job-1"], id="non-terminal"),
+        pytest.param(JobFailedError, [], id="terminal"),
     ],
 )
-def test_execute_cancels_the_job_unless_it_already_ended(error, cancels):
-    backend = _FailingPollBackend(error)
+def test_execute_cancels_the_job_unless_it_already_ended(error_type, cancelled):
+    backend = FakeAsyncBackend(poll=raise_after_running(error_type))
     param_sets = [[0.1, 0.2]]
     trace = run_binding_pipeline(
         _parametric_meta_one_body(), backend=backend, param_sets=param_sets
     )
     env = PipelineEnv(backend=backend, param_sets=param_sets)
 
-    with pytest.raises(type(error)):
+    with pytest.raises(error_type):
         _default_execute_fn(trace, env)
 
-    assert backend.cancelled == (["job_timed"] if cancels else [])
+    assert [job.job_id for job in backend.cancelled_jobs] == cancelled
 
 
 def _noop_handler(signum, frame):

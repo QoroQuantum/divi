@@ -426,14 +426,13 @@ Job Lifecycle and Recovery
 
 Jobs move through ``PENDING``, ``RUNNING``, and a terminal
 ``COMPLETED``, ``FAILED``, ``CANCELLED``, ``INSUFFICIENT_CREDITS``, or
-``TIMED_OUT`` state. Submission only queues the job; the analysis runs
-asynchronously on the server. The convenience helper then polls, showing
-progress, until the job is terminal and fetches the report. Polling is
-paced by the service's ``polling_interval`` and bounded by its
-``max_retries``, which is unbounded by default.
+``TIMED_OUT`` state. Submission only queues the job. The convenience helper
+then polls until the job is terminal, showing progress, and fetches the report.
+The service's ``polling_interval`` sets the poll rate and ``max_retries`` caps
+the polls; it is unbounded by default.
 
-Interrupting the wait with ``Ctrl-C`` does not cancel the job. Its id is
-logged when the job is created, and you can fetch it later.
+``Ctrl-C`` stops the wait without cancelling the job. Its id is logged when the
+job is created, so you can fetch it later.
 
 Initialisation and submission are not retried because both mutate server
 state. After job creation, an ambiguous submission, polling (including

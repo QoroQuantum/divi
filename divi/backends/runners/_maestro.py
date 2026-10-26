@@ -368,11 +368,6 @@ class MaestroSimulator(CircuitRunner):
         """Maestro supports native observable estimation unless sampling is forced."""
         return not self._force_sampling
 
-    @property
-    def is_async(self) -> bool:
-        """Maestro executes circuits synchronously."""
-        return False
-
     def set_seed(self, seed: int) -> None:
         """Seed maestro's simulation RNG.
 

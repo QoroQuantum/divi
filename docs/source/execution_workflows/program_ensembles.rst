@@ -575,6 +575,28 @@ exception is whatever the round raised, so catch broadly:
        failed = ensemble.round_history[-1]
        print(f"round {failed.number} failed: {failed.error}")
 
+When a program fails, the ensemble stops the rest and cancels their cloud jobs.
+A job is also cancelled when its submission, upload or polling fails for any
+reason except the job ending, such as exhausting ``max_retries``. Each distinct
+cause gets one failure panel, and the raised ``RuntimeError`` chains the
+original error as ``__cause__``.
+
+Divi does not cap sub-program width; backend limits apply when circuits run. On
+:class:`~divi.backends.QoroService`, a circuit above the account's qubit limit
+raises :exc:`~divi.exceptions.CircuitTooWideError`, which carries the limit:
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.exceptions import CircuitTooWideError
+
+   try:
+       ensemble.run()
+   except RuntimeError as exc:
+       if isinstance(exc.__cause__, CircuitTooWideError):
+           print(f"a partition exceeds {exc.__cause__.limit} qubits")
+
 Controlling a single round
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -704,7 +726,8 @@ identifier.
 Pressing :kbd:`Ctrl-C` cancels in-flight backend work and stops the current
 round. Completed rounds remain in ``round_history``; a partial round does not
 update workflow state or start another round. Cancellation is cooperative, so
-work already completing inside a backend may still return before shutdown.
+work already completing inside a backend may still return before shutdown. A
+local simulator call already running a circuit cannot be interrupted.
 
 .. _circuit-batching:
 

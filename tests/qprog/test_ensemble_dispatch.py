@@ -29,7 +29,6 @@ from rich.console import Console
 
 import divi.qprog as qprog
 import divi.qprog.ensemble as ensemble_module
-from divi.backends import ExecutionResult
 from divi.backends._cancellation import _cancel_job_on_abort
 from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
 from divi.pipeline import PipelineEnv
@@ -60,7 +59,7 @@ from divi.reporting._events import (
 )
 from divi.reporting._session import ProgressSession
 from divi.reporting._state import ProgressState
-from tests._helpers import exact_match
+from tests._helpers import FakeAsyncBackend, block_until_cancelled, exact_match
 from tests.qprog._helpers import (
     SimpleTestProgram,
     _FakeRunResult,
@@ -151,38 +150,6 @@ class _NestedEmitterBlockingProgram(SimpleTestProgram):
                 raise RuntimeError("test did not release cancelled worker")
         self.finished.set()
         return self
-
-
-class _BlockingPollBackend:
-    """Async backend whose polling blocks until the cancellation event is set."""
-
-    shots = 100
-
-    def __init__(self):
-        self.polling = threading.Event()
-        self.event_seen = False
-        self.cancelled = []
-
-    def submit_circuits(self, payloads, **kwargs):
-        return ExecutionResult(job_id="job-1")
-
-    def poll_job_status(
-        self,
-        execution_result,
-        loop_until_complete=False,
-        verbose=True,
-        progress_callback=None,
-        cancellation_event=None,
-    ):
-        self.polling.set()
-        self.event_seen = cancellation_event.wait(timeout=5)
-        raise ExecutionCancelledError("Polling cancelled.")
-
-    def get_job_results(self, execution_result):
-        return ExecutionResult(results=[])
-
-    def cancel_job(self, execution_result):
-        self.cancelled.append(execution_result.job_id)
 
 
 class _JobBackendProgram(SimpleTestProgram):
@@ -1409,7 +1376,7 @@ class TestProgramEnsemble:
             limit=30,
             response=requests.Response(),
         )
-        job_backend = _BlockingPollBackend()
+        job_backend = FakeAsyncBackend(poll=block_until_cancelled)
         program_ensemble.create_programs()
         program_ensemble.programs = {
             "failing": _FailingProgram(
@@ -1424,8 +1391,7 @@ class TestProgramEnsemble:
             )
 
         assert raised.value.__cause__ is too_wide
-        assert job_backend.event_seen
-        assert job_backend.cancelled == ["job-1"]
+        assert [job.job_id for job in job_backend.cancelled_jobs] == ["job-1"]
         render_failure.assert_called_once()
         assert render_failure.call_args.kwargs["show_traceback"] is False
 

@@ -6,9 +6,10 @@ import base64
 import gzip
 import inspect
 import json
+import pickle
 import re
+import signal
 import warnings
-from contextlib import contextmanager
 from dataclasses import replace
 from http import HTTPStatus
 from importlib import metadata
@@ -22,6 +23,7 @@ from qiskit.circuit import Parameter
 
 import divi.backends.runners._qoro as _qoro_service
 from divi.backends import (
+    AsyncJobBackend,
     DeviceConfig,
     ExecutionResult,
     InsufficientCreditsError,
@@ -203,18 +205,26 @@ class TestQoroJobStatusAPI:
                 make_execution_result("job_1"), loop_until_complete=True, verbose=False
             )
 
-        assert mock_request.call_count == 3
+        assert [call.args for call in mock_request.call_args_list] == [
+            *[("get", "job/job_1/status/")] * 3,
+            ("post", "job/job_1/cancel/"),
+        ]
         message = "Maximum retries reached: 3 retries attempted for job job_1"
         assert (exc_info.value.job_id, exc_info.value.retries) == ("job_1", 3)
         assert exc_info.value.message == message
         assert str(exc_info.value) == message
 
-    def test_default_max_retries_is_unlimited(self):
-        """The constructor default polls indefinitely (``max_retries=None``)."""
-        assert (
-            inspect.signature(QoroService.__init__).parameters["max_retries"].default
-            is None
-        )
+    def test_polling_defaults_to_unlimited_every_three_seconds(self):
+        parameters = inspect.signature(QoroService.__init__).parameters
+
+        assert parameters["max_retries"].default is None
+        assert parameters["polling_interval"].default == 3.0
+
+    def test_polling_settings_come_from_the_constructor(self, qoro_service_factory):
+        service = qoro_service_factory(max_retries=5, polling_interval=0.5)
+
+        assert isinstance(service, AsyncJobBackend)
+        assert (service.max_retries, service.polling_interval) == (5, 0.5)
 
     def test_unlimited_polling_runs_until_terminal_under_an_infinite_cap(
         self, mocker, qoro_service_factory
@@ -285,56 +295,43 @@ class TestQoroJobStatusAPI:
 
         mock_request.assert_not_called()
 
-    def test_auto_cancels_remote_job_on_user_cancel(self, mocker, qoro_service_factory):
-        """Direct callers without a cancellation event get an auto-installed
-        SIGINT funnel plus best-effort remote-job cleanup. The scope helper is
-        patched to yield a pre-set event, so the loop exits on its first
-        iteration and the scope's cleanup path must call ``cancel_job``."""
+    def test_ctrl_c_cancels_the_job_a_direct_caller_waits_on(
+        self, mocker, qoro_service_factory
+    ):
         service = qoro_service_factory(max_retries=10, polling_interval=0.01)
-        mocker.patch.object(
-            service,
-            "_make_request",
-            return_value=make_mock_status_response(mocker, JobStatus.RUNNING),
-        )
         cancel_spy = mocker.patch.object(service, "cancel_job")
 
-        @contextmanager
-        def preset_scope(backend, exec_result):
-            event = Event()
-            event.set()
-            try:
-                yield event
-            except ExecutionCancelledError:
-                backend.cancel_job(exec_result)
-                raise
+        def press_ctrl_c(*args, **kwargs):
+            signal.getsignal(signal.SIGINT)(signal.SIGINT, None)
+            return make_mock_status_response(mocker, JobStatus.RUNNING)
 
-        mocker.patch(
-            "divi.backends.runners._qoro._auto_cancellation_scope", preset_scope
-        )
+        mocker.patch.object(service, "_make_request", side_effect=press_ctrl_c)
 
         result = make_execution_result()
         with pytest.raises(ExecutionCancelledError):
             service.poll_job_status(result, loop_until_complete=True)
         cancel_spy.assert_called_once_with(result)
 
-    def test_a_caller_event_skips_the_auto_scope(self, mocker, qoro_service_factory):
-        """A caller-supplied ``cancellation_event`` means the caller owns
-        cleanup, so ``_auto_cancellation_scope`` must not open."""
+    @pytest.mark.parametrize(
+        ("cancellation_event", "cancels"),
+        [(None, True), (Event(), False)],
+        ids=["no-caller-event", "caller-owns-cleanup"],
+    )
+    def test_a_failed_wait_cancels_the_job_only_without_a_caller_event(
+        self, mocker, qoro_service_factory, cancellation_event, cancels
+    ):
         service = qoro_service_factory()
-        mocker.patch.object(
-            service,
-            "_make_request",
-            return_value=make_mock_status_response(mocker, JobStatus.COMPLETED),
-        )
-        scope_spy = mocker.patch("divi.backends.runners._qoro._auto_cancellation_scope")
+        mocker.patch.object(service, "_make_request", side_effect=RuntimeError("down"))
+        cancel_spy = mocker.patch.object(service, "cancel_job")
 
-        service.poll_job_status(
-            make_execution_result(),
-            loop_until_complete=True,
-            cancellation_event=Event(),
-        )
+        with pytest.raises(RuntimeError, match="down"):
+            service.poll_job_status(
+                make_execution_result(),
+                loop_until_complete=True,
+                cancellation_event=cancellation_event,
+            )
 
-        scope_spy.assert_not_called()
+        assert cancel_spy.called is cancels
 
     def test_the_cancellation_event_interrupts_the_sleep(
         self, mocker, qoro_service_factory
@@ -1465,6 +1462,17 @@ class TestQoroServiceMock:
             service.submit_circuits({"c1": "qasm"})
 
         assert make_request.call_args_list[-1].args == ("post", "job/job-9/cancel/")
+
+    def test_circuit_too_wide_survives_pickling(self):
+        error = CircuitTooWideError(
+            "400 Bad Request: exceeds qubit limit 30.",
+            limit=30,
+            response=requests.Response(),
+        )
+
+        restored = pickle.loads(pickle.dumps(error))
+
+        assert (restored.limit, str(restored)) == (30, str(error))
 
     @pytest.mark.parametrize(
         ("status", "message"),

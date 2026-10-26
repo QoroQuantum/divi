@@ -257,13 +257,6 @@ class QiskitSimulator(CircuitRunner):
         """
         return not self._force_sampling
 
-    @property
-    def is_async(self) -> bool:
-        """
-        Whether the backend executes circuits asynchronously.
-        """
-        return False
-
     def _resolve_backend(self, circuit: QuantumCircuit) -> BackendV2 | None:
         """Resolve the backend from qiskit_backend setting."""
         if self.qiskit_backend == "auto":

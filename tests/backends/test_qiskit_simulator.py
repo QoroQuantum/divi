@@ -218,11 +218,6 @@ class TestQiskitSimulatorProperties:
         simulator = QiskitSimulator(force_sampling=force_sampling)
         assert simulator.supports_expval is expected
 
-    def test_is_async(self):
-        """Test is_async property (line 121)."""
-        simulator = QiskitSimulator()
-        assert simulator.is_async is False
-
     def test_optimization_level_defaults_to_qiskits_choice(self):
         """Transpilation is the caller's to control; divi imposes no default."""
         assert QiskitSimulator().optimization_level is None

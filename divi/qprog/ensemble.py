@@ -76,16 +76,6 @@ __all__ = [
 _MAX_PANEL_PROGRAMS = 3
 
 
-def _programs_label(keys: list) -> str:
-    """Failure-panel title suffix naming the programs, collapsing long lists."""
-    if not keys:
-        return ""
-    shown = ", ".join(map(str, keys[:_MAX_PANEL_PROGRAMS]))
-    if len(keys) > _MAX_PANEL_PROGRAMS:
-        shown += f" and {len(keys) - _MAX_PANEL_PROGRAMS} more"
-    return f" ({'Program' if len(keys) == 1 else 'Programs'} {shown})"
-
-
 logger = logging.getLogger(__name__)
 
 
@@ -2055,9 +2045,13 @@ class ProgramEnsemble(ABC):
                 keys.append(map_key)
         chained_cause = None if chained is None else (type(chained), str(chained))
         for cause, (exc, keys) in causes.items():
+            shown = ", ".join(map(str, keys[:_MAX_PANEL_PROGRAMS]))
+            if len(keys) > _MAX_PANEL_PROGRAMS:
+                shown += f" and {len(keys) - _MAX_PANEL_PROGRAMS} more"
+            noun = "Program" if len(keys) == 1 else "Programs"
             render_failure(
                 exc,
-                label=_programs_label(keys),
+                label=f" ({noun} {shown})" if keys else "",
                 console=console,
                 show_traceback=cause != chained_cause,
             )

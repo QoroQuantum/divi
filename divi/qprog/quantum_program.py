@@ -14,8 +14,8 @@ from warnings import warn
 
 import numpy as np
 
-from divi.backends import AsyncJobBackend, CircuitRunner
-from divi.backends._cancellation import _best_effort_cancel_job, _sigint_to_event
+from divi.backends import CircuitRunner
+from divi.backends._cancellation import _sigint_to_event
 from divi.backends._job_status import JobStatus, QoroJobError
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.qem import QEMProtocol, _NoMitigation
@@ -207,7 +207,6 @@ class QuantumProgram(ABC):
         self._total_device_shots = 0
         self._total_backend_jobs = 0
         self._total_run_time = 0.0
-        self._current_execution_result = None
         self._last_cost_variance = None
         self._cancellation_event = None
         self._evaluation_counter = 0
@@ -363,33 +362,6 @@ class QuantumProgram(ABC):
             self._cancellation_event = Event()
         with _sigint_to_event(self._cancellation_event):
             yield
-
-    def cancel_unfinished_job(self):
-        """Cancel the currently running cloud job if one exists.
-
-        This method attempts to cancel the job associated with the current
-        ExecutionResult. It is best-effort and will log warnings for any errors
-        (e.g., job already completed, permission denied) without raising exceptions.
-        """
-        result = self._current_execution_result
-
-        if result is None:
-            warn("Cannot cancel job: no current execution result", stacklevel=2)
-            return
-
-        if result.job_id is None:
-            warn("Cannot cancel job: execution result has no job_id", stacklevel=2)
-            return
-
-        if not isinstance(self.backend, AsyncJobBackend):
-            warn(
-                f"Cannot cancel job: backend {type(self.backend).__name__} "
-                "does not implement the AsyncJobBackend protocol.",
-                stacklevel=2,
-            )
-            return
-
-        _best_effort_cancel_job(self.backend, result)
 
     # ------------------------------------------------------------------ #
     # Pipeline
@@ -599,7 +571,6 @@ class QuantumProgram(ABC):
         self._total_device_shots += env.artifacts["device_shots"]
         self._total_backend_jobs += env.artifacts["backend_jobs"]
         self._total_run_time += env.artifacts["run_time"]
-        self._current_execution_result = env.artifacts["_current_execution_result"]
         self._last_cost_variance = env.artifacts.get("cost_variance")
         return result
 

@@ -51,6 +51,7 @@ from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import SymbolicAngleWarning
 from divi.pipeline import DiviPerformanceWarning, PipelineEnv
 from divi.qprog.optimizers import MonteCarloOptimizer
+from tests._helpers import FakeAsyncBackend
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -136,10 +137,6 @@ class DummySimulator(CircuitRunner):
         self._rng = random.Random(seed)
 
     @property
-    def is_async(self):
-        return False
-
-    @property
     def supports_expval(self):
         return False
 
@@ -168,10 +165,6 @@ class DummyExpvalBackend(CircuitRunner):
     """Backend that supports expectation values (for PCE expval-mode tests)."""
 
     @property
-    def is_async(self):
-        return False
-
-    @property
     def supports_expval(self):
         return True
 
@@ -195,6 +188,13 @@ def dummy_simulator(make_dummy_simulator):
 @pytest.fixture
 def dummy_expval_backend():
     return DummyExpvalBackend(shots=100)
+
+
+@pytest.fixture
+def async_backend():
+    """A ``FakeAsyncBackend`` that completes every job. Tests that script polling
+    construct their own from ``tests._helpers``."""
+    return FakeAsyncBackend()
 
 
 @pytest.fixture

@@ -32,10 +32,19 @@ Backend Architecture
 
 All backends in Divi implement the :class:`~divi.backends.CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend, like cloud hardware, with a single line of code.
 
+Remote-job backends such as :class:`~divi.backends.QoroService` implement
+:class:`~divi.backends.AsyncJobBackend`, a subclass of
+:class:`~divi.backends.CircuitRunner`. Its ``submit_circuits`` returns a job
+handle, which you pass to
+:meth:`~divi.backends.AsyncJobBackend.poll_job_status`,
+:meth:`~divi.backends.AsyncJobBackend.get_job_results` and
+:meth:`~divi.backends.AsyncJobBackend.cancel_job`. The ``polling_interval`` and
+``max_retries`` attributes set how long polling waits.
+
 Direct Submission and ``ExecutionResult``
 -----------------------------------------
 
-All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return an :class:`~divi.backends.ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution.
+All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return an :class:`~divi.backends.ExecutionResult` object, which provides a unified interface for handling both synchronous and asynchronous execution. :meth:`ExecutionResult.is_async() <divi.backends.ExecutionResult.is_async>` tells a job handle from finished results.
 
 **Accepted Input:**
    Circuits may be given as a mapping of label → circuit, or as a bare

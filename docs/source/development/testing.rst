@@ -108,6 +108,8 @@ Current locations:
      - Role
    * - ``tests/conftest.py``
      - Global simulators, API key, warning suppression
+   * - ``tests/_helpers.py``
+     - Suite-wide helpers, including ``FakeAsyncBackend`` and its polling scripts
    * - ``tests/backends/conftest.py``
      - Qoro service fixtures
    * - ``tests/backends/_helpers.py``
@@ -136,6 +138,7 @@ Current locations:
 - ``dummy_simulator``: Fast mock simulator returning random counts (for unit tests)
 - ``dummy_expval_backend``: Mock backend that supports expectation values (for PCE tests)
 - ``dummy_pipeline_env``: ``PipelineEnv`` wrapping the expval backend (for pipeline tests)
+- ``async_backend``: ``FakeAsyncBackend`` that records jobs, polls and cancels, and completes every job (for tests of job handling and cancellation; script polling with ``FakeAsyncBackend(poll=...)`` from ``tests/_helpers.py``)
 - ``default_test_simulator``: ``MaestroSimulator`` with 5000 shots (for integration tests)
 - ``api_key``: Fixture providing API key for cloud tests (module-scoped)
 

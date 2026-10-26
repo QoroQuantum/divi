@@ -187,10 +187,6 @@ class TestProperties:
         sim = _make_simulator(mocker, _make_fake_maestro(mocker), **kwargs)
         assert sim.supports_expval is expected
 
-    def test_is_async(self, mocker):
-        sim = _make_simulator(mocker, _make_fake_maestro(mocker))
-        assert sim.is_async is False
-
     @pytest.mark.parametrize(
         "kwargs, expected",
         [
