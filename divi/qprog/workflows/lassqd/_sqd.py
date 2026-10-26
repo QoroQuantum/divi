@@ -1258,8 +1258,7 @@ class SQDSolver:
         # in the winning subspace.
         carried_alpha, carried_beta = carried
 
-        previous_objective: float | None = None
-        previous_occupancy: np.ndarray | None = None
+        previous: tuple[float, np.ndarray] | None = None
 
         for iteration in range(self.n_iterations):
             candidates = self._recovered_distribution(probs, iteration)
@@ -1277,16 +1276,14 @@ class SQDSolver:
 
             occupancy = np.mean([occ for _, occ in results], axis=0)
             converged = (
-                previous_objective is not None
-                and abs(previous_objective - winner.objective) < self.energy_tol
-                and float(np.abs(occupancy - previous_occupancy).max())
-                < self.occupancies_tol
+                previous is not None
+                and abs(previous[0] - winner.objective) < self.energy_tol
+                and float(np.abs(occupancy - previous[1]).max()) < self.occupancies_tol
             )
             self.occupancy = occupancy
             if converged:
                 break
-            previous_objective = winner.objective
-            previous_occupancy = occupancy
+            previous = (winner.objective, occupancy)
 
             carried_alpha, carried_beta = self.carried_strings(winner)
 

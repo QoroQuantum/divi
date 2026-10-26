@@ -279,6 +279,8 @@ class MaestroConfig(BaseModel):
         if self.noise_realizations is not None:
             return {"noise_realizations": self.noise_realizations}
         noise_model = self.noise_model
+        if noise_model is None:
+            return {}
         stochastic = noise_model.has_coherent() or noise_model.has_correlated()
         if self._uses_exact_channels() and not stochastic:
             return {"noise_realizations": 1}

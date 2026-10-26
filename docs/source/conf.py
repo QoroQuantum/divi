@@ -158,6 +158,7 @@ intersphinx_mapping = {
     "requests": ("https://requests.readthedocs.io/en/latest/", None),
     "sklearn": ("https://scikit-learn.org/stable/", None),
     "rustworkx": ("https://www.rustworkx.org/", None),
+    "ocean": ("https://docs.dwavequantum.com/en/latest/", None),
 }
 
 # Unset, the connect timeout is unbounded and one unreachable inventory stalls
@@ -171,14 +172,6 @@ intersphinx_timeout = 30
 # underlying issue: ``__all__`` in submodules, intersphinx mapping for the
 # library, or a fully-qualified cross-reference. Every entry here is debt.
 nitpick_ignore_regex = [
-    # cirq uses Google-style docs (no objects.inv).
-    (r"py:class", r"cirq\..*"),
-    # dimod's inventory lives under the Ocean umbrella.
-    (r"py:class", r"dimod\..*"),
-    # dwave-hybrid does not publish a sphinx inventory. ``show-inheritance``
-    # also renders its base classes (e.g. ``Runnable``) as bare names.
-    (r"py:class", r"hybrid\..*"),
-    (r"py:class", r"^Runnable$"),
     # qoro-maestro does not publish a sphinx inventory.
     (r"py:class", r"maestro\..*"),
     # TypeVars in ``Generic[InT, OutT]`` — autodoc emits both object and
@@ -200,14 +193,13 @@ nitpick_ignore_regex = [
     # the chain and emits a cross-reference to the private class — a
     # third-party ecosystem limitation with no source-side fix.
     (r"py:class", r"numpy\._typing\..*"),
+    # numpy lists ``NDArray`` as ``py:data``; typehints emits ``py:class``.
+    (r"py:class", r"numpy\.typing\.NDArray"),
     # ``scipy.optimize.OptimizeResult`` — bare name from autodoc-typehints.
     (r"py:class", r"^OptimizeResult$"),
-    # PySCF's API documentation does not publish an objects.inv; these are the
-    # molecule-input classes in VQE's annotation and LASSQD's solvent models.
-    (
-        r"py:class",
-        r"pyscf\.(gto\.mole\.Mole|scf\.hf\.SCF|solvent\.ddcosmo\.ddCOSMO|solvent\.pcm\.PCM)",
-    ),
+    # PySCF's API documentation does not publish an objects.inv; these are
+    # LASSQD's solvent models.
+    (r"py:class", r"pyscf\.solvent\.(ddcosmo\.ddCOSMO|pcm\.PCM)"),
 ]
 
 # ``sphinx-autodoc-typehints`` emits its own warning category for unresolved

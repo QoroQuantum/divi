@@ -57,7 +57,7 @@ mixer, initial state, feasibility, repair, and partitioned aggregation. The cost
   sparse Pauli operator, or ``{pauli_string: coefficient}``. The leftmost
   character is qubit 0.
 * :func:`~divi.hamiltonians.qubo_to_spo` accepts a QUBO/HUBO mapping, matrix,
-  or :class:`dimod.BinaryQuadraticModel`. It folds the offset into an identity
+  or :class:`~dimod.binary.BinaryQuadraticModel`. It folds the offset into an identity
   term; use :func:`~divi.hamiltonians.qubo_to_ising` when you also need decoder
   or encoding metadata.
 
@@ -234,7 +234,7 @@ QUBO Problems
 Divi's QAOA solver can also handle Quadratic Unconstrained Binary Optimisation (QUBO) problems. Divi currently supports three ways to build a :class:`~divi.qprog.problems.BinaryOptimizationProblem`:
 
 1. **NumPy array** — pass a :class:`numpy.ndarray` or a :mod:`scipy.sparse` matrix directly
-2. **Dimod BQM** — use ``dimod`` to construct a :class:`dimod.BinaryQuadraticModel`
+2. **Dimod BQM** — use ``dimod`` to construct a :class:`~dimod.binary.BinaryQuadraticModel`
 3. **Nested list** — pass a Python list (converted to a NumPy array internally)
 
 For matrix and nested-list inputs, the solution is a binary
@@ -282,7 +282,7 @@ NumPy Array-based Input
 BinaryQuadraticModel Input
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Pass a :class:`dimod.BinaryQuadraticModel` to the same
+Pass a :class:`~dimod.binary.BinaryQuadraticModel` to the same
 ``BinaryOptimizationProblem`` constructor. Variable labels are preserved, so a
 string-labelled BQM returns a mapping such as ``{"w": 0, "x": 1, "y": 0}``
 instead of an array. Evaluate it directly with ``bqm.energy(qaoa.solution)``.

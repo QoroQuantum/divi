@@ -147,15 +147,17 @@ class BinaryOptimizationProblem(QAOAProblem):
     conversion), standard X-mixer, and ground-state initial
     superposition.
 
-    Accepted inputs (anything :class:`dimod.BinaryQuadraticModel` or
-    :class:`dimod.BinaryPolynomial` accepts, plus matrices):
+    Accepted inputs (anything :class:`~dimod.binary.BinaryQuadraticModel` or
+    :class:`~dimod.higherorder.polynomial.BinaryPolynomial` accepts, plus
+    matrices):
 
     - ``np.ndarray`` / any ``scipy.sparse`` matrix or array — square QUBO matrix.
-    - :class:`dimod.BinaryQuadraticModel` — quadratic form with named
+    - :class:`~dimod.binary.BinaryQuadraticModel` — quadratic form with named
       variables.
     - ``dict`` with tuple keys — HUBO terms, e.g.
       ``{(0,): -1.0, (0, 1, 2): 2.0}``.
-    - :class:`dimod.BinaryPolynomial` — polynomial of arbitrary degree.
+    - :class:`~dimod.higherorder.polynomial.BinaryPolynomial` — polynomial of
+      arbitrary degree.
 
     Ising-conversion strategies selected via ``hamiltonian_builder``:
 

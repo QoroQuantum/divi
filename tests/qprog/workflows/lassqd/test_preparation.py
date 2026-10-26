@@ -175,6 +175,12 @@ def test_prepare_lucj_fragment_samples_the_ccsd_seed_without_the_linear_method(
     assert stages == ["Fragment ROHF", "CCSD seed"]
 
 
+def _antisymmetric_t2(rng):
+    t2 = rng.normal(scale=0.05, size=(2, 2, 2, 2))
+    t2 = t2 - t2.transpose(1, 0, 2, 3)
+    return t2 - t2.transpose(0, 1, 3, 2)
+
+
 def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker):
     rng = np.random.default_rng(17)
     t1 = (
@@ -182,9 +188,9 @@ def test_prepare_lucj_fragment_refits_nonzero_seed_to_the_paper_topology(mocker)
         rng.normal(scale=0.05, size=(2, 2)),
     )
     t2 = (
+        _antisymmetric_t2(rng),
         rng.normal(scale=0.05, size=(2, 2, 2, 2)),
-        rng.normal(scale=0.05, size=(2, 2, 2, 2)),
-        rng.normal(scale=0.05, size=(2, 2, 2, 2)),
+        _antisymmetric_t2(rng),
     )
     spec = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
     pairs = paper_lucj_interaction_pairs(4)

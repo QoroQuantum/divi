@@ -709,7 +709,7 @@ def _enumerate_paths_dfs(
                     idx -= 1
                     continue
 
-                if symbolic:
+                if isinstance(angle, ParameterExpression):
                     cos_w = weight * angle.cos()
                     sin_w = weight * angle.sin()
                 else:
@@ -1207,7 +1207,7 @@ class QuEPP(QEMProtocol):
                 *(
                     rot.angle.parameters
                     for rot in rotations
-                    if _is_parametric(rot.angle)
+                    if isinstance(rot.angle, ParameterExpression)
                 )
             )
             context["symbolic"] = True

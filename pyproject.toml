@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     # Quantum computing
-    "qiskit>=2.5",
+    "qiskit>=2.6",
     # Scientific computing and numerical operations
     "numpy",
     "scipy>=1.16,<2.0",
@@ -37,17 +37,17 @@ dependencies = [
     "qoro-maestro==0.3.7",
     # Optimization algorithms
     "pymoo>=0.6,<0.7",
-    "dimod>=0.12.22,<0.13",
+    "dimod>=0.12,<0.13",
     # Utilities
     "requests>=2.32,<3.0",
     "dill>=0.4,<0.5",
     "python-dotenv>=1.1.1,<2.0",
     "rich>=15.0",
     "matplotlib>=3.10,<4.0",
-    "pydantic>=2.10,<3.0",
+    "pydantic>=2.14,<3.0",
     "numba>=0.68.0",
     "stim>=1.15.0,<2.0",
-    "platformdirs>=4.0,<5.0",
+    "platformdirs>=4.13,<5.0",
     "textual>=8.1.1,<9.0.0",
 ]
 
@@ -69,7 +69,7 @@ jupyter = [
 ]
 ai = [
     "llama-cpp-python>=0.3.16,<0.4.0",
-    "fastembed>=0.8.0,<0.9.0",
+    "fastembed>=0.9,<0.10.0",
     "faiss-cpu>=1.13.2,<2.0.0",
     "bm25s>=0.3,<0.4",
     "pyperclip>=1.11.0,<2.0.0",
@@ -78,8 +78,8 @@ ai = [
     "docutils>=0.18",
 ]
 aer = [
-    "qiskit-aer",
-    "qiskit-ibm-runtime>=0.50",
+    "qiskit-aer>=0.18",
+    "qiskit-ibm-runtime>=0.51",
 ]
 qubo-decompose = [
     "dwave-hybrid>=0.6.14,<0.7.0",
@@ -88,7 +88,7 @@ pennylane = [
     "pennylane>=0.45,<0.46",
 ]
 chem = [
-    "ffsim>=0.0.83,<0.1; sys_platform != 'win32'",
+    "ffsim>=0.0.85,<0.1; sys_platform != 'win32'",
     "pyscf>=2.14,<3.0; sys_platform != 'win32'",
     "openfermion>=1.5,<2.0",
     "qiskit-nature>=0.8.0,<0.9.0",
@@ -102,9 +102,9 @@ all = [
 [dependency-groups]
 dev = [
     "ruff>=0.17,<0.18",
-    "pre-commit>=4.6,<5.0",
+    "pre-commit>=4.7,<5.0",
     "commitizen>=4.19,<5.0",
-    "pyrefly>=1.3,<2.0",
+    "pyrefly>=1.4,<2.0",
     "types-networkx>=3.6",
     "types-requests>=2.33",
     "types-docutils>=0.22",
@@ -113,7 +113,7 @@ dev = [
 ]
 testing = [
     "pytest>=9.1,<10.0",
-    "pytest-mock>=3.16,<4.0",
+    "pytest-mock>=3.17,<4.0",
     "pytest-xdist>=3.8,<4.0",
     "pytest-cov>=7.0,<8.0",
     "sybil>=9.0",
@@ -127,7 +127,7 @@ docs = [
     "sphinx-autobuild>=2025.8.25,<2026.0.0",
     "sphinxcontrib-mermaid>=2.0,<3.0",
     "sphinxcontrib-spelling>=8.0.1,<9.0.0",
-    "sphinx-automodapi>=0.18",
+    "sphinx-automodapi>=0.22",
     "sphinx-copybutton>=0.5.2",
     "autodoc-pydantic>=2.0,<3.0",
 ]
