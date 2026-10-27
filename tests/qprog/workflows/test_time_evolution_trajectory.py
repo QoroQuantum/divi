@@ -15,7 +15,7 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.quepp import QuEPP
 from divi.hamiltonians.trotterization import ExactTrotterization, QDrift
-from divi.hamiltonians.trotterization._state_drift import StateDriftDensities
+from divi.hamiltonians.trotterization._state_drift import StateDriftExpansion
 from divi.pipeline import DiviPerformanceWarning
 from divi.qprog import ReportingLevel, TimeEvolutionTrajectory
 from divi.qprog.algorithms import TimeEvolution
@@ -342,9 +342,9 @@ class TestTimeEvolutionTrajectoryRun:
             observable=_STATE_DRIFT_OBSERVABLE,
             backend=default_test_simulator,
         )
-        spy = mocker.spy(StateDriftDensities, "compute")
+        spy = mocker.spy(StateDriftExpansion, "compute")
         traj = TimeEvolutionTrajectory(
-            time_points=[0.01, 0.15, 0.3],
+            time_points=[0.01, 0.05, 0.15],
             trotterization_strategy=QDrift(
                 sampling_budget=2, seed=5, sampling_strategy="state_drift"
             ),

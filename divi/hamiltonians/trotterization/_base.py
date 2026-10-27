@@ -32,7 +32,7 @@ class TrotterSpec:
     """
 
     hamiltonian: SparsePauliOp
-    """Hamiltonian to trotterize."""
+    """Hamiltonian to split into Trotter steps."""
 
     initial_state: "InitialState | None" = None
     """State the evolution starts from; ``None`` outside a time evolution."""

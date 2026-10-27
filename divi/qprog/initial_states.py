@@ -71,6 +71,14 @@ class InitialState(ABC):
         """Human-readable name of the initial state."""
         return self.__class__.__name__
 
+    def product_masks(
+        self, n_qubits: int
+    ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]] | None:
+        """For a product of single-qubit ``Z`` and ``X`` eigenstates, which
+        qubits are in a ``Z`` eigenstate and which in the ``-1`` eigenstate of
+        their axis; ``None`` for any other state."""
+        return None
+
     def pauli_expectations(
         self, terms: PauliList, n_qubits: int
     ) -> npt.NDArray[np.floating]:
@@ -105,15 +113,6 @@ class InitialState(ABC):
         return np.array([values[label] for label in labels], dtype=float)
 
 
-# Bloch vector (x, y, z) of each per-qubit product-state character.
-_BLOCH_VECTORS = {
-    "0": (0.0, 0.0, 1.0),
-    "1": (0.0, 0.0, -1.0),
-    "+": (1.0, 0.0, 0.0),
-    "-": (-1.0, 0.0, 0.0),
-}
-
-
 class _ProductState(InitialState):
     """A state whose qubit ``i`` is ``'0'``, ``'1'``, ``'+'`` or ``'-'``."""
 
@@ -133,17 +132,23 @@ class _ProductState(InitialState):
                 qc.h(qubit)
         return qc
 
+    def product_masks(
+        self, n_qubits: int
+    ) -> tuple[npt.NDArray[np.bool_], npt.NDArray[np.bool_]]:
+        chars = np.array(list(self._state_string(n_qubits)))
+        return np.isin(chars, ("0", "1")), np.isin(chars, ("1", "-"))
+
     def pauli_expectations(
         self, terms: PauliList, n_qubits: int
     ) -> npt.NDArray[np.floating]:
-        state_string = self._state_string(n_qubits)
-        bloch = np.array([_BLOCH_VECTORS[char] for char in state_string])
-        # Columns indexed by x + 2z: I, X, Z, Y.
-        table = np.column_stack(
-            [np.ones(n_qubits), bloch[:, 0], bloch[:, 2], bloch[:, 1]]
+        along_z, flipped = self.product_masks(n_qubits)
+        # A string has a non-zero value only if it is I or Z on the 0/1 qubits
+        # and I or X on the ± qubits; each Z on 1 and X on − flips its sign.
+        vanishes = np.any(terms.x & along_z, axis=1) | np.any(
+            terms.z & ~along_z, axis=1
         )
-        codes = terms.x.astype(np.intp) + 2 * terms.z.astype(np.intp)
-        return table[np.arange(n_qubits), codes].prod(axis=1)
+        odd = np.count_nonzero((terms.x | terms.z) & flipped, axis=1) % 2
+        return np.where(vanishes, 0.0, 1.0 - 2.0 * odd)
 
 
 # ---------------------------------------------------------------------------

@@ -15,10 +15,8 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.hamiltonians._term_ops import generate_empty_spo
 from divi.hamiltonians.trotterization import ExactTrotterization, QDrift, TrotterSpec
 from divi.hamiltonians.trotterization import _qdrift as qdrift_module
-from divi.hamiltonians.trotterization._state_drift import (
-    StateDriftDensities,
-    state_drift_distribution,
-)
+from divi.hamiltonians.trotterization._allocation import state_drift_distribution
+from divi.hamiltonians.trotterization._state_drift import StateDriftExpansion
 from divi.qprog.initial_states import CustomPerQubitState, DickeState, ZerosState
 from tests._helpers import exact_match
 from tests.hamiltonians.trotterization._helpers import (
@@ -235,7 +233,7 @@ class TestQDrift:
             _state_drift_spec(state, observable, time=0.2), n_steps=n_steps, rng=rng
         )
         expected = state_drift_distribution(
-            StateDriftDensities.compute(_STATE_DRIFT_HAMILTONIAN, observable, state),
+            StateDriftExpansion.compute(_STATE_DRIFT_HAMILTONIAN, observable, state),
             time=0.2,
             n_samples=2 * n_steps,
             n_trajectories=5,
@@ -249,8 +247,8 @@ class TestQDrift:
 
     def test_copies_share_the_state_drift_densities(self, mocker):
         """Per-program copies of one strategy evaluate the state only once."""
-        state = DickeState(1)
-        spy = mocker.spy(StateDriftDensities, "compute")
+        state = CustomPerQubitState("+0-")
+        spy = mocker.spy(StateDriftExpansion, "compute")
         strategy = QDrift(sampling_budget=2, seed=1, sampling_strategy="state_drift")
         for copy_ in (strategy, replace(strategy, seed=2), copy.deepcopy(strategy)):
             copy_.process_hamiltonian(_state_drift_spec(state))

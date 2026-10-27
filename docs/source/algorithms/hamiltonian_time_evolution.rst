@@ -245,25 +245,30 @@ The strategy computes the probabilities when the program runs, from the
 initial state, observable and time that ``TimeEvolution`` hands it. It needs:
 
 - exactly one ``observable``;
-- an initial state; product states (``ZerosState``, ``OnesState``,
-  ``SuperpositionState``, ``CustomPerQubitState``) have closed-form Pauli
-  expectation values, and every other state's values come from Maestro's
-  matrix-product-state simulator, so wide registers work too (see
-  :meth:`~divi.qprog.initial_states.InitialState.pauli_expectations`);
+- an initial state. Product states (``ZerosState``, ``OnesState``,
+  ``SuperpositionState``, ``CustomPerQubitState``) are evaluated in closed
+  form. Any other state is simulated once with Maestro's matrix-product-state
+  simulator, which evaluates in one batch the Pauli strings of the nested
+  commutators of :math:`H` with :math:`O` up to fourth order; their number, and
+  with it the cost, grows quickly with the number of Hamiltonian terms;
 - ``sampling_budget`` set, and no ``keep_fraction`` or ``keep_top_n``.
 
-The rule is the paper's single-step one: it balances the leading bias against
-the variance of ``n_hamiltonians_per_iteration`` averaged runs, but leaves out
-the terms that couple different Trotter steps. The expansion behind the rule
-holds only for small rotations, so the strategy keeps every sampled rotation
-angle :math:`|c_j|\,\mathrm{d}t/q_j` within 0.5, where :math:`\mathrm{d}t` is
-``time / (n_steps * sampling_budget)``. Where needed it mixes in more than a
-fifth of the weighted distribution to get there. That works whenever
-:math:`\lambda\,\mathrm{d}t \le 0.5`, with :math:`\lambda = \sum_j |c_j|`;
-beyond it the strategy warns and samples by weight, and raising ``n_steps`` or
-``sampling_budget`` brings the angles back down. Because the rule
-leaves out the cross-step terms, it is not guaranteed to lower the variance of
-circuits with more than one sampled rotation.
+The probabilities follow the paper's optimiser for the full circuit depth
+(Appendices F and J): they minimise the fourth-order mean-squared error of
+``n_hamiltonians_per_iteration`` averaged runs, or the bias alone when every
+term's first-order effect on the observable vanishes, while keeping both the
+bias and the variance within 5% of weighted sampling's. The expansion behind
+the optimiser holds only for small rotations, so every sampled rotation angle
+:math:`|c_j|\,\mathrm{d}t/q_j` stays within 0.5, where :math:`\mathrm{d}t` is
+``time / (n_steps * sampling_budget)``. The strategy warns and samples by
+weight when:
+
+- :math:`\lambda\,\mathrm{d}t > 0.5`, with :math:`\lambda = \sum_j |c_j|`, so no
+  distribution keeps the angles within 0.5; raising ``n_steps`` or
+  ``sampling_budget`` brings them back down;
+- no term changes the observable in the initial state;
+- the expansion is not reliable for the evolution, because its third- and
+  fourth-order corrections are too large next to the result.
 
 The strategy evaluates each initial state and observable once and reuses the
 result for every time, also across the copies of it that

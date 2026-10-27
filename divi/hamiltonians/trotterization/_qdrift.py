@@ -19,6 +19,7 @@ from divi.hamiltonians._term_ops import (
     _require_qiskit_num_qubits,
     generate_empty_spo,
 )
+from divi.hamiltonians.trotterization._allocation import state_drift_distribution
 from divi.hamiltonians.trotterization._base import (
     TrotterizationResult,
     TrotterizationStrategy,
@@ -26,10 +27,7 @@ from divi.hamiltonians.trotterization._base import (
     _warn_truncation_no_op,
 )
 from divi.hamiltonians.trotterization._exact import ExactTrotterization
-from divi.hamiltonians.trotterization._state_drift import (
-    StateDriftCache,
-    state_drift_distribution,
-)
+from divi.hamiltonians.trotterization._state_drift import StateDriftCache
 
 
 @dataclass(frozen=True)
@@ -254,7 +252,7 @@ class QDrift(TrotterizationStrategy):
         if budget is None:
             raise RuntimeError("sampling_budget is not set.")
         return state_drift_distribution(
-            self._state_drift_cache.densities(
+            self._state_drift_cache.expansion(
                 spec.hamiltonian, observable, spec.initial_state
             ),
             time=float(time),
