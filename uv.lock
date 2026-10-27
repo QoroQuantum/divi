@@ -2523,6 +2523,41 @@ wheels = [
 ]
 
 [[package]]
+name = "nanobind-backend"
+version = "1.0.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/76/49/a4c01de9c358b5749560a5415b899a8b57399381e5c8ae64962381302a59/nanobind_backend-1.0.0-cp311-cp311-macosx_10_14_x86_64.whl", hash = "sha256:b20b3e4bbb672987f9d65e52f1829299589c1ccf0502360879846a922e9cb1ed", size = 80577, upload-time = "2026-08-22T04:22:45.852Z" },
+    { url = "https://files.pythonhosted.org/packages/a8/65/c3ff5ef09109a163a3cbe8a69250ae7c4b0b4d8df79b1cb447d03747529f/nanobind_backend-1.0.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:89c582f83d491ba01aa1a5ad39ed6c59bdead67ec3b8c88b288b7e4b6bac18df", size = 76586, upload-time = "2026-08-22T04:22:46.756Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/14/40f0a465df491562debf55044bcfc728dca7cb8e3ef76f532aa8f75e775b/nanobind_backend-1.0.0-cp311-cp311-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fdf41e97cfb9f149c89b323b7850bd9dc6316d1d79adf99081511b9a1d0858b1", size = 98356, upload-time = "2026-08-22T04:22:47.682Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/9a/0db4d9982ac708b6c532ca6ea2a523d5c85a25f7fc288558c4d6fad725b0/nanobind_backend-1.0.0-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:33bdec0da2f78669d5c95bd546ff2bb7744dafa43a16bb72b2eecdf83d8c3b3a", size = 106460, upload-time = "2026-08-22T04:22:48.716Z" },
+    { url = "https://files.pythonhosted.org/packages/49/77/45d11f991aa78e8dfaac490c6330e38912d414b60a6b624024e8eaa4cadb/nanobind_backend-1.0.0-cp311-cp311-manylinux_2_39_riscv64.whl", hash = "sha256:d77ecad0d4b8526865f6bec7cd77603c686ef65b57cc7ec81795b3a468dba0f1", size = 100025, upload-time = "2026-08-22T04:22:49.763Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/22/8a2576123da22743a1ca6b683e2e1a046990dd75ab3f70c21c0c8690d936/nanobind_backend-1.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:691be892dcd6b4b1317d628b49bf3e688470f4f927ac316dca233ee19fab7ecd", size = 264783, upload-time = "2026-08-22T04:22:50.856Z" },
+    { url = "https://files.pythonhosted.org/packages/24/bb/fbaa64393f5ed253de5879e8d30477d05f53a3c2b106b9db4f33db7da310/nanobind_backend-1.0.0-cp311-cp311-win_arm64.whl", hash = "sha256:dc199056cbd534c5317899539a36245aa14bce6b8afd48c217e578b2463e0594", size = 435095, upload-time = "2026-08-22T04:22:52.035Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/57/f02cc977a0ba1ddf2a41ebad61bcf2fbfd905aef7753082d9f39389a13e1/nanobind_backend-1.0.0-cp312-cp312-macosx_10_14_x86_64.whl", hash = "sha256:9fd9145b1aa8e9b78029308a73e1ade94369d7250c826783655210d1800f1493", size = 80504, upload-time = "2026-08-22T04:22:53.269Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/3a/40e9ef3133573dddf32f7dcaf1bc7d4f459ecb632b2274c7a619fbfa40ea/nanobind_backend-1.0.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:dca8999e4e87a4e39e162c55b70f39fe1882913c4d7de1adab81cf82bb8cb9ad", size = 75568, upload-time = "2026-08-22T04:22:54.19Z" },
+    { url = "https://files.pythonhosted.org/packages/a3/3b/806d3346ae8175746853b204efd59a4ad8bbddf91d48d03f4eac48d15245/nanobind_backend-1.0.0-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:4a42503f65cd595f97a31f24d21c6ddbd017ffcb808626d0134e475e0db25f3d", size = 97730, upload-time = "2026-08-22T04:22:55.085Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/2c/7fb13ecb1e8c0c268e26c6bc44be4a7f51996b2a3c006749ce6fc4fd7da2/nanobind_backend-1.0.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:6aa9864050cc5fd1ff59d1f9b79740efa278515eed27af848efae07125c029b8", size = 106063, upload-time = "2026-08-22T04:22:55.973Z" },
+    { url = "https://files.pythonhosted.org/packages/18/bf/2f6dbcedcca065c20b73346f037d69d78fdb545c9abbf7ad8b27da7890c5/nanobind_backend-1.0.0-cp312-cp312-manylinux_2_39_riscv64.whl", hash = "sha256:00dadccfa92d0f9eac0b1877fdc3fd99d2ebb1a651fbe44daff365a173bd2faa", size = 99415, upload-time = "2026-08-22T04:22:57.03Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/da/f6af805e0737652d4b6aa2e51e3ec1485d906e77ee9389b126adbb9f9644/nanobind_backend-1.0.0-cp312-cp312-win_amd64.whl", hash = "sha256:9b1502e3f160358feff92f60a634e198c76754f50a60fdacd9a8b5dccbe5d9d0", size = 264454, upload-time = "2026-08-22T04:22:58.035Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/45/851847d5246c0c47dbebe473ecfbb0ed44a41fae9ef7e2ec73cd7c8975a3/nanobind_backend-1.0.0-cp312-cp312-win_arm64.whl", hash = "sha256:a1f6e6320aee495e5cad933d671e9d60ee42f4bf460930ef7afed191243aa733", size = 434441, upload-time = "2026-08-22T04:22:59.442Z" },
+    { url = "https://files.pythonhosted.org/packages/06/eb/1c4f3e1fcc41093e321b1c4eb7ca79f628a36057496398bb9fba4d97e417/nanobind_backend-1.0.0-cp313-cp313-macosx_10_14_x86_64.whl", hash = "sha256:a6dd7a66fb7416d62be577d41d64478a187d9f36d089759555698bb08addc2c3", size = 80547, upload-time = "2026-08-22T04:23:00.75Z" },
+    { url = "https://files.pythonhosted.org/packages/18/c2/d59e5b6af43e45088c18895035e053c4585bce7d1bde9679368ef5b960e0/nanobind_backend-1.0.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:28a4c397d6d36dfb712acbab817c02ad2f8658a85fb1dbbae7385689d28d20e9", size = 75630, upload-time = "2026-08-22T04:23:01.674Z" },
+    { url = "https://files.pythonhosted.org/packages/24/a1/97ffb303def8e5a4e48694b01d58477899392468295e8af5c60fdae5f035/nanobind_backend-1.0.0-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:8ddf018fc62a2bd51e9d7cc6477af7ae13ccc0db69b775d67d837ba7e0bc41b4", size = 97824, upload-time = "2026-08-22T04:23:02.696Z" },
+    { url = "https://files.pythonhosted.org/packages/c0/3e/0a2143308fd413ae10da3fb8732e9d2fc87de4605a1126d304ffe9f63414/nanobind_backend-1.0.0-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:de2c78ed4b88ef6c59a835eebe7f5e91ab6869f17f915a61c7d4eec24a1e2b85", size = 106253, upload-time = "2026-08-22T04:23:03.583Z" },
+    { url = "https://files.pythonhosted.org/packages/2c/01/7bb71f0a2566cb398d6877e3540307c3d0e684797001eb1128c2c3732a52/nanobind_backend-1.0.0-cp313-cp313-manylinux_2_39_riscv64.whl", hash = "sha256:36a116471c3ca0b6cd3af1e1fa2e38c52086a2d2daf00b86f90a99da5efdde53", size = 99504, upload-time = "2026-08-22T04:23:04.644Z" },
+    { url = "https://files.pythonhosted.org/packages/90/49/8038eedfd35433968e638081ca4eb6881869e517f766beff0f095387dc9a/nanobind_backend-1.0.0-cp313-cp313-win_amd64.whl", hash = "sha256:915c6ff4ce92584cdde18a24cc5d730f04a70c2f26bc0bc4db903ca54043eb86", size = 264501, upload-time = "2026-08-22T04:23:05.606Z" },
+    { url = "https://files.pythonhosted.org/packages/03/11/6c515cac31f723d2ce2c3155de4343a3ccf612025171cde25d48290c3680/nanobind_backend-1.0.0-cp313-cp313-win_arm64.whl", hash = "sha256:6b7c31403e6f39fd704359ce4a0687d894a9ffa67813da6a54c6d0eb6fde93aa", size = 434433, upload-time = "2026-08-22T04:23:06.626Z" },
+    { url = "https://files.pythonhosted.org/packages/33/82/474e530e562a2c98db0dbd35cc2bc08500895be7cab6b13c5c990c09a650/nanobind_backend-1.0.0-cp314-cp314-macosx_10_15_x86_64.whl", hash = "sha256:04a35c7395daeb9a33f6801ca3d1e11e0384702ae22b8e3e251ef9f6a4a54c10", size = 80613, upload-time = "2026-08-22T04:23:07.851Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/36/7f79710b96ba643c91db149f7ba1b454124cf2cf97e379ef6c3529d97dd0/nanobind_backend-1.0.0-cp314-cp314-macosx_11_0_arm64.whl", hash = "sha256:574d104bf6322711e5db55ed49409289df9582e8c1fd2a2f2d643d2136428e13", size = 76216, upload-time = "2026-08-22T04:23:08.78Z" },
+    { url = "https://files.pythonhosted.org/packages/08/08/fecefa8c4e5774222b2ed1b715822bca5c9bfb5623fef9be7cc9133df18c/nanobind_backend-1.0.0-cp314-cp314-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:926ba1e7e12bbf3f701f7a200e8801c5f9bd05ba2244962692fcafbd32b8a0d2", size = 98152, upload-time = "2026-08-22T04:23:09.791Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/65/8073c078a91e2fed8c54154f6a0b1d39e362c0ab5ffa7cb93c73f87c9954/nanobind_backend-1.0.0-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:a42a2d594f22e689f15cbdbdf4bf1468ef7a8287da41842515c1cc836a1f2dec", size = 106486, upload-time = "2026-08-22T04:23:10.771Z" },
+    { url = "https://files.pythonhosted.org/packages/37/fe/69f69fbcd6d4e6cee3e27e65a2b10e354da8adfd0d88a87c4c33a845864f/nanobind_backend-1.0.0-cp314-cp314-manylinux_2_39_riscv64.whl", hash = "sha256:ce93f26da63eaa24729d214fa6669525293d75e56f394f2980839cd65a75d2e5", size = 99382, upload-time = "2026-08-22T04:23:11.881Z" },
+    { url = "https://files.pythonhosted.org/packages/89/3e/e33c10a7b0a728e83d492673612146ed7cd47c5d28c242969b4296cb6265/nanobind_backend-1.0.0-cp314-cp314-win_amd64.whl", hash = "sha256:b0eabf671c91fdcd6a61d2177aa434731680442aa2317de54acfabeac4a4cc06", size = 273371, upload-time = "2026-08-22T04:23:12.895Z" },
+    { url = "https://files.pythonhosted.org/packages/56/f2/7a44d3b12d4a876c123445fe6f4971eff1260c6f7660ee00e261cdbe2770/nanobind_backend-1.0.0-cp314-cp314-win_arm64.whl", hash = "sha256:1e5f8217887d1d83ccbe1e61c37d1502ab951fef466a06df2abb1161e246ef79", size = 450418, upload-time = "2026-08-22T04:23:13.996Z" },
+]
+
+[[package]]
 name = "narwhals"
 version = "2.27.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4249,7 +4284,7 @@ requires-dist = [
     { name = "qiskit-ibm-runtime", marker = "extra == 'aer'", specifier = ">=0.51" },
     { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
     { name = "qoro-divi", extras = ["aer", "chem", "jupyter", "pennylane", "qubo-decompose"], marker = "extra == 'all'" },
-    { name = "qoro-maestro", specifier = "==0.3.7" },
+    { name = "qoro-maestro", specifier = "==0.3.8" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=15.0" },
     { name = "rustworkx", specifier = ">=0.18" },
@@ -4297,22 +4332,16 @@ testing = [
 
 [[package]]
 name = "qoro-maestro"
-version = "0.3.7"
+version = "0.3.8"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/4e/85/b59d3af509d9d719ebc52871ad315d31ed7d682961158cec525d57f93281/qoro_maestro-0.3.7.tar.gz", hash = "sha256:8298def28f1d0c2c07729f73acdec6f7d649270eebd4d4dbb361860ec2dbe972", size = 934986, upload-time = "2026-10-19T09:41:05.171Z" }
+dependencies = [
+    { name = "nanobind-backend" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/52/43/454869a82364c35c5975b107a4b4bd8316441e9824a5dfeef6d3acf1e339/qoro_maestro-0.3.8.tar.gz", hash = "sha256:4244f8c944110f865ef4dd95b6dd255884473fbb6a8c83600e56b695112b406e", size = 1047522, upload-time = "2026-10-26T14:00:08.806Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/68/e6/464d350c7ec8a77aad75d6f78ca8bd3054508f2d2641eb91e512a3d20f03/qoro_maestro-0.3.7-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:ebbd4b78dd84a92359c1cf9d199008272a752375a45ce00f54134d1d55744bbf", size = 13997620, upload-time = "2026-10-19T09:40:28.128Z" },
-    { url = "https://files.pythonhosted.org/packages/8e/01/32844ec1bc5f27b960d2a48d78d98a92d3911f62bb79f5c8293b9e40ecfb/qoro_maestro-0.3.7-cp311-cp311-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0b853753e4e4aeb6d875dd3abca9487d77d3965f9e7d6a86794373e232a2b4fb", size = 19246606, upload-time = "2026-10-19T09:40:31.709Z" },
-    { url = "https://files.pythonhosted.org/packages/ce/73/9986e51746a0b33bd5299c78415368fe2cea299eb2145c729efdea8237e7/qoro_maestro-0.3.7-cp311-cp311-win_amd64.whl", hash = "sha256:50f8764ba159a47f532aab76b52ac2d3771183d67e154bdb4b47a07b21391e14", size = 13500746, upload-time = "2026-10-19T09:40:34.79Z" },
-    { url = "https://files.pythonhosted.org/packages/0b/7e/fe62e1afa48e3b82980adc1732b34933520b95bb8dc63441561738910d91/qoro_maestro-0.3.7-cp312-cp312-macosx_14_0_arm64.whl", hash = "sha256:77fbd15ebbbf4c8e641d8cca5d54e1b24bd8d0b99b67bed2a3807f32ab1e6556", size = 13996649, upload-time = "2026-10-19T09:40:37.981Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/61/102ad063b02b8993cbeb5d614e78ed46c1b2aa497997426888b6e7acdfef/qoro_maestro-0.3.7-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:7a796a2d7ac3a4ad72d5d5062ff086f589ab151bdaacd91b231bb73396277a77", size = 19246514, upload-time = "2026-10-19T09:40:41.268Z" },
-    { url = "https://files.pythonhosted.org/packages/c8/db/01cc0d89c269b2ae3511062b86536531cfde7937921490bcf5173c154823/qoro_maestro-0.3.7-cp312-cp312-win_amd64.whl", hash = "sha256:e400600caaf5ea0d4440705759952c7e176a409ee6a4976684e6cbd5cf7d9769", size = 13501198, upload-time = "2026-10-19T09:40:44.185Z" },
-    { url = "https://files.pythonhosted.org/packages/70/57/e28378f2a68698e0c819ed4badb12493b93d9e5c24a28ce81b558be05204/qoro_maestro-0.3.7-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:57c885865daf5e9dd95d8fc99c7b7a369592b3630e77ca9c19ed4d07c702e0b8", size = 13996524, upload-time = "2026-10-19T09:40:47.153Z" },
-    { url = "https://files.pythonhosted.org/packages/8a/e9/92fe2d78076bb25e9a1d170686d3d15c5a36b59a7721c874564b392988d3/qoro_maestro-0.3.7-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:74ad817d61bd89601c227b19407bdc3a7160e25bf64a767d0b160da66e354770", size = 19246513, upload-time = "2026-10-19T09:40:50.341Z" },
-    { url = "https://files.pythonhosted.org/packages/f0/15/a13ef4027900719ff6d914e8ec11060b51a5c8ee7b07f1f928788d32c783/qoro_maestro-0.3.7-cp313-cp313-win_amd64.whl", hash = "sha256:b27615546f43d7069b27b80e165aa19d1ea858deed41a395e48379cc63d88f0e", size = 13501192, upload-time = "2026-10-19T09:40:53.222Z" },
-    { url = "https://files.pythonhosted.org/packages/b8/ae/67a00b7362631d71974be45c95c20d862755a29a4ff3e7eef21894d95c3d/qoro_maestro-0.3.7-cp314-cp314-macosx_14_0_arm64.whl", hash = "sha256:481d54e20458b0887e7d2cd20346c773b340d96229c978aad98af554e6139cee", size = 13996631, upload-time = "2026-10-19T09:40:56.49Z" },
-    { url = "https://files.pythonhosted.org/packages/75/65/079feedef8f8085f489adf7476f05da1ab2af8eb460aedeae1111caf426d/qoro_maestro-0.3.7-cp314-cp314-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:87ceb4797ff97156284a173a9bc0ea644fc8384c705b6abc4ac164e3ba3b45a9", size = 19246477, upload-time = "2026-10-19T09:40:59.77Z" },
-    { url = "https://files.pythonhosted.org/packages/98/cd/2f5ac9f348f7d551d2ff680915a757ea3382178cc9b98f06c0ba84892c29/qoro_maestro-0.3.7-cp314-cp314-win_amd64.whl", hash = "sha256:19866c23c344fcc4671afd832cadf21da44152c4de201e7358f9272b8a9d0f43", size = 13764353, upload-time = "2026-10-19T09:41:02.829Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/51/7e2f148342f37a16d14dbb7d15799edaf5a7d7f98802de19bc494d11dfa7/qoro_maestro-0.3.8-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:b3f54943736e170ebbbf7d63e7bc11dee934897decb96d16b6f2e1ed040df962", size = 12145870, upload-time = "2026-10-26T14:00:01.318Z" },
+    { url = "https://files.pythonhosted.org/packages/e0/dc/ca078397318a2afd211a1b408b9cf70f0ab9b189cf13faf7ae9bc10a1386/qoro_maestro-0.3.8-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:dc011498f3dbd91dbf6e05853f21607a44316ce2380f1cf7c231cb5118dcac6e", size = 17491236, upload-time = "2026-10-26T14:00:04.129Z" },
+    { url = "https://files.pythonhosted.org/packages/e8/07/f65e877201f3d784e07e0ba97c3f2dbcad18762d071357b9910602488b54/qoro_maestro-0.3.8-cp310-abi3-win_amd64.whl", hash = "sha256:9580be062076f3eb0f7fa48b870dd36a9e249660603572f46f73bdb1a4aa32fd", size = 18998038, upload-time = "2026-10-26T14:00:06.878Z" },
 ]
 
 [[package]]
