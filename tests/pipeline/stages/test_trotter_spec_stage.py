@@ -9,22 +9,25 @@ import pytest
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import (
+from divi.hamiltonians.trotterization import (
     ExactTrotterization,
     QDrift,
     TrotterizationResult,
     TrotterizationStrategy,
+    TrotterSpec,
 )
 from divi.pipeline import CircuitPipeline, PipelineEnv, PipelineTrace
 from divi.pipeline._compilation import batch_lineage
 from divi.pipeline.abc import ChildResults
 from divi.pipeline.stages import MeasurementStage, TrotterSpecStage
+from divi.qprog.initial_states import ZerosState
 from tests._helpers import exact_match
 from tests.pipeline._helpers import meta_with_observable
 
 _Z0 = SparsePauliOp("Z")
 _Z0_Z1 = SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
 _I0 = SparsePauliOp("I")
+_EXPAND_METHODS = pytest.mark.parametrize("method", ["expand", "dry_expand"])
 
 
 class _DummyStrategy(TrotterizationStrategy):
@@ -33,8 +36,8 @@ class _DummyStrategy(TrotterizationStrategy):
     def __init__(self, n: int = 3):
         self.n_hamiltonians_per_iteration = n
 
-    def process_hamiltonian(self, hamiltonian, *, n_steps=1, rng=None):
-        return TrotterizationResult(hamiltonian)
+    def process_hamiltonian(self, spec, *, n_steps=1, rng=None):
+        return TrotterizationResult(spec.hamiltonian)
 
 
 def _meta_factory(result, ham_id):
@@ -70,7 +73,7 @@ class TestExpand:
             _DummyStrategy(n=3), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(_Z0, env)
+        batch, token = stage.expand(TrotterSpec(_Z0), env)
 
         assert len(batch) == 3
         for i in range(3):
@@ -84,7 +87,7 @@ class TestExpand:
             ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, _ = stage.expand(_Z0_Z1, env)
+        batch, _ = stage.expand(TrotterSpec(_Z0_Z1), env)
         assert len(batch) == 1
 
     def test_raises_empty_hamiltonian(self, dummy_expval_backend):
@@ -95,26 +98,47 @@ class TestExpand:
         with pytest.raises(
             ValueError, match=exact_match("Hamiltonian contains only constant terms.")
         ):
-            stage.expand(_I0, env)
+            stage.expand(TrotterSpec(_I0), env)
 
     def test_raises_non_operator_input(self, dummy_expval_backend):
         stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
         env = PipelineEnv(backend=dummy_expval_backend)
         with pytest.raises(
             TypeError,
-            match=exact_match("TrotterSpecStage expects a SparsePauliOp, got str"),
+            match=exact_match("TrotterSpecStage expects a TrotterSpec, got str"),
         ):
             stage.expand("not a hamiltonian", env)
 
-    def test_accepts_sparse_pauli_op_input(self, dummy_expval_backend):
+    def test_rejects_a_bare_hamiltonian(self, dummy_expval_backend):
+        stage = TrotterSpecStage(_DummyStrategy(), meta_circuit_factory=_meta_factory)
+        env = PipelineEnv(backend=dummy_expval_backend)
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "TrotterSpecStage expects a TrotterSpec, got SparsePauliOp"
+            ),
+        ):
+            stage.expand(_Z0, env)
+
+    @_EXPAND_METHODS
+    def test_strategy_gets_the_spec_with_the_constant_removed(self, mocker, method):
+        spy = mocker.spy(_DummyStrategy, "process_hamiltonian")
+        spec = TrotterSpec(
+            SparsePauliOp.from_list([("ZI", 1.0), ("II", 2.0)]),
+            initial_state=ZerosState(),
+            observable=_Z0_Z1,
+            time=0.3,
+        )
         stage = TrotterSpecStage(
             _DummyStrategy(n=1), meta_circuit_factory=_meta_factory
         )
-        env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(SparsePauliOp("Z"), env)
+        getattr(stage, method)(spec, PipelineEnv(backend=None))
 
-        assert len(batch) == 1
-        assert token["n_terms"] == 1
+        received = spy.call_args.args[1]
+        assert received.hamiltonian == SparsePauliOp("ZI")
+        assert received.initial_state is spec.initial_state
+        assert received.observable is spec.observable
+        assert received.time == 0.3
 
     def test_rejects_non_hermitian_sparse_pauli_op(self, dummy_expval_backend):
         stage = TrotterSpecStage(
@@ -128,7 +152,7 @@ class TestExpand:
                 "must be real."
             ),
         ):
-            stage.expand(SparsePauliOp.from_list([("Z", 1.0j)]), env)
+            stage.expand(TrotterSpec(SparsePauliOp.from_list([("Z", 1.0j)])), env)
 
 
 class TestIntrospect:
@@ -137,7 +161,7 @@ class TestIntrospect:
             _DummyStrategy(n=3), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(_Z0, env)
+        batch, token = stage.expand(TrotterSpec(_Z0), env)
 
         info = stage.introspect(batch, env, token)
         assert info["strategy"] == "_DummyStrategy"
@@ -153,7 +177,7 @@ class TestIntrospect:
             ExactTrotterization(), meta_circuit_factory=_meta_factory
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        batch, token = stage.expand(_Z0, env)
+        batch, token = stage.expand(TrotterSpec(_Z0), env)
 
         info = stage.introspect(batch, env, token)
         assert info["strategy"] == "ExactTrotterization"
@@ -180,7 +204,9 @@ class TestReduce:
             branch_keys = sorted(lineage_by_label.values(), key=str)
             return {bk: 1.0 + i for i, bk in enumerate(branch_keys)}
 
-        reduced = pipeline.run(initial_spec=_Z0, env=env, execute_fn=_execute_fn)
+        reduced = pipeline.run(
+            initial_spec=TrotterSpec(_Z0), env=env, execute_fn=_execute_fn
+        )
         # Three samples score 1, 2, 3 and average to 2.
         assert len(reduced) == 1
         assert next(iter(reduced.values())) == pytest.approx([2.0])
@@ -252,7 +278,7 @@ def test_forward_pass_produces_ham_keyed_trace(dummy_expval_backend):
         ]
     )
     env = PipelineEnv(backend=dummy_expval_backend)
-    trace = pipeline.run_forward_pass(initial_spec=_Z0, env=env)
+    trace = pipeline.run_forward_pass(initial_spec=TrotterSpec(_Z0), env=env)
 
     assert len(trace.final_batch) >= 2
     # All keys should contain the ham axis
@@ -266,8 +292,8 @@ def test_dry_expand_matches_real_labels_and_metadata(dummy_expval_backend):
     pipeline = CircuitPipeline(stages=[stage, MeasurementStage()])
     env = PipelineEnv(backend=dummy_expval_backend)
 
-    real = pipeline.run_forward_pass(initial_spec=_Z0, env=env)
-    dry = pipeline.run_forward_pass(initial_spec=_Z0, env=env, dry=True)
+    real = pipeline.run_forward_pass(initial_spec=TrotterSpec(_Z0), env=env)
+    dry = pipeline.run_forward_pass(initial_spec=TrotterSpec(_Z0), env=env, dry=True)
 
     assert batch_lineage(dry.final_batch) == batch_lineage(real.final_batch)
     assert stage.introspect(
@@ -278,9 +304,6 @@ def test_dry_expand_matches_real_labels_and_metadata(dummy_expval_backend):
 _FOUR_TERM_HAMILTONIAN = SparsePauliOp.from_list(
     [("ZI", 1.0), ("IZ", 0.7), ("XX", 0.5), ("YY", 0.3)]
 )
-
-
-_EXPAND_METHODS = pytest.mark.parametrize("method", ["expand", "dry_expand"])
 
 
 def _seeded_qdrift_results(
@@ -299,7 +322,7 @@ def _seeded_qdrift_results(
         n_steps=n_steps,
     )
     getattr(stage, method)(
-        _FOUR_TERM_HAMILTONIAN,
+        TrotterSpec(_FOUR_TERM_HAMILTONIAN),
         PipelineEnv(backend=None, evaluation_counter=evaluation_counter),
     )
     return results
@@ -332,6 +355,6 @@ def test_default_batch_forwards_n_steps_to_every_call(mocker, method):
     stage = TrotterSpecStage(
         _DummyStrategy(n=3), meta_circuit_factory=_meta_factory, n_steps=5
     )
-    getattr(stage, method)(_Z0, PipelineEnv(backend=None))
+    getattr(stage, method)(TrotterSpec(_Z0), PipelineEnv(backend=None))
     assert spy.call_args_list
     assert {call.kwargs["n_steps"] for call in spy.call_args_list} == {5}

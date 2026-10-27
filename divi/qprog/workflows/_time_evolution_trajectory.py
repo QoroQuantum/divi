@@ -15,11 +15,10 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import (
+from divi.hamiltonians.trotterization import (
     ExactTrotterization,
     QDrift,
     TrotterizationStrategy,
-    to_spo,
 )
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.algorithms._time_evolution import _validate_trotter_settings
@@ -197,7 +196,7 @@ class TimeEvolutionTrajectory(ProgramEnsemble):
                 **self._extra_kwargs,
             )
             result = probe.trotterization_strategy.process_hamiltonian(
-                to_spo(self._hamiltonian)
+                probe._initial_spec()
             )
             template = probe._meta_circuit_factory(result, ham_id=0)
         except Exception:

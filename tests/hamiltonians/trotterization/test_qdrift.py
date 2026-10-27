@@ -2,46 +2,52 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for TrotterizationStrategy implementations (ExactTrotterization, QDrift)."""
+"""Tests for QDrift."""
 
+import copy
 import itertools
+from dataclasses import replace
 
 import numpy as np
 import pytest
-from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
-from scipy.linalg import expm
 
-from divi.circuits._conversions import _QISKIT_TO_QASM2
-from divi.hamiltonians import ExactTrotterization, QDrift
 from divi.hamiltonians._term_ops import generate_empty_spo
-from tests._helpers import equal_up_to_phase, exact_match, unitary
-
-_KEEP_FRACTION_NO_OP = exact_match(
-    "keep_fraction is 1.0 (no truncation); returning the full Hamiltonian."
+from divi.hamiltonians.trotterization import ExactTrotterization, QDrift, TrotterSpec
+from divi.hamiltonians.trotterization import _qdrift as qdrift_module
+from divi.hamiltonians.trotterization._state_drift import (
+    StateDriftDensities,
+    state_drift_distribution,
 )
-_KEEP_TOP_N_NO_OP = exact_match(
-    "keep_top_n is greater than or equal to the number of terms; "
-    "returning the full Hamiltonian."
-)
-_SAMPLING_BUDGET_NOT_SET = exact_match(
-    "sampling_budget is not set; only the kept terms will be applied, "
-    "equivalent to ExactTrotterization."
+from divi.qprog.initial_states import CustomPerQubitState, DickeState, ZerosState
+from tests._helpers import exact_match
+from tests.hamiltonians.trotterization._helpers import (
+    KEEP_TOP_N_NO_OP,
+    SAMPLING_BUDGET_NOT_SET,
+    SIMPLE_HAMILTONIAN,
+    single_term_hamiltonians,
 )
 
-
-# Qiskit big-endian: rightmost char is qubit 0.
-_SIMPLE_HAMILTONIAN = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 2.0), ("ZZ", 3.0)])
 # ``simplify()`` merges the two IZ entries and reorders the terms.
 _MERGING_HAMILTONIAN = SparsePauliOp.from_list(
     [("XX", 0.5), ("ZZ", 3.0), ("IZ", 0.25), ("ZI", -2.0), ("IZ", 0.75)]
 )
+_MERGING_SPEC = TrotterSpec(_MERGING_HAMILTONIAN)
+_STATE_DRIFT_HAMILTONIAN = SparsePauliOp.from_list(
+    [("ZZI", 1.0), ("IXX", -0.6), ("YIZ", 0.4), ("XII", 0.8)]
+)
 
 
-@pytest.fixture
-def simple_hamiltonian() -> SparsePauliOp:
-    """Three-term SPO over 2 qubits (coeffs 1.0, 2.0, 3.0)."""
-    return _SIMPLE_HAMILTONIAN
+def _state_drift_spec(
+    initial_state, observable=SparsePauliOp("IZI"), time=0.1
+) -> TrotterSpec:
+    """Spec of an evolution of ``_STATE_DRIFT_HAMILTONIAN``."""
+    return TrotterSpec(
+        _STATE_DRIFT_HAMILTONIAN,
+        initial_state=initial_state,
+        observable=observable,
+        time=time,
+    )
 
 
 def _only_step(result) -> SparsePauliOp:
@@ -58,301 +64,215 @@ def _scripted_rng(mocker, draw):
     return rng
 
 
-def _exact_expected_step(strategy, hamiltonian, mocker) -> SparsePauliOp:
+def _exact_expected_step(strategy, spec, mocker) -> SparsePauliOp:
     """E[one step], enumerating every index tuple ``rng.choice`` can return,
     weighted by the probabilities the strategy passes to it."""
     budget = strategy.sampling_budget
     probe = _scripted_rng(mocker, [0] * budget)
-    strategy.process_hamiltonian(hamiltonian, rng=probe)
+    strategy.process_hamiltonian(spec, rng=probe)
     (n_terms,), kwargs = probe.choice.call_args
     probs = np.full(n_terms, 1 / n_terms) if kwargs["p"] is None else kwargs["p"]
     return SparsePauliOp.sum(
         [
             np.prod(probs[list(draw)])
             * _only_step(
-                strategy.process_hamiltonian(
-                    hamiltonian, rng=_scripted_rng(mocker, draw)
-                )
+                strategy.process_hamiltonian(spec, rng=_scripted_rng(mocker, draw))
             )
             for draw in itertools.product(range(n_terms), repeat=budget)
         ]
     ).simplify()
 
 
-single_term_hamiltonians = pytest.mark.parametrize(
-    "single_term_spo",
-    [
-        0.5 * SparsePauliOp("Z"),
-        SparsePauliOp("Z"),
-    ],
-    ids=["scaled", "unit"],
-)
-
-
-class TestExactTrotterization:
-    """Tests for ExactTrotterization strategy (public API and specified behavior)."""
-
-    def test_both_keep_fraction_and_keep_top_n_raises(self):
-        """At most one of keep_fraction or keep_top_n may be provided."""
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "At most one of keep_fraction or keep_top_n may be provided."
-            ),
-        ):
-            ExactTrotterization(keep_fraction=0.5, keep_top_n=2)
-
-    @pytest.mark.parametrize("keep_fraction", [-0.1, 0, 1.5])
-    def test_keep_fraction_out_of_range_raises(self, keep_fraction):
-        """keep_fraction must be in (0, 1]."""
-        with pytest.raises(
-            ValueError,
-            match=exact_match(f"keep_fraction must be in (0, 1], got {keep_fraction}"),
-        ):
-            ExactTrotterization(keep_fraction=keep_fraction)
-
-    @pytest.mark.parametrize("keep_top_n", [-1, 0, 0.5])
-    def test_keep_top_n_invalid_raises(self, keep_top_n):
-        """keep_top_n must be a positive integer (>= 1)."""
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                f"keep_top_n must be a positive integer (>= 1), got {keep_top_n}"
-            ),
-        ):
-            ExactTrotterization(keep_top_n=keep_top_n)
-
-    def test_no_truncation_returns_simplified_hamiltonian(self, simple_hamiltonian):
-        """When both keep_fraction and keep_top_n are None, returns Hamiltonian unchanged."""
-        result = ExactTrotterization().process_hamiltonian(simple_hamiltonian)
-        assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
-
-    @pytest.mark.parametrize(
-        "strategy_kwargs, warn_match, hamiltonian",
-        [
-            ({"keep_fraction": 1.0}, _KEEP_FRACTION_NO_OP, _SIMPLE_HAMILTONIAN),
-            ({"keep_top_n": 10}, _KEEP_TOP_N_NO_OP, _SIMPLE_HAMILTONIAN),
-            ({"keep_top_n": 1}, _KEEP_TOP_N_NO_OP, 0.5 * SparsePauliOp("Z")),
-            ({"keep_top_n": 1}, _KEEP_TOP_N_NO_OP, SparsePauliOp("Z")),
-        ],
-        ids=[
-            "keep_fraction_one",
-            "keep_top_n_exceeds_terms",
-            "single_term_scaled",
-            "single_term_unit",
-        ],
-    )
-    def test_early_return_returns_full_and_warns(
-        self, strategy_kwargs, warn_match, hamiltonian
-    ):
-        """When keep_fraction=1.0 or keep_top_n >= terms, returns full Hamiltonian and warns."""
-        with pytest.warns(UserWarning, match=warn_match):
-            result = ExactTrotterization(**strategy_kwargs).process_hamiltonian(
-                hamiltonian
-            )
-        assert result.effective_hamiltonian.simplify() == hamiltonian.simplify()
-
-    @single_term_hamiltonians
-    def test_single_term_hamiltonian_with_keep_fraction(self, single_term_spo):
-        """Single-term operators work with keep_fraction; returns full operator."""
-        strategy = ExactTrotterization(keep_fraction=0.5)
-        result = strategy.process_hamiltonian(single_term_spo)
-        assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
-
-    @pytest.mark.parametrize(
-        "hamiltonian, keep_top_n, expected_terms",
-        [
-            # Qiskit big-endian labels: rightmost char is qubit 0, so
-            # Z(1) -> "ZI" and Z(0)@Z(1) -> "ZZ".
-            (_SIMPLE_HAMILTONIAN, 1, [("ZZ", 3.0)]),
-            (_SIMPLE_HAMILTONIAN, 2, [("ZI", 2.0), ("ZZ", 3.0)]),
-            (
-                SparsePauliOp.from_list([("IZ", 1.0), ("ZI", -5.0), ("ZZ", 2.0)]),
-                1,
-                [("ZI", -5.0)],
-            ),
-        ],
-        ids=["keep_top_n_1", "keep_top_n_2", "ranks_by_magnitude_not_sign"],
-    )
-    def test_keep_top_n_keeps_largest_terms(
-        self, hamiltonian, keep_top_n, expected_terms
-    ):
-        """keep_top_n keeps that many largest-magnitude terms (plus constant)."""
-        result = ExactTrotterization(keep_top_n=keep_top_n).process_hamiltonian(
-            hamiltonian
-        )
-        expected = SparsePauliOp.from_list(expected_terms)
-        assert result.effective_hamiltonian.size == keep_top_n
-        assert result.effective_hamiltonian.simplify() == expected.simplify()
-
-    @pytest.mark.parametrize(
-        "keep_fraction, expected_terms",
-        [(0.5, [("ZZ", 3.0)]), (0.8, [("ZI", 2.0), ("ZZ", 3.0)])],
-        ids=["largest_term_only", "several_terms"],
-    )
-    def test_keep_fraction_keeps_the_largest_terms_covering_the_fraction(
-        self, simple_hamiltonian, keep_fraction, expected_terms
-    ):
-        result = ExactTrotterization(keep_fraction=keep_fraction).process_hamiltonian(
-            simple_hamiltonian
-        )
-        assert (
-            result.effective_hamiltonian.simplify()
-            == SparsePauliOp.from_list(expected_terms).simplify()
-        )
-
-    def test_truncation_keeps_the_constant(self, simple_hamiltonian):
-        hamiltonian = simple_hamiltonian + SparsePauliOp("II", 1.0)
-        result = ExactTrotterization(keep_top_n=1).process_hamiltonian(hamiltonian)
-        assert result.effective_hamiltonian.equiv(
-            SparsePauliOp.from_list([("ZZ", 3.0), ("II", 1.0)])
-        )
-
-    def test_exact_trotterization_has_no_mutable_call_state(self, simple_hamiltonian):
-        strategy = ExactTrotterization(keep_top_n=1)
-        ham2 = SparsePauliOp.from_list([("IZ", 4.0), ("ZI", 5.0)])
-
-        result1 = strategy.process_hamiltonian(simple_hamiltonian)
-        result2 = strategy.process_hamiltonian(ham2)
-        result3 = strategy.process_hamiltonian(simple_hamiltonian)
-
-        assert result1 is not result3
-        assert (
-            result1.effective_hamiltonian.simplify()
-            != result2.effective_hamiltonian.simplify()
-        )
-        assert (
-            result1.effective_hamiltonian.simplify()
-            == SparsePauliOp.from_list([("ZZ", 3.0)]).simplify()
-        )
-        assert (
-            result2.effective_hamiltonian.simplify()
-            == SparsePauliOp.from_list([("ZI", 5.0)]).simplify()
-        )
-
-
-@pytest.mark.parametrize(
-    "strategy",
-    [
-        ExactTrotterization(keep_fraction=0.5),
-        ExactTrotterization(keep_fraction=1.0),
-        ExactTrotterization(keep_top_n=1),
-        QDrift(keep_fraction=0.5, sampling_budget=2, seed=0),
-        QDrift(keep_fraction=1.0, sampling_budget=2, seed=0),
-        QDrift(keep_top_n=1, sampling_budget=2, seed=0),
-    ],
-    ids=[
-        "exact_partial_fraction",
-        "exact_full_fraction",
-        "exact_top_n_covers_all",
-        "qdrift_partial_fraction",
-        "qdrift_full_fraction",
-        "qdrift_top_n_covers_all",
-    ],
-)
-def test_truncating_a_constant_only_hamiltonian_raises(strategy):
-    """Every truncation setting rejects a constant-only Hamiltonian."""
-    with pytest.raises(
-        ValueError, match=exact_match("Hamiltonian contains only constant terms.")
-    ):
-        strategy.process_hamiltonian(5.0 * SparsePauliOp("I"))
-
-
-@pytest.mark.parametrize(
-    "build, field, value",
-    [
-        (lambda v: ExactTrotterization(keep_top_n=v), "keep_top_n", np.int64(3)),
-        (
-            lambda v: ExactTrotterization(keep_fraction=v),
-            "keep_fraction",
-            np.float32(0.5),
-        ),
-        (
-            lambda v: QDrift(sampling_budget=v, seed=0),
-            "sampling_budget",
-            np.int64(2),
-        ),
-        (lambda v: QDrift(sampling_budget=2, seed=v), "seed", np.uint64(2**63 + 5)),
-        (
-            lambda v: QDrift(sampling_budget=2, seed=0, n_hamiltonians_per_iteration=v),
-            "n_hamiltonians_per_iteration",
-            np.int64(4),
-        ),
-    ],
-    ids=[
-        "keep_top_n",
-        "keep_fraction",
-        "sampling_budget",
-        "seed",
-        "n_hamiltonians_per_iteration",
-    ],
-)
-def test_strategies_accept_numpy_scalars_and_store_plain_python(build, field, value):
-    stored = getattr(build(value), field)
-
-    assert stored == value
-    assert type(stored) is (float if field == "keep_fraction" else int)
-
-
-@pytest.mark.parametrize(
-    "build, message",
-    [
-        (
-            lambda: ExactTrotterization(keep_top_n=True),
-            "keep_top_n must be a positive integer (>= 1), got True",
-        ),
-        (
-            lambda: ExactTrotterization(keep_fraction=float("nan")),
-            "keep_fraction must be in (0, 1], got nan",
-        ),
-        (
-            lambda: QDrift(sampling_budget=True),
-            "sampling_budget must be a positive integer (>= 1), got True",
-        ),
-        (
-            lambda: QDrift(sampling_budget=2, seed=True),
-            "seed must be an integer, got True",
-        ),
-        (
-            lambda: QDrift(sampling_budget=2, seed=-1),
-            "seed must be non-negative, got -1",
-        ),
-        (
-            lambda: QDrift(sampling_budget=2, n_hamiltonians_per_iteration=True),
-            "n_hamiltonians_per_iteration must be an integer, got True",
-        ),
-        (
-            lambda: QDrift(sampling_budget=2, n_hamiltonians_per_iteration=2.5),
-            "n_hamiltonians_per_iteration must be an integer, got 2.5",
-        ),
-    ],
-    ids=[
-        "keep_top_n_bool",
-        "keep_fraction_nan",
-        "sampling_budget_bool",
-        "seed_bool",
-        "seed_negative",
-        "n_hamiltonians_bool",
-        "n_hamiltonians_float",
-    ],
-)
-def test_strategies_reject_invalid_scalars(build, message):
-    with pytest.raises(ValueError, match=exact_match(message)):
-        build()
-
-
 class TestQDrift:
     """Tests for QDrift strategy (public API and specified behavior)."""
 
     def test_invalid_sampling_strategy_raises(self):
-        """sampling_strategy must be 'uniform' or 'weighted'."""
         with pytest.raises(
             ValueError,
             match=exact_match(
-                "Invalid sampling_strategy: invalid. Must be 'uniform' or 'weighted'."
+                "Invalid sampling_strategy: invalid. Must be 'uniform', 'weighted', "
+                "'state_drift' or a mapping."
             ),
         ):
             QDrift(sampling_budget=5, sampling_strategy="invalid")
+
+    @pytest.mark.parametrize(
+        "kwargs, message",
+        [
+            (
+                {"keep_top_n": 1, "sampling_budget": 2},
+                "sampling_strategy='state_drift' samples every term; "
+                "keep_fraction and keep_top_n are not supported.",
+            ),
+            (
+                {"keep_fraction": 0.5, "sampling_budget": 2},
+                "sampling_strategy='state_drift' samples every term; "
+                "keep_fraction and keep_top_n are not supported.",
+            ),
+            ({}, "sampling_strategy='state_drift' requires sampling_budget."),
+        ],
+        ids=["keep_top_n", "keep_fraction", "no_budget"],
+    )
+    def test_state_drift_rejects_unsupported_settings(self, kwargs, message):
+        with pytest.raises(ValueError, match=exact_match(message)):
+            QDrift(**kwargs, sampling_strategy="state_drift")
+
+    @pytest.mark.parametrize(
+        "spec_fields, error, message",
+        [
+            (
+                {"observable": SIMPLE_HAMILTONIAN, "time": 0.1},
+                ValueError,
+                "sampling_strategy='state_drift' needs the initial state and "
+                "time of a time evolution; only TimeEvolution supplies them.",
+            ),
+            (
+                {"initial_state": ZerosState(), "observable": SIMPLE_HAMILTONIAN},
+                ValueError,
+                "sampling_strategy='state_drift' needs the initial state and "
+                "time of a time evolution; only TimeEvolution supplies them.",
+            ),
+            (
+                {"initial_state": ZerosState(), "time": 0.1},
+                ValueError,
+                "sampling_strategy='state_drift' needs exactly one observable, "
+                "got none.",
+            ),
+            (
+                {
+                    "initial_state": ZerosState(),
+                    "observable": (SIMPLE_HAMILTONIAN, SIMPLE_HAMILTONIAN),
+                    "time": 0.1,
+                },
+                ValueError,
+                "sampling_strategy='state_drift' needs exactly one observable, got 2.",
+            ),
+            (
+                {"initial_state": ZerosState(), "observable": (), "time": 0.1},
+                ValueError,
+                "sampling_strategy='state_drift' needs exactly one observable, got 0.",
+            ),
+            (
+                {"initial_state": ZerosState(), "observable": "ZZ", "time": 0.1},
+                TypeError,
+                "sampling_strategy='state_drift' needs a SparsePauliOp observable, "
+                "got str.",
+            ),
+            (
+                {
+                    "initial_state": ZerosState(),
+                    "observable": SIMPLE_HAMILTONIAN,
+                    "time": "0.1",
+                },
+                TypeError,
+                "sampling_strategy='state_drift' needs a numeric time, got str.",
+            ),
+            (
+                {
+                    "initial_state": ZerosState(),
+                    "observable": SIMPLE_HAMILTONIAN,
+                    "time": True,
+                },
+                TypeError,
+                "sampling_strategy='state_drift' needs a numeric time, got bool.",
+            ),
+        ],
+        ids=[
+            "no_initial_state",
+            "no_time",
+            "no_observable",
+            "several_observables",
+            "empty_observables",
+            "not_an_operator",
+            "non_numeric_time",
+            "bool_time",
+        ],
+    )
+    def test_state_drift_validates_the_evolution(
+        self, simple_hamiltonian, spec_fields, error, message
+    ):
+        strategy = QDrift(sampling_budget=2, sampling_strategy="state_drift")
+        with pytest.raises(error, match=exact_match(message)):
+            strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian, **spec_fields))
+
+    @pytest.mark.parametrize(
+        "initial_state",
+        [CustomPerQubitState("+0-"), DickeState(1)],
+        ids=["product", "dicke"],
+    )
+    def test_state_drift_expected_value_matches_input_hamiltonian(
+        self, mocker, initial_state
+    ):
+        """StateDRIFT reweights terms but keeps E[step] = H."""
+        expected = _exact_expected_step(
+            QDrift(sampling_budget=2, sampling_strategy="state_drift"),
+            _state_drift_spec(
+                initial_state,
+                SparsePauliOp.from_list([("IIZ", 1.0), ("XIX", 0.5)]),
+                time=0.05,
+            ),
+            mocker,
+        )
+        np.testing.assert_allclose(
+            expected.to_matrix(), _STATE_DRIFT_HAMILTONIAN.to_matrix(), atol=1e-12
+        )
+
+    @pytest.mark.parametrize("n_steps", [1, 3])
+    def test_state_drift_samples_by_the_distribution_for_its_time(
+        self, mocker, n_steps
+    ):
+        """The strategy draws with the StateDRIFT q of the time and step count
+        it is given, over ``n_steps · sampling_budget`` rotations."""
+        observable = SparsePauliOp("IZI")
+        state = CustomPerQubitState("+0-")
+        strategy = QDrift(
+            sampling_budget=2,
+            n_hamiltonians_per_iteration=5,
+            sampling_strategy="state_drift",
+        )
+        rng = _scripted_rng(mocker, [0, 0])
+        strategy.process_hamiltonian(
+            _state_drift_spec(state, observable, time=0.2), n_steps=n_steps, rng=rng
+        )
+        expected = state_drift_distribution(
+            StateDriftDensities.compute(_STATE_DRIFT_HAMILTONIAN, observable, state),
+            time=0.2,
+            n_samples=2 * n_steps,
+            n_trajectories=5,
+        )
+        weighted = np.abs(_STATE_DRIFT_HAMILTONIAN.coeffs)
+        assert not np.allclose(list(expected.values()), weighted / weighted.sum())
+        np.testing.assert_allclose(
+            rng.choice.call_args.kwargs["p"],
+            [expected[label] for label in _STATE_DRIFT_HAMILTONIAN.paulis.to_labels()],
+        )
+
+    def test_copies_share_the_state_drift_densities(self, mocker):
+        """Per-program copies of one strategy evaluate the state only once."""
+        state = DickeState(1)
+        spy = mocker.spy(StateDriftDensities, "compute")
+        strategy = QDrift(sampling_budget=2, seed=1, sampling_strategy="state_drift")
+        for copy_ in (strategy, replace(strategy, seed=2), copy.deepcopy(strategy)):
+            copy_.process_hamiltonian(_state_drift_spec(state))
+        assert spy.call_count == 1
+
+    def test_state_drift_takes_one_observable_given_as_a_sequence(self):
+        strategy = QDrift(sampling_budget=2, seed=3, sampling_strategy="state_drift")
+        state = CustomPerQubitState("+0-")
+        observable = SparsePauliOp("IZI")
+        bare = strategy.process_hamiltonian(_state_drift_spec(state, observable))
+        wrapped = strategy.process_hamiltonian(_state_drift_spec(state, (observable,)))
+        assert wrapped.sampled_terms == bare.sampled_terms
+
+    def test_state_drift_batch_draws_from_one_distribution(self, mocker):
+        spy = mocker.spy(qdrift_module, "state_drift_distribution")
+        results = QDrift(
+            sampling_budget=2, seed=3, sampling_strategy="state_drift"
+        ).process_hamiltonian_batch(
+            _state_drift_spec(CustomPerQubitState("+0-")), n_samples=4
+        )
+        assert len(results) == 4
+        assert spy.call_count == 1
 
     def test_seed_non_int_raises(self):
         """seed must be an integer when provided."""
@@ -370,14 +290,16 @@ class TestQDrift:
                 "the Hamiltonian will be returned unchanged."
             ),
         ):
-            result = QDrift().process_hamiltonian(simple_hamiltonian)
+            result = QDrift().process_hamiltonian(TrotterSpec(simple_hamiltonian))
         assert result.effective_hamiltonian.simplify() == simple_hamiltonian.simplify()
 
     def test_sample_budget_only_returns_valid_hamiltonian(self, simple_hamiltonian):
         """When only sample_budget is set (no keep_*), exactly ``sampling_budget``
         terms are drawn, all from the input Hamiltonian."""
         step_terms = _only_step(
-            QDrift(sampling_budget=4, seed=42).process_hamiltonian(simple_hamiltonian)
+            QDrift(sampling_budget=4, seed=42).process_hamiltonian(
+                TrotterSpec(simple_hamiltonian)
+            )
         )
         assert step_terms.size == 4
         assert set(step_terms.paulis.to_labels()) <= set(
@@ -388,8 +310,8 @@ class TestQDrift:
         """Same seed yields identical first sample across fresh instances."""
         s1 = QDrift(sampling_budget=5, seed=123, sampling_strategy="uniform")
         s2 = QDrift(sampling_budget=5, seed=123, sampling_strategy="uniform")
-        r1 = s1.process_hamiltonian(simple_hamiltonian)
-        r2 = s2.process_hamiltonian(simple_hamiltonian)
+        r1 = s1.process_hamiltonian(TrotterSpec(simple_hamiltonian))
+        r2 = s2.process_hamiltonian(TrotterSpec(simple_hamiltonian))
         assert (
             r1.effective_hamiltonian.simplify() == r2.effective_hamiltonian.simplify()
         )
@@ -398,7 +320,7 @@ class TestQDrift:
         """QDrift with keep_fraction and sample_budget returns keep terms + sampled terms."""
         result = QDrift(
             keep_fraction=0.5, sampling_budget=3, seed=0, sampling_strategy="weighted"
-        ).process_hamiltonian(simple_hamiltonian)
+        ).process_hamiltonian(TrotterSpec(simple_hamiltonian))
         effective = dict(
             zip(
                 result.effective_hamiltonian.paulis.to_labels(),
@@ -417,15 +339,17 @@ class TestQDrift:
         self, simple_hamiltonian, keep, batched
     ):
         """When sample_budget is None but a keep option is set, every result equals ExactTrotterization."""
-        with pytest.warns(UserWarning, match=_SAMPLING_BUDGET_NOT_SET):
+        with pytest.warns(UserWarning, match=SAMPLING_BUDGET_NOT_SET):
             qdrift = QDrift(**keep)
         exact_result = ExactTrotterization(**keep).process_hamiltonian(
-            simple_hamiltonian
+            TrotterSpec(simple_hamiltonian)
         )
         results = (
-            qdrift.process_hamiltonian_batch(simple_hamiltonian, n_samples=3)
+            qdrift.process_hamiltonian_batch(
+                TrotterSpec(simple_hamiltonian), n_samples=3
+            )
             if batched
-            else [qdrift.process_hamiltonian(simple_hamiltonian)]
+            else [qdrift.process_hamiltonian(TrotterSpec(simple_hamiltonian))]
         )
         for result in results:
             assert (
@@ -437,15 +361,15 @@ class TestQDrift:
         strategy = QDrift(
             keep_fraction=0.5, sampling_budget=3, seed=42, sampling_strategy="weighted"
         )
-        first = strategy.process_hamiltonian(simple_hamiltonian)
-        second = strategy.process_hamiltonian(simple_hamiltonian)
+        first = strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian))
+        second = strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian))
         assert first.effective_hamiltonian == second.effective_hamiltonian
         assert first.sampled_terms == second.sampled_terms
 
     def test_keep_fraction_one_warns_on_each_stateless_call(self, simple_hamiltonian):
         strategy = QDrift(keep_fraction=1.0, sampling_budget=5, seed=0)
         with pytest.warns(UserWarning) as first_record:
-            first_result = strategy.process_hamiltonian(simple_hamiltonian)
+            first_result = strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian))
         first_messages = [str(w.message) for w in first_record]
         assert any("no terms left to sample" in m for m in first_messages)
         assert (
@@ -454,7 +378,9 @@ class TestQDrift:
         )
 
         with pytest.warns(UserWarning) as second_record:
-            second_result = strategy.process_hamiltonian(simple_hamiltonian)
+            second_result = strategy.process_hamiltonian(
+                TrotterSpec(simple_hamiltonian)
+            )
         second_messages = [str(w.message) for w in second_record]
         assert any("no terms left to sample" in m for m in second_messages)
         assert (
@@ -466,7 +392,7 @@ class TestQDrift:
     def test_single_term_hamiltonian_with_keep_top_n(self, single_term_spo):
         """Single-term operators work with QDrift keep_top_n; no len() error."""
         with (
-            pytest.warns(UserWarning, match=_KEEP_TOP_N_NO_OP),
+            pytest.warns(UserWarning, match=KEEP_TOP_N_NO_OP),
             pytest.warns(
                 UserWarning,
                 match=exact_match(
@@ -477,13 +403,15 @@ class TestQDrift:
         ):
             result = QDrift(
                 keep_top_n=1, sampling_budget=2, seed=42
-            ).process_hamiltonian(single_term_spo)
+            ).process_hamiltonian(TrotterSpec(single_term_spo))
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
 
     @single_term_hamiltonians
     def test_single_term_hamiltonian_with_sampling_budget_only(self, single_term_spo):
         """Single-term sampling preserves replacement multiplicity explicitly."""
-        result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(single_term_spo)
+        result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(
+            TrotterSpec(single_term_spo)
+        )
         assert result.effective_hamiltonian.simplify() == single_term_spo.simplify()
         step_terms = _only_step(result)
         assert step_terms.size == 3
@@ -509,7 +437,9 @@ class TestQDrift:
             UserWarning,
             match=exact_match("No terms to sample; returning the kept Hamiltonian."),
         ):
-            result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(empty_spo)
+            result = QDrift(sampling_budget=3, seed=42).process_hamiltonian(
+                TrotterSpec(empty_spo)
+            )
         assert result.effective_hamiltonian.size == 0
 
     def test_n_hamiltonians_per_iteration_less_than_one_raises(self):
@@ -524,9 +454,9 @@ class TestQDrift:
         """Instance RNG produces different Hamiltonian samples on repeated calls."""
         strategy = QDrift(sampling_budget=4, seed=42, sampling_strategy="uniform")
         rng = np.random.default_rng(42)
-        r0 = strategy.process_hamiltonian(simple_hamiltonian, rng=rng)
-        r1 = strategy.process_hamiltonian(simple_hamiltonian, rng=rng)
-        r2 = strategy.process_hamiltonian(simple_hamiltonian, rng=rng)
+        r0 = strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian), rng=rng)
+        r1 = strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian), rng=rng)
+        r2 = strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian), rng=rng)
         # With 3 terms and sample_budget=4, sampling with replacement can produce
         # different orderings; at least two of the three should differ
         results = [
@@ -543,7 +473,7 @@ class TestQDrift:
         batches = [
             QDrift(
                 sampling_budget=2, seed=42, n_hamiltonians_per_iteration=3
-            ).process_hamiltonian_batch(simple_hamiltonian, n_samples=3)
+            ).process_hamiltonian_batch(TrotterSpec(simple_hamiltonian), n_samples=3)
             for _ in range(2)
         ]
         sampled = [r.effective_hamiltonian.simplify() for r in batches[0]]
@@ -556,7 +486,7 @@ class TestQDrift:
     def test_sampled_terms_include_the_kept_terms(self, simple_hamiltonian):
         step_terms = _only_step(
             QDrift(keep_top_n=1, sampling_budget=2, seed=0).process_hamiltonian(
-                simple_hamiltonian
+                TrotterSpec(simple_hamiltonian)
             )
         )
         assert step_terms.size == 3
@@ -571,7 +501,7 @@ class TestQDrift:
         hamiltonian = SparsePauliOp.from_list([("ZZ", 3.0), ("IZ", 1e-9)])
         step_terms = _only_step(
             QDrift(keep_top_n=1, sampling_budget=2, seed=0).process_hamiltonian(
-                hamiltonian
+                TrotterSpec(hamiltonian)
             )
         )
         assert "IZ" in step_terms.paulis.to_labels()
@@ -581,7 +511,7 @@ class TestQDrift:
             [("ZZ", 3.0), ("IZ", 1.0), ("ZI", 1.0), ("XX", 1.0), ("YY", 1.0)]
         )
         result = QDrift(keep_top_n=1, sampling_budget=3, seed=0).process_hamiltonian(
-            hamiltonian, n_steps=6
+            TrotterSpec(hamiltonian), n_steps=6
         )
         assert result.sampled_terms is not None
         assert len(result.sampled_terms) == 6
@@ -595,38 +525,49 @@ class TestQDrift:
         strategy = QDrift(sampling_budget=4, sampling_strategy="uniform")
         step_terms = _only_step(
             strategy.process_hamiltonian(
-                simple_hamiltonian, rng=np.random.default_rng(5)
+                TrotterSpec(simple_hamiltonian), rng=np.random.default_rng(5)
             )
         )
         indices = np.random.default_rng(5).choice(3, size=4, replace=True)
         assert step_terms.paulis == simple_hamiltonian.paulis[indices]
 
     @pytest.mark.parametrize(
-        "strategy, hamiltonian, expected",
+        "strategy, spec, expected",
         [
             (
                 QDrift(sampling_budget=3, seed=1),
-                SparsePauliOp("Z", 0.0),
+                TrotterSpec(SparsePauliOp("Z", 0.0)),
                 generate_empty_spo(1),
             ),
             (
                 QDrift(keep_fraction=0.9, sampling_budget=3, seed=1),
-                SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 1.0)]),
+                TrotterSpec(SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 1.0)])),
                 SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 1.0)]),
             ),
+            (
+                QDrift(sampling_budget=3, seed=1, sampling_strategy="state_drift"),
+                TrotterSpec(
+                    SparsePauliOp("ZZ", 0.0),
+                    initial_state=ZerosState(),
+                    observable=SparsePauliOp("XI"),
+                    time=0.1,
+                ),
+                generate_empty_spo(2),
+            ),
         ],
-        ids=["nothing_kept", "everything_kept_by_fraction"],
+        ids=["nothing_kept", "everything_kept_by_fraction", "state_drift"],
     )
     def test_zero_weight_sampling_pool_returns_the_kept_terms(
-        self, strategy, hamiltonian, expected
+        self, strategy, spec, expected
     ):
         with pytest.warns(
             UserWarning,
             match=exact_match(
                 "All term coefficients are zero; returning the kept Hamiltonian."
             ),
-        ):
-            result = strategy.process_hamiltonian(hamiltonian)
+        ) as caught:
+            result = strategy.process_hamiltonian(spec)
+        assert len(caught) == 1
         assert result.effective_hamiltonian.num_qubits == expected.num_qubits
         assert result.effective_hamiltonian == expected
 
@@ -640,7 +581,7 @@ class TestQDrift:
         batched = QDrift(
             sampling_budget=budget, seed=7, n_hamiltonians_per_iteration=n
         ).process_hamiltonian_batch(
-            simple_hamiltonian,
+            TrotterSpec(simple_hamiltonian),
             n_samples=n,
             n_steps=n_steps,
             rng=np.random.default_rng(7),
@@ -649,7 +590,7 @@ class TestQDrift:
         loose_rng = np.random.default_rng(7)
         per_sample = [
             loose_strategy.process_hamiltonian(
-                simple_hamiltonian, n_steps=n_steps, rng=loose_rng
+                TrotterSpec(simple_hamiltonian), n_steps=n_steps, rng=loose_rng
             )
             for _ in range(n)
         ]
@@ -669,7 +610,7 @@ class TestQDrift:
         for seed in range(n_seeds):
             sampled = (
                 QDrift(sampling_budget=budget, seed=seed, sampling_strategy=strategy)
-                .process_hamiltonian(spo)
+                .process_hamiltonian(TrotterSpec(spo))
                 .effective_hamiltonian.simplify()
             )
             label_to_coeff = dict(zip(sampled.paulis.to_labels(), sampled.coeffs.real))
@@ -682,7 +623,7 @@ class TestQDrift:
     @pytest.mark.parametrize(
         "hamiltonian, keep, distribution",
         [
-            (_SIMPLE_HAMILTONIAN, {}, {"ZZ": 0.1, "IZ": 0.6, "ZI": 0.3}),
+            (SIMPLE_HAMILTONIAN, {}, {"ZZ": 0.1, "IZ": 0.6, "ZI": 0.3}),
             (
                 _MERGING_HAMILTONIAN,
                 {},
@@ -702,7 +643,7 @@ class TestQDrift:
         """Any label-keyed distribution with q_j > 0 gives E[step] = H exactly,
         however ``simplify()`` and the keep split reorder or merge terms."""
         strategy = QDrift(**keep, sampling_budget=2, sampling_strategy=distribution)
-        expected = _exact_expected_step(strategy, hamiltonian, mocker)
+        expected = _exact_expected_step(strategy, TrotterSpec(hamiltonian), mocker)
         np.testing.assert_allclose(
             expected.to_matrix(), hamiltonian.to_matrix(), atol=1e-12
         )
@@ -719,7 +660,8 @@ class TestQDrift:
             mapped_step, weighted_step = (
                 _only_step(
                     strategy.process_hamiltonian(
-                        _MERGING_HAMILTONIAN, rng=_scripted_rng(mocker, draw)
+                        TrotterSpec(_MERGING_HAMILTONIAN),
+                        rng=_scripted_rng(mocker, draw),
                     )
                 )
                 for strategy in (mapped, weighted)
@@ -729,8 +671,8 @@ class TestQDrift:
                 mapped_step.coeffs, weighted_step.coeffs, rtol=1e-12
             )
         np.testing.assert_allclose(
-            _exact_expected_step(mapped, _MERGING_HAMILTONIAN, mocker).to_matrix(),
-            _exact_expected_step(weighted, _MERGING_HAMILTONIAN, mocker).to_matrix(),
+            _exact_expected_step(mapped, _MERGING_SPEC, mocker).to_matrix(),
+            _exact_expected_step(weighted, _MERGING_SPEC, mocker).to_matrix(),
             atol=1e-12,
         )
 
@@ -816,7 +758,7 @@ class TestQDrift:
     ):
         strategy = QDrift(**keep, sampling_budget=2, sampling_strategy=distribution)
         with pytest.raises(ValueError, match=exact_match(message)):
-            strategy.process_hamiltonian(simple_hamiltonian)
+            strategy.process_hamiltonian(TrotterSpec(simple_hamiltonian))
 
     @pytest.mark.parametrize("strategy", ["uniform", "weighted"])
     def test_qdrift_wide_spo_narrow_truncation_no_index_error(self, strategy):
@@ -835,170 +777,6 @@ class TestQDrift:
         )
         result = QDrift(
             keep_top_n=3, sampling_budget=2, seed=0, sampling_strategy=strategy
-        ).process_hamiltonian(spo)
+        ).process_hamiltonian(TrotterSpec(spo))
         assert result.effective_hamiltonian.size >= 1
         assert result.effective_hamiltonian.num_qubits == 5
-
-
-# Y-carrying terms make the sign of t observable; YY and ZZ commute, so every
-# product formula is exact and the circuit must equal exp(-i t H) exactly.
-_COMMUTING_YY_ZZ = SparsePauliOp(["YY", "ZZ"], [0.8, 0.3])
-_SYNTHESIS_TIME = 0.7
-
-
-def _synthesize(
-    result, *, n_steps: int, order: int, n_qubits: int, time: float = _SYNTHESIS_TIME
-) -> QuantumCircuit:
-    return result.synthesize_evolution(
-        QuantumCircuit(n_qubits),
-        time=time,
-        n_steps=n_steps,
-        order=order,
-        qubits=list(range(n_qubits)),
-        basis_gates=list(_QISKIT_TO_QASM2),
-    )
-
-
-def _evolution(generator: SparsePauliOp, time: float = _SYNTHESIS_TIME) -> np.ndarray:
-    return expm(-1j * time * generator.to_matrix())
-
-
-@pytest.mark.parametrize(
-    "hamiltonian",
-    [SparsePauliOp("Y", 0.8), _COMMUTING_YY_ZZ],
-    ids=["single-term", "multi-term"],
-)
-@pytest.mark.parametrize("order", [1, 2])
-def test_synthesized_evolution_is_exp_minus_i_t_h(
-    default_test_simulator, hamiltonian, order
-):
-    result = ExactTrotterization().process_hamiltonian(hamiltonian, n_steps=2)
-    qc = _synthesize(result, n_steps=2, order=order, n_qubits=hamiltonian.num_qubits)
-    assert equal_up_to_phase(
-        unitary(default_test_simulator, qc), _evolution(hamiltonian), atol=1e-8
-    )
-
-
-def test_sampled_synthesis_applies_each_step_draw(default_test_simulator):
-    """Seed 3 draws different terms per step, so replaying one draw would fail."""
-    n_steps = 2
-    result = QDrift(sampling_budget=4, seed=3).process_hamiltonian(
-        _COMMUTING_YY_ZZ, n_steps=n_steps
-    )
-    assert result.sampled_terms is not None
-    assert result.sampled_terms[0] != result.sampled_terms[1]
-    qc = _synthesize(result, n_steps=n_steps, order=1, n_qubits=2)
-    assert equal_up_to_phase(
-        unitary(default_test_simulator, qc),
-        _evolution(sum(result.sampled_terms) / n_steps),
-        atol=1e-8,
-    )
-
-
-def test_qdrift_without_sampling_budget_synthesizes_deterministically(
-    default_test_simulator,
-):
-    with pytest.warns(UserWarning, match=_SAMPLING_BUDGET_NOT_SET):
-        strategy = QDrift(keep_top_n=1)
-    result = strategy.process_hamiltonian(_COMMUTING_YY_ZZ, n_steps=2)
-    assert result.sampled_terms is None
-    qc = _synthesize(result, n_steps=2, order=2, n_qubits=2)
-    assert equal_up_to_phase(
-        unitary(default_test_simulator, qc),
-        _evolution(SparsePauliOp("YY", 0.8)),
-        atol=1e-8,
-    )
-
-
-def test_sampled_synthesis_rejects_higher_order():
-    result = QDrift(sampling_budget=2, seed=0).process_hamiltonian(
-        _SIMPLE_HAMILTONIAN, n_steps=3
-    )
-    with pytest.raises(
-        ValueError,
-        match=exact_match("Sampled Trotterization supports only order=1, got order=2."),
-    ):
-        _synthesize(result, n_steps=3, order=2, n_qubits=2)
-
-
-@pytest.mark.parametrize(
-    "pauli",
-    ["".join(p) for k in (1, 2, 3, 4) for p in itertools.product("XYZ", repeat=k)],
-)
-def test_every_pauli_synthesizes_into_the_qasm_basis(default_test_simulator, pauli):
-    hamiltonian = SparsePauliOp(pauli, 0.4)
-    qc = _synthesize(
-        ExactTrotterization().process_hamiltonian(hamiltonian),
-        n_steps=1,
-        order=1,
-        n_qubits=len(pauli),
-    )
-    assert {inst.operation.name for inst in qc.data} <= set(_QISKIT_TO_QASM2)
-    assert equal_up_to_phase(
-        unitary(default_test_simulator, qc), _evolution(hamiltonian), atol=1e-10
-    )
-
-
-_NON_COMMUTING = SparsePauliOp(["IX", "ZZ", "XI", "YY"], [0.7, 0.4, -0.5, 0.3])
-_NON_COMMUTING_TERMS = list(
-    zip(_NON_COMMUTING.paulis.to_labels(), _NON_COMMUTING.coeffs.real)
-)
-_EVOLUTION_TIME = 0.9
-
-
-def _synthesized(simulator, order: int, n_steps: int) -> np.ndarray:
-    return unitary(
-        simulator,
-        _synthesize(
-            ExactTrotterization().process_hamiltonian(_NON_COMMUTING),
-            n_steps=n_steps,
-            order=order,
-            n_qubits=2,
-            time=_EVOLUTION_TIME,
-        ),
-    )
-
-
-def _ordered_product(sequence, n_steps: int) -> np.ndarray:
-    """``n_steps`` repetitions of ``exp(-i f dt c P)`` applied in ``sequence`` order."""
-    dt = _EVOLUTION_TIME / n_steps
-    step = np.eye(4, dtype=complex)
-    for label, coeff, fraction in sequence:
-        generator = coeff * SparsePauliOp(label).to_matrix()
-        step = expm(-1j * fraction * dt * generator) @ step
-    return np.linalg.matrix_power(step, n_steps)
-
-
-@pytest.mark.parametrize(
-    "order, sequence",
-    [
-        (1, [(label, coeff, 1.0) for label, coeff in _NON_COMMUTING_TERMS]),
-        (
-            2,
-            [(label, coeff, 0.5) for label, coeff in _NON_COMMUTING_TERMS]
-            + [(label, coeff, 0.5) for label, coeff in _NON_COMMUTING_TERMS[::-1]],
-        ),
-    ],
-    ids=["lie_trotter", "suzuki_second_order"],
-)
-def test_product_formula_applies_terms_in_input_order(
-    default_test_simulator, order, sequence
-):
-    assert equal_up_to_phase(
-        _synthesized(default_test_simulator, order, n_steps=3),
-        _ordered_product(sequence, n_steps=3),
-        atol=1e-8,
-    )
-
-
-def test_fourth_order_formula_is_more_accurate_than_second_order(
-    default_test_simulator,
-):
-    exact = _evolution(_NON_COMMUTING, _EVOLUTION_TIME)
-    errors = {
-        order: np.linalg.norm(
-            _synthesized(default_test_simulator, order, n_steps=3) - exact
-        )
-        for order in (2, 4)
-    }
-    assert errors[4] < errors[2] / 10

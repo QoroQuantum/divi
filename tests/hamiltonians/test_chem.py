@@ -89,4 +89,6 @@ def test_time_evolution_accepts_qubit_operator(dummy_simulator):
     from_qop = TimeEvolution(hamiltonian=qop, time=1.0, backend=dummy_simulator)
     from_spo = TimeEvolution(hamiltonian=to_spo(qop), time=1.0, backend=dummy_simulator)
     assert from_qop.n_qubits == from_spo.n_qubits == 2
-    assert from_qop._hamiltonian.equiv(from_spo._hamiltonian)
+    assert from_qop._initial_spec().hamiltonian.equiv(
+        from_spo._initial_spec().hamiltonian
+    )

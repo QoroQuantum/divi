@@ -109,8 +109,8 @@ known parameters or continue from another run. See
 Trotterization Strategies
 -------------------------
 
-The default :class:`~divi.hamiltonians.ExactTrotterization` applies every cost
-term. :class:`~divi.hamiltonians.QDrift` samples terms for shallower circuits at
+The default :class:`~divi.hamiltonians.trotterization.ExactTrotterization` applies every cost
+term. :class:`~divi.hamiltonians.trotterization.QDrift` samples terms for shallower circuits at
 the cost of averaging more circuits.
 
 QDrift controls:
@@ -127,7 +127,7 @@ Assuming ``QAOA`` is imported and ``problem`` is defined, pass it as
 
 .. code-block:: python
 
-   from divi.hamiltonians import QDrift
+   from divi.hamiltonians.trotterization import QDrift
 
    qdrift = QDrift(
        keep_fraction=0.2,

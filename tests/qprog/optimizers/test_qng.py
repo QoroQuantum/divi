@@ -18,7 +18,7 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import QDrift
+from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import CircuitPreprocessor
 from divi.pipeline._result_keys_operations import average_by_param_set
 from divi.pipeline.abc import ContractViolation
@@ -1120,7 +1120,7 @@ def test_qaoa_qdrift_qng_reuses_cost_cohort(dummy_simulator):
     )
     pipeline = qaoa._build_preprocessor_pipeline(qaoa.cost_preprocessor())
     env = qaoa._build_pipeline_env()
-    cost_trace = pipeline.run_forward_pass(qaoa.cost_hamiltonian, env)
+    cost_trace = pipeline.run_forward_pass(qaoa._initial_spec(), env)
 
     sourced = qaoa._post_spec_batch()
 

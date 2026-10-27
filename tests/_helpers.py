@@ -14,6 +14,15 @@ from qiskit import QuantumCircuit
 from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
 from divi.circuits._payloads import bound_circuits
 from divi.exceptions import ExecutionCancelledError
+from divi.qprog.initial_states import (
+    CustomPerQubitState,
+    DickeState,
+    InitialState,
+    OnesState,
+    SuperpositionState,
+    WState,
+    ZerosState,
+)
 
 
 class FakeAsyncBackend(AsyncJobBackend):
@@ -143,6 +152,49 @@ def same_unitary(
     """Whether circuits ``a`` and ``b`` implement one unitary, up to a global
     phase."""
     return equal_up_to_phase(unitary(simulator, a), unitary(simulator, b), atol)
+
+
+_QUBIT_VECTORS = {
+    "0": np.array([1.0, 0.0]),
+    "1": np.array([0.0, 1.0]),
+    "+": np.array([1.0, 1.0]) / np.sqrt(2),
+    "-": np.array([1.0, -1.0]) / np.sqrt(2),
+}
+
+
+def initial_state_amplitudes(state: InitialState, n_qubits: int) -> np.ndarray:
+    """Amplitudes of ``state`` from its definition, not its circuit, with
+    qubit 0 the least-significant bit. Dicke states span every wire."""
+    uniform_chars = {ZerosState: "0", OnesState: "1", SuperpositionState: "+"}
+    chars = (
+        state.state_string
+        if isinstance(state, CustomPerQubitState)
+        else uniform_chars.get(type(state), "") * n_qubits
+    )
+    if chars:
+        vector = np.ones(1)
+        for char in chars:
+            vector = np.kron(_QUBIT_VECTORS[char], vector)
+        return vector
+    indices = np.arange(2**n_qubits)
+    if isinstance(state, DickeState) and state.n_qubits in (None, n_qubits):
+        support = np.array(
+            [int(i).bit_count() == state.hamming_weight for i in indices]
+        )
+    elif isinstance(state, WState):
+        mask = (1 << state.block_size) - 1
+        support = np.array(
+            [
+                all(
+                    ((int(i) >> (block * state.block_size)) & mask).bit_count() == 1
+                    for block in range(state.n_blocks)
+                )
+                for i in indices
+            ]
+        )
+    else:
+        raise ValueError(f"No amplitude definition for {state.name}.")
+    return support / np.sqrt(support.sum())
 
 
 def equal_up_to_phase(a: np.ndarray, b: np.ndarray, atol: float = 1e-8) -> bool:

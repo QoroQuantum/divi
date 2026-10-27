@@ -2,244 +2,34 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Stateless trotterization strategies for Hamiltonian simulation."""
+"""QDrift: randomised trotterization by sampling Hamiltonian terms."""
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from numbers import Integral
-from typing import Literal, Protocol
+from numbers import Integral, Real
+from typing import Literal
 from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit import transpile
-from qiskit.circuit import QuantumCircuit
-from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
-from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
-    _sort_hamiltonian_terms_spo,
-    _spo_to_qiskit_basis_gates,
     generate_empty_spo,
 )
-
-
-@dataclass(frozen=True)
-class TrotterizationResult:
-    """Output of one trotterization step: the Hamiltonian to build the circuit
-    from, plus (for sampling strategies) the exact sequence of sampled terms."""
-
-    effective_hamiltonian: SparsePauliOp
-    """Simplified Hamiltonian the observable/circuit is built from. For a
-    sampling result, the first step's draw."""
-
-    sampled_terms: tuple[SparsePauliOp, ...] | None = None
-    """For sampling strategies such as QDrift, one independent draw per Trotter
-    step, each holding the drawn terms in order with repeats kept (one entry
-    per draw). ``None`` for deterministic strategies."""
-
-    def synthesize_evolution(
-        self,
-        qc: QuantumCircuit,
-        *,
-        time: float,
-        n_steps: int,
-        order: int,
-        qubits: Sequence[int],
-        basis_gates: Sequence[str],
-    ) -> QuantumCircuit:
-        """Append this result's time-evolution gates to ``qc``.
-
-        Every path approximates ``exp(-i t H)``. A sampling result
-        (``sampled_terms`` set) is first order and carries its own step count:
-        each draw is one step at ``time / len(sampled_terms)``, applying one
-        evolution gate per drawn term (sampling-with-replacement multiplicities
-        kept). A deterministic result synthesises ``effective_hamiltonian`` via
-        :class:`~qiskit.circuit.library.PauliEvolutionGate` over ``n_steps``
-        steps (:class:`~qiskit.synthesis.LieTrotter` for ``order == 1``, else
-        :class:`~qiskit.synthesis.SuzukiTrotter`). Every path is then lowered
-        to ``basis_gates``; the returned circuit is a new object.
-
-        Raises:
-            ValueError: If a sampling result is synthesised with ``order != 1``.
-            RuntimeError: If the circuit cannot be lowered to ``basis_gates``.
-        """
-        if self.sampled_terms is not None:
-            if order != 1:
-                raise ValueError(
-                    f"Sampled Trotterization supports only order=1, got order={order}."
-                )
-            # Concatenating keeps every step's terms in order, one gate per draw.
-            _spo_to_qiskit_basis_gates(
-                qc,
-                SparsePauliOp.sum(list(self.sampled_terms)),
-                time / len(self.sampled_terms),
-                qubits,
-            )
-        elif self.effective_hamiltonian.size >= 2:
-            synthesis = (
-                LieTrotter(reps=n_steps, preserve_order=True)
-                if order == 1
-                else SuzukiTrotter(order=order, reps=n_steps, preserve_order=True)
-            )
-            qc.append(
-                PauliEvolutionGate(
-                    self.effective_hamiltonian, time=time, synthesis=synthesis
-                ),
-                qubits,
-            )
-        else:
-            _spo_to_qiskit_basis_gates(qc, self.effective_hamiltonian, time, qubits)
-
-        # ``optimization_level=0`` keeps lowering to a gate-by-gate substitution.
-        try:
-            return transpile(qc, basis_gates=list(basis_gates), optimization_level=0)
-        except Exception as exc:
-            raise RuntimeError(
-                "Failed to lower the Trotter-synthesised circuit to the "
-                "requested basis-gate set. This usually means "
-                "PauliEvolutionGate synthesis emitted a gate the QASM2 "
-                f"emitter does not handle. Supported gates: {sorted(basis_gates)}."
-            ) from exc
-
-
-def _warn_truncation_no_op(
-    keep_fraction: float | None, keep_top_n: int | None, n_terms: int
-) -> bool:
-    """Emit the truncation-is-a-no-op warning if applicable. Returns True when warned."""
-    if keep_fraction is not None and keep_fraction == 1.0:
-        warn(
-            "keep_fraction is 1.0 (no truncation); returning the full Hamiltonian.",
-            UserWarning,
-        )
-        return True
-    if keep_top_n is not None and keep_top_n >= n_terms:
-        warn(
-            "keep_top_n is greater than or equal to the number of terms; "
-            "returning the full Hamiltonian.",
-            UserWarning,
-        )
-        return True
-    return False
-
-
-class TrotterizationStrategy(Protocol):
-    """Trotterization strategy protocol."""
-
-    def process_hamiltonian(
-        self,
-        hamiltonian: SparsePauliOp,
-        *,
-        n_steps: int = 1,
-        rng: np.random.Generator | None = None,
-    ) -> TrotterizationResult:
-        """Return a trotterization result for an ``n_steps`` evolution without
-        retaining call state; sampling strategies draw independently per step."""
-        ...
-
-    def process_hamiltonian_batch(
-        self,
-        hamiltonian: SparsePauliOp,
-        n_samples: int,
-        *,
-        n_steps: int = 1,
-        rng: np.random.Generator | None = None,
-    ) -> list[TrotterizationResult]:
-        """Return ``n_samples`` results from one Hamiltonian.
-
-        The default calls :meth:`process_hamiltonian` ``n_samples`` times;
-        strategies with expensive deterministic preprocessing (e.g. QDrift's
-        keep/sample split) override this to share that work across the batch.
-        """
-        return [
-            self.process_hamiltonian(hamiltonian, n_steps=n_steps, rng=rng)
-            for _ in range(n_samples)
-        ]
-
-
-@dataclass(frozen=True)
-class ExactTrotterization(TrotterizationStrategy):
-    """Exact Trotterization strategy."""
-
-    keep_fraction: float | None = None
-    """Fraction of terms to keep by coefficient magnitude (largest first). Must be in (0, 1]. If None, keep all terms."""
-    keep_top_n: int | None = None
-    """Number of top terms to keep by coefficient magnitude. Must be >= 1. If None, keep all terms. Mutually exclusive with keep_fraction."""
-
-    def __post_init__(self):
-        if self.keep_fraction is not None and self.keep_top_n is not None:
-            raise ValueError(
-                "At most one of keep_fraction or keep_top_n may be provided."
-            )
-
-        if self.keep_fraction is not None:
-            if not 0 < self.keep_fraction <= 1:
-                raise ValueError(
-                    f"keep_fraction must be in (0, 1], got {self.keep_fraction}"
-                )
-            object.__setattr__(self, "keep_fraction", float(self.keep_fraction))
-
-        if self.keep_top_n is not None:
-            if (
-                not isinstance(self.keep_top_n, Integral)
-                or isinstance(self.keep_top_n, bool)
-                or self.keep_top_n <= 0
-            ):
-                raise ValueError(
-                    f"keep_top_n must be a positive integer (>= 1), got {self.keep_top_n}"
-                )
-            object.__setattr__(self, "keep_top_n", int(self.keep_top_n))
-
-    def process_hamiltonian(
-        self,
-        hamiltonian: SparsePauliOp,
-        *,
-        n_steps: int = 1,
-        rng: np.random.Generator | None = None,
-    ) -> TrotterizationResult:
-        """Truncate the Hamiltonian to its top-magnitude terms."""
-        if self.keep_fraction is None and self.keep_top_n is None:
-            return TrotterizationResult(hamiltonian.simplify())
-
-        _clean_hamiltonian_spo(hamiltonian, raise_on_constant=True)
-        if _warn_truncation_no_op(
-            self.keep_fraction, self.keep_top_n, hamiltonian.size
-        ):
-            return TrotterizationResult(hamiltonian.simplify())
-
-        return TrotterizationResult(self._truncate_spo(hamiltonian))
-
-    def _truncate_spo(self, spo: SparsePauliOp) -> SparsePauliOp:
-        """Sort by |coeff|, slice to the kept tail, and re-attach the constant."""
-        non_id_spo, constant = _clean_hamiltonian_spo(spo, raise_on_constant=True)
-        sorted_spo = _sort_hamiltonian_terms_spo(non_id_spo, order="magnitude")
-
-        if self.keep_fraction is not None:
-            absolute_coeffs = np.abs(sorted_spo.coeffs.real)
-            target = absolute_coeffs.sum() * self.keep_fraction
-            cumsum_from_end = np.cumsum(absolute_coeffs[::-1])
-            n_keep = np.searchsorted(cumsum_from_end, target, side="left") + 1
-            slice_idx = -min(n_keep, len(absolute_coeffs))
-        elif self.keep_top_n is not None:
-            slice_idx = -self.keep_top_n
-        else:
-            raise RuntimeError(
-                "keep_fraction and keep_top_n are both None; at least one must be set."
-            )
-
-        kept_spo = SparsePauliOp(
-            sorted_spo.paulis[slice_idx:], sorted_spo.coeffs[slice_idx:]
-        )
-        if constant != 0:
-            const_spo = SparsePauliOp.from_sparse_list(
-                [("", [], constant)],
-                num_qubits=_require_qiskit_num_qubits(spo.num_qubits),
-            )
-            return (kept_spo + const_spo).simplify()
-        return kept_spo.simplify()
+from divi.hamiltonians.trotterization._base import (
+    TrotterizationResult,
+    TrotterizationStrategy,
+    TrotterSpec,
+    _warn_truncation_no_op,
+)
+from divi.hamiltonians.trotterization._exact import ExactTrotterization
+from divi.hamiltonians.trotterization._state_drift import (
+    StateDriftCache,
+    state_drift_distribution,
+)
 
 
 @dataclass(frozen=True)
@@ -263,16 +53,33 @@ class QDrift(TrotterizationStrategy):
     """Number of top terms to keep deterministically by coefficient magnitude. Must be >= 1. If None, all terms go to the sampling pool. Mutually exclusive with keep_fraction."""
     sampling_budget: int | None = None
     """Number of terms to sample from the remaining Hamiltonian per Trotter step; each step draws its own terms independently. If None, only kept terms are applied (equivalent to ``ExactTrotterization``)."""
-    sampling_strategy: Literal["uniform", "weighted"] | Mapping[str, float] = field(
-        default="uniform", hash=False
-    )
-    """How to sample terms — ``"uniform"`` (equal probability), ``"weighted"`` (by coefficient magnitude), or a mapping from Pauli label to sampling probability. A mapping must cover exactly the terms left to sample (after ``simplify()`` and any ``keep_*`` split), with every probability finite and > 0 and the probabilities summing to 1."""
+    sampling_strategy: (
+        Literal["uniform", "weighted", "state_drift"] | Mapping[str, float]
+    ) = field(default="uniform", hash=False)
+    """How to sample terms — ``"uniform"`` (equal probability), ``"weighted"`` (by coefficient magnitude), ``"state_drift"``, or a mapping from Pauli label to sampling probability. A mapping must cover exactly the terms left to sample (after ``simplify()`` and any ``keep_*`` split), with every probability finite and > 0 and the probabilities summing to 1.
+
+    ``"state_drift"`` chooses the probabilities from the initial state, observable and time of the evolution (StateDRIFT, `arXiv:2610.31515 <https://arxiv.org/abs/2610.31515>`_), so it works only in :class:`~divi.qprog.algorithms.TimeEvolution` with a single observable; it requires ``sampling_budget`` and excludes ``keep_fraction`` and ``keep_top_n``. Programs that supply no evolution raise when they first build their circuits."""
     seed: int | None = None
     """Random seed for reproducible sampling. If None, sampling is non-deterministic."""
     n_hamiltonians_per_iteration: int = 10
     """Number of Hamiltonian samples per cost evaluation; losses are averaged over them."""
+    _state_drift_cache: StateDriftCache = field(
+        default_factory=StateDriftCache, repr=False, compare=False, hash=False
+    )
+    """Densities of each evolution seen; ``replace`` and copies share it."""
 
     def __post_init__(self):
+        if self.sampling_strategy == "state_drift":
+            if self.keep_fraction is not None or self.keep_top_n is not None:
+                raise ValueError(
+                    "sampling_strategy='state_drift' samples every term; "
+                    "keep_fraction and keep_top_n are not supported."
+                )
+            if self.sampling_budget is None:
+                raise ValueError(
+                    "sampling_strategy='state_drift' requires sampling_budget."
+                )
+
         if (
             self.keep_fraction is None
             and self.keep_top_n is None
@@ -317,9 +124,10 @@ class QDrift(TrotterizationStrategy):
             object.__setattr__(
                 self, "sampling_strategy", dict(zip(labels, probs.tolist()))
             )
-        elif self.sampling_strategy not in {"uniform", "weighted"}:
+        elif self.sampling_strategy not in {"uniform", "weighted", "state_drift"}:
             raise ValueError(
-                f"Invalid sampling_strategy: {self.sampling_strategy}. Must be 'uniform' or 'weighted'."
+                f"Invalid sampling_strategy: {self.sampling_strategy}. Must be "
+                "'uniform', 'weighted', 'state_drift' or a mapping."
             )
 
         if self.seed is not None:
@@ -360,12 +168,12 @@ class QDrift(TrotterizationStrategy):
 
     def process_hamiltonian(
         self,
-        hamiltonian: SparsePauliOp,
+        spec: TrotterSpec,
         *,
         n_steps: int = 1,
         rng: np.random.Generator | None = None,
     ) -> TrotterizationResult:
-        r"""Apply the ``QDrift`` randomised channel to a Hamiltonian.
+        r"""Apply the ``QDrift`` randomised channel to ``spec.hamiltonian``.
 
         Implements the ``QDrift`` protocol (Campbell 2019): for H = Σ c_i P_i,
         randomly sample L terms for each of the ``n_steps`` Trotter steps,
@@ -379,9 +187,13 @@ class QDrift(TrotterizationStrategy):
 
         Raises:
             ValueError: If a mapping ``sampling_strategy`` does not cover
-                exactly the terms left to sample.
+                exactly the terms left to sample, or a ``"state_drift"``
+                strategy gets a spec without an initial state and time, or
+                with no observable or several.
+            TypeError: If a ``"state_drift"`` strategy gets an observable that
+                is not a ``SparsePauliOp`` or a non-numeric time.
         """
-        prepared = self._plan(hamiltonian)
+        prepared = self._plan(spec, n_steps)
         if isinstance(prepared, TrotterizationResult):
             return prepared
         if rng is None:
@@ -390,7 +202,7 @@ class QDrift(TrotterizationStrategy):
 
     def process_hamiltonian_batch(
         self,
-        hamiltonian: SparsePauliOp,
+        spec: TrotterSpec,
         n_samples: int,
         *,
         n_steps: int = 1,
@@ -398,22 +210,70 @@ class QDrift(TrotterizationStrategy):
     ) -> list[TrotterizationResult]:
         """Sample ``n_samples`` Hamiltonians, computing the deterministic
         keep/sample split once and drawing only the random terms per sample."""
-        prepared = self._plan(hamiltonian)
+        prepared = self._plan(spec, n_steps)
         if isinstance(prepared, TrotterizationResult):
             return [prepared] * n_samples
         if rng is None:
             rng = np.random.default_rng(self.seed)
         return [self._sample(prepared, rng, n_steps) for _ in range(n_samples)]
 
+    def _state_drift_probabilities(
+        self, spec: TrotterSpec, n_steps: int
+    ) -> dict[str, float]:
+        """StateDRIFT probabilities for the evolution ``spec`` describes."""
+        if spec.initial_state is None or spec.time is None:
+            raise ValueError(
+                "sampling_strategy='state_drift' needs the initial state and "
+                "time of a time evolution; only TimeEvolution supplies them."
+            )
+        observable = spec.observable
+        if isinstance(observable, Sequence) and not isinstance(observable, str):
+            if len(observable) != 1:
+                raise ValueError(
+                    "sampling_strategy='state_drift' needs exactly one "
+                    f"observable, got {len(observable)}."
+                )
+            (observable,) = observable
+        if observable is None:
+            raise ValueError(
+                "sampling_strategy='state_drift' needs exactly one observable, "
+                "got none."
+            )
+        if not isinstance(observable, SparsePauliOp):
+            raise TypeError(
+                "sampling_strategy='state_drift' needs a SparsePauliOp "
+                f"observable, got {type(observable).__name__}."
+            )
+        time = spec.time
+        if isinstance(time, bool) or not isinstance(time, Real):
+            raise TypeError(
+                "sampling_strategy='state_drift' needs a numeric time, got "
+                f"{type(time).__name__}."
+            )
+        budget = self.sampling_budget
+        if budget is None:
+            raise RuntimeError("sampling_budget is not set.")
+        return state_drift_distribution(
+            self._state_drift_cache.densities(
+                spec.hamiltonian, observable, spec.initial_state
+            ),
+            time=float(time),
+            n_samples=n_steps * budget,
+            n_trajectories=self.n_hamiltonians_per_iteration,
+        )
+
     def _plan(
-        self, hamiltonian: SparsePauliOp
-    ) -> "TrotterizationResult | _QDriftSamplingPlan":
+        self,
+        spec: TrotterSpec,
+        n_steps: int,
+    ) -> TrotterizationResult | _QDriftSamplingPlan:
         """Deterministic part shared by every sample of one batch.
 
         Returns a finished :class:`TrotterizationResult` for the cases needing
         no random draw, otherwise a :class:`_QDriftSamplingPlan` for
         :meth:`_sample`.
         """
+        hamiltonian = spec.hamiltonian
         if (
             self.keep_fraction is None
             and self.keep_top_n is None
@@ -474,20 +334,23 @@ class QDrift(TrotterizationStrategy):
                     )
                 )
             return TrotterizationResult(keep_spo)
-        if isinstance(self.sampling_strategy, Mapping):
+        distribution = self.sampling_strategy
+        if distribution == "state_drift":
+            distribution = self._state_drift_probabilities(spec, n_steps)
+        if isinstance(distribution, Mapping):
             labels = to_sample_spo.paulis.to_labels()
-            missing = sorted(set(labels) - self.sampling_strategy.keys())
+            missing = sorted(set(labels) - distribution.keys())
             if missing:
                 raise ValueError(
                     f"sampling_strategy has no probability for the sampled terms {missing}"
                 )
-            unknown = sorted(self.sampling_strategy.keys() - set(labels))
+            unknown = sorted(distribution.keys() - set(labels))
             if unknown:
                 raise ValueError(
                     f"sampling_strategy has probabilities for {unknown}, "
                     f"which are not among the sampled terms {sorted(labels)}"
                 )
-            probs = np.array([self.sampling_strategy[label] for label in labels])
+            probs = np.array([distribution[label] for label in labels])
         elif self.sampling_strategy == "weighted":
             probs = absolute_coeffs / coeff_sum
         else:
@@ -501,14 +364,13 @@ class QDrift(TrotterizationStrategy):
         )
 
     def _sample(
-        self, plan: "_QDriftSamplingPlan", rng: np.random.Generator, n_steps: int
+        self, plan: _QDriftSamplingPlan, rng: np.random.Generator, n_steps: int
     ) -> TrotterizationResult:
         """Draw one independent set of terms per Trotter step from a prepared
         plan (the random part); ``effective_hamiltonian`` is the first step's."""
-        # _plan returns a finished result (never a plan) when sampling_budget is None.
         budget = self.sampling_budget
         if budget is None:
-            raise RuntimeError("_sample requires sampling_budget; call _plan first.")
+            raise RuntimeError("sampling_budget is not set.")
         steps = tuple(self._draw_step(plan, rng, budget) for _ in range(n_steps))
         return TrotterizationResult(
             effective_hamiltonian=steps[0].simplify(),
@@ -516,7 +378,7 @@ class QDrift(TrotterizationStrategy):
         )
 
     def _draw_step(
-        self, plan: "_QDriftSamplingPlan", rng: np.random.Generator, budget: int
+        self, plan: _QDriftSamplingPlan, rng: np.random.Generator, budget: int
     ) -> SparsePauliOp:
         """One step's ``budget`` rescaled draws followed by the kept terms."""
         to_sample_spo = plan.to_sample_spo

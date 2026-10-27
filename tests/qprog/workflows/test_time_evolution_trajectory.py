@@ -14,13 +14,14 @@ from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.quepp import QuEPP
-from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.hamiltonians.trotterization import ExactTrotterization, QDrift
+from divi.hamiltonians.trotterization._state_drift import StateDriftDensities
 from divi.pipeline import DiviPerformanceWarning
 from divi.qprog import ReportingLevel, TimeEvolutionTrajectory
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.ensemble import BatchConfig, BatchMode
-from divi.qprog.initial_states import SuperpositionState
+from divi.qprog.initial_states import CustomPerQubitState, SuperpositionState
 from divi.qprog.workflows import _time_evolution_trajectory as workflow
 from tests._helpers import exact_match
 
@@ -30,6 +31,14 @@ _H_Z0_Z1 = SparsePauliOp.from_sparse_list(
     [("Z", [0], 0.5), ("Z", [1], 0.3)], num_qubits=2
 )
 _Z0_2Q = SparsePauliOp.from_sparse_list([("Z", [0], 1.0)], num_qubits=2)
+# Odd-Y terms and a "+0" start give StateDRIFT non-zero shifts and slopes.
+_STATE_DRIFT_HAMILTONIAN = SparsePauliOp.from_sparse_list(
+    [("ZZ", [0, 1], 1.0), ("X", [1], 0.7), ("Y", [0], 0.4), ("XY", [0, 1], 0.3)],
+    num_qubits=2,
+)
+_STATE_DRIFT_OBSERVABLE = SparsePauliOp.from_sparse_list(
+    [("Z", [0], 1.0), ("Z", [1], 0.5)], num_qubits=2
+)
 
 
 @pytest.fixture
@@ -321,6 +330,40 @@ def test_seeded_time_point_draws_do_not_depend_on_the_grid(
 
 
 class TestTimeEvolutionTrajectoryRun:
+    def test_state_drift_evaluates_the_state_once_and_solves_each_time(
+        self, default_test_simulator, mocker
+    ):
+        """The state is evaluated once for the whole trajectory, and each time
+        point gives what a standalone TimeEvolution with its own strategy does."""
+        initial_state = CustomPerQubitState("+0")
+        common = dict(
+            hamiltonian=_STATE_DRIFT_HAMILTONIAN,
+            initial_state=initial_state,
+            observable=_STATE_DRIFT_OBSERVABLE,
+            backend=default_test_simulator,
+        )
+        spy = mocker.spy(StateDriftDensities, "compute")
+        traj = TimeEvolutionTrajectory(
+            time_points=[0.01, 0.15, 0.3],
+            trotterization_strategy=QDrift(
+                sampling_budget=2, seed=5, sampling_strategy="state_drift"
+            ),
+            **common,
+        )
+        traj.run()
+        assert spy.call_count == 1
+
+        for t, result in traj.aggregate_results().items():
+            seed = traj.programs[f"t={t}"].trotterization_strategy.seed
+            direct = TimeEvolution(
+                time=t,
+                trotterization_strategy=QDrift(
+                    sampling_budget=2, seed=seed, sampling_strategy="state_drift"
+                ),
+                **common,
+            )
+            assert result == direct.run().results
+
     def test_checkpointing_never_passes_vqa_arguments(
         self, two_qubit_hamiltonian, dummy_simulator, tmp_path, mocker
     ):
@@ -529,7 +572,7 @@ def _build_meta_at(H, observable, time, backend, **program_kwargs):
         backend=backend,
         **program_kwargs,
     )
-    result = prog.trotterization_strategy.process_hamiltonian(H)
+    result = prog.trotterization_strategy.process_hamiltonian(prog._initial_spec())
     return prog._meta_circuit_factory(result, ham_id=0)
 
 

@@ -1,7 +1,7 @@
 Hamiltonian Time Evolution
 ==========================
 
-The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.QDrift` (randomised term sampling for shallower circuits on large Hamiltonians).
+The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.trotterization.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.trotterization.QDrift` (randomised term sampling for shallower circuits on large Hamiltonians).
 
 It supports three output modes:
 
@@ -148,14 +148,14 @@ must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
    print(te.expval())
 
 The default term-selection strategy is
-:class:`~divi.hamiltonians.ExactTrotterization`, which keeps every Hamiltonian
+:class:`~divi.hamiltonians.trotterization.ExactTrotterization`, which keeps every Hamiltonian
 term.  Pass it explicitly to truncate small-coefficient terms — ``keep_top_n``
 keeps the N largest-magnitude terms, ``keep_fraction`` keeps a fraction in
 ``(0, 1]`` (the two are mutually exclusive):
 
 .. code-block:: python
 
-   from divi.hamiltonians import ExactTrotterization
+   from divi.hamiltonians.trotterization import ExactTrotterization
 
    te = TimeEvolution(
        hamiltonian=H,
@@ -169,7 +169,7 @@ keeps the N largest-magnitude terms, ``keep_fraction`` keeps a fraction in
 QDrift Trotterization
 ---------------------
 
-For large Hamiltonians, you can use :class:`~divi.hamiltonians.QDrift` to sample terms and average over multiple Hamiltonian samples.
+For large Hamiltonians, you can use :class:`~divi.hamiltonians.trotterization.QDrift` to sample terms and average over multiple Hamiltonian samples.
 Each of the ``n_steps`` Trotter steps draws its own ``sampling_budget`` terms independently.
 Sampled evolution is first order, so it requires ``order=1``:
 
@@ -177,7 +177,7 @@ Sampled evolution is first order, so it requires ``order=1``:
 
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
-   from divi.hamiltonians import QDrift
+   from divi.hamiltonians.trotterization import QDrift
    from divi.qprog import SuperpositionState, TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
@@ -200,6 +200,77 @@ Sampled evolution is first order, so it requires ``order=1``:
    )
    te.run()
    print(te.results)
+
+**State-aware sampling (StateDRIFT)**
+
+``sampling_strategy="weighted"`` picks terms by coefficient size alone. With
+``sampling_strategy="state_drift"``, :class:`~divi.qprog.algorithms.TimeEvolution`
+instead picks them by how strongly each term changes the measured observable in
+the initial state, following StateDRIFT
+(`arXiv:2610.31515 <https://arxiv.org/abs/2610.31515>`_), which reports a
+lower bias than weighted sampling at the same circuit depth. Every term keeps at least
+a fifth of its weighted probability, and the sampled Hamiltonian still equals
+:math:`H` on average.
+
+.. code-block:: python
+
+   from qiskit.quantum_info import SparsePauliOp
+   from divi.backends import MaestroSimulator
+   from divi.hamiltonians.trotterization import QDrift
+   from divi.qprog import CustomPerQubitState, TimeEvolution
+
+   hamiltonian = SparsePauliOp.from_sparse_list(
+       [("ZZ", [0, 1], 1.0), ("ZZ", [1, 2], 1.0), ("X", [0], 0.7),
+        ("X", [1], 0.7), ("X", [2], 0.7), ("Y", [1], 0.4)],
+       num_qubits=3,
+   )
+   te = TimeEvolution(
+       hamiltonian=hamiltonian,
+       trotterization_strategy=QDrift(
+           sampling_budget=4,
+           n_hamiltonians_per_iteration=20,
+           sampling_strategy="state_drift",
+           seed=7,
+       ),
+       time=0.05,
+       n_steps=2,
+       initial_state=CustomPerQubitState("0+1"),
+       observable=SparsePauliOp.from_sparse_list([("Z", [0], 1.0)], num_qubits=3),
+       backend=MaestroSimulator(),
+   )
+   te.run()
+   print(te.results)
+
+The strategy computes the probabilities when the program runs, from the
+initial state, observable and time that ``TimeEvolution`` hands it. It needs:
+
+- exactly one ``observable``;
+- an initial state; product states (``ZerosState``, ``OnesState``,
+  ``SuperpositionState``, ``CustomPerQubitState``) have closed-form Pauli
+  expectation values, and every other state's values come from Maestro's
+  matrix-product-state simulator, so wide registers work too (see
+  :meth:`~divi.qprog.initial_states.InitialState.pauli_expectations`);
+- ``sampling_budget`` set, and no ``keep_fraction`` or ``keep_top_n``.
+
+The rule is the paper's single-step one: it balances the leading bias against
+the variance of ``n_hamiltonians_per_iteration`` averaged runs, but leaves out
+the terms that couple different Trotter steps. The expansion behind the rule
+holds only for small rotations, so the strategy keeps every sampled rotation
+angle :math:`|c_j|\,\mathrm{d}t/q_j` within 0.5, where :math:`\mathrm{d}t` is
+``time / (n_steps * sampling_budget)``. Where needed it mixes in more than a
+fifth of the weighted distribution to get there. That works whenever
+:math:`\lambda\,\mathrm{d}t \le 0.5`, with :math:`\lambda = \sum_j |c_j|`;
+beyond it the strategy warns and samples by weight, and raising ``n_steps`` or
+``sampling_budget`` brings the angles back down. Because the rule
+leaves out the cross-step terms, it is not guaranteed to lower the variance of
+circuits with more than one sampled rotation.
+
+The strategy evaluates each initial state and observable once and reuses the
+result for every time, also across the copies of it that
+:class:`~divi.qprog.workflows.TimeEvolutionTrajectory` makes, so a trajectory
+evaluates the state once and only re-solves the probabilities per time point.
+QAOA gives the strategy no initial state or observable, so it raises an error
+there.
 
 Time Evolution Trajectory
 -------------------------

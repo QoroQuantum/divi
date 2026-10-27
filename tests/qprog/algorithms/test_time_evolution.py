@@ -7,6 +7,7 @@ import warnings
 
 import numpy as np
 import pytest
+from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import ExecutionResult, MaestroConfig
@@ -14,10 +15,21 @@ from divi.circuits import DEFAULT_PRECISION
 from divi.circuits._payloads import bound_circuits
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
-from divi.hamiltonians import ExactTrotterization, QDrift
+from divi.hamiltonians.trotterization import (
+    ExactTrotterization,
+    QDrift,
+    TrotterizationResult,
+    TrotterizationStrategy,
+)
 from divi.pipeline import PipelineCadence
 from divi.pipeline.stages import MeasurementStage
-from divi.qprog import OnesState, SuperpositionState, TimeEvolution, ZerosState
+from divi.qprog import (
+    CustomPerQubitState,
+    OnesState,
+    SuperpositionState,
+    TimeEvolution,
+    ZerosState,
+)
 from divi.reporting._events import ProgressEvent, TerminalStatus
 from tests._helpers import exact_match
 from tests.qprog._program_contracts import ObservableMeasuringContractsBase
@@ -66,6 +78,40 @@ def _tfim(n_qubits: int) -> SparsePauliOp:
 
 
 _TFIM_3Q = _tfim(3)
+# TFIM plus odd-Y terms, so StateDRIFT sees non-zero rotation slopes.
+_STATE_DRIFT_HAMILTONIAN = _TFIM_3Q + _op([("Y", [1], 0.4), ("YX", [0, 2], 0.3)], 3)
+_Z0_3Q = _op([("Z", [0], 1.0)], 3)
+_STATE_DRIFT_QDRIFT = dict(
+    sampling_budget=4,
+    seed=0,
+    n_hamiltonians_per_iteration=20,
+    sampling_strategy="state_drift",
+)
+
+
+class _PassThroughStrategy(TrotterizationStrategy):
+    """Custom strategy on the plain protocol: the Hamiltonian, unchanged."""
+
+    def process_hamiltonian(self, spec, *, n_steps=1, rng=None):
+        return TrotterizationResult(spec.hamiltonian.simplify())
+
+
+def _state_drift_program(backend, strategy, **overrides) -> TimeEvolution:
+    """TimeEvolution of ``_STATE_DRIFT_HAMILTONIAN`` measuring Z₀ from ``|0+1⟩``."""
+    return TimeEvolution(
+        **{
+            "hamiltonian": _STATE_DRIFT_HAMILTONIAN,
+            "trotterization_strategy": strategy,
+            "time": 0.05,
+            "n_steps": 2,
+            "initial_state": CustomPerQubitState("0+1"),
+            "observable": _Z0_3Q,
+            "backend": backend,
+            **overrides,
+        }
+    )
+
+
 # ⟨000|H|000⟩, conserved by exact evolution from the default |000⟩ state.
 _TFIM_3Q_ENERGY = -2.0
 
@@ -238,7 +284,7 @@ class TestTimeEvolutionGenerateCircuits:
             backend=default_test_simulator,
         )
         env = te._build_pipeline_env()
-        trace = _evolution_pipeline(te).run_forward_pass(te._hamiltonian, env)
+        trace = _evolution_pipeline(te).run_forward_pass(te._initial_spec(), env)
         assert len(trace.final_batch) == 1
 
     def test_pipeline_qdrift_multiple_circuits(
@@ -254,7 +300,7 @@ class TestTimeEvolutionGenerateCircuits:
             backend=default_test_simulator,
         )
         env = te._build_pipeline_env()
-        trace = _evolution_pipeline(te).run_forward_pass(te._hamiltonian, env)
+        trace = _evolution_pipeline(te).run_forward_pass(te._initial_spec(), env)
         # QDrift with 3 samples → at least 3 circuits
         assert len(trace.final_batch) >= 3
 
@@ -269,7 +315,7 @@ class TestTimeEvolutionGenerateCircuits:
             backend=default_test_simulator,
         )
         _evolution_pipeline(te).run_forward_pass(
-            te._hamiltonian, te._build_pipeline_env()
+            te._initial_spec(), te._build_pipeline_env()
         )
         assert spy.call_args.kwargs["n_steps"] == 3
 
@@ -762,6 +808,96 @@ class TestTimeEvolutionQDrift:
         te_sampling.run()
 
         assert abs(te_expval.results - te_sampling.results) < _QDRIFT_EXPVAL_TOL
+
+    def test_programs_sharing_a_state_drift_strategy_keep_their_own_evolution(
+        self, default_test_simulator
+    ):
+        """One strategy instance shared by programs of different time,
+        observable or state gives each program what a strategy of its own
+        would, so neither the densities cache nor the pipeline cache mixes
+        them up."""
+        variants = [
+            {},
+            {"time": 0.1},
+            {"observable": _op([("Z", [2], 1.0)], 3)},
+            {"initial_state": CustomPerQubitState("1+0")},
+        ]
+        shared = QDrift(**_STATE_DRIFT_QDRIFT)
+        shared_results = [
+            _state_drift_program(default_test_simulator, shared, **variant)
+            .run()
+            .results
+            for variant in variants
+        ]
+        own_results = [
+            _state_drift_program(
+                default_test_simulator, QDrift(**_STATE_DRIFT_QDRIFT), **variant
+            )
+            .run()
+            .results
+            for variant in variants
+        ]
+        assert shared_results == own_results
+        assert len(set(shared_results)) == len(variants)
+
+    def test_custom_strategy_gets_the_evolution(self, default_test_simulator, mocker):
+        """A custom strategy receives the program's initial state, observable
+        and time with the Hamiltonian, and runs like the built-in one."""
+        spy = mocker.spy(_PassThroughStrategy, "process_hamiltonian")
+        custom = _state_drift_program(
+            default_test_simulator, _PassThroughStrategy(), n_steps=20
+        )
+        exact = _state_drift_program(
+            default_test_simulator, ExactTrotterization(), n_steps=20
+        )
+        assert custom.run().results == pytest.approx(exact.run().results, abs=1e-12)
+
+        spec = spy.call_args.args[1]
+        assert spec.initial_state is custom.initial_state
+        assert spec.observable is custom.observable
+        assert spec.time == custom.time
+
+    def test_state_drift_runs_and_matches_exact_evolution(self, default_test_simulator):
+        te = _state_drift_program(default_test_simulator, QDrift(**_STATE_DRIFT_QDRIFT))
+        exact = _state_drift_program(
+            default_test_simulator, ExactTrotterization(), n_steps=20
+        )
+        assert te.run().results == pytest.approx(exact.run().results, abs=0.02)
+
+    @pytest.mark.parametrize(
+        "observable, message",
+        [
+            (
+                None,
+                "sampling_strategy='state_drift' needs exactly one observable, got none.",
+            ),
+            (
+                [_Z0_3Q, _Z0_3Q],
+                "sampling_strategy='state_drift' needs exactly one observable, got 2.",
+            ),
+        ],
+        ids=["none", "several"],
+    )
+    def test_state_drift_needs_one_observable(
+        self, dummy_simulator, observable, message
+    ):
+        program = _state_drift_program(
+            dummy_simulator, QDrift(**_STATE_DRIFT_QDRIFT), observable=observable
+        )
+        with pytest.raises(ValueError, match=exact_match(message)):
+            program.run()
+
+    def test_state_drift_needs_numeric_time(self, dummy_simulator):
+        program = _state_drift_program(
+            dummy_simulator, QDrift(**_STATE_DRIFT_QDRIFT), time=Parameter("t")
+        )
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "sampling_strategy='state_drift' needs a numeric time, got Parameter."
+            ),
+        ):
+            program.run()
 
 
 @pytest.mark.e2e
@@ -1275,7 +1411,7 @@ class TestTimeEvolutionPrecision:
             backend=default_test_simulator,
             precision=3,
         )
-        result = te.trotterization_strategy.process_hamiltonian(te._hamiltonian)
+        result = te.trotterization_strategy.process_hamiltonian(te._initial_spec())
         meta = te._meta_circuit_factory(result, ham_id=0)
         assert meta.precision == 3
 

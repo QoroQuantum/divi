@@ -20,7 +20,7 @@ import math
 import numpy as np
 import pennylane as qp
 
-from divi.hamiltonians import QDrift
+from divi.hamiltonians.trotterization import QDrift
 from divi.qprog import TimeEvolution, TimeEvolutionTrajectory
 from divi.qprog.ensemble import BatchConfig, BatchMode
 from tutorials._backend import get_backend

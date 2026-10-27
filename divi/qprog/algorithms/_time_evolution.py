@@ -14,15 +14,16 @@ from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _QISKIT_TO_QASM2
-from divi.hamiltonians import (
-    ExactTrotterization,
-    TrotterizationResult,
-    TrotterizationStrategy,
-)
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
     to_spo,
+)
+from divi.hamiltonians.trotterization import (
+    ExactTrotterization,
+    TrotterizationResult,
+    TrotterizationStrategy,
+    TrotterSpec,
 )
 from divi.pipeline import (
     CircuitPipeline,
@@ -135,7 +136,6 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
         if hamiltonian_clean.size == 0:
             raise ValueError("Hamiltonian contains only constant terms.")
 
-        self._hamiltonian = hamiltonian_clean
         self.trotterization_strategy = trotterization_strategy
         self.time = time
         self.n_steps = n_steps
@@ -158,6 +158,12 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
                 f"initial_state must be an InitialState instance, got {type(initial_state).__name__}"
             )
         self.initial_state = initial_state
+        self._trotter_spec = TrotterSpec(
+            hamiltonian_clean,
+            initial_state=self.initial_state,
+            observable=self.observable,
+            time=self.time,
+        )
 
         if (_template_meta is None) != (_template_param is None):
             missing = (
@@ -238,8 +244,8 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             n_steps=self.n_steps,
         )
 
-    def _initial_spec(self) -> SparsePauliOp:
-        return self._hamiltonian
+    def _initial_spec(self) -> TrotterSpec:
+        return self._trotter_spec
 
     def _evolution_preprocessor(self) -> CircuitPreprocessor:
         """Measure the evolved state — expectation values when an observable was

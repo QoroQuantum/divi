@@ -15,7 +15,7 @@ from qiskit.circuit import Parameter, ParameterVector
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 
 from divi.circuits import MetaCircuit, build_overlap_meta
-from divi.hamiltonians import QDrift
+from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import ResultFormat
 from divi.pipeline.abc import ContractViolation
 from divi.qprog import (

@@ -10,7 +10,8 @@ import networkx as nx
 import numpy as np
 import pytest
 import scipy.linalg
-from qiskit.quantum_info import SparsePauliOp
+from qiskit import QuantumCircuit
+from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import xy_mixer
@@ -19,6 +20,7 @@ from divi.qprog.algorithms import QAOAAnsatz
 from divi.qprog.initial_states import (
     CustomPerQubitState,
     DickeState,
+    InitialState,
     OnesState,
     SuperpositionState,
     WState,
@@ -26,7 +28,7 @@ from divi.qprog.initial_states import (
     build_block_xy_mixer_graph,
 )
 from divi.qprog.problems import HamiltonianProblem, MaxCutProblem
-from tests._helpers import exact_match
+from tests._helpers import exact_match, initial_state_amplitudes
 from tests.qprog.algorithms._helpers import gate_names, gate_qubits
 
 
@@ -215,6 +217,89 @@ class TestDickeState:
     def test_invalid_arguments_raise(self, kwargs, n_wires, match):
         with pytest.raises(ValueError, match=exact_match(match)):
             DickeState(**kwargs).build(range(n_wires))
+
+
+# Every Pauli letter on every qubit, including odd-Y strings.
+_PAULIS = SparsePauliOp(
+    ["IIII", "ZIIZ", "XIXI", "IYXI", "YYZZ", "XXYY", "ZXZY", "IIIY"]
+).paulis
+
+
+def _expectations_in(psi) -> list[float]:
+    return [(psi.conj() @ pauli.to_matrix() @ psi).real for pauli in _PAULIS]
+
+
+class _GhzState(InitialState):
+    """User-defined state with no closed form: (|0…0⟩ + |1…1⟩)/√2."""
+
+    def build(self, wires):
+        qc = QuantumCircuit(len(wires))
+        qc.h(0)
+        for qubit in range(1, len(wires)):
+            qc.cx(0, qubit)
+        return qc
+
+
+# Wider than 64 qubits: all-X, Z on the first qubit, and Z on the two ends.
+_WIDE_PAULIS = PauliList(["X" * 70, "I" * 69 + "Z", "Z" + "I" * 68 + "Z"])
+
+
+class TestPauliExpectations:
+    @pytest.mark.parametrize(
+        "state",
+        [
+            ZerosState(),
+            OnesState(),
+            SuperpositionState(),
+            CustomPerQubitState("0+-1"),
+            DickeState(2),
+            WState(2, 2),
+        ],
+        ids=["zeros", "ones", "superposition", "per_qubit", "dicke", "w"],
+    )
+    def test_match_the_state_definition(self, state):
+        np.testing.assert_allclose(
+            state.pauli_expectations(_PAULIS, 4),
+            _expectations_in(initial_state_amplitudes(state, 4)),
+            atol=1e-10,
+        )
+
+    @pytest.mark.parametrize(
+        "state",
+        [CustomPerQubitState("+-10"), OnesState(), SuperpositionState()],
+        ids=["per_qubit", "ones", "superposition"],
+    )
+    def test_product_closed_form_matches_the_simulated_circuit(
+        self, state, default_test_simulator
+    ):
+        """The closed form agrees with simulating the state's own circuit."""
+        circuit = state.build(range(4))
+        simulated = [
+            default_test_simulator.expectation_value(circuit, SparsePauliOp(pauli))
+            for pauli in _PAULIS
+        ]
+        np.testing.assert_allclose(
+            state.pauli_expectations(_PAULIS, 4), simulated, atol=1e-10
+        )
+
+    def test_simulate_a_user_defined_state(self):
+        psi = np.zeros(16)
+        psi[[0, 15]] = 1 / np.sqrt(2)
+        np.testing.assert_allclose(
+            _GhzState().pauli_expectations(_PAULIS, 4),
+            _expectations_in(psi),
+            atol=1e-10,
+        )
+
+    @pytest.mark.parametrize(
+        "state, expected",
+        [(SuperpositionState(), [1.0, 0.0, 0.0]), (_GhzState(), [1.0, 0.0, 1.0])],
+        ids=["product", "simulated"],
+    )
+    def test_wide_registers(self, state, expected):
+        np.testing.assert_allclose(
+            state.pauli_expectations(_WIDE_PAULIS, 70), expected, atol=1e-10
+        )
 
 
 class TestBlockXYMixer:

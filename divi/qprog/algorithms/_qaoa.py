@@ -16,15 +16,16 @@ from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import (
-    ExactTrotterization,
-    TrotterizationResult,
-    TrotterizationStrategy,
-)
 from divi.hamiltonians._term_ops import (
     _spo_to_qiskit_basis_gates,
     _spo_wires,
     to_spo,
+)
+from divi.hamiltonians.trotterization import (
+    ExactTrotterization,
+    TrotterizationResult,
+    TrotterizationStrategy,
+    TrotterSpec,
 )
 from divi.pipeline import Stage
 from divi.pipeline.stages import TrotterSpecStage
@@ -134,7 +135,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             initial_state: Override the problem's recommended initial state.
                 If ``None``, uses ``problem.recommended_initial_state``.
             trotterization_strategy: Strategy for Hamiltonian evolution.
-                Defaults to :class:`~divi.hamiltonians.ExactTrotterization`.
+                Defaults to :class:`~divi.hamiltonians.trotterization.ExactTrotterization`.
             max_iterations: Maximum number of optimisation iterations.
                 Defaults to 10.
             n_layers: Number of QAOA layers (circuit depth). Defaults to 1.
@@ -169,6 +170,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         self.problem = problem
         self.cost_hamiltonian: SparsePauliOp = to_spo(problem.cost_hamiltonian)
         self.mixer_hamiltonian: SparsePauliOp = to_spo(problem.mixer_hamiltonian)
+        self._trotter_spec = TrotterSpec(self.cost_hamiltonian)
         self._decode_solution_fn = problem.decode_fn
         self.loss_constant = problem.loss_constant
         self.initial_state = initial_state or problem.recommended_initial_state
@@ -252,8 +254,8 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             meta_circuit_factory=_make_meta,
         )
 
-    def _initial_spec(self) -> SparsePauliOp:
-        return self.cost_hamiltonian
+    def _initial_spec(self) -> TrotterSpec:
+        return self._trotter_spec
 
     def _save_subclass_state(self) -> dict[str, Any]:
         """Save QAOA-specific runtime state."""
@@ -355,7 +357,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         This template supports callers that inspect ``cost_circuit`` without
         driving a pipeline.
         """
-        result = self.trotterization_strategy.process_hamiltonian(self.cost_hamiltonian)
+        result = self.trotterization_strategy.process_hamiltonian(self._trotter_spec)
         spo = result.effective_hamiltonian
         dag = circuit_to_dag(self._build_qaoa_qiskit_circuit(spo))
         return MetaCircuit(

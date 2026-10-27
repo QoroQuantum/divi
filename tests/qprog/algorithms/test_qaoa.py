@@ -12,7 +12,7 @@ from qiskit.circuit import ParameterExpression
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits.zne import ZNE, LinearExtrapolator
-from divi.hamiltonians import (
+from divi.hamiltonians.trotterization import (
     ExactTrotterization,
     QDrift,
 )
@@ -90,7 +90,7 @@ class TestGeneralQAOA:
             backend=default_test_simulator,
         )
 
-        assert qaoa_problem._initial_spec() is qaoa_problem.cost_hamiltonian
+        assert qaoa_problem._initial_spec().hamiltonian is qaoa_problem.cost_hamiltonian
 
     def test_qaoa_final_computation_runs_sample_preprocessor(
         self, mocker, optimizer, default_test_simulator
@@ -470,6 +470,25 @@ class TestQAOAQDriftMultiSample:
         env = qaoa._build_pipeline_env()
         assert trotter_stage.cache_key_extras(env) == (env.evaluation_counter,)
 
+    def test_state_drift_is_rejected(self, dummy_simulator):
+        qaoa = QAOA(
+            MaxCutProblem(nx.bull_graph()),
+            trotterization_strategy=QDrift(
+                sampling_budget=2, sampling_strategy="state_drift"
+            ),
+            max_iterations=1,
+            backend=dummy_simulator,
+            optimizer=ScipyOptimizer(method=ScipyMethod.NELDER_MEAD),
+        )
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "sampling_strategy='state_drift' needs the initial state and "
+                "time of a time evolution; only TimeEvolution supplies them."
+            ),
+        ):
+            qaoa.run()
+
     def test_multi_sample_final_computation_merges_histograms(
         self, mocker, default_test_simulator
     ):
@@ -722,7 +741,7 @@ def test_cost_pipeline_circuits_render_at_the_program_precision(
 
     forward = qaoa._build_preprocessor_pipeline(
         qaoa.cost_preprocessor()
-    ).run_forward_pass(qaoa.cost_hamiltonian, qaoa._build_pipeline_env())
+    ).run_forward_pass(qaoa._initial_spec(), qaoa._build_pipeline_env())
 
     assert {meta.precision for meta in forward.initial_batch.values()} == {4}
 
@@ -1130,7 +1149,7 @@ class TestCostPipelineCache:
     @staticmethod
     def _forward(qaoa):
         return TestCostPipelineCache._cost_pipeline(qaoa).run_forward_pass(
-            qaoa.cost_hamiltonian,
+            qaoa._initial_spec(),
             qaoa._build_pipeline_env(),
         )
 

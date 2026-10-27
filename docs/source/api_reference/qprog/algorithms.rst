@@ -18,13 +18,13 @@ Trotterization Strategies
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 QAOA uses a trotterization strategy to evolve the cost Hamiltonian. The default
-is :class:`~divi.hamiltonians.ExactTrotterization`; :class:`~divi.hamiltonians.QDrift`
+is :class:`~divi.hamiltonians.trotterization.ExactTrotterization`; :class:`~divi.hamiltonians.trotterization.QDrift`
 provides randomised sampling for shallower circuits at the cost of more circuits
 per iteration. See the :doc:`/api_reference/hamiltonians` reference page for full documentation.
 
 .. autosummary::
    :nosignatures:
 
-   divi.hamiltonians.TrotterizationStrategy
-   divi.hamiltonians.ExactTrotterization
-   divi.hamiltonians.QDrift
+   divi.hamiltonians.trotterization.TrotterizationStrategy
+   divi.hamiltonians.trotterization.ExactTrotterization
+   divi.hamiltonians.trotterization.QDrift

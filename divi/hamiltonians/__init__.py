@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cost-function domain logic: PennyLane Hamiltonian ops, Trotterization,
-binary-polynomial normalisation + evaluation, and QUBO/HUBO-to-Ising
-conversion.
+"""Cost-function domain logic: PennyLane Hamiltonian ops, binary-polynomial
+normalisation + evaluation, and QUBO/HUBO-to-Ising conversion. Trotterization
+strategies live in :mod:`divi.hamiltonians.trotterization`.
 """
 
 from ._chem import qubit_operator_to_spo
@@ -33,12 +33,6 @@ from ._polynomial import (
     qubo_to_matrix,
 )
 from ._term_ops import to_spo
-from ._trotterization import (
-    ExactTrotterization,
-    QDrift,
-    TrotterizationResult,
-    TrotterizationStrategy,
-)
 from ._types import (
     BinaryPolynomialProblem,
     CompiledBinaryPolynomial,
@@ -51,17 +45,13 @@ __all__ = [
     "BinaryPolynomialProblem",
     "BinaryToIsingConverter",
     "CompiledBinaryPolynomial",
-    "ExactTrotterization",
     "HUBOProblemTypes",
     "HUBOTerm",
     "IsingEncoding",
     "IsingResult",
     "NativeIsingConverter",
-    "QDrift",
     "QUBOProblemTypes",
     "QuadratizedIsingConverter",
-    "TrotterizationStrategy",
-    "TrotterizationResult",
     "bit_driver",
     "molecular_hamiltonian",
     "molecular_hamiltonian_from_pyscf",

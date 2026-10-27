@@ -17,11 +17,15 @@ Pass instances directly to algorithm constructors (e.g. ``initial_state=WState(3
 """
 
 from abc import ABC, abstractmethod
-from typing import Literal, Sequence
+from typing import ClassVar, Literal, Sequence
 
 import networkx as nx
 import numpy as np
+import numpy.typing as npt
 from qiskit.circuit import QuantumCircuit
+from qiskit.quantum_info import PauliList
+
+from divi.backends import MaestroConfig, MaestroSimulator
 
 __all__ = [
     "CustomPerQubitState",
@@ -67,40 +71,105 @@ class InitialState(ABC):
         """Human-readable name of the initial state."""
         return self.__class__.__name__
 
+    def pauli_expectations(
+        self, terms: PauliList, n_qubits: int
+    ) -> npt.NDArray[np.floating]:
+        """Expectation value of each Pauli string in ``terms`` in this state
+        on ``n_qubits`` qubits.
+
+        Simulates :meth:`build` with Maestro's matrix-product-state simulator,
+        so wide registers work too; product states use a closed form instead.
+
+        Args:
+            terms: Pauli strings without phase, qubit ``i`` being column ``i``
+                (e.g. ``SparsePauliOp.paulis``).
+            n_qubits: Width of the register the state is prepared on.
+        """
+        if len(terms) == 0:
+            return np.zeros(0)
+        # Maestro reads qubit 0 leftmost; Qiskit labels put it rightmost.
+        labels = [label[::-1] for label in terms.to_labels()]
+        simulator = MaestroSimulator(
+            maestro_config=MaestroConfig(simulation_type="MatrixProductState")
+        )
+        try:
+            result = simulator.submit_circuits(
+                {"initial_state": self.build(range(n_qubits))},
+                ham_ops=";".join(dict.fromkeys(labels)),
+            )
+        finally:
+            simulator.close()
+        if result.results is None:
+            raise RuntimeError("Maestro returned no expectation values.")
+        values = result.results[0]["results"]
+        return np.array([values[label] for label in labels], dtype=float)
+
+
+# Bloch vector (x, y, z) of each per-qubit product-state character.
+_BLOCH_VECTORS = {
+    "0": (0.0, 0.0, 1.0),
+    "1": (0.0, 0.0, -1.0),
+    "+": (1.0, 0.0, 0.0),
+    "-": (-1.0, 0.0, 0.0),
+}
+
+
+class _ProductState(InitialState):
+    """A state whose qubit ``i`` is ``'0'``, ``'1'``, ``'+'`` or ``'-'``."""
+
+    _char: ClassVar[str]
+    """The character of every qubit, for states that are the same on all."""
+
+    def _state_string(self, n_qubits: int) -> str:
+        """One character per qubit, qubit ``i`` first."""
+        return self._char * n_qubits
+
+    def build(self, wires: Sequence) -> QuantumCircuit:
+        qc = QuantumCircuit(len(wires))
+        for qubit, char in enumerate(self._state_string(len(wires))):
+            if char in "1-":
+                qc.x(qubit)
+            if char in "+-":
+                qc.h(qubit)
+        return qc
+
+    def pauli_expectations(
+        self, terms: PauliList, n_qubits: int
+    ) -> npt.NDArray[np.floating]:
+        state_string = self._state_string(n_qubits)
+        bloch = np.array([_BLOCH_VECTORS[char] for char in state_string])
+        # Columns indexed by x + 2z: I, X, Z, Y.
+        table = np.column_stack(
+            [np.ones(n_qubits), bloch[:, 0], bloch[:, 2], bloch[:, 1]]
+        )
+        codes = terms.x.astype(np.intp) + 2 * terms.z.astype(np.intp)
+        return table[np.arange(n_qubits), codes].prod(axis=1)
+
 
 # ---------------------------------------------------------------------------
 # Concrete implementations
 # ---------------------------------------------------------------------------
 
 
-class ZerosState(InitialState):
+class ZerosState(_ProductState):
     r"""Computational basis state \|00…0⟩ (no gates needed)."""
 
-    def build(self, wires: Sequence) -> QuantumCircuit:
-        return QuantumCircuit(len(wires))
+    _char = "0"
 
 
-class OnesState(InitialState):
+class OnesState(_ProductState):
     r"""All-ones state \|11…1⟩ via PauliX on every qubit."""
 
-    def build(self, wires: Sequence) -> QuantumCircuit:
-        qc = QuantumCircuit(len(wires))
-        for q in range(len(wires)):
-            qc.x(q)
-        return qc
+    _char = "1"
 
 
-class SuperpositionState(InitialState):
+class SuperpositionState(_ProductState):
     """Equal superposition via Hadamard on every qubit."""
 
-    def build(self, wires: Sequence) -> QuantumCircuit:
-        qc = QuantumCircuit(len(wires))
-        for q in range(len(wires)):
-            qc.h(q)
-        return qc
+    _char = "+"
 
 
-class CustomPerQubitState(InitialState):
+class CustomPerQubitState(_ProductState):
     """Per-qubit state from a string of ``'0'``, ``'1'``, ``'+'``, ``'-'``.
 
     Args:
@@ -119,23 +188,13 @@ class CustomPerQubitState(InitialState):
             )
         self.state_string = state_string
 
-    def build(self, wires: Sequence) -> QuantumCircuit:
-        n_wires = len(wires)
-        if n_wires != len(self.state_string):
+    def _state_string(self, n_qubits: int) -> str:
+        if n_qubits != len(self.state_string):
             raise ValueError(
                 f"state_string length ({len(self.state_string)}) "
-                f"must match wire count ({n_wires})."
+                f"must match wire count ({n_qubits})."
             )
-        qc = QuantumCircuit(n_wires)
-        for qubit, char in enumerate(self.state_string):
-            if char == "1":
-                qc.x(qubit)
-            elif char == "+":
-                qc.h(qubit)
-            elif char == "-":
-                qc.x(qubit)
-                qc.h(qubit)
-        return qc
+        return self.state_string
 
 
 class WState(InitialState):
