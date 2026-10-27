@@ -158,9 +158,7 @@ def qubo_to_binary_polynomial(qubo: QUBOProblemTypes) -> dimod.BinaryPolynomial:
                 f"BinaryQuadraticModel must have vartype='BINARY', got {qubo.vartype}"
             )
         poly_terms: dict[frozenset[Hashable], float] = {
-            frozenset({var}): float(coeff)
-            for var, coeff in qubo.linear.items()
-            if coeff != 0
+            frozenset({var}): float(coeff) for var, coeff in qubo.linear.items()
         }
         for (u, v), coeff in qubo.quadratic.items():
             key = frozenset({u, v})

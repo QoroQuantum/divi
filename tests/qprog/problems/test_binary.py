@@ -353,6 +353,27 @@ class TestDecomposeQUBO:
         with pytest.raises(ValueError, match="Cannot decompose"):
             problem.decompose()
 
+    def test_subproblem_keeps_zero_bias_variable_coupled_only_across_partitions(
+        self,
+    ):
+        # A 3-variable partition of two coupled pairs holds one variable whose
+        # only coupling leaves the partition and whose linear bias is zero.
+        qubo = np.zeros((4, 4))
+        qubo[0, 1], qubo[2, 3] = -10.0, -5.0
+        problem = BinaryOptimizationProblem(
+            qubo, decomposer=hybrid.EnergyImpactDecomposer(size=3)
+        )
+
+        sub_problems = problem.decompose()
+
+        for prog_id, sub_problem in sub_problems.items():
+            n_local = len(problem._variable_maps[prog_id])
+            decoded = sub_problem.decode_fn("1" * n_local)
+            extended = problem.extend_solution([0] * 4, prog_id, decoded)
+            assert sorted(np.flatnonzero(extended)) == sorted(
+                problem._variable_maps[prog_id]
+            )
+
     def test_decompose_identifies_trivial_subproblems(self):
         problem = make_decomposed_problem(TRIVIAL_QUBO)
 
@@ -468,6 +489,16 @@ class TestComposeSolutionQUBO:
         assert energy == pytest.approx(-9.0)
 
 
+# Variable 4 has an all-zero row; sparse entries first touch 0, 3, 1, 2.
+_ZERO_ROW_QUBO = np.zeros((5, 5))
+_ZERO_ROW_QUBO[0, 3], _ZERO_ROW_QUBO[1, 2] = 1.0, -2.0
+_ZERO_ROW_QUBO[2, 2], _ZERO_ROW_QUBO[3, 3] = -0.5, -1.0
+
+_UNSORTED_LABEL_BQM = dimod.BinaryQuadraticModel(
+    {2: -1.0, 0: -1.0, 1: 0.5}, {(2, 0): 2.0, (0, 1): -1.0}, 0.0, dimod.Vartype.BINARY
+)
+
+
 class TestPostprocessCandidatesQUBO:
     def test_returns_array_and_energy(self, sample_qubo_matrix):
         problem = make_decomposed_problem(sample_qubo_matrix)
@@ -491,6 +522,32 @@ class TestPostprocessCandidatesQUBO:
         # Should be sorted by energy (second element of each tuple)
         energies = [entry[1] for entry in formatted]
         assert energies == sorted(energies)
+
+    @pytest.mark.parametrize("local_search", [False, True], ids=["composer", "polish"])
+    @pytest.mark.parametrize(
+        "source, optimum, energy",
+        [
+            (np.asarray(_ZERO_ROW_QUBO), [0, 1, 1, 1, 0], -3.5),
+            (sps.csr_array(_ZERO_ROW_QUBO), [0, 1, 1, 1, 0], -3.5),
+            (_UNSORTED_LABEL_BQM, [1, 1, 0], -1.5),
+        ],
+        ids=["dense", "sparse", "unsorted-bqm"],
+    )
+    def test_solution_follows_variable_order(
+        self, source, optimum, energy, local_search
+    ):
+        problem = BinaryOptimizationProblem(
+            source,
+            decomposer=hybrid.EnergyImpactDecomposer(size=2),
+            local_search=local_search,
+        )
+        problem.decompose()
+
+        ((bits, got),) = problem.postprocess_candidates([(0.0, optimum)])
+
+        assert problem.initial_solution_size() == len(optimum)
+        np.testing.assert_array_equal(bits, optimum)
+        assert got == pytest.approx(energy)
 
 
 QUBO_FORMATS_TO_TEST = {

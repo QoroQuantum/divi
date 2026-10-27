@@ -246,6 +246,15 @@ class TestQuboToBinaryPolynomial:
         assert polynomial[frozenset({"a", "b"})] == pytest.approx(0.75)
         assert polynomial[frozenset()] == pytest.approx(offset)
 
+    def test_binary_quadratic_model_keeps_zero_bias_variables(self):
+        bqm = dimod.BinaryQuadraticModel(
+            {"a": -1.0, "b": 0.0, "c": 0.0}, {("a", "b"): 1.0}, 0.0, dimod.BINARY
+        )
+        polynomial = qubo_to_binary_polynomial(bqm)
+
+        assert set(polynomial.variables) == {"a", "b", "c"}
+        assert polynomial[frozenset({"c"})] == 0.0
+
     def test_sparse_matrix_with_stored_zero_keeps_later_entries(self):
         qubo = sps.coo_matrix(([0.0, 2.0], ([0, 0], [0, 1])), shape=(2, 2))
         polynomial = qubo_to_binary_polynomial(qubo)

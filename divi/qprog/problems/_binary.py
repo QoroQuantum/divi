@@ -101,11 +101,13 @@ def _sanitize_problem_input(qubo):
     raise ValueError(f"Got an unsupported QUBO input format: {type(qubo)}")
 
 
-def _declared_variables(problem, canonical) -> set[Hashable]:
-    """Variables a QUBO/HUBO input declares, including ones with zero coefficients."""
-    if isinstance(problem, dimod.BinaryQuadraticModel):
-        return set(problem.variables)
-    return set(canonical.variable_order)
+def _ordered_bqm(bqm, variables):
+    """``bqm`` with ``variables`` registered first, in order; absent ones get zero bias."""
+    ordered = dimod.BinaryQuadraticModel(dimod.Vartype.BINARY)
+    ordered.add_linear_from((v, bqm.linear.get(v, 0.0)) for v in variables)
+    ordered.add_quadratic_from(bqm.quadratic)
+    ordered.offset = bqm.offset
+    return ordered
 
 
 def _combine_polynomial_terms(cost_canonical, penalty_canonical, penalty_weight: float):
@@ -264,11 +266,11 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._constraints = constraints
         self._slacks: tuple[_Slack, ...] = ()
         if constraints:
-            variables = _declared_variables(problem, self._objective_canonical_problem)
+            variables = set(self._objective_canonical_problem.variable_order)
             penalty_terms: dict[tuple, float] = {}
             if penalty is not None:
                 penalty_canonical = normalize_binary_polynomial_problem(penalty)
-                variables |= _declared_variables(penalty, penalty_canonical)
+                variables |= set(penalty_canonical.variable_order)
                 penalty_terms = penalty_canonical.terms
             self._slacks, penalty = _encode_constraints(
                 constraints, variables, penalty_terms, self._activity_bounds
@@ -324,7 +326,8 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._polish_cache: tuple | None = None
         self._bqm: dimod.BinaryQuadraticModel | None
         if hybrid is not None:
-            _, self._bqm = _sanitize_problem_input(self._raw_problem)
+            _, bqm = _sanitize_problem_input(self._raw_problem)
+            self._bqm = _ordered_bqm(bqm, self._canonical_problem.variable_order)
             self._partitioning = hybrid.Unwind(decomposer)
             self._aggregating = hybrid.Reduce(hybrid.Lambda(_merge_substates)) | (
                 composer or hybrid.SplatComposer()
