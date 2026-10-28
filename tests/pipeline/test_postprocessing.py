@@ -50,16 +50,15 @@ def _measured_trace(env, observable, n_qubits=None, **stage_kw):
 
 
 def _wrs_trace(env, observable):
-    """``_measured_trace`` under weighted-random sampling, with group term weights."""
+    """``_measured_trace`` under weighted-random sampling, with the plans' group
+    term weights and empty-draw counts."""
     trace, lineage, _ = _measured_trace(
         env, observable, shot_distribution="weighted_random"
     )
-    token = trace.stage_tokens[1]
-    weights = {
-        key: plan.term_weights_by_group
-        for key, plan in token.group_shot_plans_by_spec.items()
-    }
-    return trace, lineage, weights
+    plans = trace.stage_tokens[1].group_shot_plans_by_spec
+    weights = {key: plan.term_weights_by_group for key, plan in plans.items()}
+    empty_draws = {key: plan.empty_draws for key, plan in plans.items()}
+    return trace, lineage, weights, empty_draws
 
 
 def _with_param_sets(lineage, counts_by_param_set) -> ChildResults:
@@ -266,10 +265,12 @@ class TestCountsToWRSCostVariance:
         )
 
     def test_single_shot_keys_are_each_undefined(self, wrs_trace):
-        trace, lineage, weights = wrs_trace
+        trace, lineage, weights, empty_draws = wrs_trace
         raw = _with_param_sets(dict(list(lineage.items())[:1]), [{"0": 1}, {"1": 1}])
 
-        result = _counts_to_wrs_cost_variance(raw, trace.final_batch, weights)
+        result = _counts_to_wrs_cost_variance(
+            raw, trace.final_batch, weights, empty_draws
+        )
 
         assert len(result) == 2
         assert all(np.isnan(v) for v in result.values())
@@ -292,24 +293,40 @@ class TestCountsToWRSCostVariance:
     ):
         # Per-shot values are w_0·z_q0 + w_1·z_q1; counting the two Z terms
         # independently would halve the covariance case's variance.
-        trace, lineage, weights = zz_wrs_trace
+        trace, lineage, weights, empty_draws = zz_wrs_trace
         branch_key = next(iter(lineage.values()))
-        weights = {key: {0: np.array(term_weights)} for key in weights}
+        given_weights = {key: {0: np.array(term_weights)} for key in weights}
 
         result = _counts_to_wrs_cost_variance(
-            {branch_key: counts}, trace.final_batch, weights
+            {branch_key: counts}, trace.final_batch, given_weights, empty_draws
         )
 
         assert next(iter(result.values())) == pytest.approx(expected)
 
+    def test_empty_draws_count_as_zero_samples(self, zz_wrs_trace):
+        trace, lineage, weights, _ = zz_wrs_trace
+        branch_key = next(iter(lineage.values()))
+
+        result = _counts_to_wrs_cost_variance(
+            {branch_key: {"00": 1, "11": 1}},
+            trace.final_batch,
+            weights,
+            dict.fromkeys(weights, 2),
+        )
+
+        expected = np.var([2.0, -2.0, 0.0, 0.0], ddof=1) / 4
+        assert next(iter(result.values())) == pytest.approx(expected)
+
     def test_a_group_without_shots_invalidates_its_cost(self, wrs_trace):
-        trace, lineage, weights = wrs_trace
+        trace, lineage, weights, empty_draws = wrs_trace
         raw: ChildResults = {
             bk: {} if dict(bk)["obs_group"] == 0 else {"0": 3, "1": 2}
             for bk in sorted(lineage.values(), key=lambda bk: dict(bk)["obs_group"])
         }
 
-        result = _counts_to_wrs_cost_variance(raw, trace.final_batch, weights)
+        result = _counts_to_wrs_cost_variance(
+            raw, trace.final_batch, weights, empty_draws
+        )
 
         assert len(result) == 1
         assert np.isnan(next(iter(result.values())))
@@ -327,10 +344,10 @@ class TestCountsToWRSCostVariance:
 @pytest.mark.parametrize(
     "consume",
     [
-        lambda raw, trace, _: _counts_to_expvals(raw, trace.final_batch),
-        lambda raw, trace, _: _counts_to_cost_variance(raw, trace.final_batch),
-        lambda raw, trace, weights: _counts_to_wrs_cost_variance(
-            raw, trace.final_batch, weights
+        lambda raw, trace, *_: _counts_to_expvals(raw, trace.final_batch),
+        lambda raw, trace, *_: _counts_to_cost_variance(raw, trace.final_batch),
+        lambda raw, trace, weights, empty_draws: _counts_to_wrs_cost_variance(
+            raw, trace.final_batch, weights, empty_draws
         ),
     ],
     ids=["expvals", "cost-variance", "wrs-cost-variance"],
@@ -338,7 +355,7 @@ class TestCountsToWRSCostVariance:
 def test_counts_consumers_reject_non_histogram_results(
     dummy_pipeline_env, consume, payload, found
 ):
-    trace, lineage, weights = _wrs_trace(
+    trace, lineage, weights, empty_draws = _wrs_trace(
         dummy_pipeline_env, SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
     )
     raw: ChildResults = {bk: payload for bk in lineage.values()}
@@ -348,7 +365,7 @@ def test_counts_consumers_reject_non_histogram_results(
         f"{first_key!r}, got {found}."
     )
     with pytest.raises(TypeError, match=exact_match(message)):
-        consume(raw, trace, weights)
+        consume(raw, trace, weights, empty_draws)
 
 
 class TestBatchedExpectation:

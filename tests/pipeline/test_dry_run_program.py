@@ -569,6 +569,20 @@ class TestQuantumProgramDryRun:
         assert meta["largest_group_size"] == 1
         assert meta["largest_group_width"] == 4
 
+    def test_shadows_report_their_snapshot_budget(
+        self, sampling_test_simulator, default_optimizer
+    ):
+        vqe = h2_vqe(
+            sampling_test_simulator, default_optimizer, grouping_strategy="shadows"
+        )
+        report = vqe.dry_run()["cost"]
+        meta = next(s.metadata for s in report.stages if s.name == "MeasurementStage")
+        group_shots = next(iter(report.env_artifacts["per_group_shots"].values()))
+
+        assert meta["strategy"] == "shadows"
+        assert meta["snapshots"] == sampling_test_simulator.shots
+        assert sum(group_shots.values()) == meta["snapshots"] - meta["empty_snapshots"]
+
     def test_stochastic_bind_and_dry_run_share_overlap_preprocessor(
         self, default_test_simulator, default_optimizer
     ):

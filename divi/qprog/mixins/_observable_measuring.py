@@ -12,6 +12,7 @@ sampling-only programs hit the probs branch (which ignores both) and the
 kwargs become silent no-ops.
 """
 
+from typing import get_args
 from warnings import warn
 
 import numpy as np
@@ -23,9 +24,9 @@ from divi.pipeline.stages import MeasurementStage
 # a value" so the override warning only fires for explicit choices.
 _UNSET: object = object()
 
-# User-facing subset of ``GroupingStrategy``.  ``"_backend_expval"`` is an
-# internal MeasurementStage strategy and is excluded.
-_ALLOWED_GROUPING_STRATEGIES: frozenset = frozenset({"qwc", "default", "wires", None})
+# ``GroupingStrategy`` is ``Literal[...] | None``; unwrap the literal's names.
+_GROUPING_STRATEGY_NAMES: tuple[str, ...] = get_args(get_args(GroupingStrategy)[0])
+_ALLOWED_GROUPING_STRATEGIES: frozenset = frozenset({*_GROUPING_STRATEGY_NAMES, None})
 
 
 class ObservableMeasuringMixin:
@@ -39,10 +40,10 @@ class ObservableMeasuringMixin:
             ...
 
     The mixin stores the two measurement-stage knobs verbatim.  Runtime
-    shape-aware decisions — including the auto-flip from ``"qwc"`` to
-    the internal ``"_backend_expval"`` strategy when the backend supports
-    analytic expvals and every MetaCircuit carries a single observable —
-    live inside :class:`~divi.pipeline.stages.MeasurementStage`.
+    shape-aware decisions — including handing a ``"qwc"`` observable to a
+    backend that computes expectation values itself, when every MetaCircuit
+    carries the same observable — live inside
+    :class:`~divi.pipeline.stages.MeasurementStage`.
     """
 
     def __init_subclass__(cls, **kwargs):
@@ -73,16 +74,8 @@ class ObservableMeasuringMixin:
         """Initialise the measurement-config layer.
 
         Args:
-            grouping_strategy: Strategy for partitioning Hamiltonian terms
-                into compatible measurement groups; one circuit is
-                executed per group. Options: ``"qwc"`` (qubit-wise-
-                commuting — most compact, default), ``"wires"`` (group
-                by support wires), or ``None`` (one circuit per term).
-                :class:`~divi.pipeline.stages.MeasurementStage` may
-                further auto-flip ``"qwc"`` to its internal
-                ``"_backend_expval"`` mode at runtime when the backend
-                supports analytic expvals and the batch is single-
-                observable; ``"_backend_expval"`` is not user-passable.
+            grouping_strategy: How the Hamiltonian's terms are measured; see
+                :ref:`measuring-observables`. Defaults to ``"qwc"``.
             shot_distribution: Focus the backend's shot budget on the
                 Hamiltonian terms that matter most. Without this option,
                 every measurement group is sampled with the backend's
@@ -123,8 +116,8 @@ class ObservableMeasuringMixin:
             and grouping_strategy not in _ALLOWED_GROUPING_STRATEGIES
         ):
             raise ValueError(
-                f"Invalid grouping_strategy={grouping_strategy!r}. "
-                f"Choose 'qwc', 'wires', 'default', or None."
+                f"Invalid grouping_strategy={grouping_strategy!r}. Choose "
+                f"{', '.join(map(repr, _GROUPING_STRATEGY_NAMES))}, or None."
             )
 
         if not isinstance(measure_all_qubits, (bool, np.bool_)):
@@ -135,7 +128,7 @@ class ObservableMeasuringMixin:
         measure_all_qubits = bool(measure_all_qubits)
 
         if (
-            grouping_strategy not in (_UNSET, None)
+            grouping_strategy not in (_UNSET, None, "shadows")
             and shot_distribution is None
             and self.backend.supports_expval  # type: ignore[attr-defined]
         ):

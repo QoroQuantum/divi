@@ -289,9 +289,9 @@ data and trainable parameter counts separately.
 
 .. note::
 
-   Preview with the actual backend. ``strategy: _backend_expval`` means the
-   backend evaluates the observable directly; ``strategy: qwc`` means sampling
-   circuits were grouped. ``force_sampling=True`` on
+   Preview with the actual backend. ``strategy: analytic`` means the backend
+   evaluates the observable directly; ``strategy: qwc`` means sampling circuits
+   were grouped. ``force_sampling=True`` on
    :class:`~divi.backends.MaestroSimulator` or
    :class:`~divi.backends.QiskitSimulator` selects the latter path; both use
    expval mode by default.
@@ -483,10 +483,34 @@ authoring examples; this page stays focused on understanding and inspecting
 execution.
 
 
+.. _measuring-observables:
+
+Measuring Observables on a Sampling Backend
+-------------------------------------------
+
+A backend that computes expectation values itself evaluates the observable
+directly. A sampling backend (``supports_expval=False``) returns only
+bitstrings, so :class:`~divi.pipeline.stages.MeasurementStage` decides which
+measurement circuits to run and how to turn their counts into an expectation
+value. ``grouping_strategy`` chooses the circuits and ``shot_distribution``
+splits the shots between them; :data:`~divi.pipeline.GroupingStrategy` lists
+every grouping strategy.
+
+To sample on a backend that would otherwise compute expectation values, use
+``MaestroSimulator(force_sampling=True)``, ``QiskitSimulator(force_sampling=True)``,
+or ``JobConfig(force_sampling=True)`` with QoroService.
+
+Observable Grouping
+~~~~~~~~~~~~~~~~~~~
+
+Terms that commute qubit by qubit can be read from one circuit measured in a
+shared basis. The default ``"qwc"`` groups them that way, ``"wires"`` groups
+only terms that act on disjoint qubits, and ``None`` runs one circuit per term.
+
 .. _adaptive-shot-allocation:
 
 Adaptive Shot Allocation
-------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~
 
 By default, each measurement group receives the backend's full shot count, for
 ``G × shots`` total. ``shot_distribution`` instead divides one ``shots`` budget
@@ -521,10 +545,41 @@ zero, which is generally biased. A :class:`UserWarning` reports the omitted
 fraction of the Hamiltonian L1 norm in that case.
 
 Allocation requires ``supports_expval=False``; ``grouping_strategy`` alone does
-not force sampling. Use ``MaestroSimulator(force_sampling=True)``,
-``QiskitSimulator(force_sampling=True)``, or ``JobConfig(force_sampling=True)``
-with QoroService. Expval-capable backends
-ignore ``shot_distribution`` and warn because they create no measurement groups.
+not force sampling. Expval-capable backends ignore ``shot_distribution`` and
+warn because they create no measurement groups.
+
+Classical Shadows
+~~~~~~~~~~~~~~~~~
+
+``grouping_strategy="shadows"`` replaces fixed groups with random Pauli
+classical shadows (`Huang, Kueng and Preskill
+<https://arxiv.org/abs/2002.08953>`_). Each of the backend's ``shots`` is a
+snapshot that measures every qubit in a uniformly random Pauli basis. A term is
+estimated from the snapshots whose basis matches it on every qubit it acts on,
+weighted by the inverse of that chance (``3**k`` for a term on ``k`` qubits),
+so the estimate is unbiased. Snapshots that measure the same terms share one
+circuit, and snapshots that measure no term are never submitted.
+
+.. code-block:: python
+
+   from divi.pipeline.stages import MeasurementStage
+
+   MeasurementStage(grouping_strategy="shadows")
+
+Variational algorithms accept the same option, for example
+``VQE(..., grouping_strategy="shadows")``. Compare it with ``"qwc"`` at the same
+total budget: a term on many qubits is matched by few snapshots, so its
+estimate is noisier.
+
+- ``shots`` is the number of snapshots, and the bases are redrawn on every
+  evaluation.
+- On a wide register nearly every snapshot measures a different set of terms,
+  so expect close to one circuit per shot.
+- Shadows take no ``shot_distribution`` and raise on a backend that computes
+  expectation values itself.
+- A :meth:`~divi.qprog.QuantumProgram.dry_run` reports ``snapshots`` and
+  ``empty_snapshots``, the snapshots that measured no term and were not
+  submitted.
 
 
 What's Next

@@ -19,6 +19,8 @@ from divi.pipeline._grouping import (
     GroupingStrategy,
     _compute_measurement_groups,
     _create_postprocessing_fn,
+    _ResolvedGroupingStrategy,
+    _union_labels,
 )
 from divi.pipeline._postprocessing import (
     _counts_to_cost_variance,
@@ -29,6 +31,11 @@ from divi.pipeline._result_keys_operations import (
     group_by_base_key,
     reduce_postprocess_ordered,
     strip_axis_from_label,
+)
+from divi.pipeline._shadows import (
+    _count_unique_rows,
+    _sample_shadow_covers,
+    _shadow_term_weights,
 )
 from divi.pipeline._shot_distribution import (
     ShotDistStrategy,
@@ -49,17 +56,22 @@ OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
 
 
-def _split_identity_offset(observable: SparsePauliOp) -> tuple[SparsePauliOp, float]:
-    """Remove identity terms and return their exact real-valued contribution."""
-    identity = ~(observable.paulis.x | observable.paulis.z).any(axis=1)
-    offset = float(np.asarray(observable.coeffs).real[identity].sum())
-    sampled_indices = np.flatnonzero(~identity)
-    if not len(sampled_indices):
+def _split_identity_offsets(
+    observables: Sequence[SparsePauliOp],
+) -> tuple[tuple[SparsePauliOp, ...], tuple[float, ...]]:
+    """Remove identity terms and return each observable's exact real-valued offset."""
+    stripped: list[SparsePauliOp] = []
+    offsets: list[float] = []
+    for observable in observables:
+        identity = ~(observable.paulis.x | observable.paulis.z).any(axis=1)
+        offsets.append(float(np.asarray(observable.coeffs).real[identity].sum()))
+        stripped.append(observable[np.flatnonzero(~identity)])
+    if not any(len(observable) for observable in stripped):
         raise ValueError(
-            "estimator_samples cannot be used with an identity-only observable; "
-            "its expectation is already an exact constant."
+            "The observable is identity-only, so its expectation is an exact "
+            "constant and there is nothing to sample."
         )
-    return observable[sampled_indices], offset
+    return tuple(stripped), tuple(offsets)
 
 
 @dataclass(frozen=True)
@@ -75,6 +87,8 @@ class _GroupShotPlan:
     group; empty means all ones."""
     random_group_selection: bool = False
     """Whether groups are drawn at random, making selection part of the noise."""
+    empty_draws: int = 0
+    """Random draws that measured no term: zero-valued samples never submitted."""
 
 
 def _scale_group_result(
@@ -241,6 +255,75 @@ def _plans_for_spec(
     }
 
 
+def _plan_shadow_shots(
+    spec_key: tuple,
+    labels: Sequence[str],
+    env: PipelineEnv,
+    sample_budgets: Sequence[int] | None,
+) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], dict[tuple, _GroupShotPlan]]:
+    """Draw classical-shadow snapshots and build one plan per draw.
+
+    Each parameter set with an estimator budget draws independently; the groups
+    are the union of every draw's cover patterns, and a plan treats the groups
+    it did not draw as missing. Returns ``(groups, cover_indices, plans)``.
+    """
+    rng = env.rng if env.rng is not None else np.random.default_rng()
+    if sample_budgets is None:
+        budget_by_key = {spec_key: env.effective_shots}
+    else:
+        budget_by_key = {
+            (*spec_key, (PARAM_SET_AXIS, param_idx)): budget
+            for param_idx, budget in enumerate(sample_budgets)
+        }
+    draws = {
+        key: _sample_shadow_covers(labels, budget, rng)
+        for key, budget in budget_by_key.items()
+    }
+
+    patterns, _ = _count_unique_rows(
+        np.concatenate([covers for covers, _, _ in draws.values()])
+    )
+    if not len(patterns):
+        patterns = np.eye(1, len(labels), dtype=bool)
+    group_by_pattern = {pattern.tobytes(): idx for idx, pattern in enumerate(patterns)}
+    cover_indices = [np.flatnonzero(pattern).tolist() for pattern in patterns]
+    groups = tuple(tuple(labels[term] for term in terms) for terms in cover_indices)
+    term_weights = _shadow_term_weights(labels)
+    term_weights_by_group = {
+        idx: term_weights[terms] for idx, terms in enumerate(cover_indices)
+    }
+
+    plans: dict[tuple, _GroupShotPlan] = {}
+    for key, (covers, counts, empty_draws) in draws.items():
+        shots_by_group = {
+            group_by_pattern[pattern.tobytes()]: int(count)
+            for pattern, count in zip(covers, counts)
+        }
+        budget = budget_by_key[key]
+        plan_weights = term_weights_by_group
+        if not shots_by_group:
+            # One empty draw runs group 0 at zero weight, so the plan has a result.
+            shots_by_group = {0: 1}
+            empty_draws -= 1
+            plan_weights = {**term_weights_by_group, 0: np.zeros(len(cover_indices[0]))}
+        plans[key] = _GroupShotPlan(
+            surviving_indices=sorted(shots_by_group),
+            shots_by_group=shots_by_group,
+            missing_group_results={
+                idx: dict.fromkeys(range(len(terms)), 0.0)
+                for idx, terms in enumerate(cover_indices)
+                if idx not in shots_by_group
+            },
+            scales_by_group={
+                idx: shots / budget for idx, shots in shots_by_group.items()
+            },
+            term_weights_by_group=plan_weights,
+            random_group_selection=True,
+            empty_draws=empty_draws,
+        )
+    return groups, cover_indices, plans
+
+
 @dataclass(frozen=True)
 class MeasurementToken:
     """Token carrying measurement metadata from expand to reduce."""
@@ -251,8 +334,10 @@ class MeasurementToken:
     group_shot_plans_by_spec: dict[tuple, _GroupShotPlan] = field(default_factory=dict)
     """Per-spec execution and estimator-adjustment plans."""
 
-    constant_offsets_by_spec: dict[tuple, float] = field(default_factory=dict)
-    """Exact identity contributions excluded from random-operator sampling."""
+    constant_offsets_by_spec: dict[tuple, tuple[float, ...]] = field(
+        default_factory=dict
+    )
+    """Exact per-observable identity contributions excluded from random sampling."""
 
     is_probs: bool = False
     """True when this is a probabilities measurement (no observable grouping)."""
@@ -326,12 +411,15 @@ class MeasurementStage(BundleStage):
 
     @property
     def volatile(self) -> bool:
-        """True for shot distributions that draw from ``env.rng``.
+        """True for strategies that draw from ``env.rng``.
 
-        That is ``"weighted_random"`` and user-supplied callables.
+        That is classical shadows, ``"weighted_random"`` and user-supplied
+        shot-distribution callables.
         """
-        return self._shot_distribution == "weighted_random" or callable(
-            self._shot_distribution
+        return (
+            self._grouping_strategy == "shadows"
+            or self._shot_distribution == "weighted_random"
+            or callable(self._shot_distribution)
         )
 
     def is_volatile_for(self, env: PipelineEnv) -> bool:
@@ -341,11 +429,16 @@ class MeasurementStage(BundleStage):
     def cache_key_extras(self, env) -> tuple[Hashable, ...]:
         """Extra forward-pass cache key parts.
 
-        Includes the effective shot budget when a shot distribution or
-        ``shots_override`` is active, and ``collect_variance`` when set.
+        Includes the effective shot budget when classical shadows, a shot
+        distribution or ``shots_override`` is active, and ``collect_variance``
+        when set.
         """
         extras: tuple[Hashable, ...] = ()
-        if self._shot_distribution is not None or env.shots_override is not None:
+        if (
+            self._grouping_strategy == "shadows"
+            or self._shot_distribution is not None
+            or env.shots_override is not None
+        ):
             extras += (env.effective_shots,)
         if env.collect_variance:
             extras += (env.collect_variance,)
@@ -360,9 +453,9 @@ class MeasurementStage(BundleStage):
     ) -> None:
         """
         Args:
-            grouping_strategy: Grouping strategy for expval observables.
-                Ignored for ``probs()`` measurements.
-                Defaults to "qwc" (qubit-wise commuting).
+            grouping_strategy: How expval observables are measured; see
+                :ref:`measuring-observables`. Ignored for ``probs()``
+                measurements. Defaults to ``"qwc"``.
             result_format_override: If set, overrides the auto-detected result
                 format. For example, pass ``ResultFormat.COUNTS`` to get raw
                 shot counts even when an observable is present.
@@ -379,12 +472,16 @@ class MeasurementStage(BundleStage):
                 a sampling backend (``supports_expval=False``); a backend that
                 computes expectation values analytically has no measurement groups
                 to split shots across, so it is not applied there and ``expand``
-                emits a ``UserWarning`` saying so. Pairing it with an explicit
-                ``grouping_strategy="_backend_expval"`` raises ``ValueError``.
-                When ``None`` (default), every group is submitted with the
+                emits a ``UserWarning`` saying so. When ``None`` (default), every group is submitted with the
                 backend's full shot count.
         """
         super().__init__(name=type(self).__name__)
+        if grouping_strategy == "shadows" and shot_distribution is not None:
+            raise ValueError(
+                "shot_distribution cannot be combined with grouping_strategy="
+                "'shadows': the random measurement bases already decide each "
+                "circuit's shots."
+            )
         self._grouping_strategy = grouping_strategy
         self._result_format_override = result_format_override
         self._shot_distribution = shot_distribution
@@ -497,8 +594,14 @@ class MeasurementStage(BundleStage):
         self,
         batch: MetaCircuitBatch,
         env: PipelineEnv,
-    ) -> tuple[GroupingStrategy, tuple[int, ...] | None]:
+    ) -> tuple[_ResolvedGroupingStrategy, tuple[int, ...] | None]:
         """Resolve backend-aware grouping and optional estimator budgets."""
+        if self._grouping_strategy == "shadows" and env.backend.supports_expval:
+            raise ValueError(
+                "grouping_strategy='shadows' requires a sampling backend; "
+                f"{type(env.backend).__name__} computes expectation values "
+                "analytically and does not consume shots."
+            )
         estimator_samples = env.estimator_samples
         if estimator_samples is not None:
             if env.backend.supports_expval:
@@ -568,7 +671,7 @@ class MeasurementStage(BundleStage):
         postprocess_fn_by_spec: dict[object, Callable] = {}
         n_observable_terms: int | None = None
         group_shot_plans_by_spec: dict[tuple, _GroupShotPlan] = {}
-        constant_offsets_by_spec: dict[tuple, float] = {}
+        constant_offsets_by_spec: dict[tuple, tuple[float, ...]] = {}
         sample_union: SparsePauliOp | None = None
 
         # Full measurement when opted out, COUNTS/PROBS override, or the analytic
@@ -592,34 +695,43 @@ class MeasurementStage(BundleStage):
                 if isinstance(meta.observable, tuple)
                 else (meta.observable,)
             )
-            constant_offset = 0.0
-            if sample_budgets is not None:
-                if len(observable) != 1:
-                    raise ValueError(
-                        "estimator_samples requires one scalar observable per circuit."
-                    )
-                sampled_observable, constant_offset = _split_identity_offset(
-                    observable[0]
+            if sample_budgets is not None and len(observable) != 1:
+                raise ValueError(
+                    "estimator_samples requires one scalar observable per circuit."
                 )
-                observable = (sampled_observable,)
+            # Random sampling handles identity terms exactly, outside the draws.
+            constant_offsets: tuple[float, ...] | None = None
+            if sample_budgets is not None or strategy == "shadows":
+                observable, constant_offsets = _split_identity_offsets(observable)
 
-            measurement_groups, partition_indices, union_obs, per_obs_term_indices = (
-                _compute_measurement_groups(observable, strategy, meta.n_qubits)
-            )
+            if strategy == "shadows":
+                union_obs, per_obs_term_indices, labels = _union_labels(
+                    observable, meta.n_qubits
+                )
+                measurement_groups, partition_indices, plans = _plan_shadow_shots(
+                    key, labels, env, sample_budgets
+                )
+            else:
+                (
+                    measurement_groups,
+                    partition_indices,
+                    union_obs,
+                    per_obs_term_indices,
+                ) = _compute_measurement_groups(observable, strategy, meta.n_qubits)
+                plans = _plans_for_spec(
+                    key,
+                    union_obs,
+                    measurement_groups,
+                    partition_indices,
+                    env,
+                    self._shot_distribution,
+                    sample_budgets,
+                )
             if strategy == BACKEND_EXPVAL and n_observable_terms is None:
                 n_observable_terms = sum(len(p) for p in partition_indices)
 
             if sample_union is None:
                 sample_union = union_obs
-            plans = _plans_for_spec(
-                key,
-                union_obs,
-                measurement_groups,
-                partition_indices,
-                env,
-                self._shot_distribution,
-                sample_budgets,
-            )
             group_shot_plans_by_spec.update(plans)
             postprocessing_fn = _create_postprocessing_fn(
                 observable, per_obs_term_indices, partition_indices, len(union_obs)
@@ -650,7 +762,7 @@ class MeasurementStage(BundleStage):
 
             # Keep all groups: results are indexed by their original obs_group tag.
             measurement_meta = (
-                meta.set_observable(observable) if sample_budgets is not None else meta
+                meta if constant_offsets is None else meta.set_observable(observable)
             )
             new_meta = (
                 measurement_meta.set_measurement_bodies(tagged_measurement_qasms)
@@ -674,8 +786,8 @@ class MeasurementStage(BundleStage):
                     new_meta = new_meta.set_group_shots(shot_plan.shots_by_group)
             result[key] = new_meta
             postprocess_fn_by_spec.update(dict.fromkeys(plans, postprocessing_fn))
-            if sample_budgets is not None:
-                constant_offsets_by_spec.update(dict.fromkeys(plans, constant_offset))
+            if constant_offsets is not None:
+                constant_offsets_by_spec.update(dict.fromkeys(plans, constant_offsets))
 
         if strategy == BACKEND_EXPVAL and sample_union is not None:
             ham_ops = _sparse_pauli_op_to_ham_string(sample_union)
@@ -701,8 +813,9 @@ class MeasurementStage(BundleStage):
     ) -> dict[str, Any]:
         meta = next(iter(batch.values()), None)
         effective_strategy = getattr(token, "effective_strategy", None)
+        strategy = effective_strategy or self._grouping_strategy
         info: dict[str, Any] = {
-            "strategy": effective_strategy or self._grouping_strategy
+            "strategy": "analytic" if strategy == BACKEND_EXPVAL else strategy
         }
         if meta is None:
             return info
@@ -713,6 +826,7 @@ class MeasurementStage(BundleStage):
             effective_strategy == BACKEND_EXPVAL
             or meta.measurement_groups == BACKEND_EXPVAL_GROUPS
         ):
+            info["strategy"] = "analytic"
             info["n_groups"] = 1
             if getattr(token, "n_observable_terms", None) is not None:
                 info["n_pauli_terms"] = token.n_observable_terms
@@ -726,7 +840,15 @@ class MeasurementStage(BundleStage):
             return info
 
         info["n_groups"] = len(groups)
-        info["n_pauli_terms"] = sum(len(g) for g in groups)
+        info["n_pauli_terms"] = len({label for g in groups for label in g})
+        if effective_strategy == "shadows":
+            # Empty snapshots count toward the estimate but are never submitted.
+            plans = getattr(token, "group_shot_plans_by_spec", {}).values()
+            empty_snapshots = sum(plan.empty_draws for plan in plans)
+            info["snapshots"] = empty_snapshots + sum(
+                sum((plan.shots_by_group or {}).values()) for plan in plans
+            )
+            info["empty_snapshots"] = empty_snapshots
         if env.estimator_samples is not None:
             info["estimator_samples_per_param_set"] = list(
                 env.estimator_samples.by_param_set
@@ -769,13 +891,18 @@ class MeasurementStage(BundleStage):
         token: StageToken,
     ) -> dict[tuple, float]:
         """Estimate variance according to this stage's sampling strategy."""
-        weights_by_spec = {
-            key: plan.term_weights_by_group
+        random_plans = {
+            key: plan
             for key, plan in token.group_shot_plans_by_spec.items()
             if plan.random_group_selection
         }
-        if weights_by_spec:
-            return _counts_to_wrs_cost_variance(raw, batch, weights_by_spec)
+        if random_plans:
+            return _counts_to_wrs_cost_variance(
+                raw,
+                batch,
+                {key: plan.term_weights_by_group for key, plan in random_plans.items()},
+                {key: plan.empty_draws for key, plan in random_plans.items()},
+            )
         return _counts_to_cost_variance(raw, batch)
 
     def reduce(
@@ -828,7 +955,12 @@ class MeasurementStage(BundleStage):
         reduced = reduce_postprocess_ordered(grouped, postprocess_fn_by_base)
         return {
             base_key: (
-                [value[0] + token.constant_offsets_by_spec[base_key], *value[1:]]
+                [
+                    obs_value + offset
+                    for obs_value, offset in zip(
+                        value, token.constant_offsets_by_spec[base_key], strict=True
+                    )
+                ]
                 if base_key in token.constant_offsets_by_spec
                 else value
             )

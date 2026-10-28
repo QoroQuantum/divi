@@ -27,7 +27,8 @@ The :class:`~divi.qprog.algorithms.CustomVQA`,
 constructors also forward these options to
 :class:`~divi.pipeline.stages.MeasurementStage`:
 
-- ``grouping_strategy`` — ``"qwc"`` (default), ``"wires"``, or ``None``.
+- ``grouping_strategy`` — how observable terms are measured; see
+  :ref:`measuring-observables`.
 - ``shot_distribution`` — a named or callable allocation strategy; see
   :ref:`adaptive-shot-allocation`.
 

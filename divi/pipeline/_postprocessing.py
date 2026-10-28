@@ -302,10 +302,25 @@ def _counts_to_cost_variance(
     return out
 
 
+def _welford_add(
+    state: tuple[int, float, float], value: float, count: int
+) -> tuple[int, float, float]:
+    """Add ``count`` copies of ``value`` to a ``(samples, mean, M2)`` Welford state."""
+    n_samples, mean, m2 = state
+    updated = n_samples + count
+    delta = value - mean
+    return (
+        updated,
+        mean + delta * count / updated,
+        m2 + delta * delta * n_samples * count / updated,
+    )
+
+
 def _counts_to_wrs_cost_variance(
     raw: ChildResults,
     batch: Mapping[Any, MetaCircuit],
     weights_by_spec: Mapping[tuple, Mapping[int, np.ndarray]],
+    empty_draws_by_spec: Mapping[tuple, int],
 ) -> dict[tuple, float]:
     """Estimate the variance of a weighted-random-sampling cost estimator.
 
@@ -314,7 +329,8 @@ def _counts_to_wrs_cost_variance(
     inverse inclusion probability) and ``λ_P`` the term's ±1 eigenvalue. The
     sample variance of these weighted values includes both quantum measurement
     noise and multinomial group-selection noise, including covariance between
-    terms measured from the same bitstring.
+    terms measured from the same bitstring. Draws that measured no term
+    (``empty_draws_by_spec``) were never submitted and count as zero samples.
     """
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
     coeffs_by_bk = {bk: _observable_coeff_map(node) for bk, node in batch.items()}
@@ -350,19 +366,17 @@ def _counts_to_wrs_cost_variance(
         weighted_values = coefficients @ _bitstring_eigenvalues(
             bitstrings, labels, n_qubits
         )
-        n_shots, mean_y, m2_y = moments.get(base_key, (0, 0.0, 0.0))
-
+        state = moments.get(base_key, (0, 0.0, 0.0))
         for bitstring, weighted_value in zip(
             bitstrings, weighted_values.tolist(), strict=True
         ):
-            count = counts[bitstring]
-            updated_shots = n_shots + count
-            delta = weighted_value - mean_y
-            mean_y += delta * count / updated_shots
-            m2_y += delta * delta * n_shots * count / updated_shots
-            n_shots = updated_shots
+            state = _welford_add(state, weighted_value, counts[bitstring])
+        moments[base_key] = state
 
-        moments[base_key] = n_shots, mean_y, m2_y
+    for base_key, state in moments.items():
+        empty_draws = empty_draws_by_spec[_find_batch_key(base_key, weight_keys)]
+        if empty_draws:
+            moments[base_key] = _welford_add(state, 0.0, empty_draws)
 
     out: dict[tuple, float] = {}
     for base_key in moments.keys() | invalid_keys:

@@ -29,7 +29,12 @@ BACKEND_EXPVAL = "_backend_expval"
 #: Structural marker for consumers that cannot see the strategy that produced it.
 BACKEND_EXPVAL_GROUPS = ((),)
 
-GroupingStrategy = Literal["wires", "default", "qwc", "_backend_expval"] | None
+#: How a sampling backend measures an observable's Pauli terms; each value is
+#: described in the "Measuring Observables on a Sampling Backend" guide.
+GroupingStrategy = Literal["qwc", "default", "wires", "shadows"] | None
+
+#: A grouping strategy after the measurement stage resolves it for the backend.
+_ResolvedGroupingStrategy = GroupingStrategy | Literal["_backend_expval"]
 
 
 def _wire_grouping_from_labels(
@@ -80,12 +85,6 @@ def _create_postprocessing_fn(
     slots_by_group = [
         np.asarray(indices, dtype=np.intp) for indices in partition_indices
     ]
-    covered = np.zeros(n_union_terms, dtype=bool)
-    for slots in slots_by_group:
-        covered[slots] = True
-    if not covered.all():
-        raise ValueError("The partition does not cover every union term.")
-
     getters = [
         itemgetter(*range(len(slots))) if len(slots) else None
         for slots in slots_by_group
@@ -119,9 +118,26 @@ def _create_postprocessing_fn(
     return postprocessing_fn
 
 
+def _union_labels(
+    observable: Sequence[SparsePauliOp], n_qubits: int
+) -> tuple[SparsePauliOp, list[list[int]], list[str]]:
+    """Flatten an observable tuple into its deduplicated union.
+
+    Returns ``(union, per_obs_term_indices, labels)``, where ``labels`` are the
+    union's big-endian Pauli labels (qubit 0 on the left) padded to ``n_qubits``.
+    """
+    if not observable:
+        raise ValueError("The observable tuple is empty.")
+
+    union, per_obs_term_indices = flatten_observable_tuple(observable)
+    # Qiskit labels are little-endian; we store big-endian internally.
+    labels = [label[::-1].ljust(n_qubits, "I") for label in union.paulis.to_labels()]
+    return union, per_obs_term_indices, labels
+
+
 def _compute_measurement_groups(
     observable: Sequence[SparsePauliOp],
-    strategy: GroupingStrategy,
+    strategy: _ResolvedGroupingStrategy,
     n_qubits: int,
 ) -> tuple[
     tuple[tuple[str, ...], ...], list[list[int]], SparsePauliOp, list[list[int]]
@@ -159,18 +175,8 @@ def _compute_measurement_groups(
         indices of its Pauli terms, as :func:`_create_postprocessing_fn`
         takes them.
     """
-    if not observable:
-        raise ValueError("_compute_measurement_groups: observable tuple is empty.")
-
-    union, per_obs_term_indices = flatten_observable_tuple(observable)
-
-    # Qiskit labels are little-endian; we store big-endian internally.
-    le_labels = union.paulis.to_labels()
-    be_labels = [label[::-1] for label in le_labels]
+    union, per_obs_term_indices, be_labels = _union_labels(observable, n_qubits)
     n_union_terms = len(be_labels)
-
-    # Pad labels to n_qubits if the union acts on fewer qubits.
-    be_labels = [label.ljust(n_qubits, "I") for label in be_labels]
 
     if strategy in ("qwc", "default"):
         grouped_ops = union.group_commuting(qubit_wise=True)
@@ -212,5 +218,11 @@ def _compute_measurement_groups(
 
     else:
         raise ValueError(f"Unknown grouping strategy: {strategy}")
+
+    covered = np.zeros(n_union_terms, dtype=bool)
+    for indices in partition_indices:
+        covered[indices] = True
+    if not covered.all():
+        raise ValueError("The partition does not cover every union term.")
 
     return measurement_groups, partition_indices, union, per_obs_term_indices

@@ -47,7 +47,9 @@ def test_mixin_defaults(dummy_simulator, attribute, expected):
 class TestVerbatimStorage:
     """Explicit kwargs are stored as passed; no construction-time auto-flip."""
 
-    @pytest.mark.parametrize("grouping_strategy", ["qwc", "default", "wires", None])
+    @pytest.mark.parametrize(
+        "grouping_strategy", ["qwc", "default", "wires", "shadows", None]
+    )
     def test_explicit_grouping_stored_verbatim(
         self, dummy_simulator, grouping_strategy
     ):
@@ -106,8 +108,8 @@ class TestValidation:
     def test_invalid_grouping_strategy_rejected(
         self, dummy_simulator, grouping_strategy
     ):
-        """Any value outside the user-facing set ({qwc, default, wires, None})
-        is rejected. ``"_backend_expval"`` is internal-only; the rest are
+        """Any value outside the user-facing set ({qwc, default, wires, shadows,
+        None}) is rejected. ``"_backend_expval"`` is internal-only; the rest are
         typos / wrong type."""
         with pytest.raises(ValueError, match="Invalid grouping_strategy"):
             ConcreteObservableMeasuringProgram(
@@ -178,13 +180,17 @@ class TestOverrideWarning:
             warnings.simplefilter("error")
             ConcreteObservableMeasuringProgram(backend=dummy_expval_backend)
 
-    def test_does_not_warn_on_explicit_none(self, dummy_expval_backend):
-        """``None`` (one circuit per term) is never overridden, so it must
-        not warn even on an expval-capable backend."""
+    @pytest.mark.parametrize("grouping_strategy", [None, "shadows"])
+    def test_does_not_warn_on_never_overridden_grouping(
+        self, dummy_expval_backend, grouping_strategy
+    ):
+        """``None`` (one circuit per term) and ``"shadows"`` (rejected at run
+        time on such a backend) are never overridden, so they must not warn
+        even on an expval-capable backend."""
         with warnings.catch_warnings():
             warnings.simplefilter("error")
             ConcreteObservableMeasuringProgram(
-                backend=dummy_expval_backend, grouping_strategy=None
+                backend=dummy_expval_backend, grouping_strategy=grouping_strategy
             )
 
     def test_does_not_warn_when_shot_distribution_set(self, dummy_expval_backend):

@@ -358,12 +358,10 @@ sweeps; a ``problems`` sweep reads its results from ``sweep.programs`` instead.
 
 .. tip::
 
-   When using a sampling backend (e.g. ``QiskitSimulator`` or ``QoroService``
-   without native expval), pass ``grouping_strategy="qwc"`` (the default) or
-   ``"wires"`` to control how multi-term Hamiltonians are split into
-   compatible measurement groups.  Backends like ``MaestroSimulator`` compute
-   expectation values directly from the state representation, so measurement
-   grouping has no effect and is overridden with a warning.
+   On a sampling backend, ``grouping_strategy`` controls how a multi-term
+   Hamiltonian is measured: grouped into compatible circuits (``"qwc"``, the
+   default), or estimated from random classical shadows (``"shadows"``).  See
+   :ref:`measuring-observables` for every option.
 
    By default each measurement group only measures the qubits it acts on
    non-trivially — identity positions carry no information for the expectation

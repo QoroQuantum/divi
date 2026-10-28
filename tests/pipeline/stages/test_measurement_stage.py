@@ -1780,6 +1780,214 @@ class TestMeasurementStageEstimatorSamples:
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
 
+def _shadow_meta(observable=None) -> MetaCircuit:
+    """Entangled three-qubit state with two observables that carry identity terms."""
+    qc = QuantumCircuit(3)
+    qc.ry(0.7, 0)
+    qc.rx(1.1, 1)
+    qc.cx(0, 1)
+    qc.ry(-0.4, 2)
+    qc.cx(1, 2)
+    qc.h(0)
+    if observable is None:
+        observable = (
+            SparsePauliOp.from_list(
+                [("ZZI", 0.8), ("XIX", -0.5), ("IYY", 0.3), ("III", 1.5)]
+            ),
+            SparsePauliOp.from_list([("XXX", 0.6), ("IZI", -0.7), ("III", -0.2)]),
+        )
+    return meta_from_circuit(qc, observable=observable)
+
+
+def _shadow_pipeline(meta: MetaCircuit) -> CircuitPipeline:
+    return CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=meta),
+            MeasurementStage(grouping_strategy="shadows"),
+        ]
+    )
+
+
+class TestMeasurementStageShadows:
+    def test_groups_are_basis_covers_with_identity_split_off(
+        self, make_dummy_simulator
+    ):
+        env = PipelineEnv(
+            backend=make_dummy_simulator(300), rng=np.random.default_rng(2)
+        )
+        stage = MeasurementStage(grouping_strategy="shadows")
+        pipeline = CircuitPipeline(stages=[DummySpecStage(meta=_shadow_meta()), stage])
+
+        trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        token = trace.stage_tokens[1]
+        node = next(iter(trace.final_batch.values()))
+        plan = next(iter(token.group_shot_plans_by_spec.values()))
+        info = stage.introspect(trace.final_batch, env, token)
+
+        assert stage.is_volatile_for(env)
+        assert sum(node.group_shots.values()) + plan.empty_draws == 300
+        assert plan.random_group_selection
+        assert next(iter(token.constant_offsets_by_spec.values())) == (1.5, -0.2)
+        labels = {label for group in node.measurement_groups for label in group}
+        assert "III" not in labels
+        assert info["n_pauli_terms"] == len(labels)
+        assert info["snapshots"] == 300
+        assert info["empty_snapshots"] == plan.empty_draws
+        for idx, group in enumerate(node.measurement_groups):
+            for qubit in range(3):
+                assert len({label[qubit] for label in group} - {"I"}) <= 1
+            np.testing.assert_allclose(
+                plan.term_weights_by_group[idx],
+                [3.0 ** sum(c != "I" for c in label) for label in group],
+            )
+
+    def test_estimates_match_exact_expectations(self, make_maestro_simulator):
+        meta = _shadow_meta()
+        exact = CircuitPipeline(
+            stages=[DummySpecStage(meta=meta), MeasurementStage()]
+        ).run(initial_spec="ignored", env=PipelineEnv(backend=make_maestro_simulator()))
+        sampler = make_maestro_simulator(
+            shots=20_000,
+            force_sampling=True,
+            maestro_config=MaestroConfig(seed=11),
+        )
+
+        estimate = _shadow_pipeline(meta).run(
+            initial_spec="ignored",
+            env=PipelineEnv(backend=sampler, rng=np.random.default_rng(11)),
+        )
+
+        # About five standard deviations of a 20000-snapshot estimate.
+        assert estimate.value == pytest.approx(exact.value, abs=0.1)
+
+    def test_reported_variance_matches_spread_across_draws(
+        self, make_maestro_simulator
+    ):
+        meta = _shadow_meta(
+            SparsePauliOp.from_list(
+                [("ZZI", 0.8), ("XIX", -0.5), ("IYY", 0.3), ("ZII", 0.4)]
+            )
+        )
+        n_runs = 200
+        estimates, variances = [], []
+        for seed in range(n_runs):
+            # Independent shot noise per run, or the spread understates it.
+            sampler = make_maestro_simulator(
+                shots=2000, force_sampling=True, maestro_config=MaestroConfig(seed=seed)
+            )
+            env = PipelineEnv(
+                backend=sampler, rng=np.random.default_rng(seed), collect_variance=True
+            )
+            estimates.append(_shadow_pipeline(meta).run("ignored", env).value)
+            variances.append(next(iter(env.artifacts["cost_variance"].values())))
+
+        # Four standard errors of a sample variance; dropping the never-submitted
+        # empty draws (zero samples) misstates the ratio by about 3x.
+        assert np.mean(variances) / np.var(estimates, ddof=1) == pytest.approx(
+            1.0, abs=4 * np.sqrt(2 / (n_runs - 1))
+        )
+
+    def test_estimator_budgets_draw_each_parameter_set(self, make_dummy_simulator):
+        env = PipelineEnv(
+            backend=make_dummy_simulator(100),
+            param_sets=np.zeros((2, 1)),
+            estimator_samples=_EstimatorSamplePlan((5, 40)),
+            rng=np.random.default_rng(8),
+        )
+        meta = _shadow_meta(SparsePauliOp.from_list([("ZZI", 0.8), ("XIX", -0.5)]))
+
+        trace = _shadow_pipeline(meta).run_forward_pass("ignored", env)
+        node = next(iter(trace.final_batch.values()))
+        plans = trace.stage_tokens[1].group_shot_plans_by_spec
+
+        for param_idx, budget in enumerate((5, 40)):
+            plan = plans[(("spec", "circ"), ("param_set", param_idx))]
+            drawn = node.param_group_shots[param_idx]
+            assert sum(drawn.values()) + plan.empty_draws == budget
+            assert set(plan.missing_group_results) == (
+                set(range(len(node.measurement_groups))) - set(drawn)
+            )
+
+    def test_parameter_set_with_only_empty_draws_still_submits_a_circuit(
+        self, make_dummy_simulator
+    ):
+        """Results exist only for submitted circuits, so a parameter set whose
+        snapshots all measured nothing runs one zero-weight shot instead."""
+        env = PipelineEnv(
+            backend=make_dummy_simulator(100),
+            param_sets=np.zeros((8, 1)),
+            estimator_samples=_EstimatorSamplePlan((1,) * 8),
+            rng=np.random.default_rng(4),
+        )
+        meta = _shadow_meta(SparsePauliOp.from_list([("ZZZ", 0.8), ("ZII", -0.5)]))
+
+        trace = _shadow_pipeline(meta).run_forward_pass("ignored", env)
+        plans = trace.stage_tokens[1].group_shot_plans_by_spec.values()
+
+        assert any(not plan.term_weights_by_group[0].any() for plan in plans)
+        for plan in plans:
+            assert sum(plan.shots_by_group.values()) + plan.empty_draws == 1
+            assert plan.shots_by_group
+
+    def test_rejects_shot_distribution(self):
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "shot_distribution cannot be combined with grouping_strategy="
+                "'shadows': the random measurement bases already decide each "
+                "circuit's shots."
+            ),
+        ):
+            MeasurementStage(grouping_strategy="shadows", shot_distribution="weighted")
+
+    def test_rejects_analytic_backend(self, dummy_expval_backend):
+        env = PipelineEnv(backend=dummy_expval_backend)
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "grouping_strategy='shadows' requires a sampling backend; "
+                f"{type(dummy_expval_backend).__name__} computes expectation "
+                "values analytically and does not consume shots."
+            ),
+        ):
+            _shadow_pipeline(_shadow_meta()).run_forward_pass("ignored", env)
+
+    def test_rejects_an_identity_only_observable(self, make_dummy_simulator):
+        env = PipelineEnv(backend=make_dummy_simulator(100))
+        meta = _shadow_meta(SparsePauliOp.from_list([("III", 2.0)]))
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "The observable is identity-only, so its expectation is an exact "
+                "constant and there is nothing to sample."
+            ),
+        ):
+            _shadow_pipeline(meta).run_forward_pass("ignored", env)
+
+    def test_no_snapshot_measuring_a_term_estimates_the_identity_offset(
+        self, make_dummy_simulator
+    ):
+        """One snapshot rarely covers ``ZZZ``; when it misses, the estimate is the
+        exact identity part plus zero, from one zero-weight circuit."""
+
+        def make_env():
+            return PipelineEnv(
+                backend=make_dummy_simulator(1), rng=np.random.default_rng(0)
+            )
+
+        meta = _shadow_meta(SparsePauliOp.from_list([("ZZZ", 1.0), ("III", 0.5)]))
+        pipeline = _shadow_pipeline(meta)
+
+        trace = pipeline.run_forward_pass("ignored", make_env())
+        plan = next(iter(trace.stage_tokens[1].group_shot_plans_by_spec.values()))
+        result = pipeline.run("ignored", make_env())
+
+        assert not plan.term_weights_by_group[0].any()
+        assert result.value == pytest.approx(0.5)
+
+
 class TestExecuteFnForwardsShotGroups:
     """When MeasurementStage produces per_group_shots, execute fn forwards shot_groups."""
 

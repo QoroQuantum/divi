@@ -552,7 +552,7 @@ class TestMeasurementStageReduction:
         # All 4 Paulis QWC-commute, so plain qwc would also yield 1 group —
         # pin the strategy so this test doesn't silently pass if auto-promotion
         # were removed.
-        assert meas.metadata["strategy"] == "_backend_expval"
+        assert meas.metadata["strategy"] == "analytic"
         assert spec.factor == 4.0  # one per Pauli term
         assert meas.factor == pytest.approx(0.25)  # 4 terms -> 1 backend expval
         assert report.total_circuits == 1

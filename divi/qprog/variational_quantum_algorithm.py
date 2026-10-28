@@ -302,11 +302,10 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                     )
                     vqe.run()
 
-                Only valid when sampling is actually used. Setting it on a
-                backend that computes expectation values analytically
-                (``grouping_strategy="_backend_expval"``) is rejected because
-                shots are ignored in that mode. Defaults to ``None`` (every
-                group receives the full shot budget).
+                Only takes effect when sampling is actually used: a backend
+                that computes expectation values analytically ignores shots,
+                so the allocation does not apply there. Defaults to ``None``
+                (every group receives the full shot budget).
             precision (int): Forwarded to
                 :class:`~divi.qprog.QuantumProgram` — QASM precision of
                 numeric parameter values. Higher values

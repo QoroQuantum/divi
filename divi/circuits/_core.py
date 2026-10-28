@@ -160,8 +160,8 @@ class MetaCircuit:
     """Per-parameter-set observable-group shots for estimator-sample batches."""
 
     backend_ham_ops: str | None = None
-    """Observable string handed to the backend for analytic expectation
-    values (``_backend_expval`` grouping); ``None`` for counts-based paths."""
+    """Observable string handed to a backend that computes expectation values
+    itself; ``None`` for counts-based paths."""
 
     precision: int = DEFAULT_PRECISION
     """Precision of numeric parameter values in QASM. Magnitudes of 0.1 and

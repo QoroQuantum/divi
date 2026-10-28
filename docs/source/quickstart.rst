@@ -234,9 +234,9 @@ Rebuilding the H₂ VQE from the top of this page:
    │   ├── n_gates: 82
    │   └── depth: 47
    ├── MeasurementStage [obs_group] → ÷14
-   │   ├── strategy: _backend_expval
+   │   ├── strategy: analytic
    │   └── n_pauli_terms: 14
-   ├── Total (per evaluation): 14 ÷ 14 = 1 circuit · 1,000 configured shots
+   ├── Total (per evaluation): 14 ÷ 14 = 1 circuit · 1,000 shots
    └── Summary: avg depth 47, width 4, 36 2q-gates total
 
    sample
