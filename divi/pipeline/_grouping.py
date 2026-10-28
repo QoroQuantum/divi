@@ -31,7 +31,9 @@ BACKEND_EXPVAL_GROUPS = ((),)
 
 #: How a sampling backend measures an observable's Pauli terms; each value is
 #: described in the "Measuring Observables on a Sampling Backend" guide.
-GroupingStrategy = Literal["qwc", "default", "wires", "shadows"] | None
+GroupingStrategy = (
+    Literal["qwc", "default", "wires", "shadows", "biased_shadows"] | None
+)
 
 #: A grouping strategy after the measurement stage resolves it for the backend.
 _ResolvedGroupingStrategy = GroupingStrategy | Literal["_backend_expval"]

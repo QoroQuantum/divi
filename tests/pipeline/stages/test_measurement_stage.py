@@ -1792,13 +1792,18 @@ def _shadow_meta(observable=None) -> MetaCircuit:
     return meta_from_circuit(qc, observable=observable)
 
 
-def _shadow_pipeline(meta: MetaCircuit) -> CircuitPipeline:
+def _shadow_pipeline(meta: MetaCircuit, strategy: str = "shadows") -> CircuitPipeline:
     return CircuitPipeline(
         stages=[
             DummySpecStage(meta=meta),
-            MeasurementStage(grouping_strategy="shadows"),
+            MeasurementStage(grouping_strategy=strategy),
         ]
     )
+
+
+_EACH_SHADOW_STRATEGY = pytest.mark.parametrize(
+    "strategy", ["shadows", "biased_shadows"]
+)
 
 
 class TestMeasurementStageShadows:
@@ -1834,7 +1839,8 @@ class TestMeasurementStageShadows:
                 [3.0 ** sum(c != "I" for c in label) for label in group],
             )
 
-    def test_estimates_match_exact_expectations(self, make_maestro_simulator):
+    @_EACH_SHADOW_STRATEGY
+    def test_estimates_match_exact_expectations(self, make_maestro_simulator, strategy):
         meta = _shadow_meta()
         exact = CircuitPipeline(
             stages=[DummySpecStage(meta=meta), MeasurementStage()]
@@ -1845,7 +1851,7 @@ class TestMeasurementStageShadows:
             maestro_config=MaestroConfig(seed=11),
         )
 
-        estimate = _shadow_pipeline(meta).run(
+        estimate = _shadow_pipeline(meta, strategy).run(
             initial_spec="ignored",
             env=PipelineEnv(backend=sampler, rng=np.random.default_rng(11)),
         )
@@ -1853,8 +1859,9 @@ class TestMeasurementStageShadows:
         # About five standard deviations of a 20000-snapshot estimate.
         assert estimate.value == pytest.approx(exact.value, abs=0.1)
 
+    @_EACH_SHADOW_STRATEGY
     def test_reported_variance_matches_spread_across_draws(
-        self, make_maestro_simulator
+        self, make_maestro_simulator, strategy
     ):
         meta = _shadow_meta(
             SparsePauliOp.from_list(
@@ -1871,7 +1878,7 @@ class TestMeasurementStageShadows:
             env = PipelineEnv(
                 backend=sampler, rng=np.random.default_rng(seed), collect_variance=True
             )
-            estimates.append(_shadow_pipeline(meta).run("ignored", env).value)
+            estimates.append(_shadow_pipeline(meta, strategy).run("ignored", env).value)
             variances.append(next(iter(env.artifacts["cost_variance"].values())))
 
         # Four standard errors of a sample variance; dropping the never-submitted
@@ -1880,7 +1887,32 @@ class TestMeasurementStageShadows:
             1.0, abs=4 * np.sqrt(2 / (n_runs - 1))
         )
 
-    def test_estimator_budgets_draw_each_parameter_set(self, make_dummy_simulator):
+    def test_biased_bases_lower_the_variance_of_a_skewed_hamiltonian(
+        self, make_maestro_simulator
+    ):
+        meta = _shadow_meta(
+            SparsePauliOp.from_list(
+                [("ZZZ", 1.0), ("ZZI", 0.8), ("IZZ", 0.6), ("XXX", 0.1)]
+            )
+        )
+        sampler = make_maestro_simulator(
+            shots=4000, force_sampling=True, maestro_config=MaestroConfig(seed=3)
+        )
+        variances = {}
+        for strategy in ("shadows", "biased_shadows"):
+            env = PipelineEnv(
+                backend=sampler, rng=np.random.default_rng(3), collect_variance=True
+            )
+            _shadow_pipeline(meta, strategy).run("ignored", env)
+            variances[strategy] = next(iter(env.artifacts["cost_variance"].values()))
+
+        # Measured about 8x lower; the uniform draws rarely cover ZZZ.
+        assert variances["biased_shadows"] < variances["shadows"] / 3
+
+    @_EACH_SHADOW_STRATEGY
+    def test_estimator_budgets_draw_each_parameter_set(
+        self, make_dummy_simulator, strategy
+    ):
         env = PipelineEnv(
             backend=make_dummy_simulator(100),
             param_sets=np.zeros((2, 1)),
@@ -1889,7 +1921,7 @@ class TestMeasurementStageShadows:
         )
         meta = _shadow_meta(SparsePauliOp.from_list([("ZZI", 0.8), ("XIX", -0.5)]))
 
-        trace = _shadow_pipeline(meta).run_forward_pass("ignored", env)
+        trace = _shadow_pipeline(meta, strategy).run_forward_pass("ignored", env)
         node = next(iter(trace.final_batch.values()))
         plans = trace.stage_tokens[1].group_shot_plans_by_spec
 
@@ -1901,8 +1933,9 @@ class TestMeasurementStageShadows:
                 set(range(len(node.measurement_groups))) - set(drawn)
             )
 
+    @_EACH_SHADOW_STRATEGY
     def test_parameter_set_with_only_empty_draws_still_submits_a_circuit(
-        self, make_dummy_simulator
+        self, make_dummy_simulator, strategy
     ):
         """Results exist only for submitted circuits, so a parameter set whose
         snapshots all measured nothing runs one zero-weight shot instead."""
@@ -1912,9 +1945,10 @@ class TestMeasurementStageShadows:
             estimator_samples=_EstimatorSamplePlan((1,) * 8),
             rng=np.random.default_rng(4),
         )
-        meta = _shadow_meta(SparsePauliOp.from_list([("ZZZ", 0.8), ("ZII", -0.5)]))
+        # Conflicting bases on every qubit: most single draws cover nothing.
+        meta = _shadow_meta(SparsePauliOp.from_list([("ZZZ", 0.8), ("XXX", -0.5)]))
 
-        trace = _shadow_pipeline(meta).run_forward_pass("ignored", env)
+        trace = _shadow_pipeline(meta, strategy).run_forward_pass("ignored", env)
         plans = trace.stage_tokens[1].group_shot_plans_by_spec.values()
 
         assert any(not plan.term_weights_by_group[0].any() for plan in plans)
@@ -1922,29 +1956,31 @@ class TestMeasurementStageShadows:
             assert sum(plan.shots_by_group.values()) + plan.empty_draws == 1
             assert plan.shots_by_group
 
-    def test_rejects_shot_distribution(self):
+    @_EACH_SHADOW_STRATEGY
+    def test_rejects_shot_distribution(self, strategy):
         with pytest.raises(
             ValueError,
             match=exact_match(
-                "shot_distribution cannot be combined with grouping_strategy="
-                "'shadows': the random measurement bases already decide each "
+                f"shot_distribution cannot be combined with grouping_strategy="
+                f"'{strategy}': the random measurement bases already decide each "
                 "circuit's shots."
             ),
         ):
-            MeasurementStage(grouping_strategy="shadows", shot_distribution="weighted")
+            MeasurementStage(grouping_strategy=strategy, shot_distribution="weighted")
 
-    def test_rejects_analytic_backend(self, dummy_expval_backend):
+    @_EACH_SHADOW_STRATEGY
+    def test_rejects_analytic_backend(self, dummy_expval_backend, strategy):
         env = PipelineEnv(backend=dummy_expval_backend)
 
         with pytest.raises(
             ValueError,
             match=exact_match(
-                "grouping_strategy='shadows' requires a sampling backend; "
+                f"grouping_strategy='{strategy}' requires a sampling backend; "
                 f"{type(dummy_expval_backend).__name__} computes expectation "
                 "values analytically and does not consume shots."
             ),
         ):
-            _shadow_pipeline(_shadow_meta()).run_forward_pass("ignored", env)
+            _shadow_pipeline(_shadow_meta(), strategy).run_forward_pass("ignored", env)
 
     def test_rejects_an_identity_only_observable(self, make_dummy_simulator):
         env = PipelineEnv(backend=make_dummy_simulator(100))

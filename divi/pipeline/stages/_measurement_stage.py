@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, get_args
 
 import numpy as np
+import numpy.typing as npt
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import measurement_qasms_from_groups
@@ -33,9 +34,13 @@ from divi.pipeline._result_keys_operations import (
     strip_axis_from_label,
 )
 from divi.pipeline._shadows import (
+    _compute_cover_probabilities,
     _count_unique_rows,
+    _encode_paulis,
+    _fit_biased_bases,
     _sample_shadow_covers,
-    _shadow_term_weights,
+    _sum_squared_coefficients,
+    _uniform_bases,
 )
 from divi.pipeline._shot_distribution import (
     ShotDistStrategy,
@@ -54,6 +59,7 @@ from divi.pipeline.abc import (
 
 OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
+_SHADOW_STRATEGIES = frozenset({"shadows", "biased_shadows"})
 # ``GroupingStrategy`` is ``Literal[...] | None``; unwrap the literal's names.
 _GROUPING_STRATEGY_NAMES: tuple[str, ...] = get_args(get_args(GroupingStrategy)[0])
 
@@ -260,14 +266,18 @@ def _plans_for_spec(
 def _plan_shadow_shots(
     spec_key: tuple,
     labels: Sequence[str],
+    codes: npt.NDArray[np.uint8],
+    bases: npt.NDArray[np.float64],
     env: PipelineEnv,
     sample_budgets: Sequence[int] | None,
 ) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], dict[tuple, _GroupShotPlan]]:
     """Draw classical-shadow snapshots and build one plan per draw.
 
-    Each parameter set with an estimator budget draws independently; the groups
-    are the union of every draw's cover patterns, and a plan treats the groups
-    it did not draw as missing. Returns ``(groups, cover_indices, plans)``.
+    ``codes`` and ``bases`` are the union terms' Pauli codes and the per-qubit
+    basis probabilities snapshots draw from. Each parameter set with an
+    estimator budget draws independently; the groups are the union of every
+    draw's cover patterns, and a plan treats the groups it did not draw as
+    missing. Returns ``(groups, cover_indices, plans)``.
     """
     rng = env.rng if env.rng is not None else np.random.default_rng()
     if sample_budgets is None:
@@ -278,7 +288,7 @@ def _plan_shadow_shots(
             for param_idx, budget in enumerate(sample_budgets)
         }
     draws = {
-        key: _sample_shadow_covers(labels, budget, rng)
+        key: _sample_shadow_covers(codes, bases, budget, rng)
         for key, budget in budget_by_key.items()
     }
 
@@ -290,9 +300,9 @@ def _plan_shadow_shots(
     group_by_pattern = {pattern.tobytes(): idx for idx, pattern in enumerate(patterns)}
     cover_indices = [np.flatnonzero(pattern).tolist() for pattern in patterns]
     groups = tuple(tuple(labels[term] for term in terms) for terms in cover_indices)
-    term_weights = _shadow_term_weights(labels)
+    cover_probabilities = _compute_cover_probabilities(codes, bases)
     term_weights_by_group = {
-        idx: term_weights[terms] for idx, terms in enumerate(cover_indices)
+        idx: 1.0 / cover_probabilities[terms] for idx, terms in enumerate(cover_indices)
     }
 
     plans: dict[tuple, _GroupShotPlan] = {}
@@ -419,7 +429,7 @@ class MeasurementStage(BundleStage):
         shot-distribution callables.
         """
         return (
-            self._grouping_strategy == "shadows"
+            self._grouping_strategy in _SHADOW_STRATEGIES
             or self._shot_distribution == "weighted_random"
             or callable(self._shot_distribution)
         )
@@ -437,7 +447,7 @@ class MeasurementStage(BundleStage):
         """
         extras: tuple[Hashable, ...] = ()
         if (
-            self._grouping_strategy == "shadows"
+            self._grouping_strategy in _SHADOW_STRATEGIES
             or self._shot_distribution is not None
             or env.shots_override is not None
         ):
@@ -483,11 +493,11 @@ class MeasurementStage(BundleStage):
                 f"Invalid grouping_strategy={grouping_strategy!r}. Choose "
                 f"{', '.join(map(repr, _GROUPING_STRATEGY_NAMES))}, or None."
             )
-        if grouping_strategy == "shadows" and shot_distribution is not None:
+        if grouping_strategy in _SHADOW_STRATEGIES and shot_distribution is not None:
             raise ValueError(
                 "shot_distribution cannot be combined with grouping_strategy="
-                "'shadows': the random measurement bases already decide each "
-                "circuit's shots."
+                f"{grouping_strategy!r}: the random measurement bases already "
+                "decide each circuit's shots."
             )
         self._grouping_strategy = grouping_strategy
         self._result_format_override = result_format_override
@@ -603,10 +613,13 @@ class MeasurementStage(BundleStage):
         env: PipelineEnv,
     ) -> tuple[_ResolvedGroupingStrategy, tuple[int, ...] | None]:
         """Resolve backend-aware grouping and optional estimator budgets."""
-        if self._grouping_strategy == "shadows" and env.backend.supports_expval:
+        if (
+            self._grouping_strategy in _SHADOW_STRATEGIES
+            and env.backend.supports_expval
+        ):
             raise ValueError(
-                "grouping_strategy='shadows' requires a sampling backend; "
-                f"{type(env.backend).__name__} computes expectation values "
+                f"grouping_strategy={self._grouping_strategy!r} requires a sampling "
+                f"backend; {type(env.backend).__name__} computes expectation values "
                 "analytically and does not consume shots."
             )
         estimator_samples = env.estimator_samples
@@ -700,15 +713,26 @@ class MeasurementStage(BundleStage):
                 )
             # Random sampling handles identity terms exactly, outside the draws.
             constant_offsets: tuple[float, ...] | None = None
-            if sample_budgets is not None or strategy == "shadows":
+            if sample_budgets is not None or strategy in _SHADOW_STRATEGIES:
                 observable, constant_offsets = _split_identity_offsets(observable)
 
-            if strategy == "shadows":
+            if strategy in _SHADOW_STRATEGIES:
                 union_obs, per_obs_term_indices, labels = _union_labels(
                     observable, meta.n_qubits
                 )
+                codes = _encode_paulis(union_obs.paulis)
+                bases = (
+                    _fit_biased_bases(
+                        codes,
+                        _sum_squared_coefficients(
+                            observable, per_obs_term_indices, len(labels)
+                        ),
+                    )
+                    if strategy == "biased_shadows"
+                    else _uniform_bases(codes.shape[1])
+                )
                 measurement_groups, partition_indices, plans = _plan_shadow_shots(
-                    key, labels, env, sample_budgets
+                    key, labels, codes, bases, env, sample_budgets
                 )
             else:
                 (
@@ -840,7 +864,7 @@ class MeasurementStage(BundleStage):
 
         info["n_groups"] = len(groups)
         info["n_pauli_terms"] = len({label for g in groups for label in g})
-        if effective_strategy == "shadows":
+        if effective_strategy in _SHADOW_STRATEGIES:
             # Empty snapshots count toward the estimate but are never submitted.
             plans = getattr(token, "group_shot_plans_by_spec", {}).values()
             empty_snapshots = sum(plan.empty_draws for plan in plans)

@@ -571,6 +571,16 @@ Variational algorithms accept the same option, for example
 total budget: a term on many qubits is matched by few snapshots, so its
 estimate is noisier.
 
+``grouping_strategy="biased_shadows"`` draws each qubit's basis from its own
+distribution instead, fitted to the observable's coefficients to minimise the
+variance bound of `Hadfield et al. <https://arxiv.org/abs/2006.15788>`_. A term
+is then weighted by the inverse of its own matching chance, so the estimate
+stays unbiased. It improves on ``"shadows"`` most when the large terms favour
+one basis on a qubit, for example a Hamiltonian dominated by ``Z`` terms. It is
+not a precision upgrade over grouping: on the ground states of H2 and LiH it
+needed about 5 and 1.7 times the shots of ``"qwc"`` with
+``shot_distribution="weighted"`` for the same precision.
+
 - ``shots`` is the number of snapshots, and the bases are redrawn on every
   evaluation.
 - On a wide register nearly every snapshot measures a different set of terms,

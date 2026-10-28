@@ -46,7 +46,8 @@ class TestVerbatimStorage:
     """Explicit kwargs are stored as passed; no construction-time auto-flip."""
 
     @pytest.mark.parametrize(
-        "grouping_strategy", ["qwc", "default", "wires", "shadows", None]
+        "grouping_strategy",
+        ["qwc", "default", "wires", "shadows", "biased_shadows", None],
     )
     def test_explicit_grouping_stored_verbatim(
         self, dummy_simulator, grouping_strategy
@@ -107,8 +108,8 @@ class TestValidation:
         self, dummy_simulator, grouping_strategy
     ):
         """Any value outside the user-facing set ({qwc, default, wires, shadows,
-        None}) is rejected. ``"_backend_expval"`` is internal-only; the rest are
-        typos / wrong type."""
+        biased_shadows, None}) is rejected. ``"_backend_expval"`` is
+        internal-only; the rest are typos / wrong type."""
         with pytest.raises(ValueError, match="Invalid grouping_strategy"):
             ConcreteObservableMeasuringProgram(
                 backend=dummy_simulator, grouping_strategy=grouping_strategy
@@ -135,13 +136,14 @@ class TestValidation:
 
         assert program._measure_all_qubits is bool(value)
 
+    @pytest.mark.parametrize("grouping_strategy", ["shadows", "biased_shadows"])
     def test_shadows_with_shot_distribution_rejected_at_construction(
-        self, dummy_simulator
+        self, dummy_simulator, grouping_strategy
     ):
         with pytest.raises(ValueError, match="cannot be combined with"):
             ConcreteObservableMeasuringProgram(
                 backend=dummy_simulator,
-                grouping_strategy="shadows",
+                grouping_strategy=grouping_strategy,
                 shot_distribution="weighted",
             )
 
