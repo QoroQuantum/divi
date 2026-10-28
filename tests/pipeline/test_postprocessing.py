@@ -28,8 +28,8 @@ from tests.pipeline._helpers import DummySpecStage, meta_from_circuit
 def _measured_trace(env, observable, n_qubits=None, **stage_kw):
     """Forward pass of one counts-measured observable, with its lineage and node.
 
-    ``wires`` grouping keeps a real counts-measured group; the default would
-    promote to the backend-native expval path, which carries no counts.
+    ``env`` must sample: a backend that computes expectation values itself takes
+    the analytic path under every grouping, which carries no counts.
     """
     if n_qubits is None:
         n_qubits = observable.num_qubits
@@ -75,7 +75,7 @@ class TestCountsToExpvals:
 
     @pytest.mark.parametrize("obs_qubit, expected", [(0, -1.0), (1, -1.0), (2, 1.0)])
     def test_single_qubit_term_maps_to_correct_qubit(
-        self, dummy_pipeline_env, obs_qubit, expected
+        self, dummy_sampling_pipeline_env, obs_qubit, expected
     ):
         # Little-endian backend counts (qubit 0 rightmost): "011" -> q0=1, q1=1,
         # q2=0, so <Z0>=<Z1>=-1 and <Z2>=+1. Three qubits (not two) so a partial
@@ -84,7 +84,9 @@ class TestCountsToExpvals:
         observable = SparsePauliOp.from_sparse_list(
             [("Z", [obs_qubit], 1.0)], num_qubits=3
         )
-        trace, lineage_by_label, _ = _measured_trace(dummy_pipeline_env, observable)
+        trace, lineage_by_label, _ = _measured_trace(
+            dummy_sampling_pipeline_env, observable
+        )
         raw: ChildResults = {bk: {"011": 100} for bk in lineage_by_label.values()}
 
         result = _counts_to_expvals(raw, trace.final_batch)
@@ -93,12 +95,16 @@ class TestCountsToExpvals:
         for value in result.values():
             assert value == pytest.approx(expected)
 
-    def test_multi_obs_group_returns_dict_in_term_order(self, dummy_pipeline_env):
+    def test_multi_obs_group_returns_dict_in_term_order(
+        self, dummy_sampling_pipeline_env
+    ):
         # Three wire-disjoint terms -> per-term <Z_q> keyed by term index.
         observable = SparsePauliOp.from_sparse_list(
             [("Z", [0], 0.5), ("Z", [1], 0.3), ("Z", [2], 0.2)], num_qubits=3
         )
-        trace, lineage_by_label, _ = _measured_trace(dummy_pipeline_env, observable)
+        trace, lineage_by_label, _ = _measured_trace(
+            dummy_sampling_pipeline_env, observable
+        )
 
         # Little-endian backend counts giving distinct <Z0>=0.4, <Z1>=0.6,
         # <Z2>=0.8, so any qubit permutation (not just a full reversal) is caught
@@ -125,9 +131,11 @@ class TestCountsToCostVariance:
     Var(<H>) = Σ_i c_i²(1 − <P_i>²)/M_g from raw counts."""
 
     @pytest.fixture
-    def single_z_trace(self, dummy_pipeline_env):
+    def single_z_trace(self, dummy_sampling_pipeline_env):
         """Forward pass for a single-qubit ``<Z0>`` cost (one measurement group)."""
-        trace, lineage, _ = _measured_trace(dummy_pipeline_env, SparsePauliOp("Z"))
+        trace, lineage, _ = _measured_trace(
+            dummy_sampling_pipeline_env, SparsePauliOp("Z")
+        )
         return trace, lineage
 
     @pytest.mark.parametrize(
@@ -160,9 +168,11 @@ class TestCountsToCostVariance:
         ],
     )
     def test_single_group_matches_analytic_formula(
-        self, dummy_pipeline_env, observable, n_qubits, counts, expected
+        self, dummy_sampling_pipeline_env, observable, n_qubits, counts, expected
     ):
-        trace, lineage, node = _measured_trace(dummy_pipeline_env, observable, n_qubits)
+        trace, lineage, node = _measured_trace(
+            dummy_sampling_pipeline_env, observable, n_qubits
+        )
         raw: ChildResults = {bk: counts for bk in lineage.values()}
 
         variances = list(_counts_to_cost_variance(raw, trace.final_batch).values())
@@ -173,10 +183,12 @@ class TestCountsToCostVariance:
         assert variances == [pytest.approx(expected)]
         assert variances[0] >= 0.0
 
-    def test_sums_weighted_terms_within_and_across_groups(self, dummy_pipeline_env):
+    def test_sums_weighted_terms_within_and_across_groups(
+        self, dummy_sampling_pipeline_env
+    ):
         # Little-endian counts: <Z_q0>=0.4 and <Z_q1>=0.6 in the Z group, <XX>=0.4.
         observable = SparsePauliOp.from_list([("ZI", 2.0), ("IZ", 0.5), ("XX", 1.5)])
-        trace, lineage, node = _measured_trace(dummy_pipeline_env, observable)
+        trace, lineage, node = _measured_trace(dummy_sampling_pipeline_env, observable)
         z_counts = {"00": 50, "01": 30, "10": 20}
         xx_counts = {"00": 70, "01": 30}
         raw: ChildResults = {
@@ -196,10 +208,10 @@ class TestCountsToCostVariance:
         ]
 
     def test_multi_observable_cost_variance_is_nan_for_every_key(
-        self, dummy_pipeline_env
+        self, dummy_sampling_pipeline_env
     ):
         trace, lineage, _ = _measured_trace(
-            dummy_pipeline_env, (SparsePauliOp("Z"), SparsePauliOp("X")), 1
+            dummy_sampling_pipeline_env, (SparsePauliOp("Z"), SparsePauliOp("X")), 1
         )
         counts = {"0": 75, "1": 25}
         raw = _with_param_sets(lineage, [counts, counts])
@@ -252,16 +264,18 @@ class TestCountsToCostVariance:
 
 class TestCountsToWRSCostVariance:
     @pytest.fixture
-    def wrs_trace(self, dummy_pipeline_env):
+    def wrs_trace(self, dummy_sampling_pipeline_env):
         return _wrs_trace(
-            dummy_pipeline_env, SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
+            dummy_sampling_pipeline_env,
+            SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)]),
         )
 
     @pytest.fixture
-    def zz_wrs_trace(self, dummy_pipeline_env):
+    def zz_wrs_trace(self, dummy_sampling_pipeline_env):
         """One commuting group whose per-shot value is ``z_q0 + z_q1``."""
         return _wrs_trace(
-            dummy_pipeline_env, SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)])
+            dummy_sampling_pipeline_env,
+            SparsePauliOp.from_list([("ZI", 1.0), ("IZ", 1.0)]),
         )
 
     def test_single_shot_keys_are_each_undefined(self, wrs_trace):
@@ -353,10 +367,10 @@ class TestCountsToWRSCostVariance:
     ids=["expvals", "cost-variance", "wrs-cost-variance"],
 )
 def test_counts_consumers_reject_non_histogram_results(
-    dummy_pipeline_env, consume, payload, found
+    dummy_sampling_pipeline_env, consume, payload, found
 ):
     trace, lineage, weights, empty_draws = _wrs_trace(
-        dummy_pipeline_env, SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
+        dummy_sampling_pipeline_env, SparsePauliOp.from_list([("Z", 2.0), ("X", 1.0)])
     )
     raw: ChildResults = {bk: payload for bk in lineage.values()}
     first_key = next(iter(raw))

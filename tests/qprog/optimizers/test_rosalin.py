@@ -490,34 +490,42 @@ def test_rosalin_reports_budget_exhaustion_only_when_no_iteration_fits(
     assert result.message == message
 
 
-def test_rosalin_requires_weighted_random_sampling(dummy_simulator, default_optimizer):
+def test_rosalin_rejects_a_competing_shot_distribution(sampling_test_simulator):
     program = small_vqe(
-        dummy_simulator, default_optimizer, shot_distribution="weighted"
+        sampling_test_simulator, _rosalin(), shot_distribution="weighted"
     )
 
     with pytest.raises(
         ValueError,
         match=exact_match(
-            "RosalinOptimizer requires shot_distribution='weighted_random'."
+            "estimator_samples selects weighted-random sampling and cannot be "
+            "combined with another shot_distribution strategy."
         ),
     ):
-        _rosalin().validate_program(program)
+        program.run(perform_final_computation=False)
 
 
 @pytest.mark.parametrize("allocation", ["icans", "gcans"])
-def test_rosalin_runs_through_weighted_random_vqe(sampling_test_simulator, allocation):
+@pytest.mark.parametrize(
+    ("measurement_kwargs", "submits_every_sample"),
+    [
+        ({"shot_distribution": "weighted_random"}, True),
+        ({}, True),
+        # A snapshot that measures no term is a sample but is never submitted.
+        ({"grouping_strategy": "shadows"}, False),
+    ],
+    ids=["weighted-random", "unset", "shadows"],
+)
+def test_rosalin_runs_through_vqe(
+    sampling_test_simulator, allocation, measurement_kwargs, submits_every_sample
+):
     optimizer = RosalinOptimizer(
         learning_rate=0.2,
         total_shots=120,
         lipschitz=1.0,
         allocation=allocation,
     )
-    vqe = small_vqe(
-        sampling_test_simulator,
-        optimizer,
-        grouping_strategy="qwc",
-        shot_distribution="weighted_random",
-    )
+    vqe = small_vqe(sampling_test_simulator, optimizer, **measurement_kwargs)
     vqe.max_iterations = 3
 
     vqe.run(perform_final_computation=False)
@@ -526,7 +534,11 @@ def test_rosalin_runs_through_weighted_random_vqe(sampling_test_simulator, alloc
     assert np.isfinite(vqe.best_loss)
     assert vqe.best_loss == pytest.approx(vqe.optimize_result.fun[0])
     assert vqe.optimize_result.shots_used <= optimizer.total_shots
-    assert vqe.optimize_result.device_shots_used == vqe.optimize_result.shots_used
+    result = vqe.optimize_result
+    if submits_every_sample:
+        assert result.device_shots_used == result.shots_used
+    else:
+        assert 0 < result.device_shots_used <= result.shots_used
     assert vqe.optimize_result.circuits_used > 0
     assert vqe.optimize_result.backend_jobs_used > 0
 

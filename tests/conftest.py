@@ -205,11 +205,12 @@ def dummy_pipeline_env(dummy_expval_backend):
 
 @pytest.fixture
 def dummy_sampling_pipeline_env(make_dummy_simulator):
-    """PipelineEnv on a sampling backend, for tests that need the qwc grouping.
+    """PipelineEnv on a sampling backend, for tests that need measurement groups.
 
-    An expval-capable backend promotes qwc to the analytic ``_backend_expval``
-    path, which submits one circuit and allocates no per-group shots — so a test
-    inspecting groups or shot allocation has to ask for a backend that samples.
+    An expval-capable backend takes the analytic ``_backend_expval`` path under
+    every grouping, which submits one circuit and allocates no per-group shots —
+    so a test inspecting groups or shot allocation has to ask for a backend that
+    samples.
     """
     return PipelineEnv(backend=make_dummy_simulator(300))
 

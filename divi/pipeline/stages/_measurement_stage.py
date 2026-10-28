@@ -6,7 +6,7 @@ import warnings
 from collections.abc import Callable, Hashable, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, get_args
 
 import numpy as np
 from qiskit.quantum_info import SparsePauliOp
@@ -54,6 +54,8 @@ from divi.pipeline.abc import (
 
 OBS_GROUP_AXIS = "obs_group"
 PROBS_MEAS_AXIS = "meas"
+# ``GroupingStrategy`` is ``Literal[...] | None``; unwrap the literal's names.
+_GROUPING_STRATEGY_NAMES: tuple[str, ...] = get_args(get_args(GroupingStrategy)[0])
 
 
 def _split_identity_offsets(
@@ -472,10 +474,15 @@ class MeasurementStage(BundleStage):
                 a sampling backend (``supports_expval=False``); a backend that
                 computes expectation values analytically has no measurement groups
                 to split shots across, so it is not applied there and ``expand``
-                emits a ``UserWarning`` saying so. When ``None`` (default), every group is submitted with the
-                backend's full shot count.
+                emits a ``UserWarning`` saying so. When ``None`` (default),
+                every group is submitted with the backend's full shot count.
         """
         super().__init__(name=type(self).__name__)
+        if grouping_strategy not in (*_GROUPING_STRATEGY_NAMES, None):
+            raise ValueError(
+                f"Invalid grouping_strategy={grouping_strategy!r}. Choose "
+                f"{', '.join(map(repr, _GROUPING_STRATEGY_NAMES))}, or None."
+            )
         if grouping_strategy == "shadows" and shot_distribution is not None:
             raise ValueError(
                 "shot_distribution cannot be combined with grouping_strategy="
@@ -618,23 +625,14 @@ class MeasurementStage(BundleStage):
         else:
             sample_budgets = None
 
-        strategy = self._grouping_strategy
-        if strategy in ("qwc", BACKEND_EXPVAL) and env.backend.supports_expval:
-            # The analytic path emits one shared ham_ops, so every circuit must
-            # carry the same observable tuple.
-            first_obs = next(iter(batch.values())).observable
-            all_same_obs = all(meta.observable == first_obs for meta in batch.values())
-            strategy = BACKEND_EXPVAL if all_same_obs else "qwc"
-
-        if (
-            self._shot_distribution is not None
-            and self._grouping_strategy == BACKEND_EXPVAL
+        strategy: _ResolvedGroupingStrategy = self._grouping_strategy
+        # The analytic path emits one shared ham_ops for the whole batch.
+        first_obs = next(iter(batch.values())).observable
+        if env.backend.supports_expval and all(
+            meta.observable == first_obs for meta in batch.values()
         ):
-            raise ValueError(
-                "shot_distribution is incompatible with the '_backend_expval' grouping "
-                "strategy: the backend computes expectation values analytically and "
-                "ignores shots. Set grouping_strategy to 'qwc', 'wires', or None."
-            )
+            strategy = BACKEND_EXPVAL
+
         if self._shot_distribution is not None and strategy == BACKEND_EXPVAL:
             warnings.warn(
                 f"shot_distribution is set but backend "
@@ -642,6 +640,7 @@ class MeasurementStage(BundleStage):
                 "analytically (supports_expval=True), so per-group shot "
                 "allocation does not change the (exact) result. Use a "
                 "sampling backend for shot_distribution to take effect — e.g. "
+                "MaestroSimulator(force_sampling=True), "
                 "QiskitSimulator(force_sampling=True), or QoroService with "
                 "JobConfig(force_sampling=True).",
                 UserWarning,

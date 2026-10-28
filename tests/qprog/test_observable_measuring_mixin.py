@@ -4,8 +4,6 @@
 
 """Direct tests for ``ObservableMeasuringMixin``."""
 
-import warnings
-
 import numpy as np
 import pytest
 
@@ -137,6 +135,16 @@ class TestValidation:
 
         assert program._measure_all_qubits is bool(value)
 
+    def test_shadows_with_shot_distribution_rejected_at_construction(
+        self, dummy_simulator
+    ):
+        with pytest.raises(ValueError, match="cannot be combined with"):
+            ConcreteObservableMeasuringProgram(
+                backend=dummy_simulator,
+                grouping_strategy="shadows",
+                shot_distribution="weighted",
+            )
+
     @pytest.mark.parametrize(
         "grouping_strategy,shot_distribution",
         [
@@ -155,64 +163,6 @@ class TestValidation:
             grouping_strategy=grouping_strategy,
             shot_distribution=shot_distribution,
         )
-
-
-class TestOverrideWarning:
-    """Construction-time UserWarning when an explicit grouping_strategy
-    will likely be overridden by MeasurementStage at runtime."""
-
-    @pytest.mark.parametrize("grouping_strategy", ["qwc", "wires"])
-    def test_warns_when_explicit_grouping_with_expval_backend(
-        self, dummy_expval_backend, grouping_strategy
-    ):
-        with pytest.warns(UserWarning, match="may be auto-overridden"):
-            ConcreteObservableMeasuringProgram(
-                backend=dummy_expval_backend, grouping_strategy=grouping_strategy
-            )
-
-    def test_does_not_warn_on_default_grouping_with_expval_backend(
-        self, dummy_expval_backend
-    ):
-        """The warning targets *explicit* preferences; accepting the
-        default must not warn or every program-on-expval-backend would
-        emit noise."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            ConcreteObservableMeasuringProgram(backend=dummy_expval_backend)
-
-    @pytest.mark.parametrize("grouping_strategy", [None, "shadows"])
-    def test_does_not_warn_on_never_overridden_grouping(
-        self, dummy_expval_backend, grouping_strategy
-    ):
-        """``None`` (one circuit per term) and ``"shadows"`` (rejected at run
-        time on such a backend) are never overridden, so they must not warn
-        even on an expval-capable backend."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            ConcreteObservableMeasuringProgram(
-                backend=dummy_expval_backend, grouping_strategy=grouping_strategy
-            )
-
-    def test_does_not_warn_when_shot_distribution_set(self, dummy_expval_backend):
-        """``shot_distribution`` declares sampling intent — the runtime
-        will not flip to ``"_backend_expval"`` regardless of grouping
-        choice, so the warning is suppressed."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            ConcreteObservableMeasuringProgram(
-                backend=dummy_expval_backend,
-                grouping_strategy="qwc",
-                shot_distribution="weighted",
-            )
-
-    def test_does_not_warn_on_non_expval_backend(self, dummy_simulator):
-        """If the backend does not support analytic expval, no auto-flip
-        is possible, so no warning."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            ConcreteObservableMeasuringProgram(
-                backend=dummy_simulator, grouping_strategy="qwc"
-            )
 
 
 class TestKwargForwarding:

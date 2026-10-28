@@ -30,7 +30,11 @@ from divi.pipeline.abc import (
     SpecStage,
     _EstimatorSamplePlan,
 )
-from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
+from divi.pipeline.stages import (
+    CircuitSpecStage,
+    MeasurementStage,
+    ParameterBindingStage,
+)
 from divi.pipeline.stages._measurement_stage import (
     OBS_GROUP_AXIS,
     MeasurementToken,
@@ -413,6 +417,7 @@ def _analytic_allocation_message(backend) -> str:
         "expectation values analytically (supports_expval=True), so per-group "
         "shot allocation does not change the (exact) result. Use a sampling "
         "backend for shot_distribution to take effect — e.g. "
+        "MaestroSimulator(force_sampling=True), "
         "QiskitSimulator(force_sampling=True), or QoroService with "
         "JobConfig(force_sampling=True)."
     )
@@ -894,29 +899,6 @@ class TestMeasurementStageIntrospect:
 
 class TestMeasurementStageShotDistributionBackendExpval:
     """Spec: shot_distribution vs. expval-capable backends."""
-
-    def test_explicit_backend_expval_raises(self, dummy_expval_backend):
-        """Setting shot_distribution with explicit _backend_expval -> ValueError."""
-        env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(
-                    grouping_strategy="_backend_expval",
-                    shot_distribution="uniform",
-                ),
-            ],
-        )
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "shot_distribution is incompatible with the '_backend_expval' "
-                "grouping strategy: the backend computes expectation values "
-                "analytically and ignores shots. Set grouping_strategy to 'qwc', "
-                "'wires', or None."
-            ),
-        ):
-            pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
     def test_shot_distribution_does_not_defeat_the_analytic_path(
         self, dummy_expval_backend
@@ -1411,30 +1393,41 @@ class TestMeasurementStageTupleObservable:
         assert out[0] == pytest.approx(0.0, abs=1e-9)
         assert out[1] == pytest.approx(1.0, abs=1e-9)
 
-    @pytest.mark.parametrize(
-        "stage_kwargs",
-        [
-            pytest.param({}, id="default_qwc_auto_promotes"),
-            pytest.param(
-                {"grouping_strategy": "_backend_expval"}, id="explicit_backend_expval"
-            ),
-        ],
-    )
+    @pytest.mark.parametrize("grouping_strategy", ["qwc", "default", "wires", None])
     def test_tuple_observable_uses_backend_expval(
-        self, dummy_expval_backend, stage_kwargs
+        self, dummy_expval_backend, grouping_strategy
     ):
-        """On an expval-supporting backend a multi-observable tuple auto-promotes
-        qwc → ``_backend_expval`` (or uses it explicitly): every observable is
-        evaluated analytically in one pass, so ``ham_ops`` lands in the artifacts."""
+        """On an expval-supporting backend every grouping hands a multi-observable
+        tuple to the backend: every observable is evaluated analytically in one
+        pass, so ``ham_ops`` lands in the artifacts."""
         env = PipelineEnv(backend=dummy_expval_backend)
         pipeline = CircuitPipeline(
             stages=[
                 DummySpecStage(meta=_tuple_observable_meta()),
-                MeasurementStage(**stage_kwargs),
+                MeasurementStage(grouping_strategy=grouping_strategy),
             ],
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
+        assert trace.stage_tokens[1].effective_strategy == "_backend_expval"
         assert "ham_ops" in trace.env_artifacts
+
+    def test_differing_observables_keep_their_grouping(self, dummy_expval_backend):
+        """The analytic path shares one ``ham_ops``, so a batch whose circuits
+        measure different observables keeps the configured grouping."""
+        circuits = [
+            _shadow_meta(SparsePauliOp.from_list([(label, 1.0)]))
+            for label in ("ZZI", "XIX")
+        ]
+        pipeline = CircuitPipeline(
+            stages=[CircuitSpecStage(), MeasurementStage(grouping_strategy="wires")]
+        )
+
+        trace = pipeline.run_forward_pass(
+            initial_spec=circuits, env=PipelineEnv(backend=dummy_expval_backend)
+        )
+
+        assert trace.stage_tokens[1].effective_strategy == "wires"
+        assert "ham_ops" not in trace.env_artifacts
 
     def test_introspect_recognizes_backend_expval_without_the_token(
         self, dummy_expval_backend

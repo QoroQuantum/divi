@@ -5,7 +5,7 @@
 import warnings
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -21,9 +21,6 @@ from divi.qprog.optimizers._linalg import (
     _matrix_abs_psd,
     _regularized_solve,
 )
-
-if TYPE_CHECKING:
-    from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 #: Maps ``(theta, [perturbations])`` to one squared overlap per perturbation.
 FidelityFn = Callable[
@@ -1070,25 +1067,6 @@ class QUIVEROptimizer(_SPSAConfigMixin, Optimizer):
         if self.learning_rate is not None:
             return self.learning_rate
         return 2.0 * _TARGET_STEP_MAGNITUDE / theta.shape[0]
-
-    def validate_program(self, program: "VariationalQuantumAlgorithm") -> None:
-        """Warn when ``adapt_M`` is combined with a configured shot distribution.
-
-        ``M``-adaptivity recovers the single-shot cost variance as
-        ``Var(<H>)·M``, which assumes every measurement group received the same
-        ``M`` shots. A shot distribution splits the budget unevenly across
-        groups, so that recovery is miscalibrated — the gradient and loss stay
-        correct, but the adapted ``M`` may be off. Disable ``adapt_M`` or drop
-        the shot distribution to silence this.
-        """
-        if self.adapt_M and program._shot_distribution is not None:
-            warnings.warn(
-                f"{type(self).__name__}: adapt_M=True with a configured "
-                "shot_distribution — the per-direction shot-budget adaptation "
-                "assumes uniform per-group shots and may be miscalibrated. "
-                "Disable adapt_M or remove the shot distribution.",
-                stacklevel=2,
-            )
 
     def optimize(
         self,

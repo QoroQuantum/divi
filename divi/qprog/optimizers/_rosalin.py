@@ -171,7 +171,7 @@ def _shift_rule_layout(
 
 
 class RosalinOptimizer(Optimizer):
-    r"""ROSALIN with weighted-random sampling and adaptive shot allocation.
+    r"""ROSALIN with random operator sampling and adaptive shot allocation.
 
     Each iteration evaluates the current loss and the program's complete
     parameter-shift recipe in one batch. The gradient coordinates receive
@@ -259,13 +259,6 @@ class RosalinOptimizer(Optimizer):
     def n_param_sets(self) -> int:
         """Number of independent iterates optimised at once."""
         return 1
-
-    def validate_program(self, program) -> None:
-        """Require the weighted-random estimator used by ROSALIN."""
-        if program._shot_distribution != "weighted_random":
-            raise ValueError(
-                "RosalinOptimizer requires shot_distribution='weighted_random'."
-            )
 
     def build_evaluators(self, program) -> dict[str, Callable[..., Any]]:
         """Bind the program's generalised parameter-shift recipe."""

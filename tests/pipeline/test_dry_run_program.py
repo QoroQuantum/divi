@@ -555,12 +555,12 @@ class TestQuantumProgramDryRun:
         )
 
     def test_widest_basis_change_spans_all_groups(
-        self, default_test_simulator, default_optimizer
+        self, sampling_test_simulator, default_optimizer
     ):
         """With grouping off every group holds one term, so reading the width off
         the largest-by-size group degenerates to 1 — it must be the widest basis
         change any group needs (the pair-hopping term spans all four qubits)."""
-        vqe = h2_vqe(default_test_simulator, default_optimizer, grouping_strategy=None)
+        vqe = h2_vqe(sampling_test_simulator, default_optimizer, grouping_strategy=None)
         meta = next(
             s.metadata
             for s in vqe.dry_run()["cost"].stages

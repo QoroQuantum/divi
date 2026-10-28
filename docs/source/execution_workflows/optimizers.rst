@@ -401,10 +401,9 @@ them with ``exact_loss=True``.
 
 .. note::
 
-   Adaptive ``M`` disables circuit-template batching and cannot combine with
-   ``shot_distribution``. Prefer fixed ``M`` when cloud submission overhead
-   dominates. Compare optimizers by requested shots rather than circuit count:
-   changing ``M`` can make the latter misleading.
+   Adaptive ``M`` disables circuit-template batching. Prefer fixed ``M`` when
+   cloud submission overhead dominates. Compare optimizers by requested shots
+   rather than circuit count: changing ``M`` can make the latter misleading.
 
 .. _rosalin-optimizer:
 
@@ -429,8 +428,11 @@ the global gain-per-shot rule [#gu2021]_.
        allocation="icans",  # or "gcans"
    )
 
-Use it with an expectation-valued VQA configured with
-``shot_distribution="weighted_random"`` on a sampling backend.
+Use it with an expectation-valued VQA on a sampling backend, with
+``shot_distribution`` unset or ``"weighted_random"``: either way each gradient
+component draws its own operator samples. ``grouping_strategy="shadows"`` also
+works, drawing classical-shadow snapshots instead (see
+:ref:`measuring-observables`).
 
 iCANS allocates shots independently by coordinate and retains the original
 ``smax`` cap. gCANS instead maximises expected improvement per total gradient

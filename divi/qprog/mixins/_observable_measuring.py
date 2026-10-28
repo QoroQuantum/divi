@@ -12,21 +12,10 @@ sampling-only programs hit the probs branch (which ignores both) and the
 kwargs become silent no-ops.
 """
 
-from typing import get_args
-from warnings import warn
-
 import numpy as np
 
 from divi.pipeline import GroupingStrategy, ShotDistStrategy
 from divi.pipeline.stages import MeasurementStage
-
-# Distinguishes "user accepted the default" from "user explicitly passed
-# a value" so the override warning only fires for explicit choices.
-_UNSET: object = object()
-
-# ``GroupingStrategy`` is ``Literal[...] | None``; unwrap the literal's names.
-_GROUPING_STRATEGY_NAMES: tuple[str, ...] = get_args(get_args(GroupingStrategy)[0])
-_ALLOWED_GROUPING_STRATEGIES: frozenset = frozenset({*_GROUPING_STRATEGY_NAMES, None})
 
 
 class ObservableMeasuringMixin:
@@ -40,9 +29,9 @@ class ObservableMeasuringMixin:
             ...
 
     The mixin stores the two measurement-stage knobs verbatim.  Runtime
-    shape-aware decisions — including handing a ``"qwc"`` observable to a
-    backend that computes expectation values itself, when every MetaCircuit
-    carries the same observable — live inside
+    shape-aware decisions — including handing the observable to a backend
+    that computes expectation values itself, when every MetaCircuit carries
+    the same observable — live inside
     :class:`~divi.pipeline.stages.MeasurementStage`.
     """
 
@@ -66,7 +55,7 @@ class ObservableMeasuringMixin:
     def __init__(
         self,
         *args,
-        grouping_strategy: GroupingStrategy | None = _UNSET,  # type: ignore[assignment]
+        grouping_strategy: GroupingStrategy = "qwc",
         shot_distribution: ShotDistStrategy | None = None,
         measure_all_qubits: bool = False,
         **kwargs,
@@ -111,15 +100,6 @@ class ObservableMeasuringMixin:
         """
         super().__init__(*args, **kwargs)
 
-        if (
-            grouping_strategy is not _UNSET
-            and grouping_strategy not in _ALLOWED_GROUPING_STRATEGIES
-        ):
-            raise ValueError(
-                f"Invalid grouping_strategy={grouping_strategy!r}. Choose "
-                f"{', '.join(map(repr, _GROUPING_STRATEGY_NAMES))}, or None."
-            )
-
         if not isinstance(measure_all_qubits, (bool, np.bool_)):
             raise TypeError(
                 f"measure_all_qubits must be a bool, got "
@@ -127,25 +107,12 @@ class ObservableMeasuringMixin:
             )
         measure_all_qubits = bool(measure_all_qubits)
 
-        if (
-            grouping_strategy not in (_UNSET, None, "shadows")
-            and shot_distribution is None
-            and self.backend.supports_expval  # type: ignore[attr-defined]
-        ):
-            warn(
-                "Backend supports analytic expectation values; "
-                f"grouping_strategy={grouping_strategy!r} may be auto-"
-                "overridden to use the backend's native expval path for "
-                "single-observable expval-mode circuits.",
-                UserWarning,
-                stacklevel=2,
-            )
-
-        self._grouping_strategy: GroupingStrategy = (
-            "qwc" if grouping_strategy is _UNSET else grouping_strategy
-        )
+        self._grouping_strategy: GroupingStrategy = grouping_strategy
         self._shot_distribution = shot_distribution
         self._measure_all_qubits = measure_all_qubits
+
+        # Building the stage validates the measurement configuration.
+        self._make_measurement_stage()
 
     def _make_measurement_stage(self) -> MeasurementStage:
         """The measurement terminal carrying this program's grouping / shot strategy."""

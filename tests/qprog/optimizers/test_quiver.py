@@ -632,39 +632,6 @@ def test_quiver_gradient_drives_vqa_early_stopping(
     assert vqe.stop_reason is StopReason.GRADIENT_BELOW_THRESHOLD
 
 
-def test_quiver_adapt_m_warns_with_shot_distribution(
-    sampling_test_simulator, default_optimizer
-):
-    """``adapt_M`` assumes uniform per-group shots; combining it with a shot
-    distribution is flagged at program-validation time."""
-    vqe = small_vqe(
-        sampling_test_simulator, default_optimizer, shot_distribution="weighted"
-    )
-    message = (
-        "QUIVEROptimizer: adapt_M=True with a configured shot_distribution — the "
-        "per-direction shot-budget adaptation assumes uniform per-group shots and "
-        "may be miscalibrated. Disable adapt_M or remove the shot distribution."
-    )
-    with pytest.warns(UserWarning, match=exact_match(message)):
-        QUIVEROptimizer(adapt_M=True).validate_program(vqe)
-
-
-def test_quiver_no_shot_distribution_warning_when_safe(
-    recwarn, sampling_test_simulator, default_optimizer
-):
-    """No shot-distribution warning when ``adapt_M`` is off or no distribution
-    is configured."""
-    QUIVEROptimizer(adapt_M=True).validate_program(
-        small_vqe(sampling_test_simulator, default_optimizer)
-    )
-    QUIVEROptimizer(adapt_M=False).validate_program(
-        small_vqe(
-            sampling_test_simulator, default_optimizer, shot_distribution="weighted"
-        )
-    )
-    assert not [w for w in recwarn if "shot_distribution" in str(w.message)]
-
-
 def test_quiver_runs_under_qaoa_with_variance(sampling_test_simulator):
     """QAOA's cost is an expectation measurement, so the variance channel
     populates and M-adaptation works there as it does for VQE."""
