@@ -18,6 +18,7 @@ from divi.pipeline._grouping import (
     BACKEND_EXPVAL_GROUPS,
     GroupingStrategy,
     _compute_measurement_groups,
+    _create_postprocessing_fn,
 )
 from divi.pipeline._postprocessing import (
     _counts_to_cost_variance,
@@ -69,16 +70,24 @@ class _GroupShotPlan:
     shots_by_group: dict[int, int] | None
     missing_group_results: dict[int, object] = field(default_factory=dict)
     scales_by_group: dict[int, float] = field(default_factory=dict)
-    probabilities_by_group: dict[int, float] = field(default_factory=dict)
+    term_weights_by_group: dict[int, np.ndarray] = field(default_factory=dict)
+    """Inverse inclusion probability of each group's terms, aligned with the
+    group; empty means all ones."""
+    random_group_selection: bool = False
+    """Whether groups are drawn at random, making selection part of the noise."""
 
 
-def _scale_group_result(result: Any, scale: float) -> Any:
-    """Scale either a scalar or indexed group expectation result."""
-    if scale == 1.0:
-        return result
+def _scale_group_result(
+    result: Any, scale: float, term_weights: np.ndarray | None
+) -> Any:
+    """Scale a scalar or indexed group expectation result, term by term."""
+    if term_weights is None:
+        if scale == 1.0:
+            return result
+        term_weights = np.ones(len(result) if isinstance(result, dict) else 1)
     if isinstance(result, dict):
-        return {idx: scale * value for idx, value in result.items()}
-    return scale * result
+        return {idx: scale * term_weights[idx] * value for idx, value in result.items()}
+    return scale * term_weights[0] * result
 
 
 def _apply_group_shot_plan(
@@ -88,7 +97,11 @@ def _apply_group_shot_plan(
     if plan is None:
         return group_results
     measured_results = {
-        group_idx: _scale_group_result(result, plan.scales_by_group.get(group_idx, 1.0))
+        group_idx: _scale_group_result(
+            result,
+            plan.scales_by_group.get(group_idx, 1.0),
+            plan.term_weights_by_group.get(group_idx),
+        )
         for group_idx, result in group_results.items()
     }
     return {**plan.missing_group_results, **measured_results}
@@ -163,20 +176,23 @@ def _plan_group_shots(
     }
 
     scales_by_group: dict[int, float] = {}
-    probabilities_by_group: dict[int, float] = {}
+    term_weights_by_group: dict[int, np.ndarray] = {}
     if shot_distribution == "weighted_random":
         total_weight = float(sum(group_norms))
-        probabilities_by_group = (
-            {
-                idx: group_norm / total_weight
-                for idx, group_norm in enumerate(group_norms)
-            }
+        probabilities = (
+            [group_norm / total_weight for group_norm in group_norms]
             if total_weight > 0
-            else {idx: 1.0 / n_groups for idx in range(n_groups)}
+            else [1.0 / n_groups] * n_groups
         )
         scales_by_group = {
-            idx: shots / (effective_shots * probabilities_by_group[idx])
-            for idx, shots in surviving_shots.items()
+            idx: shots / effective_shots for idx, shots in surviving_shots.items()
+        }
+        # Zero-probability groups hold only zero-coefficient terms; weight moot.
+        term_weights_by_group = {
+            idx: np.full(len(indices), 1.0 / probability if probability > 0 else 1.0)
+            for idx, (indices, probability) in enumerate(
+                zip(partition_indices, probabilities)
+            )
         }
 
     return _GroupShotPlan(
@@ -184,7 +200,8 @@ def _plan_group_shots(
         shots_by_group=surviving_shots,
         missing_group_results=missing_group_results,
         scales_by_group=scales_by_group,
-        probabilities_by_group=probabilities_by_group,
+        term_weights_by_group=term_weights_by_group,
+        random_group_selection=shot_distribution == "weighted_random",
     )
 
 
@@ -586,7 +603,7 @@ class MeasurementStage(BundleStage):
                 )
                 observable = (sampled_observable,)
 
-            measurement_groups, partition_indices, postprocessing_fn, union_obs = (
+            measurement_groups, partition_indices, union_obs, per_obs_term_indices = (
                 _compute_measurement_groups(observable, strategy, meta.n_qubits)
             )
             if strategy == BACKEND_EXPVAL and n_observable_terms is None:
@@ -604,6 +621,9 @@ class MeasurementStage(BundleStage):
                 sample_budgets,
             )
             group_shot_plans_by_spec.update(plans)
+            postprocessing_fn = _create_postprocessing_fn(
+                observable, per_obs_term_indices, partition_indices, len(union_obs)
+            )
             surviving_indices = sorted(
                 {
                     group_idx
@@ -749,13 +769,13 @@ class MeasurementStage(BundleStage):
         token: StageToken,
     ) -> dict[tuple, float]:
         """Estimate variance according to this stage's sampling strategy."""
-        probabilities_by_spec = {
-            key: plan.probabilities_by_group
+        weights_by_spec = {
+            key: plan.term_weights_by_group
             for key, plan in token.group_shot_plans_by_spec.items()
-            if plan.probabilities_by_group
+            if plan.random_group_selection
         }
-        if probabilities_by_spec:
-            return _counts_to_wrs_cost_variance(raw, batch, probabilities_by_spec)
+        if weights_by_spec:
+            return _counts_to_wrs_cost_variance(raw, batch, weights_by_spec)
         return _counts_to_cost_variance(raw, batch)
 
     def reduce(

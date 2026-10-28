@@ -74,7 +74,8 @@ def _create_postprocessing_fn(
 
     Returns a function that takes per-group results (one entry per
     measurement group) and returns a ``list[float]`` of per-observable
-    expectation values.
+    expectation values. A union term measured in several groups takes the
+    sum of its per-group results.
     """
     slots_by_group = [
         np.asarray(indices, dtype=np.intp) for indices in partition_indices
@@ -105,11 +106,11 @@ def _create_postprocessing_fn(
             if getter is None:
                 continue
             if isinstance(val, dict):
-                flat[slots] = np.asarray(getter(val), dtype=np.float64).reshape(
+                flat[slots] += np.asarray(getter(val), dtype=np.float64).reshape(
                     len(slots), -1
                 )[:, 0]
             else:
-                flat[slots] = float(np.asarray(val).flat[0])
+                flat[slots] += float(np.asarray(val).flat[0])
         return [
             float(np.dot(coeffs, flat[indices]))
             for coeffs, indices in zip(obs_coeffs, obs_indices)
@@ -122,7 +123,9 @@ def _compute_measurement_groups(
     observable: Sequence[SparsePauliOp],
     strategy: GroupingStrategy,
     n_qubits: int,
-) -> tuple[tuple[tuple[str, ...], ...], list[list[int]], Callable, SparsePauliOp]:
+) -> tuple[
+    tuple[tuple[str, ...], ...], list[list[int]], SparsePauliOp, list[list[int]]
+]:
     """Group an observable tuple's Pauli terms for measurement fan-out.
 
     Operates on the union of every observable's Pauli terms — overlapping
@@ -139,7 +142,7 @@ def _compute_measurement_groups(
         n_qubits: Total qubit count in the circuit.
 
     Returns:
-        ``(measurement_groups, partition_indices, postprocessing_fn, union)``
+        ``(measurement_groups, partition_indices, union, per_obs_term_indices)``
 
         *measurement_groups*: tuple of tuples of big-endian Pauli label
         strings (qubit 0 on the left), one tuple per commuting group over
@@ -148,13 +151,13 @@ def _compute_measurement_groups(
         *partition_indices*: ``list[list[int]]`` mapping union term
         indices to groups.
 
-        *postprocessing_fn*: callable that recombines per-group
-        expectation values into a ``list[float]`` of per-observable
-        expectation values, in input order.
-
         *union*: the deduplicated union ``SparsePauliOp`` (the same value
         :func:`flatten_observable_tuple` would return) — exposed so
         callers needing shot-allocation weights can avoid recomputing it.
+
+        *per_obs_term_indices*: for each input observable, the union term
+        indices of its Pauli terms, as :func:`_create_postprocessing_fn`
+        takes them.
     """
     if not observable:
         raise ValueError("_compute_measurement_groups: observable tuple is empty.")
@@ -210,7 +213,4 @@ def _compute_measurement_groups(
     else:
         raise ValueError(f"Unknown grouping strategy: {strategy}")
 
-    postprocessing_fn = _create_postprocessing_fn(
-        observable, per_obs_term_indices, partition_indices, n_union_terms
-    )
-    return measurement_groups, partition_indices, postprocessing_fn, union
+    return measurement_groups, partition_indices, union, per_obs_term_indices

@@ -305,20 +305,20 @@ def _counts_to_cost_variance(
 def _counts_to_wrs_cost_variance(
     raw: ChildResults,
     batch: Mapping[Any, MetaCircuit],
-    probabilities_by_spec: Mapping[tuple, Mapping[int, float]],
+    weights_by_spec: Mapping[tuple, Mapping[int, np.ndarray]],
 ) -> dict[tuple, float]:
     """Estimate the variance of a weighted-random-sampling cost estimator.
 
-    Each measured bitstring contributes ``A_g / p_g``, where ``A_g`` is the
-    signed Hamiltonian contribution of the selected commuting group and
-    ``p_g`` is that group's sampling probability. The sample variance of these
-    inverse-probability-weighted values includes both quantum measurement noise
-    and multinomial group-selection noise, including covariance between terms
-    measured from the same bitstring.
+    Each measured bitstring contributes ``Σ_P c_P w_P λ_P`` over the selected
+    group's terms, where ``w_P`` is the group's weight for term ``P`` (its
+    inverse inclusion probability) and ``λ_P`` the term's ±1 eigenvalue. The
+    sample variance of these weighted values includes both quantum measurement
+    noise and multinomial group-selection noise, including covariance between
+    terms measured from the same bitstring.
     """
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
     coeffs_by_bk = {bk: _observable_coeff_map(node) for bk, node in batch.items()}
-    probability_keys = set(probabilities_by_spec)
+    weight_keys = set(weights_by_spec)
     # Per-result weighted Welford state: (sample count, mean, centered sum of
     # squares). Updating once per histogram bin avoids expanding individual
     # shots and avoids cancellation in ``sum(y²) - sum(y)² / n``.
@@ -340,22 +340,22 @@ def _counts_to_wrs_cost_variance(
             invalid_keys.add(base_key)
             continue
         group_idx = next(value for axis, value in branch_key if axis == "obs_group")
-        probability_key = _find_batch_key(base_key, probability_keys)
-        probability = probabilities_by_spec[probability_key][group_idx]
+        weights = weights_by_spec[_find_batch_key(base_key, weight_keys)][group_idx]
 
         labels = [str(label) for label in group_labels]
-        coefficients = np.asarray(
+        coefficients = weights * np.asarray(
             [coeff_map.get(label, 0.0) for label in labels], dtype=np.float64
         )
         bitstrings = sorted(counts)
-        group_values = coefficients @ _bitstring_eigenvalues(
+        weighted_values = coefficients @ _bitstring_eigenvalues(
             bitstrings, labels, n_qubits
         )
         n_shots, mean_y, m2_y = moments.get(base_key, (0, 0.0, 0.0))
 
-        for bitstring, group_value in zip(bitstrings, group_values, strict=True):
+        for bitstring, weighted_value in zip(
+            bitstrings, weighted_values.tolist(), strict=True
+        ):
             count = counts[bitstring]
-            weighted_value = float(group_value / probability)
             updated_shots = n_shots + count
             delta = weighted_value - mean_y
             mean_y += delta * count / updated_shots

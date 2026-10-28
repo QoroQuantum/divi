@@ -34,6 +34,8 @@ from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
 from divi.pipeline.stages._measurement_stage import (
     OBS_GROUP_AXIS,
     MeasurementToken,
+    _apply_group_shot_plan,
+    _GroupShotPlan,
     _plan_group_shots,
 )
 from divi.qprog import VQE, HartreeFockAnsatz
@@ -271,7 +273,7 @@ def test_no_shot_distribution_skips_per_group_allocation(dummy_simulator):
     plan = next(iter(meas_token.group_shot_plans_by_spec.values()))
     assert plan.missing_group_results == {}
     assert plan.scales_by_group == {}
-    assert plan.probabilities_by_group == {}
+    assert plan.term_weights_by_group == {}
 
 
 class TestMeasurementStageShotDistributionUniform:
@@ -562,9 +564,17 @@ class TestMeasurementStageShotDistributionReducePath:
         # All 3 terms contribute: 10 + 1 + 0.1 = 11.1
         assert list(reduced.values())[0] == pytest.approx([11.1])
 
-    @pytest.mark.parametrize("selected_group", [0, 1, 2])
+    @pytest.mark.parametrize(
+        ("coeffs", "selected_group", "expected"),
+        [
+            pytest.param((10.0, 1.0, 0.1), 0, 11.1, id="group-0"),
+            pytest.param((10.0, 1.0, 0.1), 1, 11.1, id="group-1"),
+            pytest.param((10.0, 1.0, 0.1), 2, 11.1, id="group-2"),
+            pytest.param((10.0, 1.0, 0.0), 0, 11.0, id="zero-coefficient-group"),
+        ],
+    )
     def test_weighted_random_reweights_a_single_selected_group(
-        self, selected_group, make_dummy_simulator, mocker
+        self, coeffs, selected_group, expected, make_dummy_simulator, mocker
     ):
         """One random draw remains unbiased even below the group-count floor."""
         allocation = [0, 0, 0]
@@ -577,7 +587,7 @@ class TestMeasurementStageShotDistributionReducePath:
         env = PipelineEnv(backend=make_dummy_simulator(1))
         pipeline = CircuitPipeline(
             stages=[
-                DummySpecStage(meta=_three_group_meta()),
+                DummySpecStage(meta=_three_group_meta(coeffs)),
                 MeasurementStage(shot_distribution="weighted_random"),
             ],
         )
@@ -590,9 +600,9 @@ class TestMeasurementStageShotDistributionReducePath:
                 execute_fn=self._counts_returning_plus_one,
             )
 
-        # With p_g = |c_g| / 11.1, selecting any deterministic +1 group gives
-        # c_g / p_g = 11.1 rather than the biased ordinary estimate c_g.
-        assert list(reduced.values())[0] == pytest.approx([11.1])
+        # With p_g = |c_g| / Σ|c|, selecting any deterministic +1 group gives
+        # c_g / p_g = Σ|c| rather than the biased ordinary estimate c_g.
+        assert list(reduced.values())[0] == pytest.approx([expected])
 
     def test_weighted_random_variance_includes_group_selection(
         self, make_dummy_simulator, mocker
@@ -1274,7 +1284,8 @@ class TestPlanGroupShotsHelper:
         assert plan.surviving_indices == [0, 1, 2]
         assert plan.missing_group_results == {}
         assert plan.shots_by_group == {0: 100, 1: 100, 2: 100}
-        assert plan.probabilities_by_group == {}
+        assert plan.term_weights_by_group == {}
+        assert not plan.random_group_selection
 
     @pytest.mark.parametrize(
         "coeffs, expected",
@@ -1304,11 +1315,13 @@ class TestPlanGroupShotsHelper:
             shot_distribution="weighted_random",
         )
 
-        probabilities = [plan.probabilities_by_group[i] for i in range(len(groups))]
-        np.testing.assert_allclose(probabilities, expected)
+        assert plan.random_group_selection
         for idx, shots in plan.shots_by_group.items():
-            assert plan.scales_by_group[idx] == pytest.approx(
-                shots / (300 * plan.probabilities_by_group[idx])
+            assert plan.scales_by_group[idx] == pytest.approx(shots / 300)
+        for idx, indices in enumerate(partition):
+            np.testing.assert_allclose(
+                plan.term_weights_by_group[idx],
+                np.full(len(indices), 1 / expected[idx]),
             )
 
     def test_drops_zero_shot_groups(self, make_dummy_simulator):
@@ -1331,6 +1344,35 @@ class TestPlanGroupShotsHelper:
         assert 2 not in plan.shots_by_group
         assert plan.missing_group_results == {2: {0: 0.0}}
         assert plan.surviving_indices == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("group_results", "expected"),
+    [
+        pytest.param(
+            {0: 0.4, 1: {0: 0.1, 1: 0.5}},
+            {0: 0.25 * 4.0 * 0.4, 1: {0: 0.5 * 3.0 * 0.1, 1: 0.5 * 2.0 * 0.5}},
+            id="measured",
+        ),
+        pytest.param(
+            {1: {0: 0.1, 1: 0.5}},
+            {0: 0.0, 1: {0: 0.5 * 3.0 * 0.1, 1: 0.5 * 2.0 * 0.5}},
+            id="missing-group-unweighted",
+        ),
+    ],
+)
+def test_group_shot_plan_scales_each_term_by_its_weight(group_results, expected):
+    plan = _GroupShotPlan(
+        surviving_indices=[0, 1],
+        shots_by_group={0: 1, 1: 2},
+        missing_group_results={0: 0.0},
+        scales_by_group={0: 0.25, 1: 0.5},
+        term_weights_by_group={0: np.array([4.0]), 1: np.array([3.0, 2.0])},
+    )
+    result = _apply_group_shot_plan(group_results, plan)
+    assert result.keys() == expected.keys()
+    for group_idx, value in expected.items():
+        assert result[group_idx] == pytest.approx(value)
 
 
 def _tuple_observable_meta() -> MetaCircuit:
