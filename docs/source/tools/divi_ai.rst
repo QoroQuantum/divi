@@ -29,8 +29,7 @@ If installation fails due to ``llama-cpp-python``, see
 Choosing a Model
 ----------------
 
-On first launch, an interactive selector lets you pick a model. Choose one
-before launching so you know what to expect:
+On first launch, an interactive selector lets you pick a model:
 
 .. list-table::
    :header-rows: 1
@@ -46,14 +45,7 @@ before launching so you know what to expect:
      - Qwen 3.5 9B Q4_K_M
      - 8K
 
-The 4B model is the default because it offers the best balance of grounded
-Divi answers and CPU generation speed. The 9B model is more consistent on
-multi-step API questions, but takes substantially longer to answer.
-
-**Hardware recommendations:**
-
-* 16+ GB RAM: ``4b`` for speed or ``9b`` for higher answer quality
-* Less than 16 GB RAM: ``4b``
+The 4B model is the default.
 
 First Launch
 ------------
@@ -69,8 +61,7 @@ On the first run:
 2. The selected generation model and the retrieval embedding model are cached.
    The first question may also download the relevance model. Keep the machine
    online until the first question completes successfully.
-3. The model and search index are loaded into memory. This can take
-   30--60 seconds depending on your hardware.
+3. The model and search index are loaded into memory.
 4. The TUI opens and you can start asking questions.
 
 Subsequent launches reuse the cached models. The cache location is
@@ -86,8 +77,6 @@ Type a question and press Enter to get an answer. The header bar tracks
 how much of the model's context window your conversation has used.
 
 * Press **Escape** to cancel generation mid-stream.
-* Use ``/reset`` before switching to a new topic to free context.
-* Use ``/retry`` if the answer seems incomplete or off.
 
 Slash Commands
 --------------
@@ -127,8 +116,7 @@ CLI Options
 
 ``--top-k N``
    Number of documentation chunks retrieved per query (default: 3).
-   Higher values give the model more context but use more of the context
-   window. Lower values are faster but may miss relevant information.
+   Higher values use more of the context window.
 
 ``--max-tokens N``
    Maximum tokens the model can generate per response (default: 1024).
@@ -146,11 +134,9 @@ Troubleshooting
 ---------------
 
 **llama-cpp-python fails to install**
-   On Windows this is the most common installation failure.
    ``llama-cpp-python`` has no prebuilt wheels on PyPI, so
-   ``pip install`` always downloads the source and compiles it. On
-   Linux and macOS this usually succeeds silently when a C++ toolchain
-   is present; on Windows it frequently fails. Try these in order:
+   ``pip install`` always downloads the source and compiles it, which requires
+   a C++ toolchain. The options are:
 
    1. **Use a prebuilt CPU wheel from abetlen's index**, when one is available
       for your platform:
@@ -190,13 +176,8 @@ Troubleshooting
    The conversation has filled the model's context window. Use ``/reset``
    to clear history.
 
-**Slow or unusable on my machine**
-   Use the default ``4b`` model. If it is still too slow, divi-ai may not be
-   practical on your system.
-
 **Answers seem wrong or hallucinated**
-   Try a larger model if your hardware allows it. See the important
-   notice at the top of this page.
+   See the important notice at the top of this page.
 
 .. _divi-ai-dev-tools:
 

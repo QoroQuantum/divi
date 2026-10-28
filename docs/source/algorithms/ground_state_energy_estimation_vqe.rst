@@ -4,7 +4,7 @@ Ground-State Energy Estimation with VQE
 The Variational Quantum Eigensolver (VQE) estimates a ground-state energy by
 optimising a parameterised state against a Hamiltonian. :class:`~divi.qprog.algorithms.VQE`
 takes its problem wrapped in a :class:`~divi.qprog.problems.HamiltonianProblem`.
-Pick the constructor matching what you already have:
+The problem is built with one of these constructors:
 
 - **A qubit Hamiltonian** — wrap it in
   ``HamiltonianProblem(hamiltonian)`` (:class:`~divi.qprog.problems.HamiltonianProblem`).
@@ -60,9 +60,6 @@ This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
 :class:`~divi.qprog.workflows.VQEHyperparameterSweep`.
 
-On sampling backends, see `Spending Shots Where They Matter`_ before assigning
-a large measurement budget.
-
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
 -----------------------------------------------
 
@@ -108,9 +105,8 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
 PySCF and OpenFermion Inputs
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Choose PennyLane, PySCF, or OpenFermion based on where your molecule or
-Hamiltonian already lives — Divi does not require converting between
-ecosystems before building a problem for :class:`~divi.qprog.algorithms.VQE`.
+Divi does not require converting between PennyLane, PySCF and OpenFermion
+inputs before building a problem for :class:`~divi.qprog.algorithms.VQE`.
 
 Pass a PySCF ``gto.Mole`` or restricted mean-field object to
 :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`. When the
@@ -193,30 +189,16 @@ constructor argument — e.g. ``ZerosState()``, ``OnesState()``,
 chemistry ansätze (Hartree-Fock, UCCSD, QCC) embed their own reference-state
 preparation, so combining them with a non-``ZerosState`` initial state prepends
 extra operators and emits a :class:`UserWarning` (it can produce unphysical
-circuits); custom or hardware-efficient ansätze are the usual place to set it.
+circuits).
 
 Available Ansätze
 -----------------
 
-Use a chemistry ansatz when its reference-state assumptions match the problem;
-use a hardware-efficient ansatz when circuit shape matters more than a
-chemistry-derived parameterisation. See
+The built-in ansätze are :class:`~divi.qprog.algorithms.HartreeFockAnsatz`,
+:class:`~divi.qprog.algorithms.UCCSDAnsatz`,
+:class:`~divi.qprog.algorithms.QCCAnsatz` and
+:class:`~divi.qprog.algorithms.GenericLayerAnsatz`. See
 :doc:`/api_reference/qprog/algorithms` for constructor details.
-
-.. list-table:: Ansatz selection
-   :header-rows: 1
-   :widths: 28 72
-
-   * - Ansatz
-     - Typical use
-   * - :class:`~divi.qprog.algorithms.HartreeFockAnsatz`
-     - Minimal chemistry baseline and reference-state preparation.
-   * - :class:`~divi.qprog.algorithms.UCCSDAnsatz`
-     - Chemistry calculations where excitation-based structure is useful.
-   * - :class:`~divi.qprog.algorithms.QCCAnsatz`
-     - Qubit-space chemistry with selected entanglers.
-   * - :class:`~divi.qprog.algorithms.GenericLayerAnsatz`
-     - Custom hardware-efficient gate sequences and connectivity.
 
 Custom Ansätze
 ^^^^^^^^^^^^^^
@@ -246,14 +228,12 @@ VQE Hyperparameter Sweep
 Use :class:`~divi.qprog.workflows.VQEHyperparameterSweep` when the same VQE
 study spans several molecular geometries, ansatzes, or optimizer settings. It
 builds the Cartesian product of those choices, runs each configuration, and
-aggregates the results for comparison. Typical uses include tracing a bond
-dissociation curve and testing how robust an ansatz or optimizer remains as the
-geometry changes.
+aggregates the results for comparison.
 
 Configuring the Molecular Transformations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to correctly and accurately modify molecules according to the users needs. These modifications can be declared and configured using the :class:`~divi.qprog.workflows.MoleculeTransformer` class, which takes as input the base molecule onto which the transformations are applied. Additionally, these arguments are used to define the specifics of the modifications:
+Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to modify molecules. These modifications can be declared and configured using the :class:`~divi.qprog.workflows.MoleculeTransformer` class, which takes as input the base molecule onto which the transformations are applied. Additionally, these arguments are used to define the specifics of the modifications:
 
 - **atom_connectivity**: The connectivity structure of the molecule, provided as a list of tuples of indices of the atoms that have a bond between them. When not provided, the molecule would be assumed to have a chain structure (i.e. the connectivity would look like ``[(0, 1), (1, 2), ...]``).
 
@@ -302,16 +282,13 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
    print(f"Total circuits executed: {vqe_sweep.total_circuit_count}")
 
-A few details worth calling out:
-
 - **Bond modifiers** — with the values above the sweep contracts all bonds by
   -0.4 and -0.25 Bohr, stretches them by 0.25 and 0.4 Bohr, and also runs the
   base molecule unchanged (the ``0`` entry). Deltas are Bohr because that is
   the unit both PennyLane and PySCF store coordinates in.
 - **Ansatz comparison** — passing two ansätze runs every bond-modifier point
   under both :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
-  :class:`~divi.qprog.algorithms.UCCSDAnsatz`, so you can compare accuracy
-  head-to-head across the full curve.
+  :class:`~divi.qprog.algorithms.UCCSDAnsatz`.
 - **Execution model** — ``run()`` dispatches all VQE programs, potentially in
   parallel, and blocks the script until every one of them finishes before
   returning.
@@ -367,47 +344,43 @@ sweeps; a ``problems`` sweep reads its results from ``sweep.programs`` instead.
    non-trivially — identity positions carry no information for the expectation
    value, so dropping them shrinks the shot histogram and the data returned by
    the backend.  Pass ``measure_all_qubits=True`` to measure the full register
-   instead (for example, when you want the raw histograms of every qubit).
+   instead.
 
 Spending Shots Where They Matter
 --------------------------------
 
-For chemistry Hamiltonians the coefficient distribution is typically highly
-skewed. Under a fixed total budget, uniform allocation can oversample
-low-weight groups and undersample dominant ones.
-
-Continuing from the sweep setup above, focus the same total budget on dominant
-groups:
+Continuing from the sweep setup above, ``shot_distribution="weighted"``
+allocates the total budget by group weight:
 
 .. code-block:: python
 
    from divi.qprog import VQE
    from divi.qprog.problems import MolecularProblem
-   from divi.backends import QiskitSimulator
+   from divi.backends import MaestroSimulator
 
    problem = MolecularProblem.from_molecule(mol)
    vqe = VQE(
        problem,
        ansatz=UCCSDAnsatz(),
        optimizer=mc_optimizer,
-       backend=QiskitSimulator(force_sampling=True, shots=2000),
+       backend=MaestroSimulator(force_sampling=True, shots=2000),
        grouping_strategy="qwc",
-       shot_distribution="weighted",  # focus shots on dominant terms
+       shot_distribution="weighted",  # allocate shots by group weight
    )
 
 The ``"weighted"`` strategy allocates shots proportional to each group's
 coefficient L1 norm.  Note that ``shot_distribution`` only takes effect on a
-sampling backend (``supports_expval=False``) — on an expval-native backend like
-:class:`~divi.backends.MaestroSimulator` the result is computed analytically and
-the allocation is ignored (with a :class:`UserWarning`).  The example above uses
-:class:`~divi.backends.QiskitSimulator`, which samples.  See the
-:ref:`adaptive-shot-allocation` section of the pipelines guide for the full list
-of strategies, the ``force_sampling`` recipe, and the bias-vs-budget trade-offs.
+sampling backend (``supports_expval=False``).
+:class:`~divi.backends.MaestroSimulator` computes expectation values
+analytically by default, in which case the allocation is ignored (with a
+:class:`UserWarning`); ``force_sampling=True`` makes it sample, as the example
+above does.  See the :ref:`adaptive-shot-allocation` section of the pipelines
+guide for the full list of strategies and the ``force_sampling`` recipe.
 
 Next Steps
 ----------
 
-- Try the runnable tutorials in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
+- Runnable tutorials are in the `tutorials/ <https://github.com/QoroQuantum/divi/tree/main/tutorials>`_ directory
 - Learn about :doc:`../execution_workflows/optimizers` for optimisation strategies
 - Explore :doc:`improving_results_qem` for error mitigation
 - Save and resume long runs with :doc:`../execution_workflows/resuming_long_runs`

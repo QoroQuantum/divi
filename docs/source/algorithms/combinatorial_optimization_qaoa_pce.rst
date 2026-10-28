@@ -2,36 +2,24 @@ Combinatorial Optimisation with QAOA and PCE
 ============================================
 
 Divi provides several routes from a graph, QUBO, or HUBO to a binary solution.
-Start with the problem representation and scale, then choose the solver:
 
-.. list-table:: Choosing a workflow
+.. list-table:: Workflows
    :header-rows: 1
-   :widths: 20 35 45
+   :widths: 30 70
 
    * - Workflow
-     - Use it when
-     - Main trade-off
+     - Behaviour
    * - :class:`~divi.qprog.algorithms.QAOA`
-     - The problem fits in the available qubits and you want the standard
-       cost/mixer construction.
-     - Uses roughly one qubit per binary variable.
+     - Standard cost/mixer construction; uses roughly one qubit per binary
+       variable.
    * - :class:`~divi.qprog.algorithms.PCE`
-     - A QUBO or HUBO has too many variables for one-qubit-per-variable
-       encoding.
-     - Encodes variables as Pauli correlations, using logarithmic or
-       square-root qubit scaling at the cost of a different objective landscape.
+     - Encodes the variables of a QUBO or HUBO as Pauli correlations, using
+       logarithmic or square-root qubit scaling.
    * - :class:`~divi.qprog.algorithms.IterativeQAOA`
-     - You want to increase QAOA depth gradually and warm-start each depth.
-     - Runs several optimisations, but often starts deeper circuits from better
-       parameters.
+     - Increases QAOA depth gradually and warm-starts each depth; runs several
+       optimisations.
    * - :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
-     - The full problem should be decomposed into independently executable
-       sub-problems.
-     - Scales beyond one quantum program, but partition boundaries can reduce
-       global solution quality.
-
-For a first run, continue to `Graph Problems`_ or `QUBO Problems`_. The next
-section is for users defining a problem type that Divi does not already ship.
+     - Decomposes the full problem into independently executable sub-problems.
 
 QAOAProblem Contract and Hamiltonian Helpers
 --------------------------------------------
@@ -68,8 +56,7 @@ mixer, initial state, feasibility, repair, and partitioned aggregation. The cost
    cost_from_dict = to_spo({"XI": 1.0, "IZ": 0.5})
    cost_from_qubo = qubo_to_spo({(0,): -1.0, (1,): -1.0, (0, 1): 2.0})
 
-The default :func:`~divi.hamiltonians.x_mixer` suits unconstrained binary
-problems. Override ``mixer_hamiltonian`` for constrained spaces. Builders include
+Builders for ``mixer_hamiltonian`` include
 :func:`~divi.hamiltonians.x_mixer`, :func:`~divi.hamiltonians.xy_mixer`,
 :func:`~divi.hamiltonians.bit_flip_mixer`, and
 :func:`~divi.hamiltonians.edge_driver`.
@@ -110,8 +97,7 @@ Trotterization Strategies
 -------------------------
 
 The default :class:`~divi.hamiltonians.trotterization.ExactTrotterization` applies every cost
-term. :class:`~divi.hamiltonians.trotterization.QDrift` samples terms for shallower circuits at
-the cost of averaging more circuits.
+term. :class:`~divi.hamiltonians.trotterization.QDrift` samples terms.
 
 QDrift controls:
 
@@ -148,12 +134,6 @@ For a full comparison of Exact Trotterization vs QDrift (including circuit depth
 count), see the `qaoa_qdrift.py
 <https://github.com/QoroQuantum/divi/blob/main/tutorials/optimization/qaoa_qdrift.py>`_
 tutorial.
-
-.. tip::
-
-   On sampling backends, pass ``shot_distribution="weighted"`` to focus the
-   cost Hamiltonian's shot budget on its dominant terms.  See
-   :ref:`adaptive-shot-allocation` for the full list of strategies.
 
 Graph Problems
 --------------
@@ -335,15 +315,12 @@ Problems are minimised; negate an objective to maximise it.
 * Integers, decimals up to six places and simple fractions are encoded
   exactly when every value is at most :math:`2^{20}` of their common step.
   Other values, or slack that would need more than eight bits, are
-  rounded and a :class:`UserWarning` says so; round data such as ESG scores or
-  returns to a coarse grid first to keep the encoding exact and small.
+  rounded and a :class:`UserWarning` says so.
 * :class:`ValueError` is raised for a bound outside the left-hand side's range,
   an equality bound off the coefficients' common step, rounding that would
   leave a constraint that always holds, or a variable not in the problem.
   Other equality constraints that no assignment meets are not detected.
   Constraints cannot be combined with a ``decomposer``.
-* Choose ``penalty_weight`` so one unit of violation outweighs the objective's
-  spread across solutions; see :ref:`penalty-tuning`.
 * :meth:`~divi.qprog.problems.BinaryOptimizationProblem.is_feasible` checks the
   original constraints and
   :meth:`~divi.qprog.problems.BinaryOptimizationProblem.compute_energy` returns
@@ -379,13 +356,11 @@ Pauli Correlation Encoding (PCE)
 parity encoding. ``encoding_type="dense"`` needs
 :math:`\lceil\log_2(N + 1)\rceil` qubits for *N* variables;
 ``encoding_type="poly"`` chooses the smallest *q* for which
-:math:`q(q + 1)/2 \geq N`. Dense encoding minimises qubit count, while the
-polynomial encoding uses lower-weight one- and two-qubit correlations.
+:math:`q(q + 1)/2 \geq N`.
 
 ``alpha`` controls the objective used during optimisation. Values below ``5``
 use a smooth parity relaxation; values at or above ``5`` use a discrete,
-CVaR-style objective over sampled energies. Start with the default ``2.0``
-unless you specifically need the harder discrete objective.
+CVaR-style objective over sampled energies.
 
 .. dashboard-example: pce
 
@@ -497,8 +472,8 @@ Portfolio Optimisation
 
 Two :class:`~divi.qprog.problems.BinaryOptimizationProblem` subclasses build
 long-only, fully invested mean-variance portfolios from expected returns
-:math:`\mu` and a covariance matrix :math:`\Sigma`, both in the same period
-(typically annualised). ``risk_tolerance`` is the weight :math:`\tau` on
+:math:`\mu` and a covariance matrix :math:`\Sigma`, both in the same period.
+``risk_tolerance`` is the weight :math:`\tau` on
 expected return; ``0`` minimises variance alone. It corresponds to
 PyPortfolioOpt's ``risk_aversion = 2/τ`` and, for Qiskit Finance's
 ``PortfolioOptimization`` over :math:`K` assets or :math:`L` units, to
@@ -653,7 +628,7 @@ Divi supports maximum-weight matching via :class:`~divi.qprog.problems.MaxWeight
 a weighted graph, it finds a set of edges that maximises total weight while
 ensuring no two selected edges share a node.
 
-For small graphs, use directly with QAOA:
+It can be used directly with QAOA:
 
 .. code-block:: python
 
@@ -677,7 +652,7 @@ For small graphs, use directly with QAOA:
    qaoa.run()
    print(f"Matching: {qaoa.solution}")
 
-For large graphs, enable edge-based partitioning with ``max_edges_per_partition``:
+Edge-based partitioning is enabled with ``max_edges_per_partition``:
 
 .. code-block:: python
 
@@ -710,12 +685,10 @@ and optionally fills unmatched residual nodes using classical
 Iterative QAOA
 --------------
 
-Standard QAOA uses random initialisation at a fixed circuit depth.
-:class:`~divi.qprog.algorithms.IterativeQAOA` improves on this by iteratively
-increasing the depth from 1 to ``max_depth``, warm-starting each depth with
-parameters interpolated from the previous optimum.  This strategy, based on
-`arXiv:2504.01694 <https://arxiv.org/abs/2504.01694>`_, often converges to
-better solutions with the same per-depth budget.
+:class:`~divi.qprog.algorithms.IterativeQAOA` iteratively
+increases the depth from 1 to ``max_depth``, warm-starting each depth with
+parameters interpolated from the previous optimum.  This strategy is based on
+`arXiv:2504.01694 <https://arxiv.org/abs/2504.01694>`_.
 
 Three interpolation strategies are available via :class:`~divi.qprog.algorithms.InterpolationStrategy`:
 
@@ -726,7 +699,7 @@ Three interpolation strategies are available via :class:`~divi.qprog.algorithms.
    * - Strategy
      - Description
    * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.INTERP`
-     - Linear interpolation (Zhou et al.).  Simple and robust.
+     - Linear interpolation (Zhou et al.).
    * - :attr:`~divi.qprog.algorithms.InterpolationStrategy.FOURIER`
      - Fourier parameterisation of Zhou et al. (`arXiv:1812.01041
        <https://arxiv.org/abs/1812.01041>`_, Eq. 8): sine modes for
@@ -774,8 +747,7 @@ Example:
        print(f"  p={entry['depth']}  loss={entry['best_loss']:.6f}")
 
 The ``max_iterations_per_depth`` parameter can also be a callable
-``(depth) -> int`` for adaptive budgets — for example, allocating more
-iterations to deeper circuits:
+``(depth) -> int``:
 
 .. code-block:: python
 
@@ -796,9 +768,7 @@ Beyond the top bitstrings, the measured distribution yields
 :math:`\langle Z_i Z_j \rangle` via
 :meth:`~divi.qprog.SolutionSamplingMixin.get_correlations` — how strongly wires
 *i* and *j* agree (``+1``) or disagree (``-1``) — and :math:`\langle Z_i \rangle`
-via :meth:`~divi.qprog.SolutionSamplingMixin.get_magnetisations`. Pairs near
-:math:`\pm 1` are effectively decided and can be frozen to shrink the problem,
-as recursive QAOA does. Wires are indexed by bitstring position, matching
+via :meth:`~divi.qprog.SolutionSamplingMixin.get_magnetisations`. Wires are indexed by bitstring position, matching
 :attr:`~divi.qprog.problems.QAOAProblem.decode_fn`.
 
 .. code-block:: python
@@ -829,9 +799,8 @@ as recursive QAOA does. Wires are indexed by bitstring position, matching
 Graph Partitioning QAOA
 -----------------------
 
-For large graphs that exceed quantum hardware limitations, use
 :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
-with a graph problem configured for partitioning via
+partitions a graph problem configured for partitioning via
 :class:`~divi.qprog.problems.GraphPartitioningConfig`:
 
 .. dashboard-example: optimization
@@ -895,9 +864,9 @@ QUBO Partitioning (QAOA or PCE)
    ``pip install "qoro-divi[qubo-decompose]"``. Plain QUBO and HUBO
    problems work on the core install — see :ref:`optional-extras`.
 
-For large QUBO problems, use :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` with a
+:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` partitions a
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` configured with D-Wave's hybrid decomposer/composer.
-You can choose the per-partition engine via ``quantum_routine``:
+The per-partition engine is chosen via ``quantum_routine``:
 
 - ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.
 - ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding_type`` and ``alpha``).
@@ -984,10 +953,7 @@ Structure-Aware Partitioning (Community Decomposer)
 Instead of the hybrid ``EnergyImpactDecomposer``, pass a
 :class:`~divi.qprog.problems.CommunityDecomposer` — a drop-in ``hybrid``
 decomposer that splits the QUBO by the *community structure* of its interaction
-graph, grouping strongly-coupled variables and cutting weak couplings so little
-energy is lost at partition boundaries. This helps most on problems with community
-structure; ``EnergyImpactDecomposer`` remains a fine default for featureless (dense,
-unstructured) QUBOs.
+graph, grouping strongly-coupled variables and cutting weak couplings.
 
 It is configured with a :class:`~divi.qprog.problems.QUBOPartitioningConfig`:
 
@@ -996,16 +962,14 @@ It is configured with a :class:`~divi.qprog.problems.QUBOPartitioningConfig`:
   ``EnergyImpactDecomposer(size=...)``.
 - ``minimum_n_clusters`` — a floor on the number of partitions produced. At least
   one of ``max_n_variables_per_cluster`` / ``minimum_n_clusters`` must be given.
-- ``method`` — ``"modularity"`` (default: Louvain community detection, the
-  strongest general-purpose choice across structured, dense, and constrained
-  QUBOs) or ``"spectral"`` (signed multi-view spectral clustering, which respects
-  coupling signs; best on sparse-geometric instances). With the ``local_search``
-  polish the two reach comparable quality.
+- ``method`` — ``"modularity"`` (default: Louvain community detection) or
+  ``"spectral"`` (signed multi-view spectral clustering, which respects
+  coupling signs).
 - ``seed`` — seed for the clustering step.
 
 ``local_search=True`` is a :class:`~divi.qprog.problems.BinaryOptimizationProblem`
 option (not part of the decomposer): it adds a greedy single-bit-flip polish of each
-aggregated solution and improves results with **any** decomposer, including
+aggregated solution and works with any decomposer, including
 ``EnergyImpactDecomposer``.
 
 .. code-block:: python
@@ -1029,15 +993,6 @@ aggregated solution and improves results with **any** decomposer, including
    )
    sol_community, energy_community = run_partitioned(ensemble)
 
-Why Partition?
---------------
-
-Quantum hardware is limited in the number of qubits and circuit depth. For large problems:
-
-- A monolithic QAOA circuit may exceed the available qubit or depth budget.
-- Partitioned QAOA trades global optimality for scalability and parallel execution.
-- It enables fast, approximate solutions using many small quantum jobs rather than one large one.
-
 Next Steps
 ----------
 
@@ -1045,6 +1000,6 @@ Next Steps
 - :doc:`routing` — TSP and CVRP with constraint-preserving encodings
 - :doc:`../execution_workflows/optimizers` — optimizer selection and tuning
 - :doc:`../execution_workflows/backends` — simulators and services
-- :doc:`../tools/qubo_characterization` — diagnose a QUBO and find good
+- :doc:`../tools/qubo_characterization` — diagnose a QUBO and find
   ``γ`` / ``β`` before running QAOA
 - :doc:`../api_reference/qprog/problems` — full :class:`~divi.qprog.problems.QAOAProblem` API

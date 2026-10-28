@@ -1,7 +1,7 @@
 Quick Start Guide
 =================
 
-Welcome to Divi! This guide will get you up and running with quantum program execution in minutes.
+Welcome to Divi! This guide will get you up and running with quantum program execution.
 
 What is Divi?
 -------------
@@ -67,21 +67,20 @@ Molecule inputs come from the ``chem`` extra. Install it first:
    print(f"Ground state energy: {vqe.best_loss:.6f} Hartree")
    print(f"Circuits executed: {vqe.total_circuit_count}")
 
-That's it — you just ran a variational quantum algorithm. The energy should be
-close to the ``-1.137`` Hartree reference for this geometry and model.
+That's it — you just ran a variational quantum algorithm.
 
 .. tip::
 
-   **Stuck?** Try :doc:`divi-ai <tools/divi_ai>` — ask questions, get code examples, and explore
-   APIs right in your terminal: ``pip install qoro-divi[ai] && divi-ai``
+   :doc:`divi-ai <tools/divi_ai>` answers questions about Divi in your terminal:
+   ``pip install qoro-divi[ai] && divi-ai``
 
-Choosing the Right Algorithm
------------------------------
+Algorithms
+----------
 
 Divi offers specialised algorithms for different problem types:
 
 **VQE – Quantum Chemistry**
-   Use :class:`~divi.qprog.algorithms.VQE` for molecular ground state calculations, dissociation curves, and electronic structure problems.
+   :class:`~divi.qprog.algorithms.VQE` covers molecular ground state calculations, dissociation curves, and electronic structure problems.
 
    .. code-block:: python
 
@@ -90,14 +89,14 @@ Divi offers specialised algorithms for different problem types:
 
       vqe = VQE(
           h2_problem,
-          ansatz=UCCSDAnsatz(),  # More sophisticated than Hartree-Fock
+          ansatz=UCCSDAnsatz(),
           n_layers=2,
           optimizer=MonteCarloOptimizer(),
           backend=MaestroSimulator()
       )
 
 **QAOA – Optimisation Problems**
-   Use :class:`~divi.qprog.algorithms.QAOA` for combinatorial optimisation: Max-Cut, Max-Clique, travelling salesman, QUBO/HUBO, and similar NP-hard problems (graphs or binary polynomial formulations).
+   :class:`~divi.qprog.algorithms.QAOA` covers combinatorial optimisation: Max-Cut, Max-Clique, travelling salesman, QUBO/HUBO, and similar NP-hard problems (graphs or binary polynomial formulations).
 
    .. dashboard-example: qaoa-basic
 
@@ -123,7 +122,7 @@ Divi offers specialised algorithms for different problem types:
       print(f"Solution: {qaoa.solution}")
 
 **PCE – QUBO/HUBO with Pauli Correlation Encoding**
-   Use :class:`~divi.qprog.algorithms.PCE` for QUBO and higher-order (HUBO) binary optimisation with parity-based encoding. PCE is a VQE variant that uses far fewer qubits than standard QAOA for the same problem size — see :doc:`/algorithms/combinatorial_optimization_qaoa_pce` for the encoding details and scaling trade-offs.
+   :class:`~divi.qprog.algorithms.PCE` covers QUBO and higher-order (HUBO) binary optimisation with parity-based encoding. PCE is a VQE variant; see :doc:`/algorithms/combinatorial_optimization_qaoa_pce` for the encoding details.
 
    .. dashboard-example: pce
 
@@ -251,7 +250,7 @@ Abridged above: each stage also reports more metadata rows, and the real trees
 carry two further stages (``PreprocessStage`` and ``ParameterBindingStage``, both
 at factor ``1`` here).
 
-Read a tree bottom-up: the ``Total`` line is the number you came for — this program
+The ``Total`` line gives the circuits and shots submitted per evaluation — this program
 submits **1 circuit per evaluation**. Maestro evaluates this expectation value
 analytically, so the displayed 1,000 shots are configured but not consumed. The
 rows above show how it got there. The
@@ -261,9 +260,6 @@ the whole observable at once, so ``÷14`` collapses those 14 terms back into a
 single circuit. A different backend, or error mitigation, changes those factors —
 and a natural-gradient optimizer drives extra routines of its own, which appear as
 further trees.
-
-That makes this the cheapest way to catch a misconfigured program: run it, read
-the ``Total``, and see whether the number is what you expected.
 
 One caveat: ``Total`` is per *evaluation*, not per iteration and not per run.
 Optimizers evaluate the cost more than once per step — COBYLA, used here, decides
@@ -275,10 +271,10 @@ Backend Options
 ---------------
 
 **Local development**
-   Use :class:`~divi.backends.MaestroSimulator` (shown in all examples above)
-   for fast iteration, testing, and hand-written noise models. Use
-   :class:`~divi.backends.QiskitSimulator` when you need Qiskit-native or
-   device-calibrated noise models — it requires the ``aer`` extra
+   :class:`~divi.backends.MaestroSimulator` (shown in all examples above)
+   supports hand-written noise models.
+   :class:`~divi.backends.QiskitSimulator` supports Qiskit-native and
+   device-calibrated noise models and requires the ``aer`` extra
    (:ref:`optional-extras`).
 
 **Cloud simulation & hardware**

@@ -8,23 +8,19 @@ subclasses and work with the same ``QAOA`` constructor described in
 :doc:`combinatorial_optimization_qaoa_pce`. With the default
 ``encoding="one_hot"``, they implement the
 **Constraint-Enhanced QAOA** (CE-QAOA) protocol [#onah2025]_, which uses
-block one-hot encoding with W-state initialisation and an XY mixer to keep
-quantum amplitude concentrated on the feasible (permutation) subspace.
+block one-hot encoding with W-state initialisation and an XY mixer, which keep
+the state inside the block one-hot subspace.
 
-Why CE-QAOA?
-------------
+CE-QAOA Components
+------------------
 
-For routing problems like TSP and CVRP, standard penalty-QAOA wastes
-most of its measurement shots on infeasible bitstrings — the feasible
-set (e.g. valid tours, or permutations more generally) is an
-exponentially small fraction of the full Hilbert space.  CE-QAOA avoids
-this by co-designing the encoding, initial state, and mixer:
+CE-QAOA co-designs the encoding, initial state, and mixer:
 
 - **W-state initialisation**: starts each qubit block in a uniform
   superposition over one-hot basis states (exactly one city per slot).
 - **XY mixer**: all-to-all XY coupling within each block swaps
   excitations without creating or destroying them, preserving the
-  one-hot constraint with a constant spectral gap.
+  one-hot constraint.
 - **Reduced phase operator**: row constraints are enforced structurally,
   so only column and capacity penalties appear in the cost Hamiltonian.
 
@@ -112,8 +108,7 @@ Continuing with the imports and backend from the TSP example:
 Binary Encoding
 ^^^^^^^^^^^^^^^
 
-Choose the encoding from the qubit budget and the importance of staying inside
-the feasible subspace:
+The ``encoding`` argument selects between the two routing encodings:
 
 .. list-table:: One-hot versus binary routing encodings
    :header-rows: 1
@@ -126,10 +121,10 @@ the feasible subspace:
    * - ``"one_hot"``
      - :math:`O(N)`
      - W-state initialisation and XY mixing preserve the one-hot constraint.
-     - Becomes impractical for large routing instances.
+     - Larger register than binary encoding.
    * - ``"binary"``
      - :math:`O(\log N)`
-     - Substantially lowers the qubit count.
+     - Smaller register than one-hot encoding.
      - Produces a HUBO with higher-order interactions; it does not preserve
        feasibility through the one-hot mixer.
 
@@ -234,8 +229,7 @@ Next Steps
 ----------
 
 - Run the ``tutorials/routing/ce_qaoa_routing.py`` tutorial
-- Explore :doc:`../execution_workflows/optimizers` — ``GridSearchOptimizer`` is particularly
-  suited for the 2-parameter CE-QAOA landscape
+- Explore :doc:`../execution_workflows/optimizers`
 - See :doc:`combinatorial_optimization_qaoa_pce` for general QAOA usage
 
 References

@@ -2,8 +2,8 @@ Divi Documentation
 ==================
 
 Divi is a Python library for building and running quantum programs at scale.
-It sits above circuit-level frameworks like PennyLane and Qiskit and handles the
-orchestration that practitioners usually write by hand: circuit generation,
+It sits above circuit-level frameworks like PennyLane and Qiskit and handles
+orchestration: circuit generation,
 batching, error mitigation, parameter optimisation, and result aggregation.
 
 Why Divi?

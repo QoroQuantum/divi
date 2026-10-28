@@ -1,7 +1,7 @@
 Testing
 =======
 
-This guide explains Divi's comprehensive testing framework and how to run tests effectively.
+This guide explains Divi's testing framework and how to run tests.
 
 Running Tests
 -------------
@@ -26,7 +26,7 @@ To run specific test files:
 
    uv run pytest tests/hamiltonians/
 
-**Parallel Testing** (Recommended for CI/Large Test Suites)
+**Parallel Testing**
 
 Divi supports parallel test execution using `pytest-xdist <https://pytest-xdist.readthedocs.io/>`_:
 
@@ -135,7 +135,7 @@ Current locations:
 
 **Key Fixtures Available:**
 
-- ``dummy_simulator``: Fast mock simulator returning random counts (for unit tests)
+- ``dummy_simulator``: Mock simulator returning random counts (for unit tests)
 - ``dummy_expval_backend``: Mock backend that supports expectation values (for PCE tests)
 - ``dummy_pipeline_env``: ``PipelineEnv`` wrapping the expval backend (for pipeline tests)
 - ``async_backend``: ``FakeAsyncBackend`` that records jobs, polls and cancels, and completes every job (for tests of job handling and cancellation; script polling with ``FakeAsyncBackend(poll=...)`` from ``tests/_helpers.py``)
@@ -204,18 +204,14 @@ Writing Tests
 **Test Guidelines:**
 
 1. **Follow naming convention**: ``test_*.py`` files, ``test_*`` functions
-2. **Use descriptive names**: ``test_quantum_program_initialization``
-3. **Test both success and failure cases**
-4. **Use appropriate fixtures** for common test data
-5. **Mark slow tests**: Use ``@pytest.mark.e2e`` for integration tests
-6. **Keep infrastructure roles separate**: fixtures in ``conftest.py``,
+2. **Mark slow tests**: Use ``@pytest.mark.e2e`` for integration tests
+3. **Keep infrastructure roles separate**: fixtures in ``conftest.py``,
    explicit helpers in ``_helpers.py``, shared ``verify_*`` in ``_contracts.py``
 
 **Example Test with Fixtures:**
 
 The ``dummy_simulator`` fixture is defined in ``tests/conftest.py`` and provides
-a fake backend (no real circuit execution). Use it so tests do not depend on a
-real backend. Common test data (e.g. a minimal molecule) can be created inline
+a fake backend (no real circuit execution). Common test data (e.g. a minimal molecule) can be created inline
 or in a shared fixture:
 
 .. code-block:: python
@@ -248,7 +244,7 @@ or in a shared fixture:
 
 **Mocking with pytest-mock**
 
-Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for clean mocking in tests. The ``mocker`` fixture provides easy access to Python's ``unittest.mock``:
+Divi uses `pytest-mock <https://pytest-mock.readthedocs.io/>`_ for mocking in tests. The ``mocker`` fixture provides access to Python's ``unittest.mock``:
 
 .. code-block:: python
 

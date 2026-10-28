@@ -13,11 +13,10 @@ networks.
    :class:`~divi.circuits.MetaCircuit` discussion in :doc:`core_concepts`.
 
 .. tip::
-   **Two ways to do QML in Divi.** For most quantum-machine-learning work, reach
-   for the curated :class:`~divi.qprog.algorithms.QNN` primitive
-   (:doc:`../algorithms/quantum_neural_networks`) — it composes a feature map and ansatz for
-   you. Use the ``CustomVQA`` data-binding path on this page only when you bring
-   your own circuit and want to mark its data parameters by hand.
+   **Two ways to do QML in Divi.** :class:`~divi.qprog.algorithms.QNN`
+   (:doc:`../algorithms/quantum_neural_networks`) composes a feature map and
+   ansatz. The ``CustomVQA`` data-binding path on this page takes your own
+   circuit with data parameters marked by hand.
 
 How External Circuits Enter Divi
 --------------------------------
@@ -33,7 +32,7 @@ stages bridge directly from the major quantum frameworks:
   ``QuantumCircuit`` into a MetaCircuit, mapping ``measure`` instructions to a
   probability measurement over the measured wires.
 
-You rarely call these stages by hand. :class:`~divi.qprog.algorithms.CustomVQA`
+:class:`~divi.qprog.algorithms.CustomVQA`
 selects the right one based on the object you pass it, then drives the resulting
 circuit through binding, execution, and reduction — the same machinery used
 throughout Divi. For manual construction, see :doc:`pipeline_authoring`.
@@ -44,7 +43,7 @@ Bring Your Own Circuit with CustomVQA
 Built-in algorithms like :class:`~divi.qprog.algorithms.VQE`,
 :class:`~divi.qprog.algorithms.QAOA`, and
 :class:`~divi.qprog.algorithms.TimeEvolution` generate their circuits
-automatically — you don't need to build circuits manually for most use cases.
+automatically.
 
 When you need a **custom ansatz or circuit**, use
 :class:`~divi.qprog.algorithms.CustomVQA`. It lets you define your own circuit

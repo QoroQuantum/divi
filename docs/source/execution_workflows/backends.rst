@@ -5,32 +5,13 @@ Divi's execution layer is built around :class:`~divi.backends.CircuitRunner`:
 every backend exposes the same submission API, so programs can change execution
 targets without changing algorithm logic.
 
-.. list-table:: Choose a backend
-   :header-rows: 1
-   :widths: 24 38 38
-
-   * - Backend
-     - Start here when
-     - Move elsewhere when
-   * - :class:`~divi.backends.MaestroSimulator`
-     - Developing locally, running noiseless simulations, or modelling
-       a hand-written ``maestro.NoiseModel``.
-     - You need Qiskit-native calibration data or a cloud target.
-   * - :class:`~divi.backends.QiskitSimulator`
-     - Reusing a Qiskit Aer noise model or fake-backend calibration.
-     - You need Maestro's local methods or managed cloud execution.
-   * - :class:`~divi.backends.QoroService`
-     - Running managed simulators or quantum hardware through the cloud.
-     - You are still iterating rapidly on local code.
-
-Most algorithm users can continue directly to the relevant backend section.
 The next section is for callers using ``submit_circuits`` without a
 :class:`~divi.qprog.QuantumProgram`.
 
 Backend Architecture
 --------------------
 
-All backends in Divi implement the :class:`~divi.backends.CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment. This powerful abstraction allows you to develop your quantum programs locally and then switch to a different backend, like cloud hardware, with a single line of code.
+All backends in Divi implement the :class:`~divi.backends.CircuitRunner` interface, providing a consistent API regardless of the underlying execution environment.
 
 Remote-job backends such as :class:`~divi.backends.QoroService` implement
 :class:`~divi.backends.AsyncJobBackend`, a subclass of
@@ -119,14 +100,14 @@ Available Backends
 
 Divi ships three :class:`~divi.backends.CircuitRunner` implementations:
 
-* :class:`~divi.backends.MaestroSimulator` — A high-performance local simulator, recommended as the default for development and testing.  Supports noise via ``maestro.NoiseModel`` (see :ref:`noisy-simulation-maestro`).
-* :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with thread-count control.  Use this when you need device-calibrated noise from a Qiskit fake backend or an arbitrary ``qiskit_aer.noise.NoiseModel``.
-* :class:`~divi.backends.QoroService` — A cloud-based quantum computing service for accessing powerful simulators and real quantum hardware.
+* :class:`~divi.backends.MaestroSimulator` — A local simulator.  Supports noise via ``maestro.NoiseModel`` (see :ref:`noisy-simulation-maestro`).
+* :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with thread-count control.  Supports device-calibrated noise from a Qiskit fake backend or an arbitrary ``qiskit_aer.noise.NoiseModel``.
+* :class:`~divi.backends.QoroService` — A cloud-based quantum computing service for accessing simulators and real quantum hardware.
 
 MaestroSimulator
 -----------------
 
-:class:`~divi.backends.MaestroSimulator` is the recommended runner for local development, testing, and research. It is powered by Qoro's C++ quantum simulator (``qoro-maestro``).
+:class:`~divi.backends.MaestroSimulator` is powered by Qoro's C++ quantum simulator (``qoro-maestro``).
 
 .. _configuring-maestrosimulator:
 
@@ -213,7 +194,7 @@ For reproducibility under noisy execution see :ref:`Operational notes <operation
 QiskitSimulator
 ------------------
 
-:class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with thread-count control and Qiskit-native noise configuration.  Use it when you need device-calibrated noise from a Qiskit fake backend, or when you have an existing ``qiskit_aer.noise.NoiseModel`` you want to run as-is.  For a noise model written from scratch, :ref:`MaestroSimulator's noisy paths <noisy-simulation-maestro>` are usually faster.
+:class:`~divi.backends.QiskitSimulator` wraps Qiskit's ``AerSimulator`` with thread-count control and Qiskit-native noise configuration.  It supports device-calibrated noise from a Qiskit fake backend and an existing ``qiskit_aer.noise.NoiseModel`` run as-is.
 
 .. note::
 
@@ -246,13 +227,7 @@ QiskitSimulator
 ``optimization_level`` is forwarded to :func:`~qiskit.compiler.transpile` for
 every circuit the backend runs, and defaults to ``None`` — Qiskit's own choice.
 
-Under a noise model this is worth setting deliberately. Optimisation rewrites a
-circuit by how compressible it is, which is not uniform across a batch: a
-Clifford circuit collapses much further than one holding arbitrary rotations. So
-the circuits that execute can accumulate different amounts of noise than the
-ones you submitted. Protocols that compare circuits to each other are sensitive
-to this — :class:`~divi.circuits.quepp.QuEPP` infers its rescaling factor from
-exactly that comparison, so it wants ``optimization_level=0``:
+Example with a noise model and ``optimization_level=0``:
 
 .. code-block:: python
 
@@ -267,13 +242,10 @@ exactly that comparison, so it wants ``optimization_level=0``:
        optimization_level=0,  # keep executed circuits faithful to submitted ones
    )
 
-The same applies to a mirror-circuit benchmark: at any level above 0 a noiseless
-``U · U†`` can be optimised away to nothing.
-
 QoroService
 ------------
 
-:class:`~divi.backends.QoroService` talks to the Qoro cloud API, giving programs access to advanced simulators, tensor-network backends, and real QPUs. It supports two execution modes: **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only).
+:class:`~divi.backends.QoroService` talks to the Qoro cloud API, giving programs access to simulators, tensor-network backends, and real QPUs. It supports two execution modes: **sampling mode** (measurement counts) and **expectation mode** (Pauli expectation values, simulation-only).
 
 **Two layers of batching**
 
@@ -438,9 +410,8 @@ A vendor whose configuration shape Qoro does not yet describe reports empty
 
    A blueprint reports what a vendor *accepts*, not what your target is
    currently set to — the stored values live on the dashboard. Nor does the QPU
-   system listing say which vendor a given system routes to, so pair this with
-   :meth:`~divi.backends.QoroService.fetch_qpu_systems` for orientation rather
-   than treating it as a description of a specific run.
+   system listing (:meth:`~divi.backends.QoroService.fetch_qpu_systems`) say
+   which vendor a given system routes to.
 
 .. _device-settings-per-job:
 
@@ -539,10 +510,6 @@ Backend Comparison
      - :class:`~divi.backends.MaestroSimulator`
      - :class:`~divi.backends.QiskitSimulator`
      - :class:`~divi.backends.QoroService`
-   * - **Use Case**
-     - Default local simulation; ``maestro.NoiseModel`` noise
-     - Qiskit-native noise (fake backends, calibrated models)
-     - Production & real hardware
    * - **Simulation Engine**
      - Qoro C++ (qoro-maestro)
      - Qiskit Aer
@@ -572,13 +539,11 @@ All backends accept ``track_depth=True`` on construction to record per-batch dep
 Operational notes
 -----------------
 
-* **MaestroSimulator and many qubits**: Maestro's default method is statevector, whose memory doubles with every qubit.  For wide circuits set ``simulation_type="MatrixProductState"`` and a ``max_bond_dimension`` (see :ref:`Configuring MaestroSimulator <configuring-maestrosimulator>` above).  Note that switching to MPS changes memory and runtime scaling — it is not a generic "make it faster" switch.
-* **QiskitSimulator**: ``n_processes`` and ``shots`` trade throughput, memory, and statistical noise; there is no single knob—balance them for your machine and accuracy needs.
+* **MaestroSimulator and many qubits**: Maestro's default method is statevector, whose memory doubles with every qubit.  For wide circuits set ``simulation_type="MatrixProductState"`` and a ``max_bond_dimension`` (see :ref:`Configuring MaestroSimulator <configuring-maestrosimulator>` above).
 
 .. _operational-notes-shot-reproducibility:
 
 * **Shot reproducibility**: The ``seed`` option makes MaestroSimulator runs, noisy or not, repeat exactly; :meth:`~divi.backends.MaestroSimulator.set_seed` sets it on an existing simulator.  Each circuit's seed is derived from its label and QASM, so circuits in a batch and across iterations draw independently. Because the QASM text is part of the seed, a change to how it is written, such as a program's ``precision``, gives different draws.  Left unset, runs draw from system entropy.
-* **QoroService latency**: Client-side wait time is dominated by how you poll; tune ``polling_interval`` and ``max_retries`` on :class:`~divi.backends.QoroService`. For fast inner loops, use a local simulator; cloud queue time is outside the client library.
 
 Next Steps
 ----------

@@ -2,9 +2,9 @@ Visualising Variational Landscapes
 ==================================
 
 The :mod:`divi.viz` module provides loss-landscape scans and analysis tools for
-variational programs. Use it to inspect the local geometry of an objective
-around a chosen parameter vector, compare minima, study curvature, and find
-minimum-energy paths between solutions.
+variational programs. It scans the local geometry of an objective around a
+chosen parameter vector, interpolates between minima, computes curvature, and
+finds minimum-energy paths between solutions.
 
 Divi's scan API is inspired by `orqviz <https://github.com/zapata-engineering/orqviz>`_
 (Zapata Engineering, Apache-2.0; see also `arXiv:2111.04695
@@ -15,32 +15,32 @@ spectra, gradient overlays, 3D rendering, trajectory overlays on PCA scans,
 and the Nudged Elastic Band algorithm — all evaluated through Divi's batched
 cost pipeline.
 
-Choosing a Scan Type
---------------------
+Scan Types
+----------
 
 .. list-table::
    :header-rows: 1
    :widths: 40 30 30
 
-   * - I want to...
-     - Use
+   * - Computes
+     - Function
      - Result type
-   * - See the landscape around my optimum
+   * - Scan around a centre point
      - :func:`~divi.viz.scan_1d` / :func:`~divi.viz.scan_2d`
      - :class:`~divi.viz.Scan1DResult` / :class:`~divi.viz.Scan2DResult`
-   * - See the landscape the optimizer explored
+   * - Scan along principal components of an optimisation trajectory
      - :func:`~divi.viz.scan_pca`
      - :class:`~divi.viz.PCAScanResult`
-   * - Compare two solutions along the connecting line
+   * - Scan along the line between two parameter vectors
      - :func:`~divi.viz.scan_interp_1d` / :func:`~divi.viz.scan_interp_2d`
      - :class:`~divi.viz.Scan1DResult` / :class:`~divi.viz.Scan2DResult`
-   * - Identify curvature directions at a point
+   * - Matrix of second derivatives at a point
      - :func:`~divi.viz.compute_hessian`
      - :class:`~divi.viz.HessianResult`
-   * - Find frequency structure in a landscape
+   * - 2D FFT power spectrum of a scan
      - :func:`~divi.viz.fourier_analysis_2d`
      - :class:`~divi.viz.Fourier2DResult`
-   * - Find the energy barrier between two minima
+   * - Minimum-energy path between two parameter vectors
      - :func:`~divi.viz.run_neb`
      - :class:`~divi.viz.NEBResult`
 
@@ -51,7 +51,7 @@ surface rendering.
 Basic Scans
 -----------
 
-The standalone API is useful when you want to make the scan call explicit:
+The standalone API makes the scan call explicit:
 
 .. dashboard-example: variational-landscape
 
@@ -88,8 +88,7 @@ The standalone API is useful when you want to make the scan call explicit:
    plane.plot(show=True)   # filled contour plot
 
 ``line.plot`` opens a matplotlib figure with the scanned offset on the x-axis and
-the objective value on the y-axis — useful for spotting barren plateaus or local
-minima along a single direction. ``plane.plot`` renders a filled contour plot
+the objective value on the y-axis. ``plane.plot`` renders a filled contour plot
 over the two scan axes with the optimum at the centre, giving a 2-D picture of
 the local loss landscape. Both return the underlying :class:`matplotlib.figure.Figure`
 and :class:`matplotlib.axes.Axes` so you can customise the rendering.
@@ -136,14 +135,11 @@ imported directly from :mod:`divi.viz`.
 PCA Scans
 ---------
 
-A random-direction scan shows a slice of the landscape that may miss the
-structure the optimizer navigated. PCA scans address this: they build scan
-directions from the principal components of the optimisation trajectory, showing
-the landscape along the directions that captured the most variance during
-optimisation. With few iterations, best-so-far points can lie almost on a line
-in parameter space (common with COBYLA early on), so give the run enough steps
-that the trajectory spans two independent directions — as in
-`tutorials/visualization/viz_qaoa_pce_comparison.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/visualization/viz_qaoa_pce_comparison.py>`_.
+PCA scans build scan directions from the principal components of the
+optimisation trajectory, showing the landscape along the directions that
+captured the most variance during optimisation. See
+`tutorials/visualization/viz_qaoa_pce_comparison.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/visualization/viz_qaoa_pce_comparison.py>`_
+for an example.
 
 Use :func:`~divi.viz.scan_pca` with parameter vectors from the optimisation
 history:
@@ -163,11 +159,9 @@ history:
    pca_scan.plot(show=True)   # cell heatmap with sample dots
 
 ``samples`` must have shape ``(n_samples, n_params)`` and span at least two
-independent directions. After ``run()``, a typical choice is stacking
-``program.param_history(mode="best_per_iteration")`` (one best row per callback;
-avoids folding an entire population into PCA) or
-``program.param_history(mode="all_evaluated")`` when you want every evaluated
-member.
+independent directions. After ``run()``, ``samples`` can be built by stacking
+``program.param_history(mode="best_per_iteration")`` (one best row per callback)
+or ``program.param_history(mode="all_evaluated")`` (every evaluated member).
 
 Omit ``center`` to anchor the affine plane at the sample mean (orqviz
 default). Pass ``center=program.best_params`` to translate the plane so the
@@ -176,10 +170,8 @@ same PC directions pass through the optimum.
 Periodic Wrapping for PCA
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Quantum gate parameters are typically :math:`2\pi`-periodic. When an optimisation
-trajectory crosses the period boundary, PCA can see an artificial jump and
-produce distorted landscapes. Use :func:`~divi.viz.periodic_trajectory_wrap`
-before feeding samples to :func:`~divi.viz.scan_pca`:
+:func:`~divi.viz.periodic_trajectory_wrap` wraps a trajectory over the
+:math:`2\pi` period before it is passed to :func:`~divi.viz.scan_pca`:
 
 .. code-block:: python
 
@@ -239,11 +231,9 @@ Hessian Analysis
 ----------------
 
 :func:`~divi.viz.compute_hessian` computes the matrix of second partial
-derivatives at a parameter point. Eigenvalues reveal local curvature;
-eigenvectors are natural choices as scan directions.
+derivatives at a parameter point.
 
-By default, the **parameter-shift rule** is used (exact for standard quantum
-gates). Pass ``gradient_method=GradientMethod.FINITE_DIFFERENCE`` for a
+By default, the **parameter-shift rule** is used. Pass ``gradient_method=GradientMethod.FINITE_DIFFERENCE`` for a
 finite-difference fallback with configurable ``eps``:
 
 .. code-block:: python
@@ -264,7 +254,7 @@ Via ``program.viz``, the center defaults to ``best_params``:
 
    # Eigenvalues are sorted ascending (smallest first).
    print("Eigenvalues:", hess.eigenvalues)
-   # Inverse condition number: values near 1 indicate isotropic curvature.
+   # Inverse condition number.
    print("Condition ratio:", hess.eigenvalues[0] / hess.eigenvalues[-1])
 
    # Use steepest-curvature directions for a 2D scan.
@@ -290,17 +280,11 @@ returns the power spectrum:
    spectrum = fourier_analysis_2d(plane)
    spectrum.plot(show=True)   # heatmap of the power spectrum
 
-The power spectrum reveals dominant frequency components in the loss landscape.
-
 Nudged Elastic Band (NEB)
 -------------------------
 
 .. warning::
-   NEB is **experimental**. Convergence is sensitive to hyperparameters.
-
-Use NEB when you have two candidate solutions and want to characterise the
-energy barrier between them — a low barrier suggests the solutions are
-connected, while a high barrier suggests distinct basins.
+   NEB is **experimental**.
 
 :func:`~divi.viz.run_neb` finds a minimum-energy path by relaxing a chain of
 images via gradient descent perpendicular to the chain tangent. Like

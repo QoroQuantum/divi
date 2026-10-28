@@ -1,7 +1,7 @@
 Quantum Neural Networks
 =======================
 
-:class:`~divi.qprog.algorithms.QNN` is Divi's first-class primitive for
+:class:`~divi.qprog.algorithms.QNN` is Divi's primitive for
 quantum machine learning. It trains the weights of a parameterised circuit over
 a batch of classical feature vectors. By default it minimises the expectation
 value of a chosen observable averaged across the batch (unsupervised); pass
@@ -135,19 +135,14 @@ available on :class:`~divi.qprog.algorithms.CustomVQA` when it has a data axis.
 
 **Regression use.** ``return_scores=True`` returns the raw ⟨H⟩ value per sample —
 a continuous output in the observable's readout range.  For the default all-qubit
-parity observable (``Z ⊗ Z ⊗ … ⊗ Z``) that range is ``[-1, 1]``.  When training
-a regressor, scale your continuous targets into this range. Targets outside it
-are unattainable, forcing predictions toward the boundary and potentially
-slowing or preventing convergence. For a
-custom observable, inspect its eigenvalue range and scale accordingly, or shift
-the readout with a `Fitted Bias`_.
+parity observable (``Z ⊗ Z ⊗ … ⊗ Z``) that range is ``[-1, 1]``.  A
+`Fitted Bias`_ shifts the readout.
 
 **Low-dimensional inputs.** The built-in feature maps
 (:class:`~divi.qprog.algorithms.AngleEmbedding` and
 :class:`~divi.qprog.algorithms.ZZFeatureMap`) consume exactly **one feature per
-qubit**: ``feature_batch`` must have ``n_qubits`` columns.  If your dataset has
-fewer features than qubits, pad the feature vectors or use a custom
-:class:`~divi.qprog.algorithms.FeatureMap` subclass that maps fewer inputs to more
+qubit**: ``feature_batch`` must have ``n_qubits`` columns.  A custom
+:class:`~divi.qprog.algorithms.FeatureMap` subclass can map fewer inputs to more
 qubits (e.g. via data re-uploading).
 
 Feature Maps
@@ -198,8 +193,7 @@ The quick start passes ``labels`` with shape ``(n_samples,)``, aligned with
 expectation value, in ``[-1, 1]`` for the default parity observable — is
 compared to its label by ``loss_fn``, and those per-sample losses are then
 aggregated by ``loss_reduction``. The default ``loss_fn="squared_error"`` with
-the default ``"mean"`` reduction is mean-squared error; encode labels to match
-the readout range (e.g. ``-1`` / ``+1`` for the parity observable):
+the default ``"mean"`` reduction is mean-squared error:
 
 .. code-block:: python
 
@@ -246,14 +240,12 @@ Fitted Bias
 
 Pass ``fit_bias=True`` to add a classical bias ``b`` to every prediction, so
 each sample predicts ``⟨H⟩ + b``, where ``⟨H⟩`` is the observable's expectation
-including any constant term. This is the ``+ bias`` term of a classic
-variational classifier, and it lets the readout reach labels outside the
+including any constant term. It lets the readout reach labels outside the
 observable's range, e.g. ``0`` / ``1`` labels with a ``[-1, 1]`` observable.
 
 ``b`` is **not** an optimizer parameter. For squared error it has a closed
 form: every cost evaluation uses ``mean(labels - ⟨H⟩)`` over the batch, the
-optimal ``b`` for the current weights. Training the weights this way reaches
-the same minimum as training ``b`` alongside them, and
+optimal ``b`` for the current weights, and
 ``best_params`` still holds only the weights. ``fit_bias`` therefore requires
 ``labels`` for at least two samples, ``loss_fn="squared_error"``, and
 ``loss_reduction="mean"`` or ``"sum"``; any other combination raises
@@ -296,9 +288,8 @@ the loss would always be zero.
    scores = biased.predict(X_train, return_scores=True)  # ⟨H⟩ + b per row
    classes = (scores >= 0.5).astype(float)               # threshold between 0 and 1
 
-``predict``'s default output is the sign of the score, which suits ``-1`` /
-``+1`` labels. For other label encodings, take ``return_scores=True`` and apply
-your own threshold, as above.
+``predict``'s default output is the sign of the score; ``return_scores=True``
+returns the scores, as above.
 
 :attr:`~divi.qprog.DataBindingMixin.fitted_bias` holds ``b`` at ``best_params``.
 ``run()`` fits it when it finishes by scoring the training batch once, and
@@ -307,17 +298,6 @@ checkpoints carry it; a program restored without it fits it on first read.
 ``params``. Assigning new ``feature_batch`` or ``labels`` afterwards, e.g. to
 score a validation split, leaves it unchanged. Reading ``fitted_bias`` or
 calling ``predict`` before training raises ``RuntimeError``.
-
-When to use QNN vs CustomVQA
-----------------------------
-
-- Reach for :class:`~divi.qprog.algorithms.QNN` when you want a curated
-  feature-map + ansatz workflow and Divi to compose and bind the circuit for
-  you.
-- Reach for :class:`~divi.qprog.algorithms.CustomVQA` (see
-  :doc:`../execution_workflows/framework_integration`) when you already have a PennyLane or Qiskit
-  circuit and want full control over its structure, marking data parameters
-  yourself with ``data_arg`` / ``arg_shapes`` / ``data_param_indices``.
 
 Next Steps
 ----------

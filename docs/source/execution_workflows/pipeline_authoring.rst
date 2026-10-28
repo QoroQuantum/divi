@@ -140,8 +140,7 @@ Writing a Custom SpecStage
 --------------------------
 
 For full control you can write a custom :class:`~divi.pipeline.SpecStage` and
-construct a :class:`~divi.pipeline.CircuitPipeline` directly.  This is useful
-when the built-in spec stages don't cover your circuit-generation logic.
+construct a :class:`~divi.pipeline.CircuitPipeline` directly.
 
 A ``SpecStage`` must implement two methods:
 
@@ -237,9 +236,7 @@ Bell-state circuit and measures its probabilities:
    # result[()] is equivalent when the spec axis has been stripped.
    assert result[()] == probs
 
-This pattern composes naturally — you can insert any ``BundleStage`` between the
-spec stage and the measurement stage to add parameter binding, error mitigation,
-or any custom transformation.
+A ``BundleStage`` is inserted between the spec stage and the measurement stage.
 
 
 Writing a Custom BundleStage
@@ -648,8 +645,7 @@ declare their own constraints — for example, :class:`~divi.pipeline.stages.QEM
 with QuEPP requires a measurement-handling stage after it.  The pipeline also
 validates that at least one stage handles measurement before custom ``validate``
 hooks run, so a custom constraint requiring a ``MeasurementStage`` after it is
-ruled out and unreachable.  Pick constraints that the built-in check does **not**
-cover, for example ordering relative to another custom stage.
+ruled out and unreachable.
 
 Custom stages can participate in this by overriding the ``validate`` method.
 This example also reuses ``ReplicaBundleStage`` from

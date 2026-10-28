@@ -1,14 +1,13 @@
 Installation
 ============
 
-Divi's core install is deliberately small. Heavier dependencies that only a
-subset of features needs are published as **optional extras**, so you only
-download what your workflow actually uses.
+Dependencies that only a subset of features needs are published as **optional
+extras**.
 
 Core Install
 ------------
 
-If you have uv installed (recommended):
+With uv:
 
 .. code-block:: bash
 
@@ -41,22 +40,19 @@ Optional Extras
 
 .. list-table::
    :header-rows: 1
-   :widths: 18 34 12 36
+   :widths: 18 40 42
 
    * - Extra
      - Unlocks
-     - Adds
      - Works without it
    * - ``pennylane``
      - PennyLane ``QNode`` and ``QuantumScript`` conversion, PennyLane
        operators, and PennyLane ``qchem.Molecule`` inputs.
-     - ~165 MB
      - Qiskit circuits and ``SparsePauliOp`` Hamiltonians, including VQE and
        QAOA; PySCF/OpenFermion chemistry remains available through ``chem``.
    * - ``aer``
      - :class:`~divi.backends.QiskitSimulator` — Qiskit Aer noise models and
        IBM fake-backend calibration data.
-     - ~38 MB
      - :class:`~divi.backends.MaestroSimulator` (the default local simulator)
        and :class:`~divi.backends.QoroService`.
    * - ``qubo-decompose``
@@ -65,27 +61,20 @@ Optional Extras
        :meth:`~divi.qprog.problems.BinaryOptimizationProblem.decompose`,
        D-Wave's own ``EnergyImpactDecomposer`` and ``SplatComposer``, and
        Divi's :class:`~divi.qprog.problems.CommunityDecomposer`.
-     - ~145 MB
      - Plain QUBO and HUBO problems — cost Hamiltonian, mixer, and
        solving without partitioning — and partitioned portfolio problems.
    * - ``chem``
      - Molecule inputs via PySCF, OpenFermion Hamiltonians,
        :class:`~divi.qprog.algorithms.UCCSDAnsatz`, and
        :class:`~divi.qprog.workflows.LASSQD`.
-     - ~322 MB
      - VQE from a ``SparsePauliOp`` or a Pauli-string dictionary, and every
        non-chemistry ansatz.
    * - ``ai``
      - The ``divi-ai`` offline documentation assistant. See :doc:`tools/divi_ai`.
-     - ~144 MB
      - Everything except ``divi-ai``.
    * - ``jupyter``
      - Notebook progress widgets.
-     - ~72 MB
      - All reporting outside notebooks.
-
-Sizes are approximate installed-on-disk figures for the extra and the
-dependencies it alone pulls in; they vary by platform and Python version.
 
 Install one extra, or several at once:
 
@@ -153,4 +142,4 @@ Or pin a specific nightly by date:
 .. note::
 
    Nightly builds may contain unstable or experimental features.
-   For production use, stick with the stable release (``pip install qoro-divi``).
+   The stable release is installed with ``pip install qoro-divi``.

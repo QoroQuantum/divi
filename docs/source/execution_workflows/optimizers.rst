@@ -1,65 +1,35 @@
 Optimizers
 ==========
 
-Choose an optimizer from the properties of the run, not from an absolute
-ranking. Shot noise, parameter count, gradient availability, and circuit budget
-usually matter more than the algorithm name.
-
-.. list-table:: Optimizer selection
+.. list-table:: Per-step cost
    :header-rows: 1
-   :widths: 20 25 25 30
+   :widths: 40 60
 
-   * - Start with
-     - Suitable regime
+   * - Optimizer
      - Per-step cost
-     - Main caveat
    * - COBYLA or Nelder–Mead
-     - Small or moderate, gradient-free problems
      - Grows with parameter count
-     - Local methods; repeated starts may find different minima.
    * - Monte Carlo or CMA-ES
-     - Global exploration and multimodal landscapes
      - Population-sized batches
-     - More evaluations before local convergence.
    * - SPSA or QN-SPSA
-     - Many parameters on shot-based backends
      - Constant number of objective evaluations
-     - Stochastic directions require tuning and averaging.
    * - QUIVER
-     - Shot-based runs needing a tunable accuracy/budget trade-off
      - Controlled by direction count ``V``
-     - Parameter-shift mode is exact only where the program provides an exact
-       shift rule.
    * - ROSALIN or gCANS
-     - Shot-limited, expectation-valued VQAs with exact parameter-shift rules
      - Adaptive samples for every gradient component
-     - Sensitive to learning rate and minimum shots; generalised QAOA rules can
-       require many evaluations.
    * - L-BFGS-B or QNG
-     - Smooth objectives with an exact program gradient
      - Parameter-shift and, for QNG, metric evaluations
-     - QAOA may require a high-order generalised shift rule.
    * - Grid search
-     - One or two parameters, especially shallow QAOA
      - Exponential in parameter count
-     - Impractical beyond roughly three parameters.
 
 All optimizer classes are listed in the
 :doc:`optimizer API reference <../api_reference/qprog/optimizers>`. SciPy
-methods are selected with :class:`~divi.qprog.optimizers.ScipyMethod`. The
-sections below explain the trade-offs and program-specific restrictions in
-more detail.
+methods are selected with :class:`~divi.qprog.optimizers.ScipyMethod`.
 
 Monte Carlo Optimisation
 -------------------------
 
-The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimisation approach. It works by randomly sampling the parameter space and selecting configurations that minimise the target cost function. This method is particularly useful when:
-
-- The optimisation landscape is rugged or non-convex.
-- Gradients are not available or are unreliable.
-- A rough global search is preferred before local refinement.
-
-Monte Carlo optimisation can help identify promising regions in high-dimensional parameter spaces before applying more refined methods.
+The Monte Carlo [#kalos2008]_ method in Divi is a stochastic global optimisation approach. It works by randomly sampling the parameter space and selecting configurations that minimise the target cost function.
 
 Configure :class:`~divi.qprog.optimizers.MonteCarloOptimizer` by passing ``population_size`` (the number of parameter sets evaluated per iteration) and optionally ``n_best_sets`` (how many top-performing sets are carried to the next iteration) to its constructor. The read-only ``n_param_sets`` property then reflects the configured population size.
 
@@ -71,13 +41,7 @@ Divi provides several SciPy-based optimizers through the :class:`~divi.qprog.opt
 Nelder-Mead
 ^^^^^^^^^^^
 
-Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimisation algorithm. It is ideal for local optimisation in low to moderate dimensional spaces. The method iteratively refines a simplex (a geometrical figure defined by a set of parameter vectors) by evaluating cost function values and applying operations such as reflection, expansion, and contraction.
-
-Use Nelder-Mead when:
-
-- Your problem is continuous but noisy.
-- Gradients are unavailable or expensive to compute.
-- You are tuning parameters in a relatively low-dimensional space.
+Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimisation algorithm.
 
 .. code-block:: python
 
@@ -88,30 +52,22 @@ Use Nelder-Mead when:
 L-BFGS-B
 ^^^^^^^^
 
-L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that leverages gradient information to efficiently converge to a local minimum. In Divi, gradient calculation is performed using the parameter shift rule, a technique well-suited to quantum circuits that allows for analytical gradient computation by evaluating the function at shifted parameter values.
+L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that uses gradient information. In Divi, gradients are computed using the parameter shift rule, which evaluates the function at shifted parameter values.
 
-Divi computes these parameter shifts in parallel, significantly reducing wall-clock time for gradient evaluations.
-
-Use L-BFGS-B when:
-
-- You require fast convergence to a local minimum.
-- Your cost function is smooth and differentiable.
+Divi computes these parameter shifts in parallel.
 
 .. note::
 
    On small or barren-plateau circuits the parameter-shift gradient can be
    near-zero at the start, so L-BFGS-B may hit its ``gtol`` and stop after a
-   couple of iterations (a flat, uninformative loss trajectory). If that
-   happens, switch to a gradient-free optimizer (COBYLA, Nelder-Mead) or the
-   Monte Carlo optimizer for a more illustrative run.
+   couple of iterations (a flat, uninformative loss trajectory).
 
 .. note::
 
    :class:`~divi.qprog.algorithms.QAOA` generally has no exact *two-term*
    parameter-shift rule because a shared layer angle drives many Hamiltonian
    terms. For exact trotterization, Divi derives a generalised rule from the
-   Hamiltonian frequencies [#wierichs2022]_. The rule may require many circuit
-   evaluations, especially for weighted objectives, so QAOA applies
+   Hamiltonian frequencies [#wierichs2022]_. QAOA applies
    ``max_shift_evaluations_per_parameter`` as a safety limit. Stochastic or
    approximate trotterization still requires SPSA or a gradient-free method.
 
@@ -123,14 +79,6 @@ COBYLA
 ^^^^^^
 
 COBYLA (Constrained Optimisation BY Linear Approximations) [#powell1994]_ is a gradient-free, local optimisation method—like Nelder-Mead—that supports nonlinear inequality constraints. It constructs successive linear approximations of the objective function and constraints, iteratively refining the solution within a trust region.
-
-Use COBYLA when:
-
-- Your optimisation problem includes constraints.
-- Gradients are inaccessible or too noisy.
-- You seek a reliable optimizer for low to moderate-dimensional spaces.
-
-COBYLA is also a good choice of optimizer when trying out :class:`~divi.qprog.algorithms.QAOA` for a new problem/experimenting, but your mileage may vary.
 
 .. code-block:: python
 
@@ -170,9 +118,6 @@ parameter-shift gradient with a regularised metric:
 .. math::
 
    \theta \leftarrow \theta - \eta \, (G + \lambda I)^{-1} \nabla L,
-
-This can improve convergence when parameter directions have different
-curvatures, at the cost of metric evaluations.
 
 Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
 
@@ -241,14 +186,12 @@ To switch to the Fubini–Study metric, inject a different estimator:
    already checkpoints the parameter history, so optimizer-level state is
    not needed.
 
-Use QNG on small-to-moderate exact-gradient problems where metric overhead is
-acceptable. It does not support QAOA or checkpointing.
+QNG does not support QAOA or checkpointing.
 
 Simultaneous Perturbation (SPSA / QN-SPSA)
 ------------------------------------------
 
-SPSA and QN-SPSA use a constant number of evaluations per step, making them
-useful for many-parameter, shot-noisy circuits.
+SPSA and QN-SPSA use a constant number of evaluations per step.
 
 SPSA
 ^^^^
@@ -271,12 +214,9 @@ The two points share a batch, so stochastic costs use one sampled Hamiltonian.
    optimizer = SPSAOptimizer()
 
 With no ``learning_rate``, the gain is **calibrated**: 25 sampled directions fix
-it so the first step is about ``2*pi/10`` in parameter space, matching the gain
-to a curvature scale the caller rarely knows. Costs ``2 * calibration_steps``
+it so the first step is about ``2*pi/10`` in parameter space. Costs ``2 * calibration_steps``
 evaluations once; pass ``learning_rate=`` to skip it.
 
-Set ``c`` near the cost's shot-noise standard deviation — below it the measured
-derivative is noise and the run does worse than not optimising.
 ``resamplings`` reduces gradient variance at proportional cost. ``blocking``
 spends an extra evaluation to reject steps whose loss rises by more than
 ``allowed_increase``, which defaults to twice the loss's standard deviation at
@@ -284,8 +224,7 @@ the start point and is fixed for the run.
 
 .. note::
 
-   A 1000× loss increase warns once. Enable ``blocking`` or lower
-   ``learning_rate``.
+   A 1000× loss increase warns once.
 
 .. note::
 
@@ -328,8 +267,7 @@ SPSA with a pluggable metric:
 
 QN-SPSA bounds the preconditioned update to ``2*pi/10`` by default — the trust
 region acts after the metric solve, where a small eigenvalue can otherwise
-amplify a well-calibrated gradient. ``max_step_norm=None`` disables it. For
-noisy runs, raise ``resamplings`` or ``regularization``, or enable ``blocking``.
+amplify a well-calibrated gradient. ``max_step_norm=None`` disables it.
 
 .. note::
 
@@ -351,8 +289,7 @@ gradient from ``V`` random directional derivatives:
    {2\varepsilon}\, v_\ell,
    \qquad \theta \leftarrow \theta - a_k\,\tilde\nabla^{\mathsf F} f,
 
-This costs :math:`2V` evaluations: ``V=1`` resembles SPSA; larger ``V`` trades
-cost for precision.
+This costs :math:`2V` evaluations.
 
 QUIVER uses Adam and adapts ``V`` and the per-direction shot count ``M`` with
 the paper's joint minimum-cost rule:
@@ -390,20 +327,17 @@ first :math:`V^*` to ``V_init``. Pass a value to enforce an absolute target.
 Use ``derivative_mode="parameter_shift"`` where an exact directional shift is
 valid; ``adapt_V=False`` or ``adapt_M=False`` pins the budget. QUIVER supports
 SPSA's ``blocking`` and ``exact_loss`` options, but not checkpointing. With no
-explicit ``learning_rate``, its Adam rate is ``2*(2*pi/10)/n_params``, which
-stays conservative for sparse high-dimensional gradients.
+explicit ``learning_rate``, its Adam rate is ``2*(2*pi/10)/n_params``.
 
 QUIVER reports its reconstructed gradient to
 :class:`~divi.qprog.early_stopping.EarlyStopping`, so ``grad_norm_threshold``
 can stop a converged run before the allocation rule spends an explicit
-``M_max``. Patience and cost-variance stopping need unperturbed losses, so pair
-them with ``exact_loss=True``.
+``M_max``. Without ``exact_loss`` or ``blocking``, the recorded loss is the
+average of the perturbed evaluations, not ``f(theta)``.
 
 .. note::
 
-   Adaptive ``M`` disables circuit-template batching. Prefer fixed ``M`` when
-   cloud submission overhead dominates. Compare optimizers by requested shots
-   rather than circuit count: changing ``M`` can make the latter misleading.
+   Adaptive ``M`` disables circuit-template batching.
 
 .. _rosalin-optimizer:
 
@@ -436,27 +370,14 @@ works, drawing classical-shadow snapshots instead (see
 
 iCANS allocates shots independently by coordinate and retains the original
 ``smax`` cap. gCANS instead maximises expected improvement per total gradient
-shot and does not use that cap. Neither rule is universally better: validate
-``learning_rate`` and ``min_shots`` against the target circuit and noise model.
-Weighted random operator sampling is most useful for Hamiltonians with several
-measurement groups. A diagonal QAOA cost often has only one group, leaving no
-operator-selection advantage; generalised parameter shifts can then make SPSA
-substantially cheaper.
+shot and does not use that cap.
 
 Grid Search
 -----------
 
 The :class:`~divi.qprog.optimizers.GridSearchOptimizer` performs an exhaustive evaluation of every
 point on a user-defined parameter grid and returns the best-performing
-combination. It is designed for low-dimensional parameter spaces (1–3
-parameters) where you want full visibility into the loss landscape.
-
-Use Grid Search when:
-
-- You have a small number of variational parameters (e.g. QAOA with 1 layer: γ and β).
-- You want to visualise the loss landscape.
-- You need a deterministic, reproducible sweep.
-- You want to warm-start a variational optimizer from the best grid point.
+combination.
 
 .. code-block:: python
 
@@ -480,21 +401,18 @@ A warning is issued if ``max_iterations > 1`` is supplied.
 
 .. note::
 
-   Grid search scales as ``grid_points ** n_params``, so it becomes
-   impractical beyond ~3 parameters. For higher dimensions, use
-   :class:`~divi.qprog.optimizers.MonteCarloOptimizer` or CMA-ES instead.
+   Grid search scales as ``grid_points ** n_params``.
 
 Program-Specific Constraints
 ----------------------------
 
 - :class:`~divi.qprog.algorithms.QAOA` can derive an exact generalised
   parameter-shift rule under exact trotterization, subject to its evaluation
-  safety limit. For large rules, prefer SPSA, a gradient-free method, or a
-  low-dimensional grid search.
+  safety limit.
 - VQE and ``CustomVQA`` can use exact-gradient methods only when their ansatz
   declares a valid parameter-shift spectrum.
 - PCE uses a classical counts-based objective. Default pullback QNG does not
-  apply; use the Fubini–Study estimator or a gradient-free optimizer.
+  apply; the Fubini–Study estimator supports PCE.
 - Checkpointing requires an optimizer with restorable state. See
   :doc:`resuming_long_runs` for the compatibility table.
 
@@ -502,9 +420,8 @@ Program-Specific Constraints
 Early Stopping
 --------------
 
-Long-running optimisations can waste resources once convergence has effectively
-stalled.  Divi's :class:`~divi.qprog.early_stopping.EarlyStopping` controller lets you
-terminate the loop automatically based on configurable criteria.
+Divi's :class:`~divi.qprog.early_stopping.EarlyStopping` controller terminates
+the loop automatically based on configurable criteria.
 
 Pass an ``EarlyStopping`` instance to any variational algorithm:
 
@@ -551,8 +468,7 @@ iteration.  The first one that fires stops the loop.
       EarlyStopping(patience=10, grad_norm_threshold=1e-6)
 
 3. **Cost variance** *(optional)* — Stop when the rolling variance of the last
-   ``variance_window`` cost values drops below ``variance_threshold``.  Useful
-   for noisy landscapes where cost oscillates but no longer trends downward.
+   ``variance_window`` cost values drops below ``variance_threshold``.
 
    .. code-block:: python
 

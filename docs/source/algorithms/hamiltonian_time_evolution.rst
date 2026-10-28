@@ -1,7 +1,7 @@
 Hamiltonian Time Evolution
 ==========================
 
-The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.trotterization.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.trotterization.QDrift` (randomised term sampling for shallower circuits on large Hamiltonians).
+The :class:`~divi.qprog.algorithms.TimeEvolution` program performs Hamiltonian time evolution simulation — simulating real-time quantum dynamics under a given Hamiltonian. Divi supports multiple Trotterization techniques out of the box: :class:`~divi.hamiltonians.trotterization.ExactTrotterization` (full Trotter-Suzuki decomposition) and :class:`~divi.hamiltonians.trotterization.QDrift` (randomised term sampling).
 
 It supports three output modes:
 
@@ -12,7 +12,7 @@ It supports three output modes:
 Basic Usage
 -----------
 
-Use probability mode when you want a final-state distribution:
+Without ``observable``, the program runs in probability mode:
 
 .. code-block:: python
 
@@ -61,8 +61,8 @@ Provide ``observable=...`` to estimate expectation values after evolution:
 
 .. tip::
 
-   On sampling backends, pass ``shot_distribution="weighted"`` to focus the
-   shot budget on the observable's dominant terms.  See
+   On sampling backends, ``shot_distribution`` selects how the shot budget is
+   allocated across measurement groups.  See
    :ref:`adaptive-shot-allocation` for the full list of strategies.
 
 .. _time-evolution-multi-observable:
@@ -120,10 +120,9 @@ Trotter Steps and Order
 -----------------------
 
 By default the evolution uses a single first-order Trotter step
-(``n_steps=1``, ``order=1``).  Increasing ``n_steps`` or the Suzuki-Trotter
-``order`` reduces the Trotter error at the cost of deeper circuits.  ``order``
+(``n_steps=1``, ``order=1``).  ``order`` is the Suzuki-Trotter order and
 must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
-``ValueError``); higher even orders converge faster per step but add gates.
+``ValueError``).
 
 .. code-block:: python
 
@@ -135,7 +134,7 @@ must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
    H = 0.7 * SparsePauliOp("Z") + 0.4 * SparsePauliOp("X")
    Z0 = SparsePauliOp("Z")
 
-   # Second-order Suzuki-Trotter with 8 steps for tighter accuracy.
+   # Second-order Suzuki-Trotter with 8 steps.
    te = TimeEvolution(
        hamiltonian=H,
        time=1.0,
@@ -169,7 +168,7 @@ keeps the N largest-magnitude terms, ``keep_fraction`` keeps a fraction in
 QDrift Trotterization
 ---------------------
 
-For large Hamiltonians, you can use :class:`~divi.hamiltonians.trotterization.QDrift` to sample terms and average over multiple Hamiltonian samples.
+:class:`~divi.hamiltonians.trotterization.QDrift` samples terms and averages over multiple Hamiltonian samples.
 Each of the ``n_steps`` Trotter steps draws its own ``sampling_budget`` terms independently.
 Sampled evolution is first order, so it requires ``order=1``:
 
@@ -207,8 +206,7 @@ Sampled evolution is first order, so it requires ``order=1``:
 ``sampling_strategy="state_drift"``, :class:`~divi.qprog.algorithms.TimeEvolution`
 instead picks them by how strongly each term changes the measured observable in
 the initial state, following StateDRIFT
-(`arXiv:2610.31515 <https://arxiv.org/abs/2610.31515>`_), which reports a
-lower bias than weighted sampling at the same circuit depth. Every term keeps at least
+(`arXiv:2610.31515 <https://arxiv.org/abs/2610.31515>`_). Every term keeps at least
 a fifth of its weighted probability, and the sampled Hamiltonian still equals
 :math:`H` on average.
 
@@ -249,8 +247,7 @@ initial state, observable and time that ``TimeEvolution`` hands it. It needs:
   ``SuperpositionState``, ``CustomPerQubitState``) are evaluated in closed
   form. Any other state is simulated once with Maestro's matrix-product-state
   simulator, which evaluates in one batch the Pauli strings of the nested
-  commutators of :math:`H` with :math:`O` up to fourth order; their number, and
-  with it the cost, grows quickly with the number of Hamiltonian terms;
+  commutators of :math:`H` with :math:`O` up to fourth order;
 - ``sampling_budget`` set, and no ``keep_fraction`` or ``keep_top_n``.
 
 The probabilities follow the paper's optimiser for the full circuit depth
@@ -264,8 +261,7 @@ the optimiser holds only for small rotations, so every sampled rotation angle
 weight when:
 
 - :math:`\lambda\,\mathrm{d}t > 0.5`, with :math:`\lambda = \sum_j |c_j|`, so no
-  distribution keeps the angles within 0.5; raising ``n_steps`` or
-  ``sampling_budget`` brings them back down;
+  distribution keeps the angles within 0.5;
 - no term changes the observable in the initial state;
 - the expansion is not reliable for the evolution, because its third- and
   fourth-order corrections are too large next to the result.
@@ -280,8 +276,8 @@ there.
 Time Evolution Trajectory
 -------------------------
 
-Use :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` to simulate dynamics at
-multiple time points in parallel.  It creates one ``TimeEvolution`` program
+:class:`~divi.qprog.workflows.TimeEvolutionTrajectory` simulates dynamics at
+multiple time points.  It creates one ``TimeEvolution`` program
 per time point, runs them via
 :class:`~divi.qprog.ensemble.ProgramEnsemble` (with optional circuit batching), and
 collects results into a time-ordered mapping.
@@ -319,11 +315,9 @@ The trajectory supports all the same options as ``TimeEvolution``
 Each time point becomes its own program in a
 :class:`~divi.qprog.ensemble.ProgramEnsemble`, so the trajectory inherits
 the ensemble's circuit-batching machinery — the default ``BatchConfig()``
-already merges every program's submission into a single backend call.  For
-dense trajectories (e.g. 512 time points) on
-:class:`~divi.backends.QoroService`, set ``max_concurrent_programs=-1`` so
-all time points run concurrently and the entire ensemble submits as one
-cloud job, reducing overhead significantly:
+already merges every program's submission into a single backend call.  On
+:class:`~divi.backends.QoroService`, ``max_concurrent_programs=-1`` runs all
+time points concurrently and submits the entire ensemble as one cloud job:
 
 .. skip: next
 
@@ -340,6 +334,6 @@ See :ref:`circuit-batching` for the full batching reference.
 Next Steps
 ----------
 
-- Run the full tutorial scripts: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/dynamics/time_evolution.py>`_ — covers single-time-point evolution, trajectories, multi-observable groups, and QDrift — and `nmr_spectroscopy.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/nmr_spectroscopy.py>`_ — a 34-spin NMR simulation that demonstrates the cloud-merge recipe end-to-end.
+- Tutorial script: `time_evolution.py <https://github.com/QoroQuantum/divi/blob/main/tutorials/dynamics/time_evolution.py>`_ — covers single-time-point evolution, trajectories, multi-observable groups, and QDrift.
 - Learn about optimisation-based workflows in :doc:`ground_state_energy_estimation_vqe` and :doc:`combinatorial_optimization_qaoa_pce`
 - Explore backend choices in :doc:`../execution_workflows/backends`

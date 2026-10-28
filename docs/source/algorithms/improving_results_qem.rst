@@ -1,8 +1,8 @@
 Improving Results with Error Mitigation
 ========================================
 
-Divi provides built-in quantum error mitigation (QEM) to improve results from
-noisy quantum hardware. Two built-in protocols ship with the library:
+Divi provides built-in quantum error mitigation (QEM). Two built-in protocols
+ship with the library:
 
 - **Zero Noise Extrapolation (ZNE)** — runs circuits at artificially increased
   noise levels and extrapolates to the zero-noise limit.
@@ -15,29 +15,20 @@ or :class:`~divi.qprog.algorithms.QAOA`) with the ``qem_protocol`` argument. You
 subclass :class:`~divi.circuits.qem.QEMProtocol` for custom mitigation; see
 `Custom Error Mitigation Protocols`_ below.
 
-.. list-table:: Choosing a mitigation protocol
+.. list-table:: Mitigation protocols
    :header-rows: 1
-   :widths: 18 32 25 25
+   :widths: 30 70
 
    * - Protocol
-     - Reach for it when
      - Cost driver
-     - Main limitation
    * - ZNE
-     - The backend noise can be amplified predictably and several folded
-       evaluations are affordable.
      - Scale factors × measurement groups
-     - Extrapolation becomes unstable when amplification does not track the
-       target noise.
    * - QuEPP
-     - Clifford-path simulation is tractable and the residual signal survives
-       the target noise.
      - Path count × twirls, plus the target circuit
-     - Signal destruction and cancellation can amplify statistical error.
 
-Use :meth:`~divi.qprog.QuantumProgram.dry_run` before a long mitigated run. It
-shows structural circuit expansion; it cannot predict the number of shots
-needed to reach a particular statistical error bar.
+:meth:`~divi.qprog.QuantumProgram.dry_run` shows structural circuit expansion;
+it cannot predict the number of shots needed to reach a particular statistical
+error bar.
 
 Zero Noise Extrapolation (ZNE)
 ------------------------------
@@ -48,8 +39,8 @@ Folding and extrapolation are both built-in — :class:`~divi.circuits.zne.ZNE`
 ships with global-unitary folding (:func:`~divi.circuits.zne.global_fold`)
 by default and uses :class:`~divi.circuits.zne.RichardsonExtrapolator`
 unless a custom extrapolator is provided.  Both integer and fractional
-scale factors are supported; for per-gate folding on deep circuits or
-scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
+scale factors are supported. :func:`~divi.circuits.zne.local_fold` folds
+per gate.
 
 **Basic Usage:**
 
@@ -104,11 +95,8 @@ scales close to 1, switch to :func:`~divi.circuits.zne.local_fold`.
    vqe.run()
    print(f"Mitigated energy: {vqe.best_loss:.6f}")
 
-Use two or three scales for lower cost and more scales for a richer
-extrapolation fit. Additional scales also increase cost and statistical noise;
-they do not guarantee greater accuracy. The default :func:`~divi.circuits.zne.global_fold` is
-deterministic and suits widely spaced scales. For deep circuits, scales near 1,
-or per-gate control, use :func:`~divi.circuits.zne.local_fold`:
+The default :func:`~divi.circuits.zne.global_fold` is deterministic.
+:func:`~divi.circuits.zne.local_fold` folds per gate:
 
 .. skip: next
 
@@ -189,9 +177,6 @@ ZNE vs QuEPP
      - ``(1 + surviving Pauli paths) × n_twirls``. The default
        ``n_twirls=10`` multiplies the entire path fan-out by 10; use a dry run
        for the actual count
-   * - Best for
-     - Coherent gate noise
-     - Uniform noise (e.g. readout error)
    * - Observable required?
      - No
      - Yes (used for classical simulation)
@@ -199,7 +184,6 @@ ZNE vs QuEPP
 Estimating Circuit Cost with Dry Run
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Use :meth:`~divi.qprog.QuantumProgram.dry_run` before committing to mitigation:
 ``format_dry_run(program.dry_run())`` shows QEM paths, Clifford simulations,
 and twirl fan-out. QuEPP's fan-out is ``n_paths + 1`` because it also submits
 the unmitigated circuit. See :ref:`dry-run` for the complete report contract.
@@ -207,8 +191,7 @@ the unmitigated circuit. See :ref:`dry-run` for the complete report contract.
 .. warning::
 
    For concrete-angle programs that actually use Monte Carlo, path counts are
-   sampled estimates; budget with headroom or use ``sampling="exhaustive"``.
-   Default previews report pre-mitigation circuit
+   sampled estimates. Default previews report pre-mitigation circuit
    shape. Use ``force_circuit_generation=True`` for post-rewrite depth and gate
    counts; measurement basis changes add further depth.
 
@@ -235,29 +218,18 @@ observable group and emits a summary warning after the evaluation:
 The η diagnostics carry no per-run counts, so each fires at most once for a
 whole optimisation rather than once per iteration.
 
-If you see this warning frequently, consider:
-
-- **Increasing the number of shots** to reduce statistical noise in η.
-- **Enabling Pauli twirling** (``n_twirls > 0``) to convert coherent noise into
-  stochastic noise that QuEPP handles more gracefully.
-- **Lowering the noise level** (e.g. using a less noisy backend or reducing
-  circuit depth).
-
-Three further conditions get their own warning, because each calls for a
-different response:
+Three further conditions get their own warning:
 
 - **No classical signal.** Every Pauli path of an observable has a negligible
   classical expectation value, so η has no denominator to form and the raw
-  noisy value is returned. Check that the observable's coefficients are not all
-  negligible, and that the circuit's final Clifford layer leaves the
-  back-propagated Pauli diagonal.
+  noisy value is returned.
 - **Negative η.** The noisy Clifford ensemble came back with the opposite sign
-  to the exact one. No rescaling repairs that, so it points at a misconfigured
-  backend or a noise level past the protocol's usable range rather than at a
-  recoverable estimate.
+  to the exact one. No rescaling repairs that.
 - **Amplifying η.** η cleared ``min_eta`` but is still small enough that
-  ``1/η`` magnifies the noisy residual several-fold. The mitigated value is
-  then *noisier* than the unmitigated one even though it is less biased.
+  ``1/η`` magnifies the noisy residual several-fold.
+
+QuEPP does not warn on a wide spread in the per-circuit factors. The
+diagnostics it does emit are an undefined, negative, or small η.
 
 Shallow Circuit Warning
 ~~~~~~~~~~~~~~~~~~~~~~~
@@ -273,80 +245,20 @@ reliable η estimation.  QuEPP emits a warning when ``K / n_rotations > 33%``:
    4 non-Clifford rotations (50%). Mitigation quality may degrade on shallow
    circuits — consider reducing truncation_order or using a deeper circuit.
 
-This typically occurs on small circuits (< 10 qubits) where the number of
-non-Clifford rotations is comparable to K.  The paper validates QuEPP on
-49-qubit circuits with hundreds of rotations.
-
-If you see this warning:
-
-- **Reduce truncation_order** to ``K=1`` to cut the number of enumerated
-  branches.  (Monte Carlo sampling does *not* help here: the symbolic circuits
-  variational programs produce are always enumerated — see ``sampling``
-  above.)
-- If the problem already requires more non-Clifford rotations, the warning may
-  disappear; do not deepen a circuit solely to satisfy QuEPP.
-- **Use ZNE instead** for shallow circuits where QuEPP is unreliable.
-
-.. _qem-quepp-assumptions:
-
-What QuEPP Assumes About the Noise
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-QuEPP infers one rescaling factor from how much noise the Clifford ensemble
-suffers relative to the target. That is sound only when the ensemble is a fair
-proxy for the target, which fails in ways worth knowing:
-
-- **Coherent (unitary) errors.** A systematic over-rotation accumulates with
-  depth in the target, while the ensemble's exact ±π/2 Clifford replacements
-  are far less sensitive to it. η therefore comes back close to 1 and the
-  correction barely fires; at larger coherent strengths the result can be worse
-  than the unmitigated value. Keep ``n_twirls > 0`` on hardware: Pauli twirling
-  converts coherent errors into the stochastic channel QuEPP assumes, which is
-  why ``n_twirls`` defaults to 10.
-- **Non-unital noise.** Amplitude damping and thermal relaxation bias the state
-  toward :math:`|0\rangle`, which *shifts* an expectation value rather than
-  merely shrinking it. A multiplicative ``1/η`` cannot undo an additive shift,
-  so the mitigated value can be further from the truth than the unmitigated one
-  while η itself looks healthy.
-- **Noise carried only by the rotations being replaced.** A cos branch
-  substitutes an identity for a rotation, so error attached exclusively to the
-  rotation gate has no counterpart in the ensemble and cannot be inferred from
-  it. This is a limit of the protocol rather than of any particular backend.
-- **Transpiler optimisation.** The ensemble circuits are Clifford, so an
-  optimising transpiler compresses them much further than the target, and they
-  then see less noise than it does. On
-  :class:`~divi.backends.QiskitSimulator` pass ``optimization_level=0``
-  alongside your noise model; on hardware, transpile the ensemble and the
-  target the same way.
-
-A wide spread in the per-circuit factors is not on its own a sign of trouble, so
-QuEPP does not warn on it. The diagnostics it does emit — an undefined,
-negative, or small η — are the ones that indicate an unusable correction.
-
 .. _qem-quepp-pauli-sums:
 
 How QuEPP Handles Sums of Pauli Terms
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Most real observables — a molecular Hamiltonian, a QUBO cost operator — are
-sums :math:`H = \sum_i c_i P_i` rather than single Pauli strings. Pauli
-propagation back-propagates *one* Pauli at a time, so QuEPP treats each term
-separately and adds the results:
-
-.. math::
-
-   \langle H \rangle = \sum_i c_i \sum_p w_{i,p}\,
-   \mathrm{Tr}\!\left[\rho\, C_{i,p}(P_i)\right]
-
-The path weights :math:`w_{i,p}` belong to a specific term, and each path
-circuit is evaluated against **that term's** Pauli — not against the whole
-observable. So QuEPP measures each Pauli term separately, on both the classical
-and the noisy side.
+For an observable that is a sum of Pauli terms, QuEPP treats each term
+separately and adds the results. The path weights belong to a specific term,
+and each path circuit is evaluated against **that term's** Pauli, not against
+the whole observable. So QuEPP measures each Pauli term separately, on both the
+classical and the noisy side.
 
 This adds no target-circuit variants and does not change the configured shot
 split. Grouping still uses the same distinct Pauli strings, and path circuits
-remain deduplicated across terms. Higher reconstruction variance can nonetheless
-require more shots for a target accuracy.
+remain deduplicated across terms.
 
 You do not configure any of this, and it does not surface anywhere you look:
 :meth:`~divi.circuits.quepp.QuEPP.reduce` maps the per-term values back and
@@ -357,24 +269,13 @@ the Pauli set before it counts them.
 Performance Considerations
 --------------------------
 
-- **ZNE**: Expect roughly one backend evaluation per scale factor per
-  unmitigated evaluation (plus extrapolation overhead on the classical side).
 - **QuEPP**: Cost grows with path count (Monte Carlo budget or exhaustive
-  enumeration), twirls, and circuit size. Classical Clifford simulation of
-  paths is comparatively cheap next to quantum shots.
+  enumeration), twirls, and circuit size.
 - **QuEPP on a many-term Hamiltonian**: Pauli-term handling does not by itself
   add target-circuit variants, but each term gets its own paths and
-  its own weight (see :ref:`qem-quepp-pauli-sums`), so the CPT sum has more,
-  individually larger, terms than a per-observable sum would. The reconstruction
-  is unbiased either way, but its variance is higher, and reaching a given
-  accuracy on a chemistry Hamiltonian can take more shots than a single-Pauli
-  observable needs. ``1/η`` is a floor on how much the error bar grows: the
-  noisy residual's own shot noise is weighted by the path weights, so a
-  reconstruction leaning on heavy cancellation grows it further. QuEPP warns
-  once ``1/η`` alone exceeds 5.
-- **Budget**: Mitigation increases total shots or circuit evaluations; use
-  :meth:`~divi.qprog.QuantumProgram.dry_run` to preview expansion before a long
-  run.
+  its own weight (see :ref:`qem-quepp-pauli-sums`). QuEPP warns once ``1/η``
+  alone exceeds 5.
+- **Budget**: Mitigation increases total shots or circuit evaluations.
 
 .. _qem-multi-observable:
 
@@ -393,8 +294,8 @@ amortise mitigation cost across the group:
   ``#scales`` circuits — the fan-out follows the grouping, not the raw
   observable count.
 - **QuEPP** shares the target circuit across all observables and dedupes
-  path DAGs across observables that produce coincident branches, so a
-  large fraction of the classical Clifford simulation is reused.
+  path DAGs across observables that produce coincident branches, so the
+  classical Clifford simulation is reused.
 
 Both protocols return one mitigated value per input observable, in input
 order.

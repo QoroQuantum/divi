@@ -6,8 +6,7 @@ generation, execution, and error mitigation.
 
 .. warning::
    **Developer-Facing Classes**: The core circuit class ``MetaCircuit`` is
-   intended for advanced users and developers. Most users should interact with
-   circuits through higher-level APIs in the ``divi.qprog`` module.
+   intended for advanced users and developers.
 
 Core
 ----
@@ -21,8 +20,7 @@ Core
 Error Mitigation Protocols
 --------------------------
 
-Divi provides quantum error mitigation (QEM) capabilities to improve the
-accuracy of quantum computations in the presence of noise. All protocols
+Divi provides quantum error mitigation (QEM) capabilities. All protocols
 inherit from :class:`~divi.circuits.qem.QEMProtocol`.
 
 .. automodapi:: divi.circuits.qem

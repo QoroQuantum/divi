@@ -3,22 +3,13 @@ Program Ensembles and Workflows
 
 A :class:`~divi.qprog.ensemble.ProgramEnsemble` runs multiple quantum programs
 in parallel — handling scheduling, circuit batching, progress tracking, and
-result aggregation.  Typical use cases include parameter sweeps, molecular
-dissociation curves, problem decomposition, and algorithm comparison.
+result aggregation.
 
 An ensemble can also run over several *rounds*, choosing each round's programs
 from what the previous round measured — the basis for iterative refinement and
 other adaptive workflows. Ensemble checkpointing preserves that round state and,
 where supported, the progress of individual variational programs. See
 `Checkpointing Ensemble Workflows`_.
-
-Use this page in increasing order of control:
-
-1. choose a ready-made workflow under `Built-in Ensemble Workflows`_;
-2. inspect its results, or aggregate a partitioning workflow;
-3. use `The Workflow Lifecycle`_ for adaptive rounds; and
-4. use `Custom Ensemble Workflows`_ and `Circuit Batching`_ only when you need
-   custom orchestration or dispatch control.
 
 Built-in Ensemble Workflows
 ----------------------------
@@ -59,8 +50,7 @@ Aggregation Strategies
 For :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`, each solved
 partition returns several candidate
 bitstrings ranked by probability. An *aggregation strategy* stitches these
-per-partition candidates into a single global solution — the choice of strategy
-controls the quality/cost trade-off across the full problem. ``aggregate_results``
+per-partition candidates into a single global solution. ``aggregate_results``
 and ``get_top_solutions`` accept a ``strategy`` — an
 :class:`~divi.qprog.AggregationStrategy` — and default to
 :class:`~divi.qprog.BeamSearchStrategy`.
@@ -109,22 +99,11 @@ parameters:
        )
    )
 
-**When to use beam search**
+With both settings equal to ``None``, the strategy requests up to
+:math:`2^{20}` candidates per partition and keeps every resulting combination.
+This is exhaustive when each measured candidate pool fits under that cap.
 
-- **Balanced default** (``beam_width=256``, ``n_partition_candidates=6``):
-  General-purpose quality/runtime trade-off.
-- **Greedy** (both settings equal to 1): Fast, good for problems with low
-  inter-partition coupling.
-- **Bounded beam** (``beam_width=k``): Custom cost/quality trade-off for problems
-  with moderate coupling between partitions.
-- **Unpruned** (both settings equal to ``None``): Requests up to :math:`2^{20}`
-  candidates per partition and keeps every resulting combination. This is exhaustive
-  when each measured candidate pool fits under that cap, but scales exponentially
-  with the number of partitions.
-
-.. tip::
-
-   The two settings are independent, and either can be the larger one. Raising ``n_partition_candidates`` above ``beam_width`` lets each partition propose many alternatives (wider local search) while the beam stays narrow. Raising ``beam_width`` above ``n_partition_candidates`` goes the other way: the beam holds *combinations* of per-partition choices, so across ``P`` partitions it can retain up to ``n_partition_candidates ** P`` of them. That is usually the cheaper way to widen the search, because the number of candidates fetched per partition — and therefore the branching factor at every step — stays small.
+The two settings are independent, and either can be the larger one. With ``n_partition_candidates`` above ``beam_width``, each partition proposes many alternatives while the beam stays narrow. With ``beam_width`` above ``n_partition_candidates``, the beam holds *combinations* of per-partition choices, so across ``P`` partitions it can retain up to ``n_partition_candidates ** P`` of them.
 
 Hierarchical aggregation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -132,17 +111,16 @@ Hierarchical aggregation
 :class:`~divi.qprog.HierarchicalStrategy` is a divide-and-conquer alternative:
 partitions are split into groups of ``group_size``, each group is solved
 independently with a beam of width ``max_per_group``, and the resulting group
-pools are combined in a pairwise merge tree. Deferring cross-group commitment
-lets each group keep prefixes that a single left-to-right beam would prune
-early. The trade-off is that interactions spanning partitions in *different*
-groups are only scored at merge time, not during per-group pruning.
+pools are combined in a pairwise merge tree. Interactions spanning partitions
+in *different* groups are only scored at merge time, not during per-group
+pruning.
 
-The knobs trade solution quality against cost:
+Its parameters are:
 
-- ``group_size`` — partitions per group (larger groups defer more commitment).
+- ``group_size`` — partitions per group.
 - ``k_per_partition`` — candidates fetched from each partition.
-- ``max_per_group`` — solutions kept per group and per merge level; the main quality/cost dial.
-- ``merge_width`` — limits how many solutions from each group are paired during a merge step, capping each merge's cost to ``merge_width`` squared. Lower it to tame cost on problems with many partitions; the default (``None``) uses all ``max_per_group`` entries.
+- ``max_per_group`` — solutions kept per group and per merge level.
+- ``merge_width`` — limits how many solutions from each group are paired during a merge step, capping each merge's cost to ``merge_width`` squared. The default (``None``) uses all ``max_per_group`` entries.
 
 Unlike beam search, ``top_n`` does **not** widen the search for the hierarchical
 strategy — it only sets how many of the final solutions are returned. Calling
@@ -160,12 +138,6 @@ larger ``n`` never inflates the search cost.
            group_size=4, k_per_partition=20, max_per_group=200, merge_width=50
        )
    )
-
-**When to use hierarchical aggregation**
-
-- **Many partitions with localised coupling**: when strongly-coupled partitions can land in the same group, each group explores more alternatives before committing to a cross-group assignment — recovering combinations a greedy left-to-right beam would prune early.
-- **Finer cost control**: ``merge_width`` caps per-merge cost independently of ``max_per_group``, a knob beam search does not offer.
-- **Prefer beam search** when coupling is global or unpredictable across partition boundaries: groups are formed in partition order, so the grouping then provides little benefit over a wider beam.
 
 .. _ensemble-top-n:
 
@@ -192,8 +164,7 @@ accepts the same ``strategy`` argument.
    for rank, (solution, energy) in enumerate(top_solutions, 1):
        print(f"{rank}. Energy: {energy:.6f}, Solution: {solution}")
 
-This is useful when you want to inspect alternative solutions or post-process
-candidates with domain-specific constraints. Beam search widens its beam to at
+Beam search widens its beam to at
 least ``n`` when needed; hierarchical returns the ``n`` best from its final
 merged pool (without widening the search, as noted above).
 
@@ -212,10 +183,9 @@ Sampling from Pre-Trained Parameters
 :meth:`~divi.qprog.ensemble.ProgramEnsemble.sample_solution` mirrors the
 standalone
 :meth:`~divi.qprog.SolutionSamplingMixin.sample_solution` across every
-sub-program in one call. Use it when you already have trained parameters for
-each partition (e.g. from a prior ``run()``, a loaded checkpoint, or an
-external training routine) and only need to re-sample — no EXPECTATION jobs
-are dispatched.
+sub-program in one call. It takes trained parameters for each partition (e.g.
+from a prior ``run()``, a loaded checkpoint, or an external training routine)
+and only re-samples — no EXPECTATION jobs are dispatched.
 
 Two usage paths:
 
@@ -427,9 +397,8 @@ results never reach it — whether the interrupt landed in the dispatch or in
 
    ``batch_config`` is fixed for the whole run while the program count can
    change per round, so an ensemble that grows across rounds can hit the
-   wait-for-all barrier limit partway through. Set ``max_batch_size`` or
-   ``max_concurrent_programs`` explicitly (see :ref:`circuit-batching`) when
-   later rounds may produce many more programs than the first.
+   wait-for-all barrier limit partway through. See :ref:`circuit-batching` for
+   ``max_batch_size`` and ``max_concurrent_programs``.
 
 .. _ensemble-checkpointing:
 
@@ -602,8 +571,8 @@ Controlling a single round
 
 :meth:`~divi.qprog.ensemble.ProgramEnsemble.run_one_round` dispatches an
 already-materialised program map exactly once, and is the lower-level control
-surface behind ``run()``. Prefer ``run()``; reach for this only when you need
-to dispatch without blocking, or to drive rounds yourself:
+surface behind ``run()``. It can dispatch without blocking, and lets the caller
+drive rounds:
 
 .. skip: next
 
@@ -644,10 +613,6 @@ is rendered. It is a :class:`~divi.qprog.ReportingLevel`:
    * - ``OFF``
      - No display at all. ``round_history`` is still recorded.
 
-Reach for ``FULL`` when you need to watch one specific program — say a
-partition that keeps failing — and for ``OFF`` in notebooks, logging
-pipelines, or scripts whose stdout you parse.
-
 .. skip: next
 
 .. code-block:: python
@@ -668,7 +633,7 @@ silently falling back.
 
 Setting the ``DIVI_DISABLE_PROGRESS`` environment variable to a truthy value
 (``1``, ``true``, ``yes``, ``on``) suppresses progress output from standalone
-programs and ensembles regardless of the level — useful in CI. Ordinary log
+programs and ensembles regardless of the level. Ordinary log
 messages are unaffected, and round history is still retained.
 
 Custom Ensemble Workflows
@@ -747,16 +712,10 @@ Each iteration, the coordinator:
 4. Polls for results once (instead of N times).
 5. Demultiplexes the results back to each program by tag prefix.
 
-**When to use batching**
-
-- **Cloud backends**: batching reduces API calls, queue slots, and polling.
-- **Local simulators**: batching adds synchronisation without network savings.
-
 **Limiting batch size**
 
 By default the coordinator waits for **all** active programs to submit before
-merging circuits.  For large ensembles this can produce very large merged jobs.
-Use ``max_batch_size`` to cap the number of circuits per flush:
+merging circuits. Use ``max_batch_size`` to cap the number of circuits per flush:
 
 .. skip: next
 
@@ -786,8 +745,7 @@ submission, bypassing the default 256-program barrier cap:
        batch_config=BatchConfig(max_concurrent_programs=-1),
    )
 
-Use a positive integer to cap concurrency. Combine it with ``max_batch_size``
-when each program emits many circuits:
+A positive integer caps concurrency. It can be combined with ``max_batch_size``:
 
 .. skip: next
 
@@ -800,8 +758,7 @@ when each program emits many circuits:
        ),
    )
 
-Values above 1024 warn because users often intend ``max_batch_size`` instead;
-the explicit ``-1`` opt-in is silent.
+Values above 1024 warn; the explicit ``-1`` opt-in is silent.
 
 **Disabling batching**
 
@@ -822,7 +779,7 @@ Pass ``BatchConfig(mode=BatchMode.OFF)`` to disable batching entirely:
 Next Steps
 ----------
 
-- :doc:`backends` — backend configuration and performance tuning.
+- :doc:`backends` — backend configuration.
 - :doc:`resuming_long_runs` — checkpointing and restoring individual programs
   and complete ensemble workflows.
 - :doc:`visualization` — result visualisation, including :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.

@@ -17,13 +17,6 @@ the active space. Each macro-cycle then:
 
 The cycle repeats until the total energy converges.
 
-**When to reach for it**: an active space of a handful of orbitals fits one
-:class:`~divi.qprog.algorithms.VQE`; see :doc:`ground_state_energy_estimation_vqe`.
-LASSQD scales the active space past one circuit's qubit count by splitting it,
-at the cost of exact inter-fragment correlation. Read
-:ref:`lassqd-accuracy-characteristics` before treating its output as a
-chemistry-grade energy.
-
 LASSQD requires the ``chem`` extra: ``pip install qoro-divi[chem]``. Build its
 input with :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`, passed
 a PySCF ``gto.Mole`` or restricted mean-field object. LASSQD runs (or reuses)
@@ -121,9 +114,7 @@ topology, including its final orbital rotation and local interaction pairs.
 
 :class:`~divi.qprog.workflows.lassqd.CCSDPreparation`, the default, samples the
 seeded operator without optimisation or a fragment statevector: its classical
-cost is CCSD's, with one sampling job per fragment per round. The sampled state
-is CCSD's quality, so carryover across rounds (:ref:`lassqd-carryover`) does
-more of the work.
+cost is CCSD's, with one sampling job per fragment per round.
 
 :class:`~divi.qprog.workflows.lassqd.LinearMethodPreparation` follows
 arXiv:2512.14936: ffsim optimises the seeded operator with the linear method
@@ -141,7 +132,7 @@ quantum optimisation loop: pass it an optimizer, and optionally another ansatz
 
 .. code-block:: python
 
-   from divi.backends import MaestroSimulator, QiskitSimulator
+   from divi.backends import MaestroSimulator
    from divi.qprog import ScipyMethod, ScipyOptimizer, UCCSDAnsatz
    from divi.qprog.workflows.lassqd import VQEPreparation
 
@@ -151,7 +142,7 @@ quantum optimisation loop: pass it an optimizer, and optionally another ansatz
            ScipyOptimizer(ScipyMethod.COBYLA), ansatz=UCCSDAnsatz()
        ),
        backend=MaestroSimulator(shots=500),
-       sampling_backend=QiskitSimulator(force_sampling=True, shots=4000),
+       sampling_backend=MaestroSimulator(force_sampling=True, shots=4000),
    )
    ensemble.run(max_rounds=2)
 
@@ -162,26 +153,14 @@ final sample. The configured strategy is ``ensemble.preparation``. The
 ``LASSQD`` rejects them with the other preparations. Set the VQE iteration count
 with ``VQEPreparation(max_iterations=...)``.
 
-Choose ``LinearMethodPreparation`` while fragments can be simulated classically
-and ``CCSDPreparation`` once they cannot. At that size only ``VQEPreparation``
-can improve on the CCSD seed, at the cost of a quantum optimisation loop.
-Optimising it on a :class:`~divi.backends.MaestroSimulator` configured for
-matrix-product-state simulation and passing the device as ``sampling_backend``
-keeps the device to one job per fragment per round.
-
-SQD needs coverage, not only a low ansatz energy: an ansatz concentrated on one
-determinant starves recovery. Compare
-:attr:`~divi.qprog.workflows.lassqd.LASSQDRoundReport.subspace_sizes` against
-the fragment's full determinant count.
-
 .. important::
 
    - Examples here run below :class:`~divi.qprog.workflows.lassqd.SQDConfig`'s
      defaults (``n_batches=15``, ``batch_size=170``,
      ``n_recovery_iterations=6``) for speed.
    - Each batch samples at most ``batch_size`` alpha and beta half-strings, so
-     its subspace holds at most ``batch_size**2`` determinants. ``n_batches``
-     subspaces compete rather than pool, so it buys attempts, not size.
+     its subspace holds at most ``batch_size**2`` determinants. The ``n_batches``
+     subspaces compete rather than pool.
    - ``carryover_cutoff`` is on by default; ``None`` gives conventional SQD,
      whose energies can oscillate (:ref:`lassqd-carryover`).
    - ``extension`` defaults to ``"auto"``, which runs ``"singles"`` (Ext-SQD,
@@ -193,9 +172,6 @@ the fragment's full determinant count.
      it is accurate.
    - An energy equal to the mean field means the subspace held only the
      reference determinant; the workflow warns.
-
-A smaller ``batch_size`` can miss a correlated determinant that carries little
-of the distribution and return the mean-field energy instead.
 
 Explicit Fragment Specification
 --------------------------------
@@ -219,11 +195,6 @@ splits through ``active_spaces``. For the four-orbital H4 tutorial:
        ],
    )
 
-.. note::
-
-   This occupied/virtual split cuts through both H2 units and is intentionally
-   poor. The H4 tutorial compares it with a weak-coupling split.
-
 Automatic Fragmentation
 ------------------------
 
@@ -234,8 +205,7 @@ selection, partitioning and spin.
 ``active_spaces``):
 
 - ``n_active_orbitals`` — selects around the HOMO-LUMO gap.
-- ``active_orbitals`` — explicit MO columns, for when character matters more
-  than energy; pair with a suitable mean field such as PySCF AVAS.
+- ``active_orbitals`` — explicit MO columns.
 
 **Partitioning.** The default localises orbitals and merges them by coupling,
 capped by ``max_orbitals_per_fragment`` (default 4); ``coupling_threshold``
@@ -363,31 +333,23 @@ orbitals. A singlet–triplet gap:
   when states cross, labels and state-averaging weights follow the states, not
   the energy order. States across two fragments are labelled by energy order
   every round.
-- **Orbitals decide the gap.**
+- **Orbitals.**
   :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate` relaxes the orbitals
   for a weighted average of the states (default: each root equally, a triplet
-  counting once), as SA-CASSCF does; the weights shift every gap.
-  :class:`~divi.qprog.workflows.lassqd.FixedOrbitals` keeps the input orbitals, for
-  comparison with CASCI. The other updates relax for the lowest state only and
-  warn.
-- **Keep the symmetry.** Averaging over states of different spatial symmetry
-  can lower the average by breaking the molecule's symmetry and mixing those
-  states. Several such solutions can exist, and which one a run reaches can
-  depend on rounding and the starting orbitals. Build the molecule with
+  counting once), as SA-CASSCF does.
+  :class:`~divi.qprog.workflows.lassqd.FixedOrbitals` keeps the input orbitals.
+  The other updates relax for the lowest state only and warn.
+- **Symmetry.** Build the molecule with
   ``symmetry=True`` (or pass a mean field with symmetry-adapted orbitals) and
   the state-averaged orbitals keep the abelian point group PySCF works in: the
   molecule's own group when abelian, D2h or C2v for a linear molecule, otherwise
-  the largest abelian subgroup (NH3 keeps Cs, not C3v). Request every component
-  of a degenerate set so the average does not favour one. A solve that breaks
+  the largest abelian subgroup (NH3 keeps Cs, not C3v). A solve that breaks
   the abelian group warns.
 - **Energies.** ``energy`` is always the lowest requested state's, of whichever
   spin. Under state averaging the macro-cycle converges on the average,
   reported as each round's ``averaged_energy``.
 - **Coverage.** The circuit samples the ground state, so excited states rely on
-  the default extension, ``"auto"`` (singles); ``"doubles"`` reaches further but
-  grows the subspace far more. An incomplete subspace raises excited states
-  unevenly and can reorder them: a dark state may carry the label a bright one
-  has in the full space, and a triplet may fall below S0.
+  the default extension, ``"auto"`` (singles).
 - **Spin** is targeted by ``lambda_penalty``. A root nearer another spin is left
   out, with a warning, so a subspace short of states of one spin returns fewer
   than were requested. A state can still be partly contaminated, so each
@@ -444,8 +406,8 @@ active-space Hamiltonian on the round's orbitals:
   are limited by how far electrons may move between fragments, how many
   multiplets each fragment keeps, and how much of each fragment's space its
   samples reach. The workflow warns about each when it can raise the states.
-- **Close contact.** ``SQDConfig.fragment_hops=2`` also moves two electrons,
-  which fragments in contact can need. With one hop, the workflow suggests two
+- **Close contact.** ``SQDConfig.fragment_hops=2`` also moves two electrons.
+  With one hop, the workflow suggests two
   when the lowest state has noticeable charge-transfer weight.
 - **Fragment multiplets.** ``SQDConfig.fragment_roots`` caps how many of each
   fragment's lowest multiplets per electron count enter the products. The
@@ -454,16 +416,14 @@ active-space Hamiltonian on the round's orbitals:
   included, and warns.
 - **Charge transfer.** A state's ``charge_transfer`` is its weight on products
   with an electron moved between fragments, in either direction. Between bonded
-  fragments it also counts covalent sharing, so read it as charge transfer only
-  when the fragments are apart.
+  fragments it also counts covalent sharing.
 - **Orbitals.** ``StateAveragedOrbitalUpdate`` is rejected. The other updates
   relax for the lowest state, so excited states miss their orbital relaxation.
-  Use ``FixedOrbitals`` to compare with CASCI.
 - **Results.** ``electronic_states`` holds the energies, ``spin_square`` and
   ``charge_transfer``. ``state_wavefunctions``, ``transition_properties`` and
   ``nevpt2`` need a single fragment and raise otherwise.
 - **Cost.** The products are mixed densely and each fragment's multiplets are
-  held as full-space CI vectors, so this suits small fragments. A fragment past
+  held as full-space CI vectors. A fragment past
   16384 determinants at one of its electron counts is rejected, and a round
   estimated to need more than ``mol.max_memory`` raises ``MemoryError``.
 
@@ -499,9 +459,7 @@ last completed round:
 Dynamic Correlation
 ~~~~~~~~~~~~~~~~~~~
 
-The states are CASSCF-quality: they miss the correlation of electrons outside
-the active space, which shifts excitation energies and can reorder close states.
-:meth:`~divi.qprog.workflows.LASSQD.nevpt2` adds it to second order, with
+:meth:`~divi.qprog.workflows.LASSQD.nevpt2` adds dynamic correlation to second order, with
 PySCF's strongly contracted NEVPT2 on each state at the final orbitals:
 
 .. code-block:: python
@@ -516,14 +474,12 @@ PySCF's strongly contracted NEVPT2 on each state at the final orbitals:
   ``mrpt.NEVPT`` does, so states close in energy that mix under the correction
   are not captured.
 - **Order.** The correction can reorder states, a bright state dropping below a
-  dark one, while the keys keep the uncorrected labels; sort the corrected
-  energies to rank the states.
+  dark one, while the keys keep the uncorrected labels.
 - **Degenerate sets.** Each component of an exactly degenerate set is an
-  arbitrary mixture, and the state-specific correction depends on the mixture;
-  average the components' corrections.
+  arbitrary mixture, and the state-specific correction depends on the mixture.
 - **Classical active-space sizes.** PySCF needs each state's CI vector over the
   whole active space, which grows as the product of the alpha and beta string
-  counts: about 1.3 GB for CAS(16,16) and 19 GB for CAS(18,18). The method
+  counts. The method
   raises ``MemoryError`` when one vector exceeds ``mol.max_memory``.
 - **Open shells** are corrected the same way, from the ROHF-based states.
 
@@ -583,25 +539,19 @@ set or, for SMD, its solvent named:
   is no variational bound; ``best_energy`` is then the last round's.
 - **Which density.** The lowest requested state's, also under
   :class:`~divi.qprog.workflows.lassqd.StateAveragedOrbitalUpdate`, where
-  PySCF's state-averaged CASSCF uses the averaged density. Request the ground
-  state for vertical energies; otherwise the lowest requested state sets the
-  field for all.
+  PySCF's state-averaged CASSCF uses the averaged density. It sets the field
+  for all states.
 - **Vertical excitations.** Excited states sit in the lowest state's
-  equilibrium field, which misses most of a charge-transfer state's
-  stabilisation. :meth:`~divi.qprog.workflows.LASSQD.nonequilibrium_corrections`
-  adds it: the solvent's fast, electronic part answering each state's density
-  change at the optical dielectric constant, ``optical_eps`` (default 1.78,
-  suiting water or acetonitrile; an organic host needs its refractive index
-  squared, about 2 to 3). The correction is first order, without relaxation of
-  the state in that response. It grows with a state's dipole change, so it
-  matters most for charge-transfer states and little for local excitations.
+  equilibrium field. :meth:`~divi.qprog.workflows.LASSQD.nonequilibrium_corrections`
+  adds the solvent's fast, electronic part answering each state's density
+  change at the optical dielectric constant, ``optical_eps`` (default 1.78). The correction
+  is first order, without relaxation of the state in that response.
 - **What the model covers.** ddCOSMO and PCM are electrostatics only; SMD adds
   its cavitation and dispersion term. :meth:`~divi.qprog.workflows.LASSQD.nevpt2`
   corrects the states in the converged field without feeding its correlated
   density back into it.
 - **Comparing with PySCF.** PySCF's ddCOSMO- or PCM-CASSCF updates the field
-  from a density that lags its converged one, so its energy can differ slightly;
-  compare with CASSCF iterated to self-consistency with the field.
+  from a density that lags its converged one, so its energy can differ.
 - **Checkpoints** keep the field, so a resumed run continues from it; one
   written with other solvent settings is refused. LASSQD works on a copy of the
   solvent model and leaves the one passed in untouched.
@@ -620,22 +570,7 @@ since LASSQD re-optimises the orbitals. In a ``solvent`` the energy adds a
 solvation energy and is no bound.
 
 **What fragmenting costs is inter-fragment correlation.** A product of fragment
-states cannot describe correlation *between* fragments, and the error grows with
-how strongly they interact: small for well-separated fragments, larger for
-coupled ones, largest when a boundary cuts through a bond (a triple bond is a
-hard case, and the error grows as it stretches). Pick fragments along weak
-interactions, not through bonds.
-
-* **Error smoothness matters more than its size** for relative energies. Along
-  a curve separating weakly interacting fragments the error varies smoothly;
-  along one that breaks a bond between fragments it can jump between adjacent
-  geometries and need not change monotonically. Automatic fragmentation can
-  also change its layout along the curve. Such a curve is unusable for reaction
-  energies although each point is a valid bound.
-* **More fragments is not automatically worse.** One fragment spanning a wide
-  active space asks more of the sampling than several narrow ones and can be
-  less accurate despite the more expressive ansatz. Compare layouts on your own
-  system.
+states cannot describe correlation *between* fragments.
 
 .. _lassqd-carryover:
 
@@ -682,14 +617,7 @@ descending weight, then this batch's halves by descending sample count.
 
    With both caps unset, the retained set and the subspace grow quadratically
    every iteration, as the relative cutoff prunes little. Past 16384
-   determinants a failed eigenvalue solve has no dense fallback, so a fragment
-   with a large determinant space should set ``max_dim``.
-
-Carryover helps where sampling reaches a small fraction of a fragment's
-determinant space. Where sampling already covers it (small fragments, a
-generous ``batch_size``) it changes nothing. Compare
-:attr:`~divi.qprog.workflows.lassqd.LASSQDRoundReport.subspace_sizes` with the
-fragment's full determinant count to see which regime you are in.
+   determinants a failed eigenvalue solve has no dense fallback.
 
 Retention also crosses macro-cycles: the strings retained from a fragment's best
 result seed the first recovery iteration of its next round, then the cutoff
@@ -718,8 +646,7 @@ Three further :class:`~divi.qprog.workflows.lassqd.SQDConfig` knobs shape the
 subspace rather than its size.
 
 ``include_reference`` (on by default) keeps the fragment's aufbau reference
-determinant in every batch. Adding a determinant to a variational subspace can
-only lower the projected minimum, so a fragment's SQD energy cannot land above
+determinant in every batch, so a fragment's SQD energy cannot land above
 its own reference. Turn it off to make the subspace exactly what was sampled.
 
 ``symmetrize_spin`` pools the alpha and beta halves, so a sampled ``|1001>``
@@ -731,13 +658,6 @@ symmetry.
 recovery once both its energy and orbital occupancies stop moving. Both default
 to ``0.0``, so recovery spends every iteration unless you opt in. Neither is
 ``LASSQD``'s own ``energy_tol``, which ends the macro-cycle.
-
-.. warning::
-
-   Carryover improves the subspace non-monotonically, so a settled iteration
-   does not mean the next had nothing to add, and stopping early can cost
-   accuracy. Enable these only once recovery, not the orbital solve, is where
-   your runs spend their time.
 
 Next Steps
 ------------

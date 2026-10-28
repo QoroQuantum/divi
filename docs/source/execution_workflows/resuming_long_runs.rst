@@ -419,16 +419,6 @@ The ``optimizer_state.json`` file contains optimizer-specific data:
 - For ``PymooOptimizer``: Serialised algorithm object and population
 - For ``GridSearchOptimizer``: Parameter grid, evaluated losses, best point
 
-Best Practices
---------------
-
-1. **Use meaningful checkpoint directory names** - Include experiment identifiers or timestamps
-2. **Set appropriate checkpoint intervals** - For long runs, checkpoint every N iterations to save disk space
-3. **Always provide problem configuration when loading** - Checkpoints don't store problem definitions
-4. **Clean up old checkpoints** - Use ``cleanup_old_checkpoints()`` to manage disk space
-5. **Verify checkpoint validity** - Check ``is_valid`` before resuming from a checkpoint
-6. **Use auto-generated directories** - ``CheckpointConfig.with_timestamped_dir()`` prevents accidental overwrites
-
 Error Handling
 --------------
 
@@ -439,7 +429,7 @@ Checkpointing operations can raise several exceptions:
 - :exc:`RuntimeError` — saving a checkpoint before any iteration has completed
 - :exc:`ValueError` — invalid :class:`~divi.qprog.checkpointing.CheckpointConfig` or incompatible resume state
 
-Handle load failures explicitly when you build tooling or CLIs:
+Load failures can be handled explicitly:
 
 .. skip: next
 
@@ -473,7 +463,6 @@ Limitations
 - Optimizers marked unsupported in the compatibility table reject checkpointing
 - Checkpoints are **not portable** across different Python versions or library versions
 - Problem configuration must be **manually provided** when loading (not stored in checkpoint)
-- Checkpoint files can be **large** for population-based optimizers (MonteCarlo, Pymoo)
 - A child that is not eligible for mid-round restore restarts from the ensemble
   round's saved input state
 

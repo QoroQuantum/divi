@@ -168,16 +168,10 @@ A dry run is a **sanity check on the pipeline you just constructed**, performed
 before a single circuit executes.  It walks each pipeline's forward pass and
 reports what that pipeline *is*: which stages it contains, in what order, what
 each one fans out or reduces, and the shape of the circuits that come out the
-end.  Use it to confirm the pipeline you built is the pipeline you meant —
-that the mitigation you configured actually applies, that observable grouping
-is doing what you expect, that an optimizer is driving the auxiliary pipelines
-you think it is.
+end.
 
-It is deliberately a *back-of-the-envelope* instrument, not a cost model: the
-counts it reports describe one pass through the pipeline, and it does not
-attempt to predict a full optimisation run (see
-:ref:`what-a-dry-run-does-not-tell-you`).  Its strength is **comparison** —
-run it twice with different settings and read off what changed.
+The counts it reports describe one pass through the pipeline, not a full
+optimisation run (see :ref:`what-a-dry-run-does-not-tell-you`).
 
 Call :meth:`~divi.qprog.QuantumProgram.dry_run` on any quantum program, then
 pass the resulting dict to :func:`~divi.pipeline.format_dry_run` for the rich
@@ -187,7 +181,7 @@ tree output:
 
    from pyscf import gto
 
-   from divi.backends import QiskitSimulator
+   from divi.backends import MaestroSimulator
    from divi.circuits.quepp import QuEPP
    from divi.pipeline import format_dry_run
    from divi.qprog import VQE
@@ -199,7 +193,7 @@ tree output:
    vqe = VQE(
        MolecularProblem.from_molecule(h2_molecule),
        qem_protocol=QuEPP(truncation_order=1, n_twirls=10),
-       backend=QiskitSimulator(qiskit_backend="auto"),
+       backend=MaestroSimulator(force_sampling=True),
        optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
    )
 
@@ -252,31 +246,22 @@ looks redundant: it restructures circuits without adding a dimension.
 For most optimizers one evaluation is one parameter vector (θ).  A *population*
 optimizer binds its whole working set in a single pass, so there the count covers
 all of them and the line says so explicitly:
-``Total (per evaluation, all 10 parameter sets)``.  Read the label, not the
-assumption.
+``Total (per evaluation, all 10 parameter sets)``.
 
 .. important::
 
    Those shape figures are **logical**: they are measured before transpilation,
    so they model no coupling map and include no routing SWAPs.  On a device whose
    qubits are not all-to-all connected, the submitted circuit is deeper and
-   carries more entangling gates than reported — often substantially, for an
-   ansatz with long-range interactions.  Treat them as a lower bound on circuit
-   shape, and transpile a representative circuit against your target device
-   before concluding that it fits.
+   carries more entangling gates than reported.
 
 **The report stops at one evaluation.**  How many evaluations an optimizer spends
-per step, and how many steps a run takes, are not modelled here: a gradient-free
-method decides as it goes, a line search spends what the landscape demands, and
-SPSA-style methods add fixed extras (a resampled gradient, a blocking baseline)
-that vary with their own settings.  Reaching a run total means multiplying by
-figures only you have — consult the optimizer's own documentation for its call
-pattern, or measure one short run and scale.
+per step, and how many steps a run takes, are not modelled here.
 
 What the report *does* say about run structure is which routines recur: a
 ``PER_EVALUATION`` pipeline runs every time the optimizer evaluates, a ``ONCE``
 pipeline runs one time (the final readout).  The ensemble roll-up keeps the two
-buckets apart for the same reason.
+buckets apart.
 
 Data-bound programs add a ``data_sample`` axis. Its size multiplies observable
 groups, mitigation branches, and population parameter sets. The report lists
@@ -289,7 +274,7 @@ data and trainable parameter counts separately.
 
 .. note::
 
-   Preview with the actual backend. ``strategy: analytic`` means the backend
+   ``strategy: analytic`` means the backend
    evaluates the observable directly; ``strategy: qwc`` means sampling circuits
    were grouped. ``force_sampling=True`` on
    :class:`~divi.backends.MaestroSimulator` or
@@ -325,11 +310,8 @@ does not register anything, so a custom program that only does that returns
    print(cost.total_circuits)        # 500 — one evaluation (this optimizer: one θ)
    print(cost.cadence)               # PipelineCadence.PER_EVALUATION
 
-When you do want a figure spanning several pipelines, keep the cadences apart:
-recurring pipelines are not comparable with one-time ones, and only you know how
-many evaluations your optimizer will spend.  A ``ONCE`` routine runs *at most*
-once — ``run(perform_final_computation=False)`` skips solution sampling
-altogether, so drop it from the total on that path.
+A ``ONCE`` routine runs *at most* once — ``run(perform_final_computation=False)``
+skips solution sampling altogether.
 
 Metric-Optimizer Pipelines
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -367,8 +349,7 @@ What a Dry Run Does Not Tell You
 A dry run describes **pipelines**, not complete runs:
 
 - It does not multiply by ``max_iterations`` or model line searches, gradients,
-  baselines, or other optimizer call patterns. Measure a short run when you need
-  a total estimate.
+  baselines, or other optimizer call patterns.
 - Shot totals reflect configured budgets, not provider billing. Analytic
   backends may report configured shots while consuming none.
 - Default QEM/twirling previews preserve circuit counts but may report shape
@@ -459,19 +440,13 @@ the program's own routines. They do, however, declare those routines through
 into its own set — so a dry run accounts for their cost (see the metric-optimizer
 example under :ref:`dry-run`).
 
-**Stage ordering affects performance.**  Because each stage in the expand pass
-fans out the batch it receives, any work-multiplying stage placed early forces
-every downstream stage to repeat its logic across a larger batch.  Conversely,
-placing a fan-out stage late keeps the batch small for as long as possible.
+Each stage in the expand pass fans out the batch it receives.
 
-The most concrete example is ``ParameterBindingStage``.  By default it runs
-last — structural stages process the symbolic circuit once instead of repeating
-work per parameter set.  When using
-:class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalize rotation
-angles, which may produce more Pauli paths. ``QuEPP(sampling="exhaustive")``
-binds parameters first — fewer paths per circuit, but more total mitigation work
-across parameter sets. The default ``QuEPP(sampling="auto")`` keeps the cheaper
-symbolic ordering.
+``ParameterBindingStage`` runs last by default — structural stages process the
+symbolic circuit once instead of repeating work per parameter set.  When using
+:class:`~divi.circuits.quepp.QuEPP`, this means QuEPP cannot normalise rotation
+angles. ``QuEPP(sampling="exhaustive")`` binds parameters first. The default
+``QuEPP(sampling="auto")`` uses the symbolic ordering.
 
 
 Extending Pipelines
@@ -514,7 +489,7 @@ Adaptive Shot Allocation
 
 By default, each measurement group receives the backend's full shot count, for
 ``G × shots`` total. ``shot_distribution`` instead divides one ``shots`` budget
-among all groups. Compare strategies at equal total budget.
+among all groups.
 
 .. code-block:: python
 
@@ -567,24 +542,16 @@ circuit, and snapshots that measure no term are never submitted.
    MeasurementStage(grouping_strategy="shadows")
 
 Variational algorithms accept the same option, for example
-``VQE(..., grouping_strategy="shadows")``. Compare it with ``"qwc"`` at the same
-total budget: a term on many qubits is matched by few snapshots, so its
-estimate is noisier.
+``VQE(..., grouping_strategy="shadows")``.
 
 ``grouping_strategy="biased_shadows"`` draws each qubit's basis from its own
 distribution instead, fitted to the observable's coefficients to minimise the
 variance bound of `Hadfield et al. <https://arxiv.org/abs/2006.15788>`_. A term
 is then weighted by the inverse of its own matching chance, so the estimate
-stays unbiased. It improves on ``"shadows"`` most when the large terms favour
-one basis on a qubit, for example a Hamiltonian dominated by ``Z`` terms. It is
-not a precision upgrade over grouping: on the ground states of H2 and LiH it
-needed about 5 and 1.7 times the shots of ``"qwc"`` with
-``shot_distribution="weighted"`` for the same precision.
+stays unbiased.
 
 - ``shots`` is the number of snapshots, and the bases are redrawn on every
   evaluation.
-- On a wide register nearly every snapshot measures a different set of terms,
-  so expect close to one circuit per shot.
 - Shadows take no ``shot_distribution`` and raise on a backend that computes
   expectation values itself.
 - A :meth:`~divi.qprog.QuantumProgram.dry_run` reports ``snapshots`` and

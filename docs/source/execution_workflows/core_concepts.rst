@@ -43,7 +43,6 @@ consistent interface.
 - **Pipeline-Oriented Execution** — Structured *expand → execute → reduce* flow
 - **Backend Integration** — Unified interface for simulators and hardware
 - **Result Handling** — A common structure for aggregating and processing results
-- **Error Handling** — Graceful handling of execution failures
 
 **Key Properties:**
 
@@ -72,9 +71,8 @@ Every variational quantum program in Divi follows a consistent lifecycle:
 
 .. note::
    Internally, steps 2–5 are orchestrated by a **circuit pipeline** that uses an
-   *expand → execute → reduce* pattern. You don't need to interact with the pipeline
-   directly when using built-in algorithms, but understanding it enables powerful
-   customisation. See :doc:`pipelines` for a deep dive.
+   *expand → execute → reduce* pattern. Built-in algorithms do not require
+   direct interaction with the pipeline. See :doc:`pipelines`.
 
 ``run()`` owns expansion through optimisation. It validates parameter shapes,
 drives the optimizer, tracks histories and best/final parameters, applies early
@@ -97,7 +95,7 @@ The most commonly accessed properties for result analysis:
   entry per population member per iteration
 - :attr:`~divi.qprog.VariationalQuantumAlgorithm.min_losses_per_iteration` -
   Convenience property returning the minimum loss per iteration as
-  ``list[float]``; use it to plot the convergence curve
+  ``list[float]``
 
 .. note::
    ``best_params`` produced the lowest observed loss; ``final_params`` is the
@@ -173,9 +171,8 @@ when only the trained parameters matter.
 **Sampling from Pre-Trained Parameters**
    VQE, QAOA, and PCE expose
    :meth:`~divi.qprog.SolutionSamplingMixin.sample_solution`, which runs
-   only the final measurement step with a user-supplied parameter set. This is
-   the cheapest way to re-sample a circuit when parameters are already known
-   (e.g. loaded from a checkpoint or produced by an external training routine).
+   only the final measurement step with a user-supplied parameter set, such as
+   one loaded from a checkpoint or produced by an external training routine.
    Unlike ``run()``, it does not dispatch any expectation-value jobs and does
    not mutate optimizer-side state (``best_params``, ``losses_history``,
    ``current_iteration``).
@@ -207,8 +204,7 @@ Circuit Architecture
 A :class:`~divi.circuits.MetaCircuit` is Divi’s logical circuit representation.
 PennyLane, Qiskit, Hamiltonian, and existing-circuit specification stages
 produce MetaCircuit batches; the pipeline binds parameters, expands measurement
-or mitigation variants, and lowers the final batch to executable OpenQASM. Most
-users never construct this representation directly.
+or mitigation variants, and lowers the final batch to executable OpenQASM.
 
 Bring an existing PennyLane or Qiskit circuit through
 :class:`~divi.qprog.algorithms.CustomVQA`; see :doc:`framework_integration`.

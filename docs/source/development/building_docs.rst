@@ -26,9 +26,9 @@ To build the HTML documentation:
 
 The built documentation will be available in ``docs/build/html/``.
 
-**Live Development Server** (Recommended for Development)
+**Live Development Server**
 
-For active documentation development, use the live reload server:
+To start the live reload server:
 
 .. code-block:: bash
 
@@ -38,7 +38,7 @@ For active documentation development, use the live reload server:
 This will:
 - Automatically rebuild when files change
 - Serve documentation at ``http://localhost:8000``
-- Provide live reloading for faster iteration
+- Provide live reloading
 
 **Serving Built Documentation**
 
@@ -67,10 +67,9 @@ Writing Good Docstrings
 
 Follow these guidelines for docstrings that work well with Sphinx:
 
-1. **Use Google-style docstrings** (recommended) or NumPy-style
+1. **Use Google-style or NumPy-style docstrings**
 2. **Include type hints** - Sphinx will automatically link them
 3. **Document all public methods and classes**
-4. **Include examples** where helpful
 
 Example:
 
@@ -161,28 +160,14 @@ Sybil; it is not shown in the built HTML.
 Finding ``skip`` directives
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Line-number inventories go stale; search when auditing:
+List ``skip`` directives with:
 
 .. code-block:: shell
 
    rg '\.\. skip:' docs/source
 
-Invisible snippets: when and how
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Use ``.. invisible-code-block: python`` when:
-
-- A section has several short examples that share the same objects (for example, one
-  optimisation run reused by several plotting calls).
-- The shared setup is runnable and needed for tests, but repetitive in the rendered guide.
-- You want to replace ``.. skip: next`` continuation fragments with executable docs.
-
-Avoid invisible snippets when:
-
-- The hidden code is long enough that readers need to see it to understand the example.
-- A visible minimal setup would be clearer than hidden state.
-- The setup is shared across many pages (prefer ``docs/source/conftest.py`` namespace
-  injection instead).
+Invisible snippets
+^^^^^^^^^^^^^^^^^^
 
 ``execution_workflows/visualization.rst`` uses invisible setup to define shared scan inputs once
 and keep later examples short while still runnable.
