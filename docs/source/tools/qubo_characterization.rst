@@ -55,7 +55,7 @@ Reading the Result
 the result renders the full HTML report.
 
 The result exposes the report's sections as dictionaries, as the service sends
-them: ``problem``, ``classical``, ``qaoa``, ``angles``, ``references``,
+them: ``problem``, ``structure``, ``classical``, ``qaoa``, ``angles``, ``references``,
 ``limits``, and, when the request asks for them, ``constraints`` and
 ``penalty``. ``result.report`` holds the whole report.
 
@@ -75,6 +75,9 @@ Shortcuts read individual values:
        1 is the optimum.
    * - ``recommended_lambda``
      - The recommended penalty weight, for a problem with a penalty.
+   * - ``fixed_values``
+     - Variables fixed at values one optimum takes, as ``{index: value}``;
+       substituting them leaves a smaller problem with the same minimum.
    * - ``qaoa_initial_params(layers)``
      - The angles at a layer count (default: the recommended one), in the
        layout :class:`~divi.qprog.algorithms.QAOA`'s ``run`` expects.

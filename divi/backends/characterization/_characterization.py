@@ -356,7 +356,7 @@ class CharacterizationResult:
     """Job status (``COMPLETED``, ``FAILED``, etc.)."""
 
     report: dict = field(default_factory=dict, repr=False)
-    """The full report, with sections ``summary``, ``problem``, ``classical``,
+    """The full report, with sections ``summary``, ``problem``, ``structure``, ``classical``,
     ``qaoa``, ``angles``, ``references``, ``limits``, ``recommendations`` and,
     on request, ``constraints`` and ``penalty``."""
 
@@ -384,8 +384,13 @@ class CharacterizationResult:
 
     @property
     def problem(self) -> dict:
-        """The QUBO's size, terms, degree, components and light-cone widths."""
+        """The QUBO's size, terms, gates per layer and light-cone widths."""
         return self._section("problem")
+
+    @property
+    def structure(self) -> dict:
+        """The QUBO's classical structure — variables fixed exactly, qubits left, splits into parts, penalty blocks."""
+        return self._section("structure")
 
     @property
     def classical(self) -> dict:
@@ -441,6 +446,16 @@ class CharacterizationResult:
     def recommended_lambda(self) -> float | None:
         """The recommended penalty weight; ``None`` without a penalty component or above the exact size."""
         return self.penalty.get("recommended_lambda")
+
+    @property
+    def fixed_values(self) -> dict[int, int]:
+        """Variables the service fixed, each at a value one optimum takes for all of them at once.
+
+        Substituting them leaves a smaller problem with the same minimum.
+        """
+        return {q: 0 for q in self.structure.get("fixed_to_zero") or []} | {
+            q: 1 for q in self.structure.get("fixed_to_one") or []
+        }
 
     def qaoa_initial_params(self, layers: int | None = None) -> np.ndarray | None:
         """Angles ready for :class:`~divi.qprog.algorithms.QAOA`'s ``run``.
@@ -511,6 +526,21 @@ class CharacterizationResult:
                     title="Recommendations",
                 )
             )
+        if structure := self.structure:
+            lines = [
+                f"Qubits after reduction: {structure.get('qubits_after_reduction')} · "
+                f"fixed: {len(self.fixed_values)} · "
+                f"unused: {len(structure.get('unused_variables') or [])} · "
+                f"independent parts: {structure.get('components')}"
+            ]
+            lines += [
+                f"{level.get('parts')} parts of at most {level.get('largest_part')} variables cut "
+                f"{_number(level.get('cut_share'), '.1%')} of the coupling weight"
+                for level in structure.get("partition") or []
+            ]
+            if blocks := structure.get("penalty_blocks"):
+                lines.append(f"Penalty blocks: {len(blocks)}")
+            parts.append(Panel("\n".join(lines), title="Structure"))
         curve = self.qaoa.get("curve") or []
         if curve:
             confidence = _number(self.qaoa.get("shots_confidence"), ".0%")

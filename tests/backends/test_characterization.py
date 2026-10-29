@@ -93,6 +93,18 @@ _CURVE = [
 REPORT = {
     "summary": "The exact optimum is already known classically; use QAOA here to benchmark it.",
     "problem": {"num_variables": 2, "num_terms": 3, "lightcone_limit": 22},
+    "structure": {
+        "components": 1,
+        "largest_component": 2,
+        "unused_variables": [],
+        "fixed_to_zero": [0],
+        "fixed_to_one": [],
+        "fixed_by": {"first_order": 1, "roof_duality": 0},
+        "qubits_after_reduction": 1,
+        "z2_symmetric": False,
+        "easy_witnesses": [],
+        "partition": [],
+    },
     "classical": {
         "best_energy": -1.0,
         "best_bitstring": "01",
@@ -629,6 +641,7 @@ class TestCharacterizationResult:
         assert result.summary == REPORT["summary"]
         assert result.recommendations == REPORT["recommendations"]
         assert result.problem is REPORT["problem"]
+        assert result.structure is REPORT["structure"]
         assert result.classical is REPORT["classical"]
         assert result.qaoa is REPORT["qaoa"]
         assert result.angles is REPORT["angles"]
@@ -640,10 +653,12 @@ class TestCharacterizationResult:
         result = _result(report={})
 
         assert (result.summary, result.recommendations, result.limits) == ("", [], [])
-        assert result.problem == result.constraints == result.penalty == {}
+        assert result.problem == result.structure == result.constraints == {}
+        assert result.penalty == {}
         assert result.recommended_layers is None
         assert result.gap_closed is None
         assert result.recommended_lambda is None
+        assert result.fixed_values == {}
 
     def test_shortcuts_read_the_report(self):
         result = _result()
@@ -651,6 +666,7 @@ class TestCharacterizationResult:
         assert result.recommended_layers == 3
         assert result.gap_closed == 0.88
         assert result.recommended_lambda == 1.519
+        assert result.fixed_values == {0: 0}
 
     def test_gap_closed_is_none_when_the_requested_layers_were_not_computed(self):
         result = _result(
@@ -733,6 +749,7 @@ class TestCharacterizationResult:
             REPORT["summary"],
             "• Use p = 3 layers.",
             "• At p = 2 QAOA closes 88.0%.",
+            "Qubits after reduction: 1 · fixed: 1 · unused: 0 · independent parts: 1",
             "2 │ 88.0% │ 0.8800 │ 4 │ exact statevector simulation",
             "3 ★ │ 94.0% │ 0.9400 │ 4 │ exact statevector simulation",
             f"★ recommended: {REPORT['qaoa']['recommended_reason']}",
@@ -741,6 +758,30 @@ class TestCharacterizationResult:
             limit,
         ):
             assert expected in text
+
+    def test_display_lists_splits_and_penalty_blocks(self, mocker):
+        structure = {
+            **REPORT["structure"],
+            "partition": [
+                {
+                    "parts": 2,
+                    "largest_part": 18,
+                    "cut_weight": 700.0,
+                    "cut_share": 0.389,
+                },
+                {"parts": 4, "largest_part": 9, "cut_weight": 900.0, "cut_share": 0.5},
+            ],
+            "penalty_blocks": [{"variables": [0, 1], "count": 1, "weight": 5.0}],
+        }
+        text = self._displayed(
+            mocker, _result(report={**REPORT, "structure": structure})
+        )
+
+        assert (
+            "2 parts of at most 18 variables cut 38.9% of the coupling weight" in text
+        )
+        assert "4 parts of at most 9 variables cut 50.0% of the coupling weight" in text
+        assert "Penalty blocks: 1" in text
 
     def test_display_of_an_empty_report_shows_only_its_frame(self, mocker):
         text = self._displayed(mocker, _result(report={}))
