@@ -273,13 +273,13 @@ class TestSamplingSubmission:
 
     def test_bitstring_reversal(self, mocker):
         """Bitstrings are reversed from maestro big-endian to Qiskit little-endian."""
-        fake = _make_fake_maestro(mocker, counts={"100": 70, "001": 30})
+        fake = _make_fake_maestro(mocker, counts={"10": 70, "11": 30})
         sim = _make_simulator(mocker, fake)
 
         result = sim.submit_circuits({"c0": QASM_DEPTH_2})
 
-        # "100" (maestro) -> "001" (qiskit), "001" -> "100"
-        assert result.results[0]["results"] == {"001": 70, "100": 30}
+        # "10" (maestro) -> "01" (qiskit)
+        assert result.results[0]["results"] == {"01": 70, "11": 30}
 
     def test_shots_and_config_passed_to_simple_execute(self, mocker):
         """shots is forwarded, and the SimulatorConfig built from MaestroConfig
@@ -819,12 +819,12 @@ class TestNoisySamplingSubmission:
 
     def test_noisy_sampling_reverses_bitstrings(self, mocker):
         """Big-endian → little-endian reversal applies to noisy results too."""
-        fake = _make_fake_maestro(mocker, counts={"100": 70, "001": 30})
+        fake = _make_fake_maestro(mocker, counts={"10": 70, "11": 30})
         sim, _ = _make_noisy_sim(mocker, fake)
 
         result = sim.submit_circuits({"c0": _BELL_QASM})
 
-        assert result.results[0]["results"] == {"001": 70, "100": 30}
+        assert result.results[0]["results"] == {"01": 70, "11": 30}
 
     def test_noisy_sampling_honors_shot_groups(self, mocker):
         fake = _make_fake_maestro(mocker)

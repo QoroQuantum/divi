@@ -22,7 +22,7 @@ from divi.circuits._conversions import _QISKIT_TO_QASM2, _sparse_pauli_op_to_ham
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
-from divi.qasm import count_qubits
+from divi.qasm import count_clbits, count_qubits
 
 from .._base import CircuitRunner, ExecutionResult
 from .._cancellation import raise_if_cancelled
@@ -516,8 +516,13 @@ class MaestroSimulator(CircuitRunner):
                         **noisy_kwargs,
                     )
                 )
-                # Maestro puts q[0] leftmost; Qiskit (little-endian) puts it rightmost.
-                counts = {bits[::-1]: n for bits, n in raw["counts"].items()}
+                # Maestro puts c[0] leftmost and sizes keys by the highest index it
+                # touched; fit them to the classical register, then little-endian.
+                width = count_clbits(qasm)
+                counts = {
+                    (bits[:width].ljust(width, "0") if width else bits)[::-1]: n
+                    for bits, n in raw["counts"].items()
+                }
                 return _result_entry(label, counts, raw, "counts")
 
             terms = per_circuit_terms[i]

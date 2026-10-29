@@ -5,6 +5,7 @@
 import pytest
 
 from divi.qasm import (
+    count_clbits,
     count_qubits,
     is_valid_qasm,
     validate_qasm,
@@ -419,6 +420,20 @@ def test_validate_qasm_valid(qasm):
 )
 def test_count_qubits_reads_declarations(qasm, expected):
     assert count_qubits(qasm) == expected
+
+
+@pytest.mark.parametrize(
+    "qasm, expected",
+    [
+        ("OPENQASM 2.0;\nqreg q[5];\ncreg a[2];\ncreg b [ 3 ];\n", 5),
+        ("OPENQASM 2.0;\nbit[4] c;\nbit flag;\n", 5),
+        ("OPENQASM 2.0;\n// creg ghost[9];\ncreg c[1];\n", 1),
+        ("OPENQASM 2.0;\nqreg q[3];\n", 0),
+    ],
+    ids=["cregs-not-qregs", "bit-decls", "commented-out", "none"],
+)
+def test_count_clbits_reads_declarations(qasm, expected):
+    assert count_clbits(qasm) == expected
 
 
 @pytest.mark.parametrize("qasm", **INVALID_QASM)

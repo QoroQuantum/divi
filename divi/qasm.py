@@ -697,11 +697,26 @@ _QUBIT_DECL_RE = re.compile(
 )
 
 
+_CLBIT_DECL_RE = re.compile(
+    r"(?:^|;)\s*(?:creg\s+[A-Za-z_]\w*\s*\[\s*(\d+)\s*\]|bit\b\s*(?:\[\s*(\d+)\s*\])?)",
+    re.MULTILINE,
+)
+
+
 def count_qubits(src: str) -> int:
     """Total qubits declared by the program's registers, read without validating it."""
     return sum(
         int(qreg_size or qubit_size or 1)
         for qreg_size, qubit_size in _QUBIT_DECL_RE.findall(_strip_comments(src))
+    )
+
+
+def count_clbits(src: str) -> int:
+    """Total classical bits declared by the program's registers, read without
+    validating it."""
+    return sum(
+        int(creg_size or bit_size or 1)
+        for creg_size, bit_size in _CLBIT_DECL_RE.findall(_strip_comments(src))
     )
 
 
