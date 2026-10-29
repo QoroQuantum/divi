@@ -10,6 +10,7 @@ from qiskit.circuit.library import RYGate
 from qiskit.quantum_info import SparsePauliOp
 from scipy.spatial.distance import pdist, squareform
 
+from divi.backends import MaestroConfig
 from divi.qprog import ReportingLevel
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
@@ -514,6 +515,39 @@ def vqe_sweep_problems(
 
 class TestVQEHyperparameterSweep:
     """A test class to group all tests for the VQEHyperparameterSweep."""
+
+    def test_seeded_merged_sweep_reproduces_exactly(
+        self, make_maestro_simulator, h2_molecule, vqe_sweep_ansatze
+    ):
+        """Merged calls seed each circuit by its label, so labels must not
+        carry the programs' memory addresses."""
+
+        def run_sweep():
+            sweep = VQEHyperparameterSweep(
+                ansatze=vqe_sweep_ansatze,
+                molecule_transformer=MoleculeTransformer(
+                    base_molecule=h2_molecule, bond_modifiers=[0.9, 1.1]
+                ),
+                problems=None,
+                optimizer=MonteCarloOptimizer(population_size=3, n_best_sets=1),
+                max_iterations=2,
+                backend=make_maestro_simulator(
+                    shots=300,
+                    force_sampling=True,
+                    maestro_config=MaestroConfig(seed=5),
+                ),
+                seed=7,
+            )
+            sweep.create_programs()
+            sweep.run()
+            return sweep
+
+        # Both sweeps stay alive, so the second cannot reuse the first's addresses.
+        first, second = run_sweep(), run_sweep()
+
+        assert {key: p.best_loss for key, p in first.programs.items()} == {
+            key: p.best_loss for key, p in second.programs.items()
+        }
 
     def test_child_checkpoints_use_distinct_derived_directories(
         self, vqe_sweep_problems, tmp_path

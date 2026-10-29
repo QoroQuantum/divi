@@ -1439,11 +1439,11 @@ class TestRegistrationFailureCleanup:
         original_register = _BatchCoordinator.register_program
         calls = {"n": 0}
 
-        def _flaky(self, program_key):
+        def _flaky(self, program_key, route_key):
             calls["n"] += 1
             if calls["n"] == 3:
                 raise RuntimeError("boom: simulated registration failure")
-            return original_register(self, program_key)
+            return original_register(self, program_key, route_key)
 
         mocker.patch.object(_BatchCoordinator, "register_program", _flaky)
 
@@ -1474,11 +1474,11 @@ class TestRegistrationFailureCleanup:
         original_register = _BatchCoordinator.register_program
         calls = {"n": 0}
 
-        def _flaky_once(self, program_key):
+        def _flaky_once(self, program_key, route_key):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("boom")
-            return original_register(self, program_key)
+            return original_register(self, program_key, route_key)
 
         mocker.patch.object(_BatchCoordinator, "register_program", _flaky_once)
 

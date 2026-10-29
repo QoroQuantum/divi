@@ -11,7 +11,7 @@ improving backend utilization.
 
 import logging
 from collections import defaultdict
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
 from enum import Enum
@@ -185,18 +185,22 @@ _Batch = dict[Hashable, _PendingEntry]
 
 def _route_batch_circuits(
     batch: _Batch,
+    route_keys: Mapping[Hashable, Hashable],
 ) -> tuple[_Batch, dict[str, tuple[Hashable, str]]]:
-    """Prefix circuit labels with their program key and retain their routes.
+    """Prefix circuit labels with their program's route key and retain their
+    routes.
 
-    Tokens depend only on the program and circuit, never on merge order, so
-    backends that seed per label draw the same stream on every run.
+    Tokens depend only on the route key and circuit, never on merge order or
+    on the program's identity in memory, so backends that seed per label draw
+    the same stream on every run.
     """
     routed_batch: _Batch = {}
     circuit_routes: dict[str, tuple[Hashable, str]] = {}
     for program_key, entry in batch.items():
         routed_circuits = {}
+        route_key = route_keys[program_key]
         for original_label, qasm in entry.circuits.items():
-            token = f"{program_key!r}/{original_label}"
+            token = f"{route_key!r}/{original_label}"
             if token in circuit_routes:
                 raise ValueError(
                     f"Two circuits in one batch share the label {token!r}."
@@ -305,6 +309,9 @@ class _BatchCoordinator:
         # Programs currently executing (not yet finished their run()).
         self._active_programs: set[Hashable] = set()
 
+        # Label prefix of each registered program's circuits in merged calls.
+        self._route_keys: dict[Hashable, Hashable] = {}
+
         # Programs that have already emitted their prep-progress signal —
         # used to make the prep-row tick exactly once per program even
         # when a program submits multiple times during its lifetime.
@@ -329,10 +336,16 @@ class _BatchCoordinator:
     # Registration
     # ------------------------------------------------------------------
 
-    def register_program(self, program_key: Hashable) -> None:
-        """Register a program as active before it starts executing."""
+    def register_program(self, program_key: Hashable, route_key: Hashable) -> None:
+        """Register a program as active before it starts executing.
+
+        ``route_key`` prefixes the program's circuit labels in merged calls,
+        which backends that seed per label draw from, so it must be the same on
+        every run and unique among the registered programs.
+        """
         with self._lock:
             self._active_programs.add(program_key)
+            self._route_keys[program_key] = route_key
 
     def deregister_program(self, program_key: Hashable) -> None:
         """Remove a program from the active set.
@@ -550,8 +563,7 @@ class _BatchCoordinator:
                 if entry.kwargs.get("shot_groups") is None:
                     raise ValueError(
                         "Cannot merge a mix of programs with and without "
-                        "'shot_groups' in the same sub-batch. Either set "
-                        "shot_distribution on every program or none."
+                        "'shot_groups' in the same sub-batch."
                     )
 
             _require_kwargs_match_except(all_kwargs, "shot_groups")
@@ -602,30 +614,35 @@ class _BatchCoordinator:
         return merged, merged_kw
 
     @staticmethod
-    def _split_by_ham_ops(batch: _Batch) -> list[_Batch]:
+    def _split_by_job_type(batch: _Batch) -> list[_Batch]:
         """Split a batch into compatible sub-batches.
 
         Programs with ``ham_ops`` cannot be merged with programs without it
         because the backend treats the two as fundamentally different job types
-        (observable evaluation vs shot-based sampling).  This method partitions
-        the batch so each sub-batch can be merged safely.
+        (observable evaluation vs shot-based sampling). Sampling programs with
+        per-circuit ``shot_groups`` cannot share a call with ones running every
+        circuit at the backend's shots, since a call takes one allocation for
+        all its circuits. Returns the non-empty sub-batches in that order.
         """
         with_ham: _Batch = {}
-        without_ham: _Batch = {}
+        with_shot_groups: _Batch = {}
+        plain: _Batch = {}
         for prog_key, entry in batch.items():
             if entry.kwargs.get("ham_ops") is not None:
                 with_ham[prog_key] = entry
+            elif entry.kwargs.get("shot_groups") is not None:
+                with_shot_groups[prog_key] = entry
             else:
-                without_ham[prog_key] = entry
+                plain[prog_key] = entry
 
-        return [sb for sb in (with_ham, without_ham) if sb]
+        return [sb for sb in (with_ham, with_shot_groups, plain) if sb]
 
     def _do_flush(self, batch: _Batch, flush_group: _FlushGroup) -> None:
         """Merge circuits, submit to real backend, demux results, resolve futures.
 
-        Programs are first split into compatible sub-batches (with/without
-        ``ham_ops``) so that each backend call receives a uniform set of
-        kwargs.  Within a sub-batch, programs with different ``ham_ops``
+        Programs are first split into compatible sub-batches (``ham_ops``,
+        ``shot_groups``, neither) so that each backend call receives a uniform
+        set of kwargs.  Within a sub-batch, programs with different ``ham_ops``
         values are merged using ``circuit_ham_map``.
         """
         sub_flush_groups: list[_FlushGroup] = []
@@ -637,7 +654,7 @@ class _BatchCoordinator:
                 )
                 return
 
-            sub_batches = self._split_by_ham_ops(batch)
+            sub_batches = self._split_by_job_type(batch)
 
             # Build (sub_batch, flush_group) pairs. When there's only one
             # sub-batch reuse the parent flush_group; otherwise create
@@ -647,11 +664,17 @@ class _BatchCoordinator:
                 sub_groups.append((sub_batches[0], flush_group))
             else:
                 for sub_batch in sub_batches:
-                    has_ham = any(e.kwargs.get("ham_ops") for e in sub_batch.values())
+                    kwargs = next(iter(sub_batch.values())).kwargs
+                    if kwargs.get("ham_ops") is not None:
+                        label = "expval"
+                    elif kwargs.get("shot_groups") is not None:
+                        label = "allocated shots"
+                    else:
+                        label = "shots"
                     sub_fg = _FlushGroup(
                         program_keys=tuple(sub_batch),
                         color=flush_group.color,
-                        label="expval" if has_ham else "shots",
+                        label=label,
                     )
                     sub_flush_groups.append(sub_fg)
                     with self._in_flight_lock:
@@ -681,7 +704,9 @@ class _BatchCoordinator:
         Each program's future resolves with its results and an even share of
         the backend's reported run time.
         """
-        routed_batch, circuit_routes = _route_batch_circuits(sub_batch)
+        with self._lock:
+            route_keys = dict(self._route_keys)
+        routed_batch, circuit_routes = _route_batch_circuits(sub_batch, route_keys)
         merged_circuits, submit_kwargs = self._merge_circuits_and_kwargs(routed_batch)
 
         n_circuits = len(merged_circuits)

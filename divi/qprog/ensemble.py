@@ -1726,9 +1726,10 @@ class ProgramEnsemble(ABC):
             n_workers=n_workers,
             cancellation_event=self._cancellation_event,
         )
-        for program in self._programs.values():
+        # The slot, as checkpoints use, is the program's identity across runs.
+        for slot, program in enumerate(self._programs.values()):
             program_key = program._progress_key
-            self._coordinator.register_program(program_key)
+            self._coordinator.register_program(program_key, route_key=slot)
             self._program_original_backend[program] = program.backend
             program.backend = _ProxyBackend(
                 selected_backend, self._coordinator, program_key
