@@ -6,17 +6,15 @@
 
 Tests cover:
 - Wire-format serialization from all supported QUBO/HUBO types
-- CharacterizationResult dataclass properties and display
+- CharacterizationResult sections and shortcuts over the service's report
 - QoroService.characterize_and_validate submit + fetch flows (mocked HTTP)
 - divi.backends.characterization convenience functions
 """
 
-import dataclasses
 import io
 import json
 import logging
 import re
-import warnings
 from http import HTTPStatus
 
 import dimod
@@ -67,162 +65,76 @@ from tests.backends._helpers import (
 )
 
 
-def _is_number(val) -> bool:
-    """``isinstance(val, (int, float))`` excluding ``bool``.
+def _curve_entry(layers, gap_closed, gammas, betas):
+    return {
+        "layers": layers,
+        "gammas": gammas,
+        "betas": betas,
+        "energy": -1.0 - gap_closed,
+        "error_bound": 0.0,
+        "gap_closed": gap_closed,
+        "gap_closed_bounds": [gap_closed, gap_closed],
+        "padded": False,
+        "optimized": True,
+        "p_ground": gap_closed,
+        "method": "statevector",
+        "method_label": "exact statevector simulation",
+        "shots_for_confidence": 4,
+    }
 
-    ``bool`` is a subclass of ``int``; without this guard, a boolean-valued
-    field would silently pass numeric type assertions.
-    """
-    return isinstance(val, (int, float)) and not isinstance(val, bool)
 
-
-SAMPLE_REPORT = {
-    "reference_concentration_score": 78.5,
-    "formulation_quality": 64.0,
-    "concentration_ratio": 3.2,
-    "approximation_ratio": 0.92,
-    "feasibility_rate": 0.85,
-    "state_probabilities": [
-        {"state": "01", "is_reference": True, "probability": 0.35, "energy": -1.0},
-        {"state": "10", "is_reference": True, "probability": 0.30, "energy": -1.0},
-        {"state": "00", "is_reference": False, "probability": 0.20, "energy": 0.0},
-        {"state": "11", "is_reference": False, "probability": 0.15, "energy": 2.0},
-    ],
-    "best_parameters": {"gamma": 1.2, "beta": 0.7, "probability": 0.15},
-    "recommended_min_layers": 3,
-    "recommended_layers_basis": "saturated",
-    "ar_vs_depth": [
-        {
-            "layers": 1,
-            "gammas": [0.4],
-            "betas": [0.8],
-            "energy": -1.0,
-            "approximation_ratio": 0.75,
-        },
-        {
-            "layers": 2,
-            "gammas": [0.3, 0.5],
-            "betas": [0.9, 0.4],
-            "energy": -1.5,
-            "approximation_ratio": 0.90,
-        },
-        {
-            "layers": 3,
-            "gammas": [0.2, 0.4, 0.6],
-            "betas": [1.0, 0.6, 0.3],
-            "energy": -1.8,
-            "approximation_ratio": 0.905,
-        },
-    ],
-    "penalty_recommendation": 2.5,
-    "penalty_tuning": {"is_well_tuned": True, "optimal_lambda": 2.5},
-    "structural_sensitivity": [
-        {"qubit": 0, "score": 0.42},
-        {"qubit": 1, "score": 0.18},
-    ],
-}
-
-SAMPLE_HARDNESS = {
-    "difficulty": "moderate",
-    "matrix_spectral_gap": 0.35,
-    "matrix_condition_number": 4.2,
-    "ground_state_degeneracy": 2,
-    "cost_spectrum_estimated": False,
-}
-
-# Mirrors the server's recommendations — top-level field on the response, list
-# of dicts with ``level``/``metric``/``text``/``html`` keys.
-SAMPLE_RECOMMENDATIONS = [
-    {
-        "level": "info",
-        "metric": "quality_score",
-        "text": "Quality is moderate — consider tuning penalty parameters.",
-        "html": "<strong>Quality is moderate</strong> — consider tuning penalty parameters.",
-    },
-    {
-        "level": "warn",
-        "metric": "feasibility_rate",
-        "text": "Feasibility rate is low; review constraint penalties.",
-        "html": "<strong>Feasibility rate is low</strong>; review constraint penalties.",
-    },
+_CURVE = [
+    _curve_entry(1, 0.69, [0.4], [0.8]),
+    _curve_entry(2, 0.88, [0.3, 0.5], [0.9, 0.4]),
+    _curve_entry(3, 0.94, [0.2, 0.4, 0.6], [1.0, 0.6, 0.3]),
 ]
+
+# Shaped like the report the characterisation service returns.
+REPORT = {
+    "summary": "The exact optimum is already known classically; use QAOA here to benchmark it.",
+    "problem": {"num_variables": 2, "num_terms": 3, "lightcone_limit": 22},
+    "classical": {
+        "best_energy": -1.0,
+        "best_bitstring": "01",
+        "optimum": -1.0,
+        "bound_label": "exact enumeration",
+    },
+    "qaoa": {
+        "requested_layers": 2,
+        "curve": _CURVE,
+        "recommended_layers": 3,
+        "recommended_reason": "the deeper layer counts computed gain little over it",
+        "at_requested": _CURVE[1],
+    },
+    "angles": {
+        "layers": 2,
+        "gammas": [0.3, 0.5],
+        "betas": [0.9, 0.4],
+        "source": "optimized",
+        "source_label": "optimised at this layer count",
+    },
+    "references": [{"bitstring": "01", "energy": -1.0, "gap_to_best": 0.0}],
+    "penalty": {"exact": True, "qaoa_lambda": 3.0, "recommended_lambda": 1.519},
+    "limits": [],
+    "recommendations": [
+        {"level": "action", "topic": "qaoa", "text": "Use p = 3 layers."},
+        {"level": "info", "topic": "qaoa", "text": "At p = 2 QAOA closes 88.0%."},
+    ],
+}
 
 SAMPLE_RESPONSE = {
     "job_id": "abc-123",
     "status": "COMPLETED",
-    "hardness": SAMPLE_HARDNESS,
-    "report": SAMPLE_REPORT,
-    "recommendations": SAMPLE_RECOMMENDATIONS,
+    "report": REPORT,
+    "recommendations": REPORT["recommendations"],
     "created_at": "2026-04-25T12:00:00Z",
     "completed_at": "2026-04-25T12:00:01Z",
 }
 
 
-@pytest.fixture
-def characterization_result():
-    """A fully-populated CharacterizationResult for testing."""
+def _result(report=REPORT, **fields):
     return CharacterizationResult(
-        job_id="abc-123",
-        status="COMPLETED",
-        hardness=SAMPLE_HARDNESS,
-        report=SAMPLE_REPORT,
-        recommendations=SAMPLE_RECOMMENDATIONS,
-        created_at="2026-04-25T12:00:00Z",
-        completed_at="2026-04-25T12:00:01Z",
-        html="<div>stub</div>",
-    )
-
-
-@pytest.fixture
-def display_result(characterization_result):
-    """``characterization_result`` plus the fields that drive the gauge and tables."""
-    return dataclasses.replace(
-        characterization_result,
-        report={**SAMPLE_REPORT, "num_qubits": 2, "reference_states": ["01", "10"]},
-    )
-
-
-_SAMPLE_SUMMARY_LINES = (
-    "QUBO Characterisation Result — Job abc-123...",
-    "  Status: COMPLETED",
-    "  Approximation Ratio (mean over the output): 0.9200 (light-cone, not a live run)",
-    "  QAOA Amenability: 78.50 / 100  (formulation fit, NOT solution quality)",
-    "  Concentration Ratio: 3.20x  (vs subspace uniform)",
-    "  Hardness: moderate",
-    "    Ground-state Degeneracy: 2",
-    "  Best Parameters: γ=1.2, β=0.7",
-    "  Penalty Recommendation: λ=2.50",
-    "  Feasibility Rate: 85.0%",
-    "  Created: 2026-04-25T12:00:00Z",
-    "  Completed: 2026-04-25T12:00:01Z",
-)
-
-_BOX_CHARS = str.maketrans({c: " " for c in "│┃╭╮╰╯─━┏┓┗┛┡┩╇┳┻└┘┴┬┼"})
-
-
-def _content_lines(rendered: str) -> list[str]:
-    """Rendered lines with box-drawing stripped and whitespace collapsed."""
-    lines = (
-        " ".join(line.translate(_BOX_CHARS).split()) for line in rendered.splitlines()
-    )
-    return [line for line in lines if line]
-
-
-def _assert_lines_in_order(lines: list[str], expected) -> None:
-    """Every ``expected`` line (whitespace-collapsed) appears in ``lines``, in order."""
-    position = 0
-    for want in (" ".join(e.split()) for e in expected):
-        assert want in lines[position:], f"{want!r} missing after line {position}"
-        position = lines.index(want, position) + 1
-
-
-@pytest.fixture
-def empty_result():
-    """A minimal CharacterizationResult with no report or hardness."""
-    return CharacterizationResult(
-        job_id="xyz-789",
-        status="FAILED",
-        html="",
+        job_id="abc-123", status="COMPLETED", report=report, **fields
     )
 
 
@@ -232,35 +144,20 @@ def _pydantic_error(location: str, message: str) -> str:
 
 
 _INVALID_OPTIONS = [
-    pytest.param(
-        {"sensitivity": True},
-        _pydantic_error("sensitivity", "Extra inputs are not permitted"),
-        id="old-sensitivity-option",
-    ),
-    pytest.param(
-        {"auto_tune": True},
-        _pydantic_error("auto_tune", "Extra inputs are not permitted"),
-        id="old-auto-tune-option",
-    ),
-    pytest.param(
-        {"cost_qubo": BinaryOptimizationProblem({(0,): -1.0})},
-        _pydantic_error("cost_qubo", "Extra inputs are not permitted"),
-        id="cost-qubo-option",
-    ),
-    pytest.param(
-        {"penalty_qubo": BinaryOptimizationProblem({(0, 1): 2.0})},
-        _pydantic_error("penalty_qubo", "Extra inputs are not permitted"),
-        id="penalty-qubo-option",
-    ),
-    pytest.param(
-        {"structural_sensitivity": "yes"},
-        _pydantic_error("structural_sensitivity", "Input should be a valid boolean"),
-        id="structural-sensitivity-not-bool",
-    ),
-    pytest.param(
-        {"penalty_tuning": "yes"},
-        _pydantic_error("penalty_tuning", "Input should be a valid boolean"),
-        id="penalty-tuning-not-bool",
+    *(
+        pytest.param(
+            {removed: value},
+            _pydantic_error(removed, "Extra inputs are not permitted"),
+            id=f"removed-{removed}",
+        )
+        for removed, value in (
+            ("preset", "deep"),
+            ("subspace", {"auto_warmstart": True}),
+            ("parameter_sweep", True),
+            ("penalty_tuning", True),
+            ("gamma", 1.0),
+            ("cost_qubo", BinaryOptimizationProblem({(0,): -1.0})),
+        )
     ),
     pytest.param(
         {"n_qubits": 0},
@@ -271,11 +168,6 @@ _INVALID_OPTIONS = [
         {"n_qubits": -3},
         _pydantic_error("n_qubits", "Input should be greater than 0"),
         id="n-qubits-negative",
-    ),
-    pytest.param(
-        {"preset": "turbo"},
-        _pydantic_error("preset", "Input should be 'fast', 'standard' or 'deep'"),
-        id="unknown-preset",
     ),
     pytest.param(
         # Weight keys are qubit indices; negatives must not reach the wire.
@@ -338,75 +230,6 @@ _INVALID_OPTIONS = [
         {"ansatz": {"mixer": "bad"}},
         _pydantic_error("ansatz.mixer", "Input should be 'x', 'xy' or 'I'"),
         id="ansatz-unknown-mixer",
-    ),
-    # Strict typing: no silent coercion of strings or bools into an angle.
-    pytest.param(
-        {"gamma": "1.2"},
-        _pydantic_error("gamma.float", "Input should be a valid number"),
-        id="gamma-string",
-    ),
-    pytest.param(
-        {"gamma": True},
-        _pydantic_error("gamma.float", "Input should be a valid number"),
-        id="gamma-bool",
-    ),
-    pytest.param(
-        {"parameter_sweep": True, "gamma": 1.0},
-        "mutually exclusive",
-        id="sweep-with-fixed-gamma",
-    ),
-    pytest.param(
-        {"subspace": {"restarts": 0}},
-        _pydantic_error("subspace.restarts", "Input should be greater than 0"),
-        id="restarts-zero",
-    ),
-    pytest.param(
-        {"subspace": {"auto_warmstart": False, "restarts": 20}},
-        "and restarts only affect automatic subspace selection",
-        id="restarts-without-warmstart",
-    ),
-    pytest.param(
-        {
-            "subspace": {
-                "auto_warmstart": False,
-                "solver": "sa",
-                "max_variable_qubits": 8,
-            }
-        },
-        "only affect automatic subspace selection",
-        id="auto-controls-with-warmstart-off",
-    ),
-    pytest.param(
-        {"subspace": {"base_bitstring": "10", "variable_qubits": [0]}},
-        "Set auto_warmstart=False",
-        id="manual-subspace-with-unset-warmstart",
-    ),
-    pytest.param(
-        {
-            "subspace": {
-                "auto_warmstart": True,
-                "base_bitstring": "10",
-                "variable_qubits": [0],
-            }
-        },
-        "manual subspace",
-        id="manual-subspace-with-warmstart-on",
-    ),
-    pytest.param(
-        {"subspace": {"auto_warmstart": False, "base_bitstring": "10"}},
-        "provided together",
-        id="manual-subspace-missing-variables",
-    ),
-    pytest.param(
-        {
-            "subspace": {
-                "auto_warmstart": False,
-                "base_bitstring": "10",
-                "variable_qubits": [0, 0],
-            }
-        },
-        "variable_qubits must not contain duplicate indices",
-        id="duplicate-variable-qubits",
     ),
 ]
 
@@ -798,358 +621,180 @@ class TestSerializeQuboMidScale:
 
 
 class TestCharacterizationResult:
-    """Tests for the characterization result dataclass."""
+    """The result exposes the service's report as it arrives, plus a few shortcuts."""
+
+    def test_sections_are_the_report_as_sent(self):
+        result = _result()
+
+        assert result.summary == REPORT["summary"]
+        assert result.recommendations == REPORT["recommendations"]
+        assert result.problem is REPORT["problem"]
+        assert result.classical is REPORT["classical"]
+        assert result.qaoa is REPORT["qaoa"]
+        assert result.angles is REPORT["angles"]
+        assert result.references == REPORT["references"]
+        assert result.penalty is REPORT["penalty"]
+        assert result.limits == []
+
+    def test_absent_sections_read_as_empty(self):
+        result = _result(report={})
+
+        assert (result.summary, result.recommendations, result.limits) == ("", [], [])
+        assert result.problem == result.constraints == result.penalty == {}
+        assert result.recommended_layers is None
+        assert result.gap_closed is None
+        assert result.recommended_lambda is None
+
+    def test_shortcuts_read_the_report(self):
+        result = _result()
+
+        assert result.recommended_layers == 3
+        assert result.gap_closed == 0.88
+        assert result.recommended_lambda == 1.519
+
+    def test_gap_closed_is_none_when_the_requested_layers_were_not_computed(self):
+        result = _result(
+            report={**REPORT, "qaoa": {**REPORT["qaoa"], "at_requested": None}}
+        )
+
+        assert result.gap_closed is None
 
     @pytest.mark.parametrize(
-        "result_fixture, attribute, expected",
+        ("layers", "expected"),
         [
-            ("characterization_result", "quality_score", 78.5),
-            ("characterization_result", "concentration_ratio", 3.2),
-            ("characterization_result", "is_well_tuned", True),
-            ("empty_result", "quality_score", None),
-            ("empty_result", "concentration_ratio", None),
-            ("empty_result", "is_well_tuned", None),
+            (None, [[0.2, 1.0, 0.4, 0.6, 0.6, 0.3]]),
+            (2, [[0.3, 0.9, 0.5, 0.4]]),
         ],
+        ids=["recommended", "explicit"],
     )
-    def test_report_property(self, request, result_fixture, attribute, expected):
-        assert getattr(request.getfixturevalue(result_fixture), attribute) == expected
+    def test_qaoa_initial_params_interleave_the_curve_angles(self, layers, expected):
+        np.testing.assert_array_equal(_result().qaoa_initial_params(layers), expected)
 
-    def test_summary_content(self, characterization_result):
-        assert characterization_result.summary() == "\n".join(_SAMPLE_SUMMARY_LINES)
+    def test_qaoa_initial_params_fall_back_to_the_starting_angles(self):
+        """With no layer count computed, the report's (heuristic) starting angles are used."""
+        ramp = {
+            "layers": 2,
+            "gammas": [0.1, 0.3],
+            "betas": [0.2, 0.4],
+            "source": "ramp",
+        }
+        result = _result(
+            report={"qaoa": {"curve": [], "recommended_layers": None}, "angles": ramp}
+        )
 
-    def test_display_renders_the_full_report(self, mocker, display_result):
-        """Pins report content in order; borders, colours and titles are free to change."""
-        console = Console(record=True, width=100, color_system=None, file=io.StringIO())
+        np.testing.assert_array_equal(
+            result.qaoa_initial_params(), [[0.1, 0.2, 0.3, 0.4]]
+        )
+
+    def test_qaoa_initial_params_reject_layers_without_angles(self):
+        with pytest.raises(
+            ValueError,
+            match=re.escape(
+                "No angles at layers=7; the report has them for [1, 2, 3]."
+            ),
+        ):
+            _result().qaoa_initial_params(layers=7)
+
+    @pytest.mark.parametrize(
+        "angles",
+        [{"gammas": [0.4, 0.5], "betas": [0.8]}, {"gammas": [], "betas": []}],
+        ids=["mismatched", "empty"],
+    )
+    def test_qaoa_initial_params_none_for_incomplete_angles(self, angles):
+        result = _result(report={"qaoa": {}, "angles": angles})
+
+        assert result.qaoa_initial_params() is None
+
+    def test_repr_lists_the_summary_and_the_advice(self):
+        assert repr(_result()) == "\n".join(
+            [
+                "CharacterizationResult(job_id='abc-123', status='COMPLETED')",
+                f"  {REPORT['summary']}",
+                "  [action] Use p = 3 layers.",
+                "  [info] At p = 2 QAOA closes 88.0%.",
+            ]
+        )
+
+    @staticmethod
+    def _displayed(mocker, result) -> str:
+        console = Console(record=True, width=120, color_system=None, file=io.StringIO())
         mocker.patch(
             "divi.backends.characterization._characterization.Console",
             return_value=console,
         )
+        result.display()
+        return " ".join(console.export_text().split())
 
-        display_result.display()
+    def test_display_lays_out_the_report_wording(self, mocker):
+        limit = "Sampling outcomes need the full statevector [22 variables]."
+        text = self._displayed(mocker, _result(report={**REPORT, "limits": [limit]}))
 
-        rendered = console.export_text()
-        # Recommendation HTML is reduced to plain text in the terminal.
-        assert "<strong>" not in rendered
-        _assert_lines_in_order(
-            _content_lines(rendered),
-            [
-                *_SAMPLE_SUMMARY_LINES,
-                "QAOA Amenability (concentration): "
-                + "█" * 31
-                + "░" * 9
-                + " 78.50 / 100",
-                "γ = 1.2000",
-                "β = 0.7000",
-                "P(reference) = 0.650000 (2.6× full-space uniform)",
-                "• Quality is moderate — consider tuning penalty parameters.",
-                "• Feasibility rate is low; review constraint penalties.",
-                "Recommended λ = 2.50",
-                "✓ Well-tuned",
-                "State Reference? Probability vs Uniform",
-                "01 ✓ 0.350000 1.4×",
-                "10 ✓ 0.300000 1.2×",
-                "00 ✗ 0.200000 0.80×",
-                "11 ✗ 0.150000 0.60×",
-                "Uniform: 0.250000 (1/4)",
-                "Metric Value",
-                "Difficulty moderate",
-                "Matrix Spectral Gap 0.3500",
-                "Matrix Condition Number 4.2000",
-                "Ground State Degeneracy 2",
-                "Cost Spectrum Estimated False",
-                "Qubit Score Assessment",
-                "0 0.4200 moderate",
-                "1 0.1800 stable",
-            ],
-        )
+        for expected in (
+            REPORT["summary"],
+            "• Use p = 3 layers.",
+            "• At p = 2 QAOA closes 88.0%.",
+            "2 │ 88.0% │ 0.8800 │ 4 │ exact statevector simulation",
+            "3 ★ │ 94.0% │ 0.9400 │ 4 │ exact statevector simulation",
+            f"★ recommended: {REPORT['qaoa']['recommended_reason']}",
+            "γ = [0.3000, 0.5000]",
+            "optimised at this layer count",
+            limit,
+        ):
+            assert expected in text
 
-    def test_qaoa_initial_params_broadcasts_best_parameters(self):
-        result = CharacterizationResult(
-            job_id="j",
-            status="COMPLETED",
-            report={"best_parameters": {"gamma": 0.1, "beta": 0.2}},
-        )
+    def test_display_of_an_empty_report_shows_only_its_frame(self, mocker):
+        text = self._displayed(mocker, _result(report={}))
 
-        np.testing.assert_array_equal(
-            result.qaoa_initial_params(layers=3), [[0.1, 0.2, 0.1, 0.2, 0.1, 0.2]]
-        )
+        assert "QUBO Characterization Report — job abc-123" in text
+        assert "QAOA by layer count" not in text
+
+    def test_repr_html_returns_the_stored_html(self):
+        assert _result(html="<div>r</div>")._repr_html_() == "<div>r</div>"
+
+
+class TestWrapResponse:
+    """Turning the service's response into a result, or into the matching error."""
 
     @pytest.mark.parametrize(
-        ("extra", "expected_layers"), [({}, 1), ({"recommended_min_layers": 2}, 2)]
-    )
-    def test_qaoa_initial_params_broadcast_default_depth(self, extra, expected_layers):
-        result = CharacterizationResult(
-            job_id="j",
-            status="COMPLETED",
-            report={"best_parameters": {"gamma": 0.1, "beta": 0.2}, **extra},
-        )
-
-        np.testing.assert_array_equal(
-            result.qaoa_initial_params(), [[0.1, 0.2] * expected_layers]
-        )
-
-    def test_qaoa_initial_params_defaults_to_deepest_curve_entry(self):
-        result = CharacterizationResult(
-            job_id="j",
-            status="COMPLETED",
-            report={
-                "ar_vs_depth": [
-                    {"layers": 1, "gammas": [0.4], "betas": [0.8]},
-                    {"layers": 2, "gammas": [0.3, 0.5], "betas": [0.9, 0.4]},
-                ]
-            },
-        )
-
-        np.testing.assert_array_equal(
-            result.qaoa_initial_params(), [[0.3, 0.9, 0.5, 0.4]]
-        )
-
-    @pytest.mark.parametrize(
-        "report",
+        ("status", "error"),
         [
-            {"ar_vs_depth": [{"layers": 1, "gammas": [0.4, 0.5], "betas": [0.8]}]},
-            {"ar_vs_depth": [{"layers": 1, "gammas": [], "betas": []}]},
-            {"best_parameters": {"gamma": 0.1}},
-            {"best_parameters": {"beta": 0.2}},
-            {"regime": "refuse"},
-        ],
-    )
-    def test_qaoa_initial_params_none_for_incomplete_angles(self, report):
-        result = CharacterizationResult(job_id="j", status="COMPLETED", report=report)
-
-        assert result.qaoa_initial_params() is None
-
-    @pytest.mark.parametrize(
-        "report",
-        [{}, {"certificate": {"uncertain": True}}, {"certificate": "unavailable"}],
-    )
-    def test_structural_fields_none_without_structural_certificate(self, report):
-        result = CharacterizationResult(job_id="j", status="COMPLETED", report=report)
-
-        assert result.is_psd is None
-        assert result.rank is None
-
-    @pytest.mark.parametrize("layers", [7, 99])
-    def test_qaoa_initial_params_rejects_unswept_depth(self, layers):
-        """Asking beyond the curve must not silently hand back shallower angles."""
-        result = CharacterizationResult(
-            job_id="j",
-            status="COMPLETED",
-            report={
-                "ar_vs_depth": [
-                    {"layers": 1, "gammas": [0.4], "betas": [0.8]},
-                    {"layers": 2, "gammas": [0.3, 0.5], "betas": [0.9, 0.4]},
-                ]
-            },
-        )
-
-        with pytest.raises(ValueError, match=r"covers \[1, 2\]"):
-            result.qaoa_initial_params(layers=layers)
-
-    def test_failed_job_raises_rather_than_returning_a_blank_result(self, mocker):
-        """A failed job must not be mistakable for a run that skipped analyses."""
-        service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = ""
-
-        with pytest.raises(CharacterizationFailedError) as exc:
-            _wrap_response({"job_id": "failed-1", "status": "FAILED"}, service)
-
-        assert exc.value.job_id == "failed-1"
-        assert exc.value.status == "FAILED"
-        assert str(exc.value) == (
-            "Characterization job failed-1 (FAILED): "
-            "the analysis did not complete on the server."
-        )
-
-    @pytest.mark.parametrize(
-        ("status", "error_type"),
-        [
+            ("FAILED", CharacterizationFailedError),
+            ("CANCELLED", ExecutionCancelledError),
             ("INSUFFICIENT_CREDITS", InsufficientCreditsError),
             ("TIMED_OUT", JobTimedOutError),
+            ("RUNNING", CharacterizationFailedError),
         ],
     )
-    def test_billing_and_timeout_statuses_carry_the_job_id(
-        self, mocker, status, error_type
-    ):
-        with pytest.raises(error_type) as exc:
-            _wrap_response(
-                {"job_id": "terminal-1", "status": status}, mocker.MagicMock()
-            )
+    def test_unfinished_jobs_raise(self, mocker, status, error):
+        with pytest.raises(error):
+            _wrap_response({"job_id": "j", "status": status}, mocker.MagicMock())
 
-        assert exc.value.job_id == "terminal-1"
+    def test_a_completed_job_without_a_report_raises(self, mocker):
+        with pytest.raises(CharacterizationFailedError, match="carried no report"):
+            _wrap_response({"job_id": "j", "status": "COMPLETED"}, mocker.MagicMock())
 
-    def test_hardness_only_completed_job_is_accepted(self, mocker):
+    def test_the_report_and_html_are_kept(self, mocker):
         service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = ""
-
-        result = _wrap_response(
-            {"job_id": "h-1", "status": "COMPLETED", "hardness": SAMPLE_HARDNESS},
-            service,
-        )
-
-        assert result.report is None
-        assert result.hardness == SAMPLE_HARDNESS
-
-    def test_wrap_response_builds_the_full_result(
-        self, mocker, characterization_result
-    ):
-        service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = "<div>report</div>"
+        service._fetch_characterization_html.return_value = "<div/>"
 
         result = _wrap_response(SAMPLE_RESPONSE, service)
 
-        assert result == characterization_result
-        assert result.html == "<div>report</div>"
-        service._fetch_characterization_html.assert_called_once_with("abc-123")
+        assert result == _result(
+            created_at="2026-04-25T12:00:00Z", completed_at="2026-04-25T12:00:01Z"
+        )
+        assert result.html == "<div/>"
 
-    def test_get_characterization_result_fetches_by_job_id(
-        self, mocker, characterization_result
-    ):
-        service = mocker.MagicMock()
-        service.characterize_and_validate.return_value = SAMPLE_RESPONSE
-        service._fetch_characterization_html.return_value = "<div>report</div>"
-
-        result = get_characterization_result("abc-123", service=service)
-
-        assert result == characterization_result
-        assert result.html == "<div>report</div>"
-        service.characterize_and_validate.assert_called_once_with(job_id="abc-123")
-
-    def test_cancelled_job_raises_the_shared_cancellation_error(self, mocker):
-        """Cancellation reuses divi's existing signal, not a bespoke one."""
-        service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = ""
-
-        with pytest.raises(ExecutionCancelledError, match="cancelled-1"):
-            _wrap_response({"job_id": "cancelled-1", "status": "CANCELLED"}, service)
-
-    def test_completed_but_empty_job_raises(self, mocker):
-        """A report-less COMPLETED job reads as all-None; reject it too."""
-        service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = ""
-
-        with pytest.raises(CharacterizationFailedError, match="no report") as exc:
-            _wrap_response({"job_id": "empty-1", "status": "COMPLETED"}, service)
-
-        assert exc.value.job_id == "empty-1"
-        assert exc.value.status == "COMPLETED"
-
-    @pytest.mark.parametrize("status", ["PENDING", "RUNNING", "UNKNOWN"])
-    def test_non_completed_job_raises_with_reported_status(self, mocker, status):
-        service = mocker.MagicMock()
-
-        with pytest.raises(CharacterizationFailedError) as exc:
-            _wrap_response({"job_id": "unfinished-1", "status": status}, service)
-
-        assert exc.value.job_id == "unfinished-1"
-        assert exc.value.status == status
-        assert str(exc.value).endswith("re-fetch it once it reaches COMPLETED.")
-
-    def test_html_fetch_failure_returns_structured_result(self, mocker, caplog):
+    def test_an_unreachable_html_page_leaves_the_html_empty(self, mocker, caplog):
         service = mocker.MagicMock()
         service._fetch_characterization_html.side_effect = requests.ConnectionError(
-            "HTML endpoint unavailable"
+            "down"
         )
 
         with caplog.at_level(logging.WARNING):
-            result = _wrap_response(
-                {
-                    "job_id": "html-fallback-1",
-                    "status": "COMPLETED",
-                    "report": {"regime": "exact"},
-                },
-                service,
-            )
+            result = _wrap_response(SAMPLE_RESPONSE, service)
 
         assert result.html == ""
-        assert result.regime == "exact"
-        assert "html-fallback-1" in caplog.text
-
-    def test_summary_does_not_invent_a_refusal(self):
-        """A missing ratio outside the refuse regime must not be reported as refused."""
-        result = CharacterizationResult(
-            job_id="j",
-            status="COMPLETED",
-            report={"regime": "exact", "confidence": "proven"},
-        )
-
-        summary = result.summary()
-
-        assert "refused" not in summary
-        assert "not computed" in summary
-
-    def test_repr_equals_summary(self, characterization_result):
-        assert repr(characterization_result) == characterization_result.summary()
-
-    def test_repr_html_returns_stored_html(self):
-        """``_repr_html_`` returns whatever HTML was stored at construction."""
-        result = CharacterizationResult(
-            job_id="abc-123",
-            status="COMPLETED",
-            html="<div>server-rendered</div>",
-        )
-        assert result._repr_html_() == "<div>server-rendered</div>"
-
-    def test_recommendations_empty_list_when_missing(self, empty_result):
-        """``recommendations`` is an empty list, never ``None``, when the server omits it."""
-        assert empty_result.recommendations == []
-
-    def test_display_does_not_read_recommendations_from_report_dict(self, capsys):
-        """Regression: ``display()`` reads the ``recommendations`` dataclass
-        field, not ``self.report["recommendations"]``.
-
-        The ``report`` dict is opaque pass-through from the server; whatever
-        it puts under any key name is the server's business. The structured
-        user-facing recommendations arrive as a *separate* top-level response
-        field, which divi stores on the dedicated dataclass field.
-
-        Mechanism: the test plants a ``list[str]`` under
-        ``report["recommendations"]``. If a future change re-introduces a
-        property/getter that reads from there, ``display()`` will iterate
-        the strings and crash with ``AttributeError`` (strings have no
-        ``.get()``) — the same crash that motivated this refactor. The
-        ``== []`` assertion additionally pins that ``result.recommendations``
-        is not shadowed by such a getter.
-        """
-        result = CharacterizationResult(
-            job_id="r1",
-            status="COMPLETED",
-            report={
-                "quality_score": 50.0,
-                "recommendations": [
-                    "Report string 1",
-                    "Report string 2",
-                ],
-            },
-            html="",
-        )
-        # The dataclass field, not ``report``, is the source of truth.
-        assert result.recommendations == []
-        # And ``display()`` must not iterate ``report["recommendations"]``.
-        result.display()  # AttributeError would propagate if it did
-
-    def test_wrap_response_collapses_null_recommendations_to_list(self, mocker):
-        """``_wrap_response`` must turn a missing or null ``recommendations``
-        field into the empty-list contract."""
-        service = mocker.MagicMock()
-        service._fetch_characterization_html.return_value = ""
-        # explicit null
-        result_null = _wrap_response(
-            {
-                "job_id": "n1",
-                "status": "COMPLETED",
-                "report": {"regime": "exact"},
-                "recommendations": None,
-            },
-            service,
-        )
-        # missing key
-        result_missing = _wrap_response(
-            {"job_id": "n2", "status": "COMPLETED", "report": {"regime": "exact"}},
-            service,
-        )
-        assert result_null.recommendations == []
-        assert result_missing.recommendations == []
+        assert "Could not fetch HTML report for job abc-123" in caplog.text
 
 
 class TestQoroServiceCharacterize:
@@ -1165,11 +810,10 @@ class TestQoroServiceCharacterize:
         )
 
         # service.characterize_and_validate returns the raw API response dict;
-        # the rich wrapper is built by divi.backends.characterize_and_validate().
+        # the result object is built by divi.backends.characterize_and_validate().
         assert isinstance(result, dict)
         assert result["status"] == "COMPLETED"
-        assert result["report"]["reference_concentration_score"] == 78.5
-        assert result["hardness"]["difficulty"] == "moderate"
+        assert result["report"] == REPORT
 
         # init → submit → status → result, all routed through the same
         # wrapper (init and submit use retry=False).
@@ -1190,8 +834,7 @@ class TestQoroServiceCharacterize:
 
         options = {
             "ansatz": {"mixer": "x", "layers": 1},
-            "subspace": {"auto_warmstart": False},
-            "analysis": {"structural_sensitivity": True, "parameter_sweep": True},
+            "constraints": [{"type": "max_cardinality", "bound": 1}],
         }
 
         service.characterize_and_validate(
@@ -1236,7 +879,7 @@ class TestQoroServiceCharacterize:
 
         assert isinstance(result, dict)
         assert result["job_id"] == "abc-123"
-        assert result["report"]["reference_concentration_score"] == 78.5
+        assert result["report"] == REPORT
 
         assert [call.args for call in mock_req.call_args_list] == [
             ("get", "job/abc-123/status/"),
@@ -1538,27 +1181,12 @@ class TestTopLevelCharacterize:
         )
 
         assert isinstance(result, CharacterizationResult)
-        assert result.quality_score == 78.5
+        assert result.summary == REPORT["summary"]
 
     @pytest.mark.parametrize("kwargs, match", _INVALID_OPTIONS)
     def test_invalid_options_rejected(self, kwargs, match):
         with pytest.raises(ValueError, match=match):
             CharacterizationOptions(**kwargs)
-
-    def test_characterize_with_fixed_gamma_beta(self, mocker, qoro_service_factory):
-        service = qoro_service_factory()
-        mock_req = _mock_characterization_requests(mocker, service, "top-fixed-123")
-
-        characterize_and_validate(
-            BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]])),
-            reference_states=["01"],
-            service=service,
-            options=CharacterizationOptions(gamma=1.0, beta=0.5),
-        )
-
-        analysis = mock_req.call_args_list[1].kwargs["json"]["options"]["analysis"]
-        assert analysis["gamma"] == 1.0
-        assert analysis["beta"] == 0.5
 
     def test_factored_payload_auto_attaches_n_qubits(
         self, mocker, qoro_service_factory
@@ -1580,36 +1208,6 @@ class TestTopLevelCharacterize:
         submit_json = mock_req.call_args_list[1].kwargs["json"]
         assert submit_json["qubo"]["_format"] == "factored_v1"
         assert submit_json["options"]["n_qubits"] == n
-
-    def test_options_n_qubits_serialized_to_wire(self):
-        """N5: an explicit n_qubits (to pin the dimension for a QUBO whose
-        top variable has no terms) must reach the wire options."""
-        opts = CharacterizationOptions(n_qubits=5)
-        wire = opts._to_wire()
-        assert wire is not None
-        assert wire["n_qubits"] == 5
-
-    def test_penalty_tuning_requires_problem_penalty(
-        self, mocker, qoro_service_factory
-    ):
-        """D6: penalty_tuning needs an attached penalty component."""
-        service = qoro_service_factory()
-
-        with pytest.raises(ValueError, match="penalty="):
-            characterize_and_validate(
-                BinaryOptimizationProblem({(0,): -1.0}),
-                reference_states=["0"],
-                service=service,
-                options=CharacterizationOptions(penalty_tuning=True),
-            )
-
-        _mock_characterization_requests(mocker, service, "pen-ok")
-        characterize_and_validate(
-            BinaryOptimizationProblem({(0,): -1.0}, penalty={(0, 1): 2.0}),
-            reference_states=["00"],
-            service=service,
-            options=CharacterizationOptions(penalty_tuning=True),
-        )
 
     def test_factored_n_qubits_does_not_clobber_user_option(
         self, mocker, qoro_service_factory
@@ -1633,79 +1231,59 @@ class TestTopLevelCharacterize:
         submit_json = mock_req.call_args_list[1].kwargs["json"]
         assert submit_json["options"]["n_qubits"] == 999
 
-    @pytest.mark.parametrize("preset", [None, "fast", "standard", "deep"])
-    def test_preset_and_unset_flags_on_the_wire(self, preset):
-        """preset is top-level and only when set; unset flags defer to the server."""
-        wire = CharacterizationOptions(preset=preset, n_qubits=4)._to_wire()
+    def test_options_wire_exactly(self):
+        wire = CharacterizationOptions(
+            ansatz={"mixer": "xy", "layers": 2},
+            constraints=[
+                {"type": "max_cardinality", "bound": 3},
+                {"type": "inequality", "bound": 10, "weights": {0: 4, 1: 5}},
+            ],
+            n_qubits=5,
+        )._to_wire()
 
-        assert ("preset" in wire) == (preset is not None)
-        assert wire.get("preset") == preset
-        assert "analysis" not in wire
+        assert wire == {
+            "ansatz": {"mixer": "xy", "layers": 2},
+            "constraints": [
+                {"type": "max_cardinality", "bound": 3},
+                {"type": "inequality", "bound": 10, "weights": {0: 4, 1: 5}},
+            ],
+            "n_qubits": 5,
+        }
 
-    def test_preset_reaches_the_submit_payload(self, mocker, qoro_service_factory):
-        """preset survives the whole path from options to the HTTP request body."""
+    def test_default_options_send_nothing(self):
+        assert CharacterizationOptions()._to_wire() is None
+
+    def test_a_penalised_problem_sends_its_cost_and_penalty(
+        self, mocker, qoro_service_factory
+    ):
+        """Zero-coefficient and constant terms never reach the component dicts."""
         service = qoro_service_factory()
-        mock_req = _mock_characterization_requests(mocker, service, "top-preset-123")
-
-        characterize_and_validate(
-            BinaryOptimizationProblem(np.array([[-1.0, 2.0], [0.0, -1.0]])),
-            reference_states=["01"],
-            service=service,
-            options=CharacterizationOptions(preset="deep"),
+        mock_req = _mock_characterization_requests(mocker, service, "pen-wire")
+        problem = BinaryOptimizationProblem(
+            {(0,): -1.0, (0, 2): 1.5, (0, 1): 0.0, (): 2.0},
+            penalty={(1, 2): 3.0, (1,): -0.5, (): 1.0},
         )
 
-        assert mock_req.call_args_list[1].kwargs["json"]["options"]["preset"] == "deep"
+        with pytest.warns(UserWarning, match="constant offset"):
+            characterize_and_validate(
+                problem, reference_states=["000"], service=service
+            )
 
-    @pytest.mark.parametrize(
-        "flag", ["parameter_sweep", "structural_sensitivity", "penalty_tuning"]
-    )
-    @pytest.mark.parametrize("value", [True, False])
-    def test_explicitly_set_flags_are_transmitted(self, flag, value):
-        """An explicit value is sent verbatim and overrides the server default."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            wire = CharacterizationOptions(**{flag: value})._to_wire()
+        options = mock_req.call_args_list[1].kwargs["json"]["options"]
+        assert options["cost_qubo"] == {"0": -1.0, "0,2": 1.5}
+        assert options["penalty_qubo"] == {"1,2": 3.0, "1": -0.5}
 
-        assert wire["analysis"][flag] is value
+    def test_an_unpenalised_problem_sends_no_split(self, mocker, qoro_service_factory):
+        service = qoro_service_factory()
+        mock_req = _mock_characterization_requests(mocker, service, "no-pen")
 
-    @pytest.mark.parametrize("flag", ["parameter_sweep", "structural_sensitivity"])
-    def test_preset_transmits_explicit_flag_overrides(self, flag):
-        with pytest.warns(UserWarning, match=flag):
-            wire = CharacterizationOptions(preset="deep", **{flag: False})._to_wire()
+        characterize_and_validate(
+            BinaryOptimizationProblem({(0,): -1.0}),
+            reference_states=["0"],
+            service=service,
+        )
 
-        assert wire["preset"] == "deep"
-        assert wire["analysis"][flag] is False
-
-    @pytest.mark.parametrize("preset", ["standard", "deep"])
-    def test_sweep_preset_with_fixed_angles_warns_and_still_sends_them(self, preset):
-        with pytest.warns(UserWarning, match="sweep"):
-            wire = CharacterizationOptions(
-                preset=preset, gamma=1.0, beta=0.5
-            )._to_wire()
-
-        assert wire["analysis"]["gamma"] == 1.0
-        assert wire["analysis"]["beta"] == 0.5
-
-    def test_preset_warning_points_at_the_caller(self):
-        """stacklevel must attribute the warning to user code, not pydantic internals."""
-        with pytest.warns(UserWarning) as record:
-            CharacterizationOptions(preset="deep", parameter_sweep=False)
-
-        assert record[0].filename == __file__
-
-    @pytest.mark.parametrize(
-        "kwargs",
-        [
-            {"gamma": 1.0},
-            {"parameter_sweep": False},
-            {"structural_sensitivity": False},
-        ],
-    )
-    def test_fast_preset_never_warns(self, kwargs):
-        """'fast' enables neither analysis, so disabling them is not contradictory."""
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            CharacterizationOptions(preset="fast", **kwargs)
+        assert "options" not in mock_req.call_args_list[1].kwargs["json"]
 
     @pytest.mark.parametrize(
         ("reference_states", "message"),
@@ -1744,19 +1322,6 @@ class TestTopLevelCharacterize:
 
         service.characterize_and_validate.assert_not_called()
 
-    def test_constraints_serialized_to_wire(self):
-        wire = CharacterizationOptions(
-            constraints=[
-                {"type": "max_cardinality", "bound": 3},
-                {"type": "inequality", "bound": 10, "weights": {0: 4, 1: 5}},
-            ]
-        )._to_wire()
-
-        assert wire["constraints"] == [
-            {"type": "max_cardinality", "bound": 3},
-            {"type": "inequality", "bound": 10, "weights": {0: 4, 1: 5}},
-        ]
-
     def test_constraint_indices_unchecked_without_n_qubits(self):
         """Without n_qubits there is nothing to check against; the server decides."""
         wire = CharacterizationOptions(
@@ -1775,89 +1340,12 @@ class TestTopLevelCharacterize:
 
     def test_options_survive_a_model_dump_round_trip(self):
         """model_dump() emits explicit Nones; re-validating them must not raise."""
-        original = CharacterizationOptions(
-            preset="deep", subspace={"auto_warmstart": True}, n_qubits=4
-        )
+        original = CharacterizationOptions(ansatz={"layers": 2}, n_qubits=4)
 
         assert (
             CharacterizationOptions.model_validate(original.model_dump())._to_wire()
             == original._to_wire()
         )
-
-    def test_unset_auto_warmstart_stays_unsent_after_a_round_trip(self):
-        """Leaving auto_warmstart unset defers to the server's small-problem rule."""
-        original = CharacterizationOptions(subspace={"solver": "greedy"})
-
-        restored = CharacterizationOptions.model_validate(original.model_dump())
-
-        assert restored._to_wire() == {"subspace": {"solver": "greedy"}}
-
-    def test_ansatz_and_subspace_wire_exactly(self):
-        wire = CharacterizationOptions(
-            ansatz={"layers": 2},
-            subspace={"auto_warmstart": True, "max_variable_qubits": 6},
-        )._to_wire()
-
-        assert wire == {
-            "ansatz": {"layers": 2},
-            "subspace": {"auto_warmstart": True, "max_variable_qubits": 6},
-        }
-
-    def test_gamma_accepts_int_and_float(self):
-        assert CharacterizationOptions(gamma=1).gamma == 1
-        assert CharacterizationOptions(gamma=1.2).gamma == 1.2
-
-    def test_subspace_restarts_serialized(self):
-        wire = CharacterizationOptions(subspace={"restarts": 20})._to_wire()
-
-        assert wire["subspace"]["restarts"] == 20
-
-    def test_identity_mixer_options_pass_through(self):
-        options = CharacterizationOptions(ansatz={"mixer": "I", "layers": 1})
-
-        wire = options._to_wire()
-
-        assert wire["ansatz"] == {"mixer": "I", "layers": 1}
-
-    def test_subspace_options_pass_through(self):
-        options = CharacterizationOptions(
-            ansatz={"mixer": "x", "layers": 20},
-            subspace={
-                "auto_warmstart": False,
-                "base_bitstring": "10",
-                "variable_qubits": [0],
-            },
-        )
-
-        wire = options._to_wire()
-
-        assert wire["ansatz"] == {"mixer": "x", "layers": 20}
-        assert wire["subspace"] == {
-            "auto_warmstart": False,
-            "base_bitstring": "10",
-            "variable_qubits": [0],
-        }
-
-    def test_penalty_tuning_components_wire_exactly(self, mocker, qoro_service_factory):
-        """Zero-coefficient and constant terms never reach the component dicts."""
-        service = qoro_service_factory()
-        mock_req = _mock_characterization_requests(mocker, service, "pen-wire")
-        problem = BinaryOptimizationProblem(
-            {(0,): -1.0, (0, 2): 1.5, (0, 1): 0.0, (): 2.0},
-            penalty={(1, 2): 3.0, (1,): -0.5, (): 1.0},
-        )
-
-        with pytest.warns(UserWarning, match="constant offset"):
-            characterize_and_validate(
-                problem,
-                reference_states=["000"],
-                service=service,
-                options=CharacterizationOptions(penalty_tuning=True),
-            )
-
-        options = mock_req.call_args_list[1].kwargs["json"]["options"]
-        assert options["cost_qubo"] == {"0": -1.0, "0,2": 1.5}
-        assert options["penalty_qubo"] == {"1,2": 3.0, "1": -0.5}
 
     def test_reference_states_match_a_wider_explicit_n_qubits(self, mocker):
         service = mocker.MagicMock()
@@ -1901,32 +1389,7 @@ def test_job_type_characterize_has_validate_wire_value():
     "kwargs",
     [
         pytest.param({"n_qubits": np.int64(5)}, id="n-qubits"),
-        pytest.param(
-            {"parameter_sweep": np.bool_(True), "penalty_tuning": np.True_},
-            id="flags",
-        ),
-        pytest.param({"structural_sensitivity": np.bool_(False)}, id="flag-false"),
         pytest.param({"ansatz": {"layers": np.int32(2)}}, id="ansatz-layers"),
-        pytest.param(
-            {
-                "subspace": {
-                    "auto_warmstart": np.bool_(True),
-                    "max_variable_qubits": np.uint8(4),
-                    "restarts": np.int64(3),
-                }
-            },
-            id="subspace-auto",
-        ),
-        pytest.param(
-            {
-                "subspace": {
-                    "auto_warmstart": np.bool_(False),
-                    "base_bitstring": "01",
-                    "variable_qubits": np.array([0, 1]),
-                }
-            },
-            id="subspace-manual-array",
-        ),
         pytest.param(
             {
                 "constraints": [
@@ -1957,13 +1420,10 @@ def test_options_accept_numpy_scalars_and_serialise_to_json(kwargs):
 
 
 def test_options_hold_numpy_scalars_as_builtin_types():
-    options = CharacterizationOptions(
-        n_qubits=np.uint64(2**63 + 5), parameter_sweep=np.bool_(True)
-    )
+    options = CharacterizationOptions(n_qubits=np.uint64(2**63 + 5))
 
     assert options.n_qubits == 2**63 + 5
     assert type(options.n_qubits) is int
-    assert options.parameter_sweep is True
 
 
 @pytest.mark.parametrize(
@@ -1972,16 +1432,8 @@ def test_options_hold_numpy_scalars_as_builtin_types():
         pytest.param({"n_qubits": True}, "valid integer", id="bool-as-int"),
         pytest.param({"n_qubits": 2.0}, "valid integer", id="float-as-int"),
         pytest.param({"n_qubits": np.float64(2.0)}, "valid integer", id="np-float"),
-        pytest.param({"parameter_sweep": 1}, "valid boolean", id="int-as-bool"),
-        pytest.param({"parameter_sweep": np.int64(1)}, "valid boolean", id="np-int"),
-        pytest.param({"penalty_tuning": "true"}, "valid boolean", id="string-as-bool"),
         pytest.param(
             {"ansatz": {"layers": True}}, "valid integer", id="bool-as-layers"
-        ),
-        pytest.param(
-            {"subspace": {"auto_warmstart": 0}},
-            "valid boolean",
-            id="int-auto-warmstart",
         ),
         pytest.param(
             {
@@ -1999,7 +1451,7 @@ def test_options_hold_numpy_scalars_as_builtin_types():
         ),
     ],
 )
-def test_options_still_reject_non_integers_and_non_booleans(kwargs, message):
+def test_options_still_reject_non_integers(kwargs, message):
     with pytest.raises(ValidationError, match=message):
         CharacterizationOptions(**kwargs)
 
@@ -2040,347 +1492,6 @@ def test_the_service_requires_a_reference_state_in_any_empty_container(
         qoro_service_factory().characterize_and_validate(
             qubo={"0,0": -1.0}, reference_states=reference_states
         )
-
-
-# Report/hardness matching the redesigned canonical server schema.
-CANONICAL_REPORT = {
-    "formulation_quality": 72.0,
-    "reference_concentration_score": 61.0,
-    "concentration_ratio": 1.4,
-    "approximation_ratio": 0.87,
-    "approximation_ratio_error_bound": 0.05,
-    "feasibility_rate": 0.9,
-    "regime": "estimate",
-    "confidence": "estimated",
-    "certificate": {
-        "certified_easy": False,
-        "no_lowdepth_advantage_expected": False,
-        "uncertain": True,
-        "easy_witnesses": [],
-        "lowdepth_markers": [],
-        "quantum_curiosity": {
-            "status": "unresolved",
-            "depth_to_escape_locality": 4,
-            "next_step": "run deeper light-cone probe at p=4",
-        },
-        "structural": {
-            "is_psd": False,
-            "rank": 12,
-            "submodular": False,
-            "bounded_treewidth": False,
-            "certified_easy": False,
-            "witnesses": [],
-        },
-    },
-    "classical_baseline": {
-        "greedy_energy": -2.0,
-        "sa_energy": -2.0,
-        "best_energy": -2.0,
-        "exact_ground_energy": -2.0,
-        "distinct_optima": 1,
-    },
-    "constraint_diagnostics": [
-        {
-            "index": 0,
-            "type": "max_cardinality",
-            "violation_rate": 0.1,
-            "is_redundant": False,
-        }
-    ],
-    "penalty_lambda_min_feasible": 2.0,
-    "penalty_lambda_safe": 3.5,
-    "penalty_recommendation": 3.5,
-    "penalty_tuning": {"is_well_tuned": True, "optimal_lambda": 2.0},
-    "recommended_min_layers": 2,
-    "recommended_layers_basis": "threshold_reached",
-    "ar_vs_depth": [
-        {
-            "layers": 1,
-            "gammas": [0.4],
-            "betas": [0.8],
-            "energy": -1.5,
-            "approximation_ratio": 0.75,
-        },
-        {
-            "layers": 2,
-            "gammas": [0.3, 0.5],
-            "betas": [0.9, 0.4],
-            "energy": -1.9,
-            "approximation_ratio": 0.99,
-        },
-    ],
-}
-CANONICAL_HARDNESS = {
-    "difficulty": "moderate",
-    "cost_gap": 1.0,
-    "cost_gap_normalized": 0.33,
-    "ground_state_degeneracy": 2,
-    "treewidth_estimate": 2,
-    "frustration_index": 0.25,
-    "matrix_spectral_gap": 0.0,
-}
-
-
-class TestCanonicalResultFields:
-    """Client reads the canonical result schema (regime/certificate, AR, cost gap, depth)."""
-
-    def _result(self):
-        return CharacterizationResult(
-            job_id="c1",
-            status="COMPLETED",
-            hardness=CANONICAL_HARDNESS,
-            report=CANONICAL_REPORT,
-            html="",
-        )
-
-    @pytest.mark.parametrize(
-        "attribute, expected",
-        [
-            # quality_score prefers the reference concentration score.
-            ("quality_score", 61.0),
-            ("formulation_quality", 72.0),
-            ("reference_concentration_score", 61.0),
-            ("approximation_ratio", 0.87),
-            ("approximation_ratio_error_bound", 0.05),
-            ("regime", "estimate"),
-            ("confidence", "estimated"),
-            ("is_psd", False),
-            ("rank", 12),
-            ("cost_gap", 1.0),
-            ("ground_state_degeneracy", 2),
-            ("treewidth_estimate", 2),
-            ("frustration_index", 0.25),
-            ("recommended_min_layers", 2),
-            ("recommended_layers_basis", "threshold_reached"),
-            ("penalty_lambda_min_feasible", 2.0),
-            ("penalty_lambda_safe", 3.5),
-        ],
-    )
-    def test_scalar_field(self, attribute, expected):
-        value = getattr(self._result(), attribute)
-        assert value == expected
-        assert type(value) is type(expected)
-
-    def test_certificate_fields(self):
-        cert = self._result().certificate
-        assert cert["uncertain"] is True
-        assert cert["certified_easy"] is False
-        assert cert["no_lowdepth_advantage_expected"] is False
-
-    def test_quantum_curiosity(self):
-        qc = self._result().quantum_curiosity
-        assert qc["status"] == "unresolved"
-        assert qc["next_step"] == "run deeper light-cone probe at p=4"
-
-    def test_classical_baseline(self):
-        assert self._result().classical_baseline["best_energy"] == -2.0
-
-    def test_depth_recommendation_curve(self):
-        curve = self._result().ar_vs_depth
-        assert [c["layers"] for c in curve] == [1, 2]
-        ars = [c["approximation_ratio"] for c in curve]
-        assert all(hi >= lo for lo, hi in zip(ars, ars[1:]))
-
-    def test_qaoa_initial_params_default_uses_recommended_depth(self):
-        # Default depth = recommended_min_layers (2); per-layer [gamma, beta]
-        # interleave from the p=2 curve entry.
-        ip = self._result().qaoa_initial_params()
-        assert ip.shape == (1, 4)
-        assert ip.ravel().tolist() == [0.3, 0.9, 0.5, 0.4]
-
-    def test_qaoa_initial_params_explicit_layers(self):
-        ip = self._result().qaoa_initial_params(layers=1)
-        assert ip.shape == (1, 2)
-        assert ip.ravel().tolist() == [0.4, 0.8]
-
-    def test_summary_treats_safe_lambda_as_a_minimum_threshold(self):
-        summary = self._result().summary()
-
-        assert "Empirical Feasible Threshold: λ ≥ 2.00" in summary
-        assert "Guaranteed Penalty Threshold: λ ≥ 3.50" in summary
-        assert "Safe Penalty Range" not in summary
-        assert "λ ≤" not in summary
-
-    def test_constraint_diagnostics(self):
-        result = self._result()
-        assert result.constraint_diagnostics[0]["type"] == "max_cardinality"
-        assert "Constraint Diagnostics: 1 constraint(s)" in result.summary()
-
-    def test_summary_shows_regime_confidence_and_ar(self):
-        s = self._result().summary()
-        assert "estimate" in s
-        assert "estimated" in s
-        assert "0.87" in s
-        assert "± 0.05" in s
-
-    def test_summary_labels_amenability_not_quality_score(self):
-        """D2: summary must match display()'s 'QAOA Amenability' label and not
-        say 'Quality Score' (which reads as solution quality)."""
-        s = self._result().summary()
-        assert "QAOA Amenability" in s
-        assert "Quality Score" not in s
-        # D3: AR is tagged as a mean over the output distribution, so it is not
-        # mistaken for a bound on what a sampled run achieves.
-        assert "mean over the output" in s.lower()
-        assert "light-cone" in s.lower()
-
-    def test_summary_shows_normalised_cost_gap(self):
-        """D5: the summary leads with the scale-invariant normalised gap."""
-        s = self._result().summary()
-        assert "Cost Gap: 0.3300 normalised (1.0000 raw)" in s
-
-    def test_summary_shows_relaxation_bound_when_present(self):
-        """D4: the provable LP relaxation bound is surfaced in the summary."""
-        report = {
-            **CANONICAL_REPORT,
-            "classical_baseline": {
-                **CANONICAL_REPORT["classical_baseline"],
-                "relaxation_bound": -2.5,
-            },
-        }
-        r = CharacterizationResult(
-            job_id="c1",
-            status="COMPLETED",
-            hardness=CANONICAL_HARDNESS,
-            report=report,
-            html="",
-        )
-        assert r.relaxation_bound == -2.5
-        assert "Relaxation Bound" in r.summary()
-
-    def test_summary_shows_guaranteed_threshold_without_empirical_threshold(self):
-        report = {**CANONICAL_REPORT, "penalty_lambda_min_feasible": None}
-        result = CharacterizationResult(
-            job_id="c1",
-            status="COMPLETED",
-            hardness=CANONICAL_HARDNESS,
-            report=report,
-            html="",
-        )
-
-        summary = result.summary()
-        assert "Empirical Feasible Threshold" not in summary
-        assert "Guaranteed Penalty Threshold: λ ≥ 3.50" in summary
-
-    def test_render_shows_penalty_thresholds_and_constraint_table(self, capsys):
-        self._result().display()
-        out = capsys.readouterr().out
-
-        assert "Empirical feasible threshold" in out
-        assert "Guaranteed penalty threshold" in out
-        assert "2.00" in out and "3.50" in out
-        assert "Constraint Diagnostics" in out
-        assert "max_cardinality" in out
-        assert "10.0%" in out
-
-    def test_empty_result_new_fields_are_none(self):
-        r = CharacterizationResult(job_id="x", status="FAILED", html="")
-        assert r.formulation_quality is None
-        assert r.regime is None
-        assert r.confidence is None
-        assert r.certificate is None
-        assert r.classical_baseline is None
-        assert r.cost_gap is None
-        assert r.constraint_diagnostics is None
-
-    def test_field_falls_through_explicit_null_to_next_fallback(self):
-        """A present-but-null key must not short-circuit the fallback chain.
-
-        Regression test: ``_field`` used to check ``k in self.report`` before
-        reading the value, so a key present with an explicit ``None`` (e.g. an
-        optional analysis that wasn't requested) would short-circuit and
-        return ``None`` instead of falling through to a populated fallback.
-        """
-        report = {"reference_concentration_score": None, "formulation_quality": 72.0}
-        r = CharacterizationResult(
-            job_id="n1", status="COMPLETED", report=report, html=""
-        )
-        assert r.quality_score == 72.0
-
-
-REFUSE_REPORT = {
-    "regime": "refuse",
-    "confidence": "open",
-    "refuse_reason": "lightcone_too_wide",
-    "regime_diagnostics": {
-        "max_lightcone_k": 30,
-        "n": 30,
-        "layers": 1,
-        "k_cheap": 18,
-        "k_feasible": 24,
-    },
-    "certificate": {
-        "certified_easy": False,
-        "no_lowdepth_advantage_expected": False,
-        "uncertain": True,
-        "easy_witnesses": [],
-        "lowdepth_markers": [],
-    },
-}
-
-
-class TestRefuseRegimeAndCertificateOnly:
-    """The ``"refuse"`` regime and certificate-only reports must not crash
-    and must clearly communicate what did (and didn't) get computed."""
-
-    def test_refuse_regime_has_no_approximation_ratio(self):
-        r = CharacterizationResult(
-            job_id="refuse-1", status="COMPLETED", report=REFUSE_REPORT, html=""
-        )
-        assert r.regime == "refuse"
-        assert r.approximation_ratio is None
-        assert r.approximation_ratio_error_bound is None
-
-    def test_refuse_regime_summary_says_refused(self):
-        r = CharacterizationResult(
-            job_id="refuse-1", status="COMPLETED", report=REFUSE_REPORT, html=""
-        )
-        s = r.summary()
-        assert "refused" in s.lower()
-        assert "not assessed" in s.lower()
-        # Attributed to light-cone width, not coupling density.
-        assert "light-cone" in s.lower()
-        assert "densely coupled" not in s.lower()
-
-    def test_refuse_reason_and_diagnostics_exposed(self):
-        r = CharacterizationResult(
-            job_id="refuse-1", status="COMPLETED", report=REFUSE_REPORT, html=""
-        )
-        assert r.refuse_reason == "lightcone_too_wide"
-        assert r.regime_diagnostics["max_lightcone_k"] == 30
-        assert r.regime_diagnostics["k_feasible"] == 24
-
-    def test_refuse_regime_display_does_not_crash(self, capsys):
-        r = CharacterizationResult(
-            job_id="refuse-1", status="COMPLETED", report=REFUSE_REPORT, html=""
-        )
-        r.display()
-        out = capsys.readouterr().out
-        assert "refused" in out.lower()
-
-    def test_certificate_only_report_summary_and_display_do_not_crash(self, capsys):
-        """A report with only a certificate (no AR, no quality/hardness data)
-        must render without crashing."""
-        report = {
-            "certificate": {
-                "certified_easy": True,
-                "no_lowdepth_advantage_expected": False,
-                "uncertain": False,
-                "easy_witnesses": ["diagonal QUBO"],
-                "lowdepth_markers": [],
-            },
-        }
-        r = CharacterizationResult(
-            job_id="cert-only", status="COMPLETED", report=report, html=""
-        )
-        assert r.approximation_ratio is None
-
-        s = r.summary()
-        assert "classically easy" in s
-
-        r.display()
-        out = capsys.readouterr().out
-        assert "classically easy" in out
 
 
 class TestNamedVariableBQMSerialization:
@@ -2433,65 +1544,38 @@ class TestQoroServiceValidationHtmlE2E:
 
     Pins the wire contract between divi and the Qoro API for the QUBO
     characterization feature against the real prod API. Every test reads
-    from one of two class-scoped fixtures so the prod account sees at most
-    two VALIDATE submissions per CI run.
+    from one class-scoped job, so the prod account sees one VALIDATE
+    submission per CI run.
 
     Endpoints exercised:
       - ``POST /api/job/init/``                         (job creation)
       - ``POST /api/job/<pk>/submit_qubo/``             (validation submit)
       - ``GET  /api/job/<pk>/validation_result/``       (JSON, via ``characterize_and_validate``)
       - ``GET  /api/job/<pk>/validation_result/html/``  (HTML)
-
-    Deferred (not covered here — would need orchestration we can't drive
-    from the public API):
-      - 401 specifically for the validation path (covered generally by
-        ``test_qoro_service.py::test_initialization_with_deactivated_token``,
-        which fails earlier at ``QoroService`` construction).
-      - 402 insufficient credits (would need a quota-exhausted test account).
-      - 409 for RUNNING / FAILED VALIDATE jobs (would need a job caught
-        mid-analysis).
-      - 500 when the job can't be queued (can't trigger from outside).
-      - 403 cross-user access (would need a second test account's job ID).
     """
 
     @pytest.fixture(scope="class")
     def completed_validation_job(self, api_key):
-        """Submit one rich VALIDATE job and clean up afterwards.
+        """Submit one VALIDATE job with every option divi sends, and clean up afterwards.
 
-        Class-scoped: shared by every test in this class. Uses
-        ``preset="deep"`` — the only preset that runs the hardness analysis
-        — so the response carries every optional field the wire contract
-        supports, letting a single submission anchor the full-shape audit,
-        the HTML render, recommendations parsing, and the fetch-by-job-id
-        round-trip.
-
-        The option set is deliberately maximal: every ``analysis``,
-        ``ansatz``, and ``subspace`` key divi can emit is present. The server
-        rejects unknown keys in those groups with a 400, so a submission
-        that succeeds proves divi's wire vocabulary is still a subset of
-        the server's. ``auto_warmstart`` is explicitly enabled because structural
-        sensitivity is derived from the warm-start solver's flip costs; the
-        service otherwise selects exact full-space evaluation at this size.
+        The problem carries a penalty and a constraint so the report includes
+        its optional ``penalty`` and ``constraints`` sections. The server
+        rejects unknown option keys with a 400, so a submission that succeeds
+        proves divi's wire vocabulary is still a subset of the server's.
         """
         service = QoroService(auth_token=api_key)
-        # 2-qubit QUBO with a concrete optimum at ``00``. Larger than this
-        # adds prod cost without unlocking new wire-contract surface.
-        problem = BinaryOptimizationProblem(np.array([[1.0, -1.0], [-1.0, 1.0]]))
+        # Pick exactly one of two items worth 1 and 2: (x0 + x1 - 1)² penalty.
+        problem = BinaryOptimizationProblem(
+            {(0,): -1.0, (1,): -2.0},
+            penalty={(0,): -1.0, (1,): -1.0, (0, 1): 2.0},
+        )
         result = characterize_and_validate(
             problem,
-            reference_states=["00"],
+            reference_states=["01"],
             service=service,
             options=CharacterizationOptions(
-                preset="deep",
-                structural_sensitivity=True,
-                parameter_sweep=True,
                 ansatz={"mixer": "x", "layers": 1},
-                subspace={
-                    "auto_warmstart": True,
-                    "solver": "greedy",
-                    "max_variable_qubits": 6,
-                    "restarts": 3,
-                },
+                constraints=[{"type": "eq_cardinality", "bound": 1}],
                 n_qubits=2,
             ),
         )
@@ -2504,141 +1588,51 @@ class TestQoroServiceValidationHtmlE2E:
                 # Don't mask a real test failure with cleanup noise.
                 pass
 
-    @pytest.fixture(scope="class")
-    def fast_preset_job(self, api_key):
-        """Submit one VALIDATE job with ``preset="fast"`` and one reference state.
-
-        The lightest characterization path: no sweep, no sensitivity, no
-        hardness analysis. Confirms the wire contract degrades gracefully
-        when every optional analysis is switched off server-side.
-        """
-        service = QoroService(auth_token=api_key)
-        problem = BinaryOptimizationProblem(np.array([[1.0, -1.0], [-1.0, 1.0]]))
-        result = characterize_and_validate(
-            problem,
-            reference_states=["00"],
-            service=service,
-            options=CharacterizationOptions(preset="fast"),
-        )
-        try:
-            yield service, result
-        finally:
-            try:
-                service.delete_job(ExecutionResult(job_id=result.job_id))
-            except Exception:
-                pass
-
     def test_completed_job_full_shape(self, completed_validation_job):
-        """Every user-facing field on a sweep+structural_sensitivity result is the right
-        shape and contains the keys downstream code reads.
+        """Every section divi exposes arrives, with the keys its shortcuts read.
 
-        This is the wire-contract regression test: if the API
-        renames or reshapes any of the fields divi exposes through
-        ``CharacterizationResult``, this test fails. Offline tests can't
-        catch shape drift because their mocks were authored against the
-        expected shape, not the actual one.
-
-        Asserts types and required keys, not specific numeric values
-        (which would be flaky against the live service).
+        Asserts types and keys, not specific numeric values (which would be
+        flaky against the live service).
         """
         _, result = completed_validation_job
 
-        # Top-level dataclass fields.
         assert isinstance(result.job_id, str) and result.job_id
         assert result.status == "COMPLETED"
         assert isinstance(result.created_at, str) and result.created_at
         assert isinstance(result.completed_at, str) and result.completed_at
-        assert isinstance(result.report, dict) and result.report
-        assert isinstance(result.hardness, dict) and result.hardness
-        assert isinstance(result.recommendations, list)
-        assert isinstance(result.html, str) and result.html
-
-        # Hardness — ``difficulty`` drives the recommendation rules and the
-        # rich display. The matrix diagnostics are transparency-only and carry
-        # a ``matrix_`` prefix; asserting the exact names pins them against a
-        # rename, which is what silently broke this contract before.
-        assert result.hardness["difficulty"] in {"easy", "moderate", "hard"}
-        assert "matrix_spectral_gap" in result.hardness
-        assert _is_number(result.hardness["matrix_spectral_gap"])
-        assert "matrix_condition_number" in result.hardness
-        assert _is_number(result.hardness["matrix_condition_number"])
-        assert isinstance(result.hardness["cost_spectrum_estimated"], bool)
-
-        # Quality / concentration — both should be numeric in [0, *) with
-        # quality bounded at 100.
-        assert _is_number(result.quality_score)
-        assert 0.0 <= result.quality_score <= 100.0
-        assert _is_number(result.concentration_ratio)
-        assert result.concentration_ratio >= 0.0
-
-        # Best parameters — the sweep's headline output. ``gamma`` and
-        # ``beta`` are the keys the tutorial and ``display()`` both read.
-        bp = result.best_parameters
-        assert isinstance(bp, dict)
-        assert "gamma" in bp and _is_number(bp["gamma"])
-        assert "beta" in bp and _is_number(bp["beta"])
-
-        # State probabilities — list of per-state rows, each carrying at
-        # least ``state`` (str) and ``probability`` (numeric).
-        sp = result.state_probabilities
-        assert isinstance(sp, list) and sp
-        for row in sp:
-            assert isinstance(row.get("state"), str)
-            assert _is_number(row.get("probability"))
-
-        # Structural sensitivity — per-qubit rows with normalized flip-cost score.
-        sens = result.structural_sensitivity
-        assert isinstance(sens, list) and sens
-        for row in sens:
-            assert "qubit" in row
-            assert "score" in row
-
-        # Recommendations — already pinned by
-        # ``test_recommendations_have_structured_shape``; smoke-check here
-        # that the field came through.
-        for rec in result.recommendations:
-            assert set(rec.keys()) >= {"level", "metric", "text", "html"}
+        assert isinstance(result.summary, str) and result.summary
+        assert {
+            "problem",
+            "classical",
+            "qaoa",
+            "angles",
+            "references",
+            "limits",
+        } <= set(result.report)
+        assert result.problem["num_variables"] == 2
+        assert {"curve", "recommended_layers", "at_requested"} <= set(result.qaoa)
+        assert {"gammas", "betas", "source", "convention"} <= set(result.angles)
+        assert {"exact", "qaoa_lambda"} <= set(result.penalty)
+        assert result.constraints["constraints"][0]["type"] == "eq_cardinality"
+        assert result.qaoa_initial_params() is not None
 
     def test_recommendations_have_structured_shape(self, completed_validation_job):
-        """``result.recommendations`` is a list of structured dicts.
-
-        Regression for a client/server shape mismatch — the API returns
-        ``recommendations`` as a top-level field with
-        ``{level, metric, text, html}`` dicts; if ``_wrap_response`` ever
-        drops it again or a property reads from ``self.report`` instead of
-        the dataclass field, this test fails.
+        """Each recommendation is ``{level, topic, text}`` with plain text.
 
         Deliberately does **not** assert ``len(recs) > 0`` — whether any
         rules fire is server-side policy, not divi's contract.
         """
         _, result = completed_validation_job
 
-        recs = result.recommendations
-        assert isinstance(recs, list)
-        for rec in recs:
-            assert isinstance(rec, dict)
-            assert set(rec.keys()) >= {"level", "metric", "text", "html"}
-            assert rec["level"] in {"info", "warn", "action"}
+        for rec in result.recommendations:
+            assert set(rec) == {"level", "topic", "text"}
+            assert rec["level"] in {"warning", "action", "info"}
             assert isinstance(rec["text"], str) and rec["text"]
             assert "<" not in rec["text"], "text field must be plain (no markup)"
-            # ``html`` carries the same content as ``text``, optionally with
-            # inline ``<strong>`` markup. Pinning markup *presence* would be
-            # a server-style assumption, not a contract: a future rec rule
-            # that emits a plain message would then fail spuriously here.
-            assert isinstance(rec["html"], str) and rec["html"]
 
     def test_html_report_renders(self, completed_validation_job):
-        """The cached ``result.html`` is a self-contained validation report doc.
-
-        Uses the public ``CharacterizationResult.html`` field rather than
-        re-calling ``_fetch_characterization_html`` so the test covers the
-        same artifact users actually consume (e.g. via ``_repr_html_`` in
-        a notebook), with no extra prod call.
-        """
+        """The cached ``result.html`` is the self-contained validation report."""
         _, result = completed_validation_job
-        assert isinstance(result.html, str)
-        # Root container of the validation-report template; present in
-        # every successful render.
         assert 'class="qvr-root"' in result.html
 
     def test_fetch_by_job_id_returns_equivalent_result(
@@ -2646,16 +1640,8 @@ class TestQoroServiceValidationHtmlE2E:
     ):
         """``get_characterization_result(job_id)`` re-reads without resubmitting.
 
-        Pins the read-only code path: a second call with only the prior
-        job's ``job_id`` must return a ``CharacterizationResult`` whose
-        data fields equal the original. Catches drift between the submit-
-        then-fetch path (``characterize_and_validate``) and the pure-fetch path
-        (``get_characterization_result``) in ``QoroService.characterize_and_validate``.
-
         The ``html`` field is excluded from the equality check by the
-        dataclass (``compare=False``); we additionally assert it's
-        non-empty on the refetch so the lazy HTML fetch isn't silently
-        broken on this code path.
+        dataclass (``compare=False``), so it is checked separately.
         """
         _, original = completed_validation_job
 
@@ -2664,105 +1650,12 @@ class TestQoroServiceValidationHtmlE2E:
             service=qoro_service,
         )
 
-        # Pin ``job_id`` explicitly so this test still catches drift even
-        # if a future dataclass refactor marks any field ``compare=False``.
         assert refetched.job_id == original.job_id
-        # Dataclass ``__eq__`` compares every field except ``html``
-        # (marked ``compare=False``).
         assert refetched == original
-        # And the second HTML fetch returns a non-empty document — the
-        # lazy HTML fetch must work on the pure-fetch code path too.
-        assert isinstance(refetched.html, str)
         assert 'class="qvr-root"' in refetched.html
 
-    def test_fast_preset_returns_valid_report(self, fast_preset_job):
-        """``preset="fast"`` returns a minimal valid report.
-
-        Pins that Divi parses the response without crashing on the missing
-        sweep / structural_sensitivity fields.
-        """
-        _, result = fast_preset_job
-
-        assert result.status == "COMPLETED"
-
-        # The contract for this mode is "if optional fields are present, they
-        # have the same shape as in the rich path" — not "they're absent."
-        bp = result.best_parameters
-        if bp is not None:
-            assert isinstance(bp, dict)
-            assert "gamma" in bp and _is_number(bp["gamma"])
-            assert "beta" in bp and _is_number(bp["beta"])
-
-        sens = result.structural_sensitivity
-        if sens is not None:
-            assert isinstance(sens, list)
-            for row in sens:
-                assert "qubit" in row
-                assert "score" in row
-
-        # Recommendations may fire from hardness alone (e.g. a "hard"
-        # difficulty triggers a rec); always a list of structured dicts
-        # when any are emitted.
-        assert isinstance(result.recommendations, list)
-
-    def test_deep_preset_produces_the_hardness_derived_fields(
-        self, completed_validation_job
-    ):
-        """``preset="deep"`` is what unlocks the certificate and its inputs.
-
-        Schema-drift guard for the preset contract: the certificate,
-        ``classical_baseline``, ``formulation_quality``, and the hardness
-        metrics are all produced by the hardness analysis, which only the
-        ``deep`` preset enables. If the server renames the preset values,
-        stops honoring ``preset`` as a top-level key, or moves hardness
-        under a different preset, every assertion here fails at once.
-        """
-        _, result = completed_validation_job
-
-        assert isinstance(result.hardness, dict) and result.hardness
-        assert isinstance(result.certificate, dict) and result.certificate
-        assert isinstance(result.classical_baseline, dict)
-        assert _is_number(result.report.get("formulation_quality"))
-
-        # The certificate's flags are independently firing, so assert the
-        # keys exist rather than which one is set.
-        assert {
-            "certified_easy",
-            "no_lowdepth_advantage_expected",
-            "uncertain",
-        } <= set(result.certificate)
-
-        assert {"greedy_energy", "sa_energy", "best_energy"} <= set(
-            result.classical_baseline
-        )
-
-    def test_fast_preset_skips_the_hardness_analysis(self, fast_preset_job):
-        """``preset="fast"`` must not pay for the hardness analysis.
-
-        The negative half of the preset contract. Together with
-        ``test_deep_preset_produces_the_hardness_derived_fields`` this pins
-        that ``preset`` reaches the server and actually selects a tier — if
-        the API ever drops the key, both jobs would fall back to the same
-        server default and one of the two tests would break.
-        """
-        _, result = fast_preset_job
-
-        assert result.hardness is None
-        assert result.certificate is None
-        assert result.classical_baseline is None
-
-        # regime/confidence are computed regardless of the hardness gate.
-        assert isinstance(result.regime, str) and result.regime
-
     def test_nonexistent_job_returns_404(self, qoro_service):
-        """A bogus UUID surfaces as ``HTTPError 404`` through the public API.
-
-        Exercises ``get_characterization_result`` rather than reaching into
-        ``_make_request``: this is the real user-facing contract, and a
-        future refactor that moves 4xx handling out of ``_make_request``
-        into a higher layer must still produce the same exception type
-        and status code on this path.
-        """
+        """A bogus UUID surfaces as ``HTTPError 404`` through the public API."""
         with pytest.raises(requests.HTTPError) as exc:
             get_characterization_result(
                 job_id="00000000-0000-0000-0000-000000000000",

@@ -20,13 +20,13 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
-    StrictBool,
     StrictFloat,
     StrictInt,
     field_validator,
     model_validator,
 )
-from rich.console import Console
+from rich.console import Console, Group
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 
@@ -42,6 +42,19 @@ if TYPE_CHECKING:
     from divi.qprog.problems import BinaryOptimizationProblem
 
 logger = logging.getLogger(__name__)
+
+_LEVEL_STYLES = {"warning": "yellow", "action": "magenta", "info": "cyan"}
+
+
+def _number(value: Any, spec: str) -> str:
+    """``value`` formatted by ``spec``, or ``"—"`` when it is not a number."""
+    is_number = isinstance(value, (int, float)) and not isinstance(value, bool)
+    return format(value, spec) if is_number else "—"
+
+
+def _vector(values: Sequence[float]) -> str:
+    """Angles as ``\\[a, b, …]`` to four decimals, the bracket escaped for rich."""
+    return escape(f"[{', '.join(_number(v, '.4f') for v in values)}]")
 
 
 # Smallest QUBO size at which the factored encoding is even probed.
@@ -78,15 +91,6 @@ _TRUNCATED_PAYLOAD_BUDGET_BYTES = 950_000
 # candidate. If reconstruction error exceeds this the candidate is
 # discarded and a lossless encoding (or legacy) is shipped instead.
 _TRUNCATED_REL_ERROR_MAX = 1e-3
-
-# Presets whose server-side defaults enable the parameter sweep and the
-# structural sensitivity analysis.
-_SWEEP_PRESETS = frozenset({"standard", "deep"})
-
-# Pydantic invokes ``mode="after"`` validators one frame below the caller's
-# constructor call, so warnings raised there need to skip two frames to land
-# on user code.
-_VALIDATOR_STACKLEVEL = 3
 
 
 def _serialize_qubo_legacy(canonical) -> dict[str, float]:
@@ -315,105 +319,31 @@ def _serialize_qubo_for_wire(problem: "BinaryOptimizationProblem") -> dict:
     return factored if _payload_size(factored) < _payload_size(legacy) else legacy
 
 
-def _attach_penalty_tuning_components(
+def _attach_penalty_components(
     wire_options: dict | None, problem: "BinaryOptimizationProblem"
-) -> dict:
-    """Attach the cost/penalty split needed by penalty tuning."""
+) -> dict | None:
+    """Attach the problem's cost/penalty split, when it has one, for the report's penalty section."""
     penalty_canonical = problem.penalty_canonical_problem
     if penalty_canonical is None:
-        raise ValueError(
-            "penalty_tuning=True requires BinaryOptimizationProblem(..., penalty=...) "
-            "or BinaryOptimizationProblem(..., constraints=...)."
-        )
-
+        return wire_options
     options = dict(wire_options or {})
     idx = problem.canonical_problem.variable_to_idx
     options["cost_qubo"] = _serialize_qubo_component_legacy(
-        problem.objective_canonical_problem,
-        idx,
+        problem.objective_canonical_problem, idx
     )
-    options["penalty_qubo"] = _serialize_qubo_component_legacy(
-        penalty_canonical,
-        idx,
-    )
+    options["penalty_qubo"] = _serialize_qubo_component_legacy(penalty_canonical, idx)
     return options
-
-
-_HTML_TAG_RE = re.compile(r"<[^>]+>")
-
-# Module-level constants used by ``_render``; pulled out to keep the
-# rendering function focused on layout instead of palette bookkeeping.
-_QUALITY_BAR_LEN = 40
-_QUALITY_COLORS = ((75, "green"), (50, "yellow"), (25, "bright_red"))
-_STRUCTURAL_SENSITIVITY_LABELS = (
-    (0.5, "[red]fragile[/red]"),
-    (0.2, "[yellow]moderate[/yellow]"),
-)
-_RECOMMENDATION_BULLETS = {
-    "action": "[red]•[/red]",
-    "warn": "[yellow]•[/yellow]",
-    "info": "[cyan]•[/cyan]",
-}
-_WELL_TUNED_LABELS = {
-    True: "[green]✓ Well-tuned[/green]",
-    False: "[red]✗ Needs adjustment[/red]",
-}
-_STATE_TABLE_CAP = 20
-_STRUCTURAL_SENSITIVITY_TABLE_CAP = 16
-
-# Confidence border/label colours for the regime/certificate panel.
-_CONFIDENCE_STYLES = {
-    "proven": "green",
-    "estimated": "yellow",
-    "open": "bright_black",
-}
-
-
-def _threshold_pick(
-    value: float, thresholds: Sequence[tuple[float, str]], default: str
-) -> str:
-    """Return the first label whose threshold ``value`` meets, else ``default``."""
-    return next((label for cutoff, label in thresholds if value >= cutoff), default)
-
-
-def _html_to_rich(text: str) -> str:
-    """Convert a small subset of HTML to ``rich`` console markup."""
-    text = text.replace("<strong>", "[bold]").replace("</strong>", "[/bold]")
-    return _HTML_TAG_RE.sub("", text)
-
-
-# ``(attribute, format_template)`` pairs for CharacterizationResult.summary()'s
-# scalar fields, grouped to preserve the original rendering order without
-# forcing structurally different fields (certificate/classical_baseline/hardness/
-# best_parameters, all dict-shaped) into the same table.
-# "QAOA Amenability" (not "Quality Score") to match the display() gauge label
-# and to avoid reading as solution quality. The approximation-ratio line is
-# rendered manually in ``summary()`` (not here) since it needs its ``±ε`` band
-# and regime-aware "refused" wording.
-_QUALITY_SUMMARY_FIELDS = (
-    (
-        "quality_score",
-        "  QAOA Amenability: {:.2f} / 100  (formulation fit, NOT solution quality)",
-    ),
-    ("concentration_ratio", "  Concentration Ratio: {:.2f}x  (vs subspace uniform)"),
-)
-_PENALTY_SUMMARY_FIELDS = (
-    ("penalty_recommendation", "  Penalty Recommendation: λ={:.2f}"),
-    ("feasibility_rate", "  Feasibility Rate: {:.1%}"),
-)
-_TIMESTAMP_SUMMARY_FIELDS = (
-    ("created_at", "  Created: {}"),
-    ("completed_at", "  Completed: {}"),
-)
 
 
 @dataclass
 class CharacterizationResult:
-    """Result container for QUBO/HUBO characterisation.
+    """The characterisation report of a QUBO/HUBO, as Maestro's characterisation service words it.
 
     Returned by :meth:`~divi.backends.QoroService.characterize_and_validate` and
-    :func:`~divi.backends.characterization.characterize_and_validate`. Displays a rich HTML report when
-    rendered in a Jupyter notebook.
+    :func:`~divi.backends.characterization.characterize_and_validate`. The
+    report's sections are exposed as they arrive, and shortcuts read individual
+    values. Evaluating the result in Jupyter shows the
+    server-rendered HTML report.
 
     .. note::
         Credit cost scales with QUBO size.
@@ -425,42 +355,10 @@ class CharacterizationResult:
     status: str
     """Job status (``COMPLETED``, ``FAILED``, etc.)."""
 
-    hardness: dict | None = field(default=None, repr=False)
-    """Cost-spectrum hardness analysis. ``None`` unless ``preset="deep"``.
-
-    Always carries ``difficulty`` (``"easy"`` / ``"moderate"`` / ``"hard"``),
-    ``n_variables``, ``n_terms``, ``density``, ``weight_range``,
-    ``weight_ratio``, ``advice``, and ``cost_spectrum_estimated``. The
-    spectrum-derived entries (``cost_gap``, ``cost_gap_normalized``,
-    ``ground_state_degeneracy``, ``energy_min``, ``energy_max``,
-    ``frustration_index``, ``global_flip_symmetric``, ``treewidth_estimate``)
-    are present only when computable at the problem's size.
-
-    The matrix-eigenvalue diagnostics are ``matrix_spectral_gap`` and
-    ``matrix_condition_number`` — reported for transparency only, and not
-    inputs to ``difficulty``. See :ref:`cost-spectrum-metrics`.
-    """
-
-    report: dict | None = field(default=None, repr=False)
-    """Full characterisation report — quality score, state probabilities, etc."""
-
-    recommendations: list[dict] = field(default_factory=list, repr=False)
-    """Actionable suggestions for tuning the QUBO or QAOA setup, derived
-    from the characterisation report.
-
-    Always a list — empty when no rules fire in a completed response.
-    Each entry is a dict with these keys:
-
-    * ``level`` — one of ``"info"``, ``"warn"``, ``"action"``. ``action``
-      recommends a concrete change; ``warn`` flags a risk; ``info`` is
-      contextual.
-    * ``metric`` — which report field triggered the rule
-      (e.g. ``"quality_score"``, ``"feasibility_rate"``).
-    * ``text`` — plain-text message, suitable for terminal/log output.
-    * ``html`` — the same message with inline ``<strong>`` markup,
-      consumed by the notebook ``_repr_html_`` renderer. ``text`` and
-      ``html`` carry the same content; choose by output medium.
-    """
+    report: dict = field(default_factory=dict, repr=False)
+    """The full report, with sections ``summary``, ``problem``, ``classical``,
+    ``qaoa``, ``angles``, ``references``, ``limits``, ``recommendations`` and,
+    on request, ``constraints`` and ``penalty``."""
 
     created_at: str | None = None
     """ISO timestamp when the characterisation job was created."""
@@ -471,611 +369,193 @@ class CharacterizationResult:
     html: str = field(kw_only=True, default="", repr=False, compare=False)
     """Server-rendered HTML report. Empty when the HTML endpoint was unreachable."""
 
-    def _field(self, key: str, *fallbacks: str):
-        """Return the first non-``None`` value among ``key`` and ``fallbacks``.
+    def _section(self, name: str) -> dict:
+        return self.report.get(name) or {}
 
-        Treats an explicitly-``null`` value the same as a missing key, so a
-        present-but-unset field (e.g. an optional analysis that wasn't
-        requested) correctly falls through to the next fallback instead of
-        short-circuiting on it.
+    @property
+    def summary(self) -> str:
+        """One sentence on whether and how to run QAOA on this problem."""
+        return self.report.get("summary") or ""
+
+    @property
+    def recommendations(self) -> list[dict]:
+        """Advice, warnings and actions first, each a dict of ``level``, ``topic`` and ``text``."""
+        return self.report.get("recommendations") or []
+
+    @property
+    def problem(self) -> dict:
+        """The QUBO's size, terms, degree, components and light-cone widths."""
+        return self._section("problem")
+
+    @property
+    def classical(self) -> dict:
+        """The classical baseline's best solution, a rigorous lower bound, and the exact optimum when known."""
+        return self._section("classical")
+
+    @property
+    def qaoa(self) -> dict:
+        """QAOA's result per layer count (``curve``) and the recommended layer count."""
+        return self._section("qaoa")
+
+    @property
+    def angles(self) -> dict:
+        """Starting angles for the requested layers, with their source and circuit convention."""
+        return self._section("angles")
+
+    @property
+    def references(self) -> list[dict]:
+        """One entry per reference state, with its energy and, when computed, its probability."""
+        return self.report.get("references") or []
+
+    @property
+    def constraints(self) -> dict:
+        """Per-constraint redundancy and violation probability, and slack encodings; empty without constraints."""
+        return self._section("constraints")
+
+    @property
+    def penalty(self) -> dict:
+        """Penalty weight guidance; empty unless the problem has a penalty component."""
+        return self._section("penalty")
+
+    @property
+    def limits(self) -> list[str]:
+        """What the report leaves out at this problem's size."""
+        return self.report.get("limits") or []
+
+    @property
+    def recommended_layers(self) -> int | None:
+        """The recommended QAOA layer count; ``None`` when no layer count was computed."""
+        return self.qaoa.get("recommended_layers")
+
+    @property
+    def gap_closed(self) -> float | None:
+        """Share of the gap from random guessing to the optimum that QAOA closes at the requested layers.
+
+        ``0`` is no better than guessing and ``1`` the optimum; ``None`` when
+        the requested layer count was not computed.
         """
-        if not self.report:
-            return None
-        for k in (key, *fallbacks):
-            val = self.report.get(k)
-            if val is not None:
-                return val
-        return None
+        at_requested = self.qaoa.get("at_requested") or {}
+        return at_requested.get("gap_closed")
 
     @property
-    def quality_score(self) -> float | None:
-        """QAOA amenability score (0–100) at the best parameters found.
-
-        Prefers the reference-dependent ``reference_concentration_score`` (how well the
-        QAOA ansatz concentrates probability on the reference states at the
-        swept best parameters); falls back to the structural
-        :attr:`formulation_quality` when no sweep was run.
-
-        .. warning::
-           The two sources are different quantities on the same 0–100 scale,
-           and nothing in the result says which one you got. A sweep produces
-           the concentration score; ``preset="deep"`` without a sweep produces
-           the structural score; ``preset="fast"`` produces neither and this
-           is ``None``. Read :attr:`reference_concentration_score` and
-           :attr:`formulation_quality` directly if you are comparing across
-           runs or presets.
-
-        **This is not the solution quality** — for the mean-cost
-        approximation ratio, see :attr:`approximation_ratio`, and for the
-        "is quantum worth it?" structural call see :attr:`certificate`.
-        """
-        return self._field(
-            "reference_concentration_score",
-            "formulation_quality",
-        )
-
-    @property
-    def formulation_quality(self) -> float | None:
-        """Structural amenability score (0–100), reference-independent.
-
-        Scale-invariant weighted sum of four structural components: weight
-        balance (35 points), normalised cost gap (35), coupling density (10),
-        and ground-state degeneracy (20). A high score means the QUBO is
-        well-formed for QAOA, not that any depth will solve it.
-
-        Above 18 variables the cost gap and degeneracy are unavailable: the
-        gap component is substituted from the frustration index and the
-        degeneracy component takes a fixed neutral value. On a large sparse
-        problem those substitutions bias the score substantially *upward*, so
-        it is not comparable across that boundary. ``None`` unless
-        ``preset="deep"``.
-        """
-        return self._field("formulation_quality")
-
-    @property
-    def reference_concentration_score(self) -> float | None:
-        """QAOA quality (0–100) at the best swept parameters (reference-dependent)."""
-        return self._field("reference_concentration_score")
-
-    @property
-    def regime(self) -> str | None:
-        """Analysis regime the server used to reach its certificate/AR call.
-
-        One of ``"exact"``, ``"structured"``, ``"estimate"``, or ``"refuse"``.
-        ``"refuse"`` means the interaction light-cone is wider than the
-        feasibility budget at the requested depth, so no cheap-and-correct
-        assessment exists — :attr:`approximation_ratio` is ``None`` in that
-        regime. See :attr:`refuse_reason` for which limit was hit. This is set
-        by the light-cone width (which grows with circuit depth and
-        connectivity), not by coupling density.
-        """
-        return self._field("regime")
-
-    @property
-    def confidence(self) -> str | None:
-        """Confidence level behind :attr:`regime`: ``"proven"``, ``"estimated"``, or ``"open"``."""
-        return self._field("confidence")
-
-    @property
-    def refuse_reason(self) -> str | None:
-        """Why a ``"refuse"`` :attr:`regime` reported no approximation ratio.
-
-        ``"lightcone_too_wide"`` — the depth-p interaction light-cone exceeds
-        the feasibility budget a priori (a size limit, not density).
-        ``"estimate_unreachable"`` — routed to the truncated estimator, but its
-        ±ε tolerance was unreachable within the term budget. ``None`` outside
-        the ``"refuse"`` regime. See :attr:`regime_diagnostics` for the sizes.
-        """
-        return self._field("refuse_reason")
-
-    @property
-    def regime_diagnostics(self) -> dict | None:
-        """Light-cone sizes behind the :attr:`regime` call.
-
-        A dict with ``max_lightcone_k``, ``n``, ``layers``, ``k_cheap``, and
-        ``k_feasible`` — the numbers that determined the regime.
-        """
-        return self._field("regime_diagnostics")
-
-    @property
-    def certificate(self) -> dict | None:
-        """Structural certificate backing :attr:`regime`/:attr:`confidence`.
-
-        A dict with ``certified_easy``, ``no_lowdepth_advantage_expected``,
-        ``uncertain`` (bools), ``easy_witnesses``, ``lowdepth_markers``
-        (lists of str), and optional ``quantum_curiosity`` /
-        ``structural`` sub-dicts — see :attr:`quantum_curiosity`,
-        :attr:`is_psd`, :attr:`rank`.
-        """
-        return self._field("certificate")
-
-    @property
-    def quantum_curiosity(self) -> dict | None:
-        """``certificate["quantum_curiosity"]`` — present when the certificate is ``uncertain``.
-
-        A fixed dict with ``status``, ``depth_to_escape_locality``, and
-        ``next_step``: standing guidance for the "neither ruled in nor ruled
-        out" case, not a per-problem computation.
-        """
-        cert = self.certificate
-        return cert.get("quantum_curiosity") if isinstance(cert, dict) else None
-
-    def _structural_field(self, key: str):
-        """Return ``certificate["structural"][key]`` if both dicts are present."""
-        cert = self.certificate
-        structural = cert.get("structural") if isinstance(cert, dict) else None
-        return structural.get(key) if isinstance(structural, dict) else None
-
-    @property
-    def is_psd(self) -> bool | None:
-        """Whether the QUBO matrix is positive semidefinite (``certificate["structural"]["is_psd"]``)."""
-        return self._structural_field("is_psd")
-
-    @property
-    def rank(self) -> int | None:
-        """Rank of the QUBO matrix (``certificate["structural"]["rank"]``)."""
-        return self._structural_field("rank")
-
-    @property
-    def classical_baseline(self) -> dict | None:
-        """What cheap classical solvers achieve on the same QUBO.
-
-        A dict with ``greedy_energy`` (10-restart descent), ``sa_energy``
-        (3-restart simulated annealing), ``best_energy``, ``distinct_optima``,
-        and — up to 18 variables — ``exact_ground_energy``. Both solvers are
-        seeded, so these are reproducible across identical submissions.
-
-        When the problem has at most 60 variables it also carries
-        ``relaxation_bound``, a provable lower bound, with
-        ``relaxation_method`` naming the relaxation (currently
-        ``"lp_mccormick"``). On a HUBO the bound applies to the degree-≤2
-        truncation of the problem.
-
-        The reference an :attr:`approximation_ratio` needs to be meaningful.
-        ``None`` unless ``preset="deep"``.
-        """
-        return self._field("classical_baseline")
-
-    @property
-    def relaxation_bound(self) -> float | None:
-        """Continuous relaxation bound on the optimum (e.g. LP/SDP), if computed.
-
-        A provable lower bound on the true minimum energy, independent of any
-        classical heuristic — when it's close to :attr:`classical_baseline`'s
-        ``best_energy``, that baseline is already known to be near-optimal.
-        """
-        bl = self.classical_baseline
-        return bl.get("relaxation_bound") if isinstance(bl, dict) else None
-
-    @property
-    def constraint_diagnostics(self) -> list[dict] | None:
-        """Per-constraint feasibility diagnostics (violation rate, redundancy).
-
-        One entry per declared constraint, each with ``index``, ``type``,
-        ``violation_rate``, and ``is_redundant``. Both rates carry the same
-        weighting and sampling caveats as :attr:`feasibility_rate`, so
-        ``is_redundant`` means "carries negligible QAOA probability mass",
-        not "logically implied by the other constraints".
-        """
-        return self._field("constraint_diagnostics")
-
-    @property
-    def penalty_lambda_safe(self) -> float | None:
-        """Guaranteed minimum penalty sufficient to dominate objective gains."""
-        return self._field("penalty_lambda_safe")
-
-    @property
-    def penalty_lambda_min_feasible(self) -> float | None:
-        """Empirical smallest penalty at which the optimum becomes feasible.
-
-        Exact only for small problems; above ~15 variables it is an
-        unreliable subspace-search estimate — check
-        :attr:`penalty_lambda_min_feasible_estimated` and prefer
-        :attr:`penalty_lambda_safe` when it is ``True``.
-        """
-        return self._field("penalty_lambda_min_feasible")
-
-    @property
-    def penalty_lambda_min_feasible_estimated(self) -> bool | None:
-        """Whether :attr:`penalty_lambda_min_feasible` is a subspace estimate.
-
-        ``True`` past the exact-search size cap (~15 qubits), where the value
-        is advisory only; rely on :attr:`penalty_lambda_safe` there.
-        """
-        return self._field("penalty_lambda_min_feasible_estimated")
-
-    def _hardness_field(self, key: str):
-        """Return ``self.hardness[key]`` if the hardness dict is present."""
-        return self.hardness.get(key) if isinstance(self.hardness, dict) else None
-
-    @property
-    def cost_gap(self) -> float | None:
-        """Energy gap from the optimum to the next distinct energy level.
-
-        Degenerate optima are skipped, so this is not ``0`` when several
-        assignments tie for best — see :attr:`ground_state_degeneracy` for
-        that. ``None`` above 18 variables.
-        """
-        return self._hardness_field("cost_gap")
-
-    @property
-    def ground_state_degeneracy(self) -> int | None:
-        """Number of optimal assignments (exact for small problems)."""
-        return self._hardness_field("ground_state_degeneracy")
-
-    @property
-    def treewidth_estimate(self) -> int | None:
-        """Upper bound on the interaction-graph treewidth (min-fill heuristic)."""
-        return self._hardness_field("treewidth_estimate")
-
-    @property
-    def frustration_index(self) -> float | None:
-        """Fraction of couplings unsatisfiable at the best-known assignment.
-
-        Measured at the cost-spectrum optimum — exact up to 18 variables,
-        annealing-derived above. Counts two-body Ising couplings only, so on
-        a HUBO it reflects the two-local shadow of the problem rather than
-        its hyperedges. ``None`` when the problem has no quadratic couplings.
-        """
-        return self._hardness_field("frustration_index")
-
-    @property
-    def cost_gap_normalized(self) -> float | None:
-        """:attr:`cost_gap` divided by the full energy range ``E_max - E_min``.
-
-        Scale-invariant (unlike the raw ``cost_gap``), so it's the version to
-        compare across differently-scaled formulations of the same problem.
-        """
-        return self._hardness_field("cost_gap_normalized")
-
-    @property
-    def global_flip_symmetric(self) -> bool | None:
-        """Whether flipping every bit maps the best solution to another optimum.
-
-        When ``True``, a standard X-mixer QAOA state stays in a fixed
-        global-parity eigenspace at any depth, so this degeneracy cannot be
-        resolved by adding layers alone (see :attr:`ground_state_degeneracy`).
-        """
-        return self._hardness_field("global_flip_symmetric")
-
-    @property
-    def concentration_ratio(self) -> float | None:
-        """Probability mass on reference states relative to the **subspace**
-        uniform baseline ``1/2^k`` (k = simulated/variable qubits).
-
-        ``1.0`` matches a uniform distribution *over the simulated subspace*;
-        ``> 1`` means the ansatz concentrates mass *on* references; ``< 1`` means
-        it concentrates *away* from them. Values near or below 1 at the
-        returned parameters indicate the ansatz at this depth cannot resolve
-        the reference states — increasing circuit depth (more QAOA layers) or
-        running a deeper parameter sweep is the typical remedy.
-
-        Measured at the best swept parameters. The baseline is the *subspace*
-        uniform ``1/2^k`` over the ``k`` simulated variable qubits (``k`` is
-        the problem size only up to 15 qubits; above that it is the warm-start
-        neighbourhood), NOT the full-space ``1/2^n`` used by the "× uniform"
-        cue in the rendered state-probabilities table — so the two can point
-        different directions on the same report. Because ``k`` follows the
-        :attr:`~CharacterizationOptions.preset`, this value is not comparable
-        across presets.
-        """
-        return self._field("concentration_ratio")
-
-    @property
-    def approximation_ratio(self) -> float | None:
-        """Achievable upper-bound approximation ratio from the light-cone engine.
-
-        ``r = (⟨C⟩ − C_max) / (C_min − C_max)``, an upper bound on what a
-        real, cold-started QAOA run can reach at that depth — not a guarantee
-        any live run gets there. Paired with
-        :attr:`approximation_ratio_error_bound` for the ``±ε`` band around it.
-        Interpret it against :attr:`classical_baseline` (an AR of 0.9 means
-        little if greedy already reaches the optimum).
-
-        ⟨C⟩ is evaluated by the light-cone engine on the uniform ``|+⟩`` state
-        over all qubits, at the engine's own per-depth optimised angles.
-        Those are **not** :attr:`best_parameters`, which comes from a separate
-        subspace sweep and never feeds this value.
-
-        .. warning::
-           ``C_min`` / ``C_max`` are exact only up to 18 variables. Above
-           that they come from simulated annealing, and because the ratio is
-           clamped to ``[0, 1]`` an out-of-range value is silently reported as
-           exactly ``0.0`` or ``1.0``. Check
-           ``hardness["cost_spectrum_estimated"]`` before reading ``r = 1.0``
-           as evidence of optimality — and note
-           :attr:`approximation_ratio_error_bound` does not cover this source
-           of error.
-
-        ``None`` in the ``"refuse"`` :attr:`regime` — the server declined to
-        estimate rather than ship an unreliable number. Also ``None`` unless
-        ``preset="deep"`` (the light-cone curve is gated on the hardness
-        analysis), and for any mixer other than ``"x"``.
-        """
-        return self._field("approximation_ratio")
-
-    @property
-    def approximation_ratio_error_bound(self) -> float | None:
-        """``±ε`` uncertainty band on :attr:`approximation_ratio`.
-
-        ``0`` for the exact light-cone computation (``"exact"``/``"structured"``
-        :attr:`regime`); positive for the truncated Pauli-propagation estimate
-        used in the ``"estimate"`` regime, where it is a rigorous containment
-        bound: the discarded-coefficient mass divided by the energy range, so
-        it is dimensionless and directly comparable to the ratio itself. The
-        truncation targets 1% of that range.
-
-        It bounds the error in ⟨C⟩ only. It does **not** cover error in the
-        ``C_min`` / ``C_max`` denominator, which is annealing-estimated above
-        18 variables, so ``0`` here does not mean the ratio is exact. Both
-        endpoints are estimated, so the net direction of that error is not
-        determined in general.
-        """
-        return self._field("approximation_ratio_error_bound")
-
-    @property
-    def best_parameters(self) -> dict | None:
-        """Best QAOA parameters found during parameter sweep (if requested)."""
-        return self._field("best_parameters")
-
-    @property
-    def recommended_min_layers(self) -> int | None:
-        """Recommended minimum QAOA depth p, derived from the AR-vs-depth curve.
-
-        The smallest depth at which the (monotone) predicted approximation ratio
-        reaches near-optimal or stops improving; see :attr:`recommended_layers_basis`
-        for which of those fired. Falls back to a structural estimate when no
-        parameter sweep was run.
-
-        This is an *achievable-optimal* depth: it is the depth at which a
-        well-tuned QAOA (optimal angles) reaches the target ratio. A real run
-        with a finite-budget optimizer typically plateaus a layer or two
-        shallower, so treat this as an upper guide. Warm-starting from the
-        per-layer angles in :attr:`ar_vs_depth` closes much of that gap.
-        """
-        return self._field("recommended_min_layers")
-
-    @property
-    def recommended_layers_basis(self) -> str | None:
-        """How :attr:`recommended_min_layers` was chosen.
-
-        One of ``"threshold_reached"`` (AR hit the near-optimal threshold),
-        ``"saturated"`` (deeper layers stopped helping), ``"depth_limited"`` (AR
-        still climbing at the deepest probed depth), ``"structural"`` (no sweep),
-        or ``"flat_spectrum"``.
-        """
-        return self._field("recommended_layers_basis")
-
-    @property
-    def ar_vs_depth(self) -> list[dict] | None:
-        """Monotone predicted approximation ratio as a function of QAOA depth.
-
-        Each entry has ``layers``, ``gammas``, ``betas``, ``energy``,
-        ``approximation_ratio``, and ``error_bound``. Angles are optimised
-        afresh at each depth, seeded by interpolation from the depth below.
-
-        Monotonicity is imposed rather than observed: a depth-``p`` optimum
-        can always match depth ``p−1`` by appending a zero layer, so when the
-        optimizer fails to improve, the previous entry is carried forward with
-        a zero angle appended. A flat segment therefore means "no improvement
-        found", not "the physics saturated".
-        """
-        return self._field("ar_vs_depth")
+    def recommended_lambda(self) -> float | None:
+        """The recommended penalty weight; ``None`` without a penalty component or above the exact size."""
+        return self.penalty.get("recommended_lambda")
 
     def qaoa_initial_params(self, layers: int | None = None) -> np.ndarray | None:
-        """Warm-start angles ready for :class:`~divi.qprog.algorithms.QAOA`'s ``run``.
+        """Angles ready for :class:`~divi.qprog.algorithms.QAOA`'s ``run``.
 
-        Returns the swept angles as an ``initial_params`` array of shape
-        ``(1, 2 * layers)``, ordered per layer as ``[γ₀, β₀, γ₁, β₁, …]`` — the
-        exact layout ``QAOA.run(initial_params=...)`` expects — so warm-starting
-        a real run from a characterisation is one line::
+        Returns an ``initial_params`` array of shape ``(1, 2 * layers)``,
+        ordered per layer as ``[γ₀, β₀, γ₁, β₁, …]``, so warm-starting a real
+        run from a characterisation is one line::
 
-            result = characterize_and_validate(problem, service=service,
-                                               options=CharacterizationOptions(parameter_sweep=True))
-            p = result.recommended_min_layers
-            qaoa = QAOA(problem, n_layers=p)
+            result = characterize_and_validate(problem, ["01"], service=service)
+            qaoa = QAOA(problem, n_layers=result.recommended_layers)
             qaoa.run(initial_params=result.qaoa_initial_params())
 
-        Prefers the per-depth :attr:`ar_vs_depth` angles for the requested
-        ``layers`` (default: :attr:`recommended_min_layers`, else the deepest
-        available). Falls back to broadcasting the p=1 :attr:`best_parameters`
-        across ``layers`` when no depth curve is available. Returns ``None`` when
-        no angles were produced — the ``"refuse"`` regime, or no
-        ``parameter_sweep`` — so guard the result before passing it on.
-
         Args:
-            layers: Circuit depth to warm-start. Defaults to
-                :attr:`recommended_min_layers`. Must match the ``n_layers`` of
-                the ``QAOA`` you feed it into.
+            layers: Layer count to warm-start; defaults to
+                :attr:`recommended_layers`, else the requested layers. Must
+                match the ``n_layers`` of the ``QAOA`` you feed it into.
+
+        Returns:
+            The angles, or ``None`` when the report carries none.
 
         Raises:
-            ValueError: If ``layers`` exceeds the depth the sweep reached.
+            ValueError: If the report has no angles at ``layers``.
         """
-        curve = self.ar_vs_depth
-        if curve:
-            target = (
-                layers
-                if layers is not None
-                else (self.recommended_min_layers or curve[-1]["layers"])
-            )
-            entry = next((c for c in curve if c.get("layers") == target), None)
-            if entry is None:
-                available = sorted(c["layers"] for c in curve if "layers" in c)
-                raise ValueError(
-                    f"No swept angles at layers={target}; the depth curve "
-                    f"covers {available}. Pass one of those depths explicitly."
-                )
-            gammas = list(entry.get("gammas") or [])
-            betas = list(entry.get("betas") or [])
+        target = layers if layers is not None else self.recommended_layers
+        entries = [*(self.qaoa.get("curve") or []), self.angles]
+        if target is None:
+            entry = self.angles
         else:
-            bp = self.best_parameters or {}
-            gamma, beta = bp.get("gamma"), bp.get("beta")
-            if gamma is None or beta is None:
-                return None
-            n = layers or self.recommended_min_layers or 1
-            gammas, betas = [gamma] * n, [beta] * n
-
+            entry = next((e for e in entries if e.get("layers") == target), None)
+            if entry is None:
+                available = sorted({e["layers"] for e in entries if "layers" in e})
+                raise ValueError(
+                    f"No angles at layers={target}; the report has them for {available}."
+                )
+        gammas, betas = list(entry.get("gammas") or []), list(entry.get("betas") or [])
         if not gammas or len(gammas) != len(betas):
             return None
-        # Per-layer interleave, cost angle then mixer angle: [γ₀, β₀, γ₁, β₁, …].
-        flat = [angle for g, b in zip(gammas, betas) for angle in (g, b)]
-        return np.asarray([flat], dtype=float)
-
-    @property
-    def state_probabilities(self) -> list[dict] | None:
-        """Per-state probability data from the characterisation report."""
-        return self._field("state_probabilities")
-
-    @property
-    def structural_sensitivity(self) -> list | None:
-        """Per-qubit structural sensitivity analysis (if requested)."""
-        return self._field("structural_sensitivity")
-
-    @property
-    def feasibility_rate(self) -> float | None:
-        """Probability mass on constraint-satisfying states, not a state count.
-
-        Weighted by the diagnostic p=1 QAOA distribution, measured over the
-        ``k``-qubit simulated subspace, and evaluated at the fixed diagnostic
-        angles (``gamma``/``beta``, defaulting to 1.0/0.5) — **not** at
-        :attr:`best_parameters`. Above 15 variables the subspace is a
-        greedy-chosen neighbourhood, so this is a conditional rate within that
-        pocket rather than a global one.
-        """
-        return self._field("feasibility_rate")
-
-    @property
-    def penalty_recommendation(self) -> float | None:
-        """Recommended penalty multiplier for constrained problems."""
-        return self._field("penalty_recommendation")
-
-    @property
-    def is_well_tuned(self) -> bool | None:
-        """Whether the penalty parameter is well-tuned based on the analysis."""
-        pt = self._field("penalty_tuning")
-        return pt.get("is_well_tuned") if isinstance(pt, dict) else None
-
-    def summary(self) -> str:
-        """Return a rich text summary of the characterisation result."""
-        lines = [
-            f"QUBO Characterisation Result — Job {self.job_id[:8]}...",
-            f"  Status: {self.status}",
-        ]
-        regime = self.regime
-        if regime:
-            confidence = self.confidence
-            conf_suffix = f" (confidence: {confidence})" if confidence else ""
-            lines.append(f"  Regime: {regime}{conf_suffix}")
-        cert = self.certificate
-        if isinstance(cert, dict):
-            if cert.get("certified_easy"):
-                witnesses = cert.get("easy_witnesses") or []
-                suffix = f" — {witnesses[0]}" if witnesses else ""
-                lines.append(f"  Certificate: classically easy{suffix}")
-            elif cert.get("no_lowdepth_advantage_expected"):
-                markers = cert.get("lowdepth_markers") or []
-                suffix = f" — {markers[0]}" if markers else ""
-                lines.append(
-                    f"  Certificate: no low-depth quantum advantage expected{suffix}"
-                )
-            elif cert.get("uncertain"):
-                lines.append("  Certificate: uncertain (not ruled out)")
-        ar = self.approximation_ratio
-        if ar is None and regime == "refuse":
-            reason = (
-                "estimate tolerance unreachable within budget"
-                if self.refuse_reason == "estimate_unreachable"
-                else "light-cone too wide for a cheap-and-correct assessment"
-            )
-            lines.append(f"  Approximation Ratio: not assessed (refused — {reason})")
-        elif ar is None:
-            lines.append(
-                "  Approximation Ratio: not computed (requires preset='deep' "
-                "and the default 'x' mixer)"
-            )
-        else:
-            ar_line = f"  Approximation Ratio (mean over the output): {ar:.4f}"
-            err = self.approximation_ratio_error_bound
-            if isinstance(err, (int, float)) and not isinstance(err, bool) and err > 0:
-                ar_line += f" ± {err:.3g}"
-            ar_line += " (light-cone, not a live run)"
-            lines.append(ar_line)
-        lines += [
-            tpl.format(v)
-            for attr, tpl in _QUALITY_SUMMARY_FIELDS
-            if (v := getattr(self, attr)) is not None
-        ]
-        if isinstance(self.classical_baseline, dict):
-            be = self.classical_baseline.get("best_energy")
-            if isinstance(be, (int, float)):
-                lines.append(f"  Classical Best Energy: {be:.4f}")
-            # Surface the provable LP lower bound next to the heuristic best:
-            # when they coincide, the classical answer is certifiably optimal.
-            rb = self.relaxation_bound
-            if isinstance(rb, (int, float)):
-                lines.append(f"  Classical Relaxation Bound (provable): {rb:.4f}")
-        if self.hardness:
-            difficulty = self.hardness.get("difficulty", "unknown")
-            lines.append(f"  Hardness: {difficulty}")
-            if self.cost_gap is not None:
-                # Lead with the scale-invariant normalised gap (the one meant
-                # for comparison); raw gap in parentheses.
-                if self.cost_gap_normalized is not None:
-                    lines.append(
-                        f"    Cost Gap: {self.cost_gap_normalized:.4f} normalised ({self.cost_gap:.4f} raw)"
-                    )
-                else:
-                    lines.append(f"    Cost Gap: {self.cost_gap:.4f}")
-            if self.ground_state_degeneracy is not None:
-                lines.append(
-                    f"    Ground-state Degeneracy: {self.ground_state_degeneracy}"
-                )
-            if self.treewidth_estimate is not None:
-                lines.append(f"    Treewidth (<=): {self.treewidth_estimate}")
-        if bp := self.best_parameters:
-            lines.append(
-                f"  Best Parameters: γ={bp.get('gamma', '?')}, β={bp.get('beta', '?')}"
-            )
-        lines += [
-            tpl.format(v)
-            for attr, tpl in _PENALTY_SUMMARY_FIELDS
-            if (v := getattr(self, attr)) is not None
-        ]
-        if self.penalty_lambda_min_feasible is not None:
-            lines.append(
-                "  Empirical Feasible Threshold: "
-                f"λ ≥ {self.penalty_lambda_min_feasible:.2f}"
-            )
-        if self.penalty_lambda_safe is not None:
-            lines.append(
-                f"  Guaranteed Penalty Threshold: λ ≥ {self.penalty_lambda_safe:.2f}"
-            )
-        if self.constraint_diagnostics:
-            lines.append(
-                f"  Constraint Diagnostics: {len(self.constraint_diagnostics)} constraint(s)"
-            )
-        lines += [
-            tpl.format(v)
-            for attr, tpl in _TIMESTAMP_SUMMARY_FIELDS
-            if (v := getattr(self, attr))
-        ]
-        return "\n".join(lines)
+        return np.asarray(
+            [[angle for g, b in zip(gammas, betas) for angle in (g, b)]], dtype=float
+        )
 
     def __repr__(self) -> str:
-        return self.summary()
-
-    def display(self) -> None:
-        """Print a rich console report of the characterisation result.
-
-        Uses the ``rich`` library to display styled panels, tables, and
-        gauges in the terminal.  In Jupyter notebooks, prefer evaluating
-        the result object directly (which triggers ``_repr_html_``).
-        """
-        _render(self)
+        lines = [
+            f"CharacterizationResult(job_id={self.job_id!r}, status={self.status!r})"
+        ]
+        if self.summary:
+            lines.append(f"  {self.summary}")
+        lines += [
+            f"  [{r.get('level', 'info')}] {r.get('text', '')}"
+            for r in self.recommendations
+        ]
+        return "\n".join(lines)
 
     def _repr_html_(self) -> str:
         """Return the server-rendered HTML report (Jupyter)."""
         return self.html
+
+    def display(self) -> None:
+        """Print the report to the terminal; every piece of wording comes from the report itself."""
+        parts: list = [f"[bold]{escape(self.summary)}[/]"] if self.summary else []
+        if self.recommendations:
+            parts.append(
+                Panel(
+                    "\n".join(
+                        f"[{_LEVEL_STYLES.get(r.get('level', 'info'), 'cyan')}]•[/] {escape(r.get('text', ''))}"
+                        for r in self.recommendations
+                    ),
+                    title="Recommendations",
+                )
+            )
+        curve = self.qaoa.get("curve") or []
+        if curve:
+            confidence = _number(self.qaoa.get("shots_confidence"), ".0%")
+            table = Table(title="QAOA by layer count")
+            for column in (
+                "Layers (p)",
+                "Gap closed",
+                "P(optimum)",
+                f"Shots for {confidence}",
+                "Method",
+            ):
+                table.add_column(column)
+            for e in curve:
+                marker = " ★" if e.get("layers") == self.recommended_layers else ""
+                table.add_row(
+                    f"{e.get('layers')}{marker}",
+                    _number(e.get("gap_closed"), ".1%"),
+                    _number(e.get("p_ground"), ".4f"),
+                    _number(e.get("shots_for_confidence"), ","),
+                    escape(e.get("method_label") or "—"),
+                )
+            parts.append(table)
+            if reason := self.qaoa.get("recommended_reason"):
+                parts.append(f"★ recommended: {escape(reason)}")
+        if self.angles.get("gammas"):
+            note = "; ".join(
+                filter(
+                    None,
+                    (self.angles.get("source_label"), self.angles.get("convention")),
+                )
+            )
+            parts.append(
+                Panel(
+                    f"γ = {_vector(self.angles['gammas'])}\nβ = {_vector(self.angles['betas'])}\n"
+                    f"[dim]{escape(note)}[/]",
+                    title=f"Angles (p = {self.angles.get('layers')})",
+                )
+            )
+        if self.limits:
+            parts.append(Panel(escape("\n".join(self.limits)), title="Not included"))
+        Console().print(
+            Panel(
+                Group(*parts), title=f"QUBO Characterization Report — job {self.job_id}"
+            )
+        )
 
 
 def _plain_integer(value: Any) -> Any:
@@ -1085,16 +565,11 @@ def _plain_integer(value: Any) -> Any:
     return value
 
 
-def _plain_boolean(value: Any) -> Any:
-    return bool(value) if isinstance(value, np.bool_) else value
-
-
 def _plain_list(value: Any) -> Any:
     return value.tolist() if isinstance(value, np.ndarray) else value
 
 
 _Int = Annotated[StrictInt, BeforeValidator(_plain_integer)]
-_Bool = Annotated[StrictBool, BeforeValidator(_plain_boolean)]
 
 
 class _Ansatz(BaseModel):
@@ -1104,64 +579,6 @@ class _Ansatz(BaseModel):
 
     mixer: Literal["x", "xy", "I"] | None = None
     layers: _Int | None = Field(default=None, gt=0)
-
-
-class _Subspace(BaseModel):
-    """Subspace-search controls (:attr:`CharacterizationOptions.subspace`)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    auto_warmstart: _Bool | None = None
-    solver: str | None = None
-    max_variable_qubits: _Int | None = Field(default=None, gt=0)
-    restarts: _Int | None = Field(default=None, gt=0)
-    base_bitstring: str | None = None
-    variable_qubits: list[Annotated[_Int, Field(ge=0)]] | None = None
-
-    _plain_variable_qubits = field_validator("variable_qubits", mode="before")(
-        _plain_list
-    )
-
-    @field_validator("base_bitstring")
-    @classmethod
-    def _binary_chars_only(cls, v: str | None) -> str | None:
-        if v is not None:
-            invalid = set(v) - {"0", "1"}
-            if invalid:
-                raise ValueError(
-                    f"base_bitstring contains non-binary characters: {invalid}."
-                )
-        return v
-
-    @model_validator(mode="after")
-    def _check_subspace(self) -> Self:
-        has_base = self.base_bitstring is not None
-        has_variables = self.variable_qubits is not None
-        has_auto_controls = any(
-            getattr(self, name) is not None
-            for name in ("solver", "max_variable_qubits", "restarts")
-        )
-        manual = self.auto_warmstart is False
-        if not manual and (has_base or has_variables):
-            raise ValueError(
-                "base_bitstring and variable_qubits are manual subspace controls. "
-                "Set auto_warmstart=False when providing them."
-            )
-        if manual and has_auto_controls:
-            raise ValueError(
-                "solver, max_variable_qubits, and restarts only affect automatic "
-                "subspace selection. Omit them when auto_warmstart=False."
-            )
-        if has_base != has_variables:
-            raise ValueError(
-                "base_bitstring and variable_qubits must be provided together for "
-                "manual subspace selection."
-            )
-        if self.variable_qubits is not None and len(set(self.variable_qubits)) != len(
-            self.variable_qubits
-        ):
-            raise ValueError("variable_qubits must not contain duplicate indices.")
-        return self
 
 
 class _Constraint(BaseModel):
@@ -1203,125 +620,15 @@ class _Constraint(BaseModel):
 class CharacterizationOptions(BaseModel):
     """Configuration for :func:`~divi.backends.characterization.characterize_and_validate`.
 
-    All fields are optional. Field combinations are validated at construction
-    time, so misconfiguration surfaces before any API call.
-
-    The three analysis flags default to ``None``, meaning "let the server
-    decide" — they are dropped from the payload so the :attr:`preset`'s values
-    apply. Setting one explicitly transmits it and overrides the preset. A
-    :exc:`UserWarning` is emitted for combinations that are likely
-    unintentional (e.g. ``preset="deep"`` with ``parameter_sweep=False``).
-
-    A default-constructed object is therefore not a minimal run: with no
-    preset the server applies its ``"standard"`` defaults, which include a
-    parameter sweep and a sensitivity analysis. Use ``preset="fast"`` for the
-    cheapest run, and ``preset="deep"`` for the certificate.
+    All fields are optional and validated at construction time, so
+    misconfiguration surfaces before any API call.
 
     Examples:
-        >>> CharacterizationOptions(preset="deep")
-        >>> CharacterizationOptions(gamma=1.2, beta=0.7)
-        >>> CharacterizationOptions(parameter_sweep=True, structural_sensitivity=True)
-        >>> CharacterizationOptions(preset="standard", structural_sensitivity=False)  # warns
+        >>> CharacterizationOptions(ansatz={"layers": 2})
+        >>> CharacterizationOptions(constraints=[{"type": "eq_cardinality", "bound": 2}])
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
-
-    preset: Literal["fast", "standard", "deep"] | None = None
-    """Analysis preset that selects a depth-vs-cost trade-off server-side.
-
-    A preset supplies defaults for ``parameter_sweep``,
-    ``structural_sensitivity``, hardness analysis, the γ/β sweep grid
-    resolution, and the warm-start ``max_variable_qubits`` / ``restarts``:
-
-    .. list-table::
-       :header-rows: 1
-       :widths: 12 12 12 14 16 12
-
-       * - Preset
-         - Sweep
-         - Sensitivity
-         - Hardness
-         - Variable qubits
-         - Restarts
-       * - ``"fast"``
-         - no
-         - no
-         - no
-         - 6
-         - 3
-       * - ``"standard"``
-         - yes
-         - yes
-         - no
-         - 8
-         - 5
-       * - ``"deep"``
-         - yes
-         - yes
-         - yes
-         - 12
-         - 10
-
-    ``"deep"`` also uses the finest sweep grid (30×30, versus 15×15 for
-    ``"standard"``).
-
-    .. important::
-       Only ``"deep"`` runs the hardness analysis, and
-       :attr:`~CharacterizationResult.certificate`,
-       :attr:`~CharacterizationResult.hardness`,
-       :attr:`~CharacterizationResult.classical_baseline`, and
-       ``formulation_quality`` are all produced by it. Under ``"fast"`` and
-       ``"standard"`` those fields are absent from the result;
-       :attr:`~CharacterizationResult.regime` and ``confidence`` are still
-       computed. Use ``preset="deep"`` for the "is quantum worth it here?"
-       verdict.
-
-    Omitting ``preset`` does **not** mean "no analyses": the server falls back
-    to the whole ``"standard"`` row, so a sweep and a sensitivity analysis both
-    run. Pass ``preset="fast"``, or set the individual flags, to opt out.
-
-    The variable-qubit and restart entries only take effect on the warm-start
-    path, which the server auto-disables for problems of 15 variables or
-    fewer unless ``subspace={"auto_warmstart": True}`` is set explicitly.
-
-    Passing an explicit flag that agrees with what the preset would have chosen
-    (e.g. ``preset="deep", parameter_sweep=True``) is accepted without warning
-    but locks that value on the wire — future changes to the preset's default
-    will not affect it.
-    """
-
-    structural_sensitivity: StrictBool | None = None
-    """Request per-qubit structural sensitivity analysis.
-
-    ``None`` (the default) defers to the server: the :attr:`preset`'s value,
-    or ``"standard"``'s — which enables it — when no preset is given. Set it
-    explicitly to override.
-    """
-
-    parameter_sweep: StrictBool | None = None
-    """Request a γ/β parameter sweep.
-
-    ``None`` (the default) defers to the server: the :attr:`preset`'s value,
-    or ``"standard"``'s — which enables it — when no preset is given. Set it
-    explicitly to override. Mutually exclusive with fixed ``gamma`` / ``beta``.
-    """
-
-    penalty_tuning: StrictBool | None = None
-    """Request penalty-lambda tuning.
-
-    Requires a penalty component in the problem passed to
-    :func:`characterize_and_validate`, from
-    ``BinaryOptimizationProblem(..., penalty=...)`` or
-    ``BinaryOptimizationProblem(..., constraints=...)``, and must be set to ``True`` to
-    have any effect: the cost/penalty split is only transmitted when you ask
-    for tuning, so leaving this at ``None`` means no penalty tuning runs.
-    """
-
-    gamma: StrictFloat | StrictInt | None = None
-    """Fixed γ value. Mutually exclusive with ``parameter_sweep``."""
-
-    beta: StrictFloat | StrictInt | None = None
-    """Fixed β value. Mutually exclusive with ``parameter_sweep``."""
 
     constraints: list[_Constraint] | None = None
     """Constraint descriptors, each a dict ``{"type": ..., "bound": ...}``.
@@ -1349,24 +656,8 @@ class CharacterizationOptions(BaseModel):
     ansatz: _Ansatz | None = None
     """Ansatz configuration dict (e.g. ``{"mixer": "x", "layers": 1}``).
 
-    Supported ``mixer`` values are ``"x"``, ``"xy"``, and ``"I"`` (identity/no
-    mixer, useful as a diagnostic baseline).
-
-    Only circuit-shape controls belong here. Search-space controls such as
-    ``auto_warmstart``, ``max_variable_qubits``, ``base_bitstring``, and
-    ``variable_qubits`` belong in :attr:`subspace`.
-    """
-
-    subspace: _Subspace | None = None
-    """Subspace-search configuration dict.
-
-    Supported keys include ``auto_warmstart``, ``solver``,
-    ``max_variable_qubits``, ``restarts``, ``base_bitstring``, and
-    ``variable_qubits``. These controls choose or bound the simulated/search
-    subspace; they are not properties of the QAOA circuit ansatz itself.
-
-    ``max_variable_qubits`` and ``restarts`` override the corresponding
-    :attr:`preset` values, and only apply on the warm-start path.
+    ``layers`` is the requested layer count. Supported ``mixer`` values are
+    ``"x"``, ``"xy"`` (Hamming-weight preserving), and ``"I"`` (no mixer).
     """
 
     n_qubits: StrictInt | None = Field(default=None, gt=0)
@@ -1379,96 +670,32 @@ class CharacterizationOptions(BaseModel):
     """
 
     _plain_n_qubits = field_validator("n_qubits", mode="before")(_plain_integer)
-    _plain_flags = field_validator(
-        "structural_sensitivity", "parameter_sweep", "penalty_tuning", mode="before"
-    )(_plain_boolean)
 
     @model_validator(mode="after")
-    def _check_options(self) -> Self:
-        if self.parameter_sweep and (self.gamma is not None or self.beta is not None):
-            raise ValueError(
-                "parameter_sweep=True is mutually exclusive with fixed "
-                "gamma/beta — pick one."
-            )
-        # Checks that need n_qubits (a sibling field) live here rather than on
-        # the nested models, which cannot see the enclosing qubit count.
-        if self.n_qubits is not None:
-
-            def check_indices(indices, description: str) -> None:
+    def _check_constraint_indices(self) -> Self:
+        if self.n_qubits is None:
+            return self
+        for k, c in enumerate(self.constraints or ()):
+            for kind, indices in (
+                ("weight", c.weights or {}),
+                ("qubit", c.qubits or ()),
+            ):
                 for idx in indices:
                     if idx >= self.n_qubits:
                         raise ValueError(
-                            f"{description} index {idx} is out of range for "
+                            f"constraints[{k}]: {kind} index {idx} is out of range for "
                             f"n_qubits={self.n_qubits}."
                         )
-
-            if self.subspace is not None:
-                bitstring = self.subspace.base_bitstring
-                if bitstring is not None and len(bitstring) != self.n_qubits:
-                    raise ValueError(
-                        f"base_bitstring has {len(bitstring)} bits but "
-                        f"n_qubits={self.n_qubits}."
-                    )
-                check_indices(self.subspace.variable_qubits or (), "variable_qubits")
-
-            for k, c in enumerate(self.constraints or ()):
-                check_indices(c.weights or {}, f"constraints[{k}]: weight")
-                check_indices(c.qubits or (), f"constraints[{k}]: qubit")
-
-        if self.preset in _SWEEP_PRESETS:
-            if self.gamma is not None or self.beta is not None:
-                warnings.warn(
-                    f"preset={self.preset!r} runs a parameter sweep, which "
-                    "fixed gamma/beta does not disable — the server evaluates "
-                    "the fixed angles and sweeps the grid. Use preset='fast' "
-                    "for fixed-angle evaluation only.",
-                    UserWarning,
-                    stacklevel=_VALIDATOR_STACKLEVEL,
-                )
-            for flag in ("parameter_sweep", "structural_sensitivity"):
-                if getattr(self, flag) is False:
-                    warnings.warn(
-                        f"preset={self.preset!r} enables {flag} by default, "
-                        f"but you explicitly set {flag}=False, which the "
-                        "server honours. Use preset='fast' for a run that "
-                        "skips both analyses.",
-                        UserWarning,
-                        stacklevel=_VALIDATOR_STACKLEVEL,
-                    )
-
         return self
 
     def _to_wire(self) -> dict | None:
-        """Serialise to the wire-format options dict (or ``None`` if empty).
-
-        The three analysis flags default to ``None``, which drops them from the
-        payload so the server's preset defaults decide. Only values the caller
-        set explicitly are transmitted.
-        """
-        analysis = {
-            k: v
-            for k, v in {
-                "gamma": self.gamma,
-                "beta": self.beta,
-                "structural_sensitivity": self.structural_sensitivity,
-                "parameter_sweep": self.parameter_sweep,
-                "penalty_tuning": self.penalty_tuning,
-            }.items()
-            if v is not None
-        }
+        """Serialise to the wire-format options dict (or ``None`` if empty)."""
         options = {
             k: v
             for k, v in {
-                "preset": self.preset,
-                "analysis": analysis or None,
                 "ansatz": (
                     self.ansatz.model_dump(exclude_none=True)
                     if self.ansatz is not None
-                    else None
-                ),
-                "subspace": (
-                    self.subspace.model_dump(exclude_none=True)
-                    if self.subspace is not None
                     else None
                 ),
                 "constraints": (
@@ -1478,291 +705,9 @@ class CharacterizationOptions(BaseModel):
                 ),
                 "n_qubits": self.n_qubits,
             }.items()
-            if v is not None
+            if v
         }
         return options or None
-
-
-def _render(result: "CharacterizationResult") -> None:
-    """Print a rich console report for ``result``.
-
-    Free function rather than a method so that ``CharacterizationResult``
-    stays focused on data + properties; the ~180 lines of styled-rendering
-    code live here.
-    """
-    console = Console()
-
-    # ``num_qubits`` is server-supplied in the report; used below for the
-    # uniform-distribution baseline in the state-probabilities table.
-    n_qubits = result.report.get("num_qubits") if result.report else None
-
-    # --- Header ---
-    console.print(
-        Panel(
-            result.summary(),
-            title="[cyan bold]QUBO Characterisation Report[/cyan bold]",
-            subtitle=f"[dim]Job {result.job_id[:12]}…[/dim]",
-            border_style="cyan",
-        )
-    )
-
-    # --- Regime / certificate (decision-first: is quantum worth it here?) ---
-    # Surfaced as its own panel, ahead of the quality gauge, so the single
-    # most decision-relevant line isn't just a sentence buried in the header.
-    regime = result.regime
-    confidence = result.confidence
-    cert = result.certificate
-    if regime or isinstance(cert, dict):
-        color = _CONFIDENCE_STYLES.get(confidence or "", "cyan")
-        body_lines = []
-        if regime:
-            conf_suffix = f" (confidence: {confidence})" if confidence else ""
-            body_lines.append(
-                f"[bold {color}]Regime: {regime}{conf_suffix}[/bold {color}]"
-            )
-        if isinstance(cert, dict):
-            if cert.get("certified_easy"):
-                witnesses = cert.get("easy_witnesses") or []
-                suffix = f" — {witnesses[0]}" if witnesses else ""
-                body_lines.append(f"Certificate: classically easy{suffix}")
-            elif cert.get("no_lowdepth_advantage_expected"):
-                markers = cert.get("lowdepth_markers") or []
-                suffix = f" — {markers[0]}" if markers else ""
-                body_lines.append(
-                    f"Certificate: no low-depth quantum advantage expected{suffix}"
-                )
-            elif cert.get("uncertain"):
-                body_lines.append("Certificate: uncertain (not ruled out)")
-                qc = result.quantum_curiosity
-                next_step = qc.get("next_step") if isinstance(qc, dict) else None
-                if next_step:
-                    body_lines.append(f"[dim]Next step: {next_step}[/dim]")
-        if regime == "refuse":
-            reason = (
-                "estimate tolerance unreachable within budget"
-                if result.refuse_reason == "estimate_unreachable"
-                else "light-cone too wide for a cheap-and-correct assessment"
-            )
-            body_lines.append(
-                f"[bold red]Refused: {reason} — no approximation ratio "
-                "given.[/bold red]"
-            )
-        console.print(Panel("\n".join(body_lines), border_style=color))
-
-    # --- Quality gauge ---
-    # Note: this is QAOA *amenability*, not solution quality — see
-    # ``CharacterizationResult.quality_score``'s docstring. Labelled
-    # accordingly so it isn't mistaken for the approximation ratio above.
-    qs = result.quality_score
-    if qs is not None:
-        color = _threshold_pick(qs, _QUALITY_COLORS, default="red")
-        filled = min(_QUALITY_BAR_LEN, int(_QUALITY_BAR_LEN * qs / 100))
-        bar = (
-            f"[{color}]{'█' * filled}[/{color}]"
-            f"[dim]{'░' * (_QUALITY_BAR_LEN - filled)}[/dim]"
-        )
-        source = (
-            "concentration"
-            if result._field("reference_concentration_score") is not None
-            else "structural"
-        )
-        console.print(
-            f"  QAOA Amenability ({source}): {bar} [bold]{qs:.2f}[/bold] / 100\n"
-        )
-
-    # Pre-compute the uniform baseline; reused by the Best Parameters panel
-    # (for the inline P(reference) vs uniform cue) and the State Probabilities
-    # table further down.
-    uniform_prob = (1.0 / (2**n_qubits)) if n_qubits is not None else None
-    reference_set = set((result.report or {}).get("reference_states") or ())
-
-    # --- Best parameters ---
-    # Surfaced near the top: this is the actionable output of the sweep.
-    bp = result.best_parameters
-    if bp:
-        gamma = bp.get("gamma")
-        beta = bp.get("beta")
-        # Derive ``P(reference)`` from ``state_probabilities`` so the rendered
-        # number matches the rendered table further down. The server-supplied
-        # ``bp["probability"]`` field has opaque semantics and does not in
-        # general equal the sum of reference-state sampling probabilities.
-        sp = result.state_probabilities or []
-        reference_prob: float | None = None
-        if reference_set and sp:
-            reference_prob = sum(
-                float(s.get("probability", 0))
-                for s in sp
-                if s.get("is_reference", s.get("state") in reference_set)
-            )
-
-        parts = []
-        if gamma is not None:
-            parts.append(f"[bold green]γ = {gamma:.4f}[/bold green]")
-        if beta is not None:
-            parts.append(f"[bold green]β = {beta:.4f}[/bold green]")
-        if reference_prob is not None:
-            # Inline the boost-vs-uniform so the number is self-interpretable
-            # without scrolling to the State Probabilities table.
-            cue = ""
-            if uniform_prob:
-                boost = reference_prob / uniform_prob
-                # Full-space (1/2^n) baseline here -- distinct from the
-                # concentration_ratio field's subspace (1/2^k) baseline.
-                cue = (
-                    f"  ({boost:.2f}× full-space uniform)"
-                    if boost < 1.0
-                    else f"  ({boost:.1f}× full-space uniform)"
-                )
-            parts.append(f"[dim]P(reference) = {reference_prob:.6f}{cue}[/dim]")
-        console.print(
-            Panel(
-                "  " + "\n  ".join(parts),
-                title="[green]Best Parameters[/green]",
-                border_style="green",
-            )
-        )
-
-    # --- Recommendations (server-supplied) ---
-    # Surfaced right after Best Parameters: the most actionable interpretive
-    # content the report carries. Reference tables (hardness, state probs,
-    # structural_sensitivity) live below.
-    recs = result.recommendations
-    if recs:
-        default_bullet = _RECOMMENDATION_BULLETS["info"]
-        lines = [
-            f"  {_RECOMMENDATION_BULLETS.get(r.get('level', 'info'), default_bullet)}"
-            f" {_html_to_rich(r.get('html', ''))}"
-            for r in recs
-        ]
-        console.print(
-            Panel(
-                "\n".join(lines),
-                title="[cyan]Recommendations[/cyan]",
-                border_style="cyan",
-            )
-        )
-
-    # --- Penalty tuning ---
-    pr = result.penalty_recommendation
-    wt = result.is_well_tuned
-    lambda_min = result.penalty_lambda_min_feasible
-    lambda_safe = result.penalty_lambda_safe
-    if pr is not None or wt is not None or lambda_safe is not None:
-        items = [
-            "[dim]λ is the constraint-penalty multiplier. The empirical "
-            "threshold is observed in the tuner; the guaranteed threshold "
-            "is the conservative minimum that dominates any objective gain "
-            "from violating a constraint.[/dim]"
-        ]
-        if lambda_min is not None:
-            items.append(
-                f"Empirical feasible threshold: λ ≥ [bold]{lambda_min:.2f}[/bold]"
-            )
-        if lambda_safe is not None:
-            items.append(
-                f"Guaranteed penalty threshold: λ ≥ [bold]{lambda_safe:.2f}[/bold]"
-            )
-        if pr is not None:
-            items.append(f"Recommended λ = [bold]{pr:.2f}[/bold]")
-        if wt in _WELL_TUNED_LABELS:
-            items.append(_WELL_TUNED_LABELS[wt])
-        console.print(
-            Panel(
-                "  " + "\n  ".join(items),
-                title="[yellow]Penalty Tuning[/yellow]",
-                border_style="yellow",
-            )
-        )
-
-    # --- Constraint diagnostics ---
-    diagnostics = result.constraint_diagnostics
-    if diagnostics:
-        ct = Table(
-            title="Constraint Diagnostics",
-            caption=(
-                "[dim]High violation rate → raise that constraint's penalty toward its "
-                "recommended λ. Redundant constraints are already always-satisfied.[/dim]"
-            ),
-            border_style="red",
-        )
-        ct.add_column("#", justify="center")
-        ct.add_column("Type")
-        ct.add_column("Violation Rate", justify="right")
-        ct.add_column("Redundant", justify="center")
-        ct.add_column("Recommended λ", justify="right")
-        for d in diagnostics:
-            if not isinstance(d, dict):
-                continue
-            rate = d.get("violation_rate")
-            rec_lambda = d.get("recommended_lambda")
-            is_redundant = bool(d.get("is_redundant"))
-            ct.add_row(
-                str(d.get("index", "?")),
-                str(d.get("type", "?")),
-                f"{rate:.1%}" if isinstance(rate, (int, float)) else "—",
-                "[green]✓[/green]" if is_redundant else "[dim]✗[/dim]",
-                f"{rec_lambda:.2f}" if isinstance(rec_lambda, (int, float)) else "—",
-            )
-        console.print(ct)
-
-    # --- State probabilities ---
-    sp = result.state_probabilities
-    if sp:
-        st = Table(title="State Probabilities", border_style="magenta")
-        st.add_column("State", style="bold")
-        st.add_column("Reference?", justify="center")
-        st.add_column("Probability", justify="right")
-        if uniform_prob:
-            st.add_column("vs Uniform", justify="right")
-
-        for s in sp[:_STATE_TABLE_CAP]:
-            state = s.get("state", "?")
-            is_reference = s.get("is_reference", state in reference_set)
-            marker = "[green]✓[/green]" if is_reference else "[dim]✗[/dim]"
-            prob = s.get("probability", 0)
-            row = [str(state), marker, f"{prob:.6f}"]
-            if uniform_prob:
-                boost = prob / uniform_prob
-                boost_str = f"{boost:.1f}×" if boost >= 1.0 else f"{boost:.2f}×"
-                row.append(f"[bold]{boost_str}[/bold]" if is_reference else boost_str)
-            st.add_row(*row)
-
-        console.print(st)
-        if uniform_prob and n_qubits is not None:
-            console.print(f"  [dim]Uniform: {uniform_prob:.6f} (1/{2**n_qubits})[/dim]")
-
-    # --- Hardness analysis (reference: static QUBO structure) ---
-    if result.hardness:
-        ht = Table(
-            title="Hardness Analysis",
-            caption="[dim]Static QUBO structure metrics — does not predict QAOA quality at any specific depth.[/dim]",
-            border_style="yellow",
-        )
-        ht.add_column("Metric", style="bold")
-        ht.add_column("Value", justify="right")
-        for key, value in result.hardness.items():
-            label = key.replace("_", " ").title()
-            fmt = f"{value:.4f}" if isinstance(value, float) else str(value)
-            ht.add_row(label, fmt)
-        console.print(ht)
-
-    # --- Structural sensitivity (reference: per-qubit flip-cost criticality) ---
-    sens = result.structural_sensitivity
-    if sens:
-        se = Table(
-            title="Structural Sensitivity (per-qubit flip-cost criticality)",
-            border_style="blue",
-        )
-        se.add_column("Qubit", justify="center")
-        se.add_column("Score", justify="right")
-        se.add_column("Assessment")
-        for entry in sens[:_STRUCTURAL_SENSITIVITY_TABLE_CAP]:
-            val = entry.get("score", 0)
-            assessment = _threshold_pick(
-                val, _STRUCTURAL_SENSITIVITY_LABELS, default="[green]stable[/green]"
-            )
-            se.add_row(str(entry.get("qubit", "?")), f"{val:.4f}", assessment)
-        console.print(se)
 
 
 def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
@@ -1770,8 +715,6 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
     # let ``KeyError`` surface noisily on a malformed payload rather than
     # silently fabricating defaults. Optional metadata stays as ``.get()``.
     job_id = data["job_id"]
-    recs = data.get("recommendations")
-
     status = data["status"]
     if status == "FAILED":
         raise CharacterizationFailedError(
@@ -1791,11 +734,9 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
             status,
             "the job has not finished; re-fetch it once it reaches COMPLETED.",
         )
-    if not data.get("report") and not data.get("hardness"):
+    if not data.get("report"):
         raise CharacterizationFailedError(
-            job_id,
-            status,
-            "the job completed but carried no report — every field would read as None.",
+            job_id, status, "the job completed but carried no report."
         )
 
     try:
@@ -1812,9 +753,7 @@ def _wrap_response(data: dict, service: QoroService) -> CharacterizationResult:
     return CharacterizationResult(
         job_id=job_id,
         status=status,
-        hardness=data.get("hardness"),
-        report=data.get("report"),
-        recommendations=recs if recs is not None else [],
+        report=data["report"],
         created_at=data.get("created_at"),
         completed_at=data.get("completed_at"),
         html=html,
@@ -1862,23 +801,26 @@ def characterize_and_validate(
 
     Converts the problem to wire format, submits it to the Qoro
     Characterisation Service, and returns a :class:`CharacterizationResult`
-    that renders a styled report in Jupyter.
+    that renders the report in Jupyter. When the problem was built with a
+    penalty (``BinaryOptimizationProblem(..., penalty=...)`` or
+    ``constraints=...``), its cost/penalty split is sent too and the report
+    gains a ``penalty`` section.
 
     Args:
         problem: A :class:`~divi.qprog.problems.BinaryOptimizationProblem`.
             Wrap raw inputs (ndarray, sparse, BQM, HUBO dict, etc.) in this
             class before calling.
-        reference_states: One or more candidate solution bitstrings used for
-            reference-dependent diagnostics. They are not constraints or a
-            warm start and do not have to be proven optima. Each value must be
-            binary and match the problem dimension.
+        reference_states: One or more candidate solution bitstrings the report
+            covers. They are not constraints or a warm start and do not have
+            to be proven optima. Each value must be binary and match the
+            problem dimension.
         service: A :class:`~divi.backends.QoroService` instance.
-        options: Optional :class:`CharacterizationOptions` configuring
-            presets, sub-analyses, fixed parameters, ansatz, and constraints.
+        options: Optional :class:`CharacterizationOptions` with the ansatz,
+            constraints and qubit count.
 
     Returns:
-        CharacterizationResult: Rich result object. Displaying it in Jupyter
-        shows a styled HTML report.
+        CharacterizationResult: The report. Displaying it in Jupyter shows the
+        rendered HTML report.
 
     Raises:
         ValueError: If reference states are empty, non-binary, or the wrong
@@ -1889,7 +831,7 @@ def characterize_and_validate(
             ``max_retries``), or result retrieval failed ambiguously. Its
             ``job_id`` identifies the existing job to re-fetch.
         ~divi.exceptions.CharacterizationFailedError: If the job failed or
-            completed carrying no analysis.
+            completed carrying no report.
         ~divi.exceptions.ExecutionCancelledError: If the job was cancelled.
         ~divi.backends.InsufficientCreditsError: If the account lacks the
             credits required to run the job.
@@ -1908,10 +850,10 @@ def characterize_and_validate(
         ...     problem,
         ...     reference_states=["01", "10"],
         ...     service=QoroService(),
-        ...     options=CharacterizationOptions(parameter_sweep=True),
+        ...     options=CharacterizationOptions(ansatz={"layers": 2}),
         ... )
-        >>> result.quality_score  # doctest: +SKIP
-        78.5
+        >>> result.summary  # doctest: +SKIP
+        'An exact polynomial-time classical method solves this problem; ...'
 
     .. note::
         Credit cost scales with QUBO size.
@@ -1921,9 +863,7 @@ def characterize_and_validate(
     _validate_reference_states(problem, reference_states, options.n_qubits)
 
     wire_qubo = _serialize_qubo_for_wire(problem)
-    wire_options = options._to_wire()
-    if options.penalty_tuning:
-        wire_options = _attach_penalty_tuning_components(wire_options, problem)
+    wire_options = _attach_penalty_components(options._to_wire(), problem)
 
     # Factored payloads hide their dimension in byte arrays, so send it
     # explicitly for credit billing and backend validation.
@@ -1961,7 +901,7 @@ def get_characterization_result(
 
     Raises:
         ~divi.exceptions.CharacterizationFailedError: If the job failed or
-            completed without analysis.
+            completed without a report.
         ~divi.exceptions.ExecutionCancelledError: If the job was cancelled.
         ~divi.backends.InsufficientCreditsError: If the account lacks the
             credits required to run the job.
@@ -1975,7 +915,7 @@ def get_characterization_result(
         >>> result = get_characterization_result(  # doctest: +SKIP
         ...     "4d0550f5-ffb0-...", service=QoroService()
         ... )
-        >>> result.display()   # doctest: +SKIP
+        >>> print(result)   # doctest: +SKIP
     """
     data = service.characterize_and_validate(job_id=job_id)
     return _wrap_response(data, service)

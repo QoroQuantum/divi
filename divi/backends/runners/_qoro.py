@@ -1452,8 +1452,8 @@ class QoroService(AsyncJobBackend):
                 envelope. Required in submit mode.
             reference_states: One or more binary reference bitstrings. Required
                 in submit mode by the characterisation engine.
-            options: Optional server options, including ``preset``, ``analysis``,
-                ``ansatz``, ``subspace``, ``constraints``, and ``n_qubits``.
+            options: Optional server options: ``ansatz``, ``constraints``,
+                ``n_qubits``, and the ``cost_qubo``/``penalty_qubo`` split.
             job_id: Existing characterisation job to wait for and fetch. When
                 set, submit-mode arguments are ignored.
             tag: Job tag used during initialisation.
