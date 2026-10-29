@@ -11,6 +11,7 @@ import pytest
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.pipeline import ContractViolation
 from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.optimizers import RosalinOptimizer
@@ -490,19 +491,47 @@ def test_rosalin_reports_budget_exhaustion_only_when_no_iteration_fits(
     assert result.message == message
 
 
-def test_rosalin_rejects_a_competing_shot_distribution(sampling_test_simulator):
-    program = small_vqe(
-        sampling_test_simulator, _rosalin(), shot_distribution="weighted"
-    )
+@pytest.mark.parametrize("entry_point", ["run", "dry_run"])
+@pytest.mark.parametrize(
+    ("measurement_kwargs", "message"),
+    [
+        (
+            {"shot_distribution": "weighted"},
+            "Random estimator sampling draws its own allocation and cannot be "
+            "combined with shot_distribution='weighted'.",
+        ),
+        (
+            {"grouping_strategy": "derandomised_shadows"},
+            "Random estimator sampling cannot be combined with "
+            "grouping_strategy='derandomised_shadows', whose bases are fixed.",
+        ),
+    ],
+    ids=["shot-distribution", "derandomised-shadows"],
+)
+def test_rosalin_rejects_measurement_it_cannot_sample(
+    sampling_test_simulator, entry_point, measurement_kwargs, message
+):
+    program = small_vqe(sampling_test_simulator, _rosalin(), **measurement_kwargs)
+
+    with pytest.raises(ContractViolation, match=exact_match(message)):
+        if entry_point == "run":
+            program.run(perform_final_computation=False)
+        else:
+            program.dry_run()
+
+
+def test_rosalin_rejects_an_analytic_backend(dummy_expval_backend):
+    program = small_vqe(dummy_expval_backend, _rosalin())
 
     with pytest.raises(
-        ValueError,
+        ContractViolation,
         match=exact_match(
-            "estimator_samples selects weighted-random sampling and cannot be "
-            "combined with another shot_distribution strategy."
+            "Random estimator sampling requires a sampling backend; "
+            f"{type(dummy_expval_backend).__name__} computes expectation values "
+            "analytically and does not consume shots."
         ),
     ):
-        program.run(perform_final_computation=False)
+        program.dry_run()
 
 
 @pytest.mark.parametrize("allocation", ["icans", "gcans"])

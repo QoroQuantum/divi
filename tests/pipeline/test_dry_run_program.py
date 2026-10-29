@@ -569,23 +569,30 @@ class TestQuantumProgramDryRun:
         assert meta["largest_group_size"] == 1
         assert meta["largest_group_width"] == 4
 
-    @pytest.mark.parametrize("grouping_strategy", ["shadows", "biased_shadows"])
+    @pytest.mark.parametrize(
+        "grouping_strategy", ["shadows", "biased_shadows", "derandomised_shadows"]
+    )
     def test_shadows_report_their_snapshot_budget(
         self, sampling_test_simulator, default_optimizer, grouping_strategy
     ):
-        vqe = h2_vqe(
-            sampling_test_simulator,
-            default_optimizer,
-            grouping_strategy=grouping_strategy,
-        )
-        report = vqe.dry_run()["cost"]
-        meta = next(s.metadata for s in report.stages if s.name == "MeasurementStage")
+        def preview_measurement(strategy):
+            vqe = h2_vqe(
+                sampling_test_simulator, default_optimizer, grouping_strategy=strategy
+            )
+            report = vqe.dry_run()["cost"]
+            meta = next(
+                s.metadata for s in report.stages if s.name == "MeasurementStage"
+            )
+            return report, meta
 
+        report, meta = preview_measurement(grouping_strategy)
+        _, qwc_meta = preview_measurement("qwc")
         group_shots = next(iter(report.env_artifacts["per_group_shots"].values()))
 
         assert meta["strategy"] == grouping_strategy
         assert meta["snapshots"] == sampling_test_simulator.shots
         assert sum(group_shots.values()) == meta["snapshots"] - meta["empty_snapshots"]
+        assert meta["n_pauli_terms"] == qwc_meta["n_pauli_terms"]
 
     def test_stochastic_bind_and_dry_run_share_overlap_preprocessor(
         self, default_test_simulator, default_optimizer

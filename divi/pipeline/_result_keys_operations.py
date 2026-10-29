@@ -26,6 +26,7 @@ from divi.pipeline.abc import BranchKey, ChildResults
 FOREIGN_KEY_ATTR = "_foreign_key"
 
 PARAM_SET_AXIS = "param_set"
+OBS_GROUP_AXIS = "obs_group"
 
 
 # ---------------------------------------------------------------------------

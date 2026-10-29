@@ -204,7 +204,18 @@ def dummy_pipeline_env(dummy_expval_backend):
 
 
 @pytest.fixture
-def dummy_sampling_pipeline_env(make_dummy_simulator):
+def make_sampling_env(make_dummy_simulator):
+    """PipelineEnv on a DummySimulator of ``shots``, seeded when ``seed`` is given."""
+
+    def _make(shots, seed=None, **env_kw):
+        rng = None if seed is None else np.random.default_rng(seed)
+        return PipelineEnv(backend=make_dummy_simulator(shots), rng=rng, **env_kw)
+
+    return _make
+
+
+@pytest.fixture
+def dummy_sampling_pipeline_env(make_sampling_env):
     """PipelineEnv on a sampling backend, for tests that need measurement groups.
 
     An expval-capable backend takes the analytic ``_backend_expval`` path under
@@ -212,7 +223,7 @@ def dummy_sampling_pipeline_env(make_dummy_simulator):
     so a test inspecting groups or shot allocation has to ask for a backend that
     samples.
     """
-    return PipelineEnv(backend=make_dummy_simulator(300))
+    return make_sampling_env(300)
 
 
 @pytest.fixture

@@ -39,7 +39,12 @@ from ._postprocessing import (
     _counts_to_probs,
     _expval_dicts_to_indexed,
 )
-from ._result_keys_operations import FOREIGN_KEY_ATTR, _collapse_to_parent_results
+from ._result_keys_operations import (
+    FOREIGN_KEY_ATTR,
+    OBS_GROUP_AXIS,
+    PARAM_SET_AXIS,
+    _collapse_to_parent_results,
+)
 from .abc import (
     BundleStage,
     ChildResults,
@@ -167,11 +172,11 @@ def _shot_count_for_branch(
     if spec_match is None:
         return None
 
-    obs_group = next(value for axis, value in branch_key if axis == "obs_group")
+    obs_group = next(value for axis, value in branch_key if axis == OBS_GROUP_AXIS)
     if spec_match not in per_param_group_shots:
         return per_group_shots[spec_match].get(obs_group)
 
-    param_set = next(value for axis, value in branch_key if axis == "param_set")
+    param_set = next(value for axis, value in branch_key if axis == PARAM_SET_AXIS)
     return per_param_group_shots[spec_match].get(param_set, {}).get(obs_group)
 
 

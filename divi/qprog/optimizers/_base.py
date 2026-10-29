@@ -155,8 +155,8 @@ class Optimizer(ABC):
 
         Called at the start of
         :meth:`~divi.qprog.VariationalQuantumAlgorithm.run`, before
-        any optimisation, so an incompatible optimizer/program pairing fails
-        loudly and early. The base implementation accepts any program; override
+        any optimisation, and by a dry run, so an incompatible optimizer/program
+        pairing fails loudly and early. The base implementation accepts any program; override
         to raise when the optimizer's requirements are not met.
         """
 

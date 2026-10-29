@@ -260,6 +260,11 @@ class RosalinOptimizer(Optimizer):
         """Number of independent iterates optimised at once."""
         return 1
 
+    def validate_program(self, program) -> None:
+        """Require a measurement stage that random estimator samples can run
+        through on the program's backend."""
+        program._make_measurement_stage().check_estimator_sampling(program.backend)
+
     def build_evaluators(self, program) -> dict[str, Callable[..., Any]]:
         """Bind the program's generalised parameter-shift recipe."""
         return {"shift_rule": lambda: program._grad_shift_rule}

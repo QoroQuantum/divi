@@ -1024,6 +1024,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         :class:`~divi.pipeline.ContractViolation` from here — the same refusal
         ``run()`` makes, reached without submitting anything.
         """
+        self.optimizer.validate_program(self)
         return (
             *super()._preprocessors(),
             self.cost_preprocessor(),

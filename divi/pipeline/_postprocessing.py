@@ -20,7 +20,7 @@ import numpy.typing as npt
 from scipy.sparse import csr_matrix
 
 from divi.circuits import MetaCircuit
-from divi.pipeline._result_keys_operations import _find_batch_key
+from divi.pipeline._result_keys_operations import OBS_GROUP_AXIS, _find_batch_key
 from divi.pipeline.abc import ChildResults
 
 # ---------------------------------------------------------------------------
@@ -174,7 +174,7 @@ def _resolve_group(
 ) -> tuple[tuple, tuple[object, ...], int]:
     """Return ``(batch_key, group_labels, n_qubits)`` for one branch key."""
     bk = _find_batch_key(branch_key, batch_keys)
-    obs_group_idx = int(dict(branch_key)["obs_group"])
+    obs_group_idx = int(dict(branch_key)[OBS_GROUP_AXIS])
     return bk, labels_by_bk[bk][obs_group_idx], nq_by_bk[bk]
 
 
@@ -247,33 +247,46 @@ def _observable_coeff_map(
 def _counts_to_cost_variance(
     raw: ChildResults,
     batch: Mapping[Any, MetaCircuit],
+    term_factors_by_spec: (
+        Mapping[tuple, Mapping[int, float | npt.NDArray[np.float64]]] | None
+    ) = None,
 ) -> dict[tuple, float]:
-    """Estimate the shot-noise variance of each cost value from raw counts.
+    """Estimate the shot-noise variance of each cost value from raw counts,
+    for groups whose shot counts are fixed in advance.
 
-    For a Hamiltonian ``H = Σ_i c_i P_i`` measured group-wise, the variance of
-    the (group-wise independent) mean estimator is approximated by
-    ``Var(<H>) = Σ_i c_i² (1 − <P_i>²) / M_g``, where ``M_g`` is the shot count
-    for the group containing ``P_i``. This drops intra-group Pauli covariance —
-    a standard, cheap first approximation. Each Pauli's ``<P_i>`` and the group
-    shot count come from the same counts :func:`_counts_to_expvals` consumes.
+    Group ``g`` scales term ``P`` by its factor ``f_gP`` in
+    ``term_factors_by_spec`` (``1`` when absent), so the
+    cost is ``Σ_g mean_g(y)`` over the per-shot values
+    ``y = Σ_{P∈g} c_P f_gP λ_P`` of ±1 eigenvalues ``λ_P``. Groups are
+    independent, so the variance is ``Σ_g Var_g(y) / M_g`` for ``M_g`` shots,
+    covariance between a group's terms included. ``Var_g(y)`` is the mean of
+    ``y²`` less the square of ``Σ_P c_P f_gP P̂``, where ``P̂ = Σ_g f_gP <P>_g``
+    pools every group measuring ``P``, so a group of a single shot still
+    contributes.
 
-    Returns ``{base_key: variance}`` summed over a spec's measurement groups,
-    where ``base_key`` is the branch key with the ``obs_group`` axis stripped —
-    matching the post-reduce cost keys. Specs with multiple observables yield
-    ``nan`` (single-scalar variance undefined).
+    Returns ``{base_key: variance}``, where ``base_key`` is the branch key with
+    the ``obs_group`` axis stripped — matching the post-reduce cost keys. Specs
+    with multiple observables, or a group with no shots, yield ``nan``.
     """
     batch_keys, labels_by_bk, nq_by_bk = _group_lookups(batch)
     coeffs_by_bk = {bk: _observable_coeff_map(node) for bk, node in batch.items()}
+    factors_by_spec = term_factors_by_spec or {}
+    factor_keys = set(factors_by_spec)
 
-    out: dict[tuple, float] = {}
+    # Per cost key: each group's (labels, c·f, eigenvalues, counts, shots).
+    groups_by_base: defaultdict[tuple, list[tuple]] = defaultdict(list)
+    estimates_by_base: defaultdict[tuple, defaultdict[str, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
+    invalid_keys: set[tuple] = set()
     for branch_key, counts in raw.items():
         bk, group_labels, n_qubits = _resolve_group(
             branch_key, batch_keys, labels_by_bk, nq_by_bk
         )
-        base_key = tuple(ax for ax in branch_key if ax[0] != "obs_group")
+        base_key = tuple(ax for ax in branch_key if ax[0] != OBS_GROUP_AXIS)
         coeff_map = coeffs_by_bk[bk]
         if coeff_map is None:
-            out[base_key] = float("nan")
+            invalid_keys.add(base_key)
             continue
 
         counts = _big_endian_histogram(branch_key, counts)
@@ -281,24 +294,42 @@ def _counts_to_cost_variance(
         if shots <= 0:
             # A group with no shots invalidates the whole cost variance rather
             # than silently deflating the sum.
-            out[base_key] = float("nan")
+            invalid_keys.add(base_key)
             continue
 
-        expvals = _batched_expectation(
-            [counts], [str(p) for p in group_labels], n_qubits
-        )[:, 0]
+        labels = [str(p) for p in group_labels]
+        bitstrings = sorted(counts)
+        eigenvalues = _bitstring_eigenvalues(bitstrings, labels, n_qubits)
+        frequencies = np.asarray([counts[b] for b in bitstrings], dtype=np.float64)
+        factors = np.ones(len(labels))
+        if factor_keys:
+            group_factors = factors_by_spec[_find_batch_key(base_key, factor_keys)]
+            factors = factors * group_factors.get(
+                int(dict(branch_key)[OBS_GROUP_AXIS]), 1.0
+            )
 
-        group_var = 0.0
-        for label, exp in zip(group_labels, expvals, strict=True):
-            coeff = coeff_map.get(str(label), 0.0)
-            if coeff == 0.0:
-                continue
-            # ``exp`` is a convex combination of ±1 eigenvalues, so 1−exp² ≥ 0
-            # mathematically; clamp to guard float rounding when |exp| ≈ 1.
-            group_var += coeff * coeff * max(0.0, 1.0 - float(exp) ** 2) / shots
+        estimates = estimates_by_base[base_key]
+        for label, factor, expval in zip(
+            labels, factors, eigenvalues @ frequencies / shots, strict=True
+        ):
+            estimates[label] += factor * expval
+        coefficients = np.asarray([coeff_map.get(label, 0.0) for label in labels])
+        groups_by_base[base_key].append(
+            (labels, coefficients * factors, eigenvalues, frequencies, shots)
+        )
 
-        out[base_key] = out.get(base_key, 0.0) + group_var
-
+    out: dict[tuple, float] = dict.fromkeys(invalid_keys, float("nan"))
+    for base_key, groups in groups_by_base.items():
+        if base_key in invalid_keys:
+            continue
+        estimates = estimates_by_base[base_key]
+        variance = 0.0
+        for labels, scaled, eigenvalues, frequencies, shots in groups:
+            mean = scaled @ np.asarray([estimates[label] for label in labels])
+            mean_square = frequencies @ (scaled @ eigenvalues) ** 2 / shots
+            variance += (mean_square - mean**2) / shots
+        # A pooled mean can exceed a group's own, so clamp the sum at zero.
+        out[base_key] = max(0.0, float(variance))
     return out
 
 
@@ -345,7 +376,7 @@ def _counts_to_wrs_cost_variance(
         bk, group_labels, n_qubits = _resolve_group(
             branch_key, batch_keys, labels_by_bk, nq_by_bk
         )
-        base_key = tuple(ax for ax in branch_key if ax[0] != "obs_group")
+        base_key = tuple(ax for ax in branch_key if ax[0] != OBS_GROUP_AXIS)
         coeff_map = coeffs_by_bk[bk]
         if coeff_map is None:
             invalid_keys.add(base_key)
@@ -355,7 +386,7 @@ def _counts_to_wrs_cost_variance(
         if sum(counts.values()) <= 0:
             invalid_keys.add(base_key)
             continue
-        group_idx = next(value for axis, value in branch_key if axis == "obs_group")
+        group_idx = next(value for axis, value in branch_key if axis == OBS_GROUP_AXIS)
         weights = weights_by_spec[_find_batch_key(base_key, weight_keys)][group_idx]
 
         labels = [str(label) for label in group_labels]

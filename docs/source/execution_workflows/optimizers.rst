@@ -366,7 +366,10 @@ Use it with an expectation-valued VQA on a sampling backend, with
 ``shot_distribution`` unset or ``"weighted_random"``: either way each gradient
 component draws its own operator samples. ``grouping_strategy="shadows"`` also
 works, drawing classical-shadow snapshots instead (see
-:ref:`measuring-observables`).
+:ref:`measuring-observables`). Another ``shot_distribution``,
+``grouping_strategy="derandomised_shadows"`` or a backend that computes
+expectation values itself raises :class:`~divi.pipeline.ContractViolation` from
+``run()`` and :meth:`~divi.qprog.QuantumProgram.dry_run`.
 
 iCANS allocates shots independently by coordinate and retains the original
 ``smax`` cap. gCANS instead maximises expected improvement per total gradient

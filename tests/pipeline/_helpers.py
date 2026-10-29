@@ -381,21 +381,16 @@ def ones_execute_fn(
         return {key: 1 for key in trace.final_batch}
 
 
-def build_pipeline_with_shots(
-    meta: MetaCircuit,
-    distribution: str | None,
-    backend: CircuitRunner,
-    **stage_kw,
-) -> tuple[CircuitPipeline, PipelineEnv]:
-    """Build a pipeline with optional shot distribution."""
-    env = PipelineEnv(backend=backend)
-    pipeline = CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=meta),
-            MeasurementStage(shot_distribution=distribution, **stage_kw),
-        ],
+def build_measurement_pipeline(meta: MetaCircuit, **stage_kw) -> CircuitPipeline:
+    """Pipeline of ``meta`` through a ``MeasurementStage`` built from ``stage_kw``."""
+    return CircuitPipeline(
+        stages=[DummySpecStage(meta=meta), MeasurementStage(**stage_kw)]
     )
-    return pipeline, env
+
+
+def get_first_node(trace) -> MetaCircuit:
+    """The first MetaCircuit in ``trace``'s final batch."""
+    return next(iter(trace.final_batch.values()))
 
 
 class ExpvalBackendSpy(CircuitRunner):

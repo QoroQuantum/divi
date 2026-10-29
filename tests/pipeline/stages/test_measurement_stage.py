@@ -21,10 +21,11 @@ from divi.pipeline import (
     StageOutput,
 )
 from divi.pipeline._compilation import batch_lineage
-from divi.pipeline._grouping import _compute_measurement_groups
+from divi.pipeline._grouping import BACKEND_EXPVAL, _compute_measurement_groups
 from divi.pipeline._postprocessing import _counts_to_expvals
 from divi.pipeline.abc import (
     ChildResults,
+    ContractViolation,
     MetaCircuitBatch,
     ResultFormat,
     SpecStage,
@@ -51,13 +52,33 @@ from tests.pipeline._helpers import (
     ExpvalBackendSpy,
     RecordingBackend,
     ShotsBackendSpy,
-    build_pipeline_with_shots,
+    build_measurement_pipeline,
+    get_first_node,
     measured_qubits,
     meta_from_circuit,
     meta_with_observable,
     ones_execute_fn,
     two_group_pipeline_stages,
 )
+
+
+@pytest.fixture
+def make_seeded_sampler(make_maestro_simulator):
+    """Sampling MaestroSimulator of ``shots``, seeded for reproducible counts."""
+
+    def _make(shots, seed):
+        return make_maestro_simulator(
+            shots=shots,
+            force_sampling=True,
+            maestro_config=MaestroConfig(seed=seed),
+        )
+
+    return _make
+
+
+def read_cost_variance(env) -> float:
+    """The first cost variance ``env`` collected."""
+    return next(iter(env.artifacts["cost_variance"].values()))
 
 
 def _two_term_meta() -> MetaCircuit:
@@ -109,9 +130,7 @@ class TestMeasurementStageExpvalBackendReduce:
         meta = _two_term_meta()
 
         env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()],
-        )
+        pipeline = build_measurement_pipeline(meta)
 
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
@@ -163,9 +182,7 @@ class TestMeasurementStageExpvalBackendReduce:
             observable=SparsePauliOp.from_list([("Z", 0.9), ("X", 0.4)]),
         )
         env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()],
-        )
+        pipeline = build_measurement_pipeline(meta)
 
         reduced = pipeline.run(
             initial_spec="ignored",
@@ -229,7 +246,7 @@ class TestMeasurementStageResultFormatOverride:
 # --------------------------------------------------------------------------- #
 
 
-def _three_group_meta(coeffs=(10.0, 1.0, 0.1)) -> MetaCircuit:
+def _make_three_group_meta(coeffs=(10.0, 1.0, 0.1)) -> MetaCircuit:
     """A Hamiltonian that produces 3 QWC groups with skewed L1 norms.
 
     H = 10*Z(0) + 1*X(0) + 0.1*Y(0) by default.
@@ -264,9 +281,7 @@ def _multi_term_qwc_meta() -> MetaCircuit:
 def test_no_shot_distribution_skips_per_group_allocation(dummy_simulator):
     """Spec: shot_distribution=None preserves existing behaviour exactly."""
     env = PipelineEnv(backend=dummy_simulator)
-    pipeline = CircuitPipeline(
-        stages=[DummySpecStage(meta=_three_group_meta()), MeasurementStage()],
-    )
+    pipeline = build_measurement_pipeline(_make_three_group_meta())
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
@@ -283,15 +298,11 @@ def test_no_shot_distribution_skips_per_group_allocation(dummy_simulator):
 class TestMeasurementStageShotDistributionUniform:
     """Spec: 'uniform' splits backend.shots equally across groups."""
 
-    def test_per_group_shots_equal_split(self, make_dummy_simulator):
+    def test_per_group_shots_equal_split(self, make_sampling_env):
 
-        backend = make_dummy_simulator(300)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
+        env = make_sampling_env(300)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="uniform"
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
@@ -301,15 +312,11 @@ class TestMeasurementStageShotDistributionUniform:
         # 300 / 3 groups = 100 per group.
         assert per_group[spec_key] == {0: 100, 1: 100, 2: 100}
 
-    def test_uniform_total_preserved_with_remainder(self, make_dummy_simulator):
+    def test_uniform_total_preserved_with_remainder(self, make_sampling_env):
 
-        backend = make_dummy_simulator(10)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
+        env = make_sampling_env(10)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="uniform"
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
@@ -321,15 +328,11 @@ class TestMeasurementStageShotDistributionUniform:
 class TestMeasurementStageShotDistributionWeighted:
     """Spec: 'weighted' allocates shots proportional to per-group L1 norm."""
 
-    def test_dominant_group_gets_most_shots(self, make_dummy_simulator):
+    def test_dominant_group_gets_most_shots(self, make_sampling_env):
 
-        backend = make_dummy_simulator(1000)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(1000)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
@@ -338,16 +341,12 @@ class TestMeasurementStageShotDistributionWeighted:
         assert per_group[0] > per_group[1] > per_group[2]
         assert sum(per_group.values()) == 1000
 
-    def test_qwc_group_l1_uses_combined_terms(self, make_dummy_simulator):
+    def test_qwc_group_l1_uses_combined_terms(self, make_sampling_env):
         """Two-term QWC group's L1 norm = sum of |c_i| within the group."""
 
-        backend = make_dummy_simulator(1000)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_multi_term_qwc_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(1000)
+        pipeline = build_measurement_pipeline(
+            _multi_term_qwc_meta(), shot_distribution="weighted"
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error", UserWarning)
@@ -361,16 +360,12 @@ class TestMeasurementStageShotDistributionWeighted:
         assert min(per_group.values()) == 200
 
 
-def test_wires_strategy_per_group_shots(make_dummy_simulator):
+def test_wires_strategy_per_group_shots(make_sampling_env):
     """Spec: 'wires' grouping also supports adaptive shot allocation."""
 
-    backend = make_dummy_simulator(300)
-    env = PipelineEnv(backend=backend)
-    pipeline = CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=_three_group_meta()),
-            MeasurementStage(grouping_strategy="wires", shot_distribution="uniform"),
-        ],
+    env = make_sampling_env(300)
+    pipeline = build_measurement_pipeline(
+        _make_three_group_meta(), grouping_strategy="wires", shot_distribution="uniform"
     )
     trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
@@ -380,16 +375,12 @@ def test_wires_strategy_per_group_shots(make_dummy_simulator):
     assert len(per_group) == 3
 
 
-def test_none_strategy_per_group_shots(make_dummy_simulator):
+def test_none_strategy_per_group_shots(make_sampling_env):
     """Spec: grouping_strategy=None (one group per observable) supports allocation."""
 
-    backend = make_dummy_simulator(1000)
-    env = PipelineEnv(backend=backend)
-    pipeline = CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=_three_group_meta()),
-            MeasurementStage(grouping_strategy=None, shot_distribution="weighted"),
-        ],
+    env = make_sampling_env(1000)
+    pipeline = build_measurement_pipeline(
+        _make_three_group_meta(), grouping_strategy=None, shot_distribution="weighted"
     )
     trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
@@ -411,45 +402,44 @@ def _dropped_groups_message(dropped: str, bias: str, fraction: str) -> str:
     )
 
 
-def _analytic_allocation_message(backend) -> str:
+def _analytic_backend_message(setting, backend, consequence) -> str:
     return exact_match(
-        f"shot_distribution is set but backend {type(backend).__name__} computes "
-        "expectation values analytically (supports_expval=True), so per-group "
-        "shot allocation does not change the (exact) result. Use a sampling "
-        "backend for shot_distribution to take effect — e.g. "
+        f"{setting} is set but backend {type(backend).__name__} computes "
+        f"expectation values analytically (supports_expval=True), so {consequence}. "
+        "Use a sampling backend for it to take effect — e.g. "
         "MaestroSimulator(force_sampling=True), "
         "QiskitSimulator(force_sampling=True), or QoroService with "
         "JobConfig(force_sampling=True)."
     )
 
 
+def _analytic_allocation_message(backend) -> str:
+    return _analytic_backend_message(
+        "shot_distribution",
+        backend,
+        "per-group shot allocation does not change the (exact) result",
+    )
+
+
 class TestMeasurementStageShotDistributionDropZeroGroups:
     """Spec: groups with zero allocated shots are dropped + warn."""
 
-    def test_warning_emitted_when_groups_dropped(self, make_dummy_simulator):
+    def test_warning_emitted_when_groups_dropped(self, make_sampling_env):
 
-        backend = make_dummy_simulator(11)  # weighted 10:1:0.1 -> 10:1:0
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(11)  # weighted 10:1:0.1 -> 10:1:0
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         with pytest.warns(
             UserWarning, match=_dropped_groups_message("1/3", "0.1", "0.90%")
         ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    def test_dropped_groups_excluded_from_per_group_shots(self, make_dummy_simulator):
+    def test_dropped_groups_excluded_from_per_group_shots(self, make_sampling_env):
 
-        backend = make_dummy_simulator(11)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(11)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -460,15 +450,11 @@ class TestMeasurementStageShotDistributionDropZeroGroups:
         assert 2 not in per_group
         assert 0 in per_group and 1 in per_group
 
-    def test_zero_shot_groups_in_token(self, make_dummy_simulator):
+    def test_zero_shot_groups_in_token(self, make_sampling_env):
 
-        backend = make_dummy_simulator(11)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(11)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -483,24 +469,20 @@ class TestMeasurementStageShotDistributionDropZeroGroups:
         }
 
     def test_dropped_groups_skip_qasms_but_stay_in_measurement_groups(
-        self, make_dummy_simulator
+        self, make_sampling_env
     ):
         """Dropped groups lose their measurement QASM, but the MetaCircuit retains
         all groups so _counts_to_expvals can index by original index."""
 
-        backend = make_dummy_simulator(11)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(11)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-        meta = next(iter(trace.final_batch.values()))
+        meta = get_first_node(trace)
         # Only 2 measurement_qasms should remain (groups 0 and 1).
         assert len(meta.measurement_qasms) == 2
         # Original obs_group indices preserved (no renumbering).
@@ -523,18 +505,14 @@ class TestMeasurementStageShotDistributionReducePath:
         return {bk: {"0": 100} for bk in lineage.values()}
 
     def test_reduce_injects_placeholders_and_yields_correct_energy(
-        self, make_dummy_simulator
+        self, make_sampling_env
     ):
         """End-to-end: with mocked backend results for surviving groups, the
         reduce path injects 0 for dropped groups and computes the right sum."""
 
-        backend = make_dummy_simulator(11)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(11)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
 
         with warnings.catch_warnings():
@@ -550,15 +528,11 @@ class TestMeasurementStageShotDistributionReducePath:
         # Final: 10*1 + 1*1 + 0.1*0 = 11.0
         assert list(reduced.values())[0] == pytest.approx([11.0])
 
-    def test_reduce_no_drops_works_normally(self, make_dummy_simulator):
+    def test_reduce_no_drops_works_normally(self, make_sampling_env):
 
-        backend = make_dummy_simulator(10000)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
+        env = make_sampling_env(10000)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
 
         reduced = pipeline.run(
@@ -579,7 +553,7 @@ class TestMeasurementStageShotDistributionReducePath:
         ],
     )
     def test_weighted_random_reweights_a_single_selected_group(
-        self, coeffs, selected_group, expected, make_dummy_simulator, mocker
+        self, coeffs, selected_group, expected, make_sampling_env, mocker
     ):
         """One random draw remains unbiased even below the group-count floor."""
         allocation = [0, 0, 0]
@@ -589,12 +563,9 @@ class TestMeasurementStageShotDistributionReducePath:
             return_value=allocation,
         )
 
-        env = PipelineEnv(backend=make_dummy_simulator(1))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta(coeffs)),
-                MeasurementStage(shot_distribution="weighted_random"),
-            ],
+        env = make_sampling_env(1)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(coeffs), shot_distribution="weighted_random"
         )
 
         with warnings.catch_warnings():
@@ -610,7 +581,7 @@ class TestMeasurementStageShotDistributionReducePath:
         assert list(reduced.values())[0] == pytest.approx([expected])
 
     def test_weighted_random_variance_includes_group_selection(
-        self, make_dummy_simulator, mocker
+        self, make_sampling_env, mocker
     ):
         """Deterministic group outcomes still vary when the group is random."""
         mocker.patch(
@@ -626,12 +597,9 @@ class TestMeasurementStageShotDistributionReducePath:
                 for branch_key in batch_lineage(trace.final_batch).values()
             }
 
-        env = PipelineEnv(backend=make_dummy_simulator(2), collect_variance=True)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted_random"),
-            ],
+        env = make_sampling_env(2, collect_variance=True)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted_random"
         )
 
         pipeline.run(
@@ -642,9 +610,7 @@ class TestMeasurementStageShotDistributionReducePath:
 
         # The two inverse-probability-weighted samples are +11.1 and -11.1.
         # Their sample variance divided by two is 11.1² = 123.21.
-        assert next(iter(env.artifacts["cost_variance"].values())) == pytest.approx(
-            123.21
-        )
+        assert read_cost_variance(env) == pytest.approx(123.21)
 
 
 @pytest.mark.filterwarnings("ignore:shot_distribution is set but backend")
@@ -652,11 +618,10 @@ def test_weighted_wires_e2e_yields_finite_energy(default_test_simulator):
     """Full pipeline with adaptive shot allocation against a real shot-based
     backend produces a finite, in-range energy (smoke test)."""
     env = PipelineEnv(backend=default_test_simulator)
-    pipeline = CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=_three_group_meta()),
-            MeasurementStage(grouping_strategy="wires", shot_distribution="weighted"),
-        ],
+    pipeline = build_measurement_pipeline(
+        _make_three_group_meta(),
+        grouping_strategy="wires",
+        shot_distribution="weighted",
     )
     result = pipeline.run(initial_spec="ignored", env=env)
     assert len(result) == 1
@@ -667,7 +632,7 @@ def test_weighted_wires_e2e_yields_finite_energy(default_test_simulator):
     assert -11.2 <= energy[0] <= 11.2
 
 
-def _h_layer_meta(n_qubits: int, terms: list[tuple[str, float]]) -> MetaCircuit:
+def _make_h_layer_meta(n_qubits: int, terms: list[tuple[str, float]]) -> MetaCircuit:
     """``n_qubits``-wide Hadamard layer measured against the observable ``terms``."""
     qc = QuantumCircuit(n_qubits)
     for i in range(n_qubits):
@@ -678,50 +643,43 @@ def _h_layer_meta(n_qubits: int, terms: list[tuple[str, float]]) -> MetaCircuit:
     )
 
 
-def _idle_qubit_meta() -> MetaCircuit:
+def _make_idle_qubit_meta() -> MetaCircuit:
     """3-qubit circuit whose observable (Z0 + Z2) leaves qubit 1 idle."""
-    return _h_layer_meta(3, [("IIZ", 1.0), ("ZII", 1.0)])
+    return _make_h_layer_meta(3, [("IIZ", 1.0), ("ZII", 1.0)])
 
 
 class TestMeasureAllQubits:
     """``measure_all`` restricts (default) or forces full-register measurement."""
 
-    def _run_and_collect_qasm(self, make_dummy_simulator, measure_all):
-        env = PipelineEnv(backend=make_dummy_simulator(1000))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_idle_qubit_meta()),
-                MeasurementStage(grouping_strategy="wires", measure_all=measure_all),
-            ],
+    def _run_and_collect_qasm(self, make_sampling_env, measure_all):
+        env = make_sampling_env(1000)
+        pipeline = build_measurement_pipeline(
+            _make_idle_qubit_meta(), grouping_strategy="wires", measure_all=measure_all
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        meta = next(iter(trace.final_batch.values()))
+        meta = get_first_node(trace)
         # wires strategy: Z0 and Z2 are non-overlapping → one group covering both.
         return {q for _, qasm in meta.measurement_qasms for q in measured_qubits(qasm)}
 
-    def test_default_restricts_to_active_qubits(self, make_dummy_simulator):
-        measured = self._run_and_collect_qasm(make_dummy_simulator, measure_all=False)
+    def test_default_restricts_to_active_qubits(self, make_sampling_env):
+        measured = self._run_and_collect_qasm(make_sampling_env, measure_all=False)
         assert measured == {0, 2}
 
-    def test_measure_all_true_measures_every_qubit(self, make_dummy_simulator):
-        measured = self._run_and_collect_qasm(make_dummy_simulator, measure_all=True)
+    def test_measure_all_true_measures_every_qubit(self, make_sampling_env):
+        measured = self._run_and_collect_qasm(make_sampling_env, measure_all=True)
         assert measured == {0, 1, 2}
 
-    def test_counts_override_forces_full_measurement(self, make_dummy_simulator):
+    def test_counts_override_forces_full_measurement(self, make_sampling_env):
         """A COUNTS override wants the raw per-qubit histogram, so it measures
         the full register even though ``measure_all`` defaults to False."""
-        env = PipelineEnv(backend=make_dummy_simulator(1000))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_idle_qubit_meta()),
-                MeasurementStage(
-                    grouping_strategy="wires",
-                    result_format_override=ResultFormat.COUNTS,
-                ),
-            ],
+        env = make_sampling_env(1000)
+        pipeline = build_measurement_pipeline(
+            _make_idle_qubit_meta(),
+            grouping_strategy="wires",
+            result_format_override=ResultFormat.COUNTS,
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        meta = next(iter(trace.final_batch.values()))
+        meta = get_first_node(trace)
         measured = {
             q for _, qasm in meta.measurement_qasms for q in measured_qubits(qasm)
         }
@@ -744,11 +702,26 @@ class TestMeasureAllQubits:
         assert all(len(key) == 3 for key in counts)
         assert sum(counts.values()) == default_test_simulator.shots
 
+    @pytest.mark.parametrize(
+        ("registers", "body", "expected"),
+        [
+            ("qreg q[3];\ncreg c[3];\n", "x q[0];\nmeasure q[0] -> c[0];\n", "001"),
+            ("qreg q[3];\ncreg c[2];\n", "x q[2];\nmeasure q[2] -> c[1];\n", "10"),
+        ],
+        ids=["untouched-qubits", "narrower-register"],
+    )
+    def test_real_backend_keys_span_the_classical_register(
+        self, default_test_simulator, registers, body, expected
+    ):
+        qasm = f'OPENQASM 2.0;\ninclude "qelib1.inc";\n{registers}{body}'
+        result = default_test_simulator.submit_circuits({"c0": qasm})
+        assert result.results[0]["results"] == {expected: default_test_simulator.shots}
+
     def test_idle_qubit_outcome_does_not_change_expval(self):
         """Restricting measurement is safe: the reduced expval is identical
         whether the idle qubit reads 0 (restricted) or a random value
         (full-register)."""
-        meta = _idle_qubit_meta()
+        meta = _make_idle_qubit_meta()
         batch = {
             (("spec", "circ"),): meta.set_measurement_groups(
                 _compute_measurement_groups(meta.observable, "wires", meta.n_qubits)[0]
@@ -766,24 +739,43 @@ class TestMeasureAllQubits:
         e_full = _counts_to_expvals(full_register, batch)
         assert list(e_restricted.values()) == list(e_full.values())
 
+    @pytest.mark.parametrize(
+        ("grouping_strategy", "shot_distribution"),
+        [(None, None), ("qwc", "weighted_random")],
+        ids=["ungrouped", "weighted-random"],
+    )
+    def test_identity_terms_are_added_exactly_without_a_measured_group(
+        self, make_seeded_sampler, grouping_strategy, shot_distribution
+    ):
+        backend = make_seeded_sampler(4000, 5)
+        pipeline = build_measurement_pipeline(
+            _make_h_layer_meta(2, [("II", 10.0), ("IZ", 0.5), ("IX", 0.5)]),
+            grouping_strategy=grouping_strategy,
+            shot_distribution=shot_distribution,
+        )
+        env = PipelineEnv(backend=backend, rng=np.random.default_rng(5))
+
+        trace = pipeline.run_forward_pass("ignored", env)
+        energy = pipeline.run("ignored", env).value
+
+        groups = get_first_node(trace).measurement_groups
+        assert all("II" not in map(str, group) for group in groups)
+        # <IZ> = 0 and <IX> = 1 on |++>; the identity adds exactly 10.
+        assert energy == pytest.approx(10.5, abs=0.1)
+
     @pytest.mark.parametrize("measure_all", [False, True])
     def test_end_to_end_energy_correct_on_real_sampling_backend(
-        self, measure_all, make_maestro_simulator
+        self, measure_all, make_seeded_sampler
     ):
         """Full pipeline on a real shot-based backend (Maestro sampling)
         that honours which qubits are measured: the restricted default and the
         full-register mode must both recover the analytic energy of Z0 + Z2 on
         H|0>^3 (= 0) within shot noise. This exercises the actual
         partial-measurement circuit → backend → decode path end-to-end."""
-        backend = make_maestro_simulator(
-            shots=20000, force_sampling=True, maestro_config=MaestroConfig(seed=7)
-        )
+        backend = make_seeded_sampler(20000, 7)
         env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_idle_qubit_meta()),
-                MeasurementStage(grouping_strategy="wires", measure_all=measure_all),
-            ],
+        pipeline = build_measurement_pipeline(
+            _make_idle_qubit_meta(), grouping_strategy="wires", measure_all=measure_all
         )
         energy = list(pipeline.run(initial_spec="ignored", env=env).values())[0]
         # <Z0> = <Z2> = 0 on |+>; σ = sqrt(2 / 20000) = 0.01, so this is 5σ.
@@ -792,7 +784,16 @@ class TestMeasureAllQubits:
 
 def _wide_term_meta() -> MetaCircuit:
     """4-qubit observable whose terms differ in support: ZIII, IZII, YXXY."""
-    return _h_layer_meta(4, [("ZIII", 1.0), ("IZII", 1.0), ("YXXY", 0.5)])
+    return _make_h_layer_meta(4, [("ZIII", 1.0), ("IZII", 1.0), ("YXXY", 0.5)])
+
+
+def _make_estimator_env(make_sampling_env, budgets, seed=None):
+    return make_sampling_env(
+        100,
+        seed=seed,
+        param_sets=np.zeros((len(budgets), 1)),
+        estimator_samples=_EstimatorSamplePlan(tuple(budgets)),
+    )
 
 
 def _introspect(stage, meta, backend, **run_kwargs):
@@ -834,7 +835,7 @@ class TestMeasurementStageIntrospect:
         which no other reported figure reflects."""
         info = _introspect(
             MeasurementStage(grouping_strategy="wires", measure_all=measure_all),
-            _idle_qubit_meta(),
+            _make_idle_qubit_meta(),
             make_dummy_simulator(100),
         )
         assert info["measured_qubits"] == expected
@@ -844,7 +845,7 @@ class TestMeasurementStageIntrospect:
         per-circuit figure would not describe any of them."""
         info = _introspect(
             MeasurementStage(shot_distribution="weighted"),
-            _three_group_meta(),
+            _make_three_group_meta(),
             make_dummy_simulator(1000),
         )
         # Weighted over L1 norms [10, 1, 0.1]: a wide spread, no flat count.
@@ -861,7 +862,7 @@ class TestMeasurementStageIntrospect:
             warnings.simplefilter("ignore")
             info = _introspect(
                 MeasurementStage(shot_distribution="weighted"),
-                _three_group_meta(),
+                _make_three_group_meta(),
                 make_dummy_simulator(11),  # 10:1:0.1 -> 10:1:0
             )
         assert info["n_groups"] == 3
@@ -891,7 +892,7 @@ class TestMeasurementStageIntrospect:
         self, make_dummy_simulator
     ):
         info = _introspect(
-            MeasurementStage(), _three_group_meta(), make_dummy_simulator(1000)
+            MeasurementStage(), _make_three_group_meta(), make_dummy_simulator(1000)
         )
         assert info["shots_per_circuit"] == 1000
         assert "shots_per_group_range" not in info
@@ -911,18 +912,17 @@ class TestMeasurementStageShotDistributionBackendExpval:
         that the allocation has no effect.
         """
         env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(grouping_strategy="qwc", shot_distribution="uniform"),
-            ],
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(),
+            grouping_strategy="qwc",
+            shot_distribution="uniform",
         )
         with pytest.warns(
             UserWarning, match=_analytic_allocation_message(dummy_expval_backend)
         ):
             trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         token = next(t for t in trace.stage_tokens if isinstance(t, MeasurementToken))
-        assert token.effective_strategy == "_backend_expval"
+        assert token.effective_strategy == BACKEND_EXPVAL
         assert "ham_ops" in trace.env_artifacts
         # No allocation to record: the analytic path submits one circuit, not groups.
         assert "per_group_shots" not in trace.env_artifacts
@@ -957,20 +957,16 @@ class TestMeasurementStageShotDistributionBackendExpval:
         assert flattened[0] == flattened[1] == flattened[2]
 
     def test_an_allocation_that_starves_every_group_fails_loudly(
-        self, make_dummy_simulator
+        self, make_sampling_env
     ):
         """An all-zero allocation leaves nothing to submit. Emitting the unmeasured
         spec circuit instead previewed as a plausible one-circuit cost and then died
         at execution with a message about missing measurement QASM."""
-        env = PipelineEnv(backend=make_dummy_simulator(300))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(
-                    grouping_strategy="qwc",
-                    shot_distribution=lambda norms, total: [0] * len(norms),
-                ),
-            ],
+        env = make_sampling_env(300)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(),
+            grouping_strategy="qwc",
+            shot_distribution=lambda norms, total: [0] * len(norms),
         )
         # Budget drift and each dropped group warn separately.
         with (
@@ -998,14 +994,13 @@ class TestMeasurementStageShotDistributionBackendExpval:
         ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
-    def test_shot_distribution_on_qwc_counts_backend(self, make_dummy_simulator):
+    def test_shot_distribution_on_qwc_counts_backend(self, make_sampling_env):
         """qwc + sampling backend honours per_group_shots and skips ham_ops."""
-        env = PipelineEnv(backend=make_dummy_simulator(300))
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(grouping_strategy="qwc", shot_distribution="uniform"),
-            ],
+        env = make_sampling_env(300)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(),
+            grouping_strategy="qwc",
+            shot_distribution="uniform",
         )
         with warnings.catch_warnings():
             warnings.simplefilter("error")
@@ -1014,20 +1009,16 @@ class TestMeasurementStageShotDistributionBackendExpval:
         assert "ham_ops" not in trace.env_artifacts
 
 
-def test_callable_strategy(make_dummy_simulator):
+def test_callable_strategy(make_sampling_env):
     """Spec: shot_distribution accepts a callable for custom allocation."""
 
     def custom(norms, total):
         # Allocate everything to the first group.
         return [total] + [0] * (len(norms) - 1)
 
-    backend = make_dummy_simulator(500)
-    env = PipelineEnv(backend=backend)
-    pipeline = CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=_three_group_meta()),
-            MeasurementStage(shot_distribution=custom),
-        ],
+    env = make_sampling_env(500)
+    pipeline = build_measurement_pipeline(
+        _make_three_group_meta(), shot_distribution=custom
     )
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -1044,17 +1035,11 @@ class TestMeasurementStageShotDistributionReproducibility:
         backend = make_dummy_simulator(10000)
         rng_a = np.random.default_rng(42)
         rng_b = np.random.default_rng(42)
-        pipeline_a = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted_random"),
-            ],
+        pipeline_a = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted_random"
         )
-        pipeline_b = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted_random"),
-            ],
+        pipeline_b = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted_random"
         )
         env_a = PipelineEnv(backend=backend, rng=rng_a)
         env_b = PipelineEnv(backend=backend, rng=rng_b)
@@ -1070,11 +1055,8 @@ class TestMeasurementStageShotDistributionReproducibility:
         that the seeded test above is actually exercising the rng plumbing
         (rather than just hitting a deterministic code path)."""
         backend = make_dummy_simulator(10000)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="weighted_random"),
-            ],
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted_random"
         )
         # No explicit rng -> falls back to a fresh default_rng each call.
         env_a = PipelineEnv(backend=backend)
@@ -1091,10 +1073,10 @@ class TestMeasurementStageShotDistributionReproducibility:
         )
 
 
-def test_two_specs_both_get_their_own_allocations(make_dummy_simulator):
+def test_two_specs_both_get_their_own_allocations(make_sampling_env):
     """Use a custom spec stage emitting two distinct spec batch keys."""
 
-    meta_a = _three_group_meta()
+    meta_a = _make_three_group_meta()
     meta_b = _multi_term_qwc_meta()  # 2 groups
 
     class TwoSpecStage(SpecStage[str]):
@@ -1111,8 +1093,7 @@ def test_two_specs_both_get_their_own_allocations(make_dummy_simulator):
         def reduce(self, results, env, token):
             return results
 
-    backend = make_dummy_simulator(1000)
-    env = PipelineEnv(backend=backend)
+    env = make_sampling_env(1000)
     pipeline = CircuitPipeline(
         stages=[TwoSpecStage(), MeasurementStage(shot_distribution="weighted")],
     )
@@ -1135,11 +1116,8 @@ class TestMeasurementStageShotDistributionPipelineRerun:
         recomputed (random strategies)."""
         backend = make_dummy_simulator(300)
         env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="uniform"
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         first = dict(trace.env_artifacts["per_group_shots"])
@@ -1154,11 +1132,8 @@ class TestMeasurementStageShotDistributionPipelineRerun:
         not restore the cached one. Cache invalidation comes from
         ``MeasurementStage.cache_key`` seeing the new shot count."""
         backend = make_dummy_simulator(300)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="uniform"
         )
         env_a = PipelineEnv(backend=backend)
         trace_a = pipeline.run_forward_pass(initial_spec="ignored", env=env_a)
@@ -1181,15 +1156,35 @@ class TestMeasurementStageShotDistributionPipelineRerun:
             MeasurementStage(shot_distribution=lambda *a, **kw: None).volatile is True
         )
 
+    def test_switching_to_an_analytic_backend_re_expands(
+        self, make_sampling_env, dummy_expval_backend
+    ):
+        pipeline = build_measurement_pipeline(_make_three_group_meta())
+
+        sampled = pipeline.run_forward_pass("ignored", make_sampling_env(300))
+        analytic = pipeline.run_forward_pass(
+            "ignored", PipelineEnv(backend=dummy_expval_backend)
+        )
+
+        assert sampled.stage_tokens[1].effective_strategy == "qwc"
+        assert analytic.stage_tokens[1].effective_strategy == BACKEND_EXPVAL
+
     def test_cache_key_extras_track_backend_shots(self, dummy_simulator):
         env = PipelineEnv(backend=dummy_simulator)
         none_stage = MeasurementStage()
         uniform_stage = MeasurementStage(shot_distribution="uniform")
         weighted_stage = MeasurementStage(shot_distribution="weighted")
 
-        assert none_stage.cache_key_extras(env) == ()
-        assert uniform_stage.cache_key_extras(env) == (dummy_simulator.shots,)
-        assert weighted_stage.cache_key_extras(env) == (dummy_simulator.shots,)
+        is_analytic = dummy_simulator.supports_expval
+        assert none_stage.cache_key_extras(env) == (is_analytic,)
+        assert uniform_stage.cache_key_extras(env) == (
+            is_analytic,
+            dummy_simulator.shots,
+        )
+        assert weighted_stage.cache_key_extras(env) == (
+            is_analytic,
+            dummy_simulator.shots,
+        )
 
     def test_disable_then_run_clears_artifact(self, make_dummy_simulator):
         """If MeasurementStage runs once with shot_distribution and then a fresh
@@ -1197,11 +1192,8 @@ class TestMeasurementStageShotDistributionPipelineRerun:
 
         backend = make_dummy_simulator(300)
         env_with = PipelineEnv(backend=backend)
-        pipeline_with = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
+        pipeline_with = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="uniform"
         )
         trace_with = pipeline_with.run_forward_pass(
             initial_spec="ignored", env=env_with
@@ -1209,12 +1201,7 @@ class TestMeasurementStageShotDistributionPipelineRerun:
         assert "per_group_shots" in trace_with.env_artifacts
 
         env_without = PipelineEnv(backend=backend)
-        pipeline_without = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(),
-            ],
-        )
+        pipeline_without = build_measurement_pipeline(_make_three_group_meta())
         trace_without = pipeline_without.run_forward_pass(
             initial_spec="ignored", env=env_without
         )
@@ -1229,12 +1216,12 @@ class TestMeasurementStageShotDistributionPipelineRerun:
 class TestPlanGroupShotsHelper:
     """The shot plan is determined entirely by its explicit inputs."""
 
-    def test_returns_full_indices_when_disabled(self, make_dummy_simulator):
-        meta = _three_group_meta()
+    def test_returns_full_indices_when_disabled(self, make_sampling_env):
+        meta = _make_three_group_meta()
         groups, partition, _, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
-        env = PipelineEnv(backend=make_dummy_simulator(100))
+        env = make_sampling_env(100)
 
         plan = _plan_group_shots(
             "spec_x",
@@ -1248,12 +1235,12 @@ class TestPlanGroupShotsHelper:
         assert plan.missing_group_results == {}
         assert plan.shots_by_group is None
 
-    def test_returns_per_spec_shots_when_enabled(self, make_dummy_simulator):
-        meta = _three_group_meta()
+    def test_returns_per_spec_shots_when_enabled(self, make_sampling_env):
+        meta = _make_three_group_meta()
         groups, partition, _, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
-        env = PipelineEnv(backend=make_dummy_simulator(300))
+        env = make_sampling_env(300)
 
         plan = _plan_group_shots(
             "spec_x",
@@ -1267,7 +1254,7 @@ class TestPlanGroupShotsHelper:
         assert plan.missing_group_results == {}
         assert plan.shots_by_group == {0: 100, 1: 100, 2: 100}
         assert plan.term_weights_by_group == {}
-        assert not plan.random_group_selection
+        assert not plan.is_selection_random
 
     @pytest.mark.parametrize(
         "coeffs, expected",
@@ -1278,15 +1265,13 @@ class TestPlanGroupShotsHelper:
         ids=["all-zero-norms-uniform", "sub-unit-total-proportional"],
     )
     def test_weighted_random_selection_probabilities(
-        self, make_dummy_simulator, coeffs, expected
+        self, make_sampling_env, coeffs, expected
     ):
-        meta = _three_group_meta(coeffs)
+        meta = _make_three_group_meta(coeffs)
         groups, partition, _, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
-        env = PipelineEnv(
-            backend=make_dummy_simulator(300), rng=np.random.default_rng(7)
-        )
+        env = make_sampling_env(300, seed=7)
 
         plan = _plan_group_shots(
             "spec_x",
@@ -1297,7 +1282,7 @@ class TestPlanGroupShotsHelper:
             shot_distribution="weighted_random",
         )
 
-        assert plan.random_group_selection
+        assert plan.is_selection_random
         for idx, shots in plan.shots_by_group.items():
             assert plan.scales_by_group[idx] == pytest.approx(shots / 300)
         for idx, indices in enumerate(partition):
@@ -1306,12 +1291,12 @@ class TestPlanGroupShotsHelper:
                 np.full(len(indices), 1 / expected[idx]),
             )
 
-    def test_drops_zero_shot_groups(self, make_dummy_simulator):
-        meta = _three_group_meta()  # norms 10:1:0.1
+    def test_drops_zero_shot_groups(self, make_sampling_env):
+        meta = _make_three_group_meta()  # norms 10:1:0.1
         groups, partition, _, _ = _compute_measurement_groups(
             meta.observable, "qwc", meta.n_qubits
         )
-        env = PipelineEnv(backend=make_dummy_simulator(11))
+        env = make_sampling_env(11)
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -1378,12 +1363,7 @@ class TestMeasurementStageTupleObservable:
 
     def test_tuple_observable_yields_list_of_floats(self, default_test_simulator):
         env = PipelineEnv(backend=default_test_simulator)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_tuple_observable_meta()),
-                MeasurementStage(),
-            ],
-        )
+        pipeline = build_measurement_pipeline(_tuple_observable_meta())
         reduced = pipeline.run(initial_spec="ignored", env=env)
         out = reduced[(("spec", "circ"),)]
         assert isinstance(out, list)
@@ -1401,21 +1381,18 @@ class TestMeasurementStageTupleObservable:
         tuple to the backend: every observable is evaluated analytically in one
         pass, so ``ham_ops`` lands in the artifacts."""
         env = PipelineEnv(backend=dummy_expval_backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_tuple_observable_meta()),
-                MeasurementStage(grouping_strategy=grouping_strategy),
-            ],
+        pipeline = build_measurement_pipeline(
+            _tuple_observable_meta(), grouping_strategy=grouping_strategy
         )
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        assert trace.stage_tokens[1].effective_strategy == "_backend_expval"
+        assert trace.stage_tokens[1].effective_strategy == BACKEND_EXPVAL
         assert "ham_ops" in trace.env_artifacts
 
     def test_differing_observables_keep_their_grouping(self, dummy_expval_backend):
         """The analytic path shares one ``ham_ops``, so a batch whose circuits
         measure different observables keeps the configured grouping."""
         circuits = [
-            _shadow_meta(SparsePauliOp.from_list([(label, 1.0)]))
+            _make_shadow_meta(SparsePauliOp.from_list([(label, 1.0)]))
             for label in ("ZZI", "XIX")
         ]
         pipeline = CircuitPipeline(
@@ -1446,24 +1423,18 @@ class TestMeasurementStageTupleObservable:
         assert "n_pauli_terms" not in info
         assert "largest_group_width" not in info
 
-    def test_shot_distribution_with_tuple_works(self, make_dummy_simulator):
+    def test_shot_distribution_with_tuple_works(self, make_sampling_env):
         """Adaptive shot allocation operates on the union L1 norm and is
         well-defined for any tuple length."""
-        backend = make_dummy_simulator(100)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_tuple_observable_meta()),
-                MeasurementStage(shot_distribution="uniform"),
-            ],
+        env = make_sampling_env(100)
+        pipeline = build_measurement_pipeline(
+            _tuple_observable_meta(), shot_distribution="uniform"
         )
         # No raise: the union has well-defined coefficients for shot weighting.
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         assert "per_group_shots" in trace.env_artifacts
 
-    def test_shot_distribution_with_sign_canceling_observables(
-        self, make_dummy_simulator
-    ):
+    def test_shot_distribution_with_sign_canceling_observables(self, make_sampling_env):
         """Sign-canceling observables must not zero out shot allocation on the
         shared Pauli — the union uses absolute coefficients."""
         qc = QuantumCircuit(1)
@@ -1475,14 +1446,8 @@ class TestMeasurementStageTupleObservable:
                 -SparsePauliOp("Z"),
             ),
         )
-        backend = make_dummy_simulator(200)
-        env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
-        )
+        env = make_sampling_env(200)
+        pipeline = build_measurement_pipeline(meta, shot_distribution="weighted")
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         per_group_shots = trace.env_artifacts["per_group_shots"]
         spec_key = (("spec", "circ"),)
@@ -1506,12 +1471,7 @@ class TestMeasurementStageTupleObservable:
             ),
         )
         env = PipelineEnv(backend=default_test_simulator)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=meta),
-                MeasurementStage(shot_distribution="weighted"),
-            ],
-        )
+        pipeline = build_measurement_pipeline(meta, shot_distribution="weighted")
         reduced = pipeline.run(initial_spec="ignored", env=env)
         out = reduced[(("spec", "circ"),)]
         assert isinstance(out, list)
@@ -1539,12 +1499,7 @@ class TestHamOpsExpvalBackend:
     def test_expand_sets_env_artifacts_ham_ops(self):
         expval_spy = ExpvalBackendSpy()
         env = PipelineEnv(backend=expval_spy)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_make_expval_meta()),
-                MeasurementStage(),
-            ]
-        )
+        pipeline = build_measurement_pipeline(_make_expval_meta())
         trace = pipeline.run_forward_pass(initial_spec="x", env=env)
         assert "ham_ops" in trace.env_artifacts
         terms = trace.env_artifacts["ham_ops"].split(";")
@@ -1555,12 +1510,7 @@ class TestHamOpsExpvalBackend:
     def test_execute_fn_passes_ham_ops_to_backend(self):
         expval_spy = ExpvalBackendSpy()
         env = PipelineEnv(backend=expval_spy)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_make_expval_meta()),
-                MeasurementStage(),
-            ]
-        )
+        pipeline = build_measurement_pipeline(_make_expval_meta())
         pipeline.run(initial_spec="x", env=env)
         assert expval_spy.last_ham_ops is not None
         assert "ZI" in expval_spy.last_ham_ops
@@ -1569,12 +1519,7 @@ class TestHamOpsExpvalBackend:
     def test_reduce_unpacks_pauli_dict_to_per_obs_list(self):
         expval_spy = ExpvalBackendSpy()
         env = PipelineEnv(backend=expval_spy)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_make_expval_meta()),
-                MeasurementStage(),
-            ]
-        )
+        pipeline = build_measurement_pipeline(_make_expval_meta())
         result = pipeline.run(initial_spec="x", env=env)
         assert len(result) == 1
         value = next(iter(result.values()))
@@ -1585,12 +1530,7 @@ class TestHamOpsExpvalBackend:
     def test_ham_ops_not_set_for_shots_backend(self):
         shots_spy = ShotsBackendSpy(shots=100)
         env = PipelineEnv(backend=shots_spy)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_make_expval_meta()),
-                MeasurementStage(),
-            ]
-        )
+        pipeline = build_measurement_pipeline(_make_expval_meta())
         trace = pipeline.run_forward_pass(initial_spec="x", env=env)
         assert "ham_ops" not in trace.env_artifacts
 
@@ -1601,12 +1541,7 @@ class TestProbsMeasurementReduce:
     def test_probs_pipeline_returns_probability_dict(self):
         shots_spy = ShotsBackendSpy(shots=100)
         env = PipelineEnv(backend=shots_spy)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_make_probs_meta()),
-                MeasurementStage(),
-            ]
-        )
+        pipeline = build_measurement_pipeline(_make_probs_meta())
         result = pipeline.run(initial_spec="x", env=env)
         assert len(result) == 1
         probs = next(iter(result.values()))
@@ -1618,12 +1553,7 @@ class TestProbsMeasurementReduce:
     def test_probs_are_normalised_by_shots(self):
         shots_spy = ShotsBackendSpy(shots=100)
         env = PipelineEnv(backend=shots_spy)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_make_probs_meta()),
-                MeasurementStage(),
-            ]
-        )
+        pipeline = build_measurement_pipeline(_make_probs_meta())
         result = pipeline.run(initial_spec="x", env=env)
         probs = next(iter(result.values()))
         assert probs.get("0") == 0.8
@@ -1632,13 +1562,10 @@ class TestProbsMeasurementReduce:
 
 class TestMeasurementStageEstimatorSamples:
     def test_estimator_sampling_is_volatile_for_its_environment(
-        self, make_dummy_simulator
+        self, make_sampling_env
     ):
         stage = MeasurementStage()
-        env = PipelineEnv(
-            backend=make_dummy_simulator(100),
-            estimator_samples=_EstimatorSamplePlan((8,)),
-        )
+        env = make_sampling_env(100, estimator_samples=_EstimatorSamplePlan((8,)))
 
         assert stage.volatile is False
         assert stage.is_volatile_for(env) is True
@@ -1661,7 +1588,7 @@ class TestMeasurementStageEstimatorSamples:
         )
 
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        node = next(iter(trace.final_batch.values()))
+        node = get_first_node(trace)
         assert {str(pauli) for group in node.measurement_groups for pauli in group} == {
             "Z"
         }
@@ -1679,18 +1606,11 @@ class TestMeasurementStageEstimatorSamples:
             (("spec", "circ"), ("param_set", 1)): pytest.approx(0.0),
         }
 
-    def test_scalar_budget_is_allocated_for_each_parameter_set(
-        self, make_dummy_simulator
-    ):
-        env = PipelineEnv(
-            backend=make_dummy_simulator(100),
-            param_sets=np.zeros((2, 1)),
-            estimator_samples=_EstimatorSamplePlan((8, 8)),
-            rng=np.random.default_rng(7),
-        )
+    def test_scalar_budget_is_allocated_for_each_parameter_set(self, make_sampling_env):
+        env = _make_estimator_env(make_sampling_env, (8, 8), seed=7)
         stage = MeasurementStage()
         pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=_three_group_meta()), stage]
+            stages=[DummySpecStage(meta=_make_three_group_meta()), stage]
         )
 
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
@@ -1704,19 +1624,12 @@ class TestMeasurementStageEstimatorSamples:
         assert info["estimator_samples_per_param_set"] == [8, 8]
         assert info["device_shots"] == 16
 
-    def test_per_set_budgets_keep_union_of_sampled_groups(self, make_dummy_simulator):
-        env = PipelineEnv(
-            backend=make_dummy_simulator(100),
-            param_sets=np.zeros((2, 1)),
-            estimator_samples=_EstimatorSamplePlan((1, 32)),
-            rng=np.random.default_rng(11),
-        )
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=_three_group_meta()), MeasurementStage()]
-        )
+    def test_per_set_budgets_keep_union_of_sampled_groups(self, make_sampling_env):
+        env = _make_estimator_env(make_sampling_env, (1, 32), seed=11)
+        pipeline = build_measurement_pipeline(_make_three_group_meta())
 
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
-        node = next(iter(trace.final_batch.values()))
+        node = get_first_node(trace)
         allocation = node.param_group_shots
 
         assert allocation is not None
@@ -1730,25 +1643,18 @@ class TestMeasurementStageEstimatorSamples:
 
     @pytest.mark.parametrize("shot_distribution", ["uniform", "weighted"])
     def test_rejects_competing_distribution_strategy(
-        self, make_dummy_simulator, shot_distribution
+        self, make_sampling_env, shot_distribution
     ):
-        env = PipelineEnv(
-            backend=make_dummy_simulator(100),
-            param_sets=np.zeros((1, 1)),
-            estimator_samples=_EstimatorSamplePlan((8,)),
-        )
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(shot_distribution=shot_distribution),
-            ]
+        env = _make_estimator_env(make_sampling_env, (8,))
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution=shot_distribution
         )
 
         with pytest.raises(
-            ValueError,
+            ContractViolation,
             match=exact_match(
-                "estimator_samples selects weighted-random sampling and cannot be "
-                "combined with another shot_distribution strategy."
+                "Random estimator sampling draws its own allocation and cannot be "
+                f"combined with shot_distribution={shot_distribution!r}."
             ),
         ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
@@ -1759,21 +1665,20 @@ class TestMeasurementStageEstimatorSamples:
             param_sets=np.zeros((1, 1)),
             estimator_samples=_EstimatorSamplePlan((8,)),
         )
-        pipeline = CircuitPipeline(
-            stages=[DummySpecStage(meta=_three_group_meta()), MeasurementStage()]
-        )
+        pipeline = build_measurement_pipeline(_make_three_group_meta())
 
         with pytest.raises(
-            ValueError,
+            ContractViolation,
             match=exact_match(
-                "estimator_samples requires a sampling backend; analytic "
-                "expectation-value backends do not consume shots."
+                "Random estimator sampling requires a sampling backend; "
+                f"{type(dummy_expval_backend).__name__} computes expectation "
+                "values analytically and does not consume shots."
             ),
         ):
             pipeline.run_forward_pass(initial_spec="ignored", env=env)
 
 
-def _shadow_meta(observable=None) -> MetaCircuit:
+def _make_shadow_meta(observable=None) -> MetaCircuit:
     """Entangled three-qubit state with two observables that carry identity terms."""
     qc = QuantumCircuit(3)
     qc.ry(0.7, 0)
@@ -1792,39 +1697,31 @@ def _shadow_meta(observable=None) -> MetaCircuit:
     return meta_from_circuit(qc, observable=observable)
 
 
-def _shadow_pipeline(meta: MetaCircuit, strategy: str = "shadows") -> CircuitPipeline:
-    return CircuitPipeline(
-        stages=[
-            DummySpecStage(meta=meta),
-            MeasurementStage(grouping_strategy=strategy),
-        ]
-    )
-
-
-_EACH_SHADOW_STRATEGY = pytest.mark.parametrize(
+_EACH_RANDOM_SHADOW_STRATEGY = pytest.mark.parametrize(
     "strategy", ["shadows", "biased_shadows"]
+)
+_EACH_SHADOW_STRATEGY = pytest.mark.parametrize(
+    "strategy", ["shadows", "biased_shadows", "derandomised_shadows"]
 )
 
 
 class TestMeasurementStageShadows:
-    def test_groups_are_basis_covers_with_identity_split_off(
-        self, make_dummy_simulator
-    ):
-        env = PipelineEnv(
-            backend=make_dummy_simulator(300), rng=np.random.default_rng(2)
-        )
+    def test_groups_are_basis_covers_with_identity_split_off(self, make_sampling_env):
+        env = make_sampling_env(300, seed=2)
         stage = MeasurementStage(grouping_strategy="shadows")
-        pipeline = CircuitPipeline(stages=[DummySpecStage(meta=_shadow_meta()), stage])
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=_make_shadow_meta()), stage]
+        )
 
         trace = pipeline.run_forward_pass(initial_spec="ignored", env=env)
         token = trace.stage_tokens[1]
-        node = next(iter(trace.final_batch.values()))
+        node = get_first_node(trace)
         plan = next(iter(token.group_shot_plans_by_spec.values()))
         info = stage.introspect(trace.final_batch, env, token)
 
         assert stage.is_volatile_for(env)
         assert sum(node.group_shots.values()) + plan.empty_draws == 300
-        assert plan.random_group_selection
+        assert plan.is_selection_random
         assert next(iter(token.constant_offsets_by_spec.values())) == (1.5, -0.2)
         labels = {label for group in node.measurement_groups for label in group}
         assert "III" not in labels
@@ -1840,18 +1737,16 @@ class TestMeasurementStageShadows:
             )
 
     @_EACH_SHADOW_STRATEGY
-    def test_estimates_match_exact_expectations(self, make_maestro_simulator, strategy):
-        meta = _shadow_meta()
-        exact = CircuitPipeline(
-            stages=[DummySpecStage(meta=meta), MeasurementStage()]
-        ).run(initial_spec="ignored", env=PipelineEnv(backend=make_maestro_simulator()))
-        sampler = make_maestro_simulator(
-            shots=20_000,
-            force_sampling=True,
-            maestro_config=MaestroConfig(seed=11),
+    def test_estimates_match_exact_expectations(
+        self, make_maestro_simulator, make_seeded_sampler, strategy
+    ):
+        meta = _make_shadow_meta()
+        exact = build_measurement_pipeline(meta).run(
+            initial_spec="ignored", env=PipelineEnv(backend=make_maestro_simulator())
         )
+        sampler = make_seeded_sampler(20_000, 11)
 
-        estimate = _shadow_pipeline(meta, strategy).run(
+        estimate = build_measurement_pipeline(meta, grouping_strategy=strategy).run(
             initial_spec="ignored",
             env=PipelineEnv(backend=sampler, rng=np.random.default_rng(11)),
         )
@@ -1859,27 +1754,34 @@ class TestMeasurementStageShadows:
         # About five standard deviations of a 20000-snapshot estimate.
         assert estimate.value == pytest.approx(exact.value, abs=0.1)
 
-    @_EACH_SHADOW_STRATEGY
+    @pytest.mark.parametrize(
+        "strategy", ["qwc", "shadows", "biased_shadows", "derandomised_shadows"]
+    )
     def test_reported_variance_matches_spread_across_draws(
-        self, make_maestro_simulator, strategy
+        self, make_seeded_sampler, strategy
     ):
-        meta = _shadow_meta(
-            SparsePauliOp.from_list(
-                [("ZZI", 0.8), ("XIX", -0.5), ("IYY", 0.3), ("ZII", 0.4)]
-            )
+        # Z_q0 = Z_q1 on this state; dropping their covariance halves the variance.
+        qc = QuantumCircuit(2)
+        qc.ry(1.0, 0)
+        qc.cx(0, 1)
+        meta = meta_from_circuit(
+            qc,
+            observable=SparsePauliOp.from_list([("IZ", 1.0), ("ZI", 1.0), ("XX", 0.5)]),
         )
         n_runs = 200
         estimates, variances = [], []
         for seed in range(n_runs):
             # Independent shot noise per run, or the spread understates it.
-            sampler = make_maestro_simulator(
-                shots=2000, force_sampling=True, maestro_config=MaestroConfig(seed=seed)
-            )
+            sampler = make_seeded_sampler(2000, seed)
             env = PipelineEnv(
                 backend=sampler, rng=np.random.default_rng(seed), collect_variance=True
             )
-            estimates.append(_shadow_pipeline(meta, strategy).run("ignored", env).value)
-            variances.append(next(iter(env.artifacts["cost_variance"].values())))
+            estimates.append(
+                build_measurement_pipeline(meta, grouping_strategy=strategy)
+                .run("ignored", env)
+                .value
+            )
+            variances.append(read_cost_variance(env))
 
         # Four standard errors of a sample variance; dropping the never-submitted
         # empty draws (zero samples) misstates the ratio by about 3x.
@@ -1888,41 +1790,100 @@ class TestMeasurementStageShadows:
         )
 
     def test_biased_bases_lower_the_variance_of_a_skewed_hamiltonian(
-        self, make_maestro_simulator
+        self, make_seeded_sampler
     ):
-        meta = _shadow_meta(
+        meta = _make_shadow_meta(
             SparsePauliOp.from_list(
                 [("ZZZ", 1.0), ("ZZI", 0.8), ("IZZ", 0.6), ("XXX", 0.1)]
             )
         )
-        sampler = make_maestro_simulator(
-            shots=4000, force_sampling=True, maestro_config=MaestroConfig(seed=3)
-        )
+        sampler = make_seeded_sampler(4000, 3)
         variances = {}
         for strategy in ("shadows", "biased_shadows"):
             env = PipelineEnv(
                 backend=sampler, rng=np.random.default_rng(3), collect_variance=True
             )
-            _shadow_pipeline(meta, strategy).run("ignored", env)
-            variances[strategy] = next(iter(env.artifacts["cost_variance"].values()))
+            build_measurement_pipeline(meta, grouping_strategy=strategy).run(
+                "ignored", env
+            )
+            variances[strategy] = read_cost_variance(env)
 
         # Measured about 8x lower; the uniform draws rarely cover ZZZ.
         assert variances["biased_shadows"] < variances["shadows"] / 3
 
-    @_EACH_SHADOW_STRATEGY
-    def test_estimator_budgets_draw_each_parameter_set(
-        self, make_dummy_simulator, strategy
+    def test_derandomised_bases_repeat_and_average_each_term_over_its_covers(
+        self, make_sampling_env
     ):
-        env = PipelineEnv(
-            backend=make_dummy_simulator(100),
-            param_sets=np.zeros((2, 1)),
-            estimator_samples=_EstimatorSamplePlan((5, 40)),
-            rng=np.random.default_rng(8),
+        stage = MeasurementStage(grouping_strategy="derandomised_shadows")
+        pipeline = CircuitPipeline(
+            stages=[DummySpecStage(meta=_make_shadow_meta()), stage]
         )
-        meta = _shadow_meta(SparsePauliOp.from_list([("ZZI", 0.8), ("XIX", -0.5)]))
 
-        trace = _shadow_pipeline(meta, strategy).run_forward_pass("ignored", env)
-        node = next(iter(trace.final_batch.values()))
+        traces = [
+            pipeline.run_forward_pass(
+                "ignored",
+                make_sampling_env(60, seed=seed),
+            )
+            for seed in (0, 1)
+        ]
+        nodes = [get_first_node(trace) for trace in traces]
+        plan = next(iter(traces[0].stage_tokens[1].group_shot_plans_by_spec.values()))
+
+        assert not stage.volatile
+        assert not plan.is_selection_random
+        assert nodes[0].measurement_groups == nodes[1].measurement_groups
+        assert nodes[0].group_shots == nodes[1].group_shots
+        assert sum(nodes[0].group_shots.values()) == 60
+        # Each term's group factors sum to one: the mean over its covering bases.
+        factor_sums: dict[str, float] = {}
+        for idx, group in enumerate(nodes[0].measurement_groups):
+            for label, weight in zip(group, plan.term_weights_by_group[idx]):
+                factor_sums[label] = (
+                    factor_sums.get(label, 0.0) + plan.scales_by_group[idx] * weight
+                )
+        assert factor_sums == pytest.approx(dict.fromkeys(factor_sums, 1.0))
+
+    def test_derandomised_bases_warn_about_unmeasured_terms(self, make_sampling_env):
+        env = make_sampling_env(1)
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("ZZZ", 0.8), ("XXX", -0.5)]))
+
+        with pytest.warns(
+            UserWarning,
+            match=exact_match(
+                "Derandomised shadows measured 1/2 term(s) of spec "
+                "(('spec', 'circ'),) in no basis; those terms contribute zero to "
+                "the estimate. Raise the shot count to cover them."
+            ),
+        ):
+            build_measurement_pipeline(
+                meta, grouping_strategy="derandomised_shadows"
+            ).run_forward_pass("ignored", env)
+
+    def test_derandomised_bases_reject_estimator_budgets(self, make_sampling_env):
+        env = _make_estimator_env(make_sampling_env, (5, 40))
+
+        with pytest.raises(
+            ContractViolation,
+            match=exact_match(
+                "Random estimator sampling cannot be combined with "
+                "grouping_strategy='derandomised_shadows', whose bases are fixed."
+            ),
+        ):
+            build_measurement_pipeline(
+                _make_shadow_meta(), grouping_strategy="derandomised_shadows"
+            ).run_forward_pass("ignored", env)
+
+    @_EACH_RANDOM_SHADOW_STRATEGY
+    def test_estimator_budgets_draw_each_parameter_set(
+        self, make_sampling_env, strategy
+    ):
+        env = _make_estimator_env(make_sampling_env, (5, 40), seed=8)
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("ZZI", 0.8), ("XIX", -0.5)]))
+
+        trace = build_measurement_pipeline(
+            meta, grouping_strategy=strategy
+        ).run_forward_pass("ignored", env)
+        node = get_first_node(trace)
         plans = trace.stage_tokens[1].group_shot_plans_by_spec
 
         for param_idx, budget in enumerate((5, 40)):
@@ -1933,22 +1894,19 @@ class TestMeasurementStageShadows:
                 set(range(len(node.measurement_groups))) - set(drawn)
             )
 
-    @_EACH_SHADOW_STRATEGY
+    @_EACH_RANDOM_SHADOW_STRATEGY
     def test_parameter_set_with_only_empty_draws_still_submits_a_circuit(
-        self, make_dummy_simulator, strategy
+        self, make_sampling_env, strategy
     ):
         """Results exist only for submitted circuits, so a parameter set whose
         snapshots all measured nothing runs one zero-weight shot instead."""
-        env = PipelineEnv(
-            backend=make_dummy_simulator(100),
-            param_sets=np.zeros((8, 1)),
-            estimator_samples=_EstimatorSamplePlan((1,) * 8),
-            rng=np.random.default_rng(4),
-        )
+        env = _make_estimator_env(make_sampling_env, (1,) * 8, seed=4)
         # Conflicting bases on every qubit: most single draws cover nothing.
-        meta = _shadow_meta(SparsePauliOp.from_list([("ZZZ", 0.8), ("XXX", -0.5)]))
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("ZZZ", 0.8), ("XXX", -0.5)]))
 
-        trace = _shadow_pipeline(meta, strategy).run_forward_pass("ignored", env)
+        trace = build_measurement_pipeline(
+            meta, grouping_strategy=strategy
+        ).run_forward_pass("ignored", env)
         plans = trace.stage_tokens[1].group_shot_plans_by_spec.values()
 
         assert any(not plan.term_weights_by_group[0].any() for plan in plans)
@@ -1962,29 +1920,53 @@ class TestMeasurementStageShadows:
             ValueError,
             match=exact_match(
                 f"shot_distribution cannot be combined with grouping_strategy="
-                f"'{strategy}': the random measurement bases already decide each "
+                f"'{strategy}': the shadow measurement bases already decide each "
                 "circuit's shots."
             ),
         ):
             MeasurementStage(grouping_strategy=strategy, shot_distribution="weighted")
 
     @_EACH_SHADOW_STRATEGY
-    def test_rejects_analytic_backend(self, dummy_expval_backend, strategy):
-        env = PipelineEnv(backend=dummy_expval_backend)
-
+    @pytest.mark.parametrize(
+        "override", [ResultFormat.COUNTS, ResultFormat.PROBS], ids=["counts", "probs"]
+    )
+    def test_rejects_raw_result_formats(self, strategy, override):
         with pytest.raises(
             ValueError,
             match=exact_match(
-                f"grouping_strategy='{strategy}' requires a sampling backend; "
-                f"{type(dummy_expval_backend).__name__} computes expectation "
-                "values analytically and does not consume shots."
+                f"result_format_override={override!r} cannot be combined with "
+                f"grouping_strategy='{strategy}': each shadow circuit measures a "
+                "different basis, so their raw outcomes do not form one "
+                "distribution."
             ),
         ):
-            _shadow_pipeline(_shadow_meta(), strategy).run_forward_pass("ignored", env)
+            MeasurementStage(
+                grouping_strategy=strategy, result_format_override=override
+            )
 
-    def test_rejects_an_identity_only_observable(self, make_dummy_simulator):
-        env = PipelineEnv(backend=make_dummy_simulator(100))
-        meta = _shadow_meta(SparsePauliOp.from_list([("III", 2.0)]))
+    @_EACH_SHADOW_STRATEGY
+    def test_analytic_backend_computes_the_exact_value_with_a_warning(
+        self, dummy_expval_backend, strategy
+    ):
+        env = PipelineEnv(backend=dummy_expval_backend)
+
+        with pytest.warns(
+            UserWarning,
+            match=_analytic_backend_message(
+                f"grouping_strategy='{strategy}'",
+                dummy_expval_backend,
+                "the exact result is returned and no shadow is measured",
+            ),
+        ):
+            trace = build_measurement_pipeline(
+                _make_shadow_meta(), grouping_strategy=strategy
+            ).run_forward_pass("ignored", env)
+
+        assert trace.stage_tokens[1].effective_strategy == BACKEND_EXPVAL
+
+    def test_rejects_an_identity_only_observable(self, make_sampling_env):
+        env = make_sampling_env(100)
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("III", 2.0)]))
 
         with pytest.raises(
             ValueError,
@@ -1993,21 +1975,21 @@ class TestMeasurementStageShadows:
                 "constant and there is nothing to sample."
             ),
         ):
-            _shadow_pipeline(meta).run_forward_pass("ignored", env)
+            build_measurement_pipeline(
+                meta, grouping_strategy="shadows"
+            ).run_forward_pass("ignored", env)
 
     def test_no_snapshot_measuring_a_term_estimates_the_identity_offset(
-        self, make_dummy_simulator
+        self, make_sampling_env
     ):
         """One snapshot rarely covers ``ZZZ``; when it misses, the estimate is the
         exact identity part plus zero, from one zero-weight circuit."""
 
         def make_env():
-            return PipelineEnv(
-                backend=make_dummy_simulator(1), rng=np.random.default_rng(0)
-            )
+            return make_sampling_env(1, seed=0)
 
-        meta = _shadow_meta(SparsePauliOp.from_list([("ZZZ", 1.0), ("III", 0.5)]))
-        pipeline = _shadow_pipeline(meta)
+        meta = _make_shadow_meta(SparsePauliOp.from_list([("ZZZ", 1.0), ("III", 0.5)]))
+        pipeline = build_measurement_pipeline(meta, grouping_strategy="shadows")
 
         trace = pipeline.run_forward_pass("ignored", make_env())
         plan = next(iter(trace.stage_tokens[1].group_shot_plans_by_spec.values()))
@@ -2022,8 +2004,9 @@ class TestExecuteFnForwardsShotGroups:
 
     def test_uniform_forwards_evenly_split_shot_groups(self):
         backend = RecordingBackend(shots=300)
-        pipeline, env = build_pipeline_with_shots(
-            _three_group_meta(), "uniform", backend
+        env = PipelineEnv(backend=backend)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="uniform"
         )
         pipeline.run(initial_spec="ignored", env=env)
         assert "shot_groups" in backend.last_kwargs
@@ -2031,8 +2014,9 @@ class TestExecuteFnForwardsShotGroups:
 
     def test_weighted_produces_distinct_ranges(self):
         backend = RecordingBackend(shots=1000)
-        pipeline, env = build_pipeline_with_shots(
-            _three_group_meta(), "weighted", backend
+        env = PipelineEnv(backend=backend)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         pipeline.run(initial_spec="ignored", env=env)
         groups = backend.last_kwargs["shot_groups"]
@@ -2046,8 +2030,9 @@ class TestExecuteFnForwardsShotGroups:
 
     def test_dropped_groups_not_submitted(self):
         backend = RecordingBackend(shots=11)
-        pipeline, env = build_pipeline_with_shots(
-            _three_group_meta(), "weighted", backend
+        env = PipelineEnv(backend=backend)
+        pipeline = build_measurement_pipeline(
+            _make_three_group_meta(), shot_distribution="weighted"
         )
         with pytest.warns(UserWarning):
             pipeline.run(initial_spec="ignored", env=env)
@@ -2058,11 +2043,6 @@ class TestExecuteFnForwardsShotGroups:
     def test_no_distribution_means_no_shot_groups_in_kwargs(self):
         backend = RecordingBackend(shots=300)
         env = PipelineEnv(backend=backend)
-        pipeline = CircuitPipeline(
-            stages=[
-                DummySpecStage(meta=_three_group_meta()),
-                MeasurementStage(),
-            ],
-        )
+        pipeline = build_measurement_pipeline(_make_three_group_meta())
         pipeline.run(initial_spec="ignored", env=env)
         assert "shot_groups" not in backend.last_kwargs

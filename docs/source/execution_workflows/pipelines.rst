@@ -550,10 +550,22 @@ variance bound of `Hadfield et al. <https://arxiv.org/abs/2006.15788>`_. A term
 is then weighted by the inverse of its own matching chance, so the estimate
 stays unbiased.
 
-- ``shots`` is the number of snapshots, and the bases are redrawn on every
-  evaluation.
-- Shadows take no ``shot_distribution`` and raise on a backend that computes
-  expectation values itself.
+``grouping_strategy="derandomised_shadows"`` fixes the bases instead, choosing
+them one qubit at a time with the derandomisation of `Huang, Kueng and Preskill
+<https://arxiv.org/abs/2103.07510>`_, which measures terms with larger
+coefficients in more bases. A term is estimated as the mean over the snapshots
+that measure it. A term that no basis measures contributes zero, and a
+:class:`UserWarning` reports how many terms that applies to.
+
+- ``shots`` is the number of snapshots. Random bases are redrawn on every
+  evaluation; derandomised bases are the same on every evaluation.
+- Shadows take no ``shot_distribution`` and no ``COUNTS`` or ``PROBS``
+  ``result_format_override``.
+- A backend that computes expectation values itself returns the exact value,
+  and a :class:`UserWarning` reports that no shadow was measured.
+- Derandomised shadows raise with
+  :class:`~divi.qprog.optimizers.RosalinOptimizer`, which draws its own random
+  measurements.
 - A :meth:`~divi.qprog.QuantumProgram.dry_run` reports ``snapshots`` and
   ``empty_snapshots``, the snapshots that measured no term and were not
   submitted.

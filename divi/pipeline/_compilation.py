@@ -13,7 +13,7 @@ import numpy as np
 from divi.circuits import MetaCircuit, dag_to_qasm_body
 from divi.circuits._conversions import _real_float_array
 from divi.circuits._payloads import CircuitPayload
-from divi.pipeline._result_keys_operations import PARAM_SET_AXIS
+from divi.pipeline._result_keys_operations import OBS_GROUP_AXIS, PARAM_SET_AXIS
 from divi.pipeline.abc import BranchKey, ContractViolation
 
 
@@ -98,7 +98,9 @@ def _has_param_group_allocation(
     param_idx = next(
         (value for axis, value in body_tag if axis == PARAM_SET_AXIS), None
     )
-    group_idx = next((value for axis, value in meas_tag if axis == "obs_group"), None)
+    group_idx = next(
+        (value for axis, value in meas_tag if axis == OBS_GROUP_AXIS), None
+    )
     if param_idx is None or group_idx is None:
         raise ValueError(
             "Per-parameter-set group shots require bound param_set body tags and "
