@@ -23,6 +23,7 @@ from divi.backends import (
     CircuitRunner,
     ExecutionResult,
 )
+from divi.backends._base import PerCircuitKwarg
 from divi.backends._cancellation import (
     _best_effort_cancel_job,
     _cancel_job_on_abort,
@@ -30,7 +31,6 @@ from divi.backends._cancellation import (
     raise_if_cancelled,
 )
 from divi.backends._job_status import JobStatus, QoroJobError
-from divi.backends._shot_allocation import from_wire, to_wire
 from divi.circuits._payloads import (
     CircuitPayload,
     bound_circuits,
@@ -234,20 +234,20 @@ def _fail_futures(batch: _Batch, exc: BaseException) -> None:
             entry.future.set_exception(exc)
 
 
-def _require_kwargs_match_except(all_kwargs: Sequence[dict], varying_key: str) -> None:
-    """Raise unless every kwargs dict equals the first one outside *varying_key*."""
+def _call_kwargs(kwargs: dict, per_circuit: Sequence[PerCircuitKwarg]) -> dict:
+    """The submit kwargs that apply to a whole call, not one value per circuit."""
+    names = {name for kwarg in per_circuit for name in kwarg.names}
+    return {k: v for k, v in kwargs.items() if k not in names}
 
-    def _without(kw: dict) -> dict:
-        return {k: v for k, v in kw.items() if k != varying_key}
 
-    template = _without(all_kwargs[0])
-    for kw in all_kwargs[1:]:
-        if _without(kw) != template:
-            raise ValueError(
-                "Cannot merge programs whose kwargs differ in keys "
-                f"other than {varying_key!r}. Submit such programs in "
-                "separate batches."
-            )
+def _call_signature(
+    kwargs: dict, per_circuit: Sequence[PerCircuitKwarg]
+) -> tuple[dict, tuple[bool, ...]]:
+    """What submissions sharing one call must agree on: their call-level kwargs,
+    and which per-circuit kwargs without a fill value they set."""
+    return _call_kwargs(kwargs, per_circuit), tuple(
+        kwarg.is_set(kwargs) for kwarg in per_circuit if kwarg.fill is None
+    )
 
 
 def _job_status_from_backend_exception(exc: BaseException) -> JobStatus | None:
@@ -494,156 +494,69 @@ class _BatchCoordinator:
         )
         return progress_key
 
-    @staticmethod
-    def _merge_circuits_and_kwargs(
-        batch: _Batch,
-    ) -> tuple[dict[str, str], dict]:
-        """Merge circuits from all programs and build unified submit kwargs.
+    def _merge_circuits_and_kwargs(self, batch: _Batch) -> tuple[dict[str, str], dict]:
+        """Merge one call's worth of programs into its circuits and submit kwargs.
 
-        When all programs share identical kwargs the circuits are merged in
-        batch iteration order and the common kwargs are returned directly,
-        with one exception: ``shot_groups`` indices are per-program and must
-        be re-offset to point into the merged circuit list.
-
-        When programs have different ``ham_ops``, circuits are **reordered** so
-        that circuits sharing the same ``ham_ops`` are contiguous.  The
-        individual ``ham_ops`` strings are combined with ``|`` and a
-        ``circuit_ham_map`` is computed so the backend routes each group to the
-        correct circuit slice; every other kwarg must match across programs.
-        Combining heterogeneous ``ham_ops`` with ``shot_groups`` is currently
-        rejected because the circuit reordering would require reshuffling the
-        per-circuit shot allocation in lockstep.
+        Circuits are concatenated in batch order. Each per-circuit kwarg is
+        decoded to one value per circuit, concatenated, and encoded for the
+        merged list; a program that leaves it unset contributes its fill value.
+        Call-level kwargs, equal across the batch, are kept as they are.
 
         Returns:
             ``(merged_circuits, submit_kwargs)``
         """
-        all_kwargs = [entry.kwargs for entry in batch.values()]
+        entries = list(batch.values())
+        if len(entries) == 1:
+            return dict(entries[0].circuits), dict(entries[0].kwargs)
 
-        # Fast path: all kwargs identical → simple merge.
-        if all(kw == all_kwargs[0] for kw in all_kwargs):
-            merged: dict[str, str] = {}
-            offset = 0
-            template_shot_groups = all_kwargs[0].get("shot_groups")
-            merged_ranges = [] if template_shot_groups is not None else None
-            for entry in batch.values():
-                if merged_ranges is not None:
-                    for r in from_wire(entry.kwargs["shot_groups"]):
-                        merged_ranges.append(r.shift(offset))
-                merged.update(entry.circuits)
-                offset += len(entry.circuits)
+        per_circuit_kwargs = self._real_backend.per_circuit_kwargs
+        merged: dict[str, str] = {}
+        for entry in entries:
+            merged.update(entry.circuits)
+        merged_kwargs = _call_kwargs(entries[0].kwargs, per_circuit_kwargs)
+        for kwarg in per_circuit_kwargs:
+            decoded = [
+                kwarg.decode(entry.kwargs, len(entry.circuits)) for entry in entries
+            ]
+            if all(values is None for values in decoded):
+                continue
+            per_circuit: list = []
+            for entry, values in zip(entries, decoded, strict=True):
+                if values is None:
+                    if kwarg.fill is None:
+                        raise ValueError(
+                            f"Programs that set {kwarg.names[0]!r} and programs "
+                            "that do not cannot share a backend call."
+                        )
+                    values = [kwarg.fill] * len(entry.circuits)
+                per_circuit.extend(values)
+            merged_kwargs.update(kwarg.encode(per_circuit))
+        return merged, merged_kwargs
 
-            merged_kw = dict(all_kwargs[0])
-            if merged_ranges is not None:
-                merged_kw["shot_groups"] = to_wire(merged_ranges)
-            return merged, merged_kw
+    def _split_into_calls(self, batch: _Batch) -> list[_Batch]:
+        """Split a batch into sub-batches that can each go in one backend call.
 
-        # Slow path: kwargs differ across programs.  We support two
-        # independent forms of variation: per-program ``shot_groups`` (sampling
-        # mode) and per-program ``ham_ops`` (expval mode). Combining the two
-        # would require reshuffling the per-circuit shot allocation when
-        # circuits are reordered by observable group, which is out of scope.
-        any_shot_groups = any(
-            entry.kwargs.get("shot_groups") is not None for entry in batch.values()
-        )
-        any_ham_ops = any(
-            entry.kwargs.get("ham_ops") is not None for entry in batch.values()
-        )
-        if any_shot_groups and any_ham_ops:
-            raise ValueError(
-                "Cannot merge programs that combine per-program 'shot_groups' "
-                "with heterogeneous 'ham_ops'. Submit such programs in "
-                "separate batches."
-            )
-
-        if any_shot_groups:
-            # Programs differ only in shot_groups (sampling mode). Merge
-            # circuits in batch order and re-offset each program's
-            # shot_groups indices into the merged circuit list.
-            for entry in batch.values():
-                if entry.kwargs.get("shot_groups") is None:
-                    raise ValueError(
-                        "Cannot merge a mix of programs with and without "
-                        "'shot_groups' in the same sub-batch."
-                    )
-
-            _require_kwargs_match_except(all_kwargs, "shot_groups")
-
-            merged = {}
-            merged_ranges = []
-            offset = 0
-            for entry in batch.values():
-                for r in from_wire(entry.kwargs["shot_groups"]):
-                    merged_ranges.append(r.shift(offset))
-                merged.update(entry.circuits)
-                offset += len(entry.circuits)
-
-            merged_kw = dict(all_kwargs[0])
-            merged_kw["shot_groups"] = to_wire(merged_ranges)
-            return merged, merged_kw
-
-        # Group by ham_ops so circuits with the same observable are contiguous.
-        ham_to_programs: defaultdict[str, list[Hashable]] = defaultdict(list)
-        for prog_key, entry in batch.items():
-            ham = entry.kwargs.get("ham_ops")
-            if ham is None:
-                raise ValueError(
-                    f"Program {prog_key!r} has no 'ham_ops' but its kwargs "
-                    f"differ from other programs in the sub-batch. "
-                    f"Cannot merge programs with incompatible submit kwargs."
-                )
-            ham_to_programs[ham].append(prog_key)
-        _require_kwargs_match_except(all_kwargs, "ham_ops")
-
-        merged = {}
-        ham_groups: list[str] = []
-        circuit_ham_map: list[list[int]] = []
-        offset = 0
-
-        for ham, prog_keys in ham_to_programs.items():
-            group_start = offset
-            for pk in prog_keys:
-                circuits = batch[pk].circuits
-                merged.update(circuits)
-                offset += len(circuits)
-            ham_groups.append(ham)
-            circuit_ham_map.append([group_start, offset])
-
-        merged_kw = dict(all_kwargs[0])
-        merged_kw["ham_ops"] = "|".join(ham_groups)
-        merged_kw["circuit_ham_map"] = circuit_ham_map
-        return merged, merged_kw
-
-    @staticmethod
-    def _split_by_job_type(batch: _Batch) -> list[_Batch]:
-        """Split a batch into compatible sub-batches.
-
-        Programs with ``ham_ops`` cannot be merged with programs without it
-        because the backend treats the two as fundamentally different job types
-        (observable evaluation vs shot-based sampling). Sampling programs with
-        per-circuit ``shot_groups`` cannot share a call with ones running every
-        circuit at the backend's shots, since a call takes one allocation for
-        all its circuits. Returns the non-empty sub-batches in that order.
+        Programs share a call when their call-level kwargs are equal and they
+        set the same per-circuit kwargs that have no fill value; the
+        sub-batches keep the order their first programs appear in.
         """
-        with_ham: _Batch = {}
-        with_shot_groups: _Batch = {}
-        plain: _Batch = {}
+        per_circuit_kwargs = self._real_backend.per_circuit_kwargs
+        calls: list[tuple[tuple, _Batch]] = []
         for prog_key, entry in batch.items():
-            if entry.kwargs.get("ham_ops") is not None:
-                with_ham[prog_key] = entry
-            elif entry.kwargs.get("shot_groups") is not None:
-                with_shot_groups[prog_key] = entry
+            signature = _call_signature(entry.kwargs, per_circuit_kwargs)
+            for call_signature, sub_batch in calls:
+                if call_signature == signature:
+                    sub_batch[prog_key] = entry
+                    break
             else:
-                plain[prog_key] = entry
-
-        return [sb for sb in (with_ham, with_shot_groups, plain) if sb]
+                calls.append((signature, {prog_key: entry}))
+        return [sub_batch for _, sub_batch in calls]
 
     def _do_flush(self, batch: _Batch, flush_group: _FlushGroup) -> None:
         """Merge circuits, submit to real backend, demux results, resolve futures.
 
-        Programs are first split into compatible sub-batches (``ham_ops``,
-        ``shot_groups``, neither) so that each backend call receives a uniform
-        set of kwargs.  Within a sub-batch, programs with different ``ham_ops``
-        values are merged using ``circuit_ham_map``.
+        Programs are first split into sub-batches that can each go in one
+        backend call, then each sub-batch is merged and submitted.
         """
         sub_flush_groups: list[_FlushGroup] = []
         try:
@@ -654,7 +567,7 @@ class _BatchCoordinator:
                 )
                 return
 
-            sub_batches = self._split_by_job_type(batch)
+            sub_batches = self._split_into_calls(batch)
 
             # Build (sub_batch, flush_group) pairs. When there's only one
             # sub-batch reuse the parent flush_group; otherwise create
@@ -665,12 +578,11 @@ class _BatchCoordinator:
             else:
                 for sub_batch in sub_batches:
                     kwargs = next(iter(sub_batch.values())).kwargs
-                    if kwargs.get("ham_ops") is not None:
-                        label = "expval"
-                    elif kwargs.get("shot_groups") is not None:
-                        label = "allocated shots"
-                    else:
-                        label = "shots"
+                    label = " + ".join(
+                        kwarg.label
+                        for kwarg in self._real_backend.per_circuit_kwargs
+                        if kwarg.label and kwarg.is_set(kwargs)
+                    )
                     sub_fg = _FlushGroup(
                         program_keys=tuple(sub_batch),
                         color=flush_group.color,

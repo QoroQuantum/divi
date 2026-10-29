@@ -42,7 +42,6 @@ from divi.reporting._state import ProgressState
 from tests._helpers import (
     FakeAsyncBackend,
     block_until_cancelled,
-    exact_match,
     raise_after_running,
     report_status,
 )
@@ -322,133 +321,102 @@ class TestBatchConfig:
             BatchConfig(mode=BatchMode.OFF, max_concurrent_programs=10)
 
 
+def _merge(batch: _Batch, shots: int = 100) -> tuple[dict, dict]:
+    """Merge ``batch`` as one call on a backend of ``shots``."""
+    return _BatchCoordinator(FakeSyncBackend(shots=shots))._merge_circuits_and_kwargs(
+        batch
+    )
+
+
+def _split(batch: _Batch) -> list[set]:
+    """The program keys of each call ``batch`` splits into."""
+    return [
+        set(sub_batch)
+        for sub_batch in _BatchCoordinator(FakeSyncBackend())._split_into_calls(batch)
+    ]
+
+
 class TestMergeCircuitsAndKwargs:
     """Tests for _BatchCoordinator._merge_circuits_and_kwargs."""
 
-    def test_identical_kwargs_fast_path(self):
-        """When all programs share identical kwargs, circuits merge directly."""
+    def test_single_program_keeps_its_kwargs(self):
+        batch: _Batch = {
+            "p1": _make_entry({"c1": "q1"}, {"ham_ops": "Z;X", "shots": 5}),
+        }
+
+        assert _merge(batch) == ({"c1": "q1"}, {"ham_ops": "Z;X", "shots": 5})
+
+    def test_circuits_concatenate_in_batch_order_with_call_kwargs_kept(self):
         batch: _Batch = {
             "p1": _make_entry({"p1@c1": "q1", "p1@c2": "q2"}, {"shots": 100}),
             "p2": _make_entry({"p2@c1": "q3"}, {"shots": 100}),
         }
-        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
 
-        assert merged == {"p1@c1": "q1", "p1@c2": "q2", "p2@c1": "q3"}
+        merged, kw = _merge(batch)
+
+        assert list(merged.items()) == [
+            ("p1@c1", "q1"),
+            ("p1@c2", "q2"),
+            ("p2@c1", "q3"),
+        ]
         assert kw == {"shots": 100}
 
-    def test_different_ham_ops_produces_circuit_ham_map(self):
-        """Programs with different ham_ops get reordered with circuit_ham_map."""
-        batch: _Batch = {
-            "p1": _make_entry({"p1@c1": "q1", "p1@c2": "q2"}, {"ham_ops": "Z0"}),
-            "p2": _make_entry({"p2@c1": "q3"}, {"ham_ops": "Z1"}),
-        }
-        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
-
-        assert len(merged) == 3
-        assert kw["ham_ops"] == "Z0|Z1"
-        assert kw["circuit_ham_map"] == [[0, 2], [2, 3]]
-
-    def test_same_ham_ops_grouped(self):
-        """Programs sharing the same ham_ops end up in one contiguous slice."""
-        batch: _Batch = {
-            "p1": _make_entry({"p1@c1": "q1"}, {"ham_ops": "XX"}),
-            "p2": _make_entry({"p2@c1": "q2"}, {"ham_ops": "ZZ"}),
-            "p3": _make_entry({"p3@c1": "q3"}, {"ham_ops": "XX"}),
-        }
-        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
-
-        # p1 and p3 share "XX" so they should be contiguous.
-        assert kw["ham_ops"] == "XX|ZZ"
-        assert kw["circuit_ham_map"] == [[0, 2], [2, 3]]
-
-    def test_different_ham_ops_keep_shared_kwargs(self):
-        batch: _Batch = {
-            "p1": _make_entry({"p1@c1": "q1"}, {"shots": 100, "ham_ops": "Z0"}),
-            "p2": _make_entry({"p2@c1": "q2"}, {"shots": 100, "ham_ops": "Z1"}),
-        }
-        _, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
-
-        assert kw == {
-            "shots": 100,
-            "ham_ops": "Z0|Z1",
-            "circuit_ham_map": [[0, 1], [1, 2]],
-        }
-
-    def test_different_ham_ops_with_diverging_other_kwargs_raises(self):
-        batch: _Batch = {
-            "p1": _make_entry({"p1@c1": "q1"}, {"shots": 100, "ham_ops": "Z0"}),
-            "p2": _make_entry({"p2@c1": "q2"}, {"shots": 200, "ham_ops": "Z1"}),
-        }
-        with pytest.raises(
-            ValueError,
-            match=exact_match(
-                "Cannot merge programs whose kwargs differ in keys other than "
-                "'ham_ops'. Submit such programs in separate batches."
+    @pytest.mark.parametrize(
+        ("programs", "expected"),
+        [
+            pytest.param(
+                [(2, "Z0"), (1, "Z1")],
+                {"ham_ops": "Z0|Z1", "circuit_ham_map": [[0, 2], [2, 3]]},
+                id="one_group_per_program",
             ),
-        ):
-            _BatchCoordinator._merge_circuits_and_kwargs(batch)
+            pytest.param(
+                [(1, "XX"), (1, "ZZ"), (1, "XX")],
+                {"ham_ops": "XX|ZZ|XX", "circuit_ham_map": [[0, 1], [1, 2], [2, 3]]},
+                id="recurring_observable_keeps_circuit_order",
+            ),
+            pytest.param(
+                [(2, "ZI;IZ"), (1, "ZI;IZ")],
+                {"ham_ops": "ZI;IZ"},
+                id="shared_observable_needs_no_map",
+            ),
+        ],
+    )
+    def test_observables_follow_their_circuits(self, programs, expected):
+        batch: _Batch = {
+            f"p{i}": _make_entry(
+                {f"p{i}@c{j}": f"q{i}{j}" for j in range(n)}, {"ham_ops": ham_ops}
+            )
+            for i, (n, ham_ops) in enumerate(programs)
+        }
+
+        merged, kw = _merge(batch)
+
+        assert list(merged) == [
+            label for entry in batch.values() for label in entry.circuits
+        ]
+        assert kw == expected
+
+    def test_program_without_a_map_measures_every_group_on_each_circuit(self):
+        batch: _Batch = {
+            "p1": _make_entry({"a": "q1"}, {"ham_ops": "ZZ|XX"}),
+            "p2": _make_entry({"b": "q2"}, {"ham_ops": "YY"}),
+        }
+
+        _, kw = _merge(batch)
+
+        assert kw == {"ham_ops": "ZZ;XX|YY", "circuit_ham_map": [[0, 1], [1, 2]]}
 
 
 class TestMergeCircuitsAndKwargsShotGroups:
-    """Tests for shot_groups behavior in _merge_circuits_and_kwargs.
-
-    When programs in an ensemble use shot_distribution, each program's
-    submit_kwargs include a ``shot_groups`` payload whose indices are
-    relative to that program's own circuit list.  After merging multiple
-    programs, those indices must be re-offset to point into the merged
-    circuit list, otherwise the backend will see ranges that don't cover
-    every circuit.
-    """
-
-    def test_identical_shot_groups_reindexed_per_program(self):
-        """Two programs with identical encoded shot_groups must be expanded
-        into a merged shot_groups whose ranges cover ALL merged circuits."""
-        batch: _Batch = {
-            "p1": _make_entry(
-                {"p1@c1": "q1", "p1@c2": "q2", "p1@c3": "q3"},
-                {"shot_groups": [[0, 3, 100]]},
-            ),
-            "p2": _make_entry(
-                {"p2@c1": "q4", "p2@c2": "q5", "p2@c3": "q6"},
-                {"shot_groups": [[0, 3, 100]]},
-            ),
-        }
-        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
-        assert len(merged) == 6
-        # The merged shot_groups must cover all 6 circuits (not just first 3).
-        flat = []
-        for s, e, shots in kw["shot_groups"]:
-            flat.extend([shots] * (e - s))
-        assert len(flat) == 6
-        assert all(s == 100 for s in flat)
-
-    def test_distinct_shot_groups_per_program_reindexed(self):
-        """Programs with different shot allocations get correctly stitched."""
-        batch: _Batch = {
-            "p1": _make_entry(
-                {"p1@c1": "q1", "p1@c2": "q2"},
-                {"shot_groups": [[0, 1, 50], [1, 2, 200]]},
-            ),
-            "p2": _make_entry(
-                {"p2@c1": "q3", "p2@c2": "q4"},
-                {"shot_groups": [[0, 2, 300]]},
-            ),
-        }
-        merged, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
-        assert len(merged) == 4
-        flat = []
-        for s, e, shots in kw["shot_groups"]:
-            flat.extend([shots] * (e - s))
-        # p1's allocation: [50, 200], p2's: [300, 300] -> merged [50, 200, 300, 300]
-        assert flat == [50, 200, 300, 300]
+    """Shot allocations are re-encoded for the merged circuit list."""
 
     @pytest.mark.parametrize(
         ("programs", "expected"),
         [
             pytest.param(
                 [(2, [[0, 2, 100]])] * 3,
-                [[0, 2, 100], [2, 4, 100], [4, 6, 100]],
-                id="identical_kwargs",
+                [[0, 6, 100]],
+                id="identical_allocations",
             ),
             pytest.param(
                 [
@@ -457,11 +425,11 @@ class TestMergeCircuitsAndKwargsShotGroups:
                     (2, [[0, 2, 400]]),
                 ],
                 [[0, 1, 50], [1, 2, 200], [2, 3, 300], [3, 5, 400]],
-                id="distinct_shot_groups",
+                id="distinct_allocations",
             ),
         ],
     )
-    def test_shot_groups_are_offset_into_merged_circuit_list(self, programs, expected):
+    def test_shot_groups_cover_the_merged_circuit_list(self, programs, expected):
         batch: _Batch = {
             f"p{i}": _make_entry(
                 {f"p{i}@c{j}": "q" for j in range(n_circuits)},
@@ -469,107 +437,60 @@ class TestMergeCircuitsAndKwargsShotGroups:
             )
             for i, (n_circuits, shot_groups) in enumerate(programs)
         }
-        _, kw = _BatchCoordinator._merge_circuits_and_kwargs(batch)
+
+        _, kw = _merge(batch)
 
         assert kw["shot_groups"] == expected
 
-    def test_mixed_with_without_shot_groups_raises(self):
-        """Programs that mix shot_groups-set and shot_groups-unset can't merge."""
+    def test_program_without_shot_groups_runs_at_the_backend_shots(self):
         batch: _Batch = {
-            "p1": _make_entry(
-                {"p1@c1": "q1"},
-                {"shot_groups": [[0, 1, 100]]},
+            "p1": _make_entry({"a": "q1"}, {"shot_groups": [[0, 1, 30]]}),
+            "p2": _make_entry({"b": "q2", "c": "q3"}, {}),
+        }
+
+        _, kw = _merge(batch, shots=100)
+
+        assert kw == {"shot_groups": [[0, 1, 30], [1, 3, 100]]}
+
+
+class TestSplitIntoCalls:
+    """Tests for _BatchCoordinator._split_into_calls."""
+
+    @pytest.mark.parametrize(
+        ("kwargs_by_program", "expected"),
+        [
+            pytest.param(
+                {"p1": {"ham_ops": "Z"}, "p2": {"ham_ops": "X"}},
+                [{"p1", "p2"}],
+                id="observables_share_a_call",
             ),
-            "p2": _make_entry(
-                {"p2@c1": "q2"},
-                {"shots": 100},  # no shot_groups
+            pytest.param(
+                {"p1": {"shot_groups": [[0, 1, 100]]}, "p2": {}},
+                [{"p1", "p2"}],
+                id="shot_groups_and_plain_sampling_share_a_call",
             ),
-        }
-        with pytest.raises(ValueError, match="mix of programs"):
-            _BatchCoordinator._merge_circuits_and_kwargs(batch)
-
-    def test_shot_groups_with_diverging_other_kwargs_raises(self):
-        """Programs that share shot_groups but differ in any other kwarg
-        must raise rather than silently discarding the diverging value."""
-        batch: _Batch = {
-            "p1": _make_entry(
-                {"p1@c1": "q1"},
-                {"shots": 100, "shot_groups": [[0, 1, 100]]},
+            pytest.param(
+                {"p1": {"ham_ops": "Z"}, "p2": {}, "p3": {"ham_ops": "X"}},
+                [{"p1", "p3"}, {"p2"}],
+                id="expval_and_sampling_split",
             ),
-            "p2": _make_entry(
-                {"p2@c1": "q2"},
-                {"shots": 200, "shot_groups": [[0, 1, 200]]},
+            pytest.param(
+                {"p1": {"shots": 100}, "p2": {"shots": 200}, "p3": {"shots": 100}},
+                [{"p1", "p3"}, {"p2"}],
+                id="differing_call_kwargs_split",
             ),
-        }
-        with pytest.raises(ValueError, match="keys other than 'shot_groups'"):
-            _BatchCoordinator._merge_circuits_and_kwargs(batch)
-
-    def test_shot_groups_with_different_ham_ops_raises(self):
-        """Combining shot_groups with heterogeneous ham_ops would require
-        reordering shots in lockstep with circuit reordering. Out of scope
-        for v1 — must raise a clear error rather than misbehave."""
+        ],
+    )
+    def test_programs_share_a_call_when_compatible(self, kwargs_by_program, expected):
         batch: _Batch = {
-            "p1": _make_entry(
-                {"p1@c1": "q1"},
-                {"ham_ops": "Z", "shot_groups": [[0, 1, 100]]},
-            ),
-            "p2": _make_entry(
-                {"p2@c1": "q2"},
-                {"ham_ops": "X", "shot_groups": [[0, 1, 200]]},
-            ),
-        }
-        with pytest.raises(ValueError, match="shot_groups"):
-            _BatchCoordinator._merge_circuits_and_kwargs(batch)
-
-
-class TestSplitByJobType:
-    """Tests for _BatchCoordinator._split_by_job_type."""
-
-    def test_all_with_ham_ops(self):
-        batch: _Batch = {
-            "p1": _make_entry({}, {"ham_ops": "Z"}),
-            "p2": _make_entry({}, {"ham_ops": "X"}),
-        }
-        result = _BatchCoordinator._split_by_job_type(batch)
-        assert len(result) == 1
-        assert set(result[0].keys()) == {"p1", "p2"}
-
-    def test_all_without_ham_ops(self):
-        batch: _Batch = {
-            "p1": _make_entry({}, {}),
-            "p2": _make_entry({}, {}),
-        }
-        result = _BatchCoordinator._split_by_job_type(batch)
-        assert len(result) == 1
-        assert set(result[0].keys()) == {"p1", "p2"}
-
-    def test_mixed_splits_into_two(self):
-        batch: _Batch = {
-            "p1": _make_entry({}, {"ham_ops": "Z"}),
-            "p2": _make_entry({}, {}),
-            "p3": _make_entry({}, {"ham_ops": "X"}),
-        }
-        result = _BatchCoordinator._split_by_job_type(batch)
-        assert len(result) == 2
-
-        with_ham = result[0]
-        without_ham = result[1]
-        assert set(with_ham.keys()) == {"p1", "p3"}
-        assert set(without_ham.keys()) == {"p2"}
-
-    def test_shot_groups_split_from_plain_sampling(self):
-        batch: _Batch = {
-            "p1": _make_entry({}, {"shot_groups": [[0, 1, 100]]}),
-            "p2": _make_entry({}, {}),
-            "p3": _make_entry({}, {"ham_ops": "X"}),
+            key: _make_entry({"c": "q"}, kwargs)
+            for key, kwargs in kwargs_by_program.items()
         }
 
-        result = _BatchCoordinator._split_by_job_type(batch)
-
-        assert [set(sub_batch) for sub_batch in result] == [{"p3"}, {"p1"}, {"p2"}]
+        assert _split(batch) == expected
 
     def test_empty_batch(self):
-        assert _BatchCoordinator._split_by_job_type({}) == []
+        assert _split({}) == []
 
 
 class TestRegistrationAndBarrier:
@@ -1112,9 +1033,10 @@ class TestBatchProgress:
         )
 
         registrations = _batch_registrations(emitted)
-        assert [event.label for event in registrations] == [
+        # Calls go out in the order their first program arrived.
+        assert sorted(event.label for event in registrations) == [
+            "Batch (1 circuit, 1 program)",
             "Batch expval (1 circuit, 1 program)",
-            "Batch shots (1 circuit, 1 program)",
         ]
         assert [event.batch_color for event in registrations] == [
             _BATCH_COLORS[0],

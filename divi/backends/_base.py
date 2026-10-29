@@ -16,6 +16,12 @@ import requests
 from qiskit import QuantumCircuit
 
 from divi.backends._job_status import JobStatus
+from divi.backends._pauli_serde import group_ham_ops, ham_ops_terms_per_circuit
+from divi.backends._shot_allocation import (
+    from_per_circuit,
+    per_circuit_or_none,
+    to_wire,
+)
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 
 
@@ -103,6 +109,60 @@ class ExecutionResult:
         return replace(self, results=results, run_time=run_time)
 
 
+@dataclass(frozen=True)
+class PerCircuitKwarg:
+    """A ``submit_circuits`` value with one entry per circuit, carried in one or
+    more keyword arguments in a compressed form."""
+
+    names: tuple[str, ...]
+    """The keyword arguments that carry the value."""
+
+    decode: Callable[[Mapping[str, Any], int], list | None]
+    """One value per circuit from a call's kwargs, or ``None`` when unset."""
+
+    encode: Callable[[Sequence[Any]], dict[str, Any]]
+    """The kwargs carrying one value per circuit."""
+
+    fill: Any = None
+    """The value a circuit takes when its call leaves this unset. ``None``
+    means there is none, so calls that set it and calls that do not cannot be
+    merged into one."""
+
+    label: str = ""
+    """How a call that sets the value is described in progress output."""
+
+    def is_set(self, kwargs: Mapping[str, Any]) -> bool:
+        """Whether ``kwargs`` sets the value."""
+        return any(kwargs.get(name) is not None for name in self.names)
+
+
+def _decode_shots(kwargs: Mapping[str, Any], n_circuits: int) -> list[int] | None:
+    return per_circuit_or_none(kwargs.get("shot_groups"), n_circuits)
+
+
+def _encode_shots(shots: Sequence[int]) -> dict[str, Any]:
+    return {"shot_groups": to_wire(from_per_circuit(shots))}
+
+
+def _decode_observables(kwargs: Mapping[str, Any], n_circuits: int) -> list[str] | None:
+    ham_ops = kwargs.get("ham_ops")
+    if ham_ops is None:
+        return None
+    return [
+        ";".join(terms)
+        for terms in ham_ops_terms_per_circuit(
+            n_circuits, ham_ops, kwargs.get("circuit_ham_map")
+        )
+    ]
+
+
+def _encode_observables(observables: Sequence[str]) -> dict[str, Any]:
+    ham_ops, circuit_ham_map = group_ham_ops(observables)
+    if len(circuit_ham_map) == 1:
+        return {"ham_ops": ham_ops}
+    return {"ham_ops": ham_ops, "circuit_ham_map": circuit_ham_map}
+
+
 class CircuitRunner(ABC):
     """
     A generic interface for anything that can "run" quantum circuits.
@@ -188,6 +248,29 @@ class CircuitRunner(ABC):
                 For asynchronous backends, contains a job_id that can be used to
                 fetch results later.
         """
+
+    @property
+    def per_circuit_kwargs(self) -> tuple[PerCircuitKwarg, ...]:
+        """The ``submit_circuits`` kwargs that carry one value per circuit.
+
+        Merging calls concatenates their circuits, so these are decoded per
+        circuit, concatenated and encoded again; every other kwarg applies to
+        the whole call. A backend taking further per-circuit kwargs extends this.
+        """
+        return (
+            PerCircuitKwarg(
+                names=("shot_groups",),
+                decode=_decode_shots,
+                encode=_encode_shots,
+                fill=self.shots,
+            ),
+            PerCircuitKwarg(
+                names=("ham_ops", "circuit_ham_map"),
+                decode=_decode_observables,
+                encode=_encode_observables,
+                label="expval",
+            ),
+        )
 
     def _reject_unknown_options(self, kwargs: Mapping[str, Any]) -> None:
         """Raise on keyword arguments this backend does not take."""

@@ -124,6 +124,23 @@ def ham_ops_terms_per_circuit(
     return per_circuit
 
 
+def group_ham_ops(observables: Sequence[str]) -> tuple[str, list[list[int]]]:
+    """``ham_ops`` and ``circuit_ham_map`` giving each circuit its observable.
+
+    Each run of consecutive circuits sharing an observable becomes one group,
+    so an observable that recurs later in the list appears in more than one.
+    """
+    groups: list[str] = []
+    circuit_ham_map: list[list[int]] = []
+    for index, observable in enumerate(observables):
+        if groups and groups[-1] == observable:
+            circuit_ham_map[-1][1] = index + 1
+        else:
+            groups.append(observable)
+            circuit_ham_map.append([index, index + 1])
+    return "|".join(groups), circuit_ham_map
+
+
 def _dense_to_sparse(term: str) -> str:
     """Convert a dense Pauli string to sparse notation.
 

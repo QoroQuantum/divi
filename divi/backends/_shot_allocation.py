@@ -82,6 +82,17 @@ def per_circuit_or_none(
     return per_circuit(ranges, n_circuits)
 
 
+def from_per_circuit(shots: Sequence[int]) -> list[ShotRange]:
+    """Ranges grouping consecutive circuits that share a shot count."""
+    ranges: list[ShotRange] = []
+    for index, count in enumerate(shots):
+        if ranges and ranges[-1].shots == count:
+            ranges[-1] = ranges[-1]._replace(end=index + 1)
+        else:
+            ranges.append(ShotRange(index, index + 1, count))
+    return ranges
+
+
 def bucket_by_shots(ranges: Sequence[ShotRange]) -> dict[int, list[int]]:
     """Return ``{shots: indices}`` — circuits sharing a shot count.
 

@@ -13,6 +13,7 @@ from divi.backends._pauli_serde import (
     _dense_to_sparse,
     compress_ham_ops,
     encode_ham_ops,
+    group_ham_ops,
     ham_ops_terms_for_circuit,
     ham_ops_terms_per_circuit,
     pad_ham_ops,
@@ -78,6 +79,27 @@ def test_ham_ops_terms_per_circuit_matches_per_circuit_lookup(
         ham_ops_terms_for_circuit(i, ham_ops, circuit_ham_map)
         for i in range(n_circuits)
     ]
+
+
+@pytest.mark.parametrize(
+    "observables, expected",
+    [
+        (["ZI;IZ"], ("ZI;IZ", [[0, 1]])),
+        (["ZI", "ZI", "XX"], ("ZI|XX", [[0, 2], [2, 3]])),
+        (["XX", "ZZ", "XX", "XX"], ("XX|ZZ|XX", [[0, 1], [1, 2], [2, 4]])),
+    ],
+    ids=["one-circuit", "leading-run", "recurring-observable"],
+)
+def test_group_ham_ops_gives_each_circuit_its_observable(observables, expected):
+    ham_ops, circuit_ham_map = group_ham_ops(observables)
+
+    assert (ham_ops, circuit_ham_map) == expected
+    assert [
+        ";".join(terms)
+        for terms in ham_ops_terms_per_circuit(
+            len(observables), ham_ops, circuit_ham_map
+        )
+    ] == observables
 
 
 class TestPadHamOps:

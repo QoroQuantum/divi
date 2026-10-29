@@ -12,6 +12,7 @@ import pytest
 from divi.backends._shot_allocation import (
     ShotRange,
     bucket_by_shots,
+    from_per_circuit,
     from_wire,
     per_circuit,
     restrict_to_chunk,
@@ -20,6 +21,25 @@ from divi.backends._shot_allocation import (
 )
 from tests._helpers import exact_match
 from tests.backends._helpers import uncovered_circuits_message
+
+
+@pytest.mark.parametrize(
+    "shots, expected",
+    [
+        ([100], [ShotRange(0, 1, 100)]),
+        (
+            [50, 50, 200, 50],
+            [ShotRange(0, 2, 50), ShotRange(2, 3, 200), ShotRange(3, 4, 50)],
+        ),
+        ([], []),
+    ],
+    ids=["one-circuit", "runs", "no-circuits"],
+)
+def test_from_per_circuit_groups_runs_of_equal_shots(shots, expected):
+    ranges = from_per_circuit(shots)
+
+    assert ranges == expected
+    assert per_circuit(ranges, len(shots)) == shots
 
 
 class TestShotRange:
