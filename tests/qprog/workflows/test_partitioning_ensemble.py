@@ -16,6 +16,7 @@ from divi.qprog import (
 from divi.qprog.aggregation import BeamSearchStrategy, HierarchicalStrategy
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.early_stopping import EarlyStopping
+from divi.qprog.ensemble import _child_seed
 from divi.qprog.mixins import SolutionEntry
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
@@ -149,7 +150,7 @@ def test_children_are_built_from_the_routine_configuration(
     mocker, dummy_simulator, routine, engine_cls, depth_attrs
 ):
     """Each child is the routine's engine with the ensemble's depth, a private
-    early-stopping copy and the forwarded engine kwargs."""
+    early-stopping copy, a seed derived per slot and the forwarded engine kwargs."""
     problem = _make_stub_problem(mocker, solution_size=2)
     problem.decompose.return_value = {
         pid: BinaryOptimizationProblem(_TWO_VARIABLE_QUBO) for pid in ("A", "B")
@@ -168,15 +169,15 @@ def test_children_are_built_from_the_routine_configuration(
 
     ensemble.create_programs()
 
-    assert ensemble._engine_kwargs == {"seed": 5}
+    assert ensemble._engine_kwargs == {}
     assert ensemble.reporting_level == ReportingLevel.OFF
     children = list(ensemble.programs.values())
     assert len(children) == 2
-    for child in children:
+    for slot, child in enumerate(children):
         assert type(child) is engine_cls
         for attr, expected in depth_attrs.items():
             assert getattr(child, attr) == expected
-        assert child._seed == 5
+        assert child._seed == _child_seed(5, slot)
         assert child.backend is dummy_simulator
         assert isinstance(child._early_stopping, EarlyStopping)
         assert child._early_stopping is not early_stopping

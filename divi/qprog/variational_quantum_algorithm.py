@@ -343,7 +343,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         See :class:`scipy.optimize.OptimizeResult` for the full specification.
         """
         # --- Random Number Generation ---
-        self._rng = np.random.default_rng(self._seed)
         # The optimizer draws perturbations from an independent stream, spawned
         # from the same seed lineage, so env/metric/QDrift draws on self._rng can
         # never shift optimizer randomness (and vice versa). Reproducible under a
@@ -932,8 +931,6 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             overrides["param_sets"] = np.zeros(
                 (self.optimizer.n_param_sets, self.n_params)
             )
-        if "rng" not in overrides:
-            overrides["rng"] = self._rng
         return super()._build_pipeline_env(**overrides)
 
     @property

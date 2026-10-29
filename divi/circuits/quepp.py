@@ -1045,7 +1045,10 @@ class QuEPP(QEMProtocol):
             mitigation so it can see concrete angles.
         n_samples: Number of Monte Carlo path samples (default 200); applies only
             when a concrete circuit is sampled.
-        seed: RNG seed for Monte Carlo reproducibility.
+        seed: Seed for Monte Carlo path sampling. When set, every expansion of
+            a circuit draws the same paths; when ``None``, paths come from the
+            generator the pipeline passes, which in a program is seeded by the
+            program's ``seed``.
         n_twirls: Number of Pauli twirling samples.  When non-zero, the
             pipeline builder appends a ``PauliTwirlStage``.  Default ``10``.
     """
@@ -1092,7 +1095,7 @@ class QuEPP(QEMProtocol):
         )
         self._sampling = sampling
         self._n_samples = n_samples
-        self._rng = np.random.default_rng(seed)
+        self._seed = seed
         self.n_twirls = int(n_twirls)
         self.requires_bound_params = sampling == "exhaustive"
 
@@ -1104,10 +1107,18 @@ class QuEPP(QEMProtocol):
         # QuEPP reduces to expectation values; raw sampling has none.
         return result_format is ResultFormat.EXPVALS
 
+    def _path_rng(self, rng: np.random.Generator | None) -> np.random.Generator:
+        """Return a fresh ``seed`` generator if set, else ``rng``, else an unseeded one."""
+        if self._seed is not None:
+            return np.random.default_rng(self._seed)
+        return rng if rng is not None else np.random.default_rng()
+
     def expand(
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Build path DAGs and per-observable classical context.
 
@@ -1133,8 +1144,9 @@ class QuEPP(QEMProtocol):
 
         # ----- Per-observable path enumeration --------------------------- #
         obs_terms_list = [prep.obs_terms for prep in preps]
+        path_rng = self._path_rng(rng)
         obs_paths_list: list[list[_PauliPath]] = [
-            self._select_paths(prep) for prep in preps
+            self._select_paths(prep, path_rng) for prep in preps
         ]
         self._warn_on_truncation_ratio(len(rotations))
         self._warn_no_diagonal_paths(
@@ -1218,6 +1230,8 @@ class QuEPP(QEMProtocol):
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic path: emit ``1 + n_paths`` placeholder DAGs, no Clifford sim.
 
@@ -1233,8 +1247,8 @@ class QuEPP(QEMProtocol):
         preps = self._preprocess(dag, observables)
         rotations, symbolic = preps[0].rotations, preps[0].symbolic
 
-        # A throwaway stream, so previewing leaves self._rng where a run found it.
-        preview_rng = np.random.default_rng(0)
+        # Without a generator, preview from a fixed one so the count is stable.
+        path_rng = self._path_rng(rng if rng is not None else np.random.default_rng(0))
         sampled_paths = self._sampling != "exhaustive" and not symbolic
 
         unique_branches: set[tuple[int, ...]] = set()
@@ -1243,7 +1257,7 @@ class QuEPP(QEMProtocol):
             # The run itself reports any symbolic fallback; keep the preview quiet.
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", SymbolicAngleWarning)
-                paths = self._select_paths(prep, rng=preview_rng)
+                paths = self._select_paths(prep, path_rng)
             n_paths_per_obs.append(len(paths))
             for p in paths:
                 unique_branches.add(p.branches)
@@ -1318,15 +1332,10 @@ class QuEPP(QEMProtocol):
         ]
 
     def _select_paths(
-        self, prep: "_PreprocResult", rng: np.random.Generator | None = None
+        self, prep: "_PreprocResult", rng: np.random.Generator
     ) -> list[_PauliPath]:
-        """Choose sampling strategy and enumerate / sample the Pauli paths.
-
-        ``rng`` overrides the protocol's own generator, so a preview can sample
-        without advancing the protocol's state. The draw is an independent
-        stream, not a replay of the one a run would use: a preview estimates the
-        path count rather than predicting the exact paths.
-        """
+        """Choose sampling strategy and enumerate / sample the Pauli paths,
+        drawing any sampled ones from ``rng``."""
         symbolic = prep.symbolic
         if self._sampling == "montecarlo" and symbolic:
             warnings.warn(
@@ -1352,7 +1361,7 @@ class QuEPP(QEMProtocol):
                 prep.tableaus,
                 prep.obs_terms,
                 self._n_samples,
-                self._rng if rng is None else rng,
+                rng,
             )
         return _enumerate_paths_dfs(
             prep.rotations,

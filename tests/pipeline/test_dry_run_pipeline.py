@@ -681,26 +681,18 @@ class TestQuEPPDryExpand:
             observable=SparsePauliOp.from_list([("ZZ", 1.0), ("XI", 0.5)]),
         )
 
-    def test_montecarlo_preview_does_not_advance_the_protocol_rng(
-        self, dummy_pipeline_env
-    ):
-        """Previewing must not change what a later run samples.
-
-        The protocol owns its generator, so drawing preview paths from it left the
-        real run further along the stream — previewing a seeded program changed its
-        circuit count.
-        """
+    def test_seeded_montecarlo_preview_matches_the_run(self):
+        """A seeded protocol samples the same paths in preview and run."""
         protocol = QuEPP(truncation_order=2, n_twirls=0, seed=11)
         meta = self._concrete_montecarlo_meta()
-        state_before = protocol._rng.bit_generator.state
+        dag, observable = meta.circuit_bodies[0][1], meta.observable
 
-        dags, context = protocol.dry_expand(
-            dag=meta.circuit_bodies[0][1], observable=meta.observable
-        )
+        dags, context = protocol.dry_expand(dag=dag, observable=observable)
+        _, run_context = protocol.expand(dag=dag, observable=observable)
 
-        assert protocol._rng.bit_generator.state == state_before
         assert context["sampled_paths"] is True
         assert len(dags) == 1 + context["n_paths"]
+        assert context["n_paths"] == run_context["n_paths"]
 
     def test_montecarlo_preview_does_not_depend_on_run_position(self):
         """One protocol instance is often shared across an ensemble's programs, and

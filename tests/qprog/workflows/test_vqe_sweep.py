@@ -14,6 +14,7 @@ from divi.backends import MaestroConfig
 from divi.qprog import ReportingLevel
 from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz, UCCSDAnsatz
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.ensemble import _child_seed
 from divi.qprog.optimizers import MonteCarloOptimizer, SPSAOptimizer
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.workflows import (
@@ -611,7 +612,8 @@ class TestVQEHyperparameterSweep:
         reporting_kwargs,
         expected_level,
     ):
-        """Children get the sweep's ansatz, a fresh optimizer copy and forwarded kwargs."""
+        """Children get the sweep's ansatz, a fresh optimizer copy, a seed derived
+        per slot and forwarded kwargs."""
         template = SPSAOptimizer()
         sweep = VQEHyperparameterSweep(
             ansatze=vqe_sweep_ansatze,
@@ -628,11 +630,11 @@ class TestVQEHyperparameterSweep:
 
         assert sweep.reporting_level == expected_level
         optimizers = []
-        for ansatz in vqe_sweep_ansatze:
+        for slot, ansatz in enumerate(vqe_sweep_ansatze):
             program = sweep.programs[(ansatz.name, 0)]
             assert program.ansatz is ansatz
             assert program.max_iterations == 3
-            assert program._seed == 11
+            assert program._seed == _child_seed(11, slot)
             assert program._precision == 5
             assert program.backend is default_test_simulator
             assert isinstance(program.optimizer, SPSAOptimizer)

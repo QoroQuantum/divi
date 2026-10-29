@@ -499,17 +499,31 @@ class ZNE(QEMProtocol):
     def folding_fn(self) -> FoldingFn:
         return self._folding_fn
 
+    def _folding_fn_for(self, rng: np.random.Generator | None) -> FoldingFn:
+        """``folding_fn``, with :func:`local_fold` given a generator drawn from
+        ``rng`` when it was not given one of its own."""
+        fn = self._folding_fn
+        is_partial = isinstance(fn, functools.partial)
+        func = fn.func if is_partial else fn
+        keywords = fn.keywords if is_partial else {}
+        if rng is None or func is not local_fold or "rng" in keywords:
+            return fn
+        return functools.partial(fn, rng=random.Random(int(rng.integers(2**63))))
+
     def expand(
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         scales = self._scale_factors
+        fold = self._folding_fn_for(rng)
         # Every scale folds a copy, the last one included: ``folding_fn`` mutates
         # in place, and ``dag`` belongs to the caller. Folding it directly would
         # leave the program's seed circuit permanently folded — inflating every
         # later pipeline built from that seed, and compounding across calls.
-        folded_pairs = [self._folding_fn(copy.deepcopy(dag), s) for s in scales]
+        folded_pairs = [fold(copy.deepcopy(dag), s) for s in scales]
         folded_dags = tuple(pair[0] for pair in folded_pairs)
         effective_scales = tuple(float(pair[1]) for pair in folded_pairs)
 
@@ -533,6 +547,8 @@ class ZNE(QEMProtocol):
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """One unfolded alias of ``dag`` per scale factor; never mutates the
         input (dry batches may alias one DAG across entries)."""

@@ -24,8 +24,8 @@ def bell_dag():
 class _EchoProtocol(QEMProtocol):
     name = "echo"
 
-    def expand(self, dag, observable=None):
-        return (dag,), {"observable": observable}
+    def expand(self, dag, observable=None, *, rng=None):
+        return (dag,), {"observable": observable, "rng": rng}
 
     def reduce(self, quantum_results, context):
         return list(quantum_results)
@@ -33,9 +33,11 @@ class _EchoProtocol(QEMProtocol):
 
 def test_default_dry_expand_delegates_to_expand(bell_dag):
     observable = ("o1",)
-    (dag,), ctx = _EchoProtocol().dry_expand(bell_dag, observable)
+    rng = np.random.default_rng(0)
+    (dag,), ctx = _EchoProtocol().dry_expand(bell_dag, observable, rng=rng)
     assert dag is bell_dag
     assert ctx["observable"] is observable
+    assert ctx["rng"] is rng
 
 
 class TestQEMProtocol:

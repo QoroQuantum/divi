@@ -22,7 +22,7 @@ from divi.hamiltonians._molecular import (
     pyscf_mole_at,
 )
 from divi.qprog.algorithms import VQE, Ansatz
-from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
+from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel, _child_seed
 from divi.qprog.optimizers import MonteCarloOptimizer, Optimizer
 from divi.qprog.problems import HamiltonianProblem, MolecularProblem
 
@@ -539,7 +539,9 @@ class VQEHyperparameterSweep(ProgramEnsemble):
             Forwarded to the parent class. ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live
             progress is shown. ``sampling_backend`` optionally selects a
-            separate backend for final solution sampling.
+            separate backend for final solution sampling. ``seed`` seeds
+            each VQE run with its own seed derived from it and the run's
+            position in the sweep.
         """
         super().__init__(
             backend=kwargs.pop("backend"),
@@ -567,6 +569,7 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         self._optimizer_template = (
             optimizer if optimizer is not None else MonteCarloOptimizer()
         )
+        self._seed = kwargs.pop("seed", None)
 
         self._constructor = partial(
             VQE,
@@ -597,11 +600,14 @@ class VQEHyperparameterSweep(ProgramEnsemble):
         else:
             sweep_items = list(enumerate(self.problems or ()))
 
-        for ansatz, (item_id, problem) in product(self.ansatze, sweep_items):
+        for slot, (ansatz, (item_id, problem)) in enumerate(
+            product(self.ansatze, sweep_items)
+        ):
             self._programs[(ansatz.name, item_id)] = self._constructor(
                 problem,
                 ansatz=ansatz,
                 optimizer=self._optimizer_template.copy(),
+                seed=_child_seed(self._seed, slot),
             )
 
     def aggregate_results(self):

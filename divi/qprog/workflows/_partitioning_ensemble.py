@@ -10,7 +10,7 @@ from typing import Literal
 from divi.backends import CircuitRunner
 from divi.qprog.aggregation import AggregationStrategy, BeamSearchStrategy
 from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
-from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
+from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel, _child_seed
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import QAOAProblem
 from divi.qprog.problems._binary import BinaryOptimizationProblem
@@ -40,8 +40,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
             deep-copied per sub-program.  ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live
             progress is shown.  ``sampling_backend`` optionally selects a
-            separate backend for final solution sampling.  Remaining kwargs
-            are forwarded to the engine constructor.
+            separate backend for final solution sampling.  ``seed`` seeds
+            each sub-program with its own seed derived from it and the
+            sub-problem's position in the decomposition.  Remaining
+            kwargs are forwarded to the engine constructor.
     """
 
     def __init__(
@@ -64,6 +66,7 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self.max_iterations = max_iterations
         self._optimizer_template = optimizer
         self._early_stopping_template = kwargs.pop("early_stopping", None)
+        self._seed = kwargs.pop("seed", None)
         self._engine_kwargs = kwargs
 
         # Build the engine constructor partial
@@ -125,9 +128,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         """Decompose the problem and create quantum programs for each sub-problem."""
         super().create_programs()
         sub_problems = self._problem.decompose()
-        for prog_id, sub_problem in sub_problems.items():
+        for slot, (prog_id, sub_problem) in enumerate(sub_problems.items()):
             self._programs[prog_id] = self._constructor(
                 problem=sub_problem,
+                seed=_child_seed(self._seed, slot),
                 **self._make_program_args(),
             )
 

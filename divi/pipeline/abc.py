@@ -246,8 +246,10 @@ class PipelineEnv:
 
     rng: np.random.Generator | None = None
     """Random generator for stochastic stage decisions (e.g. ``weighted_random``
-    shot allocation). When ``None``, stages that need randomness construct a
-    fresh, unseeded generator, which means they are not reproducible."""
+    shot allocation or random shadows). Programs pass their own generator, seeded
+    by the program's ``seed``. When ``None``, stages that need randomness
+    construct a fresh, unseeded generator, which means they are not
+    reproducible."""
 
     evaluation_counter: int = 0
     """Index of the current optimizer evaluation, bumped once per cost call.

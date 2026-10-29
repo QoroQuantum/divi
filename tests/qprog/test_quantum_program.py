@@ -376,6 +376,13 @@ class TestQuantumProgramBase:
         with pytest.raises(ValueError, match=exact_match(message)):
             ConcreteQuantumProgram(backend=dummy_simulator, seed=seed)
 
+    def test_pipeline_rng_is_the_programs_seeded_generator(self, dummy_simulator):
+        first = ConcreteQuantumProgram(backend=dummy_simulator, seed=3)
+        second = ConcreteQuantumProgram(backend=dummy_simulator, seed=3)
+
+        assert first._build_pipeline_env().rng is first._rng
+        assert first._rng.random() == second._build_pipeline_env().rng.random()
+
     def test_unseeded_base_seed_is_one_stable_int(self, dummy_simulator):
         program = ConcreteQuantumProgram(backend=dummy_simulator)
         base_seed = program._base_seed

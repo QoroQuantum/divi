@@ -5,6 +5,7 @@
 import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -167,7 +168,7 @@ class QEMStage(BundleStage):
     def expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
     ) -> StageOutput[MetaCircuitBatch]:
-        return self._expand_with(batch, self.protocol.expand)
+        return self._expand_with(batch, partial(self.protocol.expand, rng=env.rng))
 
     def dry_expand(
         self, batch: MetaCircuitBatch, env: PipelineEnv
@@ -182,7 +183,7 @@ class QEMStage(BundleStage):
         Clifford simulation + per-path DAG cloning while preserving the
         emitted DAG count.
         """
-        return self._expand_with(batch, self.protocol.dry_expand)
+        return self._expand_with(batch, partial(self.protocol.dry_expand, rng=env.rng))
 
     def _detect_per_obs(self, grouped: dict) -> bool:
         """Check whether results are per-observable dicts or scalars."""

@@ -229,6 +229,8 @@ class QuantumProgram(ABC):
             if self._seed is not None
             else int(np.random.default_rng().integers(0, 2**63))
         )
+        # Draws for stochastic stages (e.g. random shadows), via ``env.rng``.
+        self._rng = np.random.default_rng(self._seed)
 
         self._progress_key: Hashable = id(self)
         self._progress_emitter: ProgressEmitter = log_progress_event
@@ -553,6 +555,7 @@ class QuantumProgram(ABC):
             "cancellation_event": self._cancellation_event,
             "evaluation_counter": self._evaluation_counter,
             "base_seed": self._base_seed,
+            "rng": self._rng,
         }
         env_kwargs.update(overrides)  # caller-supplied values win
         env = PipelineEnv(**env_kwargs)

@@ -513,6 +513,42 @@ class TestZNE:
         ):
             ZNE(scale_factors=[1.0, 3.0], extrapolator="not an extrapolator")
 
+    @pytest.fixture
+    def eight_gate_dag(self):
+        qc = QuantumCircuit(1)
+        for gate in ("h", "x", "y", "z", "s", "t", "sx", "sdg"):
+            getattr(qc, gate)(0)
+        return circuit_to_dag(qc)
+
+    def _local_folds(self, dag, rng_seed):
+        dags, _ = ZNE([1.0, 1.25], folding_fn=local_fold).expand(
+            dag, rng=np.random.default_rng(rng_seed)
+        )
+        return tuple(tuple(_op_names(d)) for d in dags)
+
+    def test_local_fold_selection_draws_from_the_given_rng(self, eight_gate_dag):
+        assert self._local_folds(eight_gate_dag, 3) == self._local_folds(
+            eight_gate_dag, 3
+        )
+        assert len({self._local_folds(eight_gate_dag, s) for s in range(10)}) > 1
+
+    @pytest.mark.parametrize(
+        "folding_fn",
+        [
+            pytest.param(global_fold, id="global_fold"),
+            pytest.param(
+                functools.partial(local_fold, rng=random.Random(0)), id="own_rng"
+            ),
+        ],
+    )
+    def test_folds_that_need_no_program_rng_leave_it_alone(
+        self, eight_gate_dag, folding_fn
+    ):
+        rng = np.random.default_rng(0)
+        state = rng.bit_generator.state
+        ZNE([1.0, 1.25], folding_fn=folding_fn).expand(eight_gate_dag, rng=rng)
+        assert rng.bit_generator.state == state
+
     def test_expand_effective_scales_ignore_non_unitary_ops(self):
         qc = QuantumCircuit(2)
         qc.h(0)

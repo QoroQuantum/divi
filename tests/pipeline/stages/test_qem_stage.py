@@ -57,7 +57,7 @@ class _DummyQEMProtocol(QEMProtocol):
         return "dummy-qem"
 
     def expand(
-        self, dag: DAGCircuit, observable: Any | None = None
+        self, dag: DAGCircuit, observable: Any | None = None, *, rng=None
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         return (dag,), QEMContext()
 
@@ -334,7 +334,7 @@ class TestQEMStage:
                 self.scale_factors = scale_factors
 
             def expand(
-                self, dag: DAGCircuit, observable: Any | None = None
+                self, dag: DAGCircuit, observable: Any | None = None, *, rng=None
             ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
                 return tuple(dag for _ in self.scale_factors), QEMContext()
 
@@ -360,6 +360,29 @@ class TestQEMStage:
         )
         assert len(reduced) == 1
         assert list(reduced.values())[0] == pytest.approx([3.9])
+
+    @pytest.mark.parametrize("dry, method", [(False, "expand"), (True, "dry_expand")])
+    def test_protocol_draws_from_the_program_generator(
+        self, mocker, dummy_pipeline_env, dry, method
+    ):
+        protocol = _DummyQEMProtocol()
+        spy = mocker.spy(protocol, method)
+        pipeline = CircuitPipeline(
+            stages=[
+                DummySpecStage(meta=two_group_meta()),
+                QEMStage(protocol=protocol),
+                MeasurementStage(),
+            ],
+        )
+
+        pipeline.run_forward_pass(
+            initial_spec="ignored", env=dummy_pipeline_env, dry=dry
+        )
+
+        assert spy.call_count > 0
+        assert all(
+            call.kwargs["rng"] is dummy_pipeline_env.rng for call in spy.call_args_list
+        )
 
     def test_reduce_binds_symbolic_weights_from_param_set_foreign_key(
         self, dummy_pipeline_env

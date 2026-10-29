@@ -84,6 +84,15 @@ def _qualified_type(value: Any) -> str:
     return f"{cls.__module__}.{cls.__qualname__}"
 
 
+def _child_seed(seed: int | None, key: int) -> int | None:
+    """63-bit seed for an ensemble's child ``key``, derived from the ensemble's
+    ``seed`` so children draw independent streams; ``None`` stays unseeded."""
+    if seed is None:
+        return None
+    state = np.random.SeedSequence(seed, spawn_key=(key,)).generate_state(1, np.uint64)
+    return int(state[0] >> np.uint64(1))
+
+
 def _restore_completion(program: QuantumProgram, path: Path) -> ProgramCheckpoint:
     """Restore ``program`` from the completion file in ``path``.
 

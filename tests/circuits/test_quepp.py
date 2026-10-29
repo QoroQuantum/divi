@@ -1637,7 +1637,7 @@ def test_symbolic_fallback_warnings_carry_their_own_category():
     proto = QuEPP(sampling="montecarlo", coefficient_threshold=0.1, n_twirls=0)
     prep = _single_rx_prep(Parameter("theta"))
     with pytest.warns(SymbolicAngleWarning) as record:
-        proto._select_paths(prep)
+        proto._select_paths(prep, np.random.default_rng(0))
     assert [str(w.message) for w in record] == [
         "QuEPP: Monte Carlo sampling requires concrete angles. Falling back to "
         "exhaustive enumeration for symbolic circuit.",
@@ -1648,7 +1648,7 @@ def test_symbolic_fallback_warnings_carry_their_own_category():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         warnings.simplefilter("ignore", SymbolicAngleWarning)
-        proto._select_paths(prep)
+        proto._select_paths(prep, np.random.default_rng(0))
 
 
 @pytest.mark.parametrize(
@@ -1735,10 +1735,11 @@ def test_numpy_integer_options_are_stored_as_plain_ints():
     )
 
 
-def _montecarlo_weights(seed: int) -> np.ndarray:
-    """Path weights of a seeded Monte Carlo expansion of :func:`_two_qubit_qc`."""
+def _montecarlo_weights(seed: int | None, rng_seed: int | None = None) -> np.ndarray:
+    """Path weights of a Monte Carlo expansion of :func:`_two_qubit_qc`."""
     protocol = QuEPP(sampling="montecarlo", n_samples=30, seed=seed, n_twirls=0)
-    _, ctx = protocol.expand(circuit_to_dag(_two_qubit_qc()), _Z0Z1)
+    rng = None if rng_seed is None else np.random.default_rng(rng_seed)
+    _, ctx = protocol.expand(circuit_to_dag(_two_qubit_qc()), _Z0Z1, rng=rng)
     return ctx["per_obs"][0].weights
 
 
@@ -1746,6 +1747,23 @@ def _montecarlo_weights(seed: int) -> np.ndarray:
 def test_seed_makes_montecarlo_expansion_reproducible():
     np.testing.assert_array_equal(_montecarlo_weights(3), _montecarlo_weights(3))
     assert not np.array_equal(_montecarlo_weights(3), _montecarlo_weights(4))
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_unseeded_montecarlo_expansion_draws_from_the_given_rng():
+    np.testing.assert_array_equal(
+        _montecarlo_weights(None, rng_seed=3), _montecarlo_weights(None, rng_seed=3)
+    )
+    assert not np.array_equal(
+        _montecarlo_weights(None, rng_seed=3), _montecarlo_weights(None, rng_seed=4)
+    )
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_protocol_seed_overrides_the_given_rng():
+    np.testing.assert_array_equal(
+        _montecarlo_weights(3, rng_seed=0), _montecarlo_weights(3, rng_seed=1)
+    )
 
 
 def _layered_two_qubit_qc() -> QuantumCircuit:
@@ -1768,6 +1786,19 @@ def test_dry_expand_preview_path_count_is_deterministic():
         for _ in range(10)
     }
     assert len(counts) == 1
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+def test_unseeded_dry_expand_preview_draws_from_the_given_rng():
+    dag = circuit_to_dag(_layered_two_qubit_qc())
+    protocol = QuEPP(sampling="montecarlo", n_samples=20, n_twirls=0)
+
+    def preview_paths(rng_seed):
+        _, ctx = protocol.dry_expand(dag, _Z0Z1, rng=np.random.default_rng(rng_seed))
+        return ctx["n_paths"]
+
+    assert preview_paths(3) == preview_paths(3)
+    assert len({preview_paths(s) for s in range(10)}) > 1
 
 
 def test_dry_expand_preview_keeps_montecarlo_warnings():
@@ -1808,9 +1839,11 @@ class TestAutoSampling:
 
         with warnings.catch_warnings():
             warnings.simplefilter("error", SymbolicAngleWarning)
-            paths = QuEPP(n_twirls=0)._select_paths(prep)
+            paths = QuEPP(n_twirls=0)._select_paths(prep, np.random.default_rng(0))
 
-        expected = QuEPP(sampling="exhaustive", n_twirls=0)._select_paths(prep)
+        expected = QuEPP(sampling="exhaustive", n_twirls=0)._select_paths(
+            prep, np.random.default_rng(0)
+        )
         assert [p.branches for p in paths] == [p.branches for p in expected]
 
     def test_samples_a_concrete_circuit(self):

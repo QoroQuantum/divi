@@ -152,7 +152,9 @@ residual. Select it with ``qem_protocol=QuEPP(truncation_order=2)``.
   enumerates, binding parameters before mitigation so it sees concrete angles.
 - ``n_samples`` *(int, default 200)* — Monte Carlo path budget, used only when
   a concrete circuit is sampled (see ``sampling``).
-- ``seed`` *(int, optional)* — RNG seed for Monte Carlo reproducibility.
+- ``seed`` *(int, optional)* — fixes the Monte Carlo paths, so every expansion
+  samples the same ones. Without it, paths are drawn from the program's own
+  generator and follow the program's ``seed``.
 - ``n_twirls`` *(int, default 10)* — Pauli twirl count; ``0`` disables twirling.
 
 ZNE vs QuEPP

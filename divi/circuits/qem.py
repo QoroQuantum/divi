@@ -69,6 +69,8 @@ class QEMProtocol(ABC):
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Generate DAGs and classical context for error mitigation.
 
@@ -80,12 +82,17 @@ class QEMProtocol(ABC):
             dag: Circuit to mitigate.
             observable: ``tuple[SparsePauliOp, ...]`` (one entry per
                 expectation value being measured), or ``None``.
+            rng: Generator for any random choice the protocol makes. In a
+                program's pipeline it is the program's own, seeded by the
+                program's ``seed``. Overrides must accept it.
         """
 
     def dry_expand(
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Analytic counterpart to :meth:`expand` used by dry-run pipelines.
 
@@ -102,7 +109,7 @@ class QEMProtocol(ABC):
         correct but not necessarily fast; override on expensive protocols
         (e.g. QuEPP's Clifford simulation).
         """
-        return self.expand(dag, observable)
+        return self.expand(dag, observable, rng=rng)
 
     @abstractmethod
     def reduce(
@@ -147,6 +154,8 @@ class _NoMitigation(QEMProtocol):
         self,
         dag: DAGCircuit,
         observable: Sequence[SparsePauliOp] | None = None,
+        *,
+        rng: np.random.Generator | None = None,
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         return (dag,), {}
 

@@ -22,7 +22,7 @@ from divi.hamiltonians.trotterization import (
 )
 from divi.qprog.algorithms import TimeEvolution
 from divi.qprog.algorithms._time_evolution import _validate_trotter_settings
-from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel
+from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel, _child_seed
 from divi.qprog.initial_states import InitialState
 
 logger = logging.getLogger(__name__)
@@ -34,12 +34,8 @@ _CACHE_MIN_TIME_POINTS = 4
 
 
 def _time_point_seed(seed: int | None, time: float) -> int | None:
-    """63-bit child seed of ``seed`` keyed by ``time``; ``None`` stays unseeded."""
-    if seed is None:
-        return None
-    key = int(np.float64(time).view(np.uint64))
-    state = np.random.SeedSequence(seed, spawn_key=(key,)).generate_state(1, np.uint64)
-    return int(state[0] >> np.uint64(1))
+    """Child seed of ``seed`` keyed by ``time``; ``None`` stays unseeded."""
+    return _child_seed(seed, int(np.float64(time).view(np.uint64)))
 
 
 class TimeEvolutionTrajectory(ProgramEnsemble):
