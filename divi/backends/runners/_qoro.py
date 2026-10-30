@@ -648,7 +648,9 @@ class QoroService(AsyncJobBackend):
 
     @staticmethod
     def _compress_data(value: str) -> str:
-        return base64.b64encode(gzip.compress(value.encode("utf-8"))).decode("utf-8")
+        return base64.b64encode(gzip.compress(value.encode("utf-8"), mtime=0)).decode(
+            "utf-8"
+        )
 
     def _split_circuits(
         self,

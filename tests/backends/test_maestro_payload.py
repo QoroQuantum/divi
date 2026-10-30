@@ -195,14 +195,18 @@ def test_unknown_keys_are_dropped_with_a_warning():
     assert config == MaestroConfig(max_bond_dimension=64)
 
 
-def test_a_failed_setter_is_refused():
-    """The call log records a setter before it runs, including one that raised."""
+def test_a_failed_setter_is_not_sent():
+    """A setter that raised is left out of the call log, so the model still sends."""
     noise_model = maestro.NoiseModel()
     with pytest.raises(ValueError):
         noise_model.set_depolarizing(0, 2.0)
+    noise_model.set_depolarizing(0, 0.01)
 
-    with pytest.raises(ValueError, match="do not replay"):
-        maestro_config_to_payload(MaestroConfig(noise_model=noise_model))
+    payload = maestro_config_to_payload(MaestroConfig(noise_model=noise_model))
+
+    assert payload["noise_model"] == [
+        {"method": "set_depolarizing", "args": [0, 0.01], "kwargs": {}}
+    ]
 
 
 def test_only_setters_are_replayed():

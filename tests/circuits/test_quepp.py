@@ -255,8 +255,8 @@ class TestNormalizeCircuit:
 
 
 class TestDecomposeControlledRotations:
-    @pytest.mark.parametrize("method,axis", [("crx", "x"), ("cry", "y"), ("crz", "z")])
-    def test_unitary_preserved(self, method, axis, default_test_simulator):
+    @pytest.mark.parametrize("method", ["crx", "cry", "crz", "rzz", "rxx"])
+    def test_unitary_preserved(self, method, default_test_simulator):
         qc = QuantumCircuit(2)
         getattr(qc, method)(0.6, 0, 1)
         decomposed = _decompose_controlled_rotations(qc)
@@ -743,6 +743,23 @@ class TestPathCircuitsMatchTargetStructure:
         target, *paths = self._expanded()
         for path in paths:
             assert path.count_ops().get("cz", 0) == target.count_ops()["cz"]
+
+    def test_two_qubit_rotations_reach_the_target_in_their_paths_form(self):
+        """The target runs ``rzz``/``rxx`` as the CNOTs its paths are built from."""
+        qc = QuantumCircuit(2)
+        qc.h(range(2))
+        qc.rzz(0.6, 0, 1)
+        qc.rxx(0.5, 0, 1)
+        protocol = QuEPP(sampling="exhaustive", truncation_order=2, n_twirls=0)
+        dags, _ = protocol.expand(
+            circuit_to_dag(qc), (SparsePauliOp.from_list([("XX", 1.0)]),)
+        )
+        target, *paths = [dag_to_circuit(d) for d in dags]
+
+        assert not {"rzz", "rxx"} & target.count_ops().keys()
+        assert paths
+        for path in paths:
+            assert path.count_ops()["cx"] == target.count_ops()["cx"]
 
 
 class TestSimulateCliffordEnsemble:

@@ -189,9 +189,9 @@ def encode_ham_ops(dense_ham_ops: str) -> str:
             f"All Pauli terms must have the same length; got lengths {lengths}"
         )
     sparse_str = ";".join(_dense_to_sparse(t) for t in terms)
-    compressed = base64.b64encode(gzip.compress(sparse_str.encode("utf-8"))).decode(
-        "ascii"
-    )
+    compressed = base64.b64encode(
+        gzip.compress(sparse_str.encode("utf-8"), mtime=0)
+    ).decode("ascii")
     return f"@gzs{n_qubits}:{compressed}"
 
 

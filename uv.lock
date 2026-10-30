@@ -4284,7 +4284,7 @@ requires-dist = [
     { name = "qiskit-ibm-runtime", marker = "extra == 'aer'", specifier = ">=0.51" },
     { name = "qiskit-nature", marker = "extra == 'chem'", specifier = ">=0.8.0,<0.9.0" },
     { name = "qoro-divi", extras = ["aer", "chem", "jupyter", "pennylane", "qubo-decompose"], marker = "extra == 'all'" },
-    { name = "qoro-maestro", specifier = "==0.3.9" },
+    { name = "qoro-maestro", specifier = "==0.3.10" },
     { name = "requests", specifier = ">=2.32,<3.0" },
     { name = "rich", specifier = ">=15.0" },
     { name = "rustworkx", specifier = ">=0.18" },
@@ -4332,16 +4332,16 @@ testing = [
 
 [[package]]
 name = "qoro-maestro"
-version = "0.3.9"
+version = "0.3.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "nanobind-backend" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e5/f0/d5a64ae17502532ee8aea02371c006341d84ec8a3f0d288a64da88344edb/qoro_maestro-0.3.9.tar.gz", hash = "sha256:17d9805ada9df761561858404671f9203f055554738c671e975c916f4e8aafb6", size = 1080085, upload-time = "2026-10-28T00:45:54.383Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/03/6148d57844fcc0a23ea4dc5c0fcaf9324a95706c15d4872e736f32936938/qoro_maestro-0.3.10.tar.gz", hash = "sha256:28ed910e9b1b612f26d94b9983b2e8d533868785e9a1573071ff5dddedff2091", size = 1113308, upload-time = "2026-10-30T14:58:30.06Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/d4/820819e8ec21d2dd1972838efe845a49897e90ddb0e5d1492148f96fb457/qoro_maestro-0.3.9-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:cdc7939be84f1297bdc6ad8004d925f5ca7bc45e965610663245510d193ed665", size = 12159378, upload-time = "2026-10-28T00:45:45.38Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/9d/3f66c0c94252377ab0a5d46cc0d3334fc09376156e78bf9f79dd028fc7ed/qoro_maestro-0.3.9-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:de62fe05ceb6289cc89a56e37b3e7673933bb21d58591d8d62bf5b249680ecec", size = 17506748, upload-time = "2026-10-28T00:45:48.763Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/90/8d13b7da26923e9c67b0e8a198574cf27a6f74bb928c6df8edaea69eb1d0/qoro_maestro-0.3.9-cp310-abi3-win_amd64.whl", hash = "sha256:c3f427747b98c9fc546340184e9bd23975e325331b4dad028f3ac705533b120a", size = 19023881, upload-time = "2026-10-28T00:45:52.155Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/b3/f7ffe25c91ce09d0971ac47a8635292a0c6ac04b6e76c9b240cff3dd1599/qoro_maestro-0.3.10-cp310-abi3-macosx_14_0_arm64.whl", hash = "sha256:aa6098204463c3b9c834442933f16cf1a60b34bd0da8696010695dc04b40252f", size = 12422140, upload-time = "2026-10-30T14:58:21.852Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/36/22ec791a72f51a7f53badc3607b3cfca7a8fb948f0126a3fad346e2fe956/qoro_maestro-0.3.10-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:94a421dfcdb7ab1b481dcc99885a500a25e0f55a4c14d5e0b79a2271e80a3333", size = 17538077, upload-time = "2026-10-30T14:58:24.884Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/82/7945285ffbc7f681cf352a28513866dcda63ff85e9e0a1220ba0ae44642a/qoro_maestro-0.3.10-cp310-abi3-win_amd64.whl", hash = "sha256:0e9981d1a2793ad99afbebfbfc3663da4b0fb1175654d82e8461381b709b9d50", size = 19049535, upload-time = "2026-10-30T14:58:27.626Z" },
 ]
 
 [[package]]

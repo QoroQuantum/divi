@@ -6,8 +6,9 @@
 
 Pauli twirling inserts random Pauli gates around each two-qubit Clifford
 gate (CNOT, CZ) so that coherent errors are converted into stochastic
-Pauli noise.  The ideal circuit is unchanged up to a measurement-invariant
-global phase; only the noise channel is affected.
+Pauli noise.  ``rzz`` and ``rxx`` are first lowered to their CNOT form so
+those CNOTs are twirled too.  The ideal circuit is unchanged up to a
+measurement-invariant global phase; only the noise channel is affected.
 
 During *expand*, each DAG body is replaced by ``n_twirls`` randomised
 copies.  During *reduce*, the expectation values from all copies are
@@ -45,7 +46,7 @@ import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import CXGate, CZGate, IGate, XGate, YGate, ZGate
-from qiskit.converters import circuit_to_dag
+from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import Clifford, Pauli
 
@@ -169,6 +170,19 @@ def _extract_rotation_values(dag: DAGCircuit) -> tuple[float, ...]:
     return tuple(
         float(p) for node in dag.topological_op_nodes() for p in node.op.params
     )
+
+
+_LOWERED_FOR_TWIRLING = ("rzz", "rxx")
+
+
+def _expose_twirl_sites(dag: DAGCircuit) -> DAGCircuit:
+    """*dag* with ``rzz``/``rxx`` lowered to ``cx · rz · cx``, so their CNOTs can be twirled."""
+    if not any(name in _LOWERED_FOR_TWIRLING for name in dag.count_ops()):
+        return dag
+    circuit = dag_to_circuit(dag).decompose(
+        gates_to_decompose=list(_LOWERED_FOR_TWIRLING)
+    )
+    return circuit_to_dag(circuit)
 
 
 def _discover_twirl_plan(
@@ -370,6 +384,7 @@ class PauliTwirlStage(BundleStage):
         """
         updated_bodies: list[tuple] = []
         for body_tag, body_dag in meta.circuit_bodies:
+            body_dag = _expose_twirl_sites(body_dag)
             twirl_positions, twirl_gate_names = _discover_twirl_plan(body_dag)
             unique_labels, twirl_to_unique = self._sample_unique_labels(
                 len(twirl_positions)
@@ -416,7 +431,9 @@ class PauliTwirlStage(BundleStage):
         for variants in topology_groups.values():
             _, ref_dag = variants[0]
 
-            parametric_dag, param_names = _parametrise_rotations(ref_dag)
+            parametric_dag, param_names = _parametrise_rotations(
+                _expose_twirl_sites(ref_dag)
+            )
             twirl_positions, twirl_gate_names = _discover_twirl_plan(parametric_dag)
             n_twirl_gates = len(twirl_positions)
 
@@ -435,7 +452,7 @@ class PauliTwirlStage(BundleStage):
 
             # Render each variant × each twirl from the cached templates.
             for variant_tag, variant_dag in variants:
-                values = _extract_rotation_values(variant_dag)
+                values = _extract_rotation_values(_expose_twirl_sites(variant_dag))
                 if len(values) != len(param_names):
                     raise RuntimeError(
                         f"PauliTwirlStage topology cache: reference and variant "

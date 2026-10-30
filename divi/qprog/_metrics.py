@@ -409,11 +409,13 @@ _GATE_GENERATORS = {
     "rx": "X",
     "ry": "Y",
     "rz": "Z",
+    "rxx": "XX",
+    "rzz": "ZZ",
 }
 
 _FS_UNSUPPORTED_GATE = (
     "The Fubini–Study metric supports only single-parameter Pauli-rotation gates "
-    "(rx/ry/rz) with a bare parameter as the angle; this ansatz uses "
+    "(rx/ry/rz/rxx/rzz) with a bare parameter as the angle; this ansatz uses "
     "{gate!r}{detail}. Use the pullback metric (PullbackMetricEstimator) or a "
     "non-metric optimizer."
 )

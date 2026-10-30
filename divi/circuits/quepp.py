@@ -456,21 +456,34 @@ def _is_pauli_rotation(op) -> tuple[str, float | ParameterExpression] | None:
 
 
 def _decompose_controlled_rotations(qc: QuantumCircuit) -> QuantumCircuit:
-    """Decompose controlled Pauli rotations into CNOT + single-qubit form.
+    """Decompose two-qubit Pauli rotations into CNOT + single-qubit form.
 
     Handles ``CRX(θ)`` / ``CRY(θ)`` / ``CRZ(θ)`` with exactly one control
-    qubit:
+    qubit, and ``RZZ(θ)`` / ``RXX(θ)``:
 
     * ``CRY(θ) → RY(θ/2), CNOT, RY(-θ/2), CNOT``
     * ``CRZ(θ) → RZ(θ/2), CNOT, RZ(-θ/2), CNOT``
     * ``CRX(θ) → H, RZ(θ/2), CNOT, RZ(-θ/2), CNOT, H``
+    * ``RZZ(θ) → CNOT, RZ(θ), CNOT``
+    * ``RXX(θ) → H⊗H, CNOT, RZ(θ), CNOT, H⊗H``
 
     Other gates pass through unchanged.
     """
     out = QuantumCircuit(*qc.qregs, *qc.cregs)
     for inst in qc.data:
         name = inst.operation.name
-        if name in ("crx", "cry", "crz"):
+        if name in ("rzz", "rxx"):
+            a, b = inst.qubits
+            (theta_raw,) = inst.operation.params
+            basis_change = (a, b) if name == "rxx" else ()
+            for qubit in basis_change:
+                out.append(HGate(), [qubit])
+            out.append(CXGate(), [a, b])
+            out.append(_ROTATION_CLASS["z"](_coerce_angle(theta_raw)), [b])
+            out.append(CXGate(), [a, b])
+            for qubit in basis_change:
+                out.append(HGate(), [qubit])
+        elif name in ("crx", "cry", "crz"):
             ctrl, target = inst.qubits
             (theta_raw,) = inst.operation.params
             theta = _coerce_angle(theta_raw)
@@ -1167,7 +1180,9 @@ class QuEPP(QEMProtocol):
             for branches in unique_branches
         ]
 
-        merged_dags = (dag,) + tuple(merged_path_dags)
+        # The target runs as the same gate sequence its paths are built from,
+        # so both see the same noise (and the same twirl sites).
+        merged_dags = (working_dag,) + tuple(merged_path_dags)
 
         # ----- Single-term observables to measure ------------------------- #
         # One declared observable per (requested observable, Pauli term),

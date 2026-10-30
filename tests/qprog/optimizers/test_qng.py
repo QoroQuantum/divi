@@ -802,7 +802,7 @@ def test_fs_blocks_rejects_unsupported_rotations(build, used):
     build(qc, Parameter("x"))
     message = (
         "The Fubini–Study metric supports only single-parameter Pauli-rotation "
-        "gates (rx/ry/rz) with a bare parameter as the angle; this "
+        "gates (rx/ry/rz/rxx/rzz) with a bare parameter as the angle; this "
         f"ansatz uses {used}{_FS_GATE_HINT}"
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):

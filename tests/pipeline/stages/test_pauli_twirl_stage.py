@@ -7,6 +7,7 @@
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
@@ -87,6 +88,61 @@ def test_structural_twirls_preserve_the_unitary_and_vary(
         for _, dag in bodies
     )
     assert len({_op_sequence(dag) for _, dag in bodies}) > 1
+
+
+def test_rzz_and_rxx_are_twirled_through_their_cnots(
+    dummy_pipeline_env, default_test_simulator
+):
+    qc = QuantumCircuit(4)
+    qc.h([0, 2])
+    qc.rzz(0.4, 0, 1)
+    qc.rxx(0.3, 2, 3)
+    meta = meta_from_circuit(qc, observable=SparsePauliOp.from_list([("ZZZZ", 1.0)]))
+    bodies = _structural_twirl_bodies(dummy_pipeline_env, meta=meta)
+
+    original = unitary(default_test_simulator, qc)
+    for _, dag in bodies:
+        assert not {"rzz", "rxx"} & dag.count_ops().keys()
+        assert equal_up_to_phase(
+            unitary(default_test_simulator, dag_to_circuit(dag)), original
+        )
+    assert len({_op_sequence(dag) for _, dag in bodies}) > 1
+
+
+def test_fast_path_twirls_rzz_through_its_cnots(dummy_pipeline_env):
+    theta, phi = Parameter("theta"), Parameter("phi")
+    qc = QuantumCircuit(2)
+    qc.rx(theta, 0)
+    qc.rzz(phi, 0, 1)
+    meta = MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=(theta, phi),
+        observable=SparsePauliOp.from_list([("ZZ", 1.0)]),
+    )
+    pipeline = CircuitPipeline(
+        stages=[
+            DummySpecStage(meta=meta),
+            ParameterBindingStage(),
+            PauliTwirlStage(n_twirls=20, seed=0),
+            MeasurementStage(),
+        ]
+    )
+    env = PipelineEnv(
+        backend=dummy_pipeline_env.backend, param_sets=np.array([[0.1, 0.2]])
+    )
+    qasm = [
+        body
+        for _, body in stage_output(
+            pipeline.run_forward_pass("x", env), "PauliTwirlStage"
+        ).qasm_bodies
+    ]
+
+    assert not any("rzz" in body for body in qasm)
+    assert any(
+        line.startswith(("x ", "y ", "z "))
+        for body in qasm
+        for line in body.splitlines()
+    )
 
 
 def test_structural_twirl_leaves_circuits_without_two_qubit_cliffords(

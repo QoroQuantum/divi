@@ -388,7 +388,7 @@ class TestSpoToQiskitBasisGatesParity:
         ],
     )
     def test_numeric_matches_symbolic(self, default_test_simulator, spo, qubits):
-        """Numeric path (Rust accelerator) and symbolic path (CX-RZ-CX) must
+        """Numeric path (Rust accelerator) and symbolic path (RZZ / CX-RZ-CX) must
         produce unitarily equivalent circuits on the same SPO + numeric time."""
         assert len(qubits) <= self._MAX_PARITY_QUBITS, (
             f"Parity test cases must stay ≤{self._MAX_PARITY_QUBITS} qubits "
@@ -428,6 +428,20 @@ class TestSpoToQiskitBasisGatesSymbolicEdgeCases:
         assert same_unitary(
             default_test_simulator, bound_with, bound_without, atol=1e-10
         )
+
+    @pytest.mark.parametrize(
+        "label, gates",
+        [
+            ("ZZ", {"rzz": 1}),
+            ("XY", {"h": 2, "rx": 2, "rzz": 1}),
+            ("ZZZ", {"cx": 4, "rz": 1}),
+        ],
+    )
+    def test_two_body_terms_emit_one_rzz(self, label, gates):
+        qc = _build_symbolic(
+            SparsePauliOp(label), Parameter("t"), range(len(label)), n_qubits=len(label)
+        )
+        assert dict(qc.count_ops()) == gates
 
     def test_parameter_expression_threads_through_gates(self):
         spo = SparsePauliOp("Z")

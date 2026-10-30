@@ -39,8 +39,7 @@ def test_bound_payloads_makes_one_single_row_payload_per_circuit():
     assert all(payload.parameters == () for payload in payloads)
 
 
-def test_rzz_and_rxx_are_decomposed_on_export(default_test_simulator):
-    """Maestro cannot parse ``rzz`` or ``rxx``; other gates export as they are."""
+def test_gates_export_without_decomposition(default_test_simulator):
     circuit = QuantumCircuit(3)
     circuit.h([0, 1, 2])
     circuit.rzz(0.3, 0, 1)
@@ -50,8 +49,7 @@ def test_rzz_and_rxx_are_decomposed_on_export(default_test_simulator):
     (qasm,) = bound_circuits([circuit]).values()
     exported = QuantumCircuit.from_qasm_str(qasm)
 
-    assert not {"rzz", "rxx"} & set(exported.count_ops())
-    assert "xx_plus_yy" in exported.count_ops()
+    assert {"rzz", "rxx", "xx_plus_yy"} <= set(exported.count_ops())
     assert same_unitary(default_test_simulator, circuit, exported)
 
 

@@ -731,7 +731,7 @@ def test_cost_layers_use_gamma_and_mixer_layers_use_beta(
                 driving_names.setdefault(instruction.operation.name, set()).update(
                     parameter.name.split("[")[0] for parameter in angle.parameters
                 )
-    assert driving_names == {"rz": {"γ"}, "rx": {"β"}}
+    assert driving_names == {"rzz": {"γ"}, "rx": {"β"}}
 
 
 def test_cost_pipeline_circuits_render_at_the_program_precision(

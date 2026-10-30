@@ -247,8 +247,8 @@ class TestDagToQasmBody:
                 id="barrier",
             ),
             pytest.param(
-                lambda circuit: circuit.rxx(0.1, 0, 1),
-                "Instruction 'rxx' not supported by the QASM body emitter. "
+                lambda circuit: circuit.ryy(0.1, 0, 1),
+                "Instruction 'ryy' not supported by the QASM body emitter. "
                 "Decompose to basis gates before calling dag_to_qasm_body.",
                 id="non-basis-gate",
             ),

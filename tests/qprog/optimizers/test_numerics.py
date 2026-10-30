@@ -403,6 +403,34 @@ def test_fubini_study_metric_for_a_shared_parameter_sums_both_generators(
     assert metric[0, 0] == pytest.approx(0.5, abs=1e-10)
 
 
+@pytest.mark.parametrize(
+    "gate, expected",
+    [("rzz", np.sin(0.7) ** 2 / 4), ("rxx", 0.25)],
+)
+def test_fubini_study_metric_supports_two_qubit_rotations(
+    default_test_simulator, default_optimizer, gate, expected
+):
+    """After ``RY(a)`` on qubit 0 the pre-state is ``RY(a)|0> ⊗ |0>``, so the
+    two-qubit block's metric is ``Var(ZZ/2) = sin(a)^2 / 4`` for ``rzz`` and
+    ``Var(XX/2) = 1/4`` for ``rxx``; the ``RY`` block contributes ``1/4``."""
+    a, b = Parameter("a"), Parameter("b")
+    circuit = QuantumCircuit(2, 2)
+    circuit.ry(a, 0)
+    getattr(circuit, gate)(b, 0, 1)
+    circuit.measure(range(2), range(2))
+
+    program = CustomVQA(
+        qscript=circuit, backend=default_test_simulator, optimizer=default_optimizer
+    )
+    program.backend.set_seed(1997)
+
+    metric = FubiniStudyMetricEstimator().bind(program)["metric_fn"](
+        np.array([0.7, 0.4])
+    )
+
+    np.testing.assert_allclose(metric, np.diag([0.25, expected]), atol=1e-10)
+
+
 def test_fubini_study_metric_accumulates_a_parameter_across_blocks(
     default_test_simulator, default_optimizer
 ):

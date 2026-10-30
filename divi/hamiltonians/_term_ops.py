@@ -358,7 +358,7 @@ def _spo_to_qiskit_basis_gates_numeric(
 def _spo_to_qiskit_basis_gates_symbolic(
     qc, spo: SparsePauliOp, time, qubits: Sequence[int]
 ) -> None:
-    """CX-RZ-CX ladder emitter for symbolic ``time``.
+    """Pauli-rotation emitter for symbolic ``time``: RZZ for two-body terms, a CX-RZ-CX ladder above.
 
     Qiskit's ``LieTrotter`` synthesiser only accepts numeric angles, so any
     ``Parameter`` / ``ParameterExpression`` ``time`` comes through here.
@@ -396,11 +396,14 @@ def _spo_to_qiskit_basis_gates_symbolic(
                 qc.rx(_HALF_PI, q)
 
         active_qubits = [q for q, _ in active]
-        for control, target in pairwise(reversed(active_qubits)):
-            qc.cx(control, target)
-        qc.rz(theta, active_qubits[0])
-        for target, control in pairwise(active_qubits):
-            qc.cx(control, target)
+        if len(active_qubits) == 2:
+            qc.rzz(theta, *active_qubits)
+        else:
+            for control, target in pairwise(reversed(active_qubits)):
+                qc.cx(control, target)
+            qc.rz(theta, active_qubits[0])
+            for target, control in pairwise(active_qubits):
+                qc.cx(control, target)
 
         for q, ch in active:
             if ch == "X":

@@ -43,6 +43,8 @@ _QISKIT_TO_QASM2 = {
     "cry": "cry",
     "crz": "crz",
     "swap": "swap",
+    "rzz": "rzz",
+    "rxx": "rxx",
     "ccx": "ccx",
     "cswap": "cswap",
 }
