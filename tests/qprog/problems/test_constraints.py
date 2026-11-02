@@ -182,6 +182,77 @@ def test_penalty_is_the_squared_violation_in_the_constraints_units(
     ) == pytest.approx(missing**2)
 
 
+def _assert_relaxed_energy_is_penalised_energy_on_assignments(problem):
+    for bitstring, assignment in iter_assignments(problem):
+        x = np.array([int(bit) for bit in bitstring], dtype=float)
+        expected = polynomial_value(problem.canonical_problem.terms, assignment)
+        assert problem.relaxed_energy(x) == pytest.approx(expected, abs=1e-9)
+
+
+@pytest.mark.parametrize(
+    "coefficients, sense, bound, may_round", _fuzzed_constraints(n_cases=50, seed=2)
+)
+def test_relaxed_energy_is_the_penalised_energy_on_every_assignment(
+    coefficients, sense, bound, may_round
+):
+    n = len(coefficients)
+    try:
+        problem = BinaryOptimizationProblem(
+            np.diag(np.sqrt(np.arange(2, n + 2))),
+            constraints=[LinearConstraint(coefficients, sense, bound)],
+            penalty_weight=3.0,
+        )
+    except ValueError:
+        return
+    _assert_relaxed_energy_is_penalised_energy_on_assignments(problem)
+
+
+def test_relaxed_energy_keeps_a_penalty_polynomial_and_named_slack():
+    problem = BinaryOptimizationProblem(
+        {("a",): -1.0, ("a", "b"): 2.0, ("c",): 0.5},
+        constraints=[LinearConstraint({"a": 1, "b": 2, "c": 1}, "<=", 2)],
+        penalty={("b", "c"): 1.5},
+        penalty_weight=2.0,
+    )
+    assert problem._slack_variables
+    _assert_relaxed_energy_is_penalised_energy_on_assignments(problem)
+
+
+def test_relaxed_energy_squares_each_constraint_violation_exactly():
+    """At x = (0.5, 0.2, 0.9) the objective's multilinear extension is
+    -0.5 - 0.4 - 2.7, and x0 + x1 + x2 = 1.6 misses the bound 2 by 0.4."""
+    problem = _constrained(LinearConstraint([1, 1, 1], "==", 2), penalty_weight=5.0)
+    energy = problem.relaxed_energy(np.array([0.5, 0.2, 0.9]))
+    assert energy == pytest.approx(-3.6 + 5.0 * 0.4**2)
+
+
+def test_relaxed_energy_scores_each_column_of_a_batch():
+    problem = _constrained(LinearConstraint([1, 2, 1], ">=", 2), penalty_weight=2.0)
+    x = np.random.default_rng(4).random((problem.canonical_problem.n_vars, 5))
+    np.testing.assert_allclose(
+        problem.relaxed_energy(x),
+        [problem.relaxed_energy(column) for column in x.T],
+        rtol=1e-12,
+    )
+
+
+def test_relaxed_energy_gradient_matches_central_differences():
+    problem = BinaryOptimizationProblem(
+        {(0,): -1.0, (0, 1): 2.0, (0, 1, 2): 1.5},
+        constraints=[LinearConstraint([1, 2, 1], "<=", 2)],
+        penalty={(1, 2): 0.7},
+        penalty_weight=3.0,
+    )
+    x = np.random.default_rng(5).random(problem.canonical_problem.n_vars)
+    step = 1e-6
+    numeric = [
+        (problem.relaxed_energy(x + step * e) - problem.relaxed_energy(x - step * e))
+        / (2 * step)
+        for e in np.eye(len(x))
+    ]
+    np.testing.assert_allclose(problem.relaxed_energy_gradient(x), numeric, rtol=1e-6)
+
+
 def _least_penalty(problem, n_decision: int) -> dict[str, float]:
     """Penalty of each decision setting, minimised over the slack."""
     terms = problem.penalty_canonical_problem.terms

@@ -226,10 +226,14 @@ class _UnreachableBoundError(ValueError):
         )
 
 
+# (coefficients, target) of a penalty (Σ c_v v - target)² over decision and slack variables.
+_LinearForm = tuple[dict[Hashable, float], float]
+
+
 def _encode_constraint(
     constraint: LinearConstraint,
     activity_bounds: Callable[[Mapping[Hashable, float]], tuple[float, float]],
-) -> tuple[dimod.BinaryQuadraticModel, _Slack | None]:
+) -> tuple[dimod.BinaryQuadraticModel, _Slack | None, _LinearForm | None]:
     r"""Encode ``constraint`` as :math:`(\sum a_i x_i \pm \sum_j 2^j s_j - b)^2`.
 
     The slack is sized for the activity bounds of the left-hand side, as
@@ -237,10 +241,11 @@ def _encode_constraint(
 
     Returns:
         The penalty in the constraint's own units, where a violation of ``v``
-        costs ``v**2``, and its slack as dimod labels it, or ``None`` when it
-        needs none. The penalty includes its constant, so it is zero exactly
-        when the rounded constraint holds and the slack takes its matching
-        value.
+        costs ``v**2``; its slack as dimod labels it, or ``None`` when it
+        needs none; and the linear form whose square is the penalty, or
+        ``None`` when the constraint always holds. The penalty includes its
+        constant, so it is zero exactly when the rounded constraint holds and
+        the slack takes its matching value.
 
     Raises:
         ValueError: If no assignment the problem allows can satisfy the
@@ -252,7 +257,7 @@ def _encode_constraint(
     if (sense != "<=" and hi < b - tol) or (sense != ">=" and lo > b + tol):
         raise _UnreachableBoundError(constraint, lo, hi)
     if (sense == "<=" and hi <= b + tol) or (sense == ">=" and lo >= b - tol):
-        return dimod.BinaryQuadraticModel(dimod.BINARY), None
+        return dimod.BinaryQuadraticModel(dimod.BINARY), None, None
 
     coefficients, bound_value, step, exact = _rational(constraint, tol)
     scaled, bound = _scale(coefficients, bound_value, sense, step, tol)
@@ -317,15 +322,17 @@ def _encode_constraint(
     linear = [(v, c) for v, c in scaled.items() if c]
     if slack_range == 0:
         bqm.add_linear_equality_constraint(linear, r * r, -bound)
-        return bqm, None
+        return bqm, None, ({v: r * c for v, c in linear}, r * bound)
     # dimod names its slack f"slack_{label}_{j}"; keep clear of user labels.
     label = "divi"
     while any(isinstance(v, str) and v.startswith(f"slack_{label}_") for v in scaled):
         label += "_"
     lb, ub = (bound, hi_s) if sense == ">=" else (lo_s, bound)
+    # dimod's penalty is r²(Σ a·x + Σ c·s - ub)².
     slack = bqm.add_linear_inequality_constraint(linear, r * r, label, lb=lb, ub=ub)
     terms = tuple((s, int(c)) for s, c in slack)
-    return bqm, _Slack(terms, scaled, ub)
+    form = {v: r * c for v, c in (*linear, *terms)}
+    return bqm, _Slack(terms, scaled, ub), (form, r * ub)
 
 
 def _encode_constraints(
@@ -333,8 +340,9 @@ def _encode_constraints(
     variables: AbstractSet[Hashable],
     penalty_terms: Mapping[tuple, float],
     activity_bounds: Callable[[Mapping[Hashable, float]], tuple[float, float]],
-) -> tuple[tuple[_Slack, ...], dict[tuple, float]]:
-    """Slack of each inequality in ``constraints``, and ``penalty_terms`` plus their penalties.
+) -> tuple[tuple[_Slack, ...], dict[tuple, float], tuple[_LinearForm, ...]]:
+    """Slack of each inequality in ``constraints``, ``penalty_terms`` plus their
+    penalties, and the linear form of each penalty that is not always zero.
 
     Slack variables continue the problem's integer labels after the largest
     one, or are labelled ``("slack", i, j)`` when the problem uses other
@@ -353,8 +361,10 @@ def _encode_constraints(
     next_int = max(int_labels, default=-1) + 1
     total = dimod.BinaryQuadraticModel(dimod.BINARY)
     slacks: list[_Slack] = []
+    forms: list[_LinearForm] = []
     for index, constraint in enumerate(constraints):
-        bqm, slack = _encode_constraint(constraint, activity_bounds)
+        bqm, slack, form = _encode_constraint(constraint, activity_bounds)
+        mapping: dict[Hashable, Hashable] = {}
         if slack is not None:
             width = len(slack.terms)
             if integer_labels:
@@ -371,6 +381,11 @@ def _encode_constraints(
             bqm.relabel_variables(mapping)
             relabelled = tuple((mapping[s], c) for s, c in slack.terms)
             slacks.append(replace(slack, terms=relabelled))
+        if form is not None:
+            coefficients, target = form
+            forms.append(
+                ({mapping.get(v, v): c for v, c in coefficients.items()}, target)
+            )
         total.update(bqm)
 
     terms: defaultdict[tuple, float] = defaultdict(float, penalty_terms)
@@ -382,4 +397,4 @@ def _encode_constraints(
             terms[(u, v)] += b
     if total.offset:
         terms[()] += total.offset
-    return tuple(slacks), dict(terms)
+    return tuple(slacks), dict(terms), tuple(forms)

@@ -380,7 +380,10 @@ carries its own setting. :class:`~divi.qprog.algorithms.SoftObjective` (the
 default) evaluates the problem on a smooth relaxation of each variable's
 expectation value, :math:`x_i = (1 + \tanh(\alpha \langle P_i \rangle)) / 2`; a
 larger ``alpha`` pushes the variables towards 0 and 1 at the cost of a flatter
-landscape. Without an explicit ``objective``, a multi-basis encoding on *q*
+landscape. The relaxation
+(:meth:`~divi.qprog.problems.BinaryOptimizationProblem.relaxed_energy`) is
+the multilinear extension of the objective and any ``penalty``, plus the exact
+square of each :class:`~divi.qprog.problems.LinearConstraint`'s violation. Without an explicit ``objective``, a multi-basis encoding on *q*
 qubits uses ``SoftObjective(alpha=1.5 * q ** (k // 2))``, the scaling reported
 by Sciorilli et al. [#sciorilli2025]_; the regularisation term of their loss is
 not included. :class:`~divi.qprog.algorithms.CVaRObjective` minimises the mean

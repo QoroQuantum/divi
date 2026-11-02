@@ -51,8 +51,8 @@ _MIXED_ORDER_HUBO = {(): 0.5, (0,): 0.0, (1,): -1.0, (0, 1): 2.0}
 
 
 def _mixed_order_energy(x):
-    """Energy of ``_MIXED_ORDER_HUBO``, degree-1 terms evaluated as ``c * x**2``."""
-    return 0.5 - x[1] ** 2 + 2.0 * x[0] * x[1]
+    """Energy of ``_MIXED_ORDER_HUBO``, the multilinear extension at ``x``."""
+    return 0.5 - x[1] + 2.0 * x[0] * x[1]
 
 
 @pytest.mark.parametrize("compiled", [False, True], ids=["python", "jit"])
@@ -368,11 +368,11 @@ class TestEvalPoly1dJit:
         problem = _make_problem(Q)
         ti, to, tc, const = compile_problem(problem)
 
-        # x = [1, 0] → energy = 1*1² + 2*0² = 1.0
+        # x = [1, 0] → energy = 1*1 + 2*0 = 1.0
         assert float(
             _eval_poly_1d_jit(np.array([1.0, 0.0]), ti, to, tc, const)
         ) == pytest.approx(1.0)
-        # x = [0, 1] → energy = 1*0² + 2*1² = 2.0
+        # x = [0, 1] → energy = 1*0 + 2*1 = 2.0
         assert float(
             _eval_poly_1d_jit(np.array([0.0, 1.0]), ti, to, tc, const)
         ) == pytest.approx(2.0)
@@ -450,69 +450,42 @@ class TestComputeHardCvarEnergyJit:
         ids=["inside-lowest-state", "spills-into-next", "whole-histogram"],
     )
     def test_averages_the_lowest_energy_shots(self, fraction, expected):
-        """diag([1, 2]) scores the four states 3, 2, 1, 0 with 10, 20, 30, 40
-        shots: the best quarter is all energy 0; the best half adds 10 shots
-        at 1 (10/50); the whole histogram averages to 100/100."""
-        ti, to, tc, const = compile_problem(_make_problem(np.diag([1.0, 2.0])))
-        x_vals = np.array([[1.0, 0.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]])
+        """States of energy 3, 2, 1, 0 with 10, 20, 30, 40 shots: the best
+        quarter is all energy 0; the best half adds 10 shots at 1 (10/50); the
+        whole histogram averages to 100/100."""
+        energies = np.array([3.0, 2.0, 1.0, 0.0])
         counts = np.array([10.0, 20.0, 30.0, 40.0])
 
-        result = _compute_hard_cvar_energy_jit(
-            x_vals, counts, 100.0, fraction, ti, to, tc, const
-        )
+        result = _compute_hard_cvar_energy_jit(energies, counts, 100.0, fraction)
 
         assert result == pytest.approx(expected)
 
     def test_all_equal_energies(self):
         """When all states have the same energy, CVaR equals that energy."""
-        Q = np.zeros((2, 2))
-        problem = _make_problem(Q)
-        ti, to, tc, const = compile_problem(problem)
-
-        x_vals = np.ones((2, 4), dtype=np.float64)
+        energies = np.full(4, 1.5)
         counts = np.array([25.0, 25.0, 25.0, 25.0])
 
-        result = float(
-            _compute_hard_cvar_energy_jit(
-                x_vals, counts, 100.0, 0.25, ti, to, tc, const
-            )
-        )
-        assert result == pytest.approx(0.0)
+        result = _compute_hard_cvar_energy_jit(energies, counts, 100.0, 0.25)
+
+        assert result == pytest.approx(1.5)
 
     def test_smaller_fraction_selects_a_lower_tail(self):
         """A smaller fraction averages a lower-energy tail."""
-        Q = np.diag([1.0, 2.0])
-        problem = _make_problem(Q)
-        ti, to, tc, const = compile_problem(problem)
-
-        # 4 states with different energies
-        parities = np.array([[0, 1, 0, 1], [0, 0, 1, 1]], dtype=np.uint8)
-        x_vals = np.ascontiguousarray(1.0 - parities.astype(np.float64))
+        energies = np.array([3.0, 2.0, 1.0, 0.0])
         counts = np.array([25.0, 25.0, 25.0, 25.0])
 
-        e_25 = float(
-            _compute_hard_cvar_energy_jit(
-                x_vals, counts, 100.0, 0.25, ti, to, tc, const
-            )
-        )
-        e_75 = float(
-            _compute_hard_cvar_energy_jit(
-                x_vals, counts, 100.0, 0.75, ti, to, tc, const
-            )
-        )
-        # 25% tail should be <= 75% tail (CVaR picks lower energies)
-        assert e_25 <= e_75
+        e_25 = _compute_hard_cvar_energy_jit(energies, counts, 100.0, 0.25)
+        e_75 = _compute_hard_cvar_energy_jit(energies, counts, 100.0, 0.75)
+
+        assert e_25 < e_75
 
     def test_cutoff_does_not_round_a_float_product_up(self):
         """0.07 * 100 is 7.000000000000001 in floating point; the tail is still
         7 shots, all at energy 0, not 8 with one at energy 3."""
-        ti, to, tc, const = compile_problem(_make_problem(np.diag([1.0, 2.0])))
-        x_vals = np.array([[0.0, 1.0], [0.0, 1.0]])
+        energies = np.array([0.0, 3.0])
         counts = np.array([7.0, 93.0])
 
-        result = _compute_hard_cvar_energy_jit(
-            x_vals, counts, 100.0, 0.07, ti, to, tc, const
-        )
+        result = _compute_hard_cvar_energy_jit(energies, counts, 100.0, 0.07)
 
         assert result == 0.0
 
@@ -527,9 +500,8 @@ class TestBinaryPolynomialGradient:
         ids=["qubo", "cubic-hubo"],
     )
     def test_matches_central_differences(self, problem):
-        """The analytic gradient of the de-linearised evaluation matches a
-        central difference of ``_evaluate_binary_polynomial`` at an interior
-        point."""
+        """The analytic gradient matches a central difference of
+        ``_evaluate_binary_polynomial`` at an interior point."""
         compiled = compile_problem(problem)
         x = np.array([0.3, 0.6, 0.8])
         step = 1e-6

@@ -414,10 +414,10 @@ def test_pce_runs_when_the_backend_suits_the_objective(
 
 
 class _ConstantObjective(ExpectationObjective):
-    def score(self, z, problem, compiled):
+    def score(self, z, problem):
         return 7.0
 
-    def gradient(self, z, problem, compiled):
+    def gradient(self, z, problem):
         return np.zeros_like(z)
 
 
@@ -492,7 +492,7 @@ def _parity_expectations(pce, histogram):
 
 
 def _score(objective, pce, *args):
-    return objective.score(*args, pce._polynomial, pce._compiled_problem)
+    return objective.score(*args, pce.problem)
 
 
 def test_soft_objective_scores_a_cubic_hubo(make_pce):
@@ -500,8 +500,7 @@ def test_soft_objective_scores_a_cubic_hubo(make_pce):
       "000" count=30, "001"=10, "010"=20, "011"=40.
     Parities (x0, x1, x2): 000→[0,0,0], 001→[1,0,1], 010→[0,1,1], 011→[1,1,0].
     mean_parity = [0.5, 0.6, 0.3] → z = [0, -0.2, 0.4].
-    x = 0.5*(1 + tanh(z)); linear terms use x² (soft de-linearization).
-    energy = -x0² + 0.25*x1² + 1.5*x0*x1*x2.
+    x = 0.5*(1 + tanh(z)), and the energy is the hubo's multilinear extension.
     """
     hubo = {
         ("x0",): -1.0,
@@ -514,7 +513,7 @@ def test_soft_objective_scores_a_cubic_hubo(make_pce):
     energy = _score(SoftObjective(alpha=1.0), pce, z)
 
     x0, x1, x2 = (0.5 * (1.0 + np.tanh(z)) for z in (0.0, -0.2, 0.4))
-    expected = -1.0 * x0**2 + 0.25 * x1**2 + 1.5 * x0 * x1 * x2
+    expected = -1.0 * x0 + 0.25 * x1 + 1.5 * x0 * x1 * x2
     assert energy == pytest.approx(expected)
 
 
@@ -524,14 +523,14 @@ def test_soft_objective_scores_a_mixed_histogram(make_pce):
 
     mean_parity = [0.25, 0.25], so z = [0.5, 0.5].
     x = 0.5*(1 + tanh(0.5)) = e/(e+1)   [algebraic identity].
-    energy = 1*x² + 2*x² = 3*(e/(e+1))².
+    The diagonal entries are linear terms: energy = 1*x + 2*x = 3*e/(e+1).
     """
     pce = make_pce(problem=np.diag([1.0, 2.0]))
     z = _parity_expectations(pce, {"00": 3, "11": 1})
 
     result = _score(SoftObjective(alpha=1.0), pce, z)
 
-    assert result == pytest.approx(3.0 * (np.e / (np.e + 1)) ** 2)
+    assert result == pytest.approx(3.0 * np.e / (np.e + 1))
 
 
 def test_soft_objective_gradient_matches_central_differences(make_pce):
@@ -545,11 +544,7 @@ def test_soft_objective_gradient_matches_central_differences(make_pce):
         for e in np.eye(3)
     ]
 
-    np.testing.assert_allclose(
-        objective.gradient(z, pce._polynomial, pce._compiled_problem),
-        numeric,
-        rtol=1e-6,
-    )
+    np.testing.assert_allclose(objective.gradient(z, pce.problem), numeric, rtol=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -612,11 +607,8 @@ def test_soft_objective_gradient_keeps_precision_near_saturation(make_pce, z):
     """sech^2 is computed without 1 - tanh^2, and x without 1 + tanh, both of
     which cancel catastrophically once tanh rounds towards +-1."""
     pce = make_pce(problem=np.array([[1.0]]))
-    gradient = SoftObjective(alpha=1.0).gradient(
-        np.array([z]), pce._polynomial, pce._compiled_problem
-    )
-    x = 1.0 / (1.0 + np.exp(-2.0 * z))
-    np.testing.assert_allclose(gradient, [2.0 * x * 0.5 / np.cosh(z) ** 2], rtol=1e-12)
+    gradient = SoftObjective(alpha=1.0).gradient(np.array([z]), pce.problem)
+    np.testing.assert_allclose(gradient, [0.5 / np.cosh(z) ** 2], rtol=1e-12)
 
 
 def test_soft_objective_keeps_the_precision_of_a_vanishing_variable(make_pce):
@@ -624,7 +616,7 @@ def test_soft_objective_keeps_the_precision_of_a_vanishing_variable(make_pce):
     pce = make_pce(problem=np.array([[1.0]]))
     x = np.exp(-50.0) / (1.0 + np.exp(-50.0))
     assert _score(SoftObjective(alpha=1.0), pce, np.array([-25.0])) == pytest.approx(
-        x**2, rel=1e-12
+        x, rel=1e-12
     )
 
 
@@ -638,18 +630,14 @@ def test_soft_objective_warns_when_every_variable_saturates(make_pce):
             "or restart from other parameters."
         ),
     ):
-        SoftObjective(alpha=1.0).gradient(
-            np.array([25.0, -30.0]), pce._polynomial, pce._compiled_problem
-        )
+        SoftObjective(alpha=1.0).gradient(np.array([25.0, -30.0]), pce.problem)
 
 
 def test_soft_objective_is_silent_while_one_variable_can_move(make_pce):
     pce = make_pce()
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        gradient = SoftObjective(alpha=1.0).gradient(
-            np.array([25.0, 0.3]), pce._polynomial, pce._compiled_problem
-        )
+        gradient = SoftObjective(alpha=1.0).gradient(np.array([25.0, 0.3]), pce.problem)
     assert gradient[1] != 0.0
 
 

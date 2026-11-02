@@ -12,23 +12,31 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import dimod
 import numpy as np
+import numpy.typing as npt
 import scipy.sparse as sps
 from dimod import BinaryQuadraticModel
 from qiskit.quantum_info import SparsePauliOp
 
 from divi._optional import import_optional
 from divi.hamiltonians import (
+    CompiledBinaryPolynomial,
     HUBOProblemTypes,
     IsingResult,
     QUBOProblemTypes,
+    compile_problem,
     normalize_binary_polynomial_problem,
     qubo_to_ising,
     x_mixer,
+)
+from divi.hamiltonians._polynomial import (
+    _binary_polynomial_gradient,
+    _evaluate_binary_polynomial,
 )
 from divi.qprog.problems._base import QAOAProblem
 from divi.qprog.problems._constraints import (
     LinearConstraint,
     _encode_constraints,
+    _LinearForm,
     _Slack,
 )
 from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
@@ -265,15 +273,17 @@ class BinaryOptimizationProblem(QAOAProblem):
         self._objective_canonical_problem = normalize_binary_polynomial_problem(problem)
         self._constraints = constraints
         self._slacks: tuple[_Slack, ...] = ()
+        self._constraint_forms: tuple[_LinearForm, ...] = ()
+        self._extra_penalty_terms: Mapping[tuple, float] = (
+            {}
+            if penalty is None
+            else normalize_binary_polynomial_problem(penalty).terms
+        )
         if constraints:
             variables = set(self._objective_canonical_problem.variable_order)
-            penalty_terms: dict[tuple, float] = {}
-            if penalty is not None:
-                penalty_canonical = normalize_binary_polynomial_problem(penalty)
-                variables |= set(penalty_canonical.variable_order)
-                penalty_terms = penalty_canonical.terms
-            self._slacks, penalty = _encode_constraints(
-                constraints, variables, penalty_terms, self._activity_bounds
+            variables |= {v for term in self._extra_penalty_terms for v in term}
+            self._slacks, penalty, self._constraint_forms = _encode_constraints(
+                constraints, variables, self._extra_penalty_terms, self._activity_bounds
             )
         self._slack_variables = tuple(
             label for slack in self._slacks for label, _ in slack.terms
@@ -407,6 +417,60 @@ class BinaryOptimizationProblem(QAOAProblem):
             coeff * math.prod(assignment[v] for v in term)
             for term, coeff in self._objective_canonical_problem.terms.items()
         )
+
+    @cached_property
+    def _relaxation(
+        self,
+    ) -> tuple[
+        CompiledBinaryPolynomial, npt.NDArray[np.float64], npt.NDArray[np.float64]
+    ]:
+        """The multilinear part, compiled in canonical variable order, and the
+        constraint penalties as ``penalty_weight * Σ (forms @ x - targets)²``."""
+        order = self._canonical_problem.variable_order
+        terms: dict[tuple, float] = {(v,): 0.0 for v in order}
+        for term, coeff in self._objective_canonical_problem.terms.items():
+            terms[term] = terms.get(term, 0.0) + coeff
+        for term, coeff in self._extra_penalty_terms.items():
+            terms[term] = terms.get(term, 0.0) + self._penalty_weight * coeff
+        multilinear = normalize_binary_polynomial_problem(terms, variable_order=order)
+        idx = self._canonical_problem.variable_to_idx
+        forms = np.zeros((len(self._constraint_forms), len(order)))
+        for row, (coefficients, _) in zip(forms, self._constraint_forms):
+            for var, coeff in coefficients.items():
+                row[idx[var]] = coeff
+        targets = np.array([target for _, target in self._constraint_forms])
+        return compile_problem(multilinear), forms, targets
+
+    def relaxed_energy(self, x: npt.ArrayLike) -> float | npt.NDArray[np.float64]:
+        """The penalised energy at continuous variable values ``x`` in ``[0, 1]``.
+
+        ``x`` follows ``canonical_problem.variable_order``, slack included,
+        with shape ``(n_vars,)`` or ``(n_vars, n_states)``. The objective and
+        ``penalty`` are evaluated as their multilinear extensions, and each
+        constraint adds ``penalty_weight`` times the exact square of its
+        violation, so the value equals the penalised energy on 0/1
+        assignments.
+
+        Returns:
+            A float for one assignment, or one energy per column.
+        """
+        compiled, forms, targets = self._relaxation
+        x = np.asarray(x, dtype=np.float64)
+        energy = _evaluate_binary_polynomial(x, self._canonical_problem, compiled)
+        if not len(targets):
+            return energy
+        violation = forms @ x - (targets if x.ndim == 1 else targets[:, None])
+        return energy + self._penalty_weight * np.sum(violation**2, axis=0)
+
+    def relaxed_energy_gradient(self, x: npt.ArrayLike) -> npt.NDArray[np.float64]:
+        """Derivative of :meth:`relaxed_energy` at one assignment ``x``,
+        shape ``(n_vars,)``."""
+        compiled, forms, targets = self._relaxation
+        x = np.asarray(x, dtype=np.float64)
+        gradient = _binary_polynomial_gradient(x, compiled)
+        if not len(targets):
+            return gradient
+        return gradient + 2.0 * self._penalty_weight * (forms @ x - targets) @ forms
 
     @cached_property
     def _ising(self) -> IsingResult:

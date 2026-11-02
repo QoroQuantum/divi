@@ -5,8 +5,7 @@
 """Binary polynomial types, normalisation, and JIT-compiled evaluation kernels.
 
 Handles HUBO/QUBO inputs, normalises them to :class:`BinaryPolynomialProblem`,
-and provides compiled evaluators used by both ``divi.qprog.algorithms._pce``
-and the ``PCECostStage`` pipeline stage.
+and provides the compiled evaluators that PCE scores it with.
 """
 
 import numbers
@@ -220,9 +219,6 @@ def normalize_binary_polynomial_problem(
 
 # ---------------------------------------------------------------------------
 # JIT-compiled polynomial evaluation kernels
-#
-# Shared math over ``BinaryPolynomialProblem``.  Consumed by both
-# ``divi.qprog.algorithms._pce`` and the ``PCECostStage`` pipeline stage.
 # ---------------------------------------------------------------------------
 
 
@@ -272,20 +268,12 @@ def _eval_poly_1d_jit(
     constant: float,
 ) -> float:
     """Evaluate binary polynomial for a single variable assignment (1D)."""
-    n_terms = len(coeffs)
     energy = constant
-    for t in range(n_terms):
-        start = term_offsets[t]
-        end = term_offsets[t + 1]
-        degree = end - start
-        c = coeffs[t]
-        if degree == 1:
-            energy += c * x_vals[term_indices[start]] ** 2
-        else:
-            prod = 1.0
-            for k in range(start, end):
-                prod *= x_vals[term_indices[k]]
-            energy += c * prod
+    for t in range(len(coeffs)):
+        prod = coeffs[t]
+        for k in range(term_offsets[t], term_offsets[t + 1]):
+            prod *= x_vals[term_indices[k]]
+        energy += prod
     return energy
 
 
@@ -302,10 +290,6 @@ def _poly_gradient_1d_jit(
         start = term_offsets[t]
         end = term_offsets[t + 1]
         c = coeffs[t]
-        if end - start == 1:
-            i = term_indices[start]
-            grad[i] += 2.0 * c * x_vals[i]
-            continue
         for k in range(start, end):
             prod = c
             for m in range(start, end):
@@ -318,11 +302,7 @@ def _poly_gradient_1d_jit(
 def _binary_polynomial_gradient(
     x_vals: npt.NDArray[np.float64], compiled: CompiledBinaryPolynomial
 ) -> npt.NDArray[np.float64]:
-    """Gradient of :func:`_evaluate_binary_polynomial` at one assignment.
-
-    Matches its de-linearised evaluation: a degree-1 term ``c * x_i²``
-    contributes ``2 c x_i``.
-    """
+    """Gradient of :func:`_evaluate_binary_polynomial` at one assignment."""
     term_indices, term_offsets, coeffs, _ = compiled
     return _poly_gradient_1d_jit(
         np.ascontiguousarray(x_vals, dtype=np.float64),
@@ -364,17 +344,10 @@ def _eval_poly_2d(
     for s in numba.prange(n_states):
         e = constant
         for t in range(n_terms):
-            start = term_offsets[t]
-            end = term_offsets[t + 1]
-            degree = end - start
-            c = coeffs[t]
-            if degree == 1:
-                e += c * x_vals[term_indices[start], s] ** 2
-            else:
-                prod = 1.0
-                for k in range(start, end):
-                    prod *= x_vals[term_indices[k], s]
-                e += c * prod
+            prod = coeffs[t]
+            for k in range(term_offsets[t], term_offsets[t + 1]):
+                prod *= x_vals[term_indices[k], s]
+            e += prod
         energies[s] = e
     return energies
 
@@ -403,31 +376,24 @@ def _eval_poly_2d_jit(
 
 @numba.njit(cache=True)
 def _compute_hard_cvar_energy_jit(
-    x_vals: npt.NDArray[np.float64],
+    energies: npt.NDArray[np.float64],
     counts: npt.NDArray[np.float64],
     total_shots: float,
     fraction: float,
-    term_indices: npt.NDArray[np.int32],
-    term_offsets: npt.NDArray[np.int32],
-    coeffs: npt.NDArray[np.float64],
-    constant: float,
 ) -> float:
     """Mean energy of the lowest-energy ``fraction`` of the shots.
 
-    Scores every state, then accumulates the cheapest states' shots until the
+    Accumulates the cheapest states' shots until the
     ``ceil(fraction * total_shots)`` cutoff, taking part of the state that
     crosses it.
 
     Args:
-        x_vals: Shape ``(n_vars, n_states)`` — binary variable assignments.
+        energies: Shape ``(n_states,)`` — energy of each state.
         counts: Shape ``(n_states,)`` — shot counts per state.
         total_shots: Sum of *counts*.
         fraction: Share of the shots averaged, in ``(0, 1]``.
-        term_indices, term_offsets, coeffs, constant: compiled problem arrays.
     """
-    n_states = x_vals.shape[1]
-
-    energies = _eval_poly_2d_jit(x_vals, term_indices, term_offsets, coeffs, constant)
+    n_states = energies.shape[0]
 
     sorted_indices = np.argsort(energies)
     # The relative slack keeps 0.07 * 100 = 7.000000000000001 from ceiling to 8.
@@ -457,10 +423,8 @@ def _evaluate_binary_polynomial(
 ) -> npt.NDArray[np.float64] | float:
     """Evaluate binary polynomial energy for one or many assignments.
 
-    Degree-1 terms are evaluated as ``c * x_i²`` rather than ``c * x_i`` to
-    undo the linearisation (``x_i² → x_i``) applied during polynomial
-    normalisation.  This is a no-op for binary values (``x² = x``) but
-    produces correct energies for continuous soft-relaxed values.
+    The polynomial is multilinear, so at continuous values in ``[0, 1]`` this
+    is its multilinear extension.
 
     Args:
         x_vals: Variable assignments. Shape ``(n_vars,)`` for one assignment
@@ -491,11 +455,7 @@ def _evaluate_binary_polynomial(
             continue
 
         indices = [problem.variable_to_idx[var] for var in term]
-        if len(term) == 1:
-            # De-linearise: evaluate as c * x_i² instead of c * x_i.
-            idx = indices[0]
-            monomial = x_vals[idx] ** 2 if is_single else x_vals[idx, :] ** 2
-        elif is_single:
+        if is_single:
             monomial = np.prod(x_vals[indices])
         else:
             monomial = np.prod(x_vals[indices, :], axis=0)

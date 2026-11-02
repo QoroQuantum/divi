@@ -18,16 +18,8 @@ from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import (
-    BinaryPolynomialProblem,
-    CompiledBinaryPolynomial,
-    compile_problem,
-)
-from divi.hamiltonians._polynomial import (
-    _binary_polynomial_gradient,
-    _compute_hard_cvar_energy_jit,
-    _evaluate_binary_polynomial,
-)
+from divi.hamiltonians import BinaryPolynomialProblem
+from divi.hamiltonians._polynomial import _compute_hard_cvar_energy_jit
 from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
 from divi.pipeline.stages import MeasurementStage
 from divi.qprog.algorithms._ansatze import GenericLayerAnsatz
@@ -156,26 +148,19 @@ class ExpectationObjective(PCEObjective, ABC):
 
     @abstractmethod
     def score(
-        self,
-        z: npt.NDArray[np.float64],
-        problem: BinaryPolynomialProblem,
-        compiled: CompiledBinaryPolynomial,
+        self, z: npt.NDArray[np.float64], problem: BinaryOptimizationProblem
     ) -> float:
         """Return the objective for the expectations ``z`` (shape ``(n_vars,)``).
 
         Args:
-            z: Each variable's expectation value, in ``[-1, 1]``.
-            problem: The canonical binary polynomial being minimised.
-            compiled: ``problem`` compiled by
-                :func:`~divi.hamiltonians.compile_problem`.
+            z: Each variable's expectation value, in ``[-1, 1]``, ordered like
+                ``problem.canonical_problem.variable_order``.
+            problem: The problem being minimised.
         """
 
     @abstractmethod
     def gradient(
-        self,
-        z: npt.NDArray[np.float64],
-        problem: BinaryPolynomialProblem,
-        compiled: CompiledBinaryPolynomial,
+        self, z: npt.NDArray[np.float64], problem: BinaryOptimizationProblem
     ) -> npt.NDArray[np.float64]:
         """Return the derivative of :meth:`score` with respect to each ``z_i``."""
 
@@ -192,8 +177,7 @@ class SampleObjective(PCEObjective, ABC):
         self,
         assignments: npt.NDArray[np.uint8],
         counts: npt.NDArray[np.float64],
-        problem: BinaryPolynomialProblem,
-        compiled: CompiledBinaryPolynomial,
+        problem: BinaryOptimizationProblem,
     ) -> float:
         """Return the objective for one shot histogram.
 
@@ -201,9 +185,7 @@ class SampleObjective(PCEObjective, ABC):
             assignments: ``(n_vars, n_states)`` 0/1 assignment decoded from
                 each sampled state.
             counts: Shot count of each state; sums to a positive total.
-            problem: The canonical binary polynomial being minimised.
-            compiled: ``problem`` compiled by
-                :func:`~divi.hamiltonians.compile_problem`.
+            problem: The problem being minimised.
         """
 
 
@@ -212,7 +194,10 @@ class SoftObjective(ExpectationObjective):
     """PCE objective on a smooth relaxation of the variables' expectations.
 
     Each variable becomes ``x_i = (1 + tanh(alpha * z_i)) / 2`` and the
-    problem's objective is evaluated at these continuous values.
+    problem is scored by
+    :meth:`~divi.qprog.problems.BinaryOptimizationProblem.relaxed_energy` at
+    these continuous values: the multilinear extension of the objective, plus
+    the exact square of each constraint's violation.
 
     Args:
         alpha: Sharpness of the relaxation, a positive finite number. Larger
@@ -232,20 +217,14 @@ class SoftObjective(ExpectationObjective):
             )
 
     def score(
-        self,
-        z: npt.NDArray[np.float64],
-        problem: BinaryPolynomialProblem,
-        compiled: CompiledBinaryPolynomial,
+        self, z: npt.NDArray[np.float64], problem: BinaryOptimizationProblem
     ) -> float:
         """Evaluate the problem at the relaxed variables."""
         x_soft, _ = _soft_relaxation(self.alpha * z)
-        return float(_evaluate_binary_polynomial(x_soft, problem, _compiled=compiled))
+        return float(problem.relaxed_energy(x_soft))
 
     def gradient(
-        self,
-        z: npt.NDArray[np.float64],
-        problem: BinaryPolynomialProblem,
-        compiled: CompiledBinaryPolynomial,
+        self, z: npt.NDArray[np.float64], problem: BinaryOptimizationProblem
     ) -> npt.NDArray[np.float64]:
         """Chain the problem's gradient through the tanh relaxation.
 
@@ -261,7 +240,7 @@ class SoftObjective(ExpectationObjective):
                 UserWarning,
             )
         x_soft, decay = _soft_relaxation(u)
-        d_energy = _binary_polynomial_gradient(x_soft, compiled)
+        d_energy = problem.relaxed_energy_gradient(x_soft)
         sech_squared = 4.0 * decay / (1.0 + decay) ** 2
         return d_energy * 0.5 * self.alpha * sech_squared
 
@@ -290,17 +269,16 @@ class CVaRObjective(SampleObjective):
         self,
         assignments: npt.NDArray[np.uint8],
         counts: npt.NDArray[np.float64],
-        problem: BinaryPolynomialProblem,
-        compiled: CompiledBinaryPolynomial,
+        problem: BinaryOptimizationProblem,
     ) -> float:
         """Mean energy of the lowest ``fraction`` of the histogram's shots."""
+        energies = problem.relaxed_energy(assignments.astype(np.float64))
         return float(
             _compute_hard_cvar_energy_jit(
-                np.ascontiguousarray(assignments, dtype=np.float64),
+                np.ascontiguousarray(energies, dtype=np.float64),
                 np.ascontiguousarray(counts, dtype=np.float64),
                 float(counts.sum()),
                 float(self.fraction),
-                *compiled,
             )
         )
 
@@ -557,7 +535,6 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         self.encoding = encoding
         self._polynomial: BinaryPolynomialProblem = problem.canonical_problem
         self.n_vars = self._polynomial.n_vars
-        self._compiled_problem = compile_problem(self._polynomial)
 
         self.n_qubits, strings = encoding.layout(self.n_vars)
         objective = (
@@ -668,8 +645,7 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             _params_key(row): z for row, z in zip(param_sets, expectations)
         }
         return {
-            idx: objective.score(z, self._polynomial, self._compiled_problem)
-            for idx, z in enumerate(expectations)
+            idx: objective.score(z, self.problem) for idx, z in enumerate(expectations)
         }
 
     def _score_histogram(
@@ -695,12 +671,7 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
                 "qubits for the variables' parities to decode."
             )
         counts = np.array(list(histogram.values()), dtype=np.float64)
-        return objective.score(
-            self._decode_states(states).T,
-            counts,
-            self._polynomial,
-            self._compiled_problem,
-        )
+        return objective.score(self._decode_states(states).T, counts, self.problem)
 
     def _variable_expectations(
         self, param_sets: npt.NDArray[np.float64], **kwargs
@@ -732,9 +703,7 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         params = np.asarray(params, dtype=np.float64).reshape(-1)
         expectations = self._variable_expectations(np.vstack([params, shifts + params]))
         jacobian = weights @ expectations[1:]
-        return jacobian @ objective.gradient(
-            expectations[0], self._polynomial, self._compiled_problem
-        )
+        return jacobian @ objective.gradient(expectations[0], self.problem)
 
     def _loss_gradient_by_observable(
         self, params: npt.NDArray[np.float64]
@@ -753,7 +722,7 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         z = self._cost_expectations.get(_params_key(params))
         if z is None:
             z = self._variable_expectations(np.atleast_2d(params))[0]
-        return objective.gradient(z, self._polynomial, self._compiled_problem)
+        return objective.gradient(z, self.problem)
 
     def _differentiable_objective(self) -> ExpectationObjective:
         """The objective, which must have a gradient.
@@ -798,7 +767,8 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
     def _serialized_cost_hamiltonian_fingerprint(self) -> str:
         """Identifies the problem, encoding and objective, so a checkpoint
         resumes only the PCE that wrote it."""
-        term_indices, term_offsets, coeffs, constant = self._compiled_problem
+        compiled, forms, targets = self.problem._relaxation
+        term_indices, term_offsets, coeffs, constant = compiled
         objective = (
             repr(self.objective)
             if is_dataclass(self.objective)
@@ -813,6 +783,9 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             term_offsets.tolist(),
             np.round(coeffs, 6).tolist(),
             round(float(constant), 6),
+            np.round(forms, 6).tolist(),
+            np.round(targets, 6).tolist(),
+            round(self.problem.penalty_weight, 6),
         )
         return hashlib.sha256(repr(payload).encode()).hexdigest()
 
@@ -907,11 +880,7 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         compute_energy = sort_by == "energy"
         energies = (
             np.asarray(
-                _evaluate_binary_polynomial(
-                    decoded_qubo_solutions.T.astype(float),
-                    self._polynomial,
-                    _compiled=self._compiled_problem,
-                )
+                self.problem.relaxed_energy(decoded_qubo_solutions.T.astype(float))
             ).tolist()
             if compute_energy
             else [None] * len(filtered)
