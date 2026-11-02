@@ -237,19 +237,26 @@ class _MetricOptimizerMixin:
 class PullbackMetricEstimator(MetricEstimator):
     r"""Hamiltonian-aware pullback metric.
 
-    Builds ``G_ij = sum_r w_r (d_i <P_r>)(d_j <P_r>)``, with
-    ``w_r = a_r^2 / sum_s a_s^2``, from the per-Pauli-term expectation gradients
-    of the loss observable ``H = sum_r a_r P_r`` (identity terms excluded), so
-    rescaling ``H`` leaves ``G`` unchanged. The energy gradient ``J @ a`` and the
-    metric share the same parameter-shift evaluation, so both are returned from
-    one pass. Measurement-only and PSD by construction (rank at most the number
-    of Hamiltonian terms).
+    Builds ``G_ij = sum_r |c_r| (d_i <P_r>)(d_j <P_r>)`` from the per-Pauli-term
+    expectation gradients of the cost observables ``O_j = sum_r a_jr P_r``
+    (identity terms excluded). Each term's weight in the loss is
+    ``c_r = a_jr * dL/d<O_j>``, with the slopes supplied by the program at the
+    current parameters: ``1`` when the loss is ``<H>``, the loss's local slope
+    otherwise. Weighting by ``|c_r|`` is a heuristic choice, not a Gauss–Newton
+    or Fisher metric; it makes ``G`` scale with the loss as the gradient does,
+    so rescaling the loss leaves the natural-gradient step unchanged while
+    ``mean(diag(G))`` is at least 1. Below that,
+    :class:`~divi.qprog.optimizers.QNGOptimizer`'s damping
+    stays at ``regularization`` and the step shrinks with the loss. The loss
+    gradient ``J @ c`` and the metric share the
+    same parameter-shift evaluation, so both are returned from one pass.
+    Measurement-only and PSD by construction (rank at most the number of terms).
 
-    Requires the program's loss to be the expectation value of its cost
-    Hamiltonian (VQE/QAOA, plain or unsupervised-data-bound CustomVQA).
+    Requires a loss built from the cost observables' expectation values (not a
+    supervised data-binding loss).
 
     When the cost fans out into several measurement branches (QDrift sampling,
-    a data cohort), the energy gradient averages linearly across branches while
+    a data cohort), the loss gradient averages linearly across branches while
     the metric is the *mean of the per-branch metrics* ``E_b[G_b]``, not the
     metric of the mean Jacobian ``G(E_b[J])``. This is deliberate and is the
     only well-defined choice: each QDrift branch samples a different Hamiltonian
@@ -263,10 +270,9 @@ class PullbackMetricEstimator(MetricEstimator):
     def check_compatible(self, program: "VariationalQuantumAlgorithm") -> None:
         if program.cost_preprocessor().result_format is not ResultFormat.EXPVALS:
             raise ContractViolation(
-                "The pullback metric requires the loss to be the expectation "
-                "value of the cost Hamiltonian, but this program's cost computes "
-                "a classical objective (e.g. PCE). Use the Fubini–Study estimator "
-                "(FubiniStudyMetricEstimator) instead."
+                "The pullback metric requires a loss built from expectation "
+                "values, but this program's cost reads raw counts. Use the "
+                "Fubini–Study estimator (FubiniStudyMetricEstimator) instead."
             )
         if isinstance(program, DataBindingMixin) and program.sample_loss is not None:
             raise ContractViolation(
@@ -277,15 +283,11 @@ class PullbackMetricEstimator(MetricEstimator):
                 "use a non-metric optimizer such as SPSAOptimizer."
             )
         # Structural, so it belongs here rather than in bind(): a dry run only
-        # catches ContractViolation from check_compatible, and would otherwise
-        # preview a metric that run() goes on to reject.
-        if (
-            program.cost_circuit.observable is None
-            or len(program.cost_circuit.observable) != 1
-        ):
+        # catches ContractViolation from check_compatible.
+        if not program.cost_circuit.observable:
             raise ContractViolation(
-                "The pullback metric requires the cost circuit to carry exactly "
-                "one loss observable."
+                "The pullback metric requires the cost circuit to carry a loss "
+                "observable."
             )
 
     def bind(self, program: "VariationalQuantumAlgorithm") -> Evaluators:
@@ -300,15 +302,16 @@ class PullbackMetricEstimator(MetricEstimator):
                 np.asarray(params, dtype=np.float64).tobytes(),
             )
             if cache["key"] != key:
-                branch_payloads = _term_expectations(program, shifts + params)
+                params = np.asarray(params, dtype=np.float64)
+                branch_payloads = _term_expectations(
+                    program, shifts + params, _loss_gradient(program, params)
+                )
                 gradients = []
                 metrics = []
                 for exp_vals, coeffs in branch_payloads.values():
                     jacobian = weights @ exp_vals  # (m, v): d_i <P_r>
                     gradients.append(jacobian @ coeffs)
-                    norm = np.sum(coeffs**2)
-                    term_weights = coeffs**2 / norm if norm > 0 else coeffs**2
-                    metrics.append((jacobian * term_weights) @ jacobian.T)
+                    metrics.append((jacobian * np.abs(coeffs)) @ jacobian.T)
                 grad = np.mean(gradients, axis=0)
                 metric = np.mean(metrics, axis=0)
                 cache["key"] = key
@@ -331,7 +334,10 @@ def _split_into_terms(
     hamiltonian: SparsePauliOp,
 ) -> tuple[tuple[SparsePauliOp, ...], npt.NDArray[np.float64]]:
     """Split into single-term, unit-coefficient observables (dropping identity
-    terms, which have zero gradient) and the matching real coefficients."""
+    terms, which have zero gradient) and the matching real coefficients.
+
+    An identity-only observable splits into no terms.
+    """
     terms: list[SparsePauliOp] = []
     coeffs: list[float] = []
     for label, coeff in hamiltonian.to_list():
@@ -339,25 +345,27 @@ def _split_into_terms(
             continue
         terms.append(SparsePauliOp(label))
         coeffs.append(float(np.real(coeff)))
-
-    if not terms:
-        raise ValueError(
-            "Pullback metric requires a loss observable with at least one "
-            "non-identity Pauli term."
-        )
     return tuple(terms), np.asarray(coeffs, dtype=np.float64)
 
 
 def _split_observable_into_terms(meta: MetaCircuit) -> MetaCircuit:
-    """Expand a branch's single cost observable into its unit-coefficient
-    single-Pauli terms as a multi-observable tuple."""
-    if meta.observable is None or len(meta.observable) != 1:
+    """Expand a branch's cost observables into their unit-coefficient
+    single-Pauli terms as one multi-observable tuple."""
+    if not meta.observable:
         raise ContractViolation(
-            "The pullback metric requires each cost branch to carry exactly "
-            "one loss observable."
+            "The pullback metric requires each cost branch to carry a loss observable."
         )
-    terms, _ = _split_into_terms(meta.observable[0])
-    return replace(meta, observable=tuple(terms), _was_multi_obs=True)
+    terms = tuple(
+        term
+        for observable in meta.observable
+        for term in _split_into_terms(observable)[0]
+    )
+    if not terms:
+        raise ContractViolation(
+            "The pullback metric requires the cost observables to carry at least "
+            "one non-identity Pauli term."
+        )
+    return replace(meta, observable=terms, _was_multi_obs=True)
 
 
 def _all_terms_preprocessor() -> CircuitPreprocessor:
@@ -370,16 +378,35 @@ def _all_terms_preprocessor() -> CircuitPreprocessor:
     )
 
 
+def _loss_gradient(
+    program: "VariationalQuantumAlgorithm", params: npt.NDArray[np.float64]
+) -> npt.NDArray[np.float64]:
+    """The program's ``dL/d<O_j>`` at ``params`` as a finite real vector.
+
+    Raises:
+        ContractViolation: If the slopes are complex or not finite.
+    """
+    slopes = np.asarray(program._loss_gradient_by_observable(params))
+    if np.iscomplexobj(slopes) or not np.all(np.isfinite(slopes)):
+        raise ContractViolation(
+            f"The loss gradient by observable must be finite and real, got {slopes!r}."
+        )
+    return slopes.astype(np.float64).reshape(-1)
+
+
 def _term_expectations(
     program: "VariationalQuantumAlgorithm",
     param_sets: npt.NDArray[np.float64],
+    loss_gradient: npt.NDArray[np.float64],
 ) -> dict[tuple, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]]:
-    """Per-branch ``(n_sets, n_terms)`` term expectations and matching coefficients.
+    """Per-branch ``(n_sets, n_terms)`` term expectations and each term's weight
+    in the loss.
 
-    Measures every Pauli term of each branch's cost observable in one
-    multi-observable pass; the coefficients are recovered by inspecting the same
-    sampled cohort the cost evaluation used (``_post_spec_batch``),
-    rather than smuggled out through a closure.
+    Measures every Pauli term of each branch's cost observables in one
+    multi-observable pass. A term's weight is its coefficient in its observable
+    times ``loss_gradient`` at that observable; the coefficients are recovered
+    by inspecting the same sampled cohort the cost evaluation used
+    (``_post_spec_batch``), rather than smuggled out through a closure.
     """
     by_branch = _run_metric_by_branch(program, _all_terms_preprocessor(), param_sets)
     source = program._post_spec_batch()
@@ -387,19 +414,30 @@ def _term_expectations(
     payloads: dict[tuple, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
     for branch_key, by_param in by_branch.items():
         source_meta = source.get(branch_key)
-        if source_meta is None or source_meta.observable is None:
+        if source_meta is None or not source_meta.observable:
             raise ContractViolation(
                 "A measured metric branch is absent from the cost cohort or "
                 "carries no observable."
             )
-        _, coeffs = _split_into_terms(source_meta.observable[0])
+        if len(source_meta.observable) != len(loss_gradient):
+            raise ContractViolation(
+                "The loss gradient has one entry per cost observable; this branch "
+                f"has {len(source_meta.observable)} observables and "
+                f"{len(loss_gradient)} entries."
+            )
+        weights = np.concatenate(
+            [
+                _split_into_terms(observable)[1] * loss_gradient[j]
+                for j, observable in enumerate(source_meta.observable)
+            ]
+        )
         rows = np.asarray([by_param[i] for i in sorted(by_param)], dtype=np.float64)
-        if rows.ndim != 2 or rows.shape[1] != len(coeffs):
+        if rows.ndim != 2 or rows.shape[1] != len(weights):
             raise ContractViolation(
                 "Per-term measurement count does not match the branch's "
                 "coefficient count."
             )
-        payloads[branch_key] = (rows, coeffs)
+        payloads[branch_key] = (rows, weights)
     return payloads
 
 
@@ -438,8 +476,8 @@ class FubiniStudyMetricEstimator(MetricEstimator):
     several gates collects the contribution of each of its generators. Unlike
     the pullback metric this is independent of the loss
     observable — it is the geometry of the ansatz state — so it applies to any
-    program with a supported Pauli-rotation ansatz (including PCE, whose loss is
-    a classical objective). It provides only ``metric_fn``; the gradient falls
+    program with a supported Pauli-rotation ansatz, whatever its loss. It
+    provides only ``metric_fn``; the gradient falls
     back to the program's parameter-shift rule.
     """
 

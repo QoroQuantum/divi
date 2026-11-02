@@ -22,7 +22,14 @@ from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import CircuitPreprocessor
 from divi.pipeline._result_keys_operations import average_by_param_set
 from divi.pipeline.abc import ContractViolation
-from divi.qprog import PCE, QAOA, VQE, CustomVQA, FubiniStudyMetricEstimator
+from divi.qprog import (
+    PCE,
+    QAOA,
+    VQE,
+    CustomVQA,
+    FubiniStudyMetricEstimator,
+    VariationalQuantumAlgorithm,
+)
 from divi.qprog._metrics import (
     METRIC_ROUTINE,
     PullbackMetricEstimator,
@@ -440,7 +447,7 @@ def test_pullback_metric_assembly(injectable_vqe, monkeypatch):
 
     jac = 0.5 * (fake[0::2] - fake[1::2])
     np.testing.assert_allclose(grad, jac @ _COEFFS)
-    np.testing.assert_allclose(metric, (jac * _COEFFS**2) @ jac.T / np.sum(_COEFFS**2))
+    np.testing.assert_allclose(metric, (jac * np.abs(_COEFFS)) @ jac.T)
     np.testing.assert_allclose(metric, metric.T, atol=1e-12)
     assert np.linalg.eigvalsh(metric).min() >= -1e-9
 
@@ -471,6 +478,67 @@ def test_pullback_metric_with_all_zero_coefficients_is_zero(
         np.full(n_params, 0.3)
     )
     np.testing.assert_array_equal(metric, np.zeros((n_params, n_params)))
+
+
+def test_pullback_with_constant_slopes_measures_only_the_shifted_points(
+    toy_vqe, mocker
+):
+    evaluate = mocker.spy(toy_vqe, "evaluate")
+    theta = np.full(toy_vqe.n_params, 0.4)
+
+    PullbackMetricEstimator().bind(toy_vqe)["jac"](theta)
+
+    assert evaluate.call_count == 1
+    [param_sets, *_] = evaluate.call_args.args
+    np.testing.assert_allclose(param_sets, toy_vqe._grad_shift_rule[0] + theta)
+
+
+def test_pullback_scales_gradient_and_metric_by_the_programs_slopes(
+    toy_vqe, monkeypatch
+):
+    """A slope of -2.5 scales the gradient by -2.5 and the |c|-weighted metric
+    by 2.5."""
+    theta = np.linspace(0.1, 1.0, toy_vqe.n_params)
+    default = PullbackMetricEstimator().bind(toy_vqe)
+    grad, metric = default["jac"](theta), default["metric_fn"](theta)
+    monkeypatch.setattr(
+        toy_vqe, "_loss_gradient_by_observable", lambda _params: np.array([-2.5])
+    )
+    sloped = PullbackMetricEstimator().bind(toy_vqe)
+
+    np.testing.assert_allclose(sloped["jac"](theta), -2.5 * grad)
+    np.testing.assert_allclose(sloped["metric_fn"](theta), 2.5 * metric)
+
+
+@pytest.mark.parametrize(
+    "slopes", [np.array([np.nan]), np.array([1j])], ids=["nan", "complex"]
+)
+def test_pullback_rejects_slopes_that_are_not_finite_and_real(
+    toy_vqe, monkeypatch, slopes
+):
+    monkeypatch.setattr(toy_vqe, "_loss_gradient_by_observable", lambda _params: slopes)
+    message = (
+        f"The loss gradient by observable must be finite and real, got {slopes!r}."
+    )
+    with pytest.raises(ContractViolation, match=exact_match(message)):
+        PullbackMetricEstimator().bind(toy_vqe)["jac"](np.zeros(toy_vqe.n_params))
+
+
+@pytest.mark.parametrize(
+    "observable, expected",
+    [
+        (None, []),
+        ((SparsePauliOp("Z"),), [1.0]),
+        ((SparsePauliOp("Z"), SparsePauliOp("X"), SparsePauliOp("Y")), [1.0, 0, 0]),
+    ],
+    ids=["none", "one", "three"],
+)
+def test_default_loss_gradient_is_one_for_the_first_observable(observable, expected):
+    program = SimpleNamespace(cost_circuit=SimpleNamespace(observable=observable))
+    slopes = VariationalQuantumAlgorithm._loss_gradient_by_observable(
+        program, np.array([0.3, 1.2])
+    )
+    np.testing.assert_array_equal(slopes, expected)
 
 
 def test_metric_pipeline_terms_sum_to_energy(toy_vqe):
@@ -667,10 +735,9 @@ def test_pce_rejects_pullback_metric(dummy_simulator, default_optimizer):
     pullback metric is rejected up front rather than run on the placeholder."""
     pce = _small_pce(dummy_simulator, default_optimizer)
     message = (
-        "The pullback metric requires the loss to be the expectation value of the "
-        "cost Hamiltonian, but this program's cost computes a classical objective "
-        "(e.g. PCE). Use the Fubini–Study estimator (FubiniStudyMetricEstimator) "
-        "instead."
+        "The pullback metric requires a loss built from expectation values, but "
+        "this program's cost reads raw counts. Use the Fubini–Study estimator "
+        "(FubiniStudyMetricEstimator) instead."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
         QNGOptimizer().validate_program(pce)
@@ -830,13 +897,10 @@ def test_split_into_terms_drops_identity_terms():
     np.testing.assert_allclose(coeffs, [0.5, -0.3])
 
 
-def test_split_into_terms_rejects_an_identity_only_observable():
-    message = (
-        "Pullback metric requires a loss observable with at least one "
-        "non-identity Pauli term."
-    )
-    with pytest.raises(ValueError, match=exact_match(message)):
-        _split_into_terms(SparsePauliOp.from_list([("II", 1.0)]))
+def test_split_into_terms_of_an_identity_only_observable_is_empty():
+    terms, coeffs = _split_into_terms(SparsePauliOp.from_list([("II", 1.0)]))
+    assert terms == ()
+    assert coeffs.shape == (0,)
 
 
 def test_fubini_study_metric_sums_shared_parameters_and_averages_branches(
@@ -965,22 +1029,21 @@ def _expval_program(observable):
     )
 
 
-@pytest.mark.parametrize(
-    "observable",
-    [None, (SparsePauliOp("Z"), SparsePauliOp("X"))],
-    ids=["no-observable", "two-observables"],
-)
-def test_pullback_requires_exactly_one_loss_observable(observable):
+def test_pullback_requires_a_loss_observable():
     message = (
-        "The pullback metric requires the cost circuit to carry exactly one loss "
-        "observable."
+        "The pullback metric requires the cost circuit to carry a loss observable."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        PullbackMetricEstimator().check_compatible(_expval_program(observable))
+        PullbackMetricEstimator().check_compatible(_expval_program(None))
 
 
-def test_pullback_accepts_a_single_loss_observable():
-    PullbackMetricEstimator().check_compatible(_expval_program((SparsePauliOp("Z"),)))
+@pytest.mark.parametrize(
+    "observable",
+    [(SparsePauliOp("Z"),), (SparsePauliOp("Z"), SparsePauliOp("X"))],
+    ids=["one-observable", "two-observables"],
+)
+def test_pullback_accepts_any_cost_observables(observable):
+    PullbackMetricEstimator().check_compatible(_expval_program(observable))
 
 
 _DATA_BOUND_SUPERVISED = (
@@ -1018,28 +1081,78 @@ def test_state_metrics_reject_data_bound_programs(
         estimator().check_compatible(program)
 
 
+def _one_term_vqe(backend, optimizer) -> VQE:
+    return VQE(
+        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5)])),
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        backend=backend,
+        optimizer=optimizer,
+    )
+
+
 def test_term_expectations_rejects_term_count_mismatch(
     dummy_simulator, default_optimizer, monkeypatch
 ):
     """A branch whose measured term count disagrees with its coefficient count
     fails loudly rather than mis-assembling the metric."""
-    vqe = VQE(
-        HamiltonianProblem(SparsePauliOp.from_list([("ZI", 0.5)])),
-        ansatz=GenericLayerAnsatz([RYGate]),
-        n_layers=1,
-        backend=dummy_simulator,
-        optimizer=default_optimizer,
-    )
+    vqe = _one_term_vqe(dummy_simulator, default_optimizer)
     branch_key = next(iter(vqe._post_spec_batch()))
     monkeypatch.setattr(
         "divi.qprog._metrics._run_metric_by_branch",
         lambda _p, _prep, _ps: {branch_key: {0: np.array([0.5, 0.3])}},
     )
+    param_sets = np.zeros((1, vqe.n_params))
     message = (
         "Per-term measurement count does not match the branch's coefficient count."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        _term_expectations(vqe, np.zeros((1, vqe.n_layers * vqe.n_params_per_layer)))
+        _term_expectations(vqe, param_sets, np.ones(1))
+
+
+@pytest.mark.parametrize("n_entries", [0, 2], ids=["too-short", "too-long"])
+def test_term_expectations_rejects_a_loss_gradient_of_the_wrong_length(
+    dummy_simulator, default_optimizer, n_entries
+):
+    vqe = _one_term_vqe(dummy_simulator, default_optimizer)
+    param_sets = np.zeros((1, vqe.n_params))
+    message = (
+        "The loss gradient has one entry per cost observable; this branch has 1 "
+        f"observables and {n_entries} entries."
+    )
+    with pytest.raises(ContractViolation, match=exact_match(message)):
+        _term_expectations(vqe, param_sets, np.ones(n_entries))
+
+
+def test_term_expectations_weights_each_observables_terms_by_its_slope(
+    monkeypatch,
+):
+    """Identity terms carry no weight, an identity-only observable contributes
+    no terms, and each remaining term is its coefficient times its
+    observable's slope."""
+    qc = QuantumCircuit(1)
+    qc.rx(Parameter("theta"), 0)
+    meta = _meta_from(
+        qc,
+        (
+            SparsePauliOp.from_list([("Z", 0.5), ("I", 0.7)]),
+            SparsePauliOp.from_list([("I", 2.0)]),
+            SparsePauliOp.from_list([("X", -0.4), ("Y", 0.1)]),
+        ),
+    )
+    program = SimpleNamespace(_post_spec_batch=lambda: {(("ham", 0),): meta})
+    measured = {0: np.array([0.9, -0.2, 0.3]), 1: np.array([0.1, 0.4, -0.6])}
+    monkeypatch.setattr(
+        "divi.qprog._metrics._run_metric_by_branch",
+        lambda *_: {(("ham", 0),): measured},
+    )
+
+    [(rows, weights)] = _term_expectations(
+        program, np.zeros((2, 1)), np.array([2.0, 5.0, -3.0])
+    ).values()
+
+    np.testing.assert_allclose(weights, [1.0, 1.2, -0.3])
+    np.testing.assert_allclose(rows, [measured[0], measured[1]])
 
 
 @pytest.mark.parametrize(
@@ -1061,7 +1174,7 @@ def test_term_expectations_rejects_an_unusable_source_branch(monkeypatch, source
         "observable."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        _term_expectations(program, np.zeros((1, 1)))
+        _term_expectations(program, np.zeros((1, 1)), np.ones(1))
 
 
 def test_all_terms_preprocessor_rejects_branch_without_observable():
@@ -1072,8 +1185,7 @@ def test_all_terms_preprocessor_rejects_branch_without_observable():
     meta = MetaCircuit(circuit_bodies=(((), circuit_to_dag(qc)),), observable=None)
 
     message = (
-        "The pullback metric requires each cost branch to carry exactly one loss "
-        "observable."
+        "The pullback metric requires each cost branch to carry a loss observable."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
         _split_observable_into_terms(meta)
@@ -1088,6 +1200,28 @@ def test_all_terms_preprocessor_expands_into_a_multi_observable_meta():
 
     assert expanded._was_multi_obs is True
     assert [o.paulis.to_labels() for o in expanded.observable] == [["ZI"], ["XX"]]
+
+
+def test_all_terms_preprocessor_skips_an_identity_only_observable():
+    qc = QuantumCircuit(1)
+    qc.rx(Parameter("a"), 0)
+    meta = _meta_from(qc, (SparsePauliOp.from_list([("I", 2.0)]), SparsePauliOp("Z")))
+
+    expanded = _split_observable_into_terms(meta)
+
+    assert [o.paulis.to_labels() for o in expanded.observable] == [["Z"]]
+
+
+def test_all_terms_preprocessor_rejects_identity_only_cost_observables():
+    qc = QuantumCircuit(1)
+    qc.rx(Parameter("a"), 0)
+    meta = _meta_from(qc, (SparsePauliOp.from_list([("I", 2.0)]),))
+    message = (
+        "The pullback metric requires the cost observables to carry at least one "
+        "non-identity Pauli term."
+    )
+    with pytest.raises(ContractViolation, match=exact_match(message)):
+        _split_observable_into_terms(meta)
 
 
 def test_vqe_runs_under_fubini_study_qng(toy_vqe):
@@ -1145,7 +1279,7 @@ def test_qaoa_qdrift_pullback_uses_sampled_branch_observables(dummy_simulator):
     assert qaoa.cost_circuit.observable is not None
     param_sets = np.zeros((1, len(qaoa.cost_circuit.parameters)))
 
-    branch_payloads = _term_expectations(qaoa, param_sets)
+    branch_payloads = _term_expectations(qaoa, param_sets, np.ones(1))
     sourced = qaoa._post_spec_batch()
 
     assert set(branch_payloads) == set(sourced)
@@ -1242,7 +1376,7 @@ def test_qng_vqe_h2_converges(qp, default_test_simulator):
         MolecularProblem.from_molecule(molecule),
         ansatz=HartreeFockAnsatz(),
         n_layers=1,
-        optimizer=QNGOptimizer(step_size=0.02),
+        optimizer=QNGOptimizer(),
         max_iterations=15,
         backend=default_test_simulator,
         seed=seed,

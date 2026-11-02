@@ -1110,6 +1110,20 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """
         return None
 
+    def _loss_gradient_by_observable(
+        self, params: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """``dL/d<O_j>`` for each cost-circuit observable ``O_j`` at ``params``.
+
+        The loss is the first observable's expectation value plus
+        ``loss_constant``, so the default is ``[1, 0, ...]`` whatever
+        ``params`` is. Programs whose loss is a non-linear function of the
+        expectations override this; branches share the returned slopes.
+        """
+        slopes = np.zeros(len(self.cost_circuit.observable or ()), dtype=np.float64)
+        slopes[:1] = 1.0
+        return slopes
+
     @cached_property
     def _grad_shift_rule(
         self,

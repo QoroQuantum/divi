@@ -320,12 +320,12 @@ def test_pullback_metric_is_psd_relative_to_its_own_scale(
     assert _psd_margin(metric) >= -1e-12
 
 
-def test_pullback_metric_condition_number_squares_the_coefficient_range(
+def test_pullback_metric_condition_number_tracks_the_coefficient_range(
     injectable_vqe, monkeypatch
 ):
-    """``G = (J * c^2) J^T / ||c||^2`` squares the coefficient dynamic range:
-    widening the coefficients by two decades costs four decades of condition
-    number."""
+    """``G = (J * |c|) J^T`` carries the coefficient dynamic range linearly:
+    widening the coefficients by two decades costs about two decades of
+    condition number."""
     n_params = injectable_vqe.n_layers * injectable_vqe.n_params_per_layer
     n_terms = 4
     jacobian = np.random.default_rng(1).standard_normal((n_params, n_terms))
@@ -339,13 +339,14 @@ def test_pullback_metric_condition_number_squares_the_coefficient_range(
         conditions[half_decades] = np.linalg.cond(metric)
 
     growth = conditions[2] / conditions[1]
-    assert 1e3 < growth < 1e5
+    assert 1e1 < growth < 1e3
 
 
 @pytest.mark.parametrize("scale", [1e-3, 1e3])
-def test_pullback_metric_is_unchanged_by_rescaling_the_hamiltonian(
+def test_pullback_metric_scales_with_the_hamiltonian(
     injectable_vqe, monkeypatch, scale
 ):
+    """The metric scales linearly with the Hamiltonian, as the gradient does."""
     n_params = injectable_vqe.n_layers * injectable_vqe.n_params_per_layer
     jacobian = np.random.default_rng(2).standard_normal((n_params, 3))
     coeffs = np.array([0.5, -0.3, 0.2])
@@ -355,7 +356,7 @@ def test_pullback_metric_is_unchanged_by_rescaling_the_hamiltonian(
             np.zeros(n_params)
         )
 
-    np.testing.assert_allclose(metric_for(scale * coeffs), metric_for(coeffs))
+    np.testing.assert_allclose(metric_for(scale * coeffs), scale * metric_for(coeffs))
 
 
 # --- Fubini-Study metric on a degenerate ansatz ----------------------------- #

@@ -122,13 +122,17 @@ parameter-shift gradient with a regularised metric:
 Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
 
 - :class:`~divi.qprog.optimizers.PullbackMetricEstimator` *(default)* shares
-  the Hamiltonian-gradient measurement pass and is unchanged by rescaling the
-  Hamiltonian. It supports expectation-valued VQE and CustomVQA, but not PCE
-  or supervised data-bound losses.
+  the loss-gradient measurement pass and scales with the loss, so rescaling the
+  loss leaves the step unchanged while the metric's mean diagonal is at least 1;
+  below that, the damping stays at ``regularization`` and the step shrinks with
+  the loss. It supports any loss that is a differentiable
+  function of the cost observables' expectation values, weighting each Pauli
+  term by the magnitude of its slope in the loss; it rejects losses read from
+  raw counts and supervised data-bound losses.
 
 - :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` is
-  observable-independent and supports PCE with Pauli-rotation ansatze. It
-  rejects unsupported/composite-angle gates and data-bound programs.
+  observable-independent and supports Pauli-rotation ansatze. It rejects
+  unsupported/composite-angle gates and data-bound programs.
 
 ``solver="tikhonov"`` regularises flat directions; ``solver="pinv"`` uses a
 pseudo-inverse with cutoff ``rcond``.
@@ -414,8 +418,8 @@ Program-Specific Constraints
   safety limit.
 - VQE and ``CustomVQA`` can use exact-gradient methods only when their ansatz
   declares a valid parameter-shift spectrum.
-- PCE uses a classical counts-based objective. Default pullback QNG does not
-  apply; the Fubini–Study estimator supports PCE.
+- A loss computed from raw measurement counts has no gradient, so it needs a
+  gradient-free optimizer.
 - Checkpointing requires an optimizer with restorable state. See
   :doc:`resuming_long_runs` for the compatibility table.
 

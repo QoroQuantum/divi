@@ -137,11 +137,11 @@ def set_unit_shift_rule(vqe) -> int:
 
 def inject_term_expectations(monkeypatch, term_values) -> list[np.ndarray]:
     """Replace the pullback measurement seam with one branch whose per-term
-    expectations and coefficients are ``term_values(param_sets)``; return the list
+    expectations and weights are ``term_values(param_sets)``; return the list
     of parameter batches it was called with."""
     calls = []
 
-    def fake(_program, param_sets):
+    def fake(_program, param_sets, _loss_gradient):
         calls.append(np.array(param_sets))
         return {(("circuit", 0),): term_values(param_sets)}
 
