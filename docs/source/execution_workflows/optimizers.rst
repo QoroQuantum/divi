@@ -17,7 +17,7 @@ Optimizers
      - Controlled by direction count ``V``
    * - ROSALIN or gCANS
      - Adaptive samples for every gradient component
-   * - L-BFGS-B or QNG
+   * - L-BFGS-B, SLSQP or QNG
      - Parameter-shift and, for QNG, metric evaluations
    * - Grid search
      - Exponential in parameter count
@@ -74,6 +74,16 @@ Divi computes these parameter shifts in parallel.
 .. code-block:: python
 
    optimizer = ScipyOptimizer(method=ScipyMethod.L_BFGS_B)
+
+SLSQP
+^^^^^
+
+SLSQP (Sequential Least Squares Programming) is a quasi-Newton method using
+the same parameter-shift gradient as L-BFGS-B.
+
+.. code-block:: python
+
+   optimizer = ScipyOptimizer(method=ScipyMethod.SLSQP)
 
 COBYLA
 ^^^^^^

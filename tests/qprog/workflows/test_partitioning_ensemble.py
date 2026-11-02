@@ -70,13 +70,16 @@ def _make_ensemble(problem, backend, **overrides):
     return PartitioningProgramEnsemble(**kwargs)
 
 
-def test_pce_routine_rejects_graph_problem(dummy_simulator):
-    """quantum_routine='pce' on a graph problem fails at construction with a clear error."""
-    with pytest.raises(TypeError, match="quantum_routine='pce' does not support graph"):
+@pytest.mark.parametrize("routine", ["pce", "progressive_pce"])
+def test_pce_routines_reject_graph_problems(dummy_simulator, routine):
+    """A PCE routine on a graph problem fails at construction with a clear error."""
+    with pytest.raises(
+        TypeError, match=f"quantum_routine='{routine}' does not support graph"
+    ):
         _make_ensemble(
             MaxCutProblem(nx.path_graph(4)),
             dummy_simulator,
-            quantum_routine="pce",
+            quantum_routine=routine,
         )
 
 

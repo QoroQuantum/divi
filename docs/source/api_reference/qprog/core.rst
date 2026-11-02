@@ -13,10 +13,10 @@ uniform return type for decoded solutions.
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
-   :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, TimeEvolution
+   :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, ProgressivePCE, TimeEvolution
    :skip: PCEObjective, ExpectationObjective, SampleObjective, SoftObjective, CVaRObjective
    :skip: PCEEncoding, ParityEncoding, DenseEncoding, PolyEncoding, MultiBasisEncoding, CustomVQA, QNN
-   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz, LUCJAnsatz
+   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz, BrickworkAnsatz, LUCJAnsatz
    :skip: FeatureMap, AngleEmbedding, ZZFeatureMap
    :skip: InitialState, ZerosState, OnesState, SuperpositionState, CustomPerQubitState, WState
    :skip: ScipyOptimizer, ScipyMethod, MonteCarloOptimizer, GridSearchOptimizer, RosalinOptimizer

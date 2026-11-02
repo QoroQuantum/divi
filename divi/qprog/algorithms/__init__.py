@@ -6,6 +6,7 @@
 
 from ._ansatze import (
     Ansatz,
+    BrickworkAnsatz,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
     LUCJAnsatz,
@@ -30,6 +31,7 @@ from ._pce import (
     SampleObjective,
     SoftObjective,
 )
+from ._progressive_pce import ProgressivePCE
 from ._qaoa import QAOA
 from ._qnn import QNN
 from ._time_evolution import TimeEvolution
@@ -37,6 +39,7 @@ from ._time_evolution import TimeEvolution
 __all__ = [
     "AngleEmbedding",
     "Ansatz",
+    "BrickworkAnsatz",
     "CVaRObjective",
     "CustomVQA",
     "DenseEncoding",
@@ -53,6 +56,7 @@ __all__ = [
     "PCEObjective",
     "ParityEncoding",
     "PolyEncoding",
+    "ProgressivePCE",
     "QAOA",
     "QAOAAnsatz",
     "QCCAnsatz",

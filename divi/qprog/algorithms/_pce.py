@@ -226,20 +226,8 @@ class SoftObjective(ExpectationObjective):
     def gradient(
         self, z: npt.NDArray[np.float64], problem: BinaryOptimizationProblem
     ) -> npt.NDArray[np.float64]:
-        """Chain the problem's gradient through the tanh relaxation.
-
-        Warns when ``tanh(alpha * z)`` rounds to ``±1`` for every variable: the
-        loss is then flat to machine precision and gradient steps stall.
-        """
-        u = self.alpha * z
-        if np.all(np.abs(np.tanh(u)) == 1.0):
-            warn(
-                f"SoftObjective(alpha={self.alpha:g}) has saturated: tanh(alpha * z) "
-                "is ±1 for every variable, so the loss is flat and its gradient "
-                "vanishes. Lower alpha or restart from other parameters.",
-                UserWarning,
-            )
-        x_soft, decay = _soft_relaxation(u)
+        """Chain the problem's gradient through the tanh relaxation."""
+        x_soft, decay = _soft_relaxation(self.alpha * z)
         d_energy = problem.relaxed_energy_gradient(x_soft)
         sech_squared = 4.0 * decay / (1.0 + decay) ** 2
         return d_energy * 0.5 * self.alpha * sech_squared
@@ -769,14 +757,9 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         resumes only the PCE that wrote it."""
         compiled, forms, targets = self.problem._relaxation
         term_indices, term_offsets, coeffs, constant = compiled
-        objective = (
-            repr(self.objective)
-            if is_dataclass(self.objective)
-            else type(self.objective).__qualname__
-        )
         payload = (
             repr(self.encoding),
-            objective,
+            self._objective_fingerprint(),
             self.n_qubits,
             [repr(var) for var in self._polynomial.variable_order],
             term_indices.tolist(),
@@ -788,6 +771,12 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             round(self.problem.penalty_weight, 6),
         )
         return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+    def _objective_fingerprint(self) -> str:
+        """The objective's part of the checkpoint fingerprint."""
+        if is_dataclass(self.objective):
+            return repr(self.objective)
+        return type(self.objective).__qualname__
 
     def get_top_solutions(
         self,

@@ -4289,7 +4289,7 @@ requires-dist = [
     { name = "rich", specifier = ">=15.0" },
     { name = "rustworkx", specifier = ">=0.18" },
     { name = "scikit-learn", specifier = ">=1.7,<2.0" },
-    { name = "scipy", specifier = ">=1.16,<2.0" },
+    { name = "scipy", specifier = ">=1.17,<2.0" },
     { name = "stim", specifier = ">=1.15.0,<2.0" },
     { name = "sympy", specifier = ">=1.14,<2.0" },
     { name = "textual", specifier = ">=8.1.1,<9.0.0" },

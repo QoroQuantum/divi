@@ -20,14 +20,19 @@ class ScipyMethod(Enum):
     NELDER_MEAD = "Nelder-Mead"
     COBYLA = "COBYLA"
     L_BFGS_B = "L-BFGS-B"
+    SLSQP = "SLSQP"
+
+
+_GRADIENT_METHODS = frozenset({ScipyMethod.L_BFGS_B, ScipyMethod.SLSQP})
 
 
 class ScipyOptimizer(Optimizer):
     """
     Optimizer wrapper for scipy.optimize methods.
 
-    Supports gradient-free and gradient-based optimisation algorithms from scipy,
-    including Nelder-Mead simplex, COBYLA, and L-BFGS-B.
+    Supports gradient-free and gradient-based optimisation algorithms from scipy:
+    Nelder-Mead simplex and COBYLA, which use only loss values, and L-BFGS-B and
+    SLSQP, which also use the program's gradient.
     """
 
     def __init__(self, method: ScipyMethod):
@@ -78,7 +83,7 @@ class ScipyOptimizer(Optimizer):
 
                 - max_iterations (int, optional): Total desired number of iterations.
                   Defaults to None (no limit for some methods).
-                - jac (Callable): Gradient function (only used for L-BFGS-B).
+                - jac (Callable): Gradient function (used by L-BFGS-B and SLSQP).
 
         Returns:
             OptimizeResult: Optimisation result with final parameters and cost value.
@@ -116,9 +121,7 @@ class ScipyOptimizer(Optimizer):
             cost_fn,
             initial_params.reshape(-1),
             method=self.method.value,
-            jac=(
-                kwargs.pop("jac", None) if self.method == ScipyMethod.L_BFGS_B else None
-            ),
+            jac=kwargs.pop("jac", None) if self.method in _GRADIENT_METHODS else None,
             callback=callback_wrapper,
             options={"maxiter": maxiter},
         )

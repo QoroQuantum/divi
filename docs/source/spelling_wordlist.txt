@@ -6,6 +6,7 @@ Adjoint
 Aer
 ai
 al
+Alfonso
 alkane
 Anandkumar
 ancilla
@@ -29,10 +30,16 @@ ax
 backend
 backends
 Bärtschi
+binarisation
+Binarisation
+Binarization
+binarise
+binarised
 bitstring
 bitstrings
 booleans
 bools
+Borrallo
 Braket
 Broyden
 cacheable
@@ -180,6 +187,7 @@ Kashefi
 kernighan
 Killoran
 Kraus
+Krompiec
 Kübler
 kwarg
 kwargs
@@ -195,6 +203,7 @@ macOS
 Majumder
 Makefile
 Martín
+Martínez
 memoizes
 metis
 mHa
@@ -245,7 +254,9 @@ orchestrators
 orientational
 orqviz
 Ostermeier
+Otero
 oversample
+Padín
 param
 parameterisation
 parameterises
@@ -314,6 +325,7 @@ realizations
 regressor
 regularization
 renderer
+Rentero
 reproducibility
 rescale
 rescaling
@@ -321,6 +333,7 @@ restorable
 resumable
 reweights
 rng
+Rodríguez
 rtype
 runnable
 runopts
@@ -334,6 +347,7 @@ Shanno
 shorthands
 solvated
 solvation
+Soloviev
 Somma
 Spall
 spo
@@ -346,6 +360,7 @@ stdout
 Storn
 subclasses
 subclassing
+subdirectories
 subdirectory
 subgraph
 subgraphs
@@ -381,6 +396,7 @@ tunable
 uint
 Umathe
 uncompute
+unbinarised
 unconverged
 undamped
 undersample

@@ -29,6 +29,7 @@ from scipy.stats import unitary_group
 from divi.hamiltonians._chem import _spo_from_integrals
 from divi.qprog import (
     VQE,
+    BrickworkAnsatz,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
     LUCJAnsatz,
@@ -371,6 +372,51 @@ class TestGenericLayerAnsatz:
             list(params[1:4]),
             [params[4]],
         ]
+
+
+# --- Test BrickworkAnsatz ---
+class TestBrickworkAnsatz:
+    """Tests for the BrickworkAnsatz class."""
+
+    def test_builds_x_y_z_rotations_each_followed_by_a_brick(self):
+        """Five qubits: RX, bricks (0,1)(2,3); RY, bricks (1,2)(3,4); RZ,
+        bricks (0,1)(2,3), every gate on its own angle in that order."""
+        params = ParameterVector("p", 21)
+        qc = _build_circuit(BrickworkAnsatz(), list(params), 5, 1)
+
+        expected = []
+        angles = iter(params)
+        for rotation, pairs in (
+            ("rx", [(0, 1), (2, 3)]),
+            ("ry", [(1, 2), (3, 4)]),
+            ("rz", [(0, 1), (2, 3)]),
+        ):
+            expected += [(rotation, (q,), (next(angles),)) for q in range(5)]
+            expected += [("rxx", pair, (next(angles),)) for pair in pairs]
+        assert _instructions(qc) == expected
+
+    @pytest.mark.parametrize(
+        "n_qubits, n_params", [(1, 3), (2, 8), (3, 12), (4, 17), (5, 21)]
+    )
+    def test_counts_three_rotations_per_qubit_and_one_angle_per_brick(
+        self, n_qubits, n_params
+    ):
+        assert BrickworkAnsatz().n_params_per_layer(n_qubits) == n_params
+
+    def test_repeats_the_block_per_layer_with_fresh_angles(self):
+        params = ParameterVector("p", 2 * 8)
+        qc = _build_circuit(BrickworkAnsatz(RZZGate), list(params), 2, 2)
+
+        assert gate_names(qc) == ["rx", "rx", "rzz", "ry", "ry", "rz", "rz", "rzz"] * 2
+        assert [instr.operation.params[0] for instr in qc.data] == list(params)
+
+    def test_rejects_an_entangler_outside_the_pauli_rotations(self):
+        message = (
+            "entangler must be one of RXXGate, RYYGate, RZZGate, RZXGate, "
+            f"got {CXGate!r}."
+        )
+        with pytest.raises(TypeError, match=exact_match(message)):
+            BrickworkAnsatz(CXGate)
 
 
 @pytest.mark.parametrize(
@@ -1000,6 +1046,8 @@ def _finite_difference_gradient(vqe, params, step=1e-4):
         # Ansaetze on the default (1, 1) rule: measured over a 4*pi window to
         # carry frequency 1 exactly, so the two-term rule is right for them.
         (lambda: GenericLayerAnsatz([RYGate, RZGate]), 4, 2, 1, None),
+        (BrickworkAnsatz, 4, 2, 1, None),
+        (lambda: BrickworkAnsatz(RZZGate), 4, 2, 2, None),
         (QCCAnsatz, 4, 2, 1, None),
         (QCCAnsatz, 4, 2, 2, None),
         # Ansaetze that declare their own frequencies. Hartree-Fock is exact

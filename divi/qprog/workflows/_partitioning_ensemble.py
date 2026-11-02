@@ -9,7 +9,7 @@ from typing import Literal
 
 from divi.backends import CircuitRunner
 from divi.qprog.aggregation import AggregationStrategy, BeamSearchStrategy
-from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA
+from divi.qprog.algorithms import PCE, QAOA, IterativeQAOA, ProgressivePCE
 from divi.qprog.ensemble import ProgramEnsemble, ReportingLevel, _child_seed
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import QAOAProblem
@@ -32,10 +32,12 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         backend: Backend for circuit execution.
         optimizer: Optimizer for each sub-program.
         quantum_routine: Per-partition quantum algorithm.
-            ``"qaoa"`` (default), ``"pce"``, or ``"iterative_qaoa"``.
+            ``"qaoa"`` (default), ``"pce"``, ``"progressive_pce"``, or
+            ``"iterative_qaoa"``.
         max_iterations: Max optimisation iterations per sub-program; per depth
-            for ``"iterative_qaoa"``, unless ``max_iterations_per_depth`` is
-            passed.
+            for ``"iterative_qaoa"`` and per step for ``"progressive_pce"``,
+            unless ``max_iterations_per_depth`` or ``max_iterations_per_step``
+            is passed.
         **kwargs: If ``early_stopping`` is present it is extracted and
             deep-copied per sub-program.  ``reporting_level`` accepts a
             :class:`~divi.qprog.ReportingLevel` controlling how much live
@@ -52,7 +54,9 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         n_layers: int,
         backend: CircuitRunner,
         optimizer: Optimizer,
-        quantum_routine: Literal["qaoa", "pce", "iterative_qaoa"] = "qaoa",
+        quantum_routine: Literal[
+            "qaoa", "pce", "progressive_pce", "iterative_qaoa"
+        ] = "qaoa",
         max_iterations: int = 10,
         **kwargs,
     ):
@@ -73,6 +77,10 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         _ENGINE_MAP = {
             "qaoa": (QAOA, dict(max_iterations=max_iterations, n_layers=n_layers)),
             "pce": (PCE, dict(max_iterations=max_iterations, n_layers=n_layers)),
+            "progressive_pce": (
+                ProgressivePCE,
+                dict(max_iterations_per_step=max_iterations, n_layers=n_layers),
+            ),
             "iterative_qaoa": (
                 IterativeQAOA,
                 dict(max_depth=n_layers, max_iterations_per_depth=max_iterations),
@@ -89,9 +97,11 @@ class PartitioningProgramEnsemble(ProgramEnsemble):
         self._engine_cls, engine_args = _ENGINE_MAP[routine]
 
         # PCE needs BinaryOptimizationProblem partitions; graph problems yield graph sub-problems.
-        if routine == "pce" and isinstance(self._problem, _GraphProblemBase):
+        if routine in ("pce", "progressive_pce") and isinstance(
+            self._problem, _GraphProblemBase
+        ):
             raise TypeError(
-                "quantum_routine='pce' does not support graph problems "
+                f"quantum_routine={routine!r} does not support graph problems "
                 f"({type(self._problem).__name__}): their partitions are graph "
                 "sub-problems, which PCE cannot consume. Use quantum_routine='qaoa' "
                 "or 'iterative_qaoa', or model the problem as a QUBO with "

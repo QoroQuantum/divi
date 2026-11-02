@@ -24,7 +24,12 @@ _SCIPY_STATE = (
 
 
 @pytest.fixture(
-    params=[ScipyMethod.L_BFGS_B, ScipyMethod.COBYLA, ScipyMethod.NELDER_MEAD],
+    params=[
+        ScipyMethod.L_BFGS_B,
+        ScipyMethod.SLSQP,
+        ScipyMethod.COBYLA,
+        ScipyMethod.NELDER_MEAD,
+    ],
     ids=lambda method: method.value,
 )
 def scipy_contract_optimizer(request):
@@ -91,10 +96,12 @@ class TestScipyOptimizer:
         ("method", "expects_jac"),
         [
             (ScipyMethod.L_BFGS_B, True),
+            (ScipyMethod.SLSQP, True),
             (ScipyMethod.NELDER_MEAD, False),
+            (ScipyMethod.COBYLA, False),
         ],
     )
-    def test_optimize_passes_jac_only_for_l_bfgs_b(
+    def test_optimize_passes_jac_only_to_gradient_methods(
         self, method: ScipyMethod, expects_jac: bool, monkeypatch
     ):
         """Ensure jacobian callbacks are only forwarded when supported."""

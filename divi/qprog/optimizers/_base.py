@@ -82,8 +82,8 @@ class Optimizer(ABC):
                   stochastic optimizers (PymooOptimizer, MonteCarloOptimizer).
                   Defaults to a new generator if not provided.
                 - jac (Callable, optional): Gradient/Jacobian function for
-                  gradient-based optimizers (only used by ScipyOptimizer with
-                  L_BFGS_B method). Defaults to None.
+                  gradient-based optimizers (used by ScipyOptimizer with the
+                  L_BFGS_B and SLSQP methods). Defaults to None.
 
         Returns:
             OptimizeResult whose ``x`` is the single best parameter set as a 1-D

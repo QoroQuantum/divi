@@ -620,27 +620,6 @@ def test_soft_objective_keeps_the_precision_of_a_vanishing_variable(make_pce):
     )
 
 
-def test_soft_objective_warns_when_every_variable_saturates(make_pce):
-    pce = make_pce()
-    with pytest.warns(
-        UserWarning,
-        match=exact_match(
-            "SoftObjective(alpha=1) has saturated: tanh(alpha * z) is ±1 for every "
-            "variable, so the loss is flat and its gradient vanishes. Lower alpha "
-            "or restart from other parameters."
-        ),
-    ):
-        SoftObjective(alpha=1.0).gradient(np.array([25.0, -30.0]), pce.problem)
-
-
-def test_soft_objective_is_silent_while_one_variable_can_move(make_pce):
-    pce = make_pce()
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        gradient = SoftObjective(alpha=1.0).gradient(np.array([25.0, 0.3]), pce.problem)
-    assert gradient[1] != 0.0
-
-
 # ---------------------------------------------------------------------------
 # sample_solution / solution property
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from divi.qprog import (
     HierarchicalStrategy,
     MonteCarloOptimizer,
     MultiBasisEncoding,
+    ProgressivePCE,
     ScipyMethod,
     ScipyOptimizer,
 )
@@ -1174,6 +1175,33 @@ class TestQUBOPartitioningEnsemble:
 
         assert all(
             len(program.best_probs[0]) == 1 for program in ensemble.programs.values()
+        )
+        np.testing.assert_array_equal(solution, np.array([1, 1, 0, 0]))
+        assert energy == pytest.approx(-1.5)
+
+    @pytest.mark.e2e
+    def test_qubo_partitioning_progressive_pce_e2e(
+        self, make_maestro_simulator, basic_ansatz
+    ):
+        """Each partition runs its own progressive-alpha steps, and the
+        aggregate reaches the known optimum."""
+        ensemble = PartitioningProgramEnsemble(
+            problem=make_decomposed_problem(make_known_qubo_bqm()),
+            n_layers=2,
+            quantum_routine="progressive_pce",
+            ansatz=basic_ansatz,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=15,
+            backend=make_maestro_simulator(),
+            seed=1997,
+        )
+
+        ensemble.run(batch_config=BatchConfig(_sort_programs=True))
+        solution, energy = ensemble.aggregate_results()
+
+        assert all(
+            isinstance(program, ProgressivePCE) and program.step_history
+            for program in ensemble.programs.values()
         )
         np.testing.assert_array_equal(solution, np.array([1, 1, 0, 0]))
         assert energy == pytest.approx(-1.5)

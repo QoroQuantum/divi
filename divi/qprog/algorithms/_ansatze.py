@@ -25,7 +25,16 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 from qiskit.circuit import Gate, QuantumCircuit
-from qiskit.circuit.library import RXGate, RYGate, RZGate, RZZGate, XXPlusYYGate
+from qiskit.circuit.library import (
+    RXGate,
+    RXXGate,
+    RYGate,
+    RYYGate,
+    RZGate,
+    RZXGate,
+    RZZGate,
+    XXPlusYYGate,
+)
 from scipy.optimize import least_squares
 
 from divi._optional import import_optional
@@ -294,6 +303,66 @@ class GenericLayerAnsatz(Ansatz):
                 for wire_a, wire_b in layout:
                     qc.append(self.entangler(), [wire_a, wire_b])  # type: ignore[call-arg]
 
+        return qc
+
+
+_BRICKWORK_ENTANGLERS = (RXXGate, RYYGate, RZZGate, RZXGate)
+
+
+class BrickworkAnsatz(Ansatz):
+    """The brickwork circuit of Sciorilli et al. (2025), used with PCE.
+
+    Each layer applies an ``RX`` rotation to every qubit followed by the
+    entangler on the pairs ``(0, 1), (2, 3), ...``; an ``RY`` rotation to
+    every qubit followed by the entangler on ``(1, 2), (3, 4), ...``; and an
+    ``RZ`` rotation to every qubit followed by the entangler on the first
+    pairs again. Every gate has its own angle, so a layer on ``n`` qubits
+    with ``e`` first and ``o`` second pairs has ``3n + 2e + o`` parameters.
+
+    Args:
+        entangler: Two-qubit Pauli rotation between neighbours: ``RXXGate``
+            (the default), ``RYYGate``, ``RZZGate`` or ``RZXGate``.
+
+    Raises:
+        TypeError: If ``entangler`` is not one of those gates.
+    """
+
+    def __init__(self, entangler: type[Gate] = RXXGate):
+        if entangler not in _BRICKWORK_ENTANGLERS:
+            names = ", ".join(gate.__name__ for gate in _BRICKWORK_ENTANGLERS)
+            raise TypeError(f"entangler must be one of {names}, got {entangler!r}.")
+        self.entangler = entangler
+
+    @staticmethod
+    def _bricks(n_qubits: int) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+        """The first and second brick sublayers' qubit pairs."""
+        first = [(q, q + 1) for q in range(0, n_qubits - 1, 2)]
+        second = [(q, q + 1) for q in range(1, n_qubits - 1, 2)]
+        return first, second
+
+    def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
+        """``3 * n_qubits`` rotations plus one angle per brick."""
+        first, second = self._bricks(n_qubits)
+        return _require_trainable_params(
+            3 * n_qubits + 2 * len(first) + len(second), self.name
+        )
+
+    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+        first, second = self._bricks(n_qubits)
+        sublayers = (
+            (RXGate, first),
+            (RYGate, second),
+            (RZGate, first),
+        )
+        params = np.asarray(params, dtype=object).reshape(n_layers, -1)
+        qc = QuantumCircuit(n_qubits)
+        for layer_params in params:
+            angles = iter(layer_params)
+            for rotation, pairs in sublayers:
+                for q in range(n_qubits):
+                    qc.append(rotation(next(angles)), [q])
+                for pair in pairs:
+                    qc.append(self.entangler(next(angles)), list(pair))
         return qc
 
 

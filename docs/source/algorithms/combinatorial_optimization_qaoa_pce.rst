@@ -15,6 +15,9 @@ Divi provides several routes from a graph, QUBO, or HUBO to a binary solution.
    * - :class:`~divi.qprog.algorithms.PCE`
      - Encodes the variables of a QUBO or HUBO as Pauli correlations, using
        logarithmic or square-root qubit scaling.
+   * - :class:`~divi.qprog.algorithms.ProgressivePCE`
+     - Runs PCE at a growing binarisation parameter, warm-starting each step,
+       until every variable is binarised.
    * - :class:`~divi.qprog.algorithms.IterativeQAOA`
      - Increases QAOA depth gradually and warm-starts each depth; runs several
        optimisations.
@@ -394,9 +397,7 @@ Gradient-based optimizers receive the gradient of the soft objective: the
 parameter-shift derivatives of the variables' expectations, chained through the
 relaxation. It is exact on a backend that computes expectation values and
 carries the shot noise of the measured expectations on a sampling backend.
-Once :math:`\tanh(\alpha \langle P_i \rangle)` rounds to :math:`\pm 1` for every
-variable, the loss is flat and its gradient vanishes; PCE warns when that
-happens. :class:`~divi.qprog.optimizers.QNGOptimizer`'s default pullback metric weights
+:class:`~divi.qprog.optimizers.QNGOptimizer`'s default pullback metric weights
 each variable by the objective's local slope.
 :class:`~divi.qprog.algorithms.CVaRObjective` has no gradient, so it
 needs a gradient-free optimizer, and shot-adaptive optimizers
@@ -434,6 +435,10 @@ drive PCE, whose loss has no shot-noise variance of its own.
    print(f"Best solution: {best.decoded} (energy={best.energy})")
    print(f"Qubits: {pce.n_qubits} for {pce.n_vars} variables")
 
+:class:`~divi.qprog.algorithms.BrickworkAnsatz` is the circuit of Sciorilli et
+al. [#sciorilli2025]_: X, Y and Z rotation layers, each followed by an ``RXX``
+brick on alternating neighbour pairs.
+
 With :class:`~divi.qprog.algorithms.MultiBasisEncoding`, a gradient-based
 optimizer can train on the exact gradient:
 
@@ -462,6 +467,62 @@ optimizer can train on the exact gradient:
 
    print(f"Qubits: {pce.n_qubits} for {pce.n_vars} variables")
    print(f"Solution: {pce.get_top_solutions(n=1, sort_by='energy')[0]}")
+
+Progressive Binarisation
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+A small ``alpha`` leaves variables fractional; a large one flattens the
+landscape. :class:`~divi.qprog.algorithms.ProgressivePCE` implements the
+continuation scheme of Padín-Martínez et al. [#padinmartinez2026]_. Each step
+trains :class:`~divi.qprog.algorithms.SoftObjective`, warm-started from the
+previous step, then raises ``alpha`` so the unbinarised variable closest to
+``threshold`` reaches it, where a variable's binarisation is
+:math:`b_i = |\tanh(\alpha \langle P_i \rangle)|`. The run stops when every
+:math:`b_i` reaches ``threshold``, after ``max_steps``, or, with a warning,
+past ``max_alpha``.
+
+The encoding defaults to ``MultiBasisEncoding(order=2)``; Z-parity encodings
+usually binarise at the first step. ``max_iterations_per_step`` takes an
+integer or a callable ``(step) -> int``.
+
+The result is the last step. If that step's sign-rounded assignment breaks a
+:class:`~divi.qprog.problems.LinearConstraint`, it is instead the earlier step
+with the lowest-energy feasible assignment. With ``max_restarts``, a run with
+no feasible step restarts from ``initial_alpha`` and fresh parameters. Neither
+rule is in the paper; both target relaxations that park two variables at
+complementary fractional values until a large ``alpha`` step breaks the
+constraint. :attr:`~divi.qprog.algorithms.ProgressivePCE.result_step` names
+the step read out; :attr:`~divi.qprog.algorithms.ProgressivePCE.step_history`
+records every step. Checkpoints are written per step under ``step_NN``
+subdirectories, and :meth:`~divi.qprog.VariationalQuantumAlgorithm.load_state`
+resumes at the step where the run stopped.
+
+.. code-block:: python
+
+   import numpy as np
+
+   from divi.backends import MaestroSimulator
+   from divi.qprog import ProgressivePCE
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import BinaryOptimizationProblem
+
+   qubo = np.triu(np.random.default_rng(3).uniform(-1, 1, (9, 9)))
+   progressive = ProgressivePCE(
+       BinaryOptimizationProblem(qubo),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       max_iterations_per_step=20,
+       backend=MaestroSimulator(),
+       seed=1997,
+   )
+   progressive.run()
+
+   for entry in progressive.step_history:
+       print(
+           f"step {entry['step']}: alpha={entry['alpha']:.3g}, "
+           f"binarised {entry['binarised_fraction']:.0%}"
+       )
+   print(f"Solution: {progressive.get_top_solutions(n=1)[0].bitstring}")
 
 HUBO Problems
 -------------
@@ -941,6 +1002,9 @@ The per-partition engine is chosen via ``quantum_routine``:
 
 - ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.
 - ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding`` and ``objective``).
+- ``quantum_routine="progressive_pce"``: :class:`~divi.qprog.algorithms.ProgressivePCE` partitions;
+  ``max_iterations`` is the budget per step, and ``initial_alpha``,
+  ``threshold`` and the other ProgressivePCE kwargs are passed directly.
 - ``quantum_routine="iterative_qaoa"``: :class:`~divi.qprog.algorithms.IterativeQAOA` partitions with warm-started depth progression.
   Pass ``strategy``, ``max_iterations_per_depth``, and other IterativeQAOA-specific kwargs
   directly; ``n_layers`` is used as ``max_depth``.
@@ -1079,3 +1143,5 @@ References
 ----------
 
 .. [#sciorilli2025] Sciorilli, M., Borges, L., Patti, T. L., García-Martín, D., Camilo, G., Anandkumar, A., & Aolita, L. (2025). Towards large-scale quantum optimization solvers with few qubits. *Nature Communications*, 16, 476.
+
+.. [#padinmartinez2026] Padín-Martínez, J., Soloviev, V. P., Borrallo-Rentero, A., Rodríguez-Otero, A., Alfonso-Rodríguez, R., & Krompiec, M. (2026). Progressive Binarization - Pauli Correlation Encoding: a Continuation Method for Constrained Optimization. `arXiv:2602.17479 <https://arxiv.org/abs/2602.17479>`_.

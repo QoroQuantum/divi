@@ -19,6 +19,7 @@ from tests.qprog._helpers import RecordingProgressSession
 _OPTIMIZER_FACTORIES = [
     ("monte-carlo", lambda: MonteCarloOptimizer(population_size=5, n_best_sets=2)),
     ("l-bfgs-b", lambda: ScipyOptimizer(method=ScipyMethod.L_BFGS_B)),
+    ("slsqp", lambda: ScipyOptimizer(method=ScipyMethod.SLSQP)),
     ("cobyla", lambda: ScipyOptimizer(method=ScipyMethod.COBYLA)),
     ("nelder-mead", lambda: ScipyOptimizer(method=ScipyMethod.NELDER_MEAD)),
     ("cmaes", lambda: PymooOptimizer(method=PymooMethod.CMAES, population_size=10)),
@@ -59,7 +60,11 @@ def optimizer(request):
 
 @pytest.fixture(
     **_fixture_kwargs(
-        [variant for variant in _OPTIMIZER_FACTORIES if variant[0] != "l-bfgs-b"]
+        [
+            variant
+            for variant in _OPTIMIZER_FACTORIES
+            if variant[0] not in {"l-bfgs-b", "slsqp"}
+        ]
     )
 )
 def gradient_free_optimizer(request):

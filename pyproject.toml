@@ -27,7 +27,7 @@ dependencies = [
     "qiskit>=2.6",
     # Scientific computing and numerical operations
     "numpy",
-    "scipy>=1.16,<2.0",
+    "scipy>=1.17,<2.0",
     "sympy>=1.14,<2.0",
     "scikit-learn>=1.7,<2.0",
     # Graph operations and partitioning
