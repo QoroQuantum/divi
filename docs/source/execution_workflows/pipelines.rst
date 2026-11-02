@@ -151,12 +151,6 @@ Divi ships with the following built-in stages:
      - Generates randomised Pauli-twirl variants of each circuit.
        Used alongside :class:`~divi.pipeline.stages.QEMStage` when the QEM
        protocol requests twirls (e.g. ``QuEPP(n_twirls=10)``).
-   * - :class:`~divi.pipeline.stages.PCECostStage`
-     - Bundle
-     - Computes the custom counts-based objective for ``PCE``-based algorithms.
-       In soft mode it evaluates a smooth surrogate from the measured bitstring
-       distribution; in hard mode it evaluates a discrete CVaR-style objective
-       over sampled energies.
 
 
 .. _dry-run:
@@ -409,7 +403,7 @@ solution-extracting programs add a ``sample`` protocol from
        return self.cost_circuit
 
    def cost_preprocessor(self):
-       # Public + overridable (PCE returns a counts-based variant).
+       # Public + overridable, e.g. to read raw counts instead.
        # identity transform, EXPVALS, recurring per evaluation (the defaults)
        return CircuitPreprocessor("cost", cache_key="cost")
 

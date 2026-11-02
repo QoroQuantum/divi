@@ -352,20 +352,54 @@ Pauli Correlation Encoding (PCE)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 :class:`~divi.qprog.algorithms.PCE` solves the same
-:class:`~divi.qprog.problems.BinaryOptimizationProblem` through a compressed
-parity encoding. ``encoding_type="dense"`` needs
-:math:`\lceil\log_2(N + 1)\rceil` qubits for *N* variables;
-``encoding_type="poly"`` chooses the smallest *q* for which
-:math:`q(q + 1)/2 \geq N`.
+:class:`~divi.qprog.problems.BinaryOptimizationProblem` on fewer qubits by
+mapping each variable to a Pauli string. ``encoding`` chooses the strings:
+
+- :class:`~divi.qprog.algorithms.DenseEncoding` (the default): variable *i* is
+  the Z-parity of the qubits set in the binary form of :math:`i + 1`, so *N*
+  variables need :math:`\lceil\log_2(N + 1)\rceil` qubits.
+- :class:`~divi.qprog.algorithms.PolyEncoding`: each variable is the Z-parity of
+  one or two qubits, on the smallest *q* with :math:`q(q + 1)/2 \geq N`.
+- :class:`~divi.qprog.algorithms.MultiBasisEncoding`: each variable is an
+  ``order``-body correlator :math:`X^{\otimes k}`, :math:`Y^{\otimes k}` or
+  :math:`Z^{\otimes k}`, so *q* qubits hold :math:`3\binom{q}{k}` variables
+  [#sciorilli2025]_.
+
+Every encoding takes an ``n_qubits`` override above its minimum. The parity
+encodings decode each sampled bitstring to an assignment, so
+:meth:`~divi.qprog.algorithms.PCE.get_top_solutions` ranks a distribution of
+candidates. A multi-basis encoding's strings do not commute, so no bitstring
+decodes; each variable is read as the sign of its expectation value instead,
+:math:`x_i = [\langle P_i \rangle > 0]`, and ``get_top_solutions`` returns that
+single assignment. The sign rounds the trained relaxation, so that assignment's
+energy can differ from the optimised soft loss. On a sampling backend a multi-basis evaluation measures up
+to three circuits, one per Pauli letter, where the parity encodings measure one.
 
 ``objective`` selects what is minimised during optimisation, and each objective
 carries its own setting. :class:`~divi.qprog.algorithms.SoftObjective` (the
-default) evaluates the problem on a smooth relaxation of the parity
-expectations, :math:`x_i = (1 + \tanh(\alpha \langle Z_i \rangle)) / 2`; a
+default) evaluates the problem on a smooth relaxation of each variable's
+expectation value, :math:`x_i = (1 + \tanh(\alpha \langle P_i \rangle)) / 2`; a
 larger ``alpha`` pushes the variables towards 0 and 1 at the cost of a flatter
-landscape. :class:`~divi.qprog.algorithms.CVaRObjective` minimises the mean
-energy of the lowest ``fraction`` of sampled bitstrings and needs a sampling
-backend.
+landscape. Without an explicit ``objective``, a multi-basis encoding on *q*
+qubits uses ``SoftObjective(alpha=1.5 * q ** (k // 2))``, the scaling reported
+by Sciorilli et al. [#sciorilli2025]_; the regularisation term of their loss is
+not included. :class:`~divi.qprog.algorithms.CVaRObjective` minimises the mean
+energy of the lowest ``fraction`` of sampled bitstrings; it needs a sampling
+backend and a parity encoding.
+
+Gradient-based optimizers receive the gradient of the soft objective: the
+parameter-shift derivatives of the variables' expectations, chained through the
+relaxation. It is exact on a backend that computes expectation values and
+carries the shot noise of the measured expectations on a sampling backend.
+Once :math:`\tanh(\alpha \langle P_i \rangle)` rounds to :math:`\pm 1` for every
+variable, the loss is flat and its gradient vanishes; PCE warns when that
+happens. :class:`~divi.qprog.optimizers.QNGOptimizer`'s default pullback metric weights
+each variable by the objective's local slope.
+:class:`~divi.qprog.algorithms.CVaRObjective` has no gradient, so it
+needs a gradient-free optimizer, and shot-adaptive optimizers
+(:class:`~divi.qprog.optimizers.RosalinOptimizer`, and
+:class:`~divi.qprog.optimizers.QUIVEROptimizer` with adaptive shots) cannot
+drive PCE, whose loss has no shot-noise variance of its own.
 
 .. dashboard-example: pce
 
@@ -374,14 +408,14 @@ backend.
    import numpy as np
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import PCE, SoftObjective
+   from divi.qprog import PCE, DenseEncoding, SoftObjective
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import BinaryOptimizationProblem
 
    qubo = np.array([[-1.0, 2.0], [0.0, 1.0]])
    pce = PCE(
        problem=BinaryOptimizationProblem(qubo),
-       encoding_type="dense",
+       encoding=DenseEncoding(),
        objective=SoftObjective(alpha=2.0),
        n_layers=2,
        optimizer=MonteCarloOptimizer(population_size=8),
@@ -396,6 +430,35 @@ backend.
    )[0]
    print(f"Best solution: {best.decoded} (energy={best.energy})")
    print(f"Qubits: {pce.n_qubits} for {pce.n_vars} variables")
+
+With :class:`~divi.qprog.algorithms.MultiBasisEncoding`, a gradient-based
+optimizer can train on the exact gradient:
+
+.. code-block:: python
+
+   import numpy as np
+
+   from divi.backends import MaestroSimulator
+   from divi.qprog import PCE, MultiBasisEncoding
+   from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+   from divi.qprog.problems import BinaryOptimizationProblem
+
+   qubo = np.array(
+       [[-1.0, 2.0, 0.0, 0.5], [0.0, 1.0, -1.5, 0.0], [0.0, 0.0, -0.5, 1.0], [0.0, 0.0, 0.0, 0.3]]
+   )
+   pce = PCE(
+       problem=BinaryOptimizationProblem(qubo),
+       encoding=MultiBasisEncoding(order=2),
+       n_layers=2,
+       optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+       max_iterations=20,
+       backend=MaestroSimulator(),
+       seed=42,
+   )
+   pce.run()
+
+   print(f"Qubits: {pce.n_qubits} for {pce.n_vars} variables")
+   print(f"Solution: {pce.get_top_solutions(n=1, sort_by='energy')[0]}")
 
 HUBO Problems
 -------------
@@ -874,7 +937,7 @@ QUBO Partitioning (QAOA or PCE)
 The per-partition engine is chosen via ``quantum_routine``:
 
 - ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.
-- ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding_type`` and ``objective``).
+- ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding`` and ``objective``).
 - ``quantum_routine="iterative_qaoa"``: :class:`~divi.qprog.algorithms.IterativeQAOA` partitions with warm-started depth progression.
   Pass ``strategy``, ``max_iterations_per_depth``, and other IterativeQAOA-specific kwargs
   directly; ``n_layers`` is used as ``max_depth``.
@@ -887,7 +950,7 @@ ensemble arguments change:
    import dimod
    import hybrid
    from qiskit.circuit.library import RYGate, RZGate
-   from divi.qprog import InterpolationStrategy, SoftObjective
+   from divi.qprog import DenseEncoding, InterpolationStrategy, SoftObjective
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.workflows import PartitioningProgramEnsemble
    from divi.qprog.algorithms import GenericLayerAnsatz
@@ -925,7 +988,7 @@ ensemble arguments change:
        quantum_routine="pce",
        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
        n_layers=2,
-       encoding_type="dense",
+       encoding=DenseEncoding(),
        objective=SoftObjective(alpha=2.0),
        optimizer=optimizer,
        max_iterations=10,
@@ -1008,3 +1071,8 @@ Next Steps
 - :doc:`../tools/qubo_characterization` — diagnose a QUBO and find
   ``γ`` / ``β`` before running QAOA
 - :doc:`../api_reference/qprog/problems` — full :class:`~divi.qprog.problems.QAOAProblem` API
+
+References
+----------
+
+.. [#sciorilli2025] Sciorilli, M., Borges, L., Patti, T. L., García-Martín, D., Camilo, G., Anandkumar, A., & Aolita, L. (2025). Towards large-scale quantum optimization solvers with few qubits. *Nature Communications*, 16, 476.

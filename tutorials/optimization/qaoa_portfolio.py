@@ -19,7 +19,7 @@ import itertools
 
 import numpy as np
 
-from divi.qprog import PCE, QAOA
+from divi.qprog import PCE, QAOA, PolyEncoding
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     LinearConstraint,
@@ -106,7 +106,7 @@ def allocate_weights(backend, sigma: np.ndarray) -> None:
     print(f"Allocation: weights of {TICKERS[:n]} in steps of 1/{n_steps}")
     pce = PCE(
         problem,
-        encoding_type="poly",
+        encoding=PolyEncoding(),
         n_layers=2,
         optimizer=MonteCarloOptimizer(population_size=10),
         max_iterations=10,

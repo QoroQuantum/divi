@@ -28,12 +28,12 @@ from divi.hamiltonians import (
 )
 from divi.hamiltonians._polynomial import (
     _PARALLEL_POLY_MIN_WORK,
+    _binary_polynomial_gradient,
     _compute_hard_cvar_energy_jit,
     _eval_poly_1d_jit,
     _eval_poly_2d_jit,
     _evaluate_binary_polynomial,
 )
-from divi.pipeline.stages._pce_cost_stage import _compute_hard_cvar_energy
 from tests._helpers import exact_match
 
 
@@ -444,29 +444,24 @@ class TestEvalPoly2dJit:
 
 
 class TestComputeHardCvarEnergyJit:
-    def test_matches_python_fallback(self):
-        """JIT CVaR matches the Python fallback path."""
-        Q = np.diag([1.0, 2.0])
-        problem = _make_problem(Q)
-        compiled = compile_problem(problem)
-        ti, to, tc, const = compiled
-
-        parities = np.array([[0, 1, 0, 1], [0, 0, 1, 1]], dtype=np.uint8)
+    @pytest.mark.parametrize(
+        "fraction, expected",
+        [(0.25, 0.0), (0.5, 0.2), (1.0, 1.0)],
+        ids=["inside-lowest-state", "spills-into-next", "whole-histogram"],
+    )
+    def test_averages_the_lowest_energy_shots(self, fraction, expected):
+        """diag([1, 2]) scores the four states 3, 2, 1, 0 with 10, 20, 30, 40
+        shots: the best quarter is all energy 0; the best half adds 10 shots
+        at 1 (10/50); the whole histogram averages to 100/100."""
+        ti, to, tc, const = compile_problem(_make_problem(np.diag([1.0, 2.0])))
+        x_vals = np.array([[1.0, 0.0, 1.0, 0.0], [1.0, 1.0, 0.0, 0.0]])
         counts = np.array([10.0, 20.0, 30.0, 40.0])
-        total_shots = 100.0
-        alpha_cvar = 0.25
 
-        expected = _compute_hard_cvar_energy(
-            parities, counts, total_shots, problem, alpha_cvar
-        )
-        x_vals = np.ascontiguousarray(1.0 - parities.astype(np.float64))
-        result = float(
-            _compute_hard_cvar_energy_jit(
-                x_vals, counts, total_shots, alpha_cvar, ti, to, tc, const
-            )
+        result = _compute_hard_cvar_energy_jit(
+            x_vals, counts, 100.0, fraction, ti, to, tc, const
         )
 
-        assert result == pytest.approx(expected, rel=1e-10)
+        assert result == pytest.approx(expected)
 
     def test_all_equal_energies(self):
         """When all states have the same energy, CVaR equals that energy."""
@@ -484,8 +479,8 @@ class TestComputeHardCvarEnergyJit:
         )
         assert result == pytest.approx(0.0)
 
-    def test_alpha_cvar_selects_tail(self):
-        """Smaller alpha_cvar selects lower-energy tail."""
+    def test_smaller_fraction_selects_a_lower_tail(self):
+        """A smaller fraction averages a lower-energy tail."""
         Q = np.diag([1.0, 2.0])
         problem = _make_problem(Q)
         ti, to, tc, const = compile_problem(problem)
@@ -520,6 +515,36 @@ class TestComputeHardCvarEnergyJit:
         )
 
         assert result == 0.0
+
+
+class TestBinaryPolynomialGradient:
+    @pytest.mark.parametrize(
+        "problem",
+        [
+            _make_problem(np.array([[1.0, -2.0, 0.5], [0.0, 3.0, 1.5], [0, 0, -1.0]])),
+            _make_hubo_problem({(0,): -1.0, (1, 2): 0.7, (0, 1, 2): 2.5, (): 4.0}),
+        ],
+        ids=["qubo", "cubic-hubo"],
+    )
+    def test_matches_central_differences(self, problem):
+        """The analytic gradient of the de-linearised evaluation matches a
+        central difference of ``_evaluate_binary_polynomial`` at an interior
+        point."""
+        compiled = compile_problem(problem)
+        x = np.array([0.3, 0.6, 0.8])
+        step = 1e-6
+        numeric = [
+            (
+                _evaluate_binary_polynomial(x + step * e, problem, _compiled=compiled)
+                - _evaluate_binary_polynomial(x - step * e, problem, _compiled=compiled)
+            )
+            / (2 * step)
+            for e in np.eye(3)
+        ]
+
+        np.testing.assert_allclose(
+            _binary_polynomial_gradient(x, compiled), numeric, rtol=1e-6
+        )
 
 
 @pytest.mark.parametrize(

@@ -7,6 +7,7 @@ Aer
 ai
 al
 alkane
+Anandkumar
 ancilla
 Ångstroms
 ansatz
@@ -14,6 +15,7 @@ ansatze
 ansätze
 ansatzes
 antiferromagnetically
+Aolita
 arg
 args
 arity
@@ -35,6 +37,7 @@ Braket
 Broyden
 cacheable
 callables
+Camilo
 cancellable
 Capacitated
 cardinality
@@ -60,6 +63,7 @@ composable
 computable
 config
 ConfigDict
+correlator
 CSR
 Ctrl
 CustomVQA
@@ -130,6 +134,7 @@ Fortran
 fourier
 Fubini
 Gacon
+García
 gCANS
 Gemma
 Goldfarb
@@ -181,6 +186,7 @@ kwargs
 lexicographically
 lifecycle
 lin
+linearisation
 Lipschitz
 LLM
 Lookahead
@@ -188,6 +194,7 @@ Louvain
 macOS
 Majumder
 Makefile
+Martín
 memoizes
 metis
 mHa
@@ -318,6 +325,7 @@ runnable
 runopts
 RustworkX
 scalable
+Sciorilli
 scipy
 Sdg
 semidefinite

@@ -7,38 +7,28 @@ import warnings
 import dimod
 import numpy as np
 import pytest
-from qiskit.circuit.library import CYGate, RYGate, RZGate
+from qiskit.circuit.library import CXGate, CYGate, RYGate, RZGate
 
+from divi.backends import MaestroConfig
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
-from divi.pipeline.stages import (
-    CircuitSpecStage,
-    ParameterBindingStage,
-    PCECostStage,
-    PCEObjective,
-    PreprocessStage,
-)
-from divi.pipeline.stages._pce_cost_stage import (
-    _compute_hard_cvar_energy,
-    _compute_soft_energy,
-)
+from divi.pipeline import ResultFormat
+from divi.pipeline.stages import MeasurementStage
 from divi.qprog import (
     PCE,
     CVaRObjective,
+    DenseEncoding,
+    ExpectationObjective,
     MonteCarloOptimizer,
+    MultiBasisEncoding,
+    PolyEncoding,
+    QNGOptimizer,
     ScipyMethod,
     ScipyOptimizer,
     SoftObjective,
 )
 from divi.qprog.algorithms import GenericLayerAnsatz
-from divi.qprog.algorithms._pce import (
-    _aggregate_param_group,
-    _decode_parities,
-    _mask_to_int,
-    _masks_to_ham_ops,
-    _pack_masks,
-    _setup_poly_encoding,
-)
+from divi.qprog.algorithms._pce import _decode_parities, _pack_masks
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
 from tests._helpers import exact_match
@@ -53,6 +43,8 @@ from tests.qprog.problems._helpers import (
     PCE_QUBO_SOLUTION,
     exact_hubo_minima,
 )
+
+_QUBO_3 = np.array([[1.0, -2.0, 0.5], [0.0, 3.0, 1.5], [0.0, 0.0, -1.0]])
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
@@ -147,43 +139,40 @@ def test_pce_hubo_basic_initialization(make_pce):
     verify_cost_circuit(pce)
 
 
-def test_pce_cost_pipeline_uses_custom_stage_stack(make_pce):
-    """PCE should own its counts-based cost pipeline explicitly."""
-    pce = make_pce(n_layers=1)
+@pytest.mark.parametrize(
+    "objective, result_format",
+    [(SoftObjective(), ResultFormat.EXPVALS), (CVaRObjective(), ResultFormat.COUNTS)],
+    ids=["soft", "cvar"],
+)
+def test_pce_cost_pipeline_measures_through_measurement_stage(
+    make_pce, objective, result_format
+):
+    """Expectation objectives read the variables' expectations, sample
+    objectives the raw counts, both through the ordinary MeasurementStage."""
+    pce = make_pce(n_layers=1, objective=objective)
 
-    pipeline = pce._build_preprocessor_pipeline(pce.cost_preprocessor())
-    assert [type(stage) for stage in pipeline.stages] == [
-        CircuitSpecStage,
-        PreprocessStage,
-        PCECostStage,
-        ParameterBindingStage,
-    ]
-
-
-@pytest.mark.parametrize("measure_all_qubits", [True, False])
-def test_pce_measure_all_qubits_threads_to_cost_stage(make_pce, measure_all_qubits):
-    """The mixin's ``measure_all_qubits`` reaches PCE's dedicated cost stage."""
-    pce = make_pce(measure_all_qubits=measure_all_qubits)
-    cost_stage = pce._pce_cost_preprocessor.terminal_stage
-    assert isinstance(cost_stage, PCECostStage)
-    assert cost_stage._measure_all is measure_all_qubits
+    preprocessor = pce.cost_preprocessor()
+    pipeline = pce._build_preprocessor_pipeline(preprocessor)
+    assert preprocessor.result_format is result_format
+    assert any(isinstance(stage, MeasurementStage) for stage in pipeline.stages)
 
 
-def test_pce_measure_all_qubits_defaults_to_false(make_pce):
-    pce = make_pce()
-    assert pce._pce_cost_preprocessor.terminal_stage._measure_all is False
-
-
-def test_pce_custom_decoder_overrides_explicit_restrict_request(make_pce):
-    """The mask-union restriction is only sound for the built-in decoder, so a
-    custom decoder forces full measurement even if ``measure_all_qubits=False``
-    is passed — a boolean cannot describe which bits a custom decoder reads."""
-
-    def custom_decoder(state_strings, variable_masks_u64):
-        return np.zeros((len(variable_masks_u64), len(state_strings)), dtype=np.uint8)
-
-    pce = make_pce(decode_parities_fn=custom_decoder, measure_all_qubits=False)
-    assert pce._pce_cost_preprocessor.terminal_stage._measure_all is True
+@pytest.mark.parametrize(
+    "encoding, strings",
+    [
+        (DenseEncoding(), ["ZI", "IZ", "ZZ"]),
+        (PolyEncoding(), ["ZI", "IZ", "ZZ"]),
+        (MultiBasisEncoding(order=1), ["X", "Y", "Z"]),
+    ],
+    ids=["dense", "poly", "multi-basis"],
+)
+def test_pce_cost_circuit_measures_one_pauli_string_per_variable(
+    make_pce, encoding, strings
+):
+    """Mask bit j is bitstring position n - 1 - j, so dense variable 0 (mask 0b01)
+    is Z on qubit 1, which Qiskit labels ZI."""
+    pce = make_pce(problem=np.eye(3), encoding=encoding)
+    assert [str(op.paulis[0]) for op in pce.cost_circuit.observable] == strings
 
 
 _EXTRA_QUBITS_WARNING = exact_match(
@@ -192,40 +181,54 @@ _EXTRA_QUBITS_WARNING = exact_match(
 )
 
 
-def test_pce_n_qubits_validation_and_warning(make_pce):
-    qubo = np.zeros((3, 3))
+@pytest.mark.parametrize(
+    "n_vars, too_few, too_many, minimum",
+    [
+        (3, DenseEncoding(n_qubits=1), DenseEncoding(n_qubits=3), 2),
+        (4, PolyEncoding(n_qubits=2), PolyEncoding(n_qubits=4), 3),
+        (
+            10,
+            MultiBasisEncoding(order=2, n_qubits=3),
+            MultiBasisEncoding(order=2, n_qubits=5),
+            4,
+        ),
+    ],
+    ids=["dense", "poly", "multi-basis"],
+)
+def test_pce_n_qubits_validation_and_warning(
+    make_pce, n_vars, too_few, too_many, minimum
+):
+    qubo = np.zeros((n_vars, n_vars))
 
     with pytest.raises(
         ValueError,
         match=exact_match(
-            "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
-            "Got n_qubits=1, minimum=2."
+            f"{type(too_few).__name__} needs n_qubits >= {minimum} for {n_vars} "
+            f"variables, got n_qubits={too_few.n_qubits}."
         ),
     ):
-        make_pce(problem=qubo, n_qubits=1)
+        make_pce(problem=qubo, encoding=too_few)
 
     with pytest.warns(UserWarning, match=_EXTRA_QUBITS_WARNING):
-        pce = make_pce(problem=qubo, n_qubits=3)
-    assert pce.n_qubits == 3
+        pce = make_pce(problem=qubo, encoding=too_many)
+    assert pce.n_qubits == too_many.n_qubits
 
 
 @pytest.mark.parametrize(
-    "n_vars, encoding_type, n_qubits",
-    [(3, "dense", 2), (6, "poly", 3)],
-    ids=["dense", "poly"],
+    "n_vars, encoding",
+    [
+        (3, DenseEncoding(n_qubits=2)),
+        (6, PolyEncoding(n_qubits=3)),
+        (9, MultiBasisEncoding(order=2, n_qubits=3)),
+    ],
+    ids=["dense", "poly", "multi-basis"],
 )
-def test_pce_accepts_the_minimum_n_qubits_silently(
-    make_pce, n_vars, encoding_type, n_qubits
-):
+def test_pce_accepts_the_minimum_n_qubits_silently(make_pce, n_vars, encoding):
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        pce = make_pce(
-            problem=np.zeros((n_vars, n_vars)),
-            n_qubits=n_qubits,
-            encoding_type=encoding_type,
-        )
+        pce = make_pce(problem=np.zeros((n_vars, n_vars)), encoding=encoding)
 
-    assert pce.n_qubits == n_qubits
+    assert pce.n_qubits == encoding.n_qubits
 
 
 @pytest.mark.parametrize(
@@ -233,11 +236,11 @@ def test_pce_accepts_the_minimum_n_qubits_silently(
     [(5, [1, 2, 4, 3, 5]), (6, [1, 2, 4, 3, 5, 6])],
     ids=["stops-at-n-vars", "reaches-the-last-pair"],
 )
-def test_poly_encoding_masks(n_vars, expected_masks):
-    n_qubits, masks = _setup_poly_encoding(n_vars, None)
+def test_poly_encoding_masks(make_pce, n_vars, expected_masks):
+    pce = make_pce(problem=np.zeros((n_vars, n_vars)), encoding=PolyEncoding())
 
-    assert n_qubits == 3
-    assert masks.tolist() == expected_masks
+    assert pce.n_qubits == 3
+    assert pce.encoding._masks(n_vars, pce.n_qubits).tolist() == expected_masks
 
 
 def test_pce_default_ansatz_is_hardware_efficient_and_entangling(
@@ -302,9 +305,50 @@ def test_pce_qem_protocol_raises(make_pce):
         make_pce(problem=np.eye(2), qem_protocol=object())
 
 
-def test_pce_invalid_encoding_type(make_pce):
-    with pytest.raises(ValueError, match="Unknown encoding_type: sparse"):
-        make_pce(problem=np.zeros((2, 2)), encoding_type="sparse")
+def test_pce_rejects_a_non_encoding(make_pce):
+    with pytest.raises(
+        TypeError, match=exact_match("encoding must be a PCEEncoding, got str.")
+    ):
+        make_pce(encoding="dense")
+
+
+def test_pce_rejects_a_sample_objective_on_multi_basis(make_pce):
+    with pytest.raises(
+        TypeError,
+        match=exact_match(
+            "CVaRObjective scores sampled bitstrings, which MultiBasisEncoding "
+            "cannot decode. Use an ExpectationObjective such as SoftObjective."
+        ),
+    ):
+        make_pce(encoding=MultiBasisEncoding(), objective=CVaRObjective())
+
+
+def test_multi_basis_encoding_rejects_order_zero():
+    with pytest.raises(
+        ValueError, match=exact_match("order must be at least 1, got 0")
+    ):
+        MultiBasisEncoding(order=0)
+
+
+@pytest.mark.parametrize(
+    "order, n_vars, n_qubits, first, last",
+    [
+        (1, 3, 1, ("X", (0,)), ("Z", (0,))),
+        (2, 9, 3, ("XX", (0, 1)), ("ZZ", (1, 2))),
+        (2, 10, 4, ("XX", (0, 1)), ("YY", (1, 2))),
+        (3, 12, 4, ("XXX", (0, 1, 2)), ("ZZZ", (1, 2, 3))),
+    ],
+    ids=["order-1", "order-2-full", "order-2-partial", "order-3-full"],
+)
+def test_multi_basis_layout_fills_letters_then_subsets(
+    order, n_vars, n_qubits, first, last
+):
+    """q qubits hold 3*C(q, k) variables: X strings first, then Y, then Z."""
+    q, strings = MultiBasisEncoding(order=order).layout(n_vars)
+    assert q == n_qubits
+    assert len(strings) == n_vars
+    assert strings[0] == first
+    assert strings[-1] == last
 
 
 def test_pce_rejects_non_binary_problem():
@@ -366,20 +410,15 @@ def test_pce_runs_when_the_backend_suits_the_objective(
     )
     pce.run()
     assert len(pce.losses_history) == 1
+    assert np.isfinite(pce.best_loss)
 
 
-@pytest.mark.parametrize(
-    "objective", [SoftObjective(alpha=50.0), CVaRObjective(fraction=0.4)]
-)
-def test_pce_threads_its_objective_to_the_cost_stage(make_pce, objective):
-    """The objective alone selects the cost mode; a large alpha stays soft."""
-    stage = make_pce(objective=objective)._pce_cost_preprocessor.terminal_stage
-    assert stage._objective is objective
-
-
-class _ConstantObjective(PCEObjective):
-    def score(self, parities, counts, problem, compiled):
+class _ConstantObjective(ExpectationObjective):
+    def score(self, z, problem, compiled):
         return 7.0
+
+    def gradient(self, z, problem, compiled):
+        return np.zeros_like(z)
 
 
 def test_pce_minimises_a_custom_objective(make_pce):
@@ -392,10 +431,29 @@ def test_pce_defaults_to_the_soft_objective(make_pce):
     assert make_pce().objective == SoftObjective(alpha=2.0)
 
 
+@pytest.mark.parametrize(
+    "order, n_vars, n_qubits, alpha",
+    [(1, 3, 1, 1.5), (2, 9, 3, 4.5), (3, 12, 4, 6.0), (4, 15, 5, 37.5)],
+    ids=["k1", "k2", "k3", "k4"],
+)
+def test_multi_basis_defaults_alpha_to_its_qubit_scaling(
+    make_pce, order, n_vars, n_qubits, alpha
+):
+    """alpha = 1.5 * n ** (k // 2), after Sciorilli et al. (2025)."""
+    pce = make_pce(
+        problem=np.zeros((n_vars, n_vars)), encoding=MultiBasisEncoding(order=order)
+    )
+
+    assert pce.n_qubits == n_qubits
+    assert pce.objective == SoftObjective(alpha=alpha)
+
+
 def test_pce_rejects_a_non_objective(make_pce):
     with pytest.raises(
         TypeError,
-        match=exact_match("objective must be a PCEObjective, got str."),
+        match=exact_match(
+            "objective must be an ExpectationObjective or SampleObjective, got str."
+        ),
     ):
         make_pce(objective="cvar")
 
@@ -422,60 +480,23 @@ def test_objectives_reject_out_of_range_settings(build, message):
 
 
 # ---------------------------------------------------------------------------
-# Poly encoding
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "n_vars,n_qubits,expected_n_qubits,expected_masks,expect_warning",
-    [
-        # N=3: min 2 qubits, capacity 3. Masks [1, 2, 3].
-        (3, None, 2, [1, 2, 3], False),
-        # N=4, n_qubits=5: explicit value respected, warns (exceeds min 3).
-        (4, 5, 5, None, True),
-    ],
-)
-def test_pce_poly_encoding_config(
-    make_pce,
-    n_vars,
-    n_qubits,
-    expected_n_qubits,
-    expected_masks,
-    expect_warning,
-):
-    """Test poly encoding: n_qubits, masks, and n_qubits validation."""
-    qubo = np.zeros((n_vars, n_vars))
-    kwargs = dict(problem=qubo, encoding_type="poly", n_qubits=n_qubits)
-    if expect_warning:
-        with pytest.warns(UserWarning, match="n_qubits exceeds the minimum required"):
-            pce = make_pce(**kwargs)
-    else:
-        pce = make_pce(**kwargs)
-
-    assert pce.n_vars == n_vars
-    assert pce.encoding_type == "poly"
-    assert pce.n_qubits == expected_n_qubits
-    if expected_masks is not None:
-        np.testing.assert_array_equal(
-            pce._variable_masks_u64, np.array(expected_masks, dtype=np.uint64)
-        )
-
-
-def test_pce_poly_n_qubits_too_low_raises(make_pce):
-    """Poly encoding raises when n_qubits is below minimum (N=4 requires 3)."""
-    with pytest.raises(ValueError, match="n_qubits must be >= 3 for poly encoding"):
-        make_pce(problem=np.zeros((4, 4)), n_qubits=2, encoding_type="poly")
-
-
-# ---------------------------------------------------------------------------
 # Energy computation helpers
 # ---------------------------------------------------------------------------
 
 
-def test_pce_hubo_quadratized_objective_helpers(make_pce):
-    """Soft HUBO energy for a cubic term via parity expectations.
+def _parity_expectations(pce, histogram):
+    """Each variable's Z-parity expectation over a ``{state: count}`` histogram."""
+    states, probs = _histogram_to_probs(histogram)
+    masks = pce.encoding._masks(pce.n_vars, pce.n_qubits)
+    return 1.0 - 2.0 * _decode_parities(states, masks).dot(probs)
 
-    hubo = -x0 + 0.25*x1 + 1.5*x0*x1*x2, alpha = 1, histogram (100 shots):
+
+def _score(objective, pce, *args):
+    return objective.score(*args, pce._polynomial, pce._compiled_problem)
+
+
+def test_soft_objective_scores_a_cubic_hubo(make_pce):
+    """hubo = -x0 + 0.25*x1 + 1.5*x0*x1*x2, alpha = 1, histogram (100 shots):
       "000" count=30, "001"=10, "010"=20, "011"=40.
     Parities (x0, x1, x2): 000→[0,0,0], 001→[1,0,1], 010→[0,1,1], 011→[1,1,0].
     mean_parity = [0.5, 0.6, 0.3] → z = [0, -0.2, 0.4].
@@ -488,43 +509,47 @@ def test_pce_hubo_quadratized_objective_helpers(make_pce):
         ("x0", "x1", "x2"): 1.5,
     }
     pce = make_pce(problem=hubo)
+    z = _parity_expectations(pce, {"000": 30, "001": 10, "010": 20, "011": 40})
 
-    state_strings, probs = _histogram_to_probs(
-        {"000": 30, "001": 10, "010": 20, "011": 40}
-    )
-    parities = _decode_parities(state_strings, pce._variable_masks_u64)
-
-    energy = _compute_soft_energy(parities, probs, 1.0, pce.problem.canonical_problem)
+    energy = _score(SoftObjective(alpha=1.0), pce, z)
 
     x0, x1, x2 = (0.5 * (1.0 + np.tanh(z)) for z in (0.0, -0.2, 0.4))
     expected = -1.0 * x0**2 + 0.25 * x1**2 + 1.5 * x0 * x1 * x2
     assert energy == pytest.approx(expected)
 
 
-def test_pce_soft_energy_computation(make_pce):
-    """_compute_soft_energy returns correct energy for a mixed histogram.
-
-    qubo = diag([1, 2]), alpha = 1, histogram: {"00": 3, "11": 1} (4 shots)
+def test_soft_objective_scores_a_mixed_histogram(make_pce):
+    """qubo = diag([1, 2]), alpha = 1, histogram: {"00": 3, "11": 1} (4 shots)
     masks = [1, 2] (one qubit per variable).
 
-    "00"=0: both parities 0.  "11"=3: both parities 1.
-    probs = [0.75, 0.25].
-    mean_parity = [0*0.75 + 1*0.25, 0*0.75 + 1*0.25] = [0.25, 0.25].
-    z = 1 - 2*0.25 = [0.5, 0.5].
+    mean_parity = [0.25, 0.25], so z = [0.5, 0.5].
     x = 0.5*(1 + tanh(0.5)) = e/(e+1)   [algebraic identity].
     energy = 1*x² + 2*x² = 3*(e/(e+1))².
     """
     pce = make_pce(problem=np.diag([1.0, 2.0]))
+    z = _parity_expectations(pce, {"00": 3, "11": 1})
 
-    states = ["00", "11"]
-    counts = np.array([3, 1], dtype=float)
-    probs = counts / counts.sum()
-    parities = _decode_parities(states, pce._variable_masks_u64)
+    result = _score(SoftObjective(alpha=1.0), pce, z)
 
-    result = _compute_soft_energy(parities, probs, 1.0, pce.problem.canonical_problem)
+    assert result == pytest.approx(3.0 * (np.e / (np.e + 1)) ** 2)
 
-    expected = 3.0 * (np.e / (np.e + 1)) ** 2
-    assert result == pytest.approx(expected)
+
+def test_soft_objective_gradient_matches_central_differences(make_pce):
+    pce = make_pce(problem=_QUBO_3)
+    objective = SoftObjective(alpha=1.7)
+    z = np.array([0.2, -0.5, 0.7])
+    step = 1e-6
+    numeric = [
+        (_score(objective, pce, z + step * e) - _score(objective, pce, z - step * e))
+        / (2 * step)
+        for e in np.eye(3)
+    ]
+
+    np.testing.assert_allclose(
+        objective.gradient(z, pce._polynomial, pce._compiled_problem),
+        numeric,
+        rtol=1e-6,
+    )
 
 
 @pytest.mark.parametrize(
@@ -534,161 +559,98 @@ def test_pce_soft_energy_computation(make_pce):
         pytest.param({"10": 2, "01": 3, "00": 5}, 1.6, id="nonzero-tail"),
     ],
 )
-def test_pce_hard_cvar_energy_computation(make_pce, histogram, expected):
-    """_compute_hard_cvar_energy returns correct CVaR for a mixed histogram.
-
-    qubo = diag([1, 2]), alpha_cvar = 0.5, 10 shots; "11" → x=[0,0] (energy 0),
+def test_cvar_objective_averages_the_low_energy_tail(make_pce, histogram, expected):
+    """qubo = diag([1, 2]), fraction = 0.5, 10 shots; "11" → x=[0,0] (energy 0),
     "10" → x=[1,0] (1), "01" → x=[0,1] (2), "00" → x=[1,1] (3).
 
     CVaR(0.5) averages the best ceil(0.5*10)=5 shots:
       zero-energy-head: 4 shots at 0 + 1 shot at 1 → 1/5 = 0.2
       nonzero-tail: 2 shots at 1 + 3 shots at 2 → 8/5 = 1.6
     """
-    pce = make_pce(problem=np.diag([1.0, 2.0]))
+    pce = make_pce(problem=np.diag([1.0, 2.0]), objective=CVaRObjective(fraction=0.5))
 
-    states = list(histogram)
-    counts_arr = np.array(list(histogram.values()), dtype=float)
-    parities = _decode_parities(states, pce._variable_masks_u64)
+    assert pce._score_histogram(pce.objective, histogram) == pytest.approx(expected)
 
-    result = _compute_hard_cvar_energy(
-        parities,
-        counts_arr,
-        counts_arr.sum(),
-        pce.problem.canonical_problem,
-        alpha_cvar=0.5,
+
+@pytest.mark.parametrize("histogram", [{}, {"00": 0}], ids=["empty", "zero-counts"])
+def test_cvar_scoring_rejects_a_histogram_without_shots(make_pce, histogram):
+    pce = make_pce(objective=CVaRObjective())
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Backend returned an empty PCE histogram; the energy is undefined "
+            "without shots. This indicates a backend fault, so check the job's "
+            "results."
+        ),
+    ):
+        pce._score_histogram(pce.objective, histogram)
+
+
+@pytest.mark.parametrize("state", ["0", "000"], ids=["narrower", "wider"])
+def test_cvar_scoring_rejects_bitstrings_not_spanning_the_register(make_pce, state):
+    pce = make_pce(objective=CVaRObjective())
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "Backend returned PCE bitstrings narrower or wider than the 2-qubit "
+            "register; every bitstring must report all qubits for the variables' "
+            "parities to decode."
+        ),
+    ):
+        pce._score_histogram(pce.objective, {state: 10})
+
+
+def test_cvar_cutoff_does_not_round_a_float_product_up(make_pce):
+    """0.07 * 100 is 7.000000000000001 in floating point; the tail is still 7
+    shots, all at energy 0, not 8 with one at energy 3."""
+    pce = make_pce(problem=np.diag([1.0, 2.0]), objective=CVaRObjective(fraction=0.07))
+    assert pce._score_histogram(pce.objective, {"11": 7, "00": 93}) == 0.0
+
+
+@pytest.mark.parametrize("z", [17.0, -18.5], ids=["positive", "negative"])
+def test_soft_objective_gradient_keeps_precision_near_saturation(make_pce, z):
+    """sech^2 is computed without 1 - tanh^2, and x without 1 + tanh, both of
+    which cancel catastrophically once tanh rounds towards +-1."""
+    pce = make_pce(problem=np.array([[1.0]]))
+    gradient = SoftObjective(alpha=1.0).gradient(
+        np.array([z]), pce._polynomial, pce._compiled_problem
+    )
+    x = 1.0 / (1.0 + np.exp(-2.0 * z))
+    np.testing.assert_allclose(gradient, [2.0 * x * 0.5 / np.cosh(z) ** 2], rtol=1e-12)
+
+
+def test_soft_objective_keeps_the_precision_of_a_vanishing_variable(make_pce):
+    """At z = -25, (1 + tanh(z)) / 2 rounds to 0; x is exp(-50) / (1 + exp(-50))."""
+    pce = make_pce(problem=np.array([[1.0]]))
+    x = np.exp(-50.0) / (1.0 + np.exp(-50.0))
+    assert _score(SoftObjective(alpha=1.0), pce, np.array([-25.0])) == pytest.approx(
+        x**2, rel=1e-12
     )
 
-    assert result == pytest.approx(expected)
+
+def test_soft_objective_warns_when_every_variable_saturates(make_pce):
+    pce = make_pce()
+    with pytest.warns(
+        UserWarning,
+        match=exact_match(
+            "SoftObjective(alpha=1) has saturated: tanh(alpha * z) is ±1 for every "
+            "variable, so the loss is flat and its gradient vanishes. Lower alpha "
+            "or restart from other parameters."
+        ),
+    ):
+        SoftObjective(alpha=1.0).gradient(
+            np.array([25.0, -30.0]), pce._polynomial, pce._compiled_problem
+        )
 
 
-# ---------------------------------------------------------------------------
-# Custom decode_parities_fn
-# ---------------------------------------------------------------------------
-
-
-def test_pce_custom_decode_parities_fn_soft_energy(make_pce):
-    """Custom decode_parities_fn is used in the soft energy path."""
-
-    def all_zeros_decoder(state_strings, variable_masks_u64):
-        n_vars = len(variable_masks_u64)
-        n_states = len(state_strings)
-        return np.zeros((n_vars, n_states), dtype=np.uint8)
-
-    pce = make_pce(decode_parities_fn=all_zeros_decoder)
-
-    state_strings, probs = _histogram_to_probs({"00": 30, "01": 10, "10": 20, "11": 40})
-
-    parities = all_zeros_decoder(state_strings, pce._variable_masks_u64)
-    result = _compute_soft_energy(parities, probs, 1.0, pce.problem.canonical_problem)
-
-    # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
-    z = np.array([1.0, 1.0])
-    x_soft = 0.5 * (1.0 + np.tanh(z))
-    qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
-    expected = float(x_soft @ qubo @ x_soft)
-    assert result == pytest.approx(expected)
-
-
-def test_pce_custom_decode_parities_fn_hard_cvar(make_pce):
-    """Custom decode_parities_fn is used in the hard CVaR energy path."""
-
-    def all_ones_decoder(state_strings, variable_masks_u64):
-        n_vars = len(variable_masks_u64)
-        n_states = len(state_strings)
-        return np.ones((n_vars, n_states), dtype=np.uint8)
-
-    pce = make_pce(
-        problem=np.diag([1.0, 2.0]),
-        decode_parities_fn=all_ones_decoder,
-    )
-
-    merged = {"11": 2, "10": 3, "01": 10, "00": 25}
-    state_strings = list(merged.keys())
-    counts_arr = np.array(list(merged.values()), dtype=float)
-    total_shots = counts_arr.sum()
-
-    parities = all_ones_decoder(state_strings, pce._variable_masks_u64)
-    result = _compute_hard_cvar_energy(
-        parities,
-        counts_arr,
-        total_shots,
-        pce.problem.canonical_problem,
-        alpha_cvar=0.25,
-    )
-
-    # All parities 1 -> x_vals = 0 for all vars/states -> energies all 0 -> CVaR = 0
-    assert result == pytest.approx(0.0)
-
-
-def test_pce_decode_parities_fn_none_uses_default(make_pce):
-    """Passing decode_parities_fn=None uses the built-in decoder (same as omitting)."""
-    pce_default = make_pce()
-    pce_explicit_none = make_pce(decode_parities_fn=None)
-
-    state_strings, probs = _histogram_to_probs({"00": 30, "01": 10, "10": 20, "11": 40})
-
-    parities_default = _decode_parities(state_strings, pce_default._variable_masks_u64)
-    parities_none = _decode_parities(
-        state_strings, pce_explicit_none._variable_masks_u64
-    )
-
-    result_default = _compute_soft_energy(
-        parities_default, probs, 1.0, pce_default.problem.canonical_problem
-    )
-    result_none = _compute_soft_energy(
-        parities_none, probs, 1.0, pce_explicit_none.problem.canonical_problem
-    )
-
-    assert result_default == pytest.approx(result_none)
-
-
-def test_pce_custom_decode_parities_fn_perform_final_computation(
-    mocker, make_pce, qubo_identity
-):
-    """Custom decode_parities_fn is used in sample_solution."""
-
-    # Decoder that returns parities [0, 1] for any input -> solution = 1 - [0,1] = [1, 0]
-    def fixed_decoder(state_strings, variable_masks_u64):
-        n_vars = len(variable_masks_u64)
-        n_states = len(state_strings)
-        out = np.zeros((n_vars, n_states), dtype=np.uint8)
-        out[1, :] = 1  # Second variable parity always 1
-        return out
-
-    pce = make_pce(problem=qubo_identity, decode_parities_fn=fixed_decoder)
-
-    pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
-    pce._results["best_probs"] = {"0_NoMitigation:0_0": {"01": 1.0}}
-    mocker.patch.object(pce, "_run_solution_measurement_for")
-
-    pce.sample_solution()
-
-    # Fixed decoder returns parities [0, 1] -> solution = [1, 0]
-    np.testing.assert_array_equal(_read_solution(pce), np.array([1, 0]))
-
-
-def test_pce_custom_decode_parities_fn_get_top_solutions(make_pce):
-    """Custom decode_parities_fn is used in get_top_solutions."""
-
-    # Decoder that complements the default: return 1 - default_decoder output
-    # So decoded QUBO solution = 1 - (1 - default) = default (same as default)
-    # Or we use a decoder that returns fixed output per state
-    def complement_decoder(state_strings, variable_masks_u64):
-        default = _decode_parities(state_strings, variable_masks_u64)
-        return 1 - default
-
-    pce = make_pce(problem=np.eye(2), decode_parities_fn=complement_decoder)
-
-    _set_probs(pce, {"00": 0.5, "01": 0.3, "10": 0.2, "11": 0.0})
-
-    solutions = pce.get_top_solutions(n=4)
-
-    # Default decoder: "00"->"11", "01"->"01", "10"->"10", "11"->"00"
-    # Complement decoder: "00"->"00", "01"->"10", "10"->"01", "11"->"11"
-    expected_decoded = {"00": 0.5, "10": 0.3, "01": 0.2, "11": 0.0}
-    decoded_map = {sol.bitstring: sol.prob for sol in solutions}
-    for bitstring, expected_prob in expected_decoded.items():
-        assert decoded_map[bitstring] == expected_prob
+def test_soft_objective_is_silent_while_one_variable_can_move(make_pce):
+    pce = make_pce()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", UserWarning)
+        gradient = SoftObjective(alpha=1.0).gradient(
+            np.array([25.0, 0.3]), pce._polynomial, pce._compiled_problem
+        )
+    assert gradient[1] != 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -715,15 +677,14 @@ def test_pce_solution_requires_run(make_pce, qubo_identity):
         _ = pce.solution
 
 
-def test_pce_perform_final_computation_none_eigenstate(mocker, make_pce, qubo_identity):
-    """Without a measured distribution there is no eigenstate, so no solution."""
+def test_pce_solution_needs_a_measured_distribution(mocker, make_pce, qubo_identity):
+    """A sample_solution that measures nothing leaves no solution to read."""
     pce = make_pce(problem=qubo_identity)
     pce._best_params = np.zeros(pce.n_layers * pce.n_params_per_layer)
     mocker.patch.object(pce, "_run_solution_measurement_for")
 
     pce.sample_solution()
 
-    assert pce.eigenstate is None
     with pytest.raises(RuntimeError, match="not available yet"):
         pce.solution
 
@@ -966,11 +927,11 @@ def test_pce_get_top_solutions_no_probs_raises(make_pce):
 
 
 @pytest.mark.parametrize(
-    "encoding_type,qubo,encoded_probs,expected_decoded_map,n_vars",
+    "encoding,qubo,encoded_probs,expected_decoded_map,n_vars",
     [
         # Dense: 2 vars, masks [1,2]. "00"->"11", "01"->"01", "10"->"10", "11"->"00"
         (
-            "dense",
+            DenseEncoding(),
             np.array([[1.0, 0.2], [0.2, 2.0]]),
             {"00": 0.4, "01": 0.3, "10": 0.2, "11": 0.1},
             {"11": 0.4, "01": 0.3, "10": 0.2, "00": 0.1},
@@ -978,7 +939,7 @@ def test_pce_get_top_solutions_no_probs_raises(make_pce):
         ),
         # Poly: 3 vars, masks [1,2,3]. "00"->"111", "01"->"010", "10"->"100", "11"->"001"
         (
-            "poly",
+            PolyEncoding(),
             np.zeros((3, 3)),
             {"00": 0.4, "01": 0.3, "10": 0.2, "11": 0.1},
             {"111": 0.4, "010": 0.3, "100": 0.2, "001": 0.1},
@@ -988,14 +949,14 @@ def test_pce_get_top_solutions_no_probs_raises(make_pce):
 )
 def test_pce_get_top_solutions_decoding_correctness(
     make_pce,
-    encoding_type,
+    encoding,
     qubo,
     encoded_probs,
     expected_decoded_map,
     n_vars,
 ):
     """Decoding produces correct QUBO variable assignments for both encodings."""
-    pce = make_pce(problem=qubo, encoding_type=encoding_type)
+    pce = make_pce(problem=qubo, encoding=encoding)
 
     _set_probs(pce, encoded_probs)
 
@@ -1035,7 +996,8 @@ def test_pce_qubo_e2e_solution(default_test_simulator, basic_ansatz):
     solution = _read_solution(pce)
     assert solution.shape == (qubo.shape[0],)
     assert set(np.unique(solution)).issubset({0, 1})
-    np.testing.assert_array_equal(solution, PCE_QUBO_SOLUTION)
+    [best] = pce.get_top_solutions(n=1, sort_by="energy")
+    assert best.bitstring == "".join(map(str, PCE_QUBO_SOLUTION))
     assert all(
         len(bitstring) == pce.n_qubits
         for probs_dict in pce.best_probs.values()
@@ -1102,6 +1064,39 @@ def test_pce_qubo_e2e_checkpointing_resume(
     assert _read_solution(pce3).shape == (qubo.shape[0],)
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"problem": BinaryOptimizationProblem(PCE_QUBO_MATRIX * 2.0)},
+        {"encoding": PolyEncoding()},
+        {"objective": SoftObjective(alpha=5.0)},
+    ],
+    ids=["problem", "encoding", "objective"],
+)
+def test_pce_refuses_a_checkpoint_from_another_pce(
+    make_maestro_simulator, basic_ansatz, tmp_path, changed
+):
+    """The fingerprint covers the problem's coefficients, the encoding and the
+    objective, not only the qubit layout."""
+    build = dict(
+        problem=BinaryOptimizationProblem(PCE_QUBO_MATRIX),
+        ansatz=basic_ansatz,
+        n_layers=1,
+    )
+    PCE(
+        **build,
+        optimizer=MonteCarloOptimizer(population_size=3, n_best_sets=1),
+        max_iterations=1,
+        backend=make_maestro_simulator(),
+        seed=1997,
+    ).run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+    with pytest.raises(
+        ValueError, match="The checkpoint was written for a different cost Hamiltonian"
+    ):
+        PCE.load_state(tmp_path, backend=make_maestro_simulator(), **(build | changed))
+
+
 @pytest.mark.e2e
 def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz):
     """E2E test for PCE with poly encoding (3 vars, 2 qubits)."""
@@ -1115,7 +1110,7 @@ def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz):
         optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
         max_iterations=5,
         backend=default_test_simulator,
-        encoding_type="poly",
+        encoding=PolyEncoding(),
         seed=1997,
     )
 
@@ -1124,7 +1119,6 @@ def test_pce_poly_e2e_solution(default_test_simulator, basic_ansatz):
     assert len(pce.losses_history) == 5
     assert isinstance(pce.best_loss, float)
     assert isinstance(pce.best_params, np.ndarray)
-    assert pce.encoding_type == "poly"
     assert pce.n_qubits == 2  # N=3: min 2 qubits, capacity 3
     solution = _read_solution(pce)
     assert solution.shape == (qubo.shape[0],)
@@ -1186,73 +1180,6 @@ def test_pce_named_variables_decode_to_names(default_test_simulator, basic_ansat
 
 
 # ---------------------------------------------------------------------------
-# _aggregate_param_group
-# ---------------------------------------------------------------------------
-
-
-class TestAggregateParamGroup:
-    """Tests for _aggregate_param_group covering L44-55."""
-
-    def test_single_histogram(self):
-        """Single param group entry returns its own histogram."""
-        group = [("label_0", {"00": 10, "01": 5})]
-        states, counts, total = _aggregate_param_group(group)
-        assert set(states) == {"00", "01"}
-        assert total == 15.0
-        assert counts.sum() == 15.0
-
-    def test_merges_multiple_histograms(self):
-        """Multiple histograms are merged, overlapping keys summed."""
-        group = [
-            ("label_0", {"00": 10, "01": 5}),
-            ("label_1", {"01": 3, "10": 7}),
-        ]
-        states, counts, total = _aggregate_param_group(group)
-
-        state_to_count = dict(zip(states, counts.tolist()))
-        assert state_to_count["00"] == 10
-        assert state_to_count["01"] == 8  # 5 + 3
-        assert state_to_count["10"] == 7
-        assert total == 25.0
-
-    def test_empty_histograms(self):
-        """Empty histograms produce empty results."""
-        group = [("label_0", {})]
-        states, counts, total = _aggregate_param_group(group)
-        assert states == []
-        assert len(counts) == 0
-        assert total == 0.0
-
-
-# ---------------------------------------------------------------------------
-# _masks_to_ham_ops
-# ---------------------------------------------------------------------------
-
-
-class TestMasksToHamOps:
-    """Tests for _masks_to_ham_ops covering L126-140."""
-
-    @pytest.mark.parametrize(
-        "masks, expected",
-        [
-            pytest.param([1, 2], "ZI;IZ", id="single_qubit_masks"),
-            pytest.param([3], "ZZ", id="two_qubit_mask"),
-            pytest.param([1, 2, 3], "ZI;IZ;ZZ", id="poly_masks"),
-        ],
-    )
-    def test_masks_on_two_qubits(self, masks, expected):
-        """Bit ``i`` of a mask places Z on qubit ``i`` (leftmost character)."""
-        result = _masks_to_ham_ops(np.array(masks, dtype=np.uint64), n_qubits=2)
-        assert result == expected
-
-    def test_identity_mask(self):
-        """Mask 0 → all Identity."""
-        masks = np.array([0], dtype=np.uint64)
-        result = _masks_to_ham_ops(masks, n_qubits=3)
-        assert result == "III"
-
-
-# ---------------------------------------------------------------------------
 # Wide registers (> 64 qubits): limb-based masks and decoding
 # ---------------------------------------------------------------------------
 
@@ -1273,6 +1200,11 @@ def _bits_to_int(bits):
     return val
 
 
+def _limbs_to_int(limbs):
+    """The integer a row of little-endian 64-bit limbs packs."""
+    return sum(int(limb) << (64 * j) for j, limb in enumerate(limbs))
+
+
 class TestWideRegisterMasks:
     """PCE mask/decode machinery must work past the 64-qubit uint64 boundary."""
 
@@ -1286,7 +1218,7 @@ class TestWideRegisterMasks:
         # bit 70 lives in limb 1 (bits 64-127).
         packed = _pack_masks([1 << 3, 1 << 70, (1 << 5) | (1 << 70)], n_qubits=72)
         assert packed.shape == (3, 2)
-        assert [_mask_to_int(row) for row in packed] == [
+        assert [_limbs_to_int(row) for row in packed] == [
             1 << 3,
             1 << 70,
             (1 << 5) | (1 << 70),
@@ -1366,21 +1298,52 @@ class TestWideRegisterMasks:
 
 
 def test_pce_poly_encoding_supports_more_than_64_qubits(make_pce):
-    """A poly-encoded problem forced past 64 qubits builds 2-D limb masks and a
-    cost stage whose relevant wires can exceed 64 — no silent uint64 overflow."""
-    # Small problem, n_qubits forced to 65 (>= min for poly); variable 64's
-    # weight-1 mask is 1<<64, which must land in limb 1.
+    """A poly-encoded problem forced past 64 qubits builds 2-D limb masks and
+    measures a variable on qubit 64 — no silent uint64 overflow."""
     qubo = np.diag(np.ones(65))
-    with pytest.warns(UserWarning, match="n_qubits exceeds the minimum"):
-        pce = make_pce(problem=qubo, n_qubits=65, encoding_type="poly")
+    with pytest.warns(UserWarning, match=_EXTRA_QUBITS_WARNING):
+        pce = make_pce(problem=qubo, encoding=PolyEncoding(n_qubits=65))
 
+    masks = pce.encoding._masks(pce.n_vars, pce.n_qubits)
     assert pce.n_qubits == 65
-    assert pce._variable_masks_u64.ndim == 2
-    assert pce._variable_masks_u64.shape[1] == 2  # two 64-bit limbs
+    assert masks.ndim == 2
+    assert masks.shape[1] == 2  # two 64-bit limbs
     # Variable 64 reads qubit 64 (bit 64 → limb 1).
-    assert _mask_to_int(pce._variable_masks_u64[64]) == 1 << 64
-    relevant = pce._pce_cost_preprocessor.terminal_stage._relevant_wires
-    assert 64 in relevant
+    assert _limbs_to_int(masks[64]) == 1 << 64
+    assert pce.cost_circuit.observable[64].paulis[0].z[0]
+
+
+def _seventy_qubit_pce(make_pce, **kwargs):
+    """70 poly-encoded variables, one per qubit: variable i reads qubit 69 - i."""
+    with pytest.warns(UserWarning, match=_EXTRA_QUBITS_WARNING):
+        return make_pce(
+            problem=np.diag(np.arange(1.0, 71.0)),
+            encoding=PolyEncoding(n_qubits=70),
+            **kwargs,
+        )
+
+
+def test_pce_decodes_a_state_wider_than_64_qubits(make_pce):
+    """Qubit 0 set flips only variable 69; every other parity is even."""
+    pce = _seventy_qubit_pce(make_pce)
+    _set_probs(pce, {"1" + "0" * 69: 1.0})
+
+    [entry] = pce.get_top_solutions(n=1, sort_by="energy")
+
+    assert entry.bitstring == "1" * 69 + "0"
+    assert entry.energy == pytest.approx(sum(range(1, 70)))
+
+
+def test_cvar_scores_a_histogram_wider_than_64_qubits(make_pce):
+    """Half the shots flip variable 69 (energy 2415), half flip variable 0
+    (energy 2484); CVaR(1.0) averages both."""
+    pce = _seventy_qubit_pce(make_pce, objective=CVaRObjective(fraction=1.0))
+    histogram = {"1" + "0" * 69: 5, "0" * 69 + "1": 5}
+
+    cost = pce._score_histogram(pce.objective, histogram)
+
+    total = sum(range(1, 71))
+    assert cost == pytest.approx(((total - 70) + (total - 1)) / 2)
 
 
 # ---------------------------------------------------------------------------
@@ -1488,19 +1451,347 @@ class TestObservableMeasuringContracts(ObservableMeasuringContractsBase):
         return _make
 
 
-def test_one_circuit_per_param_set_per_iteration(make_pce):
-    """PCE spends exactly one circuit per parameter set, plus the final sample.
+# ---------------------------------------------------------------------------
+# Multi-basis encoding and the chain-rule gradient (exact Maestro expectations)
+# ---------------------------------------------------------------------------
 
-    The shared ``verify_correct_circuit_count`` contract models an observable
-    fan-out and so does not apply here: ``PCECostStage`` emits a single
-    Z-basis measurement per spec and reads the whole cost off that one
-    histogram, whatever the problem's term count.
-    """
-    pce = make_pce(max_iterations=3)
+
+def _entangling_pce(backend, optimizer, **kwargs):
+    """``_QUBO_3`` on a two-layer RY/RZ ansatz with CX entanglers."""
+    kwargs.setdefault("problem", BinaryOptimizationProblem(_QUBO_3))
+    return PCE(
+        ansatz=GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate),
+        n_layers=2,
+        optimizer=optimizer,
+        backend=backend,
+        **kwargs,
+    )
+
+
+def _bloch_pce(backend, optimizer, objective=None):
+    """Three variables on one qubit, read as <X>, <Y>, <Z> of RY(theta)|0>."""
+    return PCE(
+        problem=BinaryOptimizationProblem(_QUBO_3),
+        encoding=MultiBasisEncoding(order=1),
+        objective=objective,
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        optimizer=optimizer,
+        backend=backend,
+    )
+
+
+def test_multi_basis_cost_is_the_soft_objective_of_the_bloch_vector(
+    make_maestro_simulator, default_optimizer
+):
+    """RY(theta)|0> has <X> = sin(theta), <Y> = 0, <Z> = cos(theta)."""
+    objective = SoftObjective(alpha=1.3)
+    pce = _bloch_pce(make_maestro_simulator(), default_optimizer, objective)
+    theta = 0.7
+
+    cost = pce._evaluate_cost_param_sets(np.array([[theta]]))[0]
+
+    z = np.array([np.sin(theta), 0.0, np.cos(theta)])
+    assert cost == pytest.approx(_score(objective, pce, z))
+
+
+def test_multi_basis_solution_is_the_sign_of_each_expectation(
+    make_maestro_simulator, default_optimizer
+):
+    """At theta = 2: <X> = 0.91 > 0, <Y> = 0, <Z> = -0.42, so x = 100."""
+    pce = _bloch_pce(make_maestro_simulator(), default_optimizer)
+
+    pce.sample_solution(np.array([2.0]))
+
+    assert pce.best_probs == {0: {"100": 1.0}}
+    np.testing.assert_array_equal(pce.solution, np.array([1, 0, 0]))
+    [entry] = pce.get_top_solutions(sort_by="energy")
+    assert (entry.bitstring, entry.prob) == ("100", 1.0)
+    assert entry.energy == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "encoding", [DenseEncoding(), MultiBasisEncoding()], ids=["dense", "multi-basis"]
+)
+def test_pce_gradient_matches_central_differences(
+    make_maestro_simulator, default_optimizer, encoding
+):
+    """The parameter-shift Jacobian chained through the objective is the exact
+    gradient of the non-linear loss."""
+    pce = _entangling_pce(
+        make_maestro_simulator(),
+        default_optimizer,
+        problem=BinaryOptimizationProblem(
+            np.array(
+                [
+                    [1.0, -2.0, 0.5, 0.0],
+                    [0, 3.0, 1.5, -1.0],
+                    [0, 0, -1.0, 2.0],
+                    [0, 0, 0, 0.5],
+                ]
+            )
+        ),
+        encoding=encoding,
+    )
+    params = np.random.default_rng(5).uniform(0, 2 * np.pi, pce.n_params)
+    step = 1e-5
+    shifted = np.vstack(
+        [params + step * e for e in np.eye(pce.n_params)]
+        + [params - step * e for e in np.eye(pce.n_params)]
+    )
+    losses = np.array(list(pce._evaluate_cost_param_sets(shifted).values()))
+    numeric = (losses[: pce.n_params] - losses[pce.n_params :]) / (2 * step)
+
+    np.testing.assert_allclose(pce._evaluate_gradient_at(params), numeric, atol=1e-6)
+
+
+def test_pce_slopes_reuse_the_latest_cost_evaluation(
+    make_maestro_simulator, default_optimizer, mocker
+):
+    """QNG evaluates the cost at theta just before the gradient, so the slopes
+    need no new measurement; a cold call measures them and agrees."""
+    pce = _entangling_pce(make_maestro_simulator(), default_optimizer)
+    theta = np.random.default_rng(4).uniform(0, 2 * np.pi, pce.n_params)
+    cold = pce._loss_gradient_by_observable(theta)
+
+    pce._evaluate_cost_param_sets(np.atleast_2d(theta))
+    evaluate = mocker.spy(pce, "evaluate")
+    warm = pce._loss_gradient_by_observable(theta)
+
+    assert evaluate.call_count == 0
+    np.testing.assert_allclose(warm, cold)
+
+
+def test_pce_slopes_at_other_parameters_are_measured(
+    make_maestro_simulator, default_optimizer, mocker
+):
+    pce = _entangling_pce(make_maestro_simulator(), default_optimizer)
+    rng = np.random.default_rng(4)
+    evaluated, other = rng.uniform(0, 2 * np.pi, (2, pce.n_params))
+    expected = _entangling_pce(
+        make_maestro_simulator(), default_optimizer
+    )._loss_gradient_by_observable(other)
+
+    pce._evaluate_cost_param_sets(np.atleast_2d(evaluated))
+    evaluate = mocker.spy(pce, "evaluate")
+    slopes = pce._loss_gradient_by_observable(other)
+
+    assert evaluate.call_count == 1
+    np.testing.assert_allclose(slopes, expected)
+
+
+def test_pce_slopes_reuse_every_parameter_set_of_a_batched_evaluation(
+    make_maestro_simulator, default_optimizer, mocker
+):
+    """Every row of a batched cost evaluation is reused, whatever the sign of
+    zero in the parameters."""
+    pce = _entangling_pce(make_maestro_simulator(), default_optimizer)
+    batch = np.random.default_rng(4).uniform(0, 2 * np.pi, (2, pce.n_params))
+    batch[1, 0] = 0.0
+
+    negative_zero = batch[1].copy()
+    negative_zero[0] = -0.0
+
+    pce._evaluate_cost_param_sets(batch)
+    evaluate = mocker.spy(pce, "evaluate")
+    pce._loss_gradient_by_observable(batch[0])
+    pce._loss_gradient_by_observable(negative_zero)
+
+    assert evaluate.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "encoding", [DenseEncoding(), PolyEncoding()], ids=["dense", "poly"]
+)
+@pytest.mark.parametrize("flipped", [(0,), (2,), (0, 1)], ids=["q0", "q2", "q0-q1"])
+def test_parity_expectations_agree_with_decoded_samples(
+    make_maestro_simulator, default_optimizer, encoding, flipped
+):
+    """A basis state measures each variable's Z-parity as exactly +-1, and the
+    cost path must read the same signs the sampled bitstring decodes to."""
+    pce = PCE(
+        problem=BinaryOptimizationProblem(np.eye(6)),
+        encoding=encoding,
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        optimizer=default_optimizer,
+        backend=make_maestro_simulator(),
+    )
+    params = np.array([np.pi if q in flipped else 0.0 for q in range(pce.n_qubits)])
+
+    z = pce._variable_expectations(params)[0]
+    pce.sample_solution(params)
+    [state] = pce.best_probs[0]
+
+    assignment = pce._decode_states([state])[0].astype(int)
+    np.testing.assert_allclose(z, 2 * assignment - 1, atol=1e-9)
+
+
+@pytest.mark.parametrize(
+    "encoding", [DenseEncoding(), PolyEncoding()], ids=["dense", "poly"]
+)
+@pytest.mark.parametrize("flipped", [0, 1, 2], ids=["q0", "q1", "q2"])
+def test_cvar_cost_scores_the_assignment_the_solution_reports(
+    make_maestro_simulator, default_optimizer, encoding, flipped
+):
+    """Raw counts and sampled probabilities both put qubit 0 leftmost, so on a
+    basis state the CVaR cost is the energy of the reported solution."""
+    qubo = np.diag([1.0, 2.0, 4.0, 8.0, 16.0, 32.0])
+    pce = PCE(
+        problem=BinaryOptimizationProblem(qubo),
+        encoding=encoding,
+        objective=CVaRObjective(fraction=1.0),
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        optimizer=default_optimizer,
+        backend=make_maestro_simulator(force_sampling=True),
+    )
+    params = np.array([np.pi if q == flipped else 0.0 for q in range(pce.n_qubits)])
+
+    [counts_key] = pce.evaluate(np.atleast_2d(params), pce.cost_preprocessor())[0]
+    cost = pce._evaluate_cost_param_sets(np.atleast_2d(params))[0]
+    pce.sample_solution(params)
+    [probs_key] = pce.best_probs[0]
+    x = np.array([int(bit) for bit in pce.get_top_solutions(n=1)[0].bitstring])
+
+    assert counts_key == probs_key
+    assert counts_key[flipped] == "1"
+    assert cost == pytest.approx(float(x @ qubo @ x))
+
+
+def test_multi_basis_cost_on_a_sampling_backend_matches_the_exact_cost(
+    make_maestro_simulator, default_optimizer
+):
+    """Basis-rotated sampled estimates of the X, Y and Z correlators give the
+    same soft loss as exact expectation values, within shot noise."""
+
+    def pce_on(backend):
+        return PCE(
+            problem=BinaryOptimizationProblem(_QUBO_3),
+            encoding=MultiBasisEncoding(order=1),
+            ansatz=GenericLayerAnsatz([RYGate, RZGate]),
+            n_layers=2,
+            optimizer=default_optimizer,
+            backend=backend,
+        )
+
+    exact = pce_on(make_maestro_simulator())
+    sampled = pce_on(
+        make_maestro_simulator(
+            shots=200_000, force_sampling=True, maestro_config=MaestroConfig(seed=7)
+        )
+    )
+    params = np.random.default_rng(7).uniform(0, 2 * np.pi, (1, exact.n_params))
+
+    assert sampled._evaluate_cost_param_sets(params)[0] == pytest.approx(
+        exact._evaluate_cost_param_sets(params)[0], abs=0.03
+    )
+
+
+@pytest.mark.parametrize(
+    "encoding", [DenseEncoding(), MultiBasisEncoding()], ids=["dense", "multi-basis"]
+)
+@pytest.mark.parametrize(
+    "optimizer",
+    [
+        ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+        QNGOptimizer(step_size=0.2, max_step_norm=0.5),
+    ],
+    ids=["l-bfgs-b", "qng"],
+)
+def test_gradient_optimizers_lower_the_pce_loss(
+    make_maestro_simulator, encoding, optimizer
+):
+    pce = _entangling_pce(
+        make_maestro_simulator(),
+        optimizer,
+        encoding=encoding,
+        max_iterations=8,
+        seed=11,
+    )
+    pce.run(perform_final_computation=False)
+
+    first_loss = min(pce.losses_history[0].values())
+    assert pce.best_loss < first_loss
+
+
+@pytest.mark.e2e
+def test_multi_basis_pce_resumes_from_a_checkpoint(
+    make_maestro_simulator, basic_ansatz, tmp_path
+):
+    """The encoding is a constructor argument, so a resumed program rebuilt
+    with the same one restores the same sign-decoded solution."""
+    qubo = PCE_QUBO_MATRIX.copy()
+
+    def build(**kwargs):
+        return dict(
+            problem=BinaryOptimizationProblem(qubo),
+            encoding=MultiBasisEncoding(),
+            ansatz=basic_ansatz,
+            n_layers=1,
+            **kwargs,
+        )
+
+    first = PCE(
+        **build(),
+        optimizer=MonteCarloOptimizer(population_size=5, n_best_sets=2),
+        max_iterations=2,
+        backend=make_maestro_simulator(),
+        seed=1997,
+    )
+    first.run(checkpoint_config=CheckpointConfig(checkpoint_dir=tmp_path))
+
+    resumed = PCE.load_state(tmp_path, backend=make_maestro_simulator(), **build())
+
+    assert resumed.current_iteration == 2
+    assert resumed.best_probs == first.best_probs
+    np.testing.assert_array_equal(resumed.solution, first.solution)
+
+
+def test_pce_sample_objective_has_no_gradient(make_pce):
+    pce = make_pce(objective=CVaRObjective())
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "CVaRObjective scores sampled bitstrings and has no gradient; use a "
+            "gradient-free optimizer."
+        ),
+    ):
+        pce._evaluate_gradient_at(np.zeros(pce.n_params))
+
+
+def test_pce_rejects_shot_variance_requests(make_pce):
+    pce = make_pce()
+    with pytest.raises(
+        ValueError,
+        match=exact_match(
+            "PCE does not provide shot-noise variances of its loss, so "
+            "shot-adaptive optimizers (RosalinOptimizer, QUIVEROptimizer with "
+            "adaptive shots) cannot drive it."
+        ),
+    ):
+        pce._evaluate_cost_param_sets(
+            np.zeros((1, pce.n_params)), collect_variance=True
+        )
+
+
+@pytest.mark.parametrize(
+    "encoding, circuits_per_set",
+    [(DenseEncoding(), 1), (MultiBasisEncoding(order=1), 3)],
+    ids=["dense", "multi-basis"],
+)
+def test_cost_spends_one_circuit_per_measured_basis_per_param_set(
+    make_pce, encoding, circuits_per_set
+):
+    """Dense Z-parities share one basis, so each parameter set costs one
+    circuit; order-1 X, Y and Z correlators on one qubit need one each. The
+    run spends what the dry run predicts, plus the final readout."""
+    pce = make_pce(problem=np.eye(3), encoding=encoding, max_iterations=3)
+    per_evaluation = pce.dry_run()["cost"].total_circuits
 
     pce.run()
 
     n_param_sets = pce.optimizer.n_param_sets
-    # Three optimizer iterations, then one all-wires measurement for the
-    # final solution sample.
-    assert pce.total_circuit_count == 3 * n_param_sets + 1
+    assert per_evaluation == circuits_per_set * n_param_sets
+    final_readout = 1 if isinstance(encoding, DenseEncoding) else circuits_per_set
+    assert pce.total_circuit_count == 3 * per_evaluation + final_readout

@@ -11,7 +11,7 @@ import pytest
 from qiskit.quantum_info import SparsePauliOp
 from scipy.linalg import block_diag
 
-from divi.qprog import PCE, QAOA
+from divi.qprog import PCE, QAOA, PolyEncoding
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import DickeState, SuperpositionState
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
@@ -562,7 +562,7 @@ class TestPortfolioAllocation:
         problem = _make_allocation()
         pce = PCE(
             problem,
-            encoding_type="poly",
+            encoding=PolyEncoding(),
             n_layers=1,
             optimizer=MonteCarloOptimizer(population_size=4),
             max_iterations=1,

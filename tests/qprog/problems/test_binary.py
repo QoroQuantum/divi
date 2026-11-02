@@ -21,6 +21,7 @@ from divi.qprog import (
     BeamSearchStrategy,
     HierarchicalStrategy,
     MonteCarloOptimizer,
+    MultiBasisEncoding,
     ScipyMethod,
     ScipyOptimizer,
 )
@@ -1147,6 +1148,34 @@ class TestQUBOPartitioningEnsemble:
         np.testing.assert_array_equal(solution, expected_solution)
 
         assert isinstance(energy, float)
+        assert energy == pytest.approx(-1.5)
+
+    @pytest.mark.e2e
+    def test_qubo_partitioning_multi_basis_pce_aggregates_sign_decoded_partitions(
+        self, make_maestro_simulator, basic_ansatz
+    ):
+        """Each multi-basis partition contributes its one sign-decoded
+        assignment, and the aggregate's energy is that assignment's."""
+        bqm = make_known_qubo_bqm()
+        ensemble = PartitioningProgramEnsemble(
+            problem=make_decomposed_problem(bqm),
+            n_layers=2,
+            quantum_routine="pce",
+            encoding=MultiBasisEncoding(),
+            ansatz=basic_ansatz,
+            optimizer=ScipyOptimizer(method=ScipyMethod.COBYLA),
+            max_iterations=15,
+            backend=make_maestro_simulator(),
+            seed=1997,
+        )
+
+        ensemble.run(batch_config=BatchConfig(_sort_programs=True))
+        solution, energy = ensemble.aggregate_results()
+
+        assert all(
+            len(program.best_probs[0]) == 1 for program in ensemble.programs.values()
+        )
+        np.testing.assert_array_equal(solution, np.array([1, 1, 0, 0]))
         assert energy == pytest.approx(-1.5)
 
 

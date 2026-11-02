@@ -234,7 +234,7 @@ def test_custom_vqa_has_no_sample_pipeline(dummy_simulator, default_optimizer):
     assert "MeasurementStage" in _stage_types(_metric_pipeline(program))
 
 
-def test_pce_cost_uses_pce_cost_stage_without_mitigation(
+def test_pce_cost_measures_through_the_program_measurement_stage(
     dummy_simulator, default_optimizer
 ):
     pce = PCE(
@@ -245,9 +245,7 @@ def test_pce_cost_uses_pce_cost_stage_without_mitigation(
         optimizer=default_optimizer,
     )
     cost_types = _stage_types(_protocol_pipeline(pce, pce.cost_preprocessor()))
-    assert "PCECostStage" in cost_types
-    assert "QEMStage" not in cost_types  # COUNTS is outside the QEM protocol's remit
-    # The metric measures plain expectation values, not PCE's COUNTS objective.
+    assert "MeasurementStage" in cost_types
+    assert "QEMStage" not in cost_types
     metric_types = _stage_types(_metric_pipeline(pce))
     assert "MeasurementStage" in metric_types
-    assert "PCECostStage" not in metric_types

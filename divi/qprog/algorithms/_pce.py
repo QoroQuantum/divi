@@ -2,12 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import itertools
-from collections import Counter
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
-from functools import cached_property
-from typing import Any, ClassVar, Literal
+import math
+from abc import ABC, abstractmethod
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, is_dataclass, replace
+from functools import cached_property, lru_cache
+from typing import Any, Literal
 from warnings import warn
 
 import numpy as np
@@ -21,19 +23,23 @@ from divi.hamiltonians import (
     CompiledBinaryPolynomial,
     compile_problem,
 )
-from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
-from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
-from divi.pipeline.stages import PCECostStage, PCEObjective
-from divi.pipeline.stages._pce_cost_stage import (
-    _compute_hard_cvar_energy,
-    _compute_soft_energy,
+from divi.hamiltonians._polynomial import (
+    _binary_polynomial_gradient,
+    _compute_hard_cvar_energy_jit,
+    _evaluate_binary_polynomial,
 )
+from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
+from divi.pipeline.stages import MeasurementStage
 from divi.qprog.algorithms._ansatze import GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
-from divi.qprog.algorithms._vqe import VQE
-from divi.qprog.mixins import SolutionEntry
+from divi.qprog.mixins import (
+    LayeredAnsatzMixin,
+    SolutionEntry,
+    SolutionSamplingMixin,
+)
 from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
-from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
+from divi.qprog.problems import BinaryOptimizationProblem
+from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -43,19 +49,6 @@ def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.
     """
     # copy=False skips the copy on the hot path when already uint64.
     return _popcount_parity_jit(arr_input.astype(np.uint64, copy=False))
-
-
-def _aggregate_param_group(
-    param_group: Sequence[tuple[str, dict[str, int]]],
-) -> tuple[list[str], npt.NDArray[np.float64], float]:
-    """Aggregate a parameter group into states, counts, and total shots."""
-    shots_dict: Counter[str] = Counter()
-    for _, histogram in param_group:
-        shots_dict.update(histogram)
-    state_strings = list(shots_dict.keys())
-    counts = np.array(list(shots_dict.values()), dtype=float)
-    total_shots = counts.sum()
-    return state_strings, counts, float(total_shots)
 
 
 _LIMB_BITS = 64
@@ -79,13 +72,6 @@ def _pack_masks(mask_ints: Sequence[int], n_qubits: int) -> npt.NDArray[np.uint6
         ],
         dtype=np.uint64,
     )
-
-
-def _mask_to_int(mask: npt.NDArray[np.uint64]) -> int:
-    """Reconstruct the Python integer bitmask from a scalar or limb-row mask."""
-    if np.ndim(mask) == 0:
-        return int(mask)
-    return sum(int(limb) << (_LIMB_BITS * j) for j, limb in enumerate(mask))
 
 
 def _states_to_limbs(
@@ -146,74 +132,86 @@ def _decode_parities(
     return _fast_popcount_parity(overlaps)
 
 
-def _setup_dense_encoding(
-    n_vars: int, n_qubits: int | None
-) -> tuple[int, npt.NDArray[np.uint64]]:
-    """Compute n_qubits and variable masks for dense (logarithmic) encoding."""
-    min_qubits = int(np.ceil(np.log2(n_vars + 1)))
-    if n_qubits is not None and n_qubits < min_qubits:
-        raise ValueError(
-            "n_qubits must be >= ceil(log2(N + 1)) to represent all variables. "
-            f"Got n_qubits={n_qubits}, minimum={min_qubits}."
-        )
-
-    if n_qubits is not None and n_qubits > min_qubits:
-        warn(
-            "n_qubits exceeds the minimum required; extra qubits increase circuit "
-            "size and can add noise without representing more variables.",
-            UserWarning,
-        )
-    n_q = n_qubits if n_qubits is not None else min_qubits
-    masks = _pack_masks(list(range(1, n_vars + 1)), n_q)
-    return n_q, masks
+def _soft_relaxation(
+    u: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """``x = (1 + tanh(u)) / 2`` without cancellation for negative ``u``, and
+    ``exp(-2|u|)``."""
+    decay = np.exp(-2.0 * np.abs(u))
+    return np.where(u >= 0, 1.0, decay) / (1.0 + decay), decay
 
 
-def _setup_poly_encoding(
-    n_vars: int, n_qubits: int | None
-) -> tuple[int, npt.NDArray[np.uint64]]:
-    """Compute n_qubits and variable masks for poly (weight-1 & 2) encoding."""
-    discriminant = 1 + 8 * n_vars
-    min_qubits = int(np.ceil((-1 + np.sqrt(discriminant)) / 2))
-
-    if n_qubits is not None and n_qubits < min_qubits:
-        raise ValueError(
-            f"n_qubits must be >= {min_qubits} for poly encoding with {n_vars} vars. "
-            f"Got n_qubits={n_qubits}."
-        )
-    if n_qubits is not None and n_qubits > min_qubits:
-        warn(
-            "n_qubits exceeds the minimum required; extra qubits increase circuit "
-            "size and can add noise without representing more variables.",
-            UserWarning,
-        )
-    n_q = n_qubits if n_qubits is not None else min_qubits
-
-    # Weight-1 masks, then weight-2 pairs; islice stops at n_vars without
-    # enumerating the full O(n_q^2) pair space.
-    weight1 = (1 << i for i in range(n_q))
-    weight2 = ((1 << i) | (1 << j) for i in range(n_q) for j in range(i + 1, n_q))
-    masks = list(itertools.islice(itertools.chain(weight1, weight2), n_vars))
-    return n_q, _pack_masks(masks, n_q)
+class PCEObjective:
+    """Base class for what :class:`PCE` minimises: an
+    :class:`ExpectationObjective` or a :class:`SampleObjective`."""
 
 
-def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int) -> str:
-    """Convert variable masks to semicolon-separated Pauli strings for expval backend.
+class ExpectationObjective(PCEObjective, ABC):
+    """An objective computed from each variable's expectation value ``z_i``.
 
-    Each variable's parity is <Z on qubits in mask>. For mask with bit i set, include Z
-    at wire i. Big Endian: qubit 0 is leftmost.
+    ``z_i`` is the expectation of the variable's Pauli string: its Z-parity
+    for :class:`DenseEncoding` and :class:`PolyEncoding`, its X, Y or Z
+    correlator for :class:`MultiBasisEncoding`.
     """
-    terms = []
-    for mask in variable_masks_u64:
-        m = _mask_to_int(mask)
-        terms.append("".join("Z" if (m >> i) & 1 else "I" for i in range(n_qubits)))
-    return ";".join(terms)
+
+    @abstractmethod
+    def score(
+        self,
+        z: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> float:
+        """Return the objective for the expectations ``z`` (shape ``(n_vars,)``).
+
+        Args:
+            z: Each variable's expectation value, in ``[-1, 1]``.
+            problem: The canonical binary polynomial being minimised.
+            compiled: ``problem`` compiled by
+                :func:`~divi.hamiltonians.compile_problem`.
+        """
+
+    @abstractmethod
+    def gradient(
+        self,
+        z: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> npt.NDArray[np.float64]:
+        """Return the derivative of :meth:`score` with respect to each ``z_i``."""
+
+
+class SampleObjective(PCEObjective, ABC):
+    """An objective computed from sampled bitstrings.
+
+    Needs a sampling backend and an encoding whose bitstrings decode to
+    assignments (:class:`DenseEncoding` or :class:`PolyEncoding`).
+    """
+
+    @abstractmethod
+    def score(
+        self,
+        assignments: npt.NDArray[np.uint8],
+        counts: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> float:
+        """Return the objective for one shot histogram.
+
+        Args:
+            assignments: ``(n_vars, n_states)`` 0/1 assignment decoded from
+                each sampled state.
+            counts: Shot count of each state; sums to a positive total.
+            problem: The canonical binary polynomial being minimised.
+            compiled: ``problem`` compiled by
+                :func:`~divi.hamiltonians.compile_problem`.
+        """
 
 
 @dataclass(frozen=True)
-class SoftObjective(PCEObjective):
-    """PCE objective on a smooth relaxation of the parity expectations.
+class SoftObjective(ExpectationObjective):
+    """PCE objective on a smooth relaxation of the variables' expectations.
 
-    Each variable becomes ``x_i = (1 + tanh(alpha * <Z_i>)) / 2`` and the
+    Each variable becomes ``x_i = (1 + tanh(alpha * z_i)) / 2`` and the
     problem's objective is evaluated at these continuous values.
 
     Args:
@@ -235,23 +233,45 @@ class SoftObjective(PCEObjective):
 
     def score(
         self,
-        parities: npt.NDArray[np.uint8],
-        counts: npt.NDArray[np.float64],
+        z: npt.NDArray[np.float64],
         problem: BinaryPolynomialProblem,
         compiled: CompiledBinaryPolynomial,
     ) -> float:
-        """Evaluate the problem at the relaxed variables of one histogram."""
-        return _compute_soft_energy(
-            parities, counts / counts.sum(), self.alpha, problem, _compiled=compiled
-        )
+        """Evaluate the problem at the relaxed variables."""
+        x_soft, _ = _soft_relaxation(self.alpha * z)
+        return float(_evaluate_binary_polynomial(x_soft, problem, _compiled=compiled))
+
+    def gradient(
+        self,
+        z: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> npt.NDArray[np.float64]:
+        """Chain the problem's gradient through the tanh relaxation.
+
+        Warns when ``tanh(alpha * z)`` rounds to ``±1`` for every variable: the
+        loss is then flat to machine precision and gradient steps stall.
+        """
+        u = self.alpha * z
+        if np.all(np.abs(np.tanh(u)) == 1.0):
+            warn(
+                f"SoftObjective(alpha={self.alpha:g}) has saturated: tanh(alpha * z) "
+                "is ±1 for every variable, so the loss is flat and its gradient "
+                "vanishes. Lower alpha or restart from other parameters.",
+                UserWarning,
+            )
+        x_soft, decay = _soft_relaxation(u)
+        d_energy = _binary_polynomial_gradient(x_soft, compiled)
+        sech_squared = 4.0 * decay / (1.0 + decay) ** 2
+        return d_energy * 0.5 * self.alpha * sech_squared
 
 
 @dataclass(frozen=True)
-class CVaRObjective(PCEObjective):
+class CVaRObjective(SampleObjective):
     """PCE objective on the lowest-energy tail of the sampled bitstrings.
 
     Each shot is decoded to a binary assignment and scored; the objective is the
-    mean energy of the lowest ``fraction`` of shots. Needs a sampling backend.
+    mean energy of the lowest ``fraction`` of shots.
 
     Args:
         fraction: Share of the shots averaged, in ``(0, 1]``.
@@ -259,8 +279,6 @@ class CVaRObjective(PCEObjective):
     Raises:
         ValueError: If ``fraction`` is outside ``(0, 1]``.
     """
-
-    needs_samples: ClassVar[bool] = True
 
     fraction: float = 0.25
 
@@ -270,39 +288,231 @@ class CVaRObjective(PCEObjective):
 
     def score(
         self,
-        parities: npt.NDArray[np.uint8],
+        assignments: npt.NDArray[np.uint8],
         counts: npt.NDArray[np.float64],
         problem: BinaryPolynomialProblem,
         compiled: CompiledBinaryPolynomial,
     ) -> float:
-        """Mean energy of the lowest ``fraction`` of one histogram's shots."""
-        return _compute_hard_cvar_energy(
-            parities, counts, counts.sum(), problem, self.fraction, _compiled=compiled
+        """Mean energy of the lowest ``fraction`` of the histogram's shots."""
+        return float(
+            _compute_hard_cvar_energy_jit(
+                np.ascontiguousarray(assignments, dtype=np.float64),
+                np.ascontiguousarray(counts, dtype=np.float64),
+                float(counts.sum()),
+                float(self.fraction),
+                *compiled,
+            )
         )
 
 
-class PCE(VQE):
+@dataclass(frozen=True, kw_only=True)
+class PCEEncoding(ABC):
+    """Base class for how :class:`PCE` maps variables onto qubits.
+
+    Args:
+        n_qubits: Override of the minimum qubit count. Larger values warn,
+            since the extra qubits encode nothing.
+    """
+
+    n_qubits: int | None = None
+
+    @abstractmethod
+    def min_qubits(self, n_vars: int) -> int:
+        """Fewest qubits that hold ``n_vars`` variables."""
+
+    @abstractmethod
+    def strings(self, n_vars: int, n_qubits: int) -> list[tuple[str, tuple[int, ...]]]:
+        """Each variable's Pauli string on ``n_qubits`` qubits.
+
+        Each string is ``(letters, qubits)``, e.g. ``("ZZ", (0, 3))`` for
+        :math:`Z_0 Z_3`.
+        """
+
+    @abstractmethod
+    def decode(
+        self, states: Sequence[str], n_vars: int, n_qubits: int
+    ) -> npt.NDArray[np.uint8]:
+        """``(n_states, n_vars)`` assignments of the stored solution states."""
+
+    def default_objective(self, n_qubits: int) -> PCEObjective:
+        """The objective :class:`PCE` uses when none is given."""
+        return SoftObjective()
+
+    def layout(self, n_vars: int) -> tuple[int, list[tuple[str, tuple[int, ...]]]]:
+        """Return the qubit count and each variable's Pauli string.
+
+        Raises:
+            ValueError: If ``n_qubits`` is below :meth:`min_qubits`.
+        """
+        min_qubits = self.min_qubits(n_vars)
+        if self.n_qubits is not None and self.n_qubits < min_qubits:
+            raise ValueError(
+                f"{type(self).__name__} needs n_qubits >= {min_qubits} for "
+                f"{n_vars} variables, got n_qubits={self.n_qubits}."
+            )
+        if self.n_qubits is not None and self.n_qubits > min_qubits:
+            warn(
+                "n_qubits exceeds the minimum required; extra qubits increase circuit "
+                "size and can add noise without representing more variables.",
+                UserWarning,
+            )
+        n_qubits = min_qubits if self.n_qubits is None else self.n_qubits
+        return n_qubits, self.strings(n_vars, n_qubits)
+
+
+class ParityEncoding(PCEEncoding):
+    """Base class for encodings whose variables are Z-parities of the qubits.
+
+    Each variable is the parity of a subset of qubits, so a sampled bitstring
+    decodes to an assignment.
+    """
+
+    def _masks(self, n_vars: int, n_qubits: int) -> npt.NDArray[np.uint64]:
+        """Each variable's qubit subset as a bitmask over a big-endian bitstring,
+        packed by :func:`_pack_masks`."""
+        return _parity_masks(self, n_vars, n_qubits)
+
+    def decode(
+        self, states: Sequence[str], n_vars: int, n_qubits: int
+    ) -> npt.NDArray[np.uint8]:
+        """Each variable is 1 where its qubits' parity is even."""
+        return (1 - _decode_parities(states, self._masks(n_vars, n_qubits))).T
+
+
+@lru_cache(maxsize=64)
+def _parity_masks(
+    encoding: ParityEncoding, n_vars: int, n_qubits: int
+) -> npt.NDArray[np.uint64]:
+    masks = _pack_masks(
+        [
+            sum(1 << (n_qubits - 1 - q) for q in qubits)
+            for _, qubits in encoding.strings(n_vars, n_qubits)
+        ],
+        n_qubits,
+    )
+    masks.setflags(write=False)
+    return masks
+
+
+def _bits_to_qubits(mask: int, n_qubits: int) -> tuple[str, tuple[int, ...]]:
+    """The Z-parity string of ``mask``, whose most significant bit is qubit 0."""
+    qubits = tuple(sorted(n_qubits - 1 - j for j in range(n_qubits) if (mask >> j) & 1))
+    return "Z" * len(qubits), qubits
+
+
+@dataclass(frozen=True)
+class DenseEncoding(ParityEncoding):
+    """Variable ``i`` is the parity of the qubits set in the binary form of
+    ``i + 1``, read with qubit 0 as the most significant bit:
+    :math:`\\lceil\\log_2(N + 1)\\rceil` qubits for ``N`` variables."""
+
+    def min_qubits(self, n_vars: int) -> int:
+        return n_vars.bit_length()
+
+    def strings(self, n_vars: int, n_qubits: int) -> list[tuple[str, tuple[int, ...]]]:
+        return [_bits_to_qubits(i + 1, n_qubits) for i in range(n_vars)]
+
+
+@dataclass(frozen=True)
+class PolyEncoding(ParityEncoding):
+    """Each variable is the parity of one or two qubits: the smallest ``q``
+    with :math:`q(q + 1)/2 \\geq N` qubits for ``N`` variables."""
+
+    def min_qubits(self, n_vars: int) -> int:
+        q = (math.isqrt(8 * n_vars + 1) - 1) // 2
+        return q if q * (q + 1) // 2 >= n_vars else q + 1
+
+    def strings(self, n_vars: int, n_qubits: int) -> list[tuple[str, tuple[int, ...]]]:
+        last = n_qubits - 1
+        singles = (("Z", (last - i,)) for i in range(n_qubits))
+        pairs = (
+            ("ZZ", (last - j, last - i))
+            for i in range(n_qubits)
+            for j in range(i + 1, n_qubits)
+        )
+        return list(itertools.islice(itertools.chain(singles, pairs), n_vars))
+
+
+@dataclass(frozen=True)
+class MultiBasisEncoding(PCEEncoding):
+    """Each variable is a ``order``-body correlator of one Pauli type.
+
+    The strings are :math:`X^{\\otimes k}`, :math:`Y^{\\otimes k}` and
+    :math:`Z^{\\otimes k}` on every ``k``-subset of the qubits, so ``q`` qubits
+    hold :math:`3\\binom{q}{k}` variables. Variables take the X strings first,
+    then Y, then Z, each in lexicographic order of qubit subsets. A variable is
+    read as the sign of its expectation value, an exact zero reading as 0, so
+    only :class:`ExpectationObjective` objectives apply. The sign-read
+    assignment is stored in ``best_probs`` as one outcome of probability 1.0;
+    it is not a measured distribution.
+
+    Without an explicit objective, :class:`PCE` uses
+    ``SoftObjective(alpha=1.5 * q ** (k // 2))``, the scaling of Sciorilli et
+    al. (2025).
+
+    Args:
+        order: Number of qubits ``k`` in each string, at least 1.
+
+    Raises:
+        ValueError: If ``order`` is below 1.
+    """
+
+    order: int = 2
+
+    def __post_init__(self) -> None:
+        if self.order < 1:
+            raise ValueError(f"order must be at least 1, got {self.order}")
+
+    def min_qubits(self, n_vars: int) -> int:
+        return next(
+            q
+            for q in itertools.count(self.order)
+            if 3 * math.comb(q, self.order) >= n_vars
+        )
+
+    def strings(self, n_vars: int, n_qubits: int) -> list[tuple[str, tuple[int, ...]]]:
+        strings: Iterator[tuple[str, tuple[int, ...]]] = (
+            (letter * self.order, qubits)
+            for letter in "XYZ"
+            for qubits in itertools.combinations(range(n_qubits), self.order)
+        )
+        return list(itertools.islice(strings, n_vars))
+
+    def decode(
+        self, states: Sequence[str], n_vars: int, n_qubits: int
+    ) -> npt.NDArray[np.uint8]:
+        """The stored states already are the sign-read assignments."""
+        return np.array(
+            [[int(bit) for bit in state] for state in states], dtype=np.uint8
+        ).reshape(len(states), n_vars)
+
+    def default_objective(self, n_qubits: int) -> PCEObjective:
+        return SoftObjective(alpha=1.5 * n_qubits ** (self.order // 2))
+
+
+def _params_key(params: npt.NDArray[np.float64]) -> bytes:
+    """A hashable key for one parameter vector; ``-0.0`` and ``0.0`` match."""
+    return (np.asarray(params, dtype=np.float64).reshape(-1) + 0.0).tobytes()
+
+
+class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm):
     """
     Generalised Pauli Correlation Encoding (PCE) VQE.
 
-    Encodes an N-variable QUBO into qubits by mapping each variable to a parity
-    (Pauli-Z correlation) of the measured bitstring. Qubit scaling depends on
-    `encoding_type`: O(log2(N)) for dense, O(sqrt(N)) for poly. The algorithm
-    uses the measurement distribution to estimate these parities and minimises
-    either a smooth relaxation of the QUBO objective E = x.T @ Q @ x
-    (:class:`SoftObjective`) or the CVaR of the sampled energies
+    Encodes an N-variable QUBO/HUBO into fewer qubits by mapping each variable
+    to a Pauli string (see :class:`PCEEncoding`). The cost pipeline measures
+    every variable's expectation value and the objective (see
+    :class:`PCEObjective`) turns them into the loss: a smooth relaxation of the
+    problem (:class:`SoftObjective`) or the CVaR of sampled energies
     (:class:`CVaRObjective`).
     """
 
     def __init__(
         self,
         problem: BinaryOptimizationProblem,
-        n_qubits: int | None = None,
+        encoding: PCEEncoding | None = None,
         objective: PCEObjective | None = None,
-        encoding_type: Literal["dense", "poly"] = "dense",
-        decode_parities_fn: (
-            Callable[[list[str], npt.NDArray[np.uint64]], npt.NDArray[np.uint8]] | None
-        ) = None,
+        max_iterations: int = 10,
         **kwargs,
     ):
         """
@@ -310,129 +520,301 @@ class PCE(VQE):
             problem (BinaryOptimizationProblem): The binary problem to minimise.
                 Its combined objective + penalty QUBO/HUBO is used. Wrap a raw
                 QUBO/HUBO with ``BinaryOptimizationProblem(...)``.
-            n_qubits (int | None): Optional override. Must be >= minimum for the
-                chosen encoding (ceil(log2(N + 1)) for dense; solve n(n+1)/2 >= N
-                for poly). Larger values raise a warning for both encodings.
+            encoding (PCEEncoding | None): How variables map onto qubits.
+                ``None`` uses ``DenseEncoding()``.
             objective (PCEObjective | None): What the optimiser minimises.
-                :class:`SoftObjective` evaluates the problem at
-                ``x = (1 + tanh(alpha * <Z>)) / 2``, a smooth relaxation of the
-                parity expectations; :class:`CVaRObjective` averages the
-                lowest-energy fraction of sampled bitstrings and needs a
-                sampling backend. ``None`` uses ``SoftObjective()``.
-            encoding_type (Literal["dense", "poly"]): "dense" (logarithmic qubits,
-                default) or "poly" (each variable maps to parity of 1 or 2 qubits).
-            decode_parities_fn (Callable | None): Optional custom decoder for mapping
-                encoded bitstrings to parity arrays. Signature:
-                (state_strings, variable_masks_u64) -> parities. Defaults to the
-                built-in parity decoder.
-            **kwargs: Additional arguments passed to VQE (e.g. ansatz, backend).
-                ``ansatz`` defaults to a hardware-efficient, entangling
-                ``GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate)`` —
-                the chemistry ansätze VQE defaults to do not apply to PCE's
-                qubit encoding.
+                ``None`` uses the encoding's default: ``SoftObjective()``, or
+                for :class:`MultiBasisEncoding` a ``SoftObjective`` with
+                ``alpha`` scaled to the qubit count.
+            max_iterations (int): Maximum number of optimisation iterations.
+                Defaults to 10.
+            **kwargs: ``ansatz``, ``n_layers``, ``ansatz_kwargs`` and the
+                :class:`~divi.qprog.VariationalQuantumAlgorithm` arguments
+                (e.g. ``backend``, ``optimizer``). ``ansatz`` defaults to a
+                hardware-efficient, entangling
+                ``GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate)``.
+
+        Raises:
+            TypeError: If ``problem``, ``encoding`` or ``objective`` has the
+                wrong type, or a :class:`SampleObjective` is paired with an
+                encoding whose bitstrings do not decode to assignments.
+            ValueError: If ``qem_protocol`` is passed.
         """
         if not isinstance(problem, BinaryOptimizationProblem):
             raise TypeError(
                 f"PCE requires a BinaryOptimizationProblem, got {type(problem).__name__}. "
                 "Wrap your QUBO/HUBO: PCE(BinaryOptimizationProblem(qubo))."
             )
-        self.problem = problem
-        self._polynomial: BinaryPolynomialProblem = problem.canonical_problem
-        self.n_vars = self._polynomial.n_vars
-        if objective is None:
-            objective = SoftObjective()
-        if not isinstance(objective, PCEObjective):
+        encoding = DenseEncoding() if encoding is None else encoding
+        if not isinstance(encoding, PCEEncoding):
             raise TypeError(
-                f"objective must be a PCEObjective, got {type(objective).__name__}."
+                f"encoding must be a PCEEncoding, got {type(encoding).__name__}."
             )
-        self.objective = objective
-        self.encoding_type = encoding_type
-        self._decode_parities_fn = decode_parities_fn or _decode_parities
-        self._compiled_problem = compile_problem(self._polynomial)
-
         if kwargs.get("qem_protocol") is not None:
             raise ValueError("PCE does not currently support qem_protocol.")
 
-        if self.encoding_type == "dense":
-            self.n_qubits, self._variable_masks_u64 = _setup_dense_encoding(
-                self.n_vars, n_qubits
-            )
-        elif self.encoding_type == "poly":
-            self.n_qubits, self._variable_masks_u64 = _setup_poly_encoding(
-                self.n_vars, n_qubits
-            )
-        else:
-            raise ValueError(f"Unknown encoding_type: {self.encoding_type}")
+        self.problem = problem
+        self.encoding = encoding
+        self._polynomial: BinaryPolynomialProblem = problem.canonical_problem
+        self.n_vars = self._polynomial.n_vars
+        self._compiled_problem = compile_problem(self._polynomial)
 
-        # Placeholder Hamiltonian required by the VQE constructor. PCE's cost path
-        # ignores it (PCECostStage computes a classical objective from Z-basis
-        # counts); it only sets the observable on the unused ``cost_circuit``
-        # factory entry. The sample pipeline measures the prepared state directly.
-        placeholder_hamiltonian = SparsePauliOp.from_sparse_list(
-            [("Z", [i], 1.0) for i in range(self.n_qubits)],
-            num_qubits=self.n_qubits,
+        self.n_qubits, strings = encoding.layout(self.n_vars)
+        objective = (
+            encoding.default_objective(self.n_qubits)
+            if objective is None
+            else objective
         )
-        # PCE encodes a QUBO/HUBO and has no electrons, so VQE's chemistry
-        # default (HartreeFockAnsatz) is inapplicable — it would query
-        # n_electrons (None) and raise. Default to a hardware-efficient,
-        # entangling ansatz instead; an explicit ``ansatz`` still overrides.
+        if not isinstance(objective, ExpectationObjective | SampleObjective):
+            raise TypeError(
+                "objective must be an ExpectationObjective or SampleObjective, got "
+                f"{type(objective).__name__}."
+            )
+        if isinstance(objective, SampleObjective) and not isinstance(
+            encoding, ParityEncoding
+        ):
+            raise TypeError(
+                f"{type(objective).__name__} scores sampled bitstrings, which "
+                f"{type(encoding).__name__} cannot decode. Use an "
+                "ExpectationObjective such as SoftObjective."
+            )
+        self.objective: ExpectationObjective | SampleObjective = objective
+        self._cost_expectations: dict[bytes, npt.NDArray[np.float64]] = {}
+        self._variable_observables = tuple(
+            SparsePauliOp.from_sparse_list(
+                [(letters, list(qubits), 1.0)], num_qubits=self.n_qubits
+            )
+            for letters, qubits in strings
+        )
+
         kwargs.setdefault(
             "ansatz", GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate)
         )
-        # ``grouping_strategy`` does not affect PCE's cost pipeline
-        # (PCECostStage replaces MeasurementStage there), but it still
-        # configures the measurement pipeline used by ``sample_solution``,
-        # so it flows through unchanged.
-        super().__init__(HamiltonianProblem(placeholder_hamiltonian), **kwargs)
+        super().__init__(**kwargs)
+        self.max_iterations = max_iterations
+        self.current_iteration = 0
+        self.cost_hamiltonian = sum(
+            self._variable_observables[1:], self._variable_observables[0]
+        )
+        self.loss_constant = 0.0
 
     @cached_property
-    def _pce_cost_preprocessor(self) -> CircuitPreprocessor:
-        # PCE's cost terminal is a PCECostStage (a standalone BundleStage, not a
-        # MeasurementStage) that emits one Z-basis measurement QASM per circuit
-        # spec and computes the nonlinear binary-polynomial objective from raw
-        # shot histograms. COUNTS keeps QEM off this path (extrapolation has no
-        # expectation value to act on; PCE forbids qem_protocol anyway). Cached
-        # so ``PCECostStage`` (which re-runs ``compile_problem`` in its __init__)
-        # is built once rather than per optimizer iteration.
+    def _counts_cost_preprocessor(self) -> CircuitPreprocessor:
+        # The variables' Z-parities commute qubit-wise, so "qwc" measures them
+        # in one circuit whose full-width counts decode shot by shot.
         return replace(
             cost_preprocessor(),
             result_format=ResultFormat.COUNTS,
-            terminal_stage=PCECostStage(
-                problem=self._polynomial,
-                objective=self.objective,
-                decode_parities_fn=self._decode_parities_fn,
-                variable_masks_u64=self._variable_masks_u64,
-                # Restriction is only lossless for the built-in decoder; a custom
-                # decoder may read any bit, so keep the full register for it.
-                measure_all=self._measure_all_qubits
-                or self._decode_parities_fn is not _decode_parities,
+            terminal_stage=MeasurementStage(
+                grouping_strategy="qwc", result_format_override=ResultFormat.COUNTS
             ),
         )
 
     def cost_preprocessor(self) -> CircuitPreprocessor:
-        return self._pce_cost_preprocessor
+        """Measure every variable's expectation value, or the raw counts for a
+        :class:`SampleObjective`; :meth:`_evaluate_cost_param_sets` turns
+        either into the loss."""
+        if isinstance(self.objective, SampleObjective):
+            return self._counts_cost_preprocessor
+        return super().cost_preprocessor()
 
     def _evaluate_cost_param_sets(
-        self, param_sets: np.ndarray, **kwargs
+        self,
+        param_sets: np.ndarray,
+        *,
+        shots: int | None = None,
+        estimator_samples: int | Sequence[int] | None = None,
+        collect_variance: bool = False,
+        **kwargs,
     ) -> dict[int, float]:
-        """Evaluate the cost pipeline for the provided parameter sets."""
-        if self.objective.needs_samples and self.backend.supports_expval:
+        """Score every parameter set with the objective.
+
+        Raises:
+            ValueError: If shot-noise variances are requested (PCE's loss is a
+                non-linear function of the measurements), or a
+                :class:`SampleObjective` meets an expectation-value backend.
+        """
+        if collect_variance:
             raise ValueError(
-                f"PCE with {type(self.objective).__name__} requires shot histograms and "
-                "cannot use expectation-value backends. Use a sampling backend: "
-                "MaestroSimulator(force_sampling=True), "
-                "QiskitSimulator(force_sampling=True), or QoroService with "
-                "JobConfig(force_sampling=True)."
+                "PCE does not provide shot-noise variances of its loss, so "
+                "shot-adaptive optimizers (RosalinOptimizer, QUIVEROptimizer "
+                "with adaptive shots) cannot drive it."
             )
-        return super()._evaluate_cost_param_sets(param_sets, **kwargs)
+        objective = self.objective
+        if isinstance(objective, SampleObjective):
+            if self.backend.supports_expval:
+                raise ValueError(
+                    f"PCE with {type(objective).__name__} requires shot "
+                    "histograms and cannot use expectation-value backends. Use a "
+                    "sampling backend: MaestroSimulator(force_sampling=True), "
+                    "QiskitSimulator(force_sampling=True), or QoroService with "
+                    "JobConfig(force_sampling=True)."
+                )
+            histograms = self.evaluate(
+                np.atleast_2d(param_sets),
+                self.cost_preprocessor(),
+                shots=shots,
+                estimator_samples=estimator_samples,
+            )
+            return {
+                idx: self._score_histogram(objective, histogram)
+                for idx, histogram in histograms.items()
+            }
+        param_sets = np.atleast_2d(np.asarray(param_sets, dtype=np.float64))
+        expectations = self._variable_expectations(
+            param_sets, shots=shots, estimator_samples=estimator_samples
+        )
+        self._cost_expectations = {
+            _params_key(row): z for row, z in zip(param_sets, expectations)
+        }
+        return {
+            idx: objective.score(z, self._polynomial, self._compiled_problem)
+            for idx, z in enumerate(expectations)
+        }
+
+    def _score_histogram(
+        self, objective: SampleObjective, histogram: dict[str, int]
+    ) -> float:
+        """Score one cost-circuit histogram with ``objective``.
+
+        Raises:
+            ValueError: If the histogram is empty or its bitstrings do not span
+                the full register.
+        """
+        if not histogram or sum(histogram.values()) <= 0:
+            raise ValueError(
+                "Backend returned an empty PCE histogram; the energy is undefined "
+                "without shots. This indicates a backend fault, so check the "
+                "job's results."
+            )
+        states = list(histogram)
+        if any(len(state) != self.n_qubits for state in states):
+            raise ValueError(
+                f"Backend returned PCE bitstrings narrower or wider than the "
+                f"{self.n_qubits}-qubit register; every bitstring must report all "
+                "qubits for the variables' parities to decode."
+            )
+        counts = np.array(list(histogram.values()), dtype=np.float64)
+        return objective.score(
+            self._decode_states(states).T,
+            counts,
+            self._polynomial,
+            self._compiled_problem,
+        )
+
+    def _variable_expectations(
+        self, param_sets: npt.NDArray[np.float64], **kwargs
+    ) -> npt.NDArray[np.float64]:
+        """Each variable's expectation value, shape ``(n_sets, n_vars)``."""
+        result = self.evaluate(
+            np.atleast_2d(param_sets), super().cost_preprocessor(), **kwargs
+        )
+        return np.array(
+            [np.atleast_1d(result[idx]) for idx in range(len(result))],
+            dtype=np.float64,
+        )
+
+    def _evaluate_gradient_at(
+        self, params: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The parameter-shift Jacobian of the variables' expectations, chained
+        through the objective's derivative.
+
+        Exact on a backend that computes expectation values. On a sampling
+        backend the objective's derivative is taken at noisy expectations, so
+        the gradient carries a bias that shrinks with the shot count.
+
+        Raises:
+            ValueError: If the objective scores samples, which have no gradient.
+        """
+        objective = self._differentiable_objective()
+        shifts, weights = self._grad_shift_rule
+        params = np.asarray(params, dtype=np.float64).reshape(-1)
+        expectations = self._variable_expectations(np.vstack([params, shifts + params]))
+        jacobian = weights @ expectations[1:]
+        return jacobian @ objective.gradient(
+            expectations[0], self._polynomial, self._compiled_problem
+        )
+
+    def _loss_gradient_by_observable(
+        self, params: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """The objective's slope in each variable's expectation at ``params``.
+
+        Reuses the expectations of the latest cost evaluation at ``params``,
+        which QNG runs just before asking for the gradient, and measures them
+        otherwise.
+
+        Raises:
+            ValueError: If the objective scores samples, which have no gradient.
+        """
+        objective = self._differentiable_objective()
+        params = np.asarray(params, dtype=np.float64).reshape(-1)
+        z = self._cost_expectations.get(_params_key(params))
+        if z is None:
+            z = self._variable_expectations(np.atleast_2d(params))[0]
+        return objective.gradient(z, self._polynomial, self._compiled_problem)
+
+    def _differentiable_objective(self) -> ExpectationObjective:
+        """The objective, which must have a gradient.
+
+        Raises:
+            ValueError: If the objective scores samples, which have no gradient.
+        """
+        if not isinstance(self.objective, ExpectationObjective):
+            raise ValueError(
+                f"{type(self.objective).__name__} scores sampled bitstrings and "
+                "has no gradient; use a gradient-free optimizer."
+            )
+        return self.objective
+
+    def _run_solution_measurement_for(
+        self, param_sets: npt.NDArray[np.float64], *, backend=None
+    ) -> None:
+        """Sample parity encodings; read other encodings by expectation sign.
+
+        A multi-basis encoding's strings do not commute, so no measured
+        bitstring decodes to an assignment. Its solution is
+        ``x_i = [<P_i> > 0]``, stored as a certain outcome per parameter set.
+        """
+        if isinstance(self.encoding, ParityEncoding):
+            super()._run_solution_measurement_for(param_sets, backend=backend)
+            return
+        expectations = self._variable_expectations(param_sets, backend=backend)
+        self._results["best_probs"] = {
+            idx: {"".join("1" if value > 0 else "0" for value in z): 1.0}
+            for idx, z in enumerate(expectations)
+        }
+
+    def _decode_states(self, states: Sequence[str]) -> npt.NDArray[np.uint8]:
+        """``(n_states, n_vars)`` assignments of measured or stored states."""
+        return self.encoding.decode(states, self.n_vars, self.n_qubits)
 
     def _create_cost_circuit(self) -> MetaCircuit:
-        """Create the cost MetaCircuit — no initial state, no spin keywords.
+        """The layered ansatz, measuring every variable's Pauli string."""
+        return self._cost_meta_from_ansatz(self._variable_observables)
 
-        PCE encodes variables in Pauli parities rather than electrons, so the
-        chemistry reference state VQE prepends does not apply.
-        """
-        return self._cost_meta_from_ansatz()
+    @property
+    def _serialized_cost_hamiltonian_fingerprint(self) -> str:
+        """Identifies the problem, encoding and objective, so a checkpoint
+        resumes only the PCE that wrote it."""
+        term_indices, term_offsets, coeffs, constant = self._compiled_problem
+        objective = (
+            repr(self.objective)
+            if is_dataclass(self.objective)
+            else type(self.objective).__qualname__
+        )
+        payload = (
+            repr(self.encoding),
+            objective,
+            self.n_qubits,
+            [repr(var) for var in self._polynomial.variable_order],
+            term_indices.tolist(),
+            term_offsets.tolist(),
+            np.round(coeffs, 6).tolist(),
+            round(float(constant), 6),
+        )
+        return hashlib.sha256(repr(payload).encode()).hexdigest()
 
     def get_top_solutions(
         self,
@@ -445,10 +827,10 @@ class PCE(VQE):
     ) -> list[SolutionEntry]:
         """Get the top-N solutions with decoded QUBO variable assignments.
 
-        This method overrides the base implementation to decode encoded qubit states
-        into actual QUBO variable assignments. The bitstrings in the probability
-        distribution represent encoded qubit states (O(log2(N)) qubits), not the
-        decoded QUBO solutions (N variables).
+        This method overrides the base implementation to decode the stored
+        distribution into QUBO variable assignments: a parity encoding's encoded
+        qubit states are decoded through their parities, and a multi-basis
+        encoding's single sign-decoded assignment is returned as is.
 
         Args:
             n (int): Maximum number of solutions to return. Must be non-negative;
@@ -509,12 +891,7 @@ class PCE(VQE):
 
         filtered = [(bs, prob) for bs, prob in probs_dict.items() if prob >= min_prob]
 
-        encoded_bitstrings = [bs for bs, _ in filtered]
-        decoded_parities = self._decode_parities_fn(
-            encoded_bitstrings, self._variable_masks_u64
-        )
-        # decoded_parities shape: (n_vars, n_states), transpose to (n_states, n_vars)
-        decoded_qubo_solutions = (1 - decoded_parities).T
+        decoded_qubo_solutions = self._decode_states([bs for bs, _ in filtered])
 
         if feasibility != "ignore":
             decoded_bitstrings = (
@@ -565,11 +942,11 @@ class PCE(VQE):
         return result[:limit]
 
     def _decode_assignment(self, vector: npt.NDArray[np.integer]) -> Any:
-        """Decode a canonical-order assignment through the problem's ``decode_fn``.
+        """Decode a canonical-order assignment.
 
-        Falls back to the raw assignment, keyed by variable name when the
-        variable order isn't ``0..n_vars-1``, when the problem's Hamiltonian
-        adds auxiliary qubits.
+        Uses the problem's ``decode_fn`` with the ``"native"`` Hamiltonian
+        builder. Otherwise returns the raw assignment, as a dict keyed by
+        variable name when the variable order is not ``0..n_vars-1``.
         """
         if self.problem.hamiltonian_builder == "native":
             return self.problem.decode_fn("".join(str(int(x)) for x in vector))
@@ -596,23 +973,22 @@ class PCE(VQE):
             names to binary values.
 
         Raises:
-            RuntimeError: If no eigenstate has been sampled yet.
+            RuntimeError: If nothing has been sampled yet.
         """
-        eigenstate = self._results.get("eigenstate")
-        if eigenstate is None:
+        if not self._results.get("best_probs"):
             raise RuntimeError(f"PCE.solution is not available yet. {_SAMPLE_HINT}")
 
-        warn(
-            "PCE.solution returns the decoded assignment of the most-probable "
-            "encoded bitstring. Because PCE operates in a compressed qubit space "
-            "(O(log2(N)) qubits for N variables), the most-probable encoded state "
-            "does not necessarily decode to the lowest-energy QUBO solution. "
-            "Use get_top_solutions(sort_by='energy') for energy-ranked results, "
-            "or feasibility='repair' when the problem has constraints.",
-            stacklevel=2,
-        )
-
-        parities = self._decode_parities_fn(
-            ["".join(str(x) for x in eigenstate)], self._variable_masks_u64
-        ).flatten()
-        return self._decode_assignment(1 - parities)
+        if isinstance(self.encoding, ParityEncoding):
+            warn(
+                "PCE.solution returns the decoded assignment of the most-probable "
+                "encoded bitstring. Because PCE operates in a compressed qubit "
+                "space (fewer qubits than variables), the most-probable "
+                "encoded state does not necessarily decode to the lowest-energy "
+                "QUBO solution. Use get_top_solutions(sort_by='energy') for "
+                "energy-ranked results, or feasibility='repair' when the problem "
+                "has constraints.",
+                stacklevel=2,
+            )
+        probs = self._single_distribution()
+        state = max(probs, key=probs.__getitem__)
+        return self._decode_assignment(self._decode_states([state])[0])

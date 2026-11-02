@@ -34,6 +34,7 @@ from qiskit.circuit.library import RYGate, RZGate
 
 from divi.qprog import (
     BeamSearchStrategy,
+    DenseEncoding,
     EarlyStopping,
     HierarchicalStrategy,
     SoftObjective,
@@ -306,7 +307,7 @@ if __name__ == "__main__":
             engine="pce",
             engine_kwargs={
                 "ansatz": GenericLayerAnsatz([RYGate, RZGate]),
-                "encoding_type": "dense",
+                "encoding": DenseEncoding(),
                 "objective": SoftObjective(alpha=2.0),
             },
         ),

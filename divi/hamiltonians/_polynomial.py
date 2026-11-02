@@ -289,6 +289,49 @@ def _eval_poly_1d_jit(
     return energy
 
 
+@numba.njit(cache=True)
+def _poly_gradient_1d_jit(
+    x_vals: npt.NDArray[np.float64],
+    term_indices: npt.NDArray[np.int32],
+    term_offsets: npt.NDArray[np.int32],
+    coeffs: npt.NDArray[np.float64],
+) -> npt.NDArray[np.float64]:
+    """Gradient of :func:`_eval_poly_1d_jit` with respect to ``x_vals``."""
+    grad = np.zeros(x_vals.shape[0])
+    for t in range(len(coeffs)):
+        start = term_offsets[t]
+        end = term_offsets[t + 1]
+        c = coeffs[t]
+        if end - start == 1:
+            i = term_indices[start]
+            grad[i] += 2.0 * c * x_vals[i]
+            continue
+        for k in range(start, end):
+            prod = c
+            for m in range(start, end):
+                if m != k:
+                    prod *= x_vals[term_indices[m]]
+            grad[term_indices[k]] += prod
+    return grad
+
+
+def _binary_polynomial_gradient(
+    x_vals: npt.NDArray[np.float64], compiled: CompiledBinaryPolynomial
+) -> npt.NDArray[np.float64]:
+    """Gradient of :func:`_evaluate_binary_polynomial` at one assignment.
+
+    Matches its de-linearised evaluation: a degree-1 term ``c * x_i²``
+    contributes ``2 c x_i``.
+    """
+    term_indices, term_offsets, coeffs, _ = compiled
+    return _poly_gradient_1d_jit(
+        np.ascontiguousarray(x_vals, dtype=np.float64),
+        term_indices,
+        term_offsets,
+        coeffs,
+    )
+
+
 #: Term evaluations (states x terms) below which the serial kernel beats the
 #: parallel one: thread-pool start-up costs ~5 ms, measured break-even ~4e6.
 _PARALLEL_POLY_MIN_WORK = 4_000_000
@@ -363,23 +406,23 @@ def _compute_hard_cvar_energy_jit(
     x_vals: npt.NDArray[np.float64],
     counts: npt.NDArray[np.float64],
     total_shots: float,
-    alpha_cvar: float,
+    fraction: float,
     term_indices: npt.NDArray[np.int32],
     term_offsets: npt.NDArray[np.int32],
     coeffs: npt.NDArray[np.float64],
     constant: float,
 ) -> float:
-    """Fused CVaR energy: evaluate polynomial + sort + accumulate in one kernel.
+    """Mean energy of the lowest-energy ``fraction`` of the shots.
 
-    Equivalent to calling ``_eval_poly_2d_jit`` followed by the CVaR
-    partial-sort accumulation, but avoids materialising intermediate NumPy
-    arrays for ``argsort``, ``cumsum``, and ``searchsorted``.
+    Scores every state, then accumulates the cheapest states' shots until the
+    ``ceil(fraction * total_shots)`` cutoff, taking part of the state that
+    crosses it.
 
     Args:
         x_vals: Shape ``(n_vars, n_states)`` — binary variable assignments.
         counts: Shape ``(n_states,)`` — shot counts per state.
         total_shots: Sum of *counts*.
-        alpha_cvar: CVaR tail fraction.
+        fraction: Share of the shots averaged, in ``(0, 1]``.
         term_indices, term_offsets, coeffs, constant: compiled problem arrays.
     """
     n_states = x_vals.shape[1]
@@ -388,7 +431,7 @@ def _compute_hard_cvar_energy_jit(
 
     sorted_indices = np.argsort(energies)
     # The relative slack keeps 0.07 * 100 = 7.000000000000001 from ceiling to 8.
-    cutoff_count = max(1, int(np.ceil(alpha_cvar * total_shots * (1.0 - 1e-12))))
+    cutoff_count = max(1, int(np.ceil(fraction * total_shots * (1.0 - 1e-12))))
 
     cvar_energy = 0.0
     count_sum = 0.0

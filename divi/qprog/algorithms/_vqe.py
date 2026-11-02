@@ -10,12 +10,8 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit import transpile
-from qiskit.circuit import ParameterVector, QuantumCircuit
-from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
-from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
@@ -28,13 +24,13 @@ from divi.qprog.algorithms._ansatze import (
     UCCSDAnsatz,
 )
 from divi.qprog.initial_states import InitialState, ZerosState
-from divi.qprog.mixins import SolutionSamplingMixin
+from divi.qprog.mixins import LayeredAnsatzMixin, SolutionSamplingMixin
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent
 
 
-class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
+class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm):
     """Variational Quantum Eigensolver (VQE) implementation.
 
     VQE is a hybrid quantum-classical algorithm used to find the ground state
@@ -102,10 +98,12 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 "HamiltonianProblem, or a molecule in "
                 "MolecularProblem.from_molecule."
             )
-        super().__init__(**kwargs)
-
-        self.ansatz = HartreeFockAnsatz() if ansatz is None else ansatz
-        self.n_layers = n_layers
+        super().__init__(
+            ansatz=HartreeFockAnsatz() if ansatz is None else ansatz,
+            n_layers=n_layers,
+            ansatz_kwargs=ansatz_kwargs,
+            **kwargs,
+        )
         self.max_iterations = max_iterations
         self.current_iteration = 0
 
@@ -121,8 +119,6 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             if problem.n_alpha is None or problem.n_beta is None
             else {"n_alpha": problem.n_alpha, "n_beta": problem.n_beta}
         )
-        # Merged into every ansatz call, so the count and the circuit agree.
-        self._ansatz_kwargs: dict[str, Any] = dict(ansatz_kwargs or {})
 
         # Resolve & store initial state (n_qubits is now set)
         if initial_state is None:
@@ -142,34 +138,9 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 stacklevel=2,
             )
 
-    @property
-    def n_params_per_layer(self):
-        """Number of trainable parameters per ansatz layer.
-
-        Returns:
-            int: Parameters per layer for the current ansatz, qubit count,
-            and electron count.
-        """
-        return self.ansatz.n_params_per_layer(
-            self.n_qubits,
-            n_electrons=self._problem.n_electrons,
-            **self._spin_kwargs,
-            **self._ansatz_kwargs,
-        )
-
-    @property
-    def _serialized_ansatz_type(self) -> str | None:
-        return type(self.ansatz).__name__
-
-    def _parameter_frequencies(self):
-        """The ansatz's per-layer frequencies, repeated across layers."""
-        per_layer = self.ansatz.parameter_frequencies(
-            self.n_qubits,
-            n_electrons=self._problem.n_electrons,
-            **self._spin_kwargs,
-            **self._ansatz_kwargs,
-        )
-        return None if per_layer is None else list(per_layer) * self.n_layers
+    def _ansatz_context(self) -> dict[str, Any]:
+        """The problem's electron and spin counts, for chemistry ansätze."""
+        return {"n_electrons": self._problem.n_electrons, **self._spin_kwargs}
 
     def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
         """Start excitation ansätze at the Hartree–Fock reference.
@@ -194,60 +165,11 @@ class VQE(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """
         return self._results.get("eigenstate")
 
-    def _cost_meta_from_ansatz(
-        self, prefix: QuantumCircuit | None = None, /, **ansatz_kwargs
-    ) -> MetaCircuit:
-        """Wrap ``prefix`` plus a layered ansatz into a cost ``MetaCircuit``.
-
-        The same keywords reach ``n_params_per_layer`` and ``build``, so the
-        parameter count and the circuit cannot disagree. ``prefix`` is
-        positional so an ansatz keyword of the same name cannot capture it.
-        """
-        n_electrons = self._problem.n_electrons
-        n_params = self.ansatz.n_params_per_layer(
-            self.n_qubits, n_electrons=n_electrons, **ansatz_kwargs
-        )
-        weights = np.array(
-            [ParameterVector(f"w_{i}", n_params) for i in range(self.n_layers)],
-            dtype=object,
-        )
-
-        qc = QuantumCircuit(self.n_qubits)
-        if prefix is not None:
-            qc.compose(prefix, inplace=True)
-        qc.compose(
-            self.ansatz.build(
-                weights,
-                n_qubits=self.n_qubits,
-                n_layers=self.n_layers,
-                n_electrons=n_electrons,
-                **ansatz_kwargs,
-            ),
-            inplace=True,
-        )
-
-        # Lower to the gate set the QASM body emitter accepts. Ansatzes such as
-        # LUCJAnsatz emit gates (e.g. xx_plus_yy) outside that basis;
-        # optimization_level=0 keeps this a cheap gate-by-gate substitution.
-        qc = transpile(
-            qc,
-            basis_gates=list(_QISKIT_TO_QASM2.keys()),
-            optimization_level=0,
-        )
-
-        return MetaCircuit(
-            circuit_bodies=(((), circuit_to_dag(qc)),),
-            parameters=tuple(weights.flatten()),
-            observable=self.cost_hamiltonian,
-            precision=self._precision,
-        )
-
     def _create_cost_circuit(self) -> MetaCircuit:
         """Create the cost MetaCircuit for VQE: initial state plus ansatz."""
         return self._cost_meta_from_ansatz(
+            self.cost_hamiltonian,
             self.initial_state.build(list(range(self.n_qubits))),
-            **self._spin_kwargs,
-            **self._ansatz_kwargs,
         )
 
     def sample_solution(

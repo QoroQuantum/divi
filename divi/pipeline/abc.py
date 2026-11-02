@@ -477,8 +477,7 @@ class BundleStage(Stage[MetaCircuitBatch, MetaCircuitBatch], ABC):
 
         Default ``True`` — the safe assumption. Override with ``False`` on
         stages that only inspect measurement/observable metadata
-        (e.g. :class:`~divi.pipeline.stages.MeasurementStage`,
-        :class:`~divi.pipeline.stages.PCECostStage`).
+        (e.g. :class:`~divi.pipeline.stages.MeasurementStage`).
         Used by
         :class:`~divi.pipeline.stages.ParameterBindingStage` to decide
         whether it can stay on the fast QASM-template render path.

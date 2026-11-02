@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
-from qiskit.circuit.library import RYGate
+from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -27,7 +27,10 @@ from divi.qprog import (
     QAOA,
     VQE,
     CustomVQA,
+    CVaRObjective,
+    DenseEncoding,
     FubiniStudyMetricEstimator,
+    MultiBasisEncoding,
     VariationalQuantumAlgorithm,
 )
 from divi.qprog._metrics import (
@@ -730,10 +733,46 @@ def _small_pce(backend, optimizer):
     )
 
 
-def test_pce_rejects_pullback_metric(dummy_simulator, default_optimizer):
-    """PCE's loss is a classical objective, not <cost_hamiltonian>, so the
-    pullback metric is rejected up front rather than run on the placeholder."""
-    pce = _small_pce(dummy_simulator, default_optimizer)
+@pytest.mark.parametrize(
+    "encoding", [DenseEncoding(), MultiBasisEncoding()], ids=["dense", "multi-basis"]
+)
+def test_pce_pullback_gradient_is_the_exact_chain_rule_gradient(
+    make_maestro_simulator, default_optimizer, encoding
+):
+    """Weighting each variable's term by the objective's slope makes the
+    pullback's loss gradient J @ c equal PCE's chain-rule gradient."""
+    pce = PCE(
+        problem=BinaryOptimizationProblem(
+            np.array([[1.0, -2.0, 0.5], [0.0, 3.0, 1.5], [0.0, 0.0, -1.0]])
+        ),
+        encoding=encoding,
+        ansatz=GenericLayerAnsatz([RYGate, RZGate], entangler=CXGate),
+        n_layers=2,
+        backend=make_maestro_simulator(),
+        optimizer=default_optimizer,
+    )
+    params = np.random.default_rng(3).uniform(0, 2 * np.pi, pce.n_params)
+
+    estimator = PullbackMetricEstimator()
+    estimator.check_compatible(pce)
+    evaluators = estimator.bind(pce)
+
+    np.testing.assert_allclose(
+        evaluators["jac"](params), pce._evaluate_gradient_at(params), atol=1e-9
+    )
+    metric = evaluators["metric_fn"](params)
+    assert np.all(np.linalg.eigvalsh(metric) >= -1e-12)
+
+
+def test_pce_cvar_rejects_pullback_metric(dummy_simulator, default_optimizer):
+    pce = PCE(
+        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
+        objective=CVaRObjective(),
+        ansatz=GenericLayerAnsatz([RYGate]),
+        n_layers=1,
+        backend=dummy_simulator,
+        optimizer=default_optimizer,
+    )
     message = (
         "The pullback metric requires a loss built from expectation values, but "
         "this program's cost reads raw counts. Use the Fubini–Study estimator "

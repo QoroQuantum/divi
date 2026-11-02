@@ -409,7 +409,7 @@ class MeasurementStage(BundleStage):
 
     - ``ResultFormat.PROBS`` for ``probs()`` measurements
     - ``ResultFormat.EXPVALS`` for ``expval(H)`` measurements
-    - ``ResultFormat.COUNTS`` is never set here (reserved for PCE)
+    - ``ResultFormat.COUNTS`` only when ``result_format_override`` asks for it
 
     During ``reduce``, combines measurement groups using the postprocessing
     function from ``_compute_measurement_groups``.
@@ -862,6 +862,8 @@ class MeasurementStage(BundleStage):
         info: dict[str, Any] = {
             "strategy": "analytic" if strategy == BACKEND_EXPVAL else strategy
         }
+        if self._result_format_override is not None:
+            info["result_format_override"] = self._result_format_override.name
         if meta is None:
             return info
 

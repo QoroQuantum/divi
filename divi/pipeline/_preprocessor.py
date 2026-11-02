@@ -15,7 +15,7 @@ routine by passing a preprocessor instead of assembling pipelines themselves.
 These default preprocessors are factory *functions* (``cost_preprocessor``,
 ``sample_preprocessor``); each program surfaces one through a method that
 returns it — the public, overridable ``VariationalQuantumAlgorithm.cost_preprocessor``
-(PCE overrides it with its counts-based variant) and the internal
+and the internal
 ``_sample_preprocessor``. The metric/overlap preprocessors live in
 ``divi.qprog._metrics`` as factory functions too, parameterized by
 per-evaluation state (the overlap closure, the Fubini-Study block id) rather
@@ -49,8 +49,8 @@ class PipelineCadence(str, Enum):
     """Run a single time per ``run()`` — e.g. solution sampling after training."""
 
 
-#: The cost routine's pipeline name. Shared because more than one program builds
-#: a cost preprocessor (PCE supplies its own terminal stage), and they must agree.
+#: The cost routine's pipeline name. Shared because programs may build their own
+#: cost preprocessor, and every variant must agree on it.
 COST_PIPELINE = "cost"
 
 
@@ -84,8 +84,7 @@ class CircuitPreprocessor:
         terminal_stage: Optional custom ``handles_measurement`` terminal. ``None``
             means the program supplies its default
             :class:`~divi.pipeline.stages.MeasurementStage` (configured with the
-            program's grouping / shot strategy); PCE supplies its own
-            :class:`~divi.pipeline.stages.PCECostStage`.
+            program's grouping / shot strategy).
         consumes_dag_bodies: Whether ``preprocess`` reads or replaces circuit
             DAG bodies. Metadata-only transforms leave this ``False`` so dry
             runs can keep analytic shortcuts.

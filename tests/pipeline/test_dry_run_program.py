@@ -39,7 +39,14 @@ from divi.qprog._metrics import (
     PullbackMetricEstimator,
     StochasticFidelityMetricEstimator,
 )
-from divi.qprog.algorithms import PCE, GenericLayerAnsatz, TimeEvolution
+from divi.qprog.algorithms import (
+    PCE,
+    CVaRObjective,
+    DenseEncoding,
+    GenericLayerAnsatz,
+    MultiBasisEncoding,
+    TimeEvolution,
+)
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     QNGOptimizer,
@@ -270,11 +277,12 @@ class TestQuantumProgramDryRun:
     def test_a_real_incompatible_pairing_refuses_with_the_estimators_reason(
         self, dummy_simulator, default_optimizer
     ):
-        """PCE's cost is a classical (COUNTS) objective, which the pullback metric
-        rejects. The estimator's own message names the alternative, so previewing
-        surfaces it before any circuit is built."""
+        """A CVaR PCE reads raw counts, which the pullback metric rejects. The
+        estimator's own message names the alternative, so previewing surfaces it
+        before any circuit is built."""
         pce = PCE(
             problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
+            objective=CVaRObjective(),
             ansatz=GenericLayerAnsatz([RYGate, RZGate]),
             optimizer=QNGOptimizer(),  # default pullback metric
             backend=dummy_simulator,
@@ -789,18 +797,25 @@ def test_metric_estimator_must_declare_its_routines():
         _IncompleteMetricEstimator()
 
 
-def test_pce_cost_pipeline_has_no_phantom_reduction(dummy_simulator, default_optimizer):
-    """PCE reads raw bitstrings — one circuit per spec, no per-Pauli-term
-    grouping — so its cost pipeline must not show a per-term baseline or a
-    phantom reduction from the placeholder Hamiltonian it never measures."""
+@pytest.mark.parametrize(
+    "encoding, circuits_per_set",
+    [(DenseEncoding(), 1), (MultiBasisEncoding(), 3)],
+    ids=["dense", "multi-basis"],
+)
+def test_pce_cost_measures_each_basis_in_one_circuit(
+    dummy_simulator, default_optimizer, encoding, circuits_per_set
+):
+    """Dense Z-parities share one qubit-wise-commuting group; multi-basis
+    strings need one circuit per Pauli letter."""
     pce = PCE(
-        problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
+        problem=BinaryOptimizationProblem(
+            np.array([[1.0, 0.2, 0.0], [0.2, 2.0, 0.3], [0.0, 0.3, 1.5]])
+        ),
+        encoding=encoding,
         ansatz=GenericLayerAnsatz([RYGate, RZGate]),
         optimizer=default_optimizer,
         backend=dummy_simulator,
     )
     cost = pce.dry_run()["cost"]
-    assert all(
-        stage.factor in (1.0, float(cost.total_circuits)) for stage in cost.stages
-    )
-    assert not any(stage.factor < 1.0 for stage in cost.stages)  # no phantom ÷N
+    n_sets = default_optimizer.n_param_sets
+    assert cost.total_circuits == circuits_per_set * n_sets

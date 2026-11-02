@@ -131,7 +131,9 @@ a ``QuantumProgram``. Both accept a circuit, sequence, or mapping. For example:
 .. tip::
 
    ``result.value`` squeezes a single expectation to ``float`` and returns a
-   list for several expectations or a dict for probabilities/counts.
+   list for several expectations or a dict for probabilities/counts. Both
+   dicts are keyed by bitstrings with qubit 0 leftmost, whatever ordering the
+   backend itself returns.
    ``evaluate(...)`` instead returns unsqueezed values keyed by parameter-set
    index, such as ``{0: [1.0]}``.
 

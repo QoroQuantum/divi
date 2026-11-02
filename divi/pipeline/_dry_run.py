@@ -349,7 +349,7 @@ def _measures_observable_per_term(trace: PipelineTrace) -> bool:
 
     ``MeasurementStage`` records QWC groups (``measurement_groups``) on every
     expectation-value path and leaves them empty for sampling or raw-bitstring
-    terminals (e.g. PCE). A non-empty ``measurement_groups`` on the final batch
+    terminals. A non-empty ``measurement_groups`` on the final batch
     is the signal — not the observable field, which lingers even where it is
     never measured per term.
     """

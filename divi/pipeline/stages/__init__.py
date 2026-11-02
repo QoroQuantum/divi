@@ -18,7 +18,6 @@ from ._data_binding_stage import (
     resolve_sample_loss,
 )
 from ._measurement_stage import MeasurementStage
-from ._pce_cost_stage import PCECostStage, PCEObjective
 from ._preprocess_stage import PreprocessStage
 from ._qiskit_spec_stage import QiskitSpecStage
 from ._trotter_spec_stage import TrotterSpecStage
@@ -35,8 +34,6 @@ __all__ = [
     "MeasurementStage",
     "ParameterBindingStage",
     "PauliTwirlStage",
-    "PCECostStage",
-    "PCEObjective",
     "PennyLaneSpecStage",
     "PreprocessStage",
     "QEMStage",
