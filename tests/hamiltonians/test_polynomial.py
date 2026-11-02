@@ -508,6 +508,19 @@ class TestComputeHardCvarEnergyJit:
         # 25% tail should be <= 75% tail (CVaR picks lower energies)
         assert e_25 <= e_75
 
+    def test_cutoff_does_not_round_a_float_product_up(self):
+        """0.07 * 100 is 7.000000000000001 in floating point; the tail is still
+        7 shots, all at energy 0, not 8 with one at energy 3."""
+        ti, to, tc, const = compile_problem(_make_problem(np.diag([1.0, 2.0])))
+        x_vals = np.array([[0.0, 1.0], [0.0, 1.0]])
+        counts = np.array([7.0, 93.0])
+
+        result = _compute_hard_cvar_energy_jit(
+            x_vals, counts, 100.0, 0.07, ti, to, tc, const
+        )
+
+        assert result == 0.0
+
 
 @pytest.mark.parametrize(
     "build",

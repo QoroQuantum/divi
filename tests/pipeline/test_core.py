@@ -37,6 +37,7 @@ from divi.pipeline import (
     PipelineEnv,
     PipelineResult,
     PipelineTrace,
+    ResultFormat,
     SpecStage,
     StageOutput,
     format_pipeline_tree,
@@ -55,6 +56,7 @@ from divi.pipeline._core import (
 )
 from divi.pipeline.abc import BundleStage
 from divi.pipeline.stages import (
+    CircuitSpecStage,
     MeasurementStage,
     ParameterBindingStage,
     PauliTwirlStage,
@@ -1238,6 +1240,33 @@ def test_run_with_default_execute_fn_and_shots_backend_auto_converts_counts(
     assert isinstance(value, list)
     assert len(value) == 1
     assert isinstance(value[0], (int, float))
+
+
+@pytest.mark.parametrize(
+    "stage",
+    [
+        MeasurementStage(),
+        MeasurementStage(result_format_override=ResultFormat.COUNTS),
+    ],
+    ids=["probs", "counts"],
+)
+def test_run_keys_sampled_results_with_qubit_zero_leftmost(
+    make_maestro_simulator, stage
+):
+    """X on qubit 0 of three reads "100" whether the run returns probabilities
+    or raw counts."""
+    qc = QuantumCircuit(3)
+    qc.x(0)
+    seed = MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),), measured_wires=(0, 1, 2)
+    )
+    pipeline = CircuitPipeline(stages=[CircuitSpecStage(), stage])
+
+    result = pipeline.run(
+        initial_spec=seed, env=PipelineEnv(backend=make_maestro_simulator(shots=10))
+    )
+
+    assert list(result[()]) == ["100"]
 
 
 class TestWaitForAsyncResult:

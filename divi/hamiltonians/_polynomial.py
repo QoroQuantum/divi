@@ -387,7 +387,8 @@ def _compute_hard_cvar_energy_jit(
     energies = _eval_poly_2d_jit(x_vals, term_indices, term_offsets, coeffs, constant)
 
     sorted_indices = np.argsort(energies)
-    cutoff_count = int(np.ceil(alpha_cvar * total_shots))
+    # The relative slack keeps 0.07 * 100 = 7.000000000000001 from ceiling to 8.
+    cutoff_count = max(1, int(np.ceil(alpha_cvar * total_shots * (1.0 - 1e-12))))
 
     cvar_energy = 0.0
     count_sum = 0.0

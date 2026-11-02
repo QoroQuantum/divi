@@ -34,6 +34,7 @@ from ._compilation import (
     reject_colliding_body_tags,
 )
 from ._postprocessing import (
+    _big_endian_histogram,
     _counts_to_cost_variance,
     _counts_to_expvals,
     _counts_to_probs,
@@ -557,6 +558,11 @@ class CircuitPipeline:
             if result_format is not None:
                 if result_format is ResultFormat.PROBS:
                     raw = _counts_to_probs(raw, env.backend.shots)
+                elif result_format is ResultFormat.COUNTS:
+                    raw = {
+                        key: _big_endian_histogram(key, counts)
+                        for key, counts in raw.items()
+                    }
                 elif result_format is ResultFormat.EXPVALS:
                     ham_ops = plan.env_artifacts.get("ham_ops")
                     if ham_ops is not None:
