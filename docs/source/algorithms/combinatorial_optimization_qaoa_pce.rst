@@ -358,9 +358,14 @@ parity encoding. ``encoding_type="dense"`` needs
 ``encoding_type="poly"`` chooses the smallest *q* for which
 :math:`q(q + 1)/2 \geq N`.
 
-``alpha`` controls the objective used during optimisation. Values below ``5``
-use a smooth parity relaxation; values at or above ``5`` use a discrete,
-CVaR-style objective over sampled energies.
+``objective`` selects what is minimised during optimisation, and each objective
+carries its own setting. :class:`~divi.qprog.algorithms.SoftObjective` (the
+default) evaluates the problem on a smooth relaxation of the parity
+expectations, :math:`x_i = (1 + \tanh(\alpha \langle Z_i \rangle)) / 2`; a
+larger ``alpha`` pushes the variables towards 0 and 1 at the cost of a flatter
+landscape. :class:`~divi.qprog.algorithms.CVaRObjective` minimises the mean
+energy of the lowest ``fraction`` of sampled bitstrings and needs a sampling
+backend.
 
 .. dashboard-example: pce
 
@@ -369,7 +374,7 @@ CVaR-style objective over sampled energies.
    import numpy as np
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import PCE
+   from divi.qprog import PCE, SoftObjective
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import BinaryOptimizationProblem
 
@@ -377,7 +382,7 @@ CVaR-style objective over sampled energies.
    pce = PCE(
        problem=BinaryOptimizationProblem(qubo),
        encoding_type="dense",
-       alpha=2.0,
+       objective=SoftObjective(alpha=2.0),
        n_layers=2,
        optimizer=MonteCarloOptimizer(population_size=8),
        max_iterations=5,
@@ -869,7 +874,7 @@ QUBO Partitioning (QAOA or PCE)
 The per-partition engine is chosen via ``quantum_routine``:
 
 - ``quantum_routine="qaoa"`` (default): standard :class:`~divi.qprog.algorithms.QAOA` partitions.
-- ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding_type`` and ``alpha``).
+- ``quantum_routine="pce"``: :class:`~divi.qprog.algorithms.PCE` partitions (supports PCE-specific kwargs such as ``encoding_type`` and ``objective``).
 - ``quantum_routine="iterative_qaoa"``: :class:`~divi.qprog.algorithms.IterativeQAOA` partitions with warm-started depth progression.
   Pass ``strategy``, ``max_iterations_per_depth``, and other IterativeQAOA-specific kwargs
   directly; ``n_layers`` is used as ``max_depth``.
@@ -882,7 +887,7 @@ ensemble arguments change:
    import dimod
    import hybrid
    from qiskit.circuit.library import RYGate, RZGate
-   from divi.qprog import InterpolationStrategy
+   from divi.qprog import InterpolationStrategy, SoftObjective
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.workflows import PartitioningProgramEnsemble
    from divi.qprog.algorithms import GenericLayerAnsatz
@@ -921,7 +926,7 @@ ensemble arguments change:
        ansatz=GenericLayerAnsatz([RYGate, RZGate]),
        n_layers=2,
        encoding_type="dense",
-       alpha=2.0,
+       objective=SoftObjective(alpha=2.0),
        optimizer=optimizer,
        max_iterations=10,
        backend=backend,

@@ -15,13 +15,21 @@ from divi.pipeline.stages import (
     CircuitSpecStage,
     ParameterBindingStage,
     PCECostStage,
+    PCEObjective,
     PreprocessStage,
 )
 from divi.pipeline.stages._pce_cost_stage import (
     _compute_hard_cvar_energy,
     _compute_soft_energy,
 )
-from divi.qprog import PCE, MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
+from divi.qprog import (
+    PCE,
+    CVaRObjective,
+    MonteCarloOptimizer,
+    ScipyMethod,
+    ScipyOptimizer,
+    SoftObjective,
+)
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.algorithms._pce import (
     _aggregate_param_group,
@@ -121,7 +129,6 @@ def test_pce_basic_initialization(make_pce):
 
     assert pce.n_vars == 2
     assert pce.n_qubits == 2  # ceil(log2(2 + 1)) = 2
-    assert pce.alpha == 2.0
     verify_cost_circuit(pce)
 
 
@@ -312,28 +319,30 @@ def test_pce_rejects_non_binary_problem():
         PCE(np.array([[1.0, 0.0], [0.0, 1.0]]))
 
 
-def _two_variable_pce(alpha, basic_ansatz, backend, optimizer):
+def _two_variable_pce(basic_ansatz, backend, optimizer, **kwargs):
     return PCE(
         problem=BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]])),
         ansatz=basic_ansatz,
         optimizer=optimizer,
         backend=backend,
-        alpha=alpha,
         max_iterations=1,
+        **kwargs,
     )
 
 
-@pytest.mark.parametrize("alpha", [5.0, 6.0])
-def test_pce_hard_cvar_expval_backend_raises(
-    alpha, basic_ansatz, default_test_simulator, default_optimizer
+def test_pce_cvar_expval_backend_raises(
+    basic_ansatz, default_test_simulator, default_optimizer
 ):
     pce = _two_variable_pce(
-        alpha, basic_ansatz, default_test_simulator, default_optimizer
+        basic_ansatz,
+        default_test_simulator,
+        default_optimizer,
+        objective=CVaRObjective(),
     )
     with pytest.raises(
         ValueError,
         match=exact_match(
-            "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
+            "PCE with CVaRObjective requires shot histograms and "
             "cannot use expectation-value backends. Use a sampling backend: "
             "MaestroSimulator(force_sampling=True), "
             "QiskitSimulator(force_sampling=True), or QoroService with "
@@ -344,17 +353,72 @@ def test_pce_hard_cvar_expval_backend_raises(
 
 
 @pytest.mark.parametrize(
-    "alpha,force_sampling",
-    [(4.9, False), (6.0, True)],
-    ids=["soft-objective", "hard-cvar-forced-sampling"],
+    "objective,force_sampling",
+    [(SoftObjective(), False), (CVaRObjective(), True)],
+    ids=["soft-objective", "cvar-forced-sampling"],
 )
 def test_pce_runs_when_the_backend_suits_the_objective(
-    alpha, force_sampling, basic_ansatz, make_maestro_simulator, default_optimizer
+    objective, force_sampling, basic_ansatz, make_maestro_simulator, default_optimizer
 ):
     backend = make_maestro_simulator(force_sampling=force_sampling)
-    pce = _two_variable_pce(alpha, basic_ansatz, backend, default_optimizer)
+    pce = _two_variable_pce(
+        basic_ansatz, backend, default_optimizer, objective=objective
+    )
     pce.run()
     assert len(pce.losses_history) == 1
+
+
+@pytest.mark.parametrize(
+    "objective", [SoftObjective(alpha=50.0), CVaRObjective(fraction=0.4)]
+)
+def test_pce_threads_its_objective_to_the_cost_stage(make_pce, objective):
+    """The objective alone selects the cost mode; a large alpha stays soft."""
+    stage = make_pce(objective=objective)._pce_cost_preprocessor.terminal_stage
+    assert stage._objective is objective
+
+
+class _ConstantObjective(PCEObjective):
+    def score(self, parities, counts, problem, compiled):
+        return 7.0
+
+
+def test_pce_minimises_a_custom_objective(make_pce):
+    pce = make_pce(objective=_ConstantObjective(), max_iterations=1)
+    pce.run(perform_final_computation=False)
+    assert pce.best_loss == pytest.approx(7.0)
+
+
+def test_pce_defaults_to_the_soft_objective(make_pce):
+    assert make_pce().objective == SoftObjective(alpha=2.0)
+
+
+def test_pce_rejects_a_non_objective(make_pce):
+    with pytest.raises(
+        TypeError,
+        match=exact_match("objective must be a PCEObjective, got str."),
+    ):
+        make_pce(objective="cvar")
+
+
+@pytest.mark.parametrize(
+    "build, message",
+    [
+        (
+            lambda: SoftObjective(alpha=0.0),
+            "alpha must be a positive finite number, got 0.0",
+        ),
+        (
+            lambda: SoftObjective(alpha=float("inf")),
+            "alpha must be a positive finite number, got inf",
+        ),
+        (lambda: CVaRObjective(fraction=0.0), "fraction must be in (0, 1], got 0.0"),
+        (lambda: CVaRObjective(fraction=1.5), "fraction must be in (0, 1], got 1.5"),
+    ],
+    ids=["zero-alpha", "infinite-alpha", "zero-fraction", "fraction-above-one"],
+)
+def test_objectives_reject_out_of_range_settings(build, message):
+    with pytest.raises(ValueError, match=exact_match(message)):
+        build()
 
 
 # ---------------------------------------------------------------------------
@@ -423,16 +487,14 @@ def test_pce_hubo_quadratized_objective_helpers(make_pce):
         ("x1",): 0.25,
         ("x0", "x1", "x2"): 1.5,
     }
-    pce = make_pce(problem=hubo, alpha=1.0)
+    pce = make_pce(problem=hubo)
 
     state_strings, probs = _histogram_to_probs(
         {"000": 30, "001": 10, "010": 20, "011": 40}
     )
     parities = _decode_parities(state_strings, pce._variable_masks_u64)
 
-    energy = _compute_soft_energy(
-        parities, probs, pce.alpha, pce.problem.canonical_problem
-    )
+    energy = _compute_soft_energy(parities, probs, 1.0, pce.problem.canonical_problem)
 
     x0, x1, x2 = (0.5 * (1.0 + np.tanh(z)) for z in (0.0, -0.2, 0.4))
     expected = -1.0 * x0**2 + 0.25 * x1**2 + 1.5 * x0 * x1 * x2
@@ -452,7 +514,7 @@ def test_pce_soft_energy_computation(make_pce):
     x = 0.5*(1 + tanh(0.5)) = e/(e+1)   [algebraic identity].
     energy = 1*x² + 2*x² = 3*(e/(e+1))².
     """
-    pce = make_pce(problem=np.diag([1.0, 2.0]), alpha=1.0)
+    pce = make_pce(problem=np.diag([1.0, 2.0]))
 
     states = ["00", "11"]
     counts = np.array([3, 1], dtype=float)
@@ -482,7 +544,7 @@ def test_pce_hard_cvar_energy_computation(make_pce, histogram, expected):
       zero-energy-head: 4 shots at 0 + 1 shot at 1 → 1/5 = 0.2
       nonzero-tail: 2 shots at 1 + 3 shots at 2 → 8/5 = 1.6
     """
-    pce = make_pce(problem=np.diag([1.0, 2.0]), alpha=6.0)
+    pce = make_pce(problem=np.diag([1.0, 2.0]))
 
     states = list(histogram)
     counts_arr = np.array(list(histogram.values()), dtype=float)
@@ -512,18 +574,16 @@ def test_pce_custom_decode_parities_fn_soft_energy(make_pce):
         n_states = len(state_strings)
         return np.zeros((n_vars, n_states), dtype=np.uint8)
 
-    pce = make_pce(alpha=1.0, decode_parities_fn=all_zeros_decoder)
+    pce = make_pce(decode_parities_fn=all_zeros_decoder)
 
     state_strings, probs = _histogram_to_probs({"00": 30, "01": 10, "10": 20, "11": 40})
 
     parities = all_zeros_decoder(state_strings, pce._variable_masks_u64)
-    result = _compute_soft_energy(
-        parities, probs, pce.alpha, pce.problem.canonical_problem
-    )
+    result = _compute_soft_energy(parities, probs, 1.0, pce.problem.canonical_problem)
 
     # All parities 0 -> mean_parities = [0, 0] -> z_expectations = [1, 1]
     z = np.array([1.0, 1.0])
-    x_soft = 0.5 * (1.0 + np.tanh(pce.alpha * z))
+    x_soft = 0.5 * (1.0 + np.tanh(z))
     qubo = np.array([[1.0, 0.2], [0.2, 2.0]])
     expected = float(x_soft @ qubo @ x_soft)
     assert result == pytest.approx(expected)
@@ -538,7 +598,8 @@ def test_pce_custom_decode_parities_fn_hard_cvar(make_pce):
         return np.ones((n_vars, n_states), dtype=np.uint8)
 
     pce = make_pce(
-        problem=np.diag([1.0, 2.0]), alpha=6.0, decode_parities_fn=all_ones_decoder
+        problem=np.diag([1.0, 2.0]),
+        decode_parities_fn=all_ones_decoder,
     )
 
     merged = {"11": 2, "10": 3, "01": 10, "00": 25}
@@ -561,8 +622,8 @@ def test_pce_custom_decode_parities_fn_hard_cvar(make_pce):
 
 def test_pce_decode_parities_fn_none_uses_default(make_pce):
     """Passing decode_parities_fn=None uses the built-in decoder (same as omitting)."""
-    pce_default = make_pce(alpha=1.0)
-    pce_explicit_none = make_pce(alpha=1.0, decode_parities_fn=None)
+    pce_default = make_pce()
+    pce_explicit_none = make_pce(decode_parities_fn=None)
 
     state_strings, probs = _histogram_to_probs({"00": 30, "01": 10, "10": 20, "11": 40})
 

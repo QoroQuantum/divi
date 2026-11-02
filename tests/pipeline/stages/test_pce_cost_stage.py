@@ -22,6 +22,7 @@ from divi.hamiltonians import normalize_binary_polynomial_problem
 from divi.pipeline.abc import PipelineEnv, ResultFormat
 from divi.pipeline.stages import PCECostStage
 from divi.pipeline.stages._pce_cost_stage import PCE_MEAS_AXIS, _PCEMeasToken
+from divi.qprog.algorithms import CVaRObjective, SoftObjective
 from divi.qprog.algorithms._pce import _decode_parities, _pack_masks
 from tests._helpers import exact_match
 from tests.pipeline._helpers import measured_qubits
@@ -30,9 +31,7 @@ from tests.pipeline._helpers import measured_qubits
 def _make_stage(
     qubo: np.ndarray,
     *,
-    alpha: float = 1.0,
-    soft: bool = True,
-    alpha_cvar: float = 0.25,
+    objective: SoftObjective | CVaRObjective = SoftObjective(alpha=1.0),
     masks: np.ndarray | None = None,
     measure_all: bool = False,
 ):
@@ -46,11 +45,9 @@ def _make_stage(
         masks = np.arange(1, problem.n_vars + 1, dtype=np.uint64)
     return PCECostStage(
         problem=problem,
-        alpha=alpha,
-        use_soft_objective=soft,
+        objective=objective,
         decode_parities_fn=_decode_parities,
         variable_masks_u64=masks,
-        alpha_cvar=alpha_cvar,
         measure_all=measure_all,
     )
 
@@ -107,7 +104,7 @@ class TestExpandSingleCircuit:
         """Produces exactly 1 circuit, whether or not the backend supports expval."""
         n_qubits = 16
         batch = _make_z_hamiltonian_batch(n_qubits)
-        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+        stage = _make_stage(np.eye(n_qubits))
 
         env = PipelineEnv(backend=make_backend())
         output = stage.expand(batch, env)
@@ -119,7 +116,7 @@ class TestExpandSingleCircuit:
         """Result format must be COUNTS after expand, regardless of backend."""
         n_qubits = 4
         batch = _make_z_hamiltonian_batch(n_qubits)
-        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+        stage = _make_stage(np.eye(n_qubits))
 
         env = PipelineEnv(backend=_make_expval_backend())
         output = stage.expand(batch, env)
@@ -132,7 +129,7 @@ class TestExpandSingleCircuit:
         """ham_ops must NOT be set — PCE never uses the backend expval path."""
         n_qubits = 4
         batch = _make_z_hamiltonian_batch(n_qubits)
-        stage = _make_stage(np.eye(n_qubits), alpha=1.0, soft=True)
+        stage = _make_stage(np.eye(n_qubits))
 
         env = PipelineEnv(backend=_make_expval_backend())
         output = stage.expand(batch, env)
@@ -235,7 +232,7 @@ def test_reduce_histogram_soft_energy_per_param_set(shots):
     """A single-outcome histogram fixes every parity, so each soft variable is
     ``(1 + tanh(alpha * z)) / 2`` and the diagonal QUBO evaluates to
     ``1*x0*x0 + 2*x1*x1``. Each param set is scored from its own histogram."""
-    stage = _make_stage(np.diag([1.0, 2.0]), alpha=1.0, soft=True)
+    stage = _make_stage(np.diag([1.0, 2.0]))
     result = stage.reduce(
         {_meas_key(0): {"00": shots}, _meas_key(1): {"11": shots}},
         _make_env(ResultFormat.COUNTS),
@@ -248,12 +245,11 @@ def test_reduce_histogram_soft_energy_per_param_set(shots):
 
 
 @pytest.mark.parametrize(
-    "soft, kwargs",
-    [(True, {"alpha": 1.0}), (False, {"alpha": 6.0, "alpha_cvar": 0.25})],
+    "objective", [SoftObjective(alpha=1.0), CVaRObjective()], ids=["soft", "cvar"]
 )
 @pytest.mark.parametrize("histogram", [{}, {"00": 0}], ids=["empty", "zero-counts"])
-def test_reduce_rejects_a_histogram_without_shots(soft, kwargs, histogram):
-    stage = _make_stage(np.diag([1.0, 2.0]), soft=soft, **kwargs)
+def test_reduce_rejects_a_histogram_without_shots(objective, histogram):
+    stage = _make_stage(np.diag([1.0, 2.0]), objective=objective)
     with pytest.raises(
         ValueError,
         match=exact_match(
@@ -269,13 +265,13 @@ class TestReducePathRouting:
     """Verify reduce dispatches to the correct energy computation path."""
 
     def test_soft_and_hard_produce_different_energies(self):
-        """Soft energy and hard CVaR energy differ for the same histogram."""
+        """Soft energy and CVaR energy differ for the same histogram."""
         qubo = np.diag([1.0, 2.0])
         histogram = {"11": 2, "10": 3, "01": 10, "00": 25}
         env = _make_env(ResultFormat.COUNTS)
 
-        soft_stage = _make_stage(qubo, alpha=1.0, soft=True)
-        hard_stage = _make_stage(qubo, alpha=6.0, soft=False, alpha_cvar=0.25)
+        soft_stage = _make_stage(qubo)
+        hard_stage = _make_stage(qubo, objective=CVaRObjective(fraction=0.25))
 
         soft_energy = list(
             soft_stage.reduce({_meas_key(0): histogram}, env, token=None).values()
@@ -287,7 +283,7 @@ class TestReducePathRouting:
         assert soft_energy != pytest.approx(hard_energy)
 
     @pytest.mark.parametrize(
-        "histogram, alpha_cvar, expected",
+        "histogram, fraction, expected",
         [
             pytest.param({"11": 100}, 0.25, 0.0, id="single-outcome"),
             pytest.param({"11": 50, "00": 50}, 0.5, 0.0, id="low-energy-half"),
@@ -295,15 +291,15 @@ class TestReducePathRouting:
         ],
     )
     def test_hard_cvar_averages_the_low_energy_tail(
-        self, histogram, alpha_cvar, expected
+        self, histogram, fraction, expected
     ):
         """qubo = diag([1, 2]), masks = [1, 2]: ``"11"`` → energy 0, ``"10"`` → 1,
-        ``"01"`` → 2, ``"00"`` → 3. CVaR averages the best ``ceil(alpha_cvar *
+        ``"01"`` → 2, ``"00"`` → 3. CVaR averages the best ``ceil(fraction *
         shots)`` shots: single-outcome is that outcome's 0; the low half of 50/50
         "11"/"00" is all "11", so 0; the best 5 of the nonzero tail are two at 1
         and three at 2, so 8/5."""
         stage = _make_stage(
-            np.diag([1.0, 2.0]), alpha=6.0, soft=False, alpha_cvar=alpha_cvar
+            np.diag([1.0, 2.0]), objective=CVaRObjective(fraction=fraction)
         )
         result = stage.reduce(
             {_meas_key(0): histogram}, _make_env(ResultFormat.COUNTS), token=None
@@ -312,19 +308,21 @@ class TestReducePathRouting:
 
 
 @pytest.mark.parametrize(
-    "soft, expected",
-    [(True, "soft surrogate"), (False, "hard CVaR")],
-    ids=["soft", "hard"],
+    "objective, expected",
+    [
+        (SoftObjective(alpha=0.7), {"objective": "SoftObjective", "alpha": 0.7}),
+        (CVaRObjective(fraction=0.4), {"objective": "CVaRObjective", "fraction": 0.4}),
+    ],
+    ids=["soft", "cvar"],
 )
-def test_introspect_names_the_objective(soft, expected):
+def test_introspect_names_the_objective(objective, expected):
     """The two objectives score the same shot histogram, so they submit an
     identical circuit count and are otherwise indistinguishable in a report."""
     qubo = np.diag([1.0, 2.0])
-    stage = _make_stage(qubo, alpha=0.7, soft=soft, measure_all=True)
+    stage = _make_stage(qubo, objective=objective, measure_all=True)
     info = stage.introspect({}, _make_env(ResultFormat.COUNTS), token=None)
 
-    assert info["objective"] == expected
-    assert info["alpha"] == 0.7
+    assert info.items() >= expected.items()
     assert info["n_variables"] == 2
     assert info["measured_wires"] == "all"
 

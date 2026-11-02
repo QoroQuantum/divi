@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 
-from divi.qprog import PCE, QAOA, GenericLayerAnsatz
+from divi.qprog import PCE, QAOA, GenericLayerAnsatz, SoftObjective
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend
@@ -75,7 +75,7 @@ if __name__ == "__main__":
         n_layers=1,
         optimizer=optimizer,
         max_iterations=n_opt_iters,
-        alpha=1.0,
+        objective=SoftObjective(alpha=1.0),
         backend=backend,
     )
     pce.run()

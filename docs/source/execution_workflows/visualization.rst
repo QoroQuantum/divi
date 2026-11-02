@@ -344,7 +344,7 @@ including ``VQE``, ``QAOA``, ``PCE``, and ``CustomVQA``.
 Limitations:
 
 - ``IterativeQAOA`` is excluded because its parameter space is not fixed across iterations.
-- ``PCE`` preserves the same backend rules as ordinary cost evaluation. In particular, hard CVaR mode still requires a sampling backend.
+- ``PCE`` preserves the same backend rules as ordinary cost evaluation. In particular, :class:`~divi.qprog.algorithms.CVaRObjective` still requires a sampling backend.
 
 Next Steps
 ----------

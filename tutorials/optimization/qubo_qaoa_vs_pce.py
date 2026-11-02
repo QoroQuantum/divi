@@ -24,7 +24,7 @@ from dimod import ExactSolver
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 
 from divi.hamiltonians import qubo_to_matrix
-from divi.qprog import PCE, QAOA, GenericLayerAnsatz
+from divi.qprog import PCE, QAOA, GenericLayerAnsatz, SoftObjective
 from divi.qprog.optimizers import (
     PymooMethod,
     PymooOptimizer,
@@ -128,7 +128,7 @@ if __name__ == "__main__":
         backend=backend,
         max_iterations=10,
         n_layers=2,
-        alpha=1.0,
+        objective=SoftObjective(alpha=1.0),
     )
     pce_solver.run()
 

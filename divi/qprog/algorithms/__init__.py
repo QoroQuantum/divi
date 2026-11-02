@@ -17,7 +17,7 @@ from ._custom_vqa import CustomVQA
 from ._feature_maps import AngleEmbedding, FeatureMap, ZZFeatureMap
 from ._vqe import VQE
 from ._iterative_qaoa import InterpolationStrategy, IterativeQAOA
-from ._pce import PCE
+from ._pce import PCE, CVaRObjective, SoftObjective
 from ._qaoa import QAOA
 from ._qnn import QNN
 from ._time_evolution import TimeEvolution
@@ -25,6 +25,7 @@ from ._time_evolution import TimeEvolution
 __all__ = [
     "AngleEmbedding",
     "Ansatz",
+    "CVaRObjective",
     "CustomVQA",
     "FeatureMap",
     "GenericLayerAnsatz",
@@ -37,6 +38,7 @@ __all__ = [
     "QAOAAnsatz",
     "QCCAnsatz",
     "QNN",
+    "SoftObjective",
     "TimeEvolution",
     "UCCSDAnsatz",
     "VQE",

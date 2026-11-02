@@ -35,7 +35,12 @@ from divi.pipeline.stages import (
     MeasurementStage,
     PauliTwirlStage,
 )
-from divi.qprog.algorithms import PCE, GenericLayerAnsatz
+from divi.qprog.algorithms import (
+    PCE,
+    CVaRObjective,
+    GenericLayerAnsatz,
+    SoftObjective,
+)
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
 )
@@ -281,20 +286,22 @@ class TestEnsembleDryRunFormatting:
         CVaR tail is exactly that: same Pauli terms, different objective."""
         problem = BinaryOptimizationProblem(np.array([[1.0, 0.2], [0.2, 2.0]]))
 
-        def pce(alpha):
+        def pce(objective):
             return PCE(
                 problem=problem,
                 ansatz=GenericLayerAnsatz([RYGate, RZGate]),
-                alpha=alpha,
+                objective=objective,
                 backend=dummy_simulator,
                 optimizer=MonteCarloOptimizer(),
             ).dry_run()
 
-        soft, hard = pce(0.1), pce(0.9)
+        soft, hard = pce(SoftObjective(alpha=0.1)), pce(CVaRObjective())
         assert soft["cost"].objective_fingerprint != hard["cost"].objective_fingerprint
         assert _program_signature(soft) != _program_signature(hard)
         # ...and an unchanged objective still groups.
-        assert _program_signature(pce(0.1)) == _program_signature(soft)
+        assert _program_signature(pce(SoftObjective(alpha=0.1))) == (
+            _program_signature(soft)
+        )
 
     def test_merged_group_marks_metadata_the_members_disagree_on(
         self, dummy_pipeline_env

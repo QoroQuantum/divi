@@ -36,6 +36,7 @@ from divi.qprog import (
     BeamSearchStrategy,
     EarlyStopping,
     HierarchicalStrategy,
+    SoftObjective,
 )
 from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
@@ -306,7 +307,7 @@ if __name__ == "__main__":
             engine_kwargs={
                 "ansatz": GenericLayerAnsatz([RYGate, RZGate]),
                 "encoding_type": "dense",
-                "alpha": 2.0,
+                "objective": SoftObjective(alpha=2.0),
             },
         ),
     }

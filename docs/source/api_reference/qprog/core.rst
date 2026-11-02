@@ -13,7 +13,7 @@ uniform return type for decoded solutions.
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
-   :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, TimeEvolution, CustomVQA, QNN
+   :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, SoftObjective, CVaRObjective, TimeEvolution, CustomVQA, QNN
    :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz, LUCJAnsatz
    :skip: FeatureMap, AngleEmbedding, ZZFeatureMap
    :skip: InitialState, ZerosState, OnesState, SuperpositionState, CustomPerQubitState, WState

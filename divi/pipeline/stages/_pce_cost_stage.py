@@ -4,9 +4,10 @@
 
 """Pipeline stage for PCE Z-basis measurement and binary-polynomial reduction."""
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import numpy.typing as npt
@@ -36,6 +37,36 @@ from divi.pipeline.abc import (
 
 PCE_MEAS_AXIS = "pce_meas"
 # Axis name for the single Z-basis measurement circuit emitted by PCECostStage.
+
+
+class PCEObjective(ABC):
+    """Base class for what PCE minimises: a score for one shot histogram.
+
+    Built-in objectives are :class:`~divi.qprog.algorithms.SoftObjective` and
+    :class:`~divi.qprog.algorithms.CVaRObjective`.
+    """
+
+    needs_samples: ClassVar[bool] = False
+    """Whether the score needs sampled shots, so expectation-value backends
+    cannot evaluate it."""
+
+    @abstractmethod
+    def score(
+        self,
+        parities: npt.NDArray[np.uint8],
+        counts: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> float:
+        """Return the objective for one histogram.
+
+        Args:
+            parities: ``(n_vars, n_states)`` parity of each variable per state.
+            counts: Shot count of each state; sums to a positive total.
+            problem: The canonical binary polynomial being minimised.
+            compiled: ``problem`` compiled by
+                :func:`~divi.hamiltonians.compile_problem`.
+        """
 
 
 @dataclass(frozen=True)
@@ -119,16 +150,14 @@ class PCECostStage(BundleStage):
     stage bypasses MeasurementStage's observable grouping entirely.  Expand
     generates a single Z-basis measurement QASM per circuit spec (over the
     mask-relevant qubits, or all qubits when ``measure_all``), and reduce
-    applies the soft tanh or hard CVaR energy formula.
+    scores each histogram with the configured objective.
 
     Args:
         problem: Canonical binary polynomial problem used for objective evaluation.
-        alpha: Scaling factor for the tanh activation.
-        use_soft_objective: If True, compute relaxed (soft) energy;
-            otherwise compute hard CVaR energy.
+        objective: Scores each histogram, e.g.
+            :class:`~divi.qprog.algorithms.SoftObjective`.
         decode_parities_fn: Function mapping (state_strings, masks) → parities.
         variable_masks_u64: Precomputed uint64 masks for each QUBO variable.
-        alpha_cvar: CVaR tail fraction (only used when use_soft_objective is False).
         measure_all: When ``False`` (default), measure only the qubits that
             appear in some variable mask (qubits in no mask never contribute to
             a parity, so the energy is unchanged). ``True`` measures every qubit.
@@ -138,20 +167,16 @@ class PCECostStage(BundleStage):
         self,
         *,
         problem: BinaryPolynomialProblem,
-        alpha: float,
-        use_soft_objective: bool,
+        objective: PCEObjective,
         decode_parities_fn: Callable,
         variable_masks_u64: npt.NDArray[np.uint64],
-        alpha_cvar: float = 0.25,
         measure_all: bool = False,
     ) -> None:
         super().__init__(name="PCECostStage")
         self._problem = problem
-        self._alpha = alpha
-        self._soft = use_soft_objective
+        self._objective = objective
         self._decode = decode_parities_fn
         self._masks = variable_masks_u64
-        self._alpha_cvar = alpha_cvar
         self._compiled = compile_problem(problem)
         self._measure_all = measure_all
         # Wires touched by at least one mask (bit i ↔ wire i); others need no
@@ -184,13 +209,13 @@ class PCECostStage(BundleStage):
     ) -> dict[str, Any]:
         """Surface which objective this terminal evaluates.
 
-        The circuit count is identical either way — the mode changes how the same
-        shot histogram is scored — so without this the soft and hard objectives
-        are indistinguishable in a report.
+        The circuit count is identical either way — the objective changes how the
+        same shot histogram is scored — so without this the soft and CVaR
+        objectives are indistinguishable in a report.
         """
         return {
-            "objective": "soft surrogate" if self._soft else "hard CVaR",
-            "alpha": self._alpha,
+            "objective": type(self._objective).__name__,
+            **vars(self._objective),
             "n_variables": len(self._masks),
             "measured_wires": "all" if self._measure_all else "problem-relevant",
         }
@@ -225,7 +250,7 @@ class PCECostStage(BundleStage):
         """Compute polynomial energy from shot histograms.
 
         Each param set has a single histogram (no observable-group merging
-        needed).  Applies the soft tanh or hard CVaR energy formula.
+        needed).  Scores each one with the stage's objective.
         """
         reduced: dict[object, Any] = {}
         for key, histogram in results.items():
@@ -256,28 +281,8 @@ class PCECostStage(BundleStage):
                     "backend fault, so check the job's results."
                 )
             parities = self._decode(state_strings, self._masks)
-
-            if self._soft:
-                probs = counts / total_shots
-                reduced[base_key] = [
-                    _compute_soft_energy(
-                        parities,
-                        probs,
-                        self._alpha,
-                        self._problem,
-                        _compiled=self._compiled,
-                    )
-                ]
-            else:
-                reduced[base_key] = [
-                    _compute_hard_cvar_energy(
-                        parities,
-                        counts,
-                        total_shots,
-                        self._problem,
-                        self._alpha_cvar,
-                        _compiled=self._compiled,
-                    )
-                ]
+            reduced[base_key] = [
+                self._objective.score(parities, counts, self._problem, self._compiled)
+            ]
 
         return reduced

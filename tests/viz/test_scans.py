@@ -15,6 +15,7 @@ from divi.qprog import (
     PCE,
     QAOA,
     CustomVQA,
+    CVaRObjective,
     IterativeQAOA,
     ScipyMethod,
     ScipyOptimizer,
@@ -56,7 +57,6 @@ def pce_program_soft(dummy_simulator, basic_ansatz, default_optimizer):
         n_layers=1,
         backend=dummy_simulator,
         optimizer=default_optimizer,
-        alpha=2.0,
     )
 
 
@@ -185,7 +185,7 @@ class TestDirectAPI:
         assert result.values.shape == (4,)
         assert result.program_type == "PCE"
 
-    def test_scan_1d_pce_preserves_hard_mode_backend_guard(
+    def test_scan_1d_pce_preserves_cvar_backend_guard(
         self, dummy_expval_backend, basic_ansatz, default_optimizer
     ):
         pce = PCE(
@@ -194,13 +194,13 @@ class TestDirectAPI:
             n_layers=1,
             backend=dummy_expval_backend,
             optimizer=default_optimizer,
-            alpha=6.0,
+            objective=CVaRObjective(),
         )
         center = np.zeros(pce.get_expected_param_shape()[1])
 
         with pytest.raises(
             ValueError,
-            match="hard CVaR mode.*cannot use expectation-value backends",
+            match="CVaRObjective.*cannot use expectation-value backends",
         ):
             scan_1d(pce, center=center, n_points=3)
 

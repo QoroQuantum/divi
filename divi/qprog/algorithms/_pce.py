@@ -5,9 +5,9 @@
 import itertools
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import cached_property
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 from warnings import warn
 
 import numpy as np
@@ -16,10 +16,18 @@ from qiskit.circuit.library import CXGate, RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.hamiltonians import BinaryPolynomialProblem, compile_problem
+from divi.hamiltonians import (
+    BinaryPolynomialProblem,
+    CompiledBinaryPolynomial,
+    compile_problem,
+)
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
-from divi.pipeline.stages import PCECostStage
+from divi.pipeline.stages import PCECostStage, PCEObjective
+from divi.pipeline.stages._pce_cost_stage import (
+    _compute_hard_cvar_energy,
+    _compute_soft_energy,
+)
 from divi.qprog.algorithms._ansatze import GenericLayerAnsatz
 from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
 from divi.qprog.algorithms._vqe import VQE
@@ -201,6 +209,78 @@ def _masks_to_ham_ops(variable_masks_u64: npt.NDArray[np.uint64], n_qubits: int)
     return ";".join(terms)
 
 
+@dataclass(frozen=True)
+class SoftObjective(PCEObjective):
+    """PCE objective on a smooth relaxation of the parity expectations.
+
+    Each variable becomes ``x_i = (1 + tanh(alpha * <Z_i>)) / 2`` and the
+    problem's objective is evaluated at these continuous values.
+
+    Args:
+        alpha: Sharpness of the relaxation, a positive finite number. Larger
+            values push the variables towards 0 and 1 at the cost of a flatter
+            landscape.
+
+    Raises:
+        ValueError: If ``alpha`` is not a positive finite number.
+    """
+
+    alpha: float = 2.0
+
+    def __post_init__(self) -> None:
+        if not (np.isfinite(self.alpha) and self.alpha > 0):
+            raise ValueError(
+                f"alpha must be a positive finite number, got {self.alpha}"
+            )
+
+    def score(
+        self,
+        parities: npt.NDArray[np.uint8],
+        counts: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> float:
+        """Evaluate the problem at the relaxed variables of one histogram."""
+        return _compute_soft_energy(
+            parities, counts / counts.sum(), self.alpha, problem, _compiled=compiled
+        )
+
+
+@dataclass(frozen=True)
+class CVaRObjective(PCEObjective):
+    """PCE objective on the lowest-energy tail of the sampled bitstrings.
+
+    Each shot is decoded to a binary assignment and scored; the objective is the
+    mean energy of the lowest ``fraction`` of shots. Needs a sampling backend.
+
+    Args:
+        fraction: Share of the shots averaged, in ``(0, 1]``.
+
+    Raises:
+        ValueError: If ``fraction`` is outside ``(0, 1]``.
+    """
+
+    needs_samples: ClassVar[bool] = True
+
+    fraction: float = 0.25
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.fraction <= 1.0:
+            raise ValueError(f"fraction must be in (0, 1], got {self.fraction}")
+
+    def score(
+        self,
+        parities: npt.NDArray[np.uint8],
+        counts: npt.NDArray[np.float64],
+        problem: BinaryPolynomialProblem,
+        compiled: CompiledBinaryPolynomial,
+    ) -> float:
+        """Mean energy of the lowest ``fraction`` of one histogram's shots."""
+        return _compute_hard_cvar_energy(
+            parities, counts, counts.sum(), problem, self.fraction, _compiled=compiled
+        )
+
+
 class PCE(VQE):
     """
     Generalised Pauli Correlation Encoding (PCE) VQE.
@@ -208,17 +288,17 @@ class PCE(VQE):
     Encodes an N-variable QUBO into qubits by mapping each variable to a parity
     (Pauli-Z correlation) of the measured bitstring. Qubit scaling depends on
     `encoding_type`: O(log2(N)) for dense, O(sqrt(N)) for poly. The algorithm
-    uses the measurement distribution to estimate these parities, applies a
-    smooth relaxation when `alpha` is small, and evaluates the classical QUBO
-    objective: E = x.T @ Q @ x. For larger `alpha`, it switches to a discrete
-    objective (CVaR over sampled energies) for harder convergence.
+    uses the measurement distribution to estimate these parities and minimises
+    either a smooth relaxation of the QUBO objective E = x.T @ Q @ x
+    (:class:`SoftObjective`) or the CVaR of the sampled energies
+    (:class:`CVaRObjective`).
     """
 
     def __init__(
         self,
         problem: BinaryOptimizationProblem,
         n_qubits: int | None = None,
-        alpha: float = 2.0,
+        objective: PCEObjective | None = None,
         encoding_type: Literal["dense", "poly"] = "dense",
         decode_parities_fn: (
             Callable[[list[str], npt.NDArray[np.uint64]], npt.NDArray[np.uint8]] | None
@@ -233,8 +313,12 @@ class PCE(VQE):
             n_qubits (int | None): Optional override. Must be >= minimum for the
                 chosen encoding (ceil(log2(N + 1)) for dense; solve n(n+1)/2 >= N
                 for poly). Larger values raise a warning for both encodings.
-            alpha (float): Scaling factor for the tanh() activation. Higher = harder
-                binary constraints, Lower = smoother gradient.
+            objective (PCEObjective | None): What the optimiser minimises.
+                :class:`SoftObjective` evaluates the problem at
+                ``x = (1 + tanh(alpha * <Z>)) / 2``, a smooth relaxation of the
+                parity expectations; :class:`CVaRObjective` averages the
+                lowest-energy fraction of sampled bitstrings and needs a
+                sampling backend. ``None`` uses ``SoftObjective()``.
             encoding_type (Literal["dense", "poly"]): "dense" (logarithmic qubits,
                 default) or "poly" (each variable maps to parity of 1 or 2 qubits).
             decode_parities_fn (Callable | None): Optional custom decoder for mapping
@@ -255,9 +339,14 @@ class PCE(VQE):
         self.problem = problem
         self._polynomial: BinaryPolynomialProblem = problem.canonical_problem
         self.n_vars = self._polynomial.n_vars
-        self.alpha = alpha
+        if objective is None:
+            objective = SoftObjective()
+        if not isinstance(objective, PCEObjective):
+            raise TypeError(
+                f"objective must be a PCEObjective, got {type(objective).__name__}."
+            )
+        self.objective = objective
         self.encoding_type = encoding_type
-        self._use_soft_objective = self.alpha < 5.0
         self._decode_parities_fn = decode_parities_fn or _decode_parities
         self._compiled_problem = compile_problem(self._polynomial)
 
@@ -310,8 +399,7 @@ class PCE(VQE):
             result_format=ResultFormat.COUNTS,
             terminal_stage=PCECostStage(
                 problem=self._polynomial,
-                alpha=self.alpha,
-                use_soft_objective=self._use_soft_objective,
+                objective=self.objective,
                 decode_parities_fn=self._decode_parities_fn,
                 variable_masks_u64=self._variable_masks_u64,
                 # Restriction is only lossless for the built-in decoder; a custom
@@ -328,9 +416,9 @@ class PCE(VQE):
         self, param_sets: np.ndarray, **kwargs
     ) -> dict[int, float]:
         """Evaluate the cost pipeline for the provided parameter sets."""
-        if not self._use_soft_objective and self.backend.supports_expval:
+        if self.objective.needs_samples and self.backend.supports_expval:
             raise ValueError(
-                "PCE with alpha >= 5.0 (hard CVaR mode) requires shot histograms and "
+                f"PCE with {type(self.objective).__name__} requires shot histograms and "
                 "cannot use expectation-value backends. Use a sampling backend: "
                 "MaestroSimulator(force_sampling=True), "
                 "QiskitSimulator(force_sampling=True), or QoroService with "
