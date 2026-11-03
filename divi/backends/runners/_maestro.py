@@ -15,10 +15,13 @@ from typing import Any
 import maestro
 import numpy as np
 from pydantic import BaseModel, ConfigDict, SkipValidation, model_validator
-from qiskit import QuantumCircuit, transpile
+from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._conversions import _QISKIT_TO_QASM2, _sparse_pauli_op_to_ham_string
+from divi.circuits._conversions import (
+    _sparse_pauli_op_to_ham_string,
+    lower_to_basis_gates,
+)
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
@@ -582,9 +585,7 @@ class MaestroSimulator(CircuitRunner):
             else circuit
         )
         # Lowered here, not only on export, so its decompositions' phase is kept.
-        lowered = transpile(
-            source, basis_gates=list(_QISKIT_TO_QASM2), optimization_level=0
-        )
+        lowered = lower_to_basis_gates(source)
         if include_idle_qubits:
             active = {
                 qubit

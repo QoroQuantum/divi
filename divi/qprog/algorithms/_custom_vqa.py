@@ -13,13 +13,13 @@ from warnings import warn
 
 import numpy as np
 import numpy.typing as npt
-from qiskit import QuantumCircuit, transpile
+from qiskit import QuantumCircuit
 from qiskit.converters import dag_to_circuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi._optional import module_if_imported
 from divi.circuits import MetaCircuit
-from divi.circuits._conversions import _QISKIT_TO_QASM2
+from divi.circuits._conversions import _QISKIT_TO_QASM2, lower_to_basis_gates
 from divi.hamiltonians._mixers import single_pauli_label
 
 if TYPE_CHECKING:
@@ -393,11 +393,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
                 instruction.operation.name in _QISKIT_TO_QASM2
                 for instruction in self._qiskit_circuit.data
             )
-            else transpile(
-                self._qiskit_circuit,
-                basis_gates=list(_QISKIT_TO_QASM2),
-                optimization_level=0,
-            )
+            else lower_to_basis_gates(self._qiskit_circuit)
         )
         self._set_cost_hamiltonian(_z_sum_observable(qc.num_qubits, measured_wires))
         return np.array(list(qc.parameters), dtype=object)

@@ -10,12 +10,12 @@ from typing import TYPE_CHECKING, Protocol
 from warnings import warn
 
 import numpy as np
-from qiskit import transpile
 from qiskit.circuit import Parameter, QuantumCircuit
 from qiskit.circuit.library import PauliEvolutionGate
 from qiskit.quantum_info import SparsePauliOp
 from qiskit.synthesis import LieTrotter, SuzukiTrotter
 
+from divi.circuits._conversions import lower_to_basis_gates
 from divi.hamiltonians._term_ops import _spo_to_qiskit_basis_gates
 
 if TYPE_CHECKING:
@@ -112,9 +112,8 @@ class TrotterizationResult:
         else:
             _spo_to_qiskit_basis_gates(qc, self.effective_hamiltonian, time, qubits)
 
-        # ``optimization_level=0`` keeps lowering to a gate-by-gate substitution.
         try:
-            return transpile(qc, basis_gates=list(basis_gates), optimization_level=0)
+            return lower_to_basis_gates(qc, basis_gates)
         except Exception as exc:
             raise RuntimeError(
                 "Failed to lower the Trotter-synthesised circuit to the "

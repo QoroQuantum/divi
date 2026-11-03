@@ -692,32 +692,43 @@ def validate_qasm_count_qubits(src: str) -> int:
 
 
 _QUBIT_DECL_RE = re.compile(
-    r"(?:^|;)\s*(?:qreg\s+[A-Za-z_]\w*\s*\[\s*(\d+)\s*\]|qubit\b\s*(?:\[\s*(\d+)\s*\])?)",
-    re.MULTILINE,
+    r"(?:qreg\s+[A-Za-z_]\w*\s*\[\s*(\d+)\s*\]|qubit\b\s*(?:\[\s*(\d+)\s*\])?)"
 )
 
 
 _CLBIT_DECL_RE = re.compile(
-    r"(?:^|;)\s*(?:creg\s+[A-Za-z_]\w*\s*\[\s*(\d+)\s*\]|bit\b\s*(?:\[\s*(\d+)\s*\])?)",
-    re.MULTILINE,
+    r"(?:creg\s+[A-Za-z_]\w*\s*\[\s*(\d+)\s*\]|bit\b\s*(?:\[\s*(\d+)\s*\])?)"
 )
+
+
+def _at_statement_start(src: str, index: int) -> bool:
+    """Whether only whitespace lies between ``index`` and the previous ``;`` or line start."""
+    if index and (src[index - 1].isalnum() or src[index - 1] == "_"):
+        return False
+    while index and src[index - 1] != "\n" and src[index - 1].isspace():
+        index -= 1
+    return index == 0 or src[index - 1] in ";\n"
+
+
+def _declared_size(pattern: re.Pattern[str], src: str) -> int:
+    src = _strip_comments(src)
+    return sum(
+        int(register_size or array_size or 1)
+        for match in pattern.finditer(src)
+        if _at_statement_start(src, match.start())
+        for register_size, array_size in [match.groups()]
+    )
 
 
 def count_qubits(src: str) -> int:
     """Total qubits declared by the program's registers, read without validating it."""
-    return sum(
-        int(qreg_size or qubit_size or 1)
-        for qreg_size, qubit_size in _QUBIT_DECL_RE.findall(_strip_comments(src))
-    )
+    return _declared_size(_QUBIT_DECL_RE, src)
 
 
 def count_clbits(src: str) -> int:
     """Total classical bits declared by the program's registers, read without
     validating it."""
-    return sum(
-        int(creg_size or bit_size or 1)
-        for creg_size, bit_size in _CLBIT_DECL_RE.findall(_strip_comments(src))
-    )
+    return _declared_size(_CLBIT_DECL_RE, src)
 
 
 def is_valid_qasm(src: str, parameters: Collection[str] = ()) -> bool:

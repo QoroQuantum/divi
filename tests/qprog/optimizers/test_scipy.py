@@ -2,10 +2,10 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-
 import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
+from threadpoolctl import threadpool_info, threadpool_limits
 
 from divi.qprog.optimizers import (
     ScipyMethod,
@@ -21,6 +21,40 @@ _SCIPY_STATE = (
     "state during minimisation. Please use MonteCarloOptimizer or PymooOptimizer "
     "for checkpointing support."
 )
+
+
+def _blas_threads():
+    return {
+        lib["num_threads"] for lib in threadpool_info() if lib["user_api"] == "blas"
+    }
+
+
+def _minimise(cost_fn, method=ScipyMethod.NELDER_MEAD, max_iterations=2):
+    return ScipyOptimizer(method=method).optimize(
+        cost_fn, np.array([0.5, -0.5]), max_iterations=max_iterations
+    )
+
+
+def _failing_cost(x):
+    raise RuntimeError("cost failed")
+
+
+def _plainly(cost_fn, method):
+    _minimise(cost_fn, method)
+
+
+def _nested_in_another(cost_fn, method):
+    def outer_cost(x):
+        _minimise(sphere_cost_fn_single, ScipyMethod.COBYLA)
+        return cost_fn(x)
+
+    _minimise(outer_cost, method)
+
+
+def _after_a_failed_run(cost_fn, method):
+    with pytest.raises(RuntimeError, match="cost failed"):
+        _minimise(_failing_cost, method)
+    _minimise(cost_fn, method)
 
 
 @pytest.fixture(
@@ -161,6 +195,28 @@ class TestScipyOptimizer:
         )
 
         assert captured_shapes == [((1, self.n_params), (1,))]
+
+    @pytest.mark.parametrize(
+        "run",
+        [_plainly, _nested_in_another, _after_a_failed_run],
+        ids=["plain", "nested", "after-a-failure"],
+    )
+    @pytest.mark.parametrize("method", list(ScipyMethod), ids=lambda m: m.value)
+    def test_blas_is_single_threaded_only_while_minimising(self, method, run):
+        """A thread per core in every process would starve concurrent runs."""
+        observed = []
+
+        def cost_fn(x):
+            observed.append(_blas_threads())
+            return sphere_cost_fn_single(x)
+
+        with threadpool_limits(limits=2, user_api="blas"):
+            before = _blas_threads()
+            run(cost_fn, method)
+            assert _blas_threads() == before
+
+        assert 2 in before
+        assert observed and all(threads == {1} for threads in observed)
 
     def test_copy_returns_fresh_optimizer(self):
         optimizer = ScipyOptimizer(method=ScipyMethod.COBYLA)

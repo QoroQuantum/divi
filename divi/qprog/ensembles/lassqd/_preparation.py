@@ -4,13 +4,11 @@
 
 """Paper-faithful classical LUCJ preparation for LASSQD fragments."""
 
-import contextlib
 import hashlib
 import itertools
 import math
 import os
 import tempfile
-import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,11 +21,11 @@ import ffsim.optimize
 import ffsim.qiskit
 import numpy as np
 from pydantic import Field, model_validator
-from pyscf import ao2mo, cc, gto, lib, scf
+from pyscf import ao2mo, cc, gto, scf
 from pyscf.scf import stability
 from qiskit import ClassicalRegister, QuantumCircuit, transpile
-from threadpoolctl import threadpool_limits
 
+from divi._thread_limits import SingleThreadedSection
 from divi.backends import CircuitRunner
 from divi.hamiltonians._molecular import without_chkfile
 from divi.pipeline import sample_preprocessor
@@ -49,10 +47,8 @@ _ROHF_STARTS = 64
 # flat direction rather than a lower solution.
 _FLAT_DIRECTION_TOL = 1e-9
 
-_PINNING_LOCK = threading.Lock()
-_pinned_users = 0
-_pinned_limits: threadpool_limits | None = None
-_pinned_pyscf_threads = 0
+# Fragment-sized arrays are too small for BLAS or OpenMP threading to pay.
+_SINGLE_THREADED_NUMERICS = SingleThreadedSection()
 
 
 @dataclass(frozen=True)
@@ -319,8 +315,9 @@ def build_lucj_circuit(
     circuit.add_register(classical_bits)
     for index, qubit in enumerate(circuit.qubits):
         circuit.measure(qubit, classical_bits[index])
+    # PRE_INIT merges the orbital rotations before they are decomposed.
     return transpile(
-        circuit,
+        ffsim.qiskit.PRE_INIT.run(circuit),
         basis_gates=["x", "u", "cx"],
         optimization_level=1,
     )
@@ -566,15 +563,19 @@ def _fragment_rohf(
     return best
 
 
-def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
-    """Compute the paper's CCSD seed, retaining best amplitudes at the limit."""
+def fragment_coupled_cluster(
+    solver: Callable, name: str, mean_field: Any, spec: FragmentSpec
+):
+    """``solver`` (``cc.CCSD`` or ``cc.UCCSD``) run on a fragment's mean field.
 
-    coupled_cluster = cc.UCCSD(mean_field)
+    Non-convergence warns and keeps the best amplitudes reached.
+    """
+    coupled_cluster = solver(mean_field)
     coupled_cluster.max_cycle = _CC_MAX_CYCLE
     coupled_cluster.kernel()
     if not coupled_cluster.converged:
         warn(
-            f"CCSD seed did not converge for fragment {spec.orbitals} after "
+            f"{name} did not converge for fragment {spec.orbitals} after "
             f"{_CC_MAX_CYCLE} cycles; using its best available amplitudes.",
             UserWarning,
             stacklevel=2,
@@ -582,33 +583,7 @@ def _fragment_ccsd(mean_field: Any, spec: FragmentSpec):
     return coupled_cluster
 
 
-@contextlib.contextmanager
-def _single_threaded_numerics():
-    """Pin BLAS and OpenMP to one thread while any fragment preparation runs.
-
-    Fragment-sized arrays are too small for threading to pay. The limits are
-    process-wide, so concurrent preparations share one pinning, lifted when the
-    last of them finishes.
-    """
-    global _pinned_users, _pinned_limits, _pinned_pyscf_threads
-    with _PINNING_LOCK:
-        if _pinned_users == 0:
-            _pinned_limits = threadpool_limits(limits=1)
-            _pinned_pyscf_threads = lib.num_threads()
-            lib.num_threads(1)
-        _pinned_users += 1
-    try:
-        yield
-    finally:
-        with _PINNING_LOCK:
-            _pinned_users -= 1
-            if _pinned_users == 0:
-                lib.num_threads(_pinned_pyscf_threads)
-                _pinned_limits.restore_original_limits()
-                _pinned_limits = None
-
-
-@_single_threaded_numerics()
+@_SINGLE_THREADED_NUMERICS.hold()
 def prepare_lucj_fragment(
     problem: MolecularProblem,
     spec: FragmentSpec,
@@ -640,7 +615,7 @@ def prepare_lucj_fragment(
     h_beta_mo = _rotate_one_body(problem.one_body_beta, orbital_rotation)
 
     announce("CCSD seed")
-    coupled_cluster = _fragment_ccsd(mean_field, spec)
+    coupled_cluster = fragment_coupled_cluster(cc.UCCSD, "UCCSD", mean_field, spec)
     t1, t2 = _physical_spin_amplitudes(coupled_cluster, spec)
     _require_finite_fragment_values((*t1, *t2), label="CCSD amplitudes", spec=spec)
 

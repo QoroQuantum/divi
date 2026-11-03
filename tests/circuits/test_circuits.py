@@ -8,7 +8,7 @@ from qiskit.circuit import Parameter
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits import MetaCircuit
+from divi.circuits import MetaCircuit, _core
 
 
 @pytest.fixture
@@ -48,10 +48,36 @@ class TestMetaCircuit:
         meta = MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
         assert meta.observable == (obs,)
 
-    def test_non_hermitian_observable_raises(self, plain_dag):
-        obs = SparsePauliOp.from_list([("Z", 1.0j)])
+    @pytest.mark.parametrize(
+        "assign",
+        [
+            lambda meta, obs: MetaCircuit(
+                circuit_bodies=meta.circuit_bodies, observable=obs
+            ),
+            lambda meta, obs: meta.set_observable(obs),
+            lambda meta, obs: meta.set_observable((obs,)),
+        ],
+        ids=["constructor", "set_observable", "set_observable-tuple"],
+    )
+    def test_non_hermitian_observable_raises(self, plain_dag, assign):
+        meta = MetaCircuit(
+            circuit_bodies=(((), plain_dag),),
+            observable=SparsePauliOp.from_list([("IZ", 1.0)]),
+        )
         with pytest.raises(ValueError, match="Hermitian"):
-            MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
+            assign(meta, SparsePauliOp.from_list([("ZZ", 1.0j)]))
+
+    def test_observable_is_checked_once_per_assignment_not_per_copy(
+        self, plain_dag, mocker
+    ):
+        check = mocker.spy(_core, "_assert_hermitian_spo")
+        obs = SparsePauliOp.from_list([("IZ", 1.0), ("ZI", -1.0)])
+        meta = MetaCircuit(circuit_bodies=(((), plain_dag),), observable=obs)
+        copied = meta.set_measurement_bodies(()).set_qasm_bodies(()).set_group_shots({})
+        assert check.call_count == 1
+        assert copied.observable is meta.observable
+        copied.set_observable(obs)
+        assert check.call_count == 2
 
     def test_tuple_observable_requires_sparse_pauli_ops(self, plain_dag):
         with pytest.raises(TypeError) as exc_info:

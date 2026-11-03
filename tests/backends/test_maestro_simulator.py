@@ -13,8 +13,8 @@ import maestro
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.circuit.library import XXPlusYYGate
-from qiskit.quantum_info import SparsePauliOp
+from qiskit.circuit.library import UnitaryGate, XXPlusYYGate
+from qiskit.quantum_info import SparsePauliOp, random_unitary
 
 import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
@@ -1315,16 +1315,32 @@ def test_statevector_keeps_the_global_phase_qasm_drops(default_test_simulator):
     )
 
 
-def test_statevector_lowers_gates_outside_qasm2(default_test_simulator):
-    """``XXPlusYYGate`` has no OpenQASM 2 form; at angle pi it swaps |01>
-    into |10> up to a phase."""
+def _swap_by_xx_plus_yy():
+    """``XXPlusYYGate`` at angle pi swaps |01> into |10> up to a phase."""
     circuit = QuantumCircuit(2)
     circuit.x(0)
     circuit.append(XXPlusYYGate(np.pi), [0, 1])
+    return circuit, np.array([0, 0, 1, 0])
 
-    probabilities = np.abs(default_test_simulator.statevector(circuit)) ** 2
 
-    np.testing.assert_allclose(probabilities, [0, 0, 1, 0], atol=1e-12)
+def _three_qubit_unitary():
+    unitary = random_unitary(8, seed=4)
+    circuit = QuantumCircuit(3)
+    circuit.append(UnitaryGate(unitary), [0, 1, 2])
+    return circuit, unitary.data[:, 0]
+
+
+@pytest.mark.parametrize(
+    "make_case",
+    [_swap_by_xx_plus_yy, _three_qubit_unitary],
+    ids=["XXPlusYYGate", "UnitaryGate"],
+)
+def test_statevector_lowers_gates_outside_qasm2(default_test_simulator, make_case):
+    circuit, expected = make_case()
+
+    overlap = np.vdot(expected, default_test_simulator.statevector(circuit))
+
+    assert abs(overlap) == pytest.approx(1.0, abs=1e-10)
 
 
 def test_statevector_takes_qasm_and_ignores_final_measurements(default_test_simulator):

@@ -27,7 +27,7 @@ from divi.qprog.algorithms._ansatze import (
     rotation_angles,
     uccsd_excitations,
 )
-from divi.qprog.ensembles.lassqd import _vqe_preparation
+from divi.qprog.ensembles.lassqd import _preparation, _vqe_preparation
 from divi.qprog.ensembles.lassqd._integrals import (
     AOIntegrals,
     fragment_effective_integrals,
@@ -456,12 +456,12 @@ _SEEDED_ANSATZES = [
 def test_an_unconverged_seed_calculation_warns_but_still_seeds(
     h4_chain_mean_field, mocker, ansatz
 ):
-    mocker.patch.object(_vqe_preparation, "_SEED_CC_MAX_CYCLE", 1)
+    mocker.patch.object(_preparation, "_CC_MAX_CYCLE", 1)
     h_eff, g_frag = _h4_as_one_fragment(h4_chain_mean_field)
     n_params = ansatz.n_params_per_layer(8, ElectronCounts(4, 2, 2))
     message = (
-        "CCSD did not converge for fragment (0, 1, 2, 3); seeding from its "
-        "amplitudes anyway, as the seed is judged on its energy."
+        "CCSD did not converge for fragment (0, 1, 2, 3) after 1 cycles; using "
+        "its best available amplitudes."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):

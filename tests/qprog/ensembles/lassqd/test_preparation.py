@@ -14,13 +14,14 @@ from qiskit import ClassicalRegister, QuantumCircuit
 
 ffsim = pytest.importorskip("ffsim")
 
+from divi.circuits._conversions import lower_to_basis_gates
 from divi.qprog.ensembles.lassqd import _preparation as preparation
 from divi.qprog.ensembles.lassqd._preparation import (
     LUCJFragmentProgram,
     LUCJPreparation,
-    _fragment_ccsd,
     _fragment_rohf,
     build_lucj_circuit,
+    fragment_coupled_cluster,
     paper_lucj_interaction_pairs,
     prepare_lucj_fragment,
     rotate_rdms_to_fragment_basis,
@@ -49,7 +50,8 @@ def _patch_mean_field_and_ccsd(mocker, mo_coeff, t1, t2):
         f"{_PREPARATION}._fragment_rohf", return_value=mocker.Mock(mo_coeff=mo_coeff)
     )
     mocker.patch(
-        f"{_PREPARATION}._fragment_ccsd", return_value=mocker.Mock(t1=t1, t2=t2)
+        f"{_PREPARATION}.fragment_coupled_cluster",
+        return_value=mocker.Mock(t1=t1, t2=t2),
     )
 
 
@@ -129,6 +131,50 @@ def test_lucj_circuit_maps_grouped_spin_gates_to_interleaved_wires(
         "u",
         "x",
     }
+
+
+def _unmerged_lucj_circuit(operator, norb, nelec):
+    """The LUCJ circuit lowered gate by gate, without merging its rotations."""
+    circuit = QuantumCircuit(2 * norb)
+    wires = [
+        *(circuit.qubits[2 * p] for p in range(norb)),
+        *(circuit.qubits[2 * p + 1] for p in range(norb)),
+    ]
+    circuit.append(ffsim.qiskit.PrepareHartreeFockJW(norb, nelec), wires)
+    circuit.append(ffsim.qiskit.UCJOpSpinUnbalancedJW(operator), wires)
+    return lower_to_basis_gates(circuit, ("x", "u", "cx"))
+
+
+def test_lucj_circuit_merges_orbital_rotations_without_changing_the_state(
+    default_test_simulator,
+):
+    norb, nelec = 4, (3, 1)
+    pairs = paper_lucj_interaction_pairs(norb)
+    n_params = ffsim.UCJOpSpinUnbalanced.n_params(
+        norb, 1, interaction_pairs=pairs, with_final_orbital_rotation=True
+    )
+    operator = ffsim.UCJOpSpinUnbalanced.from_parameters(
+        np.random.default_rng(0).normal(scale=0.3, size=n_params),
+        norb=norb,
+        n_reps=1,
+        interaction_pairs=pairs,
+        with_final_orbital_rotation=True,
+    )
+    unmerged = _unmerged_lucj_circuit(operator, norb, nelec)
+
+    circuit = build_lucj_circuit(operator, norb, nelec)
+
+    np.testing.assert_allclose(
+        np.abs(
+            default_test_simulator.statevector(
+                circuit.remove_final_measurements(inplace=False)
+            )
+        )
+        ** 2,
+        np.abs(default_test_simulator.statevector(unmerged)) ** 2,
+        atol=1e-12,
+    )
+    assert circuit.count_ops()["cx"] < unmerged.count_ops()["cx"]
 
 
 def test_prepare_lucj_fragment_uses_ccsd_seed_and_linear_method(mocker):
@@ -495,16 +541,16 @@ def test_non_finite_linear_method_result_fails_before_circuit_construction(mocke
 
 def test_fragment_ccsd_warns_and_keeps_best_unconverged_amplitudes(mocker):
     coupled_cluster = mocker.Mock(converged=False)
-    ccsd = mocker.patch("pyscf.cc.UCCSD", return_value=coupled_cluster)
+    ccsd = mocker.Mock(return_value=coupled_cluster)
     mean_field = mocker.Mock()
     spec = FragmentSpec(orbitals=(3, 4), n_alpha=1, n_beta=1)
     message = (
-        "CCSD seed did not converge for fragment (3, 4) after 500 cycles; using "
+        "UCCSD did not converge for fragment (3, 4) after 500 cycles; using "
         "its best available amplitudes."
     )
 
     with pytest.warns(UserWarning, match=exact_match(message)):
-        result = _fragment_ccsd(mean_field, spec)
+        result = fragment_coupled_cluster(ccsd, "UCCSD", mean_field, spec)
 
     ccsd.assert_called_once_with(mean_field)
     assert coupled_cluster.max_cycle == 500

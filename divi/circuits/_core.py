@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from qiskit.circuit import Parameter
@@ -176,6 +176,11 @@ class MetaCircuit:
     :class:`~divi.pipeline.PipelineResult` boundary — ``False`` allows
     a length-1 expval list to be unwrapped to a scalar."""
 
+    _validated_observable: Sequence[SparsePauliOp] | None = field(
+        default=None, compare=False, repr=False
+    )
+    """The observable already checked, so copies that keep it skip the check."""
+
     def __post_init__(self):
         """Minimal shape validation — caller owns correctness of the DAGs."""
         if not self.circuit_bodies:
@@ -185,7 +190,9 @@ class MetaCircuit:
         if isinstance(self.observable, SparsePauliOp):
             object.__setattr__(self, "observable", (self.observable,))
 
-        if self.observable is not None:
+        if self.observable is not None and (
+            self.observable is not self._validated_observable
+        ):
             for obs in self.observable:
                 if not isinstance(obs, SparsePauliOp):
                     raise TypeError(
@@ -193,6 +200,7 @@ class MetaCircuit:
                         "tuple of SparsePauliOp instances."
                     )
                 _assert_hermitian_spo(obs)
+            object.__setattr__(self, "_validated_observable", self.observable)
 
     @property
     def n_qubits(self) -> int:

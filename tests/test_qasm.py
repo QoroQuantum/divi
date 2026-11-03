@@ -402,38 +402,77 @@ def test_validate_qasm_valid(qasm):
 
 
 @pytest.mark.parametrize(
-    "qasm, expected",
+    ("qasm", "qubits", "clbits"),
     [
-        ("OPENQASM 2.0;\nqreg a[2];\nqreg b [ 3 ];\ncreg c[5];\n", 5),
-        ("OPENQASM 2.0;\nqubit[4] q;\nqubit anc;\n", 5),
-        ("OPENQASM 2.0;\n// qreg ghost[9];\n/* qreg ghost2[9]; */\nqreg q[1];\n", 1),
-        ("OPENQASM 2.0;\nqreg qubit[5];\nx qubit[2]; h qubit[3];\n", 5),
-        ("OPENQASM 2.0;qreg a[2];qreg b[3];", 5),
-    ],
-    ids=[
-        "qregs-and-cregs",
-        "qubit-decls",
-        "commented-out",
-        "register-named-qubit",
-        "one-line",
+        pytest.param(
+            "OPENQASM 2.0;\nqreg a[2];\nqreg b [ 3 ];\ncreg c[5];\ncreg d [ 1 ];\n",
+            5,
+            6,
+            id="registers",
+        ),
+        pytest.param(
+            "OPENQASM 3.0;\nqubit[4] q;\nqubit anc;\nbit[4] c;\nbit flag;\n",
+            5,
+            5,
+            id="openqasm3-declarations",
+        ),
+        pytest.param(
+            "OPENQASM 2.0;\n// qreg ghost[9];\n/* creg ghost[9]; */\nqreg q[1];\n"
+            "creg c[1];\n",
+            1,
+            1,
+            id="commented-out",
+        ),
+        pytest.param("OPENQASM 2.0;\nqreg q[3];\n", 3, 0, id="no-classical-bits"),
+        pytest.param(
+            "OPENQASM 2.0;\nqreg qubit[5];\ncreg bit[2];\nx qubit[2];\n"
+            "measure qubit[3] -> bit[0];\n",
+            5,
+            2,
+            id="registers-named-like-keywords",
+        ),
+        pytest.param(
+            "OPENQASM 2.0;qreg a[2];creg c[1];qreg b[3];", 5, 1, id="one-line"
+        ),
+        pytest.param(
+            "OPENQASM 3.0;\nqubit[2] q;\nbit[2] c;\nmyqreg x[4];\nxqubit[3] y;\n"
+            "orbit z;\ncreg_x e[4];\nc[0] = measure q[0];\n",
+            2,
+            2,
+            id="keyword-inside-identifier",
+        ),
+        pytest.param(
+            "OPENQASM 2.0;\nqreg q[2];\n  ;  creg d [ 3 ] ;\n",
+            2,
+            3,
+            id="empty-statement-and-spacing",
+        ),
+        pytest.param(
+            "OPENQASM 2.0;\r\n\tqreg a[2];\r\n\tcreg b[3];\r\n", 2, 3, id="crlf-and-tab"
+        ),
+        pytest.param(
+            "OPENQASM 2.0;\n\v\fqreg b[3];\n\v\fcreg c[1];\n",
+            3,
+            1,
+            id="vertical-tab-and-form-feed",
+        ),
+        pytest.param(
+            "OPENQASM 2.0;\n/* ancillas */ qreg a[2];\nqreg b[1]; /* x */ qreg c[3];\n"
+            "/* flags */ creg f[2];\n",
+            6,
+            2,
+            id="after-block-comment",
+        ),
+        pytest.param(
+            "OPENQASM 2.0;\n\xa0qreg a[2];\n　qreg b[3];\n\xa0creg c[1];\n",
+            5,
+            1,
+            id="unicode-whitespace",
+        ),
     ],
 )
-def test_count_qubits_reads_declarations(qasm, expected):
-    assert count_qubits(qasm) == expected
-
-
-@pytest.mark.parametrize(
-    "qasm, expected",
-    [
-        ("OPENQASM 2.0;\nqreg q[5];\ncreg a[2];\ncreg b [ 3 ];\n", 5),
-        ("OPENQASM 2.0;\nbit[4] c;\nbit flag;\n", 5),
-        ("OPENQASM 2.0;\n// creg ghost[9];\ncreg c[1];\n", 1),
-        ("OPENQASM 2.0;\nqreg q[3];\n", 0),
-    ],
-    ids=["cregs-not-qregs", "bit-decls", "commented-out", "none"],
-)
-def test_count_clbits_reads_declarations(qasm, expected):
-    assert count_clbits(qasm) == expected
+def test_count_qubits_and_clbits_read_declarations(qasm, qubits, clbits):
+    assert (count_qubits(qasm), count_clbits(qasm)) == (qubits, clbits)
 
 
 @pytest.mark.parametrize("qasm", **INVALID_QASM)

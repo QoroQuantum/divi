@@ -24,7 +24,7 @@ from divi.qprog.algorithms import (
 from divi.qprog.optimizers import Optimizer
 from divi.qprog.problems import MolecularProblem
 
-from ._preparation import fragment_mean_field
+from ._preparation import fragment_coupled_cluster, fragment_mean_field
 from ._state import FragmentSpec, FragmentState
 
 # Below this the embedding potential's spin channels are the same to seeding precision.
@@ -32,9 +32,6 @@ _SEED_SPIN_ASYMMETRY_TOL = 1e-6
 
 # Minimum energy gain over the reference determinant, in Hartree, for a seed to be used.
 _SEED_ACCEPTANCE_MARGIN = 1e-4
-
-# Coupled-cluster iterations allowed on a fragment.
-_SEED_CC_MAX_CYCLE = 500
 
 # What a coupled-cluster solve raises on a fragment it cannot handle;
 # ``numpy.linalg.LinAlgError`` is a ``ValueError``.
@@ -115,9 +112,7 @@ def _coupled_cluster(
     """``solver`` run on ``mean_field``, or ``None`` (with a ``UserWarning``) if
     PySCF raises a numerical or runtime error; non-convergence only warns."""
     try:
-        coupled_cluster = solver(mean_field)
-        coupled_cluster.max_cycle = _SEED_CC_MAX_CYCLE
-        coupled_cluster.kernel()
+        return fragment_coupled_cluster(solver, name, mean_field, spec)
     except _CC_FAILURES as exc:
         warn(
             f"CCSD seeding failed for fragment {spec.orbitals}: {exc}. "
@@ -126,14 +121,6 @@ def _coupled_cluster(
             stacklevel=stacklevel,
         )
         return None
-    if not coupled_cluster.converged:
-        warn(
-            f"{name} did not converge for fragment {spec.orbitals}; seeding "
-            "from its amplitudes anyway, as the seed is judged on its energy.",
-            UserWarning,
-            stacklevel=stacklevel,
-        )
-    return coupled_cluster
 
 
 def _embedded_mean_field(

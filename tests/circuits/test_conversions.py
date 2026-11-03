@@ -4,17 +4,22 @@
 
 """Tests for PennyLane-free circuit conversion utilities."""
 
+import subprocess
+import sys
+
 import numpy as np
 import pytest
 import sympy as sp
-from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter, ParameterExpression
-from qiskit.circuit.library import RZGate
+from qiskit import QuantumCircuit, transpile
+from qiskit.circuit import Parameter, ParameterExpression, ParameterVector
+from qiskit.circuit.library import PauliEvolutionGate, RZGate
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 from qiskit.quantum_info import PauliList, SparsePauliOp
+from qiskit.synthesis import SuzukiTrotter
 
 from divi.circuits import dag_to_qasm_body, measurement_qasms_from_groups
 from divi.circuits._conversions import (
+    _QISKIT_TO_QASM2,
     _assert_finite,
     _bind_op_params,
     _format_bound_param,
@@ -23,6 +28,7 @@ from divi.circuits._conversions import (
     _sparse_pauli_op_to_ham_string,
     _sympy_to_qiskit,
     bind_parameters_in_dag,
+    lower_to_basis_gates,
 )
 from tests._helpers import exact_match
 
@@ -259,6 +265,122 @@ class TestDagToQasmBody:
         add_instruction(circuit)
         with pytest.raises(ValueError, match=exact_match(expected)):
             dag_to_qasm_body(circuit_to_dag(circuit))
+
+
+def _gates_outside_the_qasm_basis():
+    weights = ParameterVector("w", 2)
+    qc = QuantumCircuit(3)
+    qc.ryy(weights[0], 0, 1)
+    qc.ccx(0, 1, 2)
+    qc.cswap(2, 0, 1)
+    qc.rzz(weights[1], 1, 2)
+    qc.sxdg(0)
+    qc.ch(0, 2)
+    return qc
+
+
+def _measured_bell_pair():
+    qc = QuantumCircuit(2, 2)
+    qc.h(0)
+    qc.cx(0, 1)
+    qc.measure([0, 1], [0, 1])
+    return qc
+
+
+def _trotter_evolution():
+    hamiltonian = SparsePauliOp.from_sparse_list(
+        [("XX", [0, 1], 1.0), ("YY", [1, 2], 0.5), ("Z", [0], 0.3)], num_qubits=3
+    )
+    qc = QuantumCircuit(3)
+    qc.append(
+        PauliEvolutionGate(
+            hamiltonian,
+            time=Parameter("t"),
+            synthesis=SuzukiTrotter(order=2, reps=2, preserve_order=True),
+        ),
+        range(3),
+    )
+    return qc
+
+
+def _control_flow_and_timing():
+    theta = Parameter("θ")
+    qc = QuantumCircuit(2, 1, global_phase=theta)
+    qc.h(0)
+    qc.measure(0, 0)
+    with qc.if_test((qc.clbits[0], 1)):
+        qc.rzz(theta, 0, 1)
+    with qc.for_loop(range(2)):
+        qc.sxdg(1)
+    qc.barrier()
+    qc.delay(10, 0, unit="dt")
+    qc.reset(1)
+    qc.ryy(2 * theta + 0.5, 0, 1)
+    return qc
+
+
+def _custom_and_controlled_gates():
+    inner = QuantumCircuit(2, name="entangle")
+    inner.h(0)
+    inner.cx(0, 1)
+    inner.rzz(0.3, 0, 1)
+    gate = inner.to_gate()
+    qc = QuantumCircuit(3)
+    qc.append(gate, [0, 1])
+    qc.append(gate.control(1), [2, 0, 1])
+    return qc
+
+
+class TestLowerToBasisGates:
+    @pytest.mark.parametrize(
+        "make_circuit",
+        [
+            _gates_outside_the_qasm_basis,
+            _trotter_evolution,
+            _measured_bell_pair,
+            _control_flow_and_timing,
+            _custom_and_controlled_gates,
+        ],
+        ids=[
+            "non-basis gates",
+            "Trotter evolution",
+            "measurements",
+            "control flow and timing",
+            "custom and controlled gates",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "basis_gates", [tuple(_QISKIT_TO_QASM2), ("u", "cx")], ids=["qasm", "u-cx"]
+    )
+    def test_matches_transpile_at_optimization_level_zero(
+        self, make_circuit, basis_gates
+    ):
+        circuit = make_circuit()
+        expected = transpile(
+            circuit, basis_gates=list(basis_gates), optimization_level=0
+        )
+        lowered = lower_to_basis_gates(circuit, basis_gates)
+        assert lowered == expected
+        assert lowered.global_phase == expected.global_phase
+
+    def test_does_not_load_qiskits_transpiler_plugins(self):
+        pytest.importorskip(
+            "qiskit_ibm_runtime",
+            reason="the plugin loading this guards against needs qiskit-ibm-runtime",
+        )
+        script = (
+            "import sys\n"
+            "from qiskit import QuantumCircuit\n"
+            "from divi.circuits._conversions import lower_to_basis_gates\n"
+            "qc = QuantumCircuit(3)\n"
+            "qc.ccx(0, 1, 2)\n"
+            "lower_to_basis_gates(qc)\n"
+            "assert 'qiskit_ibm_runtime' not in sys.modules\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True
+        )
+        assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize(

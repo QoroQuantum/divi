@@ -5,13 +5,25 @@
 """Qiskit DAG conversion helpers and parametric QASM2 emission."""
 
 from collections.abc import Mapping, Sequence
+from functools import lru_cache
 from typing import cast
 
 import numpy as np
 import sympy as sp
-from qiskit.circuit import Parameter, ParameterExpression
+from qiskit.circuit import Parameter, ParameterExpression, QuantumCircuit
+from qiskit.circuit.controlflow import (
+    CONTROL_FLOW_OP_NAMES,
+    get_control_flow_name_mapping,
+)
+from qiskit.circuit.equivalence_library import SessionEquivalenceLibrary
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
+from qiskit.transpiler import PassManager, Target
+from qiskit.transpiler.passes import (
+    BasisTranslator,
+    HighLevelSynthesis,
+    UnitarySynthesis,
+)
 
 from divi.circuits._core import DEFAULT_PRECISION
 
@@ -48,6 +60,44 @@ _QISKIT_TO_QASM2 = {
     "ccx": "ccx",
     "cswap": "cswap",
 }
+
+
+@lru_cache(maxsize=None)
+def _basis_target(basis_gates: frozenset[str]) -> tuple[list[str], Target]:
+    """Instructions and target ``transpile`` builds from ``basis_gates``."""
+    instructions = sorted(
+        {*basis_gates, "measure", "delay", "reset", *CONTROL_FLOW_OP_NAMES}
+    )
+    target = Target.from_configuration(
+        basis_gates=instructions, custom_name_mapping=get_control_flow_name_mapping()
+    )
+    return instructions, target
+
+
+def lower_to_basis_gates(
+    circuit: QuantumCircuit, basis_gates: Sequence[str] = tuple(_QISKIT_TO_QASM2)
+) -> QuantumCircuit:
+    """Rewrite ``circuit`` gate by gate into ``basis_gates``.
+
+    Runs the passes ``transpile(..., optimization_level=0)`` runs without a
+    coupling map, without loading qiskit's transpiler plugins. Clifford+T bases
+    are not supported: ``transpile`` routes them through a separate synthesis
+    pipeline.
+    """
+    basis, target = _basis_target(frozenset(basis_gates))
+    return PassManager(
+        [
+            UnitarySynthesis(basis, approximation_degree=1.0, target=target),
+            HighLevelSynthesis(
+                target=target,
+                use_qubit_indices=True,
+                equivalence_library=SessionEquivalenceLibrary,
+                basis_gates=basis,
+                qubits_initially_zero=True,
+            ),
+            BasisTranslator(SessionEquivalenceLibrary, basis, target),
+        ]
+    ).run(circuit)
 
 
 def _sympy_to_qiskit(

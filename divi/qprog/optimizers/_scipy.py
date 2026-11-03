@@ -11,7 +11,11 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult, minimize
 
+from divi._thread_limits import SingleThreadedSection
+
 from ._base import Optimizer
+
+_SINGLE_THREADED_BLAS = SingleThreadedSection(user_api="blas")
 
 
 class ScipyMethod(Enum):
@@ -117,14 +121,21 @@ class ScipyOptimizer(Optimizer):
         if initial_params is None:
             raise ValueError("ScipyOptimizer requires initial_params.")
 
-        return minimize(
-            cost_fn,
-            initial_params.reshape(-1),
-            method=self.method.value,
-            jac=kwargs.pop("jac", None) if self.method in _GRADIENT_METHODS else None,
-            callback=callback_wrapper,
-            options={"maxiter": maxiter},
-        )
+        # The optimisers' BLAS calls are tiny; a thread per core in every process
+        # would spin and starve concurrent simulations.
+        with _SINGLE_THREADED_BLAS.hold():
+            return minimize(
+                cost_fn,
+                initial_params.reshape(-1),
+                method=self.method.value,
+                jac=(
+                    kwargs.pop("jac", None)
+                    if self.method in _GRADIENT_METHODS
+                    else None
+                ),
+                callback=callback_wrapper,
+                options={"maxiter": maxiter},
+            )
 
     def save_state(self, checkpoint_dir: Path | str) -> None:
         """Save the optimizer's internal state to a checkpoint directory.

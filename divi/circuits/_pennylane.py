@@ -17,7 +17,6 @@ import pennylane as qp
 import sympy as sp
 from pennylane.tape import QuantumScript
 from pennylane.workflow.qnode import QNode
-from qiskit import transpile
 from qiskit.circuit import (
     Parameter,
     ParameterExpression,
@@ -57,10 +56,7 @@ from qiskit.converters import circuit_to_dag
 from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.circuits._conversions import (
-    _QISKIT_TO_QASM2,
-    _sympy_to_qiskit,
-)
+from divi.circuits._conversions import _sympy_to_qiskit, lower_to_basis_gates
 from divi.circuits._core import DEFAULT_PRECISION, MetaCircuit
 from divi.hamiltonians import to_spo
 
@@ -271,11 +267,7 @@ def _qscript_to_dag(
             decomposed = decomposed.bind_new_parameters(new_values, indices)
 
     circuit = _qscript_to_qiskit_circuit(decomposed, register_size=len(qscript.wires))
-    circuit = transpile(
-        circuit,
-        basis_gates=list(_QISKIT_TO_QASM2),
-        optimization_level=0,
-    )
+    circuit = lower_to_basis_gates(circuit)
 
     ordered_params = tuple(ordered_qiskit_params) + tuple(parameter_map.values())
     return circuit_to_dag(circuit), ordered_params

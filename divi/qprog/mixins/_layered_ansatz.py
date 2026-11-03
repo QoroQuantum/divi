@@ -8,13 +8,12 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
-from qiskit import transpile
 from qiskit.circuit import ParameterVector, QuantumCircuit
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits import MetaCircuit
-from divi.circuits._conversions import _QISKIT_TO_QASM2
+from divi.circuits._conversions import lower_to_basis_gates
 
 if TYPE_CHECKING:
     from divi.qprog.algorithms import Ansatz, ElectronCounts
@@ -100,13 +99,8 @@ class LayeredAnsatzMixin:
             inplace=True,
         )
 
-        # Ansatzes such as LUCJAnsatz emit gates outside the QASM emitter's
-        # basis; optimization_level=0 is a cheap gate-by-gate substitution.
-        qc = transpile(
-            qc,
-            basis_gates=list(_QISKIT_TO_QASM2.keys()),
-            optimization_level=0,
-        )
+        # Ansatzes such as LUCJAnsatz emit gates outside the QASM emitter's basis.
+        qc = lower_to_basis_gates(qc)
 
         return MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),),
