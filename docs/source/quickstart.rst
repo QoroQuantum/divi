@@ -36,7 +36,7 @@ Molecule inputs come from the ``chem`` extra. Install it first:
 .. code-block:: python
 
    from pyscf import gto
-   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.algorithms import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroSimulator
@@ -84,7 +84,7 @@ Divi offers specialised algorithms for different problem types:
 
    .. code-block:: python
 
-      from divi.qprog import VQE, UCCSDAnsatz
+      from divi.qprog.algorithms import VQE, UCCSDAnsatz
       from divi.qprog.optimizers import MonteCarloOptimizer
 
       vqe = VQE(
@@ -103,7 +103,7 @@ Divi offers specialised algorithms for different problem types:
    .. code-block:: python
 
       import networkx as nx
-      from divi.qprog import QAOA
+      from divi.qprog.algorithms import QAOA
       from divi.qprog.problems import MaxCutProblem
       from divi.qprog.optimizers import MonteCarloOptimizer
 
@@ -130,7 +130,7 @@ Divi offers specialised algorithms for different problem types:
 
       import numpy as np
       from qiskit.circuit.library import CXGate, RYGate, RZGate
-      from divi.qprog import PCE, GenericLayerAnsatz
+      from divi.qprog.algorithms import PCE, GenericLayerAnsatz
       from divi.qprog.problems import BinaryOptimizationProblem
       from divi.backends import MaestroSimulator
 
@@ -156,7 +156,7 @@ Divi offers specialised algorithms for different problem types:
 
       import math
       from qiskit.quantum_info import SparsePauliOp
-      from divi.qprog import TimeEvolution
+      from divi.qprog.algorithms import TimeEvolution
       from divi.backends import MaestroSimulator
 
       te = TimeEvolution(
@@ -183,7 +183,7 @@ Divi offers specialised algorithms for different problem types:
 
       import numpy as np
       from qiskit.circuit.library import CXGate, RYGate, RZGate
-      from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+      from divi.qprog.algorithms import QNN, AngleEmbedding, GenericLayerAnsatz
       from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
       from divi.backends import MaestroSimulator
 

@@ -12,8 +12,10 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
-from divi.qprog.checkpointing import OPTIMIZER_STATE_FILE, _atomic_write
-from divi.qprog.optimizers._base import Optimizer, _argmin_finite
+from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
+from divi.qprog.checkpointing.write import atomic_write
+
+from ._base import Optimizer, argmin_finite
 
 
 class GridSearchOptimizer(Optimizer):
@@ -110,7 +112,7 @@ class GridSearchOptimizer(Optimizer):
 
         self._all_losses = np.atleast_1d(cost_fn(self._param_grid)).astype(np.float64)
 
-        best_idx = _argmin_finite(self._all_losses)
+        best_idx = argmin_finite(self._all_losses)
         if best_idx is None:
             self._best_params = None
             self._best_loss = None
@@ -153,7 +155,7 @@ class GridSearchOptimizer(Optimizer):
             "best_loss": self._best_loss,
         }
         state_file = checkpoint_path / OPTIMIZER_STATE_FILE
-        _atomic_write(state_file, json.dumps(state, indent=2))
+        atomic_write(state_file, json.dumps(state, indent=2))
 
     @classmethod
     def load_state(cls, checkpoint_dir: Path | str) -> Self:

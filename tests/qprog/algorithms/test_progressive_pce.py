@@ -7,21 +7,16 @@ import shutil
 import numpy as np
 import pytest
 
-from divi.qprog import (
+from divi.qprog.algorithms import (
     BrickworkAnsatz,
-    MonteCarloOptimizer,
     MultiBasisEncoding,
     ProgressivePCE,
-    ScipyMethod,
-    ScipyOptimizer,
     SoftObjective,
 )
 from divi.qprog.algorithms._progressive_pce import _next_alpha
-from divi.qprog.checkpointing import (
-    PROGRAM_COMPLETION_FILE,
-    CheckpointConfig,
-    list_checkpoints,
-)
+from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
+from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem, LinearConstraint
 from tests._helpers import exact_match
 from tests.qprog._program_contracts import verify_load_state_rejects_missing_state_key

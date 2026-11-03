@@ -34,7 +34,7 @@ Train a tiny 2-qubit classifier on four labelled samples:
    import numpy as np
    from qiskit.circuit.library import CXGate, RYGate, RZGate
 
-   from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+   from divi.qprog.algorithms import QNN, AngleEmbedding, GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -93,7 +93,7 @@ Inference
 ---------
 
 After ``run()``, score a fresh feature batch with
-:meth:`~divi.qprog.DataBindingMixin.predict`. It binds each row's
+:meth:`~divi.qprog.mixins.DataBindingMixin.predict`. It binds each row's
 features with the trained weights, estimates the cost observable per sample, and
 returns the **sign** as a class label in ``{-1, +1}``.  For continuous /
 regression output — or to apply a custom threshold — pass
@@ -104,7 +104,7 @@ way ``predict`` returns a ``numpy.ndarray`` of shape ``(n_samples,)``:
 
    import numpy as np
    from qiskit.circuit.library import CXGate, RYGate, RZGate
-   from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+   from divi.qprog.algorithms import QNN, AngleEmbedding, GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -129,7 +129,7 @@ way ``predict`` returns a ``numpy.ndarray`` of shape ``(n_samples,)``:
    scores = program.predict(X_new, params=trained_weights, return_scores=True)  # raw ⟨H⟩ per row
 
 When called after training, ``params`` defaults to ``best_params``. Pass
-``return_scores=True`` to :meth:`~divi.qprog.DataBindingMixin.predict` for the
+``return_scores=True`` to :meth:`~divi.qprog.mixins.DataBindingMixin.predict` for the
 continuous scores if you want to apply your own decision threshold. The same method is
 available on :class:`~divi.qprog.algorithms.CustomVQA` when it has a data axis.
 
@@ -200,7 +200,7 @@ the default ``"mean"`` reduction is mean-squared error:
    import numpy as np
    from qiskit.circuit.library import CXGate, RYGate, RZGate
 
-   from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+   from divi.qprog.algorithms import QNN, AngleEmbedding, GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -258,7 +258,7 @@ the loss would always be zero.
    from qiskit.circuit.library import CXGate, RYGate, RZGate
    from qiskit.quantum_info import SparsePauliOp
 
-   from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+   from divi.qprog.algorithms import QNN, AngleEmbedding, GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -291,7 +291,7 @@ the loss would always be zero.
 ``predict``'s default output is the sign of the score; ``return_scores=True``
 returns the scores, as above.
 
-:attr:`~divi.qprog.DataBindingMixin.fitted_bias` holds ``b`` at ``best_params``.
+:attr:`~divi.qprog.mixins.DataBindingMixin.fitted_bias` holds ``b`` at ``best_params``.
 ``run()`` fits it when it finishes by scoring the training batch once, and
 checkpoints carry it; a program restored without it fits it on first read.
 ``predict`` adds the stored value to every row, including when you pass other

@@ -32,14 +32,15 @@ from divi.hamiltonians._polynomial import (
     _binary_polynomial_gradient,
     _evaluate_binary_polynomial,
 )
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._constraints import (
+
+from ._base import QAOAProblem
+from ._constraints import (
     LinearConstraint,
     _encode_constraints,
     _LinearForm,
     _Slack,
 )
-from divi.qprog.problems._qubo_partitioning_utils import bqm_to_sparse
+from ._qubo_partitioning_utils import bqm_to_sparse
 
 if TYPE_CHECKING:
     # pyrefly: ignore[missing-import]

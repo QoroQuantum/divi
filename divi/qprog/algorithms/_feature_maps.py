@@ -23,7 +23,7 @@ from typing import Literal
 import numpy as np
 from qiskit.circuit import QuantumCircuit
 
-from divi.qprog.algorithms._ansatze import (
+from ._ansatze import (
     _emit_rx,
     _emit_ry,
     _emit_rz,

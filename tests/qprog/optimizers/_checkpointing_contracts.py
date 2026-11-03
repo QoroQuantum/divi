@@ -12,11 +12,8 @@ import numpy as np
 import pytest
 from scipy.optimize import OptimizeResult
 
-from divi.qprog.checkpointing import (
-    OPTIMIZER_STATE_FILE,
-    CheckpointCorruptedError,
-    CheckpointNotFoundError,
-)
+from divi.qprog.checkpointing import CheckpointCorruptedError, CheckpointNotFoundError
+from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
 from divi.qprog.optimizers import Optimizer
 from tests._helpers import exact_match
 

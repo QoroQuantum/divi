@@ -200,7 +200,7 @@ class TestExtractTestUsage:
     def test_extracts_test_functions(self):
         src = textwrap.dedent("""\
             import pytest
-            from divi.qprog import VQE
+            from divi.qprog.algorithms import VQE
 
             def test_vqe_runs():
                 vqe = VQE()
@@ -245,7 +245,7 @@ class TestExtractTestUsage:
     def test_includes_import_block(self):
         src = textwrap.dedent("""\
             import pytest
-            from divi.qprog import VQE
+            from divi.qprog.algorithms import VQE
 
             def test_import_visible():
                 pass

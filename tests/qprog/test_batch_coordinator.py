@@ -21,7 +21,6 @@ from divi.backends import (
 )
 from divi.circuits._payloads import bound_circuits
 from divi.exceptions import ExecutionCancelledError
-from divi.qprog import BatchConfig, BatchMode
 from divi.qprog._batch_coordinator import (
     _BATCH_COLORS,
     _Batch,
@@ -32,6 +31,7 @@ from divi.qprog._batch_coordinator import (
     _ProxyBackend,
     _route_batch_circuits,
 )
+from divi.qprog.ensembles import BatchConfig, BatchMode
 from divi.reporting._events import (
     EventKind,
     ProgressEvent,

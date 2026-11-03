@@ -24,12 +24,11 @@ from pymoo.core.termination import NoTermination
 from pymoo.problems.static import StaticProblem
 from scipy.optimize import OptimizeResult
 
-from divi.qprog.checkpointing import (
-    OPTIMIZER_STATE_FILE,
-    _atomic_write,
-    _load_and_validate_pydantic_model,
-)
-from divi.qprog.optimizers._base import Optimizer
+from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
+from divi.qprog.checkpointing.read import load_and_validate_pydantic_model
+from divi.qprog.checkpointing.write import atomic_write
+
+from ._base import Optimizer
 
 
 class PymooState(BaseModel):
@@ -353,7 +352,7 @@ class PymooOptimizer(Optimizer):
             algorithm_obj_b64=algorithm_obj_b64,
         )
 
-        _atomic_write(state_file, state.model_dump_json(indent=2))
+        atomic_write(state_file, state.model_dump_json(indent=2))
 
     @classmethod
     def load_state(cls, checkpoint_dir: Path | str) -> Self:
@@ -373,7 +372,7 @@ class PymooOptimizer(Optimizer):
         checkpoint_path = Path(checkpoint_dir)
         state_file = checkpoint_path / OPTIMIZER_STATE_FILE
 
-        state = _load_and_validate_pydantic_model(
+        state = load_and_validate_pydantic_model(
             state_file,
             PymooState,
             required_fields=["method_value", "algorithm_obj_b64"],

@@ -15,19 +15,20 @@ from qiskit.circuit.library import RYGate, RZGate
 import divi.qprog.problems._binary as binary_module
 from divi.backends import CircuitRunner
 from divi.hamiltonians import BinaryPolynomialProblem, to_spo
-from divi.qprog import (
+from divi.qprog.algorithms import (
     QAOA,
+    GenericLayerAnsatz,
+    MultiBasisEncoding,
+    ProgressivePCE,
+)
+from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.ensembles import (
     BatchConfig,
     BeamSearchStrategy,
     HierarchicalStrategy,
-    MonteCarloOptimizer,
-    MultiBasisEncoding,
-    ProgressivePCE,
-    ScipyMethod,
-    ScipyOptimizer,
+    PartitioningProgramEnsemble,
 )
-from divi.qprog.algorithms import GenericLayerAnsatz
-from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     CommunityDecomposer,
@@ -35,7 +36,6 @@ from divi.qprog.problems import (
     QUBOPartitioningConfig,
 )
 from divi.qprog.problems._binary import _merge_substates, _sanitize_problem_input
-from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests._helpers import exact_match
 from tests.qprog._program_contracts import verify_cost_circuit
 from tests.qprog.problems._helpers import (

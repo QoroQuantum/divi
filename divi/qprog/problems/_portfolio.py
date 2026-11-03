@@ -32,11 +32,12 @@ from divi.qprog.initial_states import (
     SuperpositionState,
     build_block_xy_mixer_graph,
 )
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._binary import BinaryOptimizationProblem
-from divi.qprog.problems._constraints import LinearConstraint, _UnreachableBoundError
-from divi.qprog.problems._partitioning_config import QUBOPartitioningConfig
-from divi.qprog.problems._qubo_partitioning_utils import partition_by_method
+
+from ._base import QAOAProblem
+from ._binary import BinaryOptimizationProblem
+from ._constraints import LinearConstraint, _UnreachableBoundError
+from ._partitioning_config import QUBOPartitioningConfig
+from ._qubo_partitioning_utils import partition_by_method
 
 _MAX_DOUBLE_TRANSFERS = 2_000_000
 _EPS = 1e-12
@@ -569,7 +570,7 @@ class PortfolioSelectionProblem(_PortfolioBase):
             outweighs the spread of the objective across portfolios.
         use_constrained_mixer: Use the ring XY mixer and Dicke initial state.
         config: Enables partitioned solving with
-            :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`; each
+            :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`; each
             asset cluster holds a share of the :math:`K` names. Its variables
             are assets, so ``max_n_variables_per_cluster`` limits the assets
             per cluster.
@@ -730,7 +731,7 @@ class PortfolioAllocationProblem(_PortfolioBase):
             costs 1). Choose it so that one unit of violation outweighs the
             spread of the objective across portfolios.
         config: Enables partitioned solving with
-            :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`; each
+            :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`; each
             asset cluster holds a share of the :math:`L` units. Its variables
             are assets, so ``max_n_variables_per_cluster`` limits the assets
             (not qubits) per cluster. Requires ``encoding="domain_wall"``.

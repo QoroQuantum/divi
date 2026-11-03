@@ -11,16 +11,15 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from sklearn.decomposition import PCA
 
-from divi.qprog import (
+from divi.qprog.algorithms import (
     PCE,
     QAOA,
     CustomVQA,
     CVaRObjective,
+    InterpolationStrategy,
     IterativeQAOA,
-    ScipyMethod,
-    ScipyOptimizer,
 )
-from divi.qprog.algorithms import InterpolationStrategy
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from divi.reporting._events import EventKind, ProgressEvent
 from divi.viz import (

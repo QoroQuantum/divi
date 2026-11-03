@@ -19,7 +19,7 @@ Without ``observable``, the program runs in probability mode:
    import math
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
-   from divi.qprog import TimeEvolution
+   from divi.qprog.algorithms import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
@@ -45,7 +45,7 @@ Provide ``observable=...`` to estimate expectation values after evolution:
 
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
-   from divi.qprog import TimeEvolution
+   from divi.qprog.algorithms import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
@@ -79,7 +79,7 @@ the same order as the input observables, and the cost is shared across them:
    import math
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
-   from divi.qprog import TimeEvolution
+   from divi.qprog.algorithms import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
 
@@ -128,7 +128,7 @@ must be ``1`` or an even integer ``>= 2`` (a non-conforming value raises
 
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
-   from divi.qprog import TimeEvolution
+   from divi.qprog.algorithms import TimeEvolution
 
    backend = MaestroSimulator(shots=5000)
    H = 0.7 * SparsePauliOp("Z") + 0.4 * SparsePauliOp("X")
@@ -177,7 +177,8 @@ Sampled evolution is first order, so it requires ``order=1``:
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.hamiltonians.trotterization import QDrift
-   from divi.qprog import SuperpositionState, TimeEvolution
+   from divi.qprog.algorithms import TimeEvolution
+   from divi.qprog.initial_states import SuperpositionState
 
    backend = MaestroSimulator(shots=5000)
    qdrift = QDrift(
@@ -215,7 +216,8 @@ a fifth of its weighted probability, and the sampled Hamiltonian still equals
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
    from divi.hamiltonians.trotterization import QDrift
-   from divi.qprog import CustomPerQubitState, TimeEvolution
+   from divi.qprog.algorithms import TimeEvolution
+   from divi.qprog.initial_states import CustomPerQubitState
 
    hamiltonian = SparsePauliOp.from_sparse_list(
        [("ZZ", [0, 1], 1.0), ("ZZ", [1, 2], 1.0), ("X", [0], 0.7),
@@ -268,7 +270,7 @@ weight when:
 
 The strategy evaluates each initial state and observable once and reuses the
 result for every time, also across the copies of it that
-:class:`~divi.qprog.workflows.TimeEvolutionTrajectory` makes, so a trajectory
+:class:`~divi.qprog.ensembles.TimeEvolutionTrajectory` makes, so a trajectory
 evaluates the state once and only re-solves the probabilities per time point.
 QAOA gives the strategy no initial state or observable, so it raises an error
 there.
@@ -276,10 +278,10 @@ there.
 Time Evolution Trajectory
 -------------------------
 
-:class:`~divi.qprog.workflows.TimeEvolutionTrajectory` simulates dynamics at
+:class:`~divi.qprog.ensembles.TimeEvolutionTrajectory` simulates dynamics at
 multiple time points.  It creates one ``TimeEvolution`` program
 per time point, runs them via
-:class:`~divi.qprog.ensemble.ProgramEnsemble` (with optional circuit batching), and
+:class:`~divi.qprog.ensembles.ProgramEnsemble` (with optional circuit batching), and
 collects results into a time-ordered mapping.
 
 .. dashboard-example: simulation
@@ -290,7 +292,7 @@ collects results into a time-ordered mapping.
    import numpy as np
    from qiskit.quantum_info import SparsePauliOp
    from divi.backends import MaestroSimulator
-   from divi.qprog import TimeEvolutionTrajectory
+   from divi.qprog.ensembles import TimeEvolutionTrajectory
 
    backend = MaestroSimulator(shots=5000)
 
@@ -313,7 +315,7 @@ The trajectory supports all the same options as ``TimeEvolution``
 **Batching across time points**
 
 Each time point becomes its own program in a
-:class:`~divi.qprog.ensemble.ProgramEnsemble`, so the trajectory inherits
+:class:`~divi.qprog.ensembles.ProgramEnsemble`, so the trajectory inherits
 the ensemble's circuit-batching machinery — the default ``BatchConfig()``
 already merges every program's submission into a single backend call.  On
 :class:`~divi.backends.QoroService`, ``max_concurrent_programs=-1`` runs all
@@ -323,7 +325,7 @@ time points concurrently and submits the entire ensemble as one cloud job:
 
 .. code-block:: python
 
-   from divi.qprog import BatchConfig
+   from divi.qprog.ensembles import BatchConfig
 
    trajectory.run(
        batch_config=BatchConfig(max_concurrent_programs=-1),

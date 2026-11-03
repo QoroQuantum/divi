@@ -14,8 +14,10 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
-from divi.qprog.checkpointing import OPTIMIZER_STATE_FILE, _atomic_write
-from divi.qprog.optimizers._base import Optimizer
+from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
+from divi.qprog.checkpointing.write import atomic_write
+
+from ._base import Optimizer
 
 _PARAMETER_SHIFT = np.pi / 2
 
@@ -515,7 +517,7 @@ class RosalinOptimizer(Optimizer):
             "shots_used": self._shots_used,
             "nit": self._nit,
         }
-        _atomic_write(
+        atomic_write(
             checkpoint_path / OPTIMIZER_STATE_FILE,
             json.dumps(state, indent=2),
         )

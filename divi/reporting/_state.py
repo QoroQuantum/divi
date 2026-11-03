@@ -8,7 +8,7 @@ from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
-from divi.backends._job_status import JobStatus
+from divi.backends import JobStatus
 
 from ._events import EventKind, ProgressEvent, ProgressScope, TerminalStatus
 

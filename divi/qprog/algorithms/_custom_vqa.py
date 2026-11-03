@@ -29,11 +29,8 @@ else:
     QNode = QuantumScript = Any
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
-from divi.qprog.mixins._data_binding import (
-    _LOSS_FN_IGNORED_MSG,
-    DataBindingMixin,
-)
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.qprog import VariationalQuantumAlgorithm
+from divi.qprog.mixins import DataBindingMixin
 
 
 def _measured_wires_of(qc: QuantumCircuit) -> list[int]:
@@ -299,7 +296,7 @@ class CustomVQA(DataBindingMixin, VariationalQuantumAlgorithm):
             loss_fn=loss_fn,
         )
         if labels is None and loss_fn != "squared_error":
-            warn(_LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
+            warn(self._LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
 
     @staticmethod
     def _infer_data_arg_from_batch_input(

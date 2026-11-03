@@ -35,7 +35,7 @@ exactly once and returning to the start.
 .. code-block:: python
 
    import numpy as np
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import TSPProblem
    from divi.qprog.optimizers import GridSearchOptimizer
    from divi.backends import MaestroSimulator

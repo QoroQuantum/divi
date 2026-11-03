@@ -2,188 +2,33 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import TYPE_CHECKING, Any
+"""Quantum programs and the machinery around them.
 
-from ._metrics import (
-    FubiniStudyMetricEstimator,
-    MetricEstimator,
-    PullbackMetricEstimator,
-    StochasticFidelityMetricEstimator,
-)
-from ._types import GraphProblemTypes
+This package exports only the core contract. Everything else is imported from
+the module that owns it:
 
-# isort: off
-from .mixins import (
-    DataBindingMixin,
-    LayeredAnsatzMixin,
-    ObservableMeasuringMixin,
-    SolutionEntry,
-    SolutionSamplingMixin,
-)
-from .aggregation import (
-    AggregationStrategy,
-    BeamSearchStrategy,
-    HierarchicalStrategy,
-)
-from .algorithms import (
-    PCE,
-    QAOA,
-    QNN,
-    VQE,
-    AngleEmbedding,
-    Ansatz,
-    BrickworkAnsatz,
-    CustomVQA,
-    CVaRObjective,
-    DenseEncoding,
-    ExpectationObjective,
-    FeatureMap,
-    GenericLayerAnsatz,
-    HartreeFockAnsatz,
-    InterpolationStrategy,
-    IterativeQAOA,
-    LUCJAnsatz,
-    MultiBasisEncoding,
-    ParityEncoding,
-    PCEEncoding,
-    PCEObjective,
-    PolyEncoding,
-    ProgressivePCE,
-    QAOAAnsatz,
-    QCCAnsatz,
-    SampleObjective,
-    SoftObjective,
-    TimeEvolution,
-    UCCSDAnsatz,
-    ZZFeatureMap,
-)
-from .initial_states import (
-    CustomPerQubitState,
-    InitialState,
-    OnesState,
-    SuperpositionState,
-    WState,
-    ZerosState,
-)
-from .early_stopping import EarlyStopping
-from .ensemble import (
-    BatchConfig,
-    BatchMode,
-    ProgramEnsemble,
-    ReportingLevel,
-    RoundRecord,
-    WorkflowStatus,
-)
-from .optimizers import (
-    GridSearchOptimizer,
-    MonteCarloOptimizer,
-    QNGOptimizer,
-    QNSPSAOptimizer,
-    QUIVEROptimizer,
-    RosalinOptimizer,
-    ScipyMethod,
-    ScipyOptimizer,
-    SPSAOptimizer,
-)
+* :mod:`divi.qprog.algorithms`: VQE, QAOA, PCE, QNN, time evolution, ansatzes.
+* :mod:`divi.qprog.optimizers`: classical optimisers;
+  :mod:`divi.qprog.optimizers.metrics`: their metric estimators.
+* :mod:`divi.qprog.problems`: problem definitions and partitioning configs.
+* :mod:`divi.qprog.ensembles`: :class:`ProgramEnsemble`, its reporting types, the
+  concrete ensembles and the strategies that aggregate results;
+  :mod:`divi.qprog.ensembles.lassqd`: LASSQD, which needs the ``chem`` extra.
+* :mod:`divi.qprog.mixins`: capability mixins and :class:`SolutionEntry`.
+* :mod:`divi.qprog.initial_states`, :mod:`divi.qprog.checkpointing`.
+"""
 
-# isort: on
+from ._early_stopping import EarlyStopping, StopReason
 from .quantum_program import QuantumProgram
 from .variational_quantum_algorithm import (
     ParamHistoryMode,
     VariationalQuantumAlgorithm,
 )
-from .workflows import (
-    MoleculeTransformer,
-    PartitioningProgramEnsemble,
-    TimeEvolutionTrajectory,
-    VQEHyperparameterSweep,
-)
-
-if TYPE_CHECKING:
-    from .workflows import LASSQD
-
 
 __all__ = [
-    "LASSQD",
-    "AggregationStrategy",
-    "AngleEmbedding",
-    "Ansatz",
-    "BatchConfig",
-    "BatchMode",
-    "BeamSearchStrategy",
-    "BrickworkAnsatz",
-    "CVaRObjective",
-    "CustomPerQubitState",
-    "CustomVQA",
-    "DataBindingMixin",
-    "DenseEncoding",
     "EarlyStopping",
-    "ExpectationObjective",
-    "FeatureMap",
-    "FubiniStudyMetricEstimator",
-    "GenericLayerAnsatz",
-    "GraphProblemTypes",
-    "GridSearchOptimizer",
-    "HartreeFockAnsatz",
-    "HierarchicalStrategy",
-    "InitialState",
-    "InterpolationStrategy",
-    "IterativeQAOA",
-    "LUCJAnsatz",
-    "LayeredAnsatzMixin",
-    "MetricEstimator",
-    "MoleculeTransformer",
-    "MonteCarloOptimizer",
-    "MultiBasisEncoding",
-    "ObservableMeasuringMixin",
-    "OnesState",
-    "PCE",
-    "PCEEncoding",
-    "PCEObjective",
     "ParamHistoryMode",
-    "ParityEncoding",
-    "PartitioningProgramEnsemble",
-    "PolyEncoding",
-    "ProgramEnsemble",
-    "ProgressivePCE",
-    "PullbackMetricEstimator",
-    "QAOA",
-    "QAOAAnsatz",
-    "QCCAnsatz",
-    "QNGOptimizer",
-    "QNN",
-    "QNSPSAOptimizer",
-    "QUIVEROptimizer",
     "QuantumProgram",
-    "ReportingLevel",
-    "RosalinOptimizer",
-    "RoundRecord",
-    "SPSAOptimizer",
-    "SampleObjective",
-    "ScipyMethod",
-    "ScipyOptimizer",
-    "SoftObjective",
-    "SolutionEntry",
-    "SolutionSamplingMixin",
-    "StochasticFidelityMetricEstimator",
-    "SuperpositionState",
-    "TimeEvolution",
-    "TimeEvolutionTrajectory",
-    "UCCSDAnsatz",
-    "VQE",
-    "VQEHyperparameterSweep",
+    "StopReason",
     "VariationalQuantumAlgorithm",
-    "WState",
-    "WorkflowStatus",
-    "ZZFeatureMap",
-    "ZerosState",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    """Resolve ``LASSQD`` on first access."""
-    if name == "LASSQD":
-        from . import workflows
-
-        return workflows.LASSQD
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

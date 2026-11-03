@@ -123,7 +123,7 @@ class MolecularProblem(HamiltonianProblem):
     :meth:`from_molecule`. The electron counts may differ, as for a
     spin-polarised fragment; :meth:`from_molecule` builds integrals for
     closed-shell molecules only, and keeps an open-shell PySCF molecule for
-    :class:`~divi.qprog.workflows.LASSQD`.
+    :class:`~divi.qprog.ensembles.lassqd.LASSQD`.
 
     Args:
         one_body: ``(n_orbitals, n_orbitals)`` one-electron integrals. The
@@ -186,7 +186,7 @@ class MolecularProblem(HamiltonianProblem):
         """Build the problem from a molecule.
 
         The integrals and the Hamiltonian are computed on first access, so a
-        consumer that reads neither (e.g. :class:`~divi.qprog.workflows.LASSQD`,
+        consumer that reads neither (e.g. :class:`~divi.qprog.ensembles.lassqd.LASSQD`,
         which needs a PySCF input) never pays for them.
 
         Args:
@@ -195,7 +195,7 @@ class MolecularProblem(HamiltonianProblem):
                 Integrals come from a Hartree-Fock solve: PennyLane's own
                 differentiable one, or PySCF's RHF. An open-shell PySCF input
                 (non-zero ``spin``, ROHF/ROKS mean field) is accepted for
-                :class:`~divi.qprog.workflows.LASSQD`, which builds its own
+                :class:`~divi.qprog.ensembles.lassqd.LASSQD`, which builds its own
                 integrals; reading this problem's integrals or Hamiltonian then
                 raises ``NotImplementedError``.
 

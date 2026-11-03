@@ -7,7 +7,7 @@ import warnings
 import numpy as np
 import pytest
 
-from divi.qprog.checkpointing import OPTIMIZER_STATE_FILE
+from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
 )

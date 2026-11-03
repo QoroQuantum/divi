@@ -7,7 +7,7 @@
 import numpy as np
 import pytest
 
-from divi.qprog import ObservableMeasuringMixin
+from divi.qprog.mixins import ObservableMeasuringMixin
 from divi.qprog.quantum_program import QuantumProgram
 
 

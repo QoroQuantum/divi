@@ -11,8 +11,9 @@ import pytest
 from qiskit.quantum_info import SparsePauliOp
 from scipy.linalg import block_diag
 
-from divi.qprog import PCE, QAOA, PolyEncoding
+from divi.qprog.algorithms import PCE, QAOA, PolyEncoding
 from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.ensembles import PartitioningProgramEnsemble
 from divi.qprog.initial_states import DickeState, SuperpositionState
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
@@ -24,7 +25,6 @@ from divi.qprog.problems import (
     QUBOPartitioningConfig,
 )
 from divi.qprog.problems._constraints import _UnreachableBoundError
-from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests.qprog.problems._helpers import (
     assert_penalty_zero_iff_feasible,
     n_slack,

@@ -11,9 +11,9 @@ from qiskit.circuit import Parameter
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.pipeline.stages import DataBindingStage
-from divi.qprog import CustomVQA
+from divi.qprog.algorithms import CustomVQA
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.mixins._data_binding import _LOSS_FN_IGNORED_MSG
+from divi.qprog.mixins import DataBindingMixin
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tests._helpers import exact_match
 from tests.qprog._program_contracts import (
@@ -1261,10 +1261,12 @@ class TestDataBindingConstruction:
         """The ignored-``loss_fn`` warning points at the caller's constructor call."""
         qc, _, _ = qiskit_data_circuit
         with pytest.warns(
-            UserWarning, match=exact_match(_LOSS_FN_IGNORED_MSG)
+            UserWarning, match=exact_match(DataBindingMixin._LOSS_FN_IGNORED_MSG)
         ) as record:
             make_custom_vqa(qscript=qc, loss_fn=lambda pred, label: (pred - label) ** 2)
-        ignored = [w for w in record if str(w.message) == _LOSS_FN_IGNORED_MSG]
+        ignored = [
+            w for w in record if str(w.message) == DataBindingMixin._LOSS_FN_IGNORED_MSG
+        ]
         assert ignored and ignored[0].filename == __file__
 
 

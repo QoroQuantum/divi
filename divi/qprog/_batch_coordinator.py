@@ -22,6 +22,8 @@ from divi.backends import (
     CircuitBatch,
     CircuitRunner,
     ExecutionResult,
+    JobStatus,
+    QoroJobError,
 )
 from divi.backends._base import PerCircuitKwarg
 from divi.backends._cancellation import (
@@ -30,11 +32,7 @@ from divi.backends._cancellation import (
     _require_async_backend,
     raise_if_cancelled,
 )
-from divi.backends._job_status import JobStatus, QoroJobError
-from divi.circuits._payloads import (
-    CircuitPayload,
-    bound_circuits,
-)
+from divi.circuits import CircuitPayload, bound_circuits
 from divi.exceptions import ExecutionCancelledError
 from divi.reporting._events import (
     ProgressEmitter,
@@ -93,7 +91,7 @@ class BatchConfig:
 
     Attributes:
         mode: Whether to merge circuit submissions across programs.
-            Defaults to :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+            Defaults to :attr:`~divi.qprog.ensembles.BatchMode.MERGED`.
         max_batch_size: Flush-trigger threshold on the pending circuit
             count, **not** a hard cap on merged-call size.  When set, the
             coordinator fires a flush as soon as pending circuits reach
@@ -106,7 +104,7 @@ class BatchConfig:
             is unset): the pool is sized to
             ``min(max_batch_size, len(programs))`` so the barrier
             predicate can fill the batch in one wave.  Only meaningful
-            when ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+            when ``mode`` is :attr:`~divi.qprog.ensembles.BatchMode.MERGED`.
         max_concurrent_programs: Maximum number of programs running
             concurrently.  When set to a positive integer, sizes the
             executor pool to that value and bypasses the default
@@ -124,7 +122,7 @@ class BatchConfig:
             when ``max_batch_size`` is set.  Explicit values above 1024
             emit a :class:`UserWarning`; the ``-1`` form is silent
             because it's an intentional opt-in.  Only meaningful when
-            ``mode`` is :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+            ``mode`` is :attr:`~divi.qprog.ensembles.BatchMode.MERGED`.
         _sort_programs: Whether to sort programs by key before merging their
             circuits into a single backend call.  Defaults to ``False``.
 
@@ -138,7 +136,7 @@ class BatchConfig:
             :class:`~divi.backends.QiskitSimulator` deterministic mode)
             map to the same circuit on every run, making seeded experiments
             fully reproducible.  Only meaningful when ``mode`` is
-            :attr:`~divi.qprog.ensemble.BatchMode.MERGED`.
+            :attr:`~divi.qprog.ensembles.BatchMode.MERGED`.
     """
 
     mode: BatchMode = BatchMode.MERGED

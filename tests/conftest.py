@@ -68,7 +68,7 @@ def pytest_configure(config):
 def pytest_ignore_collect(collection_path: Path, config):
     optional_suites = (
         ("ai", "bm25s"),
-        ("qprog/workflows/lassqd", "pyscf"),
+        ("qprog/ensembles/lassqd", "pyscf"),
     )
     for suite, package in optional_suites:
         path = Path(__file__).parent / suite

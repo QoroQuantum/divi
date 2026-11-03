@@ -19,18 +19,14 @@ from pathlib import Path
 import numpy as np
 import pennylane as qp
 
-from divi.qprog import (
-    VQE,
-    HartreeFockAnsatz,
-    MoleculeTransformer,
-    VQEHyperparameterSweep,
-)
+from divi.qprog.algorithms import VQE, HartreeFockAnsatz
 from divi.qprog.checkpointing import (
     CheckpointConfig,
     get_checkpoint_info,
     get_latest_checkpoint,
     list_checkpoints,
 )
+from divi.qprog.ensembles import MoleculeTransformer, VQEHyperparameterSweep
 from divi.qprog.optimizers import MonteCarloOptimizer
 from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend

@@ -4,8 +4,11 @@ Core Architecture
 :class:`~divi.qprog.QuantumProgram` is the abstract base shared by every quantum
 algorithm in Divi. :class:`~divi.qprog.VariationalQuantumAlgorithm` extends it
 with the variational-parameter machinery used by VQE, QAOA, PCE, and
-:class:`~divi.qprog.algorithms.CustomVQA`. :class:`~divi.qprog.SolutionEntry` is the
-uniform return type for decoded solutions.
+:class:`~divi.qprog.algorithms.CustomVQA`. :class:`~divi.qprog.mixins.SolutionEntry`
+is the uniform return type for decoded solutions.
+:class:`~divi.qprog.EarlyStopping` terminates a variational optimisation once a
+criterion is met: a patience-based plateau, a gradient-norm threshold, or
+settled cost variance. :class:`~divi.qprog.StopReason` reports which one fired.
 
 .. automodapi:: divi.qprog
    :headings: ~^
@@ -13,18 +16,6 @@ uniform return type for decoded solutions.
    :no-inheritance-diagram:
    :no-inherited-members:
    :include-all-objects:
-   :skip: VQE, QAOA, IterativeQAOA, InterpolationStrategy, PCE, ProgressivePCE, TimeEvolution
-   :skip: PCEObjective, ExpectationObjective, SampleObjective, SoftObjective, CVaRObjective
-   :skip: PCEEncoding, ParityEncoding, DenseEncoding, PolyEncoding, MultiBasisEncoding, CustomVQA, QNN
-   :skip: Ansatz, HartreeFockAnsatz, UCCSDAnsatz, QCCAnsatz, QAOAAnsatz, GenericLayerAnsatz, BrickworkAnsatz, LUCJAnsatz
-   :skip: FeatureMap, AngleEmbedding, ZZFeatureMap
-   :skip: InitialState, ZerosState, OnesState, SuperpositionState, CustomPerQubitState, WState
-   :skip: ScipyOptimizer, ScipyMethod, MonteCarloOptimizer, GridSearchOptimizer, RosalinOptimizer
-   :skip: QNGOptimizer, SPSAOptimizer, QNSPSAOptimizer, QUIVEROptimizer
-   :skip: MetricEstimator, PullbackMetricEstimator, FubiniStudyMetricEstimator, StochasticFidelityMetricEstimator
-   :skip: MoleculeTransformer, PartitioningProgramEnsemble, TimeEvolutionTrajectory, VQEHyperparameterSweep
-   :skip: LASSQD
-   :skip: ProgramEnsemble, BatchConfig, BatchMode, EarlyStopping
    :skip: ParamHistoryMode
 
 Type Aliases

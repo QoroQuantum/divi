@@ -13,6 +13,7 @@ from ._binary import BinaryOptimizationProblem
 from ._constraints import LinearConstraint
 from ._graph_partitioning_utils import draw_partitions
 from ._graphs import (
+    GraphProblemBase,
     MaxCliqueProblem,
     MaxCutProblem,
     MaxIndependentSetProblem,
@@ -28,6 +29,7 @@ from ._matching import (
     check_matching_matrix,
     is_valid_matching,
 )
+from ._types import GraphProblemTypes
 from ._routing import (
     BinaryBlockConfig,
     CVRPProblem,
@@ -49,6 +51,8 @@ __all__ = [
     "CommunityDecomposer",
     "MolecularProblem",
     "GraphPartitioningConfig",
+    "GraphProblemBase",
+    "GraphProblemTypes",
     "HamiltonianProblem",
     "LinearConstraint",
     "MaxCliqueProblem",

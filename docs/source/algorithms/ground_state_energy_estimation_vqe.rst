@@ -58,7 +58,7 @@ integrations with ``pip install "qoro-divi[chem]"``.
 
 This page covers single-instance ground-state energy estimation with
 :class:`~divi.qprog.algorithms.VQE` and large-scale sweeps with
-:class:`~divi.qprog.workflows.VQEHyperparameterSweep`.
+:class:`~divi.qprog.ensembles.VQEHyperparameterSweep`.
 
 Basic :class:`~divi.qprog.algorithms.VQE` Usage
 -----------------------------------------------
@@ -70,7 +70,7 @@ Here's how to set up a basic :class:`~divi.qprog.algorithms.VQE` calculation for
 .. code-block:: python
 
    from pyscf import gto
-   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.algorithms import VQE, HartreeFockAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroSimulator
@@ -147,7 +147,7 @@ therefore needs either an explicit non-chemistry ansatz, such as
 
    from qiskit.circuit.library import RYGate, RZGate
    from qiskit.quantum_info import SparsePauliOp
-   from divi.qprog import GenericLayerAnsatz, VQE
+   from divi.qprog.algorithms import GenericLayerAnsatz, VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import HamiltonianProblem
    from divi.backends import MaestroSimulator
@@ -225,7 +225,7 @@ full abstract contract and the built-in implementations as concrete examples.
 VQE Hyperparameter Sweep
 ------------------------
 
-Use :class:`~divi.qprog.workflows.VQEHyperparameterSweep` when the same VQE
+Use :class:`~divi.qprog.ensembles.VQEHyperparameterSweep` when the same VQE
 study spans several molecular geometries, ansatzes, or optimizer settings. It
 builds the Cartesian product of those choices, runs each configuration, and
 aggregates the results for comparison.
@@ -233,7 +233,7 @@ aggregates the results for comparison.
 Configuring the Molecular Transformations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to modify molecules. These modifications can be declared and configured using the :class:`~divi.qprog.workflows.MoleculeTransformer` class, which takes as input the base molecule onto which the transformations are applied. Additionally, these arguments are used to define the specifics of the modifications:
+Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to modify molecules. These modifications can be declared and configured using the :class:`~divi.qprog.ensembles.MoleculeTransformer` class, which takes as input the base molecule onto which the transformations are applied. Additionally, these arguments are used to define the specifics of the modifications:
 
 - **atom_connectivity**: The connectivity structure of the molecule, provided as a list of tuples of indices of the atoms that have a bond between them. When not provided, the molecule would be assumed to have a chain structure (i.e. the connectivity would look like ``[(0, 1), (1, 2), ...]``).
 
@@ -247,10 +247,10 @@ Divi uses `Z-matrices <https://en.wikipedia.org/wiki/Z-matrix_(chemistry)>`_ to 
 
 .. code-block:: python
 
-   from divi.qprog import VQEHyperparameterSweep, MoleculeTransformer
+   from divi.qprog.ensembles import VQEHyperparameterSweep, MoleculeTransformer
    from divi.qprog.optimizers import MonteCarloOptimizer
    from pyscf import gto
-   from divi.qprog import HartreeFockAnsatz, UCCSDAnsatz
+   from divi.qprog.algorithms import HartreeFockAnsatz, UCCSDAnsatz
    from divi.backends import MaestroSimulator
 
    # H2 near its equilibrium bond length of about 1.4 Bohr
@@ -304,7 +304,8 @@ label instead of by position:
 
 .. code-block:: python
 
-   from divi.qprog import VQEHyperparameterSweep, HartreeFockAnsatz
+   from divi.qprog.algorithms import HartreeFockAnsatz
+   from divi.qprog.ensembles import VQEHyperparameterSweep
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import MolecularProblem
    from pyscf import gto
@@ -329,7 +330,7 @@ label instead of by position:
    sweep.run()
 
 ``molecule_transformer`` and ``problems`` are mutually exclusive.
-:meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results` plots
+:meth:`~divi.qprog.ensembles.VQEHyperparameterSweep.visualize_results` plots
 against the bond-modifier axis, so it only supports ``molecule_transformer``
 sweeps; a ``problems`` sweep reads its results from ``sweep.programs`` instead.
 
@@ -354,7 +355,7 @@ allocates the total budget by group weight:
 
 .. code-block:: python
 
-   from divi.qprog import VQE
+   from divi.qprog.algorithms import VQE
    from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroSimulator
 

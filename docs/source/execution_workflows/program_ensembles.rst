@@ -1,7 +1,7 @@
 Program Ensembles and Workflows
 ================================
 
-A :class:`~divi.qprog.ensemble.ProgramEnsemble` runs multiple quantum programs
+A :class:`~divi.qprog.ensembles.ProgramEnsemble` runs multiple quantum programs
 in parallel — handling scheduling, circuit batching, progress tracking, and
 result aggregation.
 
@@ -18,17 +18,17 @@ Divi provides several ready-made ensemble workflows.  Each is covered in
 detail on its own page — this section gives a quick overview and links.
 
 **VQE Hyperparameter Sweeps**
-   :class:`~divi.qprog.workflows.VQEHyperparameterSweep` runs VQE across multiple
+   :class:`~divi.qprog.ensembles.VQEHyperparameterSweep` runs VQE across multiple
    molecular configurations (bond lengths, ansätze) in parallel.
    See :doc:`../algorithms/ground_state_energy_estimation_vqe` for configuration and examples.
 
 **Time Evolution Trajectories**
-   :class:`~divi.qprog.workflows.TimeEvolutionTrajectory` runs one time-evolution
+   :class:`~divi.qprog.ensembles.TimeEvolutionTrajectory` runs one time-evolution
    program per time point and collects expectation values into a trajectory.
    See :doc:`../algorithms/hamiltonian_time_evolution` for full details.
 
 **Problem Decomposition (Graph / QUBO / Matching / Portfolio)**
-   :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` decomposes a
+   :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` decomposes a
    large :class:`~divi.qprog.problems.QAOAProblem` into sub-problems, solves
    each partition with QAOA (or PCE / IterativeQAOA), and stitches the
    per-partition results into a global solution using a configurable
@@ -37,7 +37,7 @@ detail on its own page — this section gives a quick overview and links.
    :doc:`../algorithms/combinatorial_optimization_qaoa_pce`.
 
 **Localised Active-Space SQD**
-   :class:`~divi.qprog.workflows.LASSQD` partitions a molecule's active space
+   :class:`~divi.qprog.ensembles.lassqd.LASSQD` partitions a molecule's active space
    into fragments, prepares one circuit per fragment against its own
    mean-field-embedded effective Hamiltonian, samples it, and recovers the
    fragment state by sample-based quantum diagonalisation. See
@@ -47,18 +47,18 @@ detail on its own page — this section gives a quick overview and links.
 Aggregation Strategies
 ----------------------
 
-For :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`, each solved
+For :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`, each solved
 partition returns several candidate
 bitstrings ranked by probability. An *aggregation strategy* stitches these
 per-partition candidates into a single global solution. ``aggregate_results``
 and ``get_top_solutions`` accept a ``strategy`` — an
-:class:`~divi.qprog.AggregationStrategy` — and default to
-:class:`~divi.qprog.BeamSearchStrategy`.
+:class:`~divi.qprog.ensembles.AggregationStrategy` — and default to
+:class:`~divi.qprog.ensembles.BeamSearchStrategy`.
 
 Beam search
 ~~~~~~~~~~~
 
-:class:`~divi.qprog.BeamSearchStrategy` explores candidates left-to-right across
+:class:`~divi.qprog.ensembles.BeamSearchStrategy` explores candidates left-to-right across
 partitions, keeping the best partial solutions at each step. It takes two
 parameters:
 
@@ -71,7 +71,7 @@ parameters:
 
 .. code-block:: python
 
-   from divi.qprog import BeamSearchStrategy
+   from divi.qprog.ensembles import BeamSearchStrategy
 
    # Balanced default: beam width 256, with 6 candidates per partition
    solution, energy = qaoa_partition.aggregate_results()
@@ -108,7 +108,7 @@ The two settings are independent, and either can be the larger one. With ``n_par
 Hierarchical aggregation
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:class:`~divi.qprog.HierarchicalStrategy` is a divide-and-conquer alternative:
+:class:`~divi.qprog.ensembles.HierarchicalStrategy` is a divide-and-conquer alternative:
 partitions are split into groups of ``group_size``, each group is solved
 independently with a beam of width ``max_per_group``, and the resulting group
 pools are combined in a pairwise merge tree. Interactions spanning partitions
@@ -124,14 +124,14 @@ Its parameters are:
 
 Unlike beam search, ``top_n`` does **not** widen the search for the hierarchical
 strategy — it only sets how many of the final solutions are returned. Calling
-:meth:`~divi.qprog.workflows.PartitioningProgramEnsemble.get_top_solutions` with a
+:meth:`~divi.qprog.ensembles.PartitioningProgramEnsemble.get_top_solutions` with a
 larger ``n`` never inflates the search cost.
 
 .. skip: next
 
 .. code-block:: python
 
-   from divi.qprog import HierarchicalStrategy
+   from divi.qprog.ensembles import HierarchicalStrategy
 
    solution, energy = qaoa_partition.aggregate_results(
        strategy=HierarchicalStrategy(
@@ -144,7 +144,7 @@ larger ``n`` never inflates the search cost.
 Top-N Solutions
 ---------------
 
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` exposes a
+:class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` exposes a
 ``get_top_solutions`` method that returns multiple ranked global solutions. It
 accepts the same ``strategy`` argument.
 
@@ -152,7 +152,7 @@ accepts the same ``strategy`` argument.
 
 .. code-block:: python
 
-   from divi.qprog import BeamSearchStrategy
+   from divi.qprog.ensembles import BeamSearchStrategy
 
    top_solutions = qaoa_partition.get_top_solutions(
        n=5, strategy=BeamSearchStrategy(beam_width=5, n_partition_candidates=10)
@@ -180,9 +180,9 @@ may contain fewer than ``n`` entries.
 Sampling from Pre-Trained Parameters
 ------------------------------------
 
-:meth:`~divi.qprog.ensemble.ProgramEnsemble.sample_solution` mirrors the
+:meth:`~divi.qprog.ensembles.ProgramEnsemble.sample_solution` mirrors the
 standalone
-:meth:`~divi.qprog.SolutionSamplingMixin.sample_solution` across every
+:meth:`~divi.qprog.mixins.SolutionSamplingMixin.sample_solution` across every
 sub-program in one call. It takes trained parameters for each partition (e.g.
 from a prior ``run()``, a loaded checkpoint, or an external training routine)
 and only re-samples — no EXPECTATION jobs are dispatched.
@@ -218,14 +218,14 @@ Two usage paths:
 
 The full lifecycle infrastructure (executor pool, merged batching,
 progress UI, cancellation, ``blocking`` / non-blocking semantics) is
-shared with :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`. No sub-program
+shared with :meth:`~divi.qprog.ensembles.ProgramEnsemble.run`. No sub-program
 mutates its own optimizer-side state (``best_params``, ``losses_history``,
 ``current_iteration``).
 
 Separate Optimisation and Sampling Backends
 --------------------------------------------
 
-Programs that expose :meth:`~divi.qprog.SolutionSamplingMixin.sample_solution`
+Programs that expose :meth:`~divi.qprog.mixins.SolutionSamplingMixin.sample_solution`
 accept an optional ``sampling_backend`` in addition to their normal ``backend``
 (also readable as a ``sampling_backend`` property). The normal backend
 executes optimisation and other circuit evaluations; the sampling backend
@@ -242,7 +242,7 @@ Backend selection follows this precedence, for both a standalone program's
 Solution-sampling ensembles accept the same ``sampling_backend`` constructor
 argument — step 2 above is then the *ensemble's* ``sampling_backend``. Every
 sub-program must expose ``sample_solution`` once it is set —
-:meth:`~divi.qprog.ensemble.ProgramEnsemble.run` raises ``TypeError`` upfront
+:meth:`~divi.qprog.ensembles.ProgramEnsemble.run` raises ``TypeError`` upfront
 otherwise — and ``run`` trains every sub-program before sampling any of them.
 Final measurements still participate in the ensemble's merged batching,
 cancellation, progress reporting, and accounting.
@@ -282,7 +282,7 @@ the selected backend, and each sub-program's own ``backend`` is restored once
 
 .. warning::
 
-   :meth:`~divi.qprog.ensemble.ProgramEnsemble.run_one_round` splits the same
+   :meth:`~divi.qprog.ensembles.ProgramEnsemble.run_one_round` splits the same
    way when ``sampling_backend`` is set, but only for ``blocking=True``:
    sampling needs training to finish first, so ``blocking=False`` raises
    ``ValueError``.
@@ -293,7 +293,7 @@ the selected backend, and each sub-program's own ``backend`` is restored once
 The Workflow Lifecycle
 ----------------------
 
-:meth:`~divi.qprog.ensemble.ProgramEnsemble.run` is the entry point for every
+:meth:`~divi.qprog.ensembles.ProgramEnsemble.run` is the entry point for every
 ensemble. It blocks until the workflow finishes and returns the ensemble, so
 results are ready to aggregate as soon as it returns:
 
@@ -406,7 +406,7 @@ Checkpointing Ensemble Workflows
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Pass a :class:`~divi.qprog.checkpointing.CheckpointConfig` to
-:meth:`~divi.qprog.ensemble.ProgramEnsemble.run` to checkpoint an entire
+:meth:`~divi.qprog.ensembles.ProgramEnsemble.run` to checkpoint an entire
 workflow, not just a single variational program:
 
 .. skip: next
@@ -467,7 +467,7 @@ child through the normal worker and batching lifecycle.
 .. important::
 
    A fresh run refuses a directory that already contains an ensemble
-   checkpoint. Call :meth:`~divi.qprog.ensemble.ProgramEnsemble.restore_state`
+   checkpoint. Call :meth:`~divi.qprog.ensembles.ProgramEnsemble.restore_state`
    or choose a new directory; silently mixing two workflow histories is not
    allowed. A checkpoint directory is owned by one running process; concurrent
    writers or restorers are not supported. Restore also requires an empty
@@ -482,7 +482,7 @@ round.
 One-shot ensembles use the built-in ``None`` workflow-state serialisation.
 Custom ensembles with state must override ``_save_workflow_checkpoint_state`` and
 ``_load_workflow_checkpoint_state`` with an explicit, validated format. The
-built-in :class:`~divi.qprog.workflows.LASSQD` workflow does this for molecular
+built-in :class:`~divi.qprog.ensembles.lassqd.LASSQD` workflow does this for molecular
 orbitals, fragment RDMs, solver occupancy, reports, and RNG state without
 pickle. Its fragment programs also store terminal numerical results in a
 validated NumPy sidecar. Time-evolution trajectories, VQE hyperparameter
@@ -500,11 +500,11 @@ Inspecting what happened
 After ``run()`` returns, three attributes describe the workflow:
 
 - ``workflow_state`` — the latest state, converged or not.
-- ``stop_reason`` — a :class:`~divi.qprog.WorkflowStatus`: ``COMPLETE``,
+- ``stop_reason`` — a :class:`~divi.qprog.ensembles.WorkflowStatus`: ``COMPLETE``,
   ``MAX_ROUNDS``, ``FAILED``, or ``CANCELLED``, and ``None`` before the first
   ``run()``.
 - ``round_history`` — a tuple of immutable
-  :class:`~divi.qprog.RoundRecord` entries, one per round.
+  :class:`~divi.qprog.ensembles.RoundRecord` entries, one per round.
 
 Each record carries the round number, program count, the round's circuit and
 runtime *deltas*, a status, and — for a failed round — the formatted
@@ -569,7 +569,7 @@ raises :exc:`~divi.exceptions.CircuitTooWideError`, which carries the limit:
 Controlling a single round
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:meth:`~divi.qprog.ensemble.ProgramEnsemble.run_one_round` dispatches an
+:meth:`~divi.qprog.ensembles.ProgramEnsemble.run_one_round` dispatches an
 already-materialised program map exactly once, and is the lower-level control
 surface behind ``run()``. It can dispatch without blocking, and lets the caller
 drive rounds:
@@ -597,7 +597,7 @@ Progress Reporting
 ------------------
 
 Every ensemble accepts a ``reporting_level`` controlling how much live progress
-is rendered. It is a :class:`~divi.qprog.ReportingLevel`:
+is rendered. It is a :class:`~divi.qprog.ensembles.ReportingLevel`:
 
 .. list-table::
    :header-rows: 1
@@ -617,7 +617,7 @@ is rendered. It is a :class:`~divi.qprog.ReportingLevel`:
 
 .. code-block:: python
 
-   from divi.qprog import ReportingLevel
+   from divi.qprog.ensembles import ReportingLevel
 
    ensemble = PartitioningProgramEnsemble(
        problem=problem,
@@ -639,7 +639,7 @@ messages are unaffected, and round history is still retained.
 Custom Ensemble Workflows
 -------------------------
 
-Subclass :class:`~divi.qprog.ensemble.ProgramEnsemble` and implement
+Subclass :class:`~divi.qprog.ensembles.ProgramEnsemble` and implement
 ``create_programs``. Override the state hooks for adaptive rounds and
 ``aggregate_results`` for a custom return shape. The multi-round example above
 is schematic; ``make_vqe`` and its geometry helpers stand for application code.
@@ -659,7 +659,7 @@ A one-round subclass needs only this contract:
 Inspecting an Ensemble Before Running It
 ----------------------------------------
 
-:meth:`~divi.qprog.ensemble.ProgramEnsemble.dry_run` traverses every
+:meth:`~divi.qprog.ensembles.ProgramEnsemble.dry_run` traverses every
 sub-program without execution. Call ``create_programs()``, then render the
 nested report:
 
@@ -699,8 +699,8 @@ local simulator call already running a circuit cannot be interrupted.
 Circuit Batching
 ----------------
 
-By default, :meth:`~divi.qprog.ensemble.ProgramEnsemble.run` merges submissions
-through :class:`~divi.qprog.ensemble.BatchConfig`.
+By default, :meth:`~divi.qprog.ensembles.ProgramEnsemble.run` merges submissions
+through :class:`~divi.qprog.ensembles.BatchConfig`.
 
 **How it works**
 
@@ -721,7 +721,7 @@ merging circuits. Use ``max_batch_size`` to cap the number of circuits per flush
 
 .. code-block:: python
 
-   from divi.qprog import BatchConfig
+   from divi.qprog.ensembles import BatchConfig
 
    # Flush as soon as 50 circuits are pending (partial flush)
    ensemble.run(batch_config=BatchConfig(max_batch_size=50))
@@ -738,7 +738,7 @@ submission, bypassing the default 256-program barrier cap:
 
 .. code-block:: python
 
-   from divi.qprog import BatchConfig
+   from divi.qprog.ensembles import BatchConfig
 
    # All programs run concurrently -> single merged backend submission.
    ensemble.run(
@@ -768,7 +768,7 @@ Pass ``BatchConfig(mode=BatchMode.OFF)`` to disable batching entirely:
 
 .. code-block:: python
 
-   from divi.qprog import BatchConfig, BatchMode
+   from divi.qprog.ensembles import BatchConfig, BatchMode
 
    # Each program submits circuits independently
    ensemble.run(batch_config=BatchConfig(mode=BatchMode.OFF))
@@ -782,4 +782,4 @@ Next Steps
 - :doc:`backends` — backend configuration.
 - :doc:`resuming_long_runs` — checkpointing and restoring individual programs
   and complete ensemble workflows.
-- :doc:`visualization` — result visualisation, including :meth:`~divi.qprog.workflows.VQEHyperparameterSweep.visualize_results`.
+- :doc:`visualization` — result visualisation, including :meth:`~divi.qprog.ensembles.VQEHyperparameterSweep.visualize_results`.

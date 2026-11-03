@@ -18,3 +18,9 @@ tuning, from classical gradient-based methods to quantum-inspired approaches.
 
 .. autopydantic_model:: divi.qprog.optimizers.PymooState
    :members:
+
+.. automodapi:: divi.qprog.optimizers.metrics
+   :headings: ~^
+   :no-inheritance-diagram:
+   :no-inherited-members:
+   :include-all-objects:

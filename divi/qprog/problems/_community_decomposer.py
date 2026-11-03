@@ -11,8 +11,8 @@ from hybrid.core import Runnable
 from hybrid.exceptions import EndOfStream
 from hybrid.utils import bqm_induced_by
 
-from divi.qprog.problems._partitioning_config import QUBOPartitioningConfig
-from divi.qprog.problems._qubo_partitioning_utils import (
+from ._partitioning_config import QUBOPartitioningConfig
+from ._qubo_partitioning_utils import (
     bqm_to_sparse,
     partition_by_method,
 )

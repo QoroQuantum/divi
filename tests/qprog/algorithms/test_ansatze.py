@@ -27,9 +27,12 @@ from scipy.linalg import expm
 from scipy.stats import unitary_group
 
 from divi.hamiltonians._chem import _spo_from_integrals
-from divi.qprog import (
+from divi.qprog.algorithms import (
     VQE,
+    AmplitudeSeededAnsatz,
+    AmplitudeSeedError,
     BrickworkAnsatz,
+    ElectronCounts,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
     LUCJAnsatz,
@@ -49,10 +52,10 @@ from divi.qprog.algorithms._ansatze import (
     _rotation_one_particle,
     _rotation_schedule,
     _spin_conserving_excitations,
-    _uccsd_excitations,
     lucj_jastrow_pairs,
     n_rotation_params,
     rotation_angles,
+    uccsd_excitations,
 )
 from divi.qprog.problems import HamiltonianProblem
 from tests._helpers import exact_match, same_unitary, unitary
@@ -60,6 +63,7 @@ from tests.qprog.algorithms._helpers import (
     gate_names,
     gate_qubits,
     needs_qiskit_nature,
+    one_pair_amplitudes,
 )
 
 _needs_openfermion = pytest.mark.skipif(
@@ -68,8 +72,10 @@ _needs_openfermion = pytest.mark.skipif(
 )
 
 
-def _build_circuit(ansatz, params, n_qubits, n_layers, **kwargs) -> QuantumCircuit:
-    return ansatz.build(params, n_qubits, n_layers, **kwargs)
+def _build_circuit(
+    ansatz, params, n_qubits, n_layers, reference=None
+) -> QuantumCircuit:
+    return ansatz.build(params, n_qubits, n_layers, reference)
 
 
 def _instructions(qc: QuantumCircuit) -> list[tuple]:
@@ -420,22 +426,22 @@ class TestBrickworkAnsatz:
 
 
 @pytest.mark.parametrize(
-    "ansatz, n_qubits, kwargs",
+    "ansatz, n_qubits",
     [
-        (GenericLayerAnsatz(gate_sequence=[HGate]), 2, {}),
-        (QAOAAnsatz(), 0, {}),
-        (QCCAnsatz(), 0, {}),
-        (LUCJAnsatz(), 2, {"opposite_spin_pairs": []}),
+        (GenericLayerAnsatz(gate_sequence=[HGate]), 2),
+        (QAOAAnsatz(), 0),
+        (QCCAnsatz(), 0),
+        (LUCJAnsatz(opposite_spin_pairs=[]), 2),
     ],
     ids=["generic-layer", "qaoa", "qcc", "lucj"],
 )
-def test_parameter_free_ansatz_is_rejected_by_name(ansatz, n_qubits, kwargs):
+def test_parameter_free_ansatz_is_rejected_by_name(ansatz, n_qubits):
     message = (
         f"{ansatz.name} must define at least one trainable parameter. "
         "Parameter-free circuits are not supported."
     )
     with pytest.raises(ValueError, match=exact_match(message)):
-        ansatz.n_params_per_layer(n_qubits, **kwargs)
+        ansatz.n_params_per_layer(n_qubits)
 
 
 # --- Test QAOAAnsatz ---
@@ -468,7 +474,7 @@ class TestQAOAAnsatz:
         """Each layer opens with Hadamards, then its ZZ weights, one per coupled
         pair (a single pair below three qubits, a closed ring from three), then
         one local field per qubit; Hadamards close the circuit."""
-        per_layer = QAOAAnsatz.n_params_per_layer(n_qubits)
+        per_layer = QAOAAnsatz().n_params_per_layer(n_qubits)
         params = ParameterVector("p", n_layers * per_layer)
         ring = (
             [(0, 1)]
@@ -505,6 +511,76 @@ class TestQAOAAnsatz:
             QAOAAnsatz(local_field=HGate)
 
 
+class _SeededWithoutHook(AmplitudeSeededAnsatz):
+    def n_params_per_layer(self, n_qubits, reference=None):
+        return 1
+
+    def parameter_frequencies(self, n_qubits, reference=None):
+        return None
+
+    def build(self, params, n_qubits, n_layers, reference=None):
+        return QuantumCircuit(n_qubits)
+
+
+class TestAmplitudeSeededAnsatz:
+    """The capability of mapping coupled-cluster amplitudes onto parameters."""
+
+    @pytest.mark.parametrize(
+        "ansatz, seeded",
+        [
+            pytest.param(UCCSDAnsatz(), True, id="uccsd"),
+            pytest.param(LUCJAnsatz(), True, id="lucj"),
+            pytest.param(HartreeFockAnsatz(), False, id="hartree-fock"),
+            pytest.param(QCCAnsatz(), False, id="qcc"),
+            pytest.param(QAOAAnsatz(), False, id="qaoa"),
+        ],
+    )
+    def test_only_amplitude_aware_ansatzes_have_the_capability(self, ansatz, seeded):
+        assert isinstance(ansatz, AmplitudeSeededAnsatz) is seeded
+
+    def test_a_subclass_without_the_hook_cannot_be_instantiated(self):
+        with pytest.raises(TypeError, match="params_from_amplitudes"):
+            _SeededWithoutHook()
+
+    def test_a_seed_failure_is_a_value_error(self):
+        assert issubclass(AmplitudeSeedError, ValueError)
+
+
+class TestAnsatz:
+    """Behaviour shared by every ansatz."""
+
+    @pytest.mark.parametrize(
+        "ansatz, expected",
+        [
+            pytest.param(UCCSDAnsatz(), "UCCSDAnsatz()", id="stateless"),
+            pytest.param(
+                QAOAAnsatz(local_field=RXGate),
+                f"QAOAAnsatz(local_field={RXGate!r})",
+                id="qaoa",
+            ),
+            pytest.param(
+                BrickworkAnsatz(),
+                f"BrickworkAnsatz(entangler={RXXGate!r})",
+                id="brickwork",
+            ),
+            pytest.param(
+                GenericLayerAnsatz([RYGate], entangler=CXGate),
+                f"GenericLayerAnsatz(gate_sequence=[{RYGate!r}], "
+                f"entangler={CXGate!r}, entangling_layout='linear')",
+                id="generic-layer",
+            ),
+            pytest.param(
+                LUCJAnsatz(trailing_rotation=True, rotation_depth=2),
+                "LUCJAnsatz(trailing_rotation=True, shared_spin_params=False, "
+                "rotation_depth=2, same_spin_pairs=None, opposite_spin_pairs=None)",
+                id="lucj",
+            ),
+        ],
+    )
+    def test_repr_lists_the_constructor_options(self, ansatz, expected):
+        assert repr(ansatz) == expected
+
+
 # --- Test Chemistry Ansaetze ---
 @pytest.mark.parametrize(
     "call",
@@ -537,9 +613,9 @@ def test_build_only_ansatz_names_a_missing_electron_count(ansatz):
 @pytest.mark.parametrize(
     "ansatz, call",
     [
-        (UCCSDAnsatz(), lambda a: a.n_params_per_layer(4, n_electrons=3)),
-        (UCCSDAnsatz(), lambda a: a.build([0.1] * 3, 4, 1, n_electrons=3)),
-        (LUCJAnsatz(), lambda a: a.build([0.1] * 8, 4, 1, n_electrons=3)),
+        (UCCSDAnsatz(), lambda a: a.n_params_per_layer(4, ElectronCounts(3))),
+        (UCCSDAnsatz(), lambda a: a.build([0.1] * 3, 4, 1, ElectronCounts(3))),
+        (LUCJAnsatz(), lambda a: a.build([0.1] * 8, 4, 1, ElectronCounts(3))),
     ],
     ids=["uccsd-n_params_per_layer", "uccsd-build", "lucj-build"],
 )
@@ -557,18 +633,15 @@ class TestUCCSDAnsatz:
     """Tests for the UCCSDAnsatz class."""
 
     def test_n_params_per_layer(self):
-        assert UCCSDAnsatz().n_params_per_layer(n_qubits=4, n_electrons=2) == 3
+        assert UCCSDAnsatz().n_params_per_layer(4, ElectronCounts(2)) == 3
 
     def test_build_emits_qiskit_circuit(self):
-        n_electrons, n_qubits, n_layers = 2, 4, 1
+        reference = ElectronCounts(2)
+        n_qubits, n_layers = 4, 1
         ansatz = UCCSDAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(
-            n_qubits, n_electrons=n_electrons
-        )
+        n_params = n_layers * ansatz.n_params_per_layer(n_qubits, reference)
         params = ParameterVector("p", n_params)
-        qc = _build_circuit(
-            ansatz, list(params), n_qubits, n_layers, n_electrons=n_electrons
-        )
+        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers, reference)
         # Should produce a non-empty Qiskit circuit on the requested qubit count.
         assert qc.num_qubits == n_qubits
         assert len(qc.data) > 0
@@ -623,10 +696,11 @@ class TestUCCSDAnsatz:
         lowering the excitation gates require.
 
         Also pins the positional alignment between ``excitation_list[index]``
-        and parameter ``index``, which ``_uccsd_amplitude_seed`` indexes on.
+        and parameter ``index``, which ``UCCSDAnsatz.params_from_amplitudes``
+        indexes on.
         """
         n_qubits, n_electrons, theta = 8, 4, 0.37
-        excitations = _uccsd_excitations(n_qubits // 2, (2, 2))
+        excitations = uccsd_excitations(n_qubits // 2, (2, 2))
         assert len(excitations) == 26
 
         vqe = _make_uccsd_vqe(
@@ -654,6 +728,56 @@ class TestUCCSDAnsatz:
             label for label in probs if _occupied_from_label(label) == excited
         )
         assert probs[excited_label] == pytest.approx(np.sin(theta) ** 2, abs=0.02)
+
+    def test_amplitudes_map_onto_each_excitations_own_parameter(self):
+        """Singles take ``-t1`` of their spin, the spin-mixed double its ``t2``,
+        in the order of :func:`uccsd_excitations`."""
+        pytest.importorskip("pyscf.cc.addons")
+        t1_alpha, t1_beta, t2_mixed = 0.1, 0.2, 0.3
+        t1 = (np.full((1, 1), t1_alpha), np.full((1, 1), t1_beta))
+        t2 = (
+            np.zeros((1, 1, 1, 1)),
+            np.full((1, 1, 1, 1), t2_mixed),
+            np.zeros((1, 1, 1, 1)),
+        )
+        n_spatial = 2
+        expected = [
+            (
+                (-t1_alpha if occupied[0] < n_spatial else -t1_beta)
+                if len(occupied) == 1
+                else t2_mixed
+            )
+            for occupied, _ in uccsd_excitations(n_spatial, (1, 1))
+        ]
+
+        seed = UCCSDAnsatz().params_from_amplitudes(
+            t1, t2, 2 * n_spatial, ElectronCounts(2, 1, 1)
+        )
+
+        np.testing.assert_allclose(seed, expected)
+
+    def test_amplitudes_of_a_spin_imbalanced_reference_fill_every_parameter(self):
+        pytest.importorskip("pyscf.cc.addons")
+        reference = ElectronCounts(3, 2, 1)
+        n_qubits = 6
+        t1 = (np.full((2, 1), 0.1), np.full((1, 2), 0.2))
+        t2 = (
+            np.zeros((2, 2, 1, 1)),
+            np.full((2, 1, 1, 2), 0.3),
+            np.zeros((1, 1, 2, 2)),
+        )
+        ansatz = UCCSDAnsatz()
+
+        seed = ansatz.params_from_amplitudes(t1, t2, n_qubits, reference)
+
+        assert seed.shape == (ansatz.n_params_per_layer(n_qubits, reference),)
+        assert np.count_nonzero(seed) == seed.size
+
+    def test_amplitudes_need_a_reference(self):
+        with pytest.raises(ValueError, match="UCCSDAnsatz"):
+            UCCSDAnsatz().params_from_amplitudes(
+                (np.zeros((1, 1)),) * 2, (np.zeros((1,) * 4),) * 3, 4, None
+            )
 
 
 def _givens_matrix(theta: float, dim: int, i: int, j: int) -> np.ndarray:
@@ -705,18 +829,15 @@ class TestHartreeFockAnsatz:
     """Tests for the HartreeFockAnsatz class."""
 
     def test_n_params_per_layer(self):
-        assert HartreeFockAnsatz().n_params_per_layer(n_qubits=4, n_electrons=2) == 3
+        assert HartreeFockAnsatz().n_params_per_layer(4, ElectronCounts(2)) == 3
 
     def test_build_emits_qiskit_circuit(self):
-        n_electrons, n_qubits, n_layers = 2, 4, 2
+        reference = ElectronCounts(2)
+        n_qubits, n_layers = 4, 2
         ansatz = HartreeFockAnsatz()
-        n_params = n_layers * ansatz.n_params_per_layer(
-            n_qubits, n_electrons=n_electrons
-        )
+        n_params = n_layers * ansatz.n_params_per_layer(n_qubits, reference)
         params = ParameterVector("p", n_params)
-        qc = _build_circuit(
-            ansatz, list(params), n_qubits, n_layers, n_electrons=n_electrons
-        )
+        qc = _build_circuit(ansatz, list(params), n_qubits, n_layers, reference)
         assert qc.num_qubits == n_qubits
         assert len(qc.data) > 0
 
@@ -734,17 +855,20 @@ class TestHartreeFockAnsatz:
         """Invalid references must fail before a circuit is silently prepared."""
         with pytest.raises(ValueError, match=match):
             HartreeFockAnsatz().build(
-                [0.0], n_qubits=4, n_layers=1, n_electrons=n_electrons
+                [0.0], n_qubits=4, n_layers=1, reference=ElectronCounts(n_electrons)
             )
 
     @pytest.mark.parametrize(
         "call",
         [
-            lambda n_electrons=2, **spin: HartreeFockAnsatz.n_params_per_layer(
-                4, n_electrons=n_electrons, **spin
+            lambda n_electrons=2, **spin: HartreeFockAnsatz().n_params_per_layer(
+                4, ElectronCounts(n_electrons, **spin)
             ),
             lambda n_electrons=2, **spin: HartreeFockAnsatz().build(
-                [0.0] * 3, n_qubits=4, n_layers=1, n_electrons=n_electrons, **spin
+                [0.0] * 3,
+                n_qubits=4,
+                n_layers=1,
+                reference=ElectronCounts(n_electrons, **spin),
             ),
         ],
         ids=["n_params_per_layer", "build"],
@@ -765,7 +889,9 @@ class TestHartreeFockAnsatz:
             "got n_electrons == n_qubits == 4."
         )
         with pytest.raises(ValueError, match=exact_match(message)):
-            HartreeFockAnsatz().build([], n_qubits=4, n_layers=1, n_electrons=4)
+            HartreeFockAnsatz().build(
+                [], n_qubits=4, n_layers=1, reference=ElectronCounts(4)
+            )
 
     @pytest.mark.parametrize("n_qubits, n_layers", [(4, 1), (6, 1), (4, 2)])
     def test_build_applies_doubles_before_singles(
@@ -798,7 +924,7 @@ class TestHartreeFockAnsatz:
         reference[int("".join(map(str, occupation)), 2)] = 1.0
 
         qc = HartreeFockAnsatz().build(
-            params, n_qubits, n_layers, n_electrons=n_electrons
+            params, n_qubits, n_layers, ElectronCounts(n_electrons)
         )
         actual = (
             _big_endian_operator(default_test_simulator, qc) @ np.eye(2**n_qubits)[:, 0]
@@ -891,7 +1017,7 @@ class TestQCCAnsatz:
         params = ParameterVector("p", n_params)
 
         qc = _build_circuit(
-            ansatz, list(params), n_qubits, n_layers, n_electrons=n_electrons
+            ansatz, list(params), n_qubits, n_layers, ElectronCounts(n_electrons)
         )
 
         names = gate_names(qc)
@@ -925,22 +1051,29 @@ class TestQCCAnsatz:
         """Invalid references must fail instead of saturating the occupation."""
         with pytest.raises(ValueError, match=match):
             QCCAnsatz().build(
-                [0.0] * 13, n_qubits=4, n_layers=1, n_electrons=n_electrons
+                [0.0] * 13,
+                n_qubits=4,
+                n_layers=1,
+                reference=ElectronCounts(n_electrons),
             )
 
     def test_build_validates_electron_count_before_parameter_shape(self):
         with pytest.raises(ValueError, match="positive integer"):
-            QCCAnsatz().build([0.0], n_qubits=4, n_layers=2, n_electrons=0)
+            QCCAnsatz().build(
+                [0.0], n_qubits=4, n_layers=2, reference=ElectronCounts(0)
+            )
 
     def test_build_accepts_a_fully_occupied_reference(self):
-        qc = QCCAnsatz().build([0.0] * 13, n_qubits=4, n_layers=1, n_electrons=4)
+        qc = QCCAnsatz().build(
+            [0.0] * 13, n_qubits=4, n_layers=1, reference=ElectronCounts(4)
+        )
         assert gate_names(qc)[:4] == ["x"] * 4
 
     def test_build_matches_a_hand_built_reference(self, default_test_simulator):
         """Three qubits, so the second pair is distinguishable from a reversed
         or wrapped one, and distinct angles pin each entangler's parameter."""
         n_qubits = 3
-        params = np.linspace(0.1, 0.9, QCCAnsatz.n_params_per_layer(n_qubits))
+        params = np.linspace(0.1, 0.9, QCCAnsatz().n_params_per_layer(n_qubits))
         reference = QuantumCircuit(n_qubits)
         reference.x(0)
         for q in range(n_qubits):
@@ -950,7 +1083,7 @@ class TestQCCAnsatz:
             for gate_cls in (RXXGate, RYYGate, RZZGate):
                 reference.append(gate_cls(next(entangler_params)), [q, q + 1])
 
-        qc = QCCAnsatz().build(params, n_qubits, 1, n_electrons=1)
+        qc = QCCAnsatz().build(params, n_qubits, 1, ElectronCounts(1))
         assert same_unitary(default_test_simulator, qc, reference)
 
     def test_build_multi_layer(self):
@@ -960,7 +1093,7 @@ class TestQCCAnsatz:
         params = ParameterVector("p", n_params)
 
         qc = _build_circuit(
-            ansatz, list(params), n_qubits, n_layers, n_electrons=n_electrons
+            ansatz, list(params), n_qubits, n_layers, ElectronCounts(n_electrons)
         )
 
         names = gate_names(qc)
@@ -991,7 +1124,7 @@ def _make_lucj_vqe(
     backend,
     optimizer,
     n_layers=1,
-    ansatz_kwargs=None,
+    ansatz_options=None,
     **spin_counts,
 ):
     """Build a VQE(LUCJAnsatz()) over a dummy n_qubits-wide Hamiltonian.
@@ -1004,10 +1137,9 @@ def _make_lucj_vqe(
     return VQE(
         HamiltonianProblem(hamiltonian, n_electrons=n_electrons, **spin_counts),
         n_layers=n_layers,
-        ansatz=LUCJAnsatz(),
+        ansatz=LUCJAnsatz(**(ansatz_options or {})),
         backend=backend,
         optimizer=optimizer,
-        ansatz_kwargs=ansatz_kwargs,
     )
 
 
@@ -1107,10 +1239,9 @@ def test_declared_frequencies_give_exact_gradients(
     vqe = VQE(
         HamiltonianProblem(hamiltonian, n_electrons=n_electrons),
         n_layers=n_layers,
-        ansatz=ansatz_factory(),
+        ansatz=ansatz_factory(**(ansatz_kwargs or {})),
         backend=default_test_simulator,
         optimizer=default_optimizer,
-        ansatz_kwargs=ansatz_kwargs,
     )
 
     params = np.random.default_rng(5).uniform(0.2, 1.2, vqe.n_params)
@@ -1124,36 +1255,36 @@ _LUCJ_SANDWICHED_TWO_ORBITALS = [(0.5, 4), (1.0, 4)] * 2 + [(1.0, 1)] * 4
 
 
 @pytest.mark.parametrize(
-    "ansatz, kwargs, expected",
+    "ansatz, reference, expected",
     [
         pytest.param(
             UCCSDAnsatz(),
-            {"n_electrons": 2},
+            ElectronCounts(2),
             [(1.0, 2)] * 3,
             marks=needs_qiskit_nature,
         ),
-        (HartreeFockAnsatz(), {"n_electrons": 2}, [(0.5, 2)] * 3),
-        (LUCJAnsatz(), {}, _LUCJ_SANDWICHED_TWO_ORBITALS),
+        (HartreeFockAnsatz(), ElectronCounts(2), [(0.5, 2)] * 3),
+        (LUCJAnsatz(), None, _LUCJ_SANDWICHED_TWO_ORBITALS),
         (
-            LUCJAnsatz(),
-            {"trailing_rotation": True},
+            LUCJAnsatz(trailing_rotation=True),
+            None,
             _LUCJ_SANDWICHED_TWO_ORBITALS + ([(0.5, 2), (1.0, 2)] + [(1.0, 1)] * 2) * 2,
         ),
         (
-            LUCJAnsatz(),
-            {"shared_spin_params": True, "trailing_rotation": True},
+            LUCJAnsatz(shared_spin_params=True, trailing_rotation=True),
+            None,
             [(0.5, 8), (1.0, 8), (1.0, 1), (1.0, 1), (1.0, 2)]
             + [(0.5, 4), (1.0, 4), (1.0, 2), (1.0, 2)],
         ),
     ],
     ids=["uccsd", "hartree-fock", "lucj", "lucj-trailing", "lucj-shared-trailing"],
 )
-def test_declared_frequencies_are_exact(ansatz, kwargs, expected):
+def test_declared_frequencies_are_exact(ansatz, reference, expected):
     """Each parameter declares exactly its frequencies, with no superset."""
-    assert ansatz.parameter_frequencies(4, **kwargs) == expected
+    assert ansatz.parameter_frequencies(4, reference) == expected
 
 
-def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
+def test_vqe_ansatz_options_reach_both_the_count_and_the_circuit(
     default_test_simulator, default_optimizer
 ):
     """An ansatz option must reach ``n_params_per_layer`` *and* ``build``.
@@ -1171,7 +1302,7 @@ def test_vqe_ansatz_kwargs_reach_both_the_count_and_the_circuit(
         n_electrons,
         default_test_simulator,
         default_optimizer,
-        ansatz_kwargs={"trailing_rotation": True},
+        ansatz_options={"trailing_rotation": True},
     )
 
     n_orb = n_qubits // 2
@@ -1307,17 +1438,17 @@ def _without_sign_ladder(circuit):
     return stripped
 
 
-def _lucj_fidelities(n_layers, **build_kwargs):
+def _lucj_fidelities(n_layers, reference, **options):
     """Overlap of a six-qubit LUCJ circuit with the same circuit built from
     Jordan-Wigner-wrapped hops, and that overlap without the final sign ladder."""
     n_qubits = 6
-    ansatz = LUCJAnsatz()
-    n_params = n_layers * ansatz.n_params_per_layer(n_qubits, **build_kwargs)
+    ansatz = LUCJAnsatz(**options)
+    n_params = n_layers * ansatz.n_params_per_layer(n_qubits, reference)
     circuit = ansatz.build(
         np.random.default_rng(5).uniform(-np.pi, np.pi, n_params),
         n_qubits,
         n_layers,
-        **build_kwargs,
+        reference,
     )
     stripped = _without_sign_ladder(circuit)
     wrapped = Statevector(_with_jordan_wigner_strings(stripped))
@@ -1344,25 +1475,25 @@ class TestLUCJAnsatz:
         [
             (
                 lambda: LUCJAnsatz().build(
-                    np.zeros(6), n_qubits=5, n_layers=1, n_electrons=2
+                    np.zeros(6), n_qubits=5, n_layers=1, reference=ElectronCounts(2)
                 ),
                 "LUCJAnsatz needs an even qubit count (two spin-orbitals per "
                 "spatial orbital); got n_qubits=5.",
             ),
             (
-                lambda: LUCJAnsatz.n_params_per_layer(5),
+                lambda: LUCJAnsatz().n_params_per_layer(5),
                 "LUCJAnsatz needs an even qubit count (two spin-orbitals per "
                 "spatial orbital); got 5.",
             ),
             (
                 lambda: LUCJAnsatz().build(
-                    np.zeros(8), n_qubits=4, n_layers=1, n_electrons=6
+                    np.zeros(8), n_qubits=4, n_layers=1, reference=ElectronCounts(6)
                 ),
                 "n_electrons (6) cannot exceed n_qubits (4).",
             ),
             (
                 lambda: LUCJAnsatz().build(
-                    np.zeros(3), n_qubits=4, n_layers=1, n_electrons=2
+                    np.zeros(3), n_qubits=4, n_layers=1, reference=ElectronCounts(2)
                 ),
                 "LUCJAnsatz expected 8 parameters (1 layers x 8 per layer); got 3.",
             ),
@@ -1381,12 +1512,12 @@ class TestLUCJAnsatz:
         ``n_params`` distinct values and confirm the last one is actually
         consumed by some gate, proving the reported count matches what
         ``build`` reads rather than over- or under-counting it."""
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits)
+        n_params = LUCJAnsatz().n_params_per_layer(n_qubits)
         circuit = LUCJAnsatz().build(
             np.arange(n_params, dtype=float),
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
+            reference=ElectronCounts(2),
         )
         assert circuit.num_qubits == n_qubits
         assert _consumed_values(circuit) == set(range(n_params))
@@ -1404,18 +1535,18 @@ class TestLUCJAnsatz:
         n_orb = n_qubits // 2
         n_gates = len(_rotation_schedule(n_orb))
         added = 2 * n_rotation_params(n_orb, orbital_phases=True)
-        plain = LUCJAnsatz.n_params_per_layer(n_qubits)
-        extended = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
+        plain = LUCJAnsatz().n_params_per_layer(n_qubits)
+        extended = LUCJAnsatz(trailing_rotation=True).n_params_per_layer(n_qubits)
         assert extended - plain == added
 
-        def rotation_gates(**kwargs):
-            n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **kwargs)
-            circuit = LUCJAnsatz().build(
+        def rotation_gates(**options):
+            ansatz = LUCJAnsatz(**options)
+            n_params = ansatz.n_params_per_layer(n_qubits)
+            circuit = ansatz.build(
                 np.arange(1, n_params + 1, dtype=float),
                 n_qubits=n_qubits,
                 n_layers=1,
-                n_electrons=2,
-                **kwargs,
+                reference=ElectronCounts(2),
             )
             gates = [
                 instr for instr in circuit.data if instr.operation.name == "xx_plus_yy"
@@ -1443,18 +1574,18 @@ class TestLUCJAnsatz:
         n_qubits = 6
         n_orb = n_qubits // 2
         added = 2 * n_rotation_params(n_orb, orbital_phases=True)
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, trailing_rotation=True)
+        ansatz = LUCJAnsatz(trailing_rotation=True)
+        n_params = ansatz.n_params_per_layer(n_qubits)
         params = np.zeros(n_params)
         # Only the trailing block is non-zero, so any gate that fires must
         # belong to it.
         trailing = np.arange(1, added + 1, dtype=float) / 10.0
         params[-added:] = trailing
-        circuit = LUCJAnsatz().build(
+        circuit = ansatz.build(
             params,
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
-            trailing_rotation=True,
+            reference=ElectronCounts(2),
         )
         firing = {value for value in _consumed_values(circuit) if value > 0.0}
         assert firing == set(trailing)
@@ -1462,18 +1593,17 @@ class TestLUCJAnsatz:
     def test_trailing_rotation_defaults_off(self):
         """Existing callers must see the previous circuit unchanged."""
         n_qubits = 6
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits)
+        n_params = LUCJAnsatz().n_params_per_layer(n_qubits)
         rng = np.random.default_rng(11)
         params = rng.uniform(0, 2 * np.pi, n_params)
         without = LUCJAnsatz().build(
-            params, n_qubits=n_qubits, n_layers=1, n_electrons=2
+            params, n_qubits=n_qubits, n_layers=1, reference=ElectronCounts(2)
         )
-        explicit = LUCJAnsatz().build(
+        explicit = LUCJAnsatz(trailing_rotation=False).build(
             params,
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
-            trailing_rotation=False,
+            reference=ElectronCounts(2),
         )
         assert [instr.operation.name for instr in without.data] == [
             instr.operation.name for instr in explicit.data
@@ -1499,13 +1629,13 @@ class TestLUCJAnsatz:
         layout that reads the wrong slice shows up as a missing value.
         """
         n_qubits = 6
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **flavor)
-        circuit = LUCJAnsatz().build(
+        ansatz = LUCJAnsatz(**flavor)
+        n_params = ansatz.n_params_per_layer(n_qubits)
+        circuit = ansatz.build(
             np.arange(1, n_params + 1, dtype=float),
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
-            **flavor,
+            reference=ElectronCounts(2),
         )
         assert _consumed_values(circuit) == {
             float(value) for value in range(1, n_params + 1)
@@ -1516,19 +1646,19 @@ class TestLUCJAnsatz:
         beta sector must realize the same rotation as alpha, from the same
         parameters."""
         n_qubits, n_orb = 6, 3
-        balanced = LUCJAnsatz.n_params_per_layer(n_qubits, shared_spin_params=True)
-        assert LUCJAnsatz.n_params_per_layer(n_qubits) - balanced == n_rotation_params(
-            n_orb, orbital_phases=False
-        ) + (n_orb - 1)
+        shared = LUCJAnsatz(shared_spin_params=True)
+        balanced = shared.n_params_per_layer(n_qubits)
+        assert LUCJAnsatz().n_params_per_layer(
+            n_qubits
+        ) - balanced == n_rotation_params(n_orb, orbital_phases=False) + (n_orb - 1)
 
         rng = np.random.default_rng(3)
         params = rng.uniform(0.2, 1.2, balanced)
-        circuit = LUCJAnsatz().build(
+        circuit = shared.build(
             params,
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
-            shared_spin_params=True,
+            reference=ElectronCounts(2),
         )
 
         def sector_params(spin):
@@ -1546,13 +1676,13 @@ class TestLUCJAnsatz:
         """A shallower network means fewer Givens gates; the full depth is the
         whole schedule."""
         n_qubits = 8
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, rotation_depth=depth)
-        circuit = LUCJAnsatz().build(
+        ansatz = LUCJAnsatz(rotation_depth=depth)
+        n_params = ansatz.n_params_per_layer(n_qubits)
+        circuit = ansatz.build(
             np.arange(1, n_params + 1, dtype=float),
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
-            rotation_depth=depth,
+            reference=ElectronCounts(2),
         )
         # Two sectors, each rotation emitted and inverted.
         assert (
@@ -1564,7 +1694,7 @@ class TestLUCJAnsatz:
         """Past the full schedule the extra half-layers only add parameters, so
         the request is a mistake rather than a deeper ansatz."""
         with pytest.raises(ValueError, match="between 0 and n_orb"):
-            LUCJAnsatz.n_params_per_layer(8, rotation_depth=5)
+            LUCJAnsatz(rotation_depth=5).n_params_per_layer(8)
 
     def test_jastrow_pairs_land_on_the_named_qubits(self):
         """Explicit pairs have to reach the circuit as written, with the
@@ -1572,13 +1702,13 @@ class TestLUCJAnsatz:
         pairing alpha ``2p`` with beta ``2q + 1``."""
         n_qubits = 6
         flavor = {"same_spin_pairs": [(0, 2)], "opposite_spin_pairs": [(1, 2)]}
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits, **flavor)
-        circuit = LUCJAnsatz().build(
+        ansatz = LUCJAnsatz(**flavor)
+        n_params = ansatz.n_params_per_layer(n_qubits)
+        circuit = ansatz.build(
             np.arange(1, n_params + 1, dtype=float),
             n_qubits=n_qubits,
             n_layers=1,
-            n_electrons=2,
-            **flavor,
+            reference=ElectronCounts(2),
         )
         placements = {
             tuple(circuit.qubits.index(qubit) for qubit in instruction.qubits)
@@ -1611,7 +1741,7 @@ class TestLUCJAnsatz:
     )
     def test_jastrow_pairs_are_validated(self, pairs, message):
         with pytest.raises(ValueError, match=exact_match(message)):
-            LUCJAnsatz.n_params_per_layer(6, **pairs)
+            LUCJAnsatz(**pairs).n_params_per_layer(6)
 
     @pytest.mark.parametrize(
         "same, opposite, expected",
@@ -1627,6 +1757,70 @@ class TestLUCJAnsatz:
         pairs included."""
         assert lucj_jastrow_pairs(3, same, opposite) == expected
 
+    def test_amplitudes_fill_exactly_one_layer_of_parameters(self):
+        ansatz = LUCJAnsatz(trailing_rotation=True)
+        reference = ElectronCounts(2, 1, 1)
+
+        seed = ansatz.params_from_amplitudes(
+            *one_pair_amplitudes(0.3, single=0.05), 4, reference
+        )
+
+        assert seed.shape == (ansatz.n_params_per_layer(4, reference),)
+        assert seed.any()
+
+    def test_shared_spin_amplitudes_are_rejected(self):
+        message = (
+            "the double factorisation gives each spin sector its own rotation, "
+            "which shared_spin_params cannot hold."
+        )
+
+        with pytest.raises(AmplitudeSeedError, match=exact_match(message)):
+            LUCJAnsatz(shared_spin_params=True).params_from_amplitudes(
+                *one_pair_amplitudes(0.3), 4, ElectronCounts(2, 1, 1)
+            )
+
+    def test_an_empty_opposite_spin_block_is_rejected(self):
+        t1 = (np.zeros((0, 2)), np.zeros((0, 2)))
+        t2 = (np.zeros((0, 0, 2, 2)),) * 3
+        message = (
+            "the opposite-spin doubles block is empty, which leaves all-zero "
+            "parameters, a stationary point a gradient optimiser cannot leave."
+        )
+
+        with pytest.raises(AmplitudeSeedError, match=exact_match(message)):
+            LUCJAnsatz().params_from_amplitudes(t1, t2, 4, ElectronCounts(0, 0, 0))
+
+    def test_an_unrealisable_rotation_is_rejected(self, mocker):
+        mocker.patch(
+            "divi.qprog.algorithms._ansatze.rotation_angles", return_value=None
+        )
+        message = (
+            "a spin sector's orbital rotation cannot be realised by the rotation "
+            "network."
+        )
+
+        with pytest.raises(AmplitudeSeedError, match=exact_match(message)):
+            LUCJAnsatz().params_from_amplitudes(
+                *one_pair_amplitudes(0.3), 4, ElectronCounts(2, 1, 1)
+            )
+
+    def test_a_program_records_the_options_its_checkpoint_must_match(
+        self, default_test_simulator, default_optimizer
+    ):
+        def recorded(options):
+            return _make_lucj_vqe(
+                4,
+                2,
+                default_test_simulator,
+                default_optimizer,
+                ansatz_options=options,
+            )._serialized_ansatz_type
+
+        assert recorded({"trailing_rotation": True}) == recorded(
+            {"trailing_rotation": True}
+        )
+        assert recorded({"trailing_rotation": True}) != recorded({})
+
     @pytest.mark.parametrize("n_alpha,n_beta", [(2, 2), (2, 0), (3, 1)])
     def test_reference_honours_the_requested_spin_counts(self, n_alpha, n_beta):
         """LUCJ used to ignore ``n_alpha``/``n_beta`` and fill the lowest
@@ -1635,12 +1829,10 @@ class TestLUCJAnsatz:
         error."""
         n_qubits = 8
         circuit = LUCJAnsatz().build(
-            np.zeros(LUCJAnsatz.n_params_per_layer(n_qubits)),
+            np.zeros(LUCJAnsatz().n_params_per_layer(n_qubits)),
             n_qubits,
             1,
-            n_electrons=n_alpha + n_beta,
-            n_alpha=n_alpha,
-            n_beta=n_beta,
+            ElectronCounts(n_alpha + n_beta, n_alpha, n_beta),
         )
 
         occupied = sorted(
@@ -1691,7 +1883,7 @@ class TestLUCJAnsatz:
         path, including the QASM2 lowering ``xx_plus_yy`` requires.
         """
         n_qubits, n_electrons = 4, 2
-        n_params = LUCJAnsatz.n_params_per_layer(n_qubits)
+        n_params = LUCJAnsatz().n_params_per_layer(n_qubits)
         vqe = _make_lucj_vqe(
             n_qubits, n_electrons, default_test_simulator, default_optimizer
         )
@@ -1718,13 +1910,13 @@ class TestLUCJAnsatz:
         asserts the gate placement directly instead.
         """
         n_qubits, n_electrons, n_layers = 6, 4, 2
-        n_params = n_layers * LUCJAnsatz.n_params_per_layer(n_qubits)
+        n_params = n_layers * LUCJAnsatz().n_params_per_layer(n_qubits)
         rng = np.random.default_rng(3)
         circuit = LUCJAnsatz().build(
             rng.uniform(0, 2 * np.pi, n_params),
             n_qubits=n_qubits,
             n_layers=n_layers,
-            n_electrons=n_electrons,
+            reference=ElectronCounts(n_electrons),
         )
         hop_gates = [
             instr for instr in circuit.data if instr.operation.name == "xx_plus_yy"
@@ -1745,7 +1937,7 @@ class TestLUCJAnsatz:
         path, including the QASM2 lowering ``xx_plus_yy`` requires.
         """
         n_qubits, n_electrons, n_layers = 6, 4, 2
-        n_params = n_layers * LUCJAnsatz.n_params_per_layer(n_qubits)
+        n_params = n_layers * LUCJAnsatz().n_params_per_layer(n_qubits)
         rng = np.random.default_rng(2)
         vqe = _make_lucj_vqe(
             n_qubits,
@@ -1770,45 +1962,45 @@ class TestLUCJAnsatz:
             assert beta == n_electrons // 2
 
     @pytest.mark.parametrize(
-        "ansatz_kwargs",
+        "ansatz_options",
         [{}, {"trailing_rotation": True}, {"shared_spin_params": True}],
     )
-    def test_state_matches_the_circuit_with_every_hop_sign_wrapped(self, ansatz_kwargs):
+    def test_state_matches_the_circuit_with_every_hop_sign_wrapped(
+        self, ansatz_options
+    ):
         """One trailing sign ladder reproduces the state of the circuit with
         every hop wrapped in its Jordan-Wigner string; without it the state
         differs."""
-        fidelity, bare_fidelity = _lucj_fidelities(1, n_electrons=4, **ansatz_kwargs)
+        fidelity, bare_fidelity = _lucj_fidelities(
+            1, ElectronCounts(4), **ansatz_options
+        )
 
         assert fidelity == pytest.approx(1.0, abs=1e-10)
         assert bare_fidelity != pytest.approx(1.0, abs=1e-3)
 
     @pytest.mark.parametrize(
-        "n_layers, build_kwargs",
+        "n_layers, reference, options",
         [
-            pytest.param(2, {"n_electrons": 4}, id="two-layers"),
-            pytest.param(1, {"n_electrons": 3, "n_alpha": 2, "n_beta": 1}, id="2a-1b"),
-            pytest.param(1, {"n_electrons": 3, "n_alpha": 3, "n_beta": 0}, id="3a-0b"),
-            pytest.param(1, {"n_electrons": 4, "n_alpha": 1, "n_beta": 3}, id="1a-3b"),
+            pytest.param(2, ElectronCounts(4), {}, id="two-layers"),
+            pytest.param(1, ElectronCounts(3, 2, 1), {}, id="2a-1b"),
+            pytest.param(1, ElectronCounts(3, 3, 0), {}, id="3a-0b"),
+            pytest.param(1, ElectronCounts(4, 1, 3), {}, id="1a-3b"),
             pytest.param(
                 1,
-                {"n_electrons": 4, "rotation_depth": 1, "trailing_rotation": True},
+                ElectronCounts(4),
+                {"rotation_depth": 1, "trailing_rotation": True},
                 id="shallow-rotation",
             ),
             pytest.param(
                 2,
-                {
-                    "n_electrons": 3,
-                    "n_alpha": 2,
-                    "n_beta": 1,
-                    "shared_spin_params": True,
-                    "trailing_rotation": True,
-                },
+                ElectronCounts(3, 2, 1),
+                {"shared_spin_params": True, "trailing_rotation": True},
                 id="shared-trailing-imbalanced",
             ),
             pytest.param(
                 1,
+                ElectronCounts(4),
                 {
-                    "n_electrons": 4,
                     "same_spin_pairs": [(0, 2), (2, 0), (0, 1), (0, 1)],
                     "opposite_spin_pairs": [(0, 2), (2, 1), (1, 1), (1, 1)],
                 },
@@ -1817,9 +2009,9 @@ class TestLUCJAnsatz:
         ],
     )
     def test_state_matches_the_sign_wrapped_circuit_beyond_the_balanced_default(
-        self, n_layers, build_kwargs
+        self, n_layers, reference, options
     ):
-        fidelity, _ = _lucj_fidelities(n_layers, **build_kwargs)
+        fidelity, _ = _lucj_fidelities(n_layers, reference, **options)
 
         assert fidelity == pytest.approx(1.0, abs=1e-10)
 
@@ -1827,10 +2019,10 @@ class TestLUCJAnsatz:
     def test_signs_are_applied_by_one_ladder_after_the_last_layer(self, n_orb):
         n_qubits = 2 * n_orb
         circuit = LUCJAnsatz().build(
-            np.ones(LUCJAnsatz.n_params_per_layer(n_qubits)),
+            np.ones(LUCJAnsatz().n_params_per_layer(n_qubits)),
             n_qubits,
             1,
-            n_electrons=2,
+            ElectronCounts(2),
         )
 
         counts = circuit.count_ops()
@@ -1857,7 +2049,7 @@ class TestLUCJAnsatz:
 
         energy = next(iter(vqe._evaluate_cost_param_sets(params).values()))
 
-        circuit = LUCJAnsatz().build(params, n_qubits, 1, n_electrons=n_electrons)
+        circuit = LUCJAnsatz().build(params, n_qubits, 1, ElectronCounts(n_electrons))
         expected = (
             Statevector(_with_jordan_wigner_strings(_without_sign_ladder(circuit)))
             .expectation_value(hamiltonian)
@@ -1877,12 +2069,12 @@ class TestLUCJAnsatz:
     )
     def test_jastrow_gates_fall_into_few_layers_of_disjoint_wires(self, pair_kwargs):
         n_qubits = 20
-        circuit = LUCJAnsatz().build(
-            np.ones(LUCJAnsatz.n_params_per_layer(n_qubits, **pair_kwargs)),
+        ansatz = LUCJAnsatz(**pair_kwargs)
+        circuit = ansatz.build(
+            np.ones(ansatz.n_params_per_layer(n_qubits)),
             n_qubits,
             1,
-            n_electrons=10,
-            **pair_kwargs,
+            ElectronCounts(10),
         )
         jastrow = QuantumCircuit(n_qubits)
         for instruction in circuit.data:
@@ -1917,12 +2109,11 @@ class TestLUCJAnsatz:
         angles = np.arange(
             1, len(opposite_pairs) + 2 * len(same_pairs) + 1, dtype=float
         )
-        circuit = LUCJAnsatz().build(
+        circuit = LUCJAnsatz(**pair_kwargs).build(
             np.concatenate([np.zeros(n_rotation), angles]),
             n_qubits,
             1,
-            n_electrons=2,
-            **pair_kwargs,
+            ElectronCounts(2),
         )
 
         expected = QuantumCircuit(n_qubits)

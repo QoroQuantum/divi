@@ -8,7 +8,7 @@ from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 
-from divi.backends._job_status import JobStatus
+from divi.backends import JobStatus
 
 
 class EventKind(StrEnum):

@@ -40,7 +40,7 @@ from divi.backends import (
     SimulatorCluster,
 )
 from divi.circuits._payloads import bound_circuits
-from divi.qprog import SuperpositionState
+from divi.qprog.initial_states import SuperpositionState
 
 # ---------------------------------------------------------------------------
 # Runtime patching for snippet tests

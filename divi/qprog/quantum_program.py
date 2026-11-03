@@ -14,9 +14,8 @@ from warnings import warn
 
 import numpy as np
 
-from divi.backends import CircuitRunner
+from divi.backends import CircuitRunner, JobStatus, QoroJobError
 from divi.backends._cancellation import _sigint_to_event
-from divi.backends._job_status import JobStatus, QoroJobError
 from divi.circuits import DEFAULT_PRECISION
 from divi.circuits.qem import QEMProtocol, _NoMitigation
 from divi.exceptions import ExecutionCancelledError
@@ -30,8 +29,8 @@ from divi.pipeline import (
     ResultFormat,
     Stage,
     dry_run_pipeline,
+    extract_param_set_idx,
 )
-from divi.pipeline._result_keys_operations import extract_param_set_idx
 from divi.pipeline.abc import _EstimatorSamplePlan
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -52,32 +51,6 @@ from divi.reporting._events import (
 from divi.reporting._logging import log_progress_event
 from divi.reporting._session import ProgressSession, _environment_disables_progress
 from divi.reporting._state import ProgressState
-
-
-def reject_unclaimed_run_kwargs(program: object, kwargs: Mapping[str, Any]) -> None:
-    """Reject leftover ``run`` keywords, before anything is submitted.
-
-    ``run`` forwards ``**kwargs`` through several layers, each popping what it
-    consumes, so whatever remains is claimed by nobody — a misspelling, or a flag
-    the caller believes is doing something. Call this once the layer has taken its
-    own arguments and before any circuit goes out: checking afterwards would
-    report the mistake having already paid for the run it invalidates.
-    """
-    if not kwargs:
-        return
-    message = (
-        f"{type(program).__name__}.run() got unexpected keyword argument(s): "
-        f"{', '.join(sorted(kwargs))}."
-    )
-    if "dry_run" in kwargs:
-        # A flag on the action is the near-universal convention, so this is the
-        # reflex to catch: silently ignoring it would execute the run the caller
-        # was trying to avoid.
-        message += (
-            " To preview without executing anything, call the separate method "
-            "instead: program.dry_run()."
-        )
-    raise TypeError(message)
 
 
 def _terminal_progress_for_exception(
@@ -335,6 +308,31 @@ class QuantumProgram(ABC):
         Returns:
             QuantumProgram: Returns ``self`` for method chaining.
         """
+
+    def _reject_unclaimed_run_kwargs(self, kwargs: Mapping[str, Any]) -> None:
+        """Reject leftover ``run`` keywords, before anything is submitted.
+
+        ``run`` forwards ``**kwargs`` through several layers, each popping what it
+        consumes, so whatever remains is claimed by nobody — a misspelling, or a flag
+        the caller believes is doing something. Call this once the layer has taken its
+        own arguments and before any circuit goes out: checking afterwards would
+        report the mistake having already paid for the run it invalidates.
+        """
+        if not kwargs:
+            return
+        message = (
+            f"{type(self).__name__}.run() got unexpected keyword argument(s): "
+            f"{', '.join(sorted(kwargs))}."
+        )
+        if "dry_run" in kwargs:
+            # A flag on the action is the near-universal convention, so this is the
+            # reflex to catch: silently ignoring it would execute the run the caller
+            # was trying to avoid.
+            message += (
+                " To preview without executing anything, call the separate method "
+                "instead: program.dry_run()."
+            )
+        raise TypeError(message)
 
     @abstractmethod
     def has_results(self) -> bool:
@@ -607,7 +605,7 @@ class QuantumProgram(ABC):
 
     def _make_measurement_stage(self) -> Stage:
         """The default ``handles_measurement`` terminal. Overridden by
-        :class:`~divi.qprog.ObservableMeasuringMixin` to carry the program's
+        :class:`~divi.qprog.mixins.ObservableMeasuringMixin` to carry the program's
         grouping / shot-distribution strategy."""
         return MeasurementStage()
 

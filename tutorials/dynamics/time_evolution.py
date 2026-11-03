@@ -21,8 +21,8 @@ import numpy as np
 import pennylane as qp
 
 from divi.hamiltonians.trotterization import QDrift
-from divi.qprog import TimeEvolution, TimeEvolutionTrajectory
-from divi.qprog.ensemble import BatchConfig, BatchMode
+from divi.qprog.algorithms import TimeEvolution
+from divi.qprog.ensembles import BatchConfig, BatchMode, TimeEvolutionTrajectory
 from tutorials._backend import get_backend
 
 

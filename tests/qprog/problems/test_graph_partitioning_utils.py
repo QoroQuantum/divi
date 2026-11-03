@@ -26,9 +26,9 @@ _skip_no_pymetis = pytest.mark.skipif(
     reason="pymetis not available (install via conda: conda install -c conda-forge pymetis)",
 )
 
-from divi.qprog import GraphProblemTypes
 from divi.qprog.problems import (
     GraphPartitioningConfig,
+    GraphProblemTypes,
     MaxCutProblem,
     _graph_partitioning_utils,
     draw_partitions,
@@ -675,7 +675,7 @@ class TestGraphPartitioningConfig:
 
 
 def test_decompose_with_pygraph_input():
-    """End-to-end: ``_GraphProblemBase.decompose`` honours rx.PyGraph input."""
+    """End-to-end: ``GraphProblemBase.decompose`` honours rx.PyGraph input."""
     g = _make_pygraph_cycle(6)
     problem = MaxCutProblem(
         g,

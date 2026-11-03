@@ -7,7 +7,7 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from divi.qprog import QAOA
+from divi.qprog.algorithms import QAOA
 from divi.qprog.problems import MaxCutProblem
 from divi.viz import Scan2DResult, fourier_analysis_2d, scan_2d
 

@@ -11,16 +11,15 @@ import pytest
 import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.qprog import (
-    QAOA,
+from divi.qprog.algorithms import QAOA
+from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.ensembles import (
     BeamSearchStrategy,
     HierarchicalStrategy,
-    ScipyMethod,
-    ScipyOptimizer,
-    SuperpositionState,
-    ZerosState,
+    PartitioningProgramEnsemble,
 )
-from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.initial_states import SuperpositionState, ZerosState
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     GraphPartitioningConfig,
     MaxCliqueProblem,
@@ -28,7 +27,6 @@ from divi.qprog.problems import (
     MaxIndependentSetProblem,
     MinVertexCoverProblem,
 )
-from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests._helpers import exact_match
 from tests.qprog._program_contracts import verify_cost_circuit
 from tests.qprog.problems._helpers import (
@@ -934,7 +932,7 @@ def test_partitioned_solution_names_nodes_like_unpartitioned(
 
 class TestGraphPartitioningEnsemble:
     def test_correct_number_of_programs_created(self, mocker, graph_ensemble):
-        mocker.patch("divi.qprog.QAOA")
+        mocker.patch("divi.qprog.ensembles._partitioning_ensemble.QAOA")
 
         graph_ensemble.create_programs()
 

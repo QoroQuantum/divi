@@ -21,7 +21,7 @@ from divi.backends.characterization import (
     CharacterizationOptions,
     characterize_and_validate,
 )
-from divi.qprog import QAOA
+from divi.qprog.algorithms import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend

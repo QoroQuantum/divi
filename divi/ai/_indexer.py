@@ -1164,38 +1164,55 @@ def load_search_stack() -> "SearchStack":
 _META_FILE = "project_meta.json"
 
 
-def _scan_init_imports(package_dir: Path) -> dict[str, list[str]]:
-    """Scan ``__init__.py`` files for public re-exports.
+def _scan_public_exports(package_dir: Path) -> dict[str, list[str]]:
+    """Scan public modules for the names they export.
 
-    Returns a mapping from ``divi.subpackage`` module paths to lists of
-    exported names, e.g. ``{"divi.qprog": ["VQE", "QAOA", ...]}``.
+    A package ``__init__.py`` exports what it imports; a single module whose
+    name has no leading underscore exports its literal ``__all__``. Returns a
+    mapping from dotted module path to exported names, e.g.
+    ``{"divi.qprog.algorithms": ["VQE", "QAOA", ...]}``.
     """
-    imports: dict[str, list[str]] = {}
+    exports: dict[str, list[str]] = {}
 
-    for init_file in sorted(package_dir.rglob("__init__.py")):
-        # Derive module path: divi/qprog/__init__.py -> divi.qprog
-        rel = init_file.relative_to(package_dir.parent)
-        module = ".".join(rel.parent.parts)
+    for source in sorted(package_dir.rglob("*.py")):
+        is_package = source.name == "__init__.py"
+        if not is_package and source.stem.startswith("_"):
+            continue
+        rel = source.relative_to(package_dir.parent)
+        module = ".".join(rel.parent.parts if is_package else rel.with_suffix("").parts)
 
         try:
-            tree = ast.parse(init_file.read_text(encoding="utf-8"))
+            tree = ast.parse(source.read_text(encoding="utf-8"))
         except SyntaxError:
             continue
 
         names: list[str] = []
         for node in ast.iter_child_nodes(tree):
-            if isinstance(node, ast.ImportFrom):
+            if is_package and isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     name = alias.asname or alias.name
                     # Skip private names and star imports
                     if name.startswith("_") or name == "*":
                         continue
                     names.append(name)
+            elif (
+                not is_package
+                and isinstance(node, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+                )
+                and isinstance(node.value, (ast.List, ast.Tuple))
+            ):
+                names.extend(
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                )
 
         if names:
-            imports[module] = names
+            exports[module] = names
 
-    return imports
+    return exports
 
 
 def _read_pyproject(repo_root: Path) -> dict[str, str]:
@@ -1221,19 +1238,19 @@ def _read_pyproject(repo_root: Path) -> dict[str, str]:
 def build_project_meta(repo_root: Path, output_dir: Path) -> dict:
     """Build and save project metadata (import map + project info).
 
-    Scans ``__init__.py`` files for public exports and reads
+    Scans public modules and packages for exported names and reads
     ``pyproject.toml`` for version and Python requirements.
     Saves the result as ``project_meta.json`` in *output_dir*.
     """
     package_dir = repo_root / "divi"
-    import_map = _scan_init_imports(package_dir)
+    import_map = _scan_public_exports(package_dir)
     project_info = _read_pyproject(repo_root)
 
     # Modules to skip entirely
     _SKIP = {".ai", ".reporting", ".pipeline", ".stages"}
 
     # Build deduplicated import lines — prefer the shortest module path
-    # for each name (e.g. VQE from divi.qprog, not divi.qprog.algorithms)
+    # for each name (e.g. ``divi.qprog.algorithms`` over a deeper re-export)
     name_to_module: dict[str, str] = {}
     for module, names in sorted(import_map.items()):
         # Skip root 'divi' (only has enable_logging)

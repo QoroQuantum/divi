@@ -43,7 +43,7 @@ from divi.pipeline.stages._measurement_stage import (
     _GroupShotPlan,
     _plan_group_shots,
 )
-from divi.qprog import VQE, HartreeFockAnsatz
+from divi.qprog.algorithms import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import SPSAOptimizer
 from divi.qprog.problems import MolecularProblem
 from tests._helpers import exact_match

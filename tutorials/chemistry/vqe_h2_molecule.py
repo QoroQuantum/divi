@@ -6,7 +6,7 @@
 
 Three parts, all driven through :class:`~divi.qprog.algorithms.VQE`:
 
-1. Basic VQE — minimal setup with :class:`~divi.qprog.HartreeFockAnsatz` and
+1. Basic VQE — minimal setup with :class:`~divi.qprog.algorithms.HartreeFockAnsatz` and
    a ``dry_run()`` preview of the pipeline's circuit fan-out before execution.
 2. Grouping strategy comparison — how the ``grouping_strategy`` argument
    (``None`` / ``"wires"`` / ``"qwc"``) changes the number of measurement
@@ -22,7 +22,7 @@ import numpy as np
 import pennylane as qp
 
 from divi.pipeline import format_dry_run
-from divi.qprog import VQE, HartreeFockAnsatz
+from divi.qprog.algorithms import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
 from tutorials._backend import get_backend

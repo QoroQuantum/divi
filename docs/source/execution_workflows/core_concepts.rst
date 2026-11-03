@@ -170,7 +170,7 @@ when only the trained parameters matter.
 
 **Sampling from Pre-Trained Parameters**
    VQE, QAOA, and PCE expose
-   :meth:`~divi.qprog.SolutionSamplingMixin.sample_solution`, which runs
+   :meth:`~divi.qprog.mixins.SolutionSamplingMixin.sample_solution`, which runs
    only the final measurement step with a user-supplied parameter set, such as
    one loaded from a checkpoint or produced by an external training routine.
    Unlike ``run()``, it does not dispatch any expectation-value jobs and does
@@ -185,14 +185,14 @@ when only the trained parameters matter.
    constructor to run that final measurement on a different backend than
    training used; see :ref:`ensemble-sample-solution` for the full precedence
    rules and the ensemble-level equivalent — one call to re-sample every
-   partition of a trained :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`.
+   partition of a trained :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`.
 
 Analysing Solution Distributions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Solution-extracting programs expose
-:meth:`~divi.qprog.SolutionSamplingMixin.get_top_solutions`, returning ranked
-:class:`~divi.qprog.SolutionEntry` objects with a bitstring, probability, and
+:meth:`~divi.qprog.mixins.SolutionSamplingMixin.get_top_solutions`, returning ranked
+:class:`~divi.qprog.mixins.SolutionEntry` objects with a bitstring, probability, and
 optional decoded value. Use ``include_decoded=True`` for problem-domain values
 and ``min_prob`` to discard negligible candidates. The QAOA and routing guides
 show problem-specific energy, feasibility, and repair workflows.

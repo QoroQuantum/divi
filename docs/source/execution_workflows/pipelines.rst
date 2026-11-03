@@ -178,7 +178,7 @@ tree output:
    from divi.backends import MaestroSimulator
    from divi.circuits.quepp import QuEPP
    from divi.pipeline import format_dry_run
-   from divi.qprog import VQE
+   from divi.qprog.algorithms import VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import MolecularProblem
 
@@ -311,7 +311,7 @@ Metric-Optimizer Pipelines
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A dry run includes optimizer-owned pipelines. QNG and QN-SPSA add ``metric``;
-:class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` adds one
+:class:`~divi.qprog.optimizers.metrics.FubiniStudyMetricEstimator` adds one
 ``metric[block N]`` per commuting block. Cadence labels keep these recurring
 pipelines separate from the one-time ``sample`` pipeline:
 
@@ -363,7 +363,7 @@ authors should implement ``dry_expand`` or declare
 Dry Running an Ensemble
 ~~~~~~~~~~~~~~~~~~~~~~~
 
-A :class:`~divi.qprog.ensemble.ProgramEnsemble` previews all sub-programs after
+A :class:`~divi.qprog.ensembles.ProgramEnsemble` previews all sub-programs after
 ``create_programs()``. :func:`~divi.pipeline.format_dry_run` selects a layout
 by ensemble size, or accepts ``style=``:
 
@@ -389,7 +389,7 @@ pipeline for any protocol.  State preparation is two hooks —
 transform with a :class:`~divi.pipeline.ResultFormat` and an optional terminal
 stage.  :class:`~divi.qprog.algorithms.VQE` exposes a ``cost`` protocol;
 solution-extracting programs add a ``sample`` protocol from
-:class:`~divi.qprog.SolutionSamplingMixin`:
+:class:`~divi.qprog.mixins.SolutionSamplingMixin`:
 
 .. code-block:: python
 

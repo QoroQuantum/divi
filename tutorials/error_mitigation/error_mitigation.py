@@ -24,7 +24,7 @@ from rich.table import Table
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.circuits.quepp import QuEPP
 from divi.circuits.zne import ZNE, RichardsonExtrapolator
-from divi.qprog import VQE, HartreeFockAnsatz
+from divi.qprog.algorithms import VQE, HartreeFockAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MolecularProblem
 

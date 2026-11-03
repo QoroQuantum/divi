@@ -36,8 +36,7 @@ from divi.pipeline.abc import (
     StageToken,
 )
 from divi.pipeline.stages import MeasurementStage, ParameterBindingStage
-from divi.qprog import VQE, HartreeFockAnsatz
-from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.algorithms import VQE, GenericLayerAnsatz, HartreeFockAnsatz
 from divi.qprog.problems import HamiltonianProblem
 
 

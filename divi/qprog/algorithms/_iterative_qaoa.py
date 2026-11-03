@@ -28,14 +28,10 @@ import numpy as np
 import numpy.typing as npt
 from qiskit.circuit import ParameterVector
 
-from divi.qprog.checkpointing import (
-    PROGRAM_COMPLETION_FILE,
-    CheckpointConfig,
-    CheckpointNotFoundError,
-    _find_latest_checkpoint_subdir,
-    _write_program_completion,
-)
-from divi.qprog.quantum_program import reject_unclaimed_run_kwargs
+from divi.qprog.checkpointing import CheckpointConfig, CheckpointNotFoundError
+from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
+from divi.qprog.checkpointing.read import find_latest_checkpoint_subdir
+from divi.qprog.checkpointing.write import write_program_completion
 from divi.reporting._events import ProgressEvent, TerminalStatus
 
 from ._qaoa import QAOA
@@ -386,7 +382,7 @@ class IterativeQAOA(QAOA):
             depth_dirs = sorted(depths, key=depths.__getitem__, reverse=True)
             for depth_dir in depth_dirs:
                 try:
-                    _find_latest_checkpoint_subdir(depth_dir)
+                    find_latest_checkpoint_subdir(depth_dir)
                 except CheckpointNotFoundError:
                     continue
                 main_dir = depth_dir
@@ -481,7 +477,7 @@ class IterativeQAOA(QAOA):
             self._checkpoint_config = checkpoint_config
         checkpoint_config = self._checkpoint_config or CheckpointConfig()
         max_iterations = kwargs.pop("max_iterations", None)
-        reject_unclaimed_run_kwargs(self, kwargs)
+        self._reject_unclaimed_run_kwargs(kwargs)
 
         if self._training_finished:
             ended = (
@@ -578,7 +574,7 @@ class IterativeQAOA(QAOA):
         self._best_loss = best_entry["best_loss"]
 
         self._finalize(perform_final_computation)
-        _write_program_completion(self, checkpoint_config.checkpoint_dir)
+        write_program_completion(self, checkpoint_config.checkpoint_dir)
 
         return self
 

@@ -7,11 +7,11 @@
 This tutorial shows how to train a quantum neural network on a labeled
 classical feature batch. The circuit factors into:
 
-* an :class:`~divi.qprog.AngleEmbedding` feature map that encodes each
+* an :class:`~divi.qprog.algorithms.AngleEmbedding` feature map that encodes each
   feature vector ``x_i`` into single-qubit rotations,
-* an :class:`~divi.qprog.GenericLayerAnsatz` with trainable weights.
+* an :class:`~divi.qprog.algorithms.GenericLayerAnsatz` with trainable weights.
 
-The :class:`~divi.qprog.QNN` algorithm evaluates the cost observable on the
+The :class:`~divi.qprog.algorithms.QNN` algorithm evaluates the cost observable on the
 composed circuit once per sample to get a per-sample prediction in
 ``[-1, 1]``. With ``labels`` supplied, each prediction is scored against its
 label by ``loss_fn`` (squared error here), and those per-sample losses are
@@ -23,7 +23,7 @@ unsupervised objective (minimize the observable) instead.
 import numpy as np
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 
-from divi.qprog import QNN, AngleEmbedding, GenericLayerAnsatz
+from divi.qprog.algorithms import QNN, AngleEmbedding, GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 

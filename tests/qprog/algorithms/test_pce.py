@@ -14,22 +14,24 @@ from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians._polynomial import _evaluate_binary_polynomial
 from divi.pipeline import ResultFormat
 from divi.pipeline.stages import MeasurementStage
-from divi.qprog import (
+from divi.qprog.algorithms import (
     PCE,
     CVaRObjective,
     DenseEncoding,
     ExpectationObjective,
-    MonteCarloOptimizer,
+    GenericLayerAnsatz,
     MultiBasisEncoding,
     PolyEncoding,
+    SoftObjective,
+)
+from divi.qprog.algorithms._pce import _decode_parities, _pack_masks
+from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.optimizers import (
+    MonteCarloOptimizer,
     QNGOptimizer,
     ScipyMethod,
     ScipyOptimizer,
-    SoftObjective,
 )
-from divi.qprog.algorithms import GenericLayerAnsatz
-from divi.qprog.algorithms._pce import _decode_parities, _pack_masks
-from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.problems import BinaryOptimizationProblem
 from tests._helpers import exact_match
 from tests.qprog._program_contracts import (

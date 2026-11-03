@@ -20,13 +20,10 @@ import divi.qprog._program_checkpoint as program_checkpoint_module
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
 from divi.pipeline import CircuitPreprocessor, CostEstimate
+from divi.qprog import EarlyStopping, StopReason
 from divi.qprog._program_checkpoint import VQACheckpoint
-from divi.qprog.checkpointing import (
-    PROGRAM_COMPLETION_FILE,
-    CheckpointConfig,
-    list_checkpoints,
-)
-from divi.qprog.early_stopping import EarlyStopping, StopReason
+from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
+from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
 from divi.qprog.optimizers import (
     GridSearchOptimizer,

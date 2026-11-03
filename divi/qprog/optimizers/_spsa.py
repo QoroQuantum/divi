@@ -11,15 +11,15 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
-from divi.qprog._metrics import (
+from ._base import Optimizer
+from ._linalg import (
+    _matrix_abs_psd,
+    _regularized_solve,
+)
+from .metrics import (
     MetricEstimator,
     StochasticFidelityMetricEstimator,
     _MetricOptimizerMixin,
-)
-from divi.qprog.optimizers._base import Optimizer
-from divi.qprog.optimizers._linalg import (
-    _matrix_abs_psd,
-    _regularized_solve,
 )
 
 #: Maps ``(theta, [perturbations])`` to one squared overlap per perturbation.
@@ -563,10 +563,10 @@ class QNSPSAOptimizer(_SPSAConfigMixin, _MetricOptimizerMixin, Optimizer):
 
     The metric backend is pluggable, exactly as for
     :class:`~divi.qprog.optimizers.QNGOptimizer`. The
-    default :class:`~divi.qprog._metrics.StochasticFidelityMetricEstimator` is the
+    default :class:`~divi.qprog.optimizers.metrics.StochasticFidelityMetricEstimator` is the
     faithful QN-SPSA metric; passing
-    :class:`~divi.qprog._metrics.FubiniStudyMetricEstimator` (or
-    :class:`~divi.qprog._metrics.PullbackMetricEstimator`) instead uses that
+    :class:`~divi.qprog.optimizers.metrics.FubiniStudyMetricEstimator` (or
+    :class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator`) instead uses that
     estimator's exact metric while keeping the SPSA gradient.
 
     Single-point optimizer (``n_param_sets == 1``); the variational algorithm

@@ -9,7 +9,7 @@ metric estimators' own measurement seam, so a failure points at the optimizer's
 arithmetic rather than at sampling noise. The three seams under test are the
 linear-algebra helpers (:mod:`divi.qprog.optimizers._linalg`), the stochastic
 Fubini-Study sampler that drives QN-SPSA, and the metric assembly in
-:mod:`divi.qprog._metrics`.
+:mod:`divi.qprog.optimizers.metrics`.
 """
 
 import numpy as np
@@ -20,11 +20,15 @@ from qiskit.converters import circuit_to_dag
 from scipy.linalg import hilbert
 
 from divi.circuits import MetaCircuit
-from divi.qprog import CustomVQA, FubiniStudyMetricEstimator
-from divi.qprog._metrics import PullbackMetricEstimator, _fs_blocks
+from divi.qprog.algorithms import CustomVQA
 from divi.qprog.optimizers import QNGOptimizer, QNSPSAOptimizer
 from divi.qprog.optimizers._linalg import _matrix_abs_psd, _regularized_solve
 from divi.qprog.optimizers._spsa import _fidelity_metric_sample, _spsa_gain_c
+from divi.qprog.optimizers.metrics import (
+    FubiniStudyMetricEstimator,
+    PullbackMetricEstimator,
+    _fs_blocks,
+)
 from tests._helpers import exact_match
 from tests.qprog.optimizers._helpers import (
     inject_term_expectations,

@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 
-from divi.qprog import PCE, QAOA, GenericLayerAnsatz, SoftObjective
+from divi.qprog.algorithms import PCE, QAOA, GenericLayerAnsatz, SoftObjective
 from divi.qprog.optimizers import PymooMethod, PymooOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from tutorials._backend import get_backend

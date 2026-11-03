@@ -4,7 +4,7 @@
 
 import pytest
 
-from divi.qprog.early_stopping import EarlyStopping, StopReason
+from divi.qprog import EarlyStopping, StopReason
 
 # ======================================================================
 #  Construction & validation

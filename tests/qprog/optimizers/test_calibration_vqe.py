@@ -16,8 +16,7 @@ import numpy as np
 import pytest
 from qiskit.circuit.library import RYGate, RZGate
 
-from divi.qprog import VQE
-from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.optimizers import SPSAOptimizer
 from divi.qprog.problems import MolecularProblem
 

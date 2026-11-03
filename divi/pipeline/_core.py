@@ -16,13 +16,12 @@ from typing import Any
 from rich.console import Console
 from rich.tree import Tree
 
-from divi.backends._base import AsyncJobBackend, ExecutionResult
+from divi.backends import AsyncJobBackend, ExecutionResult, JobStatus
 from divi.backends._cancellation import (
     _cancel_job_on_abort,
     _require_async_backend,
     _sigint_to_event,
 )
-from divi.backends._job_status import JobStatus
 from divi.circuits._payloads import bound_circuits, is_bound
 from divi.exceptions import ExecutionCancelledError
 from divi.reporting._events import ProgressEvent

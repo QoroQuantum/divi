@@ -49,7 +49,7 @@ per gate.
 .. code-block:: python
 
    from divi.circuits.zne import ZNE, RichardsonExtrapolator
-   from divi.qprog import VQE
+   from divi.qprog.algorithms import VQE
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import MolecularProblem
    from divi.backends import MaestroConfig, MaestroSimulator

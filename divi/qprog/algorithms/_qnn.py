@@ -29,13 +29,11 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits import MetaCircuit
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
 from divi.pipeline.stages import LossReductionFn, SampleLossFn
-from divi.qprog.algorithms._ansatze import Ansatz
-from divi.qprog.algorithms._feature_maps import FeatureMap
-from divi.qprog.mixins._data_binding import (
-    _LOSS_FN_IGNORED_MSG,
-    DataBindingMixin,
-)
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+from divi.qprog import VariationalQuantumAlgorithm
+from divi.qprog.mixins import DataBindingMixin
+
+from ._ansatze import Ansatz
+from ._feature_maps import FeatureMap
 
 
 class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
@@ -186,7 +184,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
             labels, loss_fn, self.feature_batch.shape[0]
         )
         if labels is None and loss_fn != "squared_error":
-            warn(_LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
+            warn(self._LOSS_FN_IGNORED_MSG, UserWarning, stacklevel=2)
 
         if fit_bias:
             if self.labels is None:
@@ -275,7 +273,7 @@ class QNN(DataBindingMixin, VariationalQuantumAlgorithm):
 
     @property
     def _serialized_ansatz_type(self) -> str | None:
-        return type(self.ansatz).__name__
+        return repr(self.ansatz)
 
     # ------------------------------------------------------------------ #
     # Plumbing

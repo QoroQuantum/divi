@@ -24,7 +24,7 @@ from dimod import ExactSolver
 from qiskit.circuit.library import CXGate, RYGate, RZGate
 
 from divi.hamiltonians import qubo_to_matrix
-from divi.qprog import PCE, QAOA, GenericLayerAnsatz, SoftObjective
+from divi.qprog.algorithms import PCE, QAOA, GenericLayerAnsatz, SoftObjective
 from divi.qprog.optimizers import (
     PymooMethod,
     PymooOptimizer,

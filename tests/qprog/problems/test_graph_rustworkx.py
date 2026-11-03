@@ -19,6 +19,7 @@ import pytest
 import rustworkx as rx
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.qprog.ensembles import PartitioningProgramEnsemble
 from divi.qprog.problems import (
     GraphPartitioningConfig,
     MaxCliqueProblem,
@@ -29,7 +30,6 @@ from divi.qprog.problems import (
     draw_graph_solution_nodes,
 )
 from divi.qprog.problems._graph_hamiltonians import edges_to_wires
-from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests._helpers import exact_match
 from tests.qprog.problems._helpers import nx_twin as _nx_twin
 

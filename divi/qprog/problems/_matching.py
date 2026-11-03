@@ -19,9 +19,9 @@ import rustworkx as rx
 import scipy.sparse as sps
 import scipy.sparse.linalg as spla
 
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._binary import BinaryOptimizationProblem
-from divi.qprog.problems._graph_hamiltonians import _edge_weight, _wire_edges
+from ._base import QAOAProblem
+from ._binary import BinaryOptimizationProblem
+from ._graph_hamiltonians import _edge_weight, _wire_edges
 
 _Edge = tuple[int, int]
 
@@ -395,7 +395,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
 
     Can be used directly with :class:`~divi.qprog.algorithms.QAOA` for
     small graphs, or with
-    :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` for large
+    :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` for large
     graphs via edge-based partitioning.
 
     Qubit ``i`` is the ``i``-th edge in ascending order of its endpoints'
@@ -425,7 +425,7 @@ class MaxWeightMatchingProblem(QAOAProblem):
     Example::
 
         from divi.qprog.problems import MaxWeightMatchingProblem
-        from divi.qprog import QAOA
+        from divi.qprog.algorithms import QAOA
         from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
         from divi.backends import MaestroSimulator
 

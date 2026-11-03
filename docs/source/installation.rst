@@ -66,7 +66,7 @@ Optional Extras
    * - ``chem``
      - Molecule inputs via PySCF, OpenFermion Hamiltonians,
        :class:`~divi.qprog.algorithms.UCCSDAnsatz`, and
-       :class:`~divi.qprog.workflows.LASSQD`.
+       :class:`~divi.qprog.ensembles.lassqd.LASSQD`.
      - VQE from a ``SparsePauliOp`` or a Pauli-string dictionary, and every
        non-chemistry ansatz.
    * - ``ai``

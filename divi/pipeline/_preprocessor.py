@@ -17,7 +17,7 @@ These default preprocessors are factory *functions* (``cost_preprocessor``,
 returns it — the public, overridable ``VariationalQuantumAlgorithm.cost_preprocessor``
 and the internal
 ``_sample_preprocessor``. The metric/overlap preprocessors live in
-``divi.qprog._metrics`` as factory functions too, parameterized by
+``divi.qprog.optimizers.metrics`` as factory functions too, parameterized by
 per-evaluation state (the overlap closure, the Fubini-Study block id) rather
 than overridden.
 """

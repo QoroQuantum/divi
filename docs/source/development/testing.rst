@@ -70,7 +70,7 @@ non-obvious split is within ``tests/qprog/``:
 
 - ``tests/qprog/problems/`` - one file per ``QAOAProblem`` subclass
 - ``tests/qprog/algorithms/`` - algorithm-generic behaviour (QAOA pipeline, QDrift, VQE, PCE)
-- ``tests/qprog/workflows/`` - workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
+- ``tests/qprog/ensembles/`` - workflow orchestrators (``PartitioningProgramEnsemble``, ``VQEHyperparameterSweep``)
 
 Shared test infrastructure
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -195,7 +195,7 @@ Example layout for a new problem:
        def test_partitioning_e2e(self, default_test_simulator): ...
 
 Generic ``PartitioningProgramEnsemble`` behaviour (error handling, hook delegation) is tested
-once in ``tests/qprog/workflows/test_partitioning_ensemble.py`` using mocked problems — do
+once in ``tests/qprog/ensembles/test_partitioning_ensemble.py`` using mocked problems — do
 not duplicate those tests in problem-specific files.
 
 Writing Tests
@@ -218,7 +218,7 @@ or in a shared fixture:
 
    import pytest
    from pyscf import gto
-   from divi.qprog import VQE
+   from divi.qprog.algorithms import VQE
    from divi.qprog.algorithms import HartreeFockAnsatz
    from divi.qprog.problems import MolecularProblem
 

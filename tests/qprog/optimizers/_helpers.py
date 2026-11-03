@@ -10,8 +10,7 @@ from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.qprog import VQE, CustomVQA
-from divi.qprog.algorithms import GenericLayerAnsatz
+from divi.qprog.algorithms import VQE, CustomVQA, GenericLayerAnsatz
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
 
@@ -145,7 +144,7 @@ def inject_term_expectations(monkeypatch, term_values) -> list[np.ndarray]:
         calls.append(np.array(param_sets))
         return {(("circuit", 0),): term_values(param_sets)}
 
-    monkeypatch.setattr("divi.qprog._metrics._term_expectations", fake)
+    monkeypatch.setattr("divi.qprog.optimizers.metrics._term_expectations", fake)
     return calls
 
 

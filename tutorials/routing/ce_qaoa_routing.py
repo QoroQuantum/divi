@@ -34,7 +34,8 @@ import numpy as np
 from rich.console import Console
 from rich.table import Table
 
-from divi.qprog import QAOA, GridSearchOptimizer, MonteCarloOptimizer
+from divi.qprog.algorithms import QAOA
+from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
 from divi.qprog.problems import (
     CVRPProblem,
     TSPProblem,

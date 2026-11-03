@@ -129,9 +129,9 @@ parameter-shift gradient with a regularised metric:
 
    \theta \leftarrow \theta - \eta \, (G + \lambda I)^{-1} \nabla L,
 
-Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
+Choose a :class:`~divi.qprog.optimizers.metrics.MetricEstimator`:
 
-- :class:`~divi.qprog.optimizers.PullbackMetricEstimator` *(default)* shares
+- :class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator` *(default)* shares
   the loss-gradient measurement pass and scales with the loss, so rescaling the
   loss leaves the step unchanged while the metric's mean diagonal is at least 1;
   below that, the damping stays at ``regularization`` and the step shrinks with
@@ -140,7 +140,7 @@ Choose a :class:`~divi.qprog.optimizers.MetricEstimator`:
   term by the magnitude of its slope in the loss; it rejects losses read from
   raw counts and supervised data-bound losses.
 
-- :class:`~divi.qprog.optimizers.FubiniStudyMetricEstimator` is
+- :class:`~divi.qprog.optimizers.metrics.FubiniStudyMetricEstimator` is
   observable-independent and supports Pauli-rotation ansatze. It rejects
   unsupported/composite-angle gates and data-bound programs.
 
@@ -171,7 +171,7 @@ pseudo-inverse with cutoff ``rcond``.
 
 .. code-block:: python
 
-   from divi.qprog import VQE
+   from divi.qprog.algorithms import VQE
    from divi.qprog.optimizers import QNGOptimizer
 
    vqe = VQE(
@@ -186,7 +186,8 @@ To switch to the Fubini–Study metric, inject a different estimator:
 
 .. code-block:: python
 
-   from divi.qprog.optimizers import FubiniStudyMetricEstimator, QNGOptimizer
+   from divi.qprog.optimizers import QNGOptimizer
+   from divi.qprog.optimizers.metrics import FubiniStudyMetricEstimator
 
    optimizer = QNGOptimizer(
        metric_estimator=FubiniStudyMetricEstimator(),
@@ -257,7 +258,7 @@ QN-SPSA
 The :class:`~divi.qprog.optimizers.QNSPSAOptimizer` [#gacon2021]_ preconditions
 SPSA with a pluggable metric:
 
-- :class:`~divi.qprog.optimizers.StochasticFidelityMetricEstimator` *(default)*
+- :class:`~divi.qprog.optimizers.metrics.StochasticFidelityMetricEstimator` *(default)*
   adds four state-overlap evaluations per step to SPSA's two objective
   evaluations. It supports Qiskit-invertible ansatze, not data-bound programs.
   QDrift uses one fixed ansatz realisation.
@@ -273,7 +274,7 @@ SPSA with a pluggable metric:
    optimizer = QNSPSAOptimizer(c=0.2, regularization=1e-3)
 
    # Or reuse an exact metric with the SPSA gradient
-   from divi.qprog.optimizers import FubiniStudyMetricEstimator
+   from divi.qprog.optimizers.metrics import FubiniStudyMetricEstimator
 
    optimizer = QNSPSAOptimizer(
        metric_estimator=FubiniStudyMetricEstimator(),
@@ -344,7 +345,7 @@ SPSA's ``blocking`` and ``exact_loss`` options, but not checkpointing. With no
 explicit ``learning_rate``, its Adam rate is ``2*(2*pi/10)/n_params``.
 
 QUIVER reports its reconstructed gradient to
-:class:`~divi.qprog.early_stopping.EarlyStopping`, so ``grad_norm_threshold``
+:class:`~divi.qprog.EarlyStopping`, so ``grad_norm_threshold``
 can stop a converged run before the allocation rule spends an explicit
 ``M_max``. Without ``exact_loss`` or ``blocking``, the recorded loss is the
 average of the perturbed evaluations, not ``f(theta)``.
@@ -437,14 +438,15 @@ Program-Specific Constraints
 Early Stopping
 --------------
 
-Divi's :class:`~divi.qprog.early_stopping.EarlyStopping` controller terminates
+Divi's :class:`~divi.qprog.EarlyStopping` controller terminates
 the loop automatically based on configurable criteria.
 
 Pass an ``EarlyStopping`` instance to any variational algorithm:
 
 .. code-block:: python
 
-   from divi.qprog import VQE, EarlyStopping
+   from divi.qprog.algorithms import VQE
+   from divi.qprog import EarlyStopping
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 
    vqe = VQE(

@@ -22,19 +22,23 @@ from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import CircuitPreprocessor
 from divi.pipeline._result_keys_operations import average_by_param_set
 from divi.pipeline.abc import ContractViolation
-from divi.qprog import (
+from divi.qprog import VariationalQuantumAlgorithm
+from divi.qprog.algorithms import (
     PCE,
     QAOA,
     VQE,
     CustomVQA,
     CVaRObjective,
     DenseEncoding,
-    FubiniStudyMetricEstimator,
+    GenericLayerAnsatz,
+    HartreeFockAnsatz,
     MultiBasisEncoding,
-    VariationalQuantumAlgorithm,
 )
-from divi.qprog._metrics import (
+from divi.qprog.checkpointing import CheckpointConfig
+from divi.qprog.optimizers import QNGOptimizer
+from divi.qprog.optimizers.metrics import (
     METRIC_ROUTINE,
+    FubiniStudyMetricEstimator,
     PullbackMetricEstimator,
     StochasticFidelityMetricEstimator,
     _all_terms_preprocessor,
@@ -49,9 +53,6 @@ from divi.qprog._metrics import (
     _split_observable_into_terms,
     _term_expectations,
 )
-from divi.qprog.algorithms import GenericLayerAnsatz, HartreeFockAnsatz
-from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.optimizers import QNGOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     HamiltonianProblem,
@@ -697,9 +698,10 @@ def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(monkeypatch)
         prefix_metas.append(preprocessor.preprocess(sampled_meta))
         return {(("ham", 0),): {0: np.array([0.25])}}
 
-    monkeypatch.setattr("divi.qprog._metrics._fs_blocks", fake_fs_blocks)
+    monkeypatch.setattr("divi.qprog.optimizers.metrics._fs_blocks", fake_fs_blocks)
     monkeypatch.setattr(
-        "divi.qprog._metrics._run_metric_by_branch", fake_run_metric_by_branch
+        "divi.qprog.optimizers.metrics._run_metric_by_branch",
+        fake_run_metric_by_branch,
     )
 
     program = SimpleNamespace(
@@ -954,7 +956,7 @@ def test_fubini_study_metric_sums_shared_parameters_and_averages_branches(
         qscript=qc, backend=dummy_simulator, optimizer=default_optimizer
     )
     monkeypatch.setattr(
-        "divi.qprog._metrics._fs_block_covariance",
+        "divi.qprog.optimizers.metrics._fs_block_covariance",
         lambda *_: {
             (("ham", 0),): ((0, 0), np.array([[1.0, 2.0], [2.0, 4.0]])),
             (("ham", 1),): ((0, 0), np.array([[0.0, 0.0], [0.0, 1.0]])),
@@ -1054,7 +1056,7 @@ def test_measure_prefix_paulis_rejects_inconsistent_measurements(
 ):
     program, theta = _single_rx_program(source_batch)
     monkeypatch.setattr(
-        "divi.qprog._metrics._run_metric_by_branch",
+        "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda *_: {(("ham", 0),): {0: np.array(measured)}},
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
@@ -1138,7 +1140,7 @@ def test_term_expectations_rejects_term_count_mismatch(
     vqe = _one_term_vqe(dummy_simulator, default_optimizer)
     branch_key = next(iter(vqe._post_spec_batch()))
     monkeypatch.setattr(
-        "divi.qprog._metrics._run_metric_by_branch",
+        "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda _p, _prep, _ps: {branch_key: {0: np.array([0.5, 0.3])}},
     )
     param_sets = np.zeros((1, vqe.n_params))
@@ -1182,7 +1184,7 @@ def test_term_expectations_weights_each_observables_terms_by_its_slope(
     program = SimpleNamespace(_post_spec_batch=lambda: {(("ham", 0),): meta})
     measured = {0: np.array([0.9, -0.2, 0.3]), 1: np.array([0.1, 0.4, -0.6])}
     monkeypatch.setattr(
-        "divi.qprog._metrics._run_metric_by_branch",
+        "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda *_: {(("ham", 0),): measured},
     )
 
@@ -1205,7 +1207,7 @@ def test_term_expectations_weights_each_observables_terms_by_its_slope(
 def test_term_expectations_rejects_an_unusable_source_branch(monkeypatch, source_batch):
     program, theta = _single_rx_program(source_batch)
     monkeypatch.setattr(
-        "divi.qprog._metrics._run_metric_by_branch",
+        "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda *_: {(("ham", 0),): {0: np.array([0.5])}},
     )
     message = (

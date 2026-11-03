@@ -20,22 +20,19 @@ from warnings import warn
 import numpy as np
 import numpy.typing as npt
 
-from divi.qprog.algorithms._pce import (
+from divi.qprog.checkpointing import CheckpointConfig, CheckpointNotFoundError
+from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
+from divi.qprog.checkpointing.read import find_latest_checkpoint_subdir
+from divi.qprog.checkpointing.write import write_program_completion
+from divi.qprog.problems import BinaryOptimizationProblem
+from divi.reporting._events import ProgressEvent, TerminalStatus
+
+from ._pce import (
     PCE,
     MultiBasisEncoding,
     PCEEncoding,
     SoftObjective,
 )
-from divi.qprog.checkpointing import (
-    PROGRAM_COMPLETION_FILE,
-    CheckpointConfig,
-    CheckpointNotFoundError,
-    _find_latest_checkpoint_subdir,
-    _write_program_completion,
-)
-from divi.qprog.problems import BinaryOptimizationProblem
-from divi.qprog.quantum_program import reject_unclaimed_run_kwargs
-from divi.reporting._events import ProgressEvent, TerminalStatus
 
 STEP_SUBDIR_PREFIX = "step_"
 
@@ -285,7 +282,7 @@ class ProgressivePCE(PCE):
             }
             for step_dir in sorted(steps, key=steps.__getitem__, reverse=True):
                 try:
-                    _find_latest_checkpoint_subdir(step_dir)
+                    find_latest_checkpoint_subdir(step_dir)
                 except CheckpointNotFoundError:
                     continue
                 main_dir = step_dir
@@ -356,7 +353,7 @@ class ProgressivePCE(PCE):
             self._checkpoint_config = checkpoint_config
         checkpoint_config = self._checkpoint_config or CheckpointConfig()
         max_iterations = kwargs.pop("max_iterations", None)
-        reject_unclaimed_run_kwargs(self, kwargs)
+        self._reject_unclaimed_run_kwargs(kwargs)
 
         if self._training_finished:
             last = self._step_history[-1]
@@ -471,7 +468,7 @@ class ProgressivePCE(PCE):
         self._best_params = result["best_params"].copy()
         self._best_loss = result["best_loss"]
         self._finalize(perform_final_computation)
-        _write_program_completion(self, checkpoint_config.checkpoint_dir)
+        write_program_completion(self, checkpoint_config.checkpoint_dir)
         return self
 
     def _begin_attempt(self, attempt: int) -> None:

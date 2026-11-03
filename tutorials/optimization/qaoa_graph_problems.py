@@ -16,7 +16,7 @@ see ``qaoa_partitioning.py``.
 
 import networkx as nx
 
-from divi.qprog import QAOA
+from divi.qprog.algorithms import QAOA
 from divi.qprog.optimizers import (
     PymooMethod,
     PymooOptimizer,

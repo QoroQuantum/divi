@@ -32,24 +32,28 @@ from divi.pipeline import (
 )
 from divi.pipeline import cost_preprocessor as _default_cost_preprocessor
 from divi.pipeline.stages import ParameterBindingStage
+from divi.qprog._early_stopping import EarlyStopping, StopReason
 from divi.qprog._program_checkpoint import (
     OptimizerConfig,
     SubclassState,
     VQACheckpoint,
 )
 from divi.qprog.checkpointing import (
-    PROGRAM_COMPLETION_FILE,
-    PROGRAM_STATE_FILE,
     CheckpointConfig,
-    _atomic_write,
-    _ensure_checkpoint_dir,
-    _get_checkpoint_subdir_path,
-    _load_and_validate_pydantic_model,
-    _write_program_completion,
     list_checkpoints,
     resolve_checkpoint_path,
 )
-from divi.qprog.early_stopping import EarlyStopping, StopReason
+from divi.qprog.checkpointing.names import (
+    PROGRAM_COMPLETION_FILE,
+    PROGRAM_STATE_FILE,
+    get_checkpoint_subdir_path,
+)
+from divi.qprog.checkpointing.read import load_and_validate_pydantic_model
+from divi.qprog.checkpointing.write import (
+    atomic_write,
+    ensure_checkpoint_dir,
+    write_program_completion,
+)
 from divi.qprog.mixins import ObservableMeasuringMixin, SolutionSamplingMixin
 from divi.qprog.optimizers import (
     GridSearchOptimizer,
@@ -59,9 +63,9 @@ from divi.qprog.optimizers import (
     RosalinOptimizer,
     ScipyMethod,
     ScipyOptimizer,
+    argmin_finite,
 )
-from divi.qprog.optimizers._base import _argmin_finite
-from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
+from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import (
     ProgressEvent,
     TerminalStatus,
@@ -316,7 +320,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         Note:
             Solution-extracting subclasses (VQE/QAOA/PCE) also accept
             ``decode_solution_fn`` via
-            :class:`~divi.qprog.SolutionSamplingMixin`.
+            :class:`~divi.qprog.mixins.SolutionSamplingMixin`.
         """
 
         super().__init__(
@@ -381,7 +385,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         """Reason the optimisation was stopped early, or ``None``.
 
         Returns:
-            StopReason | None: The :class:`~divi.qprog.early_stopping.StopReason`
+            StopReason | None: The :class:`~divi.qprog.StopReason`
                 that triggered early stopping, or ``None`` if optimisation
                 completed normally or has not been run yet.
         """
@@ -454,7 +458,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             zip(self._losses_history, self._param_history, strict=True)
         ):
             arr = np.atleast_2d(np.asarray(block, dtype=np.float64))
-            best_idx = _argmin_finite([loss_dict[str(j)] for j in range(arr.shape[0])])
+            best_idx = argmin_finite([loss_dict[str(j)] for j in range(arr.shape[0])])
             if best_idx is None:
                 non_finite.append(i)
                 best_idx = 0
@@ -489,7 +493,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         non_finite: list[int] = []
         for i, loss_dict in enumerate(self._losses_history):
             values = list(loss_dict.values())
-            best_idx = _argmin_finite(values)
+            best_idx = argmin_finite(values)
             if best_idx is None:
                 non_finite.append(i)
                 mins.append(float("inf"))
@@ -590,7 +594,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
     @property
     def _serialized_ansatz_type(self) -> str | None:
-        """The ansatz class name, for programs built from an ansatz."""
+        """The ansatz class and options, for programs built from an ansatz."""
         return None
 
     @property
@@ -690,8 +694,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                 "checkpoint_config.checkpoint_dir must be a non-None Path."
             )
 
-        main_dir = _ensure_checkpoint_dir(checkpoint_config.checkpoint_dir)
-        checkpoint_path = _get_checkpoint_subdir_path(main_dir, self.current_iteration)
+        main_dir = ensure_checkpoint_dir(checkpoint_config.checkpoint_dir)
+        checkpoint_path = get_checkpoint_subdir_path(main_dir, self.current_iteration)
         checkpoint_path.mkdir(parents=True, exist_ok=True)
 
         # 1. Save optimizer
@@ -701,7 +705,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         state = VQACheckpoint.from_program(self, kind="iteration")
 
         state_file = checkpoint_path / PROGRAM_STATE_FILE
-        _atomic_write(state_file, state.model_dump_json(indent=2))
+        atomic_write(state_file, state.model_dump_json(indent=2))
         # A newer iteration supersedes the finished run's results.
         (main_dir / PROGRAM_COMPLETION_FILE).unlink(missing_ok=True)
 
@@ -724,7 +728,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     ) -> tuple[Path, VQACheckpoint]:
         """Read and validate the program portion of a checkpoint."""
         checkpoint_path = cls._resolve_checkpoint_path(checkpoint_dir, subdirectory)
-        state = _load_and_validate_pydantic_model(
+        state = load_and_validate_pydantic_model(
             checkpoint_path / PROGRAM_STATE_FILE, VQACheckpoint
         )
         if state.kind != "iteration":
@@ -1225,7 +1229,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             ``total_circuit_count`` and ``total_backend_jobs``.
         """
         self.max_iterations = kwargs.pop("max_iterations", self.max_iterations)
-        reject_unclaimed_run_kwargs(self, kwargs)
+        self._reject_unclaimed_run_kwargs(kwargs)
         if checkpoint_config is not None:
             self._checkpoint_config = checkpoint_config
         checkpoint_config = self._checkpoint_config or CheckpointConfig()
@@ -1252,7 +1256,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
 
         self._optimize(initial_params, checkpoint_config)
         self._finalize(perform_final_computation)
-        _write_program_completion(self, checkpoint_config.checkpoint_dir)
+        write_program_completion(self, checkpoint_config.checkpoint_dir)
 
         self._progress_emitter(
             ProgressEvent.finish(
@@ -1452,7 +1456,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
             self._param_history.append(iterate)
 
             fun = np.asarray(intermediate_result.fun, dtype=np.float64).ravel()
-            best_idx = _argmin_finite(fun)
+            best_idx = argmin_finite(fun)
             # Where the optimiser is now; a success result overrides it at the end.
             self._final_params = iterate[0 if best_idx is None else best_idx].copy()
             if best_idx is None:
@@ -1587,7 +1591,7 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
                     # non-finite loss never wins (falls back to the
                     # iteration-tracked best when every final loss is non-finite).
                     x = np.atleast_2d(self.optimize_result.x)
-                    best_idx = _argmin_finite(self.optimize_result.fun)
+                    best_idx = argmin_finite(self.optimize_result.fun)
                     if best_idx is not None:
                         self._best_params = x[best_idx].copy()
                         self._best_loss = float(

@@ -633,7 +633,7 @@ def format_dry_run(
     Accepts either the flat single-program result from
     :meth:`~divi.qprog.QuantumProgram.dry_run`
     (``dict[str, DryRunReport]``) or the nested ensemble result from
-    :meth:`~divi.qprog.ensemble.ProgramEnsemble.dry_run`
+    :meth:`~divi.qprog.ensembles.ProgramEnsemble.dry_run`
     (``dict[program_id, dict[str, DryRunReport]]``), dispatching on the shape
     of the values.
 

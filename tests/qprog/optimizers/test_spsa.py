@@ -14,30 +14,25 @@ from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterVector
 from qiskit.converters import circuit_to_dag, dag_to_circuit
 
+import divi.qprog.optimizers.metrics as metrics_module
 from divi.circuits import MetaCircuit, build_overlap_meta
 from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import ResultFormat
 from divi.pipeline.abc import ContractViolation
-from divi.qprog import (
-    QAOA,
-    CustomVQA,
-    FubiniStudyMetricEstimator,
-    QNSPSAOptimizer,
-    QUIVEROptimizer,
-    SPSAOptimizer,
-    _metrics,
-)
-from divi.qprog._metrics import (
-    METRIC_ROUTINE,
-    StochasticFidelityMetricEstimator,
-    _zeros_probability,
-)
+from divi.qprog.algorithms import QAOA, CustomVQA
+from divi.qprog.optimizers import QNSPSAOptimizer, QUIVEROptimizer, SPSAOptimizer
 from divi.qprog.optimizers._linalg import _matrix_abs_psd
 from divi.qprog.optimizers._spsa import (
     _fidelity_metric_sample,
     _spsa_gain_a,
     _spsa_gain_c,
     _spsa_gradient,
+)
+from divi.qprog.optimizers.metrics import (
+    METRIC_ROUTINE,
+    FubiniStudyMetricEstimator,
+    StochasticFidelityMetricEstimator,
+    _zeros_probability,
 )
 from divi.qprog.problems import MaxCutProblem
 from tests._helpers import exact_match
@@ -1298,7 +1293,7 @@ def test_overlap_cache_is_keyed_on_ansatz_structure():
 
 
 def test_overlap_cache_clears_once_full(monkeypatch):
-    monkeypatch.setattr("divi.qprog._metrics._OVERLAP_CACHE_CAP", 2)
+    monkeypatch.setattr("divi.qprog.optimizers.metrics._OVERLAP_CACHE_CAP", 2)
     overlap_for = _overlap_routine().preprocess
     metas = [_one_qubit_meta(((rotation, "a"),)) for rotation in ("rx", "ry", "rz")]
 
@@ -1315,7 +1310,7 @@ def test_fidelity_fn_pairs_theta_with_each_perturbed_point(monkeypatch):
         captured["rows"], captured["zeros"] = rows, zeros
         return {0: 0.9, 1: 0.4}
 
-    monkeypatch.setattr("divi.qprog._metrics._run_overlap", fake_run_overlap)
+    monkeypatch.setattr("divi.qprog.optimizers.metrics._run_overlap", fake_run_overlap)
     program = SimpleNamespace(cost_circuit=_one_qubit_meta(_RX_A_RY_B))
     fidelity_fn = StochasticFidelityMetricEstimator().bind(program)["fidelity_fn"]
 
@@ -1385,7 +1380,7 @@ def test_stochastic_fidelity_bind_does_not_advance_rng(toy_vqe):
 def test_stochastic_fidelity_caches_overlap_circuit(toy_vqe, mocker):
     """A deterministic ansatz builds the overlap circuit once and reuses it
     across fidelity evaluations, and the cached circuit stays correct."""
-    spy = mocker.spy(_metrics, "build_overlap_meta")
+    spy = mocker.spy(metrics_module, "build_overlap_meta")
     fidelity_fn = StochasticFidelityMetricEstimator().bind(toy_vqe)["fidelity_fn"]
     n_params = toy_vqe.n_layers * toy_vqe.n_params_per_layer
     theta = np.linspace(0.1, 1.0, n_params)
@@ -1422,7 +1417,7 @@ def test_stochastic_fidelity_uses_bounded_structural_cache_for_qdrift(
     n_params = len(qaoa.cost_circuit.parameters)
     theta = np.linspace(0.1, 1.0, n_params)
 
-    spy = mocker.spy(_metrics, "build_overlap_meta")
+    spy = mocker.spy(metrics_module, "build_overlap_meta")
     fidelity_fn(theta, [np.zeros(n_params)])
     after_first = spy.call_count
     fidelity_fn(theta, [np.zeros(n_params)])

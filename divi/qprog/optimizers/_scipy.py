@@ -11,7 +11,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult, minimize
 
-from divi.qprog.optimizers._base import Optimizer
+from ._base import Optimizer
 
 
 class ScipyMethod(Enum):

@@ -14,16 +14,15 @@ from qiskit.quantum_info import SparsePauliOp
 from divi.circuits.zne import ZNE
 from divi.pipeline import CircuitPreprocessor, ContractViolation
 from divi.pipeline.stages import MeasurementStage, QEMStage
-from divi.qprog import (
+from divi.qprog.algorithms import (
     QNN,
     AngleEmbedding,
     GenericLayerAnsatz,
     ZZFeatureMap,
 )
 from divi.qprog.checkpointing import CheckpointConfig
-from divi.qprog.ensemble import _restore_completion
+from divi.qprog.ensembles._base import _restore_completion
 from divi.qprog.mixins import DataBindingMixin
-from divi.qprog.mixins._data_binding import _LOSS_FN_IGNORED_MSG
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     QNSPSAOptimizer,
@@ -42,8 +41,8 @@ from tests.qprog._program_contracts import (
 class _DoubleFrequencyAnsatz(GenericLayerAnsatz):
     """Declares frequency ``{1, 2}`` for each of its per-layer parameters."""
 
-    def parameter_frequencies(self, n_qubits, **kwargs):
-        return [(1.0, 2)] * self.n_params_per_layer(n_qubits)
+    def parameter_frequencies(self, n_qubits, reference=None):
+        return [(1.0, 2)] * self.n_params_per_layer(n_qubits, reference)
 
 
 @pytest.fixture
@@ -212,10 +211,12 @@ class TestConstructionValidation:
     def test_loss_fn_without_labels_warns_at_caller(self, make_qnn):
         """The ignored-``loss_fn`` warning points at the caller's constructor call."""
         with pytest.warns(
-            UserWarning, match=exact_match(_LOSS_FN_IGNORED_MSG)
+            UserWarning, match=exact_match(DataBindingMixin._LOSS_FN_IGNORED_MSG)
         ) as record:
             make_qnn(loss_fn=lambda pred, label: (pred - label) ** 2)
-        ignored = [w for w in record if str(w.message) == _LOSS_FN_IGNORED_MSG]
+        ignored = [
+            w for w in record if str(w.message) == DataBindingMixin._LOSS_FN_IGNORED_MSG
+        ]
         assert ignored and ignored[0].filename == __file__
 
     @pytest.mark.parametrize(

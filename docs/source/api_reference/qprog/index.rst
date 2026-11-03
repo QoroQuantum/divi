@@ -12,9 +12,9 @@ interface for all quantum algorithms.
    :maxdepth: 1
 
    core
+   mixins
    algorithms
    initial_states
    problems
    optimizers
-   early_stopping
    checkpointing

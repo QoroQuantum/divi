@@ -11,7 +11,8 @@ import numpy as np
 import pytest
 import rustworkx as rx
 
-from divi.qprog import QAOA
+from divi.qprog.algorithms import QAOA
+from divi.qprog.ensembles import PartitioningProgramEnsemble
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
@@ -33,7 +34,6 @@ from divi.qprog.problems._matching import (
     _repair_matching,
     _spectral_bisect,
 )
-from divi.qprog.workflows import PartitioningProgramEnsemble
 from tests._helpers import exact_match
 from tests.qprog.problems._helpers import nx_twin
 

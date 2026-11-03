@@ -255,8 +255,8 @@ QoroService participates in two complementary batching mechanisms:
    off by default) — packs circuits together onto the target QPU. This
    does not change how many cloud jobs are submitted; it can reduce the
    number of QPU jobs scheduled.
-2. **Ensemble-level merging** (:class:`~divi.qprog.ensemble.BatchConfig` on
-   :meth:`~divi.qprog.ensemble.ProgramEnsemble.run`) — merges submissions
+2. **Ensemble-level merging** (:class:`~divi.qprog.ensembles.BatchConfig` on
+   :meth:`~divi.qprog.ensembles.ProgramEnsemble.run`) — merges submissions
    from multiple programs into one ``submit_circuits`` call.  See
    :ref:`circuit-batching`.
 

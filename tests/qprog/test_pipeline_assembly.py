@@ -22,8 +22,13 @@ from divi.pipeline.stages import (
     PauliTwirlStage,
     QEMStage,
 )
-from divi.qprog import PCE, VQE, CustomVQA
-from divi.qprog.algorithms import GenericLayerAnsatz, TimeEvolution
+from divi.qprog.algorithms import (
+    PCE,
+    VQE,
+    CustomVQA,
+    GenericLayerAnsatz,
+    TimeEvolution,
+)
 from divi.qprog.problems import BinaryOptimizationProblem, HamiltonianProblem
 
 

@@ -18,9 +18,10 @@ from matplotlib.colors import to_rgba
 from sklearn.cluster import SpectralClustering
 
 from divi._optional import optional_module
-from divi.qprog._types import GraphProblemTypes
-from divi.qprog.problems._graph_hamiltonians import _edge_weight, _wire_edges
-from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
+
+from ._graph_hamiltonians import _edge_weight, _wire_edges
+from ._partitioning_config import GraphPartitioningConfig
+from ._types import GraphProblemTypes
 
 _WeightedEdge = tuple[int, int, float | None]
 
@@ -473,7 +474,7 @@ def draw_partitions(
         graph: The full graph. RustworkX nodes are drawn and labelled by node
             index.
         reverse_index_maps: Mapping ``{prog_id: {local_idx: global_node}}``,
-            as built by ``_GraphProblemBase.decompose()``.
+            as built by ``GraphProblemBase.decompose()``.
         pos: Node positions.  If *None*, uses spring layout.
         figsize: Figure size ``(width, height)``.
         node_size: Size of nodes.

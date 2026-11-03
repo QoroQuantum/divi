@@ -34,7 +34,7 @@ from scipy.sparse.csgraph import connected_components, laplacian
 from scipy.sparse.linalg import ArpackError, ArpackNoConvergence, eigsh
 from sklearn.cluster import KMeans
 
-from divi.qprog.problems._partitioning_config import (
+from ._partitioning_config import (
     GraphPartitioningConfig,
     QUBOPartitioningConfig,
 )

@@ -476,7 +476,7 @@ VQA-family program, override ``_assemble_pipeline`` and delegate to ``super()``:
 
    from qiskit import QuantumCircuit
    from qiskit.circuit import Parameter
-   from divi.qprog import CustomVQA
+   from divi.qprog.algorithms import CustomVQA
    from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
    from divi.pipeline import ResultFormat
    from divi.backends import MaestroSimulator

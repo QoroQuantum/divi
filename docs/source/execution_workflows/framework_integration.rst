@@ -55,7 +55,7 @@ optimisation:
 .. code-block:: python
 
    import pennylane as qp
-   from divi.qprog import CustomVQA
+   from divi.qprog.algorithms import CustomVQA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -110,7 +110,7 @@ the per-sample losses are aggregated by ``loss_reduction`` (``"mean"``,
 
    import numpy as np
    import pennylane as qp
-   from divi.qprog import CustomVQA
+   from divi.qprog.algorithms import CustomVQA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 

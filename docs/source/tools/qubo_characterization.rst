@@ -88,7 +88,7 @@ Starting QAOA from the service's angles:
 
 .. code-block:: python
 
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
 
    qaoa = QAOA(problem, n_layers=result.recommended_layers)
    qaoa.run(initial_params=result.qaoa_initial_params())

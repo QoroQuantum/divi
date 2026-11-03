@@ -38,7 +38,7 @@ import numpy.typing as npt
 
 from divi.backends import CircuitRunner
 from divi.pipeline import CircuitPreprocessor, sample_preprocessor
-from divi.qprog.checkpointing import _write_program_completion
+from divi.qprog.checkpointing.write import write_program_completion
 
 if TYPE_CHECKING:
     # Type-check the mixin as if mixed into its host, so ``super()`` calls and the
@@ -49,11 +49,6 @@ if TYPE_CHECKING:
     _SamplingMixinBase = VariationalQuantumAlgorithm
 else:
     _SamplingMixinBase = object
-
-_SAMPLE_HINT = (
-    "Call sample_solution() to sample the trained parameters, or run() to train "
-    "and sample."
-)
 
 
 class SolutionEntry(NamedTuple):
@@ -89,6 +84,11 @@ class SolutionSamplingMixin(_SamplingMixinBase):
     (``_decode_solution_fn``); the host supplies ``_initial_spec`` and
     ``_resolve_sample_params`` (see the module docstring for the full contract).
     """
+
+    _SAMPLE_HINT = (
+        "Call sample_solution() to sample the trained parameters, or run() to train "
+        "and sample."
+    )
 
     def __init__(
         self,
@@ -186,7 +186,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         best_probs = self._results.get("best_probs", {})
         if not best_probs:
             warn(
-                f"best_probs is empty: nothing has been sampled yet. {_SAMPLE_HINT}",
+                f"best_probs is empty: nothing has been sampled yet. {self._SAMPLE_HINT}",
                 UserWarning,
                 stacklevel=2,
             )
@@ -207,7 +207,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
         """
         best_probs = self._results.get("best_probs")
         if not best_probs:
-            raise RuntimeError(f"No sampled distribution yet. {_SAMPLE_HINT}")
+            raise RuntimeError(f"No sampled distribution yet. {self._SAMPLE_HINT}")
         if len(best_probs) > 1:
             warn(
                 f"{len(best_probs)} parameter sets were sampled; "
@@ -440,7 +440,7 @@ class SolutionSamplingMixin(_SamplingMixinBase):
             np.atleast_2d(params_arr), backend=selected_backend
         )
         if self._checkpoint_config is not None:
-            _write_program_completion(self, self._checkpoint_config.checkpoint_dir)
+            write_program_completion(self, self._checkpoint_config.checkpoint_dir)
         return self
 
     def _run_solution_measurement_for(

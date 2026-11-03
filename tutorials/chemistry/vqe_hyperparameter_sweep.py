@@ -7,12 +7,8 @@ import time
 import numpy as np
 import pennylane as qp
 
-from divi.qprog import (
-    HartreeFockAnsatz,
-    MoleculeTransformer,
-    UCCSDAnsatz,
-    VQEHyperparameterSweep,
-)
+from divi.qprog.algorithms import HartreeFockAnsatz, UCCSDAnsatz
+from divi.qprog.ensembles import MoleculeTransformer, VQEHyperparameterSweep
 from divi.qprog.optimizers import MonteCarloOptimizer
 from tutorials._backend import get_backend
 

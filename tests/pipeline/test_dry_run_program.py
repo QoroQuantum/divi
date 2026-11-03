@@ -31,16 +31,13 @@ from divi.pipeline.stages import (
     ParameterBindingStage,
     QEMStage,
 )
-from divi.qprog import QAOA, QNN, VQE, AngleEmbedding, QuantumProgram
-from divi.qprog._metrics import (
-    METRIC_ROUTINE,
-    FubiniStudyMetricEstimator,
-    MetricEstimator,
-    PullbackMetricEstimator,
-    StochasticFidelityMetricEstimator,
-)
+from divi.qprog import QuantumProgram
 from divi.qprog.algorithms import (
     PCE,
+    QAOA,
+    QNN,
+    VQE,
+    AngleEmbedding,
     CVaRObjective,
     DenseEncoding,
     GenericLayerAnsatz,
@@ -54,6 +51,13 @@ from divi.qprog.optimizers import (
     ScipyMethod,
     ScipyOptimizer,
     SPSAOptimizer,
+)
+from divi.qprog.optimizers.metrics import (
+    METRIC_ROUTINE,
+    FubiniStudyMetricEstimator,
+    MetricEstimator,
+    PullbackMetricEstimator,
+    StochasticFidelityMetricEstimator,
 )
 from divi.qprog.problems import BinaryOptimizationProblem, MaxCutProblem
 from tests.pipeline._helpers import (

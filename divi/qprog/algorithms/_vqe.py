@@ -16,18 +16,20 @@ from divi.hamiltonians._term_ops import (
     _clean_hamiltonian_spo,
     _require_qiskit_num_qubits,
 )
-from divi.qprog.algorithms._ansatze import (
+from divi.qprog import VariationalQuantumAlgorithm
+from divi.qprog.initial_states import InitialState, ZerosState
+from divi.qprog.mixins import LayeredAnsatzMixin, SolutionSamplingMixin
+from divi.qprog.problems import HamiltonianProblem
+from divi.reporting._events import ProgressEvent
+
+from ._ansatze import (
     Ansatz,
+    ElectronCounts,
     HartreeFockAnsatz,
     LUCJAnsatz,
     QCCAnsatz,
     UCCSDAnsatz,
 )
-from divi.qprog.initial_states import InitialState, ZerosState
-from divi.qprog.mixins import LayeredAnsatzMixin, SolutionSamplingMixin
-from divi.qprog.problems import HamiltonianProblem
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
-from divi.reporting._events import ProgressEvent
 
 
 class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm):
@@ -62,7 +64,6 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         ansatz: Ansatz | None = None,
         initial_state: InitialState | None = None,
         max_iterations=10,
-        ansatz_kwargs: dict[str, Any] | None = None,
         **kwargs,
     ) -> None:
         """Initialise the VQE problem.
@@ -72,17 +73,14 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
                 solve. Its electron counts, when set, reach ansatzes that
                 prepare a reference determinant.
             n_layers (int): Number of ansatz layers. Defaults to 1.
-            ansatz (Ansatz | None): The ansatz to use for the VQE problem.
-                Defaults to HartreeFockAnsatz.
+            ansatz (Ansatz | None): The ansatz to use for the VQE problem, with
+                its own options set on the instance (e.g.
+                ``LUCJAnsatz(trailing_rotation=True)``). Defaults to
+                HartreeFockAnsatz.
             initial_state (InitialState | None): Initial state preparation.
                 Pass an :class:`~divi.qprog.initial_states.InitialState` instance (e.g. ``ZerosState()``,
                 ``SuperpositionState()``). Defaults to ``ZerosState()`` if None.
             max_iterations (int): Maximum number of optimisation iterations. Defaults to 10.
-            ansatz_kwargs (dict | None): Ansatz-specific options, forwarded to
-                both ``n_params_per_layer`` and ``build`` so the parameter count
-                and the circuit stay in agreement (e.g.
-                ``{"trailing_rotation": True}`` for
-                :class:`~divi.qprog.algorithms.LUCJAnsatz`). Defaults to None.
             **kwargs: Additional keyword arguments passed to the parent class.
 
         Raises:
@@ -101,7 +99,6 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         super().__init__(
             ansatz=HartreeFockAnsatz() if ansatz is None else ansatz,
             n_layers=n_layers,
-            ansatz_kwargs=ansatz_kwargs,
             **kwargs,
         )
         self.max_iterations = max_iterations
@@ -112,12 +109,6 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
         self.n_qubits = _require_qiskit_num_qubits(cost_spo.num_qubits)
         self.cost_hamiltonian, self.loss_constant = _clean_hamiltonian_spo(
             cost_spo, raise_on_constant=True
-        )
-
-        self._spin_kwargs: dict[str, int] = (
-            {}
-            if problem.n_alpha is None or problem.n_beta is None
-            else {"n_alpha": problem.n_alpha, "n_beta": problem.n_beta}
         )
 
         # Resolve & store initial state (n_qubits is now set)
@@ -138,9 +129,18 @@ class VQE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
                 stacklevel=2,
             )
 
-    def _ansatz_context(self) -> dict[str, Any]:
+    def _ansatz_reference(self) -> ElectronCounts | None:
         """The problem's electron and spin counts, for chemistry ansätze."""
-        return {"n_electrons": self._problem.n_electrons, **self._spin_kwargs}
+        if self._problem.n_electrons is None:
+            return None
+        has_spin = (
+            self._problem.n_alpha is not None and self._problem.n_beta is not None
+        )
+        return ElectronCounts(
+            self._problem.n_electrons,
+            self._problem.n_alpha if has_spin else None,
+            self._problem.n_beta if has_spin else None,
+        )
 
     def _initialize_param_sets(self) -> npt.NDArray[np.float64]:
         """Start excitation ansätze at the Hartree–Fock reference.

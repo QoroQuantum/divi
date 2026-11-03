@@ -4,7 +4,7 @@
 
 """LASSQD on a stretched H4 chain, and why the fragmentation matters.
 
-:class:`~divi.qprog.workflows.LASSQD` estimates a molecule's ground-state
+:class:`~divi.qprog.ensembles.lassqd.LASSQD` estimates a molecule's ground-state
 energy by splitting its active space into fragments, preparing and sampling one
 circuit per fragment, recovering each fragment's ground state from the sampled
 bitstring distribution via sample-based quantum diagonalisation (SQD),
@@ -44,9 +44,14 @@ import time
 
 from pyscf import gto, mcscf, scf
 
-from divi.qprog import LASSQD, ReportingLevel
+from divi.qprog.ensembles import ReportingLevel
+from divi.qprog.ensembles.lassqd import (
+    LASSQD,
+    FragmentationConfig,
+    FragmentSpec,
+    SQDConfig,
+)
 from divi.qprog.problems import MolecularProblem
-from divi.qprog.workflows.lassqd import FragmentationConfig, FragmentSpec, SQDConfig
 from tutorials._backend import get_backend
 
 

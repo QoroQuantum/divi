@@ -12,7 +12,7 @@ spectra, gradient overlays, 3D surface rendering, and the Nudged Elastic Band
 import matplotlib.pyplot as plt
 import numpy as np
 
-from divi.qprog import QAOA
+from divi.qprog.algorithms import QAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import BinaryOptimizationProblem
 from divi.viz import (

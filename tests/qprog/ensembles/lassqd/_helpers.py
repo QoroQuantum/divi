@@ -1,0 +1,780 @@
+# SPDX-FileCopyrightText: 2025-2026 Qoro Quantum Ltd <divi@qoroquantum.de>
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Shared helpers for the LASSQD test modules."""
+
+import itertools
+import math
+from dataclasses import fields
+from functools import partial
+from math import isqrt
+from operator import attrgetter
+from typing import Self
+
+import numpy as np
+import pytest
+import scipy.linalg
+from pyscf import ao2mo, cc, fci, gto, mcscf, scf, solvent
+from qiskit.quantum_info import SparsePauliOp
+
+from divi.hamiltonians._chem import _spo_from_integrals
+from divi.qprog.algorithms import Ansatz, ElectronCounts, UCCSDAnsatz
+from divi.qprog.ensembles import ReportingLevel
+from divi.qprog.ensembles.lassqd import (
+    LASSQD,
+    ElectronicState,
+    FixedOrbitals,
+    FragmentationConfig,
+    SQDConfig,
+    StateAveragedOrbitalUpdate,
+    VQEPreparation,
+)
+from divi.qprog.ensembles.lassqd._active_space import localize_blocks
+from divi.qprog.ensembles.lassqd._config import SecondOrderOrbitalUpdate
+from divi.qprog.ensembles.lassqd._integrals import (
+    AOIntegrals,
+    assemble_active_rdms,
+    build_active_permutation,
+    fragment_effective_integrals,
+    transform_integrals,
+)
+from divi.qprog.ensembles.lassqd._orbital_solvers import (
+    ciah_orbital_solve,
+    optimize_orbitals,
+)
+from divi.qprog.ensembles.lassqd._sqd import (
+    _DENSE_MAX_DIM,
+    ci_string_to_int,
+    compute_spatial_rdms,
+    spin_square_of,
+)
+from divi.qprog.ensembles.lassqd._state import (
+    FragmentSpec,
+    FragmentState,
+    LASSQDRoundReport,
+    _core_orbital_count,
+)
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
+from divi.qprog.problems import MolecularProblem
+from divi.qprog.quantum_program import QuantumProgram
+
+_FRAGMENTATION_FIELDS = {field.name for field in fields(FragmentationConfig)}
+_SQD_FIELDS = {field.name for field in fields(SQDConfig)}
+
+#: The tail of the error for an extension that could outgrow the solver.
+UNBOUNDED_ADVICE = (
+    f"past the {_DENSE_MAX_DIM} the solver handles unbounded. Set "
+    "SQDConfig.max_dim to cap each spin sector "
+    f"(max_dim={isqrt(_DENSE_MAX_DIM)} keeps it within {_DENSE_MAX_DIM}), or "
+    "extension=None for plain SQD."
+)
+
+
+def lassqd_kwargs(**overrides):
+    """Route flat keyword overrides into ``LASSQD``'s configuration objects.
+
+    The test modules name individual knobs (``n_batches=2``,
+    ``max_orbitals_per_fragment=4``); this assembles the two configs they belong
+    to so each call site does not have to know which one owns what.
+    """
+    fragmentation = {
+        name: overrides.pop(name)
+        for name in list(overrides)
+        if name in _FRAGMENTATION_FIELDS
+    }
+    sqd = {name: overrides.pop(name) for name in list(overrides) if name in _SQD_FIELDS}
+    return dict(
+        fragmentation=FragmentationConfig(**fragmentation),
+        sqd=SQDConfig(**sqd),
+        **overrides,
+    )
+
+
+def ansatz_energy(
+    simulator, params, h_eff, g_frag, spec, ansatz: Ansatz | None = None, n_layers=1
+):
+    """Expectation value of a fragment Hamiltonian in an ansatz state."""
+    ansatz = ansatz if ansatz is not None else UCCSDAnsatz()
+    circuit = ansatz.build(
+        params,
+        2 * spec.n_orbitals,
+        n_layers,
+        ElectronCounts(spec.n_alpha + spec.n_beta, spec.n_alpha, spec.n_beta),
+    )
+    hamiltonian = SparsePauliOp(_spo_from_integrals(h_eff, g_frag, constant=0.0))
+    return simulator.expectation_value(circuit, hamiltonian)
+
+
+def fragment_integrals(ensemble, mo_coeff, fragments, index):
+    """``(h_alpha, h_beta, g_frag)`` for one fragment of a workflow state."""
+    n_core = _core_orbital_count(
+        ensemble._mol.nelectron,
+        sum(fragment.spec.n_alpha + fragment.spec.n_beta for fragment in fragments),
+    )
+    n_act = sum(fragment.spec.n_orbitals for fragment in fragments)
+    integrals = transform_integrals(
+        AOIntegrals.of(ensemble._mol), mo_coeff, n_core, n_act
+    )
+    return fragment_effective_integrals(integrals, fragments, index)
+
+
+def fragment_problem(h_alpha, h_beta, g_frag, spec):
+    """The embedded problem ``LASSQD.create_programs`` hands a fragment program."""
+    return MolecularProblem(
+        h_alpha,
+        g_frag,
+        n_alpha=spec.n_alpha,
+        n_beta=spec.n_beta,
+        one_body_beta=h_beta,
+    )
+
+
+def embedded_fragment_ccsd(h_eff, g_frag, spec):
+    """CCSD on a fragment's effective integrals, in the fragment's own basis.
+
+    Mirrors the embedded mean field ``_ccsd_seed_params`` builds internally,
+    including its identity ``mo_coeff``.
+    """
+    n_orb = spec.n_orbitals
+    mol = gto.M(verbose=0)
+    mol.incore_anyway = True
+
+    mean_field = scf.RHF(mol)
+    mean_field.get_hcore = lambda *args: h_eff
+    mean_field._eri = ao2mo.restore(8, g_frag, n_orb)
+
+    occupations = np.zeros(n_orb)
+    occupations[: spec.n_alpha] = 2.0
+    mean_field.mo_coeff = np.eye(n_orb)
+    mean_field.mo_occ = occupations
+
+    coupled_cluster = cc.CCSD(mean_field)
+    coupled_cluster.kernel()
+    return coupled_cluster
+
+
+def h2_molecule(bond_length=0.74, basis="sto-3g"):
+    """Closed-shell H2: 2 electrons, spatial orbital count set by ``basis``."""
+    return gto.M(
+        atom=f"H 0 0 0; H 0 0 {bond_length}",
+        basis=basis,
+        verbose=0,
+    )
+
+
+def h4_chain():
+    """Linear H4 in STO-3G, two well-separated H2 pairs.
+
+    4 spatial orbitals / 4 electrons, so FCI over the full space is exact in
+    this basis and usable as a bound.
+    """
+    return gto.M(
+        atom="H 0 0 0; H 0 0 0.74; H 0 0 2.0; H 0 0 2.74",
+        basis="sto-3g",
+        verbose=0,
+    )
+
+
+def cobyla():
+    """A fresh COBYLA optimizer."""
+    return ScipyOptimizer(ScipyMethod.COBYLA)
+
+
+def vqe_preparation(**overrides):
+    """COBYLA-driven UCCSD fragment VQE, with ``overrides`` replacing fields."""
+    return VQEPreparation(
+        **({"optimizer": cobyla(), "ansatz": UCCSDAnsatz()} | overrides)
+    )
+
+
+def h8_frontier_lassqd(backend, **overrides):
+    """H8 split into two frontier-selected 4-orbital fragments, prepared by
+    :func:`vqe_preparation`."""
+    kwargs = dict(n_active_orbitals=8, seed=0)
+    kwargs.update(overrides)
+    return LASSQD(
+        MolecularProblem.from_molecule(h8_chain()),
+        preparation=vqe_preparation(),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(**kwargs),
+    )
+
+
+def h_chain(n_atoms: int, spacing: float = 1.0):
+    """Uniform linear hydrogen chain in STO-3G."""
+    return gto.M(
+        atom="; ".join(f"H 0 0 {index * spacing:.1f}" for index in range(n_atoms)),
+        basis="sto-3g",
+        verbose=0,
+    )
+
+
+def h8_chain():
+    """Uniform linear H8 in STO-3G.
+
+    8 spatial orbitals / 8 electrons, which automatic fragmentation splits into
+    two 4-orbital fragments holding 4 electrons each.
+    """
+    return h_chain(8)
+
+
+#: H4's whole active space as a single fragment.
+H4_WHOLE_SPACE = FragmentSpec(orbitals=(0, 1, 2, 3), n_alpha=2, n_beta=2)
+
+#: ``h8_chain()``'s atoms split into two four-atom halves.
+H8_HALF_CHAINS = ([0, 1, 2, 3], [4, 5, 6, 7])
+
+
+@pytest.fixture(scope="session")
+def h2_mean_field():
+    """RHF mean field for ``h2_molecule()``, computed once per test session."""
+    return scf.RHF(h2_molecule()).run(verbose=0)
+
+
+@pytest.fixture(scope="session")
+def h4_chain_mean_field():
+    """RHF mean field for ``h4_chain()``, computed once per test session."""
+    return scf.RHF(h4_chain()).run(verbose=0)
+
+
+def mo_integrals(mean_field):
+    """``(one_body, two_body, n_orb, constant)`` over every MO of an RHF solve,
+    with ``two_body`` in chemist order and ``constant`` the nuclear repulsion."""
+    mol = mean_field.mol
+    mo_coeff = np.asarray(mean_field.mo_coeff)
+    n_orb = mo_coeff.shape[1]
+    one_body = mo_coeff.T @ mean_field.get_hcore() @ mo_coeff
+    two_body = ao2mo.restore(1, ao2mo.kernel(mol, mo_coeff), n_orb)
+    return one_body, two_body, n_orb, float(mol.energy_nuc())
+
+
+@pytest.fixture(scope="session")
+def h4_localized_blocks(h4_chain_mean_field):
+    """``localize_blocks`` on ``h4_chain_mean_field``."""
+    mol = h4_chain_mean_field.mol
+    mo_coeff = np.asarray(h4_chain_mean_field.mo_coeff)
+    return localize_blocks(mol, mo_coeff, (0, 1), (2, 3))
+
+
+def h2o_molecule(basis="6-31g", symmetry=False):
+    """Closed-shell water at its experimental geometry."""
+    return gto.M(
+        atom="O 0 0 0; H 0 -0.757 0.587; H 0 0.757 0.587",
+        basis=basis,
+        symmetry=symmetry,
+        verbose=0,
+    )
+
+
+@pytest.fixture(scope="session")
+def orbital_rotation_case():
+    """An ``optimize_orbitals`` argument set spanning every rotation category.
+
+    H2O/6-31G has 13 spatial orbitals: three frozen core, five active across
+    two fragments of unequal size whose orbital indices are neither sorted nor
+    contiguous, and five virtual -- 61 rotation pairs.
+
+    The active RDMs are those of a product of fixed-seed random fragment
+    wavefunctions, each spanning its fragment's whole determinant space, so
+    they are physical while still dense.
+
+    Returns the full positional argument list of ``optimize_orbitals``:
+    ``(ao, mo_coeff, n_core, specs, rdm1_active, rdm2_active)``.
+    """
+    mol = h2o_molecule()
+    mean_field = scf.RHF(mol).run(verbose=0)
+    mo_coeff = np.asarray(mean_field.mo_coeff)
+    n_orbitals_total = mo_coeff.shape[1]
+
+    specs = [
+        FragmentSpec(orbitals=(4, 6), n_alpha=1, n_beta=1),
+        FragmentSpec(orbitals=(2, 5, 7), n_alpha=1, n_beta=1),
+    ]
+    n_core = 3
+    permutation = build_active_permutation(specs, n_core, n_orbitals_total)
+
+    rng = np.random.default_rng(20250801)
+    fragments = []
+    for spec in specs:
+        strings_alpha = _sector_strings(spec.n_orbitals, spec.n_alpha)
+        strings_beta = _sector_strings(spec.n_orbitals, spec.n_beta)
+        amplitudes = rng.standard_normal((len(strings_alpha), len(strings_beta)))
+        amplitudes /= np.linalg.norm(amplitudes)
+        rdm1, rdm2, rdm1_alpha, rdm1_beta = compute_spatial_rdms(
+            strings_alpha, strings_beta, amplitudes, spec.n_orbitals
+        )
+        fragments.append(
+            FragmentState(
+                spec=spec,
+                rdm1=rdm1,
+                rdm2=rdm2,
+                rdm1_alpha=rdm1_alpha,
+                rdm1_beta=rdm1_beta,
+            )
+        )
+    rdm1_active, rdm2_active = assemble_active_rdms(fragments)
+
+    return (
+        AOIntegrals.of(mol),
+        mo_coeff[:, permutation],
+        n_core,
+        specs,
+        rdm1_active,
+        rdm2_active,
+    )
+
+
+#: ``ciah_orbital_solve`` under ``SecondOrderOrbitalUpdate``'s default cap.
+capped_ciah_orbital_solve = partial(
+    ciah_orbital_solve, max_iterations=SecondOrderOrbitalUpdate().max_iterations
+)
+
+
+@pytest.fixture(
+    params=[optimize_orbitals, capped_ciah_orbital_solve], ids=["l-bfgs-b", "ciah"]
+)
+def orbital_solver(request):
+    """Each orbital solve, sharing ``optimize_orbitals``'s signature."""
+    return request.param
+
+
+def _sector_strings(n_orb, n_electrons):
+    """Every occupation string of one spin sector, ascending as SQD orders them."""
+    strings = (
+        "".join("1" if p in occupied else "0" for p in range(n_orb))
+        for occupied in itertools.combinations(range(n_orb), n_electrons)
+    )
+    return sorted(strings, key=ci_string_to_int)
+
+
+def build_energy_rdms(n_orb, n_core, rdm1_active, rdm2_active):
+    """Dense full-register ``(D, d)`` whose contraction reproduces ``_total_energy``.
+
+    ``E = E_nuc + sum(h * D) + 0.5 * sum(d * g)`` over the permuted MO register,
+    with ``g`` in chemist order: core ``[0, n_core)`` doubly occupied, the active
+    RDMs next, the virtual block zero.
+    """
+    n_act = rdm1_active.shape[0]
+    active = slice(n_core, n_core + n_act)
+
+    one_rdm = np.zeros((n_orb, n_orb))
+    two_rdm = np.zeros((n_orb,) * 4)
+
+    for i in range(n_core):
+        one_rdm[i, i] = 2.0
+    one_rdm[active, active] = rdm1_active
+
+    for i in range(n_core):
+        for j in range(n_core):
+            two_rdm[i, i, j, j] += 4.0
+            two_rdm[i, j, j, i] -= 2.0
+
+    for i in range(n_core):
+        two_rdm[active, active, i, i] += 2.0 * rdm1_active
+        two_rdm[i, i, active, active] += 2.0 * rdm1_active
+        two_rdm[active, i, i, active] -= rdm1_active
+        two_rdm[i, active, active, i] -= rdm1_active
+
+    two_rdm[active, active, active, active] += rdm2_active
+
+    return one_rdm, two_rdm
+
+
+def uniform_full_space_probs(n_orb, n_alpha, n_beta):
+    """A blocked-bitstring distribution covering every symmetry-allowed determinant."""
+    probs = {}
+    for alpha in itertools.combinations(range(n_orb), n_alpha):
+        for beta in itertools.combinations(range(n_orb), n_beta):
+            bits = ["0"] * n_orb + ["0"] * n_orb
+            for p in alpha:
+                bits[p] = "1"
+            for p in beta:
+                bits[n_orb + p] = "1"
+            probs["".join(bits)] = 1.0
+    total = sum(probs.values())
+    return {k: v / total for k, v in probs.items()}
+
+
+def dense_fci_energy(one_body, two_body, n_alpha, n_beta, constant=0.0):
+    """Exact lowest eigenvalue for the given spatial-MO integrals via PySCF FCI."""
+    n_orb = one_body.shape[0]
+    energy, _ = fci.direct_spin1.kernel(one_body, two_body, n_orb, (n_alpha, n_beta))
+    return energy + constant
+
+
+def fci_roots_by_multiplicity(one_body, two_body, n_alpha, n_beta, constant=0.0):
+    """Every FCI eigenvalue of one ``(n_alpha, n_beta)`` sector, grouped by spin
+    multiplicity ``2S + 1`` and ascending within each."""
+    n_orb = one_body.shape[0]
+    nelec = (n_alpha, n_beta)
+    dimension = len(_sector_strings(n_orb, n_alpha)) * len(
+        _sector_strings(n_orb, n_beta)
+    )
+    energies, vectors = fci.direct_spin1.kernel(
+        one_body, two_body, n_orb, nelec, nroots=dimension
+    )
+    roots: dict[int, list[float]] = {}
+    for energy, vector in zip(energies, vectors):
+        _, multiplicity = fci.spin_op.spin_square0(vector, n_orb, nelec)
+        roots.setdefault(int(round(multiplicity)), []).append(energy + constant)
+    return {multiplicity: sorted(values) for multiplicity, values in roots.items()}
+
+
+def assert_roots_match(found, expected, states, energy=attrgetter("energy")):
+    """Each requested multiplicity's roots in ``found`` (anything carrying
+    ``multiplicity``, ``index`` and ``spin_square``, with ``energy`` reading its
+    energy) equal ``expected``'s, with pure spin, in index order."""
+    found = list(found)
+    assert [energy(state) for state in found] == sorted(map(energy, found))
+    for multiplicity, n_roots in states.items():
+        roots = sorted(
+            (state for state in found if state.multiplicity == multiplicity),
+            key=lambda state: state.index,
+        )
+        assert [state.index for state in roots] == list(range(n_roots))
+        np.testing.assert_allclose(
+            [energy(state) for state in roots],
+            expected[multiplicity][:n_roots],
+            atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            [state.spin_square for state in roots],
+            spin_square_of(multiplicity),
+            atol=1e-6,
+        )
+
+
+#: Energy and MO-coefficient trace of ``exact_sampler_lassqd`` over 4
+#: macro-cycles. The trace fingerprints which of several equivalent orbital
+#: solutions the optimizer reached, so it can move while the energy does not.
+PRODUCT_STATE_ENERGY = -2.221584055981204
+PRODUCT_STATE_MO_TRACE = -0.004904570749965531
+
+#: Stand-in for a converged VQE's parameters.
+_STUB_BEST_PARAMS = np.array([0.11, 0.22, 0.33])
+
+
+class ExactSamplerVQE(QuantumProgram):
+    """Stand-in for a fragment VQE whose distribution is exact.
+
+    Diagonalizes the fragment's qubit Hamiltonian -- the same
+    ``SparsePauliOp`` a real VQE is built from -- restricted to the correct
+    alpha/beta particle-number sector, and squares the ground-state amplitudes
+    into a probability distribution: a deterministic, noise-free oracle using
+    the same Jordan-Wigner convention as a real fragment VQE. Like a fragment
+    VQE, it exposes its problem as sampled and an identity orbital rotation.
+    """
+
+    def __init__(
+        self,
+        problem: MolecularProblem,
+        spec: FragmentSpec,
+        *,
+        backend,
+        best_params: np.ndarray = _STUB_BEST_PARAMS,
+    ):
+        super().__init__(backend=backend)
+        self._problem = problem
+        self._spec = spec
+        self._best_params = best_params
+
+    @property
+    def best_probs(self) -> dict[int, dict[str, float]]:
+        return self._results.get("best_probs", {})
+
+    @property
+    def best_params(self) -> np.ndarray:
+        return self._best_params
+
+    @property
+    def sampled_problem(self) -> MolecularProblem:
+        return self._problem
+
+    @property
+    def orbital_rotation(self) -> np.ndarray:
+        return np.eye(self._spec.n_orbitals)
+
+    def has_results(self) -> bool:
+        return bool(self._results)
+
+    def run(self, **kwargs) -> Self:
+        """Diagonalize the fragment's qubit Hamiltonian and sample its ground state.
+
+        Restricts the dense matrix to the computational basis states matching
+        the fragment's target alpha/beta electron counts, which a molecular
+        Hamiltonian conserves separately, and diagonalizes that subspace.
+
+        Populates ``best_probs`` keyed by divi's interleaved qubit convention
+        (qubit ``2p`` / ``2p + 1`` are the alpha / beta spin-orbitals of
+        spatial orbital ``p``).
+        """
+        n_orb = self._spec.n_orbitals
+        n_alpha, n_beta = self._spec.n_alpha, self._spec.n_beta
+        n_qubits = 2 * n_orb
+        matrix = self._problem.hamiltonian.to_matrix()
+
+        valid_indices = []
+        valid_bits = []
+        for i in range(2**n_qubits):
+            # Qiskit's to_matrix() indexes basis states little-endian (qubit
+            # 0 rightmost); reverse to divi's convention (qubit k = char k).
+            bits = format(i, f"0{n_qubits}b")[::-1]
+            alpha_count = sum(int(bits[2 * p]) for p in range(n_orb))
+            beta_count = sum(int(bits[2 * p + 1]) for p in range(n_orb))
+            if alpha_count == n_alpha and beta_count == n_beta:
+                valid_indices.append(i)
+                valid_bits.append(bits)
+
+        subspace = matrix[np.ix_(valid_indices, valid_indices)]
+        _, eigenvectors = scipy.linalg.eigh(subspace)
+        ground_state = np.asarray(eigenvectors)[:, 0]
+
+        probs: dict[str, float] = {}
+        for bits, amplitude in zip(valid_bits, ground_state):
+            prob = float(np.abs(amplitude) ** 2)
+            if prob <= 1e-12:
+                continue
+            probs[bits] = prob
+
+        self._results["best_probs"] = {0: probs}
+        return self
+
+
+def _build_exact_sampler_program(
+    self, problem, fragment, *, backend, sampling_backend, seed, options
+):
+    """Replacement for a preparation's ``_build_program`` used by
+    :func:`build_exact_sampler_lassqd`."""
+    return ExactSamplerVQE(problem, fragment.spec, backend=backend)
+
+
+def build_exact_sampler_lassqd(backend, mocker, seed=0, problem=None, **overrides):
+    """Build a fresh ``LASSQD`` ensemble whose fragment programs sample an
+    exact ground state.
+
+    Builds two 2-orbital fragments on ``h4_chain()`` unless ``problem`` is
+    given, and patches the preparation's ``_build_program`` to return
+    :class:`ExactSamplerVQE` instances in place of real VQE optimizations.
+
+    Args:
+        overrides: Extra keyword arguments forwarded to ``LASSQD``,
+            overriding the defaults below (e.g. ``energy_tol``).
+
+    Returns:
+        ``(ensemble, state)``: the ensemble and its fresh initial state.
+    """
+    kwargs = dict(
+        active_spaces=[
+            FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+            FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+        ],
+        n_batches=2,
+        batch_size=8,
+        n_recovery_iterations=2,
+        seed=seed,
+        preparation=vqe_preparation(),
+    )
+    kwargs.update(overrides)
+    ensemble = LASSQD(
+        problem or MolecularProblem.from_molecule(h4_chain()),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(**kwargs),
+    )
+    mocker.patch.object(
+        type(ensemble.preparation), "_build_program", _build_exact_sampler_program
+    )
+
+    return ensemble, ensemble.initial_state()
+
+
+@pytest.fixture
+def exact_sampler_lassqd(dummy_expval_backend, mocker):
+    """The default ``exact_sampler`` ensemble, seeded at 0."""
+    return build_exact_sampler_lassqd(dummy_expval_backend, mocker, seed=0)
+
+
+_H4_FRAGMENTS = (
+    FragmentSpec(orbitals=(0, 1), n_alpha=1, n_beta=1),
+    FragmentSpec(orbitals=(2, 3), n_alpha=1, n_beta=1),
+)
+
+
+def _lassqd(backend, *, problem=None, preparation=None, **overrides):
+    """Two-fragment H4 ensemble with a sampling budget sized for the suite,
+    preparing fragments by three-iteration :func:`vqe_preparation` unless told
+    otherwise."""
+    kwargs = dict(
+        active_spaces=list(_H4_FRAGMENTS),
+        n_batches=2,
+        batch_size=8,
+        n_recovery_iterations=2,
+        seed=42,
+    )
+    kwargs.update(overrides)
+    return LASSQD(
+        problem or MolecularProblem.from_molecule(h4_chain()),
+        preparation=(
+            vqe_preparation(max_iterations=3) if preparation is None else preparation
+        ),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **lassqd_kwargs(**kwargs),
+    )
+
+
+def _raw_lassqd(backend, **kwargs):
+    """Construct LASSQD directly, without :func:`_lassqd`'s mode-aware defaults."""
+    return LASSQD(
+        MolecularProblem.from_molecule(h4_chain()),
+        backend=backend,
+        reporting_level=ReportingLevel.OFF,
+        **kwargs,
+        **lassqd_kwargs(active_spaces=list(_H4_FRAGMENTS)),
+    )
+
+
+_ONE_DETERMINANT_WARNING = (
+    "{fragment}'s recovered subspace contains only one determinant, so this round "
+    "captured no correlation energy for it. Use a larger sampling budget (the "
+    "backend's shots, SQDConfig's batch_size){extension} or a more expressive "
+    "preparation."
+)
+
+
+_EXPORT_STATES = {1: 2, 3: 1}
+
+
+def _h2o_states_lassqd(backend, mocker, orbital_update):
+    """Symmetric H2O CAS(4,4) with every determinant in the subspace, three
+    states requested, and the mean field it was built from."""
+    mean_field = scf.RHF(h2o_molecule(symmetry=True)).run(verbose=0)
+    ensemble, _ = build_exact_sampler_lassqd(
+        backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(mean_field),
+        active_spaces=[FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2)],
+        states=_EXPORT_STATES,
+        extension="doubles",
+        lambda_penalty=1.0,
+        n_batches=1,
+        n_recovery_iterations=1,
+        orbital_update=orbital_update,
+    )
+    return ensemble, mean_field
+
+
+def _dense_casci_states(mean_field, mo_coeff, n_active=4, nelec=(2, 2)):
+    """Every active-space root at ``mo_coeff`` from a dense diagonalisation,
+    keyed ``(multiplicity, index)``, as ``(energy, CI vector)``."""
+    casci = mcscf.CASCI(mean_field, n_active, nelec)
+    h1, energy_core = casci.get_h1eff(mo_coeff)
+    h2 = ao2mo.restore(1, casci.get_h2eff(mo_coeff), n_active)
+    energies, vectors = fci.direct_spin1.kernel(
+        h1,
+        h2,
+        n_active,
+        nelec,
+        nroots=math.comb(n_active, nelec[0]) * math.comb(n_active, nelec[1]),
+    )
+    roots: dict[tuple[int, int], tuple[float, np.ndarray]] = {}
+    for energy, vector in sorted(
+        zip(energies, vectors), key=lambda root: float(root[0])
+    ):
+        _, multiplicity = fci.spin_op.spin_square0(vector, n_active, nelec)
+        multiplicity = int(round(multiplicity))
+        index = sum(1 for label in roots if label[0] == multiplicity)
+        roots[(multiplicity, index)] = (float(energy) + energy_core, vector)
+    return roots
+
+
+@pytest.fixture(
+    params=[FixedOrbitals(), StateAveragedOrbitalUpdate()],
+    ids=["fixed", "state-averaged"],
+)
+def exported_h2o_states(request, dummy_expval_backend, mocker):
+    """One round of the H2O ensemble under each orbital update, with the dense
+    CASCI roots at its final orbitals."""
+    ensemble, mean_field = _h2o_states_lassqd(
+        dummy_expval_backend, mocker, request.param
+    )
+    ensemble.run(max_rounds=1)
+    return ensemble, _dense_casci_states(mean_field, ensemble.workflow_state.mo_coeff)
+
+
+def _solvated_h2o_lassqd(backend, mocker, orbital_update, states):
+    """H2O CAS(4,4) in ddCOSMO water, every determinant in the subspace, with
+    its gas-phase mean field."""
+    mean_field = scf.RHF(h2o_molecule()).run(verbose=0)
+    ensemble, _ = build_exact_sampler_lassqd(
+        backend,
+        mocker,
+        problem=MolecularProblem.from_molecule(mean_field),
+        active_spaces=[FragmentSpec(orbitals=(3, 4, 5, 6), n_alpha=2, n_beta=2)],
+        states=states,
+        extension="doubles",
+        lambda_penalty=1.0,
+        n_batches=1,
+        n_recovery_iterations=1,
+        orbital_update=orbital_update,
+        energy_tol=1e-10,
+        solvent=solvent.ddCOSMO(mean_field.mol),
+    )
+    return ensemble, mean_field
+
+
+#: Two requested states, as a round report records them.
+_REPORTED_STATES = (
+    ElectronicState(multiplicity=1, index=0, energy=-1.25, spin_square=0.0),
+    ElectronicState(multiplicity=3, index=0, energy=-1.0, spin_square=2.0),
+)
+
+
+def _round_report(
+    number,
+    energy_change,
+    orbital_converged=False,
+    states=(),
+    averaged_energy=None,
+    saddle_check=None,
+):
+    return LASSQDRoundReport(
+        number=number,
+        energy=-1.25,
+        energy_change=energy_change,
+        subspace_sizes=(2, 3),
+        orbital_iterations=3,
+        orbital_evaluations=4,
+        orbital_gradient_norm=0.01,
+        orbital_converged=orbital_converged,
+        rotation_pairs=5,
+        recovery_seconds=0.2,
+        orbital_seconds=0.3,
+        states=states,
+        averaged_energy=averaged_energy,
+        saddle_check=saddle_check,
+    )
+
+
+@pytest.fixture
+def nh2_radical():
+    """NH2, a doublet, with its ROHF reference: orbital 4 singly occupied."""
+    return scf.ROHF(
+        gto.M(
+            atom="N 0 0 0; H 0 0.8 0.6; H 0 -0.8 0.6",
+            basis="sto-3g",
+            spin=1,
+            verbose=0,
+        )
+    ).run(verbose=0)
+
+
+def _linearly_dependent_h2():
+    """H2 whose basis repeats a function, so the mean field keeps 4 of 6."""
+    shells = gto.basis.parse("H S\n 1.0 1.0\nH S\n 1.0 1.0\nH S\n 0.3 1.0")
+    molecule = gto.M(atom="H 0 0 0; H 0 0 0.74", basis={"H": shells}, verbose=0)
+    mean_field = scf.addons.remove_linear_dep_(scf.RHF(molecule))
+    mean_field.init_guess = "1e"
+    return mean_field.run(verbose=0)

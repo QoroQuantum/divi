@@ -12,9 +12,9 @@ optional electron counts — or its subclass
 :class:`~divi.qprog.problems.MolecularProblem`, built from spatial-orbital
 integrals or a molecule via
 :meth:`~divi.qprog.problems.MolecularProblem.from_molecule`.
-:class:`~divi.qprog.workflows.VQEHyperparameterSweep` sweeps over either
+:class:`~divi.qprog.ensembles.VQEHyperparameterSweep` sweeps over either
 problem type via its ``problems`` argument.
-:class:`~divi.qprog.workflows.LASSQD` requires a
+:class:`~divi.qprog.ensembles.lassqd.LASSQD` requires a
 :class:`~divi.qprog.problems.MolecularProblem` built with ``from_molecule``
 from a PySCF input, since it re-optimises molecular orbitals in the
 atomic-orbital basis that only that constructor path retains.

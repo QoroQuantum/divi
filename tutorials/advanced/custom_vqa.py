@@ -28,7 +28,7 @@ import pennylane as qp
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 
-from divi.qprog import CustomVQA
+from divi.qprog.algorithms import CustomVQA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from tutorials._backend import get_backend
 

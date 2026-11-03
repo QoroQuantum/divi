@@ -29,12 +29,11 @@ from divi.hamiltonians.trotterization import (
 )
 from divi.pipeline import Stage
 from divi.pipeline.stages import TrotterSpecStage
+from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog._program_checkpoint import _to_jsonable
 from divi.qprog.initial_states import InitialState
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
-from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
 from divi.qprog.problems import QAOAProblem
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from divi.reporting._events import ProgressEvent
 
 logger = logging.getLogger(__name__)
@@ -308,7 +307,9 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
             RuntimeError: If no solution has been sampled yet.
         """
         if "decoded_solution" not in self._results:
-            raise RuntimeError(f"QAOA.solution is not available yet. {_SAMPLE_HINT}")
+            raise RuntimeError(
+                f"QAOA.solution is not available yet. {self._SAMPLE_HINT}"
+            )
         return self._results["decoded_solution"]
 
     @property
@@ -323,7 +324,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
         """
         if "solution_bitstring" not in self._results:
             raise RuntimeError(
-                f"QAOA.solution_bitstring is not available yet. {_SAMPLE_HINT}"
+                f"QAOA.solution_bitstring is not available yet. {self._SAMPLE_HINT}"
             )
         return self._results["solution_bitstring"]
 
@@ -427,7 +428,7 @@ class QAOA(SolutionSamplingMixin, VariationalQuantumAlgorithm):
                 penalties.
 
         Returns:
-            List of :class:`~divi.qprog.SolutionEntry`.
+            List of :class:`~divi.qprog.mixins.SolutionEntry`.
         """
         if n < 0:
             raise ValueError(f"n must be non-negative, got {n}")

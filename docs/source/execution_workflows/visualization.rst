@@ -62,7 +62,7 @@ The standalone API makes the scan call explicit:
    from qiskit.quantum_info import SparsePauliOp
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import GenericLayerAnsatz, VQE
+   from divi.qprog.algorithms import GenericLayerAnsatz, VQE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import HamiltonianProblem
    from divi.viz import scan_1d, scan_2d

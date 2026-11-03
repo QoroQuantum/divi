@@ -16,6 +16,7 @@ import inspect
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import cache
 from itertools import combinations, pairwise, product
 from numbers import Integral
@@ -35,6 +36,7 @@ from qiskit.circuit.library import (
     RZZGate,
     XXPlusYYGate,
 )
+from scipy.linalg import expm
 from scipy.optimize import least_squares
 
 from divi._optional import import_optional
@@ -50,34 +52,53 @@ def _require_trainable_params(n_params: int, ansatz_name: str) -> int:
     return n_params
 
 
-def _require_n_electrons(kwargs: dict, ansatz_name: str) -> int:
-    """Pop ``n_electrons``, rejecting a missing one by name.
+@dataclass(frozen=True)
+class ElectronCounts:
+    """Electron counts of the reference determinant a chemistry ansatz builds on.
+
+    A :class:`~divi.qprog.algorithms.VQE` derives them from its
+    :class:`~divi.qprog.problems.HamiltonianProblem` and passes them to the
+    ansatz as ``reference``.
+
+    Args:
+        n_electrons: Total electron count.
+        n_alpha: Spin-up electron count. Set together with ``n_beta``; with both
+            unset, ``n_electrons`` splits evenly.
+        n_beta: Spin-down electron count.
+    """
+
+    n_electrons: int
+    n_alpha: int | None = None
+    n_beta: int | None = None
+
+
+def _require_reference(
+    reference: ElectronCounts | None, ansatz_name: str
+) -> ElectronCounts:
+    """Reject a missing reference by name.
 
     A chemistry ansatz cannot prepare its reference state or enumerate
-    excitations without it, so reject the missing setting at the boundary that
-    can name the ansatz which needs it.
+    excitations without electron counts, so reject the missing setting at the
+    boundary that can name the ansatz which needs it.
     """
-    n_electrons = kwargs.pop("n_electrons", None)
-    if n_electrons is None:
+    if reference is None:
         raise ValueError(
             f"{ansatz_name} requires n_electrons: it builds excitations from a "
             "reference state, which needs the electron count. Set n_electrons "
             "on the program's HamiltonianProblem (MolecularProblem "
             "supplies it automatically)."
         )
-    return n_electrons
+    return reference
 
 
-def _require_balanced_spin(kwargs: dict, n_electrons: int, ansatz_name: str) -> None:
-    """Pop ``n_alpha``/``n_beta``, rejecting a spin-polarised reference by name."""
-    n_alpha = kwargs.pop("n_alpha", None)
-    n_beta = kwargs.pop("n_beta", None)
-    if n_alpha != n_beta or n_electrons % 2:
+def _require_balanced_spin(reference: ElectronCounts, ansatz_name: str) -> None:
+    """Reject a spin-polarised reference by name."""
+    if reference.n_alpha != reference.n_beta or reference.n_electrons % 2:
         raise ValueError(
             f"{ansatz_name} prepares a closed-shell reference, so it cannot "
-            f"honour n_electrons={n_electrons}, n_alpha={n_alpha}, "
-            f"n_beta={n_beta}. Use UCCSDAnsatz or LUCJAnsatz for a "
-            "spin-polarised reference."
+            f"honour n_electrons={reference.n_electrons}, "
+            f"n_alpha={reference.n_alpha}, n_beta={reference.n_beta}. Use "
+            "UCCSDAnsatz or LUCJAnsatz for a spin-polarised reference."
         )
 
 
@@ -89,14 +110,29 @@ class Ansatz(ABC):
         """Returns the human-readable name of the ansatz."""
         return self.__class__.__name__
 
-    @staticmethod
+    def __repr__(self) -> str:
+        options = ", ".join(
+            f"{key}={value!r}"
+            for key, value in vars(self).items()
+            if not key.startswith("_")
+        )
+        return f"{type(self).__name__}({options})"
+
     @abstractmethod
-    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
-        """Returns the number of parameters required by the ansatz for one layer."""
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
+        """Returns the number of parameters required by the ansatz for one layer.
+
+        Args:
+            n_qubits: Number of qubits in the circuit.
+            reference: Electron counts of the reference determinant. Only the
+                chemistry ansätze read it.
+        """
         raise NotImplementedError
 
     def parameter_frequencies(
-        self, n_qubits: int, **kwargs
+        self, n_qubits: int, reference: ElectronCounts | None = None
     ) -> Sequence[tuple[float, int]] | None:
         """One layer's per-parameter ``(omega, order)``, or ``None`` for ``(1, 1)``.
 
@@ -109,7 +145,13 @@ class Ansatz(ABC):
         return None
 
     @abstractmethod
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
         """
         Builds the ansatz circuit and returns a list of operations.
 
@@ -117,10 +159,50 @@ class Ansatz(ABC):
             params: Parameter array for the ansatz.
             n_qubits (int): Number of qubits in the circuit.
             n_layers (int): Number of ansatz layers.
-            **kwargs: Additional arguments specific to the ansatz.
+            reference: Electron counts of the reference determinant. Only the
+                chemistry ansätze read it.
 
         Returns:
             QuantumCircuit: The ansatz circuit on ``n_qubits`` qubits.
+        """
+        raise NotImplementedError
+
+
+class AmplitudeSeedError(ValueError):
+    """The coupled-cluster amplitudes cannot be mapped onto the ansatz's parameters."""
+
+
+class AmplitudeSeededAnsatz(Ansatz):
+    """An ansatz whose parameters correspond to coupled-cluster amplitudes, so a
+    CCSD solution can seed them."""
+
+    @abstractmethod
+    def params_from_amplitudes(
+        self,
+        t1: tuple[np.ndarray, np.ndarray],
+        t2: tuple[np.ndarray, np.ndarray, np.ndarray],
+        n_qubits: int,
+        reference: ElectronCounts,
+    ) -> np.ndarray:
+        """One layer's parameters realising unrestricted coupled-cluster amplitudes.
+
+        The correspondence is positional, so the amplitudes must come from a
+        solution in the orbitals the ansatz acts on. Later layers left at zero
+        leave the state unchanged.
+
+        Args:
+            t1: ``(t1_alpha, t1_beta)`` in PySCF's UCCSD layout.
+            t2: ``(t2_alpha_alpha, t2_alpha_beta, t2_beta_beta)`` in PySCF's UCCSD
+                layout.
+            n_qubits: Number of qubits in the circuit.
+            reference: Electron counts of the reference determinant.
+
+        Returns:
+            The parameters of one layer.
+
+        Raises:
+            AmplitudeSeedError: If the amplitudes cannot be mapped onto this
+                ansatz's configuration.
         """
         raise NotImplementedError
 
@@ -277,12 +359,20 @@ class GenericLayerAnsatz(Ansatz):
                     "a Sequence of (int, int) tuples."
                 )
 
-    def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """``sum(_gate_n_params(g) for g in gate_sequence) * n_qubits``."""
         per_qubit = sum(self._gate_param_counts)
         return _require_trainable_params(per_qubit * n_qubits, self.name)
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
         qc = QuantumCircuit(n_qubits)
         gate_param_counts = self._gate_param_counts
         per_qubit = sum(gate_param_counts)
@@ -340,14 +430,22 @@ class BrickworkAnsatz(Ansatz):
         second = [(q, q + 1) for q in range(1, n_qubits - 1, 2)]
         return first, second
 
-    def n_params_per_layer(self, n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """``3 * n_qubits`` rotations plus one angle per brick."""
         first, second = self._bricks(n_qubits)
         return _require_trainable_params(
             3 * n_qubits + 2 * len(first) + len(second), self.name
         )
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
         first, second = self._bricks(n_qubits)
         sublayers = (
             (RXGate, first),
@@ -416,8 +514,9 @@ class QAOAAnsatz(Ansatz):
         self.local_field = local_field
         self._emit_local_field = _QAOA_LOCAL_FIELDS[local_field]
 
-    @staticmethod
-    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """Per-layer parameter count.
 
         * ``n_qubits == 1`` → ``1`` (single local-field rotation)
@@ -432,7 +531,13 @@ class QAOAAnsatz(Ansatz):
             n_params = 2 * n_qubits
         return _require_trainable_params(n_params, QAOAAnsatz.__name__)
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
         """Build the QAOA ansatz circuit.
 
         Args:
@@ -440,7 +545,7 @@ class QAOAAnsatz(Ansatz):
                 ``n_layers * n_params_per_layer(n_qubits)``.
             n_qubits: Number of qubits.
             n_layers: Number of QAOA layers.
-            **kwargs: Additional unused arguments.
+            reference: Unused.
 
         Returns:
             QuantumCircuit: Qiskit circuit implementing the QAOA ansatz.
@@ -565,7 +670,7 @@ def _uccsd_template(
     return reference, ansatz, excitations
 
 
-def _uccsd_excitations(
+def uccsd_excitations(
     n_spatial: int, n_particles: tuple[int, int]
 ) -> tuple[tuple[tuple[int, ...], ...], ...]:
     """UCCSD excitation list, as ``(occupied, unoccupied)`` blocked indices.
@@ -575,7 +680,7 @@ def _uccsd_excitations(
     return _uccsd_template(n_spatial, n_particles)[2]
 
 
-class UCCSDAnsatz(Ansatz):
+class UCCSDAnsatz(AmplitudeSeededAnsatz):
     """
     Unitary Coupled Cluster Singles and Doubles (UCCSD) ansatz.
 
@@ -585,51 +690,110 @@ class UCCSDAnsatz(Ansatz):
 
     Excitations and the Hartree-Fock reference come from ``qiskit_nature``,
     which requires the ``chem`` extra. Spin-imbalanced references are
-    supported by passing ``n_alpha`` and ``n_beta``; without them the
-    closed-shell split ``n_alpha = n_beta = n_electrons // 2`` is used.
+    supported through the ``n_alpha`` and ``n_beta`` of the
+    :class:`ElectronCounts`; without them the closed-shell split
+    ``n_alpha = n_beta = n_electrons // 2`` is used.
     """
 
-    @staticmethod
-    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """Number of UCCSD excitation amplitudes for the given reference.
 
-        Requires ``n_electrons``; optionally accepts ``n_alpha`` / ``n_beta``.
+        Requires ``reference``.
         """
-        n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
+        counts = _require_reference(reference, "UCCSDAnsatz")
         n_spatial, n_particles = _resolve_spin_counts(
             n_qubits,
-            n_electrons,
-            kwargs.get("n_alpha"),
-            kwargs.get("n_beta"),
+            counts.n_electrons,
+            counts.n_alpha,
+            counts.n_beta,
             "UCCSDAnsatz",
         )
         _, template, _ = _uccsd_template(n_spatial, n_particles)
         return _require_trainable_params(template.num_parameters, UCCSDAnsatz.__name__)
 
-    def parameter_frequencies(self, n_qubits: int, **kwargs):
+    def parameter_frequencies(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ):
         """``{1, 2}`` per amplitude: each excitation exponentiates a generator
         whose eigenvalues span two distinct gaps."""
-        return [(1.0, 2)] * UCCSDAnsatz.n_params_per_layer(n_qubits, **kwargs)
+        return [(1.0, 2)] * self.n_params_per_layer(n_qubits, reference)
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        n_electrons = _require_n_electrons(kwargs, "UCCSDAnsatz")
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
+        counts = _require_reference(reference, "UCCSDAnsatz")
         n_spatial, n_particles = _resolve_spin_counts(
             n_qubits,
-            n_electrons,
-            kwargs.get("n_alpha"),
-            kwargs.get("n_beta"),
+            counts.n_electrons,
+            counts.n_alpha,
+            counts.n_beta,
             "UCCSDAnsatz",
         )
-        reference, template, _ = _uccsd_template(n_spatial, n_particles)
+        hartree_fock, template, _ = _uccsd_template(n_spatial, n_particles)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
         qc = QuantumCircuit(n_qubits)
-        qc.compose(reference, inplace=True)
+        qc.compose(hartree_fock, inplace=True)
         for layer in params:
             qc.compose(
                 template.assign_parameters(list(layer), inplace=False), inplace=True
             )
         return qc
+
+    def params_from_amplitudes(
+        self,
+        t1: tuple[np.ndarray, np.ndarray],
+        t2: tuple[np.ndarray, np.ndarray, np.ndarray],
+        n_qubits: int,
+        reference: ElectronCounts,
+    ) -> np.ndarray:
+        """Each excitation takes its own amplitude: ``-t1`` for singles, ``+t2``
+        for doubles.
+
+        The amplitudes become antisymmetric spin-orbital tensors, occupied spin
+        orbitals before virtual ones, which are read back through the blocked
+        register (alpha orbitals first, then beta).
+        """
+        counts = _require_reference(reference, "UCCSDAnsatz")
+        n_spatial, n_particles = _resolve_spin_counts(
+            n_qubits,
+            counts.n_electrons,
+            counts.n_alpha,
+            counts.n_beta,
+            "UCCSDAnsatz",
+        )
+        n_alpha, n_beta = n_particles
+        cc_addons = import_optional(
+            "pyscf.cc.addons", extra="chem", capability="UCCSDAnsatz"
+        )
+        n_virtual = (n_spatial - n_alpha, n_spatial - n_beta)
+        orbspin = np.repeat([0, 1, 0, 1], (n_alpha, n_beta, *n_virtual))
+        t1_spin = cc_addons.spatial2spin(t1, orbspin)
+        t2_spin = cc_addons.spatial2spin(t2, orbspin)
+
+        def occupied_index(blocked: int) -> int:
+            spin, spatial = divmod(blocked, n_spatial)
+            return spatial + spin * n_alpha
+
+        def virtual_index(blocked: int) -> int:
+            spin, spatial = divmod(blocked, n_spatial)
+            return spatial - n_particles[spin] + spin * n_virtual[0]
+
+        amplitudes = []
+        for occupied, unoccupied in uccsd_excitations(n_spatial, n_particles):
+            occupied_indices = [occupied_index(index) for index in occupied]
+            virtual_indices = [virtual_index(index) for index in unoccupied]
+            if len(occupied) == 1:
+                amplitudes.append(-t1_spin[occupied_indices[0], virtual_indices[0]])
+            else:
+                amplitudes.append(t2_spin[tuple(occupied_indices + virtual_indices)])
+        return np.array(amplitudes)
 
 
 class HartreeFockAnsatz(Ansatz):
@@ -643,29 +807,38 @@ class HartreeFockAnsatz(Ansatz):
     ``n_alpha`` and ``n_beta`` raise ``ValueError``.
     """
 
-    @staticmethod
-    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """``len(singles) + len(doubles)`` spin-conserving excitations out of the
-        reference set by ``n_electrons`` (required kwarg)."""
-        n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
-        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
-        _require_balanced_spin(kwargs, n_electrons, "HartreeFockAnsatz")
+        reference set by ``reference`` (required)."""
+        counts = _require_reference(reference, "HartreeFockAnsatz")
+        singles, doubles = _spin_conserving_excitations(counts.n_electrons, n_qubits)
+        _require_balanced_spin(counts, "HartreeFockAnsatz")
         n_params = len(singles) + len(doubles)
         return _require_trainable_params(n_params, HartreeFockAnsatz.__name__)
 
-    def parameter_frequencies(self, n_qubits: int, **kwargs):
+    def parameter_frequencies(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ):
         """``{1/2, 1}`` per amplitude: both ``SingleExcitation`` and
         ``DoubleExcitation`` have generator eigenvalues ``{0, 0, +-1/2}``."""
-        return [(0.5, 2)] * HartreeFockAnsatz.n_params_per_layer(n_qubits, **kwargs)
+        return [(0.5, 2)] * self.n_params_per_layer(n_qubits, reference)
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        n_electrons = _require_n_electrons(kwargs, "HartreeFockAnsatz")
-        singles, doubles = _spin_conserving_excitations(n_electrons, n_qubits)
-        _require_balanced_spin(kwargs, n_electrons, "HartreeFockAnsatz")
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
+        counts = _require_reference(reference, "HartreeFockAnsatz")
+        singles, doubles = _spin_conserving_excitations(counts.n_electrons, n_qubits)
+        _require_balanced_spin(counts, "HartreeFockAnsatz")
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
         qc = QuantumCircuit(n_qubits)
-        for qubit, occupied in enumerate(_hf_occupation(n_electrons, n_qubits)):
+        for qubit, occupied in enumerate(_hf_occupation(counts.n_electrons, n_qubits)):
             if occupied:
                 qc.x(qubit)
 
@@ -687,16 +860,23 @@ class QCCAnsatz(Ansatz):
     ``ZZ``) on adjacent qubit pairs.
     """
 
-    @staticmethod
-    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """``n_qubits`` single-qubit ``RY`` rotations plus ``3 * (n_qubits - 1)``
         entangler parameters (one ``XX``, ``YY``, ``ZZ`` per adjacent pair)."""
         n_params = n_qubits + 3 * (n_qubits - 1)
         return _require_trainable_params(n_params, QCCAnsatz.__name__)
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
-        n_electrons = _require_n_electrons(kwargs, "QCCAnsatz")
-        occupation = _hf_occupation(n_electrons, n_qubits)
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
+        counts = _require_reference(reference, "QCCAnsatz")
+        occupation = _hf_occupation(counts.n_electrons, n_qubits)
         params = np.asarray(params, dtype=object).reshape(n_layers, -1)
 
         qc = QuantumCircuit(n_qubits)
@@ -933,20 +1113,6 @@ def lucj_jastrow_pairs(
     return same, opposite
 
 
-def _lucj_layout(
-    n_orb: int, kwargs: dict
-) -> tuple[int, list[tuple[int, int]], list[tuple[int, int]], int | None]:
-    """A layer's structure: independent spin sectors, Jastrow pairs, and the
-    rotation depth."""
-    same, opposite = lucj_jastrow_pairs(
-        n_orb,
-        kwargs.get("same_spin_pairs"),
-        kwargs.get("opposite_spin_pairs"),
-    )
-    n_sectors = 1 if kwargs.get("shared_spin_params") else 2
-    return n_sectors, same, opposite, kwargs.get("rotation_depth")
-
-
 def _lucj_orbital_count(n_qubits: int) -> int:
     if n_qubits % 2:
         raise ValueError(
@@ -988,7 +1154,22 @@ def _layered(
     return [coupling for layer in layers for coupling in layer]
 
 
-class LUCJAnsatz(Ansatz):
+def _one_body_from_excitations(
+    block: np.ndarray, n_orb: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Diagonalise the one-body operator an occupied-virtual block defines.
+
+    Returns ``(eigenvectors, eigenvalues)``.
+    """
+    n_occupied, n_virtual = block.shape
+    one_body = np.zeros((n_orb, n_orb))
+    one_body[:n_occupied, n_occupied : n_occupied + n_virtual] = block
+    one_body[n_occupied : n_occupied + n_virtual, :n_occupied] = block.T
+    eigenvalues, eigenvectors = np.linalg.eigh(one_body)
+    return eigenvectors, eigenvalues
+
+
+class LUCJAnsatz(AmplitudeSeededAnsatz):
     """Local unitary cluster Jastrow ansatz.
 
     Each layer applies ``exp(K) exp(iJ) exp(-K)``, where ``K`` is a general
@@ -1000,11 +1181,24 @@ class LUCJAnsatz(Ansatz):
     sample-based diagonalisation requires -- its symmetry filter checks alpha
     and beta populations separately.
 
-    That default is the flavour the literature uses. Keywords select others:
-    ``trailing_rotation`` adds a closing orbital rotation per layer,
-    ``shared_spin_params`` ties the two spin sectors together, ``rotation_depth``
-    shortens each rotation network, and ``same_spin_pairs`` /
-    ``opposite_spin_pairs`` reshape ``J``. See :meth:`build`.
+    That default is the flavour the literature uses. The arguments select others.
+
+    Args:
+        trailing_rotation: Close each layer with an independent orbital
+            rotation rather than the inverse of that layer's own. At
+            ``n_layers=1`` that is the truncated LUCJ circuit
+            ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` of arXiv:2405.05068 and
+            arXiv:2512.14936; without it, the same circuit lacking ``exp(K2)``.
+        shared_spin_params: Drive both spin sectors from one set of rotation and
+            same-spin Coulomb parameters, halving the count and imposing spin
+            symmetry.
+        rotation_depth: Truncate each rotation's brick-wall network to this many
+            half-layers. ``None`` keeps the full ``n_orb`` half-layers.
+        same_spin_pairs: Replace the Jastrow's default same-spin nearest
+            neighbours with explicit ``(orbital, orbital)`` pairs, from ``[]``
+            to every pair.
+        opposite_spin_pairs: Replace the Jastrow's default on-site opposite-spin
+            pairs with explicit ``(orbital, orbital)`` pairs.
 
     Assumes the interleaved Jordan-Wigner ordering that
     ``divi.hamiltonians._chem._spo_from_integrals`` produces: qubit ``2p`` is
@@ -1016,15 +1210,43 @@ class LUCJAnsatz(Ansatz):
     ladder after the last layer, instead of around each Givens rotation.
 
     ``n_electrons`` must be at most ``n_qubits``. Spin-imbalanced references
-    are supported by passing ``n_alpha`` and ``n_beta``; without them the
-    closed-shell split ``n_alpha = n_beta = n_electrons // 2`` is used, which
-    requires an even ``n_electrons``. A single spatial orbital offers no
-    variational freedom: only the on-site diagonal term survives, and its value
-    cannot change the state.
+    are supported through the ``n_alpha`` and ``n_beta`` of the
+    :class:`ElectronCounts`; without them the closed-shell split
+    ``n_alpha = n_beta = n_electrons // 2`` is used, which requires an even
+    ``n_electrons``. A single spatial orbital offers no variational freedom:
+    only the on-site diagonal term survives, and its value cannot change the
+    state.
     """
 
-    @staticmethod
-    def n_params_per_layer(n_qubits: int, **kwargs) -> int:
+    def __init__(
+        self,
+        *,
+        trailing_rotation: bool = False,
+        shared_spin_params: bool = False,
+        rotation_depth: int | None = None,
+        same_spin_pairs: Sequence[Sequence[int]] | None = None,
+        opposite_spin_pairs: Sequence[Sequence[int]] | None = None,
+    ) -> None:
+        self.trailing_rotation = trailing_rotation
+        self.shared_spin_params = shared_spin_params
+        self.rotation_depth = rotation_depth
+        self.same_spin_pairs = same_spin_pairs
+        self.opposite_spin_pairs = opposite_spin_pairs
+
+    def _layout(
+        self, n_orb: int
+    ) -> tuple[int, list[tuple[int, int]], list[tuple[int, int]], int | None]:
+        """A layer's structure: independent spin sectors, Jastrow pairs, and the
+        rotation depth."""
+        same, opposite = lucj_jastrow_pairs(
+            n_orb, self.same_spin_pairs, self.opposite_spin_pairs
+        )
+        n_sectors = 1 if self.shared_spin_params else 2
+        return n_sectors, same, opposite, self.rotation_depth
+
+    def n_params_per_layer(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ) -> int:
         """Per-layer parameter count, where ``n_orb = n_qubits // 2``.
 
         A full-depth rotation takes two parameters per Givens pair -- an angle
@@ -1040,18 +1262,20 @@ class LUCJAnsatz(Ansatz):
         arguments shrink the count further; see :meth:`build`.
         """
         n_orb = _lucj_orbital_count(n_qubits)
-        n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
+        n_sectors, same_pairs, opposite_pairs, depth = self._layout(n_orb)
         n_params = n_sectors * n_rotation_params(
             n_orb, orbital_phases=False, depth=depth
         )
         n_params += len(opposite_pairs) + n_sectors * len(same_pairs)
-        if kwargs.get("trailing_rotation"):
+        if self.trailing_rotation:
             n_params += n_sectors * n_rotation_params(
                 n_orb, orbital_phases=True, depth=depth
             )
         return _require_trainable_params(n_params, LUCJAnsatz.__name__)
 
-    def parameter_frequencies(self, n_qubits: int, **kwargs):
+    def parameter_frequencies(
+        self, n_qubits: int, reference: ElectronCounts | None = None
+    ):
         """Per-parameter frequency families, which differ by role.
 
         A gate's mixing angle sets eigenphases ``+-theta / 2``, so one occurrence
@@ -1065,7 +1289,7 @@ class LUCJAnsatz(Ansatz):
         ``shared_spin_params`` parameters drive both sectors, doubling it.
         """
         n_orb = n_qubits // 2
-        n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
+        n_sectors, same_pairs, opposite_pairs, depth = self._layout(n_orb)
         n_gates = len(_rotation_schedule(n_orb, depth))
         sandwiched = 4 // n_sectors
         trailing = 2 // n_sectors
@@ -1075,13 +1299,19 @@ class LUCJAnsatz(Ansatz):
             frequencies += [(0.5, 2 * sandwiched), (1.0, 2 * sandwiched)] * n_gates
         frequencies += [(1.0, 1)] * len(opposite_pairs)
         frequencies += [(1.0, trailing)] * (n_sectors * len(same_pairs))
-        if kwargs.get("trailing_rotation"):
+        if self.trailing_rotation:
             for _sector in range(n_sectors):
                 frequencies += [(0.5, 2 * trailing), (1.0, 2 * trailing)] * n_gates
                 frequencies += [(1.0, trailing)] * n_orb
         return frequencies
 
-    def build(self, params, n_qubits: int, n_layers: int, **kwargs) -> QuantumCircuit:
+    def build(
+        self,
+        params,
+        n_qubits: int,
+        n_layers: int,
+        reference: ElectronCounts | None = None,
+    ) -> QuantumCircuit:
         """Build the LUCJ ansatz circuit.
 
         Args:
@@ -1089,26 +1319,9 @@ class LUCJAnsatz(Ansatz):
                 ``n_layers * n_params_per_layer(n_qubits)``.
             n_qubits: Number of qubits. Must be even.
             n_layers: Number of LUCJ layers.
-            **kwargs: Must include ``n_electrons`` (at most ``n_qubits``).
-                Optionally accepts ``n_alpha`` / ``n_beta`` to select a
-                spin-imbalanced reference determinant, and
-                ``trailing_rotation`` (default ``False``) to close each layer
-                with an independent orbital rotation rather than the inverse of
-                that layer's own. At ``n_layers=1`` that is the truncated LUCJ
-                circuit ``exp(K2) exp(-K1) exp(iJ1) exp(K1)`` of
-                arXiv:2405.05068 and arXiv:2512.14936; without it, the same
-                circuit lacking ``exp(K2)``.
-
-                Three further keywords trade expressiveness for parameters.
-                ``shared_spin_params`` (default ``False``) drives both spin sectors
-                from one set of rotation and same-spin Coulomb parameters,
-                halving the count and imposing spin symmetry.
-                ``rotation_depth`` (default ``None``, the full ``n_orb``
-                half-layers) truncates each rotation's brick-wall network.
-                ``same_spin_pairs`` and ``opposite_spin_pairs`` replace the
-                Jastrow's default local pattern -- same-spin nearest neighbours
-                and on-site opposite-spin pairs -- with explicit
-                ``(orbital, orbital)`` pairs, from ``[]`` to every pair.
+            reference: Electron counts of the reference determinant (required).
+                ``n_electrons`` is at most ``n_qubits``, and ``n_alpha`` /
+                ``n_beta`` select a spin-imbalanced one.
 
         Parameters are consumed in the order: each sandwiched rotation (alpha
         sector then beta) as an ``(angle, phase)`` pair per Givens gate in
@@ -1127,21 +1340,21 @@ class LUCJAnsatz(Ansatz):
                 ``n_alpha``/``n_beta``, or if ``params`` is shorter than
                 ``n_layers * n_params_per_layer(n_qubits)``.
         """
-        n_electrons = _require_n_electrons(kwargs, "LUCJAnsatz")
-        if n_electrons > n_qubits:
+        counts = _require_reference(reference, "LUCJAnsatz")
+        if counts.n_electrons > n_qubits:
             raise ValueError(
-                f"n_electrons ({n_electrons}) cannot exceed n_qubits ({n_qubits})."
+                f"n_electrons ({counts.n_electrons}) cannot exceed n_qubits "
+                f"({n_qubits})."
             )
         n_orb, (n_alpha, n_beta) = _resolve_spin_counts(
             n_qubits,
-            n_electrons,
-            kwargs.get("n_alpha"),
-            kwargs.get("n_beta"),
+            counts.n_electrons,
+            counts.n_alpha,
+            counts.n_beta,
             "LUCJAnsatz",
         )
 
-        trailing_rotation = bool(kwargs.get("trailing_rotation", False))
-        per_layer = LUCJAnsatz.n_params_per_layer(n_qubits, **kwargs)
+        per_layer = self.n_params_per_layer(n_qubits)
         flat = np.asarray(params, dtype=object).flatten()
         n_required = n_layers * per_layer
         if flat.size < n_required:
@@ -1156,7 +1369,7 @@ class LUCJAnsatz(Ansatz):
         for p in range(n_beta):
             circuit.x(2 * p + 1)
 
-        n_sectors, same_pairs, opposite_pairs, depth = _lucj_layout(n_orb, kwargs)
+        n_sectors, same_pairs, opposite_pairs, depth = self._layout(n_orb)
         sandwiched_size = n_rotation_params(n_orb, orbital_phases=False, depth=depth)
         trailing_size = n_rotation_params(n_orb, orbital_phases=True, depth=depth)
 
@@ -1199,7 +1412,7 @@ class LUCJAnsatz(Ansatz):
                     depth=depth,
                 )
 
-            if trailing_rotation:
+            if self.trailing_rotation:
                 trailing_params = []
                 for _sector in range(n_sectors):
                     trailing_params.append(flat[cursor : cursor + trailing_size])
@@ -1215,6 +1428,118 @@ class LUCJAnsatz(Ansatz):
 
         _emit_jordan_wigner_signs(circuit, n_orb)
         return circuit
+
+    def params_from_amplitudes(
+        self,
+        t1: tuple[np.ndarray, np.ndarray],
+        t2: tuple[np.ndarray, np.ndarray, np.ndarray],
+        n_qubits: int,
+        reference: ElectronCounts,
+    ) -> np.ndarray:
+        """Map the amplitudes onto the parameters through a double factorisation.
+
+        The leading singular triplet of the opposite-spin doubles, reshaped over
+        ``(occupied, virtual)`` pairs, gives one one-body operator per spin. Each
+        spin's eigenbasis is its rotation, the eigenvalues give
+        ``J_pq = sigma * d_p * d_q``, and ``t1`` supplies the trailing rotation.
+        Opposite-spin doubles are used because a spin-polarised reference with
+        one electron of a spin has no same-spin doubles; same-spin Coulomb
+        weights stay at zero.
+
+        The result is a starting point, not an encoding of the amplitudes: one
+        Jastrow layer holds only the leading factorisation term, ``J`` is
+        projected onto the layer's pair pattern, and the ``RZZ`` gates omit the
+        one-body remainder of ``exp(i J n_p n_q)``.
+
+        Raises:
+            AmplitudeSeedError: If ``shared_spin_params`` is set, if the
+                opposite-spin doubles block is empty, or if a spin sector's
+                rotation cannot be realised.
+        """
+        if self.shared_spin_params:
+            raise AmplitudeSeedError(
+                "the double factorisation gives each spin sector its own "
+                "rotation, which shared_spin_params cannot hold."
+            )
+
+        n_orb = _lucj_orbital_count(n_qubits)
+        _, same_pairs, opposite_pairs, depth = self._layout(n_orb)
+        t1_alpha, t1_beta = t1
+        t2_opposite = np.asarray(t2[1])
+
+        n_occupied_alpha, n_occupied_beta, n_virtual_alpha, n_virtual_beta = (
+            t2_opposite.shape
+        )
+        if min(t2_opposite.shape) == 0:
+            raise AmplitudeSeedError(
+                "the opposite-spin doubles block is empty, which leaves all-zero "
+                "parameters, a stationary point a gradient optimiser cannot leave."
+            )
+
+        # Rectangular when the spin sectors differ in size.
+        matrix = t2_opposite.transpose(0, 2, 1, 3).reshape(
+            n_occupied_alpha * n_virtual_alpha, n_occupied_beta * n_virtual_beta
+        )
+        left, singular_values, right = np.linalg.svd(matrix)
+        scale = float(singular_values[0])
+
+        rotation_alpha, diagonal_alpha = _one_body_from_excitations(
+            left[:, 0].reshape(n_occupied_alpha, n_virtual_alpha), n_orb
+        )
+        rotation_beta, diagonal_beta = _one_body_from_excitations(
+            right[0, :].reshape(n_occupied_beta, n_virtual_beta), n_orb
+        )
+        # The beta rotation takes -i on its virtual orbitals to absorb the Jastrow's factor of i.
+        phase = np.ones(n_orb, dtype=complex)
+        phase[n_occupied_beta:] = -1j
+        rotation_beta = rotation_beta.astype(complex) * phase[:, None]
+
+        seed = np.zeros(self.n_params_per_layer(n_qubits, reference))
+        cursor = 0
+        sandwiched = n_rotation_params(n_orb, orbital_phases=False, depth=depth)
+        for rotation in (rotation_alpha, rotation_beta):
+            # The block runs first, in exp(-K), so it realises the inverse; the
+            # conjugate transpose, not the transpose, pairs with the -i above.
+            angles = rotation_angles(rotation.conj().T, depth=depth)
+            if angles is None:
+                raise AmplitudeSeedError(
+                    "a spin sector's orbital rotation cannot be realised by the "
+                    "rotation network."
+                )
+            # The fit's per-orbital phases are dropped; the sandwich cancels them.
+            seed[cursor : cursor + sandwiched] = angles[:sandwiched]
+            cursor += sandwiched
+
+        # exp(i J n_p n_q) contributes exp(i J Z_p Z_q / 4), which is RZZ(-J / 2).
+        for p, q in opposite_pairs:
+            seed[cursor] = -0.5 * scale * diagonal_alpha[p] * diagonal_beta[q]
+            cursor += 1
+
+        # Same-spin Coulomb weights stay at zero.
+        cursor += 2 * len(same_pairs)
+
+        if self.trailing_rotation:
+            for t1_block in (t1_alpha, t1_beta):
+                generator = np.zeros((n_orb, n_orb))
+                n_occupied, n_virtual = t1_block.shape
+                generator[:n_occupied, n_occupied : n_occupied + n_virtual] = -t1_block
+                generator -= generator.T
+                angles = rotation_angles(expm(generator), depth=depth)
+                if angles is None:
+                    # Only this block is lost; the rest of the seed stays useful.
+                    warn(
+                        "LUCJAnsatz could not realise a trailing rotation; "
+                        "seeding the rest and leaving it at the identity.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                    angles = np.zeros(
+                        n_rotation_params(n_orb, orbital_phases=True, depth=depth)
+                    )
+                seed[cursor : cursor + len(angles)] = angles
+                cursor += len(angles)
+
+        return seed
 
 
 def _validate_reference_counts(

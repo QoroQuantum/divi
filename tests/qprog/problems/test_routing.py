@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from divi.hamiltonians import qubo_to_ising, x_mixer, xy_mixer
-from divi.qprog import QAOA
+from divi.qprog.algorithms import QAOA
 from divi.qprog.initial_states import SuperpositionState, build_block_xy_mixer_graph
 from divi.qprog.optimizers import GridSearchOptimizer, MonteCarloOptimizer
 from divi.qprog.problems import (

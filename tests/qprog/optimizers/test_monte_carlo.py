@@ -9,7 +9,7 @@ import pytest
 from scipy.optimize import OptimizeResult
 
 from divi.qprog._program_checkpoint import OptimizerConfig
-from divi.qprog.checkpointing import OPTIMIZER_STATE_FILE
+from divi.qprog.checkpointing.names import OPTIMIZER_STATE_FILE
 from divi.qprog.optimizers import (
     MonteCarloOptimizer,
     Optimizer,

@@ -10,8 +10,9 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from divi.qprog import QAOA, EarlyStopping, QUIVEROptimizer
-from divi.qprog.early_stopping import StopReason
+from divi.qprog import EarlyStopping, StopReason
+from divi.qprog.algorithms import QAOA
+from divi.qprog.optimizers import QUIVEROptimizer
 from divi.qprog.optimizers._spsa import _cost_fn_supports_variance
 from divi.qprog.problems import MaxCutProblem
 from tests._helpers import exact_match

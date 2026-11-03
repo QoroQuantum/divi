@@ -21,7 +21,7 @@ Divi provides several routes from a graph, QUBO, or HUBO to a binary solution.
    * - :class:`~divi.qprog.algorithms.IterativeQAOA`
      - Increases QAOA depth gradually and warm-starts each depth; runs several
        optimisations.
-   * - :class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
+   * - :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`
      - Decomposes the full problem into independently executable sub-problems.
 
 QAOAProblem Contract and Hamiltonian Helpers
@@ -184,7 +184,7 @@ Example: Finding the max-clique of a graph:
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import MaxCliqueProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
@@ -233,7 +233,7 @@ NumPy Array-based Input
    import numpy as np
    import dimod
    from divi.backends import MaestroSimulator
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 
@@ -277,7 +277,7 @@ instead of an array. Evaluate it directly with ``bqm.energy(qaoa.solution)``.
    import dimod
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import BinaryOptimizationProblem
 
@@ -412,7 +412,7 @@ drive PCE, whose loss has no shot-noise variance of its own.
    import numpy as np
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import PCE, DenseEncoding, SoftObjective
+   from divi.qprog.algorithms import PCE, DenseEncoding, SoftObjective
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import BinaryOptimizationProblem
 
@@ -447,7 +447,7 @@ optimizer can train on the exact gradient:
    import numpy as np
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import PCE, MultiBasisEncoding
+   from divi.qprog.algorithms import PCE, MultiBasisEncoding
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import BinaryOptimizationProblem
 
@@ -502,7 +502,7 @@ resumes at the step where the run stopped.
    import numpy as np
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import ProgressivePCE
+   from divi.qprog.algorithms import ProgressivePCE
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import BinaryOptimizationProblem
 
@@ -566,7 +566,7 @@ Example
 
 .. code-block:: python
 
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import BinaryOptimizationProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
@@ -666,7 +666,7 @@ problem.
    import numpy as np
 
    from divi.backends import MaestroSimulator
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import LinearConstraint, PortfolioSelectionProblem
 
@@ -707,12 +707,12 @@ Partitioned Portfolios
 ^^^^^^^^^^^^^^^^^^^^^^
 
 With a :class:`~divi.qprog.problems.QUBOPartitioningConfig` as ``config``,
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` clusters the assets by
+:class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` clusters the assets by
 covariance and solves each cluster as its own portfolio problem. The budget
 (:math:`K` names or :math:`L` units) is split across clusters by their weight in
 the problem's continuous relaxation. Covariance between clusters, and any extra
 constraints, count only when the clusters' solutions are combined;
-:meth:`~divi.qprog.workflows.PartitioningProgramEnsemble.aggregate_results`
+:meth:`~divi.qprog.ensembles.PartitioningProgramEnsemble.aggregate_results`
 repairs the combined portfolio, improves it by one-unit transfers between
 assets, and returns ``(decoded, objective)``.
 :class:`~divi.qprog.problems.PortfolioAllocationProblem` needs
@@ -726,7 +726,7 @@ assets, and returns ``(decoded, objective)``.
    from divi.backends import MaestroSimulator
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.qprog.problems import PortfolioSelectionProblem, QUBOPartitioningConfig
-   from divi.qprog.workflows import PartitioningProgramEnsemble
+   from divi.qprog.ensembles import PartitioningProgramEnsemble
 
    rng = np.random.default_rng(0)
    mu = rng.uniform(0.05, 0.15, 8)
@@ -765,7 +765,7 @@ It can be used directly with QAOA:
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import MaxWeightMatchingProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
@@ -788,7 +788,7 @@ Edge-based partitioning is enabled with ``max_edges_per_partition``:
 
 .. code-block:: python
 
-   from divi.qprog.workflows import PartitioningProgramEnsemble
+   from divi.qprog.ensembles import PartitioningProgramEnsemble
 
    problem = MaxWeightMatchingProblem(
        G,
@@ -853,7 +853,7 @@ Example:
 .. code-block:: python
 
    import networkx as nx
-   from divi.qprog import InterpolationStrategy, IterativeQAOA
+   from divi.qprog.algorithms import InterpolationStrategy, IterativeQAOA
    from divi.qprog.problems import MaxCutProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
@@ -898,16 +898,16 @@ Spin Moments
 
 Beyond the top bitstrings, the measured distribution yields
 :math:`\langle Z_i Z_j \rangle` via
-:meth:`~divi.qprog.SolutionSamplingMixin.get_correlations` — how strongly wires
+:meth:`~divi.qprog.mixins.SolutionSamplingMixin.get_correlations` — how strongly wires
 *i* and *j* agree (``+1``) or disagree (``-1``) — and :math:`\langle Z_i \rangle`
-via :meth:`~divi.qprog.SolutionSamplingMixin.get_magnetisations`. Wires are indexed by bitstring position, matching
+via :meth:`~divi.qprog.mixins.SolutionSamplingMixin.get_magnetisations`. Wires are indexed by bitstring position, matching
 :attr:`~divi.qprog.problems.QAOAProblem.decode_fn`.
 
 .. code-block:: python
 
    import networkx as nx
    import numpy as np
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import MaxCutProblem
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
@@ -931,7 +931,7 @@ via :meth:`~divi.qprog.SolutionSamplingMixin.get_magnetisations`. Wires are inde
 Graph Partitioning QAOA
 -----------------------
 
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble`
+:class:`~divi.qprog.ensembles.PartitioningProgramEnsemble`
 partitions a graph problem configured for partitioning via
 :class:`~divi.qprog.problems.GraphPartitioningConfig`:
 
@@ -941,7 +941,7 @@ partitions a graph problem configured for partitioning via
 
    import networkx as nx
    from divi.qprog.problems import MaxCutProblem, GraphPartitioningConfig
-   from divi.qprog.workflows import PartitioningProgramEnsemble
+   from divi.qprog.ensembles import PartitioningProgramEnsemble
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator
 
@@ -996,7 +996,7 @@ QUBO Partitioning (QAOA or PCE)
    ``pip install "qoro-divi[qubo-decompose]"``. Plain QUBO and HUBO
    problems work on the core install — see :ref:`optional-extras`.
 
-:class:`~divi.qprog.workflows.PartitioningProgramEnsemble` partitions a
+:class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` partitions a
 :class:`~divi.qprog.problems.BinaryOptimizationProblem` configured with D-Wave's hybrid decomposer/composer.
 The per-partition engine is chosen via ``quantum_routine``:
 
@@ -1017,9 +1017,9 @@ ensemble arguments change:
    import dimod
    import hybrid
    from qiskit.circuit.library import RYGate, RZGate
-   from divi.qprog import DenseEncoding, InterpolationStrategy, SoftObjective
+   from divi.qprog.algorithms import DenseEncoding, InterpolationStrategy, SoftObjective
    from divi.qprog.problems import BinaryOptimizationProblem
-   from divi.qprog.workflows import PartitioningProgramEnsemble
+   from divi.qprog.ensembles import PartitioningProgramEnsemble
    from divi.qprog.algorithms import GenericLayerAnsatz
    from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
    from divi.backends import MaestroSimulator

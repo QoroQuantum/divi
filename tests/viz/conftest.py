@@ -14,7 +14,7 @@ import pytest
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
-from divi.qprog import VQE, GenericLayerAnsatz
+from divi.qprog.algorithms import VQE, GenericLayerAnsatz
 from divi.qprog.problems import HamiltonianProblem
 
 

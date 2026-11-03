@@ -27,8 +27,7 @@ import numpy.typing as npt
 from qiskit.converters import circuit_to_dag
 
 from divi.circuits import MetaCircuit
-from divi.pipeline import CircuitPipeline, ResultFormat
-from divi.pipeline._result_keys_operations import extract_param_set_idx
+from divi.pipeline import CircuitPipeline, ResultFormat, extract_param_set_idx
 from divi.pipeline.abc import Stage
 from divi.pipeline.stages import (
     CircuitSpecStage,
@@ -54,19 +53,12 @@ else:
     _MixinBase = object
 
 
-# Emitted by QNN/CustomVQA when a supervised loss_fn is set without labels.
-_LOSS_FN_IGNORED_MSG = (
-    "loss_fn was provided but labels is None, so loss_fn is ignored. Pass "
-    "labels (with a feature_batch) to train a supervised loss."
-)
-
-
 class DataBindingMixin(_MixinBase):
     """Shared data-axis behaviour for VQA subclasses that fan a feature batch out.
 
     Mixed in *before* :class:`~divi.qprog.VariationalQuantumAlgorithm` so its
     :meth:`_assemble_pipeline` cooperatively wraps the base one (mirroring how
-    :class:`~divi.qprog.ObservableMeasuringMixin` sits ahead of
+    :class:`~divi.qprog.mixins.ObservableMeasuringMixin` sits ahead of
     ``QuantumProgram``). It owns the orchestration common to
     :class:`~divi.qprog.algorithms.QNN` and
     :class:`~divi.qprog.algorithms.CustomVQA`; each subclass still constructs the
@@ -77,6 +69,12 @@ class DataBindingMixin(_MixinBase):
     during each subclass's own construction, so there is no init ordering to
     coordinate.
     """
+
+    # Emitted by QNN/CustomVQA when a supervised loss_fn is set without labels.
+    _LOSS_FN_IGNORED_MSG = (
+        "loss_fn was provided but labels is None, so loss_fn is ignored. Pass "
+        "labels (with a feature_batch) to train a supervised loss."
+    )
 
     # Data-binding state each subclass populates; the defaults describe a host
     # with no data axis, which sets only the subset it needs.

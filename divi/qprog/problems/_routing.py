@@ -26,7 +26,8 @@ from divi.qprog.initial_states import (
     WState,
     build_block_xy_mixer_graph,
 )
-from divi.qprog.problems._base import QAOAProblem
+
+from ._base import QAOAProblem
 
 # --- TSP utilities ---
 

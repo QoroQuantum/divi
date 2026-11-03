@@ -5,8 +5,11 @@
 # isort: skip_file
 
 from ._ansatze import (
+    AmplitudeSeededAnsatz,
+    AmplitudeSeedError,
     Ansatz,
     BrickworkAnsatz,
+    ElectronCounts,
     GenericLayerAnsatz,
     HartreeFockAnsatz,
     LUCJAnsatz,
@@ -37,12 +40,15 @@ from ._qnn import QNN
 from ._time_evolution import TimeEvolution
 
 __all__ = [
+    "AmplitudeSeedError",
+    "AmplitudeSeededAnsatz",
     "AngleEmbedding",
     "Ansatz",
     "BrickworkAnsatz",
     "CVaRObjective",
     "CustomVQA",
     "DenseEncoding",
+    "ElectronCounts",
     "ExpectationObjective",
     "FeatureMap",
     "GenericLayerAnsatz",

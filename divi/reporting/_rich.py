@@ -28,7 +28,7 @@ from rich.status import Status
 from rich.text import Text
 from rich.traceback import Traceback
 
-from divi.backends._job_status import JobStatus
+from divi.backends import JobStatus
 
 from ._events import ProgressScope, TerminalStatus
 from ._state import ProgressState, _TargetState

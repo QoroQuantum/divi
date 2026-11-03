@@ -11,26 +11,32 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel
 
-import divi.qprog.checkpointing as checkpointing_module
 from divi.qprog.checkpointing import (
-    OPTIMIZER_STATE_FILE,
-    PROGRAM_STATE_FILE,
     CheckpointConfig,
     CheckpointCorruptedError,
     CheckpointNotFoundError,
-    _atomic_write,
-    _ensure_checkpoint_dir,
-    _extract_iteration_from_subdir,
-    _find_latest_checkpoint_subdir,
-    _get_checkpoint_subdir_name,
-    _get_checkpoint_subdir_path,
-    _load_and_validate_pydantic_model,
-    _validate_checkpoint_json,
     cleanup_old_checkpoints,
     get_checkpoint_info,
     get_latest_checkpoint,
     list_checkpoints,
     resolve_checkpoint_path,
+)
+from divi.qprog.checkpointing.names import (
+    OPTIMIZER_STATE_FILE,
+    PROGRAM_STATE_FILE,
+    _extract_iteration_from_subdir,
+    _get_checkpoint_subdir_name,
+    get_checkpoint_subdir_path,
+)
+from divi.qprog.checkpointing.read import (
+    _validate_checkpoint_json,
+    find_latest_checkpoint_subdir,
+    load_and_validate_pydantic_model,
+)
+from divi.qprog.checkpointing.write import (
+    atomic_write,
+    ensure_checkpoint_dir,
+    fsync_directory,
 )
 from tests._helpers import exact_match
 
@@ -98,7 +104,7 @@ class TestDirectoryUtilities:
         if pre_existing:
             checkpoint_dir.mkdir()
 
-        result = _ensure_checkpoint_dir(checkpoint_dir)
+        result = ensure_checkpoint_dir(checkpoint_dir)
 
         assert result == checkpoint_dir
         assert checkpoint_dir.is_dir()
@@ -106,7 +112,7 @@ class TestDirectoryUtilities:
     def test_get_checkpoint_subdir_path(self, tmp_path):
         """Test getting checkpoint subdirectory path."""
         main_dir = tmp_path / "checkpoints"
-        path = _get_checkpoint_subdir_path(main_dir, 5)
+        path = get_checkpoint_subdir_path(main_dir, 5)
 
         assert path == main_dir / "checkpoint_005"
         assert path.name == "checkpoint_005"
@@ -122,7 +128,7 @@ class TestDirectoryUtilities:
         make_checkpoint(main_dir, 2)
         (main_dir / "other_dir").mkdir()  # Should be ignored
 
-        latest = _find_latest_checkpoint_subdir(main_dir)
+        latest = find_latest_checkpoint_subdir(main_dir)
         assert latest.name == "checkpoint_003"
 
     def test_find_latest_checkpoint_subdir_no_checkpoints(self, tmp_path):
@@ -133,7 +139,7 @@ class TestDirectoryUtilities:
         with pytest.raises(
             CheckpointNotFoundError, match="No checkpoint subdirectories found"
         ):
-            _find_latest_checkpoint_subdir(main_dir)
+            find_latest_checkpoint_subdir(main_dir)
 
     def test_find_latest_checkpoint_subdir_only_other_directories(self, tmp_path):
         """Directories without a checkpoint name are listed, never resolved."""
@@ -147,7 +153,7 @@ class TestDirectoryUtilities:
         with pytest.raises(
             CheckpointNotFoundError, match="No checkpoint subdirectories found"
         ) as exc_info:
-            _find_latest_checkpoint_subdir(main_dir)
+            find_latest_checkpoint_subdir(main_dir)
 
         assert exc_info.value.available_directories == ["other_dir"]
 
@@ -156,7 +162,7 @@ class TestDirectoryUtilities:
         make_checkpoint(main_dir, 999)
         make_checkpoint(main_dir, 1000)
 
-        assert _find_latest_checkpoint_subdir(main_dir).name == "checkpoint_1000"
+        assert find_latest_checkpoint_subdir(main_dir).name == "checkpoint_1000"
 
     def test_find_latest_checkpoint_subdir_ignores_invalid_names(self, tmp_path):
         """Test that invalid subdirectory names are ignored."""
@@ -167,7 +173,7 @@ class TestDirectoryUtilities:
         (main_dir / "checkpoint_invalid").mkdir()  # Should be ignored
         make_checkpoint(main_dir, 2)
 
-        latest = _find_latest_checkpoint_subdir(main_dir)
+        latest = find_latest_checkpoint_subdir(main_dir)
         assert latest.name == "checkpoint_002"
 
     def test_find_latest_checkpoint_subdir_skips_incomplete(self, tmp_path):
@@ -177,7 +183,7 @@ class TestDirectoryUtilities:
         make_checkpoint(main_dir, 2)
         make_checkpoint(main_dir, 3, complete=False)
 
-        latest = _find_latest_checkpoint_subdir(main_dir)
+        latest = find_latest_checkpoint_subdir(main_dir)
         assert latest.name == "checkpoint_002"
 
     def test_find_latest_checkpoint_subdir_all_incomplete(self, tmp_path):
@@ -188,7 +194,7 @@ class TestDirectoryUtilities:
         with pytest.raises(
             CheckpointNotFoundError, match="No complete checkpoint found"
         ) as exc_info:
-            _find_latest_checkpoint_subdir(main_dir)
+            find_latest_checkpoint_subdir(main_dir)
 
         assert exc_info.value.available_directories == ["checkpoint_001"]
 
@@ -213,8 +219,8 @@ class TestCheckpointConfig:
         assert config_with_interval.checkpoint_interval == 5
 
     def test_timestamped_dir_resolves_below_a_second(self, mocker):
-        mocker.patch.object(
-            checkpointing_module, "datetime"
+        mocker.patch(
+            "divi.qprog.checkpointing.config.datetime"
         ).now.return_value = datetime(2026, 9, 30, 12, 0, 0, 123456)
 
         config = CheckpointConfig.with_timestamped_dir()
@@ -542,19 +548,21 @@ class TestResolveCheckpointPath:
 
 
 class TestValidationAndAtomicWrite:
-    """Tests for _atomic_write, _validate_checkpoint_json, _load_and_validate_pydantic_model."""
+    """Tests for atomic_write, _validate_checkpoint_json, load_and_validate_pydantic_model."""
 
     def test_atomic_write_success(self, tmp_path):
         """Atomic write creates the file with correct content."""
         target = tmp_path / "output.json"
-        _atomic_write(target, '{"key": "value"}')
+        atomic_write(target, '{"key": "value"}')
         assert target.read_text() == '{"key": "value"}'
 
     def test_atomic_write_syncs_file_and_directory(self, tmp_path, mocker):
         file_sync = mocker.spy(os, "fsync")
-        directory_sync = mocker.spy(checkpointing_module, "_fsync_directory")
+        directory_sync = mocker.patch(
+            "divi.qprog.checkpointing.write.fsync_directory", wraps=fsync_directory
+        )
 
-        _atomic_write(tmp_path / "output.json", "{}")
+        atomic_write(tmp_path / "output.json", "{}")
 
         assert file_sync.call_count == (2 if os.name == "posix" else 1)
         directory_sync.assert_called_once_with(tmp_path)
@@ -566,7 +574,7 @@ class TestValidationAndAtomicWrite:
 
         mocker.patch.object(Path, "replace", side_effect=PermissionError("denied"))
         with pytest.raises(OSError, match="Failed to write checkpoint file"):
-            _atomic_write(target, '{"key": "value"}')
+            atomic_write(target, '{"key": "value"}')
 
         # Temp file should be cleaned up
         assert not temp_file.exists()
@@ -616,7 +624,7 @@ class TestValidationAndAtomicWrite:
             x: int
 
         with pytest.raises(CheckpointNotFoundError):
-            _load_and_validate_pydantic_model(missing, DummyModel)
+            load_and_validate_pydantic_model(missing, DummyModel)
 
     def test_load_and_validate_pydantic_model_invalid_data(self, tmp_path):
         """Invalid data for Pydantic model raises CheckpointCorruptedError."""
@@ -633,7 +641,7 @@ class TestValidationAndAtomicWrite:
             CheckpointCorruptedError,
             match=exact_match(f"Failed to validate checkpoint state: {bad_file}"),
         ):
-            _load_and_validate_pydantic_model(bad_file, StrictModel)
+            load_and_validate_pydantic_model(bad_file, StrictModel)
 
     def test_load_and_validate_pydantic_model_success(self, tmp_path):
         """Valid data returns a Pydantic model instance."""
@@ -643,7 +651,7 @@ class TestValidationAndAtomicWrite:
         class SimpleModel(BaseModel):
             x: int
 
-        result = _load_and_validate_pydantic_model(good_file, SimpleModel)
+        result = load_and_validate_pydantic_model(good_file, SimpleModel)
         assert result.x == 42
 
     def test_load_and_validate_pydantic_model_with_context(self, tmp_path):
@@ -660,7 +668,7 @@ class TestValidationAndAtomicWrite:
         with pytest.raises(
             CheckpointCorruptedError, match="Failed to validate Program state"
         ):
-            _load_and_validate_pydantic_model(
+            load_and_validate_pydantic_model(
                 bad_file, StrictModel, error_context="Program state"
             )
 

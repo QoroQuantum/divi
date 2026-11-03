@@ -33,10 +33,10 @@ from divi.pipeline import (
     Stage,
 )
 from divi.pipeline.stages import ParameterBindingStage, TrotterSpecStage
+from divi.qprog import QuantumProgram
 from divi.qprog._program_checkpoint import ProgramCheckpoint
 from divi.qprog.initial_states import InitialState, ZerosState
 from divi.qprog.mixins import ObservableMeasuringMixin
-from divi.qprog.quantum_program import QuantumProgram, reject_unclaimed_run_kwargs
 from divi.reporting._events import ProgressEvent, TerminalStatus
 
 
@@ -349,7 +349,7 @@ class TimeEvolution(ObservableMeasuringMixin, QuantumProgram):
             TimeEvolution: Returns ``self`` for method chaining.
         """
         with self._ensure_progress_session(label="Time evolution", total=1):
-            reject_unclaimed_run_kwargs(self, kwargs)
+            self._reject_unclaimed_run_kwargs(kwargs)
             result = self.evaluate(
                 self._evolution_params(), self._evolution_preprocessor()
             )

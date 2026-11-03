@@ -15,8 +15,7 @@ from qiskit.quantum_info import PauliList, SparsePauliOp
 
 from divi.circuits._conversions import _QISKIT_TO_QASM2
 from divi.hamiltonians import xy_mixer
-from divi.qprog import QAOA, VQE, TimeEvolution
-from divi.qprog.algorithms import QAOAAnsatz
+from divi.qprog.algorithms import QAOA, VQE, QAOAAnsatz, TimeEvolution
 from divi.qprog.initial_states import (
     CustomPerQubitState,
     DickeState,

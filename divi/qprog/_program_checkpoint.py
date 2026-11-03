@@ -4,9 +4,10 @@
 
 """Pydantic models for :class:`~divi.qprog.VariationalQuantumAlgorithm` checkpointing.
 
-The three models here own the serialization schema; the save/load logic lives on
-the algorithm class itself (which holds the program instance and can coordinate
-the optimizer).
+The models here own the serialization schema: ``from_program`` builds a
+checkpoint and :meth:`VQACheckpoint.restore` applies one back. Writing and
+loading the files lives on the algorithm class itself (which holds the program
+instance and can coordinate the optimizer).
 """
 
 from collections.abc import Collection
@@ -24,7 +25,7 @@ from pydantic import (
     model_validator,
 )
 
-from divi.qprog.early_stopping import StopReason
+from divi.qprog._early_stopping import StopReason
 
 if TYPE_CHECKING:
     from divi.qprog.quantum_program import QuantumProgram

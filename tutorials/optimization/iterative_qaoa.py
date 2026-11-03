@@ -19,7 +19,7 @@ import networkx as nx
 from rich.console import Console
 from rich.table import Table
 
-from divi.qprog import QAOA, InterpolationStrategy, IterativeQAOA
+from divi.qprog.algorithms import QAOA, InterpolationStrategy, IterativeQAOA
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import MaxCutProblem
 from tutorials._backend import get_backend

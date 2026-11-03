@@ -6,7 +6,7 @@ Checkpointing saves program state to disk via
 interruptions, inspect intermediate progress, or raise ``max_iterations`` after
 a reload. It covers both individual
 :class:`~divi.qprog.variational_quantum_algorithm.VariationalQuantumAlgorithm`
-runs and complete :class:`~divi.qprog.ensemble.ProgramEnsemble` workflows.
+runs and complete :class:`~divi.qprog.ensembles.ProgramEnsemble` workflows.
 
 Overview
 --------
@@ -65,7 +65,7 @@ To enable checkpointing, pass a :class:`~divi.qprog.checkpointing.CheckpointConf
 .. code-block:: python
 
    from pathlib import Path
-   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.algorithms import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import MonteCarloOptimizer
    from divi.qprog.problems import MolecularProblem
@@ -155,7 +155,7 @@ To resume from a checkpoint, use the ``load_state()`` class method:
 
 .. code-block:: python
 
-   from divi.qprog import VQE
+   from divi.qprog.algorithms import VQE
 
    # Load the latest checkpoint
    vqe_resumed = VQE.load_state(
@@ -230,7 +230,7 @@ Here's a complete example showing checkpointing with :class:`~divi.qprog.algorit
 
    import networkx as nx
    from pathlib import Path
-   from divi.qprog import QAOA
+   from divi.qprog.algorithms import QAOA
    from divi.qprog.problems import MaxCliqueProblem
    from divi.qprog.checkpointing import CheckpointConfig
    from divi.qprog.optimizers import PymooOptimizer, PymooMethod
@@ -387,7 +387,7 @@ deterministic for a fixed ensemble configuration and restored state; workflows
 with nondeterministic generation must persist and reuse those choices as part of
 their workflow state.
 
-Checkpointed :class:`~divi.qprog.workflows.PartitioningProgramEnsemble` runs
+Checkpointed :class:`~divi.qprog.ensembles.PartitioningProgramEnsemble` runs
 with :class:`~divi.qprog.problems.BinaryOptimizationProblem` require a
 reproducible decomposer. Divi's seeded
 :class:`~divi.qprog.problems.CommunityDecomposer` is supported, as are
@@ -437,7 +437,7 @@ Load failures can be handled explicitly:
 
    from pathlib import Path
 
-   from divi.qprog import VQE, HartreeFockAnsatz
+   from divi.qprog.algorithms import VQE, HartreeFockAnsatz
    from divi.qprog.checkpointing import (
        CheckpointCorruptedError,
        CheckpointNotFoundError,

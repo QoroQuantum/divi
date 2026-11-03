@@ -65,10 +65,10 @@ stitch their candidates into a global solution:
 import networkx as nx
 
 from divi.backends import MaestroSimulator
-from divi.qprog import BeamSearchStrategy
+from divi.qprog.ensembles import BeamSearchStrategy
 from divi.qprog.optimizers import ScipyOptimizer, ScipyMethod
 from divi.qprog.problems import GraphPartitioningConfig, MaxCutProblem
-from divi.qprog.workflows import PartitioningProgramEnsemble
+from divi.qprog.ensembles import PartitioningProgramEnsemble
 
 graph = nx.barbell_graph(4, 0)
 problem = MaxCutProblem(

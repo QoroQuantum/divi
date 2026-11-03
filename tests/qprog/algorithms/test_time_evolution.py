@@ -23,11 +23,11 @@ from divi.hamiltonians.trotterization import (
 )
 from divi.pipeline import PipelineCadence
 from divi.pipeline.stages import MeasurementStage
-from divi.qprog import (
+from divi.qprog.algorithms import TimeEvolution
+from divi.qprog.initial_states import (
     CustomPerQubitState,
     OnesState,
     SuperpositionState,
-    TimeEvolution,
     ZerosState,
 )
 from divi.reporting._events import ProgressEvent, TerminalStatus

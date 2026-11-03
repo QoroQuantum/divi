@@ -11,13 +11,13 @@ import numpy as np
 import numpy.typing as npt
 from scipy.optimize import OptimizeResult
 
-from divi.qprog._metrics import (
+from ._base import Optimizer
+from ._linalg import _regularized_solve
+from .metrics import (
     MetricEstimator,
     PullbackMetricEstimator,
     _MetricOptimizerMixin,
 )
-from divi.qprog.optimizers._base import Optimizer
-from divi.qprog.optimizers._linalg import _regularized_solve
 
 #: Per-parameter update above which a step is reported as overshooting.
 _OVERSHOOT_WARN_STEP = np.pi / 4
@@ -33,8 +33,9 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
 
     where :math:`\\nabla L` is the parameter-shift gradient and :math:`G` is a
     positive-semidefinite metric tensor. The optimizer is **metric-agnostic**:
-    the metric is produced by an injected :class:`MetricEstimator` strategy
-    (default :class:`PullbackMetricEstimator`), bound to the program's
+    the metric is produced by an injected
+    :class:`~divi.qprog.optimizers.metrics.MetricEstimator` strategy
+    (default :class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator`), bound to the program's
     capabilities via :meth:`~divi.qprog.optimizers.Optimizer.build_evaluators`.
     Swapping the estimator changes the metric without changing the optimizer.
 
@@ -68,7 +69,7 @@ class QNGOptimizer(_MetricOptimizerMixin, Optimizer):
             (default) applies no clip.
         metric_estimator: The strategy that builds the metric ``G`` from the
             program's capabilities. Defaults to
-            :class:`~divi.qprog._metrics.PullbackMetricEstimator` (the
+            :class:`~divi.qprog.optimizers.metrics.PullbackMetricEstimator` (the
             Hamiltonian-aware pullback metric). Inject a different estimator to
             change the metric without touching the optimizer.
 

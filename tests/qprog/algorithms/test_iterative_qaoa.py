@@ -9,15 +9,12 @@ import networkx as nx
 import numpy as np
 import pytest
 
-from divi.qprog import (
+from divi.qprog.algorithms import (
     QAOA,
     InterpolationStrategy,
     IterativeQAOA,
-    MonteCarloOptimizer,
-    ScipyMethod,
-    ScipyOptimizer,
+    _iterative_qaoa,
 )
-from divi.qprog.algorithms import _iterative_qaoa
 from divi.qprog.algorithms._iterative_qaoa import (
     _chebyshev,
     _extract_depth_from_subdir,
@@ -25,11 +22,9 @@ from divi.qprog.algorithms._iterative_qaoa import (
     _interp,
     interpolate_qaoa_params,
 )
-from divi.qprog.checkpointing import (
-    PROGRAM_COMPLETION_FILE,
-    CheckpointConfig,
-    list_checkpoints,
-)
+from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
+from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,

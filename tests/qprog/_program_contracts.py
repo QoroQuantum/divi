@@ -19,15 +19,10 @@ import pytest
 
 from divi.circuits import MetaCircuit
 from divi.pipeline._grouping import _compute_measurement_groups
-from divi.qprog import (
-    MonteCarloOptimizer,
-    ProgramEnsemble,
-    QuantumProgram,
-    ScipyMethod,
-    ScipyOptimizer,
-    VariationalQuantumAlgorithm,
-)
+from divi.qprog import QuantumProgram, VariationalQuantumAlgorithm
+from divi.qprog.ensembles import ProgramEnsemble
 from divi.qprog.mixins import SolutionSamplingMixin
+from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from tests._helpers import exact_match
 
 

@@ -19,7 +19,7 @@ import itertools
 
 import numpy as np
 
-from divi.qprog import PCE, QAOA, PolyEncoding
+from divi.qprog.algorithms import PCE, QAOA, PolyEncoding
 from divi.qprog.optimizers import MonteCarloOptimizer, ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     LinearConstraint,

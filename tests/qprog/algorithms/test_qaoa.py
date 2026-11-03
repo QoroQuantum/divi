@@ -17,15 +17,11 @@ from divi.hamiltonians.trotterization import (
     QDrift,
 )
 from divi.pipeline.stages import TrotterSpecStage, _trotter_spec_stage
-from divi.qprog import (
-    QAOA,
-    ScipyMethod,
-    ScipyOptimizer,
-)
-from divi.qprog.algorithms import IterativeQAOA
+from divi.qprog.algorithms import QAOA, IterativeQAOA
 from divi.qprog.algorithms._qaoa import _hamiltonian_parameter_frequency
 from divi.qprog.checkpointing import CheckpointConfig
 from divi.qprog.initial_states import SuperpositionState
+from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
     MaxCliqueProblem,

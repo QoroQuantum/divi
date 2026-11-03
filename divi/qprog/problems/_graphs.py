@@ -17,15 +17,15 @@ import scipy.sparse as sps
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.hamiltonians._term_ops import _clean_hamiltonian_spo
-from divi.qprog._types import GraphProblemTypes
 from divi.qprog.initial_states import (
     InitialState,
     OnesState,
     SuperpositionState,
     ZerosState,
 )
-from divi.qprog.problems._base import QAOAProblem
-from divi.qprog.problems._graph_hamiltonians import (
+
+from ._base import QAOAProblem
+from ._graph_hamiltonians import (
     _node_ids,
     _qubit_edges,
     max_clique_hamiltonians,
@@ -34,11 +34,12 @@ from divi.qprog.problems._graph_hamiltonians import (
     maxcut_hamiltonians,
     min_vertex_cover_hamiltonians,
 )
-from divi.qprog.problems._graph_partitioning_utils import (
+from ._graph_partitioning_utils import (
     _drawable,
     _node_partition_graph,
 )
-from divi.qprog.problems._partitioning_config import GraphPartitioningConfig
+from ._partitioning_config import GraphPartitioningConfig
+from ._types import GraphProblemTypes
 
 
 def _selected_wires(bitstring: str, n_wires: int) -> list[int]:
@@ -46,7 +47,7 @@ def _selected_wires(bitstring: str, n_wires: int) -> list[int]:
     return [idx for idx, bit in enumerate(bitstring) if bit == "1" and idx < n_wires]
 
 
-class _GraphProblemBase(QAOAProblem):
+class GraphProblemBase(QAOAProblem):
     """Shared logic for graph problems built directly from ``SparsePauliOp``.
 
     Subclasses set ``_resolver`` (a function returning ``(cost_spo, mixer_spo)``
@@ -259,7 +260,7 @@ class _GraphProblemBase(QAOAProblem):
         ]
 
 
-class MaxCutProblem(_GraphProblemBase):
+class MaxCutProblem(GraphProblemBase):
     """MaxCut problem on a graph.
 
     The cut is unweighted: every edge counts once, and edge ``weight``
@@ -277,7 +278,7 @@ class MaxCutProblem(_GraphProblemBase):
     _supports_constrained_mixer = False
 
 
-class MaxCliqueProblem(_GraphProblemBase):
+class MaxCliqueProblem(GraphProblemBase):
     """Max clique problem on a graph.
 
     Args:
@@ -309,7 +310,7 @@ class MaxCliqueProblem(_GraphProblemBase):
         return -float(len(self.decode_fn(bitstring)))
 
 
-class MaxIndependentSetProblem(_GraphProblemBase):
+class MaxIndependentSetProblem(GraphProblemBase):
     """Max independent set problem on a graph.
 
     Args:
@@ -333,7 +334,7 @@ class MaxIndependentSetProblem(_GraphProblemBase):
         return -float(len(self.decode_fn(bitstring)))
 
 
-class MinVertexCoverProblem(_GraphProblemBase):
+class MinVertexCoverProblem(GraphProblemBase):
     """Min vertex cover problem on a graph.
 
     Args:
@@ -357,7 +358,7 @@ class MinVertexCoverProblem(_GraphProblemBase):
         return float(len(self.decode_fn(bitstring)))
 
 
-class MaxWeightCycleProblem(_GraphProblemBase):
+class MaxWeightCycleProblem(GraphProblemBase):
     """Max weight cycle problem on a directed graph.
 
     Args:

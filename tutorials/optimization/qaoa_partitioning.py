@@ -32,14 +32,13 @@ import networkx as nx
 import numpy as np
 from qiskit.circuit.library import RYGate, RZGate
 
-from divi.qprog import (
+from divi.qprog import EarlyStopping
+from divi.qprog.algorithms import DenseEncoding, GenericLayerAnsatz, SoftObjective
+from divi.qprog.ensembles import (
     BeamSearchStrategy,
-    DenseEncoding,
-    EarlyStopping,
     HierarchicalStrategy,
-    SoftObjective,
+    PartitioningProgramEnsemble,
 )
-from divi.qprog.algorithms import GenericLayerAnsatz
 from divi.qprog.optimizers import ScipyMethod, ScipyOptimizer
 from divi.qprog.problems import (
     BinaryOptimizationProblem,
@@ -50,7 +49,6 @@ from divi.qprog.problems import (
     QUBOPartitioningConfig,
     is_valid_matching,
 )
-from divi.qprog.workflows import PartitioningProgramEnsemble
 from tutorials._backend import get_backend
 
 

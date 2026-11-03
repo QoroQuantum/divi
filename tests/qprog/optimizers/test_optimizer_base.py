@@ -5,7 +5,7 @@
 import numpy as np
 import pytest
 
-from divi.qprog.optimizers._base import _argmin_finite
+from divi.qprog.optimizers import argmin_finite
 
 
 @pytest.mark.parametrize(
@@ -36,4 +36,4 @@ from divi.qprog.optimizers._base import _argmin_finite
     ],
 )
 def test_argmin_finite_picks_the_smallest_finite_entry(values, expected):
-    assert _argmin_finite(values) == expected
+    assert argmin_finite(values) == expected

@@ -22,16 +22,16 @@ from divi.hamiltonians import BinaryPolynomialProblem
 from divi.hamiltonians._polynomial import _compute_hard_cvar_energy_jit
 from divi.pipeline import CircuitPreprocessor, ResultFormat, cost_preprocessor
 from divi.pipeline.stages import MeasurementStage
-from divi.qprog.algorithms._ansatze import GenericLayerAnsatz
-from divi.qprog.algorithms._numba_kernels import _popcount_parity_jit
+from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.mixins import (
     LayeredAnsatzMixin,
     SolutionEntry,
     SolutionSamplingMixin,
 )
-from divi.qprog.mixins._solution_sampling import _SAMPLE_HINT
 from divi.qprog.problems import BinaryOptimizationProblem
-from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
+
+from ._ansatze import GenericLayerAnsatz
+from ._numba_kernels import _popcount_parity_jit
 
 
 def _fast_popcount_parity(arr_input: npt.NDArray[np.integer]) -> npt.NDArray[np.uint8]:
@@ -494,7 +494,7 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
                 ``alpha`` scaled to the qubit count.
             max_iterations (int): Maximum number of optimisation iterations.
                 Defaults to 10.
-            **kwargs: ``ansatz``, ``n_layers``, ``ansatz_kwargs`` and the
+            **kwargs: ``ansatz``, ``n_layers`` and the
                 :class:`~divi.qprog.VariationalQuantumAlgorithm` arguments
                 (e.g. ``backend``, ``optimizer``). ``ansatz`` defaults to a
                 hardware-efficient, entangling
@@ -934,7 +934,9 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             RuntimeError: If nothing has been sampled yet.
         """
         if not self._results.get("best_probs"):
-            raise RuntimeError(f"PCE.solution is not available yet. {_SAMPLE_HINT}")
+            raise RuntimeError(
+                f"PCE.solution is not available yet. {self._SAMPLE_HINT}"
+            )
 
         if isinstance(self.encoding, ParityEncoding):
             warn(

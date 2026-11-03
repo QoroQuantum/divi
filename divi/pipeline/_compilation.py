@@ -10,9 +10,8 @@ from typing import Any
 
 import numpy as np
 
-from divi.circuits import MetaCircuit, dag_to_qasm_body
+from divi.circuits import CircuitPayload, MetaCircuit, dag_to_qasm_body
 from divi.circuits._conversions import _real_float_array
-from divi.circuits._payloads import CircuitPayload
 from divi.pipeline._result_keys_operations import OBS_GROUP_AXIS, PARAM_SET_AXIS
 from divi.pipeline.abc import BranchKey, ContractViolation
 
