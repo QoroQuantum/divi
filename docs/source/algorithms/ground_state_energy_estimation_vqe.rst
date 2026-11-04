@@ -210,8 +210,10 @@ full abstract contract and the built-in implementations as concrete examples.
 
 .. important::
 
-   Gradient-based optimizers differentiate the ansatz with the two-term
-   ``±π/2`` parameter-shift rule, which is exact only when each parameter drives
+   Unless adjoint differentiation applies (see
+   :doc:`/execution_workflows/optimizers`), gradient-based optimizers
+   differentiate the ansatz with the two-term ``±π/2`` parameter-shift rule. The
+   rule is exact only when each parameter drives
    a single gate whose generator has two distinct eigenvalues. Override
    :meth:`~divi.qprog.algorithms.Ansatz.parameter_frequencies` when that does not
    hold — when a parameter appears in more than one gate, or when a gate's

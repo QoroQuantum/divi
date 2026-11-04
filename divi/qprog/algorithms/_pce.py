@@ -673,26 +673,6 @@ class PCE(SolutionSamplingMixin, LayeredAnsatzMixin, VariationalQuantumAlgorithm
             dtype=np.float64,
         )
 
-    def _evaluate_gradient_at(
-        self, params: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
-        """The parameter-shift Jacobian of the variables' expectations, chained
-        through the objective's derivative.
-
-        Exact on a backend that computes expectation values. On a sampling
-        backend the objective's derivative is taken at noisy expectations, so
-        the gradient carries a bias that shrinks with the shot count.
-
-        Raises:
-            ValueError: If the objective scores samples, which have no gradient.
-        """
-        objective = self._differentiable_objective()
-        shifts, weights = self._grad_shift_rule
-        params = np.asarray(params, dtype=np.float64).reshape(-1)
-        expectations = self._variable_expectations(np.vstack([params, shifts + params]))
-        jacobian = weights @ expectations[1:]
-        return jacobian @ objective.gradient(expectations[0], self.problem)
-
     def _loss_gradient_by_observable(
         self, params: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:

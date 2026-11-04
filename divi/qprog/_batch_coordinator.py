@@ -845,6 +845,16 @@ class _ProxyBackend(CircuitRunner):
         # mapping, so parameters must be resolved before they reach the proxy.
         return False
 
+    @property
+    def supports_vjp(self) -> bool:
+        return self._real.supports_vjp
+
+    def submit_vjp(
+        self, payloads: Sequence[CircuitPayload], **kwargs
+    ) -> ExecutionResult:
+        """Run vector-Jacobian products on the real backend, unmerged."""
+        return self._real.submit_vjp(payloads, **kwargs)
+
     # --- Intercepted methods ---
 
     def submit_circuits(

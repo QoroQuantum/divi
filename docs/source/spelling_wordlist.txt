@@ -2,6 +2,7 @@ abelian
 accessor
 acetonitrile
 adaptivity
+adjoint
 Adjoint
 Aer
 ai
@@ -16,8 +17,10 @@ ansatze
 ansätze
 ansatzes
 antiferromagnetically
+antisymmetric
 Aolita
 arg
+argmin
 args
 arity
 Arrasmith
@@ -108,6 +111,7 @@ docstrings
 durations
 dwave
 Eidenbenz
+eigenbasis
 eigenphases
 Eigensolver
 eigensolver

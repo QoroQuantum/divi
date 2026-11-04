@@ -34,6 +34,7 @@ from divi.qprog.optimizers import (
 )
 from divi.qprog.problems import BinaryOptimizationProblem
 from tests._helpers import exact_match
+from tests.qprog._helpers import central_difference_of_loss
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
@@ -1485,8 +1486,8 @@ def test_multi_basis_solution_is_the_sign_of_each_expectation(
 def test_pce_gradient_matches_central_differences(
     make_maestro_simulator, default_optimizer, encoding
 ):
-    """The parameter-shift Jacobian chained through the objective is the exact
-    gradient of the non-linear loss."""
+    """The Jacobian chained through the objective is the exact gradient of the
+    non-linear loss."""
     pce = _entangling_pce(
         make_maestro_simulator(),
         default_optimizer,
@@ -1503,15 +1504,12 @@ def test_pce_gradient_matches_central_differences(
         encoding=encoding,
     )
     params = np.random.default_rng(5).uniform(0, 2 * np.pi, pce.n_params)
-    step = 1e-5
-    shifted = np.vstack(
-        [params + step * e for e in np.eye(pce.n_params)]
-        + [params - step * e for e in np.eye(pce.n_params)]
-    )
-    losses = np.array(list(pce._evaluate_cost_param_sets(shifted).values()))
-    numeric = (losses[: pce.n_params] - losses[pce.n_params :]) / (2 * step)
 
-    np.testing.assert_allclose(pce._evaluate_gradient_at(params), numeric, atol=1e-6)
+    np.testing.assert_allclose(
+        pce._evaluate_gradient_at(params),
+        central_difference_of_loss(pce, params, step=1e-5),
+        atol=1e-6,
+    )
 
 
 def test_pce_slopes_reuse_the_latest_cost_evaluation(

@@ -6,6 +6,7 @@ import os
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 
 import pytest
 from threadpoolctl import ThreadpoolController, threadpool_info, threadpool_limits
@@ -103,6 +104,49 @@ def _fake_libraries(process_wide_openmp):
     ]
 
 
+def _install_fake_libraries(mocker, process_wide_openmp):
+    mocker.patch("divi._thread_limits._PROCESS_WIDE_OPENMP", process_wide_openmp)
+    libs = _fake_libraries(process_wide_openmp)
+    controller = ThreadpoolController()
+    controller.lib_controllers = libs
+    mocker.patch("divi._thread_limits.ThreadpoolController", return_value=controller)
+    return libs
+
+
+def _overlapping_holds(first_section, second_section, libs):
+    """Thread counts while each section holds, from a third thread while both
+    do, and after the first and then the second leaves."""
+    entered = [threading.Event(), threading.Event()]
+    release = [threading.Event(), threading.Event()]
+    inside = {}
+
+    def threads_now():
+        return [lib.get_num_threads() for lib in libs]
+
+    def hold(index, section):
+        with section.hold():
+            inside[index] = threads_now()
+            entered[index].set()
+            _wait(release[index])
+        return threads_now()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        try:
+            first = pool.submit(hold, 0, first_section)
+            _wait(entered[0])
+            second = pool.submit(hold, 1, second_section)
+            _wait(entered[1])
+            outside = threads_now()
+            release[0].set()
+            after_first = first.result(timeout=_WAIT)
+            release[1].set()
+            after_second = second.result(timeout=_WAIT)
+        finally:
+            for event in release:
+                event.set()
+    return inside, outside, after_first, after_second, threads_now()
+
+
 class TestSingleThreadedSection:
     @pytest.mark.parametrize("user_api", [None, "blas"], ids=["all", "blas"])
     @pytest.mark.parametrize(
@@ -114,42 +158,12 @@ class TestSingleThreadedSection:
         """Per-thread libraries are limited and restored in each holding
         thread; process-wide ones once for all overlapping holders, so the
         first to leave does not lift the limit from the others."""
-        mocker.patch("divi._thread_limits._PROCESS_WIDE_OPENMP", process_wide_openmp)
-        libs = _fake_libraries(process_wide_openmp)
-        controller = ThreadpoolController()
-        controller.lib_controllers = libs
-        mocker.patch(
-            "divi._thread_limits.ThreadpoolController", return_value=controller
-        )
+        libs = _install_fake_libraries(mocker, process_wide_openmp)
         section = SingleThreadedSection(user_api)
-        entered = [threading.Event(), threading.Event()]
-        release = [threading.Event(), threading.Event()]
-        inside = {}
 
-        def threads_now():
-            return [lib.get_num_threads() for lib in libs]
-
-        def hold(index):
-            with section.hold():
-                inside[index] = threads_now()
-                entered[index].set()
-                _wait(release[index])
-            return threads_now()
-
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            try:
-                first = pool.submit(hold, 0)
-                _wait(entered[0])
-                second = pool.submit(hold, 1)
-                _wait(entered[1])
-                outside = threads_now()
-                release[0].set()
-                after_first = first.result(timeout=_WAIT)
-                release[1].set()
-                after_second = second.result(timeout=_WAIT)
-            finally:
-                for event in release:
-                    event.set()
+        inside, outside, after_first, after_second, final = _overlapping_holds(
+            section, section, libs
+        )
 
         selected = [user_api in (None, lib.user_api) for lib in libs]
         assert inside[0] == inside[1] == [1 if s else 4 for s in selected]
@@ -157,7 +171,20 @@ class TestSingleThreadedSection:
             1 if s and not lib.per_thread else 4 for s, lib in zip(selected, libs)
         ]
         assert after_first == outside
-        assert after_second == threads_now() == [4] * len(libs)
+        assert after_second == final == [4] * len(libs)
+
+    def test_separate_sections_share_each_process_wide_limit(self, mocker):
+        """A section entering while another holds must not save the limited
+        count as the original, or the process keeps one thread after both."""
+        libs = _install_fake_libraries(mocker, process_wide_openmp=False)
+
+        _inside, outside, after_first, after_second, final = _overlapping_holds(
+            SingleThreadedSection("blas"), SingleThreadedSection(), libs
+        )
+
+        assert outside == [4 if lib.per_thread else 1 for lib in libs]
+        assert after_first == outside
+        assert after_second == final == [4] * len(libs)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="needs os.fork")
     @pytest.mark.parametrize("forked_inside", [False, True], ids=["outside", "inside"])
@@ -181,7 +208,12 @@ class TestSingleThreadedSection:
             return start, inside, _blas_threads()
 
         def fork():
-            with pytest.warns(DeprecationWarning, match="multi-threaded"):
+            # Python warns about forking a multi-threaded process from 3.12.
+            with (
+                pytest.warns(DeprecationWarning, match="multi-threaded")
+                if sys.version_info >= (3, 12)
+                else nullcontext()
+            ):
                 return _in_forked_child(hold_and_report)
 
         with threadpool_limits(limits=2, user_api="blas"):

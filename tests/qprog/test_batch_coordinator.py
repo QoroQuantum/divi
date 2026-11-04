@@ -1448,6 +1448,25 @@ class TestProxyBackend:
         assert real.resolves_parameters is True
         assert proxy.resolves_parameters is False
 
+    def test_proxy_delegates_vjp_to_the_real_backend(self, mocker):
+        real = mocker.Mock(spec=CircuitRunner, shots=100, supports_vjp=True)
+        coord = mocker.Mock(spec=_BatchCoordinator)
+        proxy = _ProxyBackend(real, coord, "prog_1")
+        payloads = [mocker.sentinel.payload]
+        cotangents = {"row": [1.0]}
+        event = Event()
+
+        result = proxy.submit_vjp(
+            payloads, ham_ops="Z", cotangents=cotangents, cancellation_event=event
+        )
+
+        assert proxy.supports_vjp is True
+        assert result is real.submit_vjp.return_value
+        real.submit_vjp.assert_called_once_with(
+            payloads, ham_ops="Z", cotangents=cotangents, cancellation_event=event
+        )
+        coord.submit.assert_not_called()
+
     def test_proxy_integrates_with_coordinator_barrier(self, mocker):
         """Two proxies submit through the coordinator and each gets its own
         results and an even share of the merged job's run time."""

@@ -13,13 +13,16 @@ import maestro
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
 from qiskit.circuit.library import UnitaryGate, XXPlusYYGate
 from qiskit.quantum_info import SparsePauliOp, random_unitary
 
 import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends.runners._maestro import _circuit_seed, _run_with_cancellation
-from divi.exceptions import ExecutionCancelledError
+from divi.circuits._payloads import CircuitPayload
+from divi.circuits._qasm_template import build_template, render_template
+from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from tests._helpers import exact_match
 from tests.backends._circuit_runner_contracts import (
     CONTRACT_TEST_SHOTS,
@@ -59,9 +62,9 @@ def _readout_error_model():
     return noise_model
 
 
-def _bell_counts(seed, *, noise_model=None, shots=400):
+def _bell_counts(make_maestro_simulator, seed, *, noise_model=None, shots=400):
     """Sample the Bell circuit on real maestro under ``seed``."""
-    sim = MaestroSimulator(
+    sim = make_maestro_simulator(
         shots=shots,
         maestro_config=MaestroConfig(seed=seed, noise_model=noise_model),
     )
@@ -197,6 +200,34 @@ class TestProperties:
     def test_shots(self, mocker, kwargs, expected):
         sim = _make_simulator(mocker, _make_fake_maestro(mocker), **kwargs)
         assert sim.shots == expected
+
+    @pytest.mark.parametrize(
+        "force_sampling, make_config",
+        [
+            pytest.param(True, MaestroConfig, id="force_sampling"),
+            pytest.param(
+                False,
+                lambda: MaestroConfig(noise_model=_depolarizing_model()),
+                id="noise-model",
+            ),
+        ],
+    )
+    def test_vjp_needs_native_noiseless_estimation(
+        self, make_maestro_simulator, force_sampling, make_config
+    ):
+        sim = make_maestro_simulator(
+            maestro_config=make_config(), force_sampling=force_sampling
+        )
+
+        assert sim.supports_vjp is False
+        with pytest.raises(
+            VJPUnavailableError,
+            match=exact_match(
+                "MaestroSimulator computes vector-Jacobian products only with "
+                "native, noiseless estimation."
+            ),
+        ):
+            sim.submit_vjp([], ham_ops="Z", cotangents={})
 
     def test_default_config(self, mocker):
         """No ``maestro_config=`` argument → backend uses a default MaestroConfig."""
@@ -1096,7 +1127,7 @@ class TestShotGroupsSampling:
 
 
 class TestMaestroIntegration:
-    def test_every_option_reaches_maestro(self):
+    def test_every_option_reaches_maestro(self, make_maestro_simulator):
         """A config setting options of every kind runs on real maestro.
 
         ``gpu_device`` is left out: it selects a CUDA device, so setting it
@@ -1120,19 +1151,19 @@ class TestMaestroIntegration:
             mpo_svd_solver="gesvdp",
             tensor_network_svd_solver="gesvdr",
         )
-        sim = MaestroSimulator(shots=100, maestro_config=cfg)
+        sim = make_maestro_simulator(shots=100, maestro_config=cfg)
 
         result = sim.submit_circuits({"c0": _BELL_QASM})
 
         assert sum(result.results[0]["results"].values()) == 100
 
-    def test_config_from_a_simulator_config_runs_as_given(self):
+    def test_config_from_a_simulator_config_runs_as_given(self, make_maestro_simulator):
         simulator_config = maestro.SimulatorConfig(
             simulation_type=maestro.SimulationType.MatrixProductState,
             max_bond_dimension=8,
             seed=7,
         )
-        sim = MaestroSimulator(
+        sim = make_maestro_simulator(
             shots=100,
             maestro_config=MaestroConfig.from_simulator_config(simulator_config),
         )
@@ -1142,43 +1173,53 @@ class TestMaestroIntegration:
         assert set(entry["results"]) <= {"00", "11"}
         assert sum(entry["results"].values()) == 100
 
-    def test_seed_pins_and_varies_the_sampling_stream(self):
+    def test_seed_pins_and_varies_the_sampling_stream(self, make_maestro_simulator):
         """The same seed repeats a stream; different seeds produce different ones."""
-        assert _bell_counts(1234) == _bell_counts(1234)
-        draws = {tuple(sorted(_bell_counts(seed).items())) for seed in range(5)}
+        make = make_maestro_simulator
+        assert _bell_counts(make, 1234) == _bell_counts(make, 1234)
+        draws = {tuple(sorted(_bell_counts(make, seed).items())) for seed in range(5)}
         assert len(draws) > 1
 
-    def test_unseeded_sampling_is_not_pinned(self):
+    def test_unseeded_sampling_is_not_pinned(self, make_maestro_simulator):
         """Without a seed maestro draws from system entropy.
 
         Five draws, not two: at 400 shots the Bell counts have a standard
         deviation near 10, so a single pair collides about 3% of the time.
         """
-        draws = {tuple(sorted(_bell_counts(None).items())) for _ in range(5)}
-        assert len(draws) > 1
-
-    def test_seeded_noisy_sampling_is_reproducible(self):
-        """``seed`` pins the noisy sampling path too, not just the noiseless one."""
-        noise_model = _depolarizing_model()
-
-        assert _bell_counts(21, noise_model=noise_model) == _bell_counts(
-            21, noise_model=noise_model
-        )
-
-    def test_unseeded_noisy_sampling_is_not_pinned(self):
-        """Without any seed, noisy runs draw fresh noise and shots each time."""
-        noise_model = _depolarizing_model()
         draws = {
-            tuple(sorted(_bell_counts(None, noise_model=noise_model).items()))
+            tuple(sorted(_bell_counts(make_maestro_simulator, None).items()))
             for _ in range(5)
         }
         assert len(draws) > 1
 
-    def test_id_gates_carry_noise(self):
+    def test_seeded_noisy_sampling_is_reproducible(self, make_maestro_simulator):
+        """``seed`` pins the noisy sampling path too, not just the noiseless one."""
+        noise_model = _depolarizing_model()
+
+        assert _bell_counts(
+            make_maestro_simulator, 21, noise_model=noise_model
+        ) == _bell_counts(make_maestro_simulator, 21, noise_model=noise_model)
+
+    def test_unseeded_noisy_sampling_is_not_pinned(self, make_maestro_simulator):
+        """Without any seed, noisy runs draw fresh noise and shots each time."""
+        noise_model = _depolarizing_model()
+        draws = {
+            tuple(
+                sorted(
+                    _bell_counts(
+                        make_maestro_simulator, None, noise_model=noise_model
+                    ).items()
+                )
+            )
+            for _ in range(5)
+        }
+        assert len(draws) > 1
+
+    def test_id_gates_carry_noise(self, make_maestro_simulator):
         """An ``id`` gate is a noise site, as an idle slot is on hardware."""
         noise_model = maestro.NoiseModel()
         noise_model.set_bit_flip(0, 0.5)
-        sim = MaestroSimulator(
+        sim = make_maestro_simulator(
             shots=400,
             maestro_config=MaestroConfig(
                 seed=3, noise_model=noise_model, noise_realizations=50
@@ -1202,7 +1243,7 @@ class TestMaestroIntegration:
         ],
     )
     def test_exact_channel_backends_match_maestro(
-        self, simulator_type, simulation_type
+        self, make_maestro_simulator, simulator_type, simulation_type
     ):
         """Maestro runs exact-only channels exactly where divi assumes it does."""
         noise_model = maestro.NoiseModel()
@@ -1212,7 +1253,7 @@ class TestMaestroIntegration:
             simulation_type=simulation_type,
             noise_model=noise_model,
         )
-        sim = MaestroSimulator(maestro_config=config)
+        sim = make_maestro_simulator(maestro_config=config)
 
         def run():
             return sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZZ")
@@ -1223,8 +1264,8 @@ class TestMaestroIntegration:
             with pytest.raises(ValueError, match="density-matrix or MPO"):
                 run()
 
-    def test_id_gates_run_noiseless(self):
-        sim = MaestroSimulator(shots=100)
+    def test_id_gates_run_noiseless(self, make_maestro_simulator):
+        sim = make_maestro_simulator(shots=100)
 
         sampled = sim.submit_circuits({"c0": _ID_QASM}).results[0]["results"]
         estimated = sim.submit_circuits({"c0": _ID_QASM}, ham_ops="Z").results[0]
@@ -1232,8 +1273,10 @@ class TestMaestroIntegration:
         assert sampled == {"0": 100}
         assert estimated["results"]["Z"] == pytest.approx(1.0)
 
-    def test_noisy_estimate_reports_ideal_values_as_metadata(self):
-        sim = MaestroSimulator(
+    def test_noisy_estimate_reports_ideal_values_as_metadata(
+        self, make_maestro_simulator
+    ):
+        sim = make_maestro_simulator(
             maestro_config=MaestroConfig(seed=4, noise_model=_depolarizing_model())
         )
 
@@ -1242,17 +1285,19 @@ class TestMaestroIntegration:
         assert "expectation_values" not in entry["metadata"]
         assert entry["metadata"]["ideal_expectation_values"] == pytest.approx([1.0])
 
-    def test_sampling_metadata_excludes_the_counts(self):
+    def test_sampling_metadata_excludes_the_counts(self, make_maestro_simulator):
         entry = (
-            MaestroSimulator(shots=50).submit_circuits({"c0": _BELL_QASM}).results[0]
+            make_maestro_simulator(shots=50)
+            .submit_circuits({"c0": _BELL_QASM})
+            .results[0]
         )
 
         assert "counts" not in entry["metadata"]
         assert "time_taken" in entry["metadata"]
 
-    def test_expval_path_on_maestro(self):
+    def test_expval_path_on_maestro(self, make_maestro_simulator):
         """The simple_estimate call path is covered separately from simple_execute."""
-        sim = MaestroSimulator(shots=100)
+        sim = make_maestro_simulator(shots=100)
 
         result = sim.submit_circuits({"c0": _BELL_QASM}, ham_ops="ZI;IZ")
 
@@ -1410,3 +1455,208 @@ def test_expectation_value_accepts_real_coefficients_stored_as_complex(
     assert default_test_simulator.expectation_value(
         circuit, observable
     ) == pytest.approx(-2.0)
+
+
+_VJP_PARAMETERS = ("w_0", "w_1", "w_2")
+_VJP_HAM_OPS = "ZII;XXI;IIY"
+_VJP_ROWS = ((0.3, -0.7, 1.1), (-1.2, 0.4, -0.25))
+_VJP_COTANGENTS = {
+    "row_0": np.array([1.0, 0.5, -0.2]),
+    "row_1": np.array([-0.3, 2.0, 0.7]),
+}
+_AFFINE_BODY = (
+    "ry(w_0) q[0];\nrz(2*w_1 + 0.5) q[1];\ncrx(-w_2) q[0],q[1];\n"
+    "rzz(w_0) q[1],q[2];\nu(w_1,w_2,w_0) q[2];\ncx q[2],q[0];\n"
+)
+_TRANSLATED_BODY = (
+    "h q[0];\np(w_0) q[0];\nu2(w_1,w_2) q[1];\ncx q[0],q[1];\nry(w_0) q[2];\n"
+)
+
+
+def _parametric_payload(body, rows=_VJP_ROWS, n_qubits=3, parameters=_VJP_PARAMETERS):
+    """A payload over ``parameters`` whose register is measured at the end."""
+    header = f'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[{n_qubits}];\ncreg c[{n_qubits}];\n'
+    measures = "".join(f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits))
+    return CircuitPayload(
+        circuit=header + body + measures,
+        parameters=tuple(Parameter(name) for name in parameters),
+        parameter_sets=tuple((f"row_{i}", row) for i, row in enumerate(rows)),
+    )
+
+
+def _bound(payload, values):
+    template = build_template(payload.circuit, payload.parameter_names)
+    return render_template(template, [f"({float(v)!r})" for v in values])
+
+
+def _estimate(payload, values):
+    """Maestro's expectation values of ``_VJP_HAM_OPS`` with ``values`` bound."""
+    qasm = _bound(payload, values)
+    return np.array(
+        maestro.simple_estimate(qasm, observables=_VJP_HAM_OPS)["expectation_values"]
+    )
+
+
+def _central_difference_vjp(payload, values, cotangent, step=1e-6):
+    values = np.asarray(values)
+    return np.array(
+        [
+            cotangent
+            @ (_estimate(payload, values + shift) - _estimate(payload, values - shift))
+            / (2 * step)
+            for shift in step * np.eye(len(values))
+        ]
+    )
+
+
+class TestVectorJacobianProducts:
+    @pytest.mark.parametrize(
+        "body",
+        [
+            pytest.param(_AFFINE_BODY, id="affine-expressions"),
+            pytest.param(_TRANSLATED_BODY, id="gates-maestro-translates"),
+            pytest.param(
+                "ry(w_0 + w_1) q[0];\nrz(2*w_2 - w_0) q[1];\ncx q[0],q[1];\n"
+                "rx(w_1) q[2];\n",
+                id="angles-of-several-parameters",
+            ),
+        ],
+    )
+    def test_vjp_matches_central_differences(self, default_test_simulator, body):
+        payload = _parametric_payload(body)
+
+        result = default_test_simulator.submit_vjp(
+            [payload], ham_ops=_VJP_HAM_OPS, cotangents=_VJP_COTANGENTS
+        )
+
+        assert [entry["label"] for entry in result.results] == ["row_0", "row_1"]
+        for entry, (label, values) in zip(result.results, payload.parameter_sets):
+            np.testing.assert_allclose(
+                [entry["results"][term] for term in _VJP_HAM_OPS.split(";")],
+                _estimate(payload, values),
+                rtol=0,
+                atol=1e-12,
+            )
+            np.testing.assert_allclose(
+                entry["metadata"]["vjp"],
+                _central_difference_vjp(payload, values, _VJP_COTANGENTS[label]),
+                rtol=0,
+                atol=1e-7,
+            )
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param(_parametric_payload("ry(sin(w_0)) q[0];\n"), id="non-affine"),
+            pytest.param(
+                _parametric_payload(
+                    "ry(w_0) q[0];\nmeasure q[0] -> c[0];\nrx(w_1) q[1];\n"
+                ),
+                id="mid-circuit-measurement",
+            ),
+            pytest.param(
+                _parametric_payload("ry(w_0) q[0];\nreset q[0];\n"), id="reset"
+            ),
+            pytest.param(
+                _parametric_payload("ry(w_0) q[63];\n", n_qubits=64),
+                id="wide-register",
+            ),
+        ],
+    )
+    def test_unsupported_circuits_are_unavailable_and_compiled_once(
+        self, mocker, default_test_simulator, payload
+    ):
+        sim = default_test_simulator
+        cotangents = {label: np.zeros(3) for label, _values in payload.parameter_sets}
+        maestro_module._compile_adjoint_template.cache_clear()
+        parser = mocker.spy(maestro_module.maestro, "QasmToCirc")
+        with pytest.raises(VJPUnavailableError):
+            sim.submit_vjp([payload], ham_ops=_VJP_HAM_OPS, cotangents=cotangents)
+        parses = parser.call_count
+
+        with pytest.raises(VJPUnavailableError):
+            sim.submit_vjp([payload], ham_ops=_VJP_HAM_OPS, cotangents=cotangents)
+
+        assert parses > 0
+        assert parser.call_count == parses
+
+    def test_angles_of_one_parameter_each_compile_logarithmically_often(
+        self, mocker, default_test_simulator
+    ):
+        names = tuple(f"w_{k}" for k in range(16))
+        body = "".join(
+            f"ry(2*w_{k} + 0.5) q[{k % 3}];\ncx q[0],q[1];\n" for k in range(16)
+        )
+        row = tuple(np.random.default_rng(4).uniform(-1.0, 1.0, 16))
+        payload = _parametric_payload(body, rows=(row,), parameters=names)
+        cotangents = {"row_0": _VJP_COTANGENTS["row_0"]}
+        maestro_module._compile_adjoint_template.cache_clear()
+        parser = mocker.spy(maestro_module.maestro, "QasmToCirc")
+
+        result = default_test_simulator.submit_vjp(
+            [payload], ham_ops=_VJP_HAM_OPS, cotangents=cotangents
+        )
+
+        assert parser.call_count == (16).bit_length() + 3
+        np.testing.assert_allclose(
+            result.results[0]["metadata"]["vjp"],
+            _central_difference_vjp(payload, row, cotangents["row_0"]),
+            rtol=0,
+            atol=1e-7,
+        )
+
+    def test_tracked_depths_include_each_row(self, make_maestro_simulator):
+        payload = _parametric_payload(_AFFINE_BODY)
+        sim = make_maestro_simulator(track_depth=True)
+
+        sim.submit_vjp([payload], ham_ops=_VJP_HAM_OPS, cotangents=_VJP_COTANGENTS)
+
+        assert sim.depth_history == [
+            [
+                QuantumCircuit.from_qasm_str(_bound(payload, row)).depth()
+                for row in _VJP_ROWS
+            ]
+        ]
+
+    @pytest.mark.parametrize(
+        "config, reason",
+        [
+            pytest.param(
+                {"simulation_type": "MatrixProductState"},
+                "Adjoint differentiation requires simulation_type=Statevector.",
+                id="mps",
+            ),
+            pytest.param(
+                {"simulator_type": "Gpu"},
+                "Adjoint differentiation runs on the CPU statevector and requires "
+                "simulator_type=QCSim.",
+                id="gpu",
+            ),
+        ],
+    )
+    def test_simulators_maestro_cannot_differentiate_on_are_unavailable(
+        self, make_maestro_simulator, config, reason
+    ):
+        sim = make_maestro_simulator(maestro_config=MaestroConfig(**config))
+
+        with pytest.raises(
+            VJPUnavailableError,
+            match=exact_match(f"Maestro cannot differentiate the circuit: {reason}"),
+        ):
+            sim.submit_vjp(
+                [_parametric_payload(_AFFINE_BODY)],
+                ham_ops=_VJP_HAM_OPS,
+                cotangents=_VJP_COTANGENTS,
+            )
+
+    def test_cancelled_vjp_raises_before_dispatch(self, default_test_simulator):
+        event = Event()
+        event.set()
+
+        with pytest.raises(ExecutionCancelledError):
+            default_test_simulator.submit_vjp(
+                [_parametric_payload(_AFFINE_BODY)],
+                ham_ops=_VJP_HAM_OPS,
+                cotangents=_VJP_COTANGENTS,
+                cancellation_event=event,
+            )

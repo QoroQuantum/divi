@@ -8,11 +8,13 @@ from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from contextlib import contextmanager
+from dataclasses import replace
 from itertools import groupby
 from operator import itemgetter
 from threading import Event
 from typing import Any
 
+import numpy as np
 from rich.console import Console
 from rich.tree import Tree
 
@@ -22,8 +24,13 @@ from divi.backends._cancellation import (
     _require_async_backend,
     _sigint_to_event,
 )
-from divi.circuits._payloads import bound_circuits, is_bound
-from divi.exceptions import ExecutionCancelledError
+from divi.circuits._conversions import (
+    _format_bound_param,
+    _sparse_pauli_op_to_ham_string,
+)
+from divi.circuits._payloads import CircuitPayload, bound_circuits, is_bound
+from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.hamiltonians.trotterization import ExactTrotterization
 from divi.reporting._events import ProgressEvent
 
 from ._compilation import (
@@ -44,6 +51,7 @@ from ._result_keys_operations import (
     OBS_GROUP_AXIS,
     PARAM_SET_AXIS,
     _collapse_to_parent_results,
+    extract_param_set_idx,
 )
 from .abc import (
     BundleStage,
@@ -62,8 +70,23 @@ from .abc import (
     StageToken,
     _ScopedStageToken,
 )
+from .stages import (
+    CircuitSpecStage,
+    MeasurementStage,
+    ParameterBindingStage,
+    PreprocessStage,
+    TrotterSpecStage,
+)
 
 logger = logging.getLogger(__name__)
+
+_DIFFERENTIABLE_STAGES = (
+    CircuitSpecStage,
+    TrotterSpecStage,
+    PreprocessStage,
+    MeasurementStage,
+    ParameterBindingStage,
+)
 
 #: ``(id(initial_spec), stage_instance_ids, per_stage_cache_key_extras)``.
 _ForwardCacheKey = tuple[
@@ -290,13 +313,35 @@ def _default_execute_fn(
             "or use a backend that sets resolves_parameters."
         )
 
-    payloads, lineage_by_label = _compile_batch(trace.final_batch, env.param_sets)
+    payloads, lineage_by_label, submit_kwargs = _lower_batch(
+        trace.final_batch, env, trace.env_artifacts
+    )
+    result = backend.submit_circuits(
+        payloads, cancellation_event=env.cancellation_event, **submit_kwargs
+    )
+    entries = _completed_entries(result, env)
+    return _collapse_to_parent_results(
+        {entry["label"]: entry["results"] for entry in entries}, lineage_by_label
+    )
+
+
+def _lower_batch(
+    batch: MetaCircuitBatch, env: PipelineEnv, artifacts: Mapping[str, Any]
+) -> tuple[list[CircuitPayload], dict[str, tuple], dict[str, Any]]:
+    """Compile ``batch`` to payloads and record what their submission requests.
+
+    Returns the payloads, their ``label -> branch key`` lineage, and the
+    ``ham_ops``/``shot_groups`` keyword arguments for the backend.
+
+    Raises:
+        ExecutionCancelledError: If the run was cancelled before dispatch.
+    """
+    payloads, lineage_by_label = _compile_batch(batch, env.param_sets)
     env.artifacts["circuit_count"] = sum(
         len(payload.parameter_sets) for payload in payloads
     )
 
-    submit_kwargs = {}
-    artifacts = trace.env_artifacts
+    submit_kwargs: dict[str, Any] = {}
     ham_ops = artifacts.get("ham_ops")
     if ham_ops is not None:
         submit_kwargs["ham_ops"] = ham_ops
@@ -327,27 +372,24 @@ def _default_execute_fn(
         ham_ops,
         shot_groups,
     )
-
     if env.cancellation_event is not None and env.cancellation_event.is_set():
         raise ExecutionCancelledError("Pipeline execution cancelled before dispatch")
+    return payloads, lineage_by_label, submit_kwargs
 
-    result = backend.submit_circuits(
-        payloads, cancellation_event=env.cancellation_event, **submit_kwargs
-    )
+
+def _completed_entries(result: ExecutionResult, env: PipelineEnv) -> list[dict]:
+    """Wait for ``result``, record its jobs and run time, and return its entries."""
     env.artifacts["backend_jobs"] = result.backend_jobs
 
     if result.is_async():
-        backend = _require_async_backend(backend)
+        backend = _require_async_backend(env.backend)
         with _cancel_job_on_abort(backend, result):
             result = _wait_for_async_result(backend, result, env)
 
     if result.results is None:
         raise RuntimeError("Backend returned no results")
     env.artifacts["run_time"] = env.artifacts.get("run_time", 0.0) + result.run_time
-
-    raw_by_label = {r["label"]: r["results"] for r in result.results}
-
-    return _collapse_to_parent_results(raw_by_label, lineage_by_label)
+    return result.results
 
 
 @contextmanager
@@ -584,6 +626,138 @@ class CircuitPipeline:
             # A pipeline run owns only its transient stage/polling phase;
             # clear it so no run leaks a live spinner.
             _report_pipeline_stage(env, None)
+
+    def run_vjp(
+        self, initial_spec: Any, env: PipelineEnv, cotangents: np.ndarray
+    ) -> tuple[PipelineResult, dict[int, np.ndarray]]:
+        """Run the pipeline, submitting its circuits for vector-Jacobian products.
+
+        The circuits go to ``env.backend``'s
+        :meth:`~divi.backends.CircuitRunner.submit_vjp`.
+
+        Args:
+            initial_spec: Input for the spec stage.
+            env: Pipeline environment.
+            cotangents: ``(n_param_sets, n_observables)`` weights of each
+                parameter set's expectation values.
+
+        Returns:
+            The result :meth:`run` gives, and ``cotangents[i] @ d<O>/dθ`` for
+            each parameter set ``i``, one entry per parameter in the circuit's
+            order.
+
+        Raises:
+            VJPUnavailableError: Before the forward pass, if a stage has no
+                vector-Jacobian product (stochastic Trotterization has none);
+                after it, if the run does not measure
+                one expectation-value circuit per parameter set, or the backend
+                refuses.
+        """
+        foreign = [
+            type(s).__name__
+            for s in self._stages
+            if type(s) not in _DIFFERENTIABLE_STAGES
+            or (
+                isinstance(s, TrotterSpecStage)
+                and not isinstance(s._trotterization_strategy, ExactTrotterization)
+            )
+        ]
+        if foreign:
+            raise VJPUnavailableError(
+                f"Stages {foreign} have no vector-Jacobian product."
+            )
+        binding = self._stages[-1]
+        if not isinstance(binding, ParameterBindingStage):
+            raise VJPUnavailableError(
+                "The pipeline must bind parameters in its last stage."
+            )
+        vjps: dict[int, np.ndarray] = {}
+
+        def execute(trace: PipelineTrace, env: PipelineEnv) -> ChildResults:
+            measured = trace.stage_expansions[-2].batch
+            artifacts = _measurement_artifacts(measured)
+            ham_ops = artifacts.get("ham_ops")
+            # Backend expectation values are chosen only when every node shares one.
+            observable = next(iter(measured.values())).observable
+            if ham_ops is None or observable is None:
+                raise VJPUnavailableError(
+                    "Vector-Jacobian products need the backend to compute "
+                    "expectation values."
+                )
+            if artifacts.get("per_group_shots") or artifacts.get(
+                "per_param_group_shots"
+            ):
+                raise VJPUnavailableError(
+                    "Vector-Jacobian products cannot follow per-group shot allocations."
+                )
+            if any(
+                node.result_format is not ResultFormat.EXPVALS
+                for node in measured.values()
+            ):
+                raise VJPUnavailableError(
+                    "Vector-Jacobian products need expectation values."
+                )
+
+            payloads, lineage_by_label, _ = _lower_batch(
+                binding._run_qasm_payloads(measured), env, artifacts
+            )
+            param_set_of = {
+                label: extract_param_set_idx(branch)
+                for label, branch in lineage_by_label.items()
+            }
+            if sorted(param_set_of.values()) != list(range(len(cotangents))):
+                raise VJPUnavailableError(
+                    "Vector-Jacobian products need exactly one circuit per parameter "
+                    "set."
+                )
+
+            (node,) = measured.values()
+            (payload,) = payloads
+            observables = observable if isinstance(observable, tuple) else (observable,)
+            if cotangents.shape[1] != len(observables):
+                raise ValueError(
+                    f"Got {cotangents.shape[1]} cotangents per parameter set for "
+                    f"{len(observables)} observables."
+                )
+            terms = ham_ops.split(";")
+            slot = {term: i for i, term in enumerate(terms)}
+            weights = np.zeros((len(observables), len(terms)))
+            for row, obs in enumerate(observables):
+                for term, coeff in zip(
+                    _sparse_pauli_op_to_ham_string(obs).split(";"), obs.coeffs
+                ):
+                    weights[row, slot[term]] += coeff.real
+
+            # Rounded as bound circuits render them, so cost and gradient share a point.
+            rounded = tuple(
+                (
+                    label,
+                    tuple(
+                        float(_format_bound_param(v, node.precision)) for v in values
+                    ),
+                )
+                for label, values in payload.parameter_sets
+            )
+            result = env.backend.submit_vjp(
+                [replace(payload, parameter_sets=rounded)],
+                ham_ops=ham_ops,
+                cotangents={
+                    label: cotangents[idx] @ weights
+                    for label, idx in param_set_of.items()
+                },
+                cancellation_event=env.cancellation_event,
+            )
+            entries = _completed_entries(result, env)
+            for entry in entries:
+                vjps[param_set_of[entry["label"]]] = np.asarray(
+                    entry["metadata"]["vjp"]
+                )
+            return _collapse_to_parent_results(
+                {entry["label"]: entry["results"] for entry in entries},
+                lineage_by_label,
+            )
+
+        return self.run(initial_spec, env, execute_fn=execute), vjps
 
     def run_forward_pass(
         self,

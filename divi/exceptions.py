@@ -11,11 +11,16 @@ __all__ = [
     "CharacterizationSubmitError",
     "CircuitTooWideError",
     "ExecutionCancelledError",
+    "VJPUnavailableError",
 ]
 
 
 class ExecutionCancelledError(Exception):
     """Signal that a running program, job, or batch was cooperatively cancelled."""
+
+
+class VJPUnavailableError(Exception):
+    """A vector-Jacobian product cannot be computed; the message says why."""
 
 
 class CircuitTooWideError(requests.HTTPError):

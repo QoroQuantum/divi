@@ -6,12 +6,22 @@
 
 from io import StringIO
 
+import numpy as np
 from rich.console import Console
 
 from divi.qprog.quantum_program import QuantumProgram
 from divi.reporting._events import ProgressEvent
 from divi.reporting._session import ProgressSession
 from divi.reporting._state import ProgressState
+
+
+def central_difference_of_loss(program, params, step=1e-4):
+    """Central differences of ``program``'s loss at ``params``, one per parameter."""
+    rows = np.vstack(
+        [params + step * np.eye(len(params)), params - step * np.eye(len(params))]
+    )
+    losses = np.array(list(program._evaluate_cost_param_sets(rows).values()))
+    return (losses[: len(params)] - losses[len(params) :]) / (2 * step)
 
 
 class RecordingProgressSession(ProgressSession):

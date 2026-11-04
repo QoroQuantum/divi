@@ -394,9 +394,11 @@ energy of the lowest ``fraction`` of sampled bitstrings; it needs a sampling
 backend and a parity encoding.
 
 Gradient-based optimizers receive the gradient of the soft objective: the
-parameter-shift derivatives of the variables' expectations, chained through the
-relaxation. It is exact on a backend that computes expectation values and
-carries the shot noise of the measured expectations on a sampling backend.
+derivatives of the variables' expectations, chained through the relaxation. The
+derivatives come from adjoint differentiation on a Maestro statevector and from
+the parameter-shift rule elsewhere. The gradient is exact on a backend that
+computes expectation values and carries the shot noise of the measured
+expectations on a sampling backend.
 :class:`~divi.qprog.optimizers.QNGOptimizer`'s default pullback metric weights
 each variable by the objective's local slope.
 :class:`~divi.qprog.algorithms.CVaRObjective` has no gradient, so it

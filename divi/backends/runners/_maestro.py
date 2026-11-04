@@ -2,9 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import atexit
 import copy
+import functools
 import os
 import re
+import time
 import warnings
 import zlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -19,11 +22,13 @@ from qiskit import QuantumCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.circuits._conversions import (
+    _format_bound_param,
     _sparse_pauli_op_to_ham_string,
     lower_to_basis_gates,
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
-from divi.exceptions import ExecutionCancelledError
+from divi.circuits._qasm_template import build_template, render_template
+from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.hamiltonians._term_ops import _assert_hermitian_spo
 from divi.qasm import count_clbits, count_qubits
 
@@ -80,6 +85,81 @@ def _result_entry(
     """One circuit's result entry, with maestro's other outputs as metadata."""
     metadata = {key: value for key, value in raw.items() if key != result_key}
     return {"label": label, "results": results, "metadata": metadata}
+
+
+@functools.lru_cache(maxsize=256)
+def _compile_adjoint_template(
+    circuit: str, parameter_names: tuple[str, ...]
+) -> tuple["maestro.AdjointProgram", np.ndarray, np.ndarray] | str:
+    """Compile ``circuit`` for adjoint differentiation, or say why it cannot be.
+
+    Returns the program with the ``(angle_matrix, angle_offset)`` that give its
+    gate angles as ``angle_matrix @ values + angle_offset``. The map is read from
+    programs compiled at a base point and at steps from it, then confirmed at a
+    second point. When every angle follows at most one parameter, the steps move
+    all parameters at once and then the parameters whose index has each bit set,
+    so each angle's responses spell out its parameter in ``log2`` compiles;
+    otherwise each parameter is stepped on its own.
+    """
+    lines = circuit.splitlines(keepends=True)
+    while lines and (not lines[-1].strip() or lines[-1].lstrip().startswith("measure")):
+        lines.pop()
+    template = build_template("".join(lines), parameter_names)
+    n_params = len(parameter_names)
+
+    def compile_at(values: np.ndarray) -> "maestro.AdjointProgram":
+        qasm = render_template(
+            template, [f"({_format_bound_param(v, 17)})" for v in values]
+        )
+        return maestro.AdjointProgram(maestro.QasmToCirc().parse_and_translate(qasm))
+
+    base, check = np.random.default_rng(0).uniform(-1.0, 1.0, (2, n_params))
+    try:
+        program = compile_at(base)
+        base_angles = program.parameters
+
+        def responses(steps: np.ndarray) -> np.ndarray | None:
+            moved = [compile_at(base + step).parameters for step in steps]
+            if any(angles.shape != base_angles.shape for angles in moved):
+                return None
+            return np.array(moved).reshape(len(steps), -1) - base_angles
+
+        codes = np.arange(1, n_params + 1)
+        probes = np.vstack(
+            [np.ones(n_params)]
+            + [(codes >> bit) & 1 for bit in range(n_params.bit_length())]
+        )
+        probed = responses(probes)
+        if probed is None:
+            return "The circuit's gates change with its parameter values."
+        slope = probed[0]
+        bits = np.rint(probed[1:] / np.where(slope == 0, 1.0, slope)).astype(int)
+        owner = (bits << np.arange(len(bits))[:, None]).sum(axis=0) - 1
+        follows_one = (slope != 0) & (owner >= 0) & (owner < n_params)
+        angle_matrix = np.zeros((len(base_angles), n_params))
+        angle_matrix[np.flatnonzero(follows_one), owner[follows_one]] = slope[
+            follows_one
+        ]
+        if not np.allclose(probed, probes @ angle_matrix.T, rtol=0.0, atol=1e-12):
+            stepped = responses(np.eye(n_params))
+            if stepped is None:
+                return "The circuit's gates change with its parameter values."
+            angle_matrix = stepped.T
+        angle_offset = base_angles - angle_matrix @ base
+
+        check_angles = angle_matrix @ check + angle_offset
+        compiled_check = compile_at(check).parameters
+        if compiled_check.shape != check_angles.shape or not np.allclose(
+            compiled_check, check_angles, rtol=0.0, atol=1e-12
+        ):
+            return "The circuit's gate angles are not affine in its parameters."
+    except (ValueError, MemoryError) as exc:
+        return f"Maestro cannot differentiate the circuit: {exc}"
+    return program, angle_matrix, angle_offset
+
+
+# Compiled programs are native objects; free them before interpreter shutdown.
+atexit.register(_compile_adjoint_template.cache_clear)
 
 
 _ID_GATE_RE = re.compile(r"\bid\s+(q\[\d+\])\s*;")
@@ -370,6 +450,106 @@ class MaestroSimulator(CircuitRunner):
     def supports_expval(self) -> bool:
         """Maestro supports native observable estimation unless sampling is forced."""
         return not self._force_sampling
+
+    @property
+    def supports_vjp(self) -> bool:
+        """Whether estimation is native and noiseless, as adjoint differentiation needs.
+
+        Maestro itself refuses simulators it cannot differentiate on.
+        """
+        return self.supports_expval and self.maestro_config.noise_model is None
+
+    def submit_vjp(
+        self,
+        payloads: Sequence[CircuitPayload],
+        *,
+        ham_ops: str,
+        cotangents: Mapping[str, np.ndarray],
+        cancellation_event: Event | None = None,
+    ) -> ExecutionResult:
+        """Expectation values and vector-Jacobian products by adjoint differentiation.
+
+        One native call per payload. See :meth:`~divi.backends.CircuitRunner.submit_vjp`. Terms shorter than
+        a circuit are padded onto its first qubits, as in :meth:`submit_circuits`.
+
+        Raises:
+            VJPUnavailableError: If :attr:`supports_vjp` is False, or Maestro cannot
+                differentiate a payload's circuit on the configured simulator.
+        """
+        if not self.supports_vjp:
+            raise VJPUnavailableError(
+                "MaestroSimulator computes vector-Jacobian products only with "
+                "native, noiseless estimation."
+            )
+        raise_if_cancelled(
+            cancellation_event,
+            "Maestro batch cancelled before any circuit was dispatched",
+        )
+        compiled = [
+            _compile_adjoint_template(payload.circuit, payload.parameter_names)
+            for payload in payloads
+        ]
+        if reason := next((c for c in compiled if isinstance(c, str)), None):
+            raise VJPUnavailableError(reason)
+        if self.track_depth:
+            templates = [
+                build_template(payload.circuit, payload.parameter_names)
+                for payload in payloads
+            ]
+            self._record_qasm_depths(
+                render_template(
+                    template, [f"({_format_bound_param(v, 17)})" for v in values]
+                )
+                for payload, template in zip(payloads, templates)
+                for _label, values in payload.parameter_sets
+            )
+        terms = pad_ham_ops(
+            ham_ops, None, [count_qubits(payload.circuit) for payload in payloads]
+        ).split(";")
+        config = self.maestro_config._simulator_config()
+
+        def _run(item) -> list[dict]:
+            payload, (program, angle_matrix, angle_offset) = item
+            labels = [label for label, _values in payload.parameter_sets]
+            rows = np.array(
+                [values for _label, values in payload.parameter_sets], dtype=np.float64
+            ).reshape(len(labels), len(payload.parameter_names))
+            weights = np.array(
+                [cotangents[label] for label in labels], dtype=np.float64
+            )
+            start = time.perf_counter()
+            try:
+                raw = program.vjp(
+                    terms, weights, rows @ angle_matrix.T + angle_offset, config=config
+                )
+            except (ValueError, MemoryError) as exc:
+                raise VJPUnavailableError(
+                    f"Maestro cannot differentiate the circuit: {exc}"
+                ) from exc
+            time_taken = (time.perf_counter() - start) / len(labels)
+            gradients = raw["vjp"] @ angle_matrix
+            return [
+                {
+                    "label": label,
+                    "results": dict(zip(terms, map(float, values))),
+                    "metadata": {"vjp": gradient, "time_taken": time_taken},
+                }
+                for label, values, gradient in zip(
+                    labels, raw["expectation_values"], gradients
+                )
+            ]
+
+        per_payload = _run_with_cancellation(
+            self._get_executor(),
+            _run,
+            list(zip(payloads, compiled)),
+            cancellation_event,
+        )
+        results = [entry for entries in per_payload for entry in entries]
+        return ExecutionResult(
+            results=results,
+            run_time=sum(entry["metadata"]["time_taken"] for entry in results),
+        )
 
     def set_seed(self, seed: int) -> None:
         """Seed maestro's simulation RNG.

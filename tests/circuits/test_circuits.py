@@ -79,6 +79,16 @@ class TestMetaCircuit:
         copied.set_observable(obs)
         assert check.call_count == 2
 
+    def test_set_observable_rechecks_the_observable_it_already_holds(self, plain_dag):
+        meta = MetaCircuit(
+            circuit_bodies=(((), plain_dag),),
+            observable=SparsePauliOp.from_list([("IZ", 1.0)]),
+        )
+        meta.observable[0].coeffs[0] = 1.0j
+
+        with pytest.raises(ValueError, match="Hermitian"):
+            meta.set_observable(meta.observable)
+
     def test_tuple_observable_requires_sparse_pauli_ops(self, plain_dag):
         with pytest.raises(TypeError) as exc_info:
             MetaCircuit(

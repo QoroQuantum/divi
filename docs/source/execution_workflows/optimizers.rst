@@ -52,9 +52,19 @@ Nelder-Mead [#nelder1965]_ is a gradient-free, simplex-based optimisation algori
 L-BFGS-B
 ^^^^^^^^
 
-L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that uses gradient information. In Divi, gradients are computed using the parameter shift rule, which evaluates the function at shifted parameter values.
+L-BFGS-B (Limited-memory Broyden–Fletcher–Goldfarb–Shanno with Bound constraints) [#zhu1997]_ is a quasi-Newton method that uses gradient information.
 
-Divi computes these parameter shifts in parallel.
+On a :class:`~divi.backends.MaestroSimulator` that estimates expectation values
+natively and without a noise model, Divi computes the gradient by adjoint
+differentiation on Maestro's statevector: one submission per gradient, however
+many parameters the circuit has. In a :class:`~divi.qprog.ensembles.ProgramEnsemble`
+these submissions go straight to the backend rather than into merged batches, and
+the progress display shows no batch row for them.
+
+Everywhere else (sampling backends, noise models, other Maestro simulation
+methods, error mitigation, and programs that bind data) Divi uses the parameter
+shift rule, which evaluates the function at shifted parameter values. Divi
+computes these parameter shifts in parallel.
 
 .. note::
 
@@ -68,8 +78,11 @@ Divi computes these parameter shifts in parallel.
    parameter-shift rule because a shared layer angle drives many Hamiltonian
    terms. For exact trotterization, Divi derives a generalised rule from the
    Hamiltonian frequencies [#wierichs2022]_. QAOA applies
-   ``max_shift_evaluations_per_parameter`` as a safety limit. Stochastic or
-   approximate trotterization still requires SPSA or a gradient-free method.
+   ``max_shift_evaluations_per_parameter`` as a safety limit. Adjoint
+   differentiation needs no shift rule, so on a Maestro statevector QAOA also
+   gets exact gradients for Hamiltonians whose frequencies admit none.
+   Stochastic or approximate trotterization still requires SPSA or a
+   gradient-free method.
 
 .. code-block:: python
 
@@ -79,7 +92,7 @@ SLSQP
 ^^^^^
 
 SLSQP (Sequential Least Squares Programming) is a quasi-Newton method using
-the same parameter-shift gradient as L-BFGS-B.
+the same gradient as L-BFGS-B.
 
 .. code-block:: python
 

@@ -23,6 +23,7 @@ from divi.backends._shot_allocation import (
     to_wire,
 )
 from divi.circuits._payloads import CircuitBatch, CircuitPayload, bound_circuits
+from divi.exceptions import VJPUnavailableError
 
 
 def normalise_circuit_batch(circuits: CircuitBatch) -> dict[str, str]:
@@ -204,6 +205,42 @@ class CircuitRunner(ABC):
         one row per circuit.
         """
         return False
+
+    @property
+    def supports_vjp(self) -> bool:
+        """Whether :meth:`submit_vjp` can compute vector-Jacobian products."""
+        return False
+
+    def submit_vjp(
+        self,
+        payloads: Sequence[CircuitPayload],
+        *,
+        ham_ops: str,
+        cotangents: Mapping[str, np.ndarray],
+        cancellation_event: Event | None = None,
+    ) -> ExecutionResult:
+        """Expectation values and their vector-Jacobian products, row by row.
+
+        Args:
+            payloads: Parametric payloads; every row of every payload is one
+                evaluation.
+            ham_ops: Semicolon-separated Pauli terms, as for
+                :meth:`submit_circuits`.
+            cotangents: For each row label, one weight per ``ham_ops`` term.
+            cancellation_event: When set, the backend aborts before dispatch and
+                raises :class:`~divi.exceptions.ExecutionCancelledError`.
+
+        Returns:
+            One entry per row: ``"results"`` maps each term to its expectation
+            value, and ``"metadata"`` holds ``"vjp"``, the cotangent-weighted
+            derivatives in the order of the payload's parameters.
+
+        Raises:
+            VJPUnavailableError: If the backend cannot compute them for this request.
+        """
+        raise VJPUnavailableError(
+            f"{type(self).__name__} cannot compute vector-Jacobian products."
+        )
 
     def set_seed(self, seed: int) -> None:
         """Seed the backend's random number generator, if supported.

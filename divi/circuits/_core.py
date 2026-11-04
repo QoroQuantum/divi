@@ -223,7 +223,7 @@ class MetaCircuit:
         splitting a multi-term observable into its individual Pauli terms,
         so the measurement stage reports each separately.
         """
-        return replace(self, observable=observable)
+        return replace(self, observable=observable, _validated_observable=None)
 
     def set_measurement_bodies(
         self, bodies: Sequence[tuple[QASMTag, str]]

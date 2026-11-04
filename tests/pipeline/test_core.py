@@ -15,7 +15,7 @@ from threading import Event
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter
+from qiskit.circuit import Parameter, ParameterVector
 from qiskit.converters import circuit_to_dag
 from qiskit.quantum_info import SparsePauliOp
 
@@ -29,7 +29,8 @@ from divi.backends import (
 from divi.circuits import MetaCircuit
 from divi.circuits._conversions import _format_bound_param
 from divi.circuits._payloads import bound_circuits
-from divi.exceptions import ExecutionCancelledError
+from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
+from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import (
     CircuitPipeline,
     ContractViolation,
@@ -40,6 +41,8 @@ from divi.pipeline import (
     ResultFormat,
     SpecStage,
     StageOutput,
+    cost_preprocessor,
+    extract_param_set_idx,
     format_pipeline_tree,
 )
 from divi.pipeline._compilation import (
@@ -60,6 +63,8 @@ from divi.pipeline.stages import (
     MeasurementStage,
     ParameterBindingStage,
     PauliTwirlStage,
+    PreprocessStage,
+    TrotterSpecStage,
 )
 from divi.reporting._events import ProgressEvent
 from tests._helpers import FakeAsyncBackend, exact_match, raise_after_running
@@ -71,6 +76,7 @@ from ._helpers import (
     FanoutAndSumStage,
     MisTaggedFanoutStage,
     RecordingBackend,
+    RecordingVJPBackend,
     ShotsBackendSpy,
     StatefulFanoutStage,
     assert_builds_without_performance_warning,
@@ -1820,4 +1826,223 @@ def test_suppress_performance_warnings_keeps_other_warnings():
         CircuitPipeline(
             stages=_perf_warning_stages(UserWarning),
             suppress_performance_warnings=True,
+        )
+
+
+_THETA = ParameterVector("θ", 3)
+_VJP_OBSERVABLES = (
+    SparsePauliOp.from_list([("IZ", 1.0), ("II", 0.5)]),
+    SparsePauliOp.from_list([("XX", 1.0), ("ZZ", -0.3)]),
+)
+_VJP_PARAM_SETS = np.array([[0.3, -0.712345678912, 1.1], [-1.2, 0.4, -0.25]])
+_COTANGENTS = np.array([[1.0, -0.5], [0.2, 2.0]])
+
+
+def _vjp_meta() -> MetaCircuit:
+    qc = QuantumCircuit(2)
+    qc.ry(_THETA[0], 0)
+    qc.cx(0, 1)
+    qc.rx(_THETA[1], 1)
+    qc.rz(_THETA[2], 0)
+    qc.h(0)
+    return MetaCircuit(
+        circuit_bodies=(((), circuit_to_dag(qc)),),
+        parameters=tuple(_THETA),
+        observable=_VJP_OBSERVABLES,
+    )
+
+
+def _cost_pipeline(measurement: MeasurementStage | None = None) -> CircuitPipeline:
+    return CircuitPipeline(
+        stages=[
+            CircuitSpecStage(),
+            PreprocessStage(cost_preprocessor()),
+            measurement or MeasurementStage(),
+            ParameterBindingStage(),
+        ]
+    )
+
+
+def _by_param_set(result) -> np.ndarray:
+    return np.array(
+        [
+            value
+            for _key, value in sorted(
+                result.items(), key=lambda item: extract_param_set_idx(item[0])
+            )
+        ]
+    )
+
+
+class TestCircuitPipelineRunVJP:
+    def test_submits_the_unbound_template_at_bound_precision_with_term_cotangents(
+        self,
+    ):
+        backend = RecordingVJPBackend()
+
+        _values, vjps = _cost_pipeline().run_vjp(
+            _vjp_meta(),
+            PipelineEnv(backend=backend, param_sets=_VJP_PARAM_SETS),
+            _COTANGENTS,
+        )
+
+        ((payloads, ham_ops, cotangents),) = backend.calls
+        (payload,) = payloads
+        assert payload.parameters == tuple(_THETA)
+        assert [values for _label, values in payload.parameter_sets] == [
+            (0.3, -0.71234568, 1.1),
+            (-1.2, 0.4, -0.25),
+        ]
+        terms = ham_ops.split(";")
+        for (label, _values), (c0, c1) in zip(payload.parameter_sets, _COTANGENTS):
+            assert dict(zip(terms, cotangents[label])) == pytest.approx(
+                {"ZI": c0, "II": 0.5 * c0, "XX": c1, "ZZ": -0.3 * c1}
+            )
+        np.testing.assert_array_equal(vjps[0], np.zeros(3))
+        np.testing.assert_array_equal(vjps[1], np.ones(3))
+
+    @pytest.mark.parametrize(
+        "stages, message",
+        [
+            pytest.param(
+                [
+                    CircuitSpecStage(),
+                    FanoutAndSumStage("copy", 2),
+                    MeasurementStage(),
+                    ParameterBindingStage(),
+                ],
+                "Stages ['FanoutAndSumStage'] have no vector-Jacobian product.",
+                id="stage-without-a-vjp",
+            ),
+            pytest.param(
+                [
+                    TrotterSpecStage(
+                        trotterization_strategy=QDrift(sampling_budget=2, seed=42),
+                        meta_circuit_factory=lambda result, ham_id: _vjp_meta(),
+                    ),
+                    MeasurementStage(),
+                    ParameterBindingStage(),
+                ],
+                "Stages ['TrotterSpecStage'] have no vector-Jacobian product.",
+                id="stochastic-trotterization",
+            ),
+            pytest.param(
+                [CircuitSpecStage(), ParameterBindingStage(), MeasurementStage()],
+                "The pipeline must bind parameters in its last stage.",
+                id="binding-before-measurement",
+            ),
+        ],
+    )
+    def test_unsupported_pipelines_are_refused_before_any_forward_pass(
+        self, mocker, stages, message
+    ):
+        pipeline = CircuitPipeline(stages=stages)
+        forward_pass = mocker.spy(pipeline, "run_forward_pass")
+
+        with pytest.raises(VJPUnavailableError, match=exact_match(message)):
+            pipeline.run_vjp(
+                _vjp_meta(),
+                PipelineEnv(backend=RecordingVJPBackend(), param_sets=_VJP_PARAM_SETS),
+                _COTANGENTS,
+            )
+        forward_pass.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "supports_expval, spec, measurement, message",
+        [
+            pytest.param(
+                False,
+                _vjp_meta(),
+                None,
+                "Vector-Jacobian products need the backend to compute expectation "
+                "values.",
+                id="sampled-measurement",
+            ),
+            pytest.param(
+                True,
+                _vjp_meta(),
+                MeasurementStage(result_format_override=ResultFormat.COUNTS),
+                "Vector-Jacobian products need expectation values.",
+                id="counts-readout",
+            ),
+            pytest.param(
+                True,
+                [_vjp_meta(), _vjp_meta()],
+                None,
+                "Vector-Jacobian products need exactly one circuit per parameter set.",
+                id="two-circuits-per-parameter-set",
+            ),
+        ],
+    )
+    def test_runtime_rules_refuse_after_the_forward_pass(
+        self, supports_expval, spec, measurement, message
+    ):
+        backend = RecordingVJPBackend(supports_expval=supports_expval)
+
+        with pytest.raises(VJPUnavailableError, match=exact_match(message)):
+            _cost_pipeline(measurement).run_vjp(
+                spec,
+                PipelineEnv(backend=backend, param_sets=_VJP_PARAM_SETS),
+                _COTANGENTS,
+            )
+        assert backend.calls == []
+
+    def test_cotangents_must_match_the_observables(self):
+        backend = RecordingVJPBackend()
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match("Got 3 cotangents per parameter set for 2 observables."),
+        ):
+            _cost_pipeline().run_vjp(
+                _vjp_meta(),
+                PipelineEnv(backend=backend, param_sets=_VJP_PARAM_SETS),
+                np.ones((2, 3)),
+            )
+        assert backend.calls == []
+
+    def test_a_backend_without_vjp_refuses(self, dummy_expval_backend):
+        with pytest.raises(
+            VJPUnavailableError,
+            match=exact_match(
+                "DummyExpvalBackend cannot compute vector-Jacobian products."
+            ),
+        ):
+            _cost_pipeline().run_vjp(
+                _vjp_meta(),
+                PipelineEnv(backend=dummy_expval_backend, param_sets=_VJP_PARAM_SETS),
+                _COTANGENTS,
+            )
+
+    def test_matches_the_default_run_and_the_shift_rule_on_maestro(
+        self, default_test_simulator
+    ):
+        pipeline = _cost_pipeline()
+        params = _VJP_PARAM_SETS[:1]
+
+        values, vjps = pipeline.run_vjp(
+            _vjp_meta(),
+            PipelineEnv(backend=default_test_simulator, param_sets=params),
+            _COTANGENTS[:1],
+        )
+        expected = pipeline.run(
+            _vjp_meta(), PipelineEnv(backend=default_test_simulator, param_sets=params)
+        )
+        shifts = np.pi / 2 * np.eye(3)
+        shifted = _by_param_set(
+            pipeline.run(
+                _vjp_meta(),
+                PipelineEnv(
+                    backend=default_test_simulator,
+                    param_sets=np.vstack([params + shifts, params - shifts]),
+                ),
+            )
+        )
+        jacobian = (shifted[:3] - shifted[3:]) / 2
+
+        np.testing.assert_allclose(
+            _by_param_set(values), _by_param_set(expected), rtol=0, atol=1e-12
+        )
+        np.testing.assert_allclose(
+            vjps[0], jacobian @ _COTANGENTS[0], rtol=0, atol=1e-7
         )

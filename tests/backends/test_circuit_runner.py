@@ -11,6 +11,7 @@ from qiskit.circuit import Parameter
 
 from divi.backends import CircuitRunner, ExecutionResult, normalise_circuit_batch
 from divi.circuits._payloads import CircuitPayload
+from divi.exceptions import VJPUnavailableError
 from tests._helpers import exact_match
 
 
@@ -41,6 +42,18 @@ class TestCircuitRunner:
             match=exact_match(f"Shots must be a positive integer. Got {shots}."),
         ):
             ConcreteCircuitRunner(shots=shots)
+
+    def test_vjp_is_unavailable_by_default(self):
+        runner = ConcreteCircuitRunner(shots=100)
+
+        assert runner.supports_vjp is False
+        with pytest.raises(
+            VJPUnavailableError,
+            match=exact_match(
+                "ConcreteCircuitRunner cannot compute vector-Jacobian products."
+            ),
+        ):
+            runner.submit_vjp([], ham_ops="Z", cotangents={})
 
 
 @pytest.mark.parametrize("shots", [1000, np.int64(1000), np.uint16(1000)])

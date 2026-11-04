@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
+import networkx as nx
 import numpy as np
 import pytest
 from pydantic import ValidationError
@@ -17,11 +18,16 @@ from qiskit.quantum_info import SparsePauliOp
 from scipy.optimize import OptimizeResult
 
 import divi.qprog._program_checkpoint as program_checkpoint_module
+from divi.backends import MaestroConfig
 from divi.circuits import MetaCircuit
 from divi.exceptions import ExecutionCancelledError
+from divi.hamiltonians.trotterization import QDrift
 from divi.pipeline import CircuitPreprocessor, CostEstimate
 from divi.qprog import EarlyStopping, StopReason
 from divi.qprog._program_checkpoint import VQACheckpoint
+from divi.qprog.algorithms import (
+    QAOA,
+)
 from divi.qprog.checkpointing import CheckpointConfig, list_checkpoints
 from divi.qprog.checkpointing.names import PROGRAM_COMPLETION_FILE
 from divi.qprog.mixins import SolutionEntry, SolutionSamplingMixin
@@ -33,6 +39,7 @@ from divi.qprog.optimizers import (
     ScipyOptimizer,
     SPSAOptimizer,
 )
+from divi.qprog.problems import MaxCutProblem
 from divi.qprog.quantum_program import QuantumProgram
 from divi.qprog.variational_quantum_algorithm import (
     VariationalQuantumAlgorithm,
@@ -40,8 +47,11 @@ from divi.qprog.variational_quantum_algorithm import (
 )
 from divi.reporting._events import ProgressEvent, TerminalStatus
 from tests._helpers import exact_match
-from tests.pipeline._helpers import meta_from_circuit
-from tests.qprog._helpers import restore_iteration_checkpoint
+from tests.pipeline._helpers import meta_from_circuit, metric_compatible_vqe
+from tests.qprog._helpers import (
+    central_difference_of_loss,
+    restore_iteration_checkpoint,
+)
 from tests.qprog.algorithms._helpers import seed_best_probs
 
 
@@ -3168,6 +3178,30 @@ class TestGradShiftRule(BaseVariationalQuantumAlgorithmTest):
             program._grad_shift_rule
 
 
+def _gradient_vqe(backend):
+    return metric_compatible_vqe(backend, ScipyOptimizer(method=ScipyMethod.L_BFGS_B))
+
+
+def _gradient_qaoa(backend, weights=(1.0, 1.0, 1.0, 1.0)):
+    graph = nx.cycle_graph(4)
+    nx.set_edge_attributes(graph, dict(zip(graph.edges, weights)), "weight")
+    return QAOA(
+        MaxCutProblem(graph),
+        n_layers=2,
+        optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+        backend=backend,
+    )
+
+
+def _incommensurate_qaoa(backend):
+    """Edge weights with an irrational ratio, which have no parameter-shift rule."""
+    return _gradient_qaoa(backend, weights=(1.0, np.sqrt(2), 1.0, 1.0))
+
+
+def _loss_without_its_slope(self, param_sets, **kwargs):
+    return {}
+
+
 class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
     """Spec: grad_fn correctly computes parameter-shift gradients from pipeline results."""
 
@@ -3202,15 +3236,15 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
 
         grad_call_count = [0]
 
-        def mock_run(param_sets, **kwargs):
+        def mock_evaluate(param_sets, preprocessor, **kwargs):
             n_sets = np.atleast_2d(param_sets).shape[0]
             if n_sets == 1:
-                return {0: -0.5}
+                return {0: [-0.5]}
             else:
                 grad_call_count[0] += 1
-                return {i: mock_values[i] for i in range(n_sets)}
+                return {i: [mock_values[i]] for i in range(n_sets)}
 
-        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
+        mocker.patch.object(program, "evaluate", side_effect=mock_evaluate)
         program.run(perform_final_computation=False)
 
         assert grad_call_count[0] >= 1, "grad_fn was never called"
@@ -3226,14 +3260,14 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
         captured = []
         initial_params = np.full((1, n_params), 0.25)
 
-        def mock_run(param_sets, **kwargs):
+        def mock_evaluate(param_sets, preprocessor, **kwargs):
             param_sets = np.atleast_2d(param_sets)
             n_sets = param_sets.shape[0]
             if n_sets > 1:
                 captured.append(param_sets.copy())
-            return {i: float(i) * 0.1 for i in range(n_sets)}
+            return {i: [float(i) * 0.1] for i in range(n_sets)}
 
-        mocker.patch.object(program, "_evaluate_cost_param_sets", side_effect=mock_run)
+        mocker.patch.object(program, "evaluate", side_effect=mock_evaluate)
 
         program.run(
             initial_params=initial_params,
@@ -3253,6 +3287,78 @@ class TestGradientFunction(BaseVariationalQuantumAlgorithmTest):
             assert len(nonzero) == 1, f"Row {2 * i} shifts {len(nonzero)} params"
             assert nonzero[0] == i
             np.testing.assert_allclose(np.abs(diff_pos[nonzero[0]]), np.pi / 2)
+
+    @pytest.mark.parametrize(
+        "make_program",
+        [
+            pytest.param(_gradient_vqe, id="vqe"),
+            pytest.param(_gradient_qaoa, id="qaoa"),
+            pytest.param(_incommensurate_qaoa, id="qaoa-without-a-shift-rule"),
+        ],
+    )
+    def test_adjoint_gradient_is_one_circuit_and_the_loss_gradient(
+        self, default_test_simulator, make_program
+    ):
+        program = make_program(default_test_simulator)
+        params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
+
+        gradient = program._evaluate_gradient_at(params)
+
+        assert program.total_circuit_count == 1
+        np.testing.assert_allclose(
+            gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
+
+    def test_a_backend_refusal_falls_back_to_the_shift_rule(
+        self, make_maestro_simulator
+    ):
+        backend = make_maestro_simulator(
+            maestro_config=MaestroConfig(simulation_type="MatrixProductState")
+        )
+        program = _gradient_vqe(backend)
+        params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
+        shifts, _ = program._grad_shift_rule
+
+        gradient = program._evaluate_gradient_at(params)
+
+        assert program.total_circuit_count == len(shifts)
+        np.testing.assert_allclose(
+            gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
+
+    def test_stochastic_trotterisation_still_refuses_a_gradient(
+        self, default_test_simulator
+    ):
+        qaoa = QAOA(
+            MaxCutProblem(nx.path_graph(3)),
+            trotterization_strategy=QDrift(sampling_budget=2, seed=42),
+            optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+            backend=default_test_simulator,
+        )
+
+        with pytest.raises(
+            NotImplementedError,
+            match=exact_match(
+                "QAOA has no parameter-shift gradient for stochastic or approximate "
+                "trotterization. Use a gradient-free optimizer or SPSA."
+            ),
+        ):
+            qaoa._evaluate_gradient_at(np.zeros(qaoa.n_params))
+
+    def test_overriding_the_loss_requires_its_slope(self):
+        with pytest.raises(
+            TypeError,
+            match=exact_match(
+                "_LossOnly overrides _evaluate_cost_param_sets, so it must also "
+                "override _loss_gradient_by_observable with its loss's slope in "
+                "each cost observable."
+            ),
+        ):
+            type(
+                "_LossOnly",
+                (SampleVQAProgram,),
+                {"_evaluate_cost_param_sets": _loss_without_its_slope},
+            )
 
 
 class _ScriptedOptimizer(Optimizer):

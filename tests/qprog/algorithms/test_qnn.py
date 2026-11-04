@@ -31,7 +31,10 @@ from divi.qprog.optimizers import (
 )
 from divi.qprog.variational_quantum_algorithm import VariationalQuantumAlgorithm
 from tests._helpers import exact_match
-from tests.qprog._helpers import restore_iteration_checkpoint
+from tests.qprog._helpers import (
+    central_difference_of_loss,
+    restore_iteration_checkpoint,
+)
 from tests.qprog._program_contracts import (
     ObservableMeasuringContractsBase,
     verify_cost_circuit,
@@ -548,6 +551,22 @@ class TestQNNPipelines:
         for pipeline in pipelines:
             types = [type(s).__name__ for s in pipeline.stages]
             assert "DataBindingStage" in types
+
+    def test_single_sample_gradient_stays_on_the_shift_rule(
+        self, mocker, make_qnn, feature_batch_2x2, default_test_simulator
+    ):
+        program = make_qnn(
+            feature_batch=feature_batch_2x2[:1], backend=default_test_simulator
+        )
+        submit_vjp = mocker.spy(default_test_simulator, "submit_vjp")
+        params = np.random.default_rng(7).uniform(-1.0, 1.0, program.n_params)
+
+        gradient = program._evaluate_gradient_at(params)
+
+        submit_vjp.assert_not_called()
+        np.testing.assert_allclose(
+            gradient, central_difference_of_loss(program, params), rtol=0, atol=1e-6
+        )
 
 
 @pytest.mark.e2e

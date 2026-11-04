@@ -28,7 +28,9 @@ import requests
 from rich.console import Console
 
 import divi.qprog.ensembles._base as ensemble_module
+from divi.backends import MaestroConfig
 from divi.backends._cancellation import _cancel_job_on_abort
+from divi.circuits._payloads import bound_circuits
 from divi.exceptions import CircuitTooWideError, ExecutionCancelledError
 from divi.pipeline import PipelineEnv
 from divi.pipeline._core import _wait_for_async_result
@@ -2806,6 +2808,52 @@ class TestEnsembleCountAccounting:
 
         assert ensemble.total_circuit_count == 30
         assert ensemble.total_run_time == 10.0
+
+    def test_merged_gradients_are_one_vjp_each_and_counted_exactly(
+        self, mocker, make_maestro_simulator, _reset_after
+    ):
+        """Gradients bypass the merge as one VJP each, cost evaluations still
+        merge, and the optimisation matches one taken on the shift rule."""
+        backend = make_maestro_simulator()
+        submit_circuits = mocker.spy(backend, "submit_circuits")
+        submit_vjp = mocker.spy(backend, "submit_vjp")
+        ensemble = _small_partitioning_ensemble(
+            backend, optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B), seed=7
+        )
+        _reset_after(ensemble)
+        shift_rule = _small_partitioning_ensemble(
+            make_maestro_simulator(
+                maestro_config=MaestroConfig(simulation_type="MatrixProductState")
+            ),
+            optimizer=ScipyOptimizer(method=ScipyMethod.L_BFGS_B),
+            seed=7,
+        )
+        _reset_after(shift_rule)
+
+        ensemble.run_one_round(blocking=True)
+        shift_rule.run_one_round(blocking=True)
+
+        gradients = sum(p.optimize_result.njev for p in ensemble.programs.values())
+        assert gradients > 0
+        assert submit_vjp.call_count == gradients
+        submitted_rows = sum(
+            len(bound_circuits(call.args[0])) for call in submit_circuits.call_args_list
+        ) + sum(
+            len(payload.parameter_sets)
+            for call in submit_vjp.call_args_list
+            for payload in call.args[0]
+        )
+        assert ensemble.total_circuit_count == submitted_rows
+        assert any(
+            len(bound_circuits(call.args[0])) > 1
+            for call in submit_circuits.call_args_list
+        )
+        assert {key: p.best_loss for key, p in ensemble.programs.items()} == (
+            pytest.approx(
+                {key: p.best_loss for key, p in shift_rule.programs.items()},
+                abs=1e-6,
+            )
+        )
 
 
 class TestProgramEnsembleDryRun:

@@ -7,6 +7,7 @@
 import os
 import sys
 import threading
+from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -46,17 +47,48 @@ def _split_by_limit_scope(
     )
 
 
-class _ThreadDepth(threading.local):
-    value = 0
+class _ThreadHolds(threading.local):
+    def __init__(self):
+        self.filepaths: list[str] = []
+
+
+# Holders of each process-wide library across every section, and the thread
+# count it had before the first of them entered.
+_lock = threading.Lock()
+_holders: dict[str, int] = {}
+_originals: dict[str, tuple[Any, int]] = {}
+_thread_holds = _ThreadHolds()
+
+
+def _restore(filepath: str) -> None:
+    del _holders[filepath]
+    lib, num_threads = _originals.pop(filepath)
+    lib.set_num_threads(num_threads)
+
+
+def _reset_in_child() -> None:
+    """Keep only the forking thread's holds; the other threads are gone."""
+    global _lock
+    _lock = threading.Lock()
+    held = Counter(_thread_holds.filepaths)
+    for filepath in list(_holders):
+        if held[filepath]:
+            _holders[filepath] = held[filepath]
+        else:
+            _restore(filepath)
+
+
+if sys.platform != "win32":
+    os.register_at_fork(after_in_child=_reset_in_child)
 
 
 class SingleThreadedSection:
     """Holds native thread pools at one thread while any thread is inside.
 
-    Overlapping holders share the limit on process-wide libraries: the first
-    to enter sets it and the last to leave restores it. Each also limits
-    per-thread libraries in its own thread. A forked child keeps the limit
-    only if its thread was inside.
+    Process-wide libraries are shared by every section: the first holder of a
+    library sets its limit and the last to leave restores it. Each holder also
+    limits per-thread libraries in its own thread. A forked child keeps a
+    limit only if its thread was inside.
 
     Args:
         user_api: ``"blas"`` or ``"openmp"`` to limit one kind of library;
@@ -65,13 +97,6 @@ class SingleThreadedSection:
 
     def __init__(self, user_api: str | None = None):
         self._user_api = user_api
-        self._lock = threading.Lock()
-        self._users = 0
-        self._depth = _ThreadDepth()
-        self._per_thread: ThreadpoolController | None = None
-        self._process_wide_limit: Any = None
-        if sys.platform != "win32":
-            os.register_at_fork(after_in_child=self._reset_in_child)
 
     def _discover(self) -> tuple[ThreadpoolController, ThreadpoolController]:
         controller = ThreadpoolController()
@@ -79,32 +104,28 @@ class SingleThreadedSection:
             controller = controller.select(user_api=self._user_api)
         return _split_by_limit_scope(controller)
 
-    def _reset_in_child(self) -> None:
-        self._lock = threading.Lock()
-        self._users = self._depth.value
-        if self._users == 0 and self._process_wide_limit is not None:
-            limit, self._process_wide_limit = self._process_wide_limit, None
-            limit.restore_original_limits()
-
     @contextmanager
     def hold(self) -> Iterator[None]:
         """Run the body with every selected thread pool at one thread."""
-        with self._lock:
-            per_thread = self._per_thread
-            if self._users == 0 or per_thread is None:
-                # Rediscovered per burst, so libraries loaded since the last one count.
-                per_thread, process_wide = self._discover()
-                self._process_wide_limit = process_wide.limit(limits=1)
-                self._per_thread = per_thread
-            self._users += 1
-        self._depth.value += 1
+        # Discovered per hold, so libraries loaded since the last one count.
+        per_thread, process_wide = self._discover()
+        filepaths = [lib.filepath for lib in process_wide.lib_controllers]
+        with _lock:
+            for lib, filepath in zip(process_wide.lib_controllers, filepaths):
+                if filepath not in _holders:
+                    _holders[filepath] = 0
+                    _originals[filepath] = (lib, lib.get_num_threads())
+                    lib.set_num_threads(1)
+                _holders[filepath] += 1
+        _thread_holds.filepaths.extend(filepaths)
         try:
             with per_thread.limit(limits=1):
                 yield
         finally:
-            self._depth.value -= 1
-            with self._lock:
-                self._users -= 1
-                if self._users == 0:
-                    limit, self._process_wide_limit = self._process_wide_limit, None
-                    limit.restore_original_limits()
+            for filepath in filepaths:
+                _thread_holds.filepaths.remove(filepath)
+            with _lock:
+                for filepath in filepaths:
+                    _holders[filepath] -= 1
+                    if _holders[filepath] == 0:
+                        _restore(filepath)

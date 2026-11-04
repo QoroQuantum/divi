@@ -568,12 +568,16 @@ class QuantumProgram(ABC):
         """
         env = self._build_pipeline_env(**env_overrides)
         result = pipeline.run(initial_spec=initial_spec, env=env)
+        self._record_execution(env)
+        return result
+
+    def _record_execution(self, env: PipelineEnv) -> None:
+        """Fold one pipeline run's execution artifacts into program totals."""
         self._total_circuit_count += env.artifacts["circuit_count"]
         self._total_device_shots += env.artifacts["device_shots"]
         self._total_backend_jobs += env.artifacts["backend_jobs"]
         self._total_run_time += env.artifacts["run_time"]
         self._last_cost_variance = env.artifacts.get("cost_variance")
-        return result
 
     # ------------------------------------------------------------------ #
     # Spec stage + seed (the program contract)

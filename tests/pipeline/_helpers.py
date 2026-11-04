@@ -8,6 +8,7 @@ import re
 import warnings
 from typing import cast
 
+import numpy as np
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
@@ -433,6 +434,38 @@ class ShotsBackendSpy(CircuitRunner):
                 }
             )
         return ExecutionResult(results=results)
+
+
+class RecordingVJPBackend(CircuitRunner):
+    """Answers ``submit_vjp`` with fixed values and records each call."""
+
+    def __init__(self, *, supports_expval: bool = True):
+        super().__init__(shots=100)
+        self._supports_expval = supports_expval
+        self.calls: list[tuple[list, str, dict]] = []
+
+    @property
+    def supports_expval(self) -> bool:
+        return self._supports_expval
+
+    def submit_circuits(self, payloads, **kwargs):
+        raise AssertionError("A VJP run must not submit circuits.")
+
+    def submit_vjp(self, payloads, *, ham_ops, cotangents, cancellation_event=None):
+        payloads = list(payloads)
+        self.calls.append((payloads, ham_ops, dict(cotangents)))
+        terms = ham_ops.split(";")
+        return ExecutionResult(
+            results=[
+                {
+                    "label": label,
+                    "results": {term: 0.1 * (i + 1) for i, term in enumerate(terms)},
+                    "metadata": {"vjp": np.full(len(payload.parameters), float(row))},
+                }
+                for payload in payloads
+                for row, (label, _values) in enumerate(payload.parameter_sets)
+            ]
+        )
 
 
 class RecordingBackend(CircuitRunner):

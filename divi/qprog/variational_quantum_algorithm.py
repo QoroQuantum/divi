@@ -19,7 +19,7 @@ from scipy.optimize import OptimizeResult
 
 from divi.backends import CircuitRunner
 from divi.circuits import MetaCircuit
-from divi.exceptions import ExecutionCancelledError
+from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from divi.pipeline import (
     CircuitPipeline,
     CircuitPreprocessor,
@@ -224,6 +224,20 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     _best_params: npt.NDArray[np.float64]
     _final_params: npt.NDArray[np.float64]
     _cost_circuit: MetaCircuit | None
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        if (
+            cls._evaluate_cost_param_sets
+            is not VariationalQuantumAlgorithm._evaluate_cost_param_sets
+            and cls._loss_gradient_by_observable
+            is VariationalQuantumAlgorithm._loss_gradient_by_observable
+        ):
+            raise TypeError(
+                f"{cls.__name__} overrides _evaluate_cost_param_sets, so it must "
+                "also override _loss_gradient_by_observable with its loss's slope "
+                "in each cost observable."
+            )
 
     def _make_checkpoint(
         self,
@@ -1085,7 +1099,8 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
         back via :meth:`_cost_shot_variances`.
 
         Subclasses should prefer overriding the initial-spec hook over
-        replacing the full evaluator.
+        replacing the full evaluator. One that replaces it must also override
+        :meth:`_loss_gradient_by_observable` with its loss's slopes.
         """
         if collect_variance:
             result, _ = self.evaluate(
@@ -1119,10 +1134,12 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     ) -> npt.NDArray[np.float64]:
         """``dL/d<O_j>`` for each cost-circuit observable ``O_j`` at ``params``.
 
-        The loss is the first observable's expectation value plus
-        ``loss_constant``, so the default is ``[1, 0, ...]`` whatever
-        ``params`` is. Programs whose loss is a non-linear function of the
-        expectations override this; branches share the returned slopes.
+        The loss is a function of the expectation values :meth:`cost_preprocessor`
+        measures, and every gradient is these slopes times their Jacobian. By
+        default the loss is the first observable's expectation value plus
+        ``loss_constant``, so the slopes are ``[1, 0, ...]`` whatever ``params``
+        is. Programs whose loss is a non-linear function of the expectations
+        override this; branches share the returned slopes.
         """
         slopes = np.zeros(len(self.cost_circuit.observable or ()), dtype=np.float64)
         slopes[:1] = 1.0
@@ -1151,10 +1168,36 @@ class VariationalQuantumAlgorithm(ObservableMeasuringMixin, QuantumProgram):
     def _evaluate_gradient_at(
         self, params: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
-        """Evaluate the parameter-shift gradient at a single parameter vector."""
+        """The loss gradient at a single parameter vector.
+
+        :meth:`_loss_gradient_by_observable` times the Jacobian of the cost
+        expectation values, taken by adjoint differentiation when the backend
+        offers it for the cost pipeline and by the parameter-shift rule
+        otherwise.
+        """
+        params = np.asarray(params, dtype=np.float64).reshape(-1)
+        cotangent = self._loss_gradient_by_observable(params)
+
+        if self.backend.supports_vjp:
+            pipeline = self._build_preprocessor_pipeline(self.cost_preprocessor())
+            env = self._build_pipeline_env(param_sets=np.atleast_2d(params))
+            try:
+                _, vjps = pipeline.run_vjp(
+                    self._initial_spec(), env, cotangent[None, :]
+                )
+            except VJPUnavailableError:
+                pass
+            else:
+                self._record_execution(env)
+                return vjps[0]
+
         shifts, weights = self._grad_shift_rule
-        exp_vals = self._evaluate_cost_param_sets(shifts + params)
-        return weights @ np.asarray(list(exp_vals.values()), dtype=np.float64)
+        result = self.evaluate(shifts + params, self.cost_preprocessor())
+        expectations = np.array(
+            [np.atleast_1d(result[idx]) for idx in range(len(result))],
+            dtype=np.float64,
+        )
+        return (weights @ expectations) @ cotangent
 
     def _resolve_sample_params(
         self, params: npt.NDArray[np.float64] | None
