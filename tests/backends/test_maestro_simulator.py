@@ -1402,7 +1402,7 @@ def test_statevector_refuses_a_noise_model(make_maestro_simulator):
     )
     message = (
         "statevector cannot apply the configured noise model; use "
-        "expectation_value, or a MaestroSimulator without noise_model."
+        "expectation_value, or a maestro_config without noise_model."
     )
 
     with pytest.raises(ValueError, match=exact_match(message)):

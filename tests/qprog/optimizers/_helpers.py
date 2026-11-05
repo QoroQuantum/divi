@@ -10,6 +10,7 @@ from qiskit.circuit import Parameter
 from qiskit.circuit.library import RYGate, RZGate
 from qiskit.quantum_info import SparsePauliOp
 
+from divi.qprog import VariationalQuantumAlgorithm
 from divi.qprog.algorithms import VQE, CustomVQA, GenericLayerAnsatz
 from divi.qprog.problems import HamiltonianProblem
 from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_rule
@@ -17,6 +18,14 @@ from divi.qprog.variational_quantum_algorithm import _compute_parameter_shift_ru
 #: Eigenvalues of the bowl the noisy contracts descend; condition number 10. Its
 #: length fixes the parameter count for every ``noisy_bowl`` run.
 BOWL_CURVATURE = np.logspace(0.0, 1.0, 4)
+
+
+def program_with_cost_circuit(mocker, cost_circuit):
+    """A ``VariationalQuantumAlgorithm`` stand-in whose cost circuit is
+    ``cost_circuit``."""
+    program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
+    program.cost_circuit = cost_circuit
+    return program
 
 
 def sphere_cost_fn_population(params: np.ndarray) -> np.ndarray:

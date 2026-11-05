@@ -10,7 +10,7 @@ import re
 import time
 import warnings
 import zlib
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 from typing import Any
@@ -107,10 +107,9 @@ def _compile_adjoint_template(
     n_params = len(parameter_names)
 
     def compile_at(values: np.ndarray) -> "maestro.AdjointProgram":
-        qasm = render_template(
-            template, [f"({_format_bound_param(v, 17)})" for v in values]
+        return maestro.AdjointProgram(
+            maestro.QasmToCirc().parse_and_translate(_bind_parameters(template, values))
         )
-        return maestro.AdjointProgram(maestro.QasmToCirc().parse_and_translate(qasm))
 
     base, check = np.random.default_rng(0).uniform(-1.0, 1.0, (2, n_params))
     try:
@@ -157,6 +156,21 @@ def _compile_adjoint_template(
     return program, angle_matrix, angle_offset
 
 
+def _bind_parameters(template: Any, values: Iterable[float]) -> str:
+    """``template`` with ``values`` bound to its parameters, at full precision."""
+    return render_template(
+        template, [f"({_format_bound_param(v, 17)})" for v in values]
+    )
+
+
+def _bind_parameter_sets(payloads: Sequence[CircuitPayload]) -> Iterator[str]:
+    """Each payload's circuit, once per parameter row, with the row bound."""
+    for payload in payloads:
+        template = build_template(payload.circuit, payload.parameter_names)
+        for _label, values in payload.parameter_sets:
+            yield _bind_parameters(template, values)
+
+
 def _compile_adjoint_programs(
     payloads: Sequence[CircuitPayload],
 ) -> list[tuple["maestro.AdjointProgram", np.ndarray, np.ndarray]]:
@@ -173,6 +187,21 @@ def _compile_adjoint_programs(
             raise VJPUnavailableError(program)
         compiled.append(program)
     return compiled
+
+
+def _vjp_inputs(
+    payload: CircuitPayload,
+    angle_matrix: np.ndarray,
+    angle_offset: np.ndarray,
+    cotangents: Mapping[str, np.ndarray],
+) -> tuple[list[str], np.ndarray, np.ndarray]:
+    """A payload's row labels, their gate angles and their cotangents."""
+    labels = [label for label, _values in payload.parameter_sets]
+    rows = np.array(
+        [values for _label, values in payload.parameter_sets], dtype=np.float64
+    ).reshape(len(labels), len(payload.parameter_names))
+    weights = np.array([cotangents[label] for label in labels], dtype=np.float64)
+    return labels, rows @ angle_matrix.T + angle_offset, weights
 
 
 def _vjp_result_entries(
@@ -206,6 +235,64 @@ def id_gates_as_noise_sites(qasm: str) -> str:
     """Rewrite ``id`` gates as ``u3(0,0,0)``, which Maestro's noise injection
     treats as a gate; it adds no noise after ``id`` itself."""
     return _ID_GATE_RE.sub(r"u3(0,0,0) \1;", qasm)
+
+
+def _prepare_noisy_circuits(
+    config: "MaestroConfig", qasm_strings: list[str], *, estimating: bool
+) -> list[str]:
+    """The circuits as a noisy run takes them, warning when estimating would
+    hide the model's readout errors."""
+    noise_model = config.noise_model
+    if noise_model is None:
+        return qasm_strings
+    if estimating and noise_model.has_readout_error():
+        warnings.warn(
+            "Readout errors do not affect expectation values; use "
+            "force_sampling=True to include them.",
+            stacklevel=3,
+        )
+    return [id_gates_as_noise_sites(q) for q in qasm_strings]
+
+
+def _lower_for_statevector(
+    config: "MaestroConfig",
+    circuit: "str | QuantumCircuit",
+    include_idle_qubits: bool,
+) -> tuple[str, float, list[int]]:
+    """``circuit`` as basis-gate QASM ready for a statevector, the global phase
+    OpenQASM 2 drops, and the indices of the qubits it acts on.
+
+    Raises:
+        ValueError: If ``config`` has a noise model, which a state vector
+            cannot carry.
+    """
+    if config.noise_model is not None:
+        raise ValueError(
+            "statevector cannot apply the configured noise model; use "
+            "expectation_value, or a maestro_config without noise_model."
+        )
+    source = (
+        QuantumCircuit.from_qasm_str(circuit) if isinstance(circuit, str) else circuit
+    )
+    # Lowered here, not only on export, so its decompositions' phase is kept.
+    lowered = lower_to_basis_gates(source)
+    active = {
+        qubit
+        for instruction in lowered.data
+        if instruction.operation.name != "barrier"
+        for qubit in instruction.qubits
+    }
+    if include_idle_qubits and (idle := [q for q in lowered.qubits if q not in active]):
+        # Padded first, so any measurement stays terminal.
+        padded = lowered.copy_empty_like()
+        padded.global_phase = 0.0
+        for qubit in idle:
+            padded.rz(0.0, qubit)
+        padded.compose(lowered, inplace=True)
+        lowered = padded
+    (qasm,) = flatten_bound_payloads([lowered]).values()
+    active_indices = sorted(lowered.find_bit(qubit).index for qubit in active)
+    return qasm, float(lowered.global_phase), active_indices
 
 
 # Simulator/simulation pairs on which Maestro applies noise as exact channels.
@@ -421,7 +508,108 @@ def require_maestro_config(value: Any, name: str) -> None:
     )
 
 
-class MaestroSimulator(CircuitRunner):
+def _little_endian_counts(counts: Mapping[str, int], width: int) -> dict[str, int]:
+    """Maestro's counts keyed little-endian, each key fitted to ``width`` bits.
+
+    Maestro puts c[0] leftmost and may size keys by the highest index it
+    touched; Qiskit's convention puts c[0] rightmost.
+    """
+    return {
+        (bits[:width].ljust(width, "0") if width else bits)[::-1]: n
+        for bits, n in counts.items()
+    }
+
+
+class MaestroBaseBackend(CircuitRunner):
+    """Base for the backends that run Maestro.
+
+    :class:`MaestroSimulator` runs it in-process and :class:`QRMIBackend` on a
+    Maestro server; both take the same :class:`MaestroConfig` and return the
+    same results for it.
+    """
+
+    def __init__(
+        self,
+        shots: int,
+        maestro_config: MaestroConfig | None,
+        track_depth: bool,
+        force_sampling: bool,
+    ):
+        super().__init__(shots=shots, track_depth=track_depth)
+        self.maestro_config = (
+            maestro_config if maestro_config is not None else MaestroConfig()
+        )
+        self._force_sampling = force_sampling
+
+    @property
+    def maestro_config(self) -> MaestroConfig:
+        """The Maestro settings every submission runs with."""
+        return self._maestro_config
+
+    @maestro_config.setter
+    def maestro_config(self, value: MaestroConfig) -> None:
+        require_maestro_config(value, "maestro_config")
+        self._maestro_config = value
+
+    @property
+    def supports_expval(self) -> bool:
+        """Maestro estimates observables natively unless sampling is forced."""
+        return not self._force_sampling
+
+    @property
+    def supports_vjp(self) -> bool:
+        """Whether estimation is native and noiseless, as adjoint differentiation needs.
+
+        Maestro itself refuses simulators it cannot differentiate on.
+        """
+        return self.supports_expval and self.maestro_config.noise_model is None
+
+    def set_seed(self, seed: int) -> None:
+        """Seed Maestro's simulation RNG.
+
+        Rebinds ``maestro_config`` with its ``seed`` option set, so the seed
+        reaches every subsequent submission; a seed already on the config is
+        overwritten.  Assigning a new ``maestro_config`` afterwards discards it.
+
+        Args:
+            seed: Non-negative seed value.
+        """
+        self.maestro_config = self.maestro_config.override(seed=seed)
+
+    def expectation_value(
+        self, circuit: str | QuantumCircuit, observable: SparsePauliOp
+    ) -> float:
+        """``<observable>`` in the output state of ``circuit``.
+
+        Raises:
+            ValueError: If ``observable`` has a non-real coefficient, so is not
+                Hermitian and has no real expectation value.
+        """
+        _assert_hermitian_spo(observable)
+        terms = _sparse_pauli_op_to_ham_string(observable)
+        result = self.submit_circuits({"circuit": circuit}, ham_ops=terms)
+        if result.results is None:
+            raise RuntimeError("Backend returned no results")
+        expvals = result.results[0]["results"]
+        return float(
+            sum(
+                coeff.real * expvals[term]
+                for term, coeff in zip(terms.split(";"), observable.coeffs)
+            )
+        )
+
+    def _vjp_config(self) -> MaestroConfig:
+        """The config a VJP submission runs with, read once."""
+        config = self.maestro_config
+        if not self.supports_expval or config.noise_model is not None:
+            raise VJPUnavailableError(
+                f"{type(self).__name__} computes vector-Jacobian products only "
+                "with native, noiseless estimation."
+            )
+        return config
+
+
+class MaestroSimulator(MaestroBaseBackend):
     """A CircuitRunner backend powered by qoro-maestro, Qoro's C++ quantum simulator.
 
     Runs circuits on any of maestro's simulator and simulation types, and
@@ -457,11 +645,12 @@ class MaestroSimulator(CircuitRunner):
         track_depth: bool = False,
         force_sampling: bool = False,
     ):
-        super().__init__(shots=shots, track_depth=track_depth)
-        self.maestro_config = (
-            maestro_config if maestro_config is not None else MaestroConfig()
+        super().__init__(
+            shots=shots,
+            maestro_config=maestro_config,
+            track_depth=track_depth,
+            force_sampling=force_sampling,
         )
-        self._force_sampling = force_sampling
 
         # Per-instance circuit fan-out pool, lazy-initialised on first
         # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
@@ -472,29 +661,6 @@ class MaestroSimulator(CircuitRunner):
         # through the same worker pool instead of each spawning their own.
         self._executor: ThreadPoolExecutor | None = None
         self._executor_lock = Lock()
-
-    @property
-    def maestro_config(self) -> MaestroConfig:
-        """The Maestro settings every submission runs with."""
-        return self._maestro_config
-
-    @maestro_config.setter
-    def maestro_config(self, value: MaestroConfig) -> None:
-        require_maestro_config(value, "maestro_config")
-        self._maestro_config = value
-
-    @property
-    def supports_expval(self) -> bool:
-        """Maestro supports native observable estimation unless sampling is forced."""
-        return not self._force_sampling
-
-    @property
-    def supports_vjp(self) -> bool:
-        """Whether estimation is native and noiseless, as adjoint differentiation needs.
-
-        Maestro itself refuses simulators it cannot differentiate on.
-        """
-        return self.supports_expval and self.maestro_config.noise_model is None
 
     def submit_vjp(
         self,
@@ -510,50 +676,31 @@ class MaestroSimulator(CircuitRunner):
         a circuit are padded onto its first qubits, as in :meth:`submit_circuits`.
 
         Raises:
-            VJPUnavailableError: If :attr:`supports_vjp` is False, or Maestro cannot
-                differentiate a payload's circuit on the configured simulator.
+            VJPUnavailableError: If
+                :attr:`~divi.backends.MaestroBaseBackend.supports_vjp` is
+                False, or Maestro cannot differentiate a payload's circuit on
+                the configured simulator.
         """
-        if not self.supports_vjp:
-            raise VJPUnavailableError(
-                "MaestroSimulator computes vector-Jacobian products only with "
-                "native, noiseless estimation."
-            )
+        config = self._vjp_config()._simulator_config()
         raise_if_cancelled(
             cancellation_event,
             "Maestro batch cancelled before any circuit was dispatched",
         )
         compiled = _compile_adjoint_programs(payloads)
-        if self.track_depth:
-            templates = [
-                build_template(payload.circuit, payload.parameter_names)
-                for payload in payloads
-            ]
-            self._record_qasm_depths(
-                render_template(
-                    template, [f"({_format_bound_param(v, 17)})" for v in values]
-                )
-                for payload, template in zip(payloads, templates)
-                for _label, values in payload.parameter_sets
-            )
         terms = pad_ham_ops(
             ham_ops, None, [count_qubits(payload.circuit) for payload in payloads]
         ).split(";")
-        config = self.maestro_config._simulator_config()
+        if self.track_depth:
+            self._record_qasm_depths(_bind_parameter_sets(payloads))
 
         def _run(item) -> list[dict]:
             payload, (program, angle_matrix, angle_offset) = item
-            labels = [label for label, _values in payload.parameter_sets]
-            rows = np.array(
-                [values for _label, values in payload.parameter_sets], dtype=np.float64
-            ).reshape(len(labels), len(payload.parameter_names))
-            weights = np.array(
-                [cotangents[label] for label in labels], dtype=np.float64
+            labels, angles, weights = _vjp_inputs(
+                payload, angle_matrix, angle_offset, cotangents
             )
             start = time.perf_counter()
             try:
-                raw = program.vjp(
-                    terms, weights, rows @ angle_matrix.T + angle_offset, config=config
-                )
+                raw = program.vjp(terms, weights, angles, config=config)
             except (ValueError, MemoryError) as exc:
                 raise VJPUnavailableError(
                     f"Maestro cannot differentiate the circuit: {exc}"
@@ -572,18 +719,6 @@ class MaestroSimulator(CircuitRunner):
             results=results,
             run_time=sum(entry["metadata"]["time_taken"] for entry in results),
         )
-
-    def set_seed(self, seed: int) -> None:
-        """Seed maestro's simulation RNG.
-
-        Rebinds ``maestro_config`` with its ``seed`` option set, so the seed
-        reaches every subsequent submission; a seed already on the config is
-        overwritten.  Assigning a new ``maestro_config`` afterwards discards it.
-
-        Args:
-            seed: Non-negative seed value.
-        """
-        self.maestro_config = self.maestro_config.override(seed=seed)
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the per-instance circuit fan-out pool, creating it lazily.
@@ -673,16 +808,10 @@ class MaestroSimulator(CircuitRunner):
 
         config = self.maestro_config
         noise_model = config.noise_model
-        noise_kwargs: dict[str, int] = {}
-        if noise_model is not None:
-            qasm_strings = [id_gates_as_noise_sites(q) for q in qasm_strings]
-            if ham_ops is not None and noise_model.has_readout_error():
-                warnings.warn(
-                    "Readout errors do not affect expectation values; use "
-                    "force_sampling=True to include them.",
-                    stacklevel=2,
-                )
-            noise_kwargs = config._noise_realization_kwargs()
+        qasm_strings = _prepare_noisy_circuits(
+            config, qasm_strings, estimating=ham_ops is not None
+        )
+        noise_kwargs = config._noise_realization_kwargs()
 
         base_config = config._simulator_config()
         per_circuit_shots = expand_shot_groups(shot_groups, len(circuit_labels))
@@ -721,13 +850,7 @@ class MaestroSimulator(CircuitRunner):
                         **noisy_kwargs,
                     )
                 )
-                # Maestro puts c[0] leftmost and sizes keys by the highest index it
-                # touched; fit them to the classical register, then little-endian.
-                width = count_clbits(qasm)
-                counts = {
-                    (bits[:width].ljust(width, "0") if width else bits)[::-1]: n
-                    for bits, n in raw["counts"].items()
-                }
+                counts = _little_endian_counts(raw["counts"], count_clbits(qasm))
                 return _result_entry(label, counts, raw, "counts")
 
             terms = per_circuit_terms[i]
@@ -776,54 +899,11 @@ class MaestroSimulator(CircuitRunner):
             ValueError: If the configuration has a noise model, which a state
                 vector cannot carry.
         """
-        if self.maestro_config.noise_model is not None:
-            raise ValueError(
-                "statevector cannot apply the configured noise model; use "
-                "expectation_value, or a MaestroSimulator without noise_model."
-            )
-        source = (
-            QuantumCircuit.from_qasm_str(circuit)
-            if isinstance(circuit, str)
-            else circuit
+        qasm, global_phase, _active = _lower_for_statevector(
+            self.maestro_config, circuit, include_idle_qubits
         )
-        # Lowered here, not only on export, so its decompositions' phase is kept.
-        lowered = lower_to_basis_gates(source)
-        if include_idle_qubits:
-            active = {
-                qubit
-                for instruction in lowered.data
-                if instruction.operation.name != "barrier"
-                for qubit in instruction.qubits
-            }
-            for qubit in lowered.qubits:
-                if qubit not in active:
-                    lowered.rz(0.0, qubit)
-        (qasm,) = flatten_bound_payloads([lowered]).values()
         amplitudes = maestro.get_statevector(
             maestro.QasmToCirc().parse_and_translate(qasm),
             config=self.maestro_config._simulator_config(),
         )
-        # OpenQASM 2 drops the global phase.
-        return np.exp(1j * float(lowered.global_phase)) * np.asarray(amplitudes)
-
-    def expectation_value(
-        self, circuit: str | QuantumCircuit, observable: SparsePauliOp
-    ) -> float:
-        """``<observable>`` in the output state of ``circuit``.
-
-        Raises:
-            ValueError: If ``observable`` has a non-real coefficient, so is not
-                Hermitian and has no real expectation value.
-        """
-        _assert_hermitian_spo(observable)
-        terms = _sparse_pauli_op_to_ham_string(observable)
-        result = self.submit_circuits({"circuit": circuit}, ham_ops=terms)
-        if result.results is None:
-            raise RuntimeError("Backend returned no results")
-        expvals = result.results[0]["results"]
-        return float(
-            sum(
-                coeff.real * expvals[term]
-                for term, coeff in zip(terms.split(";"), observable.coeffs)
-            )
-        )
+        return np.exp(1j * global_phase) * np.asarray(amplitudes)

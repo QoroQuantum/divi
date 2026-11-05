@@ -23,6 +23,7 @@ from ._results_processing import convert_counts_to_probs, reverse_dict_endiannes
 from ._systems import QPU, QPUSystem, SimulatorCluster
 from .runners import (
     JobType,
+    MaestroBaseBackend,
     MaestroConfig,
     MaestroSimulator,
     QoroService,
@@ -42,6 +43,7 @@ __all__ = [
     "JobStatus",
     "JobTimedOutError",
     "JobType",
+    "MaestroBaseBackend",
     "MaestroConfig",
     "MaestroSimulator",
     "QPU",

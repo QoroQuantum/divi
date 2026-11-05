@@ -6,7 +6,6 @@
 
 import itertools
 from dataclasses import replace
-from types import SimpleNamespace
 
 import networkx as nx
 import numpy as np
@@ -65,6 +64,7 @@ from tests.qprog.optimizers._helpers import (
     bowl_metric,
     data_bound_custom_vqa,
     inject_term_expectations,
+    program_with_cost_circuit,
     set_unit_shift_rule,
 )
 
@@ -537,8 +537,12 @@ def test_pullback_rejects_slopes_that_are_not_finite_and_real(
     ],
     ids=["none", "one", "three"],
 )
-def test_default_loss_gradient_is_one_for_the_first_observable(observable, expected):
-    program = SimpleNamespace(cost_circuit=SimpleNamespace(observable=observable))
+def test_default_loss_gradient_is_one_for_the_first_observable(
+    mocker, observable, expected
+):
+    program = program_with_cost_circuit(
+        mocker, mocker.MagicMock(spec=MetaCircuit, observable=observable)
+    )
     slopes = VariationalQuantumAlgorithm._loss_gradient_by_observable(
         program, np.array([0.3, 1.2])
     )
@@ -675,7 +679,9 @@ def test_fubini_study_matches_pennylane_block_diag(
     np.testing.assert_allclose(divi_metric, pl_metric[np.ix_(order, order)], atol=1e-10)
 
 
-def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(monkeypatch):
+def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(
+    mocker, monkeypatch
+):
     """FS prefix measurement derives the prefix + per-branch block structure
     from the sampled branch meta (recomputed from the cost cohort) and measures
     every label in one multi-observable pass."""
@@ -704,10 +710,8 @@ def test_fubini_study_prefix_preprocessor_uses_incoming_branch_meta(monkeypatch)
         fake_run_metric_by_branch,
     )
 
-    program = SimpleNamespace(
-        cost_circuit=sampled_meta,
-        _post_spec_batch=lambda: {(("ham", 0),): sampled_meta},
-    )
+    program = program_with_cost_circuit(mocker, sampled_meta)
+    program._post_spec_batch.return_value = {(("ham", 0),): sampled_meta}
     exp_by_branch, branch_data = _measure_prefix_paulis(
         program, [theta], np.array([0.1]), block_id=0
     )
@@ -1013,17 +1017,16 @@ def test_fs_block_closed_form_matches_anticommutator_algebra(seed):
     )
 
 
-def _single_rx_program(source_batch):
+def _single_rx_program(mocker, source_batch):
     """Stand-in program whose cost ansatz is ``rx(theta)`` and whose cost cohort
     is ``source_batch``."""
     theta = Parameter("theta")
     qc = QuantumCircuit(1)
     qc.rx(theta, 0)
     meta = _meta_from(qc)
-    return (
-        SimpleNamespace(cost_circuit=meta, _post_spec_batch=lambda: source_batch(meta)),
-        theta,
-    )
+    program = program_with_cost_circuit(mocker, meta)
+    program._post_spec_batch.return_value = source_batch(meta)
+    return program, theta
 
 
 @pytest.mark.parametrize(
@@ -1052,9 +1055,9 @@ def _single_rx_program(source_batch):
     ids=["block-out-of-range", "branch-absent", "label-count-mismatch"],
 )
 def test_measure_prefix_paulis_rejects_inconsistent_measurements(
-    monkeypatch, block_id, source_batch, measured, message
+    mocker, monkeypatch, block_id, source_batch, measured, message
 ):
-    program, theta = _single_rx_program(source_batch)
+    program, theta = _single_rx_program(mocker, source_batch)
     monkeypatch.setattr(
         "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda *_: {(("ham", 0),): {0: np.array(measured)}},
@@ -1063,19 +1066,20 @@ def test_measure_prefix_paulis_rejects_inconsistent_measurements(
         _measure_prefix_paulis(program, [theta], np.array([0.1]), block_id=block_id)
 
 
-def _expval_program(observable):
-    return SimpleNamespace(
-        cost_preprocessor=lambda: CircuitPreprocessor("cost"),
-        cost_circuit=SimpleNamespace(observable=observable),
+def _expval_program(mocker, observable):
+    program = program_with_cost_circuit(
+        mocker, mocker.MagicMock(spec=MetaCircuit, observable=observable)
     )
+    program.cost_preprocessor.return_value = CircuitPreprocessor("cost")
+    return program
 
 
-def test_pullback_requires_a_loss_observable():
+def test_pullback_requires_a_loss_observable(mocker):
     message = (
         "The pullback metric requires the cost circuit to carry a loss observable."
     )
     with pytest.raises(ContractViolation, match=exact_match(message)):
-        PullbackMetricEstimator().check_compatible(_expval_program(None))
+        PullbackMetricEstimator().check_compatible(_expval_program(mocker, None))
 
 
 @pytest.mark.parametrize(
@@ -1083,8 +1087,8 @@ def test_pullback_requires_a_loss_observable():
     [(SparsePauliOp("Z"),), (SparsePauliOp("Z"), SparsePauliOp("X"))],
     ids=["one-observable", "two-observables"],
 )
-def test_pullback_accepts_any_cost_observables(observable):
-    PullbackMetricEstimator().check_compatible(_expval_program(observable))
+def test_pullback_accepts_any_cost_observables(mocker, observable):
+    PullbackMetricEstimator().check_compatible(_expval_program(mocker, observable))
 
 
 _DATA_BOUND_SUPERVISED = (
@@ -1166,7 +1170,7 @@ def test_term_expectations_rejects_a_loss_gradient_of_the_wrong_length(
 
 
 def test_term_expectations_weights_each_observables_terms_by_its_slope(
-    monkeypatch,
+    mocker, monkeypatch
 ):
     """Identity terms carry no weight, an identity-only observable contributes
     no terms, and each remaining term is its coefficient times its
@@ -1181,7 +1185,8 @@ def test_term_expectations_weights_each_observables_terms_by_its_slope(
             SparsePauliOp.from_list([("X", -0.4), ("Y", 0.1)]),
         ),
     )
-    program = SimpleNamespace(_post_spec_batch=lambda: {(("ham", 0),): meta})
+    program = mocker.MagicMock(spec=VariationalQuantumAlgorithm)
+    program._post_spec_batch.return_value = {(("ham", 0),): meta}
     measured = {0: np.array([0.9, -0.2, 0.3]), 1: np.array([0.1, 0.4, -0.6])}
     monkeypatch.setattr(
         "divi.qprog.optimizers.metrics._run_metric_by_branch",
@@ -1204,8 +1209,10 @@ def test_term_expectations_weights_each_observables_terms_by_its_slope(
     ],
     ids=["branch-absent", "branch-without-observable"],
 )
-def test_term_expectations_rejects_an_unusable_source_branch(monkeypatch, source_batch):
-    program, theta = _single_rx_program(source_batch)
+def test_term_expectations_rejects_an_unusable_source_branch(
+    mocker, monkeypatch, source_batch
+):
+    program, theta = _single_rx_program(mocker, source_batch)
     monkeypatch.setattr(
         "divi.qprog.optimizers.metrics._run_metric_by_branch",
         lambda *_: {(("ham", 0),): {0: np.array([0.5])}},

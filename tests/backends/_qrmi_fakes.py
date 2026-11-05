@@ -10,7 +10,6 @@ pyo3 extension whose classes cannot be constructed from Python.
 
 import json
 from enum import Enum
-from types import SimpleNamespace
 
 
 class FakeTaskStatus(Enum):
@@ -21,15 +20,40 @@ class FakeTaskStatus(Enum):
     Cancelled = "Cancelled"
 
 
-class FakePayload:
-    """Mirrors ``qrmi.Payload``; the variant is a constructor, not a class."""
-
-    @staticmethod
-    def MaestroLocal(**fields):
-        return SimpleNamespace(**fields)
+class FakeConfigError(RuntimeError):
+    """``qrmi.ConfigError``: no task exists after it."""
 
 
-FAKE_QRMI = SimpleNamespace(Payload=FakePayload, TaskStatus=FakeTaskStatus)
+class FakeInvalidInputError(RuntimeError):
+    """``qrmi.InvalidInputError``."""
+
+
+class FakeUnsupportedFunctionError(RuntimeError):
+    """``qrmi.UnsupportedFunctionError``."""
+
+
+def fake_qrmi_module(mocker):
+    """The ``qrmi`` module, its payload helper checking a native request as
+    ``qrmi.maestro.request_payload`` does."""
+
+    def request_payload(request):
+        if request.get("schema_version") != 2:
+            raise ValueError("Maestro request must be an object with schema_version=2")
+        return mocker.Mock(
+            input=json.dumps(request, allow_nan=False), job_type="request"
+        )
+
+    qrmi = mocker.MagicMock(
+        TaskStatus=FakeTaskStatus,
+        ConfigError=FakeConfigError,
+        InvalidInputError=FakeInvalidInputError,
+        UnsupportedFunctionError=FakeUnsupportedFunctionError,
+    )
+    qrmi.maestro.request_payload.side_effect = request_payload
+    return qrmi
+
+
+SESSION_NOT_FOUND = "invalid configuration: session_not_found: Session does not exist"
 
 
 class FakeQuantumResource:
@@ -41,18 +65,24 @@ class FakeQuantumResource:
 
     def __init__(
         self,
+        mocker,
         *,
         resource_id: str = "MAESTRO_LOCAL",
         counts: dict[str, int] | None = None,
         expectation_values: list[float] | None = None,
         statuses: list[FakeTaskStatus] | None = None,
     ):
+        self._mocker = mocker
         self._resource_id = resource_id
         self._counts = counts if counts is not None else {"00": 4, "11": 6}
         self._expectation_values = expectation_values
         self._statuses = list(statuses) if statuses else None
+        self._failure = {
+            "error": {"code": "backend_unavailable", "message": "no such backend"},
+            "logs": "",
+        }
 
-        self.payloads: list[SimpleNamespace] = []
+        self.payloads: list = []
         self.acquired: list[str] = []
         self.released: list[str] = []
         self.stopped: list[str] = []
@@ -89,13 +119,23 @@ class FakeQuantumResource:
             if values is None:
                 values = [1.0] * len(request["observables"])
             body = {"expectation_values": values}
+        elif request["operation"] == "statevector":
+            # Amplitude k is k itself, so tests can see which entries come back.
+            dimension = 2 ** request["circuit"]["num_qubits"]
+            body = {"amplitudes": [[float(k), 0.0] for k in range(dimension)]}
+        elif request["operation"] == "adjoint_vjp":
+            rows = request["parameter_rows"]
+            body = {
+                "expectation_values": [[0.5] * len(request["observables"])] * len(rows),
+                "vjp": [[1.0] * len(row) for row in rows],
+            }
         else:
             body = {"counts": dict(self._counts)}
         body |= {"ok": True, "time_taken": 0.001, "seed": 7}
-        return SimpleNamespace(value=json.dumps(body))
+        return self._mocker.Mock(value=json.dumps(body))
 
     def task_logs(self, task_id: str) -> str:
-        return f"logs for {task_id}"
+        return json.dumps(self._failure)
 
     def task_stop(self, task_id: str) -> None:
         self.stopped.append(task_id)

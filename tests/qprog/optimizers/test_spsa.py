@@ -5,8 +5,6 @@
 """Tests for the SPSA and QN-SPSA optimizers, the SPSA-family behaviour QUIVER
 shares with them, and the state-overlap primitive."""
 
-from types import SimpleNamespace
-
 import networkx as nx
 import numpy as np
 import pytest
@@ -44,6 +42,7 @@ from tests.qprog.optimizers._helpers import (
     count_divergence_warnings,
     counting_cost_fn,
     data_bound_custom_vqa,
+    program_with_cost_circuit,
 )
 from tests.qprog.optimizers._helpers import sphere_cost_fn_batch_aware as _sphere
 
@@ -1259,25 +1258,25 @@ def _one_qubit_meta(gates, order=None) -> MetaCircuit:
 _RX_A_RY_B = (("rx", "a"), ("ry", "b"))
 
 
-def _overlap_routine():
-    program = SimpleNamespace(cost_circuit=_one_qubit_meta(_RX_A_RY_B))
+def _overlap_routine(mocker):
+    program = program_with_cost_circuit(mocker, _one_qubit_meta(_RX_A_RY_B))
     (routine,) = StochasticFidelityMetricEstimator().preprocessors(program)
     return routine
 
 
-def test_overlap_routine_reads_probabilities_from_dag_bodies():
-    routine = _overlap_routine()
+def test_overlap_routine_reads_probabilities_from_dag_bodies(mocker):
+    routine = _overlap_routine(mocker)
     assert routine.name == METRIC_ROUTINE
     assert routine.result_format is ResultFormat.PROBS
     assert routine.consumes_dag_bodies is True
     assert routine.cache_key == METRIC_ROUTINE
 
 
-def test_overlap_cache_is_keyed_on_ansatz_structure():
+def test_overlap_cache_is_keyed_on_ansatz_structure(mocker):
     """Rebuilt parameter objects with the same names reuse the cached overlap
     circuit; any change of gate, gate-parameter assignment or parameter order
     builds a new one."""
-    overlap_for = _overlap_routine().preprocess
+    overlap_for = _overlap_routine(mocker).preprocess
     reference = overlap_for(_one_qubit_meta(_RX_A_RY_B))
 
     assert overlap_for(_one_qubit_meta(_RX_A_RY_B)) is reference
@@ -1292,9 +1291,9 @@ def test_overlap_cache_is_keyed_on_ansatz_structure():
         assert overlap.parameters[: len(variant.parameters)] == variant.parameters
 
 
-def test_overlap_cache_clears_once_full(monkeypatch):
+def test_overlap_cache_clears_once_full(mocker, monkeypatch):
     monkeypatch.setattr("divi.qprog.optimizers.metrics._OVERLAP_CACHE_CAP", 2)
-    overlap_for = _overlap_routine().preprocess
+    overlap_for = _overlap_routine(mocker).preprocess
     metas = [_one_qubit_meta(((rotation, "a"),)) for rotation in ("rx", "ry", "rz")]
 
     first, _, last = (overlap_for(meta) for meta in metas)
@@ -1303,7 +1302,7 @@ def test_overlap_cache_clears_once_full(monkeypatch):
     assert overlap_for(metas[2]) is last
 
 
-def test_fidelity_fn_pairs_theta_with_each_perturbed_point(monkeypatch):
+def test_fidelity_fn_pairs_theta_with_each_perturbed_point(mocker, monkeypatch):
     captured = {}
 
     def fake_run_overlap(_program, _routine, rows, zeros):
@@ -1311,7 +1310,7 @@ def test_fidelity_fn_pairs_theta_with_each_perturbed_point(monkeypatch):
         return {0: 0.9, 1: 0.4}
 
     monkeypatch.setattr("divi.qprog.optimizers.metrics._run_overlap", fake_run_overlap)
-    program = SimpleNamespace(cost_circuit=_one_qubit_meta(_RX_A_RY_B))
+    program = program_with_cost_circuit(mocker, _one_qubit_meta(_RX_A_RY_B))
     fidelity_fn = StochasticFidelityMetricEstimator().bind(program)["fidelity_fn"]
 
     overlaps = fidelity_fn(
@@ -1325,14 +1324,15 @@ def test_fidelity_fn_pairs_theta_with_each_perturbed_point(monkeypatch):
     np.testing.assert_allclose(overlaps, [0.9, 0.4])
 
 
-def test_stochastic_fidelity_rejects_a_non_invertible_ansatz():
+def test_stochastic_fidelity_rejects_a_non_invertible_ansatz(mocker):
     qc = QuantumCircuit(1)
     qc.rx(Parameter("a"), 0)
     qc.reset(0)
-    program = SimpleNamespace(
-        cost_circuit=MetaCircuit(
+    program = program_with_cost_circuit(
+        mocker,
+        MetaCircuit(
             circuit_bodies=(((), circuit_to_dag(qc)),), parameters=tuple(qc.parameters)
-        )
+        ),
     )
     message = (
         "The stochastic-fidelity metric requires an invertible ansatz (qiskit "

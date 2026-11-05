@@ -5,7 +5,6 @@
 import asyncio
 import tomllib
 from pathlib import Path
-from types import SimpleNamespace
 
 import maestro
 import pytest
@@ -802,7 +801,7 @@ def served(mocker):
         patched + "get_available_simulator_clusters",
         return_value=[SimulatorCluster(name="eon_cpu")],
     )
-    return SimpleNamespace(
+    return mocker.Mock(
         service=mocker.patch(patched + "QoroService", return_value=service),
         app=app,
     )
