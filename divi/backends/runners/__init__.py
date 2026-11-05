@@ -9,18 +9,17 @@ from typing import Any
 from divi._optional import import_optional
 
 from divi.backends._job_status import JobStatus
-
-from ._maestro import MaestroBaseBackend, MaestroConfig, MaestroSimulator
+from ._maestro import MaestroConfig, MaestroSimulator
 from ._qoro import JobType, QoroService
-from ._qrmi import QRMIBackend
+from ._qrmi import QRMIBackend, QRMITaskFailedError
 
 __all__ = [
     "JobStatus",
     "JobType",
-    "MaestroBaseBackend",
     "MaestroConfig",
     "MaestroSimulator",
     "QRMIBackend",
+    "QRMITaskFailedError",
     "QiskitSimulator",
     "QoroService",
 ]

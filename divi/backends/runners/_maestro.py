@@ -520,96 +520,29 @@ def _little_endian_counts(counts: Mapping[str, int], width: int) -> dict[str, in
     }
 
 
-class MaestroBaseBackend(CircuitRunner):
-    """Base for the backends that run Maestro.
+def _expectation_value(
+    runner: CircuitRunner, circuit: str | QuantumCircuit, observable: SparsePauliOp
+) -> float:
+    """``<observable>`` in the output state of ``circuit``, estimated by ``runner``.
 
-    :class:`MaestroSimulator` runs it in-process and :class:`QRMIBackend` on a
-    Maestro server; both take the same :class:`MaestroConfig` and return the
-    same results for it.
+    Raises:
+        ValueError: If ``observable`` is not Hermitian.
     """
-
-    def __init__(
-        self,
-        shots: int,
-        maestro_config: MaestroConfig | None,
-        track_depth: bool,
-        force_sampling: bool,
-    ):
-        super().__init__(shots=shots, track_depth=track_depth)
-        self.maestro_config = (
-            maestro_config if maestro_config is not None else MaestroConfig()
+    _assert_hermitian_spo(observable)
+    terms = _sparse_pauli_op_to_ham_string(observable)
+    result = runner.submit_circuits({"circuit": circuit}, ham_ops=terms)
+    if result.results is None:
+        raise RuntimeError("Backend returned no results")
+    expvals = result.results[0]["results"]
+    return float(
+        sum(
+            coeff.real * expvals[term]
+            for term, coeff in zip(terms.split(";"), observable.coeffs)
         )
-        self._force_sampling = force_sampling
-
-    @property
-    def maestro_config(self) -> MaestroConfig:
-        """The Maestro settings every submission runs with."""
-        return self._maestro_config
-
-    @maestro_config.setter
-    def maestro_config(self, value: MaestroConfig) -> None:
-        require_maestro_config(value, "maestro_config")
-        self._maestro_config = value
-
-    @property
-    def supports_expval(self) -> bool:
-        """Maestro estimates observables natively unless sampling is forced."""
-        return not self._force_sampling
-
-    @property
-    def supports_vjp(self) -> bool:
-        """Whether estimation is native and noiseless, as adjoint differentiation needs.
-
-        Maestro itself refuses simulators it cannot differentiate on.
-        """
-        return self.supports_expval and self.maestro_config.noise_model is None
-
-    def set_seed(self, seed: int) -> None:
-        """Seed Maestro's simulation RNG.
-
-        Rebinds ``maestro_config`` with its ``seed`` option set, so the seed
-        reaches every subsequent submission; a seed already on the config is
-        overwritten.  Assigning a new ``maestro_config`` afterwards discards it.
-
-        Args:
-            seed: Non-negative seed value.
-        """
-        self.maestro_config = self.maestro_config.override(seed=seed)
-
-    def expectation_value(
-        self, circuit: str | QuantumCircuit, observable: SparsePauliOp
-    ) -> float:
-        """``<observable>`` in the output state of ``circuit``.
-
-        Raises:
-            ValueError: If ``observable`` has a non-real coefficient, so is not
-                Hermitian and has no real expectation value.
-        """
-        _assert_hermitian_spo(observable)
-        terms = _sparse_pauli_op_to_ham_string(observable)
-        result = self.submit_circuits({"circuit": circuit}, ham_ops=terms)
-        if result.results is None:
-            raise RuntimeError("Backend returned no results")
-        expvals = result.results[0]["results"]
-        return float(
-            sum(
-                coeff.real * expvals[term]
-                for term, coeff in zip(terms.split(";"), observable.coeffs)
-            )
-        )
-
-    def _vjp_config(self) -> MaestroConfig:
-        """The config a VJP submission runs with, read once."""
-        config = self.maestro_config
-        if not self.supports_expval or config.noise_model is not None:
-            raise VJPUnavailableError(
-                f"{type(self).__name__} computes vector-Jacobian products only "
-                "with native, noiseless estimation."
-            )
-        return config
+    )
 
 
-class MaestroSimulator(MaestroBaseBackend):
+class MaestroSimulator(CircuitRunner):
     """A CircuitRunner backend powered by qoro-maestro, Qoro's C++ quantum simulator.
 
     Runs circuits on any of maestro's simulator and simulation types, and
@@ -645,12 +578,11 @@ class MaestroSimulator(MaestroBaseBackend):
         track_depth: bool = False,
         force_sampling: bool = False,
     ):
-        super().__init__(
-            shots=shots,
-            maestro_config=maestro_config,
-            track_depth=track_depth,
-            force_sampling=force_sampling,
+        super().__init__(shots=shots, track_depth=track_depth)
+        self.maestro_config = (
+            maestro_config if maestro_config is not None else MaestroConfig()
         )
+        self._force_sampling = force_sampling
 
         # Per-instance circuit fan-out pool, lazy-initialised on first
         # ``submit_circuits`` call.  Maestro's C++ entrypoints release the
@@ -661,6 +593,29 @@ class MaestroSimulator(MaestroBaseBackend):
         # through the same worker pool instead of each spawning their own.
         self._executor: ThreadPoolExecutor | None = None
         self._executor_lock = Lock()
+
+    @property
+    def maestro_config(self) -> MaestroConfig:
+        """The Maestro settings every submission runs with."""
+        return self._maestro_config
+
+    @maestro_config.setter
+    def maestro_config(self, value: MaestroConfig) -> None:
+        require_maestro_config(value, "maestro_config")
+        self._maestro_config = value
+
+    @property
+    def supports_expval(self) -> bool:
+        """Maestro supports native observable estimation unless sampling is forced."""
+        return not self._force_sampling
+
+    @property
+    def supports_vjp(self) -> bool:
+        """Whether estimation is native and noiseless, as adjoint differentiation needs.
+
+        Maestro itself refuses simulators it cannot differentiate on.
+        """
+        return self.supports_expval and self.maestro_config.noise_model is None
 
     def submit_vjp(
         self,
@@ -676,12 +631,15 @@ class MaestroSimulator(MaestroBaseBackend):
         a circuit are padded onto its first qubits, as in :meth:`submit_circuits`.
 
         Raises:
-            VJPUnavailableError: If
-                :attr:`~divi.backends.MaestroBaseBackend.supports_vjp` is
-                False, or Maestro cannot differentiate a payload's circuit on
-                the configured simulator.
+            VJPUnavailableError: If :attr:`supports_vjp` is False, or Maestro cannot
+                differentiate a payload's circuit on the configured simulator.
         """
-        config = self._vjp_config()._simulator_config()
+        if not self.supports_vjp:
+            raise VJPUnavailableError(
+                "MaestroSimulator computes vector-Jacobian products only with "
+                "native, noiseless estimation."
+            )
+        config = self.maestro_config._simulator_config()
         raise_if_cancelled(
             cancellation_event,
             "Maestro batch cancelled before any circuit was dispatched",
@@ -719,6 +677,18 @@ class MaestroSimulator(MaestroBaseBackend):
             results=results,
             run_time=sum(entry["metadata"]["time_taken"] for entry in results),
         )
+
+    def set_seed(self, seed: int) -> None:
+        """Seed maestro's simulation RNG.
+
+        Rebinds ``maestro_config`` with its ``seed`` option set, so the seed
+        reaches every subsequent submission; a seed already on the config is
+        overwritten.  Assigning a new ``maestro_config`` afterwards discards it.
+
+        Args:
+            seed: Non-negative seed value.
+        """
+        self.maestro_config = self.maestro_config.override(seed=seed)
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Return the per-instance circuit fan-out pool, creating it lazily.
@@ -907,3 +877,14 @@ class MaestroSimulator(MaestroBaseBackend):
             config=self.maestro_config._simulator_config(),
         )
         return np.exp(1j * global_phase) * np.asarray(amplitudes)
+
+    def expectation_value(
+        self, circuit: str | QuantumCircuit, observable: SparsePauliOp
+    ) -> float:
+        """``<observable>`` in the output state of ``circuit``.
+
+        Raises:
+            ValueError: If ``observable`` has a non-real coefficient, so is not
+                Hermitian and has no real expectation value.
+        """
+        return _expectation_value(self, circuit, observable)

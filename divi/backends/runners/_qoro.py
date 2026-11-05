@@ -33,7 +33,12 @@ from divi.backends._cancellation import (
     _sigint_to_event,
     raise_if_cancelled,
 )
-from divi.backends._config import _TARGET_FIELDS, DeviceConfig, JobConfig
+from divi.backends._config import (
+    _TARGET_FIELDS,
+    DeviceConfig,
+    JobConfig,
+    require_device_config,
+)
 from divi.backends._job_status import (
     InsufficientCreditsError,
     JobCancelledError,
@@ -156,13 +161,6 @@ def _by_config_key(specs: Iterable[Mapping]) -> dict[str, dict[str, Any]]:
     return {
         spec["name"]: {k: v for k, v in spec.items() if k != "name"} for spec in specs
     }
-
-
-def _require_device_config(value: Any) -> None:
-    if not isinstance(value, DeviceConfig):
-        raise TypeError(
-            f"device_config must be a DeviceConfig, got {type(value).__name__}."
-        )
 
 
 def _is_recoverable_characterization_error(exc: Exception) -> bool:
@@ -425,7 +423,7 @@ class QoroService(AsyncJobBackend):
     @device_config.setter
     def device_config(self, value: DeviceConfig | None) -> None:
         if value is not None:
-            _require_device_config(value)
+            require_device_config(value)
         self._device_config = value
 
     @property
@@ -752,7 +750,7 @@ class QoroService(AsyncJobBackend):
                 )
             if device_config is None:
                 return None, self.device_config
-            _require_device_config(device_config)
+            require_device_config(device_config)
             return None, device_config
         if device_config is not None:
             raise ValueError(

@@ -4,6 +4,7 @@
 
 """Shared helpers for backend tests."""
 
+import weakref
 from collections.abc import Callable
 from http import HTTPStatus
 
@@ -28,6 +29,12 @@ def padding_warning(short: str, padded: str) -> str:
         "Observables shorter than their circuit are padded onto its first "
         f"qubits, e.g. {short!r} -> {padded!r}."
     )
+
+
+def close_if_alive(reference: weakref.ref) -> None:
+    """Close the backend ``reference`` points to, if it still exists."""
+    if (backend := reference()) is not None:
+        backend.close()
 
 
 def reset_unknown_message(name: str, suggestion: str) -> str:

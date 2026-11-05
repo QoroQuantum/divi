@@ -44,7 +44,7 @@ All backend :meth:`~divi.backends.CircuitRunner.submit_circuits` methods return 
    - ``label`` (str): The circuit label from your input dictionary, or the
      positional index when circuits were passed as a sequence
    - ``results`` (dict): The execution results (bitstring counts for sampling mode, or expectation values for expectation mode)
-   - ``metadata`` (dict, :class:`~divi.backends.MaestroSimulator` and :class:`~divi.backends.QRMIBackend` only): the simulator's extra outputs for each circuit
+   - ``metadata`` (dict, :class:`~divi.backends.MaestroSimulator` and :class:`~divi.backends.QRMIBackend` only): the simulator's or device's extra outputs for each circuit
 
    Example:
 
@@ -101,7 +101,7 @@ Available Backends
 Divi ships four :class:`~divi.backends.CircuitRunner` implementations:
 
 * :class:`~divi.backends.MaestroSimulator` — A local simulator.  Supports noise via ``maestro.NoiseModel`` (see :ref:`noisy-simulation-maestro`).
-* :class:`~divi.backends.QRMIBackend` — The same Maestro simulator, run by a Maestro server that QRMI manages, for instance on an HPC cluster (see :ref:`qrmi-backend`).
+* :class:`~divi.backends.QRMIBackend` — The quantum resources QRMI manages, for instance on an HPC cluster: the same Maestro simulator run by a Maestro server, or an IBM quantum computer (see :ref:`qrmi-backend`).
 * :class:`~divi.backends.QiskitSimulator` — A convenience wrapper around Qiskit's ``AerSimulator`` with thread-count control.  Supports device-calibrated noise from a Qiskit fake backend or an arbitrary ``qiskit_aer.noise.NoiseModel``.
 * :class:`~divi.backends.QoroService` — A cloud-based quantum computing service for accessing simulators and real quantum hardware.
 
@@ -197,17 +197,18 @@ For reproducibility under noisy execution see :ref:`Operational notes <operation
 QRMIBackend
 -----------
 
-:class:`~divi.backends.QRMIBackend` runs your program on a
+:class:`~divi.backends.QRMIBackend` runs your program on a quantum resource
+that `QRMI <https://github.com/qiskit-community/qrmi>`_, the interface HPC
+schedulers use to allocate quantum resources, hands to your job: a
 `Maestro local server <https://github.com/QoroQuantum/maestro-local-server>`_
-that a `QRMI <https://github.com/QoroQuantum/qrmi>`_ resource hands to your job.
-QRMI is the Quantum Resource Management Interface HPC schedulers use to allocate
-quantum resources. Choose it when your site's scheduler provides a Maestro
-server; divi must then run on the same node as the server, which it reaches over
-a Unix socket. It is the same simulator, :class:`~divi.backends.MaestroConfig`
-and results as :class:`~divi.backends.MaestroSimulator`, so only the backend
-line of a program changes. It adds no throughput, since the server runs one
-circuit at a time; it places the work where the scheduler wants it. Otherwise,
-use :class:`~divi.backends.MaestroSimulator`.
+or an IBM quantum computer (see :ref:`qrmi-ibm`).
+
+On a Maestro server, divi runs on the server's node and reaches it over a Unix
+socket. It is the same simulator, :class:`~divi.backends.MaestroConfig` and
+results as :class:`~divi.backends.MaestroSimulator`, so only the backend line
+changes. It adds no throughput, since the server runs one circuit at a time;
+use it when your scheduler provides the server, and
+:class:`~divi.backends.MaestroSimulator` otherwise.
 
 Install
 ^^^^^^^
@@ -226,8 +227,7 @@ First run
 
 Build a ``MaestroLocal`` resource, passing the socket path your server listens
 on (default ``/run/maestro.sock``) as its ``QRMI_MAESTRO_SOCKET`` setting, and
-give it to the backend. The ``with`` block, or
-:meth:`~divi.backends.QRMIBackend.close`, frees the server session.
+give it to the backend.
 
 .. skip: next
 
@@ -260,6 +260,29 @@ give it to the backend. The ``with`` block, or
        vqe.run()
        print(f"Ground state energy: {vqe.best_loss:.6f} Ha")
 
+Releasing the resource
+^^^^^^^^^^^^^^^^^^^^^^
+
+The backend holds a session on the resource from its first circuit until it is
+closed, and other jobs may be waiting for it. Release it as soon as you are
+done, either with a ``with`` block, as above, which closes the backend on
+leaving even if the program fails, or by calling
+:meth:`~divi.backends.QRMIBackend.close` yourself:
+
+.. skip: next
+
+.. code-block:: python
+
+   backend = QRMIBackend(resource)
+   try:
+       vqe = VQE(..., backend=backend)
+       vqe.run()
+   finally:
+       backend.close()
+
+A closed backend can still run circuits; it opens a new session, which needs
+closing in turn.
+
 Inside a scheduled job
 ^^^^^^^^^^^^^^^^^^^^^^
 
@@ -279,8 +302,73 @@ Differences from MaestroSimulator
 * **Noise:** noise models work as on :class:`~divi.backends.MaestroSimulator`;
   the server rejects a model whose result depends on the order of T1 and
   thermal-relaxation calls.
-* **Failures:** a circuit that fails on the server raises ``RuntimeError`` with
-  the server's error code and message.
+* **Failures:** a circuit that fails on the server raises
+  :class:`~divi.backends.QRMITaskFailedError` with the server's error code and
+  message.
+
+.. _qrmi-ibm:
+
+IBM resources
+^^^^^^^^^^^^^
+
+An on-premises IBM Quantum System, the Qiskit Runtime service or the IBM
+Quantum compute service runs your program on hardware. These need QRMI's IBM
+extra, not Qoro's fork:
+
+.. code-block:: console
+
+   $ pip install "qrmi[ibm]"
+
+The resource reads its endpoint and credentials from settings prefixed with its
+name, such as ``ibm_torino_QRMI_IBM_QS_ENDPOINT``; see QRMI's documentation.
+
+.. skip: next
+
+.. code-block:: python
+
+   from qrmi import QuantumResource, ResourceType
+
+   from divi.backends import QRMIBackend
+
+   resource = QuantumResource("ibm_torino", ResourceType.IBMQuantumSystem)
+
+   with QRMIBackend(resource, shots=4000) as backend:
+       vqe = VQE(..., backend=backend)
+       vqe.run()
+
+As on a Maestro server, close the backend when you are done, with ``with`` or
+:meth:`~divi.backends.QRMIBackend.close`.
+
+A :class:`~divi.backends.DeviceConfig` tunes compilation and error
+suppression, with the IBM keys :class:`~divi.backends.QoroService` uses:
+
+.. skip: next
+
+.. code-block:: python
+
+   from divi.backends import DeviceConfig
+
+   config = DeviceConfig(
+       transpile_optimization_level=3,
+       dynamical_decoupling_enable=True,
+       twirling_enable_gates=True,
+   )
+   with QRMIBackend(resource, device_config=config) as backend:
+       ...
+
+It takes the ``TRANSPILE_*``, ``DYNAMICAL_DECOUPLING_*`` and ``TWIRLING_*``
+keys, ``EXECUTION_REP_DELAY``, ``EXECUTION_INIT_QUBITS`` and
+``USE_FRACTIONAL_GATES``. Qoro-service-only keys such as
+``AGGRESSIVE_COMPILING`` and ``USE_MITIGATION`` raise an error.
+
+On IBM:
+
+* **Compilation:** for the device, at optimisation level 2 by default; each
+  batch runs as one sampler job per shot count.
+* **Observables:** sampled. State vectors, gradients and ``maestro_config``
+  need Maestro.
+* **Seeds:** ``set_seed`` has no effect.
+* **Jobs:** deleted from the service once read.
 
 
 QiskitSimulator
@@ -606,22 +694,22 @@ Backend Comparison
      - :class:`~divi.backends.QoroService`
    * - **Runs where**
      - In your process
-     - On a Maestro server on the same node
+     - On a Maestro server on the same node, or an IBM quantum computer
      - In your process
      - Qoro cloud
    * - **Simulation Engine**
      - Qoro C++ (qoro-maestro)
-     - Qoro C++, on a QRMI-managed Maestro server
+     - Qoro C++ on a QRMI-managed Maestro server, or IBM hardware
      - Qiskit Aer
      - Cloud (Maestro / Aer / hardware)
    * - **Noise Support**
      - ``maestro.NoiseModel``
-     - ``maestro.NoiseModel``
+     - ``maestro.NoiseModel`` on Maestro; hardware noise on IBM
      - Qiskit fake backends & noise models
      - Hardware noise (real QPUs)
    * - **Seed / Reproducibility**
      - ``seed``, and optionally a separate ``noise_seed`` for noisy paths
-     - As :class:`~divi.backends.MaestroSimulator`, with identical results
+     - On Maestro, as :class:`~divi.backends.MaestroSimulator`, with identical results; N/A on IBM
      - ``simulation_seed`` parameter
      - N/A
    * - **Depth Tracking**
@@ -646,7 +734,7 @@ Operational notes
 
 .. _operational-notes-shot-reproducibility:
 
-* **Shot reproducibility**: The ``seed`` option makes MaestroSimulator and QRMIBackend runs, noisy or not, repeat exactly, and gives both the same draws; :meth:`~divi.backends.MaestroBaseBackend.set_seed` sets it on an existing backend.  Each circuit's seed is derived from its label and QASM, so circuits in a batch and across iterations draw independently. Because the QASM text is part of the seed, a change to how it is written, such as a program's ``precision``, gives different draws.  Left unset, runs draw from system entropy.
+* **Shot reproducibility**: The ``seed`` option makes MaestroSimulator runs and QRMIBackend runs on a Maestro server, noisy or not, repeat exactly, and gives both the same draws; either backend's ``set_seed`` sets it on an existing one.  Each circuit's seed is derived from its label and QASM, so circuits in a batch and across iterations draw independently. Because the QASM text is part of the seed, a change to how it is written, such as a program's ``precision``, gives different draws.  Left unset, runs draw from system entropy.
 
 Next Steps
 ----------
