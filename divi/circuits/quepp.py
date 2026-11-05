@@ -26,16 +26,18 @@ current observable contribute weight 1 (no branching), which can
 dramatically reduce path count.
 """
 
+import copy
 import warnings
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from numbers import Integral
 from typing import Any, Literal
 
 import numpy as np
 import stim
 from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter, ParameterExpression
+from qiskit.circuit import Gate, Parameter, ParameterExpression
 from qiskit.circuit.library import (
     CXGate,
     HGate,
@@ -84,6 +86,9 @@ _RP_CONJUGATION: dict[str, dict[int, int]] = {
     "z": {_PAULI_X: _PAULI_Y, _PAULI_Y: _PAULI_X, _PAULI_Z: _PAULI_Z},
 }
 
+# (X bit, Z bit) of each rotation axis's generator
+_GENERATOR_BITS = {"x": (True, False), "y": (True, True), "z": (False, True)}
+
 # Qiskit Clifford rotations for angle normalisation (axis, n_mod_4) → gate or None.
 #
 # Using the specialised gate classes (``SXGate``, ``SGate``) — rather than
@@ -117,7 +122,7 @@ _CLIFFORD_ROTATION_QISKIT = {
 # Rotation gate classes by axis (for detecting rotation type and constructing new ones)
 _ROTATION_CLASS = {"x": RXGate, "y": RYGate, "z": RZGate}
 
-# Clifford gate name mapping Qiskit → stim (for _qiskit_to_stim helper)
+# Clifford gate name mapping Qiskit → stim
 _QISKIT_CLIFFORD_TO_STIM: dict[str, str] = {
     "h": "H",
     "x": "X",
@@ -170,72 +175,36 @@ def _is_parametric(x) -> bool:
     return isinstance(x, ParameterExpression)
 
 
-def _qiskit_clifford_to_stim(qc_or_dag: QuantumCircuit | DAGCircuit) -> stim.Circuit:
-    """Convert a Qiskit circuit of Clifford-only gates to a stim.Circuit.
-
-    Accepts a :class:`QuantumCircuit` or a :class:`DAGCircuit`.
+def _stim_gate_name(op) -> str | None:
+    """The stim gate for a Clifford Qiskit operation, or ``None`` for a no-op.
 
     Supports the Clifford gate names in :data:`_QISKIT_CLIFFORD_TO_STIM`
     plus Clifford-valued rotations (``rx``/``ry``/``rz`` with angle
     ``n·π/2``).  Non-Clifford instructions raise ``ValueError``.
-
-    The output always has the circuit's qubit count — qubits untouched by
-    any gate are padded with an explicit no-op ``I`` so downstream
-    tableau construction produces a register of the expected width.
     """
-    # Hot path: called ~1M times over large DAGs.  Dispatch once on the
-    # container type to normalise into an (op, qargs) iterator + qubit
-    # register, then tight-loop without per-node generator frame overhead.
-    clifford_map = _QISKIT_CLIFFORD_TO_STIM
-    rotation_map = _CLIFFORD_ROTATION_TO_STIM
-    rotation_names = ("rx", "ry", "rz")
-    pi_over_2 = np.pi / 2
-
-    if isinstance(qc_or_dag, DAGCircuit):
-        n_qubits = qc_or_dag.num_qubits()
-        qubits = qc_or_dag.qubits
-        op_stream = ((node.op, node.qargs) for node in qc_or_dag.topological_op_nodes())
-    else:
-        n_qubits = qc_or_dag.num_qubits
-        qubits = qc_or_dag.qubits
-        op_stream = ((inst.operation, inst.qubits) for inst in qc_or_dag.data)
-
-    qubit_idx = {q: i for i, q in enumerate(qubits)}
-
-    sc = stim.Circuit()
-    if n_qubits > 0:
-        sc.append("I", list(range(n_qubits)), ())
-
-    for op, qargs in op_stream:
-        name = op.name
-        stim_name = clifford_map.get(name)
-        if stim_name is not None:
-            sc.append(stim_name, [qubit_idx[q] for q in qargs], ())
-            continue
-        if name == "barrier":
-            continue
-        if name in rotation_names:
-            (angle,) = op.params
-            if isinstance(angle, ParameterExpression):
-                raise ValueError(
-                    f"Cannot convert parametric {name} gate to stim — "
-                    f"expected a Clifford-valued angle."
-                )
-            angle_f = float(angle)
-            n = int(round(angle_f / pi_over_2))
-            if abs(angle_f - n * pi_over_2) > 1e-10:
-                raise ValueError(
-                    f"Non-Clifford angle for {name}: {angle_f}; "
-                    f"expected a multiple of π/2."
-                )
-            stim_rot = rotation_map[(name[1], n % 4)]
-            if stim_rot is not None:
-                sc.append(stim_rot, [qubit_idx[q] for q in qargs], ())
-            continue
-        raise ValueError(
-            f"Gate {name!r} is not recognised as Clifford by QuEPP's stim converter."
-        )
-    return sc
+    name = op.name
+    stim_name = _QISKIT_CLIFFORD_TO_STIM.get(name)
+    if stim_name is not None:
+        return stim_name
+    if name == "barrier":
+        return None
+    if name in ("rx", "ry", "rz"):
+        (angle,) = op.params
+        if isinstance(angle, ParameterExpression):
+            raise ValueError(
+                f"Cannot convert parametric {name} gate to stim — "
+                f"expected a Clifford-valued angle."
+            )
+        angle_f = float(angle)
+        n = int(round(angle_f / _HALF_PI))
+        if abs(angle_f - n * _HALF_PI) > 1e-10:
+            raise ValueError(
+                f"Non-Clifford angle for {name}: {angle_f}; expected a multiple of π/2."
+            )
+        return _CLIFFORD_ROTATION_TO_STIM[(name[1], n % 4)]
+    raise ValueError(
+        f"Gate {name!r} is not recognised as Clifford by QuEPP's stim converter."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +364,7 @@ class _PreprocResult:
 
     working: QuantumCircuit
     rotations: list["_RotationGate"]
-    tableaus: list[stim.Tableau]
+    segments: list[stim.Circuit]
     obs_terms: list[tuple[float, stim.PauliString]]
     symbolic: bool
 
@@ -576,43 +545,37 @@ def _extract_rotation_gates(qc: QuantumCircuit) -> list[_RotationGate]:
     return gates
 
 
-def _build_clifford_tableaus(
+def _build_clifford_segments(
     qc: QuantumCircuit,
     rotations: Sequence[_RotationGate],
-) -> list[stim.Tableau]:
-    """Build stim Tableaus for the Clifford layers between rotations.
+) -> list[stim.Circuit]:
+    """Build stim circuits for the Clifford layers between rotations.
 
-    Returns ``K + 1`` tableaus where ``K = len(rotations)``:
+    Returns ``K + 1`` segments where ``K = len(rotations)``:
 
-    * ``tableaus[0]``: Clifford ops before the first rotation
-    * ``tableaus[i]``: Clifford ops between rotation i-1 and rotation i
-    * ``tableaus[K]``: Clifford ops after the last rotation
+    * ``segments[0]``: Clifford ops before the first rotation
+    * ``segments[i]``: Clifford ops between rotation i-1 and rotation i
+    * ``segments[K]``: Clifford ops after the last rotation
     """
-    n_qubits = qc.num_qubits
+    qubit_str = {q: str(i) for i, q in enumerate(qc.qubits)}
     rotation_idxs = {r.inst_idx for r in rotations}
 
-    segments: list[list] = [[] for _ in range(len(rotations) + 1)]
+    lines: list[list[str]] = [[] for _ in range(len(rotations) + 1)]
     seg = 0
     for i, inst in enumerate(qc.data):
         if i in rotation_idxs:
             seg += 1
-        else:
-            segments[seg].append(inst)
-
-    tableaus: list[stim.Tableau] = []
-    for seg_insts in segments:
-        if not seg_insts:
-            tableaus.append(stim.Tableau(n_qubits))
-        else:
-            seg_qc = QuantumCircuit(*qc.qregs)
-            for inst in seg_insts:
-                seg_qc.append(inst.operation, inst.qubits, inst.clbits)
-            tableaus.append(stim.Tableau.from_circuit(_qiskit_clifford_to_stim(seg_qc)))
-    return tableaus
+            continue
+        stim_name = _stim_gate_name(inst.operation)
+        if stim_name is not None:
+            lines[seg].append(
+                f"{stim_name} {' '.join(qubit_str[q] for q in inst.qubits)}"
+            )
+    return [stim.Circuit("\n".join(seg_lines)) for seg_lines in lines]
 
 
 # ---------------------------------------------------------------------------
-# Heisenberg-picture Pauli back-propagation (stim-native, unchanged)
+# Heisenberg-picture Pauli back-propagation
 # ---------------------------------------------------------------------------
 
 
@@ -656,7 +619,7 @@ def _merge_paths_by_branch(paths: Iterable[_PauliPath]) -> list[_PauliPath]:
 
 def _enumerate_paths_dfs(
     rotations: Sequence[_RotationGate],
-    tableaus: Sequence[stim.Tableau],
+    segments: Sequence[stim.Circuit],
     observable_terms: Sequence[tuple[float, stim.PauliString]],
     max_order: int,
     coefficient_threshold: float = 0.0,
@@ -679,7 +642,6 @@ def _enumerate_paths_dfs(
     # Precompute per-rotation metadata once.  The DFS inner loop accessed
     # rot.axis, rot.qubit_idx, rot.angle and called _is_parametric on
     # every iteration — all constant per rotation across millions of iters.
-    inv_tableaus = [t.inverse() for t in tableaus]
     rot_meta = [
         (
             _GENERATOR[rot.axis],
@@ -694,7 +656,7 @@ def _enumerate_paths_dfs(
     all_paths: list[_PauliPath] = []
 
     for term_idx, (_obs_coeff, obs_pauli) in enumerate(observable_terms):
-        initial_pauli = inv_tableaus[K](obs_pauli)
+        initial_pauli = obs_pauli.before(segments[K])
         # Branches stored as an int bitmask to avoid list-concat copies
         # at every push.  Bit ``i`` corresponds to rotation K-1-i (i.e.
         # bit 0 is the last decision made = rotation 0's branch).
@@ -712,13 +674,13 @@ def _enumerate_paths_dfs(
 
             while idx >= 0:
                 gen, qubit_idx, axis, angle, symbolic = rot_meta[idx]
-                inv_tab = inv_tableaus[idx]
+                segment = segments[idx]
                 branches_bits <<= 1
                 p = pauli[qubit_idx]
 
                 if p == _PAULI_I or p == gen:
                     # Commute: bit stays 0 (default after shift), walk on.
-                    pauli = inv_tab(pauli)
+                    pauli = pauli.before(segment)
                     idx -= 1
                     continue
 
@@ -742,14 +704,14 @@ def _enumerate_paths_dfs(
                     # (p != I guaranteed here by the earlier commute check).
                     sin_pauli = stim.PauliString(pauli)
                     sin_pauli[qubit_idx] = _RP_CONJUGATION[axis][p]
-                    prop_sin = inv_tab(sin_pauli)
+                    prop_sin = sin_pauli.before(segment)
                     stack.append(
                         (idx - 1, prop_sin, branches_bits | 1, sin_w, sin_order)
                     )
 
                 if cos_kept:
                     # Continue cos branch inline — bit stays 0.
-                    pauli = inv_tab(pauli)
+                    pauli = pauli.before(segment)
                     weight = cos_w
                     idx -= 1
                     continue
@@ -773,7 +735,7 @@ def _enumerate_paths_dfs(
 
 def _all_cos_paths(
     rotations: Sequence[_RotationGate],
-    inv_tableaus: Sequence[stim.Tableau],
+    segments: Sequence[stim.Circuit],
     observable_terms: Sequence[tuple[float, stim.PauliString]],
 ) -> list[_PauliPath]:
     """The all-zero-branch (all-cos) CPT path, one per observable term.
@@ -790,14 +752,14 @@ def _all_cos_paths(
     K = len(rotations)
     paths: list[_PauliPath] = []
     for term_idx, (_obs_coeff, obs_pauli) in enumerate(observable_terms):
-        pauli = inv_tableaus[K](obs_pauli)
+        pauli = obs_pauli.before(segments[K])
         weight = 1.0
         for idx in range(K - 1, -1, -1):
             rot = rotations[idx]
             p = pauli[rot.qubit_idx]
             if p != _PAULI_I and p != _GENERATOR[rot.axis]:
                 weight *= np.cos(rot.angle)
-            pauli = inv_tableaus[idx](pauli)
+            pauli = pauli.before(segments[idx])
         if _is_diagonal(pauli):
             paths.append(
                 _PauliPath(
@@ -810,9 +772,111 @@ def _all_cos_paths(
     return paths
 
 
+# Conjugation of a Pauli's (X, Z) bit rows, in place on ``(n_qubits, n_samples)``
+# arrays; signs are dropped, so a gate and its inverse act identically.
+
+
+def _swap_xz(q: int, x: np.ndarray, z: np.ndarray) -> None:
+    new_x = np.array(z[q])
+    z[q] = x[q]
+    x[q] = new_x
+
+
+def _x_xor_z(q: int, x: np.ndarray, z: np.ndarray) -> None:
+    x[q] ^= z[q]
+
+
+def _z_xor_x(q: int, x: np.ndarray, z: np.ndarray) -> None:
+    z[q] ^= x[q]
+
+
+def _cx_bits(a: int, b: int, x: np.ndarray, z: np.ndarray) -> None:
+    """CX with control *a* and target *b*."""
+    x[b] ^= x[a]
+    z[a] ^= z[b]
+
+
+def _cz_bits(a: int, b: int, x: np.ndarray, z: np.ndarray) -> None:
+    z[a] ^= x[b]
+    z[b] ^= x[a]
+
+
+def _swap_bits(a: int, b: int, x: np.ndarray, z: np.ndarray) -> None:
+    x[[a, b]] = x[[b, a]]
+    z[[a, b]] = z[[b, a]]
+
+
+_BitOp = Callable[[np.ndarray, np.ndarray], None]
+
+# Bit action of each stim gate a Clifford segment can hold; ``None`` leaves bits as is.
+_ONE_QUBIT_BIT_ACTION: dict[
+    str, Callable[[int, np.ndarray, np.ndarray], None] | None
+] = {
+    "I": None,
+    "X": None,
+    "Y": None,
+    "Z": None,
+    "H": _swap_xz,
+    "SQRT_Y": _swap_xz,
+    "SQRT_Y_DAG": _swap_xz,
+    "S": _z_xor_x,
+    "S_DAG": _z_xor_x,
+    "SQRT_X": _x_xor_z,
+    "SQRT_X_DAG": _x_xor_z,
+}
+_TWO_QUBIT_BIT_ACTION: dict[str, Callable[[int, int, np.ndarray, np.ndarray], None]] = {
+    "CX": _cx_bits,
+    "CZ": _cz_bits,
+    "SWAP": _swap_bits,
+}
+
+
+def _pauli_bit_ops(segment: stim.Circuit) -> list[_BitOp]:
+    """Steps that move Pauli bits back through *segment*, last gate first.
+
+    Applying them in order matches :meth:`stim.PauliString.before`.
+    """
+    ops: list[_BitOp] = []
+    for inst in reversed(segment):
+        if not isinstance(inst, stim.CircuitInstruction):
+            raise ValueError("Clifford segments must not contain REPEAT blocks.")
+        qubits = [t.value for t in inst.targets_copy()]
+        if inst.name in _TWO_QUBIT_BIT_ACTION:
+            two_qubit = _TWO_QUBIT_BIT_ACTION[inst.name]
+            pairs = list(zip(qubits[::2], qubits[1::2]))
+            ops.extend(partial(two_qubit, a, b) for a, b in reversed(pairs))
+        elif inst.name in _ONE_QUBIT_BIT_ACTION:
+            one_qubit = _ONE_QUBIT_BIT_ACTION[inst.name]
+            if one_qubit is not None:
+                ops.extend(partial(one_qubit, q) for q in reversed(qubits))
+        else:
+            raise ValueError(f"No Pauli bit action for stim gate {inst.name!r}.")
+    return ops
+
+
+def _apply_pauli_bit_ops(ops: Sequence[_BitOp], x: np.ndarray, z: np.ndarray) -> None:
+    """Run *ops* in order on the ``(n_qubits, n_samples)`` bit arrays."""
+    for op in ops:
+        op(x, z)
+
+
+def _quarter_turn_bits(
+    axis: str, q: int, x: np.ndarray, z: np.ndarray, mask: np.ndarray
+) -> None:
+    """Conjugate qubit *q*'s bits by ``R_P(π/2)``, on the *mask* samples only."""
+    turned_x, turned_z = np.array(x[q : q + 1]), np.array(z[q : q + 1])
+    stim_name = _CLIFFORD_ROTATION_TO_STIM[(axis, 1)]
+    action = None if stim_name is None else _ONE_QUBIT_BIT_ACTION[stim_name]
+    if action is None:
+        raise ValueError(f"R_{axis.upper()}(π/2) has no Pauli bit action.")
+    action(0, turned_x, turned_z)
+    x[q] = np.where(mask, turned_x[0], x[q])
+    z[q] = np.where(mask, turned_z[0], z[q])
+
+
 def _sample_paths_montecarlo(
     rotations: Sequence[_RotationGate],
-    tableaus: Sequence[stim.Tableau],
+    segments: Sequence[stim.Circuit],
     observable_terms: Sequence[tuple[float, stim.PauliString]],
     n_samples: int,
     rng: np.random.Generator,
@@ -824,6 +888,11 @@ def _sample_paths_montecarlo(
     weights are coefficient-free: the coefficient is applied once, later,
     on the measured value the weight pairs with.  Dividing by ``|c_i|`` is
     safe because a term with ``c_i == 0`` is never drawn.
+
+    The estimate is unbiased except when no sample ends diagonal: the
+    all-cos paths are returned then, so with probability ``q**n_samples``
+    (``q`` the chance a sample ends off-diagonal) the estimate is the
+    all-cos value rather than zero.
     """
     K = len(rotations)
     if K == 0:
@@ -831,11 +900,6 @@ def _sample_paths_montecarlo(
             _PauliPath(branches=(), weight=1.0, order=0, term_idx=term_idx)
             for term_idx in range(len(observable_terms))
         ]
-
-    # Precompute tableau inverses once (same optimisation as _enumerate_paths_dfs).
-    inv_tableaus = [t.inverse() for t in tableaus]
-
-    samples: list[_PauliPath] = []
 
     abs_coeffs = np.array([abs(c) for c, _ in observable_terms])
     coeff_sum = abs_coeffs.sum()
@@ -852,66 +916,58 @@ def _sample_paths_montecarlo(
     term_probs = abs_coeffs / coeff_sum
     _warn_on_term_starvation(term_probs, n_samples)
 
-    for _ in range(n_samples):
-        if len(observable_terms) == 1:
-            term_idx = 0
-        else:
-            term_idx = int(rng.choice(len(observable_terms), p=term_probs))
-        _obs_coeff, obs_pauli = observable_terms[term_idx]
+    # All samples propagate together as (n_qubits, n_samples) X/Z bit arrays.
+    # Signs are dropped: a sample only needs to know whether it ends diagonal.
+    if len(observable_terms) == 1:
+        term_idx = np.zeros(n_samples, dtype=np.intp)
+    else:
+        term_idx = rng.choice(len(observable_terms), size=n_samples, p=term_probs)
+    term_x, term_z = zip(*(pauli.to_numpy() for _, pauli in observable_terms))
+    x = np.ascontiguousarray(np.stack(term_x)[term_idx].T)
+    z = np.ascontiguousarray(np.stack(term_z)[term_idx].T)
+    # 1 / P(term) — the coefficient itself stays out of the weight.
+    is_weight = 1.0 / term_probs[term_idx]
+    # Rotation idx's branch is bit 7 - idx % 8 of byte idx // 8 (np.unpackbits order).
+    branch_bits = np.zeros(((K + 7) // 8, n_samples), dtype=np.uint8)
 
-        # 1 / P(term) — the coefficient itself stays out of the weight.
-        is_weight = 1.0 / term_probs[term_idx]
+    _apply_pauli_bit_ops(_pauli_bit_ops(segments[K]), x, z)
+    for idx in range(K - 1, -1, -1):
+        rot = rotations[idx]
+        q = rot.qubit_idx
+        gen_x, gen_z = _GENERATOR_BITS[rot.axis]
+        commutes = (~x[q] & ~z[q]) | ((x[q] == gen_x) & (z[q] == gen_z))
 
-        pauli = inv_tableaus[K](obs_pauli)
-        branches: list[int] = []
+        cos_val = np.cos(rot.angle)
+        sin_val = np.sin(rot.angle)
+        normalizer = abs(cos_val) + abs(sin_val)
+        take_sin = ~commutes & (rng.random(n_samples) >= abs(cos_val) / normalizer)
+        branch_factor = normalizer * np.where(
+            take_sin, np.sign(sin_val), np.sign(cos_val)
+        )
+        is_weight = np.where(commutes, is_weight, is_weight * branch_factor)
+        branch_bits[idx >> 3] |= take_sin.astype(np.uint8) << (7 - (idx & 7))
 
-        for idx in range(K - 1, -1, -1):
-            rot = rotations[idx]
-            axis = rot.axis
-            gen = _GENERATOR[axis]
-            qubit_idx = rot.qubit_idx
-            inv_tab = inv_tableaus[idx]
+        _quarter_turn_bits(rot.axis, q, x, z, take_sin)
+        _apply_pauli_bit_ops(_pauli_bit_ops(segments[idx]), x, z)
 
-            # Inline commute-at-qubit check (same hot-loop inlining as DFS).
-            p = pauli[qubit_idx]
-            if p == _PAULI_I or p == gen:
-                branches.append(0)
-                pauli = inv_tab(pauli)
-            else:
-                cos_val = np.cos(rot.angle)
-                sin_val = np.sin(rot.angle)
-                cos_p = abs(cos_val)
-                sin_p = abs(sin_val)
-                normalizer = cos_p + sin_p
-                if rng.random() < cos_p / normalizer:
-                    branches.append(0)
-                    is_weight *= np.sign(cos_val) * normalizer
-                    pauli = inv_tab(pauli)
-                else:
-                    branches.append(1)
-                    is_weight *= np.sign(sin_val) * normalizer
-                    # Inline R_P(π/2)† · pauli · R_P(π/2) on qubit_idx
-                    # (non-commuting ⇒ p != I).
-                    pauli = stim.PauliString(pauli)
-                    pauli[qubit_idx] = _RP_CONJUGATION[axis][p]
-                    pauli = inv_tab(pauli)
-
-        branches.reverse()
-
-        if not _is_diagonal(pauli):
-            continue
-
+    merged: dict[tuple[int, bytes], float] = {}
+    for j in np.flatnonzero(~x.any(axis=0)):
+        key = (int(term_idx[j]), branch_bits[:, j].tobytes())
+        merged[key] = merged.get(key, 0.0) + is_weight[j] / n_samples
+    samples = []
+    for (t_idx, packed), weight in merged.items():
+        branches = np.unpackbits(np.frombuffer(packed, dtype=np.uint8), count=K)
         samples.append(
             _PauliPath(
-                branches=tuple(branches),
-                weight=is_weight / n_samples,
-                order=sum(branches),
-                term_idx=term_idx,
+                branches=tuple(branches.tolist()),
+                weight=float(weight),
+                order=int(branches.sum()),
+                term_idx=t_idx,
             )
         )
 
     if not samples:
-        fallback = _all_cos_paths(rotations, inv_tableaus, observable_terms)
+        fallback = _all_cos_paths(rotations, segments, observable_terms)
         if not fallback:
             warnings.warn(
                 f"QuEPP Monte Carlo: all {n_samples} samples produced "
@@ -931,7 +987,7 @@ def _sample_paths_montecarlo(
             stacklevel=2,
         )
         return fallback
-    return _merge_paths_by_branch(samples)
+    return samples
 
 
 def _warn_on_term_starvation(
@@ -965,33 +1021,45 @@ def _warn_on_term_starvation(
 # ---------------------------------------------------------------------------
 
 
+def _build_all_cos_dag(
+    working: QuantumCircuit,
+    rotations: Sequence[_RotationGate],
+) -> tuple[DAGCircuit, list[tuple[int, Gate]]]:
+    """The all-cos path DAG and, per rotation, ``(node id, R_P(π/2) gate)``.
+
+    Every rotation becomes the identity gate, keeping the path circuit's
+    gate count and depth equal to the target's so it accumulates
+    comparable noise.  Rotations are located by ``inst_idx``, their
+    position in ``working.data``, so the sites follow ``rotations``' order.
+    """
+    rotation_at = {rot.inst_idx: rot for rot in rotations}
+    sites: list[tuple[int, Gate]] = []
+
+    dag = circuit_to_dag(working.copy_empty_like())
+    for i, inst in enumerate(working.data):
+        rot = rotation_at.get(i)
+        if rot is None:
+            dag.apply_operation_back(inst.operation, inst.qubits, inst.clbits)
+            continue
+        node = dag.apply_operation_back(IGate(), inst.qubits, inst.clbits)
+        # DAGCircuit.node looks a node up by this id, which deepcopy preserves.
+        sites.append((node._node_id, _CLIFFORD_ROTATION_QISKIT[rot.axis]))
+    return dag, sites
+
+
 def _build_path_dag(
-    base_dag: DAGCircuit,
-    rotation_positions: Sequence[tuple[int, _RotationGate]],
+    all_cos_dag: DAGCircuit,
+    sites: Sequence[tuple[int, Gate]],
     branches: Sequence[int],
 ) -> DAGCircuit:
-    """Build a Clifford DAG by replacing rotations according to branch choices.
+    """A copy of *all_cos_dag* with the sin gate at each branch-1 site.
 
-    * branch 0: rotation replaced with the identity gate, keeping the path
-      circuit's gate count and depth equal to the target's so it
-      accumulates comparable noise.
-    * branch 1: rotation replaced with ``R_P(π/2)`` Clifford.
-
-    The path DAG is built in a single pass, replacing rotation nodes inline.
+    *all_cos_dag* and *sites* come from :func:`_build_all_cos_dag`.
     """
-    replacements: dict[int, Any] = {}
-    for (topo_idx, rot), branch in zip(rotation_positions, branches):
-        replacements[topo_idx] = (
-            IGate() if branch == 0 else _CLIFFORD_ROTATION_QISKIT[rot.axis]
-        )
-
-    dag = base_dag.copy_empty_like()
-    for i, node in enumerate(base_dag.topological_op_nodes()):
-        gate = replacements.get(i)
-        dag.apply_operation_back(
-            node.op if gate is None else gate, node.qargs, node.cargs
-        )
-
+    dag = copy.deepcopy(all_cos_dag)
+    for (node_id, sin_gate), branch in zip(sites, branches):
+        if branch:
+            dag.substitute_node(dag.node(node_id), sin_gate)
     return dag
 
 
@@ -1001,25 +1069,36 @@ def _build_path_dag(
 
 
 def _simulate_clifford_ensemble(
-    circuits: Sequence[QuantumCircuit | DAGCircuit],
+    segments: Sequence[stim.Circuit],
+    rotations: Sequence[_RotationGate],
+    entry_branches: Sequence[tuple[int, ...]],
     entry_terms: Sequence[tuple[float, stim.PauliString]],
 ) -> np.ndarray:
-    """Exact ``coeff * <P>`` per entry on its Clifford circuit, via stim.
+    """Exact ``coeff * <P>`` per entry on its Clifford path circuit, via stim.
 
-    ``circuits[j]`` and ``entry_terms[j]`` describe the same entry: the
-    path circuit and the single Pauli term (with its coefficient) to
-    evaluate on it.  Distinct terms sharing a path circuit are common —
-    the circuit depends only on the branch choices — so the tableau
-    simulation is cached per circuit and only the cheap ``peek`` repeats.
+    ``entry_branches[j]`` and ``entry_terms[j]`` describe the same entry:
+    the branch choices selecting the path circuit — the Clifford
+    ``segments`` with ``R_P(π/2)`` at each branch-1 rotation — and the single Pauli term
+    (with its coefficient) to evaluate on it.  Distinct terms sharing a
+    path are common, so the tableau simulation is cached per branch tuple
+    and only the cheap ``peek`` repeats.
     """
-    values = np.empty(len(circuits), dtype=float)
-    sims: dict[int, stim.TableauSimulator] = {}
-    for i, qc_or_dag in enumerate(circuits):
-        sim = sims.get(id(qc_or_dag))
+    sin_layers = [
+        stim.Circuit(f"{_CLIFFORD_ROTATION_TO_STIM[(rot.axis, 1)]} {rot.qubit_idx}")
+        for rot in rotations
+    ]
+    values = np.empty(len(entry_branches), dtype=float)
+    sims: dict[tuple[int, ...], stim.TableauSimulator] = {}
+    for i, branches in enumerate(entry_branches):
+        sim = sims.get(branches)
         if sim is None:
             sim = stim.TableauSimulator()
-            sim.do_circuit(_qiskit_clifford_to_stim(qc_or_dag))
-            sims[id(qc_or_dag)] = sim
+            sim.do_circuit(segments[0])
+            for branch, sin_layer, segment in zip(branches, sin_layers, segments[1:]):
+                if branch:
+                    sim.do_circuit(sin_layer)
+                sim.do_circuit(segment)
+            sims[branches] = sim
         coeff, ps = entry_terms[i]
         values[i] = coeff * sim.peek_observable_expectation(ps)
     return values
@@ -1057,7 +1136,11 @@ class QuEPP(QEMProtocol):
             ``"exhaustive"`` always enumerates, binding parameters before
             mitigation so it can see concrete angles.
         n_samples: Number of Monte Carlo path samples (default 200); applies only
-            when a concrete circuit is sampled.
+            when a concrete circuit is sampled.  If no sample ends on a
+            diagonal Pauli, QuEPP warns and uses the all-cos path instead of a
+            zero estimate.  That keeps a small budget stable but biases it
+            towards the all-cos value; it matters only when nearly every
+            sampled path ends off-diagonal.
         seed: Seed for Monte Carlo path sampling. When set, every expansion of
             a circuit draws the same paths; when ``None``, paths come from the
             generator the pipeline passes, which in a program is seeded by the
@@ -1135,7 +1218,7 @@ class QuEPP(QEMProtocol):
     ) -> tuple[tuple[DAGCircuit, ...], QEMContext]:
         """Build path DAGs and per-observable classical context.
 
-        Preprocessing and Clifford tableau construction run once; path
+        Preprocessing and Clifford segment construction run once; path
         enumeration and classical simulation run per ``(observable term,
         path)`` pair.  Paths sharing a ``branches`` tuple produce the same
         Clifford circuit and are deduped across terms and observables — the
@@ -1168,15 +1251,15 @@ class QuEPP(QEMProtocol):
 
         # ----- Path-DAG dedup across observables ------------------------- #
         working_dag = circuit_to_dag(working)
-        rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
         unique_branches = dict.fromkeys(
             p.branches for paths in obs_paths_list for p in paths
         )
         branch_to_dag_idx: dict[tuple[int, ...], int] = {
             branches: idx for idx, branches in enumerate(unique_branches)
         }
+        all_cos_dag, sites = _build_all_cos_dag(working, rotations)
         merged_path_dags: list[DAGCircuit] = [
-            _build_path_dag(working_dag, rotation_positions, branches)
+            _build_path_dag(all_cos_dag, sites, branches)
             for branches in unique_branches
         ]
 
@@ -1198,9 +1281,6 @@ class QuEPP(QEMProtocol):
 
             # +1 offset because merged_dags[0] is the shared target.
             path_positions = [branch_to_dag_idx[p.branches] + 1 for p in paths]
-            entry_dags = [
-                merged_path_dags[branch_to_dag_idx[p.branches]] for p in paths
-            ]
             # Pair each entry's weight with *its own* term's Pauli; the
             # coefficient rides on the value, applied exactly once.
             entry_terms = [obs_terms[p.term_idx] for p in paths]
@@ -1213,7 +1293,10 @@ class QuEPP(QEMProtocol):
                         else np.array(weights)
                     ),
                     classical_values=_simulate_clifford_ensemble(
-                        entry_dags, entry_terms
+                        preps[0].segments,
+                        rotations,
+                        [p.branches for p in paths],
+                        entry_terms,
                     ),
                     dag_indices=[0] + path_positions,
                     entry_slots=[obs_slots[p.term_idx] for p in paths],
@@ -1327,19 +1410,19 @@ class QuEPP(QEMProtocol):
     def _preprocess(
         dag: DAGCircuit, observables: Sequence[SparsePauliOp]
     ) -> list["_PreprocResult"]:
-        """Decompose, normalise, extract rotations + tableaus once; obs terms per observable."""
+        """Decompose, normalise, extract rotations + segments once; obs terms per observable."""
         target_qc = dag_to_circuit(dag)
         n_qubits = target_qc.num_qubits
         decomposed = _decompose_controlled_rotations(target_qc)
         symbolic = _has_symbolic_angles(decomposed)
         working = _normalize_circuit(decomposed)
         rotations = _extract_rotation_gates(working)
-        tableaus = _build_clifford_tableaus(working, rotations)
+        segments = _build_clifford_segments(working, rotations)
         return [
             _PreprocResult(
                 working=working,
                 rotations=rotations,
-                tableaus=tableaus,
+                segments=segments,
                 obs_terms=_obs_to_stim_terms(obs, n_qubits),
                 symbolic=symbolic,
             )
@@ -1373,14 +1456,14 @@ class QuEPP(QEMProtocol):
         if self._sampling != "exhaustive" and not symbolic:
             return _sample_paths_montecarlo(
                 prep.rotations,
-                prep.tableaus,
+                prep.segments,
                 prep.obs_terms,
                 self._n_samples,
                 rng,
             )
         return _enumerate_paths_dfs(
             prep.rotations,
-            prep.tableaus,
+            prep.segments,
             prep.obs_terms,
             max_order=self._K_T,
             coefficient_threshold=coeff_threshold,

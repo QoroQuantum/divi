@@ -151,7 +151,11 @@ residual. Select it with ``qem_protocol=QuEPP(truncation_order=2)``.
   warns when a symbolic circuit forces enumeration; ``"exhaustive"`` always
   enumerates, binding parameters before mitigation so it sees concrete angles.
 - ``n_samples`` *(int, default 200)* — Monte Carlo path budget, used only when
-  a concrete circuit is sampled (see ``sampling``).
+  a concrete circuit is sampled (see ``sampling``). If no sample ends on a
+  diagonal Pauli, QuEPP warns and uses the all-cos path (every rotation on its
+  cosine branch) instead of a zero estimate. That keeps a small budget stable
+  but biases it towards the all-cos value; it matters only when nearly every
+  sampled path ends off-diagonal.
 - ``seed`` *(int, optional)* — fixes the Monte Carlo paths, so every expansion
   samples the same ones. Without it, paths are drawn from the program's own
   generator and follow the program's ``seed``.

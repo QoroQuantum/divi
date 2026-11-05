@@ -4,6 +4,7 @@
 
 """Tests for divi.circuits.quepp (DAG-native QuEPP implementation)."""
 
+import itertools
 import subprocess
 import sys
 import warnings
@@ -15,6 +16,7 @@ import stim
 from qiskit import QuantumCircuit
 from qiskit.circuit import Parameter, ParameterExpression
 from qiskit.converters import circuit_to_dag, dag_to_circuit
+from qiskit.dagcircuit import DAGCircuit
 from qiskit.quantum_info import SparsePauliOp
 
 from divi.backends import MaestroConfig
@@ -24,7 +26,8 @@ from divi.circuits.quepp import (
     QuEPP,
     SymbolicAngleWarning,
     _all_cos_paths,
-    _build_clifford_tableaus,
+    _build_all_cos_dag,
+    _build_clifford_segments,
     _build_path_dag,
     _coerce_angle,
     _decompose_controlled_rotations,
@@ -39,7 +42,6 @@ from divi.circuits.quepp import (
     _ObservableCPT,
     _PauliPath,
     _PreprocResult,
-    _qiskit_clifford_to_stim,
     _sample_paths_montecarlo,
     _simulate_clifford_ensemble,
     _warn_on_term_starvation,
@@ -113,10 +115,10 @@ def mixed_qc():
 
 
 def _prep(qc: QuantumCircuit, obs: SparsePauliOp):
-    """``(rotations, tableaus, obs_terms)`` for ``obs`` back-propagated through ``qc``."""
+    """``(rotations, segments, obs_terms)`` for ``obs`` back-propagated through ``qc``."""
     rots = _extract_rotation_gates(qc)
-    tabs = _build_clifford_tableaus(qc, rots)
-    return rots, tabs, _obs_to_stim_terms(obs, qc.num_qubits)
+    segments = _build_clifford_segments(qc, rots)
+    return rots, segments, _obs_to_stim_terms(obs, qc.num_qubits)
 
 
 def _two_rx_qc() -> QuantumCircuit:
@@ -308,55 +310,143 @@ class TestExtractRotationGates:
         assert [r.qubit_idx for r in rots] == [0, 1]
 
 
-def test_one_tableau_per_clifford_layer():
-    rots, tabs, _ = _prep(_two_rx_qc(), _Z0)
-    assert len(tabs) == len(rots) + 1 == 3
+def _pauli_bits(paulis: list[stim.PauliString]) -> tuple[np.ndarray, np.ndarray]:
+    """``(n_qubits, n_paulis)`` X and Z bit arrays, one column per Pauli."""
+    xs, zs = zip(*(p.to_numpy() for p in paulis))
+    return np.array(xs).T, np.array(zs).T
 
 
-class TestQiskitCliffordToStim:
-    def test_basic_cliffords(self, bell_qc):
-        sc = _qiskit_clifford_to_stim(bell_qc)
-        assert sc.num_qubits == 2
-        # Tableau builds successfully (no exception).
-        tab = stim.Tableau.from_circuit(sc)
-        assert len(tab) == 2
+_ALL_FOUR_QUBIT_PAULIS = [
+    stim.PauliString("".join(p)) for p in itertools.product("_XYZ", repeat=4)
+]
+
+
+def _segment_gate_names() -> list[str]:
+    """Every gate a Clifford segment can hold, spelled as stim names it."""
+    names = set(quepp._QISKIT_CLIFFORD_TO_STIM.values())
+    names |= {n for n in quepp._CLIFFORD_ROTATION_TO_STIM.values() if n is not None}
+    return sorted({stim.Circuit(f"{n} 0 1")[0].name for n in names})
+
+
+def _assert_bits_match(x, z, expected_paulis):
+    expected_x, expected_z = _pauli_bits(expected_paulis)
+    np.testing.assert_array_equal(x, expected_x)
+    np.testing.assert_array_equal(z, expected_z)
+
+
+class TestPauliBitOps:
+    @pytest.mark.parametrize("gate", _segment_gate_names())
+    def test_matches_stim_before_for_each_segment_gate(self, gate):
+        segment = stim.Circuit(f"H 0 2\nCX 2 1\n{gate} 0 1 3 2\nS 3")
+        x, z = _pauli_bits(_ALL_FOUR_QUBIT_PAULIS)
+
+        quepp._apply_pauli_bit_ops(quepp._pauli_bit_ops(segment), x, z)
+
+        _assert_bits_match(x, z, [p.before(segment) for p in _ALL_FOUR_QUBIT_PAULIS])
+
+    def test_unknown_gate_raises(self):
+        with pytest.raises(
+            ValueError, match=exact_match("No Pauli bit action for stim gate 'CY'.")
+        ):
+            quepp._pauli_bit_ops(stim.Circuit("CY 0 1"))
+
+    @pytest.mark.parametrize("axis", ["x", "y", "z"])
+    def test_quarter_turn_touches_only_the_masked_samples_on_its_qubit(self, axis):
+        paulis = [stim.PauliString(o + p) for o, p in zip("YZXZXY", "XYZXYZ")]
+        mask = np.array([True, True, True, False, False, False])
+        x, z = _pauli_bits(paulis)
+
+        quepp._quarter_turn_bits(axis, 1, x, z, mask)
+
+        expected = []
+        for pauli, masked in zip(paulis, mask):
+            turned = stim.PauliString(pauli)
+            if masked:
+                turned[1] = quepp._RP_CONJUGATION[axis][pauli[1]]
+            expected.append(turned)
+        _assert_bits_match(x, z, expected)
+
+
+def _clifford_only_segment(qc: QuantumCircuit) -> stim.Circuit:
+    """The single segment of a rotation-free circuit."""
+    (segment,) = _build_clifford_segments(qc, [])
+    return segment
+
+
+class TestBuildCliffordSegments:
+    def test_one_segment_per_clifford_layer(self):
+        qc = QuantumCircuit(2)
+        qc.h(0)
+        qc.rx(0.3, 0)
+        qc.cx(0, 1)
+        qc.rx(0.4, 1)
+        qc.s(1)
+        segments = _build_clifford_segments(qc, _extract_rotation_gates(qc))
+        assert [str(s) for s in segments] == ["H 0", "CX 0 1", "S 1"]
 
     def test_non_clifford_raises(self):
         qc = QuantumCircuit(1)
         qc.rx(0.3, 0)
         with pytest.raises(ValueError, match="Non-Clifford angle"):
-            _qiskit_clifford_to_stim(qc)
+            _clifford_only_segment(qc)
 
     def test_parametric_raises(self):
         theta = Parameter("theta")
         qc = QuantumCircuit(1)
         qc.rx(theta, 0)
         with pytest.raises(ValueError, match="parametric"):
-            _qiskit_clifford_to_stim(qc)
+            _clifford_only_segment(qc)
 
     @pytest.mark.parametrize(
         "gates,expected",
         [
-            ([("rx", np.pi / 2)], "I 0\nSQRT_X 0"),
-            ([("rz", np.pi / 2)], "I 0\nS 0"),
-            ([("rx", -np.pi / 2), ("ry", 2 * np.pi)], "I 0\nSQRT_X_DAG 0"),
-            ([], "I 0"),
-        ],
-        ids=[
-            "rx-quarter-turn",
-            "rz-quarter-turn",
-            "negative-and-full-turn",
-            "idle-qubit-padded",
+            *(
+                pytest.param([(name, (0,))], f"{stim_name} 0", id=name)
+                for name, stim_name in [
+                    ("h", "H"),
+                    ("x", "X"),
+                    ("y", "Y"),
+                    ("z", "Z"),
+                    ("s", "S"),
+                    ("sdg", "S_DAG"),
+                    ("sx", "SQRT_X"),
+                    ("sxdg", "SQRT_X_DAG"),
+                    ("id", "I"),
+                ]
+            ),
+            *(
+                pytest.param([(name, (0, 1))], f"{stim_name} 0 1", id=name)
+                for name, stim_name in [("cx", "CX"), ("cz", "CZ"), ("swap", "SWAP")]
+            ),
+            *(
+                pytest.param(
+                    [(f"r{axis}", (n * np.pi / 2, 0))],
+                    f"{stim_name} 0",
+                    id=f"r{axis}-{n}-quarter-turns",
+                )
+                for axis, stim_names in [
+                    ("x", ("SQRT_X", "X", "SQRT_X_DAG")),
+                    ("y", ("SQRT_Y", "Y", "SQRT_Y_DAG")),
+                    ("z", ("S", "Z", "S_DAG")),
+                ]
+                for n, stim_name in enumerate(stim_names, start=1)
+            ),
+            pytest.param(
+                [("rx", (-np.pi / 2, 0)), ("ry", (2 * np.pi, 0))],
+                "SQRT_X_DAG 0",
+                id="negative-and-full-turn",
+            ),
+            pytest.param([], "", id="idle-qubit"),
         ],
     )
     def test_exact_conversion(self, gates, expected):
-        qc = QuantumCircuit(1)
-        for name, angle in gates:
-            getattr(qc, name)(angle, 0)
-        assert str(_qiskit_clifford_to_stim(qc)) == expected
+        qc = QuantumCircuit(2)
+        for name, args in gates:
+            getattr(qc, name)(*args)
+        assert str(_clifford_only_segment(qc)) == expected
 
     def test_empty_register_converts_to_an_empty_circuit(self):
-        assert _qiskit_clifford_to_stim(QuantumCircuit(0)) == stim.Circuit()
+        assert _clifford_only_segment(QuantumCircuit(0)) == stim.Circuit()
 
     def test_unrecognised_gate_raises(self):
         qc = QuantumCircuit(1, 1)
@@ -368,7 +458,7 @@ class TestQiskitCliffordToStim:
                 "converter."
             ),
         ):
-            _qiskit_clifford_to_stim(qc)
+            _clifford_only_segment(qc)
 
 
 class TestObsToStimTerms:
@@ -445,9 +535,9 @@ class TestEnumeratePathsDFS:
 @pytest.mark.parametrize(
     "select",
     [
-        lambda terms: _enumerate_paths_dfs([], [stim.Tableau(1)], terms, max_order=2),
+        lambda terms: _enumerate_paths_dfs([], [stim.Circuit()], terms, max_order=2),
         lambda terms: _sample_paths_montecarlo(
-            [], [stim.Tableau(1)], terms, 10, np.random.default_rng(0)
+            [], [stim.Circuit()], terms, 10, np.random.default_rng(0)
         ),
     ],
     ids=["exhaustive", "montecarlo"],
@@ -471,33 +561,48 @@ def test_merge_sums_weights_per_term_and_branches():
     }
 
 
+def _path_dag(working: QuantumCircuit, rotations, branches) -> DAGCircuit:
+    """``_build_path_dag`` from a freshly built all-cos DAG of *working*."""
+    return _build_path_dag(*_build_all_cos_dag(working, rotations), branches)
+
+
+def _reordering_prep() -> _PreprocResult:
+    """Decomposing the ``rzz`` gates puts ``rz`` on qubit 2 before ``rx`` on
+    qubit 1 in ``working``, while a DAG's topological order swaps them."""
+    qc = QuantumCircuit(3)
+    qc.h(range(3))
+    qc.rzz(0.3, 2, 1)
+    qc.rzz(0.3, 0, 2)
+    qc.rx(0.3, 1)
+    obs = SparsePauliOp.from_list([("ZZZ", 0.5), ("IXI", 1.0), ("YIZ", -0.7)])
+    (prep,) = QuEPP._preprocess(circuit_to_dag(qc), (obs,))
+    return prep
+
+
 class TestPathDagConstruction:
-    def test_rotation_indices_align_with_working_dag_topology(self):
-        qc = QuantumCircuit(2)
-        qc.h(0)
-        qc.rx(0.2, 0)
-        qc.cx(0, 1)
-        qc.rz(-0.4, 1)
+    def test_replaces_rotations_when_dag_order_differs_from_working_order(self):
+        prep = _reordering_prep()
 
-        obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        (prep,) = QuEPP._preprocess(circuit_to_dag(qc), (obs,))
-        working_dag = circuit_to_dag(prep.working)
-        topo_nodes = list(working_dag.topological_op_nodes())
+        path = _path_dag(prep.working, prep.rotations, (1, 0, 1))
 
-        for rot in prep.rotations:
-            node = topo_nodes[rot.inst_idx]
-            assert node.op.name == f"r{rot.axis}"
-            assert working_dag.find_bit(node.qargs[0]).index == rot.qubit_idx
+        expected = QuantumCircuit(3)
+        expected.h(range(3))
+        expected.cx(2, 1)
+        expected.s(1)
+        expected.cx(2, 1)
+        expected.cx(0, 2)
+        expected.id(2)
+        expected.cx(0, 2)
+        expected.sx(1)
+        assert path == circuit_to_dag(expected)
 
     def test_single_rotation_branch_semantics(self, default_test_simulator):
         qc = QuantumCircuit(1)
         qc.rx(0.3, 0)
-        working_dag = circuit_to_dag(qc)
         rotations = _extract_rotation_gates(qc)
-        rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
 
-        skip_dag = _build_path_dag(working_dag, rotation_positions, (0,))
-        replace_dag = _build_path_dag(working_dag, rotation_positions, (1,))
+        skip_dag = _path_dag(qc, rotations, (0,))
+        replace_dag = _path_dag(qc, rotations, (1,))
 
         identity_qc = QuantumCircuit(1)
         clifford_qc = QuantumCircuit(1)
@@ -514,12 +619,10 @@ class TestPathDagConstruction:
         qc = QuantumCircuit(1)
         qc.rx(0.3, 0)
         qc.rz(0.4, 0)
-        working_dag = circuit_to_dag(qc)
-        rotations = _extract_rotation_gates(qc)
-        rotation_positions = [(rot.inst_idx, rot) for rot in rotations]
-
-        first_only = _build_path_dag(working_dag, rotation_positions, (1, 0))
-        second_only = _build_path_dag(working_dag, rotation_positions, (0, 1))
+        all_cos_dag, sites = _build_all_cos_dag(qc, _extract_rotation_gates(qc))
+        first_only = _build_path_dag(all_cos_dag, sites, (1, 0))
+        second_only = _build_path_dag(all_cos_dag, sites, (0, 1))
+        assert dag_to_circuit(all_cos_dag).count_ops() == {"id": 2}
 
         first_expected = QuantumCircuit(1)
         first_expected.rx(np.pi / 2, 0)
@@ -534,12 +637,12 @@ class TestPathDagConstruction:
         )
 
 
-def _all_cos_weight_of(rots, inv_tabs, obs_terms, term_idx=0) -> float:
+def _all_cos_weight_of(rots, segments, obs_terms, term_idx=0) -> float:
     """The all-cos path weight for one term, or 0.0 when it has no such path."""
     path = next(
         (
             p
-            for p in _all_cos_paths(rots, inv_tabs, obs_terms)
+            for p in _all_cos_paths(rots, segments, obs_terms)
             if p.term_idx == term_idx
         ),
         None,
@@ -549,8 +652,7 @@ def _all_cos_weight_of(rots, inv_tabs, obs_terms, term_idx=0) -> float:
 
 def _all_cos_of(qc: QuantumCircuit, obs: SparsePauliOp):
     """``_all_cos_paths`` for ``obs`` back-propagated through ``qc``."""
-    rots, tabs, obs_terms = _prep(qc, obs)
-    return _all_cos_paths(rots, [t.inverse() for t in tabs], obs_terms)
+    return _all_cos_paths(*_prep(qc, obs))
 
 
 class TestAllCosPaths:
@@ -559,13 +661,12 @@ class TestAllCosPaths:
     def test_matches_exhaustive_dfs_all_zero_branch(self):
         """Deterministic fallback weight matches the DFS-enumerated all-zero path."""
         angle = 0.7
-        rots, tabs, obs_terms = _prep(_normalize_circuit(_rx_qc(angle)), _Z0)
-        inv_tabs = [t.inverse() for t in tabs]
+        rots, segments, obs_terms = _prep(_normalize_circuit(_rx_qc(angle)), _Z0)
 
-        fallback_w = _all_cos_weight_of(rots, inv_tabs, obs_terms)
+        fallback_w = _all_cos_weight_of(rots, segments, obs_terms)
 
         # Cross-check with the exhaustive enumeration's all-zero branch.
-        dfs_paths = _enumerate_paths_dfs(rots, tabs, obs_terms, max_order=10)
+        dfs_paths = _enumerate_paths_dfs(rots, segments, obs_terms, max_order=10)
         zero_branch = next(p for p in dfs_paths if all(b == 0 for b in p.branches))
         assert fallback_w == pytest.approx(zero_branch.weight, rel=1e-12)
         assert fallback_w == pytest.approx(np.cos(angle), abs=1e-12)
@@ -666,6 +767,35 @@ def test_mc_with_all_zero_coefficients_returns_no_paths():
     assert paths == []
 
 
+def _mixed_rotation_qc() -> QuantumCircuit:
+    """11 rotations on all three axes, negative and beyond-π/4 angles among
+    them, between H/S/CX layers: more than 8 rotations and asymmetric paths."""
+    qc = QuantumCircuit(3)
+    angles = [0.4, -0.5, 2.0, 0.3, -1.1, 0.6, 0.25, -0.35, 1.3, 0.45, -0.2]
+    for i, theta in enumerate(angles):
+        q = (2 * i) % 3
+        getattr(qc, f"r{'xyz'[i % 3]}")(theta, q)
+        qc.cx(q, (q + 1) % 3)
+        if i % 2:
+            qc.h(q)
+        else:
+            qc.s((q + 2) % 3)
+    return qc
+
+
+@pytest.mark.usefixtures("suppress_quepp_warnings")
+class TestSampleMonteCarlo:
+    def test_estimate_converges_to_the_exhaustive_sum(self):
+        qc = _mixed_rotation_qc()
+        obs = SparsePauliOp.from_list([("ZIZ", 0.8), ("IXI", -0.5), ("YZI", 0.3)])
+        exact = _cpt_estimate(qc, obs, truncation_order=20)
+        sampled = _cpt_estimate(
+            qc, obs, sampling="montecarlo", n_samples=200000, seed=0
+        )
+        # 200000 samples give a standard deviation of about 0.0056.
+        assert sampled == pytest.approx(exact, abs=0.02)
+
+
 _STARVATION_AT_200_SAMPLES = (
     "QuEPP Monte Carlo: with n_samples=200 across 2 Pauli terms, the "
     "smallest-coefficient term expects only 2.0 samples (terms are "
@@ -762,16 +892,23 @@ class TestPathCircuitsMatchTargetStructure:
             assert path.count_ops()["cx"] == target.count_ops()["cx"]
 
 
+def _simulate_on_clifford_circuit(qc: QuantumCircuit, entry_terms):
+    """``_simulate_clifford_ensemble`` with every entry on the rotation-free *qc*."""
+    return _simulate_clifford_ensemble(
+        [_clifford_only_segment(qc)], [], [()] * len(entry_terms), entry_terms
+    )
+
+
 class TestSimulateCliffordEnsemble:
     @pytest.mark.parametrize("pauli", ["ZZ", "XX"])
     def test_bell_state_stabiliser(self, bell_qc, pauli):
         obs = SparsePauliOp.from_list([(pauli, 1.0)])
-        vals = _simulate_clifford_ensemble([bell_qc], _single_term_specs(obs, 2, 1))
+        vals = _simulate_on_clifford_circuit(bell_qc, _single_term_specs(obs, 2, 1))
         assert vals[0] == pytest.approx(1.0)
 
     def test_batch_returns_correct_count(self, bell_qc):
         obs = SparsePauliOp.from_list([("ZZ", 1.0)])
-        vals = _simulate_clifford_ensemble([bell_qc] * 3, _single_term_specs(obs, 2, 3))
+        vals = _simulate_on_clifford_circuit(bell_qc, _single_term_specs(obs, 2, 3))
         assert vals.shape == (3,)
 
     def test_applies_each_entrys_own_coefficient(self, bell_qc):
@@ -779,20 +916,55 @@ class TestSimulateCliffordEnsemble:
         terms = _obs_to_stim_terms(
             SparsePauliOp.from_list([("ZZ", 0.5), ("XX", -2.0)]), 2
         )
-        vals = _simulate_clifford_ensemble([bell_qc, bell_qc], terms)
-        assert vals == pytest.approx([0.5, -2.0])
-
-    def test_simulates_each_distinct_circuit_once(self, bell_qc, mocker):
-        flipped = QuantumCircuit(2)
-        flipped.x(0)
-        dag_a, dag_b = circuit_to_dag(bell_qc), circuit_to_dag(flipped)
-        spy = mocker.spy(quepp, "_qiskit_clifford_to_stim")
-        terms = _obs_to_stim_terms(
-            SparsePauliOp.from_list([("ZZ", 0.5), ("ZZ", -2.0), ("ZZ", 3.0)]), 2
+        assert _simulate_on_clifford_circuit(bell_qc, terms) == pytest.approx(
+            [0.5, -2.0]
         )
-        vals = _simulate_clifford_ensemble([dag_a, dag_a, dag_b], terms)
+
+    @pytest.mark.parametrize(
+        "axis, pauli, sin_value",
+        [("x", "Y", -1.0), ("y", "X", 1.0), ("z", "Y", 1.0)],
+    )
+    def test_sin_branch_applies_the_quarter_turn(self, axis, pauli, sin_value):
+        """Branch 1 runs ``R_P(π/2)`` in place of the rotation; branch 0 runs nothing.
+
+        The start state (``|0⟩``, or ``|+⟩`` for the z axis) has ``<P> = 0``,
+        so only the quarter turn makes the value nonzero.
+        """
+        qc = QuantumCircuit(1)
+        if axis == "z":
+            qc.h(0)
+        getattr(qc, f"r{axis}")(0.3, 0)
+        rots, segments, terms = _prep(qc, SparsePauliOp(pauli))
+        vals = _simulate_clifford_ensemble(segments, rots, [(0,), (1,)], terms * 2)
+        assert vals == pytest.approx([0.0, sin_value])
+
+    @pytest.mark.parametrize("branches", list(itertools.product((0, 1), repeat=3)))
+    def test_matches_a_stim_run_of_the_submitted_path_dag(self, branches):
+        prep = _reordering_prep()
+        terms = prep.obs_terms
+
+        vals = _simulate_clifford_ensemble(
+            prep.segments, prep.rotations, [branches] * len(terms), terms
+        )
+
+        sim = stim.TableauSimulator()
+        path_qc = dag_to_circuit(_path_dag(prep.working, prep.rotations, branches))
+        sim.do_circuit(_clifford_only_segment(path_qc))
+        expected = [coeff * sim.peek_observable_expectation(p) for coeff, p in terms]
+        assert vals == pytest.approx(expected)
+
+    def test_simulates_each_distinct_path_once(self, mocker):
+        rots, segments, terms = _prep(
+            _rx_qc(0.3), SparsePauliOp.from_list([("Z", 0.5), ("Z", -2.0)])
+        )
+        spy = mocker.patch.object(
+            quepp.stim, "TableauSimulator", wraps=stim.TableauSimulator
+        )
+        vals = _simulate_clifford_ensemble(
+            segments, rots, [(0,), (0,), (1,)], [*terms, terms[0]]
+        )
         assert spy.call_count == 2
-        assert vals == pytest.approx([0.5, -2.0, -3.0])
+        assert vals == pytest.approx([0.5, -2.0, 0.0])
 
 
 class TestHasSymbolicAngles:
@@ -1254,11 +1426,10 @@ def _two_qubit_qc() -> QuantumCircuit:
     return qc
 
 
-def _cpt_estimate(qc: QuantumCircuit, obs: SparsePauliOp) -> float:
+def _cpt_estimate(qc: QuantumCircuit, obs: SparsePauliOp, **protocol_kwargs) -> float:
     """The CPT reconstruction ``weights @ classical_values`` for one observable."""
-    _, ctx = QuEPP(sampling="exhaustive", truncation_order=5, n_twirls=0).expand(
-        circuit_to_dag(qc), obs
-    )
+    options = {"sampling": "exhaustive", "truncation_order": 5, "n_twirls": 0}
+    _, ctx = QuEPP(**(options | protocol_kwargs)).expand(circuit_to_dag(qc), obs)
     entry = ctx["per_obs"][0]
     return float(np.asarray(entry.weights) @ np.asarray(entry.classical_values))
 
@@ -1638,11 +1809,11 @@ def _single_rx_prep(angle) -> _PreprocResult:
     """Preprocessed ``RX(angle)`` measured as ``<Z0>``, symbolic iff ``angle`` is."""
     qc = QuantumCircuit(1)
     qc.rx(angle, 0)
-    rotations, tableaus, obs_terms = _prep(qc, _Z0)
+    rotations, segments, obs_terms = _prep(qc, _Z0)
     return _PreprocResult(
         working=qc,
         rotations=rotations,
-        tableaus=tableaus,
+        segments=segments,
         obs_terms=obs_terms,
         symbolic=isinstance(angle, Parameter),
     )
