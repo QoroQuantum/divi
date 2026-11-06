@@ -33,7 +33,12 @@ from divi.backends._cancellation import (
     _sigint_to_event,
     raise_if_cancelled,
 )
-from divi.backends._config import _TARGET_FIELDS, DeviceConfig, JobConfig
+from divi.backends._config import (
+    _TARGET_FIELDS,
+    DeviceConfig,
+    JobConfig,
+    require_device_config,
+)
 from divi.backends._job_status import (
     InsufficientCreditsError,
     JobCancelledError,
@@ -158,13 +163,6 @@ def _by_config_key(specs: Iterable[Mapping]) -> dict[str, dict[str, Any]]:
     }
 
 
-def _require_device_config(value: Any) -> None:
-    if not isinstance(value, DeviceConfig):
-        raise TypeError(
-            f"device_config must be a DeviceConfig, got {type(value).__name__}."
-        )
-
-
 def _is_recoverable_characterization_error(exc: Exception) -> bool:
     """Whether an existing job may need inspection after this request failed."""
     if isinstance(
@@ -222,6 +220,18 @@ def _greedy_size_chunks(
         chunks.append(current)
 
     return chunks
+
+
+def _encode_parameter_set(
+    label: str,
+    values: Sequence[float],
+    cotangents: Mapping[str, np.ndarray] | None,
+) -> dict[str, Any]:
+    """A ``parameter_sets`` row as sent, with its cotangent when given."""
+    row: dict[str, Any] = {"label": label, "values": [float(v) for v in values]}
+    if cotangents is not None:
+        row["cotangent"] = [float(w) for w in cotangents[label]]
+    return row
 
 
 class JobType(Enum):
@@ -425,7 +435,7 @@ class QoroService(AsyncJobBackend):
     @device_config.setter
     def device_config(self, value: DeviceConfig | None) -> None:
         if value is not None:
-            _require_device_config(value)
+            require_device_config(value)
         self._device_config = value
 
     @property
@@ -752,7 +762,7 @@ class QoroService(AsyncJobBackend):
                 )
             if device_config is None:
                 return None, self.device_config
-            _require_device_config(device_config)
+            require_device_config(device_config)
             return None, device_config
         if device_config is not None:
             raise ValueError(
@@ -986,6 +996,8 @@ class QoroService(AsyncJobBackend):
         Raises:
             VJPUnavailableError: If :attr:`supports_vjp` is False, a payload's
                 circuit cannot be differentiated, or the service fails the job.
+            ValueError: If one parameter set, with its cotangent, exceeds the
+                per-request payload cap.
         """
         if not self.supports_vjp:
             raise VJPUnavailableError(
@@ -1051,6 +1063,7 @@ class QoroService(AsyncJobBackend):
         parameter_names: Sequence[str],
         parameter_sets: Sequence[tuple[str, tuple[float, ...]]],
         envelope: Mapping[str, Any],
+        cotangents: Mapping[str, np.ndarray] | None = None,
     ) -> list[list[tuple[str, tuple[float, ...]]]]:
         """Split a ``CircuitPayload``'s ``parameter_sets`` into chunks whose
         ``add_circuits/`` bodies, as ``json.dumps`` renders them, stay under
@@ -1058,7 +1071,11 @@ class QoroService(AsyncJobBackend):
 
         Each chunk re-uses the same already-compressed ``circuit_template``
         and ``parameter_names``; only ``parameter_sets`` is split.  This
-        mirrors :meth:`_split_circuits` for the bound path.
+        mirrors :meth:`_split_circuits` for the bound path. Rows are sized as
+        sent, with their ``cotangents`` when given.
+
+        Raises:
+            ValueError: If the template, or one row with it, exceeds the cap.
         """
         max_payload_bytes = int(_MAX_PAYLOAD_SIZE_MB * 1024 * 1024)
         fixed_overhead = len(
@@ -1084,8 +1101,14 @@ class QoroService(AsyncJobBackend):
         def row_size(row: tuple[str, tuple[float, ...]]) -> int:
             label, values = row
             # The row's JSON plus the ", " separating it from the next.
-            wire_values = [float(value) for value in values]
-            return len(json.dumps({"label": label, "values": wire_values})) + 2
+            size = len(json.dumps(_encode_parameter_set(label, values, cotangents))) + 2
+            if fixed_overhead + size > max_payload_bytes:
+                raise ValueError(
+                    f"Parameter set {label!r} with the request's other fields "
+                    f"exceeds the per-request payload cap ({_MAX_PAYLOAD_SIZE_MB} "
+                    "MB); reduce its size or split the program."
+                )
+            return size
 
         return _greedy_size_chunks(
             parameter_sets, row_size, fixed_overhead, max_payload_bytes
@@ -1098,12 +1121,14 @@ class QoroService(AsyncJobBackend):
         circuit_ham_map: Sequence[list[int]] | None,
         shot_groups: Sequence[list[int]] | None,
         envelope: Mapping[str, Any],
+        cotangents: Mapping[str, np.ndarray] | None = None,
     ) -> list[dict[str, Any]]:
         """Chunk parameter matrices into ``add_circuits/`` payload fragments.
 
         Each fragment reuses the same compressed ``circuit_template``; only
         ``parameter_sets`` is split, mirroring how :meth:`_build_bound_call_plan`
-        splits the circuit mapping.
+        splits the circuit mapping. ``cotangents`` adds each row's cotangent,
+        keyed by row label.
         """
         if circuit_ham_map is not None:
             raise ValueError(
@@ -1141,14 +1166,18 @@ class QoroService(AsyncJobBackend):
 
             compressed = self._compress_data(payload.circuit)
             for chunk in self._split_payload_parameter_sets(
-                compressed, payload.parameter_names, payload.parameter_sets, envelope
+                compressed,
+                payload.parameter_names,
+                payload.parameter_sets,
+                envelope,
+                cotangents,
             ):
                 call_plan.append(
                     {
                         "circuit_template": compressed,
                         "parameter_names": list(payload.parameter_names),
                         "parameter_sets": [
-                            {"label": label, "values": [float(v) for v in values]}
+                            _encode_parameter_set(label, values, cotangents)
                             for label, values in chunk
                         ],
                     }

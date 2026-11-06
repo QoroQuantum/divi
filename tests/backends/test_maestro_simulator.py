@@ -7,20 +7,19 @@ import os
 import threading
 import warnings
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from threading import Event, Thread
 
 import maestro
 import numpy as np
 import pytest
 from qiskit import QuantumCircuit
-from qiskit.circuit import Parameter
 from qiskit.circuit.library import UnitaryGate, XXPlusYYGate
 from qiskit.quantum_info import SparsePauliOp, random_unitary
 
 import divi.backends.runners._maestro as maestro_module
 from divi.backends import MaestroConfig, MaestroSimulator
 from divi.backends.runners._maestro import _circuit_seed, _run_with_cancellation
-from divi.circuits._payloads import CircuitPayload
 from divi.circuits._qasm_template import build_template, render_template
 from divi.exceptions import ExecutionCancelledError, VJPUnavailableError
 from tests._helpers import exact_match
@@ -34,6 +33,7 @@ from tests.backends._circuit_runner_contracts import (
 from tests.backends._helpers import (
     SHOT_GROUPS_WITH_HAM_OPS_MESSAGE,
     padding_warning,
+    parametric_payload,
     uncovered_circuits_message,
 )
 
@@ -1402,7 +1402,7 @@ def test_statevector_refuses_a_noise_model(make_maestro_simulator):
     )
     message = (
         "statevector cannot apply the configured noise model; use "
-        "expectation_value, or a MaestroSimulator without noise_model."
+        "expectation_value, or a maestro_config without noise_model."
     )
 
     with pytest.raises(ValueError, match=exact_match(message)):
@@ -1473,15 +1473,9 @@ _TRANSLATED_BODY = (
 )
 
 
-def _parametric_payload(body, rows=_VJP_ROWS, n_qubits=3, parameters=_VJP_PARAMETERS):
-    """A payload over ``parameters`` whose register is measured at the end."""
-    header = f'OPENQASM 2.0;\ninclude "qelib1.inc";\nqreg q[{n_qubits}];\ncreg c[{n_qubits}];\n'
-    measures = "".join(f"measure q[{i}] -> c[{i}];\n" for i in range(n_qubits))
-    return CircuitPayload(
-        circuit=header + body + measures,
-        parameters=tuple(Parameter(name) for name in parameters),
-        parameter_sets=tuple((f"row_{i}", row) for i, row in enumerate(rows)),
-    )
+_parametric_payload = partial(
+    parametric_payload, rows=_VJP_ROWS, parameters=_VJP_PARAMETERS, n_qubits=3
+)
 
 
 def _bound(payload, values):

@@ -1850,6 +1850,48 @@ class TestQoroServiceMock:
         assert [row["label"] for row in add["parameter_sets"]] == ["row_0", "row_1"]
         assert add["observables"] == compress_ham_ops("ZZ;XI")
 
+    def test_vjp_sizes_each_request_with_its_cotangents(
+        self, mocker, qoro_service_factory
+    ):
+        """Under a cap the rows fit without their cotangents but not with them,
+        every request still stays under it."""
+        (whole,) = _vjp_add_bodies(mocker, qoro_service_factory())
+        cap = len(json.dumps(whole)) - 1
+        _cap_payload_bytes(mocker, cap)
+
+        bodies = _vjp_add_bodies(mocker, qoro_service_factory())
+
+        assert len(bodies) == 2
+        assert all(len(json.dumps(body)) <= cap for body in bodies)
+        assert [
+            row["cotangent"] for body in bodies for row in body["parameter_sets"]
+        ] == [[1.0, 0.5], [-0.3, 2.0]]
+
+    def test_vjp_rejects_a_row_too_large_for_one_request(
+        self, mocker, qoro_service_factory
+    ):
+        """The cap leaves room for the template but not for one row with its
+        cotangent."""
+        (whole,) = _vjp_add_bodies(mocker, qoro_service_factory())
+        _cap_payload_bytes(
+            mocker, len(json.dumps({**whole, "parameter_sets": []})) + 10
+        )
+        service = qoro_service_factory()
+        transport = mocker.patch.object(service, "_make_request")
+
+        with pytest.raises(
+            ValueError,
+            match=exact_match(
+                "Parameter set 'row_0' with the request's other fields exceeds the "
+                f"per-request payload cap ({_qoro_service._MAX_PAYLOAD_SIZE_MB} MB); "
+                "reduce its size or split the program."
+            ),
+        ):
+            service.submit_vjp(
+                [make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS
+            )
+        transport.assert_not_called()
+
     def test_vjp_maps_gradients_back_through_scaled_angles(
         self, mocker, qoro_service_factory
     ):
@@ -2457,6 +2499,19 @@ def _add_circuits_bodies(mock_make_request) -> list[dict]:
 
 def _cap_payload_bytes(mocker, n_bytes: int) -> None:
     mocker.patch(f"{_qoro_service.__name__}._MAX_PAYLOAD_SIZE_MB", new=n_bytes / 2**20)
+
+
+def _vjp_add_bodies(mocker, service) -> list[dict]:
+    """The ``add_circuits/`` bodies ``service`` sends for the test VJP payload."""
+    transport = mocker.patch.object(
+        service, "_make_request", side_effect=make_vjp_transport(mocker)
+    )
+    service.submit_vjp([make_vjp_payload()], ham_ops="ZZ;XI", cotangents=VJP_COTANGENTS)
+    return [
+        call.kwargs["json"]
+        for call in transport.call_args_list
+        if call.args[1].endswith("add_circuits/")
+    ]
 
 
 def test_state_changing_posts_bypass_the_retrying_session(mocker, qoro_service_factory):

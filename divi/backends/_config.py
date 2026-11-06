@@ -48,8 +48,19 @@ def reject_unknown_reset(names: Sequence[str], known: Iterable[str]) -> None:
         raise ValueError(f"Cannot reset unknown fields {unknown}.")
 
 
+def require_device_config(value: Any) -> None:
+    """Raise ``TypeError`` unless ``value`` is a :class:`DeviceConfig`."""
+    if not isinstance(value, DeviceConfig):
+        raise TypeError(
+            f"device_config must be a DeviceConfig, got {type(value).__name__}."
+        )
+
+
 class DeviceConfig(BaseModel):
     """Per-job execution options for a Qoro Service job on a QPU.
+
+    :class:`~divi.backends.QRMIBackend` takes some IBM keys; see
+    :attr:`~divi.backends.QRMIBackend.device_config`.
 
     Options are the QPU vendors' own device keys, the ones
     :meth:`~divi.backends.QoroService.fetch_vendor_blueprints` lists, given as

@@ -4,12 +4,15 @@
 
 """Shared fixtures for backend tests."""
 
+import weakref
+from contextlib import ExitStack
 from http import HTTPStatus
 
 import pytest
 
 import divi.backends.runners._qoro as _qoro_service
-from divi.backends import QoroService
+from divi.backends import QoroService, QRMIBackend
+from tests.backends._helpers import close_if_alive
 
 
 @pytest.fixture
@@ -85,3 +88,17 @@ def circuits():
         "\nmeasure q[2] -> c[2];\nmeasure q[3] -> c[3];\n"
     )
     return {f"circuit_{i}": test_qasm for i in range(10)}
+
+
+@pytest.fixture
+def make_qrmi_backend():
+    """Build a ``QRMIBackend`` on a QRMI resource, closed at teardown if a test
+    still holds it."""
+    with ExitStack() as stack:
+
+        def _make(resource, **kwargs):
+            backend = QRMIBackend(resource, **kwargs)
+            stack.callback(close_if_alive, weakref.ref(backend))
+            return backend
+
+        yield _make
